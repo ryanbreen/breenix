@@ -379,3 +379,21 @@ fn retained_catalogue_contains_each_probe_variant() {
         assert_eq!(&data[offset+80..offset+80+code.len()], code, "probe code at {offset:#x}");
     }
 }
+
+#[cfg(feature = "gt710_clock_probe")]
+#[test]
+fn c1_clock_frame_runs_sixteen_full_triangle_profile_draws() {
+    let target=encode::Target {id:19,address:0x2_0000_0000,width:512,height:512,
+        format:format::B8G8R8A8,tile_mode:0};
+    let mut frame=encode::clock_frame(target).unwrap();
+    assert_eq!(frame.chunks.len(),16);
+    frame.relocate(0x3_0000_0000).unwrap();
+    for chunk in &frame.chunks {
+        assert_eq!(chunk.target,19);assert!(chunk.copy.is_none());
+        let packets=packets(&chunk.words);
+        assert!(packets.contains(&(0x800,vec![2,0,512,512,0xcf,0,1,0,0])));
+        assert!(packets.iter().any(|(a,v)|*a==0x2140 && v.contains(&(shaders::PIPELINE_TRIANGLE_OFFSET as u32))));
+        // A197 SET_SCISSOR_ENABLE/HORIZONTAL/VERTICAL: one 3-word packet.
+        assert!(packets.contains(&(0xe00,vec![1,512<<16,512<<16])));
+    }
+}

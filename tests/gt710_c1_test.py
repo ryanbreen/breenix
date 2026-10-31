@@ -12,6 +12,7 @@
 #  *
 #  * The above copyright notice and this permission notice shall be included in
 #  * all copies or substantial portions of the Software.
+# claim-lint:ok: MIT grant in docs/gui/gt710-c1.md.
 #  *
 #  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 #  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -136,7 +137,7 @@ use std::collections::BTreeMap;
 #[test] fn tree() {
  let mut r=BTreeMap::from([(0x101000,0x400000),(0x137100,7),(0x137000,1),(0x137004,0x11e01),
  (0x137020,1),(0x137024,0x11401),(0x137040,1),(0x137044,0x10a01),
- (0x1373f4,1),(0x132020,1),(0x132024,0x11401),(0x132030,0xf0000000)]);
+ (0x1373f4,1),(0x132000,1),(0x132004,0x10000201),(0x132020,1),(0x132024,0x11401),(0x132030,0xf0000000)]);
  let (raw,d)=clock::sample_domains(|a|*r.get(&a).unwrap_or(&0));
  assert!(raw.contains(&(0x137024,0x11401)));
  for (n,f) in [("crystal",27000),("href",100000),("gpc",810000),("rop",540000),("hubk07",270000),("hubk06",27000),("hubk01",27000),("pmu",27000),("vdec",27000),("memory",540000),("mpll",540000)] {assert_eq!(d.iter().find(|v|v.0==n).unwrap().1,Ok(f),"{}",n);}
@@ -176,6 +177,42 @@ impl sensor::Io for Io {
             elif change=='time': b[0]['elapsed_ns']-=1
             else: b[0]['completion']=False
             with self.subTest(change=change),self.assertRaises(ValueError): a.benchmarks(b)
+
+    def test_c1_record_and_bulk_authentication(self):
+        a=self.api()
+        vals={0x101000:0x400000,0x137100:7,0x1373f4:1,0x132000:1,0x132004:0x10000201,
+              0x132020:1,0x132024:0x11401,0x132030:0xf0000000,0x137320:0,0x137330:0}
+        for i,n in [(0,30),(1,20),(2,10)]:
+            vals.update({0x137000+32*i:1,0x137004+32*i:0x10000+(n<<8)+1,0x137120+4*i:0,0x137140+4*i:0})
+        for i in [0,1,2,7,8,12,14]:
+            vals[0x137250+4*i]=0
+            if i>=7:vals.update({0x137160+4*i:0,0x1371d0+4*i:0})
+        raw=list(map(list,vals.items()))
+        port=dict(bdf='01:00.0',cap_offset=0x60,flags=2,device_cap=0,link_cap=2+(8<<4),link_control=0,link_status=2+(8<<4),slot_cap=None)
+        upstream=dict(port,bdf='00:01.0',flags=0x142,slot_cap=75<<7)
+        sensor=[[0x22400,0x800],[0x21000,1],[0x212a8,1],[0x21000,1],[0x22400,0x800],[0x20008,0x80000000],[0x2000c,0],[0x20400,49],[0x20008,0x80000000],[0x2000c,0]]
+        row=dict(schema=1,phase='startup',raw=raw,domains=a.domains(raw),temperature=dict(value=49,status='ok'),sensor_restored=True,sensor_raw=sensor,sensor_writes=[],voltage_raw=[[0xd610+4*i,0] for i in range(32)]+[[0x20340,0],[0x20344,0]],pcie=[port,upstream])
+        self.assertEqual(a.c1_record(row),row)
+        self.assertEqual(a.link(upstream)['slot_power_limit_w'],75)
+        b=copy.deepcopy(row);b['domains']['gpc']['value']+=1
+        with self.assertRaises(ValueError):a.c1_record(b)
+        b=copy.deepcopy(row);b['sensor_writes']=[[0x137000,1]]
+        with self.assertRaises(ValueError):a.c1_record(b)
+        import runpy
+        api=runpy.run_path(str(ROOT/'scripts/metal/gt710-suite'),run_name='c1_transport')
+        vbios=dict(bytes=len(image()),sha256=hashlib.sha256(image()).hexdigest(),hex=image().hex())
+        bodies=[('C1','GT710_CLOCK_C1 '+json.dumps(row,separators=(',',':'))),('VBIOS','GT710_VBIOS_V1 '+json.dumps(vbios,separators=(',',':')))]
+        data=''.join(body+'\n' for _,body in bodies).encode()
+        serial=''.join(f'GT710_{name}_BULK bytes={len(body)} sha256={hashlib.sha256(body.encode()).hexdigest()}\n' for name,body in bodies)
+        serial+=f'GT710_BULK {len(data)} {hashlib.sha256(data).hexdigest()}\n'
+        with tempfile.TemporaryDirectory() as t:
+            p=Path(t);(p/'serial.txt').write_text(serial);(p/'gt710-pixels.rle').write_bytes(data)
+            full=api['capture_serial'](p);self.assertIn(bodies[0][1],full)
+            for mutated in [serial.replace('GT710_C1_BULK ','REMOVED '),serial.replace('GT710_VBIOS_BULK ','REMOVED '),serial+bodies[0][1]+'\n']:
+                (p/'serial.txt').write_text(mutated)
+                with self.assertRaises(ValueError):api['capture_serial'](p)
+            (p/'serial.txt').write_text(serial);(p/'gt710-pixels.rle').write_bytes(data.replace(b'49',b'48',1))
+            with self.assertRaises(ValueError):api['capture_serial'](p)
 
     def test_boot_route_has_no_suite(self):
         import runpy
