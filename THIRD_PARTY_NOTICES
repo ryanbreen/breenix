@@ -1716,3 +1716,18 @@ above. Its file-local grant was rechecked for this unit (Copyright 2010
 Red Hat Inc.; SHA-256 `71cc116d01df5ca95223afc0c07b634594e412c1bd9aa5b2e4348773ff3b2950`).
 The check executes that production code under explicit host PLL limits;
 these limits are not represented as captured VBIOS data.
+
+## GT 710 VBIOS performance table (G24, 24.7)
+
+Synthetic layout vectors in `tests/gt710_vbios_perf_test.py` follow these
+individually checked MIT files from nouveau in Linux v6.8, revision
+`e8f897f4afef0031fe618a8e94127a0934896aba`, relative to
+`drivers/gpu/drm/nouveau/nvkm/`:
+
+- `subdev/bios/perf.c`: Copyright 2012 Nouveau Community, Author Martin Peres.
+- `subdev/bios/bit.c`: Copyright 2012 Red Hat Inc., Author Ben Skeggs.
+- `subdev/clk/gk104.c` and `subdev/clk/base.c`: Copyright 2013 Red Hat Inc.,
+  Author Ben Skeggs.
+
+The test retains the full MIT permission and warranty notice in its header.
+The fixture is constructed from the documented layout; it contains no board ROM.
