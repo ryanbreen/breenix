@@ -572,6 +572,8 @@ fn display_memory(
 #[cfg(feature = "gt710_clock_probe")]
 mod sensor;
 #[cfg(feature = "gt710_clock_probe")]
+mod thermal;
+#[cfg(feature = "gt710_clock_probe")]
 mod c1;
 #[cfg(feature = "gt710_clock_probe")]
 pub(crate) mod c2;

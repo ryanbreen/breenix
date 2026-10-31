@@ -82,7 +82,9 @@ pub fn read_status()->Result<Vec<u8>,i32> {
     let state=STATE.lock();let s=state.as_ref().ok_or(-19)?;
     let sample=clock::sample(|a|Registers(s.base).read(a as usize));
     let khz=sample.gpc_khz.map_err(|_|-5)?;
-    Ok(format!("GT710_CLOCK_READ {{\"domain\":\"gpc\",\"readback_khz\":{khz},\"post_khz\":{},\"status\":\"ok\"}}\n",s.post).into_bytes())
+    let mut status=format!("GT710_CLOCK_READ {{\"domain\":\"gpc\",\"readback_khz\":{khz},\"post_khz\":{},\"status\":\"ok\"}}\n",s.post).into_bytes();
+    status.extend(crate::gk208::thermal::read_status());
+    Ok(status)
 }
 fn set(bytes:&[u8])->Result<(),&'static str> {
     let text=core::str::from_utf8(bytes).map_err(|_|"invalid request")?;

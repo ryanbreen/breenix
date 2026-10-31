@@ -174,11 +174,13 @@ def vmap(r,p):
 
 
 def thermal(r,p):
-    v,h,s,c=r.table(p,(0x10,0x20));need(s>=3,'thermal entry short')
+    v,h,s,c=r.table(p,(0x10,0x20,0x24));need(s>=3,'thermal entry short')
     names={4:'critical',7:'down_clock',8:'fan_boost',0x32:'shutdown'};thresholds={};rows=[];section=0
     for i in range(c):
         q=p+h+i*s;tag=r.n(q);value=r.n(q+1,2);rows.append(dict(tag=tag,value=value))
-        if tag==0: section=value
+        if tag==0:
+            section=value
+            if 0 < value < 0x8000: break
         if section==0 and tag in names:thresholds[names[tag]]=dict(c=(value&0xff0)>>4,hysteresis=value&15)
     return dict(status='ok',version=v,offset=p,thresholds=thresholds,entries=rows)
 

@@ -1848,3 +1848,36 @@ The individually checked MIT source chain also includes
 chip dispatch and MC enable behavior; no Linux integration code is imported.
 `docs/gui/gt710-c2.md` records the exact lines and the absence of a separate
 PM clock-gating write in the inspected path.
+
+## GT 710 C3a sensor setup and thermal v24 (K1, G1)
+
+Individually checked MIT headers at Linux v6.8 commit
+`e8f897f4afef0031fe618a8e94127a0934896aba`:
+
+- `nvkm/subdev/therm/g84.c`, Copyright 2012 Red Hat Inc.; sensor
+  enable masks, 20 ms stabilization and direct hardware Celsius read in
+  `kernel/src/gpu/gk208/thermal.rs`.
+- `nvkm/subdev/fuse/gf100.c`, Copyright 2014 Martin Peres; temporary
+  fuse access and restoration in the same file.
+- `nvkm/subdev/bios/therm.c`, Copyright 2012 Nouveau Community; core
+  threshold section and v24 entry interpretation in the same file and
+  `scripts/metal/gt710_clock.py`. Synthetic vectors are in
+  `tests/gt710_c3a_test.py` and `tests/gt710_c3a_test.rs`.
+- `nvkm/subdev/therm/gk104.c`, Copyright 2018 Red Hat Inc., and
+  `nvkm/subdev/therm/gf119.c`, Copyright 2012 Red Hat Inc.; inspected
+  only to establish dispatch to g84_sensor_setup/g84_temp_get. No fan,
+  tachometer, clock-gating or alarm code is adapted.
+- `nvkm/subdev/therm/temp.c`, Copyright 2012 The Nouveau community;
+  MIT header checked, defaults reference only in docs/gui/gt710-c3a.md.
+
+The adapted file retains the original copyrights and complete MIT grant.
+The hardware conversion is returned directly, not calibrated again from
+legacy BIOS slope/offset fields. The fuse at offset 0x1a8 is the availability
+flag, not a temperature calibration coefficient. No fuse is programmed.
+
+C3a's documentation additionally references the individually checked MIT
+`rnndb/pm/ptherm.xml:352-380` and its imported `rnndb/copyright.xml`
+author list/grant at envytools revision
+`f102b82381f3f11cee113d16374c87091db039d9` for ADC and hardware/software
+calibration field meanings. This is a reference in docs/gui/gt710-c3a.md;
+no XML implementation or register-generation code is adapted.

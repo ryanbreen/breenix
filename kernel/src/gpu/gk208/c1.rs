@@ -83,5 +83,6 @@ pub(super) fn startup(regs:&mut Registers,device:&pci::Device)->Result<(),&'stat
     ports.push(pcie(&bridges[0])?);
     let ds=domains.iter().map(|(n,f)|format!("\"{}\":{}",n,reading(*f))).collect::<Vec<_>>().join(",");
     publish("C1",format!("GT710_CLOCK_C1 {{\"schema\":1,\"phase\":\"startup\",\"raw\":[{}],\"domains\":{{{}}},\"temperature\":{},\"sensor_restored\":{},\"sensor_raw\":[{}],\"sensor_writes\":[{}],\"voltage_raw\":[{}],\"pcie\":[{}]}}",pairs(&raw),ds,reading(temp.value),temp.restored,sensor_raw,"",pairs(&voltage_raw),ports.join(",")))?;
+    super::thermal::initialize(regs,&rom);
     Ok(())
 }

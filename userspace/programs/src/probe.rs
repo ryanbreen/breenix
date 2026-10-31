@@ -600,10 +600,29 @@ fn reap_forever() -> ! {
 
 fn probe() {
     #[cfg(target_arch="x86_64")]
-    if std::fs::read_to_string("/proc/gt710-ce").is_ok_and(|s|s=="clock-probe\n") {
+    let gt710_probe=std::fs::read_to_string("/proc/gt710-ce");
+    #[cfg(target_arch="x86_64")]
+    if gt710_probe.as_ref().is_ok_and(|s|s=="clock-probe\n" || s=="thermal-probe\n") {
         // Inventory has retained the C1/VBIOS records already. Upload them
         // before CAPS starts GR, even if native startup fails.
         gt710_artifacts::upload().expect("C1 private artifact upload");
+        if gt710_probe.as_ref().is_ok_and(|s|s=="thermal-probe\n") {
+            let observe=|phase:&str,trial:u32|->Result<(),String> {
+                let status=std::fs::read_to_string("/proc/gt710-clock").map_err(|e|format!("sensor read: {e}"))?;
+                probe_gpu_bench::temperature_record(&status,phase,trial)
+            };
+            // POST temperature precedes native CAPS and catalogue warm-up.
+            if let Err(error)=observe("post",0) {println!("GT710_C3A_ERROR {error}");reap_forever();}
+            let (status,caps)=libbreenix::gpu::caps();
+            if status!=0 || caps.backend!=libbreenix::gpu::abi::backend::GK208 ||
+                caps.status!=libbreenix::gpu::abi::status::ADMITTED {
+                println!("GT710_C3A_ERROR CAPS result={} backend={} status={}",status,caps.backend,caps.status);reap_forever();
+            }
+            // The sequence's post callback has already run before CAPS.
+            let sequence=|phase:&str,trial|if phase=="post" {Ok(())}else{observe(phase,trial)};
+            if let Err(error)=probe_gpu_bench::run_c3a(sequence) {println!("GT710_C3A_ERROR {error}");reap_forever();}
+            println!("GT710_C3A_DONE");reap_forever();
+        }
         let (status,caps)=libbreenix::gpu::caps();
         if status != 0 || caps.backend != libbreenix::gpu::abi::backend::GK208 ||
             caps.status != libbreenix::gpu::abi::status::ADMITTED {
