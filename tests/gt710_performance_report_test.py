@@ -20,7 +20,8 @@ VALUES = {
 
 
 def fixture():
-    serial = transcript(all_pass=True)
+    from gt710_clock_report_test import row
+    serial = row('startup') + transcript(all_pass=True) + row('final')
     for case, values in VALUES.items():
         lines = ''
         for key, value, unit, low, high in values:
