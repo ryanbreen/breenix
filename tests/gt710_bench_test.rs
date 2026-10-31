@@ -165,3 +165,29 @@ fn c3a_sensor_errors_continue_and_the_decoded_threshold_stops_at_equality() {
         assert!(record(&format!("GT710_SENSOR celsius=47 raw=47 down_clock=85 status=ok{bad}\n"),"bench",1).is_err());
     }
 }
+
+#[test]
+fn c3_six_controls_then_three_trials_per_pll_stage_and_restore() {
+    STATE.with_borrow_mut(|s|*s=State {thermal:true,..State::default()});
+    let mut stages=Vec::new();
+    probe_gpu_bench::run_c3(|stage,n| {
+        STATE.with_borrow(|s| {
+            assert!(!s.pending);
+            let before=match stage {"post"=>0,"A"=>6,"B"=>9,"C"=>12,"D"=>15,_=>panic!("stage")};
+            if n==0 {assert_eq!(s.submits,before);}else{assert_eq!(s.submits,n as usize-1);}
+        });
+        stages.push((stage.to_string(),n));Ok(())
+    }).unwrap();
+    STATE.with_borrow(|s|assert_eq!((s.submits,s.waits),(18,18)));
+    assert_eq!(stages.iter().filter(|p|p.1==0).map(|p|p.0.as_str()).collect::<Vec<_>>(),["post","A","B","C","D"]);
+}
+
+#[test]
+fn c3_failed_stage_or_completion_does_not_advance() {
+    STATE.with_borrow_mut(|s|*s=State {thermal:true,..State::default()});
+    assert!(probe_gpu_bench::run_c3(|stage,_|if stage=="B" {Err("counter mismatch".into())}else{Ok(())}).is_err());
+    STATE.with_borrow(|s|assert_eq!((s.submits,s.waits),(9,9)));
+    STATE.with_borrow_mut(|s|*s=State {thermal:true,fail_wait:true,..State::default()});
+    assert!(probe_gpu_bench::run_c3(|_,_|Ok(())).is_err());
+    STATE.with_borrow(|s|assert_eq!((s.submits,s.waits),(1,1)));
+}

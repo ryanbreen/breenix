@@ -197,3 +197,45 @@ fn pm_is_enabled_before_sampling_and_restored_after_counter_cleanup() {
         }
     }
 }
+
+#[test]
+fn c3_pll_coefficients_and_lock_before_source_at_the_three_authorized_targets() {
+    for requested in [810_000,1_080_000,1_307_000] {
+        let oracle=std::process::Command::new(std::env::var("GT710_PLL_ORACLE").unwrap())
+            .args([810_000.to_string(),requested.to_string()]).output().unwrap();
+        assert!(oracle.status.success());
+        let expected:Vec<u32>=String::from_utf8(oracle.stdout).unwrap().split_whitespace().map(|s|s.parse().unwrap()).collect();
+        let p=c2::pll_plan("gpc",requested,&limits(),810_000).unwrap();
+        assert!(p.pll_selected);assert_eq!([p.coefficient,p.khz],expected[..]);
+        struct Sequence { regs:BTreeMap<u32,u32>, events:Vec<(u32,u32,u32)>, lock:bool }
+        impl Access for Sequence {
+            fn read(&mut self,a:u32)->u32 {*self.regs.get(&a).unwrap_or(&0)}
+            fn write(&mut self,a:u32,v:u32) {
+                assert!(matches!(a,0x137100|0x137000|0x137004));
+                self.events.push((a,0,v));self.regs.insert(a,v);
+            }
+            fn wait(&mut self,a:u32,m:u32,v:u32)->Result<(),&'static str> {
+                self.events.push((a,m,v));
+                if a==0x137000 && self.lock {let c=self.read(a);self.regs.insert(a,c|m);}
+                if self.read(a)&m==v {Ok(())}else{Err("lock timeout")}
+            }
+        }
+        for lock in [true,false] {
+            let mut d=Sequence {regs:BTreeMap::from([(0x137000,0x10000),(0x137100,0)]),events:Vec::new(),lock};
+            let result=c2::program(&mut d,&p);
+            assert_eq!(result.is_ok(),lock);
+            assert_eq!(&d.events[..8],&[(0x137100,0,0),(0x137100,1,0),
+                (0x137000,0,0x10000),(0x137000,0,0x10000),
+                (0x137004,0,p.coefficient),(0x137000,0,0x10001),
+                (0x137000,0,0x10001),(0x137000,0x20000,0x20000)]);
+            if lock {assert_eq!(&d.events[8..],&[(0x137000,0,0x30011),(0x137000,0,0x30015),
+                (0x137100,0,1),(0x137100,1,1)]);}else{
+                assert_eq!(d.events.len(),8,"failed lock must never select the PLL");
+                assert_eq!(d.read(0x137100),0);
+            }
+        }
+    }
+    for (domain,khz) in [("gpc",1_307_001),("gpc",0),("memory",1_080_000),("voltage",1_080_000)] {
+        assert!(c2::pll_plan(domain,khz,&limits(),810_000).is_err());
+    }
+}
