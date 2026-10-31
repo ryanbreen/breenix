@@ -249,7 +249,7 @@ fn memx_guard(regs:&Registers,strap:u32,target:u32)->Result<(),&'static str> {
     if regs.read(0x20400)>=85 {return Err("C5e temperature at least 85 C");}
     let disp=regs.read(0x10a01c);let intr=regs.read(0x10a008)&disp&!(disp>>16);
     if intr&!0xc0!=0 || regs.read(0x259c)!=0 || regs.read(0x400100)!=0 {return Err("C5e GPU or PMU fault");}
-    Ok(())
+    crate::gk208::native::memx_display_guard(regs)
 }
 fn memory_record(regs:&Registers,strap:u32,phase:&str)->Result<u32,&'static str> {
     let sample=clock::sample(|a|if a==0x101000 {strap}else{regs.read(a as usize)});
@@ -315,9 +315,11 @@ fn memx_pass(s:&mut State,phase:&str,former:u32,target:u32,intermediate:bool)->R
             crate::serial_println!("GT710_MEMX_CPU stage={} phase=before address={:#x} value={:#x}",phase,a,v);
         }
         crate::serial_println!("GT710_MEMX_EXEC_BEGIN phase={} frequency_khz={} words={}",phase,frequency,words.len());
+        crate::gk208::native::memx_display_boundary(&mut io.0,phase,false)?;
         // EXEC reply[0] is pause nanoseconds; reply[1] is PMU_IN, not status.
         let reply=session.exec(&mut io)?;
         crate::serial_println!("GT710_MEMX_EXEC_REPLY phase={} status=0 pause_ns={} pmu_input={:#010x}",phase,reply[0],reply[1]);
+        crate::gk208::native::memx_display_boundary(&mut io.0,phase,true)?;
         for &(a,v) in &plan.cpu_after {
             io.0.write(a as usize,v);
             crate::serial_println!("GT710_MEMX_CPU stage={} phase=after address={:#x} value={:#x}",phase,a,v);

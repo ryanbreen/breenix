@@ -2034,3 +2034,15 @@ were checked. It describes GPC/PART/HUB domains and generic selector fields,
 but no named GK208 memory-clock signal, so C5e adds no selector programming
 or generated definitions from that inspection. Hashes and this limitation:
 `docs/gui/provenance/gt710-c5e-counter-sources.json`.
+
+## GT 710 C5f post-EXEC display observation (K6, G1)
+
+`kernel/src/gpu/gk208/memx_display.rs` uses the REPORT_UNDERFLOW fields
+from envytools rnndb/display/g80_pdisplay.xml at
+f102b82381f3f11cee113d16374c87091db039d9, importing the MIT grant and
+author list in rnndb/copyright.xml. The new file retains that author list
+and grant. Its two masked writes reuse the clear-then-arm order already
+adapted in modeset.rs under G25 (0a12e2fc). K6 defines the one-time
+post-EXEC exception; subsequent display samples retain the native predicate.
+`native.rs` records the four existing health terms at the EXEC boundary
+and the first following present. Memory programming and PMU code are unchanged.

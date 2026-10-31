@@ -374,6 +374,57 @@ fn complete(
         regs, total, notifier, limits, coefficients, route, scripts,
     })
 }
+// Probe-only route and one pending first-present observation. The CE owner
+// serializes these EXEC boundaries against native publication.
+#[cfg(feature = "gt710_clock_probe")]
+static MEMX_ROUTE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
+#[cfg(feature = "gt710_clock_probe")]
+static MEMX_PRESENT_PHASE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+#[cfg(feature = "gt710_clock_probe")]
+fn memx_health_record(phase: &str, point: &str, head: u32, sor: u32,
+    health: super::memx_display::Health,
+) {
+    crate::serial_println!("GT710_C5F_HEALTH {{\"phase\":\"{}\",\"point\":\"{}\",\"head\":{},\"sor\":{},\"raw\":[[{},{}],[{},{}],[{},{}],[{},{}]],\"healthy\":{}}}",
+        phase,point,head,sor,0x61009c,health.errors,0x616308+head*0x800,health.underflow,
+        0x61c004+sor*0x800,health.power,0x61c030+sor*0x800,health.link,health.check().is_ok());
+}
+#[cfg(feature = "gt710_clock_probe")]
+pub(in crate::gk208) fn memx_display_guard(regs: &Registers) -> Result<(), &'static str> {
+    let route=MEMX_ROUTE.load(core::sync::atomic::Ordering::Acquire);
+    if route==u32::MAX {return Err("C5f native display route absent");}
+    let (head,sor)=(route&255,route>>8);
+    let health=super::memx_display::Health::read(&mut Registers(regs.0),head,sor);
+    let result=health.check();
+    if let Err(reason)=result {
+        memx_health_record("guard","fresh-fault",head,sor,health);
+        crate::serial_println!("GT710_C5F_ERROR {}",reason);
+    }
+    result
+}
+#[cfg(feature = "gt710_clock_probe")]
+pub(in crate::gk208) fn memx_display_boundary(regs: &mut Registers, phase: &str,
+    after_reply: bool,
+) -> Result<(), &'static str> {
+    use core::sync::atomic::Ordering;
+    let route=MEMX_ROUTE.load(Ordering::Acquire);
+    if route==u32::MAX {return Err("C5f native display route absent");}
+    let (head,sor)=(route&255,route>>8);
+    let health=super::memx_display::Health::read(regs,head,sor);
+    memx_health_record(phase,if after_reply {"after-exec"}else{"before-exec"},head,sor,health);
+    if !after_reply {return health.check();}
+    // K6 admits the isolated sticky fault only for the target and return EXECs.
+    let (readback,result)=super::memx_display::after_exec(regs,head,sor,health,phase!="intermediate");
+    if let Some(readback)=readback {
+        crate::serial_println!("GT710_C5F_UNDERFLOW_CLEAR phase={} register={:#x} before={:#x} clear_mask=0x111 clear_data=0x10 arm_data=0x1 readback={:#x}",
+            phase,0x616308+head*0x800,health.underflow,readback.underflow);
+        memx_health_record(phase,"clear-readback",head,sor,readback);
+    }
+    result?;
+    MEMX_PRESENT_PHASE.store(match phase {"intermediate"=>1,"target"=>2,"return-intermediate"=>3,"return"=>4,_=>return Err("C5f unknown EXEC phase")},Ordering::Release);
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 pub struct ConsoleSurface {
     pub pointer: usize,
@@ -523,6 +574,16 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface,
 ) -> Result<super::present::Receipt, &'static str> {
     let _cost = super::cost::phase(super::cost::Slot::Evo);
+    #[cfg(feature = "gt710_clock_probe")]
+    {
+        let phase=MEMX_PRESENT_PHASE.swap(0,core::sync::atomic::Ordering::AcqRel);
+        if phase!=0 {
+            let name=match phase {1=>"intermediate",2=>"target",3=>"return-intermediate",_=>"return"};
+            let health=super::memx_display::Health::read(regs,evo.head,evo.sor);
+            memx_health_record(name,"first-present",evo.head,evo.sor,health);
+            health.check()?;
+        }
+    }
     let h=evo.head as usize*0x300;
     let blank=regs.read(0x64041c+h);
     let end=regs.read(0x640420+h);
@@ -864,6 +925,8 @@ pub fn takeover(
         regs: regs.0, head, phys: device.bars[1].address + displacement as u64,
         firmware_baseline,
     };
+    #[cfg(feature = "gt710_clock_probe")]
+    MEMX_ROUTE.store(head | (u32::from(route.sor)<<8),core::sync::atomic::Ordering::Release);
     if !measuring() {
         crate::serial_println!("GT710_MODE_STAGE console-ready diagnostics=off");
         return Ok((console, Evo {
