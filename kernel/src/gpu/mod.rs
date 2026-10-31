@@ -447,6 +447,9 @@ struct Res {
     /// The window composition whose transport wrote this scanout target, with the
     /// generation that write produced; a later write of the target ends it.
     composition: Option<Arc<Composition>>,
+    /// Native destination snapshots live with the target, not a submission.
+    #[cfg(target_arch = "x86_64")]
+    native_blend_scratch: Vec<Arc<NativeScratch>>,
 }
 
 /// A composition's provenance, kept on the scanout target with the generation its transport
@@ -2987,6 +2990,8 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
         window_sealed: false,
         observed_in: 0,
         composition: None,
+        #[cfg(target_arch = "x86_64")]
+        native_blend_scratch: Vec::new(),
     }
 }
 
@@ -3763,24 +3768,28 @@ enum Chunks {
     Gk208(Vec<crate::gk208::adapter::EncodedDraw>),
 }
 
-/// Submission-owned native snapshots. Storage references in prepared device
-/// chunks additionally retain these images across uncertain publication/reset.
+/// Native destination snapshots and submission-owned crossing inputs. Storage
+/// references in device chunks retain these images across uncertain publication/reset.
 #[cfg(target_arch = "x86_64")]
 struct NativeScratch {
     targets: [Option<crate::gk208::encode::Target>; 3],
     holds: Vec<crate::gk208::resource::Hold>,
+    cached: Vec<Arc<NativeScratch>>,
 }
 #[cfg(target_arch = "x86_64")]
 impl Drop for NativeScratch {
     fn drop(&mut self) {
-        crate::gk208::resource::retire_blend_staging(
-            self.targets.map(|t| t.map(|t| t.id)), &mut self.holds);
+        let owned = self.targets.map(|t| t.map(|t| t.id).filter(|id|
+            !self.cached.iter().any(|s| s.targets.iter().flatten().any(|t| t.id == *id))));
+        if owned.iter().any(Option::is_some) || !self.holds.is_empty() {
+            crate::gk208::resource::retire_blend_staging(owned, &mut self.holds);
+        }
     }
 }
 #[cfg(target_arch = "x86_64")]
 fn native_blend_scratch(tgid: u64, sizes: [[u32; 2]; 2]) -> Result<NativeScratch, i64> {
     let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::ScratchPrepare);
-    let mut scratch = NativeScratch { targets: [None; 3], holds: Vec::new() };
+    let mut scratch = NativeScratch { targets: [None; 3], holds: Vec::new(), cached: Vec::new() };
     for (format, [width, height]) in sizes.into_iter().enumerate() {
         if width == 0 || height == 0 { continue; }
         let layout = crate::gk208::resource::Layout::new(width, height, 4).map_err(|_| ENOMEM)?;
@@ -3791,6 +3800,52 @@ fn native_blend_scratch(tgid: u64, sizes: [[u32; 2]; 2]) -> Result<NativeScratch
             format as u32, width, height, charge).map_err(|_| EIO)?;
         scratch.targets[format] = Some(target);
         scratch.holds.push(hold);
+    }
+    Ok(scratch)
+}
+
+/// Reuse destination storage at the target's size. Submission references and
+/// device holds keep an old snapshot alive if a larger plan replaces it.
+#[cfg(target_arch = "x86_64")]
+fn native_cached_blend_scratch(tgid: u64, sizes: [[u32; 2]; 2], written: &[u32]) -> Result<NativeScratch, i64> {
+    let mut scratch = NativeScratch { targets: [None; 3], holds: Vec::new(), cached: Vec::new() };
+    for (slot, [width, height]) in sizes.into_iter().enumerate() {
+        if width == 0 || height == 0 { continue; }
+        let (id, width, height, cached) = with_core(|c| {
+            let id = *written.iter().find(|id| c.resources.get(id).is_some_and(|r| r.format == slot as u32)).ok_or(EIO)?;
+            let r = c.resources.get(&id).ok_or(EIO)?;
+            let width = width.max(r.width);
+            let height = height.max(r.height);
+            let cached = r.native_blend_scratch.iter().find(|s| s.targets[slot]
+                .is_some_and(|t| t.width >= width && t.height >= height)).cloned();
+            Ok::<_, i64>((id, width, height, cached))
+        }).ok_or(EIO)??;
+        let cached = match cached {
+            Some(s) => s,
+            None => {
+                let mut sizes = [[0; 2]; 2];
+                sizes[slot] = [width, height];
+                let new = Arc::new(native_blend_scratch(tgid, sizes)?);
+                let mut replacement = Vec::new();
+                replacement.try_reserve_exact(1).map_err(|_| ENOMEM)?;
+                replacement.push(new.clone());
+                // Allocation and quota reservation run outside the core lock.
+                let (chosen, old) = with_core(|c| {
+                    let r = c.resources.get_mut(&id).ok_or(EIO)?;
+                    if let Some(s) = r.native_blend_scratch.iter().find(|s| s.targets[slot]
+                        .is_some_and(|t| t.width >= width && t.height >= height)) {
+                        return Ok((s.clone(), Vec::new()));
+                    }
+                    let old = core::mem::replace(&mut r.native_blend_scratch, replacement);
+                    Ok::<_, i64>((new.clone(), old))
+                }).ok_or(EIO)??;
+                drop(old);
+                chosen
+            }
+        };
+        scratch.cached.try_reserve(1).map_err(|_| ENOMEM)?;
+        scratch.targets[slot] = cached.targets[slot];
+        scratch.cached.push(cached);
     }
     Ok(scratch)
 }
@@ -4428,7 +4483,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 let charge = Arc::new(Charge::new(tgid, bytes, true)?);
                 // Native scratch uses the same validated per-format plan as the
                 // virtual encoders, with native layout and retirement ownership.
-                let mut scratch = native_blend_scratch(tgid, plan.scratch)?;
+                let mut scratch = native_cached_blend_scratch(tgid, plan.scratch, &written)?;
                 if plan.data_bytes > 0 { crate::gk208::timing::begin_draw(tgid); }
                 // The packed heap copy is temporary; reserve its padded extent
                 // before allocation, separately from the retained device storage.

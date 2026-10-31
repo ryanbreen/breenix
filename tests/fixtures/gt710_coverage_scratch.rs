@@ -34,7 +34,7 @@ fn hundred_coverage_calls_allocate_one_snapshot_and_preserve_destination_bytes()
         first.get_or_insert(t.id);
         assert_eq!((t.width,t.height,t.format),(48,17,0));
         // Model the CE destination copy at the production layout's byte offsets.
-        // Every byte, including bytes outside this draw, is refreshed each call.
+        // The 48x17 destination, including pixels outside this draw, is refreshed.
         ce::with_resources(|r,_,io| {
             let l=r.layout(t.id).unwrap();let va=r.address(t.id).unwrap();
             let physical=(io.words[&r.pte_address(va).unwrap()]&0xfffffff0)<<8;
