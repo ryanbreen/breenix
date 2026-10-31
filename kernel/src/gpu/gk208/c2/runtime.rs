@@ -29,12 +29,15 @@ use crate::gk208::{Registers,clock};
 use alloc::{format,sync::Arc,vec::Vec};
 use observe::CounterAccess;
 
-struct State {base:usize,post:u32,limits:Limits,failed:bool,snapshot:Vec<(u32,u32)>,phase:u8,c3:bool,pmu_started:bool}
+struct State {base:usize,post:u32,limits:Limits,failed:bool,snapshot:Vec<(u32,u32)>,phase:u8,c3:bool,pmu_started:bool,ram_started:bool,ram_scripts:Vec<Vec<crate::gk208::modeset::Op>>,memory_post:u32,strap:u32}
 static STATE:spin::Mutex<Option<State>>=spin::Mutex::new(None);
 pub(in crate::gk208) fn initialize(regs:&Registers,rom:&[u8])->Result<(),&'static str> {
     let l=limits(rom)?;
     let post=clock::sample(|a|regs.read(a as usize)).gpc_khz?;
     if post!=810_000 {return Err("C2 requires measured POST GPC 810000");}
+    let strap=regs.read(0x101000);
+    let ram_scripts=crate::gk208::ram_init::scripts(rom,strap).map_err(|_|"RAM init script predecode failed")?;
+    let memory_post=clock::sample(|a|if a==0x101000 {strap}else{regs.read(a as usize)}).memory_khz?;
     let snapshot=observe::capture(&mut Io(Registers(regs.0)));
     print_snapshot("post-inventory",&snapshot);
     let mut io=Io(Registers(regs.0));
@@ -42,7 +45,7 @@ pub(in crate::gk208) fn initialize(regs:&Registers,rom:&[u8])->Result<(),&'stati
     io.record("post-inventory",&counters);
     let pmc=io.read(0x200);
     io.record("pm-post-inventory",&[(0x200,pmc)]);
-    *STATE.lock()=Some(State {base:regs.0,post,limits:l,failed:false,snapshot,phase:0,c3:false,pmu_started:false});Ok(())
+    *STATE.lock()=Some(State {base:regs.0,post,limits:l,failed:false,snapshot,phase:0,c3:false,pmu_started:false,ram_started:false,ram_scripts,memory_post,strap});Ok(())
 }
 struct Io(Registers);
 impl Access for Io {
@@ -116,10 +119,15 @@ fn measure_record(io:&mut Io,phase:&str,target:Option<u32>)->Result<(),&'static 
 }
 pub fn read_status()->Result<Vec<u8>,i32> {
     let state=STATE.lock();let s=state.as_ref().ok_or(-19)?;
-    let sample=clock::sample(|a|Registers(s.base).read(a as usize));
+    let sample=clock::sample(|a|if a==0x101000 {s.strap}else{Registers(s.base).read(a as usize)});
     let khz=sample.gpc_khz.map_err(|_|-5)?;
     let mut status=format!("GT710_CLOCK_READ {{\"domain\":\"gpc\",\"readback_khz\":{khz},\"post_khz\":{},\"status\":\"ok\"}}\n",s.post).into_bytes();
+    let memory=sample.memory_khz.map_err(|_|-5)?;
+    status.extend(format!("GT710_MEMORY_READ {{\"readback_khz\":{memory},\"post_khz\":{},\"status\":\"ok\"}}\n",s.memory_post).bytes());
     status.extend(crate::gk208::thermal::read_status());
+    if s.ram_started {
+        ram_guard(&Registers(s.base),s.strap,s.memory_post).map_err(|_|-5)?;
+    }
     if s.pmu_started {
         let regs=Registers(s.base);
         let disp=regs.read(0x10a01c);let intr=regs.read(0x10a008)&disp&!(disp>>16);
@@ -173,7 +181,66 @@ fn pmu_start(s:&mut State,capture_inputs:bool)->Result<(),&'static str> {
     if result.is_err() {s.failed=true;}
     result
 }
+// RAM init is serialized against GPU work by ce::with_resources. The boot
+// observer ends the run at its first fault; write echoes are records only.
+struct RamIo {regs:Registers,strap:u32,memory:u32,error:Option<&'static str>,writes:u32}
+impl crate::gk208::modeset::Io for RamIo {
+    fn read(&mut self,a:usize)->u32 {self.regs.read(a)}
+    fn write(&mut self,a:usize,v:u32) {
+        if self.error.is_some() {return;}
+        let before=self.regs.read(a);
+        self.regs.write(a,v);
+        let readback=self.regs.read(a);
+        self.writes+=1;
+        crate::serial_println!("GT710_RAM_INIT_WRITE {{\"ordinal\":{},\"selector\":{},\"address\":{},\"before\":{},\"value\":{},\"readback\":{}}}",
+            self.writes,(self.regs.read(0x10f65c)>>4)&15,a,before,v,readback);
+        self.error=ram_guard(&self.regs,self.strap,self.memory).err();
+        if let Some(reason)=self.error {crate::serial_println!("GT710_C5C_ERROR {}",reason);}
+    }
+    fn delay_us(&mut self,us:u32) {crate::gk208::modeset::Io::delay_us(&mut self.regs,us);}
+}
+fn ram_guard(regs:&Registers,strap:u32,memory:u32)->Result<(),&'static str> {
+    // Cache PEXTDEV_BOOT0: MIT bios/init.c:445-458 warns against rereading
+    // the strap at each RAM_RESTRICT opcode on this BIOS generation.
+    let sample=clock::sample(|a|if a==0x101000 {strap}else{regs.read(a as usize)});
+    let temperature=regs.read(0x20400);
+    let disp=regs.read(0x10a01c);let intr=regs.read(0x10a008)&disp&!(disp>>16);
+    let mmu=regs.read(0x259c);let gr=regs.read(0x400100);
+    let reason=if sample.memory_khz!=Ok(memory) {Some("C5c memory clock readback changed")}
+        else if temperature>=85 {Some("C5c temperature invalid or at least 85 C")}
+        else if intr&!0xc0!=0 || mmu!=0 || gr!=0 {Some("C5c GPU or PMU fault")}
+        else {None};
+    if let Some(reason)=reason {
+        crate::serial_println!("GT710_C5C_ERROR guard memory_khz={:?} post_khz={} temperature={} pmu_intr={:#x} mmu={:#x} gr={:#x}",sample.memory_khz,memory,temperature,intr,mmu,gr);
+        return Err(reason);
+    }
+    Ok(())
+}
+fn ram_start(s:&mut State)->Result<(),&'static str> {
+    if !s.pmu_started || s.ram_started || s.failed {return Err("RAM init requires ready PMU and one attempt");}
+    s.ram_started=true;
+    let regs=Registers(s.base);
+    ram_guard(&regs,s.strap,s.memory_post)?;
+    let mut io=RamIo {regs,strap:s.strap,memory:s.memory_post,error:None,writes:0};
+    crate::serial_println!("GT710_RAM_INIT_BEGIN scripts={} selector={:#x} memory_khz={}",s.ram_scripts.len(),io.regs.read(0x10f65c),s.memory_post);
+    let before=clock::sample(|a|if a==0x101000 {s.strap}else{io.regs.read(a as usize)});
+    print_snapshot("ram-init-before",&before.raw);
+    let result=crate::gk208::ce::with_resources(|_,_,_| {
+        crate::gk208::ram_init::execute(&mut io,&s.ram_scripts);
+        match io.error {Some(reason)=>Err(reason),None=>Ok(())}
+    }).and_then(|()|measure_record(&mut Io(Registers(s.base)),"ram-init-post",Some(810_000)));
+    let after=clock::sample(|a|if a==0x101000 {s.strap}else{io.regs.read(a as usize)});
+    print_snapshot("ram-init-after",&after.raw);
+    if result.is_err() {s.failed=true;} else {
+        crate::serial_println!("GT710_RAM_INIT_COMPLETE writes={} selector={:#x}",io.writes,io.regs.read(0x10f65c));
+    }
+    result
+}
 fn set(bytes:&[u8])->Result<(),&'static str> {
+    if bytes==b"ram init" {
+        let mut state=STATE.lock();
+        return ram_start(state.as_mut().ok_or("C5c not initialized")?);
+    }
     if bytes==b"pmu start" || bytes==b"pmu memx-inputs" {
         let mut state=STATE.lock();
         return pmu_start(state.as_mut().ok_or("C4 not initialized")?,bytes==b"pmu memx-inputs");

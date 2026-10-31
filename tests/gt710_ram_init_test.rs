@@ -44,3 +44,21 @@ fn init_skips_current_mode_restores_only_selector_and_keeps_fixed_write_order() 
   assert_eq!(io.writes,expected);
  }
 }
+#[test]
+fn rom_parser_uses_m0203_group_and_rammap_u32_script_pointers() {
+ let mut r=vec![0u8;1024];
+ r[..6].copy_from_slice(b"\xff\xb8BIT\0");r[8..11].copy_from_slice(&[12,6,2]);
+ r[12..18].copy_from_slice(&[b'M',2,7,0,64,0]);
+ r[18..24].copy_from_slice(&[b'P',2,8,0,80,0]);
+ r[64]=3;r[67..69].copy_from_slice(&100u16.to_le_bytes());
+ r[100..109].copy_from_slice(&[0x10,7,2,1,0,0,0,0x13,2]);
+ r[84..88].copy_from_slice(&128u32.to_le_bytes());
+ r[128]=0x11;r[129]=0x15;r[144..148].copy_from_slice(&160u32.to_le_bytes());r[148]=3;
+ for i in 0..3 {r[160+4*i..164+4*i].copy_from_slice(&(256u32+64*i as u32).to_le_bytes());
+  let s=script(0x11d67c,4,&[[100,200,300+i as u32]]);r[256+64*i..256+64*i+s.len()-1].copy_from_slice(&s[1..]);}
+ let scripts=ram_init::scripts(&r,0x80406c86).unwrap();assert_eq!(scripts.len(),3);
+ let mut io=Io{regs:BTreeMap::new(),writes:vec![]};
+ for ops in &scripts {modeset::execute_ops(&mut io,ops);}
+ assert_eq!(io.writes,vec![(0x11d67c,300),(0x11d67c,301),(0x11d67c,302)]);
+ r[148]=255;assert!(ram_init::scripts(&r,0x80406c86).is_err());
+}
