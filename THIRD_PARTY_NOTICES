@@ -1629,3 +1629,25 @@ slot-0 versus slot-15 binding from the same MIT cla197.h; the NVIDIA 2020
 copyright and full grant accompany that parser. panic/native.rs sequences
 Breenix's validated bitmap_text encoder and retained requests. No new
 shader assets are introduced.
+
+## GT 710 read-only clock and thermal records (M8 PR 8.7)
+
+Source: nouveau in Linux v6.8, commit
+`e8f897f4afef0031fe618a8e94127a0934896aba`, under
+`drivers/gpu/drm/nouveau/nvkm/`. Each named file's full MIT grant was checked
+before adaptation. The decoder and scorer retain the grant in their headers.
+
+| Source | Original copyright | Consumers |
+|---|---|---|
+| `subdev/clk/gk104.c` (`read_vco`, `read_pll`, `read_div`, `read_mem`, `read_clk`, `gk104_clk_read`) | Copyright 2013 Red Hat Inc. | `kernel/src/gpu/gk208/clock.rs`, `scripts/metal/gt710-suite`, `tests/gt710_clock_test.py`, `tests/gt710_clock_report_test.py` |
+| `engine/device/base.c` (crystal straps) | Copyright 2012 Red Hat Inc. | Same consumers |
+| `subdev/therm/g84.c` (`g84_temp_get`) | Copyright 2012 Red Hat Inc. | Same consumers |
+| `subdev/fuse/gf100.c` (`gf100_fuse_read` access gates and address) | Copyright 2014 Martin Peres | Same consumers |
+
+The record reads the fuse only when both existing access bits are enabled;
+otherwise temperature is explicitly unavailable with the observed gate words.
+A fuse value other than 1 is also unavailable, as in `g84_temp_get`.
+No fuse-enable or sensor-setup writes are adapted. Host clock is explicitly
+`nv_clk_src_href`, the 100000 kHz host reference in `gk104_clk_read`; it does
+not claim a measured PFIFO or hub clock. GPC and memory rates are decoded from
+the retained register words, including the fractional memory PLL and dividers.

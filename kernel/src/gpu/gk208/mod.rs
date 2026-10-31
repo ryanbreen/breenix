@@ -98,6 +98,7 @@ mod board;
 mod ddc;
 mod edid;
 mod bulk;
+mod clock;
 mod display_evidence;
 pub(crate) mod timing;
 pub(crate) mod cost;
@@ -310,6 +311,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
     if chipset != 0x106 || post & 2 == 0 {
         return Err("GK208B must be POSTed before inventory");
     }
+    clock::initialize(regs.0);
     let rom = rom::read(&mut regs)?;
     let board = board::parse(&rom)?;
     for route in &board.routes {

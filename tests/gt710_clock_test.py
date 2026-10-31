@@ -1,5 +1,6 @@
 # /*
-#  * Copyright 2012, 2013 Red Hat Inc.
+#  * Copyright 2012 Red Hat Inc.
+#  * Copyright 2013 Red Hat Inc.
 #  * Copyright 2014 Martin Peres
 #  *
 #  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -11,6 +12,7 @@
 #  *
 #  * The above copyright notice and this permission notice shall be included in
 #  * all copies or substantial portions of the Software.
+# claim-lint:ok: MIT license condition; source paths in docs/gui/gt710-clock-record.md.
 #  *
 #  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 #  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -100,6 +102,45 @@ fn main() {
             p = Path(tmp); (p / 'clock.rs').write_text(source)
             subprocess.run(priority + ['rustc', '--edition=2021', '-Dwarnings', str(p / 'clock.rs'), '-o', str(p / 'clock')], check=True)
             subprocess.run([str(p / 'clock')], check=True)
+
+
+    def test_runtime_exports_two_read_only_records_accepted_by_scorer(self):
+        import json
+        from gt710_clock_report_test import API, anchor
+        source = r'''extern crate alloc;
+#[path="SHA"] mod sha;
+#[path="CLOCK"] mod clock;
+fn hash(bytes:&[u8])->String { sha::sha256(bytes).iter().map(|v|format!("{v:02x}")).collect() }
+fn main() {
+    assert!(clock::export().is_none());
+    let mut bar=vec![0u32;0x1000000/4];
+    for (a,v) in [(0x101000,0x400000),(0x137100,1),(0x137000,1),(0x137004,0x21e01),
+                  (0x137250,0x80000200),(0x1373f4,1),(0x132020,1),(0x132024,0x11401),
+                  (0x132030,0xf0000000),(0x22400,0x800),(0x21000,1),(0x212a8,1),(0x20400,47)] {bar[a/4]=v;}
+    let before=bar.clone();
+    clock::initialize(bar.as_ptr() as usize);
+    for _ in 0..2 {
+        let (row,anchor)=clock::export().unwrap();println!("{}\n{}",row,anchor);
+    }
+    assert!(clock::export().is_none());
+    assert_eq!(bar,before);
+}
+'''
+        priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            module = (ROOT/'kernel/src/gpu/gk208/clock.rs').read_text().replace('#[cfg(target_os = "none")]\n','')
+            (p/'module.rs').write_text(module)
+            source = source.replace('SHA',str(ROOT/'libs/libbreenix/src/crypto/sha256.rs')).replace('CLOCK',str(p/'module.rs'))
+            (p/'runtime.rs').write_text(source)
+            subprocess.run(priority + ['rustc','--edition=2021','-Dwarnings',str(p/'runtime.rs'),'-o',str(p/'runtime')],check=True)
+            lines = subprocess.check_output([str(p/'runtime')],text=True).splitlines()
+        self.assertEqual(len(lines),4)
+        for phase, row, digest in [('startup',lines[0],lines[1]),('final',lines[2],lines[3])]:
+            self.assertEqual(digest+'\n',anchor(row))
+            data = API['clock_record'](json.loads(row.split(' ',1)[1]))
+            self.assertEqual(data['phase'],phase)
+            self.assertEqual(data['temperature_c']['value'],47)
 
 
 if __name__ == '__main__': unittest.main()

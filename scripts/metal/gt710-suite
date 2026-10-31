@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # Hardware encodings from pinned MIT sources; see THIRD_PARTY_NOTICES.
 # Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# Copyright 2014 Martin Peres
 # Copyright 2010 Christoph Bumiller
 # Copyright (c) 2019 NVIDIA CORPORATION. All rights reserved.
 # /*
@@ -2189,9 +2190,88 @@ def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
 
 
 
+
+def clock_record(row):
+    """Independently decode the captured words using the pinned MIT read paths."""
+    if (not isinstance(row, dict) or set(row) != {'schema', 'phase', 'host_source', 'raw', 'gpc_khz', 'memory_khz', 'host_khz', 'temperature_c'}
+            or type(row['schema']) is not int or row['schema'] != 1
+            or row['phase'] not in ('startup', 'final') or row['host_source'] != 'href'
+            or not isinstance(row['raw'], list) or not 1 <= len(row['raw']) <= 32
+            or any(not isinstance(r, list) or len(r) != 2 or any(type(v) is not int or not 0 <= v < 1 << 32 for v in r) for r in row['raw'])):
+        raise ValueError('invalid clock record schema')
+    raw = dict(row['raw'])
+    if len(raw) != len(row['raw']): raise ValueError('duplicate clock register')
+    used = set()
+    def reg(address):
+        if address not in raw: raise ValueError('missing clock register: ' + hex(address))
+        used.add(address)
+        return raw[address]
+    class Unavailable(Exception): pass
+    crystal = {0: 13500, 0x40: 14318, 0x400000: 27000, 0x400040: 25000}[reg(0x101000) & 0x400040]
+    def pll(address):
+        if address not in (0xe800, 0xe820, 0x132000, 0x132020, 0x137000): raise Unavailable('unknown-pll')
+        ctrl, coef = reg(address), reg(address + 4)
+        if not ctrl & 1: raise Unavailable('pll-disabled')
+        m, n, p = coef & 255, (coef >> 8) & 255, (coef >> 16) & 63
+        if not m: raise Unavailable('zero-pll-divisor')
+        fractional = 0xf000
+        if address in (0xe800, 0xe820): source, p = crystal, 1
+        elif address == 0x132000: source, p = pll(0x132020), 2 if coef & 0x10000000 else 1
+        elif address == 0x132020: source, fractional = div(0x137320, 0x137330), reg(0x132030) >> 16
+        else: source = div(0x137120, 0x137140)
+        result = (source * n + ((((fractional + 4096) & 65535) * source) >> 13)) // (m * (p or 1))
+        if result >= 1 << 32: raise Unavailable('clock-overflow')
+        return result
+    def div(source_address, control_address):
+        src, ctl = reg(source_address), reg(control_address)
+        mode = src & 3
+        if mode == 0: return 108000 if src & 0x30000 == 0x30000 else crystal
+        if mode == 2: return 100000
+        if mode != 3: raise Unavailable('unknown-divider-source')
+        frequency = pll(0xe820 if src & 0x100 else 0xe800)
+        return frequency * 2 // ((ctl & 63) + 2) if ctl & 0x80000000 else frequency
+    def gpc():
+        ctl, selected = reg(0x137250), reg(0x137100) & 1
+        frequency = pll(0x137000) if selected else div(0x137160, 0x1371d0)
+        return frequency * 2 // (((ctl >> 8 if selected else ctl) & 63) + 2) if ctl & 0x80000000 else frequency
+    def memory():
+        mode = reg(0x1373f4) & 15
+        if mode not in (1, 2): raise Unavailable('unknown-memory-mode')
+        return pll(0x132020 if mode == 1 else 0x132000)
+    def temperature():
+        enable, access = reg(0x22400), reg(0x21000)
+        if not enable & 0x800 or not access & 1: raise Unavailable('fuse-access-disabled')
+        if reg(0x212a8) != 1: raise Unavailable('sensor-unavailable')
+        value = reg(0x20400)
+        if value > 0x7fffffff: raise Unavailable('sensor-read-error')
+        return value
+    for name, decode in [('gpc_khz', gpc), ('memory_khz', memory), ('host_khz', lambda: 100000), ('temperature_c', temperature)]:
+        try: expected = dict(value=decode(), status='ok')
+        except Unavailable as reason: expected = dict(value=None, status=str(reason))
+        reading = row[name]
+        if (not isinstance(reading, dict) or set(reading) != {'value', 'status'}
+                or reading != expected or type(reading['value']) is bool):
+            raise ValueError('clock reading differs from raw registers: ' + name)
+    if used != set(raw): raise ValueError('unexpected clock register read')
+    return row
+
+
+def clock_evidence(serial):
+    rows = [clock_record(json.loads(m)) for m in re.findall(r'^GT710_CLOCK_V1 (.+)$', serial, re.M)]
+    if [r['phase'] for r in rows] != ['startup', 'final']:
+        raise ValueError('performance requires startup and final clock records')
+    print('phase gpc_khz memory_khz host_reference_khz temperature_c')
+    for row in rows:
+        if any(row[k]['status'] != 'ok' or row[k]['value'] == 0 for k in ('gpc_khz', 'memory_khz', 'host_khz')):
+            raise ValueError('performance clock unavailable: ' + row['phase'])
+        print(row['phase'] + ' ' + ' '.join(str(row[k]['value']) if row[k]['status'] == 'ok' else 'unavailable:' + row[k]['status']
+              for k in ('gpc_khz', 'memory_khz', 'host_khz', 'temperature_c')))
+
+
 def performance_evidence(serial, parsed, names, required, manifest):
     if required != names or [len(c['cases']) for c in manifest['categories']] != [12,22,19,19,22,26,25,16,9]:
         raise ValueError('performance requires all 170 cases and the nine category counts')
+    clock_evidence(serial)
     from decimal import Decimal
     expected = {
         'clear-rate-2560': ['clears-per-second'], 'rect-throughput': ['submission-us'],
@@ -2201,6 +2281,7 @@ def performance_evidence(serial, parsed, names, required, manifest):
         'present-rate-2560': ['presents-per-second'],
     }
     seen = {key: [] for key in expected}
+    values = []
     current = 0
     for kind, match, line in parsed:
         if kind in ('PASS', 'FAIL'):
@@ -2211,6 +2292,7 @@ def performance_evidence(serial, parsed, names, required, manifest):
                 raise ValueError('performance VALUE outside its case: ' + match[1])
             key = line.split(' ', 4)[4].split('=', 1)[0]
             seen[case].append(key)
+            values.append(line.removeprefix('SUITE gpu VALUE '))
             if key != 'wait-us':
                 if match[4] is None or not Decimal(match[4]) <= Decimal(match[2]) <= Decimal(match[5]):
                     raise ValueError('performance VALUE missing range or outside range: ' + match[1] + ' ' + key)
@@ -2224,6 +2306,8 @@ def performance_evidence(serial, parsed, names, required, manifest):
     fields = sorted(k for k in rows[0]['values'] if k.startswith('native_') or k.endswith(('_n', '_ns')))
     if not fields or any(set(fields) - set(r['values']) for r in rows):
         raise ValueError('performance case-heap cost slots missing')
+    print('performance values (suite units and bounds)')
+    for line in values: print(line)
     print('case ' + ' '.join(fields))
     for i, name in enumerate(names):
         print(name + ' ' + ' '.join(str(rows[i+1]['values'][k] - rows[i]['values'][k]) for k in fields))
@@ -2740,6 +2824,8 @@ def capture_serial(directory):
         raise ValueError('stall records must arrive in bulk')
     if timings and not matches: raise ValueError('timing evidence bulk missing')
     if re.search(r'^GT710_TIMING_V1 ', serial, re.M): raise ValueError('timing records must arrive in bulk')
+    if re.search(r'^GT710_CLOCK_V1 ', serial, re.M): raise ValueError('clock records must arrive in bulk')
+    if 'GT710_CLOCK_BULK ' in serial and not matches: raise ValueError('clock evidence bulk missing')
     if re.search(r'^GT710_GR_REFUSAL_V1 ', serial, re.M):
         raise ValueError('GR refusal records must arrive in bulk')
     if 'GT710_GR_REFUSAL_BULK ' in serial and not matches:
@@ -2786,6 +2872,11 @@ def capture_serial(directory):
                     or row['values']['schema'] != 1):
                 raise ValueError('invalid case heap record')
             key=('case-heap',)
+        elif fields[0]=='GT710_CLOCK_V1':
+            row = clock_record(json.loads(line.removeprefix('GT710_CLOCK_V1 ')))
+            if slot != int(row['phase'] == 'final'):
+                raise ValueError('clock record in wrong upload slot')
+            key=('clock', row['phase'])
         elif fields[0]=='GT710_TIMING_V1':
             row = json.loads(line.removeprefix('GT710_TIMING_V1 '))
             if (type(row.get('batch')) is not int or row['batch'] <= 0
@@ -2867,6 +2958,9 @@ def capture_serial(directory):
                 or [row['case'] for row in measured] != names):
             raise ValueError('case heap boundaries differ from the completed GPU cases')
     def report_key(line):
+        clock = re.fullmatch(r'GT710_CLOCK_BULK phase=(startup|final) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+        if clock: return ('clock', clock[1])
+        if line.startswith('GT710_CLOCK_BULK '): raise ValueError('invalid clock anchor')
         heap = re.fullmatch(r'GT710_CASE_HEAP_BULK ([1-9]\d*) ([a-f0-9]{64})\n?', line)
         if heap: return ('case-heap',)
         if line.startswith('GT710_CASE_HEAP_BULK '): raise ValueError('invalid case heap anchor')
@@ -2924,6 +3018,8 @@ def capture_serial(directory):
             upper=finals[0].start() if group_slots[key] else matches[0].start()
             if not lower<=serial_offset<upper:
                 raise ValueError('artifact anchor outside its upload slot')
+            if key == ('clock', 'final') and serial_offset <= done[0].end():
+                raise ValueError('final clock record before the last case completed')
         serial_offset+=len(line)
         if key is not None and key[0] == 'console-sample':
             anchor = re.fullmatch(r'GT710_CONSOLE_SAMPLE_BULK stage=([01]) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
@@ -2945,6 +3041,11 @@ def capture_serial(directory):
             record = groups[key][0].removesuffix('\n').encode('ascii')
             if len(groups[key]) != 1 or len(record) != int(anchor[1]) or hashlib.sha256(record).hexdigest() != anchor[2]:
                 raise ValueError('GR refusal record differs from serial length/digest')
+        if key is not None and key[0] == 'clock':
+            anchor = re.fullmatch(r'GT710_CLOCK_BULK phase=(startup|final) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
+            record = groups[key][0].removesuffix('\n').encode('ascii')
+            if len(groups[key]) != 1 or len(record) != int(anchor[2]) or hashlib.sha256(record).hexdigest() != anchor[3]:
+                raise ValueError('clock record differs from serial length/digest')
         if key is not None and key[0] == 'timing':
             anchor = re.fullmatch(r'GT710_TIMING_BULK batch=(\d+) bytes=(\d+) sha256=([a-f0-9]{64})\n?', line)
             record = groups[key][0].removesuffix('\n').encode('ascii')

@@ -1,5 +1,6 @@
 # /*
-#  * Copyright 2012, 2013 Red Hat Inc.
+#  * Copyright 2012 Red Hat Inc.
+#  * Copyright 2013 Red Hat Inc.
 #  * Copyright 2014 Martin Peres
 #  *
 #  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -11,6 +12,7 @@
 #  *
 #  * The above copyright notice and this permission notice shall be included in
 #  * all copies or substantial portions of the Software.
+# claim-lint:ok: MIT license condition; source paths in docs/gui/gt710-clock-record.md.
 #  *
 #  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 #  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -101,6 +103,7 @@ class ClockReport(unittest.TestCase):
             self.assertIn(last + anchor(last), API['capture_serial'](p))
             for s,a,b in [(serial.replace(anchor(last), ''),first,last),
                           (serial.replace(anchor(last),anchor(last)*2),first,last),
+                          (serial.replace(anchor(last),'').replace(middle,anchor(last)+middle),first,last),
                           (serial,first,last.replace('540000','540001')),
                           (serial.replace(anchor(first),first+anchor(first)),first,last),
                           (serial.replace(bulk_anchor('GT710_BULK',first),bulk_anchor('GT710_BULK',last)).replace(bulk_anchor('GT710_FINAL_BULK',last),bulk_anchor('GT710_FINAL_BULK',first)),last,first)]:
