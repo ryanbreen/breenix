@@ -6,7 +6,7 @@ use std::cell::RefCell;
 thread_local! { static STATE: RefCell<State> = RefCell::new(State::default()); }
 #[derive(Default)]
 struct State { images: Vec<(u32,u32,u32)>, submits: usize, waits: usize, clocks: usize,
-    warming: bool, pending: bool, fail_wait: bool, low_too_fast:bool, sets:Vec<u32> }
+    warming: bool, pending: bool, fail_wait: bool, low_too_fast:bool, sets:Vec<u32>, thermal:bool, samples:Vec<(String,u32)>, idle_sleeps:u32 }
 
 pub mod time {
     pub struct Stamp(i128);
@@ -17,7 +17,9 @@ pub mod time {
             let duration=if s.submits>=10 && s.submits<=12 && !s.low_too_fast {1_070_000_000}else{716_000_000};
             Stamp(((s.clocks-1) as i128/2)*2_000_000_000+if end {duration}else{0})}))
     }
-    pub fn sleep_ms(_:u64)->Result<(), &'static str> { Ok(()) }
+    pub fn sleep_ms(n:u64)->Result<(), &'static str> {
+        if n==1000 {crate::STATE.with_borrow_mut(|s|s.idle_sleeps+=1);} Ok(())
+    }
 }
 pub mod gpu {
     pub use gpu_abi as abi;
@@ -63,7 +65,7 @@ pub mod gpu {
                     assert_eq!(&d[4..],&[1,0,0,2560,1600]);
                 }
                 assert_eq!(plan.drawn,200);assert_eq!(plan.estimate,819_200_000);
-            assert_eq!(s.sets,match s.submits {0..=8=>vec![],9..=11=>vec![540_000],_=>vec![540_000,810_000]});
+            if !s.thermal {assert_eq!(s.sets,match s.submits {0..=8=>vec![],9..=11=>vec![540_000],_=>vec![540_000,810_000]});}
             s.submits+=1;s.pending=true;
             let mut a=abi::Submit::ZERO;a.fence=s.submits as u64;(0,a)
         })
@@ -114,4 +116,34 @@ fn measurement_failure_stops_before_any_benchmark() {
     STATE.with_borrow_mut(|s|*s=State::default());
     assert!(probe_gpu_bench::run_c2(|_|Err(String::from("counter stalled"))).is_err());
     STATE.with_borrow(|s|assert_eq!((s.submits,s.waits,s.clocks),(0,0,0)));
+}
+
+#[test]
+fn c3a_reads_post_then_before_each_of_twelve_trials_then_ten_idle_seconds() {
+    STATE.with_borrow_mut(|s|*s=State {thermal:true,..State::default()});
+    probe_gpu_bench::run_c3a(|phase,n| {
+        STATE.with_borrow_mut(|s| {
+            assert!(!s.pending);
+            match phase {
+                "post"=>assert_eq!((n,s.submits),(0,0)),
+                "bench"=>assert_eq!(s.submits,n as usize-1),
+                "idle"=>{assert_eq!(s.submits,12);assert_eq!(s.idle_sleeps,n);},
+                _=>panic!("unexpected phase"),
+            }
+            s.samples.push((phase.into(),n));
+        });Ok(())
+    }).unwrap();
+    STATE.with_borrow(|s| {
+        assert_eq!((s.submits,s.waits),(12,12));assert!(s.sets.is_empty());
+        assert_eq!(s.samples.len(),23);assert_eq!(s.idle_sleeps,10);
+    });
+}
+#[test]
+fn c3a_failed_completion_or_hot_reading_stops_new_work() {
+    STATE.with_borrow_mut(|s|*s=State {thermal:true,fail_wait:true,..State::default()});
+    assert!(probe_gpu_bench::run_c3a(|_,_|Ok(())).is_err());
+    STATE.with_borrow(|s|assert_eq!((s.submits,s.waits),(1,1)));
+    STATE.with_borrow_mut(|s|*s=State {thermal:true,..State::default()});
+    assert!(probe_gpu_bench::run_c3a(|p,n|if p=="bench" && n==3 {Err("hot".into())}else{Ok(())}).is_err());
+    STATE.with_borrow(|s|assert_eq!((s.submits,s.waits),(2,2)));
 }
