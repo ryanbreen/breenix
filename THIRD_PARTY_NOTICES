@@ -1967,3 +1967,27 @@ pmu/gk110.c SHA-256 55ce3a1aa3468664da5ddf1eb8e86cdb975147d3d074e58a40281e1ff27d
 mc/base.c SHA-256 aca570e3b6d297b7d0bf7997aac8c6766c09d531da47f066d814540088a81171
 mc/gk104.c SHA-256 15dd9fd27d86890a2d5cb9278903a3f95267b3d2743c626e59f6351c95ea8d7a
 mc/nv04.c SHA-256 bdf95057dc095b6e0f09fee47ab8d461b0b60b3af153edd4c3325955a5fc84e2
+
+C5a offline DDR3 memx generator and host oracle (MIT)
+--------------------------------------------------
+Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba, paths relative to
+https://github.com/torvalds/linux/tree/e8f897f4afef0031fe618a8e94127a0934896aba/drivers/gpu/drm/nouveau/
+
+nvkm/subdev/bios/{bit.c,gpio.c,ramcfg.c,M0203.c,rammap.c,timing.c,pll.c},
+nvkm/subdev/clk/pllgt215.c, nvkm/subdev/fb/{ramgk104.c,sddr3.c,ramfuc.h},
+nvkm/subdev/pmu/memx.c, include/nvkm/{core/device.h,subdev/bios/M0203.h}.
+Consumers: scripts/metal/gt710_memx.py; tests/fixtures/gt710_ddr3_oracle.c;
+tests/gt710_memx_test.py and docs/gui/gt710-c5a* (source-derived expectations
+and ordered offline traces). Source headers/SPDX checked individually.
+Copyright 2012, 2013, 2014 Red Hat Inc.; Copyright 2010 Red Hat Inc.;
+Copyright 2005-2006 Erik Waling; Copyright 2006 Stephane Marchesin;
+Copyright 2007-2009 Stuart Bennett. sddr3.c authors: Ben Skeggs, Roy Spliet.
+Original copyright notices and MIT grants are retained in adapted headers.
+ramfuc.h, memx.c, core/device.h and M0203.h declare SPDX-License-Identifier: MIT.
+
+Firmware interpretation references unchanged MIT
+nvkm/subdev/pmu/fuc/{memx.fuc,kernel.fuc,macros.fuc,os.h}, already vendored and
+attributed in the C4 entry above. Individual source hashes for C5a are in
+docs/gui/provenance/gt710-c5a-sources.json. No firmware image changes here.
+The board fixture contains selected table data and recorded register values,
+not a redistributed complete ROM or VBIOS instruction stream.

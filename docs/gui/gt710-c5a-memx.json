@@ -1,0 +1,3876 @@
+{
+  "source_revision": "e8f897f4afef0031fe618a8e94127a0934896aba",
+  "decoded": {
+    "strap": 1,
+    "ramcfg_index": 1,
+    "crystal_khz": 27000,
+    "configs": [
+      {
+        "rammap_min": 0,
+        "rammap_max": 162,
+        "rammap_11_08_01": 0,
+        "rammap_11_08_0c": 1,
+        "rammap_11_08_10": 1,
+        "rammap_11_09_01ff": 5,
+        "rammap_11_0a_03fe": 1,
+        "rammap_11_0a_0400": 0,
+        "rammap_11_0a_0800": 0,
+        "rammap_11_0b_01f0": 7,
+        "rammap_11_0b_0200": 1,
+        "rammap_11_0b_0400": 0,
+        "rammap_11_0b_0800": 0,
+        "rammap_11_0d": 136,
+        "rammap_11_0e": 136,
+        "rammap_11_0f": 79,
+        "rammap_11_11_0c": 0,
+        "ramcfg_11_01_01": 0,
+        "ramcfg_11_01_02": 0,
+        "ramcfg_11_01_04": 1,
+        "ramcfg_11_01_08": 0,
+        "ramcfg_11_01_10": 1,
+        "ramcfg_DLLoff": 1,
+        "ramcfg_11_01_40": 0,
+        "ramcfg_11_01_80": 0,
+        "ramcfg_11_02_03": 0,
+        "ramcfg_11_02_04": 0,
+        "ramcfg_11_02_08": 0,
+        "ramcfg_11_02_10": 0,
+        "ramcfg_11_02_40": 0,
+        "ramcfg_11_02_80": 1,
+        "ramcfg_11_03_0f": 3,
+        "ramcfg_11_03_30": 1,
+        "ramcfg_11_03_c0": 1,
+        "ramcfg_11_03_f0": 5,
+        "ramcfg_11_04": 0,
+        "ramcfg_11_06": 0,
+        "ramcfg_11_07_02": 0,
+        "ramcfg_11_07_04": 0,
+        "ramcfg_11_07_08": 0,
+        "ramcfg_11_07_10": 0,
+        "ramcfg_11_07_40": 0,
+        "ramcfg_11_07_80": 0,
+        "ramcfg_11_08_01": 1,
+        "ramcfg_11_08_02": 0,
+        "ramcfg_11_08_04": 1,
+        "ramcfg_11_08_08": 0,
+        "ramcfg_11_08_10": 0,
+        "ramcfg_11_08_20": 0,
+        "ramcfg_11_09": 1,
+        "min_mhz": 0,
+        "max_mhz": 162,
+        "rammap_offset": 29294,
+        "ramcfg_offset": 29324,
+        "rammap_raw": "0000a200ff9e0000540502700288884f000332",
+        "ramcfg_raw": "0134a05300020001050100",
+        "timing_index": 1,
+        "timing_20_2e_03": 0,
+        "timing_20_2e_30": 0,
+        "timing_20_2e_c0": 0,
+        "timing_20_2f_03": 0,
+        "timing_20_2c_003f": 4,
+        "timing_20_2c_1fc0": 0,
+        "timing_20_30_07": 5,
+        "timing_20_30_f8": 5,
+        "timing_20_31_0007": 5,
+        "timing_20_31_0078": 10,
+        "timing_20_31_0780": 11,
+        "timing_20_31_0800": 0,
+        "timing_20_31_7000": 3,
+        "timing_20_31_8000": 0,
+        "timing": [
+          119570965,
+          812761863,
+          1711736081,
+          9871,
+          1187151977,
+          159744,
+          16817180,
+          3456000,
+          14336,
+          8,
+          524288
+        ],
+        "timing_ver": 32,
+        "timing_raw": "1582200707c37130110507668f2600006980c246007002001c9c000100bc3400003800000800000000000800040000b42dd535",
+        "timing_offset": 29797
+      },
+      {
+        "rammap_min": 163,
+        "rammap_max": 460,
+        "rammap_11_08_01": 1,
+        "rammap_11_08_0c": 1,
+        "rammap_11_08_10": 1,
+        "rammap_11_09_01ff": 5,
+        "rammap_11_0a_03fe": 1,
+        "rammap_11_0a_0400": 0,
+        "rammap_11_0a_0800": 0,
+        "rammap_11_0b_01f0": 7,
+        "rammap_11_0b_0200": 1,
+        "rammap_11_0b_0400": 0,
+        "rammap_11_0b_0800": 0,
+        "rammap_11_0d": 136,
+        "rammap_11_0e": 136,
+        "rammap_11_0f": 79,
+        "rammap_11_11_0c": 0,
+        "ramcfg_11_01_01": 0,
+        "ramcfg_11_01_02": 0,
+        "ramcfg_11_01_04": 1,
+        "ramcfg_11_01_08": 0,
+        "ramcfg_11_01_10": 1,
+        "ramcfg_DLLoff": 0,
+        "ramcfg_11_01_40": 0,
+        "ramcfg_11_01_80": 0,
+        "ramcfg_11_02_03": 0,
+        "ramcfg_11_02_04": 0,
+        "ramcfg_11_02_08": 0,
+        "ramcfg_11_02_10": 0,
+        "ramcfg_11_02_40": 0,
+        "ramcfg_11_02_80": 1,
+        "ramcfg_11_03_0f": 3,
+        "ramcfg_11_03_30": 0,
+        "ramcfg_11_03_c0": 0,
+        "ramcfg_11_03_f0": 0,
+        "ramcfg_11_04": 0,
+        "ramcfg_11_06": 0,
+        "ramcfg_11_07_02": 0,
+        "ramcfg_11_07_04": 0,
+        "ramcfg_11_07_08": 0,
+        "ramcfg_11_07_10": 0,
+        "ramcfg_11_07_40": 0,
+        "ramcfg_11_07_80": 1,
+        "ramcfg_11_08_01": 1,
+        "ramcfg_11_08_02": 0,
+        "ramcfg_11_08_04": 1,
+        "ramcfg_11_08_08": 0,
+        "ramcfg_11_08_10": 0,
+        "ramcfg_11_08_20": 0,
+        "ramcfg_11_09": 1,
+        "min_mhz": 163,
+        "max_mhz": 460,
+        "rammap_offset": 29401,
+        "ramcfg_offset": 29431,
+        "rammap_raw": "a300cc01ff9e0000550502700288884f000332",
+        "ramcfg_raw": "0114a00300020081050100",
+        "timing_index": 1,
+        "timing_20_2e_03": 0,
+        "timing_20_2e_30": 0,
+        "timing_20_2e_c0": 0,
+        "timing_20_2f_03": 0,
+        "timing_20_2c_003f": 4,
+        "timing_20_2c_1fc0": 0,
+        "timing_20_30_07": 5,
+        "timing_20_30_f8": 5,
+        "timing_20_31_0007": 5,
+        "timing_20_31_0078": 10,
+        "timing_20_31_0780": 11,
+        "timing_20_31_0800": 0,
+        "timing_20_31_7000": 3,
+        "timing_20_31_8000": 0,
+        "timing": [
+          119570965,
+          812761863,
+          1711736081,
+          9871,
+          1187151977,
+          159744,
+          16817180,
+          3456000,
+          14336,
+          8,
+          524288
+        ],
+        "timing_ver": 32,
+        "timing_raw": "1582200707c37130110507668f2600006980c246007002001c9c000100bc3400003800000800000000000800040000b42dd535",
+        "timing_offset": 29797
+      },
+      {
+        "rammap_min": 461,
+        "rammap_max": 750,
+        "rammap_11_08_01": 1,
+        "rammap_11_08_0c": 1,
+        "rammap_11_08_10": 1,
+        "rammap_11_09_01ff": 39,
+        "rammap_11_0a_03fe": 39,
+        "rammap_11_0a_0400": 0,
+        "rammap_11_0a_0800": 0,
+        "rammap_11_0b_01f0": 15,
+        "rammap_11_0b_0200": 0,
+        "rammap_11_0b_0400": 1,
+        "rammap_11_0b_0800": 0,
+        "rammap_11_0d": 248,
+        "rammap_11_0e": 136,
+        "rammap_11_0f": 79,
+        "rammap_11_11_0c": 1,
+        "ramcfg_11_01_01": 0,
+        "ramcfg_11_01_02": 0,
+        "ramcfg_11_01_04": 1,
+        "ramcfg_11_01_08": 0,
+        "ramcfg_11_01_10": 1,
+        "ramcfg_DLLoff": 0,
+        "ramcfg_11_01_40": 0,
+        "ramcfg_11_01_80": 0,
+        "ramcfg_11_02_03": 0,
+        "ramcfg_11_02_04": 0,
+        "ramcfg_11_02_08": 0,
+        "ramcfg_11_02_10": 0,
+        "ramcfg_11_02_40": 1,
+        "ramcfg_11_02_80": 0,
+        "ramcfg_11_03_0f": 1,
+        "ramcfg_11_03_30": 1,
+        "ramcfg_11_03_c0": 1,
+        "ramcfg_11_03_f0": 5,
+        "ramcfg_11_04": 0,
+        "ramcfg_11_06": 0,
+        "ramcfg_11_07_02": 0,
+        "ramcfg_11_07_04": 1,
+        "ramcfg_11_07_08": 0,
+        "ramcfg_11_07_10": 1,
+        "ramcfg_11_07_40": 0,
+        "ramcfg_11_07_80": 0,
+        "ramcfg_11_08_01": 0,
+        "ramcfg_11_08_02": 0,
+        "ramcfg_11_08_04": 1,
+        "ramcfg_11_08_08": 0,
+        "ramcfg_11_08_10": 0,
+        "ramcfg_11_08_20": 0,
+        "ramcfg_11_09": 1,
+        "min_mhz": 461,
+        "max_mhz": 750,
+        "rammap_offset": 29508,
+        "ramcfg_offset": 29538,
+        "rammap_raw": "cd01ee0215a0000055274ef004f8884f000732",
+        "ramcfg_raw": "0514405100020014040100",
+        "timing_index": 5,
+        "timing_20_2e_03": 1,
+        "timing_20_2e_30": 0,
+        "timing_20_2e_c0": 0,
+        "timing_20_2f_03": 1,
+        "timing_20_2c_003f": 5,
+        "timing_20_2c_1fc0": 0,
+        "timing_20_30_07": 5,
+        "timing_20_30_f8": 7,
+        "timing_20_31_0007": 5,
+        "timing_20_31_0078": 10,
+        "timing_20_31_0780": 11,
+        "timing_20_31_0800": 0,
+        "timing_20_31_7000": 3,
+        "timing_20_31_8000": 0,
+        "timing": [
+          205449771,
+          818087052,
+          1426982673,
+          16566,
+          1187217513,
+          159744,
+          16817180,
+          3456000,
+          14080,
+          8,
+          524288
+        ],
+        "timing_ver": 32,
+        "timing_raw": "2bea3e0c8c04c33011070e55b64000006980c346007002001c9c000100bc3400003700000800000000000800050001b53dd535",
+        "timing_offset": 30001
+      },
+      {
+        "rammap_min": 750,
+        "rammap_max": 1200,
+        "rammap_11_08_01": 1,
+        "rammap_11_08_0c": 1,
+        "rammap_11_08_10": 1,
+        "rammap_11_09_01ff": 39,
+        "rammap_11_0a_03fe": 39,
+        "rammap_11_0a_0400": 0,
+        "rammap_11_0a_0800": 0,
+        "rammap_11_0b_01f0": 15,
+        "rammap_11_0b_0200": 0,
+        "rammap_11_0b_0400": 1,
+        "rammap_11_0b_0800": 0,
+        "rammap_11_0d": 248,
+        "rammap_11_0e": 136,
+        "rammap_11_0f": 79,
+        "rammap_11_11_0c": 2,
+        "ramcfg_11_01_01": 0,
+        "ramcfg_11_01_02": 0,
+        "ramcfg_11_01_04": 1,
+        "ramcfg_11_01_08": 0,
+        "ramcfg_11_01_10": 1,
+        "ramcfg_DLLoff": 0,
+        "ramcfg_11_01_40": 0,
+        "ramcfg_11_01_80": 0,
+        "ramcfg_11_02_03": 0,
+        "ramcfg_11_02_04": 0,
+        "ramcfg_11_02_08": 0,
+        "ramcfg_11_02_10": 0,
+        "ramcfg_11_02_40": 1,
+        "ramcfg_11_02_80": 0,
+        "ramcfg_11_03_0f": 1,
+        "ramcfg_11_03_30": 1,
+        "ramcfg_11_03_c0": 1,
+        "ramcfg_11_03_f0": 5,
+        "ramcfg_11_04": 0,
+        "ramcfg_11_06": 0,
+        "ramcfg_11_07_02": 0,
+        "ramcfg_11_07_04": 1,
+        "ramcfg_11_07_08": 0,
+        "ramcfg_11_07_10": 1,
+        "ramcfg_11_07_40": 0,
+        "ramcfg_11_07_80": 0,
+        "ramcfg_11_08_01": 0,
+        "ramcfg_11_08_02": 0,
+        "ramcfg_11_08_04": 1,
+        "ramcfg_11_08_08": 0,
+        "ramcfg_11_08_10": 0,
+        "ramcfg_11_08_20": 0,
+        "ramcfg_11_09": 1,
+        "min_mhz": 750,
+        "max_mhz": 1200,
+        "rammap_offset": 29615,
+        "ramcfg_offset": 29645,
+        "rammap_raw": "ee02b00432a1000055274ef004f8884f000b32",
+        "ramcfg_raw": "0214405100020014040100",
+        "timing_index": 2,
+        "timing_20_2e_03": 1,
+        "timing_20_2e_30": 0,
+        "timing_20_2e_c0": 0,
+        "timing_20_2f_03": 1,
+        "timing_20_2c_003f": 5,
+        "timing_20_2c_1fc0": 0,
+        "timing_20_30_07": 6,
+        "timing_20_30_f8": 7,
+        "timing_20_31_0007": 5,
+        "timing_20_31_0078": 10,
+        "timing_20_31_0780": 11,
+        "timing_20_31_0800": 0,
+        "timing_20_31_7000": 3,
+        "timing_20_31_8000": 0,
+        "timing": [
+          222358829,
+          819152013,
+          1426982673,
+          19134,
+          1187217513,
+          159744,
+          16817180,
+          3456000,
+          14080,
+          8,
+          524288
+        ],
+        "timing_ver": 32,
+        "timing_raw": "2ded400d8d44d33011070e55be4a00006980c346007002001c9c000100bc3400003700000800000000000800050001b53ed535",
+        "timing_offset": 29848
+      }
+    ],
+    "refpll": {
+      "min_freq": 600000,
+      "max_freq": 1200000,
+      "min_inputfreq": 25000,
+      "max_inputfreq": 75000,
+      "min_m": 1,
+      "max_m": 255,
+      "min_n": 8,
+      "max_n": 255,
+      "min_p": 1,
+      "max_p": 63,
+      "type": 12,
+      "offset": 20118,
+      "limits_offset": 20223,
+      "raw": "0cff4e000000001b001b00",
+      "limits_raw": "5802b00419004b0001ff08ff013f",
+      "refclk": 27000,
+      "alternate_refclk_raw_khz": 27000,
+      "register": 0
+    },
+    "mempll": {
+      "min_freq": 1500000,
+      "max_freq": 3000000,
+      "min_inputfreq": 100000,
+      "max_inputfreq": 250000,
+      "min_m": 1,
+      "max_m": 255,
+      "min_n": 8,
+      "max_n": 255,
+      "min_p": 1,
+      "max_p": 63,
+      "type": 4,
+      "offset": 20107,
+      "limits_offset": 20209,
+      "raw": "04f14e00000000fa00c800",
+      "limits_raw": "dc05b80b6400fa0001ff08ff013f",
+      "refclk": 200000,
+      "alternate_refclk_raw_khz": 250000,
+      "register": 0
+    },
+    "gpio": [],
+    "rammap_offset": 29273,
+    "timing_offset": 29740
+  },
+  "phases": [
+    {
+      "label": "xition",
+      "frequency_khz": 405000,
+      "config": {
+        "rammap_min": 163,
+        "rammap_max": 460,
+        "rammap_11_08_01": 1,
+        "rammap_11_08_0c": 1,
+        "rammap_11_08_10": 1,
+        "rammap_11_09_01ff": 5,
+        "rammap_11_0a_03fe": 1,
+        "rammap_11_0a_0400": 0,
+        "rammap_11_0a_0800": 0,
+        "rammap_11_0b_01f0": 7,
+        "rammap_11_0b_0200": 1,
+        "rammap_11_0b_0400": 0,
+        "rammap_11_0b_0800": 0,
+        "rammap_11_0d": 136,
+        "rammap_11_0e": 136,
+        "rammap_11_0f": 79,
+        "rammap_11_11_0c": 0,
+        "ramcfg_11_01_01": 0,
+        "ramcfg_11_01_02": 0,
+        "ramcfg_11_01_04": 1,
+        "ramcfg_11_01_08": 0,
+        "ramcfg_11_01_10": 1,
+        "ramcfg_DLLoff": 0,
+        "ramcfg_11_01_40": 0,
+        "ramcfg_11_01_80": 0,
+        "ramcfg_11_02_03": 0,
+        "ramcfg_11_02_04": 0,
+        "ramcfg_11_02_08": 0,
+        "ramcfg_11_02_10": 0,
+        "ramcfg_11_02_40": 0,
+        "ramcfg_11_02_80": 1,
+        "ramcfg_11_03_0f": 3,
+        "ramcfg_11_03_30": 0,
+        "ramcfg_11_03_c0": 0,
+        "ramcfg_11_03_f0": 0,
+        "ramcfg_11_04": 0,
+        "ramcfg_11_06": 0,
+        "ramcfg_11_07_02": 0,
+        "ramcfg_11_07_04": 0,
+        "ramcfg_11_07_08": 0,
+        "ramcfg_11_07_10": 0,
+        "ramcfg_11_07_40": 0,
+        "ramcfg_11_07_80": 1,
+        "ramcfg_11_08_01": 1,
+        "ramcfg_11_08_02": 0,
+        "ramcfg_11_08_04": 1,
+        "ramcfg_11_08_08": 0,
+        "ramcfg_11_08_10": 0,
+        "ramcfg_11_08_20": 0,
+        "ramcfg_11_09": 1,
+        "min_mhz": 163,
+        "max_mhz": 460,
+        "rammap_offset": 29401,
+        "ramcfg_offset": 29431,
+        "rammap_raw": "a300cc01ff9e0000550502700288884f000332",
+        "ramcfg_raw": "0114a00300020081050100",
+        "timing_index": 1,
+        "timing_20_2e_03": 0,
+        "timing_20_2e_30": 0,
+        "timing_20_2e_c0": 0,
+        "timing_20_2f_03": 0,
+        "timing_20_2c_003f": 4,
+        "timing_20_2c_1fc0": 0,
+        "timing_20_30_07": 6,
+        "timing_20_30_f8": 5,
+        "timing_20_31_0007": 5,
+        "timing_20_31_0078": 10,
+        "timing_20_31_0780": 11,
+        "timing_20_31_0800": 0,
+        "timing_20_31_7000": 3,
+        "timing_20_31_8000": 0,
+        "timing": [
+          119570965,
+          812761863,
+          1711736081,
+          9871,
+          1187151977,
+          159744,
+          16817180,
+          3456000,
+          14336,
+          8,
+          524288
+        ],
+        "timing_ver": 32,
+        "timing_raw": "1582200707c37130110507668f2600006980c246007002001c9c000100bc3400003800000800000000000800040000b42dd535",
+        "timing_offset": 29797
+      },
+      "mode": 1,
+      "coefficients": {
+        "M": 1,
+        "N": 29,
+        "P": 2,
+        "fN": 4096
+      },
+      "calculated_mr": [
+        "(((R[0x10f300] & 0xfffff08b) | 0x00000600) | 0x00000030)",
+        "(R[0x10f304] & 0xfffffffe)",
+        "((R[0x10f320] & 0xffffffc7) | 0x00000008)"
+      ],
+      "cpu_before": [
+        {
+          "op": "CPU_WR32",
+          "register": 1111144,
+          "mask": 2093567,
+          "data": 4101,
+          "result": "((R[0x10f468] & 0xffe00e00) | 0x00001005)",
+          "symbol": "t001",
+          "args": [
+            1111144,
+            "((R[0x10f468] & 0xffe00e00) | 0x00001005)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1179"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111072,
+          "mask": 0,
+          "data": 0,
+          "result": "R[0x10f420]",
+          "symbol": "t002",
+          "args": [
+            1111072,
+            "R[0x10f420]"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1185"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111088,
+          "mask": 0,
+          "data": 0,
+          "result": "R[0x10f430]",
+          "symbol": "t003",
+          "args": [
+            1111088,
+            "R[0x10f430]"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1191"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111040,
+          "mask": 31,
+          "data": 7,
+          "result": "((R[0x10f400] & 0xffffffe0) | 0x00000007)",
+          "symbol": "t004",
+          "args": [
+            1111040,
+            "((R[0x10f400] & 0xffffffe0) | 0x00000007)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1197"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111056,
+          "mask": 512,
+          "data": 512,
+          "result": "((R[0x10f410] & 0xfffffdff) | 0x00000200)",
+          "symbol": "t005",
+          "args": [
+            1111056,
+            "((R[0x10f410] & 0xfffffdff) | 0x00000200)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1203"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111104,
+          "mask": 16711680,
+          "data": 8912896,
+          "result": "((R[0x10f440] & 0xff00ffff) | 0x00880000)",
+          "symbol": "t006",
+          "args": [
+            1111104,
+            "((R[0x10f440] & 0xff00ffff) | 0x00880000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1213"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111108,
+          "mask": 32,
+          "data": 0,
+          "result": "(R[0x10f444] & 0xffffffdf)",
+          "symbol": "t007",
+          "args": [
+            1111108,
+            "(R[0x10f444] & 0xffffffdf)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1227"
+        }
+      ],
+      "ops": [
+        {
+          "op": "WR32",
+          "register": 1112072,
+          "mask": 1073741824,
+          "data": 1073741824,
+          "result": "((R[0x10f808] & 0xbfffffff) | 0x40000000)",
+          "symbol": "t008",
+          "args": [
+            1112072,
+            "((R[0x10f808] & 0xbfffffff) | 0x40000000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f808] != ((R[0x10f808] & 0xbfffffff) | 0x40000000)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:711"
+        },
+        {
+          "op": "ENTER",
+          "args": [],
+          "source": "fb/ramgk104.c:712",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 6471680,
+          "mask": 4294967295,
+          "data": 252641280,
+          "result": 252641280,
+          "symbol": "t009",
+          "args": [
+            6471680,
+            252641280
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:715"
+        },
+        {
+          "op": "WR32",
+          "register": 1110528,
+          "mask": 2048,
+          "data": 0,
+          "result": "(R[0x10f200] & 0xfffff7ff)",
+          "symbol": "t010",
+          "args": [
+            1110528,
+            "(R[0x10f200] & 0xfffff7ff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f200] != (R[0x10f200] & 0xfffff7ff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:725"
+        },
+        {
+          "op": "WR32",
+          "register": 1110804,
+          "mask": 4294967295,
+          "data": 1,
+          "result": 1,
+          "symbol": "t011",
+          "args": [
+            1110804,
+            1
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:729"
+        },
+        {
+          "op": "WR32",
+          "register": 1110544,
+          "mask": 4294967295,
+          "data": 0,
+          "result": 0,
+          "symbol": "t012",
+          "args": [
+            1110544,
+            0
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:734"
+        },
+        {
+          "op": "WR32",
+          "register": 1110800,
+          "mask": 4294967295,
+          "data": 1,
+          "result": 1,
+          "symbol": "t013",
+          "args": [
+            1110800,
+            1
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:735"
+        },
+        {
+          "op": "WR32",
+          "register": 1110528,
+          "mask": 2147483648,
+          "data": 2147483648,
+          "result": "((t010 & 0x7fffffff) | 0x80000000)",
+          "symbol": "t014",
+          "args": [
+            1110528,
+            "((t010 & 0x7fffffff) | 0x80000000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t010 != ((t010 & 0x7fffffff) | 0x80000000)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:736"
+        },
+        {
+          "op": "WR32",
+          "register": 1110800,
+          "mask": 4294967295,
+          "data": 1,
+          "result": 1,
+          "symbol": "t015",
+          "args": [
+            1110800,
+            1
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:737"
+        },
+        {
+          "op": "WR32",
+          "register": 1110528,
+          "mask": 2147483648,
+          "data": 0,
+          "result": "(t014 & 0x7fffffff)",
+          "symbol": "t016",
+          "args": [
+            1110528,
+            "(t014 & 0x7fffffff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t014 != (t014 & 0x7fffffff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:738"
+        },
+        {
+          "op": "DELAY",
+          "args": [
+            1000
+          ],
+          "source": "fb/ramgk104.c:739",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 1110160,
+          "mask": 4294967295,
+          "data": 96,
+          "result": 96,
+          "symbol": "t017",
+          "args": [
+            1110160,
+            96
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:741"
+        },
+        {
+          "op": "WR32",
+          "register": 1110160,
+          "mask": 4294967295,
+          "data": 3221225598,
+          "result": 3221225598,
+          "symbol": "t018",
+          "args": [
+            1110160,
+            3221225598
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:742"
+        },
+        {
+          "op": "WR32",
+          "register": 1112100,
+          "mask": 2533951456,
+          "data": 2148073952,
+          "result": "((R[0x10f824] & 0x68f6f81f) | 0x800901e0)",
+          "symbol": "t019",
+          "args": [
+            1112100,
+            "((R[0x10f824] & 0x68f6f81f) | 0x800901e0)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f824] != ((R[0x10f824] & 0x68f6f81f) | 0x800901e0)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:780"
+        },
+        {
+          "op": "WR32",
+          "register": 1253440,
+          "mask": 65536,
+          "data": 0,
+          "result": "(R[0x132040] & 0xfffeffff)",
+          "symbol": "t020",
+          "args": [
+            1253440,
+            "(R[0x132040] & 0xfffeffff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x132040] != (R[0x132040] & 0xfffeffff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:782"
+        },
+        {
+          "op": "WR32",
+          "register": 1274868,
+          "mask": 0,
+          "data": 65552,
+          "result": 65553,
+          "symbol": "t021",
+          "args": [
+            1274868,
+            65553
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:784"
+        },
+        {
+          "op": "WR32",
+          "register": 1274860,
+          "mask": 4294967295,
+          "data": "(R[0x1373ec] & 0xfffcffff)",
+          "result": "(R[0x1373ec] & 0xfffcffff)",
+          "symbol": "t022",
+          "args": [
+            1274860,
+            "(R[0x1373ec] & 0xfffcffff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:787"
+        },
+        {
+          "op": "WR32",
+          "register": 1274868,
+          "mask": 3,
+          "data": 0,
+          "result": 65552,
+          "symbol": "t023",
+          "args": [
+            1274868,
+            65552
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:788"
+        },
+        {
+          "op": "WR32",
+          "register": 1274868,
+          "mask": 16,
+          "data": 0,
+          "result": 65536,
+          "symbol": "t024",
+          "args": [
+            1274868,
+            65536
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:789"
+        },
+        {
+          "op": "WR32",
+          "register": 1253376,
+          "mask": 1,
+          "data": 0,
+          "result": 402718720,
+          "symbol": "t025",
+          "args": [
+            1253376,
+            402718720
+          ],
+          "force": false,
+          "guard": "(R[0x132034] & 0x0000ffff) != 0x00001000",
+          "emission_condition": false,
+          "emitted": false,
+          "source": "fb/ramgk104.c:794"
+        },
+        {
+          "op": "WR32",
+          "register": 1253408,
+          "mask": 1,
+          "data": 0,
+          "result": 537067520,
+          "symbol": "t026",
+          "args": [
+            1253408,
+            537067520
+          ],
+          "force": false,
+          "guard": "(R[0x132034] & 0x0000ffff) != 0x00001000",
+          "emission_condition": "(R[0x132034] & 0x0000ffff) != 0x00001000",
+          "emitted": null,
+          "source": "fb/ramgk104.c:795"
+        },
+        {
+          "op": "WR32",
+          "register": 1274656,
+          "mask": 4294967295,
+          "data": 0,
+          "result": 0,
+          "symbol": "t027",
+          "args": [
+            1274656,
+            0
+          ],
+          "force": false,
+          "guard": "(R[0x132034] & 0x0000ffff) != 0x00001000",
+          "emission_condition": "(R[0x132034] & 0x0000ffff) != 0x00001000",
+          "emitted": null,
+          "source": "fb/ramgk104.c:796"
+        },
+        {
+          "op": "WR32",
+          "register": 1253424,
+          "mask": 4294901760,
+          "data": 268435456,
+          "result": 268435459,
+          "symbol": "t028",
+          "args": [
+            1253424,
+            268435459
+          ],
+          "force": false,
+          "guard": "(R[0x132034] & 0x0000ffff) != 0x00001000",
+          "emission_condition": false,
+          "emitted": false,
+          "source": "fb/ramgk104.c:797"
+        },
+        {
+          "op": "WR32",
+          "register": 1253428,
+          "mask": 65535,
+          "data": 4096,
+          "result": "((R[0x132034] & 0xffff0000) | 0x00001000)",
+          "symbol": "t029",
+          "args": [
+            1253428,
+            "((R[0x132034] & 0xffff0000) | 0x00001000)"
+          ],
+          "force": false,
+          "guard": "(R[0x132034] & 0x0000ffff) != 0x00001000",
+          "emission_condition": "((R[0x132034] & 0x0000ffff) != 0x00001000) && (R[0x132034] != ((R[0x132034] & 0xffff0000) | 0x00001000))",
+          "emitted": null,
+          "source": "fb/ramgk104.c:798"
+        },
+        {
+          "op": "WR32",
+          "register": 1253412,
+          "mask": 4294967295,
+          "data": 138497,
+          "result": 138497,
+          "symbol": "t030",
+          "args": [
+            1253412,
+            138497
+          ],
+          "force": false,
+          "guard": "(R[0x132034] & 0x0000ffff) != 0x00001000",
+          "emission_condition": "(R[0x132034] & 0x0000ffff) != 0x00001000",
+          "emitted": null,
+          "source": "fb/ramgk104.c:799"
+        },
+        {
+          "op": "WR32",
+          "register": 1253416,
+          "mask": 524288,
+          "data": 524288,
+          "result": 4027056128,
+          "symbol": "t031",
+          "args": [
+            1253416,
+            4027056128
+          ],
+          "force": false,
+          "guard": "(R[0x132034] & 0x0000ffff) != 0x00001000",
+          "emission_condition": "(R[0x132034] & 0x0000ffff) != 0x00001000",
+          "emitted": null,
+          "source": "fb/ramgk104.c:800"
+        },
+        {
+          "op": "WR32",
+          "register": 1253408,
+          "mask": 1,
+          "data": 1,
+          "result": "((select((R[0x132034] & 0x0000ffff) != 0x00001000, 0x20030000, 0x20030001) & 0xfffffffe) | 0x00000001)",
+          "symbol": "t032",
+          "args": [
+            1253408,
+            "((select((R[0x132034] & 0x0000ffff) != 0x00001000, 0x20030000, 0x20030001) & 0xfffffffe) | 0x00000001)"
+          ],
+          "force": false,
+          "guard": "(R[0x132034] & 0x0000ffff) != 0x00001000",
+          "emission_condition": "((R[0x132034] & 0x0000ffff) != 0x00001000) && (select((R[0x132034] & 0x0000ffff) != 0x00001000, 0x20030000, 0x20030001) != ((select((R[0x132034] & 0x0000ffff) != 0x00001000, 0x20030000, 0x20030001) & 0xfffffffe) | 0x00000001))",
+          "emitted": null,
+          "source": "fb/ramgk104.c:801"
+        },
+        {
+          "op": "WAIT",
+          "args": [
+            1274768,
+            131072,
+            131072,
+            64000
+          ],
+          "source": "fb/ramgk104.c:802",
+          "guard": "(R[0x132034] & 0x0000ffff) != 0x00001000",
+          "emission_condition": "(R[0x132034] & 0x0000ffff) != 0x00001000",
+          "emitted": null
+        },
+        {
+          "op": "WR32",
+          "register": 1253416,
+          "mask": 524288,
+          "data": 0,
+          "result": "(select((R[0x132034] & 0x0000ffff) != 0x00001000, 0xf0080000, 0xf0000000) & 0xfff7ffff)",
+          "symbol": "t033",
+          "args": [
+            1253416,
+            "(select((R[0x132034] & 0x0000ffff) != 0x00001000, 0xf0080000, 0xf0000000) & 0xfff7ffff)"
+          ],
+          "force": false,
+          "guard": "(R[0x132034] & 0x0000ffff) != 0x00001000",
+          "emission_condition": "((R[0x132034] & 0x0000ffff) != 0x00001000) && (select((R[0x132034] & 0x0000ffff) != 0x00001000, 0xf0080000, 0xf0000000) != (select((R[0x132034] & 0x0000ffff) != 0x00001000, 0xf0080000, 0xf0000000) & 0xfff7ffff))",
+          "emitted": null,
+          "source": "fb/ramgk104.c:803"
+        },
+        {
+          "op": "WR32",
+          "register": 1274868,
+          "mask": 16,
+          "data": 16,
+          "result": 65552,
+          "symbol": "t034",
+          "args": [
+            1274868,
+            65552
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:806"
+        },
+        {
+          "op": "WR32",
+          "register": 1274868,
+          "mask": 3,
+          "data": 1,
+          "result": 65553,
+          "symbol": "t035",
+          "args": [
+            1274868,
+            65553
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:807"
+        },
+        {
+          "op": "WR32",
+          "register": 1274868,
+          "mask": 65536,
+          "data": 0,
+          "result": 17,
+          "symbol": "t036",
+          "args": [
+            1274868,
+            17
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:808"
+        },
+        {
+          "op": "WR32",
+          "register": 1111644,
+          "mask": 4294967295,
+          "data": 0,
+          "result": 0,
+          "symbol": "t037",
+          "args": [
+            1111644,
+            0
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:829"
+        },
+        {
+          "op": "WR32",
+          "register": 1111736,
+          "mask": 4294967295,
+          "data": 16843009,
+          "result": 16843009,
+          "symbol": "t038",
+          "args": [
+            1111736,
+            16843009
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:830"
+        },
+        {
+          "op": "WR32",
+          "register": 1111740,
+          "mask": 4294967295,
+          "data": 16843009,
+          "result": 16843009,
+          "symbol": "t039",
+          "args": [
+            1111740,
+            16843009
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:831"
+        },
+        {
+          "op": "WR32",
+          "register": 1112100,
+          "mask": 65536,
+          "data": 24579,
+          "result": "((t019 & 0xfffeffff) | 0x00006003)",
+          "symbol": "t040",
+          "args": [
+            1112100,
+            "((t019 & 0xfffeffff) | 0x00006003)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t019 != ((t019 & 0xfffeffff) | 0x00006003)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:845"
+        },
+        {
+          "op": "DELAY",
+          "args": [
+            1000
+          ],
+          "source": "fb/ramgk104.c:846",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 1112108,
+          "mask": 1048576,
+          "data": 1048576,
+          "result": "((R[0x10f82c] & 0xffefffff) | 0x00100000)",
+          "symbol": "t041",
+          "args": [
+            1112108,
+            "((R[0x10f82c] & 0xffefffff) | 0x00100000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f82c] != ((R[0x10f82c] & 0xffefffff) | 0x00100000)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:852"
+        },
+        {
+          "op": "WR32",
+          "register": 1110600,
+          "mask": 4294967295,
+          "data": 524288,
+          "result": 524288,
+          "symbol": "t042",
+          "args": [
+            1110600,
+            524288
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f248] != 0x00080000",
+          "emitted": null,
+          "source": "fb/ramgk104.c:855"
+        },
+        {
+          "op": "WR32",
+          "register": 1110672,
+          "mask": 4294967295,
+          "data": 119570965,
+          "result": 119570965,
+          "symbol": "t043",
+          "args": [
+            1110672,
+            119570965
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f290] != 0x07208215",
+          "emitted": null,
+          "source": "fb/ramgk104.c:856"
+        },
+        {
+          "op": "WR32",
+          "register": 1110676,
+          "mask": 4294967295,
+          "data": 812761863,
+          "result": 812761863,
+          "symbol": "t044",
+          "args": [
+            1110676,
+            812761863
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f294] != 0x3071c307",
+          "emitted": null,
+          "source": "fb/ramgk104.c:857"
+        },
+        {
+          "op": "WR32",
+          "register": 1110680,
+          "mask": 4294967295,
+          "data": 1711736081,
+          "result": 1711736081,
+          "symbol": "t045",
+          "args": [
+            1110680,
+            1711736081
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f298] != 0x66070511",
+          "emitted": null,
+          "source": "fb/ramgk104.c:858"
+        },
+        {
+          "op": "WR32",
+          "register": 1110684,
+          "mask": 4294967295,
+          "data": 9871,
+          "result": 9871,
+          "symbol": "t046",
+          "args": [
+            1110684,
+            9871
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f29c] != 0x0000268f",
+          "emitted": null,
+          "source": "fb/ramgk104.c:859"
+        },
+        {
+          "op": "WR32",
+          "register": 1110688,
+          "mask": 4294967295,
+          "data": 1187151977,
+          "result": 1187151977,
+          "symbol": "t047",
+          "args": [
+            1110688,
+            1187151977
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f2a0] != 0x46c28069",
+          "emitted": null,
+          "source": "fb/ramgk104.c:860"
+        },
+        {
+          "op": "WR32",
+          "register": 1110692,
+          "mask": 4294967295,
+          "data": 159744,
+          "result": 159744,
+          "symbol": "t048",
+          "args": [
+            1110692,
+            159744
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f2a4] != 0x00027000",
+          "emitted": null,
+          "source": "fb/ramgk104.c:861"
+        },
+        {
+          "op": "WR32",
+          "register": 1110696,
+          "mask": 4294967295,
+          "data": 16817180,
+          "result": 16817180,
+          "symbol": "t049",
+          "args": [
+            1110696,
+            16817180
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f2a8] != 0x01009c1c",
+          "emitted": null,
+          "source": "fb/ramgk104.c:862"
+        },
+        {
+          "op": "WR32",
+          "register": 1110700,
+          "mask": 4294967295,
+          "data": 3456000,
+          "result": 3456000,
+          "symbol": "t050",
+          "args": [
+            1110700,
+            3456000
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f2ac] != 0x0034bc00",
+          "emitted": null,
+          "source": "fb/ramgk104.c:863"
+        },
+        {
+          "op": "WR32",
+          "register": 1110732,
+          "mask": 4294967295,
+          "data": 14336,
+          "result": 14336,
+          "symbol": "t051",
+          "args": [
+            1110732,
+            14336
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f2cc] != 0x00003800",
+          "emitted": null,
+          "source": "fb/ramgk104.c:864"
+        },
+        {
+          "op": "WR32",
+          "register": 1110760,
+          "mask": 4294967295,
+          "data": 8,
+          "result": 8,
+          "symbol": "t052",
+          "args": [
+            1110760,
+            8
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f2e8] != 0x00000008",
+          "emitted": null,
+          "source": "fb/ramgk104.c:865"
+        },
+        {
+          "op": "WR32",
+          "register": 1112072,
+          "mask": 2012217376,
+          "data": 134217732,
+          "result": "((t008 & 0x880fffdf) | 0x08000004)",
+          "symbol": "t053",
+          "args": [
+            1112072,
+            "((t008 & 0x880fffdf) | 0x08000004)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t008 != ((t008 & 0x880fffdf) | 0x08000004)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:890"
+        },
+        {
+          "op": "WR32",
+          "register": 1112176,
+          "mask": 4294967295,
+          "data": 858993459,
+          "result": 858993459,
+          "symbol": "t054",
+          "args": [
+            1112176,
+            858993459
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:892"
+        },
+        {
+          "op": "WR32",
+          "register": 1110608,
+          "mask": 1008,
+          "data": 64,
+          "result": "((R[0x10f250] & 0xfffffc0f) | 0x00000040)",
+          "symbol": "t055",
+          "args": [
+            1110608,
+            "((R[0x10f250] & 0xfffffc0f) | 0x00000040)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f250] != ((R[0x10f250] & 0xfffffc0f) | 0x00000040)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:894"
+        },
+        {
+          "op": "WR32",
+          "register": 1110604,
+          "mask": 2130706432,
+          "data": 0,
+          "result": "(R[0x10f24c] & 0x80ffffff)",
+          "symbol": "t056",
+          "args": [
+            1110604,
+            "(R[0x10f24c] & 0x80ffffff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f24c] != (R[0x10f24c] & 0x80ffffff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:899"
+        },
+        {
+          "op": "WR32",
+          "register": 1110564,
+          "mask": 2031616,
+          "data": 327680,
+          "result": "((R[0x10f224] & 0xffe0ffff) | 0x00050000)",
+          "symbol": "t057",
+          "args": [
+            1110564,
+            "((R[0x10f224] & 0xffe0ffff) | 0x00050000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f224] != ((R[0x10f224] & 0xffe0ffff) | 0x00050000)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:901"
+        },
+        {
+          "op": "WR32",
+          "register": 1110160,
+          "mask": 4294967295,
+          "data": 1073741951,
+          "result": 1073741951,
+          "symbol": "t058",
+          "args": [
+            1110160,
+            1073741951
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:903"
+        },
+        {
+          "op": "DELAY",
+          "args": [
+            1000
+          ],
+          "source": "fb/ramgk104.c:904",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 1110804,
+          "mask": 4294967295,
+          "data": 1,
+          "result": 1,
+          "symbol": "t059",
+          "args": [
+            1110804,
+            1
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:906"
+        },
+        {
+          "op": "WR32",
+          "register": 1110800,
+          "mask": 4294967295,
+          "data": 1,
+          "result": 1,
+          "symbol": "t060",
+          "args": [
+            1110800,
+            1
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:907"
+        },
+        {
+          "op": "WR32",
+          "register": 1110544,
+          "mask": 4294967295,
+          "data": 2147483648,
+          "result": 2147483648,
+          "symbol": "t061",
+          "args": [
+            1110544,
+            2147483648
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:908"
+        },
+        {
+          "op": "DELAY",
+          "args": [
+            1000
+          ],
+          "source": "fb/ramgk104.c:909",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 1110788,
+          "mask": 1,
+          "data": 0,
+          "result": "(R[0x10f304] & 0xfffffffe)",
+          "symbol": "t062",
+          "args": [
+            1110788,
+            "(R[0x10f304] & 0xfffffffe)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f304] != (R[0x10f304] & 0xfffffffe)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:912"
+        },
+        {
+          "op": "WR32",
+          "register": 1110784,
+          "mask": 256,
+          "data": 256,
+          "result": "((R[0x10f300] & 0xfffffeff) | 0x00000100)",
+          "symbol": "t063",
+          "args": [
+            1110784,
+            "((R[0x10f300] & 0xfffffeff) | 0x00000100)"
+          ],
+          "force": true,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:684"
+        },
+        {
+          "op": "WR32",
+          "register": 1110784,
+          "mask": 256,
+          "data": 0,
+          "result": "(t063 & 0xfffffeff)",
+          "symbol": "t064",
+          "args": [
+            1110784,
+            "(t063 & 0xfffffeff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t063 != (t063 & 0xfffffeff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:685"
+        },
+        {
+          "op": "WR32",
+          "register": 1110816,
+          "mask": 4095,
+          "data": "((R[0x10f320] & 0xffffffc7) | 0x00000008)",
+          "result": "((R[0x10f320] & 0xfffff000) | ((R[0x10f320] & 0xffffffc7) | 0x00000008))",
+          "symbol": "t065",
+          "args": [
+            1110816,
+            "((R[0x10f320] & 0xfffff000) | ((R[0x10f320] & 0xffffffc7) | 0x00000008))"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f320] != ((R[0x10f320] & 0xfffff000) | ((R[0x10f320] & 0xffffffc7) | 0x00000008))",
+          "emitted": null,
+          "source": "fb/ramgk104.c:916"
+        },
+        {
+          "op": "WR32",
+          "register": 1110788,
+          "mask": 4294967295,
+          "data": "(R[0x10f304] & 0xfffffffe)",
+          "result": "(R[0x10f304] & 0xfffffffe)",
+          "symbol": "t066",
+          "args": [
+            1110788,
+            "(R[0x10f304] & 0xfffffffe)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t062 != (R[0x10f304] & 0xfffffffe)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:917"
+        },
+        {
+          "op": "WR32",
+          "register": 1110784,
+          "mask": 4294967295,
+          "data": "(((R[0x10f300] & 0xfffff08b) | 0x00000600) | 0x00000030)",
+          "result": "(((R[0x10f300] & 0xfffff08b) | 0x00000600) | 0x00000030)",
+          "symbol": "t067",
+          "args": [
+            1110784,
+            "(((R[0x10f300] & 0xfffff08b) | 0x00000600) | 0x00000030)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:918"
+        },
+        {
+          "op": "DELAY",
+          "args": [
+            1000
+          ],
+          "source": "fb/ramgk104.c:919",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 1110784,
+          "mask": 256,
+          "data": 256,
+          "result": "((t067 & 0xfffffeff) | 0x00000100)",
+          "symbol": "t068",
+          "args": [
+            1110784,
+            "((t067 & 0xfffffeff) | 0x00000100)"
+          ],
+          "force": true,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:684"
+        },
+        {
+          "op": "WR32",
+          "register": 1110784,
+          "mask": 256,
+          "data": 0,
+          "result": "(t068 & 0xfffffeff)",
+          "symbol": "t069",
+          "args": [
+            1110784,
+            "(t068 & 0xfffffeff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t068 != (t068 & 0xfffffeff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:685"
+        },
+        {
+          "op": "DELAY",
+          "args": [
+            1000
+          ],
+          "source": "fb/ramgk104.c:923",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 1112112,
+          "mask": 16777216,
+          "data": 16777216,
+          "result": "((R[0x10f830] & 0xfeffffff) | 0x01000000)",
+          "symbol": "t070",
+          "args": [
+            1112112,
+            "((R[0x10f830] & 0xfeffffff) | 0x01000000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "R[0x10f830] != ((R[0x10f830] & 0xfeffffff) | 0x01000000)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:935"
+        },
+        {
+          "op": "WR32",
+          "register": 1112112,
+          "mask": 16777216,
+          "data": 0,
+          "result": "(t070 & 0xfeffffff)",
+          "symbol": "t071",
+          "args": [
+            1112112,
+            "(t070 & 0xfeffffff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t070 != (t070 & 0xfeffffff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:936"
+        },
+        {
+          "op": "WR32",
+          "register": 1110528,
+          "mask": 2147483648,
+          "data": 2147483648,
+          "result": "((t016 & 0x7fffffff) | 0x80000000)",
+          "symbol": "t072",
+          "args": [
+            1110528,
+            "((t016 & 0x7fffffff) | 0x80000000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t016 != ((t016 & 0x7fffffff) | 0x80000000)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:939"
+        },
+        {
+          "op": "WR32",
+          "register": 1110808,
+          "mask": 4294967295,
+          "data": 1,
+          "result": 1,
+          "symbol": "t073",
+          "args": [
+            1110808,
+            1
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:940"
+        },
+        {
+          "op": "WR32",
+          "register": 1110528,
+          "mask": 2147483648,
+          "data": 0,
+          "result": "(t072 & 0x7fffffff)",
+          "symbol": "t074",
+          "args": [
+            1110528,
+            "(t072 & 0x7fffffff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t072 != (t072 & 0x7fffffff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:941"
+        },
+        {
+          "op": "DELAY",
+          "args": [
+            1000
+          ],
+          "source": "fb/ramgk104.c:942",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "LEAVE",
+          "args": [],
+          "source": "fb/ramgk104.c:944",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 6471680,
+          "mask": 4294967295,
+          "data": 252645120,
+          "result": 252645120,
+          "symbol": "t075",
+          "args": [
+            6471680,
+            252645120
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:947"
+        },
+        {
+          "op": "WR32",
+          "register": 1110528,
+          "mask": 2048,
+          "data": 2048,
+          "result": "((t074 & 0xfffff7ff) | 0x00000800)",
+          "symbol": "t076",
+          "args": [
+            1110528,
+            "((t074 & 0xfffff7ff) | 0x00000800)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t074 != ((t074 & 0xfffff7ff) | 0x00000800)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:953"
+        }
+      ],
+      "cpu_after": [
+        {
+          "op": "CPU_WR32",
+          "register": 1111144,
+          "mask": 2093567,
+          "data": 4101,
+          "result": "((t001 & 0xffe00e00) | 0x00001005)",
+          "symbol": "t077",
+          "args": [
+            1111144,
+            "((t001 & 0xffe00e00) | 0x00001005)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1179"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111072,
+          "mask": 0,
+          "data": 0,
+          "result": "t002",
+          "symbol": "t078",
+          "args": [
+            1111072,
+            "t002"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1185"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111088,
+          "mask": 0,
+          "data": 0,
+          "result": "t003",
+          "symbol": "t079",
+          "args": [
+            1111088,
+            "t003"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1191"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111040,
+          "mask": 31,
+          "data": 7,
+          "result": "((t004 & 0xffffffe0) | 0x00000007)",
+          "symbol": "t080",
+          "args": [
+            1111040,
+            "((t004 & 0xffffffe0) | 0x00000007)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1197"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111056,
+          "mask": 512,
+          "data": 512,
+          "result": "((t005 & 0xfffffdff) | 0x00000200)",
+          "symbol": "t081",
+          "args": [
+            1111056,
+            "((t005 & 0xfffffdff) | 0x00000200)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1203"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111104,
+          "mask": 16711680,
+          "data": 8912896,
+          "result": "((t006 & 0xff00ffff) | 0x00880000)",
+          "symbol": "t082",
+          "args": [
+            1111104,
+            "((t006 & 0xff00ffff) | 0x00880000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1213"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111108,
+          "mask": 32,
+          "data": 0,
+          "result": "(t007 & 0xffffffdf)",
+          "symbol": "t083",
+          "args": [
+            1111108,
+            "(t007 & 0xffffffdf)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1227"
+        }
+      ],
+      "words": null
+    },
+    {
+      "label": "target",
+      "frequency_khz": 900000,
+      "config": {
+        "rammap_min": 750,
+        "rammap_max": 1200,
+        "rammap_11_08_01": 1,
+        "rammap_11_08_0c": 1,
+        "rammap_11_08_10": 1,
+        "rammap_11_09_01ff": 39,
+        "rammap_11_0a_03fe": 39,
+        "rammap_11_0a_0400": 0,
+        "rammap_11_0a_0800": 0,
+        "rammap_11_0b_01f0": 15,
+        "rammap_11_0b_0200": 0,
+        "rammap_11_0b_0400": 1,
+        "rammap_11_0b_0800": 0,
+        "rammap_11_0d": 248,
+        "rammap_11_0e": 136,
+        "rammap_11_0f": 79,
+        "rammap_11_11_0c": 2,
+        "ramcfg_11_01_01": 0,
+        "ramcfg_11_01_02": 0,
+        "ramcfg_11_01_04": 1,
+        "ramcfg_11_01_08": 0,
+        "ramcfg_11_01_10": 1,
+        "ramcfg_DLLoff": 0,
+        "ramcfg_11_01_40": 0,
+        "ramcfg_11_01_80": 0,
+        "ramcfg_11_02_03": 0,
+        "ramcfg_11_02_04": 0,
+        "ramcfg_11_02_08": 0,
+        "ramcfg_11_02_10": 0,
+        "ramcfg_11_02_40": 1,
+        "ramcfg_11_02_80": 0,
+        "ramcfg_11_03_0f": 1,
+        "ramcfg_11_03_30": 1,
+        "ramcfg_11_03_c0": 1,
+        "ramcfg_11_03_f0": 5,
+        "ramcfg_11_04": 0,
+        "ramcfg_11_06": 0,
+        "ramcfg_11_07_02": 0,
+        "ramcfg_11_07_04": 1,
+        "ramcfg_11_07_08": 0,
+        "ramcfg_11_07_10": 1,
+        "ramcfg_11_07_40": 0,
+        "ramcfg_11_07_80": 0,
+        "ramcfg_11_08_01": 0,
+        "ramcfg_11_08_02": 0,
+        "ramcfg_11_08_04": 1,
+        "ramcfg_11_08_08": 0,
+        "ramcfg_11_08_10": 0,
+        "ramcfg_11_08_20": 0,
+        "ramcfg_11_09": 1,
+        "min_mhz": 750,
+        "max_mhz": 1200,
+        "rammap_offset": 29615,
+        "ramcfg_offset": 29645,
+        "rammap_raw": "ee02b00432a1000055274ef004f8884f000b32",
+        "ramcfg_raw": "0214405100020014040100",
+        "timing_index": 2,
+        "timing_20_2e_03": 1,
+        "timing_20_2e_30": 0,
+        "timing_20_2e_c0": 0,
+        "timing_20_2f_03": 1,
+        "timing_20_2c_003f": 5,
+        "timing_20_2c_1fc0": 0,
+        "timing_20_30_07": 6,
+        "timing_20_30_f8": 7,
+        "timing_20_31_0007": 5,
+        "timing_20_31_0078": 10,
+        "timing_20_31_0780": 11,
+        "timing_20_31_0800": 0,
+        "timing_20_31_7000": 3,
+        "timing_20_31_8000": 0,
+        "timing": [
+          222358829,
+          819152013,
+          1426982673,
+          19134,
+          1187217513,
+          159744,
+          16817180,
+          3456000,
+          14080,
+          8,
+          524288
+        ],
+        "timing_ver": 32,
+        "timing_raw": "2ded400d8d44d33011070e55be4a00006980c346007002001c9c000100bc3400003700000800000000000800050001b53ed535",
+        "timing_offset": 29848
+      },
+      "mode": 1,
+      "coefficients": {
+        "M": 1,
+        "N": 32,
+        "P": 1,
+        "fN": 6827
+      },
+      "calculated_mr": [
+        "((((t069 & 0xfffff08b) | 0x00000e00) | 0x00000010) | 0x00000004)",
+        "(t066 & 0xfffffffe)",
+        "((t065 & 0xffffffc7) | 0x00000020)"
+      ],
+      "cpu_before": [
+        {
+          "op": "CPU_WR32",
+          "register": 1111144,
+          "mask": 2093567,
+          "data": 4101,
+          "result": "((t077 & 0xffe00e00) | 0x00001005)",
+          "symbol": "t084",
+          "args": [
+            1111144,
+            "((t077 & 0xffe00e00) | 0x00001005)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1179"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111072,
+          "mask": 0,
+          "data": 0,
+          "result": "t078",
+          "symbol": "t085",
+          "args": [
+            1111072,
+            "t078"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1185"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111088,
+          "mask": 0,
+          "data": 0,
+          "result": "t079",
+          "symbol": "t086",
+          "args": [
+            1111088,
+            "t079"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1191"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111040,
+          "mask": 31,
+          "data": 7,
+          "result": "((t080 & 0xffffffe0) | 0x00000007)",
+          "symbol": "t087",
+          "args": [
+            1111040,
+            "((t080 & 0xffffffe0) | 0x00000007)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1197"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111056,
+          "mask": 512,
+          "data": 512,
+          "result": "((t081 & 0xfffffdff) | 0x00000200)",
+          "symbol": "t088",
+          "args": [
+            1111056,
+            "((t081 & 0xfffffdff) | 0x00000200)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1203"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111104,
+          "mask": 16711680,
+          "data": 8912896,
+          "result": "((t082 & 0xff00ffff) | 0x00880000)",
+          "symbol": "t089",
+          "args": [
+            1111104,
+            "((t082 & 0xff00ffff) | 0x00880000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1213"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111108,
+          "mask": 32,
+          "data": 0,
+          "result": "(t083 & 0xffffffdf)",
+          "symbol": "t090",
+          "args": [
+            1111108,
+            "(t083 & 0xffffffdf)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1227"
+        }
+      ],
+      "ops": [
+        {
+          "op": "WR32",
+          "register": 1112072,
+          "mask": 1073741824,
+          "data": 1073741824,
+          "result": "((t053 & 0xbfffffff) | 0x40000000)",
+          "symbol": "t091",
+          "args": [
+            1112072,
+            "((t053 & 0xbfffffff) | 0x40000000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t053 != ((t053 & 0xbfffffff) | 0x40000000)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:711"
+        },
+        {
+          "op": "ENTER",
+          "args": [],
+          "source": "fb/ramgk104.c:712",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 6471680,
+          "mask": 4294967295,
+          "data": 252641280,
+          "result": 252641280,
+          "symbol": "t092",
+          "args": [
+            6471680,
+            252641280
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:715"
+        },
+        {
+          "op": "WR32",
+          "register": 1110528,
+          "mask": 2048,
+          "data": 0,
+          "result": "(t076 & 0xfffff7ff)",
+          "symbol": "t093",
+          "args": [
+            1110528,
+            "(t076 & 0xfffff7ff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t076 != (t076 & 0xfffff7ff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:725"
+        },
+        {
+          "op": "WR32",
+          "register": 1112072,
+          "mask": 67108864,
+          "data": 67108864,
+          "result": "((t091 & 0xfbffffff) | 0x04000000)",
+          "symbol": "t094",
+          "args": [
+            1112072,
+            "((t091 & 0xfbffffff) | 0x04000000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t091 != ((t091 & 0xfbffffff) | 0x04000000)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:727"
+        },
+        {
+          "op": "WR32",
+          "register": 1110804,
+          "mask": 4294967295,
+          "data": 1,
+          "result": 1,
+          "symbol": "t095",
+          "args": [
+            1110804,
+            1
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:729"
+        },
+        {
+          "op": "WR32",
+          "register": 1110544,
+          "mask": 4294967295,
+          "data": 0,
+          "result": 0,
+          "symbol": "t096",
+          "args": [
+            1110544,
+            0
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:734"
+        },
+        {
+          "op": "WR32",
+          "register": 1110800,
+          "mask": 4294967295,
+          "data": 1,
+          "result": 1,
+          "symbol": "t097",
+          "args": [
+            1110800,
+            1
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:735"
+        },
+        {
+          "op": "WR32",
+          "register": 1110528,
+          "mask": 2147483648,
+          "data": 2147483648,
+          "result": "((t093 & 0x7fffffff) | 0x80000000)",
+          "symbol": "t098",
+          "args": [
+            1110528,
+            "((t093 & 0x7fffffff) | 0x80000000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t093 != ((t093 & 0x7fffffff) | 0x80000000)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:736"
+        },
+        {
+          "op": "WR32",
+          "register": 1110800,
+          "mask": 4294967295,
+          "data": 1,
+          "result": 1,
+          "symbol": "t099",
+          "args": [
+            1110800,
+            1
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:737"
+        },
+        {
+          "op": "WR32",
+          "register": 1110528,
+          "mask": 2147483648,
+          "data": 0,
+          "result": "(t098 & 0x7fffffff)",
+          "symbol": "t100",
+          "args": [
+            1110528,
+            "(t098 & 0x7fffffff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t098 != (t098 & 0x7fffffff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:738"
+        },
+        {
+          "op": "DELAY",
+          "args": [
+            1000
+          ],
+          "source": "fb/ramgk104.c:739",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 1110160,
+          "mask": 4294967295,
+          "data": 96,
+          "result": 96,
+          "symbol": "t101",
+          "args": [
+            1110160,
+            96
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:741"
+        },
+        {
+          "op": "WR32",
+          "register": 1110160,
+          "mask": 4294967295,
+          "data": 3221225598,
+          "result": 3221225598,
+          "symbol": "t102",
+          "args": [
+            1110160,
+            3221225598
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:742"
+        },
+        {
+          "op": "WR32",
+          "register": 1112100,
+          "mask": 2483644384,
+          "data": 67552,
+          "result": "((t040 & 0x6bf6981f) | 0x000107e0)",
+          "symbol": "t103",
+          "args": [
+            1112100,
+            "((t040 & 0x6bf6981f) | 0x000107e0)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t040 != ((t040 & 0x6bf6981f) | 0x000107e0)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:780"
+        },
+        {
+          "op": "WR32",
+          "register": 1253440,
+          "mask": 65536,
+          "data": 0,
+          "result": "(t020 & 0xfffeffff)",
+          "symbol": "t104",
+          "args": [
+            1253440,
+            "(t020 & 0xfffeffff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t020 != (t020 & 0xfffeffff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:782"
+        },
+        {
+          "op": "WR32",
+          "register": 1274868,
+          "mask": 0,
+          "data": 65552,
+          "result": 65553,
+          "symbol": "t105",
+          "args": [
+            1274868,
+            65553
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:784"
+        },
+        {
+          "op": "WR32",
+          "register": 1274860,
+          "mask": 4294967295,
+          "data": "((t022 & 0xfffcffff) | 0x00010000)",
+          "result": "((t022 & 0xfffcffff) | 0x00010000)",
+          "symbol": "t106",
+          "args": [
+            1274860,
+            "((t022 & 0xfffcffff) | 0x00010000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:787"
+        },
+        {
+          "op": "WR32",
+          "register": 1274868,
+          "mask": 3,
+          "data": 0,
+          "result": 65552,
+          "symbol": "t107",
+          "args": [
+            1274868,
+            65552
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:788"
+        },
+        {
+          "op": "WR32",
+          "register": 1274868,
+          "mask": 16,
+          "data": 0,
+          "result": 65536,
+          "symbol": "t108",
+          "args": [
+            1274868,
+            65536
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:789"
+        },
+        {
+          "op": "WR32",
+          "register": 1253376,
+          "mask": 1,
+          "data": 0,
+          "result": 402718720,
+          "symbol": "t109",
+          "args": [
+            1253376,
+            402718720
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": false,
+          "emitted": false,
+          "source": "fb/ramgk104.c:794"
+        },
+        {
+          "op": "WR32",
+          "register": 1253408,
+          "mask": 1,
+          "data": 0,
+          "result": "(select((R[0x132034] & 0x0000ffff) != 0x00001000, t032, select((R[0x132034] & 0x0000ffff) != 0x00001000, 0x20030000, 0x20030001)) & 0xfffffffe)",
+          "symbol": "t110",
+          "args": [
+            1253408,
+            "(select((R[0x132034] & 0x0000ffff) != 0x00001000, t032, select((R[0x132034] & 0x0000ffff) != 0x00001000, 0x20030000, 0x20030001)) & 0xfffffffe)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "select((R[0x132034] & 0x0000ffff) != 0x00001000, t032, select((R[0x132034] & 0x0000ffff) != 0x00001000, 0x20030000, 0x20030001)) != (select((R[0x132034] & 0x0000ffff) != 0x00001000, t032, select((R[0x132034] & 0x0000ffff) != 0x00001000, 0x20030000, 0x20030001)) & 0xfffffffe)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:795"
+        },
+        {
+          "op": "WR32",
+          "register": 1274656,
+          "mask": 4294967295,
+          "data": 0,
+          "result": 0,
+          "symbol": "t111",
+          "args": [
+            1274656,
+            0
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:796"
+        },
+        {
+          "op": "WR32",
+          "register": 1253424,
+          "mask": 4294901760,
+          "data": 447414272,
+          "result": 447414275,
+          "symbol": "t112",
+          "args": [
+            1253424,
+            447414275
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:797"
+        },
+        {
+          "op": "WR32",
+          "register": 1253428,
+          "mask": 65535,
+          "data": 6827,
+          "result": "((select((R[0x132034] & 0x0000ffff) != 0x00001000, t029, R[0x132034]) & 0xffff0000) | 0x00001aab)",
+          "symbol": "t113",
+          "args": [
+            1253428,
+            "((select((R[0x132034] & 0x0000ffff) != 0x00001000, t029, R[0x132034]) & 0xffff0000) | 0x00001aab)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "select((R[0x132034] & 0x0000ffff) != 0x00001000, t029, R[0x132034]) != ((select((R[0x132034] & 0x0000ffff) != 0x00001000, t029, R[0x132034]) & 0xffff0000) | 0x00001aab)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:798"
+        },
+        {
+          "op": "WR32",
+          "register": 1253412,
+          "mask": 4294967295,
+          "data": 73729,
+          "result": 73729,
+          "symbol": "t114",
+          "args": [
+            1253412,
+            73729
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:799"
+        },
+        {
+          "op": "WR32",
+          "register": 1253416,
+          "mask": 524288,
+          "data": 524288,
+          "result": "((select((R[0x132034] & 0x0000ffff) != 0x00001000, t033, select((R[0x132034] & 0x0000ffff) != 0x00001000, 0xf0080000, 0xf0000000)) & 0xfff7ffff) | 0x00080000)",
+          "symbol": "t115",
+          "args": [
+            1253416,
+            "((select((R[0x132034] & 0x0000ffff) != 0x00001000, t033, select((R[0x132034] & 0x0000ffff) != 0x00001000, 0xf0080000, 0xf0000000)) & 0xfff7ffff) | 0x00080000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "select((R[0x132034] & 0x0000ffff) != 0x00001000, t033, select((R[0x132034] & 0x0000ffff) != 0x00001000, 0xf0080000, 0xf0000000)) != ((select((R[0x132034] & 0x0000ffff) != 0x00001000, t033, select((R[0x132034] & 0x0000ffff) != 0x00001000, 0xf0080000, 0xf0000000)) & 0xfff7ffff) | 0x00080000)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:800"
+        },
+        {
+          "op": "WR32",
+          "register": 1253408,
+          "mask": 1,
+          "data": 1,
+          "result": "((t110 & 0xfffffffe) | 0x00000001)",
+          "symbol": "t116",
+          "args": [
+            1253408,
+            "((t110 & 0xfffffffe) | 0x00000001)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t110 != ((t110 & 0xfffffffe) | 0x00000001)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:801"
+        },
+        {
+          "op": "WAIT",
+          "args": [
+            1274768,
+            131072,
+            131072,
+            64000
+          ],
+          "source": "fb/ramgk104.c:802",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 1253416,
+          "mask": 524288,
+          "data": 0,
+          "result": "(t115 & 0xfff7ffff)",
+          "symbol": "t117",
+          "args": [
+            1253416,
+            "(t115 & 0xfff7ffff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t115 != (t115 & 0xfff7ffff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:803"
+        },
+        {
+          "op": "WR32",
+          "register": 1274868,
+          "mask": 16,
+          "data": 16,
+          "result": 65552,
+          "symbol": "t118",
+          "args": [
+            1274868,
+            65552
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:806"
+        },
+        {
+          "op": "WR32",
+          "register": 1274868,
+          "mask": 3,
+          "data": 1,
+          "result": 65553,
+          "symbol": "t119",
+          "args": [
+            1274868,
+            65553
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:807"
+        },
+        {
+          "op": "WR32",
+          "register": 1274868,
+          "mask": 65536,
+          "data": 0,
+          "result": 17,
+          "symbol": "t120",
+          "args": [
+            1274868,
+            17
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:808"
+        },
+        {
+          "op": "WR32",
+          "register": 1253440,
+          "mask": 65536,
+          "data": 65536,
+          "result": "((t104 & 0xfffeffff) | 0x00010000)",
+          "symbol": "t121",
+          "args": [
+            1253440,
+            "((t104 & 0xfffeffff) | 0x00010000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t104 != ((t104 & 0xfffeffff) | 0x00010000)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:820"
+        },
+        {
+          "op": "DELAY",
+          "args": [
+            20000
+          ],
+          "source": "fb/ramgk104.c:821",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 1111644,
+          "mask": 4294967295,
+          "data": 34,
+          "result": 34,
+          "symbol": "t122",
+          "args": [
+            1111644,
+            34
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:829"
+        },
+        {
+          "op": "WR32",
+          "register": 1111736,
+          "mask": 4294967295,
+          "data": 16843009,
+          "result": 16843009,
+          "symbol": "t123",
+          "args": [
+            1111736,
+            16843009
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:830"
+        },
+        {
+          "op": "WR32",
+          "register": 1111740,
+          "mask": 4294967295,
+          "data": 16843009,
+          "result": 16843009,
+          "symbol": "t124",
+          "args": [
+            1111740,
+            16843009
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:831"
+        },
+        {
+          "op": "WR32",
+          "register": 1112100,
+          "mask": 65536,
+          "data": 50331651,
+          "result": "((t103 & 0xfffeffff) | 0x03000003)",
+          "symbol": "t125",
+          "args": [
+            1112100,
+            "((t103 & 0xfffeffff) | 0x03000003)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t103 != ((t103 & 0xfffeffff) | 0x03000003)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:845"
+        },
+        {
+          "op": "DELAY",
+          "args": [
+            1000
+          ],
+          "source": "fb/ramgk104.c:846",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 1112108,
+          "mask": 1048576,
+          "data": 0,
+          "result": "(t041 & 0xffefffff)",
+          "symbol": "t126",
+          "args": [
+            1112108,
+            "(t041 & 0xffefffff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t041 != (t041 & 0xffefffff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:852"
+        },
+        {
+          "op": "WR32",
+          "register": 1110600,
+          "mask": 4294967295,
+          "data": 524288,
+          "result": 524288,
+          "symbol": "t127",
+          "args": [
+            1110600,
+            524288
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": false,
+          "emitted": false,
+          "source": "fb/ramgk104.c:855"
+        },
+        {
+          "op": "WR32",
+          "register": 1110672,
+          "mask": 4294967295,
+          "data": 222358829,
+          "result": 222358829,
+          "symbol": "t128",
+          "args": [
+            1110672,
+            222358829
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:856"
+        },
+        {
+          "op": "WR32",
+          "register": 1110676,
+          "mask": 4294967295,
+          "data": 819152013,
+          "result": 819152013,
+          "symbol": "t129",
+          "args": [
+            1110676,
+            819152013
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:857"
+        },
+        {
+          "op": "WR32",
+          "register": 1110680,
+          "mask": 4294967295,
+          "data": 1426982673,
+          "result": 1426982673,
+          "symbol": "t130",
+          "args": [
+            1110680,
+            1426982673
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:858"
+        },
+        {
+          "op": "WR32",
+          "register": 1110684,
+          "mask": 4294967295,
+          "data": 19134,
+          "result": 19134,
+          "symbol": "t131",
+          "args": [
+            1110684,
+            19134
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:859"
+        },
+        {
+          "op": "WR32",
+          "register": 1110688,
+          "mask": 4294967295,
+          "data": 1187217513,
+          "result": 1187217513,
+          "symbol": "t132",
+          "args": [
+            1110688,
+            1187217513
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:860"
+        },
+        {
+          "op": "WR32",
+          "register": 1110692,
+          "mask": 4294967295,
+          "data": 159744,
+          "result": 159744,
+          "symbol": "t133",
+          "args": [
+            1110692,
+            159744
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": false,
+          "emitted": false,
+          "source": "fb/ramgk104.c:861"
+        },
+        {
+          "op": "WR32",
+          "register": 1110696,
+          "mask": 4294967295,
+          "data": 16817180,
+          "result": 16817180,
+          "symbol": "t134",
+          "args": [
+            1110696,
+            16817180
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": false,
+          "emitted": false,
+          "source": "fb/ramgk104.c:862"
+        },
+        {
+          "op": "WR32",
+          "register": 1110700,
+          "mask": 4294967295,
+          "data": 3456000,
+          "result": 3456000,
+          "symbol": "t135",
+          "args": [
+            1110700,
+            3456000
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": false,
+          "emitted": false,
+          "source": "fb/ramgk104.c:863"
+        },
+        {
+          "op": "WR32",
+          "register": 1110732,
+          "mask": 4294967295,
+          "data": 14080,
+          "result": 14080,
+          "symbol": "t136",
+          "args": [
+            1110732,
+            14080
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:864"
+        },
+        {
+          "op": "WR32",
+          "register": 1110760,
+          "mask": 4294967295,
+          "data": 8,
+          "result": 8,
+          "symbol": "t137",
+          "args": [
+            1110760,
+            8
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": false,
+          "emitted": false,
+          "source": "fb/ramgk104.c:865"
+        },
+        {
+          "op": "WR32",
+          "register": 1112072,
+          "mask": 1005584420,
+          "data": 377487360,
+          "result": "((t094 & 0xc40fffdb) | 0x16800000)",
+          "symbol": "t138",
+          "args": [
+            1112072,
+            "((t094 & 0xc40fffdb) | 0x16800000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t094 != ((t094 & 0xc40fffdb) | 0x16800000)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:890"
+        },
+        {
+          "op": "WR32",
+          "register": 1112176,
+          "mask": 4294967295,
+          "data": 286331153,
+          "result": 286331153,
+          "symbol": "t139",
+          "args": [
+            1112176,
+            286331153
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:892"
+        },
+        {
+          "op": "WR32",
+          "register": 1110608,
+          "mask": 1008,
+          "data": 80,
+          "result": "((t055 & 0xfffffc0f) | 0x00000050)",
+          "symbol": "t140",
+          "args": [
+            1110608,
+            "((t055 & 0xfffffc0f) | 0x00000050)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t055 != ((t055 & 0xfffffc0f) | 0x00000050)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:894"
+        },
+        {
+          "op": "WR32",
+          "register": 1110604,
+          "mask": 2130706432,
+          "data": 0,
+          "result": "(t056 & 0x80ffffff)",
+          "symbol": "t141",
+          "args": [
+            1110604,
+            "(t056 & 0x80ffffff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t056 != (t056 & 0x80ffffff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:899"
+        },
+        {
+          "op": "WR32",
+          "register": 1110564,
+          "mask": 2031616,
+          "data": 458752,
+          "result": "((t057 & 0xffe0ffff) | 0x00070000)",
+          "symbol": "t142",
+          "args": [
+            1110564,
+            "((t057 & 0xffe0ffff) | 0x00070000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t057 != ((t057 & 0xffe0ffff) | 0x00070000)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:901"
+        },
+        {
+          "op": "WR32",
+          "register": 1110160,
+          "mask": 4294967295,
+          "data": 1073741951,
+          "result": 1073741951,
+          "symbol": "t143",
+          "args": [
+            1110160,
+            1073741951
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:903"
+        },
+        {
+          "op": "DELAY",
+          "args": [
+            1000
+          ],
+          "source": "fb/ramgk104.c:904",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 1110804,
+          "mask": 4294967295,
+          "data": 1,
+          "result": 1,
+          "symbol": "t144",
+          "args": [
+            1110804,
+            1
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:906"
+        },
+        {
+          "op": "WR32",
+          "register": 1110800,
+          "mask": 4294967295,
+          "data": 1,
+          "result": 1,
+          "symbol": "t145",
+          "args": [
+            1110800,
+            1
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:907"
+        },
+        {
+          "op": "WR32",
+          "register": 1110544,
+          "mask": 4294967295,
+          "data": 2147483648,
+          "result": 2147483648,
+          "symbol": "t146",
+          "args": [
+            1110544,
+            2147483648
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:908"
+        },
+        {
+          "op": "DELAY",
+          "args": [
+            1000
+          ],
+          "source": "fb/ramgk104.c:909",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 1110788,
+          "mask": 1,
+          "data": 0,
+          "result": "(t066 & 0xfffffffe)",
+          "symbol": "t147",
+          "args": [
+            1110788,
+            "(t066 & 0xfffffffe)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t066 != (t066 & 0xfffffffe)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:912"
+        },
+        {
+          "op": "WR32",
+          "register": 1110784,
+          "mask": 256,
+          "data": 256,
+          "result": "((t069 & 0xfffffeff) | 0x00000100)",
+          "symbol": "t148",
+          "args": [
+            1110784,
+            "((t069 & 0xfffffeff) | 0x00000100)"
+          ],
+          "force": true,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:684"
+        },
+        {
+          "op": "WR32",
+          "register": 1110784,
+          "mask": 256,
+          "data": 0,
+          "result": "(t148 & 0xfffffeff)",
+          "symbol": "t149",
+          "args": [
+            1110784,
+            "(t148 & 0xfffffeff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t148 != (t148 & 0xfffffeff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:685"
+        },
+        {
+          "op": "WR32",
+          "register": 1110816,
+          "mask": 4095,
+          "data": "((t065 & 0xffffffc7) | 0x00000020)",
+          "result": "((t065 & 0xfffff000) | ((t065 & 0xffffffc7) | 0x00000020))",
+          "symbol": "t150",
+          "args": [
+            1110816,
+            "((t065 & 0xfffff000) | ((t065 & 0xffffffc7) | 0x00000020))"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t065 != ((t065 & 0xfffff000) | ((t065 & 0xffffffc7) | 0x00000020))",
+          "emitted": null,
+          "source": "fb/ramgk104.c:916"
+        },
+        {
+          "op": "WR32",
+          "register": 1110788,
+          "mask": 4294967295,
+          "data": "(t066 & 0xfffffffe)",
+          "result": "(t066 & 0xfffffffe)",
+          "symbol": "t151",
+          "args": [
+            1110788,
+            "(t066 & 0xfffffffe)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t147 != (t066 & 0xfffffffe)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:917"
+        },
+        {
+          "op": "WR32",
+          "register": 1110784,
+          "mask": 4294967295,
+          "data": "((((t069 & 0xfffff08b) | 0x00000e00) | 0x00000010) | 0x00000004)",
+          "result": "((((t069 & 0xfffff08b) | 0x00000e00) | 0x00000010) | 0x00000004)",
+          "symbol": "t152",
+          "args": [
+            1110784,
+            "((((t069 & 0xfffff08b) | 0x00000e00) | 0x00000010) | 0x00000004)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:918"
+        },
+        {
+          "op": "DELAY",
+          "args": [
+            1000
+          ],
+          "source": "fb/ramgk104.c:919",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 1110784,
+          "mask": 256,
+          "data": 256,
+          "result": "((t152 & 0xfffffeff) | 0x00000100)",
+          "symbol": "t153",
+          "args": [
+            1110784,
+            "((t152 & 0xfffffeff) | 0x00000100)"
+          ],
+          "force": true,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:684"
+        },
+        {
+          "op": "WR32",
+          "register": 1110784,
+          "mask": 256,
+          "data": 0,
+          "result": "(t153 & 0xfffffeff)",
+          "symbol": "t154",
+          "args": [
+            1110784,
+            "(t153 & 0xfffffeff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t153 != (t153 & 0xfffffeff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:685"
+        },
+        {
+          "op": "DELAY",
+          "args": [
+            1000
+          ],
+          "source": "fb/ramgk104.c:923",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 1112112,
+          "mask": 16777216,
+          "data": 16777216,
+          "result": "((t071 & 0xfeffffff) | 0x01000000)",
+          "symbol": "t155",
+          "args": [
+            1112112,
+            "((t071 & 0xfeffffff) | 0x01000000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t071 != ((t071 & 0xfeffffff) | 0x01000000)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:935"
+        },
+        {
+          "op": "WR32",
+          "register": 1112112,
+          "mask": 16777216,
+          "data": 0,
+          "result": "(t155 & 0xfeffffff)",
+          "symbol": "t156",
+          "args": [
+            1112112,
+            "(t155 & 0xfeffffff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t155 != (t155 & 0xfeffffff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:936"
+        },
+        {
+          "op": "WR32",
+          "register": 1110528,
+          "mask": 2147483648,
+          "data": 2147483648,
+          "result": "((t100 & 0x7fffffff) | 0x80000000)",
+          "symbol": "t157",
+          "args": [
+            1110528,
+            "((t100 & 0x7fffffff) | 0x80000000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t100 != ((t100 & 0x7fffffff) | 0x80000000)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:939"
+        },
+        {
+          "op": "WR32",
+          "register": 1110808,
+          "mask": 4294967295,
+          "data": 1,
+          "result": 1,
+          "symbol": "t158",
+          "args": [
+            1110808,
+            1
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:940"
+        },
+        {
+          "op": "WR32",
+          "register": 1110528,
+          "mask": 2147483648,
+          "data": 0,
+          "result": "(t157 & 0x7fffffff)",
+          "symbol": "t159",
+          "args": [
+            1110528,
+            "(t157 & 0x7fffffff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t157 != (t157 & 0x7fffffff)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:941"
+        },
+        {
+          "op": "DELAY",
+          "args": [
+            1000
+          ],
+          "source": "fb/ramgk104.c:942",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "LEAVE",
+          "args": [],
+          "source": "fb/ramgk104.c:944",
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true
+        },
+        {
+          "op": "WR32",
+          "register": 6471680,
+          "mask": 4294967295,
+          "data": 252645120,
+          "result": 252645120,
+          "symbol": "t160",
+          "args": [
+            6471680,
+            252645120
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:947"
+        },
+        {
+          "op": "WR32",
+          "register": 1110528,
+          "mask": 2048,
+          "data": 2048,
+          "result": "((t159 & 0xfffff7ff) | 0x00000800)",
+          "symbol": "t161",
+          "args": [
+            1110528,
+            "((t159 & 0xfffff7ff) | 0x00000800)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": "t159 != ((t159 & 0xfffff7ff) | 0x00000800)",
+          "emitted": null,
+          "source": "fb/ramgk104.c:953"
+        }
+      ],
+      "cpu_after": [
+        {
+          "op": "CPU_WR32",
+          "register": 1111144,
+          "mask": 2093567,
+          "data": 159783,
+          "result": "((t084 & 0xffe00e00) | 0x00027027)",
+          "symbol": "t162",
+          "args": [
+            1111144,
+            "((t084 & 0xffe00e00) | 0x00027027)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1179"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111072,
+          "mask": 0,
+          "data": 0,
+          "result": "t085",
+          "symbol": "t163",
+          "args": [
+            1111072,
+            "t085"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1185"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111088,
+          "mask": 0,
+          "data": 0,
+          "result": "t086",
+          "symbol": "t164",
+          "args": [
+            1111088,
+            "t086"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1191"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111040,
+          "mask": 31,
+          "data": 15,
+          "result": "((t087 & 0xffffffe0) | 0x0000000f)",
+          "symbol": "t165",
+          "args": [
+            1111040,
+            "((t087 & 0xffffffe0) | 0x0000000f)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1197"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111056,
+          "mask": 512,
+          "data": 0,
+          "result": "(t088 & 0xfffffdff)",
+          "symbol": "t166",
+          "args": [
+            1111056,
+            "(t088 & 0xfffffdff)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1203"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111104,
+          "mask": 16711680,
+          "data": 16252928,
+          "result": "((t089 & 0xff00ffff) | 0x00f80000)",
+          "symbol": "t167",
+          "args": [
+            1111104,
+            "((t089 & 0xff00ffff) | 0x00f80000)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1213"
+        },
+        {
+          "op": "CPU_WR32",
+          "register": 1111108,
+          "mask": 32,
+          "data": 32,
+          "result": "((t090 & 0xffffffdf) | 0x00000020)",
+          "symbol": "t168",
+          "args": [
+            1111108,
+            "((t090 & 0xffffffdf) | 0x00000020)"
+          ],
+          "force": false,
+          "guard": true,
+          "emission_condition": true,
+          "emitted": true,
+          "source": "fb/ramgk104.c:1227"
+        }
+      ],
+      "words": null
+    }
+  ],
+  "exact": false,
+  "missing_registers": [
+    1110528,
+    1110564,
+    1110600,
+    1110604,
+    1110608,
+    1110672,
+    1110676,
+    1110680,
+    1110684,
+    1110688,
+    1110692,
+    1110696,
+    1110700,
+    1110732,
+    1110760,
+    1110784,
+    1110788,
+    1110816,
+    1111040,
+    1111056,
+    1111072,
+    1111088,
+    1111104,
+    1111108,
+    1111144,
+    1112072,
+    1112100,
+    1112108,
+    1112112,
+    1253428,
+    1253440,
+    1274860
+  ],
+  "words": null,
+  "final_registers": {
+    "0x009200": 2052,
+    "0x009210": 625,
+    "0x009220": 1042,
+    "0x00e800": 16973829,
+    "0x00e804": 84294657,
+    "0x00e808": 4026531856,
+    "0x00e820": 16973829,
+    "0x00e824": 84294657,
+    "0x00e828": 4026531856,
+    "0x101000": 2151705734,
+    "0x10f090": 1073741951,
+    "0x10f200": "t161",
+    "0x10f210": 2147483648,
+    "0x10f224": "t142",
+    "0x10f248": 524288,
+    "0x10f24c": "t141",
+    "0x10f250": "t140",
+    "0x10f290": 222358829,
+    "0x10f294": 819152013,
+    "0x10f298": 1426982673,
+    "0x10f29c": 19134,
+    "0x10f2a0": 1187217513,
+    "0x10f2a4": 159744,
+    "0x10f2a8": 16817180,
+    "0x10f2ac": 3456000,
+    "0x10f2cc": 14080,
+    "0x10f2e8": 8,
+    "0x10f300": "t154",
+    "0x10f304": "t151",
+    "0x10f310": 1,
+    "0x10f314": 1,
+    "0x10f318": 1,
+    "0x10f320": "t150",
+    "0x10f400": "t165",
+    "0x10f410": "t166",
+    "0x10f420": "t163",
+    "0x10f430": "t164",
+    "0x10f440": "t167",
+    "0x10f444": "t168",
+    "0x10f468": "t162",
+    "0x10f65c": 34,
+    "0x10f6b8": 16843009,
+    "0x10f6bc": 16843009,
+    "0x10f808": "t138",
+    "0x10f824": "t125",
+    "0x10f82c": "t126",
+    "0x10f830": "t156",
+    "0x10f870": 286331153,
+    "0x132000": 402718720,
+    "0x132004": 67585,
+    "0x132008": 3758096384,
+    "0x132020": "t116",
+    "0x132024": 73729,
+    "0x132028": "t117",
+    "0x132030": 447414275,
+    "0x132034": "t113",
+    "0x132040": "t121",
+    "0x137000": 65536,
+    "0x137004": 79617,
+    "0x137008": 536870912,
+    "0x137020": 196608,
+    "0x137024": 65793,
+    "0x137028": 0,
+    "0x137040": 65536,
+    "0x137044": 79617,
+    "0x137048": 536870912,
+    "0x1370e0": 65536,
+    "0x1370e4": 84481,
+    "0x1370e8": 538968064,
+    "0x137100": 0,
+    "0x137120": 3,
+    "0x137124": 0,
+    "0x137128": 3,
+    "0x13712c": 0,
+    "0x137130": 0,
+    "0x137134": 0,
+    "0x137138": 0,
+    "0x13713c": 3,
+    "0x137140": 2265973250,
+    "0x137144": 0,
+    "0x137148": 2265973250,
+    "0x13714c": 0,
+    "0x137150": 0,
+    "0x137154": 0,
+    "0x137158": 0,
+    "0x13715c": 2265973250,
+    "0x137160": 3,
+    "0x137164": 0,
+    "0x137168": 536870915,
+    "0x13716c": 0,
+    "0x137170": 0,
+    "0x137174": 0,
+    "0x137178": 0,
+    "0x13717c": 536870915,
+    "0x137180": 3,
+    "0x137184": 0,
+    "0x137188": 0,
+    "0x13718c": 196608,
+    "0x137190": 536870915,
+    "0x137194": 0,
+    "0x137198": 3,
+    "0x13719c": 0,
+    "0x1371d0": 2265973250,
+    "0x1371d4": 0,
+    "0x1371d8": 2265973250,
+    "0x1371dc": 0,
+    "0x1371e0": 0,
+    "0x1371e4": 0,
+    "0x1371e8": 0,
+    "0x1371ec": 2265972736,
+    "0x1371f0": 0,
+    "0x1371f4": 0,
+    "0x1371f8": 65785,
+    "0x1371fc": 8,
+    "0x137200": 0,
+    "0x137204": 0,
+    "0x137208": 0,
+    "0x13720c": 0,
+    "0x137250": 2265972736,
+    "0x137254": 0,
+    "0x137258": 2265972736,
+    "0x13725c": 0,
+    "0x137260": 0,
+    "0x137264": 0,
+    "0x137268": 0,
+    "0x13726c": 2265973250,
+    "0x137270": 2265973507,
+    "0x137274": 0,
+    "0x137278": 0,
+    "0x13727c": 2265979932,
+    "0x137280": 2265974792,
+    "0x137284": 0,
+    "0x137288": 2265974278,
+    "0x13728c": 0,
+    "0x137320": 0,
+    "0x137330": 2265974324,
+    "0x1373ec": "t106",
+    "0x1373f4": 17,
+    "0x62c000": 252645120
+  }
+}

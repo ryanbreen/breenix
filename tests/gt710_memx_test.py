@@ -4,6 +4,9 @@ import importlib.util
 import json
 from pathlib import Path
 import struct
+import re
+import subprocess
+import tempfile
 import sys
 import unittest
 
@@ -91,12 +94,59 @@ class Memx(unittest.TestCase):
             self.assertTrue(any(o.get('register')==0x10f300 and o.get('force') for o in ops))
         self.assertEqual(API.unpack(p['words']),[(o['op'],o['args']) for s in p['phases'] for o in s['ops'] if o['emitted']])
 
+    def test_synthetic_emission_matches_original_mit_c_ddr3_routines(self):
+        source=(ROOT/'tests/fixtures/gt710_ddr3_oracle.c').read_text()
+        decl=source.split('struct nvbios_ramcfg {',1)[1].split('};',1)[0]
+        names=re.findall(r'u32 (\w+);',decl)
+        priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
+        with tempfile.TemporaryDirectory() as tmp:
+            exe=str(Path(tmp)/'oracle')
+            subprocess.run(priority+['cc','-std=c11','-Wall','-Werror',
+                           str(ROOT/'tests/fixtures/gt710_ddr3_oracle.c'),'-o',exe],check=True)
+            for dll_off in (False,True):
+                f=copy.deepcopy(CARD)
+                if dll_off:
+                    # Synthetic target with DLL disabled; current table stays unchanged.
+                    raw=bytearray.fromhex(f['segments']['0x7259'])
+                    raw[0x73cd-0x7259+1]|=0x20
+                    f['segments']['0x7259']=raw.hex()
+                for a in API.generate(f)['missing_registers']:
+                    f['registers'][f'0x{a:06x}']='0x00000000'
+                f['registers']['0x10f304']='0x80000244'
+                f['registers']['0x10f300']='0x10000000'
+                f['registers']['0x10f320']='0x20000000'
+                p=API.generate(f)
+                regs={int(a,0):int(v,0) for a,v in f['registers'].items()}
+                chunks=[f'{len(regs)} {len(p["phases"])} 1']
+                chunks += [f'{a:x} {v:x}' for a,v in regs.items()]
+                expected=[]
+                for phase in p['phases']:
+                    c=phase['config'];co=phase['coefficients']
+                    chunks.append(' '.join(str(co[n]) for n in ('M','N','P','fN'))+' 1')
+                    chunks.append(' '.join(str(c.get(n,0)) for n in names))
+                    chunks.append(' '.join(str(v) for v in c['timing']))
+                    expected.extend((o['op'],o['args']) for o in phase['ops'] if o['emitted'])
+                output=subprocess.check_output([exe],input='\n'.join(chunks)+'\n',text=True)
+                actual=[]
+                for line in output.splitlines():
+                    if line=='PHASE':continue
+                    op,*args=line.split();actual.append((op,[int(a,16) for a in args]))
+                self.assertEqual(actual,expected)
+
     def test_memx_packet_coalescing_and_wait_delay_flush(self):
         ops=[('WR32',[i,i+1]) for i in range(32)]+[('WAIT',[1,2,2,64000]),('DELAY',[1000]),('ENTER',[]),('LEAVE',[])]
         words=API.pack(ops)
         self.assertEqual(words[0],(62<<16)|3)
         self.assertEqual(words[63],(2<<16)|3)
         self.assertEqual(API.unpack(words),ops)
+
+    def test_false_source_branch_does_not_read_missing_registers(self):
+        s=API.Script({})
+        s.guard=False
+        s.mask(0x132034,0xffff,0x1000,'fb/ramgk104.c:798')
+        s.command('WAIT',[0x137390,0x20000,0x20000,64000],'fb/ramgk104.c:802')
+        self.assertEqual(s.missing,set())
+        self.assertEqual(s.ops,[])
 
     def test_ramfuc_mask_data_outside_mask_and_forced_dll_reset(self):
         s=API.Script({0x10:0x100,0x20:0})
