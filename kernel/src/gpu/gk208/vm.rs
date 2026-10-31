@@ -93,7 +93,7 @@ pub trait Io {
 pub struct Space {
     pub instance: Allocation,
     pub directory: Allocation,
-    tables: Vec<(u64, Allocation, u32)>,
+    tables: Vec<(u64, Allocation, u32, Vec<u64>)>,
     total: u64,
     poisoned: bool,
     detached: bool,
@@ -110,7 +110,8 @@ fn clear(io: &mut impl Io, r: Range) -> Result<(), &'static str> {
 impl Space {
     #[cfg(target_os="none")]
     pub(super) fn heap_vector_bytes(&self) -> usize {
-        self.tables.capacity() * core::mem::size_of::<(u64, Allocation, u32)>()
+        self.tables.capacity() * core::mem::size_of::<(u64, Allocation, u32, Vec<u64>)>()
+            + self.tables.iter().map(|(_, _, _, bits)| bits.capacity() * 8).sum::<usize>()
     }
     pub fn new(a: &mut Allocator, io: &mut impl Io) -> Result<Self, &'static str> {
         let stats = a.stats();
@@ -144,10 +145,10 @@ impl Space {
     pub fn allocations(&self) -> impl Iterator<Item = Allocation> + '_ {
         core::iter::once(self.instance)
             .chain(core::iter::once(self.directory))
-            .chain(self.tables.iter().map(|(_, a, _)| *a))
+            .chain(self.tables.iter().map(|(_, a, _, _)| *a))
     }
     pub fn table_ranges(&self) -> impl Iterator<Item = (u64, Range)> + '_ {
-        self.tables.iter().map(|(i, a, _)| (*i, a.range))
+        self.tables.iter().map(|(i, a, _, _)| (*i, a.range))
     }
     pub fn pte_address(&self, va: u64) -> Option<u64> {
         if va >= LIMIT {
@@ -155,8 +156,8 @@ impl Space {
         }
         self.tables
             .iter()
-            .find(|(i, _, _)| *i == va / COVERAGE)
-            .map(|(_, a, _)| a.range.start + ((va % COVERAGE) / PAGE) * 8)
+            .find(|(i, _, _, _)| *i == va / COVERAGE)
+            .map(|(_, a, _, _)| a.range.start + ((va % COVERAGE) / PAGE) * 8)
     }
     fn validate(&self, va: u64, backing: Range) -> Result<(), &'static str> {
         if self.poisoned || self.detached {
@@ -175,16 +176,17 @@ impl Space {
     }
     fn present(
         &self,
-        io: &mut impl Io,
         va: u64,
         size: u64,
         wanted: bool,
     ) -> Result<(), &'static str> {
         for v in (va..va + size).step_by(PAGE as usize) {
-            let present = match self.pte_address(v) {
-                Some(a) => io.read(a)? != 0,
-                None => false,
-            };
+            // This owner is the only PTE writer. Keep presence in CPU memory;
+            // reading a PTE through PRAMIN for each page serializes PCIe reads.
+            // Device-operation errors poison the space before it can be reused.
+            let page = ((v % COVERAGE) / PAGE) as usize;
+            let present = self.tables.iter().find(|(i, _, _, _)| *i == v / COVERAGE)
+                .is_some_and(|(_, _, _, bits)| bits[page / 64] & (1 << (page % 64)) != 0);
             if present != wanted {
                 return Err("VM mapping presence mismatch");
             }
@@ -214,16 +216,20 @@ impl Space {
         backing: Range, flags: Flags, kind: u8,
     ) -> Result<(), &'static str> {
         self.validate(va, backing)?;
-        self.present(io, va, backing.size, false)?;
+        self.present(va, backing.size, false)?;
         let result = (|| {
             let last = (va + backing.size - 1) / COVERAGE;
             for index in va / COVERAGE..=last {
-                if self.tables.iter().any(|(i, _, _)| *i == index) {
+                if self.tables.iter().any(|(i, _, _, _)| *i == index) {
                     continue;
                 }
                 self.tables
                     .try_reserve(1)
                     .map_err(|_| "VM table metadata exhausted")?;
+                let mut presence = Vec::new();
+                let words = (COVERAGE / PAGE / 64) as usize;
+                presence.try_reserve_exact(words).map_err(|_| "VM presence metadata exhausted")?;
+                presence.resize(words, 0);
                 let table = a.allocate(TABLE_BYTES, PAGE, Kind::Engine)?;
                 clear(io, table.range)?;
                 // Empty table must be visible before publishing its SPT PDE.
@@ -232,7 +238,7 @@ impl Space {
                     self.directory.range.start + index * 8,
                     ((table.range.start >> 8) | 1) << 32,
                 )?;
-                self.tables.push((index, table, 0));
+                self.tables.push((index, table, 0, presence));
             }
             self.write_mapping(io, va, backing, flags, kind)?;
             self.account_pages(va, backing.size, true);
@@ -306,7 +312,7 @@ impl Space {
         flags: Flags,
     ) -> Result<(), &'static str> {
         self.validate(va, backing)?;
-        self.present(io, va, backing.size, true)?;
+        self.present(va, backing.size, true)?;
         let result = self
             .write_mapping(io, va, backing, flags, 0)
             .and_then(|()| self.publish(io));
@@ -317,7 +323,7 @@ impl Space {
     }
     pub fn unmap(&mut self, io: &mut impl Io, va: u64, size: u64) -> Result<(), &'static str> {
         self.validate(va, Range { start: 0, size })?;
-        self.present(io, va, size, true)?;
+        self.present(va, size, true)?;
         let result = (|| {
             for v in (va..va + size).step_by(PAGE as usize) {
                 io.write(self.pte_address(v).ok_or("missing VM page table")?, 0)?;
@@ -332,12 +338,17 @@ impl Space {
         result
     }
     fn account_pages(&mut self, va: u64, size: u64, add: bool) {
-        for (index, _, pages) in &mut self.tables {
+        for (index, _, pages, bits) in &mut self.tables {
             let start = va.max(*index * COVERAGE);
             let end = (va + size).min((*index + 1) * COVERAGE);
             if start < end {
                 let count = ((end - start) / PAGE) as u32;
                 if add { *pages += count; } else { *pages -= count; }
+                for v in (start..end).step_by(PAGE as usize) {
+                    let page = ((v % COVERAGE) / PAGE) as usize;
+                    let mask = 1 << (page % 64);
+                    if add { bits[page / 64] |= mask; } else { bits[page / 64] &= !mask; }
+                }
             }
         }
     }
@@ -349,8 +360,8 @@ impl Space {
         if !self.usable() { return Err("VM retained after uncertain device operation"); }
         let mut empty = Vec::new();
         empty.try_reserve_exact(self.tables.len()).map_err(|_| "VM reclamation scratch allocation")?;
-        empty.extend(self.tables.iter().filter(|(_, _, pages)| *pages == 0)
-            .map(|(index, _, _)| *index));
+        empty.extend(self.tables.iter().filter(|(_, _, pages, _)| *pages == 0)
+            .map(|(index, _, _, _)| *index));
         if empty.is_empty() { return Ok(empty); }
         let result = (|| {
             for &index in &empty {
@@ -366,7 +377,7 @@ impl Space {
             return Err(error);
         }
         for &index in &empty {
-            let at = self.tables.iter().position(|(i, _, _)| *i == index).unwrap();
+            let at = self.tables.iter().position(|(i, _, _, _)| *i == index).unwrap();
             a.release(self.tables[at].1)?;
             self.tables.remove(at);
         }
@@ -398,7 +409,7 @@ impl Space {
         if !self.detached {
             return Err("VM still attached");
         }
-        for (_, table, _) in self.tables {
+        for (_, table, _, _) in self.tables {
             a.release(table)?;
         }
         a.release(self.directory)?;
