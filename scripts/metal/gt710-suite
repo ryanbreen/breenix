@@ -2735,6 +2735,69 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns, pro
     return category + ': ' + str(len(CATEGORIES[category])) + ' cases passed'
 
 
+def expand_case_heap(row):
+    # costs_v1 has the fixed order in gpu_abi::heap_trace::NAMES[32..].
+    fields = (
+        'submit_n',
+        'submit_ns',
+        'wait_n',
+        'wait_ns',
+        'read_n',
+        'read_ns',
+        'present_n',
+        'present_ns',
+        'upload_n',
+        'upload_ns',
+        'pack_n',
+        'pack_ns',
+        'span_prep_n',
+        'span_prep_ns',
+        'span_map_n',
+        'span_map_ns',
+        'span_upload_n',
+        'span_upload_ns',
+        'translate_n',
+        'translate_ns',
+        'frame_prep_n',
+        'frame_prep_ns',
+        'evo_n',
+        'evo_ns',
+        'user_copy_n',
+        'user_copy_ns',
+        'read_prepare_n',
+        'read_prepare_ns',
+        'upload_convert_n',
+        'upload_convert_ns',
+        'poison_n',
+        'poison_ns',
+        'transfer_map_n',
+        'transfer_map_ns',
+        'ce_n',
+        'ce_ns',
+        'compare_n',
+        'compare_ns',
+        'copy_out_n',
+        'copy_out_ns',
+        'scratch_prepare_n',
+        'scratch_prepare_ns',
+        'scratch_copy_n',
+        'scratch_copy_ns',
+        'draw_execute_n',
+        'draw_execute_ns',
+        'native_submit_n',
+        'native_submit_ns',
+    )
+    if isinstance(row, dict) and isinstance(row.get('values'), dict) and 'costs_v1' in row['values']:
+        values = row['values'].copy()
+        costs = values.pop('costs_v1')
+        if (not isinstance(costs, list) or len(costs) != len(fields)
+                or any(type(v) is not int or not 0 <= v < 1 << 64 for v in costs)
+                or any(k in values for k in fields)):
+            raise ValueError('invalid compact case costs')
+        values.update(zip(fields, costs))
+        row = dict(row, values=values)
+    return row
+
 def capture_serial(directory):
     # claim-lint:ok: normative bulk framing; tests/gt710_bulk_test.py and tests/gt710_contexts_report_test.py mutate anchors and bodies.
     serial=(Path(directory)/'serial.txt').read_text()
@@ -2757,6 +2820,8 @@ def capture_serial(directory):
         'upload_convert_n', 'upload_convert_ns', 'poison_n', 'poison_ns',
         'transfer_map_n', 'transfer_map_ns', 'ce_n', 'ce_ns',
         'compare_n', 'compare_ns', 'copy_out_n', 'copy_out_ns',
+        'scratch_prepare_n', 'scratch_prepare_ns', 'scratch_copy_n', 'scratch_copy_ns',
+        'draw_execute_n', 'draw_execute_ns', 'native_submit_n', 'native_submit_ns',
     }
     spans = bool(re.search(r'^GT710_SPANS_BULK ', serial, re.M))
     stalls = bool(re.search(r'^GT710_STALL_BULK ', serial, re.M))
@@ -2865,7 +2930,7 @@ def capture_serial(directory):
                 raise ValueError('invalid spans record')
             key=('spans', row['id'])
         elif fields[0]=='GT710_CASE_HEAP':
-            row = json.loads(line.removeprefix('GT710_CASE_HEAP '))
+            row = expand_case_heap(json.loads(line.removeprefix('GT710_CASE_HEAP ')))
             if (not isinstance(row, dict) or set(row) != {'schema','boundary','case','values'}
                     or type(row['schema']) is not int or row['schema'] != 1
                     or type(row['boundary']) is not int or not 0 <= row['boundary'] <= 170
@@ -3100,6 +3165,10 @@ def capture_serial(directory):
                 result.append(json.dumps(row, separators=(',', ':')) + '\n')
             else:
                 result.extend(groups[key])
+        elif key == ('case-heap',):
+            for record in groups[key]:
+                row = expand_case_heap(json.loads(record.removeprefix('GT710_CASE_HEAP ')))
+                result.append('GT710_CASE_HEAP ' + json.dumps(row, separators=(',', ':')) + '\n')
         elif key is not None:
             result.extend(groups[key])
         result.append(line)

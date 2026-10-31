@@ -79,6 +79,7 @@ fn full_coverage_avoids_catalogue_allocation_and_keeps_identical_packets(){
     let mut f=encode::RUNTIME_TRANSLATE(w.as_slice(),&View).unwrap();
     f.compact().unwrap();f.batch_draws(1400).unwrap();
     let bytes=ALLOCATED.load(Ordering::Relaxed);
+    println!("coverage translation allocated {bytes} bytes");
     assert!(bytes<=64*1024,"coverage translation allocated {bytes} bytes; budget 65536");
     assert_eq!(f.chunks.len(),2);
     assert_eq!(f.chunks[0].copy,Some((19,29,[0,0,2560,1600,0,0])));
@@ -110,4 +111,35 @@ fn full_snapshot_is_one_byte_copy_with_three_ordered_releases(){
         let p=packets(&copy::encode_plan(copy::region(s,dst,r,None).unwrap(),0x1000,17,23).unwrap());
         assert!(p.iter().any(|(m,_)|*m==0x70c));assert!(p.iter().any(|(m,_)|*m==0x728));
     }
+}
+
+#[test]
+fn resident_frames_keep_probe_inputs_controls_and_empty_fences() {
+    let compare = |w:&[u32],x:encode::Extras| {
+        let mut a=encode::translate_resident_with_extras(w,&View,x).unwrap();
+        let mut b=encode::translate_with_extras(w,&View,x).unwrap();
+        a.compact().unwrap();b.compact().unwrap();
+        assert_eq!(&a.data[..],&b.data[..]);assert_eq!(a.probe_mask,b.probe_mask);
+        a.batch_draws(1400).unwrap();b.batch_draws(1400).unwrap();
+        a.relocate(0x5_0000_0000).unwrap();b.relocate(0x5_0000_0000).unwrap();
+        assert_eq!(a.chunks.len(),b.chunks.len());
+        for (a,b) in a.chunks.iter().zip(&b.chunks){
+            assert_eq!(a.words,b.words);assert_eq!(a.copy,b.copy);
+            assert_eq!((a.command,a.target,a.source),(b.command,b.target,b.source));
+        }
+    };
+    let mut w=Vec::new();stream::encode::begin(&mut w,1);
+    compare(&w,encode::Extras::default());
+    stream::encode::clear(&mut w,0xff123456);
+    stream::encode::draw(&mut w,pipeline::SOLID,0xff785634,&[[0,0,10,10],[20,20,40,40]]);
+    for routine in 0..25 {
+        w.extend([stream::cmd::PROBE,24,routine,0,0,0,1,1]);
+        let mut inputs=[0;16];if routine==11 {inputs[3]=1;}w.extend(inputs);
+    }
+    compare(&w,encode::Extras::default());
+    compare(&w,encode::Extras {corrupt:Some(1),..encode::Extras::default()});
+    compare(&w,encode::Extras {suppress:Some(1),..encode::Extras::default()});
+    let w=stream();
+    compare(&w,encode::Extras {suppress:Some(1),..encode::Extras::default()});
+    compare(&w,encode::Extras {corrupt:Some(1),..encode::Extras::default()});
 }

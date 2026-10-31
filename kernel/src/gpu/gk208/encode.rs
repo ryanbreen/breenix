@@ -702,37 +702,51 @@ pub fn translate(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, 
     translate_with_extras(w, b, Extras::default())
 }
 pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras) -> Result<Frame, &'static str> {
+    translate_inner(w, b, x, false)
+}
+/// Runtime draws use the catalogue retained by NativeChannel::publish_draw.
+/// Build only their mutable inputs; bootstrap and diagnostic encoders still
+/// produce a complete image through translate().
+pub fn translate_resident(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, &'static str> {
+    translate_resident_with_extras(w, b, Extras::default())
+}
+pub fn translate_resident_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras) -> Result<Frame, &'static str> {
+    translate_inner(w, b, x, true)
+}
+fn translate_inner(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras, resident: bool) -> Result<Frame, &'static str> {
     let Extras { mut corrupt, mut suppress, swap } = x;
     stream::validate(w, b).map_err(|_| "invalid BGL draw stream")?;
     if pipeline_refusal(w).is_some() { return Err("native pipeline not implemented"); }
     let mut f = Frame {
         probe_mask: 0,
         chunks: Vec::new(),
-        data: new_data(DATA_START)?,
-        removed_prefix: 0,
+        data: new_data(if resident { 0 } else { DATA_START })?,
+        removed_prefix: if resident { DATA_START } else { 0 },
     };
-    let segment = shaders::triangle_segment();
-    f.data[CODE..CODE + segment.len()].copy_from_slice(&segment);
-    for pipe in [
-        pipeline::SOLID,
-        pipeline::COPY,
-        pipeline::COPY_SCALED,
-        pipeline::NEAREST_SCALED,
-        pipeline::BOX_FILTER,
-        pipeline::OVER,
-        pipeline::OVER_STRAIGHT,
-        pipeline::COVERAGE,
-        pipeline::BITMAP_TEXT,
-    ] {
-        let (offset, header, code, _) = program(pipe);
-        let fs = CODE + offset;
-        f.data[fs..fs + 80].copy_from_slice(header);
-        f.data[fs + 80..fs + 80 + code.len()].copy_from_slice(code);
-    }
-    for &(offset, header, code, _) in shaders::SHAPE_PROGRAMS {
-        let fs = CODE + offset;
-        f.data[fs..fs + 80].copy_from_slice(header);
-        f.data[fs + 80..fs + 80 + code.len()].copy_from_slice(code);
+    if !resident {
+        let segment = shaders::triangle_segment();
+        f.data[CODE..CODE + segment.len()].copy_from_slice(&segment);
+        for pipe in [
+            pipeline::SOLID,
+            pipeline::COPY,
+            pipeline::COPY_SCALED,
+            pipeline::NEAREST_SCALED,
+            pipeline::BOX_FILTER,
+            pipeline::OVER,
+            pipeline::OVER_STRAIGHT,
+            pipeline::COVERAGE,
+            pipeline::BITMAP_TEXT,
+        ] {
+            let (offset, header, code, _) = program(pipe);
+            let fs = CODE + offset;
+            f.data[fs..fs + 80].copy_from_slice(header);
+            f.data[fs + 80..fs + 80 + code.len()].copy_from_slice(code);
+        }
+        for &(offset, header, code, _) in shaders::SHAPE_PROGRAMS {
+            let fs = CODE + offset;
+            f.data[fs..fs + 80].copy_from_slice(header);
+            f.data[fs + 80..fs + 80 + code.len()].copy_from_slice(code);
+        }
     }
     let tables = span_tables(w)?;
     let mut target = None;
@@ -833,8 +847,10 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
                     let pipe = PROBE_ROUTINE_BASE + routine;
                     let (offset, header, code, _) = program(pipe);
                     let fs = CODE + offset;
-                    f.data[fs..fs + 80].copy_from_slice(header);
-                    f.data[fs + 80..fs + 80 + code.len()].copy_from_slice(code);
+                    if !resident {
+                        f.data[fs..fs + 80].copy_from_slice(header);
+                        f.data[fs + 80..fs + 80 + code.len()].copy_from_slice(code);
+                    }
                     let mut constants = [0; 20];
                     for (i, value) in constants[..16].iter_mut().enumerate() {
                         *value = w.word(at + 8 + i);
@@ -1036,6 +1052,7 @@ pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Ex
             copy: None,
         });
     }
+    if resident && f.data.is_empty() { resize_data(&mut f.data, 1)?; }
     Ok(f)
 }
 /// TIC v2, single-level block-linear 2D. MIT rnndb g80_texture.xml,
@@ -1361,7 +1378,8 @@ fn quads(
         copy: None,
     };
     // IDXFETCH quarantine: 1 MiB, 128 KiB aligned (Mesa screen:1274-1283).
-    c.address(0x17bc, 0, &[3])?;
+    if f.removed_prefix == DATA_START { c.emit(0x17bc, &[0, 0, 3])?; }
+    else { c.address(0x17bc, 0, &[3])?; }
     c.emit(
         0x800,
         &[
@@ -1460,7 +1478,8 @@ fn quads(
     c.emit(0x075c, &[3])?;
     c.emit(0x07fc, &[1])?;
 
-    c.address(0x1608, CODE, &[])?;
+    if f.removed_prefix == DATA_START { c.emit(0x1608, &[0, 0])?; }
+    else { c.address(0x1608, CODE, &[])?; }
     c.emit(0x021c, &[0x1011])?; // invalidate instruction cache, all graphics stages
     for slot in [0, 2, 3, 4] {
         c.emit(0x2000 + slot * 64, &[slot << 4])?;

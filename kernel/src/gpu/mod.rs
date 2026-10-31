@@ -3779,6 +3779,7 @@ impl Drop for NativeScratch {
 }
 #[cfg(target_arch = "x86_64")]
 fn native_blend_scratch(tgid: u64, sizes: [[u32; 2]; 2]) -> Result<NativeScratch, i64> {
+    let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::ScratchPrepare);
     let mut scratch = NativeScratch { targets: [None; 3], holds: Vec::new() };
     for (format, [width, height]) in sizes.into_iter().enumerate() {
         if width == 0 || height == 0 { continue; }
@@ -4458,9 +4459,9 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 let cost_translate = crate::gk208::cost::phase(crate::gk208::cost::Slot::Translate);
                 let translating = crate::gk208::timing::phase(110);
                 let mut frame = if corrupt.is_none() && suppress.is_none() && swap.is_none() {
-                    crate::gk208::encode::translate(&words, &resolved)
+                    crate::gk208::encode::translate_resident(&words, &resolved)
                 } else {
-                    crate::gk208::encode::translate_with_extras(&words, &resolved,
+                    crate::gk208::encode::translate_resident_with_extras(&words, &resolved,
                         crate::gk208::encode::Extras { corrupt, suppress, swap })
                 }.map_err(|e| if e == crate::gk208::encode::NO_MEMORY { ENOMEM } else { EINVAL })?;
                 native_probe_mask = frame.probe_mask;

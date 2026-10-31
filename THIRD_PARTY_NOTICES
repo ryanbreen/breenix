@@ -1682,3 +1682,13 @@ copy.rs follows the byte-count non-pipelined, flushed, multiline launch with
 remapping disabled and PTE-selected L2 behaviour. Both file-local grants were
 read before adaptation; their complete notices remain in copy.rs. No Linux
 memory-management code is imported. CPU staging and band policy are Breenix code.
+
+Native full-layout blend snapshots (milestone 8 PR 8.7)
+-----------------------------------------------------
+NVIDIA open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+classes/dma-copy/cla0b5.h (MIT, Copyright (c) 2019 NVIDIA CORPORATION):
+Consumers: kernel/src/gpu/gk208/copy.rs and tests/gt710_coverage_cost_test.rs.
+Identically tiled whole allocations use byte counts, pitch source/destination,
+REMAP disabled and the existing non-pipelined flush and epoch releases. The
+file-local grant was read; its copyright and full grant remain in both files.
+Runtime input compaction and phase observations are Breenix code.

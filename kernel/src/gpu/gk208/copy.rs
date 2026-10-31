@@ -263,7 +263,22 @@ pub fn region(src: Image, dst: Image, r: [u32; 6], staging: Option<Image>) -> Re
         }
         let t = Surface::Tiled(t,[0,0]);
         Ok(Plan { stale_fence: false, copies:[Some(blit(s,t)),Some(blit(t,d))] })
-    } else { Ok(Plan { stale_fence: false, copies:[Some(blit(s,d)),None] }) }
+    } else {
+        // A whole image with identical tiling is also an identical byte string.
+        // Copy its complete padded allocation with A0B5 PITCH layout, without
+        // tile address generation or component remapping (MIT cla0b5.h).
+        // Partial rectangles and differing layouts still use tiled conversion.
+        let identical = [sx,sy,dx,dy] == [0;4] && w == src.width && h == src.height
+            && src.width == dst.width && src.height == dst.height
+            && src.pitch == dst.pitch && src.block_height == dst.block_height
+            && src.bytes == dst.bytes && src.bytes >= 1 << 20;
+        if identical {
+            let bytes = u32::try_from(src.bytes).map_err(|_| "CE byte copy extent overflow")?;
+            let linear = |i: Image| Linear { address:i.address, bytes:i.bytes, offset:0, stride:bytes };
+            return pitch(linear(src),linear(dst),bytes,1,1);
+        }
+        Ok(Plan { stale_fence: false, copies:[Some(blit(s,d)),None] })
+    }
 }
 fn surface(out: &mut Vec<u32>, s: Surface, source: bool, byte_mode: bool) -> (u64,u32,u32) {
     match s {
@@ -295,7 +310,9 @@ pub fn encode_plan(plan: Plan, semaphore: u64, epoch: u64, sequence: u32) -> Res
         };
         let tiled = matches!(b.src, Surface::Tiled(..)) || matches!(b.dst, Surface::Tiled(..));
         let bulk = u64::from(b.width) * u64::from(b.height) * u64::from(b.bpp) >= 1 << 20;
-        let byte_mode = tiled && bulk && b.bpp == 4 && b.width >= 256 && full_row(b.src) && full_row(b.dst);
+        let byte_mode = bulk && ((tiled && b.bpp == 4 && b.width >= 256
+            && full_row(b.src) && full_row(b.dst))
+            || (!tiled && b.bpp == 1 && b.height == 1));
         let (s,sp,sl) = surface(&mut out,b.src,true,byte_mode);
         let (d,dp,dl) = surface(&mut out,b.dst,false,byte_mode);
         let (width, launch) = if byte_mode {

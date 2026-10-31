@@ -1,6 +1,8 @@
 //! Fixed, address-free diagnostic snapshot for the native suite's case boundaries.
-pub const WORDS: usize = 72;
+pub const WORDS: usize = 80;
 pub const SIZE: usize = WORDS * 8;
+/// Start of the fixed, ordered costs_v1 array in bulk case records.
+pub const COST_START: usize = 32;
 pub const NAMES: [&str; WORDS] = [
     "schema", "heap_free", "heap_high_water", "frame_frontier", "frame_freelist_bytes",
     "frame_ledger_bytes", "cpu_stage_slots", "cpu_stage_metadata_bytes", "cpu_stage_pages",
@@ -20,6 +22,8 @@ pub const NAMES: [&str; WORDS] = [
     "upload_convert_n", "upload_convert_ns", "poison_n", "poison_ns",
     "transfer_map_n", "transfer_map_ns", "ce_n", "ce_ns",
     "compare_n", "compare_ns", "copy_out_n", "copy_out_ns",
+    "scratch_prepare_n", "scratch_prepare_ns", "scratch_copy_n", "scratch_copy_ns",
+    "draw_execute_n", "draw_execute_ns", "native_submit_n", "native_submit_ns",
 ];
 pub fn decode(bytes: &[u8]) -> Option<[u64; WORDS]> {
     if bytes.len() != SIZE { return None; }
