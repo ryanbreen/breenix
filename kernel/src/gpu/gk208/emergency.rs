@@ -315,6 +315,7 @@ pub(crate) struct Queue {
     pub total: u64,
     pub ring: u64,
     pub userd: u64,
+    pub userd_bar: usize,
     pub pbdma: usize,
     pub ce_error: usize,
     pub channel: u32,
@@ -420,11 +421,13 @@ impl Queue {
             return false;
         }
         let next = (put + 1) % 512;
-        if !write(&mut io, self.total, self.userd + 0x8c, next)
-            || !flush(&Registers(self.registers), deadline)
-        {
-            return false;
-        }
+        // USERD's BAR1 alias notifies PFIFO; a PRAMIN store only updates
+        // VRAM. This is the same retained WC aperture as normal publication.
+        // SAFETY: preparation pins this channel's private mapped USERD slot;
+        // the terminal latch excludes its normal producer and no mapping changes.
+        unsafe { ((self.userd_bar + 0x8c) as *mut u32).write_volatile(next); }
+        crate::gpu_cache::drain_wc();
+        let _ = Registers(self.registers).read(0x2254);
         poll(deadline, || {
             let value = unsafe { (self.report as *const u32).read_volatile() };
             let lo = unsafe { ((self.report + 4) as *const u32).read_volatile() };

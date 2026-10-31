@@ -39,21 +39,21 @@ mod gk208 {
    f(&mut crate::Resources{space:Some(crate::Space{directory:crate::Allocation{range:crate::Range{start:0x9000}},valid:true})},&mut (),&mut crate::IoState{values:std::collections::BTreeMap::from([(0x9100,0x555)]),fail:false})
   }
  }
- pub mod emergency {pub struct Queue {pub registers:usize,pub total:u64,pub ring:u64,pub userd:u64,pub pbdma:usize,pub ce_error:usize,pub channel:u32,pub instance:u64,pub report:u64,pub report_va:u64,pub epoch:u64,pub quarantine:u64,pub parking:Vec<u32>}}
+ pub mod emergency {pub struct Queue {pub registers:usize,pub total:u64,pub ring:u64,pub userd:u64,pub userd_bar:usize,pub pbdma:usize,pub ce_error:usize,pub channel:u32,pub instance:u64,pub report:u64,pub report_va:u64,pub epoch:u64,pub quarantine:u64,pub parking:Vec<u32>}}
 }
-const TARGET:u64=0x100000;
+const TARGET:u64=0x100000;const SLOT:u64=(8<<20)-4096;
 struct Context(Space);impl Context {fn space(&self)->&Space{&self.0}}
 struct Pages(u64);impl Pages {fn va(&self,_:usize)->u64{self.0}}
 struct Identity {id:u32,instance:u64,epoch:u64} struct Report {identity:Identity}
 struct Copy {base:usize}
-struct Session {second:Option<Box<Session>>,context:Context,bound:bool,quiesced:bool,copy:Option<Copy>,report:Report,commands:Allocation,userd:u64,pbdma:usize,pages:Pages}
+struct Session {second:Option<Box<Session>>,context:Context,bound:bool,quiesced:bool,copy:Option<Copy>,report:Report,commands:Allocation,userd:u64,pbdma:usize,bar:usize,pages:Pages}
 struct NativeChannel {session:Session,registers:usize,total:u64,terminal_quarantine:u64,parking:Vec<u32>}
 impl NativeChannel {// SNAPSHOT
 }
 fn session(id:u32)->Session {
  let n=u64::from(id);
  Session{second:None,context:Context(Space{directory:Allocation{range:Range{start:0x1000+n*0x1000}},valid:true}),bound:true,quiesced:false,
-  copy:Some(Copy{base:0x104000}),report:Report{identity:Identity{id,instance:0x2000+n*0x1000,epoch:10+n}},commands:Allocation{range:Range{start:0x4000+n*0x1000}},userd:0x6000+n*512,pbdma:2,pages:Pages(0x7000+n*0x1000)}
+  copy:Some(Copy{base:0x104000}),report:Report{identity:Identity{id,instance:0x2000+n*0x1000,epoch:10+n}},commands:Allocation{range:Range{start:0x4000+n*0x1000}},userd:0x6000+n*512,pbdma:2,bar:0x10000000,pages:Pages(0x7000+n*0x1000)}
 }
 #[test] fn reserved_transport_is_disjoint_and_snapshot_refuses_unavailable_state() {
  let mut c=NativeChannel{session:session(0),registers:7,total:1<<30,terminal_quarantine:0x400000,parking:vec![12]};
@@ -63,6 +63,7 @@ fn session(id:u32)->Session {
  let q=c.terminal_queue().unwrap();
  assert_eq!((q.channel,q.instance,q.epoch),(1,0x3000,11));
  assert_eq!((q.ring,q.userd,q.report),(0x5000,0x6200,0x8200));
+ assert_eq!(q.userd_bar,0x10000000+SLOT as usize+512);
  assert_eq!((q.registers,q.total,q.pbdma,q.ce_error,q.report_va,q.quarantine,q.parking),(7,1<<30,2,0x104908,TARGET+512,0x400000,vec![12]));
  assert_eq!(c.session.commands.range.start,0x4000);
  WRITES.with(|w|assert_eq!(*w.borrow(),vec![0x2000]));

@@ -1506,7 +1506,9 @@ mod native {
             parking.extend_from_slice(&self.parking);
             Ok(crate::gk208::emergency::Queue {
                 registers: self.registers, total: self.total,
-                ring: s.commands.range.start, userd: s.userd, pbdma: s.pbdma,
+                ring: s.commands.range.start, userd: s.userd,
+                userd_bar: s.bar + SLOT as usize + s.report.identity.id as usize * 512,
+                pbdma: s.pbdma,
                 ce_error: self.session.copy.as_ref().ok_or("terminal CE absent")?.base + 0x908,
                 channel: s.report.identity.id, instance: s.report.identity.instance,
                 report: s.pages.va(0) + 512, report_va: TARGET + 512,

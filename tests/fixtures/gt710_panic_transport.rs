@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::BTreeMap};
 thread_local! {static DEVICE:RefCell<Device>=RefCell::new(Device::default());}
 #[derive(Default)]
 struct Device { registers:BTreeMap<usize,u32>, vram:BTreeMap<u64,u32>, ticks:u64,
-    release:u64, nonce:u32, epoch:u64, withheld:bool, withheld_flip:bool }
+    release:u64, nonce:u32, epoch:u64, withheld:bool, withheld_flip:bool, userd_alias:Vec<u32> }
 mod arch {pub fn counter()->u64 {super::DEVICE.with(|d|{let mut d=d.borrow_mut();d.ticks+=1;d.ticks})}}
 struct Registers(usize);
 impl Registers {
@@ -42,20 +42,32 @@ mod memory {
         }
     }
 }
+mod gpu_cache {
+ pub fn drain_wc() { crate::DEVICE.with(|d| {
+  let mut d=d.borrow_mut();let put=d.userd_alias[0x8c/4];
+  d.vram.insert(0x10008c,put);d.vram.insert(0x100088,put);
+  if !d.withheld {unsafe {
+   (d.release as *mut u32).write_volatile(d.nonce);
+   ((d.release+4) as *mut u32).write_volatile(d.epoch as u32);
+   ((d.release+8) as *mut u32).write_volatile((d.epoch>>32) as u32);
+  }}
+ }); }
+}
 // TRANSPORT
 fn setup(report:&mut [u32;4])->Queue {
-    let q=Queue{registers:0,total:1<<24,ring:0x200000,userd:0x100000,pbdma:0,ce_error:0x104908,
+    let mut alias=vec![0u32;128];
+    let q=Queue{registers:0,total:1<<24,ring:0x200000,userd:0x100000,pbdma:0,ce_error:0x104908,userd_bar:alias.as_mut_ptr() as usize,
         channel:1,instance:0x400000,report:report.as_mut_ptr() as u64,report_va:0x1000,
         epoch:0x123456789,quarantine:0x800000,parking:vec![]};
     // Snapshot fields used by the preparation-side encoder, excluded above.
     assert_eq!((q.report_va,q.quarantine,q.parking.len()),(0x1000,0x800000,0));
-    DEVICE.with(|d|{let mut d=d.borrow_mut();*d=Device::default();
+    DEVICE.with(|d|{let mut d=d.borrow_mut();*d=Device::default();d.userd_alias=alias;
         d.registers.insert(0x800008,0x80000400);d.release=q.report;d.nonce=7;d.epoch=q.epoch;});q
 }
 #[test]
 fn complete_and_wrapping_receipts() {
     let mut report=[0;4];let q=setup(&mut report);
-    DEVICE.with(|d|{let mut d=d.borrow_mut();d.vram.insert(q.userd+0x88,511);d.vram.insert(q.userd+0x8c,511);});
+    DEVICE.with(|d|{let mut d=d.borrow_mut();d.vram.insert(q.userd+0x88,511);d.vram.insert(q.userd+0x8c,511);d.userd_alias[0x8c/4]=511;});
     assert!(q.drain(100));
     assert!(q.exec(&q.packet(0x300000,25,7).unwrap(),100));
     assert_eq!(report,[7,q.epoch as u32,(q.epoch>>32) as u32,0]);
