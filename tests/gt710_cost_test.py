@@ -12,7 +12,7 @@ fn main(){{
  assert_eq!(r.snapshot(),[0;cost::WORDS]);assert!(r.enabled());
  r.record(Slot::Submit,100,170);r.record(Slot::Submit,200,220);r.record(Slot::Wait,300,340);
  let a=r.snapshot();assert_eq!(&a[..4],&[2,90,1,40]);assert!(a[4..].iter().all(|&v|v==0));
- r.record(Slot::Evo,500,510);let b=r.snapshot();assert_eq!(&b[22..],&[1,10]);assert_eq!(&a[..4],&b[..4]);
+ r.record(Slot::Evo,500,510);let b=r.snapshot();assert_eq!(&b[22..24],&[1,10]);assert!(b[24..].iter().all(|&v|v==0));assert_eq!(&a[..4],&b[..4]);
  for (op,slot) in [(7,Slot::Submit),(8,Slot::Wait),(9,Slot::Read),(12,Slot::Present),(6,Slot::Upload)]{{assert_eq!(cost::slot_for_op(op),Some(slot));}}
  assert_eq!(cost::slot_for_op(0),None);assert_eq!(cost::slot_for_op(u64::MAX),None);
  assert_eq!(gpu_abi::heap_trace::WORDS,32+cost::WORDS);
