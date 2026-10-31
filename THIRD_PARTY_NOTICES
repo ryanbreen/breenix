@@ -1936,3 +1936,5 @@ plan and lock-sequence checks. Sources remain nouveau Linux v6.8 commit
 - nvkm/subdev/bios/pll.c:352-365, Copyright 2005-2006 Erik Waling,
   Copyright 2006 Stephane Marchesin, Copyright 2007-2009 Stuart Bennett, MIT.
 The full original grants and notices remain in c2.rs and the C oracle.
+C3-1 r2 uses gk104.c:397-406 for the lock-test window and post-sync
+validation in c2/runtime.rs, whose header also retains the full MIT grant.

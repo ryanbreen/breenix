@@ -1,3 +1,28 @@
+/*
+ * Copyright 2010 Red Hat Inc.
+ * Copyright 2013 Red Hat Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ * claim-lint:ok: MIT license condition; sources in THIRD_PARTY_NOTICES.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * Authors: Ben Skeggs
+ */
 //! Probe-only descriptor and serialization for the C2 GPC controller.
 use super::*;
 use crate::gk208::{Registers,clock};
@@ -29,9 +54,16 @@ impl Access for Io {
     fn wait(&mut self,a:u32,mask:u32,value:u32)->Result<(),&'static str> {
         let start=crate::time::get_monotonic_time_ns();
         loop {
-            if self.read(a)&mask==value {return Ok(());}
+            let raw=self.read(a);
             let now=crate::time::get_monotonic_time_ns();
-            if now.0.saturating_mul(1_000_000_000)+now.1-(start.0*1_000_000_000+start.1)>=2_000_000_000 {
+            let elapsed=now.0.saturating_mul(1_000_000_000)+now.1-(start.0*1_000_000_000+start.1);
+            let matched=raw&mask==value;
+            if a==0x137000 && mask==0x20000 && (matched || elapsed>=2_000_000_000) {
+                crate::serial_println!("GT710_PLL_LOCK {{\"locked\":{},\"elapsed_us\":{},\"control\":{}}}",matched,elapsed/1000,raw);
+            }
+            if matched {return Ok(());}
+            if elapsed>=2_000_000_000 {
+                if a==0x137000 && mask==0x20000 {return Err("GPC PLL lock timeout");}
                 return Err("GPC switch/lock timeout");
             }
             core::hint::spin_loop();
@@ -126,7 +158,15 @@ fn set(bytes:&[u8])->Result<(),&'static str> {
         if ctrl&0x80000000!=0 && ctrl&0x3f3f!=0 {return Err("POST final divider not unity");}
         // The caller's final GPU WAIT precedes the write. Serialize with the
         // native CE/GR owner so no other publication crosses the source switch.
-        crate::gk208::ce::with_resources(|_,_,_| program(&mut io,&p))?;
+        crate::gk208::ce::with_resources(|_,_,_| {
+            let result=program(&mut io,&p);
+            if result==Err("GPC PLL lock timeout") {
+                let restored=observe::restore(&mut io,&s.snapshot);
+                crate::serial_println!("GT710_CLOCK_RESTORE_AFTER_TIMEOUT status={}",restored.as_ref().err().copied().unwrap_or("ok"));
+                restored?;
+            }
+            result
+        })?;
         Ok(())
     })();
     // Register-derived readback is retained as evidence, separate from the counter.
@@ -138,8 +178,10 @@ fn set(bytes:&[u8])->Result<(),&'static str> {
         if if c3 {actual.abs_diff(requested)>requested/100}else{actual!=requested} {
             return Err("readback-mismatch");
         }
-        if c3 && (1..=3).contains(&phase) && (io.read(0x137100)&1!=1 || io.read(0x137000)&0x20015!=0x20015) {
-            return Err("GPC PLL lost lock or source");
+        // MIT gk104.c:397-406 tests bit17 only with bit4 clear. Once sync is
+        // enabled, retain source/enable/sync checks without re-testing bit17.
+        if c3 && (1..=3).contains(&phase) && (io.read(0x137100)&1!=1 || io.read(0x137000)&0x15!=0x15) {
+            return Err("GPC PLL control or source mismatch");
         }
         Ok(())
     });
