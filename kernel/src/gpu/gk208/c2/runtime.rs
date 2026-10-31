@@ -15,6 +15,8 @@ pub(in crate::gk208) fn initialize(regs:&Registers,rom:&[u8])->Result<(),&'stati
     let mut io=Io(Registers(regs.0));
     let counters=observe::counter_snapshot(&mut io);
     io.record("post-inventory",&counters);
+    let pmc=io.read(0x200);
+    io.record("pm-post-inventory",&[(0x200,pmc)]);
     *STATE.lock()=Some(State {base:regs.0,post,limits:l,failed:false,snapshot,phase:0});Ok(())
 }
 struct Io(Registers);
@@ -39,7 +41,8 @@ impl Access for Io {
 impl observe::CounterAccess for Io {
     fn record(&mut self,stage:&str,raw:&[(u32,u32)]) {
         let raw:Vec<_>=raw.iter().map(|(a,v)|format!("[{a},{v}]")).collect();
-        crate::serial_println!("GT710_COUNTER {{\"stage\":\"{}\",\"raw\":[{}]}}",stage,raw.join(","));
+        let prefix=if stage.starts_with("pm-") {"GT710_PMC"}else{"GT710_COUNTER"};
+        crate::serial_println!("{} {{\"stage\":\"{}\",\"raw\":[{}]}}",prefix,stage,raw.join(","));
     }
     fn monotonic_ns(&mut self)->u64 {
         let (seconds,nanos)=crate::time::get_monotonic_time_ns();
@@ -61,8 +64,17 @@ fn snapshot_records(s:&State,io:&mut Io,phase:&str)->Result<(),&'static str> {
     Ok(())
 }
 fn measure_record(io:&mut Io,phase:&str)->Result<(),&'static str> {
-    let m=crate::gk208::ce::with_resources(|_,_,_|observe::measure(io))?;
-    crate::serial_println!("GT710_CLOCK_MEASURED {{\"phase\":\"{}\",\"domain\":\"gpc\",\"khz\":{},\"method\":\"gpc0-pre-counter-ptimer\",\"cycles\":{},\"interval_ns\":{},\"ptimer_ns\":{},\"bracket_ns\":{},\"counter_restored\":true}}",
+    // Keep ownership failures fatal, but a failed counter never stops C2d.
+    // Cleanup and its readbacks are emitted by measure on either result.
+    let measured=crate::gk208::ce::with_resources(|_,_,_|Ok(observe::measure(io)))?;
+    let m=match measured {
+        Ok(m)=>m,
+        Err(reason)=>{
+            crate::serial_println!("GT710_CLOCK_MEASURED {{\"phase\":\"{}\",\"domain\":\"gpc\",\"status\":\"unmeasured\",\"khz\":null,\"reason\":\"{}\"}}",phase,reason);
+            return Ok(());
+        }
+    };
+    crate::serial_println!("GT710_CLOCK_MEASURED {{\"phase\":\"{}\",\"domain\":\"gpc\",\"status\":\"ok\",\"khz\":{},\"method\":\"gpc0-pre-counter-ptimer\",\"cycles\":{},\"interval_ns\":{},\"ptimer_ns\":{},\"bracket_ns\":{},\"counter_restored\":true}}",
         phase,m.khz,m.cycles,m.ptimer_ns,m.ptimer_ns,m.bracket_ns);
     Ok(())
 }
@@ -107,7 +119,7 @@ fn set(bytes:&[u8])->Result<(),&'static str> {
     let readback=sample.gpc_khz;
     let step=clock::gpc_pll_step(|a|io.read(a)).unwrap_or(1);
     let result=result.and_then(|()| {
-        if readback?.abs_diff(requested)>step {Err("readback-mismatch")}else{Ok(())}
+        if readback?!=requested {Err("readback-mismatch")}else{Ok(())}
     });
     let name=match phase {0=>"post",1=>"low",_=>"restored"};
     // Retain the actual register differences even when restoration refuses.

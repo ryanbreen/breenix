@@ -1829,3 +1829,22 @@ C2c rechecks the same MIT `nva/nvatiming.c`, `rnndb/gf100_pcounter.xml`,
 envytools revision above. `c2/observe.rs` uses CTRL.MODE=HALTED while saving
 and reinstating the PRE sampler, with halted and resumed restore readbacks.
 No additional source or license is introduced.
+
+
+### C2d PM master enable (MIT)
+
+`kernel/src/gpu/gk208/c2/observe.rs` adapts the PM-only PMC mask and posted
+readback from nouveau Linux v6.8, commit
+`e8f897f4afef0031fe618a8e94127a0934896aba`:
+
+- `nvkm/engine/pm/gf100.c:175-180`, Copyright 2013 Red Hat Inc. (MIT).
+- `nvkm/subdev/mc/nv04.c:39-46`, Copyright 2012 Red Hat Inc. (MIT).
+
+The full original notices and permission text are in that file's header.
+The individually checked MIT source chain also includes
+`nvkm/engine/pm/gk104.c` (Copyright 2013 Red Hat Inc.),
+`nvkm/subdev/mc/gk20a.c`, `nvkm/subdev/mc/nv50.c`, and
+`nvkm/engine/device/base.c` (Copyright 2012 Red Hat Inc.). It establishes
+chip dispatch and MC enable behavior; no Linux integration code is imported.
+`docs/gui/gt710-c2.md` records the exact lines and the absence of a separate
+PM clock-gating write in the inspected path.

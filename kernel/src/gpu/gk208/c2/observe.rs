@@ -69,7 +69,7 @@
  * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-//! C2c: inactive-path snapshots, exact POST restore, and GPC counter/PTIMER.
+//! C2d: inactive-path snapshots, exact POST restore, and GPC counter/PTIMER.
 //! MIT sources and exact revisions are listed in docs/gui/gt710-c2.md.
 use super::Access;
 use alloc::vec::Vec;
@@ -185,6 +185,39 @@ fn point(io: &mut impl Access) -> Result<(u64, u32, u64), &'static str> {
     Ok((a + span / 2, cycles, span))
 }
 pub fn measure(io: &mut impl CounterAccess) -> Result<Measurement, &'static str> {
+    // MIT nouveau pm/gf100.c:175-180 identifies the PM master bit.
+    // mc/nv04.c:40-45 enables a masked unit, followed by a posted read.
+    // GK208 mc/gk20a.c uses that device callback; no separate PM clock-gating
+    // register is touched by this PM/MC path. Preserve every unrelated unit.
+    let pmc = io.read(0x200);
+    io.record("pm-before", &[(0x200, pmc)]);
+    let before = counter_snapshot(io);
+    io.record("before-pm-enable", &before);
+    io.write(0x200, pmc | 0x10000000);
+    let enabled = io.read(0x200);
+    io.record("pm-enabled", &[(0x200, enabled)]);
+    let after = counter_snapshot(io);
+    io.record("after-pm-enable", &after);
+    let result = if enabled != pmc | 0x10000000 {
+        Err("PM enable readback mismatch")
+    } else if after[..3].iter().any(|p| p.1 & 0xffff0000 == 0xbadf0000) {
+        // These are PRI error words, not a saved owner/mode/accumulator.
+        // Do not attempt to restore them by writing them into the counter.
+        Err("GPC counter has no PRI response after PM enable")
+    } else {
+        measure_enabled(io)
+    };
+    // Counter cleanup completes inside measure_enabled before PM is restored.
+    io.write(0x200, pmc);
+    let restored = io.read(0x200);
+    io.record("pm-restored", &[(0x200, restored)]);
+    let counters = counter_snapshot(io);
+    io.record("after-pm-restore", &counters);
+    if restored != pmc { return Err("PM restore readback mismatch"); }
+    result
+}
+
+fn measure_enabled(io: &mut impl CounterAccess) -> Result<Measurement, &'static str> {
     // envytools nvatiming.c:171-242, GPC[0] PRE with constant-true logic.
     // rnndb gf100_pcounter.xml: PRE_OP, CTRL and CTR_PRE_NEXT at 0x180000.
     // No signal routing, clocks or PTIMER configuration is written.
@@ -199,6 +232,9 @@ pub fn measure(io: &mut impl CounterAccess) -> Result<Measurement, &'static str>
     let configured = counter_snapshot(io);
     io.record("configured", &configured);
     let result = (|| {
+        if configured[..3].iter().any(|p| p.1 & 0xffff0000 == 0xbadf0000) {
+            return Err("GPC counter lost PRI response during setup");
+        }
         let start = io.monotonic_ns();
         let (t0, c0, b0) = point(io)?;
         loop {
