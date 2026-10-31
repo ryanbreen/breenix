@@ -1,5 +1,7 @@
 # Advertised 75 Hz raster (24.7-raster-75hz)
 
+**Historical:** G23 was withdrawn after the 75 Hz raster caused display underflow. G24 restores the preferred detailed timing (108 MHz); the selection and validation below describe the earlier, superseded state.
+
 This unit continues `metal-gt710/m7-8-7` after coverage-blend. The operator
 explicitly authorized the unit without waiting for a coordinator ruling.
 “G23” below refers to the raster policy in the supplied unit brief, not an

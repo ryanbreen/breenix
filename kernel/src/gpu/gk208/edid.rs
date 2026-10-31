@@ -158,11 +158,7 @@ const DMT_1280_1024_75: Timing = Timing {
     vsync_start: 1025, vsync_end: 1028, vtotal: 1066, flags: 30,
 };
 
-/// 24.7-raster-75hz (G23 in the unit brief), authorized directly by the
-/// operator: select the advertised DMT at the preferred size; otherwise
-/// retain the preferred DTD. Inventory order and G20 viewports are unchanged.
+/// Select the sink's preferred detailed timing for the physical raster (G3/G20/G24).
 pub fn native_raster(modes: &[Timing]) -> Result<&Timing, &'static str> {
-    let preferred = modes.first().ok_or("no preferred sink timing")?;
-    Ok(modes.iter().find(|t| t.width == preferred.width && t.height == preferred.height
-        && **t == DMT_1280_1024_75).unwrap_or(preferred))
+    modes.first().ok_or("no preferred sink timing")
 }

@@ -290,7 +290,7 @@
       "cases": [
         {
           "id": "display",
-          "title": "Runtime EVO snapshots prove both G20 viewports, the selected DDC raster, latched surfaces and zero firmware writes"
+          "title": "Runtime EVO snapshots prove both G20 viewports, the DDC preferred raster, latched surfaces and zero firmware writes"
         },
         {
           "id": "panic",

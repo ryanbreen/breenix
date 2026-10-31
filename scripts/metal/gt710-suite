@@ -139,7 +139,7 @@ CATEGORIES = {
     'resources': [('row', 'Production CAPS admits backend 6 with executable origins 3-10, native classes and live scanouts'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 8.2 step passing, reclaimed memory and its own time within 900 s'), ('console', 'A completed production console boot passes 88/88 within 330 s of handoff')],
     'alpha': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 77-case 8.3 step passing, reclaimed memory and its own time within 900 s')],
     'shapes': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 90-case 8.4 step passing, reclaimed memory and its own time within 900 s')],
-    'presentation': [('display', 'Runtime EVO snapshots prove both G20 viewports, the selected DDC raster, latched surfaces and zero firmware writes'), ('panic', 'A separate terminal PANIC capture proves bound diagnostics under both poisons with firmware_writes=0 and no LOCKUP'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 161-case 8.6 selection passing, reclaimed memory and its own time within 900 s')],
+    'presentation': [('display', 'Runtime EVO snapshots prove both G20 viewports, the DDC preferred raster, latched surfaces and zero firmware writes'), ('panic', 'A separate terminal PANIC capture proves bound diagnostics under both poisons with firmware_writes=0 and no LOCKUP'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 161-case 8.6 selection passing, reclaimed memory and its own time within 900 s')],
     'isolation': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 140-case 8.5 selection passing, reclaimed memory and its own time within 900 s')],
     'core': [('row', 'CAPS bytes match the native backend-6 row and the created board classes'), ('dispatch', 'Native draws and copies complete; copy controls reject withheld release, stale epoch and masked 3D admission and accept their clean successors'), ('producer', 'A named production GPU-suite boot reports 170 manifest-ordered unprobed-capability admission refusals without skips and reports its own time')],
     'device': (
@@ -223,18 +223,8 @@ def edid_timings(raw):
 
 
 def native_raster(board):
-    """24.7-raster-75hz / G23: advertised 75 Hz at the preferred size, else DTD.
-
-    The operator authorized this policy directly without a coordinator ruling.
-    G20/G21 logical surfaces and receipt/allocation properties stay unchanged.
-    """
-    preferred = board['modes'][0]
-    fast = dict(width=1280,height=1024,clock_khz=135000,hsync_start=1296,
-                hsync_end=1440,htotal=1688,vsync_start=1025,vsync_end=1028,vtotal=1066,flags=30)
-    if ((preferred['width'],preferred['height']) == (fast['width'],fast['height'])
-            and fast in board['modes']):
-        return fast
-    return preferred
+    """The physical raster uses the live EDID's preferred detailed timing (G24)."""
+    return board['modes'][0]
 
 
 def board_inventory(serial):
@@ -1236,7 +1226,7 @@ def native_mode(serial):
         surface = memory['objects'][0]['start']
         need(e['schema']==1 and e['phase']=='native' and e['bdf']==board['bdf']
              and e['head']==board['head'] and e['sor']==board['sor'] and e['timing']==t,
-             'native timing differs from the selected live EDID raster')
+             'native timing differs from the live preferred EDID route')
         need(e['surface']==surface and e['pitch']==memory['pitch']
              and e['instance']==memory['objects'][4]['start'] and e['push']==memory['objects'][2]['start'],
              'native display uses foreign storage')
@@ -1287,7 +1277,7 @@ def native_mode(serial):
         numerator=e['pll_reference']*(n*8192+4096+fraction)
         denominator=m*p*8192
         need(abs(numerator-t['clock_khz']*denominator)*1000000<=t['clock_khz']*denominator*250,
-             'native pixel PLL frequency differs from selected timing')
+             'native pixel PLL frequency differs from preferred timing')
         end=one(r'^GT710_MODE (.+)$',serial,'native mode evidence').end()
         native_console_receipts(serial, end, surface)
         rows=list(re.finditer(r'^GT710_PIX (\d+) ([0-9a-f:,]+)$',serial,re.M))
@@ -1334,7 +1324,7 @@ def native_switches(serial):
             need(t in board['modes'] and t['flags']&0x98==0x18, 'switch timing not advertised by live sink')
             high = native_raster(board)
             if step==1:
-                need(t==high, 'middle switch must use selected EDID raster')
+                need(t==high, 'middle switch must use preferred EDID mode')
             else:
                 need(t['width']<high['width'] and t['height']<=high['height']
                      and t['clock_khz']<high['clock_khz'], 'switch needs a lower EDID mode')
@@ -2511,7 +2501,7 @@ def display_snapshots(rows, preferred):
                 raise ValueError('runtime display latch, viewport, completion or firmware writes differ')
             blank, end = r['raster']
             if ((end & 0xffff) - (blank & 0xffff), (end >> 16) - (blank >> 16)) != tuple(preferred):
-                raise ValueError('runtime raster differs from the selected DDC raster')
+                raise ValueError('runtime raster differs from the DDC preferred timing')
             sequences.append(r['sequence'])
         except (KeyError, TypeError, IndexError) as error:
             raise ValueError('malformed runtime display evidence') from error

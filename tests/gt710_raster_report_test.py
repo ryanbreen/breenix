@@ -1,4 +1,4 @@
-"""24.7-raster-75hz: DDC-derived raster selection keeps native evidence exact."""
+"""G24: the DDC preferred raster keeps native evidence exact."""
 import copy
 import hashlib
 import json
@@ -57,29 +57,29 @@ class RasterEvidence(unittest.TestCase):
         self.assertEqual(API['edid_timings'](RAW),[DTD,LOW,DMT75])
 
     def test_selected_native_raster_and_fallback_keep_full_pixels_pll_and_g21_receipts(self):
-        fast = capture()
-        mode, pixels = API['native_mode'](fast)
-        self.assertEqual(mode['timing'],DMT75)
+        preferred = capture(fast=False)
+        mode, pixels = API['native_mode'](preferred)
+        self.assertEqual(mode['timing'],DTD)
         self.assertEqual(len(pixels),1280*1024*4)
         API['native_mode'](capture(fast=False,advertise=False))
-        # A coherent 60 Hz MODE/PLL/register set still fails when 75 Hz is advertised.
-        for bad in [capture(fast=False),capture(advertise=False),
-                    mutate_record(fast,'GT710_MODE ',lambda r:r.update(pll_coefficients=0x094702)),
-                    mutate_record(fast,'GT710_MODE ',lambda r:r['active'][1].__setitem__(1,2<<16|111)),
-                    mutate_record(fast,'GT710_MODE ',lambda r:r.update(notifier_after=0)),
-                    fast.replace('GT710_PIX 0 ','GT710_PIX 1 ',1)]:
+        # A coherent 75 Hz MODE/PLL/register set fails even when advertised.
+        for bad in [capture(),capture(advertise=False),
+                    mutate_record(preferred,'GT710_MODE ',lambda r:r.update(pll_coefficients=0x074502)),
+                    mutate_record(preferred,'GT710_MODE ',lambda r:r['active'][1].__setitem__(1,2<<16|143)),
+                    mutate_record(preferred,'GT710_MODE ',lambda r:r.update(notifier_after=0)),
+                    preferred.replace('GT710_PIX 0 ','GT710_PIX 1 ',1)]:
             with self.subTest(rejection=bad[-200:]),self.assertRaises(ValueError):
                 API['native_mode'](bad)
-        # G20 surfaces and G21 allocation/latch joins stay exact at the new raster.
+        # G20 surfaces and G21 allocation/latch joins stay exact at the preferred raster.
         rows = [G21['console_event'](),G21['console_event'](2,'receipt')]
         for r in rows:
-            r['raster'] = [391|40<<16,1671|1064<<16]
+            r['raster'] = [359|40<<16,1639|1064<<16]
         receipt = f'GT710_NATIVE_CONSOLE surface={rows[1]["requested"]} firmware_writes=0 latch=2\n'
-        logical = fast+'GT710_NATIVE_HANDOFF latch=1\n'+G21['event_text'](rows)+receipt
+        logical = preferred+'GT710_NATIVE_HANDOFF latch=1\n'+G21['event_text'](rows)+receipt
         API['native_mode'](logical)
         bad = copy.deepcopy(rows); bad[1]['allocation'][1] += 4096
         with self.assertRaises(ValueError):
-            API['native_mode'](fast+'GT710_NATIVE_HANDOFF latch=1\n'+G21['event_text'](bad)+receipt)
+            API['native_mode'](preferred+'GT710_NATIVE_HANDOFF latch=1\n'+G21['event_text'](bad)+receipt)
 
 
 if __name__ == '__main__':
