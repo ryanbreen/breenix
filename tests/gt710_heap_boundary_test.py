@@ -16,6 +16,35 @@ class Boundaries(unittest.TestCase):
         self.assertIn('data.extend_from_slice(extra)',transport)
         self.assertLess(transport.index('data.extend_from_slice(extra)'),transport.index('sha256(&data)'))
 
+    def test_heap_transport_requires_complete_ordered_rows_and_its_digest(self):
+        import hashlib,json,re,runpy
+        api=runpy.run_path(str(ROOT/'scripts/metal/gt710-suite'))
+        names=re.findall(r'"([^"\n]+)"',(ROOT/'libs/gpu-abi/src/heap_trace.rs').read_text().split('pub const NAMES:',1)[1].split('];',1)[0])
+        values=dict.fromkeys(names,0);values.update(schema=1,heap_free=32<<20,heap_total=64<<20)
+        rows=[dict(schema=1,boundary=n,case=name,values=values.copy()) for n,name in enumerate(['','pipelines/sample'])]
+        startup=b'GT710_PIX 0 1:ff003039\n'
+        def write(path,records,anchor=True,bad_digest=False):
+            body=''.join('GT710_CASE_HEAP '+json.dumps(r,separators=(',',':'))+'\n' for r in records).encode()
+            digest=hashlib.sha256(body).hexdigest()
+            own=f'GT710_CASE_HEAP_BULK {len(body)} {digest}\n' if anchor else ''
+            if bad_digest:own=own.replace(digest,'0'*64)
+            serial=('GT710_MODE {"schema":1}\n'+f'GT710_BULK {len(startup)} {hashlib.sha256(startup).hexdigest()}\n'
+                +'SUITE gpu START total=1\nSUITE gpu CASE pipelines/sample PASS ms=1\n'
+                +'SUITE gpu DONE passed=1 failed=0 skipped=0 total=1\n'
+                +'SUITE gpu MEMORY reclaimed=PASS free_before=100 free_after=100 allowance=48\n'+own
+                +f'GT710_FINAL_BULK {len(body)} {digest}\nSUITE_SEQUENCE READY gpu\n')
+            (path/'serial.txt').write_text(serial);(path/'gt710-pixels.rle').write_bytes(startup);(path/'gt710-final.rle').write_bytes(body)
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp);write(p,rows);self.assertIn('GT710_CASE_HEAP ',api['capture_serial'](p))
+            for records in (rows[:1],[rows[0],dict(rows[1],boundary=2)],[rows[0],dict(rows[1],case='pipelines/wrong')],[rows[0],dict(rows[1],schema=2)],[rows[0],dict(rows[1],values=dict(values,heap_free=True))]):
+                write(p,records)
+                with self.assertRaises(ValueError):api['capture_serial'](p)
+            for anchor,bad in ((False,False),(True,True)):
+                write(p,rows,anchor,bad)
+                with self.assertRaises(ValueError):api['capture_serial'](p)
+        producer=(ROOT/'userspace/programs/src/gt710_artifacts.rs').read_text()
+        self.assertIn('GT710_CASE_HEAP_BULK',producer)
+
     def test_complete_ordered_bounded_records_and_bad_snapshots(self):
         source=(ROOT/'userspace/programs/src/gt710_heap.rs').read_text()
         code=r'''
