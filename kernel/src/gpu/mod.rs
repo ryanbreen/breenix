@@ -1644,6 +1644,12 @@ impl Core {
             if let Some(req) = dev::ctx_destroy(Tag::Background, id) { self.background(req); }
         }
         if dropped {
+            // Native contexts are logical registry entries. A reset cleared
+            // device_alive, so the ordinary destroy above did not retire this ID.
+            #[cfg(target_arch = "x86_64")]
+            if !destroy && dev::backend() == abi::backend::GK208 {
+                let _ = dev::ctx_destroy(Tag::Background, id);
+            }
             if let Some(c) = self.contexts.remove(&id) {
                 gauge(&GPU_CONTEXTS, -1);
                 if let Some(arena) = c.vertex_arena { self.unhold(arena.id); }
