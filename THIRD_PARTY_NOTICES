@@ -1774,3 +1774,12 @@ tests/gt710_c1_test.py use the same sources. No GPL implementation or
 proprietary driver/firmware material is used. Sources, exact line citations
 and supported layouts are documented in docs/gui/gt710-c1.md. Board ROM
 bytes are private runtime artifacts and are not redistributed in this tree.
+
+### C2 GPC coefficient oracle (MIT)
+
+`tests/fixtures/gt710_pll_oracle.c` retains the original nonfractional
+`gt215_pll_calc` from Linux v6.8, commit
+e8f897f4afef0031fe618a8e94127a0934896aba,
+`drivers/gpu/drm/nouveau/nvkm/subdev/clk/pllgt215.c:31-100`.
+Copyright 2010 Red Hat Inc.; MIT grant retained in the fixture header.
+The surrounding host declarations replace kernel dependencies for the oracle.
