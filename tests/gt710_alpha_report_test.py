@@ -135,8 +135,7 @@ class AlphaReport(unittest.TestCase):
             self.assertEqual(proof['boots'][1]['build']['commit'], SHA)
             self.assertEqual([b['commit'] for b in proof['boots']], [SHA, SHA])
             retained_pr = dict(pr, headRefOid='b' * 40)
-            with patch('subprocess.check_output', side_effect=lambda command, **kwargs:
-                       b'scripts/metal/gt710-suite\0' if command[1] == 'diff' else b''):
+            with patch('subprocess.check_output', side_effect=[b'', b'scripts/metal/gt710-suite\0']):
                 retained = API['alpha_capture_proof'](directory, retained_pr['headRefOid'], retained_pr)
             self.assertEqual(retained['head'], retained_pr['headRefOid'])
             self.assertEqual(retained['captureCommit'], SHA)
