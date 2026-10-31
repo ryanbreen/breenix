@@ -226,6 +226,21 @@ use std::collections::BTreeMap;
         with tempfile.TemporaryDirectory() as t:
             p=Path(t);(p/'serial.txt').write_text(serial);(p/'gt710-pixels.rle').write_bytes(data)
             full=api['capture_serial'](p);self.assertIn(bodies[0][1],full)
+            # C1 stops at trial four, before post-benchmark CAPS evidence or DONE.
+            bench=[dict(kind=k,trial=t,begin_ns=100,end_ns=100+n,elapsed_ns=n,
+                        work=w,unit=u,completion=True) for k,w,u,n in
+                   [('core',16*512*512,'fragments',12345678),('memory',64<<20,'bytes',23456789)] for t in (1,2)]
+            summary=''.join(f"GT710_CLOCK domain={n} khz={f['value'] if f['value'] is not None else 'null'} status={f['status']}\n" for n,f in row['domains'].items())
+            complete=summary+serial+''.join('GT710_BENCH '+json.dumps(b)+'\n' for b in bench)
+            # A startup anchor after C1's measured interval is outside its payload.
+            complete+='GT710_CORE_STARTUP_BULK 123 '+'a'*64+'\n'
+            (p/'run.json').write_text(json.dumps(dict(id='sample',commit='a'*40,toolsCommit='a'*40,build=dict(commit='a'*40,profile='gpu-clock',features=['gt710_clock_probe']))))
+            (p/'serial.txt').write_text(complete)
+            self.assertEqual(len(a.capture(p)['benchmarks']),4)
+            for mutated in [complete.replace('GT710_VBIOS_BULK ','REMOVED '),complete.replace('GT710_BENCH ', 'REMOVED ',1),complete.replace('GT710_CLOCK domain=gpc','REMOVED domain=gpc'),complete+'GT710_C1_ERROR fault\n']:
+                (p/'serial.txt').write_text(mutated)
+                with self.assertRaises(ValueError):a.capture(p)
+
             for mutated in [serial.replace('GT710_C1_BULK ','REMOVED '),serial.replace('GT710_VBIOS_BULK ','REMOVED '),serial+bodies[0][1]+'\n']:
                 (p/'serial.txt').write_text(mutated)
                 with self.assertRaises(ValueError):api['capture_serial'](p)
