@@ -28,6 +28,10 @@ def receive(handler):
             handler.send_error(404);return
         directory=m.boot_dir(intent['id'])
         filename='gt710-final.rle' if final else 'gt710-pixels.rle'
+        # Publishing the verified payload consumes the slot even if the
+        # bookkeeping below has not finished (or its writer was interrupted).
+        if (directory/filename).exists():
+            handler.send_error(404);return
         temporary=directory/(filename+'.partial')
         try:
             length=int(handler.headers.get('Content-Length','-1'))
@@ -51,10 +55,16 @@ def receive(handler):
                 intent['finalComplete']=True
             else:
                 intent.update(receipt)
-            m.write_json(directory/('native-final-upload.json' if final else 'native-upload.json'),receipt)
-            m.write_json(m.STATE/'gt710-upload.json',intent)
             handler.send_response(200);handler.send_header('Content-Length','0')
             handler.send_header('Connection','close');handler.end_headers();handler.close_connection=True
         except (OSError,ValueError):
             temporary.unlink(missing_ok=True);handler.close_connection=True
             handler.send_error(400,'display artifact upload failed')
+            return
+        # The payload is synced and digest-checked before HTTP acceptance.
+        # Receipt/state fsyncs are host bookkeeping, outside the guest's reply
+        # window. Keep the slot lock until they finish; a persistence error
+        # propagates to the service instead of attempting a second HTTP status
+        # after the 200 already sent.
+        m.write_json(directory/('native-final-upload.json' if final else 'native-upload.json'),receipt)
+        m.write_json(m.STATE/'gt710-upload.json',intent)
