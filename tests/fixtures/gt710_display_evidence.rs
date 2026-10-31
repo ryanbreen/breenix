@@ -10,6 +10,10 @@ impl Registers {fn read(&self,r:usize)->u32{self.0[&r]}}
 #[path="@ROOT@/kernel/src/gpu/gk208/display_evidence.rs"] mod display_evidence;
 mod block {pub mod install {#[path="@ROOT@/libs/libbreenix/src/crypto/sha256.rs"] pub mod sha256;}}
 mod gpu {pub fn display_active()->bool{true}pub mod console {pub fn active()->bool{true}}}
+mod signal {
+ static NS:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+ pub fn monotonic_nanos()->u64 { NS.fetch_add(16_661_000,std::sync::atomic::Ordering::SeqCst) }
+}
 mod firmware_writes {pub fn count()->u64{51}}
 fn hex(b:&[u8])->String{b.iter().map(|v|format!("{v:02x}")).collect()}
 struct Allocation {start:u64,size:u64}
@@ -66,6 +70,10 @@ mod native {
  for ((text,anchor),event) in events.iter().zip(["handoff","mode","flip","receipt"]) {
   assert!(text.starts_with("GT710_CONSOLE_V1 "));
   assert!(text.contains(&format!("\"event\":\"{event}\"")));
+  // G2: the sample time belongs to this completed update, not upload time.
+  let index=["handoff","mode","flip","receipt"].iter().position(|e| *e==event).unwrap();
+  assert!(text.contains(&format!("\"completed_ns\":{}",(500+index)*16_661_000)),
+          "completion time missing or sampled at export: {text}");
   assert!(text.contains("\"allocation\":[805306368, 16384000]"));
   assert!(text.contains("\"console\":[805306368, 16384000]"));
   assert!(text.contains("\"active\":[3145728, 2, 3, 4, 5]"));
