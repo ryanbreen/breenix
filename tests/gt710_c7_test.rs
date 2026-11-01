@@ -30,6 +30,7 @@ fn every_failed_stage_falls_back_and_restores_continue_after_an_error() {
         let outcome = start(&mut d, false);
         assert!(!outcome.full);
         assert_eq!(outcome.failure, Some("injected hardware failure"));
+        assert_eq!(outcome.failed_stage, Some(stage));
         assert_eq!(d.events.last(), Some(&stage));
         let changed_memory = d.events.contains(&Stage::MemoryIntermediate);
         let changed_gpc = d.events.contains(&Stage::Gpc);
@@ -83,4 +84,16 @@ fn failed_guard_restores_retry_each_second_and_critical_stop_latches_once() {
  assert!(!g.critical(Ok(94),true));assert!(!g.critical(Ok(95),false));
  assert!(g.critical(Ok(95),true));assert!(!g.critical(Ok(96),true));
  assert!(!g.retry_due(2_000_000_000,false));
+}
+
+#[test]
+fn clock_health_reads_gr_only_when_enabled_and_names_live_faults() {
+ let mut reads=Vec::new();
+ let mut gated=|r| {reads.push(r);match r {0x200=>0,0x400100=>panic!("read gated PGRAPH"),_=>0}};
+ assert!(policy::clock_health(&mut gated).is_ok());
+ assert!(!reads.contains(&0x400100));
+ for (register,value,check) in [(0x259c,4,"fifo-fault"),(0x400100,8,"pgraph-fault"),(0x10a008,1,"pmu-pending")] {
+  let failure=policy::clock_health(&mut |r|match r {0x200=>0x1000,0x10a01c=>1,_ if r==register=>value,_=>0}).unwrap_err();
+  assert_eq!((failure.check,failure.register,failure.value),(check,register,value));
+ }
 }
