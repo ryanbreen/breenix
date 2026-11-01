@@ -462,6 +462,16 @@
       "license": "MIT",
       "sha256": "5c81caff8fffd19d5062678601a61b98bc6ae1c585dcedc42933dee308cb0eae"
     },
+    "pmu.code.bin": {
+      "bytes": 2816,
+      "license": "MIT",
+      "sha256": "020ea859fc0b8e459f49267a6c8d8a00c214e45a24eca216342748b856385a9b"
+    },
+    "pmu.data.bin": {
+      "bytes": 3584,
+      "license": "MIT",
+      "sha256": "e7a162f46bf25236f38c26abfba3b11b8b9cf6bec748eccd9240ca2683019353"
+    },
     "probe-int-00.asm": {
       "bytes": 791,
       "license": "PolyForm-Noncommercial-1.0.0",
@@ -1015,12 +1025,18 @@
       "falcon": 5,
       "name": "gpccs",
       "preprocessed_sha256": "6470f59439daf9861039db51881edc24f27e1b26c98f0d58dfd807226b3536c4"
+    },
+    {
+      "entry_source": "nouveau-pmu/gk208.fuc5",
+      "falcon": 5,
+      "name": "pmu",
+      "preprocessed_sha256": "7697225ac9a9d35cc6e0c9a8f6a84340e3714316e2440ac02d311124a4c1843b"
     }
   ],
   "host_toolchain": {
     "bison": "3.8.2",
-    "c": "AppleClang 21.0.0.21000334",
-    "cxx": "AppleClang 21.0.0.21000334",
+    "c": "AppleClang 21.0.0.21000401",
+    "cxx": "AppleClang 21.0.0.21000401",
     "flags": "-O2 -g0 -Werror -fno-fast-math -ffp-contract=off; assertions enabled",
     "flex": "2.6.4"
   },
@@ -1033,9 +1049,9 @@
     "texture_handle_base_bytes": 0
   },
   "recipe_sha256": {
-    "libs/gpu-abi/src/lib.rs": "33169976dcf1fb04fbeb92686bf5e1c72460fd74393e419344fc47c58eb0fd6a",
+    "libs/gpu-abi/src/lib.rs": "949a2e9ca41e3f7661eca30f8b8cd7f17c366dbfdf147d01df8ce0ede1bef51e",
     "tools/kepler/CMakeLists.txt": "bb493a774b8cf0dde02a2e0bcd1829fa2bfbba2ef89b560b70e53a29734e941c",
-    "tools/kepler/assets.py": "f436fa9cc4bf631ef4f6e6d5359a93694fc345f2dcef0be5699ee22f1856969f",
+    "tools/kepler/assets.py": "99b960086b4dde8012f09c64662a53ca57b619d9ff6a44f95ca360888b9c2874",
     "tools/kepler/compile.cpp": "7860bb4d115e459501562d16c38eb7e67a09a5fd900b07b6c6a49c667df810d2"
   },
   "schema": 1,
@@ -2716,7 +2732,7 @@
       "source_sha256": "a8e11f2f2c29db45af384ff56fcfdcacca1577f9aba85df4833fb4cb57d583d8"
     }
   ],
-  "source_lock_sha256": "f00b06cfb8f8064ccae0dd93a3eb489f435a81516685d7966cf5a37ada7b459b",
+  "source_lock_sha256": "2230910a999b6be18c09d625e8dfd117b9e78ce1c382fd95026c545925568ec1",
   "sources": {
     "envytools": {
       "archive_sha256": "fed49495308b034c6a72893e3a472d6b98b7eb2ffd0b5738c26014d560b96ccc",
@@ -2734,6 +2750,11 @@
     "nouveau": {
       "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
       "prefix": "drivers/gpu/drm/nouveau/nvkm/engine/gr/fuc/",
+      "url": "https://github.com/torvalds/linux"
+    },
+    "nouveau-pmu": {
+      "commit": "e8f897f4afef0031fe618a8e94127a0934896aba",
+      "prefix": "drivers/gpu/drm/nouveau/nvkm/subdev/pmu/fuc/",
       "url": "https://github.com/torvalds/linux"
     },
     "nvidia": {

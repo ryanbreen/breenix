@@ -221,7 +221,7 @@ pub fn suite_requested() -> bool {
 pub fn memory_requested()->bool {
     // The terminal oracle uses probe transport, but needs normal display/core
     // startup before its deliberate panic, not the CPU VRAM experiments.
-    if cfg!(feature = "capture_panic_oracle") { return false; }
+    if cfg!(any(feature = "capture_panic_oracle", feature = "gt710_clock_probe")) { return false; }
     crate::boot::intent::get()
         .and_then(|bytes| core::str::from_utf8(bytes).ok())
         .and_then(|text| crate::boot::target::parse(text).ok())
@@ -292,76 +292,163 @@ fn complete(
     route: (u32, u32, bool, bool),
     scripts: &[Vec<modeset::Op>; 4],
 ) -> Result<u32, &'static str> {
-    let (head, sor, attached, attaching) = route;
-    let h = head as usize * 0x800;
-    for _ in 0..2000 {
-        let errors = regs.read(0x61009c);
-        if errors != 0 {
-            return Err("native display method error");
-        }
-        let pending = regs.read(0x6100ac) & 7;
-        if pending != 0 {
-            let phase = if pending & 1 != 0 {
-                1
-            } else if pending & 2 != 0 {
-                2
-            } else {
-                4
-            };
-            let state = regs.read(0x6101d4 + h);
-            regs.write(0x6100ac, phase);
-            if state & 0x1000 != 0 {
-                if phase == 1 && attached {
-                    modeset::execute_ops(regs, &scripts[0]);
-                }
-                if phase == 2 && attached {
-                    modeset::execute_ops(regs, &scripts[1]);
-                }
-                if phase == 4 && attaching {
-                    modeset::execute_ops(regs, &scripts[3]);
-                }
-            }
-            if phase == 2 && state & 0x10000 != 0 {
-                let r = limits.reg as usize;
-                regs.mask(r + 12, 0, 0x100);
-                regs.write(
-                    r + 4,
-                    coefficients.p << 16 | coefficients.n << 8 | coefficients.m,
-                );
-                regs.write(r + 16, u32::from(coefficients.fraction) << 16);
-            }
-            // Release power for an outgoing attachment; gate incoming scripts
-            // separately from the outgoing configuration.
-            if phase == 2 && state & 0x1000 != 0 && attached && !attaching {
-                let s = sor as usize * 0x800;
-                modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
-                regs.mask(0x61c004 + s, 0x80000001, 0x80000000);
-                modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
-                modeset::wait(regs, 0x61c030 + s, 0x10000000, 0)?;
-            }
-            if phase == 2 && state & 0x1000 != 0 && attaching {
-                modeset::execute_ops(regs, &scripts[2]);
-                regs.mask(0x612200 + h, 15, 0);
-                let s = sor as usize * 0x800;
-                regs.mask(0x612300 + s, 0x007c0707, 0x0a << 18);
-                modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
-                regs.mask(0x61c004 + s, 0x80000001, 0x80000001);
-                modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
-                modeset::wait(regs, 0x61c030 + s, 0x10000000, 0)?;
-            }
-            for i in 0..4 {
-                regs.write(0x6101d4 + i * 0x800, 0);
-            }
-            regs.write(0x6101d0, 0x80000000);
-        }
-        let value = read_word(regs, total, notifier)?;
-        if value & 1 != 0 {
-            return Ok(value);
-        }
-        regs.delay_us(1000);
-    }
-    Err("native update notifier did not complete")
+    completion(regs, total, notifier, limits, coefficients, route, scripts, true)
 }
+fn completion(
+    regs: &mut Registers,
+    total: u64,
+    notifier: u64,
+    limits: &modeset::PllLimits,
+    coefficients: &modeset::Pll,
+    route: (u32, u32, bool, bool),
+    scripts: &[Vec<modeset::Op>; 4],
+    wait: bool,
+) -> Result<u32, &'static str> {
+    struct Wait<'a> {
+        regs: &'a mut Registers,
+        total: u64,
+        notifier: u64,
+        limits: &'a modeset::PllLimits,
+        coefficients: &'a modeset::Pll,
+        route: (u32, u32, bool, bool),
+        scripts: &'a [Vec<modeset::Op>; 4],
+    }
+    impl super::present::NotifierWait for Wait<'_> {
+        fn poll(&mut self) -> Result<u32, &'static str> {
+            let Self { regs, total, notifier, limits, coefficients, route, scripts } = self;
+            let regs = &mut **regs;
+            let (head, sor, attached, attaching) = *route;
+            let h = head as usize * 0x800;
+            let errors = regs.read(0x61009c);
+            if errors != 0 {
+                return Err("native display method error");
+            }
+            let pending = regs.read(0x6100ac) & 7;
+            if pending != 0 {
+                let phase = if pending & 1 != 0 {
+                    1
+                } else if pending & 2 != 0 {
+                    2
+                } else {
+                    4
+                };
+                let state = regs.read(0x6101d4 + h);
+                regs.write(0x6100ac, phase);
+                if state & 0x1000 != 0 {
+                    if phase == 1 && attached {
+                        modeset::execute_ops(regs, &scripts[0]);
+                    }
+                    if phase == 2 && attached {
+                        modeset::execute_ops(regs, &scripts[1]);
+                    }
+                    if phase == 4 && attaching {
+                        modeset::execute_ops(regs, &scripts[3]);
+                    }
+                }
+                if phase == 2 && state & 0x10000 != 0 {
+                    let r = limits.reg as usize;
+                    regs.mask(r + 12, 0, 0x100);
+                    regs.write(
+                        r + 4,
+                        coefficients.p << 16 | coefficients.n << 8 | coefficients.m,
+                    );
+                    regs.write(r + 16, u32::from(coefficients.fraction) << 16);
+                }
+                // Release power for an outgoing attachment; gate incoming scripts
+                // separately from the outgoing configuration.
+                if phase == 2 && state & 0x1000 != 0 && attached && !attaching {
+                    let s = sor as usize * 0x800;
+                    modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+                    regs.mask(0x61c004 + s, 0x80000001, 0x80000000);
+                    modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+                    modeset::wait(regs, 0x61c030 + s, 0x10000000, 0)?;
+                }
+                if phase == 2 && state & 0x1000 != 0 && attaching {
+                    modeset::execute_ops(regs, &scripts[2]);
+                    regs.mask(0x612200 + h, 15, 0);
+                    let s = sor as usize * 0x800;
+                    regs.mask(0x612300 + s, 0x007c0707, 0x0a << 18);
+                    modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+                    regs.mask(0x61c004 + s, 0x80000001, 0x80000001);
+                    modeset::wait(regs, 0x61c004 + s, 0x80000000, 0)?;
+                    modeset::wait(regs, 0x61c030 + s, 0x10000000, 0)?;
+                }
+                for i in 0..4 {
+                    regs.write(0x6101d4 + i * 0x800, 0);
+                }
+                regs.write(0x6101d0, 0x80000000);
+            }
+            read_word(regs, *total, *notifier)
+        }
+        fn delay_us(&mut self, us: u32) { self.regs.delay_us(us); }
+    }
+    let mut io = Wait { regs, total, notifier, limits, coefficients, route, scripts };
+    if wait { super::present::wait_notifier(&mut io) }
+    else { super::present::NotifierWait::poll(&mut io) }
+}
+// Clock-transition route and one pending first-present observation. The CE owner
+// serializes these EXEC boundaries against native publication.
+static MEMX_ROUTE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
+static MEMX_CLEAR_AVAILABLE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static MEMX_PRESENT_PHASE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+fn memx_pending_check(regs:&mut Registers,head:u32,sor:u32,health:super::memx_display::Health)
+    -> (Option<super::memx_display::Health>,Result<(),&'static str>) {
+    use core::sync::atomic::Ordering;
+    let mut allow=MEMX_CLEAR_AVAILABLE.load(Ordering::Acquire);
+    let result=super::memx_display::pending_check(regs,head,sor,health,&mut allow);
+    MEMX_CLEAR_AVAILABLE.store(allow,Ordering::Release);
+    if let Some(readback)=result.0 {
+        crate::serial_println!("GT710_C5F_UNDERFLOW_CLEAR phase=pending register={:#x} before={:#x} clear_mask=0x111 clear_data=0x10 arm_data=0x1 readback={:#x}",
+            0x616308+head*0x800,health.underflow,readback.underflow);
+        memx_health_record("pending","clear-readback",head,sor,readback);
+    }
+    result
+}
+fn memx_health_record(phase: &str, point: &str, head: u32, sor: u32,
+    health: super::memx_display::Health,
+) {
+    crate::serial_println!("GT710_C5F_HEALTH {{\"phase\":\"{}\",\"point\":\"{}\",\"head\":{},\"sor\":{},\"raw\":[[{},{}],[{},{}],[{},{}],[{},{}]],\"healthy\":{}}}",
+        phase,point,head,sor,0x61009c,health.errors,0x616308+head*0x800,health.underflow,
+        0x61c004+sor*0x800,health.power,0x61c030+sor*0x800,health.link,health.check().is_ok());
+}
+pub(in crate::gk208) fn clock_display_check(regs: &Registers, phase: &str) -> Result<(), &'static str> {
+    let route=MEMX_ROUTE.load(core::sync::atomic::Ordering::Acquire);
+    if route==u32::MAX {return Err("C6 native display route absent");}
+    let (head,sor)=(route&255,route>>8);
+    let health=super::memx_display::Health::read(&mut Registers(regs.0),head,sor);
+    memx_health_record(phase,"clock-check",head,sor,health);
+    health.check()
+}
+pub(in crate::gk208) fn memx_display_guard(regs: &Registers) -> Result<(), &'static str> {
+    let route=MEMX_ROUTE.load(core::sync::atomic::Ordering::Acquire);
+    if route==u32::MAX {return Err("C5f native display route absent");}
+    let (head,sor)=(route&255,route>>8);
+    let health=super::memx_display::Health::read(&mut Registers(regs.0),head,sor);
+    let result=memx_pending_check(&mut Registers(regs.0),head,sor,health).1;
+    if let Err(reason)=result {
+        memx_health_record("guard","fresh-fault",head,sor,health);
+        crate::serial_println!("GT710_C5F_ERROR {}",reason);
+    }
+    result
+}
+pub(in crate::gk208) fn memx_display_boundary(regs: &mut Registers, phase: &str,
+    after_reply: bool,
+) -> Result<(), &'static str> {
+    use core::sync::atomic::Ordering;
+    let route=MEMX_ROUTE.load(Ordering::Acquire);
+    if route==u32::MAX {return Err("C5f native display route absent");}
+    let (head,sor)=(route&255,route>>8);
+    let health=super::memx_display::Health::read(regs,head,sor);
+    memx_health_record(phase,if after_reply {"after-exec"}else{"before-exec"},head,sor,health);
+    if !after_reply {return health.check();}
+    MEMX_CLEAR_AVAILABLE.store(true,Ordering::Release);
+    let (_,result)=memx_pending_check(regs,head,sor,health);
+    result?;
+    MEMX_PRESENT_PHASE.store(match phase {"intermediate"=>1,"target"=>2,"return-intermediate"=>3,"return"=>4,_=>return Err("C5f unknown EXEC phase")},Ordering::Release);
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 pub struct ConsoleSurface {
     pub pointer: usize,
@@ -403,6 +490,16 @@ pub struct FlipSnapshot {
     pub power: u32,
     pub link: u32,
 }
+
+/// MIT rnndb g80_pdisplay.xml NV_HEAD_STAT.VERT: VBLANK_COUNT is bits 31:16.
+pub(in crate::gk208) fn vblank_counter(regs: &Registers, head: u32)
+    -> Result<(u64, u16), &'static str> {
+    if head >= 4 { return Err("invalid native display head"); }
+    let at = crate::signal::monotonic_nanos();
+    let count = (regs.read(0x616340 + head as usize * 0x800) >> 16) as u16;
+    Ok((at, count))
+}
+
 impl Evo {
     pub(in crate::gk208) fn terminal_display(&self, registers: usize, surface: super::present::Surface)
         -> Result<super::emergency::Display, &'static str> {
@@ -510,7 +607,65 @@ fn acknowledge(evo: &mut Evo, regs: &mut Registers) -> Result<u32, &'static str>
 pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface,
 ) -> Result<super::present::Receipt, &'static str> {
+    present_inner(evo, regs, surface, true)?.ok_or("native synchronous receipt absent")
+}
+
+/// G26 answers PRESENT after GET consumes the unchanged G22 sequence.
+/// Real flips retain their latch; an unchanged latched binding uses a fresh
+/// device acknowledgement without scheduling another flip.
+pub(in crate::gk208) fn present_accepted(evo: &mut Evo, regs: &mut Registers,
+    surface: super::present::Surface,
+) -> Result<Option<super::present::Receipt>, &'static str> {
+    present_inner(evo, regs, surface, false)
+}
+
+/// Drain the one accepted flip before a synchronous mode/console transition.
+pub(in crate::gk208) fn wait_present(evo: &mut Evo, regs: &mut Registers,
+    surface: super::present::Surface,
+) -> Result<super::present::Receipt, &'static str> {
+    complete(regs, evo.total, evo.notifier, &evo.limits, &evo.coefficients,
+        (evo.head, evo.sor, true, true), &evo.scripts)?;
+    present_latched(evo, regs, surface)?.ok_or("native accepted flip did not latch")
+}
+
+pub(in crate::gk208) fn present_latched(evo: &mut Evo, regs: &mut Registers,
+    surface: super::present::Surface,
+) -> Result<Option<super::present::Receipt>, &'static str> {
+    let value = completion(regs, evo.total, evo.notifier, &evo.limits, &evo.coefficients,
+        (evo.head, evo.sor, true, true), &evo.scripts, false)?;
+    if value & 1 == 0 { return Ok(None); }
+    let receipt = super::present::receipt(&mut PresentRead(regs), evo.head, surface, value)?;
+    let h = evo.head as usize * 0x300;
+    let blank = regs.read(0x64041c + h);
+    let end = regs.read(0x640420 + h);
+    modeset::Viewport::for_raster((end & 0xffff).checked_sub(blank & 0xffff)
+        .ok_or("invalid native raster width")?, (end >> 16).checked_sub(blank >> 16)
+        .ok_or("invalid native raster height")?, surface.width, surface.height)?.verify(regs, evo.head)?;
+    super::memx_display::Health::read(regs, evo.head, evo.sor).check()?;
+    super::display_evidence::record(regs, evo.head, surface, &receipt);
+    Ok(Some(receipt))
+}
+
+// Receipt validation uses the same both-bank check as synchronous presentation.
+struct PresentRead<'a>(&'a mut Registers);
+impl super::present::Io for PresentRead<'_> {
+    fn clear_notifier(&mut self) -> Result<(), &'static str> { Err("receipt is read-only") }
+    fn submit(&mut self, _: &[(u32,u32)]) -> Result<(), &'static str> { Err("receipt is read-only") }
+    fn complete(&mut self) -> Result<u32, &'static str> { Err("receipt is read-only") }
+    fn read(&mut self, r: usize) -> u32 { self.0.read(r) }
+}
+
+fn present_inner(evo: &mut Evo, regs: &mut Registers,
+    surface: super::present::Surface, wait: bool,
+) -> Result<Option<super::present::Receipt>, &'static str> {
     let _cost = super::cost::phase(super::cost::Slot::Evo);
+    let phase=MEMX_PRESENT_PHASE.load(core::sync::atomic::Ordering::Acquire);
+    if phase!=0 {
+        let name=match phase {1=>"intermediate",2=>"target",3=>"return-intermediate",_=>"return"};
+        let health=super::memx_display::Health::read(regs,evo.head,evo.sor);
+        memx_health_record(name,"first-present-before",evo.head,evo.sor,health);
+        memx_pending_check(regs,evo.head,evo.sor,health).1?;
+    }
     let h=evo.head as usize*0x300;
     let blank=regs.read(0x64041c+h);
     let end=regs.read(0x640420+h);
@@ -564,23 +719,34 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
     let head=evo.head;
     let receipt = {
         let mut update = Update { evo, regs, view };
+        // A retained binding is already latched. Refresh its contents through
+        // the existing fresh capabilities report before considering a flip.
         let retained = if view.verify(update.regs, head).is_ok() {
             super::present::retained(&mut update, head, surface,
                 |u| acknowledge(u.evo, u.regs))?
         } else { None };
+        if retained.is_none() && !wait {
+            use super::present::Io;
+            update.clear_notifier()?;
+            update.submit(&surface.methods(head)?)?;
+            modeset::wait(update.regs, 0x640004, u32::MAX, update.evo.put)?;
+            return Ok(None);
+        }
         match retained {
             Some(receipt) => receipt,
             None => super::present::flush(&mut update, head, surface)?,
         }
     };
     view.verify(regs,head)?;
-    if regs.read(0x61009c) != 0 || regs.read(0x616308+head as usize*0x800)&0x111 != 1
-        || regs.read(0x61c004+evo.sor as usize*0x800)&0x80000001 != 1
-        || regs.read(0x61c030+evo.sor as usize*0x800)&0x10000000 != 0 {
-        return Err("native present lost display health");
-    }
+    let health=super::memx_display::Health::read(regs,evo.head,evo.sor);
+    if phase!=0 {
+        memx_health_record("present","first-present",evo.head,evo.sor,health);
+        memx_pending_check(regs,evo.head,evo.sor,health).1?;
+        MEMX_CLEAR_AVAILABLE.store(false,core::sync::atomic::Ordering::Release);
+        MEMX_PRESENT_PHASE.store(0,core::sync::atomic::Ordering::Release);
+    }else{health.check()?;}
     super::display_evidence::record(regs, head, surface, &receipt);
-    Ok(receipt)
+    Ok(Some(receipt))
 }
 
 pub fn takeover(
@@ -592,7 +758,7 @@ pub fn takeover(
     head: u32,
     layout: &memory::Layout,
 ) -> Result<(ConsoleSurface, Evo), &'static str> {
-    let t = modes.first().ok_or("no preferred sink timing")?;
+    let t = edid::native_raster(modes)?;
     let limits = modeset::board_pll(rom, head)?;
     let pll_record = modeset::board_pll_record(rom,head)?;
     let coefficients = modeset::pll(&limits, t.clock_khz)?;
@@ -760,8 +926,6 @@ pub fn takeover(
             }
         }
     }
-    // Enable sticky reporting in repeat mode for the native measurement window.
-    regs.mask(0x616308 + head as usize * 0x800, 0x111, 0x11);
     // The measured update has a fresh completion epoch after empty bootstrap.
     write_words(regs,total,notifier,&[0,0,0,0])?;
     let notifier_before = read_word(regs, total, notifier)?;
@@ -780,6 +944,9 @@ pub fn takeover(
         (head, u32::from(route.sor), inherited_attached, true),
         &scripts,
     )?;
+    let transitional_underflow = modeset::arm_underflow(regs, head)?;
+    crate::serial_println!("GT710_UNDERFLOW_ARM phase=takeover before={:#x} armed={:#x}",
+        transitional_underflow, regs.read(0x616308 + head as usize * 0x800));
     crate::firmware_writes::handoff();
     let h = head as usize * 0x300;
     let skipped_address = u64::from(regs.read(0x640460 + h)) << 8;
@@ -851,6 +1018,7 @@ pub fn takeover(
         regs: regs.0, head, phys: device.bars[1].address + displacement as u64,
         firmware_baseline,
     };
+    MEMX_ROUTE.store(head | (u32::from(route.sor)<<8),core::sync::atomic::Ordering::Release);
     if !measuring() {
         crate::serial_println!("GT710_MODE_STAGE console-ready diagnostics=off");
         return Ok((console, Evo {
@@ -1022,6 +1190,7 @@ pub fn takeover(
         let put_before = put;
         let (prior_pll,prior_ops) = if step==0 {(&coefficients,&scripts)}
             else {(&switches[step-1].3,&switches[step-1].4)};
+        modeset::pause_underflow(regs, head)?;
         crate::serial_println!("GT710_MODE_STAGE switch={} detach clock={}",step,timing.clock_khz);
         write_words(regs,total,notifier,&[0,0,0,0])?;
         let mut detach = modeset::detach_methods(head,u32::from(route.sor))?.to_vec();
@@ -1055,6 +1224,9 @@ pub fn takeover(
         submit(regs,total,evo,&mut put,&attach)?;
         let notifier_after = complete(regs,total,notifier,&limits,pll,(head,u32::from(route.sor),false,true),ops)?;
         modeset::wait(regs,0x640004,u32::MAX,put)?;
+        let transitional_underflow = modeset::arm_underflow(regs, head)?;
+        crate::serial_println!("GT710_UNDERFLOW_ARM phase=switch-{} before={:#x} armed={:#x}",
+            step, transitional_underflow, regs.read(0x616308 + head as usize * 0x800));
         let mut digest = crate::block::install::sha256::Sha256::new();
         for y in 0..timing.height {
             let mut runs: Vec<(usize,u32)> = Vec::new();
@@ -1114,6 +1286,7 @@ pub fn takeover(
         crate::serial_println!("GT710_SWITCH_REFUSAL runtime={}",reason);
     }
     if !switches.is_empty() {
+        modeset::pause_underflow(regs, head)?;
         // A switch failure must not discard the native console. Re-establish
         // the known-good preferred mode through a bounded detach/attach, also
         // returning successful measurements to preferred console geometry.
@@ -1135,6 +1308,9 @@ pub fn takeover(
         let completion=complete(regs,total,notifier,&limits,&coefficients,
             (head,u32::from(route.sor),false,true),&scripts)?;
         modeset::wait(regs,0x640004,u32::MAX,put)?;
+        let transitional_underflow = modeset::arm_underflow(regs, head)?;
+        crate::serial_println!("GT710_UNDERFLOW_ARM phase=return before={:#x} armed={:#x}",
+            transitional_underflow, regs.read(0x616308 + head as usize * 0x800));
         console.width=t.width as usize;
         console.height=t.height as usize;
         console.pitch=layout.pitch as usize;
@@ -1396,6 +1572,7 @@ impl CoreProducer {
                     }
                     Reap::Fault => return Err("core adapter engine fault"),
                     Reap::Reset(_) => return Err("core adapter request ended by engine reset"),
+                    Reap::Accepted(_) => return Err("core probe unexpectedly presented"),
                     Reap::Empty => (),
                 }
                 let Device::Gk208(d) = &mut *device else { unreachable!() };

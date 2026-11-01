@@ -8,6 +8,10 @@ pub(super) fn line(text:String)->Result<(),&'static str> {
     rows.extend_from_slice(text.as_bytes());rows.push(b'\n');Ok(())
 }
 pub(super) fn take()->Vec<u8> {
+    if let Some((row, anchor)) = super::clock::export() {
+        if line(row).is_ok() { crate::serial_println!("{}", anchor); }
+        else { crate::serial_println!("GT710_CLOCK_ERROR upload storage exhausted"); }
+    }
     for (row, anchor) in super::display_evidence::export() {
         if line(row).is_ok() { crate::serial_println!("{}", anchor); }
         else { crate::serial_println!("GT710_DISPLAY_EVIDENCE_ERROR upload storage exhausted"); }

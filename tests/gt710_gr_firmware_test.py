@@ -13,6 +13,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
 NAMES = ('fecs.code.bin', 'fecs.data.bin', 'gpccs.code.bin', 'gpccs.data.bin')
+PMU = ('pmu.code.bin', 'pmu.data.bin')
 TRIANGLE = tuple(f'diagnostic-triangle-{stage}.{extension}'
                  for stage in ('vertex', 'fragment')
                  for extension in ('bin', 'sph', 'json', 'asm'))
@@ -46,7 +47,7 @@ class Firmware(unittest.TestCase):
         source = (ROOT / 'kernel/src/gpu/gk208/gr/firmware.rs').read_text()
         constants = dict(re.findall(r'pub const (\w+)_SHA256: &str = "([0-9a-f]{64})";', source))
         assets = ROOT / 'kernel/assets/kepler'
-        self.assertEqual({p.name for p in assets.iterdir()}, set(NAMES + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE + CATALOGUE_83 + CATALOGUE_84) | {'manifest.json'})
+        self.assertEqual({p.name for p in assets.iterdir()}, set(NAMES + PMU + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE + CATALOGUE_83 + CATALOGUE_84) | {'manifest.json'})
         for name in NAMES:
             self.assertEqual(constants[name.replace('.', '_').upper()], expected[name])
             data = (assets / name).read_bytes()
@@ -54,7 +55,7 @@ class Firmware(unittest.TestCase):
             self.assertEqual(hashlib.sha256(data).hexdigest(), expected[name])
             self.assertIn(f'include_bytes!("../../../../assets/kepler/{name}")', source)
         manifest = json.loads((assets / 'manifest.json').read_text())
-        for name in TRIANGLE + CONTROLS + GRADIENT + CATALOGUE + CATALOGUE_83 + CATALOGUE_84:
+        for name in PMU + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE + CATALOGUE_83 + CATALOGUE_84:
             data = (assets / name).read_bytes()
             self.assertEqual(hashlib.sha256(data).hexdigest(), expected[name], name)
             self.assertEqual(manifest['files'][name]['sha256'], expected[name], name)
@@ -75,7 +76,7 @@ class Firmware(unittest.TestCase):
             shutil.copy(ROOT / 'kernel/src/gpu/gk208/gr/firmware.rs', copy / 'kernel/src/gpu/gk208/gr')
             shutil.copy(ROOT / 'docs/gui/provenance/kepler-toolchain.sha256.json', copy / 'docs/gui/provenance')
             verify(copy)
-            for name in NAMES + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE + CATALOGUE_83 + CATALOGUE_84 + ('manifest.json',):
+            for name in NAMES + PMU + TRIANGLE + CONTROLS + GRADIENT + CATALOGUE + CATALOGUE_83 + CATALOGUE_84 + ('manifest.json',):
                 path = copy / 'kernel/assets/kepler' / name
                 original = path.read_bytes()
                 for changed in (None, bytes([original[0] ^ 1]) + original[1:]):

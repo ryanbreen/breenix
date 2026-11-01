@@ -14,7 +14,7 @@ struct Transition { snapshot: Snapshot, allocation: [u64; 2], console: [u64; 2],
 struct Sample { offset: usize, expected: u32, actual: u32 }
 #[derive(Clone, Copy)]
 struct Snapshot {
-    sequence: u64, mode: usize, resource: u32, requested: u64, head: u32,
+    sequence: u64, completed_ns: u64, mode: usize, resource: u32, requested: u64, head: u32,
     pitch: u32, block_height: u32, format: u32, notifier: u32, active: [u32; 5], armed: [u32; 5],
     viewport_active: [u32; 8], viewport_armed: [u32; 8], raster: [u32; 2],
     firmware_writes: u64,
@@ -35,6 +35,7 @@ pub(super) fn record(regs: &mut Registers, head: u32, surface: Surface, receipt:
 }
 
 fn snapshot(regs: &Registers, head: u32, surface: Surface, receipt: &Receipt, mode: usize) -> Snapshot {
+    let completed_ns = crate::signal::monotonic_nanos();
     let h = head as usize * 0x300;
     let methods = [0x42c, 0x494, 0x4b0, 0x4b8, 0x4bc, 0x4c0, 0x4c4, 0x4c8];
     let viewport_active = methods.map(|m| regs.read(0x640000 + m + h));
@@ -42,7 +43,7 @@ fn snapshot(regs: &Registers, head: u32, surface: Surface, receipt: &Receipt, mo
     let raster = [regs.read(0x64041c + h), regs.read(0x640420 + h)];
     let firmware_writes = crate::firmware_writes::count()
         .checked_sub(BASELINE.load(Ordering::Acquire)).unwrap_or(u64::MAX);
-    Snapshot { sequence: 0, mode, resource: surface.resource, requested: surface.address, head,
+    Snapshot { sequence: 0, completed_ns, mode, resource: surface.resource, requested: surface.address, head,
         pitch: surface.pitch, block_height: surface.block_height, format: surface.format,
         notifier: receipt.notifier, active: receipt.active, armed: receipt.armed,
         viewport_active, viewport_armed, raster, firmware_writes }
@@ -129,9 +130,9 @@ pub(super) fn export_transitions() -> Result<Vec<(String, String)>, &'static str
         write!(row, concat!("GT710_CONSOLE_V1 {{\"schema\":1,\"dropped\":{},\"sequence\":{},\"event\":\"{}\",\"mode\":{},",
             "\"resource\":{},\"requested\":{},\"head\":{},\"pitch\":{},\"block_height\":{},\"format\":{},\"notifier\":{},",
             "\"active\":{:?},\"armed\":{:?},\"viewport_active\":{:?},\"viewport_armed\":{:?},",
-            "\"raster\":{:?},\"firmware_writes\":{},\"allocation\":{:?},\"console\":{:?}}}"), dropped, r.sequence, t.event, r.mode,
+            "\"raster\":{:?},\"firmware_writes\":{},\"allocation\":{:?},\"console\":{:?},\"completed_ns\":{}}}"), dropped, r.sequence, t.event, r.mode,
             r.resource, r.requested, r.head, r.pitch, r.block_height, r.format, r.notifier, r.active, r.armed,
-            r.viewport_active, r.viewport_armed, r.raster, r.firmware_writes, t.allocation, t.console).map_err(|_| "console evidence formatting")?;
+            r.viewport_active, r.viewport_armed, r.raster, r.firmware_writes, t.allocation, t.console, r.completed_ns).map_err(|_| "console evidence formatting")?;
         let digest = crate::block::install::sha256::sha256(row.as_bytes());
         let mut anchor = String::new();
         anchor.try_reserve_exact(160).map_err(|_| "console evidence anchor allocation")?;

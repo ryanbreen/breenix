@@ -106,7 +106,7 @@ def score(directory):
                                    **({'producer': host['core_capture'](directory, sha)}
                                       if suite == 'gt710' and category == 'core' else
                                       {'producer': host['resources_capture'](directory, sha)}
-                                      if suite == 'gt710' and category in ('resources', 'alpha', 'shapes', 'isolation') else {}))
+                                      if suite == 'gt710' and category in ('resources', 'alpha', 'shapes', 'isolation', 'performance') else {}))
             total = len(host['CATEGORIES'][category])
             results[milestone] = dict(reached=total, total=total, passed=True, reason=reason)
         except (OSError, ValueError, KeyError, StopIteration, TypeError, AttributeError) as error:

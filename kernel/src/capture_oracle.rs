@@ -13,9 +13,8 @@
 //! `tests/capture_path_lock_free_structure.rs` forbid `panic!` there,
 //! because a panic raised from inside a capture re-enters the very path the
 //! capture is reporting from. This module's whole job is to raise one, so it
-//! is a sibling of that directory rather than a member of it. The denylist
-//! is not being worked around: the emitter still may not panic, and no code
-//! in this module runs inside it.
+//! is a sibling of that directory rather than a member of it. The emitter
+//! still may not panic. The real emitter performs its own nonblocking THR read.
 //!
 //! # Why the timer tick
 //!
@@ -47,7 +46,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 const PANIC_AT_MS: u64 = 3_000;
 
 static FIRED: AtomicBool = AtomicBool::new(false);
-
 /// Called on each timer tick. Returns immediately once latched; the load and
 /// the comparison are the only per-tick cost, and only in a build that
 /// enables this feature.
@@ -71,15 +69,27 @@ pub fn observe(tick_count: u64) {
     // takeover, preparation or lock acquisition fails, still exercise serial.
     if elapsed_ms < preparation_deadline && crate::gpu::console::active() {
         crate::gpu::panic::test_with_locks(|| {
-            if !FIRED.swap(true, Ordering::AcqRel) {
-                fire(elapsed_ms, tick_count);
-            }
+            try_fire(elapsed_ms, tick_count, preparation_deadline);
         });
+        return;
+    }
+    try_fire(elapsed_ms, tick_count, preparation_deadline);
+}
+
+fn try_fire(elapsed_ms: u64, tick_count: u64, preparation_deadline: u64) {
+    let cpu_id = crate::capture::current_cpu_id();
+    // K10: defer this controlled injection while the scheduler is busy;
+    // discard the availability sample so the emitter must read THR itself.
+    if crate::task::scheduler::try_liveness_snapshot(cpu_id).is_none()
+        && elapsed_ms < preparation_deadline
+    {
         return;
     }
     if FIRED.swap(true, Ordering::AcqRel) {
         return;
     }
+    // At the deadline, a refused read still fires. The terminal emitter then
+    // tries its normal nonblocking read and truthfully reports any refusal.
     fire(elapsed_ms, tick_count);
 }
 

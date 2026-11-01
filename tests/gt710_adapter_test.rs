@@ -8,7 +8,7 @@ pub mod gpu {
         #[derive(Clone, Copy, Debug, PartialEq, Eq)]
         pub enum Tag { Background, Sync(u64), Submit { ctx:u32, serial:u64, last:bool } }
         pub struct Done {pub tag:Tag,pub fence:Option<u64>,pub native_fence:Option<u64>,pub answer:u32,pub echoed:u64,pub fenced:bool}
-        pub enum Reap {Empty,Done(Done),Fault,Reset(Tag)}
+        pub enum Reap {Empty,Accepted(Tag),Done(Done),Fault,Reset(Tag)}
     }
 }
 #[path = "../kernel/src/gpu/gk208"]
@@ -46,6 +46,9 @@ pub mod gk208 {
                     let mut s=self.0.borrow_mut();
                     assert_eq!(surface.resource,71);s.events.push("display-update");
                     if s.fail_display {Err("display did not latch target")} else {Ok(())}
+                }
+                pub fn present_complete(&mut self, _:crate::gk208::present::Surface)->Result<bool,&'static str> {
+                    Ok(self.0.borrow().display_latched)
                 }
                 pub fn publish_draw(&mut self,sequence:u32,draw:&crate::gk208::adapter::EncodedDraw)->Result<(),&'static str> {
                     assert_eq!(draw.target,19);
@@ -120,13 +123,13 @@ pub mod gk208 {
 use gpu::dev::{Reap,Tag};
 use gk208::{adapter::{Device,Request},copy::Rect,gr::channel::NativeChannel};
 pub struct State {
-    fail_display:bool,core_locked:bool,pri_ready_at:u64,now:u64,epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
+    display_latched:bool,fail_display:bool,core_locked:bool,pri_ready_at:u64,now:u64,epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
     transient_trap:bool,refusals:Vec<[u32;4]>,registers:std::collections::BTreeMap<usize,u32>,writes:Vec<(usize,u32)>,
     trap_at_health:bool,trap_at_sample:bool,fail_ack:bool,trap_after_samples:u32,delayed_trap_sequence:u32,
     fail_reset:bool,fail_unbind:bool,fail_publish:bool,refuse_publish:bool,stopped:bool,operations:Vec<&'static str>,published:Vec<u32>,events:Vec<&'static str>,expected_draw:Vec<u32>,
 }
 fn device()->(Device,Rc<RefCell<State>>) {
-    let s=Rc::new(RefCell::new(State{fail_display:false,core_locked:false,pri_ready_at:0,now:0,epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
+    let s=Rc::new(RefCell::new(State{display_latched:false,fail_display:false,core_locked:false,pri_ready_at:0,now:0,epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
         transient_trap:false,refusals:vec![],registers:Default::default(),writes:vec![],trap_at_health:false,trap_at_sample:false,fail_ack:false,trap_after_samples:0,delayed_trap_sequence:0,fail_reset:false,fail_unbind:false,fail_publish:false,refuse_publish:false,stopped:false,operations:vec![],published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
     (Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty()),s)
 }
@@ -585,9 +588,37 @@ fn present_fence_follows_earlier_release_and_confirmed_display_update() {
         s.borrow_mut().release=2;s.borrow_mut().fail_display=fail;
         let answer=d.reap();
         if fail {assert!(matches!(answer,Reap::Fault));assert_eq!(d.outstanding(),1);}
-        else {let Reap::Done(done)=answer else {panic!("present fence missing")};
+        else {assert!(matches!(answer,Reap::Accepted(Tag::Sync(9002))), "G26 must answer GET acceptance before latch");
+            assert!(matches!(d.reap(),Reap::Empty), "GET must not complete the context fence");
+            s.borrow_mut().display_latched=true;
+            let Reap::Done(done)=d.reap() else {panic!("present fence missing at latch")};
             assert_eq!(done.fence,Some(9002));assert_eq!(done.native_fence,Some(2));
             assert!(done.fenced);assert_eq!(d.outstanding(),0);}
-        assert_eq!(s.borrow().events.last(),Some(&"display-update"));
+        assert!(s.borrow().events.contains(&"display-update"));
     }
+}
+
+#[test]
+fn fifo_waits_for_previous_latch_but_allows_disjoint_engine_work() {
+    let (mut d,s)=device();
+    assert!(d.send(gk208::present_request(9101)).is_ok());
+    s.borrow_mut().release=1;
+    assert!(matches!(d.reap(),Reap::Accepted(Tag::Sync(9101))));
+    assert_eq!(d.outstanding(),1);
+    send(&mut d,9102);s.borrow_mut().release=2;
+    let Reap::Done(render)=d.reap() else {panic!("pending flip blocked disjoint rendering/readback")};
+    assert_eq!(render.fence,Some(9102));
+    assert!(d.send(gk208::present_request(9103)).is_ok());
+    s.borrow_mut().release=3;
+    assert!(matches!(d.reap(),Reap::Empty),"second UPDATE accepted before first latch");
+    assert_eq!(s.borrow().events.iter().filter(|&&e|e=="display-update").count(),1);
+    s.borrow_mut().display_latched=true;
+    let Reap::Done(first)=d.reap() else {panic!("first flip fence missing at latch")};
+    assert_eq!(first.fence,Some(9101));
+    s.borrow_mut().display_latched=false;
+    assert!(matches!(d.reap(),Reap::Accepted(Tag::Sync(9103))));
+    assert!(matches!(d.reap(),Reap::Empty));
+    s.borrow_mut().display_latched=true;
+    let Reap::Done(second)=d.reap() else {panic!("second flip fence missing at latch")};
+    assert_eq!(second.fence,Some(9103));assert_eq!(d.outstanding(),0);
 }

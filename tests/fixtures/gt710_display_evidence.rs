@@ -10,6 +10,10 @@ impl Registers {fn read(&self,r:usize)->u32{self.0[&r]}}
 #[path="@ROOT@/kernel/src/gpu/gk208/display_evidence.rs"] mod display_evidence;
 mod block {pub mod install {#[path="@ROOT@/libs/libbreenix/src/crypto/sha256.rs"] pub mod sha256;}}
 mod gpu {pub fn display_active()->bool{true}pub mod console {pub fn active()->bool{true}}}
+mod signal {
+ static NS:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
+ pub fn monotonic_nanos()->u64 { NS.fetch_add(16_661_000,std::sync::atomic::Ordering::SeqCst) }
+}
 mod firmware_writes {pub fn count()->u64{51}}
 fn hex(b:&[u8])->String{b.iter().map(|v|format!("{v:02x}")).collect()}
 struct Allocation {start:u64,size:u64}
@@ -20,12 +24,20 @@ impl Resources {
 }
 struct Evo {head:u32}
 struct Console {vram:u64,bytes:usize}
-struct Session {resources:Resources,evo:Evo,console:Console,scanout:Vec<u32>,mode:u32}
+struct Session {resources:Resources,evo:Evo,console:Console,scanout:Vec<u32>,mode:u32,pending_present:Option<present::Surface>,ready_present:Option<present::Receipt>}
 static SESSION:Mutex<Option<Session>>=Mutex::new(None);
 mod native {
- pub fn present(_: &mut super::Evo,_:&mut super::Registers,_:super::present::Surface)
- ->Result<super::present::Receipt,&'static str>{
-  Ok(super::present::Receipt{notifier:1,active:[0;5],armed:[0;5]})
+ pub static RETAINED:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+ pub fn present_accepted(_: &mut super::Evo,_:&mut super::Registers,_:super::present::Surface)
+ ->Result<Option<super::present::Receipt>,&'static str>{
+  Ok(RETAINED.load(std::sync::atomic::Ordering::SeqCst).then_some(super::present::Receipt{notifier:0xcafe0001,active:[7;5],armed:[7;5]}))
+ }
+ pub fn wait_present(e: &mut super::Evo,r:&mut super::Registers,s:super::present::Surface)
+ ->Result<super::present::Receipt,&'static str>{present_latched(e,r,s).map(|v|v.unwrap())}
+ pub fn present_latched(_: &mut super::Evo,_:&mut super::Registers,_:super::present::Surface)
+ ->Result<Option<super::present::Receipt>,&'static str>{
+  assert!(!RETAINED.load(std::sync::atomic::Ordering::SeqCst),"retained refresh polled an old flip notifier");
+  Ok(Some(super::present::Receipt{notifier:1,active:[0;5],armed:[0;5]}))
  }
 }
 // PROCESS_PRESENT
@@ -66,6 +78,10 @@ mod native {
  for ((text,anchor),event) in events.iter().zip(["handoff","mode","flip","receipt"]) {
   assert!(text.starts_with("GT710_CONSOLE_V1 "));
   assert!(text.contains(&format!("\"event\":\"{event}\"")));
+  // G2: the sample time belongs to this completed update, not upload time.
+  let index=["handoff","mode","flip","receipt"].iter().position(|e| *e==event).unwrap();
+  assert!(text.contains(&format!("\"completed_ns\":{}",(500+index)*16_661_000)),
+          "completion time missing or sampled at export: {text}");
   assert!(text.contains("\"allocation\":[805306368, 16384000]"));
   assert!(text.contains("\"console\":[805306368, 16384000]"));
   assert!(text.contains("\"active\":[3145728, 2, 3, 4, 5]"));
@@ -74,18 +90,27 @@ mod native {
  }
  // Coordinator C1: 4097/4097 presents succeed without an observer drain.
  *SESSION.lock()=Some(Session{resources:Resources,evo:Evo{head:0},
-  console:Console{vram:0x30000000,bytes:16384000},scanout:vec![],mode:0});
+  console:Console{vram:0x30000000,bytes:16384000},scanout:vec![],mode:0,pending_present:None,ready_present:None});
  for _ in 0..4097 {
   process_present(surface,&mut regs).unwrap();
+  assert!(process_present_complete(surface,&mut regs).unwrap());
  }
  assert_eq!(SESSION.lock().as_ref().unwrap().mode,0,"present changed the owner's chosen mode");
  let small=present::Surface{width:1024,height:768,pitch:4096,..surface};
  process_present(small,&mut regs).unwrap();
+ assert!(process_present_complete(small,&mut regs).unwrap());
  assert_eq!(SESSION.lock().as_ref().unwrap().mode,0);
  let ring=display_evidence::export_transitions().unwrap();assert_eq!(ring.len(),2048);
  assert!(ring[0].0.contains("\"sequence\":2554"));
  assert!(ring[2047].0.contains("\"sequence\":4601"));
  assert!(ring[2047].0.contains("\"dropped\":2049"));
  assert!(display_evidence::export_transitions().unwrap().is_empty());
-
+ native::RETAINED.store(true,std::sync::atomic::Ordering::SeqCst);
+ process_present(surface,&mut regs).unwrap();
+ assert!(process_present_complete(surface,&mut regs).unwrap());
+ assert_eq!(SESSION.lock().as_ref().unwrap().scanout.len(),1);
+ assert!(SESSION.lock().as_ref().unwrap().pending_present.is_none());
+ let refreshed=display_evidence::export_transitions().unwrap();
+ assert_eq!(refreshed.len(),1);
+ assert!(refreshed[0].0.contains("\"notifier\":3405643777"));
 }

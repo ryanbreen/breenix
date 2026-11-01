@@ -98,6 +98,7 @@ mod board;
 mod ddc;
 mod edid;
 mod bulk;
+mod clock;
 mod display_evidence;
 pub(crate) mod timing;
 pub(crate) mod cost;
@@ -310,8 +311,12 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
     if chipset != 0x106 || post & 2 == 0 {
         return Err("GK208B must be POSTed before inventory");
     }
+    clock::initialize(regs.0);
     let rom = rom::read(&mut regs)?;
     let board = board::parse(&rom)?;
+    clock::initialize_performance(&rom);
+    #[cfg(feature = "gt710_clock_probe")]
+    c1::startup(&mut regs,&device)?;
     for route in &board.routes {
         let state = regs.read(0x640200 + route.sor as usize * 0x20);
         if !matches!((state >> 8) & 15, 1 | 2 | 5)
@@ -564,15 +569,60 @@ fn display_memory(
     Ok(layout)
 }
 
+#[cfg(feature = "gt710_clock_probe")]
+mod sensor;
+mod thermal;
+#[cfg(feature = "gt710_clock_probe")]
+mod c1;
+pub(crate) mod c2;
+mod pmu;
+#[cfg(feature = "gt710_clock_probe")]
+mod memx_inputs;
+mod memx;
+mod memx_display;
+mod ram_init;
+#[cfg(not(feature = "gt710_clock_probe"))]
+mod production;
+#[cfg(not(feature = "gt710_clock_probe"))]
+mod production_rom;
+#[cfg(not(feature = "gt710_clock_probe"))]
+mod production_policy;
 pub mod resource;
 #[cfg(feature = "gt710_core_probe")]
 mod spans_diagnostic;
 pub mod adapter;
 pub mod caps;
 
+/// Read-only counter sample from the retained native display head.
+pub(crate) fn proc_vblank() -> Result<Vec<u8>, i32> {
+    let (at, count)=ce::with_clock_owner(|regs, evo, _| native::vblank_counter(regs, evo.head))
+        .map_err(|_| -5)?;
+    timing::vblank_sample(at,count);
+    Ok(format!("{at} {count}\n").into_bytes())
+}
+
+pub fn thermal_halted()->bool {
+    #[cfg(not(feature = "gt710_clock_probe"))]
+    { production::halted() }
+    #[cfg(feature = "gt710_clock_probe")]
+    { false }
+}
+
+/// Complete clock startup independently of GPU admission, after native handoff.
+pub fn initialize_clocks() {
+    #[cfg(not(feature = "gt710_clock_probe"))]
+    if takeover_started() {
+        let _canvas=crate::console::hold_canvas();
+        production::initialize();
+    }
+}
+
 /// Serialize first-use native startup with the existing allocator/CE owner.
 pub(crate) fn initialize_core() -> Result<(), &'static str> {
+    if thermal_halted() {return Err("GPU thermal critical stop");}
     let result = ce::initialize_core();
+    #[cfg(feature = "gt710_clock_probe")]
+    if let Err(e)=result {crate::serial_println!("GT710_C1_ERROR {}",e);}
     let longest = crate::tracing::providers::gpu::GPU_IRQ_MASKED_MAX_US.per_cpu[0].value.load(core::sync::atomic::Ordering::Relaxed);
     let row = core_record::startup(longest, result.is_ok());
     // Keep the measured startup row with bulk evidence, only its digest on serial.

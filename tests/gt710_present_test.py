@@ -19,6 +19,9 @@ class Present(unittest.TestCase):
         native = (ROOT / 'kernel/src/gpu/gk208/native.rs').read_text()
         gr = (ROOT / 'kernel/src/gpu/gk208/gr/mod.rs').read_text()
         handle = item(native, 'pub struct Evo {') + '\n' + item(native, 'pub struct FlipSnapshot {') + '\n' + item(native, 'impl Evo {')
+        # Terminal panic display has a separate hardware surface and harness;
+        # this fixture exercises the retained EVO flip and restore path.
+        handle = handle.replace(item(native, '    pub(in crate::gk208) fn terminal_display('), '')
         flip = item(native, '\nfn flip(')
         flow = item(gr, 'fn present_probe(').replace('super::native::', 'native::').replace('super::copy::', 'copy::').replace('super::hash(', 'hash(').replace('super::modeset::', 'modeset::')
         fixture = (ROOT / 'tests/fixtures/gt710_present.rs').read_text()

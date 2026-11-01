@@ -26,6 +26,11 @@ fn main() {{
  let row=r.drain(2).unwrap();
  assert_eq!(row, "GT710_TIMING_V1 {{\\\"batch\\\":2,\\\"dropped\\\":0,\\\"rows\\\":[[42,1,7,100,70],[42,2,103,200,40]]}}");
  assert!(r.drain(3).is_none());
+ r.sample_vblank(123456789,65535);r.sample_vblank(2123456789,118);
+ let samples=r.drain(5).unwrap();
+ assert!(samples.contains("[123456789,65535],[2123456789,118]"));
+ assert!(samples.contains("vblank_samples"));
+ assert!(r.drain(6).is_none());
  for n in 0..20000 {{r.finish(42,2,7,n,n+1);}}
  let row=r.drain(4).unwrap();assert!(row.contains("\\\"dropped\\\":3616"));
 }}
@@ -43,9 +48,11 @@ fn main() {{
 #[test]fn timing_export_allocation_is_a_refusal(){
  assert!(!timing::collecting(false,false));let mut r=timing::Recorder::new();r.begin_draw(42);
  for n in 0..20000{r.finish(42,1,7,n,n+1);}
+ r.sample_vblank(123456789,65535);
  arm();let refused=r.drain(7);ARMED.store(false,Ordering::Relaxed);
  assert!(HIT.load(Ordering::Relaxed));assert!(refused.is_none());
  let row=r.drain(8).unwrap();assert!(row.contains("\"dropped\":3616"));
+ assert!(row.contains("[123456789,65535]"));
  assert!(row.contains("[42,1,7,0,1]"));assert!(row.contains("[42,1,7,16383,1]"));
 }
 '''
@@ -55,7 +62,7 @@ fn main() {{
         sys.path.insert(0,str(ROOT/'scripts/metal'))
         api=runpy.run_path(str(ROOT/'scripts/metal/gt710-suite'))
         startup=b'GT710_PIX 0 1:ff003039\n'
-        row=b'GT710_TIMING_V1 {"batch":1,"dropped":0,"rows":[[42,1,7,100,70]]}\n'
+        row=b'GT710_TIMING_V1 {"batch":1,"dropped":0,"rows":[[42,1,7,100,70]],"vblank_samples":[[123456789,65535],[2123456789,118]]}\n'
         anchor=f'GT710_TIMING_BULK batch=1 bytes={len(row)-1} sha256={hashlib.sha256(row[:-1]).hexdigest()}\n'
         serial=('GT710_MODE {"schema":1}\n'+f'GT710_BULK {len(startup)} {hashlib.sha256(startup).hexdigest()}\n'
                 +'SUITE gpu START total=1\n'+anchor+'SUITE gpu CASE pipelines/sample PASS ms=1\n'

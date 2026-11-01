@@ -117,8 +117,8 @@ def generate(tools, output, cpp):
         raise RuntimeError(f"firmware requires GNU cpp 16.1.0, got {version}")
     files = {}
     firmware = []
-    for entry, name, section in [("hubgk208", "fecs", "grhub"), ("gpcgk208", "gpccs", "grgpc")]:
-        text = run([cpp, "-P", "-CC", "-undef", "-nostdinc", VENDOR / "nouveau" / (entry + ".fuc5")]).decode()
+    for project, entry, name, section in [("nouveau", "hubgk208", "fecs", "grhub"), ("nouveau", "gpcgk208", "gpccs", "grgpc"), ("nouveau-pmu", "gk208", "pmu", "pmu")]:
+        text = run([cpp, "-P", "-CC", "-undef", "-nostdinc", VENDOR / project / (entry + ".fuc5")]).decode()
         # Falcon macros deliberately use comment newlines as instruction breaks.
         text = re.sub(r"/\*.*?\*/", lambda m: "\n" * m[0].count("\n"), text, flags=re.S)
         preprocessed = output / (name + ".fuc")
@@ -137,7 +137,7 @@ def generate(tools, output, cpp):
             filename = f"{name}.{part}.bin"
             (output / filename).write_bytes(data)
             files[filename] = {"bytes": len(data), "sha256": digest(data), "license": "MIT"}
-        firmware.append({"name": name, "entry_source": f"nouveau/{entry}.fuc5", "falcon": 5,
+        firmware.append({"name": name, "entry_source": f"{project}/{entry}.fuc5", "falcon": 5,
                          "preprocessed_sha256": digest(text.encode())})
         preprocessed.unlink()
     shaders = []

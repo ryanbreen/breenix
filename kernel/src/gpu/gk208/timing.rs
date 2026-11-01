@@ -11,9 +11,18 @@ pub struct Recorder {
     draw: u64,
     rows: Vec<[u64; 5]>,
     dropped: u64,
+    vblank: [[u64; 2]; 2],
+    vblank_used: usize,
 }
 impl Recorder {
-    pub const fn new() -> Self { Self { owner: 0, draw: 0, rows: Vec::new(), dropped: 0 } }
+    pub const fn new() -> Self { Self { owner: 0, draw: 0, rows: Vec::new(), dropped: 0, vblank: [[0; 2]; 2], vblank_used: 0 } }
+    /// The clear-rate client brackets its timed work with two read-only samples.
+    pub fn sample_vblank(&mut self, at: u64, count: u16) {
+        if self.vblank_used < self.vblank.len() {
+            self.vblank[self.vblank_used] = [at, u64::from(count)];
+            self.vblank_used += 1;
+        } else { self.dropped += 1; }
+    }
     pub fn begin_draw(&mut self, owner: u64) -> u64 {
         if owner != self.owner { self.owner = owner; self.draw = 0; }
         self.draw += 1;
@@ -25,8 +34,8 @@ impl Recorder {
         self.rows.push([owner, draw, kind, start, end.saturating_sub(start)]);
     }
     pub fn drain(&mut self, batch: u64) -> Option<String> {
-        if self.rows.is_empty() && self.dropped == 0 { return None; }
-        let capacity = self.rows.len().checked_mul(128)?.checked_add(128)?;
+        if self.rows.is_empty() && self.dropped == 0 && self.vblank_used == 0 { return None; }
+        let capacity = self.rows.len().checked_mul(128)?.checked_add(256)?;
         let mut text = String::new();
         text.try_reserve_exact(capacity).ok()?;
         let _ = write!(text, "GT710_TIMING_V1 {{\"batch\":{},\"dropped\":{},\"rows\":[", batch, self.dropped);
@@ -35,7 +44,17 @@ impl Recorder {
             let _ = write!(text, "[{},{},{},{},{}]", row[0], row[1], row[2], row[3], row[4]);
         }
         self.dropped = 0;
-        text.push_str("]}");
+        text.push(']');
+        if self.vblank_used != 0 {
+            text.push_str(",\"vblank_samples\":[");
+            for (n, row) in self.vblank[..self.vblank_used].iter().enumerate() {
+                if n != 0 { text.push(','); }
+                let _ = write!(text, "[{},{}]", row[0], row[1]);
+            }
+            text.push(']');
+            self.vblank_used = 0;
+        }
+        text.push('}');
         Some(text)
     }
 }
@@ -68,8 +87,8 @@ mod runtime {
         }
     }
     pub fn phase(kind: u64) -> Option<Guard> { enabled().then(|| Guard::new(crate::gpu::caller().unwrap_or(0), kind)) }
+    pub fn vblank_sample(at: u64, count: u16) { with(|r| r.sample_vblank(at, count)); }
     pub fn export() -> Option<(String, String)> {
-        if !enabled() { return None; }
         let batch = BATCH.fetch_add(1, core::sync::atomic::Ordering::Relaxed);
         let text = with(|r| r.drain(batch))?;
         let anchor = format!("GT710_TIMING_BULK batch={} bytes={} sha256={}", batch, text.len(), super::super::hash(text.as_bytes()));
@@ -77,4 +96,4 @@ mod runtime {
     }
 }
 #[cfg(target_os = "none")]
-pub use runtime::{enable, enabled, begin_draw, phase, export, Guard};
+pub use runtime::{enable, enabled, begin_draw, phase, export, vblank_sample, Guard};

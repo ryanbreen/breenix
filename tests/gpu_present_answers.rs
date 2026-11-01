@@ -22,3 +22,15 @@ fn interrupted_callers_do_not_accumulate_late_answers() {
     a.complete(2, 0x1100);
     assert_eq!(a.take(2), Some(0x1100));
 }
+
+#[test]
+fn get_acceptance_wait_preserves_the_registered_answer() {
+    let mut a = Answers::new();
+    a.register(1);
+    assert_eq!(a.take_ready(1), None);
+    a.complete(1, 0x60000000);
+    assert_eq!(a.take_ready(1), Some(0x60000000));
+    assert_eq!(a.take_ready(1), None);
+    a.complete(1, 0x60000000); // latch after the syscall returned
+    assert_eq!(a.take(1), None);
+}

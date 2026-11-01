@@ -8,9 +8,9 @@ use vm::{Flags, Io, Space, LIMIT, TABLE_BYTES};
 use std::collections::BTreeMap;
 
 #[derive(Default)]
-struct Model { words:BTreeMap<u64,u64>, events:Vec<(char,u64,u64)>, fail:bool, regs:BTreeMap<usize,u32> }
+struct Model { reads:usize, words:BTreeMap<u64,u64>, events:Vec<(char,u64,u64)>, fail:bool, regs:BTreeMap<usize,u32> }
 impl Io for Model {
-    fn read(&mut self,a:u64)->Result<u64,&'static str> {Ok(*self.words.get(&a).unwrap_or(&0xdeadbeef))}
+    fn read(&mut self,a:u64)->Result<u64,&'static str> {self.reads+=1;Ok(*self.words.get(&a).unwrap_or(&0xdeadbeef))}
     fn write(&mut self,a:u64,v:u64)->Result<(),&'static str> {self.words.insert(a,v);self.events.push(('w',a,v));Ok(())}
     fn flush(&mut self)->Result<(),&'static str> {self.events.push(('f',0,0));Ok(())}
     fn invalidate(&mut self,pd:u64)->Result<u32,&'static str> {
@@ -152,4 +152,38 @@ fn coherent_system_pages_encode_host_aperture_without_truncating_dma_addresses()
         assert!(io.events.is_empty());
     }
     s.retire(&mut a,&mut io).unwrap();
+}
+
+// G2: cost check added before the VM presence-bookkeeping repair in this branch.
+#[test]
+fn mapping_presence_is_owned_without_per_page_pcie_reads() {
+    let mut a=Allocator::new(1<<30,&[]).unwrap();
+    let mut io=Model::default();
+    let mut s=Space::new(&mut a,&mut io).unwrap();
+    let va=(128<<20)-4096;
+    s.map(&mut a,&mut io,va,Range{start:256<<20,size:4096},Flags::default()).unwrap();
+    io.reads=0;
+    let bytes=16<<20;
+    let next=va+4096;
+    s.map(&mut a,&mut io,next,Range{start:512<<20,size:bytes},Flags::default()).unwrap();
+    assert_eq!(io.reads,0,"owned page presence must not reread VRAM for each page");
+    let published=io.events.len();
+    assert!(s.map(&mut a,&mut io,va,Range{start:768<<20,size:8192},Flags::default()).is_err());
+    assert!(s.unmap(&mut io,next+bytes-4096,8192).is_err());
+    assert_eq!(io.events.len(),published,"overlaps and holes refuse before publication");
+    s.unmap(&mut io,next+4096,4096).unwrap();
+    assert!(s.remap(&mut io,next,Range{start:768<<20,size:12288},Flags::default()).is_err());
+    s.map(&mut a,&mut io,next+4096,Range{start:768<<20,size:4096},Flags::default()).unwrap();
+    s.remap(&mut io,next,Range{start:512<<20,size:bytes},Flags::default()).unwrap();
+    for n in 0..bytes/4096 {
+        assert_eq!(io.words[&s.pte_address(next+n*4096).unwrap()],((512<<20)+n*4096)>>8|1);
+    }
+    s.unmap(&mut io,va,bytes+4096).unwrap();
+    assert_eq!(io.reads,0,"remap and unmap use the same owned presence");
+    io.fail=true;
+    assert!(s.map(&mut a,&mut io,next,Range{start:512<<20,size:bytes},Flags::default()).is_err());
+    assert!(!s.usable(),"uncertain publication poisons the space");
+    let retained=a.stats();
+    assert!(s.retire(&mut a,&mut io).is_err());
+    assert_eq!(a.stats(),retained);
 }

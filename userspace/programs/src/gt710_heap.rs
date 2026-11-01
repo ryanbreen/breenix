@@ -31,10 +31,16 @@ impl Store {
         for (index, row) in self.rows[..self.used].iter().enumerate() {
             let name = std::str::from_utf8(&row.name[..row.len]).map_err(|_| "case heap name encoding")?;
             write!(text, "GT710_CASE_HEAP {{\"schema\":1,\"boundary\":{index},\"case\":\"{name}\",\"values\":{{").map_err(|_| "case heap formatting")?;
-            for (field, (&value, key)) in row.values.iter().zip(wire::NAMES).enumerate() {
+            for (field, (&value, key)) in row.values[..wire::COST_START].iter().zip(wire::NAMES).enumerate() {
                 write!(text, "{}\"{key}\":{value}", if field == 0 { "" } else { "," }).map_err(|_| "case heap formatting")?;
             }
-            text.push_str("}}\n");
+            // The ABI's ordered tail avoids repeating phase names at
+            // each boundary. The host expands it only after digest checking.
+            text.push_str(",\"costs_v1\":[");
+            for (field, value) in row.values[wire::COST_START..].iter().enumerate() {
+                write!(text, "{}{value}", if field == 0 { "" } else { "," }).map_err(|_| "case cost formatting")?;
+            }
+            text.push_str("]}}\n");
         }
         if text.len() > MAX_BYTES { return Err("case heap evidence exceeds bound".into()); }
         Ok(text.into_bytes())

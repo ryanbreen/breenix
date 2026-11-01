@@ -170,7 +170,7 @@ const ARCH_NAME: &str = if cfg!(target_arch = "aarch64") {
 };
 
 #[inline(always)]
-fn current_cpu_id() -> usize {
+pub(crate) fn current_cpu_id() -> usize {
     #[cfg(target_arch = "x86_64")]
     {
         use crate::arch_impl::current::percpu::X86PerCpu;
@@ -258,10 +258,6 @@ pub fn emit(edge: Edge, arg0: u64, arg1: u64) {
         completed |= section_bit(SECTION_CPU);
     }
 
-    // The one non-blocking scheduler read, taken here rather than at the
-    // `THR` section below. See `sections::sample_threads` for why: the rows
-    // stay last on the wire, but the lock is asked for before the bulk
-    // sections spend milliseconds emitting.
     let sampled_threads = sections::sample_threads(cpu_id);
 
     if sections::events(&mut writer, cpu_id) {

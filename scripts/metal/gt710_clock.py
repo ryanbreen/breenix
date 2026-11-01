@@ -1,0 +1,558 @@
+# /*
+#  * Copyright 2012 Nouveau Community
+#  * Copyright 2011 Red Hat Inc.
+#  * Copyright 2012 Red Hat Inc.
+#  * Copyright 2013 Red Hat Inc.
+#  * Copyright 2014 Martin Peres
+#  * Copyright 2015 Martin Peres
+#  *
+#  * Permission is hereby granted, free of charge, to any person obtaining a
+#  * copy of this software and associated documentation files (the "Software"),
+#  * to deal in the Software without restriction, including without limitation
+#  * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+#  * and/or sell copies of the Software, and to permit persons to whom the
+#  * Software is furnished to do so, subject to the following conditions:
+#  *
+#  * The above copyright notice and this permission notice shall be included in
+#  * all copies or substantial portions of the Software.
+# claim-lint:ok: MIT grant in docs/gui/gt710-c1.md.
+#  *
+#  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+#  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+#  * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+#  * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+#  * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+#  * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+#  * OTHER DEALINGS IN THE SOFTWARE.
+#  *
+#  * Authors: Martin Peres
+#  */
+# claim-lint:ok: original MIT grant preserved under G1.
+"""Offline C1 VBIOS and readback decoder. Raw ROMs stay in private captures.
+
+Source offsets and versions: docs/gui/gt710-c1.md. Bounds failures are errors;
+absent optional tables are explicit. No table data is executed by this tool.
+"""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import re
+
+
+def need(ok, why):
+    if not ok: raise ValueError(why)
+
+
+class Image:
+    def __init__(self, raw): self.raw = raw
+    def bytes(self, off, size):
+        need(type(off) is int and type(size) is int and 0 <= off <= len(self.raw) and 0 <= size <= len(self.raw)-off,'VBIOS range outside image')
+        return self.raw[off:off+size]
+    def n(self, off, size=1, signed=False): return int.from_bytes(self.bytes(off,size),'little',signed=signed)
+    def table(self, off, versions, min_header=4):
+        h=self.bytes(off,4); v,hs,es,count=h
+        need(v in versions,f'unsupported table version {v:#x} at {off:#x}')
+        need(hs>=min_header and (es>0 or count==0),'invalid table geometry')
+        self.bytes(off,hs+es*count)
+        return v,hs,es,count
+
+
+def decode_image(raw):
+    r=Image(raw); need(512 <= len(raw) <= 256*1024,'VBIOS size bound')
+    # PCI firmware image chain: retain the entire PROM window but decode tables
+    # only in the first legacy image, as nouveau does. Check each image checksum.
+    p=0; images=[]
+    while True:
+        need(r.bytes(p,2)==b'\x55\xaa','ROM signature')
+        c=p+r.n(p+0x18,2); need(r.bytes(c,4)==b'PCIR','PCIR signature')
+        size=r.n(c+0x10,2)*512; need(size>=512,'empty PCIR image')
+        block=r.bytes(p,size); need(sum(block)&255==0,'ROM checksum')
+        images.append(dict(offset=p,bytes=size,code_type=r.n(c+0x14)))
+        p+=size
+        if r.n(c+0x15)&0x80: break
+        need(len(images)<16,'ROM image-chain bound')
+    first=Image(raw[:images[0]['bytes']])
+    bit=first.raw.find(b'\xff\xb8BIT\0'); need(bit>=0,'BIT directory missing')
+    h=first.bytes(bit,12); need(h[8]>=12 and h[9]==6,'BIT geometry')
+    entries=first.bytes(bit+h[8],h[9]*h[10]); selected=[e for e in [entries[i:i+6] for i in range(0,len(entries),6)] if e[0]==80]
+    need(len(selected)==1,'BIT P absent or duplicated'); e=selected[0]
+    pv=e[1]; need(pv in (1,2),'BIT P version')
+    payload=first.bytes(int.from_bytes(e[4:6],'little'),int.from_bytes(e[2:4],'little'))
+    def ptr(v1,v2):
+        f=v2 if pv==2 else v1
+        return int.from_bytes(payload[f:f+4],'little') if f is not None and f+4<=len(payload) else 0
+    result=dict(sha256=hashlib.sha256(raw).hexdigest(),bytes=len(raw),image_bytes=p,images=images,bit_version=pv)
+    def optional(name,off,fn):
+        result[name]=fn(first,off) if off else dict(status='absent')
+    optional('performance',ptr(0,0),performance)
+    optional('cstep',ptr(None,0x34),cstep)
+    optional('boost',ptr(None,0x30),boost)
+    optional('voltage',ptr(0x10,0x0c),voltage)
+    optional('voltage_map',ptr(None,0x20),vmap)
+    optional('thermal',ptr(0x0c,0x10),thermal)
+    optional('timing',ptr(4,8),timing)
+    optional('rammap',ptr(None,4),rammap)
+    result['gpio']=gpio(first)
+    return result
+
+
+def geometry(r,p,version,min_base):
+    v,h,b,s,n,c=r.bytes(p,6)
+    need(v==version and h>=6 and b>=min_base and (s>0 or n==0),'invalid nested table geometry')
+    r.bytes(p,h+c*(b+s*n))
+    return h,b,s,n,c
+
+
+def performance(r,p):
+    h,b,s,n,c=geometry(r,p,0x40,12); need(s>=2 and n>=4,'performance domains missing')
+    levels=[]
+    for i in range(c):
+        q=p+h+i*(b+s*n); state=r.n(q)
+        if state==255: continue
+        need(state not in [e['pstate'] for e in levels],'duplicate performance state')
+        f=[(r.n(q+b+j*s,2)&0x3fff)*1000 for j in range(n)]
+        levels.append(dict(pstate=state,voltage_id=r.n(q+2),gpc_khz=f[0],core_khz=f[0]//2,memory_khz=f[3],domain_khz=f,pcie_speed_code=r.n(q+11)&3))
+    return dict(status='ok',version=0x40,offset=p,levels=levels)
+
+
+def cstep(r,p):
+    v,h,b,c,s,n=r.bytes(p,6)
+    need(v==0x10 and h>=6 and b>=4 and s>=5,'invalid cstep geometry'); r.bytes(p,h+b*c+s*n)
+    levels=[dict(pstate=(r.n(p+h+i*b,2)&0x1e0)>>5,index=r.n(p+h+i*b+3)) for i in range(c)]
+    points=[dict(frequency_khz=r.n(p+h+c*b+i*s,2)*1000,unknown=list(r.bytes(p+h+c*b+i*s+2,2)),voltage_id=r.n(p+h+c*b+i*s+4)) for i in range(n)]
+    return dict(status='ok',version=v,offset=p,levels=levels,points=points)
+
+
+def boost(r,p):
+    h,b,s,n,c=geometry(r,p,0x11,6); need(s>=6 or n==0,'boost subentry short')
+    levels=[]
+    for i in range(c):
+        q=p+h+i*(b+s*n)
+        domains=[dict(domain=r.n(q+b+j*s),percent=r.n(q+b+j*s+1),min_khz=r.n(q+b+j*s+2,2)*1000,max_khz=r.n(q+b+j*s+4,2)*1000) for j in range(n)]
+        levels.append(dict(pstate=(r.n(q,2)&0x1e0)>>5,min_khz=r.n(q+2,2)*1000,max_khz=r.n(q+4,2)*1000,domains=domains))
+    return dict(status='ok',version=0x11,offset=p,levels=levels)
+
+
+def voltage(r,p):
+    v=r.n(p)
+    if v==0x12: h,c,s=5,r.n(p+2),r.n(p+1)
+    elif v==0x20: h,c,s=r.n(p+1),r.n(p+2),r.n(p+3)
+    else: v,h,s,c=r.table(p,(0x30,0x40,0x50))
+    minimum={0x12:5,0x20:6,0x30:5,0x40:18,0x50:26}[v]
+    need(h>=minimum and (s>0 or c==0),'voltage header short');r.bytes(p,h+c*s)
+    out=dict(status='ok',version=v,offset=p,type='gpio',entries=[])
+    if v in (0x12,0x20,0x30):
+        need(s>=2,'voltage entry short');out['vidmask']=r.n(p+(5 if v==0x20 else 4))
+        out['entries']=[dict(vid=r.n(p+h+i*s+1)>>(2 if v==0x30 else 0),uv=r.n(p+h+i*s)*10000) for i in range(c)]
+    else:
+        out.update(min_uv=r.n(p+0x0a,4) if v==0x50 else 0,max_uv=r.n(p+0x0e,4),base_uv=r.n(p+(0x12 if v==0x50 else 4),4)&(0xffffff if v==0x50 else 0xffffffff))
+        if v==0x50 and r.n(p+4)&1:
+            out.update(type='pwm',pwm_frequency_hz=r.n(p+5,4)//1000,pwm_range_uv=r.n(p+0x16,4))
+        else:
+            mask=r.n(p+(6 if v==0x50 else 11));step=r.n(p+(0x16 if v==0x50 else 8),2,signed=True)
+            out.update(vidmask=mask,step_uv=step)
+            if v==0x40 or r.n(p+4)&2:
+                if v==0x40:
+                    out['min_uv']=min(out['base_uv'],out['base_uv']+step*mask)
+                    out['max_uv']=out['max_uv'] or max(out['base_uv'],out['base_uv']+step*mask)
+                out['entries']=[dict(vid=i,uv=out['base_uv']+step*i) for i in range(mask+1) if out['min_uv']<=out['base_uv']+step*i<=out['max_uv']]
+            else:
+                need(s>=4,'voltage entry short')
+                out['entries']=[dict(vid=(r.n(p+h+i*s,4)>>23)&255,uv=r.n(p+h+i*s,4)&0x1fffff) for i in range(c)]
+    return out
+
+
+def vmap(r,p):
+    v,h,s,c=r.table(p,(0x10,0x20),4)
+    need(s >= (20 if v==0x10 else 34),'voltage map entry short')
+    rows=[]
+    for i in range(c):
+        q=p+h+i*s; start=0 if v==0x10 else 2
+        rows.append(dict(mode=0 if v==0x10 else r.n(q),link=255 if v==0x10 else r.n(q+1),min_uv=r.n(q+start,4),max_uv=r.n(q+start+4,4),args=[r.n(q+start+8+j*4,4,signed=True) for j in range(3 if v==0x10 else 6)]))
+    return dict(status='ok',version=v,offset=p,entries=rows)
+
+
+def thermal(r,p):
+    v,h,s,c=r.table(p,(0x10,0x20,0x24));need(s>=3,'thermal entry short')
+    names={4:'critical',7:'down_clock',8:'fan_boost',0x32:'shutdown'};thresholds={};rows=[];section=0
+    for i in range(c):
+        q=p+h+i*s;tag=r.n(q);value=r.n(q+1,2);rows.append(dict(tag=tag,value=value))
+        if tag==0:
+            section=value
+            if 0 < value < 0x8000: break
+        if section==0 and tag in names:thresholds[names[tag]]=dict(c=(value&0xff0)>>4,hysteresis=value&15)
+    return dict(status='ok',version=v,offset=p,thresholds=thresholds,entries=rows)
+
+
+def timing(r,p):
+    v=r.n(p)
+    if v==0x10:
+        v,h,c,b=r.bytes(p,4);s=n=0;need(h>=4 and b>=15,'timing v10 geometry');r.bytes(p,h+c*b)
+    else:h,b,s,n,c=geometry(r,p,0x20,0x33)
+    rows=[]
+    for i in range(c):
+        q=p+h+i*(b+s*n);entry=dict(raw=r.bytes(q,b+s*n).hex())
+        if v==0x20:
+            fields={}
+            for label,offset,mask,shift in [('2c_003f',0x2c,0x3f,0),('2c_1fc0',0x2c,0x1fc0,6),('2e_03',0x2e,3,0),('2e_30',0x2e,0x30,4),('2e_c0',0x2e,0xc0,6),('2f_03',0x2f,3,0),('30_07',0x30,7,0),('30_f8',0x30,0xf8,3),('31_0007',0x31,7,0),('31_0078',0x31,0x78,3),('31_0780',0x31,0x780,7),('31_0800',0x31,0x800,11),('31_7000',0x31,0x7000,12),('31_8000',0x31,0x8000,15)]:fields[label]=(r.n(q+offset,2 if offset in (0x2c,0x31) else 1)&mask)>>shift
+            entry.update(registers=[r.n(q+j*4,4) for j in range(11)],fields=fields,subentries=[r.bytes(q+b+j*s,s).hex() for j in range(n)])
+        else:
+            entry['fields']={k:r.n(q+o) for k,o in [('WR',0),('WTR',1),('CL',2),('RC',3),('RFC',5),('RAS',7),('RP',9),('RCDRD',10),('RCDWR',11),('RRD',12)]}
+        rows.append(entry)
+    return dict(status='ok',version=v,offset=p,entries=rows)
+
+
+def rammap(r,p):
+    v=r.n(p);need(v in (0x10,0x11),'rammap version');h,b,s,n,c=geometry(r,p,v,5 if v==0x10 else 0x12)
+    rows=[]
+    for i in range(c):
+        q=p+h+i*(b+s*n); rows.append(dict(min_mhz=r.n(q,2),max_mhz=r.n(q+2,2),raw=r.bytes(q,b).hex(),configurations=[dict(raw=r.bytes(q+b+j*s,s).hex(),timing_index=r.n(q+b+j*s+(1 if v==0x10 else 0))) for j in range(n)]))
+    return dict(status='ok',version=v,offset=p,entries=rows)
+
+
+def gpio(r):
+    p=r.n(0x36,2)
+    if not p:return dict(status='absent',entries=[])
+    v,h=r.bytes(p,2);need(0x30<=v<=0x41 and h>=12,'DCB GPIO header');p=r.n(p+10,2)
+    if not p:return dict(status='absent',entries=[])
+    v,h,c,s=r.bytes(p,4);need(0x30<=v<=0x41 and h>=4 and s>=(5 if v==0x41 else 4),'GPIO geometry');r.bytes(p,h+c*s)
+    rows=[]
+    for i in range(c):
+        q=p+h+i*s;info=r.n(q,4)
+        logs=r.n(q+4) if v==0x41 else info>>23
+        rows.append(dict(line=info&(63 if v==0x41 else 31),function=(info>>8)&255,log0=(logs>>4)&3,log1=(logs>>6)&3))
+    return dict(status='ok',version=v,entries=rows)
+
+
+def voltage_requirement(d, voltage_id, temperature_c=None, speedo=None):
+    """MIT nouveau volt/base.c: map/clamp each term, add links, round VID up.
+
+    Missing inputs retain the BIOS clamps. Constant clamps/zero coefficients
+    can resolve a term without a fuse value; this is offline algebra, not a
+    claim that nouveau initialized its voltage subdevice without speedo.
+    """
+    need(temperature_c is None or type(temperature_c) is int and 0 <= temperature_c <= 255,
+         'temperature outside vmap u8 input')
+    need(speedo is None or type(speedo) is int and 0 <= speedo < 1 << 31,
+         'invalid speedo input')
+    vm = d['voltage_map']
+
+    def trunc(n, divisor):
+        return (1 if n >= 0 else -1) * (abs(n) // divisor)
+
+    def mapped(idx, seen):
+        need(type(idx) is int and 0 <= idx <= 255, 'invalid voltage ID')
+        if vm['status'] != 'ok' or idx >= len(vm['entries']):
+            return (idx*10000, idx*10000, [], [idx]) if idx else (None, None, ['voltage_map'], [idx])
+        need(idx not in seen, 'cyclic voltage map')
+        e = vm['entries'][idx]
+        lo, hi = e['min_uv'], e['max_uv']
+        need(0 <= lo <= hi, 'invalid voltage map bounds')
+        a = e['args']; mode = e['mode']; missing = []
+        if lo != hi:
+            polynomial = vm['version'] == 0x10 or mode == 0
+            if polynomial:
+                if speedo is None and any(a[1:3]): missing.append('speedo')
+                if not missing:
+                    s = speedo or 0
+                    value = trunc(a[0], 10) + trunc(a[1]*s, 10) + trunc(a[2]*s*s, 100000)
+            elif mode == 1:
+                if speedo is None and any(a[i] for i in (1, 3, 4)): missing.append('speedo')
+                if temperature_c is None and any(a[i] for i in (2, 3, 5)): missing.append('temperature_c')
+                if not missing:
+                    s, t = speedo or 0, temperature_c or 0
+                    value = ((a[0]*15625) >> 18) + ((a[1]*s*15625) >> 18)
+                    value += ((a[2]*t*15625) >> 10) + ((a[3]*s*t*15625) >> 18)
+                    value += ((a[4]*s*s*15625) >> 30) + ((a[5]*t*t*15625) >> 18)
+            else:
+                value = (lo+hi)//2 if mode == 3 else lo
+            if not missing: lo = hi = min(max(value, lo), hi)
+        path = [idx]
+        if e['link'] != 255:
+            llo, lhi, absent, linked_path = mapped(e['link'], seen | {idx})
+            missing += absent; path += linked_path
+            if llo is None: return None, None, sorted(set(missing)), path
+            lo += llo; hi += lhi
+        return lo, hi, sorted(set(missing)), path
+
+    lo, hi, missing, path = mapped(voltage_id, set())
+    return requirement_selection(d, lo, hi, missing, path)
+
+
+def requirement_selection(d, lo, hi, missing, path):
+    entries = d['voltage'].get('entries', [])
+    def select(uv):
+        candidates = [e for e in entries if uv is not None and e['uv'] >= uv]
+        return min(candidates, key=lambda e: e['uv']) if candidates else None
+    lower, upper = select(lo), select(hi)
+    exact = lo is not None and lo == hi
+    return dict(min_uv=lo, max_uv=hi, requested_uv=lo if exact else None,
+                selected_min_uv=lower['uv'] if lower else None,
+                selected_max_uv=upper['uv'] if upper else None,
+                selected_uv=lower['uv'] if exact and lower else None,
+                selected_vid=lower['vid'] if exact and lower else None,
+                missing=[] if exact else sorted(set(missing)), vmap_path=path)
+
+
+def voltage_state(d, raw, temperature_c=None, speedo=None):
+    v = d['voltage']; now = current_vid = None; reason = 'voltage-table-absent'
+    pins = []; mask = 0
+    if v['status'] == 'ok':
+        if v['type'] == 'pwm':
+            if any(g['function'] == 0x81 for g in d['gpio']['entries']):
+                divisor = raw.get(0x20340, 0); duty = raw.get(0x20344, 0) & 0x7fffffff
+                if divisor: now = v['base_uv'] + v['pwm_range_uv']*duty//divisor
+                reason = 'pwm-divisor-zero' if not divisor else 'pwm-readback'
+            else: reason = 'pwm-gpio-absent'
+        else:
+            vid = 0; valid = True
+            for i, tag in enumerate([4, 5, 6, 0x1a, 0x73, 0x74, 0x75, 0x76]):
+                if not v['vidmask'] & (1 << i): continue
+                matches = [g for g in d['gpio']['entries'] if g['function'] == tag]
+                need(len(matches) <= 1, 'duplicate VID GPIO function')
+                if not matches:
+                    pins.append(dict(bit=i, function=tag, status='gpio-absent-masked'))
+                    continue
+                mask |= 1 << i
+                g = matches[0]; address = 0xd610 + 4*g['line']; word = raw.get(address)
+                readable = word is not None and word >> 16 != 0xbadf
+                sense = int(bool(word & 0x4000)) if readable else None
+                logical = int(sense == (g['log1'] & 1)) if readable else None
+                pins.append(dict(bit=i, function=tag, line=g['line'], log0=g['log0'], log1=g['log1'],
+                                 address=address, raw=word, sense=sense, logical=logical,
+                                 status='ok' if readable else 'unmeasured'))
+                if readable: vid |= logical << i
+                else: valid = False
+            matches = [e['uv'] for e in v['entries'] if e['vid'] == vid]
+            if valid and mask and len(matches) == 1: now, current_vid = matches[0], vid
+            reason = 'gpio-readback' if now is not None else 'gpio-vid-unresolved'
+
+    def requirement(idx):
+        return voltage_requirement(d, idx, temperature_c, speedo)
+
+    def floor(point, base):
+        if point['min_uv'] is None or base['min_uv'] is None:
+            return requirement_selection(d, None, None, point['missing']+base['missing'],
+                                         point['vmap_path']+base['vmap_path'])
+        return requirement_selection(d, max(point['min_uv'], base['min_uv']),
+                                     max(point['max_uv'], base['max_uv']), point['missing']+base['missing'],
+                                     point['vmap_path']+base['vmap_path'])
+
+    levels = []; csteps = []; boosts = []; used = set(); candidates = []
+    points = d['cstep'].get('points', [])
+    for level in d['performance'].get('levels', []):
+        base = requirement(level['voltage_id']); lo, hi = base['min_uv'], base['max_uv']
+        more = None if now is None or lo is None else True if lo > now else False if hi <= now else None
+        levels.append(dict(pstate=level['pstate'], voltage_id=level['voltage_id'],
+                           gpc_khz=level['gpc_khz'], memory_khz=level['memory_khz'],
+                           min_uv=lo, max_uv=hi, needs_more_voltage=more, requirement=base))
+        candidates.append((level['gpc_khz'], base))
+        boost_level = next((b for b in d['boost'].get('levels', []) if b['pstate'] == level['pstate']), None)
+
+        def adjust(f):
+            # clk/base.c:44-74: global boost clamp, then BIOS domain 0 (GPC).
+            if boost_level is not None:
+                f = min(max(f, boost_level['min_khz']), boost_level['max_khz'])
+                domain = next((s for s in boost_level['domains'] if s['domain'] == 0), None)
+                if domain:
+                    f = min(max(f*domain['percent']//100, domain['min_khz']), domain['max_khz'])
+            return f
+
+        membership = next((e for e in d['cstep'].get('levels', []) if e['pstate'] == level['pstate']), None)
+        resolved = []
+        if membership:
+            need(membership['index'] < len(points), 'cstep index outside points')
+            for index in range(membership['index']+1):
+                p = points[index]
+                if not p['frequency_khz']: continue
+                used.add(index); point = requirement(p['voltage_id']); combined = floor(point, base)
+                f = adjust(p['frequency_khz'])
+                resolved.append(dict(index=index, raw_gpc_khz=p['frequency_khz'], gpc_khz=f,
+                                     core_khz=f//2, memory_khz=level['memory_khz'], voltage_id=p['voltage_id'],
+                                     point_requirement=point, requirement=combined))
+                candidates.append((f, combined))
+            csteps.append(dict(pstate=level['pstate'], maximum_index=membership['index'], points=resolved))
+        if boost_level:
+            boosts.append(dict(**boost_level, memory_khz=level['memory_khz'],
+                               voltage_source='cstep-and-performance',
+                               cstep_indices=[p['index'] for p in resolved]))
+    legacy_points = []
+    for i, p in enumerate(points):
+        q = requirement(p['voltage_id']) if p['frequency_khz'] else None
+        legacy_points.append(dict(index=i, frequency_khz=p['frequency_khz'], voltage_id=p['voltage_id'],
+                                  min_uv=q['min_uv'] if q else None, max_uv=q['max_uv'] if q else None,
+                                  requirement=q, active=bool(p['frequency_khz'])))
+    guaranteed = []; possible = []
+    if now is not None:
+        for f, q in candidates:
+            if q['selected_min_uv'] is not None and q['selected_min_uv'] <= now: possible.append(f)
+            if q['selected_max_uv'] is not None and q['selected_max_uv'] <= now: guaranteed.append(f)
+    low, high = max(guaranteed, default=None), max(possible, default=None)
+    return dict(method=v.get('type'), current_uv=now, current_vid=current_vid, status=reason,
+                effective_vidmask=mask, vid_pins=pins, temperature_c=temperature_c, speedo=speedo,
+                levels=levels, boost_points=legacy_points, cstep_levels=csteps, boost_levels=boosts,
+                unused_cstep_indices=[i for i in range(len(points)) if i not in used],
+                highest_at_current_uv=dict(guaranteed_gpc_khz=low, possible_gpc_khz=high,
+                                           exact=low is not None and low == high))
+
+
+
+def benchmarks(rows):
+    expected=[(kind,trial) for kind in ('core','memory') for trial in (1,2,3)]
+    need([(r.get('kind'),r.get('trial')) for r in rows]==expected,'six ordered benchmark trials required')
+    for r in rows:
+        need(r.get('completion') is True,'benchmark completion missing')
+        need(all(type(r.get(k)) is int and 0<=r[k]<1<<64 for k in ('begin_ns','end_ns','elapsed_ns','work')),'benchmark integer fields')
+        need(0<r['elapsed_ns']==r['end_ns']-r['begin_ns'],'benchmark monotonic interval')
+        work,unit=(200*2560*1600,'fragments') if r['kind']=='core' else (64<<20,'bytes')
+        need(r['work']==work and r.get('unit')==unit,'benchmark work differs')
+    return rows
+
+
+def domains(raw):
+    words=dict(raw);need(len(words)==len(raw),'duplicate clock word'); used=set()
+    def reg(a):
+        need(a in words,'missing clock word '+hex(a));used.add(a);return words[a]
+    class Unavailable(Exception): pass
+    crystal={0:13500,0x40:14318,0x400000:27000,0x400040:25000}[reg(0x101000)&0x400040]
+    def pll(a):
+        need(a in (0xe800,0xe820,0x132000,0x132020,0x137000,0x137020,0x137040,0x1370e0),'unrecognized PLL')
+        ctrl,coef=reg(a),reg(a+4);m,n,p=coef&255,(coef>>8)&255,(coef>>16)&63;frac=0xf000
+        if not ctrl&1:raise Unavailable('pll-disabled')
+        if not m:raise Unavailable('zero-pll-divisor')
+        if a in (0xe800,0xe820):src,p=crystal,1
+        elif a==0x132000:src,p=pll(0x132020),2 if coef&0x10000000 else 1
+        elif a==0x132020:src,frac=div(0,0x137320,0x137330),reg(a+16)>>16
+        else:src=div((a&255)//32,0x137120,0x137140)
+        f=(src*n+((((frac+4096)&65535)*src)>>13))//(m*(p or 1))
+        if f>=1<<32:raise Unavailable('clock-overflow')
+        return f
+    def div(i,src,ctl):
+        s,c=reg(src+4*i),reg(ctl+4*i)
+        if s&3==0:return 108000 if s&0x30000==0x30000 else crystal
+        if s&3==2:return 100000
+        if s&3!=3:raise Unavailable('unknown-divider-source')
+        f=pll(0xe820 if s&0x100 else 0xe800)
+        return f*2//((c&63)+2) if c&0x80000000 else f
+    def clk(i):
+        c=reg(0x137250+4*i)
+        if i<7:
+            high=bool(reg(0x137100)&(1<<i));f=pll(0x137000+32*i) if high else div(i,0x137160,0x1371d0)
+        else:
+            src=reg(0x137160+4*i);f=div(i,0x137160,0x1371d0);high=src&3==3 and bool(src&0x100)
+            if high and src&0x40000000:f=pll(0x1370e0)
+        return f*2//(((c>>8 if high else c)&63)+2) if c&0x80000000 else f
+    def mem():
+        mode=reg(0x1373f4)&15
+        if mode not in (1,2):raise Unavailable('unknown-memory-mode')
+        return pll(0x132020 if mode==1 else 0x132000)
+    out={}
+    for n,fn in [('crystal',lambda:crystal),('href',lambda:100000)]+[(n,lambda i=i:clk(i)) for n,i in [('gpc',0),('rop',1),('hubk07',2),('hubk06',7),('hubk01',8),('pmu',12),('vdec',14)]]+[('memory',mem),('mpll',lambda:pll(0x132000)),('mpll_ref',lambda:pll(0x132020))]:
+        try:out[n]=dict(value=fn(),status='ok')
+        except Unavailable as e:out[n]=dict(value=None,status=str(e))
+    need(used==set(words),'unexpected clock register')
+    return out
+
+
+def c1_record(row):
+    need(row.get('schema')==1 and row.get('phase')=='startup','C1 schema')
+    for name in ['raw','voltage_raw']:
+        words=row[name]
+        need(isinstance(words,list) and 1<=len(words)<=128 and all(isinstance(w,list) and len(w)==2 and all(type(v) is int and 0<=v<1<<32 for v in w) for w in words),'invalid raw words')
+        need(len(dict(words))==len(words),'duplicate raw address')
+    need(set(dict(row['voltage_raw']))=={0xd610+4*i for i in range(32)}|{0x20340,0x20344},'voltage register inventory')
+    need(row['domains']==domains(row['raw']),'domain frequencies differ from hardware')
+    need(row['sensor_restored'] is True,'sensor state was not restored')
+    reads=row['sensor_raw'];writes=row['sensor_writes']
+    allowed={0x22400,0x21000,0x212a8,0x20008,0x2000c,0x20400}
+    need(all(isinstance(r,list) and len(r)==2 and r[0] in allowed and type(r[1]) is int and 0<=r[1]<1<<32 for r in reads),'invalid sensor reads')
+    need(writes==[],'C1 sensor writes are forbidden')
+    at=0
+    def read(address):
+        nonlocal at
+        need(at<len(reads) and reads[at][0]==address,'sensor read sequence differs')
+        value=reads[at][1];at+=1;return value
+    enable,access=read(0x22400),read(0x21000)
+    if not enable&0x800 or not access&1:
+        reading=dict(value=None,status='needs-setup')
+    elif read(0x212a8)!=1:
+        reading=dict(value=None,status='sensor-unavailable')
+    else:
+        a,b=read(0x20008),read(0x2000c)
+        if a&0x80008000!=0x80000000 or b&0x80000003:
+            reading=dict(value=None,status='needs-setup')
+        else:
+            v=read(0x20400)
+            reading=dict(value=v,status='ok') if v<=0x7fffffff else dict(value=None,status='sensor-read-error')
+    need(at==len(reads) and row['temperature']==reading,'sensor readback differs')
+    ports=row['pcie'];need(len(ports)==2 and ports[0]['bdf']=='01:00.0' and ports[0]['bdf']!=ports[1]['bdf'],'endpoint/upstream PCIe pair')
+    for p in ports:
+        need(0x40<=p['cap_offset']<=0xdc and p['cap_offset']%4==0,'PCIe capability offset')
+        need(all(type(p[k]) is int and 0<=p[k]<1<<32 for k in ['flags','device_cap','link_cap','link_control','link_status']),'PCIe words')
+        need(bool(p['flags']&0x100)==(p['slot_cap'] is not None),'PCIe slot presence')
+    need((ports[1]['flags']>>4)&15 in (4,6),'upstream is not a root/downstream port')
+    return row
+
+
+def link(p):
+    def power(value,scale):return value/[1,10,100,1000][scale]
+    d,l,s=p['device_cap'],p['link_cap'],p['link_status'];slot=p['slot_cap']
+    return dict(bdf=p['bdf'],maximum_speed_code=l&15,maximum_width=(l>>4)&63,
+                speed_code=s&15,width=(s>>4)&63,training=bool(s&0x800),
+                device_power_limit_w=power((d>>18)&255,(d>>26)&3),
+                slot_power_limit_w=None if slot is None else power((slot>>7)&255,(slot>>15)&3),
+                slot_power_controller=None if slot is None else bool(slot&2))
+
+
+def startup_payload(path,serial):
+    # C1 measures before CAPS finishes. Authenticate its independent early
+    # upload rather than requiring unrelated, later core/display artifacts.
+    uploads=list(re.finditer(r'^GT710_BULK ([1-9]\d*) ([a-f0-9]{64})$',serial,re.M))
+    need(len(uploads)==1,'C1 bulk missing or repeated')
+    upload=uploads[0];data=(path/'gt710-pixels.rle').read_bytes()
+    need(len(data)==int(upload[1]) and len(data)<=2<<20 and hashlib.sha256(data).hexdigest()==upload[2],'C1 bulk length/digest differs')
+    text=data.decode('ascii');rows={}
+    for kind,prefix in [('C1','GT710_CLOCK_C1'),('VBIOS','GT710_VBIOS_V1')]:
+        need(not re.search('^'+prefix+' ',serial,re.M),'C1 records must arrive in bulk')
+        bodies=re.findall('^'+prefix+' (.+)$',text,re.M)
+        anchors=list(re.finditer(r'^GT710_'+kind+r'_BULK bytes=([1-9]\d*) sha256=([a-f0-9]{64})$',serial,re.M))
+        need(len(bodies)==len(anchors)==1,'C1 record/anchor missing or repeated')
+        body=(prefix+' '+bodies[0]).encode('ascii');anchor=anchors[0]
+        need(anchor.start()<upload.start() and len(body)==int(anchor[1]) and hashlib.sha256(body).hexdigest()==anchor[2],'C1 record differs from serial anchor')
+        rows[kind]=json.loads(bodies[0])
+    trials=list(re.finditer(r'^GT710_BENCH ',serial,re.M))
+    need(trials and upload.end()<trials[0].start(),'C1 upload must precede benchmarks')
+    return rows
+
+
+def capture(directory, temperature_c=None, speedo=None):
+    path=Path(directory);boot=json.loads((path/'run.json').read_text())
+    need(boot['toolsCommit']==boot['commit']==boot['build']['commit'],'C1 tools/build/head differ')
+    need(boot['build']['profile']=='gpu-clock' and boot['build']['features']==['gt710_clock_probe'] and not boot.get('suites') and not boot.get('suite'),'C1 diagnostic profile required')
+    serial=(path/'serial.txt').read_text()
+    need(len(re.findall(r'^GT710_C1_DONE$',serial,re.M))==1,'C1 completion missing or repeated')
+    rows=startup_payload(path,serial)
+    row=c1_record(rows['C1']);rom=rows['VBIOS'];raw=bytes.fromhex(rom['hex'])
+    need(len(raw)==rom['bytes'] and hashlib.sha256(raw).hexdigest()==rom['sha256'],'VBIOS digest differs')
+    decoded=decode_image(raw)
+    times=benchmarks([json.loads(m) for m in re.findall(r'^GT710_BENCH (.+)$',serial,re.M)])
+    need(not re.search(r'^GT710_C1_ERROR|^GT710_.*ERROR|^LOCKUP|^PANIC',serial,re.M),'C1/card failure in capture')
+    for n,f in row['domains'].items():
+        need(f"GT710_CLOCK domain={n} khz={f['value'] if f['value'] is not None else 'null'} status={f['status']}" in serial,'clock serial summary differs')
+    need(all(row['domains'][n]['status']=='ok' and row['domains'][n]['value']>0 for n in ['gpc','rop','hubk07','hubk06','hubk01','memory']),'required hardware clock unavailable')
+    return dict(boot=boot['id'],commit=boot['commit'],clock=row,benchmarks=times,links=[link(p) for p in row['pcie']],vbios=decoded,voltage=voltage_state(decoded,dict(row['voltage_raw']),temperature_c,speedo))
+
+
+def main():
+    p=argparse.ArgumentParser(description=__doc__);p.add_argument('--rom',type=Path);p.add_argument('--capture',type=Path);p.add_argument('--output',type=Path)
+    p.add_argument('--temperature-c',type=int,help='explicit vmap temperature input; never inferred from POST voltage')
+    p.add_argument('--speedo',type=int,help='explicit captured speedo fuse value; never inferred from VID')
+    a=p.parse_args();need(bool(a.rom)!=bool(a.capture),'choose --rom or --capture')
+    report=decode_image(a.rom.read_bytes()) if a.rom else capture(a.capture,a.temperature_c,a.speedo)
+    if a.rom:report['voltage_analysis']=voltage_state(report,{},a.temperature_c,a.speedo)
+    text=json.dumps(report,indent=2)+'\n'
+    if a.output:a.output.write_text(text)
+    else:print(text,end='')
+
+if __name__=='__main__': main()

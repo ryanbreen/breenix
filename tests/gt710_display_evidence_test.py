@@ -71,7 +71,12 @@ class DisplayEvidence(unittest.TestCase):
         process=process.replace('pub(in crate::gk208) fn present(', 'fn process_present(')
         process=process.replace('super::super::','').replace('&mut Registers(s.registers)','regs')
         process=process.replace('surface:present::Surface)', 'surface:present::Surface, regs:&mut Registers)')
-        source=source.replace('// PROCESS_PRESENT',process)
+        completion=item((ROOT/'kernel/src/gpu/gk208/ce/process.rs').read_text(),
+                        'pub(in crate::gk208) fn present_complete(')
+        completion=completion.replace('pub(in crate::gk208) fn present_complete(', 'fn process_present_complete(')
+        completion=completion.replace('super::super::','').replace('&mut Registers(s.registers)','regs')
+        completion=completion.replace('surface:present::Surface)', 'surface:present::Surface, regs:&mut Registers)')
+        source=source.replace('// PROCESS_PRESENT',process+'\n'+completion)
         priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp);(p/'display.rs').write_text(source)

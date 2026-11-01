@@ -18,6 +18,8 @@ class BlendScratch(unittest.TestCase):
         ownership = '\n'.join(item(core, marker) for marker in (
             'struct NativeScratch {', 'impl Drop for NativeScratch {',
             'fn native_blend_scratch(', 'fn native_spans('))
+        if 'fn native_cached_blend_scratch(' in core:
+            ownership += '\n' + item(core, 'fn native_cached_blend_scratch(')
         # Reuse the controlled native channel boundary; allocator/VM, adapter,
         # scratch preparation and submission retirement are production code.
         boundary = (ROOT / 'tests/gt710_adapter_test.rs').read_text().split('fn request(caller:')[0]
@@ -70,6 +72,13 @@ class BlendScratch(unittest.TestCase):
         boundary = boundary.replace('std::sync::Arc::new(crate::gpu::dma::Pages)',
                                     'std::sync::Arc::new(crate::gpu::dma::Pages::new(1).unwrap())')
         boundary = boundary.replace('pub mod gk208 {', '''pub mod gk208 {
+    pub mod cost {
+        pub enum Slot { ScratchPrepare, SpanPrepare, SpanMap, SpanUpload }
+        pub struct Guard;
+        impl Drop for Guard { fn drop(&mut self) {} }
+        pub fn phase(_: Slot) -> Guard { Guard }
+    }
+    pub mod timing { pub fn phase(_: u64) -> super::cost::Guard { super::cost::Guard } }
     #[allow(dead_code)] #[path = "memory.rs"] pub mod memory;
     #[allow(dead_code)] #[path = "vm.rs"] pub mod vm;
     #[allow(dead_code)] #[path = "resource.rs"] pub mod resource;
@@ -97,7 +106,7 @@ class BlendScratch(unittest.TestCase):
 ''')
         boundary = boundary.replace('copy::Rect,', '').replace('Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty())', 'Device::registered(NativeChannel(s.clone()),gk208::caps::BoardState::empty(),0)')
         encode = (ROOT / 'kernel/src/gpu/gk208/encode.rs').read_text()
-        storage = item(encode, 'pub struct Spans {') + '\n#[derive(Clone, Copy)]\n' + item(encode, 'pub struct Target {') + '\n' + item(encode, 'pub(in crate::gk208) struct Storage {') + '\n' + item(encode, 'impl Drop for Storage {')
+        storage = 'type FrameBytes = Vec<u8>;\n' + item(encode, 'pub struct Spans {') + '\n#[derive(Clone, Copy)]\n' + item(encode, 'pub struct Target {') + '\n' + item(encode, 'pub(in crate::gk208) struct Storage {') + '\n' + item(encode, 'impl Drop for Storage {')
         boundary = boundary.replace('// STORAGE', storage)
         boundary = boundary.replace('std::sync::Arc::new(crate::gpu::dma::Pages)',
                                     'std::sync::Arc::new(crate::gpu::dma::Pages::new(1).unwrap())')
@@ -108,19 +117,24 @@ class BlendScratch(unittest.TestCase):
         boundary = boundary.replace('../kernel/', str(ROOT / 'kernel') + '/')
         harness = (ROOT / 'tests/fixtures/gt710_blend_scratch.rs').read_text()
         boundary = boundary.replace('extern crate alloc;', 'extern crate alloc;\n#[macro_export] macro_rules! serial_println { ($($arg:tt)*) => { let _ = format!($($arg)*); }; }')
+        # Select the actual client submission call, rather than warm-up preparation.
+        preparation = core.split('// Native scratch uses', 1)[1].split('let mut scratch = ', 1)[1].split(';', 1)[0]
+        preparation = preparation.replace('tgid', '42').replace('plan.scratch', 'sizes').replace('&written', '&[7]')
+        harness += (ROOT / 'tests/fixtures/gt710_coverage_scratch.rs').read_text().replace('PREPARE', preparation)
         harness = boundary + harness.replace('// OWNERSHIP', ownership).replace(
             '// RETIRE', item(core, '    fn retire_if_done('))
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)
             resource = (ROOT / 'kernel/src/gpu/gk208/resource.rs').read_text()
+            resource = resource.replace('#[path = "present.rs"]', f'#[path = "{ROOT / "kernel/src/gpu/gk208/present.rs"}"]')
             resource += '\n' + item(resource, 'pub(crate) fn blend_staging(')
             resource += '\n' + item(resource, 'pub(crate) fn retire_blend_staging(')
             resource += '\n' + item(resource, 'pub(crate) fn span_staging(')
             (p / 'resource.rs').write_text(resource)
             harness = harness.replace('#[path = "resource.rs"]', f'#[path = "{p / "resource.rs"}"]')
             (p / 'adapter.rs').write_text(adapter)
-            harness = harness.replace('// ADAPTER', f'#[path = "{p / "adapter.rs"}"] pub mod adapter;')
+            harness = harness.replace('// ADAPTER', f'#[allow(dead_code)] // The fixture uses only scratch retirement from the complete adapter.\n#[path = "{p / "adapter.rs"}"] pub mod adapter;')
             (p / 'scratch.rs').write_text(harness)
             subprocess.run(priority + ['rustc', '--edition=2021', '--crate-name', 'gpu_abi',
                            '--crate-type', 'rlib', '--cfg', 'feature="alloc"', '-Dwarnings',

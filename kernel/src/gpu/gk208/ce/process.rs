@@ -14,7 +14,7 @@ static RECOVERY_WAITERS:WaitQueueHead=WaitQueueHead::new();
 static WAITING:AtomicBool=AtomicBool::new(false);
 static WAITERS:WaitQueueHead=WaitQueueHead::new();
 struct Work {a:Channel,b:Channel,ticket:Option<Ticket>,request:Request,seed:u32,baseline:memory::allocator::Stats,old:[u32;3],userd:Allocation,engine:Engine}
-pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,mode:u32,evo:super::super::native::Evo,scanout:Vec<super::super::resource::Hold>,work:Option<Work>,resources:super::super::resource::Resources<crate::gpu::dma::Pages>}
+pub(super) struct Session {pub(super) layout:memory::Layout,pub(super) registers:usize,pub(super) bar:usize,pub(super) bi:u64,pub(super) bd:u64,pub(super) pte:u64,pub(super) total:u64,console:super::super::ConsoleSurface,mode:u32,evo:super::super::native::Evo,pending_present:Option<super::super::present::Surface>,ready_present:Option<super::super::present::Receipt>,scanout:Vec<super::super::resource::Hold>,work:Option<Work>,resources:super::super::resource::Resources<crate::gpu::dma::Pages>}
 pub(in crate::gk208) fn test_ownership()->Result<(),&'static str> {
     if CORE_STARTED.load(Ordering::Acquire) {return Err("native GPU core owns FIFO");}
     Ok(())
@@ -30,7 +30,7 @@ pub(crate) fn retain(mut layout:memory::Layout,regs:usize,bar:usize,console:supe
         .ok_or("logical console BAR table absent")?.range.start;
     let s=layout.allocator.stats();
     *SESSION.lock()=Some(Session{layout,registers:regs,bar,bi:native+0x2000,bd:native+0x3000,
-        pte:table+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,mode:1,evo,scanout:Vec::new(),work:None,resources:super::super::resource::Resources::new()});
+        pte:table+(SLOT/4096)*8,total:s.reserved+s.charged+s.free,console,mode:1,evo,pending_present:None,ready_present:None,scanout:Vec::new(),work:None,resources:super::super::resource::Resources::new()});
     Ok(console)
 }
 pub(in crate::gk208) fn initialize_core()->Result<(),&'static str> {
@@ -165,6 +165,8 @@ fn recovery_read()->Result<Vec<u8>,i32> {
     }
 }
 pub(crate) fn proc_read(op:u8)->Result<Vec<u8>,i32> {
+    #[cfg(feature = "gt710_clock_probe")]
+    if op==0 {return Ok(b"full-clocks-probe\n".to_vec());}
     if !crate::test_control::enabled() {return Err(-38);}
     if op==3 {return recovery_read();}
     if op==1 {
@@ -199,6 +201,41 @@ pub(crate) fn proc_read(op:u8)->Result<Vec<u8>,i32> {
     if op==2 {return s.drain().inspect_err(|e|crate::serial_println!("GT710_PROCESS_ERROR drain {}",e)).map(String::into_bytes).map_err(|_|-5);}
     if !WAITING.load(Ordering::Acquire) {return Ok(b"ready\n".to_vec());}
     s.status().map(String::into_bytes).map_err(|_|-5)
+}
+
+/// Clock startup shares the native session owner but needs no rendering core.
+/// It runs after display handoff and before GPU admission; probes retain the
+/// existing ownership predicate on with_resources.
+#[cfg(not(feature = "gt710_clock_probe"))]
+pub(in crate::gk208) fn with_clock_owner<R>(
+    f: impl FnOnce(&mut Registers, &mut super::super::native::Evo,
+        super::super::ConsoleSurface) -> Result<R, &'static str>,
+) -> Result<R, &'static str> {
+    let mut owner=SESSION.lock();
+    let s=owner.as_mut().ok_or("native display session unavailable")?;
+    if s.work.is_some() {return Err("native CE work still owned");}
+    f(&mut Registers(s.registers), &mut s.evo, s.console)
+}
+
+/// Long clock operations move the owner out; short counter reads keep the
+/// ordinary session serialization used by rendering.
+#[cfg(not(feature = "gt710_clock_probe"))]
+pub(in crate::gk208) fn with_clock_wait<R>(
+    f: impl FnOnce(&mut Registers, &mut super::super::native::Evo,
+        super::super::ConsoleSurface) -> Result<R, &'static str>,
+) -> Result<R, &'static str> {
+    // Move exclusive ownership out of the spin lock, as initialize_core does.
+    // Other callers observe an unavailable owner instead of spinning through
+    // seconds of PMU timeouts with preemption disabled.
+    let mut s={
+        let mut owner=SESSION.lock();
+        let s=owner.as_ref().ok_or("native display session unavailable")?;
+        if s.work.is_some() {return Err("native CE work still owned");}
+        owner.take().unwrap()
+    };
+    let result=f(&mut Registers(s.registers), &mut s.evo, s.console);
+    *SESSION.lock()=Some(s);
+    result
 }
 
 /// Borrow the allocator retained by the display/CE owner.
@@ -262,11 +299,39 @@ pub(in crate::gk208) fn present(surface:super::super::present::Surface)
     -> Result<(), &'static str> {
     let mut owner=SESSION.lock();
     let s=owner.as_mut().ok_or("native display owner absent")?;
+    // GR recovery can retire the request without stopping EVO. Drain its
+    // retained flip before reusing the notifier; retain storage pins until the new
+    // binding latches. Normal admission has already waited in the shared core.
+    if let Some(pending) = s.pending_present {
+        if s.ready_present.take().is_none() {
+            super::super::native::wait_present(&mut s.evo,&mut Registers(s.registers),pending)?;
+        }
+        s.pending_present=None;
+    }
     let hold=s.resources.hold(surface.resource)?;
     // An error can follow an actual latch. Keep possible display readers
     // pinned through GR reset; only a confirmed later update can release it.
     s.scanout.push(hold);
-    let receipt=super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface)?;
+    // Retain uncertainty even if publication or GET acceptance fails.
+    s.pending_present=Some(surface);
+    s.ready_present=super::super::native::present_accepted(&mut s.evo,&mut Registers(s.registers),surface)?;
+    Ok(())
+}
+
+pub(in crate::gk208) fn present_complete(surface:super::super::present::Surface)
+    -> Result<bool, &'static str> {
+    let mut owner=SESSION.lock();
+    let s=owner.as_mut().ok_or("native display owner absent")?;
+    if s.pending_present != Some(surface) { return Err("native pending flip identity mismatch"); }
+    // A retained refresh carries its own fresh report; it must not poll the
+    // ordinary flip notifier, which may still contain an older completion.
+    let receipt=match s.ready_present.take() {
+        Some(receipt)=>receipt,
+        None=>match super::super::native::present_latched(&mut s.evo,&mut Registers(s.registers),surface)? {
+            Some(receipt)=>receipt,
+            None=>return Ok(false),
+        },
+    };
     let allocation=s.resources.scanout_allocation(surface.resource).ok_or("scanout allocation absent")?;
     super::super::display_evidence::transition(&mut Registers(s.registers),s.evo.head,surface,&receipt,
         [allocation.start,allocation.size],[s.console.vram,s.console.bytes as u64],"flip")?;
@@ -276,7 +341,8 @@ pub(in crate::gk208) fn present(surface:super::super::present::Surface)
     let active=s.scanout.pop().unwrap();
     s.scanout.clear();
     s.scanout.push(active);
-    Ok(())
+    s.pending_present=None;
+    Ok(true)
 }
 /// Serialize a logical mode switch with client display readers through the
 /// shared ownership transition. No core spin lock is held across EVO waits.
@@ -284,6 +350,12 @@ pub(crate) fn set_mode(index:u32)->Result<(), &'static str> {
     if index>1 {return Err("invalid native logical mode");}
     let mut owner=SESSION.lock();
     let s=owner.as_mut().ok_or("native display owner absent")?;
+    if let Some(pending) = s.pending_present {
+        if s.ready_present.take().is_none() {
+            super::super::native::wait_present(&mut s.evo,&mut Registers(s.registers),pending)?;
+        }
+        s.pending_present=None;
+    }
     let surface=if index==1 {
         let c=s.console;
         super::super::present::Surface{resource:u32::MAX,address:c.vram,

@@ -143,7 +143,7 @@ pub fn retained<T: Io>(io: &mut T, head: u32, surface: Surface,
     receipt(io, head, surface, notifier).map(Some)
 }
 
-fn receipt(io: &mut impl Io, head: u32, surface: Surface, notifier: u32)
+pub fn receipt(io: &mut impl Io, head: u32, surface: Surface, notifier: u32)
     -> Result<Receipt, &'static str> {
     if notifier & 1 != 1 { return Err("native present update not complete"); }
     let (active, armed) = surface_state(io, head, surface)?;
@@ -162,4 +162,19 @@ fn surface_state(io: &mut impl Io, head: u32, surface: Surface)
         }
     }
     Ok((active,armed))
+}
+
+/// Bounded synchronous EVO completion, including display-event servicing.
+pub trait NotifierWait {
+    fn poll(&mut self) -> Result<u32, &'static str>;
+    fn delay_us(&mut self, us: u32);
+}
+
+pub fn wait_notifier(io: &mut impl NotifierWait) -> Result<u32, &'static str> {
+    for _ in 0..20_000 {
+        let value = io.poll()?;
+        if value & 1 != 0 { return Ok(value); }
+        io.delay_us(100);
+    }
+    Err("native update notifier did not complete")
 }
