@@ -1,6 +1,65 @@
 {
   "id": "gt710-step-9-1",
   "suite": "breengel",
+  "boardMilestone": "25.1",
+  "title": "Window fronts and source ownership (plan PR 9.1)",
+  "basis": "origin/main 37bea492 (2026-11-01), docs/suites/breengel.json manifest order; cumulative",
+  "added": 304,
+  "total": 304,
+  "reasons": {
+    "font-parser": {
+      "added": 22,
+      "why": "Pure CPU parser cases (plan: the 90 parser/codec cases prove no native acceleration); they pass once the suite runs on the R240 with a working GUI stage, because a stage error turns a pass into a FAIL (libs/libbreenix/src/suite.rs:1016, 1425)."
+    },
+    "inflate": {
+      "added": 21,
+      "why": "Pure CPU inflate cases; same stage dependency as font-parser."
+    },
+    "bmp": {
+      "added": 9,
+      "why": "Pure CPU BMP cases; same stage dependency as font-parser."
+    },
+    "png-decode": {
+      "added": 31,
+      "why": "Pure CPU PNG decode cases; same stage dependency as font-parser."
+    },
+    "png-encode": {
+      "added": 7,
+      "why": "Pure CPU PNG encode cases; same stage dependency as font-parser."
+    },
+    "raster": {
+      "added": 42,
+      "why": "GPU-core draws through BGL on backend 6 (every pipeline 0-15 is in gk208/encode.rs, proven by the 170-case GPU suite); each judged picture reaches the stage through a published window front sampled by alias, which 25.1 builds."
+    },
+    "text": {
+      "added": 38,
+      "why": "Bitmap/TrueType text on the GPU core plus the font watcher; judged pictures need the same 25.1 front and alias path; hidpi-sizes draws at scale 2 under G20."
+    },
+    "widgets": {
+      "added": 24,
+      "why": "libbui drawing and event logic on the GPU core; pictures via the 25.1 front and alias path."
+    },
+    "text-entry": {
+      "added": 19,
+      "why": "Text field, focus and file-picker logic plus GPU drawing; pictures via the 25.1 path."
+    },
+    "icons": {
+      "added": 12,
+      "why": "Icon physics and asset drawing on the GPU core; pictures via the 25.1 path."
+    },
+    "windows": {
+      "added": 36,
+      "why": "Window targets on native resources: create, sealed fronts, acquire replay, capture across commit/resize, RLIMIT_AS/quota accounting, remnants and churn after client exit; none needs a composed scene."
+    },
+    "isolation": {
+      "added": 34,
+      "why": "Authority and EFAULT checks on window, claim and alias ops, refused before any device composition; the kiosk cases need only a live claimant."
+    },
+    "panel": {
+      "added": 9,
+      "why": "Stage fixture renders at scale 2 compared with independent rasterization: GPU-core drawing like raster, no live panel check."
+    }
+  },
   "cases": [
     "raster/fill-rect",
     "raster/fill-rect-clip-left",
