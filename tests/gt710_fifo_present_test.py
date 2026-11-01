@@ -56,6 +56,7 @@ fn candidate(c:&mut Core,a:Arg)->Option<Result<(),i64>>{let tgid=7;CODE
         presented = item(source, 'pub(super) fn presented(')
         harness = r'''
 use std::collections::{BTreeMap,BTreeSet};
+mod fence_status{pub const OK:u32=0;}
 mod abi{pub mod backend{pub const GK208:u32=6;}}
 mod dev{pub fn backend()->u32{6}pub fn success()->u32{0x60000000}}
 fn notify(){}
@@ -71,11 +72,12 @@ struct Sub{present:Option<Presenting>,ctx:u32,n:u32}
 struct Core{display:Display,resources:BTreeMap<u32,Resource>,procs:BTreeMap<u64,Proc>,subs:BTreeMap<u64,Sub>,contexts:BTreeMap<u32,Context>,released:Vec<u32>}
 mod display{use super::*;METHOD}
 impl Core{
+ fn publish(&mut self,serial:u64,_status:u32,answer:u32){let sub=&self.subs[&serial];let ctx=self.contexts.get_mut(&sub.ctx).unwrap();ctx.done_upto=sub.n;ctx.flushes.complete(sub.n,answer);}
  fn unhold(&mut self,id:u32){self.resources.get_mut(&id).unwrap().holds-=1;self.released.push(id);}
  ACCEPTED
  PRESENTED
 }
-#[test]fn submit_waits_for_the_next_latch_and_acceptance_keeps_the_context_fence_pending(){
+#[test]fn submit_waits_for_the_next_latch_and_acceptance_completes_the_context_fence(){
  let p=Presenting{id:72,seq:2,owner:1};
  let old=Binding{id:71,fence:1,answer:dev::success()};
  let mut c=Core{display:Display{holds:[71,72].into_iter().collect(),outstanding:1,sent:2,accepted:1,latest_ok:true,known:false,binding:Some(old),stack:vec![Owner{group:1,last:Some(old)}]},resources:BTreeMap::from([(71,Resource{holds:2}),(72,Resource{holds:1})]),procs:BTreeMap::from([(1,Proc{presents:0})]),subs:BTreeMap::from([(17,Sub{present:Some(p),ctx:1,n:2})]),contexts:BTreeMap::from([(1,Context{ns:7,done_upto:0,flushes:Answers::default()})]),released:vec![]};
@@ -86,7 +88,7 @@ impl Core{
  assert!(display::write_blocked(&c,&[72]),"pending B was writable before latch");
  assert!(!display::write_blocked(&c,&[73]),"disjoint C must remain writable");
  c.present_accepted(17);
- assert_eq!(c.contexts[&1].done_upto,0,"GET completed the context fence");
+ assert_eq!(c.contexts[&1].done_upto,2,"GET acceptance left the PRESENT fence pending");
  assert_eq!(c.contexts[&1].flushes.values.get(&2),Some(&dev::success()));
  let binding=c.display.binding.unwrap();
  assert_eq!((binding.id,binding.fence,binding.answer),(72,(7<<32)|2,dev::success()));
@@ -104,7 +106,7 @@ impl Core{
 
     def test_readback_pins_the_latest_accepted_binding_before_latch(self):
         source = (ROOT / 'kernel/src/gpu/display.rs').read_text()
-        acquire = item(source, '    fn acquire() -> Result<Self, i64>')
+        acquire = item(source, '    fn observe() -> Result<Self, i64>' if '    fn observe()' in source else '    fn acquire() -> Result<Self, i64>').replace('fn observe()', 'fn acquire()')
         harness = r'''
 mod abi{pub mod backend{pub const GK208:u32=6;}}
 mod dev{pub fn backend()->u32{6}}
@@ -123,6 +125,31 @@ impl Transition{ACQUIRE}
 }
 '''.replace('ACQUIRE', acquire)
         self.run_rust(harness)
+
+    def test_mutations_wait_for_the_pending_flip_to_retire(self):
+        source = (ROOT / 'kernel/src/gpu/display.rs').read_text()
+        acquire = item(source, '    fn acquire() -> Result<Self, i64>')
+        harness = r'''
+mod abi{pub mod backend{pub const GK208:u32=6;}}
+mod dev{pub fn backend()->u32{6}}
+const EINTR:i64=4;
+struct Display{changing:bool,outstanding:u32,known:bool,accepted:u64,sent:u64}
+struct Core{display:Display}
+thread_local!{static CORE:std::cell::RefCell<Core>=const{std::cell::RefCell::new(Core{display:Display{changing:false,outstanding:1,known:true,accepted:2,sent:2}})};}
+fn wait_for<T>(_:Option<u64>,_:bool,f:impl FnOnce(&mut Core)->Option<T>)->Result<T,()>{CORE.with(|c|f(&mut c.borrow_mut()).ok_or(()))}
+struct Transition;
+impl Transition{ACQUIRE}
+#[test]fn accepted_flip_cannot_be_consumed_behind_the_adapter_by_a_mutation(){
+ assert!(Transition::acquire().is_err(),"mode/ownership mutation entered with adapter flip still outstanding");
+ CORE.with(|c|{assert!(!c.borrow().display.changing);c.borrow_mut().display.outstanding=0;});
+ assert!(Transition::acquire().is_ok());
+ CORE.with(|c|assert!(c.borrow().display.changing));
+}
+'''.replace('ACQUIRE', acquire)
+        self.run_rust(harness)
+        self.assertIn('Transition::for_mutation(tgid)?', item(source, 'pub(super) fn set_mode('))
+        for marker in ['pub(super) fn back(', 'pub(super) fn restore_pending(']:
+            self.assertIn('Transition::acquire()?', item(source, marker))
 
     def run_rust(self, harness):
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
