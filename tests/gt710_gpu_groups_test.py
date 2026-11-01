@@ -1,5 +1,6 @@
 """Sample actual method-group boundaries without changing the native packets."""
 from pathlib import Path
+import json
 import subprocess
 import sys
 import tempfile
@@ -9,6 +10,23 @@ ROOT=Path(__file__).resolve().parents[1]
 
 
 class GpuGroups(unittest.TestCase):
+    def test_group_export_is_parseable_and_drained(self):
+        source=r'''
+extern crate alloc;
+#[allow(dead_code)] // Export a row through the production timing recorder.
+#[path="TIMING"]mod timing;
+fn main(){let mut r=timing::Recorder::new();r.gpu_group([1;32]);println!("{}",r.drain(1).unwrap());assert!(r.drain(2).is_none());}
+'''.replace('TIMING',str(ROOT/'kernel/src/gpu/gk208/timing.rs'))
+        priority=['taskpolicy','-b']if sys.platform=='darwin'else[]
+        with tempfile.TemporaryDirectory(prefix='gt710-groups-export-')as directory:
+            p=Path(directory);(p/'check.rs').write_text(source)
+            subprocess.run(priority+['rustc','--edition=2021','-Dwarnings',str(p/'check.rs'),'-o',str(p/'check')],check=True)
+            text=subprocess.check_output([str(p/'check')],text=True).split(' ',1)[1]
+            data=json.loads(text)
+            self.assertEqual(len(data['gpu_draw_group_fields']),32)
+            self.assertEqual(data['gpu_draw_groups'],[[1]*32])
+            self.assertEqual(data['dropped'],0)
+
     def test_group_queries_extents_state_and_device_results(self):
         source=r'''
 extern crate alloc;
