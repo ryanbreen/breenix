@@ -1580,6 +1580,7 @@ fn quads(
 pub fn retain_resident_instruction_cache(words: &mut Vec<u32>) -> Result<(), &'static str> {
     let mut read = 0;
     let mut write = 0;
+    let mut kept_start = 0;
     while read < words.len() {
         let header = words[read];
         let count = ((header >> 16) & 0x1fff) as usize;
@@ -1592,12 +1593,19 @@ pub fn retain_resident_instruction_cache(words: &mut Vec<u32>) -> Result<(), &'s
             if count != 1 { return Err("resident cache packet size"); }
             words[read + 1] &= !1;
         }
-        if !resident_cache || words[read + 1] != 0 {
-            words.copy_within(read..end, write);
-            write += count + 1;
+        if resident_cache && words[read + 1] == 0 {
+            if write != kept_start && read != kept_start {
+                words.copy_within(kept_start..read, write);
+            }
+            write += read - kept_start;
+            kept_start = end;
         }
         read = end;
     }
+    if write != kept_start && read != kept_start {
+        words.copy_within(kept_start..read, write);
+    }
+    write += read - kept_start;
     words.truncate(write);
     Ok(())
 }
@@ -1614,6 +1622,7 @@ pub fn compact_state(words: &mut Vec<u32>) -> Result<(), &'static str> {
     let mut previous = [usize::MAX; BINDINGS.len()];
     let mut read = 0;
     let mut write = 0;
+    let mut kept_start = 0;
     while read < words.len() {
         let header = words[read];
         let count = ((header >> 16) & 0x1fff) as usize;
@@ -1626,10 +1635,20 @@ pub fn compact_state(words: &mut Vec<u32>) -> Result<(), &'static str> {
         let binding = BINDINGS.iter().position(|m| *m == method);
         let duplicate = subchannel == 0 && binding.is_some_and(|i| {
             let old = previous[i];
-            old != usize::MAX && words[old] == header
-                && words[old + 1..old + count + 1] == words[read + 1..end]
+            if old == usize::MAX { return false; }
+            // Cache positions name the final output. Its unflushed suffix
+            // still resides in the current contiguous input span.
+            let source = if old >= write { kept_start + old - write } else { old };
+            words[source] == header
+                && words[source + 1..source + count + 1] == words[read + 1..end]
         });
-        if !duplicate {
+        if duplicate {
+            if write != kept_start && read != kept_start {
+                words.copy_within(kept_start..read, write);
+            }
+            write += read - kept_start;
+            kept_start = end;
+        } else {
             // Only documented setters and launch/cache actions emitted by
             // this encoder preserve this cache. SET_OBJECT and unknown packets
             // invalidate it; partial writes invalidate overlapping bindings.
@@ -1653,21 +1672,24 @@ pub fn compact_state(words: &mut Vec<u32>) -> Result<(), &'static str> {
             } else {
                 for (i, old) in previous.iter_mut().enumerate() {
                     if *old == usize::MAX { continue; }
-                    let old_count = ((words[*old] >> 16) & 0x1fff) as u32;
+                    let source = if *old >= write { kept_start + *old - write } else { *old };
+                    let old_count = ((words[source] >> 16) & 0x1fff) as u32;
                     if method < BINDINGS[i] + old_count * 4
                         && BINDINGS[i] < method + count as u32 * 4 {
                         *old = usize::MAX;
                     }
                 }
             }
-            words.copy_within(read..end, write);
             if subchannel == 0 {
-                if let Some(i) = binding { previous[i] = write; }
+                if let Some(i) = binding { previous[i] = write + read - kept_start; }
             }
-            write += count + 1;
         }
         read = end;
     }
+    if write != kept_start && read != kept_start {
+        words.copy_within(kept_start..read, write);
+    }
+    write += read - kept_start;
     words.truncate(write);
     Ok(())
 }
