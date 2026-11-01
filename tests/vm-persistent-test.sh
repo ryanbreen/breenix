@@ -15,9 +15,29 @@ reject qemu unknown
 reject qemu stop
 reject qemu build --system-image
 mkdir -p "$tmp/tree/etc/breenix"
+printf 'root:x:0:0:root:/root:/bin/bsh\n' > "$tmp/tree/etc/passwd"
+printf 'root:x:0:\nwheel:x:10:\n' > "$tmp/tree/etc/group"
+printf 'root:!:::::::\n' > "$tmp/tree/etc/shadow"
+ssh-keygen -q -t ed25519 -N '' -f "$tmp/operator-key"
+export BREENIX_VM_SITE="$tmp/site"
+python3 - "$root" "$tmp" <<'PYSITE'
+import sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1] + '/scripts')
+import vm_site
+root = Path(sys.argv[2])
+values = dict(OPERATOR_USER='operator', OPERATOR_UID='1234', OPERATOR_PASSWORD='test-password',
+              OPERATOR_PASSWORD_HASH='$6$fixture$' + 'A' * 86,
+              OPERATOR_SSH_PUBLIC_KEY=(root / 'operator-key.pub').read_text().strip(),
+              CONSOLE_USER='root', CONSOLE_PASSWORD='console-password',
+              ROOT_PASSWORD_HASH='$6$console$' + 'B' * 86, SNTP_SERVERS='192.0.2.123')
+site = root / 'site'
+site.touch(mode=0o600)
+site.write_text(''.join(k + '=' + v + '\n' for k, v in values.items()))
+(root / 'operator').write_text(vm_site.metal_root.operator_account(values))
+PYSITE
 printf 'sentinel\n' > "$tmp/tree/etc/breenix/normal-image"
 printf 'suite users\n' > "$tmp/tree/etc/breenix/boot-target"
-printf 'user fixture\nuid 1234\n' > "$tmp/operator"
 chmod 600 "$tmp/operator"
 truncate -s 16M "$tmp/source.img"
 mke2fs -q -t ext2 -F -d "$tmp/tree" "$tmp/source.img"
@@ -29,6 +49,12 @@ listing=$(debugfs -R 'ls -p /etc/breenix' "$tmp/run/system.img" 2>/dev/null)
 [[ "$listing" == *'/operator-account/'* ]] || fail 'operator account missing'
 [[ "$listing" != *'/boot-target/'* ]] || fail 'boot target still present'
 [ "$(debugfs -R 'cat /etc/breenix/operator-account' "$tmp/run/system.img" 2>/dev/null)" = "$(cat "$tmp/operator")" ] || fail 'operator account differs'
+[ "$(debugfs -R 'cat /.breenix-shared/etc/passwd' "$tmp/run/system.img" 2>/dev/null)" = 'operator:x:1234:1234:operator:/home/operator:/bin/bsh' ] || fail 'operator store account missing'
+[ "$(debugfs -R 'cat /.breenix-shared/etc/group' "$tmp/run/system.img" 2>/dev/null)" = "$(printf 'operator:x:1234:\nwheel:x:10:operator')" ] || fail 'operator store groups missing'
+[ "$(debugfs -R 'cat /.breenix-shared/var/lib/accounts/pending/operator' "$tmp/run/system.img" 2>/dev/null)" = "$(cat "$tmp/operator-key.pub")" ] || fail 'operator authorized key not staged'
+[ "$(debugfs -R 'cat /etc/shadow' "$tmp/run/system.img" 2>/dev/null)" = 'root:$6$console$BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB:::::::' ] || fail 'root console hash missing'
+[ "$(debugfs -R 'cat /etc/breenix/sntp-servers' "$tmp/run/system.img" 2>/dev/null)" = '192.0.2.123' ] || fail 'SNTP source missing'
+debugfs -R 'stat /.breenix-shared' "$tmp/run/system.img" 2>/dev/null | grep -q 'Mode:  0700' || fail 'machine store is not private'
 debugfs -R 'ls -p /' "$tmp/run/home.img" 2>/dev/null | grep -q '/lost+found/' || fail 'home is not ext2'
 debugfs -R 'ls -p /etc/breenix' "$tmp/source.img" 2>/dev/null | grep -q '/boot-target/' || fail 'source image was modified'
 reject qemu build --system-image "$tmp/source.img" --operator-account "$tmp/operator" --run-dir "$tmp/run"
