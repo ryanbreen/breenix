@@ -1,8 +1,8 @@
 #![allow(dead_code)] // Production records include fields exercised by other core tests.
 extern crate alloc;
-use std::{cell::{Cell, RefCell}, collections::BTreeMap, sync::Arc};
+use std::{cell::{Cell, RefCell}, collections::{BTreeMap,VecDeque}, sync::Arc};
 use gpu_abi as abi;
-use abi::{kind, format, pipeline, stream::{self, Resolver, TargetInfo, Words}};
+use abi::{fence_status,kind, format, pipeline, stream::{self, Resolver, TargetInfo, Words}};
 const EINVAL:i64=22; const ENODEV:i64=19; const ENOMEM:i64=12; const EAGAIN:i64=11;
 const OWN:u64=0xb610000000001000; const OUTPUT:u64=OWN+1; const ALIAS:u64=OWN+2;
 const FOREIGN:u64=OWN+3;
@@ -24,12 +24,16 @@ mod window_targets {#[derive(Default)] pub struct Writer; impl Writer{pub fn end
 mod window {pub mod present {pub struct Pin;}}
 mod display {#[derive(Clone, Copy)] pub struct Presenting;}
 struct Charge; struct NativeScratch;
+struct Device; struct Request; struct SyncReq{failed:bool,why:u32}
+mod dev{pub fn backend()->u32{6}}
 // SUB
 #[derive(Default)] struct Core{procs:BTreeMap<u64,Proc>,resources:BTreeMap<u32,Res>,subs:BTreeMap<u64,Sub>,
-    contexts:BTreeMap<u32,Context>,retired_pins:Vec<Vec<Arc<window::present::Pin>>>}
+    contexts:BTreeMap<u32,Context>,backlog:VecDeque<(u64,Request)>,wedged:Option<(Device,Vec<Request>)>,
+    resetting:bool,status:u32,reason:&'static str,syncs:BTreeMap<u64,SyncReq>,retired_pins:Vec<Vec<Arc<window::present::Pin>>>}
 impl Core {
     // RES_OF
     // RETIRE
+    // FAILED_RESET
     fn unhold(&mut self,_:u32){}
 }
 thread_local!{static CORE:RefCell<Core>=RefCell::new(Core::default());}
@@ -53,6 +57,9 @@ fn frame(source:u64,command:u32)->WordBuf{
         _=>abi::draw::encode(&mut w,pipeline::COPY,0,source,0,0,&[abi::draw::Instance{rect:[0,0,4,4],params:[0;16]}]),
     }
     stream::encode::begin(&mut w,OUTPUT);stream::encode::copy(&mut w,OWN,[0,0,64,64],OUTPUT,[0,0]);WordBuf(w)
+}
+fn sampling(aliases:&[Alias],named_ids:&[u32])->Result<Vec<Arc<window::present::Pin>>,i64>{
+    // SAMPLE_PREPARE
 }
 fn resolved(view:&View)->Resolved<'_>{Resolved{view,snap:&Snapshot,native_scratch:Cell::new([None;3])}}
 #[test] fn only_op19_source_positions_reach_the_native_resource(){
@@ -97,7 +104,9 @@ fn resolved(view:&View)->Resolved<'_>{Resolved{view,snap:&Snapshot,native_scratc
         let pins=vec![pin.clone()];assert_eq!(pins.len(),1);
         let mut c=Core::default();c.subs.insert(9,Sub{requests,published,/* SAMPLE_INIT */..Sub::default()});
         // RELEASE_LOCAL
-        drop(pin);c.retire_if_done(9);
+        drop(pin);
+        if requests>0 {c.reset_failed(Device);assert!(c.wedged.is_some());}
+        c.retire_if_done(9);
         if requests!=0 || !published {assert!(weak.upgrade().is_some(),"pool pin escaped while DMA or its unpublished fence is live");
             c.subs.get_mut(&9).unwrap().requests=0;c.subs.get_mut(&9).unwrap().published=true;c.retire_if_done(9);}
         // Deferred outside the core lock: a pin can drop its Target, re-enter
@@ -120,4 +129,13 @@ fn snapshot_check(reg:&Registry,reservation:&Reservation)->Result<(),i64>{
         match change{0=>reg.current[0].uid+=1,1=>reg.current[0].incarnation+=1,2=>reg.current[0].pixel_gen+=1,_=>reg.cursor+=1};
         assert_eq!(snapshot_check(&reg,&reservation),Err(EAGAIN));
     }
+}
+
+#[test] fn submission_preparation_keeps_only_sampled_alias_pins(){
+    let (_,aliases)=setup();
+    assert_eq!(sampling(&aliases,&[]).unwrap().len(),0);
+    let held=sampling(&aliases,&[23]).unwrap();assert_eq!(held.len(),1);
+    // Dropping the call-local alias vector still leaves the submission's exact pin.
+    let weak=Arc::downgrade(&held[0]);drop(aliases);assert!(weak.upgrade().is_some());
+    drop(held);assert!(weak.upgrade().is_none());
 }

@@ -164,6 +164,10 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
                 Device::Gk208(_) => None,
             })
         }).flatten();
+        #[cfg(target_arch = "x86_64")]
+        let retired_pins = core.as_mut().map(|c| core::mem::take(&mut c.retired_pins));
+        #[cfg(target_arch = "x86_64")]
+        let r = (r, retired_pins);
         (r, kick)
     };
     if let Some(made) = kick {
@@ -171,6 +175,12 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
         RUNG.fetch_max(made, Ordering::AcqRel);
     }
     crate::per_cpu::preempt_enable();
+    #[cfg(target_arch = "x86_64")]
+    let (r, retired_pins) = r;
+    // A pin's last Target can re-enter resource retirement. Drop it with neither
+    // the core lock nor its preemption hold, also avoiding registry/core nesting.
+    #[cfg(target_arch = "x86_64")]
+    drop(retired_pins);
     r
 }
 
@@ -369,6 +379,10 @@ struct Sub {
     /// Resources it holds until the device has returned its requests and its result has
     /// reached callers, or a confirmed reset has ended them.
     held: Vec<u32>,
+    /// Native sampling excludes these fronts from the window's writable pool
+    /// through device completion and fence publication, independently of callers.
+    #[cfg(target_arch = "x86_64")]
+    sampled: Vec<Arc<crate::window::present::Pin>>,
     /// A `PRESENT`'s bind and flush rather than a `SUBMIT`.
     present: Option<display::Presenting>,
     /// The charge for its translated device chunks, released when it retires.
@@ -515,6 +529,9 @@ struct Core {
     /// left, each with its resource, kept until no transfer reads that resource: the device
     /// answered each, or a confirmed reset ended them (`end_reading`).
     canvas: Vec<(u32, crate::console::CanvasHold)>,
+    /// Completed native sampling pins, dropped outside the core/registry locks.
+    #[cfg(target_arch = "x86_64")]
+    retired_pins: Vec<Vec<Arc<crate::window::present::Pin>>>,
 }
 
 // ---------------------------------------------------------------------------------------
@@ -732,6 +749,8 @@ impl Core {
             hung: [None; HUNG_KEPT],
             hung_dropped: 0,
             canvas: Vec::new(),
+            #[cfg(target_arch = "x86_64")]
+            retired_pins: Vec::new(),
         }
     }
 
@@ -1589,6 +1608,10 @@ impl Core {
             return;
         }
         let held = core::mem::take(&mut sub.held);
+        #[cfg(target_arch = "x86_64")]
+        if !sub.sampled.is_empty() {
+            self.retired_pins.push(core::mem::take(&mut sub.sampled));
+        }
         if let Some(arena) = self.contexts.get_mut(&sub.ctx).and_then(|ctx| ctx.vertex_arena.as_mut()) {
             arena.ranges.release(serial);
         }
@@ -4157,10 +4180,12 @@ fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
 
 /// A source alias of window composition (414 op 19, ruling B13): a handle private to one
 /// submission, naming another process's committed window target only as a source.
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Alias {
     handle: u64,
     id: u32,
+    #[cfg(target_arch = "x86_64")]
+    pin: Arc<crate::window::present::Pin>,
 }
 
 /// What window composition adds to a submission: its source aliases, a check of the
@@ -4254,6 +4279,15 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         (extra.check)(&words, &view)?;
     }
     let (written, mut named_ids, whole, last_written) = named(&words, &view);
+    #[cfg(target_arch = "x86_64")]
+    let sampled_pins = {
+        let mut pins = Vec::new();
+        if dev::backend() == abi::backend::GK208 {
+            pins.try_reserve_exact(aliases.len()).map_err(|_| ENOMEM)?;
+            pins.extend(aliases.iter().filter(|x| named_ids.contains(&x.id)).map(|x| x.pin.clone()));
+        }
+        pins
+    };
     // Take the context's submission slot: one sender at a time, at most four in flight.
     let mut waited = false;
     let admitted = wait_for(None, true, |c| {
@@ -4861,6 +4895,8 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             written: written.clone(),
             whole,
             held,
+            #[cfg(target_arch = "x86_64")]
+            sampled: sampled_pins,
             present: None,
             _charge: Some(chunk_charge),
             #[cfg(target_arch = "x86_64")]

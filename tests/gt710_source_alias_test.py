@@ -29,6 +29,15 @@ class SourceAliases(unittest.TestCase):
         fixture = fixture.replace('// RES_OF', item(core, '    fn res_of('))
         fixture = fixture.replace('// SUB', '#[derive(Default)]\n' + item(core, 'struct Sub {'))
         fixture = fixture.replace('// RETIRE', item(core, '    fn retire_if_done('))
+        fixture = fixture.replace('// FAILED_RESET', item(core, '    fn reset_failed('))
+        submit = item(core, 'fn submit_stream(')
+        if '    let sampled_pins = {' in submit:
+            start = submit.index('    let sampled_pins = {')
+            end = submit.index('    // Take the context', start)
+            sampling = submit[start:end] + '\n    Ok(sampled_pins)'
+        else:
+            sampling = 'let _ = (aliases, named_ids); Ok(Vec::new())'
+        fixture = fixture.replace('// SAMPLE_PREPARE', sampling)
         # A missing retained field remains executable: dropping call-local pins
         # then exposes the early pool release, rather than just failing to compile.
         fixture = fixture.replace('/* SAMPLE_INIT */',
@@ -49,6 +58,8 @@ class SourceAliases(unittest.TestCase):
                 Some(Target {id,address:(id as u64)*0x100000,width:64,height:64,format,tile_mode:0x30})
             }\n'''
             (p / 'encode.rs').write_text(native)
+            # Exercise backend 6 on an ARM host without changing the native encoder.
+            fixture = fixture.replace('#[cfg(target_arch = "x86_64")]', '')
             fixture = fixture.replace('NATIVE', str(p / 'encode.rs')).replace('ROOT', str(ROOT))
             (p / 'alias.rs').write_text(fixture)
             priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
@@ -63,6 +74,9 @@ class SourceAliases(unittest.TestCase):
         core = (ROOT / 'kernel/src/gpu/mod.rs').read_text()
         compose = (ROOT / 'kernel/src/gpu/compose.rs').read_text()
         self.assertIn('pin: pin.clone()', compose)
+        native_handoff = compose[compose.index('    submitted?;'):compose.index('    if let Some(point) = forced')]
+        self.assertIn('drop(aliases)', native_handoff)
+        self.assertIn('source.pin.take()', native_handoff)
         submit = item(core, 'fn submit_stream(')
         self.assertIn('sampled: sampled_pins', submit)
         self.assertIn('named_ids.contains(&x.id)', submit)
