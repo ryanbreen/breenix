@@ -132,12 +132,6 @@ pub fn parse(e: &[u8]) -> Result<Vec<Timing>, &'static str> {
             vsync_start:771,vsync_end:777,vtotal:806,flags:24 };
         if !modes.contains(&low) { modes.push(low); }
     }
-    // E-EDID A2 table 3.18: byte 36 bit 0; VESA DMT 1.13 ID 24h.
-    // The tuple is also in MIT drm_edid.c (Linux v6.8), drm_dmt_modes
-    // and edid_est_modes; the original permission notice is above.
-    if e[36] & 1 != 0 && !modes.contains(&DMT_1280_1024_75) {
-        modes.push(DMT_1280_1024_75);
-    }
     for b in e[128..].chunks_exact(128) {
         if b[0] == 2 && b[2] != 0 {
             let start = b[2] as usize;
@@ -152,11 +146,7 @@ pub fn parse(e: &[u8]) -> Result<Vec<Timing>, &'static str> {
     Ok(modes)
 }
 
-const DMT_1280_1024_75: Timing = Timing {
-    width: 1280, height: 1024, clock_khz: 135000,
-    hsync_start: 1296, hsync_end: 1440, htotal: 1688,
-    vsync_start: 1025, vsync_end: 1028, vtotal: 1066, flags: 30,
-};
+
 
 /// Select the sink's preferred detailed timing for the physical raster (G3/G20/G25 fallback).
 pub fn native_raster(modes: &[Timing]) -> Result<&Timing, &'static str> {

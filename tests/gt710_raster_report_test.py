@@ -27,7 +27,7 @@ def capture(fast=True, advertise=True):
         raw[127] = -sum(raw) & 255
     m = NATIVE['capture'].__globals__['M']
     board = dict(m['board'],edid=raw.hex(),edid_sha256=hashlib.sha256(raw).hexdigest(),
-                 modes=[DTD,LOW]+([DMT75] if advertise else []))
+                 modes=[DTD,LOW])
     pci = runpy.run_path(str(ROOT/'tests/gt710_report_test.py'))['SERIAL']
     evidence = m['evidence']
     def timing(e):
@@ -51,10 +51,11 @@ def mutate_record(serial, prefix, change):
 
 
 class RasterEvidence(unittest.TestCase):
-    def test_captured_edid_decodes_established_dmt_without_replacing_preferred_dtd(self):
+    def test_k10_inventory_omits_withdrawn_dmt_and_keeps_preferred_dtd(self):
         self.assertEqual(hashlib.sha256(RAW).hexdigest(),
                          '07da84b6557390f56c0b274dd93cc9a6e09f14684bc97b87e9978cdb0d86ff2c')
-        self.assertEqual(API['edid_timings'](RAW),[DTD,LOW,DMT75])
+        # K10 removes the unused established DMT 24h append.
+        self.assertEqual(API['edid_timings'](RAW),[DTD,LOW])
 
     def test_selected_native_raster_and_fallback_keep_full_pixels_pll_and_g21_receipts(self):
         preferred = capture(fast=False)

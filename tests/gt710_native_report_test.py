@@ -40,11 +40,14 @@ def capture(change=None, short=False):
     e['bytes']=len(data);e['sha256']=hashlib.sha256(data).hexdigest()
     if change:change(e)
     serial=M['SERIAL']+'GT710_MEMORY '+json.dumps(memory)+'\n'
-    return serial+''.join(rows[:-1] if short else rows)+'GT710_MODE '+json.dumps(e)+'\n'+f'GT710_NATIVE_CONSOLE surface={start} firmware_writes=0\n'
+    return serial+'GT710_UNDERFLOW_ARM phase=takeover before=0x0 armed=0x1\n'+''.join(rows[:-1] if short else rows)+'GT710_MODE '+json.dumps(e)+'\n'+f'GT710_NATIVE_CONSOLE surface={start} firmware_writes=0\n'
 
 class NativeCapture(unittest.TestCase):
     def test_native_state_and_pixels_with_negative_controls(self):
         API['native_mode'](capture())
+        for arm in ['', 'GT710_UNDERFLOW_ARM phase=takeover before=0x10 armed=0x1\n']:
+            with self.assertRaises(ValueError):
+                API['native_mode'](capture().replace('GT710_UNDERFLOW_ARM phase=takeover before=0x0 armed=0x1\n', arm))
         mutations=[lambda e:next(r for r in e['active'] if r[0]==0x640498).__setitem__(1,0),
                    lambda e:next(r for r in e['active'] if r[0]==0x6404a0).__setitem__(1,1),lambda e:next(r for r in e['active'] if r[0]==0x64046c).__setitem__(1,0x01014000),
                    lambda e:e.update(notifier_after=0),lambda e:e.update(notifier_before=1),

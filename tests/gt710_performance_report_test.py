@@ -30,7 +30,7 @@ def heap_names():
 
 def fixture():
     from gt710_clock_report_test import row
-    serial = row('startup') + transcript(all_pass=True) + row('final')
+    serial = 'GT710_CLOCK_STARTUP full=true status=ok\n' + row('startup') + transcript(all_pass=True) + row('final')
     for case, values in VALUES.items():
         lines = ''
         for key, value, unit, low, high in values:
@@ -50,6 +50,16 @@ class PerformanceReport(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as output:
             API['resources_suite'](serial, boot(), 'gt710-step-8-7.json')
         return output.getvalue()
+
+    def test_full_clock_claim_refuses_fallback_guard_critical_and_missing_startup(self):
+        clean=fixture()
+        for bad in [clean.replace('full=true','full=false'),
+                    clean.replace('GT710_CLOCK_STARTUP full=true status=ok\n',''),
+                    clean+'GT710_CLOCK_FALLBACK stage=Pmu\n',
+                    clean+'GT710_CLOCK_GUARD trip_c=85\n',
+                    clean+'GT710_CLOCK_CRITICAL temperature_c=95\n']:
+            with self.assertRaises(ValueError):
+                self.score(bad)
 
     def test_full_gate_and_mutations(self):
         clean = fixture()

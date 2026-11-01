@@ -207,12 +207,6 @@ def edid_timings(raw):
                       hsync_end=1184,htotal=1344,vsync_start=771,vsync_end=777,vtotal=806,flags=24)
         if timing not in timings:
             timings.append(timing)
-    # E-EDID A2 table 3.18 byte 36 bit 0; MIT drm_edid.c, DMT 24h / established.
-    if raw[36] & 1:
-        timing = dict(width=1280,height=1024,clock_khz=135000,hsync_start=1296,
-                      hsync_end=1440,htotal=1688,vsync_start=1025,vsync_end=1028,vtotal=1066,flags=30)
-        if timing not in timings:
-            timings.append(timing)
     for i in range(128,len(raw),128):
         b = raw[i:i+128]
         if b[0] == 2 and b[2]:
@@ -1224,6 +1218,10 @@ def native_mode(serial):
         def need(ok, why):
             if not ok: raise ValueError(why)
         need('GT710_NATIVE_CONSOLE_REFUSAL' not in serial, 'native console reported lost binding or health')
+        # K10 keeps the settled arm, but a modeset underflow must still refuse.
+        arm=one(r'^GT710_UNDERFLOW_ARM phase=takeover before=(0x[0-9a-f]+) armed=(0x[0-9a-f]+)$',
+                serial, 'takeover underflow arm')
+        need(int(arm[1],16)==0 and int(arm[2],16)==1, 'takeover underflow before arm or arm unavailable')
         t = native_raster(board)
         surface = memory['objects'][0]['start']
         need(e['schema']==1 and e['phase']=='native' and e['bdf']==board['bdf']
@@ -2365,6 +2363,11 @@ def clock_evidence(serial):
 def performance_evidence(serial, parsed, names, required, manifest):
     if required != names or [len(c['cases']) for c in manifest['categories']] != [12,22,19,19,22,26,25,16,9]:
         raise ValueError('performance requires all 170 cases and the nine category counts')
+    # K10: readable POST clocks do not establish the full-clock claim.
+    startup=one(r'^GT710_CLOCK_STARTUP (.+)$',serial,'full-clock startup')
+    if (dict(re.findall(r'(\w+)=([^ ]+)',startup[1])).get('full')!='true'
+            or re.search(r'^GT710_CLOCK_(?:FALLBACK|GUARD|CRITICAL) ',serial,re.M)):
+        raise ValueError('performance requires full clocks without fallback, guard trip or critical stop')
     clock_evidence(serial)
     from decimal import Decimal
     expected = {
