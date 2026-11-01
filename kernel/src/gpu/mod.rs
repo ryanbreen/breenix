@@ -1289,6 +1289,12 @@ impl Core {
                     self.present_accepted(serial);
                 }
                 #[cfg(target_arch = "x86_64")]
+                Reap::Accepted(Tag::Sync(_)) => {
+                    // Kernel screen presents remain synchronous until the latch.
+                    any = true;
+                    self.last_progress = now_ns();
+                }
+                #[cfg(target_arch = "x86_64")]
                 Reap::Accepted(_) => { self.fault(); break; }
                 Reap::Fault => {
                     self.fault();
