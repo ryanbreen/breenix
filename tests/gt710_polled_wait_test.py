@@ -14,7 +14,7 @@ class PolledWait(unittest.TestCase):
   deadline=item(core,'    fn next_deadline(')
   fixture=r'''
 #![allow(dead_code)] // Minimal model for the extracted scheduler functions.
-use std::{cell::{Cell,RefCell},collections::BTreeMap,sync::atomic::{AtomicU64,Ordering}};
+use std::{cell::{Cell,RefCell},collections::{BTreeMap,VecDeque},sync::atomic::{AtomicU64,Ordering}};
 const EXAMINE_NS:u64=250_000_000;const POLL_NS:u64=250_000;const SPIN_POLL_NS:u64=1_000_000;const SPIN_POLL_PAUSE:u32=1;
 static EVENTS:AtomicU64=AtomicU64::new(0);
 mod abi {pub mod backend {pub const SVGA3D_DX:u32=5;pub const GK208:u32=6;}}
@@ -28,9 +28,9 @@ struct Device;impl Device{fn outstanding(&self)->usize{1}}
 struct Sub{published:bool,sent_ns:Option<u64>}struct Sync{failed:bool,sent_ns:Option<u64>}
 #[derive(PartialEq)]enum CtxState{Live}
 struct Ctx{warm_catalogue:bool,state:CtxState,dropped:bool,warm:u32,warm_after:u64}
-struct Core{stalled:bool,dev:Option<Device>,subs:BTreeMap<u64,Sub>,syncs:BTreeMap<u64,Sync>,quarantined_at:Option<u64>,last_progress:u64,contexts:BTreeMap<u64,Ctx>}
+struct Core{stalled:bool,dev:Option<Device>,subs:BTreeMap<u64,Sub>,syncs:BTreeMap<u64,Sync>,quarantined_at:Option<u64>,last_progress:u64,contexts:BTreeMap<u64,Ctx>,backlog:VecDeque<()>}
 fn catalogue_mask()->u32{31}
-fn core()->Core{Core{stalled:false,dev:Some(Device),subs:BTreeMap::new(),syncs:BTreeMap::new(),quarantined_at:None,last_progress:0,contexts:BTreeMap::new()}}
+fn core()->Core{Core{stalled:false,dev:Some(Device),subs:BTreeMap::new(),syncs:BTreeMap::new(),quarantined_at:None,last_progress:0,contexts:BTreeMap::new(),backlog:VecDeque::new()}}
 impl Core {
  fn poll(&mut self){POLLS.with(|v|v.set(v.get()+1));}
  fn progress_readback(&mut self){}
@@ -48,6 +48,13 @@ fn main(){
   let expected=if backend==4 {None} else {Some(123+POLL_NS)};
   assert_eq!(with_core(|c|c.next_deadline(123)).unwrap(),expected);
   with_core(|c|c.stalled=true);assert_eq!(with_core(|c|c.next_deadline(123)).unwrap(),None);
+  CORE.with(|c|*c.borrow_mut()=core());
+ }
+ for backend in [5,6] {
+  BACKEND.with(|b|b.set(backend));CLOCK.with(|c|c.set(0));SLEEPS.with(|c|c.set(0));POLLS.with(|c|c.set(0));
+  with_core(|c|c.backlog.push_back(()));
+  assert_eq!(wait_for(None,true,|_|(POLLS.with(Cell::get)>=2).then_some(7)),Ok(7));
+  assert_eq!(SLEEPS.with(Cell::get),u32::from(backend==6),"native queued work needs the worker, not a one-millisecond waiter spin");
   CORE.with(|c|*c.borrow_mut()=core());
  }
 }
