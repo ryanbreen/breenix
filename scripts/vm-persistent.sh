@@ -158,6 +158,7 @@ if [ "$(uname -s)" = Darwin ]; then
     fi
 fi
 profile=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$qemu" -M virt,gic-version=3 -cpu max)
+printf '%s\n' "$profile" > "$run/qemu-profile"
 export BREENIX_VIGIL_ARCH=aarch64 BREENIX_VIGIL_DISPLAY=false
 [ "$(uname -s)" != Darwin ] || export BREENIX_VIGIL_DISPLAY=true
 vigil=$("$ROOT/scripts/vigil-record.sh" start qemu "$mode" '' "$serial" '' "$profile")

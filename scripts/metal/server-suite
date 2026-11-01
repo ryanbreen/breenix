@@ -23,6 +23,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import uuid
 import struct
 import threading
 
@@ -2214,8 +2215,12 @@ def main():
             finally:
                 target.cleanup()
             return 0
+        suite_lines = []
+        def emit_suite(line):
+            suite_lines.append(line)
+            print(line, flush=True)
         try:
-            print('SUITE ' + suite + ' START cases=' + str(len(cases)), flush=True)
+            emit_suite('SUITE ' + suite + ' START cases=' + str(len(cases)))
             for name, _ in cases:
                 start = time.monotonic()
                 try:
@@ -2228,7 +2233,7 @@ def main():
                     result, reason = 'FAIL', type(error).__name__ + ': ' + str(error)
                 elapsed = int((time.monotonic() - start) * 1000)
                 records['cases'].append(dict(id=category + '/' + name, result=result, ms=elapsed, reason=reason))
-                print(f'SUITE {suite} CASE {category}/{name} {result} ms={elapsed}' + (' msg=' + reason if reason else ''), flush=True)
+                emit_suite(f'SUITE {suite} CASE {category}/{name} {result} ms={elapsed}' + (' msg=' + reason if reason else ''))
         finally:
             if category == 'ssh-keys':
                 cleanup_step(lambda: console.service_log('bsshd'))
@@ -2239,7 +2244,7 @@ def main():
             records['initLog'] = target.init_log
         transcript = [] if probe is None else probe.transcript
     passed = sum(r['result'] == 'PASS' for r in records['cases'])
-    print(f'SUITE {suite} DONE passed={passed} failed={len(cases)-passed} skipped=0 total={len(cases)}', flush=True)
+    emit_suite(f'SUITE {suite} DONE passed={passed} failed={len(cases)-passed} skipped=0 total={len(cases)}')
     # Re-read the live capture after the last operation; authentication errors never mask a kernel failure.
     serial = read('serial.txt')
     records['consoleGaps'] = [json.loads(line) for line in read('events.jsonl').splitlines()
@@ -2269,6 +2274,18 @@ def main():
         # category records into that archive without executing cases again.
         result = machine._remote('python3', '-c', WATCHDOG_ARCHIVE, machine.directory)
         if result.returncode: raise ValueError('cannot score the archived watchdog category')
+    if args.target == 'qemu':
+        suite_file = machine.directory / (category + '-suite.txt')
+        suite_file.write_text('\n'.join(suite_lines) + '\n')
+        started = (machine.directory / 'started').read_text().strip()
+        ended = str(time.time())
+        profile = (args.run_dir / 'qemu-profile').read_text().strip()
+        record_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-qemu-' + uuid.uuid4().hex
+        subprocess.run([str(Path(__file__).resolve().parent.parent / 'vigil-record.sh'),
+                        'record', 'qemu', 'persistent', 'server', str(suite_file),
+                        str(machine.directory / 'serial.txt'), profile, record_id, args.sha,
+                        started, ended, str(status)], check=True,
+                       env=dict(os.environ, BREENIX_VIGIL_ARCH='aarch64'))
     print(verdict)
     return status
 

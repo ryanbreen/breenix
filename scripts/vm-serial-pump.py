@@ -54,6 +54,7 @@ def main(run, whole_path):
             except FileExistsError:
                 stamp += 1
         last_stamp = stamp
+        (directory / 'started').write_text(str(time.time()) + '\n')
         (directory / 'run.json').write_text(json.dumps(dict(record, id=boot)) + '\n')
         for name, content in definition.items():
             destination = directory / 'definition' / name
