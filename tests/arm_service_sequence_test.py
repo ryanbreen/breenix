@@ -36,8 +36,8 @@ SERIAL = "\n".join([
 class ArmServiceSequence(unittest.TestCase):
     def score(self, serial):
         source = GATE.read_text()
-        # Only load function definitions and the classifier's constants. Never
-        # execute the gate's preflight, builds, resource locks or boot loop.
+        # Extract function definitions and the classifier's constants without
+        # executing the gate's preflight, builds, resource locks or boot loop.
         functions = source[source.index("silent_spawn_reason() {"):
                            source.index("\nTOTAL_575=0")]
         constants = "\n".join(line for line in source.splitlines() if line.startswith((

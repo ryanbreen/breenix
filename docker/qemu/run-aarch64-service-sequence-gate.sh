@@ -296,7 +296,7 @@ service_sequence_started() {
 
     # ARM init retains xhci_counters after removing the unauthenticated telnet
     # shell. Require that helper's entry in both completion and classification;
-    # a telnetd spawn attempt or entry must never complete this sequence.
+    # a telnetd spawn attempt or entry rejects completion of this sequence.
     grep -qF "[init] Boot script completed" "$serial_file" 2>/dev/null \
         && grep -qF "create_process_with_argv [ARM64]: ENTRY - name='xhci_counters'" "$serial_file" 2>/dev/null \
         && grep -qF "[spawn] path='/usr/bin/bounce'" "$serial_file" 2>/dev/null \
