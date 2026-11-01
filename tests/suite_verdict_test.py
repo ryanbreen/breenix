@@ -174,6 +174,34 @@ class SuiteVerdictTests(unittest.TestCase):
                     self.assertFalse(ok)
                     self.assertIn(reason, detail)
 
+    def test_screen_live_record(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            serial = Path(temporary) / "serial"
+            original = (FIXTURES / "all-pass.txt").read_text()
+            digest = "a" * 64
+            records = (
+                f"SUITE fixture SCREEN first/one end sha256={digest} mode=2560x1600\n",
+                f"SUITE fixture SCREEN first/one named-point sha256={digest} mode=1280x800 crc=1234abcd crc2=5678abcd raster=1280x1024 out=sor0\n",
+                "SUITE fixture SCREEN first/one intent error=readback-failed\n",
+            )
+            lines = original.splitlines(keepends=True)
+            def score(record):
+                serial.write_text(lines[0] + record + ''.join(lines[1:]))
+                return SCORER.verdict(MANIFEST, serial, [serial])
+
+            ok, detail = score(''.join(records))
+            self.assertTrue(ok, detail)
+            for record in (records[0].replace(digest, digest[:-1]),
+                           records[1].replace('crc2=5678abcd ', ''),
+                           records[2].replace('readback-failed', 'Bad_reason')):
+                with self.subTest(record=record):
+                    self.assertFalse(score(record)[0])
+            ok, detail = score(records[0].replace('first/one', 'first/missing'))
+            self.assertFalse(ok)
+            self.assertIn('names no manifest case', detail)
+            serial.write_text(original + records[0])
+            self.assertIn('outside START..DONE', SCORER.verdict(MANIFEST, serial, [serial])[1])
+
     def test_hostkey_live_record(self):
         with tempfile.TemporaryDirectory() as temporary:
             serial = Path(temporary) / "serial"
