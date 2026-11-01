@@ -5,14 +5,15 @@
 #
 # vm-persistent.sh qemu build --run-dir DIR --system-image IMAGE --operator-account FILE
 # vm-persistent.sh qemu boot --run-dir DIR --mode console|desktop [--kernel FILE]
+# vm-persistent.sh qemu reboot --run-dir DIR
 # vm-persistent.sh qemu stop --run-dir DIR
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 umask 077
-usage() { echo 'usage: vm-persistent.sh qemu build|boot|stop --run-dir DIR [--system-image IMAGE --operator-account FILE | --mode console|desktop [--kernel FILE]]' >&2; exit 2; }
+usage() { echo 'usage: vm-persistent.sh qemu build|boot|reboot|stop --run-dir DIR [--system-image IMAGE --operator-account FILE | --mode console|desktop [--kernel FILE]]' >&2; exit 2; }
 [ "$#" -ge 2 ] && [ "$1" = qemu ] || usage
 op=$2; shift 2
-case "$op" in build|boot|stop) ;; *) usage ;; esac
+case "$op" in build|boot|reboot|stop) ;; *) usage ;; esac
 run= system= account= kernel= mode=
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] && [ -n "$2" ] || usage
@@ -31,7 +32,7 @@ case "$op" in
     build) [ -n "$system" ] && [ -n "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage ;;
     boot) [ -z "$system" ] && [ -z "$account" ] || usage
           case "$mode" in console|desktop) ;; *) usage ;; esac ;;
-    stop) [ -z "$system" ] && [ -z "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage ;;
+    reboot|stop) [ -z "$system" ] && [ -z "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage ;;
 esac
 # debugfs command files and QEMU comma-separated options cannot safely encode
 # these characters; reject them instead of interpreting caller-supplied syntax.
@@ -77,6 +78,9 @@ PYCODE
 fi
 [ -d "$run" ] && [ ! -L "$run" ] && [ -f "$run/.breenix-vm-persistent" ] || { echo 'not a persistent VM run directory' >&2; exit 1; }
 run=$(cd "$run" && pwd -P)
+if [ "$op" = reboot ]; then
+    exec python3 "$ROOT/scripts/vm-reboot.py" "$run"
+fi
 if [ "$op" = stop ]; then
     if [ -d "$run/boot.lock" ]; then
         python3 - "$run/qmp.sock" <<'PY'
