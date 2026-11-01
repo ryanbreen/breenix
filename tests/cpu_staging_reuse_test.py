@@ -13,6 +13,7 @@ class Reuse(unittest.TestCase):
 #![allow(dead_code)] // Complete mock APIs cover the old and repaired allocation paths.
 use std::{collections::{BTreeMap,BTreeSet},ptr::NonNull,sync::{Mutex,OnceLock,atomic::{AtomicU64,Ordering}}};
 mod spin { pub struct Mutex<T>(std::sync::Mutex<T>); impl<T> Mutex<T> { pub const fn new(v:T)->Self {Self(std::sync::Mutex::new(v))} pub fn lock(&self)->std::sync::MutexGuard<'_,T> {self.0.lock().unwrap()} } }
+mod irq_safe_mutex { pub use crate::spin::Mutex as IrqSafeMutex; }
 const PAGE:usize=4096;const LIMIT:usize=1024;
 #[derive(Clone,Copy,Debug,PartialEq,Eq)]struct PhysFrame(usize);
 struct PhysAddr(u64);impl PhysAddr{fn as_u64(&self)->u64{self.0}}

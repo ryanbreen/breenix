@@ -34,6 +34,8 @@
 //! (section 1.4: no kernel output on any path).
 
 pub mod window_targets;
+#[cfg(target_arch = "x86_64")]
+pub mod framebuffer;
 use crate::gpu_completion as completion;
 mod present_answers;
 mod display;
@@ -248,6 +250,8 @@ struct Proc {
     creating: bool,
     /// One context initialized by window/claim setup for the next CONTEXT_CREATE.
     prepared_context: Option<u64>,
+    #[cfg(target_arch = "x86_64")]
+    framebuffer: Option<framebuffer::Pane>,
     /// `PRESENT`s whose flush completed OK (`/proc/breenix/stage-composites`).
     presents: u64,
 }
@@ -1026,6 +1030,8 @@ impl Core {
             quota: Quota::default(),
             creating: false,
             prepared_context: None,
+            #[cfg(target_arch = "x86_64")]
+            framebuffer: None,
             presents: 0,
         })
     }
@@ -2917,7 +2923,7 @@ fn op_caps(arg: u64, len: u64) -> Result<u64, i64> {
     #[cfg(target_arch = "x86_64")]
     if crate::gk208::takeover_started()
         && with_core(|c| NATIVE_STARTING.load(Ordering::Acquire)
-            || (c.dev.is_none() && c.status == abi::status::NO_DEVICE)).unwrap_or(false) {
+            || (c.dev.is_none() && matches!(c.status, abi::status::NO_DEVICE | abi::status::MISSING_CAPABILITY))).unwrap_or(false) {
         arch::with_interrupts(native_caps_startup)?;
     }
     let caps = with_core(|c| c.caps_record()).unwrap_or_else(|| Core::empty().caps_record());
@@ -2930,9 +2936,11 @@ fn op_caps(arg: u64, len: u64) -> Result<u64, i64> {
 #[cfg(target_arch = "x86_64")]
 fn native_caps_startup() -> Result<(), i64> {
     let start = wait_for(None, true, |c| {
+        // An early diagnostic may publish a refusal snapshot without a live
+        // device. It is evidence, not a completed startup attempt.
         if NATIVE_STARTING.load(Ordering::Acquire) {
             None
-        } else if c.dev.is_some() || c.status != abi::status::NO_DEVICE {
+        } else if c.dev.is_some() || !matches!(c.status, abi::status::NO_DEVICE | abi::status::MISSING_CAPABILITY) {
             Some(false)
         } else if !NATIVE_STARTING.swap(true, Ordering::AcqRel) {
             Some(true)
@@ -2945,6 +2953,12 @@ fn native_caps_startup() -> Result<(), i64> {
         // Firmware construction and executable probes must let a pinned timer
         // window (and other work) run on the CPU performing initialization.
         if crate::task::kthread::kthread_run(|| {
+            // The boot census measures staggered pinned timer windows. Leave
+            // that idle measurement ahead of long firmware/channel startup.
+            #[cfg(not(feature = "testing"))]
+            while !crate::boot::settled::settled() {
+                crate::task::scheduler::yield_current();
+            }
             // Native startup changes BAR/channel state while the boot console
             // still uses the CPU surface. Finish that pass before takeover.
             let canvas = crate::console::hold_canvas();

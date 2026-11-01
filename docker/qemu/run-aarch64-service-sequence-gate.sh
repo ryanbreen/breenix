@@ -291,14 +291,25 @@ silent_spawn_reason() {
     done || true
 }
 
+service_sequence_started() {
+    local serial_file="$1"
+
+    # ARM init retains xhci_counters after removing the unauthenticated telnet
+    # shell. Require that helper's entry in both completion and classification;
+    # a telnetd spawn attempt or entry rejects completion of this sequence.
+    grep -qF "[init] Boot script completed" "$serial_file" 2>/dev/null \
+        && grep -qF "create_process_with_argv [ARM64]: ENTRY - name='xhci_counters'" "$serial_file" 2>/dev/null \
+        && grep -qF "[spawn] path='/usr/bin/bounce'" "$serial_file" 2>/dev/null \
+        && ! grep -qF "create_process_with_argv [ARM64]: ENTRY - name='telnetd'" "$serial_file" 2>/dev/null \
+        && ! grep -qF "[spawn] path='/usr/sbin/telnetd'" "$serial_file" 2>/dev/null
+}
+
 green_sequence_complete() {
     local serial_file="$1"
     local bounce_line
     local heartbeat_count
 
-    grep -qF "[init] Boot script completed" "$serial_file" 2>/dev/null \
-        && grep -qF "create_process_with_argv [ARM64]: ENTRY - name='telnetd'" "$serial_file" 2>/dev/null \
-        && grep -qF "[spawn] path='/usr/bin/bounce'" "$serial_file" 2>/dev/null || return 1
+    service_sequence_started "$serial_file" || return 1
 
     bounce_line=$(grep -nF "[spawn] path='/usr/bin/bounce'" "$serial_file" | head -1 | cut -d: -f1)
     [ -n "$bounce_line" ] || return 1
@@ -819,9 +830,7 @@ classify_serial() {
         CLASS_REASON="#596 inline-save resume-point oracle never armed"
         return
     fi
-    if grep -qF "[init] Boot script completed" "$serial_file" 2>/dev/null \
-        && grep -qF "create_process_with_argv [ARM64]: ENTRY - name='telnetd'" "$serial_file" 2>/dev/null \
-        && grep -qF "[spawn] path='/usr/bin/bounce'" "$serial_file" 2>/dev/null; then
+    if service_sequence_started "$serial_file"; then
         if ! grep -qF "[INIT_GROUP_REFUSAL:aarch64:phase=quiesce:probe1=-22:probe2=-22:expected=-22]" "$serial_file" 2>/dev/null; then
             CLASS_BUCKET="P5B"
             CLASS_REASON="init-group quiesce refusal marker missing"

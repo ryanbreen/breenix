@@ -78,10 +78,16 @@ fn device_modes_poll_and_non_sleeping_device_api() {
     // The /dev/tty arm opens the controlling terminal's slave through
     // open_tty_slave, which builds the entry the same way and installs it in
     // the reserved slot, or in one it holds before taking the reference.
-    assert!(opens.contains("returnopen_tty_slave(&pair,flags,native_inode,reserved);"));
-    let tty = f.split("fnopen_tty_slave(").nth(1).unwrap();
+    // aec7088c keeps the caller's process borrow through descriptor stamping,
+    // closing the lookup/vhangup race without changing flag or slot ownership.
+    assert!(opens.contains("returnopen_tty_slave(process,&pair,flags,native_inode,reserved);"));
+    assert!(f.contains("fnopen_tty_slave(process:&mutcrate::process::Process,"));
+    let tty = parser::compact(&parser::function(&read("kernel/src/syscall/fs.rs"), "open_tty_slave"));
     assert!(tty.contains("FileDescriptor::try_opened(FdKind::PtySlave(pair.clone()),flags)"));
     assert!(tty.contains("Some(slot)=>Slot::Held(slot),"));
+    assert!(tty.contains("process.fd_table.reserve_slot()"));
+    assert!(tty.contains("slot.install(&mutprocess.fd_table,entry)"));
+    assert!(!tty.contains("manager()"));
     assert_eq!(
         opens
             .matches("install_descriptor(&mutprocess.fd_table,reserved,fd_kind)")

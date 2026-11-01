@@ -16,7 +16,7 @@ struct Registry {
     slots: Vec<Option<Record>>,
     free: Vec<usize>,
 }
-static LIVE: spin::Mutex<Registry> = spin::Mutex::new(Registry { slots: Vec::new(), free: Vec::new() });
+static LIVE: crate::irq_safe_mutex::IrqSafeMutex<Registry> = crate::irq_safe_mutex::IrqSafeMutex::new(Registry { slots: Vec::new(), free: Vec::new() });
 
 pub struct Allocation(usize);
 impl Allocation {
