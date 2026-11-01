@@ -2141,6 +2141,70 @@ def resources_identity(boot, suite, sha=None):
 STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json', 'isolation': 'gt710-step-8-5.json', 'presentation': 'gt710-step-8-6.json', 'performance': 'gt710-step-8-7.json'}
 
 
+
+def breengel_fronts_suite(serial, boot):
+    """Score the ordered BreenGL capture against the step 9.1 selection."""
+    resources_identity(boot, 'breengel')
+    root = Path(__file__).resolve().parents[2]
+    manifest = json.loads((root / 'docs/suites/breengel.json').read_text())
+    names = [c['id'] + '/' + case['id'] for c in manifest['categories'] for case in c['cases']]
+    step = json.loads((root / 'docs/gui/gt710-step-9-1.json').read_text())
+    required = step['cases']
+    if (len(names) != 401 or step.get('suite') != 'breengel' or len(required) != 304
+            or required != [name for name in names if name in required]):
+        raise ValueError('invalid BreenGL selection or manifest order')
+    fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal']
+    if not serial.endswith('\n') or any(re.search(p, serial) for p in
+            fatal + [r'KERNEL PANIC[:!]', r'SUITE_SEQUENCE (?:STALLED|FAIL)']):
+        raise ValueError('incomplete or fatal BreenGL capture')
+    shapes = {
+        'START': r'SUITE breengel START cases=(\d+)',
+        'PASS': r'SUITE breengel CASE ([a-z0-9/-]+) PASS ms=(\d+)(?: sha256=[0-9a-f]{64})?',
+        'FAIL': r'SUITE breengel CASE ([a-z0-9/-]+) FAIL ms=(\d+)(?: sha256=[0-9a-f]{64})? msg=(\S.*)',
+        'DONE': r'SUITE breengel DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)',
+        'ELAPSED': r'SUITE breengel ELAPSED ms=(\d+)',
+        'MEMORY': r'SUITE breengel MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+',
+        'RECLAIMED': r'SUITE breengel MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)',
+        'VALUE': r'SUITE breengel VALUE .*',
+        'WAIT': r'SUITE breengel WAIT .*',
+    }
+    parsed = []
+    for line in serial.splitlines():
+        if not line.startswith('SUITE breengel '):
+            continue
+        for kind, shape in shapes.items():
+            match = re.fullmatch(shape, line)
+            if match:
+                parsed.append((kind, match, line))
+                break
+        else:
+            raise ValueError('malformed BreenGL record: ' + line[:180])
+    records = [(k, m, line) for k, m, line in parsed if k in ('START', 'PASS', 'FAIL', 'DONE', 'ELAPSED')]
+    if (len(records) != 404 or records[0][0] != 'START' or records[0][1][1] != '401'
+            or [k for k, _, _ in records[1:401+1] if k not in ('PASS', 'FAIL')]
+            or [m[1] for _, m, _ in records[1:401+1]] != names
+            or records[402][0] != 'DONE' or records[403][0] != 'ELAPSED'):
+        raise ValueError('BreenGL requires manifest-ordered START/401 CASE/DONE/ELAPSED')
+    cases = records[1:402]
+    if any(m[1] == 'panel/stage-layout' and k == 'PASS' and ' sha256=' not in line
+           for k, m, line in cases):
+        raise ValueError('pictured BreenGL case lacks SHA-256')
+    if any(k != 'PASS' for k, m, _ in cases if m[1] in required):
+        raise ValueError('selected BreenGL case failed')
+    tally = (sum(k == 'PASS' for k, _, _ in cases), sum(k == 'FAIL' for k, _, _ in cases), 0, 401)
+    if tuple(map(int, records[402][1].groups())) != tally:
+        raise ValueError('BreenGL DONE disagrees with cases')
+    if not 0 < int(records[403][1][1]) <= 900000:
+        raise ValueError('BreenGL elapsed time exceeds 900 seconds')
+    lines = serial.splitlines()
+    ready = [i for i, line in enumerate(lines) if line == 'SUITE_SEQUENCE READY breengel']
+    if len(ready) != 1 or ready[0] <= lines.index(records[-1][2]):
+        raise ValueError('BreenGL requires READY after ELAPSED')
+    ok, why = runpy.run_path(str(root / 'scripts/suite-verdict.py'))['memory_problem'](parsed)
+    if not ok:
+        raise ValueError('BreenGL ' + why)
+    return cases
+
 def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
     """Score a selected step while recording every real result of the shared suite."""
     resources_identity(boot, 'gpu')
@@ -2568,6 +2632,12 @@ def display_snapshots(rows, preferred):
 
 
 def check_case(category, case, serial, producer=None):
+    if category == 'breengel-fronts':
+        if producer is None or 'breengel' not in producer or case != 'suite':
+            raise ValueError('breengel-fronts needs a production BreenGL capture')
+        capture = producer['breengel']
+        breengel_fronts_suite(capture['serial'], capture['boot'])
+        return
     if category == 'presentation' and case == 'display':
         if producer is None: raise ValueError('presentation needs named GPU and console captures')
         preferred, _ = native_mode(producer['console']['serial'])
@@ -2747,7 +2817,8 @@ def check_case(category, case, serial, producer=None):
 
 def cases(category, serial, producer=None):
     results = []
-    for name, title in CATEGORIES[category]:
+    entries = [('suite', 'A completed production BreenGL boot records the selected window front cases')] if category == 'breengel-fronts' else CATEGORIES[category]
+    for name, title in entries:
         try:
             check_case(category, name, serial, producer)
             result, reason = 'PASS', ''
@@ -3563,6 +3634,7 @@ def main():
     parser.add_argument('--boot')
     parser.add_argument('--sha')
     parser.add_argument('--gpu-boot', help='completed companion GPU-only suite boot for core/producer')
+    parser.add_argument('--breengel-fronts', action='store_true', help='score a completed BreenGL boot against step 9.1')
     parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
     parser.add_argument('--isolation', action='store_true', help='score PR 8.5 isolation and preceding selections from the same captures')
     parser.add_argument('--shapes', action='store_true', help='score PR 8.4 shapes and preceding selections from the same captures')
@@ -3625,6 +3697,20 @@ def main():
         return result.stdout
 
     boot = json.loads(read('run.json'))
+    if args.breengel_fronts:
+        if (not read('ended').strip() or read('exit-status').strip() not in ('0', '1')
+                or read('dirty').strip() != '0' or read('commit').strip() != args.sha):
+            raise ValueError('a completed clean BreenGL boot of the requested commit is required')
+        events = [json.loads(line) for line in read('events.jsonl').splitlines()]
+        if any(event.get('event') in ('console-gap', 'fatal') for event in events):
+            raise ValueError('BreenGL capture has a gap or fatal event')
+        resources_identity(boot, 'breengel', args.sha)
+        rows = cases('breengel-fronts', '', {'breengel': {'boot': dict(boot, bootedCommit=args.sha),
+                                                        'serial': read('serial.txt')}})
+        for row in rows:
+            print('SUITE gt710 CASE ' + row['id'] + ' ' + row['result'] + ' ms=0'
+                  + (' msg=' + row['reason'] if row['reason'] else ''))
+        return 0 if all(row['result'] == 'PASS' for row in rows) else 1
     if (not read('ended').strip() or read('exit-status').strip() != '0' or read('dirty').strip() != '0'
             or read('commit').strip() != args.sha):
         raise ValueError('a completed, clean, successful boot of the requested commit is required')
