@@ -9,6 +9,37 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class GpuTime(unittest.TestCase):
+    def test_cpu_clock_brackets_and_complete_request_aggregation(self):
+        source = r'''
+#[path="MODULE"] mod gpu_time;
+fn main() {
+ let q=gpu_time::end_query(0x02000000,256).unwrap();
+ assert_eq!(q,[0x200406c0,0,0x02000830,256,0x0000f002]);
+ let mut stats=[0i128;18];
+ // GPU clock is CPU clock + 9000. The read brackets CPU [1000,1020].
+ // Submit=100, GPU begin=9200, draw end=9300, parked=9400, end=9500.
+ let row=[256,1400,9200,9300,9400,1];
+ gpu_time::accumulate(&mut stats,row,9500,[100,600,1000,10010,1020]);
+ assert_eq!(&stats[..10],&[1,1,90,110,100,100,100,90,110,20]);
+ for _ in 0..40_000 {gpu_time::accumulate(&mut stats,row,9500,[100,600,1000,10010,1020]);}
+ assert_eq!(stats[0],40_001);assert_eq!(stats[1],40_001);
+ let mut bad=row;bad[5]=0;
+ gpu_time::accumulate(&mut stats,bad,9500,[100,600,1000,10010,1020]);
+ assert_eq!(stats[0],40_002);assert_eq!(stats[1],40_001);
+ // Existing packet/decode helpers stay covered by the companion check.
+ assert!(gpu_time::sampled(256));assert_eq!(gpu_time::offset(256,0).unwrap(),1216);
+ assert_eq!(gpu_time::query(0x02000000,256,0).unwrap()[4],0xf002);
+ assert_eq!(gpu_time::decode(256,1,[[256,0,1,0];3])[5],1);
+}
+'''.replace('MODULE', str(ROOT / 'kernel/src/gpu/gk208/gpu_time.rs'))
+        priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
+        with tempfile.TemporaryDirectory(prefix='gt710-gpu-clock-') as directory:
+            p = Path(directory)
+            (p / 'clock.rs').write_text(source)
+            subprocess.run(priority + ['rustc', '--edition=2021', '-Dwarnings',
+                           str(p / 'clock.rs'), '-o', str(p / 'clock')], check=True)
+            subprocess.run([str(p / 'clock')], check=True)
+
     def test_query_packets_and_sample_provenance(self):
         module = ROOT / 'kernel/src/gpu/gk208/gpu_time.rs'
         self.assertTrue(module.exists(), 'retain device timing separately from host polling')
