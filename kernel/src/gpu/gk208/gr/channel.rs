@@ -1526,7 +1526,7 @@ mod native {
                 regs: &mut Registers(self.registers), total: self.total,
                 sequence: self.put.max(1), stop_on_trap: true, retry_traps, release_slot: 0,
                 queued_put: Some(self.put) };
-            monitor.snapshot().map(|_| ())
+            monitor.check_health()
         }
         pub(crate) fn error_trap(&self) -> Result<Option<super::super::error::Trap>, &'static str> {
             super::super::error::capture_now(&mut Registers(self.registers))
@@ -1980,8 +1980,8 @@ mod native {
         release_slot: usize,
         queued_put: Option<u32>,
     }
-    impl Poll for Monitor<'_> {
-        fn snapshot(&mut self) -> Result<(u32, u64, bool), &'static str> {
+    impl Monitor<'_> {
+        fn check_health(&mut self) -> Result<(), &'static str> {
             if self.stop_on_trap {
                 let words = if self.retry_traps {
                     super::super::error::read_traps(self.regs, None)?
@@ -1996,6 +1996,12 @@ mod native {
                     return Err("draw FIFO/CE fault; backing retained");
                 }
             }
+            Ok(())
+        }
+    }
+    impl Poll for Monitor<'_> {
+        fn snapshot(&mut self) -> Result<(u32, u64, bool), &'static str> {
+            self.check_health()?;
             let s = self.session;
             s.pages.observe();
             // SAFETY: coherent observation of the owned page's three words.
