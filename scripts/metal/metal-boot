@@ -544,8 +544,9 @@ class Driver:
             intent = self.stage / 'boot-intent'
             # On the persistent layout the intent names the test root, the only partition a test boot is given.
             test_root = the_layout['partitions']['test']['guid'] if the_layout else None
-            if test_root:
-                intent.write_bytes(metal_persist.intent(target, root=test_root))
+            command_line=getattr(self.args,'kernel_command_line',None)
+            if test_root or command_line is not None:
+                intent.write_bytes(metal_persist.intent(target, root=test_root, command_line=command_line))
             else:
                 intent.write_bytes(('BREENIX-BOOT 1\n' + target + '\n').encode('ascii'))
             files['ramdisk'] = intent
@@ -2220,6 +2221,7 @@ def main():
         p.add_argument('--session', action='store_true', help='hold the console for operator input, without scoring')
         p.add_argument('--idle-minutes', type=int, default=30, help='session input idle limit (1 through 240; default 30)')
         p.add_argument('--suite')
+        p.add_argument('--kernel-command-line')
         p.add_argument('--gt710-category', choices=('core', 'panic', 'clocks'))
         p.add_argument('--milestone')
         p.add_argument('--source-boot')

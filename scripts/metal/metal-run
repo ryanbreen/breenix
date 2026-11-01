@@ -283,6 +283,10 @@ def boot(args):
         command += ['--suite', args.suite]
     if category:
         command += ['--gt710-category', category]
+    if getattr(args,'kernel_command_line',None) is not None:
+        if payload!='image' or args.disk!='root':
+            raise SystemExit('--kernel-command-line needs a disk-root image boot')
+        command += ['--kernel-command-line', args.kernel_command_line]
     if milestone:
         command += ['--milestone', milestone]
     if sha:
@@ -459,6 +463,7 @@ def main():
     p.add_argument('--disk', choices=('install', 'root'),
                    help='physical disk root (default), or an explicit recovery install')
     p.add_argument('--suite')
+    p.add_argument('--kernel-command-line', help='kernel options passed before root mounting')
     p.add_argument('--gt710-category', choices=('core', 'panic', 'clocks'),
                    help='run the named native diagnostic on a separate automated probe boot')
     p.add_argument('--milestone', help='score the effort/milestone category set from the boot commit')

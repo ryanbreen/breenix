@@ -117,9 +117,13 @@ def manager_config(site, countdown=5):
     return ['BREENIX-MANAGER 1', 'query ' + query_url(site), f'countdown {countdown}', 'test-path load-file']
 
 
-def intent(target, root=None, home=None, tests=None, userland=None, previous_userland=None):
+def intent(target, root=None, home=None, tests=None, userland=None, previous_userland=None, command_line=None):
     """A format-2 boot intent (kernel/src/boot/intent.rs)."""
     lines = ['BREENIX-BOOT 2', 'target ' + target]
+    if command_line is not None:
+        if len(command_line)>255 or any(not 32<=ord(c)<=126 for c in command_line):
+            raise ValueError('invalid kernel command line')
+        lines.append('cmdline ' + command_line)
     for item, guid in (('root', root), ('home', home)):
         if guid is not None:
             if not GUID.fullmatch(guid):

@@ -233,14 +233,8 @@ impl Startup for Controller {
     }
 }
 fn keep_post()->bool {
-    // Boot-root option, read once; missing is the normal full-clock boot.
-    let Ok(root)=crate::fs::ext2::root_fs_read() else {return false;};
-    let Some(fs)=root.as_ref() else {return false;};
-    let Ok(n)=fs.resolve_path("/etc/breenix/gt710-clocks") else {return false;};
-    let Ok(inode)=fs.read_inode(n) else {return true;};
-    if inode.is_dir() || inode.size()>16 {return true;}
-    let Ok(bytes)=fs.read_file_content_coherent(n,&inode) else {return true;};
-    bytes.as_slice()!=b"full\n" && bytes.as_slice()!=b"full"
+    crate::boot::intent::command_line().is_some_and(|line|
+        line.split_ascii_whitespace().any(|word|word=="gt710.clocks=post"))
 }
 pub(super) fn initialize() {
     let result=super::ce::with_clock_owner(|regs,_,_| {
