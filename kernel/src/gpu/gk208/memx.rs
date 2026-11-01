@@ -11,7 +11,6 @@
  *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * claim-lint:ok: Original MIT grant, pinned source hashes in docs/gui/provenance/gt710-c5a-sources.json.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -35,7 +34,6 @@
  *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * claim-lint:ok: Original MIT grant, pinned source hashes in docs/gui/provenance/gt710-c5a-sources.json.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -59,7 +57,6 @@
  *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * claim-lint:ok: Original MIT grant, pinned source hashes in docs/gui/provenance/gt710-c5a-sources.json.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -85,7 +82,6 @@
  *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * claim-lint:ok: Original MIT grant, pinned source hashes in docs/gui/provenance/gt710-c5a-sources.json.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -96,10 +92,10 @@
  * SOFTWARE.
  */
 // SPDX-License-Identifier: MIT
-//! Probe-only live DDR3 calculation and PMU memx transport.
+//! Live DDR3 calculation and PMU memx transport.
 //! Adapted from checked MIT nouveau v6.8 bios/{rammap,timing,ramcfg,M0203,pll,gpio}.c,
 //! clk/pllgt215.c, fb/{ramgk104,sddr3}.c, ramfuc.h, pmu/{memx,gt215}.c and fuc/os.h.
-//! K5 bounds execution to 405000 -> 900000 -> 405000 kHz, in mode 1.
+//! Production selects runtime targets within the reference PLL mode-1 limit.
 use alloc::{collections::BTreeMap, vec::Vec};
 use super::modeset;
 type Config = BTreeMap<&'static str,u32>;

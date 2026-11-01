@@ -11,7 +11,6 @@
  *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * claim-lint:ok: MIT license condition; sources in THIRD_PARTY_NOTICES.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -37,7 +36,6 @@
  *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
- * claim-lint:ok: MIT license condition; sources in THIRD_PARTY_NOTICES.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -47,7 +45,7 @@
  * OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
  * SOFTWARE.
  */
-//! Probe-only GPC control. MIT nouveau Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba:
+//! Shared GPC PLL control. MIT nouveau Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba:
 //! clk/gk104.c:222-335,356-473 (idx 0 only), clk/pllgt215.c:31-100,
 //! bios/pll.c:81-107,142-159,352-365. Original notices retained above.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
