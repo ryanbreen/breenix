@@ -143,7 +143,7 @@ pub fn retained<T: Io>(io: &mut T, head: u32, surface: Surface,
     receipt(io, head, surface, notifier).map(Some)
 }
 
-fn receipt(io: &mut impl Io, head: u32, surface: Surface, notifier: u32)
+pub fn receipt(io: &mut impl Io, head: u32, surface: Surface, notifier: u32)
     -> Result<Receipt, &'static str> {
     if notifier & 1 != 1 { return Err("native present update not complete"); }
     let (active, armed) = surface_state(io, head, surface)?;

@@ -11,18 +11,20 @@ class Stall(unittest.TestCase):
         fixture=r'''
 use std::collections::BTreeMap;
 const EPERM:i64=1;const EINVAL:i64=22;const EIO:i64=5;
+mod abi{pub mod backend{pub const GK208:u32=6;}}
+mod dev{pub fn backend()->u32{6}}
 mod kind{pub const TARGET:u32=1;}mod limits{pub const IN_FLIGHT:usize=4;}
 #[derive(PartialEq)]enum CtxState{Live}
 struct Context{state:CtxState,device_alive:bool,dropped:bool,inflight:Vec<()>,busy:bool}
 struct Resource{kind:u32,scanout:bool,lost:bool,dropped:bool,width:u32,height:u32,writers:u32,invalid:bool,last:Option<()>}
 struct Core{stalled:bool,display:Display,contexts:BTreeMap<u32,Context>,resources:BTreeMap<u32,Resource>}
-struct Display{changing:bool}
+struct Display{changing:bool,outstanding:u32}
 impl Core{fn ctx_of(&self,_:u64,_:u64)->Option<u32>{Some(1)}fn res_of(&self,_:u64,h:u64)->Option<u32>{(h==1).then_some(1)}}
 fn owner(_:u64)->bool{true}struct Arg{context:u64,target:u64}
 fn candidate(c:&mut Core,a:Arg)->Option<Result<(),i64>>{let tgid=7;CODE
  let _=(width,height);Some(Ok(()))}
 #[test]fn a_stalled_native_present_is_killably_waiting_before_build(){
- let mut c=Core{stalled:true,display:Display{changing:false},contexts:BTreeMap::from([(1,Context{state:CtxState::Live,device_alive:true,dropped:false,inflight:vec![],busy:false})]),resources:BTreeMap::from([(1,Resource{kind:1,scanout:true,lost:false,dropped:false,width:64,height:64,writers:0,invalid:false,last:Some(())})])};
+ let mut c=Core{stalled:true,display:Display{changing:false,outstanding:0},contexts:BTreeMap::from([(1,Context{state:CtxState::Live,device_alive:true,dropped:false,inflight:vec![],busy:false})]),resources:BTreeMap::from([(1,Resource{kind:1,scanout:true,lost:false,dropped:false,width:64,height:64,writers:0,invalid:false,last:Some(())})])};
  assert_eq!(candidate(&mut c,Arg{context:1,target:1}),None,"PRESENT reached native 64x64 geometry refusal instead of blocking");
  assert_eq!(candidate(&mut c,Arg{context:1,target:2}),Some(Err(EINVAL)));
  c.stalled=false;assert_eq!(candidate(&mut c,Arg{context:1,target:1}),Some(Ok(())));

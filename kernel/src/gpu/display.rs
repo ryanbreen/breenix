@@ -20,7 +20,7 @@ pub(super) const KERNEL_MODE: usize = 1;
 #[derive(Clone, Copy)]
 pub(super) struct Binding {
     pub id: u32,
-    /// The context fence of the `PRESENT` whose flush completed this binding.
+    /// Context fence of this binding; native G26 may still await its latch.
     pub fence: u64,
     pub answer: u32,
 }
@@ -37,16 +37,18 @@ pub(super) struct State {
     pub mode: u32,
     pub changing: bool,
     pub owner_sequence: u64,
-    /// The binding the last completed `PRESENT` made, while no later one is outstanding.
+    /// Latest completed binding, or latest GET-accepted binding on native G26.
     pub binding: Option<Binding>,
     /// Resources a sent bind could have installed, held until a later sent
     /// bind's flush completes or a confirmed reset ends device access.
     pub holds: BTreeSet<u32>,
-    /// Whether the kernel knows what the scanout shows: no bind is outstanding and the
-    /// last one completed OK, or a confirmed reset cleared it.
+    /// Whether the binding command is known: a completed virtual flush, native
+    /// GET acceptance, or a confirmed reset that cleared the binding.
     pub known: bool,
-    /// `PRESENT`s sent, in order; the latest one decides the binding once it completes.
+    /// `PRESENT`s sent, in order; native binding publication occurs at GET acceptance.
     pub sent: u64,
+    /// Native G26 binding sequence most recently accepted by core-channel GET.
+    pub accepted: u64,
     /// `PRESENT`s sent whose flush has not completed.
     pub outstanding: u32,
     /// The latest sent `PRESENT` completed OK (initially true before a send).
@@ -63,6 +65,7 @@ impl State {
             holds: BTreeSet::new(),
             known: true,
             sent: 0,
+            accepted: 0,
             outstanding: 0,
             latest_ok: true,
         }
@@ -109,7 +112,29 @@ pub(super) fn binding(c: &Core, tgid: u64, id: u32, window: bool) -> Result<Opti
     Ok(c.display.binding.filter(|b| b.id == id))
 }
 
+/// G26: storage still displayed or pending cannot be a GPU write destination.
+pub(super) fn write_blocked(c: &Core, written: &[u32]) -> bool {
+    dev::backend() == abi::backend::GK208
+        && written.iter().any(|id| c.display.holds.contains(id))
+}
+
 impl Core {
+    /// GET accepted the native UPDATE. Publish the named binding and syscall
+    /// answer, leaving the context fence and previous scanout holds pending.
+    #[cfg(target_arch = "x86_64")]
+    pub(super) fn present_accepted(&mut self, serial: u64) {
+        let Some(sub) = self.subs.get(&serial) else { return };
+        let Some(p) = sub.present else { return };
+        let Some(ctx) = self.contexts.get_mut(&sub.ctx) else { return };
+        let answer = dev::success();
+        ctx.flushes.complete(sub.n, answer);
+        self.display.binding = Some(Binding {
+            id: p.id, fence: (ctx.ns as u64) << 32 | sub.n as u64, answer,
+        });
+        self.display.accepted = p.seq;
+        self.display.known = p.seq == self.display.sent;
+        notify();
+    }
     /// A `PRESENT`'s flush came back: the latest one, completed OK, makes its binding
     /// known and ends the holds of resources only an earlier bind could have shown.
     /// The binding is known again once the outstanding count is 0 and the latest completed OK.
@@ -212,7 +237,8 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
     }
 }
 
-/// Bind `target` of `tgid` to the scanout in `context` and wait for its flush: the fence,
+/// Bind `target` of `tgid` to the scanout in `context` and wait for its flush answer
+/// (native G26: GET acceptance, with a separate latch fence): the fence,
 /// its status and the device's answer. `on_sent` receives the fence once the bind is queued;
 /// its error, or an interrupted wait, leaves the queued present to complete on its own.
 pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(u64) -> Result<(), i64>) -> Result<(u64, u32, u32), i64> {
@@ -270,6 +296,9 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
             return Some(Err(EINVAL));
         }
         if c.stalled {
+            return None;
+        }
+        if dev::backend() == abi::backend::GK208 && c.display.outstanding != 0 {
             return None;
         }
         // Count admitted display work across the device wait. A VT switch waits
@@ -342,7 +371,9 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
         };
         c.display.sent += 1;
         c.display.outstanding += 1;
-        c.display.known = false;
+        // MODES keeps naming the latest accepted native binding while the next
+        // UPDATE awaits GET. Observation also waits for its acceptance below.
+        if dev::backend() != abi::backend::GK208 { c.display.known = false; }
         let seq = c.display.sent;
         let ctx = c.contexts.get_mut(&ctx_id)?;
         ctx.issued += 1;
@@ -416,6 +447,12 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
         let Some(ctx) = c.contexts.get_mut(&ctx_id) else {
             return Some((fence_status::DEVICE_RESET, 0));
         };
+        #[cfg(target_arch = "x86_64")]
+        if dev::backend() == abi::backend::GK208 {
+            if let Some(answer) = ctx.flushes.take_ready(n) {
+                return Some((fence_status::OK, answer));
+            }
+        }
         if n > ctx.done_upto {
             return None;
         }
@@ -571,7 +608,11 @@ impl Transition {
     }
     fn acquire() -> Result<Self, i64> {
         wait_for(None, true, |c| {
-            if c.display.changing || c.display.outstanding > 0 {
+            // G26 observations name the accepted binding even before its latch.
+            // The transition excludes a later PRESENT throughout the readback.
+            if c.display.changing || (c.display.outstanding > 0
+                && !(dev::backend() == abi::backend::GK208 && c.display.known
+                    && c.display.accepted == c.display.sent)) {
                 return None;
             }
             c.display.changing = true;

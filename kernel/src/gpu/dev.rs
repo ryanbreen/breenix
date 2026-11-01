@@ -94,6 +94,9 @@ impl Done {
 
 pub enum Reap {
     Empty,
+    /// Native display accepted the binding; its context fence is still pending.
+    #[cfg(target_arch = "x86_64")]
+    Accepted(Tag),
     Done(Done),
     Fault,
     /// A native engine reset ended this request without losing peer objects.

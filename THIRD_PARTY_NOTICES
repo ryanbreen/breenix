@@ -2072,3 +2072,15 @@ uses the same pinned MIT BIOS performance, M0203, voltage, vmap and GPIO
 layouts and voltage arithmetic cited in the C1 and C3-0 sections above.
 Its source notice retains the corresponding Nouveau Community, Red Hat and
 Martin Peres copyrights. No board ROM data is embedded in this decoder.
+
+GK208B FIFO presentation (E24 milestone 8 PR 8.7, G26)
+--------------------------------------------------
+`kernel/src/gpu/gk208/{native,present}.rs` separates core GET acceptance
+from the existing EVO completion notifier. It retains the UPDATE ordering
+and register encodings already attributed above to nouveau v6.8
+`dispnv50/core507d.c` (MIT, Copyright 2018 Red Hat Inc.) and NVIDIA
+open-gpu-doc `classes/display/cl927d.h` at
+`9fdf5c4062007929d9f4e6cbad9c9771fe61b880` (MIT SPDX, Copyright (c)
+1993-2022 NVIDIA CORPORATION & AFFILIATES). Their full notices remain in
+the consumers. G26's single pending flip, binding publication and write
+exclusion are Breenix policy; this change adds no external hardware source.

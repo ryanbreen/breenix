@@ -292,6 +292,18 @@ fn complete(
     route: (u32, u32, bool, bool),
     scripts: &[Vec<modeset::Op>; 4],
 ) -> Result<u32, &'static str> {
+    completion(regs, total, notifier, limits, coefficients, route, scripts, true)
+}
+fn completion(
+    regs: &mut Registers,
+    total: u64,
+    notifier: u64,
+    limits: &modeset::PllLimits,
+    coefficients: &modeset::Pll,
+    route: (u32, u32, bool, bool),
+    scripts: &[Vec<modeset::Op>; 4],
+    wait: bool,
+) -> Result<u32, &'static str> {
     struct Wait<'a> {
         regs: &'a mut Registers,
         total: u64,
@@ -370,9 +382,9 @@ fn complete(
         }
         fn delay_us(&mut self, us: u32) { self.regs.delay_us(us); }
     }
-    super::present::wait_notifier(&mut Wait {
-        regs, total, notifier, limits, coefficients, route, scripts,
-    })
+    let mut io = Wait { regs, total, notifier, limits, coefficients, route, scripts };
+    if wait { super::present::wait_notifier(&mut io) }
+    else { super::present::NotifierWait::poll(&mut io) }
 }
 // Clock-transition route and one pending first-present observation. The CE owner
 // serializes these EXEC boundaries against native publication.
@@ -585,6 +597,56 @@ fn acknowledge(evo: &mut Evo, regs: &mut Registers) -> Result<u32, &'static str>
 pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface,
 ) -> Result<super::present::Receipt, &'static str> {
+    present_inner(evo, regs, surface, true)?.ok_or("native synchronous receipt absent")
+}
+
+/// G26 answers PRESENT after GET consumes the unchanged G22 sequence.
+/// The notifier is sampled separately; GET does not complete the presentation fence.
+pub(in crate::gk208) fn present_accepted(evo: &mut Evo, regs: &mut Registers,
+    surface: super::present::Surface,
+) -> Result<(), &'static str> {
+    present_inner(evo, regs, surface, false).map(|_| ())
+}
+
+/// Drain the one accepted flip before a synchronous mode/console transition.
+pub(in crate::gk208) fn wait_present(evo: &mut Evo, regs: &mut Registers,
+    surface: super::present::Surface,
+) -> Result<super::present::Receipt, &'static str> {
+    complete(regs, evo.total, evo.notifier, &evo.limits, &evo.coefficients,
+        (evo.head, evo.sor, true, true), &evo.scripts)?;
+    present_latched(evo, regs, surface)?.ok_or("native accepted flip did not latch")
+}
+
+pub(in crate::gk208) fn present_latched(evo: &mut Evo, regs: &mut Registers,
+    surface: super::present::Surface,
+) -> Result<Option<super::present::Receipt>, &'static str> {
+    let value = completion(regs, evo.total, evo.notifier, &evo.limits, &evo.coefficients,
+        (evo.head, evo.sor, true, true), &evo.scripts, false)?;
+    if value & 1 == 0 { return Ok(None); }
+    let receipt = super::present::receipt(&mut PresentRead(regs), evo.head, surface, value)?;
+    let h = evo.head as usize * 0x300;
+    let blank = regs.read(0x64041c + h);
+    let end = regs.read(0x640420 + h);
+    modeset::Viewport::for_raster((end & 0xffff).checked_sub(blank & 0xffff)
+        .ok_or("invalid native raster width")?, (end >> 16).checked_sub(blank >> 16)
+        .ok_or("invalid native raster height")?, surface.width, surface.height)?.verify(regs, evo.head)?;
+    super::memx_display::Health::read(regs, evo.head, evo.sor).check()?;
+    super::display_evidence::record(regs, evo.head, surface, &receipt);
+    Ok(Some(receipt))
+}
+
+// Receipt validation uses the same both-bank check as synchronous presentation.
+struct PresentRead<'a>(&'a mut Registers);
+impl super::present::Io for PresentRead<'_> {
+    fn clear_notifier(&mut self) -> Result<(), &'static str> { Err("receipt is read-only") }
+    fn submit(&mut self, _: &[(u32,u32)]) -> Result<(), &'static str> { Err("receipt is read-only") }
+    fn complete(&mut self) -> Result<u32, &'static str> { Err("receipt is read-only") }
+    fn read(&mut self, r: usize) -> u32 { self.0.read(r) }
+}
+
+fn present_inner(evo: &mut Evo, regs: &mut Registers,
+    surface: super::present::Surface, wait: bool,
+) -> Result<Option<super::present::Receipt>, &'static str> {
     let _cost = super::cost::phase(super::cost::Slot::Evo);
     let phase=MEMX_PRESENT_PHASE.load(core::sync::atomic::Ordering::Acquire);
     if phase!=0 {
@@ -646,6 +708,13 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
     let head=evo.head;
     let receipt = {
         let mut update = Update { evo, regs, view };
+        if !wait {
+            use super::present::Io;
+            update.clear_notifier()?;
+            update.submit(&surface.methods(head)?)?;
+            modeset::wait(update.regs, 0x640004, u32::MAX, update.evo.put)?;
+            return Ok(None);
+        }
         let retained = if view.verify(update.regs, head).is_ok() {
             super::present::retained(&mut update, head, surface,
                 |u| acknowledge(u.evo, u.regs))?
@@ -664,7 +733,7 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
         MEMX_PRESENT_PHASE.store(0,core::sync::atomic::Ordering::Release);
     }else{health.check()?;}
     super::display_evidence::record(regs, head, surface, &receipt);
-    Ok(receipt)
+    Ok(Some(receipt))
 }
 
 pub fn takeover(
@@ -1490,6 +1559,7 @@ impl CoreProducer {
                     }
                     Reap::Fault => return Err("core adapter engine fault"),
                     Reap::Reset(_) => return Err("core adapter request ended by engine reset"),
+                    Reap::Accepted(_) => return Err("core probe unexpectedly presented"),
                     Reap::Empty => (),
                 }
                 let Device::Gk208(d) = &mut *device else { unreachable!() };

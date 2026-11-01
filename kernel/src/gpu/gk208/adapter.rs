@@ -140,6 +140,9 @@ pub struct Device {
     board: super::caps::BoardState,
     queue: Queue,
     pending: VecDeque<Sent>,
+    // A GR release has executed, but the G22 display notifier has not latched.
+    // Keep this separate so disjoint rendering and readback can retire meanwhile.
+    flipping: Option<(Sent, gpu_completion::CeSample)>,
     retired: VecDeque<(Request, Option<u32>)>,
     attributed: Option<(super::gr::error::Trap, u32)>,
     #[cfg(target_os = "none")]
@@ -159,7 +162,7 @@ impl Device {
     }
     pub(crate) fn new(channel: NativeChannel, board: super::caps::BoardState) -> Self {
         Self { channel, board, queue: Queue::new(), pending: VecDeque::new(),
-            retired: VecDeque::new(), attributed: None,
+            retired: VecDeque::new(), flipping: None, attributed: None,
             #[cfg(target_os = "none")]
             recent: VecDeque::new(), pri_pending: false, fault: false, first_error: None, resetting: None }
     }
@@ -277,7 +280,25 @@ impl Device {
         if let Err(reason) = self.channel.healthy() {
             return self.retry_error_trap(reason);
         }
+        if let Some((sent, sample)) = self.flipping.as_ref() {
+            match self.channel.present_complete(sent.request.scanout.unwrap()) {
+                Ok(true) => {
+                    let identity = sent.identity.unwrap();
+                    let echoed = u64::from(sample.sequence);
+                    let (sent, _) = self.flipping.take().unwrap();
+                    return Reap::Done(Done { tag: sent.request.tag, fence: Some(identity.caller),
+                        native_fence: Some(u64::from(identity.sequence)),
+                        answer: gpu_abi::gk208::SUCCESS, echoed, fenced: true });
+                }
+                Ok(false) => (),
+                Err(reason) => {
+                    self.first_error.get_or_insert(reason); self.fault = true;
+                    return Reap::Fault;
+                }
+            }
+        }
         let Some(front) = self.pending.front() else { return Reap::Empty };
+        if front.request.scanout.is_some() && self.flipping.is_some() { return Reap::Empty; }
         let Some(identity) = front.identity else {
             let sent = self.pending.pop_front().unwrap();
             return Reap::Done(Done { tag: sent.request.tag, fence: None, native_fence: None,
@@ -326,6 +347,11 @@ impl Device {
         let identity = completed.request();
         if self.queue.complete(identity.sequence).is_err() { self.fault = true; return Reap::Fault; }
         let sent = self.pending.pop_front().unwrap();
+        if sent.request.scanout.is_some() {
+            let tag = sent.request.tag;
+            self.flipping = Some((sent, sample));
+            return Reap::Accepted(tag);
+        }
         #[cfg(target_os = "none")]
         if let Some(execution) = sent.execution { execution.finish(); }
         Reap::Done(Done { tag: sent.request.tag, fence: Some(identity.caller),
@@ -362,9 +388,9 @@ impl Device {
     pub fn has_room(&self, segments: usize) -> bool {
         !self.pri_pending && !self.needs_reset() && self.attributed.is_none() && self.retired.is_empty()
             && self.resetting.is_none() && segments <= 4
-            && self.pending.len() + segments <= 4 && self.queue.next().is_ok()
+            && self.pending.len() + usize::from(self.flipping.is_some()) + segments <= 4 && self.queue.next().is_ok()
     }
-    pub fn outstanding(&self) -> usize { self.pending.len() + self.retired.len() }
+    pub fn outstanding(&self) -> usize { self.pending.len() + self.retired.len() + usize::from(self.flipping.is_some()) }
     pub fn queue_size(&self) -> usize { 4 }
     pub fn needs_reset(&self) -> bool {
         self.fault || (!self.pri_pending && self.attributed.is_none()
@@ -428,11 +454,11 @@ impl Device {
             Some(Err(error)) => return (Vec::new(), Err(error)),
             None => return (Vec::new(), Err("native reset not confirmed; backing retained")),
         }
-        if self.attributed.is_some() && self.retired.try_reserve(self.pending.len()).is_err() {
+        if self.attributed.is_some() && self.retired.try_reserve(self.outstanding()).is_err() {
             return (Vec::new(), Err("native retirement allocation; backing retained"));
         }
         let mut held = Vec::new();
-        if self.attributed.is_none() && held.try_reserve_exact(self.pending.len()).is_err() {
+        if self.attributed.is_none() && held.try_reserve_exact(self.outstanding()).is_err() {
             return (held, Err("native restart allocation; backing retained"));
         }
         // A restart refusal retains requests as well as channel backing.
@@ -440,6 +466,12 @@ impl Device {
             self.resetting = Some(Err(error));
             self.fault = true;
             return (Vec::new(), Err(error));
+        }
+        // GR reset does not stop EVO. SESSION retains both possible scanouts;
+        // only a later confirmed display update releases those hardware pins.
+        if let Some((sent, _)) = self.flipping.take() {
+            if self.attributed.is_some() { self.retired.push_back((sent.request, None)); }
+            else { held.push(sent.request); }
         }
         let held = if let Some((_, sequence)) = self.attributed.take() {
             // Publish the producing error before reset outcomes for earlier

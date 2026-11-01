@@ -38,30 +38,79 @@ fn candidate(c:&mut Core,a:Arg)->Option<Result<(),i64>>{let tgid=7;CODE
 
     def test_submit_waits_for_displayed_and_pending_targets(self):
         source = (ROOT / 'kernel/src/gpu/display.rs').read_text()
-        # Before G26 the production path has no scanout write exclusion.
         method = (item(source, 'pub(super) fn write_blocked(')
                   if 'pub(super) fn write_blocked(' in source else
                   'pub(super) fn write_blocked(_: &Core, _: &[u32])->bool {false}')
+        accepted = (item(source, 'pub(super) fn present_accepted(')
+                    if 'pub(super) fn present_accepted(' in source else
+                    'pub(super) fn present_accepted(&mut self, _:u64) {}')
+        presented = item(source, 'pub(super) fn presented(')
         harness = r'''
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap,BTreeSet};
 mod abi{pub mod backend{pub const GK208:u32=6;}}
-mod dev{pub fn backend()->u32{6}}
-struct Display{holds:BTreeSet<u32>}
-struct Core{display:Display}
+mod dev{pub fn backend()->u32{6}pub fn success()->u32{0x60000000}}
+fn notify(){}
+#[derive(Clone,Copy)]struct Binding{id:u32,fence:u64,answer:u32}
+#[derive(Clone,Copy)]struct Presenting{id:u32,seq:u64,owner:u64}
+struct Owner{group:u64,last:Option<Binding>}
+struct Display{holds:BTreeSet<u32>,outstanding:u32,sent:u64,accepted:u64,latest_ok:bool,known:bool,binding:Option<Binding>,stack:Vec<Owner>}
+struct Resource{holds:u32}struct Proc{presents:u64}
+#[derive(Default)]struct Answers{values:BTreeMap<u32,u32>}
+impl Answers{fn complete(&mut self,n:u32,a:u32){self.values.insert(n,a);}}
+struct Context{ns:u32,done_upto:u32,flushes:Answers}
+struct Sub{present:Option<Presenting>,ctx:u32,n:u32}
+struct Core{display:Display,resources:BTreeMap<u32,Resource>,procs:BTreeMap<u64,Proc>,subs:BTreeMap<u64,Sub>,contexts:BTreeMap<u32,Context>,released:Vec<u32>}
 mod display{use super::*;METHOD}
-#[test]fn submit_cannot_write_displayed_or_pending_storage(){
- let mut c=Core{display:Display{holds:[71,72].into_iter().collect()}};
+impl Core{
+ fn unhold(&mut self,id:u32){self.resources.get_mut(&id).unwrap().holds-=1;self.released.push(id);}
+ ACCEPTED
+ PRESENTED
+}
+#[test]fn submit_waits_for_the_next_latch_and_acceptance_keeps_the_context_fence_pending(){
+ let p=Presenting{id:72,seq:2,owner:1};
+ let old=Binding{id:71,fence:1,answer:dev::success()};
+ let mut c=Core{display:Display{holds:[71,72].into_iter().collect(),outstanding:1,sent:2,accepted:1,latest_ok:true,known:false,binding:Some(old),stack:vec![Owner{group:1,last:Some(old)}]},resources:BTreeMap::from([(71,Resource{holds:2}),(72,Resource{holds:1})]),procs:BTreeMap::from([(1,Proc{presents:0})]),subs:BTreeMap::from([(17,Sub{present:Some(p),ctx:1,n:2})]),contexts:BTreeMap::from([(1,Context{ns:7,done_upto:0,flushes:Answers::default()})]),released:vec![]};
  assert!(display::write_blocked(&c,&[71]),"displayed A was writable before B latched");
  assert!(display::write_blocked(&c,&[72]),"pending B was writable before latch");
  assert!(!display::write_blocked(&c,&[73]),"disjoint C must remain writable");
- c.display.holds.remove(&71); // B's completion notifier ends A's hold.
- assert!(!display::write_blocked(&c,&[71]));
+ c.present_accepted(17);
+ assert_eq!(c.contexts[&1].done_upto,0,"GET completed the context fence");
+ assert_eq!(c.contexts[&1].flushes.values.get(&2),Some(&dev::success()));
+ let binding=c.display.binding.unwrap();
+ assert_eq!((binding.id,binding.fence,binding.answer),(72,(7<<32)|2,dev::success()));
+ assert!(c.display.known);assert_eq!(c.display.outstanding,1);assert_eq!(c.display.accepted,2);
+ assert!(c.released.is_empty());assert!(display::write_blocked(&c,&[71]));
+ c.presented(p,true,(7<<32)|2,dev::success());
+ assert_eq!(c.display.outstanding,0);assert_eq!(c.released,[71,71]);
+ assert!(!display::write_blocked(&c,&[71]),"A stays blocked after B's actual latch");
  assert!(display::write_blocked(&c,&[72]),"B remains displayed after its own latch");
 }
-'''.replace('METHOD', method)
+'''.replace('METHOD', method).replace('ACCEPTED', accepted).replace('PRESENTED', presented).replace('pub(super)', 'pub(crate)')
         self.run_rust(harness)
         submit = item((ROOT / 'kernel/src/gpu/mod.rs').read_text(), 'fn submit_stream(')
         self.assertIn('display::write_blocked(c, &written)', submit)
+
+    def test_readback_pins_the_latest_accepted_binding_before_latch(self):
+        source = (ROOT / 'kernel/src/gpu/display.rs').read_text()
+        acquire = item(source, '    fn acquire() -> Result<Self, i64>')
+        harness = r'''
+mod abi{pub mod backend{pub const GK208:u32=6;}}
+mod dev{pub fn backend()->u32{6}}
+const EINTR:i64=4;
+struct Display{changing:bool,outstanding:u32,known:bool,accepted:u64,sent:u64}
+struct Core{display:Display}
+thread_local!{static CORE:std::cell::RefCell<Core>=const{std::cell::RefCell::new(Core{display:Display{changing:false,outstanding:1,known:true,accepted:1,sent:2}})};}
+fn wait_for<T>(_:Option<u64>,_:bool,f:impl FnOnce(&mut Core)->Option<T>)->Result<T,()>{CORE.with(|c|f(&mut c.borrow_mut()).ok_or(()))}
+struct Transition;
+impl Transition{ACQUIRE}
+#[test]fn a_readback_waits_for_acceptance_then_pins_without_waiting_for_latch(){
+ assert!(Transition::acquire().is_err(),"unaccepted UPDATE could change binding inside the readback");
+ CORE.with(|c|c.borrow_mut().display.accepted=2);
+ assert!(Transition::acquire().is_ok(),"accepted binding readback unnecessarily waited for latch");
+ CORE.with(|c|{assert!(c.borrow().display.changing);assert_eq!(c.borrow().display.outstanding,1);});
+}
+'''.replace('ACQUIRE', acquire)
+        self.run_rust(harness)
 
     def run_rust(self, harness):
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []

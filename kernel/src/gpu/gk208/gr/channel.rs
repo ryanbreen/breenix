@@ -1559,6 +1559,10 @@ mod native {
             super::super::error::acknowledge(&mut Registers(self.registers), trap, c.id, c.runlist)
         }
         /// Confirm a native surface update after the adapter orders its release.
+        pub(crate) fn present_complete(&mut self, surface:crate::gk208::present::Surface)
+            -> Result<bool, &'static str> {
+            crate::gk208::ce::present_complete(surface)
+        }
         pub(crate) fn present(&mut self, surface:crate::gk208::present::Surface)
             -> Result<(), &'static str> {
             crate::gk208::ce::present(surface)

@@ -1282,6 +1282,14 @@ impl Core {
             };
             match reaped {
                 Reap::Empty => break,
+                #[cfg(target_arch = "x86_64")]
+                Reap::Accepted(Tag::Submit { serial, .. }) => {
+                    any = true;
+                    self.last_progress = now_ns();
+                    self.present_accepted(serial);
+                }
+                #[cfg(target_arch = "x86_64")]
+                Reap::Accepted(_) => { self.fault(); break; }
                 Reap::Fault => {
                     self.fault();
                     break;
@@ -4222,6 +4230,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     // Take the context's submission slot: one sender at a time, at most four in flight.
     let mut waited = false;
     let admitted = wait_for(None, true, |c| {
+        let scanout_busy = display::write_blocked(c, &written);
         // An alias's window keeps its target after the client destroyed the handle.
         if named_ids.iter().any(|rid| !c.resources.get(rid).is_some_and(|r| (!r.dropped || alias(rid)) && !r.lost)) { return Some(Err(EINVAL)); }
         let Some(ctx) = c.contexts.get_mut(&id) else {
@@ -4230,6 +4239,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         if ctx.state != CtxState::Live || ctx.dropped {
             return Some(Err(EIO));
         }
+        if scanout_busy { return None; }
         if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.window_sealed)) {
             return Some(Err(breengel_abi::errno::EBUSY as i64));
         }

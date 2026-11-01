@@ -24,12 +24,16 @@ impl Resources {
 }
 struct Evo {head:u32}
 struct Console {vram:u64,bytes:usize}
-struct Session {resources:Resources,evo:Evo,console:Console,scanout:Vec<u32>,mode:u32}
+struct Session {resources:Resources,evo:Evo,console:Console,scanout:Vec<u32>,mode:u32,pending_present:Option<present::Surface>}
 static SESSION:Mutex<Option<Session>>=Mutex::new(None);
 mod native {
- pub fn present(_: &mut super::Evo,_:&mut super::Registers,_:super::present::Surface)
- ->Result<super::present::Receipt,&'static str>{
-  Ok(super::present::Receipt{notifier:1,active:[0;5],armed:[0;5]})
+ pub fn present_accepted(_: &mut super::Evo,_:&mut super::Registers,_:super::present::Surface)
+ ->Result<(),&'static str>{Ok(())}
+ pub fn wait_present(e: &mut super::Evo,r:&mut super::Registers,s:super::present::Surface)
+ ->Result<super::present::Receipt,&'static str>{present_latched(e,r,s).map(|v|v.unwrap())}
+ pub fn present_latched(_: &mut super::Evo,_:&mut super::Registers,_:super::present::Surface)
+ ->Result<Option<super::present::Receipt>,&'static str>{
+  Ok(Some(super::present::Receipt{notifier:1,active:[0;5],armed:[0;5]}))
  }
 }
 // PROCESS_PRESENT
@@ -82,13 +86,15 @@ mod native {
  }
  // Coordinator C1: 4097/4097 presents succeed without an observer drain.
  *SESSION.lock()=Some(Session{resources:Resources,evo:Evo{head:0},
-  console:Console{vram:0x30000000,bytes:16384000},scanout:vec![],mode:0});
+  console:Console{vram:0x30000000,bytes:16384000},scanout:vec![],mode:0,pending_present:None});
  for _ in 0..4097 {
   process_present(surface,&mut regs).unwrap();
+  assert!(process_present_complete(surface,&mut regs).unwrap());
  }
  assert_eq!(SESSION.lock().as_ref().unwrap().mode,0,"present changed the owner's chosen mode");
  let small=present::Surface{width:1024,height:768,pitch:4096,..surface};
  process_present(small,&mut regs).unwrap();
+ assert!(process_present_complete(small,&mut regs).unwrap());
  assert_eq!(SESSION.lock().as_ref().unwrap().mode,0);
  let ring=display_evidence::export_transitions().unwrap();assert_eq!(ring.len(),2048);
  assert!(ring[0].0.contains("\"sequence\":2554"));

@@ -9,5 +9,11 @@ impl Answers {
         // Interrupted or faulted callers unregister, so late completion has no registered destination.
         if let Some(slot) = self.0.get_mut(&fence) { *slot = Some(answer); }
     }
+    /// Leave a pending answer registered while GET acceptance is awaited.
+    #[cfg(any(target_arch = "x86_64", test))]
+    pub fn take_ready(&mut self, fence: u32) -> Option<u32> {
+        self.0.get(&fence).copied().flatten()?;
+        self.take(fence)
+    }
     pub fn take(&mut self, fence: u32) -> Option<u32> { self.0.remove(&fence).flatten() }
 }
