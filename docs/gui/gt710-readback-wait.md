@@ -84,3 +84,40 @@ Allocation failure preserves records for a later export. The boot's actual
 `dropped` count and export length remain the acceptance of this case's retention.
 
 Hardware results are retained in the E25 ledger under the diagnostic boot ID.
+
+## Fence-driven native readback (25.1-u9)
+
+The retained u8 split found 2,389 case readbacks: 6,040.968 ms waiting,
+13.257 ms copying and 270.060 ms residual. All 748 readbacks above 5 ms
+entered blocking and crossed a delivered tick. Their return phases were spread,
+so the capture does not measure GPU-complete-to-wake latency or prove a single
+phase lock. It does expose the queued-continuation handoff described above:
+`Core::poll` refills native slots, but a remaining backlog makes the caller
+immediately hand the queue to the tick-driven worker.
+
+Native resource-writer and CE readback waits now select fence-driven polling.
+Each turn reaps real engine receipts and refills the bounded native queue, then
+releases the core lock before the next turn. A queued continuation no longer
+forces a worker handoff, and a readback receipt beyond the 1 ms general spin
+window is still consumed directly. Signals, caller deadlines and the existing
+watchdog run on every turn. A stalled device or a wait with no outstanding
+native work still blocks for worker recovery. Console restoration and ordinary
+fence waits retain the existing blocking policy; the suite's wait-CPU bound is
+unchanged. The policy is independent of whether timing recording is enabled.
+All new arguments and policy expressions compile only on x86; ARM execution
+retains its original path.
+
+Reference: MIT `nouveau_fence_wait_busy` / `nouveau_fence_wait` in
+`nouveau/nouveau_fence.c` at Linux v6.8 commit
+`e8f897f4afef0031fe618a8e94127a0934896aba`, whose file header was checked
+before use. The consuming source retains its full notice and is listed in
+`THIRD_PARTY_NOTICES`. Breenix supplies its own completion validation, signals
+and watchdog; no Linux scheduler or DMA-fence implementation is imported.
+
+The host reproduction executes the production wait against two queued engine
+receipts at 80 us and 1,100 us per stage, at three phases of a 5 ms worker tick,
+with timing recording both present and absent. Completion must follow the
+receipts without any worker sleep. The old queued handoff slept twice even for
+the 80 us receipts. Deadline, signal and virtual/recovery blocking controls
+exercise the same function. This models the measured scheduling mechanism;
+only the confirming card captures establish the case deadlines.

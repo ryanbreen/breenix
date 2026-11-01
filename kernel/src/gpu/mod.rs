@@ -1,3 +1,34 @@
+// Native readback fence polling in wait_for_traced references/adapts
+// nouveau_fence_wait_busy in nouveau/nouveau_fence.c, Linux v6.8
+// e8f897f4afef0031fe618a8e94127a0934896aba (MIT, checked file header).
+// The following notice applies to that mechanism; other code retains its
+// existing Breenix provenance and license.
+/*
+ * Copyright (C) 2007 Ben Skeggs.
+ * All Rights Reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining
+ * a copy of this software and associated documentation files (the
+ * "Software"), to deal in the Software without restriction, including
+ * without limitation the rights to use, copy, modify, merge, publish,
+ * distribute, sublicense, and/or sell copies of the Software, and to
+ * permit persons to whom the Software is furnished to do so, subject to
+ * the following conditions:
+ *
+ * The above copyright notice and this permission notice (including the
+ * next paragraph) shall be included in all copies or substantial
+ * portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+ * EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+ * MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.
+ * IN NO EVENT SHALL THE COPYRIGHT OWNER(S) AND/OR ITS SUPPLIERS BE
+ * LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+ * OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ *
+ */
+
 //! The kernel GPU core: system call 416, `gpu(op, arg, len)` (`docs/gui/gpu.md` section
 //! 1.4, argument layouts in `docs/gui/gpu-abi.md`).
 //!
@@ -2108,12 +2139,16 @@ enum Stop {
 /// Wait until `f` (run under the core's lock after taking completions) returns a value,
 /// the absolute `deadline` passes, or a signal arrives.
 fn wait_for<T>(deadline: Option<u64>, interruptible: bool, f: impl FnMut(&mut Core) -> Option<T>) -> Result<T, Stop> {
-    wait_for_traced(deadline, interruptible, f, #[cfg(target_arch = "x86_64")] None)
+    wait_for_traced(deadline, interruptible, f, #[cfg(target_arch = "x86_64")] None,
+        #[cfg(target_arch = "x86_64")] false)
 }
 
 fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mut Core) -> Option<T>,
     #[cfg(target_arch = "x86_64")] trace: Option<(&crate::gk208::timing::Readback, u64)>,
+    #[cfg(target_arch = "x86_64")] fence_driven: bool,
 ) -> Result<T, Stop> {
+    #[cfg(target_arch = "x86_64")]
+    let fence_driven = fence_driven && dev::backend() == abi::backend::GK208;
     #[cfg(target_arch = "x86_64")]
     let _wait = trace.map(|(t, _)| t.phase(false));
     let start = now_ns();
@@ -2131,6 +2166,8 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
             let backend = dev::backend();
             let native_queued = backend == abi::backend::GK208
                 && REAPER.load(Ordering::Acquire) != 0 && !c.backlog.is_empty();
+            #[cfg(target_arch = "x86_64")]
+            let native_queued = native_queued && !fence_driven;
             if found.is_none() && native_queued {
                 // Also cover a worker that chose its deadline before this
                 // handoff but has not yet published its blocked state.
@@ -2151,7 +2188,16 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
         if interruptible && crate::syscall::check_signals_for_wait().is_some() {
             return Err(Stop::Interrupted);
         }
-        if polled && now_ns().saturating_sub(start) < SPIN_POLL_NS {
+        // Native readback owns the poll through queued continuations and the
+        // engine receipt. There is no native completion IRQ: handing it to
+        // kgpu turns its 250 us poll request into a 5 ms timer dispatch (u8).
+        // The core lock/preemption level is released between polls; signals,
+        // caller deadlines and the unchanged watchdog are checked each time.
+        // A stalled/resetting device still hands recovery back to kgpu.
+        let direct_poll = polled && now_ns().saturating_sub(start) < SPIN_POLL_NS;
+        #[cfg(target_arch = "x86_64")]
+        let direct_poll = direct_poll || (polled && fence_driven);
+        if direct_poll {
             #[cfg(target_arch = "x86_64")]
             if let Some((t, _)) = trace { t.spin(); }
             for _ in 0..SPIN_POLL_PAUSE {
@@ -2246,18 +2292,21 @@ fn send_sync(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32]
 /// The waiting half of [`exec_req_why`]: the answer to sent request `serial`, or its EIO
 /// cause, or EINTR. A request that ends without its answer is abandoned.
 fn await_sync(serial: u64) -> Result<Done, (i64, u32)> {
-    await_sync_traced(serial, #[cfg(target_arch = "x86_64")] None)
+    await_sync_traced(serial, #[cfg(target_arch = "x86_64")] None,
+        #[cfg(target_arch = "x86_64")] false)
 }
 
 fn await_sync_traced(serial: u64,
     #[cfg(target_arch = "x86_64")] trace: Option<&crate::gk208::timing::Readback>,
+    #[cfg(target_arch = "x86_64")] fence_driven: bool,
 ) -> Result<Done, (i64, u32)> {
     let outcome = wait_for_traced(None, true, |c| {
         if let Some(d) = c.done.remove(&serial) {
             return Some(Ok(d));
         }
         c.syncs.get(&serial).filter(|s| s.failed).map(|s| Err(s.why))
-    }, #[cfg(target_arch = "x86_64")] trace.map(|t| (t, 2)));
+    }, #[cfg(target_arch = "x86_64")] trace.map(|t| (t, 2)),
+        #[cfg(target_arch = "x86_64")] fence_driven);
     match outcome {
         Ok(Ok(d)) => Ok(d),
         other => {
@@ -5513,7 +5562,8 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         }
         wait_for_traced(None, true, |c| {
             (!console::restoring(c.display.owner_sequence)).then_some(c.display.known)
-        }, #[cfg(target_arch = "x86_64")] trace.as_ref().map(|t| (t, 3)))
+        }, #[cfg(target_arch = "x86_64")] trace.as_ref().map(|t| (t, 3)),
+            #[cfg(target_arch = "x86_64")] false)
         .map_err(|_| EINTR)?;
         Some(if window {
             display::Transition::for_window_observer()?
@@ -5627,7 +5677,8 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         r.reading = true;
         let composition = r.composition.clone().filter(|p| p.generation == r.generation);
         Some(Ok((r.invalid, r.invalidated_by, r.generation, r.last, composition)))
-    }, #[cfg(target_arch = "x86_64")] trace.as_ref().map(|t| (t, 1)));
+    }, #[cfg(target_arch = "x86_64")] trace.as_ref().map(|t| (t, 1)),
+        #[cfg(target_arch = "x86_64")] true);
     let (invalid, invalidated_by, generation, last, composition) = match taken {
         Ok(Ok(t)) => t,
         Ok(Err(reason)) => return refuse(reason, 0),
@@ -6072,7 +6123,8 @@ fn observe(
     // Take band `b`'s transfer back from the device and check its answer.
     let mut finish = |b: &mut Band| -> Result<(), (i64, u32)> {
         let Some(s) = b.sent.take() else { return Ok(()) };
-        let done = await_sync_traced(s.serial, #[cfg(target_arch = "x86_64")] trace);
+        let done = await_sync_traced(s.serial, #[cfg(target_arch = "x86_64")] trace,
+            #[cfg(target_arch = "x86_64")] true);
         #[cfg(target_arch = "x86_64")]
         drop(s.cost);
         release_other(s.other);

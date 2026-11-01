@@ -2084,3 +2084,15 @@ open-gpu-doc `classes/display/cl927d.h` at
 1993-2022 NVIDIA CORPORATION & AFFILIATES). Their full notices remain in
 the consumers. G26's single pending flip, binding publication and write
 exclusion are Breenix policy; this change adds no external hardware source.
+
+## Native readback fence polling reference
+
+`kernel/src/gpu/mod.rs` adapts the completion-polling mechanism of
+`nouveau_fence_wait_busy` from `drivers/gpu/drm/nouveau/nouveau_fence.c` at
+Linux v6.8, commit `e8f897f4afef0031fe618a8e94127a0934896aba`:
+[source](https://raw.githubusercontent.com/torvalds/linux/e8f897f4afef0031fe618a8e94127a0934896aba/drivers/gpu/drm/nouveau/nouveau_fence.c).
+The file's complete MIT permission grant was checked before use; Copyright
+(C) 2007 Ben Skeggs. All Rights Reserved. The original notice and full license
+are retained in the consuming file's header. Breenix retains its own queue,
+engine-receipt validation, lock release, watchdog, deadline and signal handling;
+no Linux scheduling or DMA-fence implementation is imported.
