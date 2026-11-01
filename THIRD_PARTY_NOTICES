@@ -1990,14 +1990,12 @@ Firmware interpretation references unchanged MIT
 nvkm/subdev/pmu/fuc/{memx.fuc,kernel.fuc,macros.fuc,os.h}, already vendored and
 attributed in the C4 entry above. Individual source hashes for C5a are in
 docs/gui/provenance/gt710-c5a-sources.json. No firmware image changes here.
-The board fixture contains selected table data and recorded register values,
-not a redistributed complete ROM or VBIOS instruction stream.
+The test fixture builder generates synthetic tables from the documented layouts.
+Board ROM bytes and card-specific table/script decodes remain private (K9).
 
 C5c RAMMAP initialization audit and interpreter
 ---------------------------------------------
-The selected register/opcode facts in docs/gui/gt710-c5c-init-scripts.txt and
-.json are decoded from the installed board ROM; the complete ROM is private.
-The interpretation follows the MIT nouveau files at Linux v6.8
+The interpreter and synthetic RAM-script tests follow the MIT nouveau files at Linux v6.8
 (e8f897f4afef0031fe618a8e94127a0934896aba): nvkm/subdev/bios/init.c
 (Copyright 2012 Red Hat Inc.), bios/ramcfg.c, bios/rammap.c and
 fb/ramgk104.c (Copyright 2013 Red Hat Inc.), bios/M0203.c (Copyright 2014

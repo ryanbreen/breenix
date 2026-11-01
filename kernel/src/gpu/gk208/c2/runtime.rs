@@ -261,8 +261,23 @@ fn memory_record(regs:&Registers,strap:u32,phase:&str)->Result<u32,&'static str>
     Ok(memory)
 }
 fn memx_compare(plan:&crate::gk208::memx::Plan,phase:&str,target:bool) {
-    // The text supplies expected operations to compare with the live plan.
-    let text=include_str!("../../../../../docs/gui/gt710-c5b-memx.txt");
+    // A private diagnostic input supplies expected operations. Card-derived
+    // streams are kept out of the kernel image and public source tree (K9).
+    let text=(|| {
+        let root=crate::fs::ext2::root_fs_read().ok()?;
+        let fs=root.as_ref()?;
+        let n=fs.resolve_path("/etc/breenix/gt710-memx-expected").ok()?;
+        let inode=fs.read_inode(n).ok()?;
+        if inode.is_dir() || inode.size()>1<<20 {return None;}
+        alloc::string::String::from_utf8(fs.read_file_content_coherent(n,&inode).ok()?).ok()
+    })();
+    for (i,op) in plan.ops.iter().enumerate() {
+        crate::serial_println!("GT710_MEMX_OP phase={} ordinal={} code={} args={:?}",phase,i+1,op.code,op.args);
+    }
+    let Some(text)=text else {
+        crate::serial_println!("GT710_MEMX_SCRIPT_DONE phase={} live_ops={} live_words={} compared=false reason=private-input-unavailable coefficients={:?}",phase,plan.ops.len(),plan.words().len(),plan.coefficients);
+        return;
+    };
     let mut words=Vec::new();let mut in_words=false;let mut section=false;
     for row in text.lines() {
         if row.starts_with("## ") {
@@ -283,7 +298,6 @@ fn memx_compare(plan:&crate::gk208::memx::Plan,phase:&str,target:bool) {
     let mut differences=0;
     for i in 0..plan.ops.len().max(expected.len()) {
         let actual=plan.ops.get(i);let offline=expected.get(i);
-        if let Some(op)=actual {crate::serial_println!("GT710_MEMX_OP phase={} ordinal={} code={} args={:?}",phase,i+1,op.code,op.args);}
         if actual!=offline {
             differences+=1;
             crate::serial_println!("GT710_MEMX_DIFF phase={} ordinal={} live={:?} offline={:?}",phase,i+1,actual,offline);

@@ -8,6 +8,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
+from gt710_synthetic import fixture as synthetic_fixture
 SPEC = importlib.util.spec_from_file_location('offline', ROOT/'scripts/metal/gt710_memx.py')
 offline = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = offline
@@ -16,8 +17,7 @@ SPEC.loader.exec_module(offline)
 
 class Target(unittest.TestCase):
     def test_target_and_return_recalculate_from_post_exec_reads(self):
-        fixture = json.loads((ROOT/'tests/fixtures/gt710_c5a_card.json').read_text())
-        fixture['registers'] = json.loads((ROOT/'docs/gui/gt710-c5b-registers.json').read_text())
+        fixture = synthetic_fixture(complete=True)
         regs = {int(a, 0): int(v, 0) if isinstance(v, str) else v
                 for a, v in fixture['registers'].items()}
         decoded = offline.decode(fixture)
@@ -40,7 +40,7 @@ class Target(unittest.TestCase):
                 checks.append('''{
 let regs = std::collections::BTreeMap::from(%s);
 let mut reads = Vec::new();
-let plan = memx::calculate_pass(rom,0x80406c86,%d,%d,%s,&mut |a| {reads.push(a);*regs.get(&a).expect("unrecorded live read")}).unwrap();
+let plan = memx::calculate_pass(rom,0x400004,%d,%d,%s,&mut |a| {reads.push(a);*regs.get(&a).expect("unrecorded live read")}).unwrap();
 assert_eq!(plan.words(),vec!%s);
 assert_eq!(plan.cpu_before,vec!%s);
 assert_eq!(plan.cpu_after,vec!%s);
@@ -65,8 +65,8 @@ assert!(reads.contains(&0x132024));
 fn main() {
 let rom = include_bytes!("rom.bin");
 %s
-assert!(memx::calculate(rom,0x80406c86,900000,&mut |_|panic!("out of envelope read")).is_err());
-assert!(memx::calculate_pass(rom,0x80406c86,405000,1307000,false,&mut |_|panic!("out of envelope read")).is_err());
+assert!(memx::calculate(rom,0x400004,900000,&mut |_|panic!("out of envelope read")).is_err());
+assert!(memx::calculate_pass(rom,0x400004,405000,1307000,false,&mut |_|panic!("out of envelope read")).is_err());
 protocol_test();
 }
 ''' % (ROOT/'kernel/src/gpu/gk208/edid.rs', ROOT/'kernel/src/gpu/gk208/modeset.rs',

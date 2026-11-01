@@ -15,21 +15,22 @@ SPEC = importlib.util.spec_from_file_location('gt710_memx', ROOT/'scripts/metal/
 API = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = API
 SPEC.loader.exec_module(API)
-CARD = json.loads((ROOT/'tests/fixtures/gt710_c5a_card.json').read_text())
+from gt710_synthetic import fixture, RAMMAP, TARGET_CFG_FLAG
+CARD = fixture()
 
 
 class Memx(unittest.TestCase):
-    def test_card_strap_ranges_timings_and_pll_limits(self):
+    def test_synthetic_strap_ranges_timings_and_pll_limits(self):
         d = API.decode(CARD)
         self.assertEqual((d['strap'], d['ramcfg_index'], d['crystal_khz']), (1, 1, 27000))
         self.assertEqual([(c['min_mhz'], c['max_mhz']) for c in d['configs']],
                          [(0,162), (163,460), (461,750), (750,1200)])
         lo, hi = API.select(d, 405000), API.select(d, 900000)
         self.assertEqual((lo['timing_index'], hi['timing_index']), (1, 2))
-        self.assertEqual(lo['ramcfg_raw'], '0114a00300020081050100')
-        self.assertEqual(hi['ramcfg_raw'], '0214405100020014040100')
-        self.assertEqual(hi['timing'], [0x0d40ed2d,0x30d3448d,0x550e0711,0x4abe,
-                                       0x46c38069,0x27000,0x1009c1c,0x34bc00,0x3700,8,0x80000])
+        self.assertEqual(lo['ramcfg_raw'], '01140011000000800102')
+        self.assertEqual(hi['ramcfg_raw'], '02144411000000100104')
+        self.assertEqual(hi['timing'], [0x01000002,904,0x000a0000,0x3002,
+                                       0x4002,0x5002,0x6002,0x7002,0x8002,0x9002,0xa002])
         self.assertEqual((d['refpll']['min_freq'],d['refpll']['max_freq']), (600000,1200000))
         self.assertEqual((d['mempll']['min_freq'],d['mempll']['max_freq']), (1500000,3000000))
         self.assertEqual(API.pll(d['refpll'],900000), (1,32,1,0x1aab))  # M,N,P,fN
@@ -57,14 +58,14 @@ class Memx(unittest.TestCase):
         self.assertEqual((x['timing_20_2c_003f'],x['timing_20_2c_1fc0'],x['timing_20_30_07'],x['timing_20_30_f8']), (37,127,5,31))
         with self.assertRaises(ValueError): API.parse_rammap(API.Image(bytes(b[:-1])),0,1)
 
-    def test_card_missing_capture_is_not_replaced_with_assumed_state(self):
+    def test_missing_inputs_are_not_replaced_with_assumed_state(self):
         p = API.generate(CARD)
         self.assertFalse(p['exact'])
         self.assertIsNone(p['words'])
         self.assertTrue({0x132034,0x10f300,0x10f304,0x10f320,0x10f200,0x10f808,
                          0x10f824,0x1373ec,0x132040}.issubset(set(p['missing_registers'])))
         self.assertEqual([p['frequency_khz'] for p in p['phases']], [405000,900000])
-        self.assertEqual(p['phases'][0]['config']['timing_20_30_07'],6)
+        self.assertEqual(p['phases'][0]['config']['timing_20_30_07'],3)
         for phase in p['phases']:
             self.assertTrue(all(o['source'] for o in phase['ops']))
             self.assertFalse(any(o['op'] in ('VBLANK','TRAIN') for o in phase['ops']))
@@ -79,9 +80,9 @@ class Memx(unittest.TestCase):
         f['registers']['0x10f320'] = '0x20000000'
         p = API.generate(f)
         self.assertTrue(p['exact']);self.assertIsNotNone(p['words'])
-        self.assertEqual(p['final_registers']['0x10f300'],0x10000e14)
+        self.assertEqual(p['final_registers']['0x10f300'],0x10000a40)
         self.assertEqual(p['final_registers']['0x10f304'],0x80000244)
-        self.assertEqual(p['final_registers']['0x10f320'],0x20000020)
+        self.assertEqual(p['final_registers']['0x10f320'],0x20000010)
         self.assertEqual(p['final_registers']['0x132024'],0x12001)
         self.assertEqual(p['final_registers']['0x132034']&0xffff,0x1aab)
         for phase in p['phases']:
@@ -107,9 +108,9 @@ class Memx(unittest.TestCase):
                 f=copy.deepcopy(CARD)
                 if dll_off:
                     # Synthetic target with DLL disabled; current table stays unchanged.
-                    raw=bytearray.fromhex(f['segments']['0x7259'])
-                    raw[0x73cd-0x7259+1]|=0x20
-                    f['segments']['0x7259']=raw.hex()
+                    raw=bytearray.fromhex(f['segments'][hex(RAMMAP)])
+                    raw[TARGET_CFG_FLAG]|=0x20
+                    f['segments'][hex(RAMMAP)]=raw.hex()
                 for a in API.generate(f)['missing_registers']:
                     f['registers'][f'0x{a:06x}']='0x00000000'
                 f['registers']['0x10f304']='0x80000244'
@@ -117,7 +118,10 @@ class Memx(unittest.TestCase):
                 f['registers']['0x10f320']='0x20000000'
                 p=API.generate(f)
                 regs={int(a,0):int(v,0) for a,v in f['registers'].items()}
-                chunks=[f'{len(regs)} {len(p["phases"])} 1']
+                gp={g['function']:g for g in p['decoded']['gpio']}
+                mv,v=gp[0x18],gp[0x2e]
+                chunks=[f'{len(regs)} {len(p["phases"])} 1 '+
+                        ' '.join(f'{n:x}' for n in [mv['register'],v['register'],*mv['values'],*v['values']])]
                 chunks += [f'{a:x} {v:x}' for a,v in regs.items()]
                 expected=[]
                 for phase in p['phases']:

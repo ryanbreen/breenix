@@ -97,8 +97,14 @@ struct gk104_ramfuc { u32 r_funcMV[2], r_func2E[2]; };
 struct gk104_ram { struct nvkm_ram base; struct gk104_ramfuc fuc; int M1,N1,P1,fN1,mode; };
 static u32 addresses[256], registers[256], count;
 static bool forced;
+static u32 gpio_mv, gpio_2e;
 static u32 address(const char *s) {
     if (s[0]=='m') { const u32 mr[]={0x10f300,0x10f304,0x10f320}; return mr[s[3]-'0']; }
+    if (s[0]=='g') {
+        if (s[4]=='M') return gpio_mv;
+        if (s[4]=='2') return gpio_2e;
+        return 0xd604;
+    }
     return (u32)strtoul(s,NULL,0);
 }
 static u32 *reg(u32 a) {
@@ -116,7 +122,7 @@ static u32 mask_word(u32 a,u32 mask,u32 data) {
 #define ram_mask(f,r,m,d) ((void)(f), mask_word(address(#r),m,d))
 #define ram_wr32(f,r,d) write_word(address(#r),d)
 #define ram_nuke(f,r) (forced=true)
-#define ram_have(f,r) false
+#define ram_have(f,r) (address(#r)!=0)
 #define ram_nsec(f,n) printf("DELAY %x\n",(u32)(n))
 #define ram_wait(f,a,m,d,n) printf("WAIT %x %x %x %x\n",(u32)(a),(u32)(m),(u32)(d),(u32)(n))
 #define ram_block(f) puts("ENTER")
@@ -496,14 +502,17 @@ gk104_ram_calc_sddr3(struct gk104_ram *ram, u32 freq)
 
 #line 1 "host-oracle-main"
 int main(void) {
-    unsigned n, phases, a, data, display;
-    if (scanf("%u %u %u",&n,&phases,&display)!=3) return 2;
+    unsigned n, phases, a, data, display, mv0, mv1, v0, v1;
+    if (scanf("%u %u %u %x %x %x %x %x %x",&n,&phases,&display,
+              &gpio_mv,&gpio_2e,&mv0,&mv1,&v0,&v1)!=9) return 2;
     for (unsigned i=0;i<n;i++) {
         if (scanf("%x %x",&a,&data)!=2) return 2;
         *reg(a)=data;
     }
     struct device device={.disp=display};struct fb fb={.subdev={.device=&device}};
     struct nvkm_ram_data next={0};struct gk104_ram ram={.base={.next=&next,.fb=&fb}};
+    ram.fuc.r_funcMV[0]=mv0;ram.fuc.r_funcMV[1]=mv1;
+    ram.fuc.r_func2E[0]=v0;ram.fuc.r_func2E[1]=v1;
     for (unsigned i=0;i<phases;i++) {
         if (scanf("%d %d %d %d %d",&ram.M1,&ram.N1,&ram.P1,&ram.fN1,&ram.mode)!=5) return 2;
         if (scanf("%u",&next.bios.timing_ver)!=1) return 2;

@@ -34,6 +34,7 @@ use core::fmt::Write;
 #[derive(Debug)]
 pub struct Level {
     pub pstate: u8,
+    #[cfg(not(feature="gt710_clock_probe"))]
     pub voltage_id: u8,
     pub gpc_khz: u32,
     pub core_khz: u32,
@@ -113,6 +114,7 @@ pub fn decode(r: &[u8]) -> Result<Table, &'static str> {
         // PLL/domain kHz (mdiv=500 is the source's effective DDR MHz display).
         decoded.push(Level {
             pstate,
+            #[cfg(not(feature="gt710_clock_probe"))]
             voltage_id: raw[p+2],
             gpc_khz,
             core_khz: gpc_khz / 2,
