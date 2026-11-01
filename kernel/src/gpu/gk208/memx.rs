@@ -236,7 +236,7 @@ fn tables(r:&[u8],strap:u32)->Result<Tables,&'static str> {
   let refclk=word(r,q+9,2)?*1000;
   pll.insert("refclk",if refclk!=0 {refclk}else{crystal});
  }
- if pll.is_empty() || pll["refclk"]==0 {return Err("memx reference PLL absent");}
+ validate_pll(&pll)?;
  let dcb=word(r,0x36,2)? as usize;let gpio=word(r,dcb+10,2)? as usize;let mut gpios=Vec::new();
  if gpio!=0 {
   if word(r,gpio,1)?!=0x41 {return Err("memx GPIO version");}
@@ -252,13 +252,24 @@ const TIMING_NAMES:[&str;11]=["t0","t1","t2","t3","t4","t5","t6","t7","t8","t9",
 fn select(t:&Tables,khz:u32)->Result<Config,&'static str> {
  t.configs.iter().find(|c|c["rammap_min"]<=khz/1000 && khz/1000<=c["rammap_max"]).cloned().ok_or("memx RAMMAP range")
 }
+fn validate_pll(c:&Config)->Result<(),&'static str> {
+ if c.get("refclk").copied().unwrap_or(0)==0 {return Err("memx reference PLL absent");}
+ for (min,max) in [("min_freq","max_freq"),("min_inputfreq","max_inputfreq"),
+     ("min_m","max_m"),("min_n","max_n"),("min_p","max_p")] {
+  let lo=c.get(min).copied().unwrap_or(0);let hi=c.get(max).copied().unwrap_or(0);
+  if lo==0 || lo>hi {return Err("memx PLL limits invalid");}
+ }
+ Ok(())
+}
 fn pll(c:&Config,freq:u32)->Result<[u32;4],&'static str> {
+ validate_pll(c)?;
+ if freq==0 {return Err("zero memx PLL clock");}
  let reference=c["refclk"];let p=(c["max_freq"]/freq).clamp(c["min_p"],c["max_p"]);
  let lo=((reference+c["max_inputfreq"])/c["max_inputfreq"]).max(c["min_m"]);
  let hi=((reference+c["min_inputfreq"])/c["min_inputfreq"]).min(c["max_m"]);
  for m in lo.min(hi)..=hi {
   let tmp=u64::from(freq)*u64::from(p)*u64::from(m);let reference=u64::from(reference);
-  let mut n=tmp/reference;if tmp%reference<reference/2 {n-=1;}
+  let mut n=tmp/reference;if tmp%reference<reference/2 {let Some(lower)=n.checked_sub(1) else {continue;};n=lower;}
   if n<u64::from(c["min_n"]) {continue;}if n>u64::from(c["max_n"]) {break;}
   let frac=tmp-n*reference;let fn_=(((frac<<13)+reference/2)/reference).wrapping_sub(4096) as u16;
   return Ok([m,n as u32,p,fn_ as u32]);
