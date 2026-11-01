@@ -10,6 +10,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent / 'metal'))
+from metal_lib import SerialCleaner
+
 
 def main(run, whole_path):
     run = Path(run)
@@ -30,7 +33,8 @@ def main(run, whole_path):
                      'docs/efforts/path.json', 'docs/boot-path.json'):
             definition[name] = subprocess.check_output(
                 ['git', '-C', str(root), 'show', build['commit'] + ':' + name])
-    serial = timestamps = events = None
+    serial = raw = timestamps = events = None
+    cleaner = None
     directory = None
     last_stamp = 0
     offset = 0
@@ -38,12 +42,13 @@ def main(run, whole_path):
     def end_boot():
         if directory is not None:
             serial.close()
+            raw.close()
             timestamps.close()
             events.close()
             (directory / 'ended').write_text(datetime.datetime.now(datetime.timezone.utc).isoformat() + '\n')
 
     def start_boot():
-        nonlocal directory, serial, timestamps, events, last_stamp, offset
+        nonlocal directory, serial, raw, cleaner, timestamps, events, last_stamp, offset
         stamp = max(int(time.time()), last_stamp + 1)
         while True:
             boot = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ-qemu')
@@ -61,6 +66,8 @@ def main(run, whole_path):
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_bytes(content)
         serial = (directory / 'serial.txt').open('ab', buffering=0)
+        raw = (directory / 'serial.raw').open('ab', buffering=0)
+        cleaner = SerialCleaner()
         timestamps = (directory / 'serial.ts').open('a', buffering=1)
         events = (directory / 'events.jsonl').open('a', buffering=1)
         (run / 'current').write_text(boot + '\n')
@@ -144,9 +151,11 @@ def main(run, whole_path):
                             sock.close()
                             continue
                         if kind == 'guest-data':
-                            serial.write(data)
+                            raw.write(data)
+                            cleaned = cleaner.feed(data).encode()
+                            serial.write(cleaned)
                             whole.write(data)
-                            offset += len(data)
+                            offset += len(cleaned)
                             timestamps.write(f'{time.time()}\t{offset}\n')
                             for client, pending in clients.items():
                                 pending.extend(data)
