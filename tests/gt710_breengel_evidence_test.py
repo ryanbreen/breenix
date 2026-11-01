@@ -37,8 +37,11 @@ mod heap {SOURCE
 pub fn fixture()->Vec<u8>{
  let _=boundary as fn(usize,usize,&str);assert!(encode().is_err());
  let mut values=[u64::MAX;wire::WORDS];values[0]=1;
- let mut s=Store::new();s.record(0,401,"",Ok(values));
+ let mut s=Store::new();s.prepare(401).unwrap();
+ assert_eq!(s.rows.len(),402,"baseline preparation must initialize the full first-touch store");
+ let capacity=s.rows.capacity();s.record(0,401,"",Ok(values));
  for n in 1..=401{s.record(n,401,&format!("raster/case-{n}"),Ok(values));}
+ assert_eq!(s.rows.capacity(),capacity);
  let bytes=s.encode().expect("401 cases plus the initial boundary must fit");
  let mut bad=Store::new();bad.record(0,usize::MAX,"",Ok(values));
  assert!(bad.encode().is_err(),"overflow must refuse, never truncate");
@@ -92,10 +95,16 @@ fn main(){print!("{}",String::from_utf8(heap::fixture()).unwrap());}
         code = r'''
 extern crate self as libbreenix;
 pub mod crypto {#[path="SHA"]pub mod sha256;}
-#[path="PICTURES"]mod pictures;
+mod pictures {PICTURES
+pub fn check_prepared(store:&Pictures) {
+ assert_eq!(store.entries.len(),401,"picture identities must be resident at the baseline");
+ assert_eq!(store.buffer.len(),MAX_UPLOAD,"reusable encoding buffer must be resident");
+}}
+
 fn main(){
  let dir=std::env::var("EVIDENCE_OUT").unwrap();
- let mut store=pictures::Pictures::new();
+ let mut store=pictures::Pictures::new();store.prepare().unwrap();
+ pictures::check_prepared(&store);
  let mut chunks=Vec::new();
  let mut send=|data:&[u8]|{chunks.push(data.to_vec());Ok(())};
  let pixels:Vec<u8>=(0..600000u32).flat_map(|v|[v as u8,(v>>8)as u8,(v>>16)as u8,255]).collect();
@@ -119,7 +128,7 @@ fn main(){
  assert_eq!(sent,0,"over-bound pictures must refuse before upload");
  assert!(failed.manifest().is_err(),"a refused picture must never disappear from a successful manifest");
 }
-'''.replace('SHA', str(ROOT / 'libs/libbreenix/src/crypto/sha256.rs')).replace('PICTURES', str(path))
+'''.replace('SHA', str(ROOT / 'libs/libbreenix/src/crypto/sha256.rs')).replace('PICTURES', path.read_text())
         with tempfile.TemporaryDirectory() as tmp, patch.dict(os.environ, EVIDENCE_OUT=tmp):
             p = Path(tmp)
             rust(code, p, 'pictures')
