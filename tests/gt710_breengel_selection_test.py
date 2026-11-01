@@ -98,10 +98,19 @@ class BreengelSelection(unittest.TestCase):
                                     f'DONE passed=304 failed={len(outside)}')
         producer = {'breengel': {'serial': original, 'boot': boot()}}
         self.assertEqual(API['cases']('breengel-fronts', '', producer)[0]['result'], 'PASS')
+        for name in ('composition/compose-fullscreen', 'panel/cursor-restore', 'panel/cursor-trail-detected'):
+            producer['breengel']['serial'] = original.replace(
+                f'CASE {name} FAIL ms=1 sha256=' + 'a' * 64,
+                f'CASE {name} FAIL ms=1')
+            with self.subTest(early_failure=name):
+                self.assertEqual(API['cases']('breengel-fronts', '', producer)[0]['result'], 'PASS')
         producer['breengel']['serial'] = original.replace(
-            'CASE composition/compose-fullscreen FAIL ms=1 sha256=' + 'a' * 64,
-            'CASE composition/compose-fullscreen FAIL ms=1')
-        self.assertEqual(API['cases']('breengel-fronts', '', producer)[0]['result'], 'FAIL')
+            'CASE raster/fill-rect PASS ms=1 sha256='+'a'*64,
+            'CASE raster/fill-rect FAIL ms=1 msg=failed-before-frame').replace(
+                f'DONE passed=304 failed={len(outside)}',f'DONE passed=303 failed={len(outside)+1}')
+        result=API['cases']('breengel-fronts', '', producer)[0]
+        self.assertEqual(result['result'], 'FAIL')
+        self.assertIn('selected BreenGL case failed',result['reason'])
 
     def test_selection(self):
         step = json.loads((ROOT / 'docs/gui/gt710-step-9-1.json').read_text())
