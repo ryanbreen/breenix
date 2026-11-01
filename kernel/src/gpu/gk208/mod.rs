@@ -593,11 +593,18 @@ mod spans_diagnostic;
 pub mod adapter;
 pub mod caps;
 
+/// Complete clock startup independently of GPU admission, after native handoff.
+pub fn initialize_clocks() {
+    #[cfg(not(feature = "gt710_clock_probe"))]
+    if takeover_started() {
+        let _canvas=crate::console::hold_canvas();
+        production::initialize();
+    }
+}
+
 /// Serialize first-use native startup with the existing allocator/CE owner.
 pub(crate) fn initialize_core() -> Result<(), &'static str> {
     let result = ce::initialize_core();
-    #[cfg(not(feature = "gt710_clock_probe"))]
-    if result.is_ok() { production::initialize(); }
     #[cfg(feature = "gt710_clock_probe")]
     if let Err(e)=result {crate::serial_println!("GT710_C1_ERROR {}",e);}
     let longest = crate::tracing::providers::gpu::GPU_IRQ_MASKED_MAX_US.per_cpu[0].value.load(core::sync::atomic::Ordering::Relaxed);

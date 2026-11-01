@@ -106,7 +106,7 @@ impl Controller {
     fn memory_pass(&mut self,phase:&str,former:u32,target:u32,intermediate:bool,recovery:bool)->Result<(),&'static str> {
         let frequency=if intermediate {former.min(target)}else{target};
         let mut io=Io(Registers(self.base));
-        super::ce::with_resources(|_,_,_| {
+        super::ce::with_clock_owner(|_,_,_| {
             if !recovery {self.cool()?;self.gpu_health()?;}
             let session=memx::Session::init(&mut io)?;
             let calculated=memx::calculate_pass(&self.rom,self.strap,former,target,intermediate,&mut |a|io.0.read(a as usize));
@@ -135,7 +135,7 @@ impl Controller {
     }
     fn record(&mut self,full:bool,reason:&str) {
         if !full {
-            self.counter=super::ce::with_resources(|_,_,_|c2::observe::measure(&mut Io(Registers(self.base))))
+            self.counter=super::ce::with_clock_owner(|_,_,_|c2::observe::measure(&mut Io(Registers(self.base))))
                 .ok().map(|m|m.khz);
         }
         let s=self.sample();
@@ -155,7 +155,7 @@ impl Startup for Controller {
                     .map_err(|_|"thermal guard worker creation failed")?;
                 Ok(())
             }
-            Stage::Pmu=>super::ce::with_resources(|_,_,_| {
+            Stage::Pmu=>super::ce::with_clock_owner(|_,_,_| {
                 let rings=super::pmu::start(&mut Io(Registers(self.base)),
                     include_bytes!("../../../assets/kepler/pmu.code.bin"),
                     include_bytes!("../../../assets/kepler/pmu.data.bin"))?;
@@ -164,7 +164,7 @@ impl Startup for Controller {
             }),
             Stage::Ram=>{
                 let scripts=super::ram_init::scripts(&self.rom,self.strap).map_err(|_|"RAM init script decode failed")?;
-                super::ce::with_resources(|_,_,_| {
+                super::ce::with_clock_owner(|_,_,_| {
                     super::ram_init::execute(&mut Registers(self.base),&scripts);Ok(())
                 })?;
                 if !policy::within_one_percent(self.sample().memory_khz,self.post_memory) {return Err("RAM init memory readback changed");}
@@ -187,14 +187,14 @@ impl Startup for Controller {
                 let reference=clock::gpc_reference(|a|Registers(self.base).read(a as usize))?;
                 let plan=c2::pll_plan("gpc",self.target.gpc_khz,&limits,reference)?;
                 crate::serial_println!("GT710_CLOCK_GPC requested_khz={} calculated_khz={}",self.target.gpc_khz,plan.khz);
-                super::ce::with_resources(|_,_,_|c2::program(&mut Io(Registers(self.base)),&plan))
+                super::ce::with_clock_owner(|_,_,_|c2::program(&mut Io(Registers(self.base)),&plan))
             }
             Stage::Verify=>{
                 let s=self.sample();
                 if !policy::within_one_percent(s.gpc_khz,self.target.gpc_khz) || !policy::within_one_percent(s.memory_khz,self.target.memory_khz) {
                     return Err("clock readback more than 1 percent off");
                 }
-                let m=super::ce::with_resources(|_,_,_|c2::observe::measure(&mut Io(Registers(self.base))))?;
+                let m=super::ce::with_clock_owner(|_,_,_|c2::observe::measure(&mut Io(Registers(self.base))))?;
                 self.counter=Some(m.khz);
                 crate::serial_println!("GT710_CLOCK_COUNTER khz={} cycles={} interval_ns={} bracket_ns={} restored=true",m.khz,m.cycles,m.ptimer_ns,m.bracket_ns);
                 if !policy::within_one_percent(Ok(m.khz),self.target.gpc_khz.div_ceil(16)) {return Err("GPC counter more than 1 percent off");}
@@ -204,7 +204,7 @@ impl Startup for Controller {
         }
     }
     fn restore_gpc(&mut self)->Result<(),&'static str> {
-        super::ce::with_resources(|_,_,_|c2::observe::restore(&mut Io(Registers(self.base)),&self.post))
+        super::ce::with_clock_owner(|_,_,_|c2::observe::restore(&mut Io(Registers(self.base)),&self.post))
     }
     fn restore_memory(&mut self)->Result<(),&'static str> {
         // Issue both live-calculated nouveau downclock passes, including
@@ -225,8 +225,8 @@ fn keep_post()->bool {
     bytes.as_slice()!=b"full\n" && bytes.as_slice()!=b"full"
 }
 pub(super) fn initialize() {
-    let result=super::ce::with_resources(|_,_,io| {
-        let base=io.regs.0;
+    let result=super::ce::with_clock_owner(|regs,_,_| {
+        let base=regs.0;
         let rom=super::rom::read(&mut Registers(base))?;
         let strap=Registers(base).read(0x101000);
         let post=c2::observe::capture(&mut Io(Registers(base)));

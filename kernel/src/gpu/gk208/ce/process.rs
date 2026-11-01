@@ -203,6 +203,20 @@ pub(crate) fn proc_read(op:u8)->Result<Vec<u8>,i32> {
     s.status().map(String::into_bytes).map_err(|_|-5)
 }
 
+/// Clock startup shares the native session owner but needs no rendering core.
+/// It runs after display handoff and before GPU admission; probes retain the
+/// existing ownership predicate on with_resources.
+#[cfg(not(feature = "gt710_clock_probe"))]
+pub(in crate::gk208) fn with_clock_owner<R>(
+    f: impl FnOnce(&mut Registers, &mut super::super::native::Evo,
+        super::super::ConsoleSurface) -> Result<R, &'static str>,
+) -> Result<R, &'static str> {
+    let mut owner=SESSION.lock();
+    let s=owner.as_mut().ok_or("native display session unavailable")?;
+    if s.work.is_some() {return Err("native CE work still owned");}
+    f(&mut Registers(s.registers), &mut s.evo, s.console)
+}
+
 /// Borrow the allocator retained by the display/CE owner.
 /// The session lock serializes resource changes with CE ownership.
 pub(in crate::gk208) fn with_resources<R>(

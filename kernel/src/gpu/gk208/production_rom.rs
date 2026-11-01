@@ -29,7 +29,7 @@
  */
 //! Runtime BIT M/P policy. Layouts and arithmetic: MIT nouveau v6.8
 //! bios/{M0203,perf,volt,vmap,gpio}.c, volt/{base,gpio}.c and gpio/gf119.c.
-//! Unsupported layouts return POST fallback; this module never writes voltage.
+//! Unsupported layouts return POST fallback; voltage access is read-only.
 use super::{modeset,clock::perf};
 #[derive(Debug)]
 pub struct Target {pub gpc_khz:u32,pub memory_khz:u32,pub voltage_id:u8}
