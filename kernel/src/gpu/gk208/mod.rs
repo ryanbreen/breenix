@@ -593,6 +593,12 @@ mod spans_diagnostic;
 pub mod adapter;
 pub mod caps;
 
+/// Read-only counter sample from the retained native display head.
+pub(crate) fn proc_vblank() -> Result<Vec<u8>, i32> {
+    ce::with_clock_owner(|regs, evo, _| native::vblank_counter(regs, evo.head))
+        .map(|(at, count)| format!("{at} {count}\n").into_bytes()).map_err(|_| -5)
+}
+
 pub fn thermal_halted()->bool {
     #[cfg(not(feature = "gt710_clock_probe"))]
     { production::halted() }

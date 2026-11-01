@@ -490,6 +490,16 @@ pub struct FlipSnapshot {
     pub power: u32,
     pub link: u32,
 }
+
+/// MIT rnndb g80_pdisplay.xml NV_HEAD_STAT.VERT: VBLANK_COUNT is bits 31:16.
+pub(in crate::gk208) fn vblank_counter(regs: &Registers, head: u32)
+    -> Result<(u64, u16), &'static str> {
+    if head >= 4 { return Err("invalid native display head"); }
+    let at = crate::signal::monotonic_nanos();
+    let count = (regs.read(0x616340 + head as usize * 0x800) >> 16) as u16;
+    Ok((at, count))
+}
+
 impl Evo {
     pub(in crate::gk208) fn terminal_display(&self, registers: usize, surface: super::present::Surface)
         -> Result<super::emergency::Display, &'static str> {

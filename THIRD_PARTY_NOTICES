@@ -367,7 +367,7 @@ Head, surface, notifier and TMDS methods; original full notice in both consumers
 envytools revision f102b82381f3f11cee113d16374c87091db039d9,
 rnndb/display/{nv_evo,g80_pdisplay}.xml and rnndb/bus/pbus.xml:
 MIT via their imported rnndb/copyright.xml. Storage pitch units, active
-raster/underflow and BAR mode fields; imported author/grant notice retained
+raster/underflow, read-only VERT.VBLANK_COUNT and BAR mode fields; imported author/grant notice retained
 in modeset.rs and native.rs. No imported executable Linux/DRM integration.
 
 NVIDIA open-gpu-doc at the same checked revision, classes/display/cl507c.h:
