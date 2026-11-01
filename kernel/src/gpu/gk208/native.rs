@@ -611,11 +611,12 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
 }
 
 /// G26 answers PRESENT after GET consumes the unchanged G22 sequence.
-/// The notifier is sampled separately; GET does not complete the presentation fence.
+/// Real flips retain their latch; an unchanged latched binding uses a fresh
+/// device acknowledgement without scheduling another flip.
 pub(in crate::gk208) fn present_accepted(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface,
-) -> Result<(), &'static str> {
-    present_inner(evo, regs, surface, false).map(|_| ())
+) -> Result<Option<super::present::Receipt>, &'static str> {
+    present_inner(evo, regs, surface, false)
 }
 
 /// Drain the one accepted flip before a synchronous mode/console transition.
@@ -718,17 +719,19 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
     let head=evo.head;
     let receipt = {
         let mut update = Update { evo, regs, view };
-        if !wait {
+        // A retained binding is already latched. Refresh its contents through
+        // the existing fresh capabilities report before considering a flip.
+        let retained = if view.verify(update.regs, head).is_ok() {
+            super::present::retained(&mut update, head, surface,
+                |u| acknowledge(u.evo, u.regs))?
+        } else { None };
+        if retained.is_none() && !wait {
             use super::present::Io;
             update.clear_notifier()?;
             update.submit(&surface.methods(head)?)?;
             modeset::wait(update.regs, 0x640004, u32::MAX, update.evo.put)?;
             return Ok(None);
         }
-        let retained = if view.verify(update.regs, head).is_ok() {
-            super::present::retained(&mut update, head, surface,
-                |u| acknowledge(u.evo, u.regs))?
-        } else { None };
         match retained {
             Some(receipt) => receipt,
             None => super::present::flush(&mut update, head, surface)?,
