@@ -140,6 +140,7 @@ pub struct Resources<B> {
     space: Option<Space>,
     vram_bytes: u64,
     alias: Option<u64>,
+    alias_current: bool,
     channel: u64,
     incarnation: Option<(u64,u64)>,
     alias_indices: Vec<u64>,
@@ -149,7 +150,7 @@ pub struct Resources<B> {
 impl<B> Default for Resources<B> { fn default() -> Self { Self::new() } }
 impl<B> Resources<B> {
     pub const fn new() -> Self {
-        Self { entries: BTreeMap::new(), contexts: BTreeSet::new(), space: None, vram_bytes: 0, alias: None, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX - 1, retired: VecDeque::new() }
+        Self { entries: BTreeMap::new(), contexts: BTreeSet::new(), space: None, vram_bytes: 0, alias: None, alias_current: false, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX - 1, retired: VecDeque::new() }
     }
     #[cfg(target_os="none")]
     pub(in crate::gk208) fn heap_footprint(&self) -> [usize; 7] {
@@ -199,6 +200,8 @@ impl<B> Resources<B> {
         else { self.vram_bytes -= before - after; }
     }
     fn space(&mut self, a: &mut Allocator, io: &mut impl Io) -> Result<&mut Space, &'static str> {
+        // A mutable VM publication invalidates the channel's prior binding.
+        self.alias_current = false;
         if self.space.is_none() { self.space = Some(Space::new(a, io)?); }
         Ok(self.space.as_mut().unwrap())
     }
@@ -434,6 +437,9 @@ impl<B> Resources<B> {
         if self.alias.is_some_and(|old| old != directory) { return Err("native resource channel changed"); }
         let Some(space) = self.space.as_ref() else { return Err("native resource VM absent"); };
         if !space.usable() { return Err("native resource VM uncertain"); }
+        if self.alias_current && self.incarnation == Some((instance, epoch)) { return Ok(()); }
+        // Cache only a confirmed publication; a failed bind must retry.
+        self.alias_current = false;
         self.alias = Some(directory);
         if self.incarnation != Some((instance,epoch)) {
             self.channel = self.channel.checked_add(1).filter(|id| *id < 1<<32)
@@ -449,6 +455,7 @@ impl<B> Resources<B> {
         }
         io.flush()?;
         io.invalidate(directory)?;
+        self.alias_current = true;
         Ok(())
     }
     /// Preparation only. Share this owner's high-VA tables with the empty
@@ -538,6 +545,7 @@ impl<B> Resources<B> {
                 .map(|(id,_)| *id));
             let additional = ready.len().min(128usize.saturating_sub(self.retired.len()));
             self.retired.try_reserve(additional).map_err(|_| "native retirement history allocation")?;
+            if !ready.is_empty() { self.alias_current = false; }
             for id in ready {
                 let e = &self.entries[&id];
                 if e.mapped {
