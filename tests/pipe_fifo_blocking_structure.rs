@@ -1,5 +1,12 @@
 //! Source ratchets for #813 PR-A. Structural evidence is not a boot result.
 //! Mutations use owned source copies without changing the build working tree.
+//!
+//! #2629 audit: main 9e1ff0b3 changed the Console/Tty read route in handlers.rs,
+//! inspected by the imported parser's tests, by adding a revocation predicate.
+//! Pipe/FIFO mode forwarding, guarded publication, atomic writes and deferred
+//! close delivery are unchanged by that commit. The two failing imported tests
+//! use the callback traversal repaired in 2253e6a4; this suite retains those
+//! tests as well as its pipe/FIFO assertions and mutations below.
 #[path = "blocking_fd_eagain_structure.rs"]
 mod parser;
 use parser::{compact, contains, function, functions, lex, match_arms, read, Node};
