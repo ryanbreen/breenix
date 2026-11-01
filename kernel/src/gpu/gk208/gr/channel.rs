@@ -1768,12 +1768,12 @@ mod native {
             }
         }
         pub(crate) fn reset(&mut self) -> Result<(), &'static str> {
-            if crate::gk208::thermal_halted() {return Err("GPU thermal critical stop; backing retained");}
             let _access = crate::gpu::panic::Access::enter();
             // Revoke prepared panic work before touching either channel.
             crate::gpu::panic::native_reset();
             // Revoke the preceding attempt's confirmation before touching the channel.
             self.confirmed = false;
+            if crate::gk208::thermal_halted() {return Err("GPU thermal critical stop; backing retained");}
             let mut regs = Registers(self.registers);
             let c = self.session.report.identity;
             regs.mask(0x2630, 1 << c.runlist, 1 << c.runlist);
@@ -1848,6 +1848,7 @@ mod native {
             if self.initial.is_empty() { return Err("probe session returns to its original teardown"); }
             let epoch = self.session.report.identity.epoch.checked_add(1).ok_or("native epoch exhausted")?;
             self.confirmed = false;
+            if crate::gk208::thermal_halted() {return Err("GPU thermal critical stop; backing retained");}
             let mut regs = Registers(self.registers);
             super::super::ctxctl::enable(&mut regs).map_err(super::super::hardware_error)?;
             let topology = super::super::topology::decode(&self.topology)?;

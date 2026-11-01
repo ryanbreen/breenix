@@ -2,10 +2,11 @@
 // Hardware substitutes for the production restart and constructor FIFO writes.
 use std::{cell::RefCell, collections::BTreeMap};
 mod gpu {pub mod panic {pub struct Access;impl Access {pub fn enter()->Self{Self}}}}
+mod gk208 {pub fn thermal_halted()->bool {crate::STATE.with(|s|s.borrow().halted)}}
 const COMMAND: u64 = 0x1000000;
-struct State { vram: BTreeMap<u64,u32>, health: Result<(u32,u64,bool), &'static str>, reasons: Vec<String>, accessible: bool, refuse_access: bool }
+struct State { halted:bool, vram: BTreeMap<u64,u32>, health: Result<(u32,u64,bool), &'static str>, reasons: Vec<String>, accessible: bool, refuse_access: bool }
 thread_local! { static STATE: RefCell<State> = RefCell::new(State {
-    vram: BTreeMap::new(), health: Ok((0,0,false)), reasons: vec![], accessible:false, refuse_access:false }); }
+    halted:false, vram: BTreeMap::new(), health: Ok((0,0,false)), reasons: vec![], accessible:false, refuse_access:false }); }
 struct Registers(usize);
 impl Registers {
     fn mask(&mut self, _:usize, _:u32, _:u32) { assert_eq!(self.0, 7); }
@@ -144,4 +145,12 @@ fn constructor(c:&NativeChannel)->Result<(), &'static str> {
     assert!(t.pages.0.iter().all(|&b|b==0));
     for off in (0..0x200).step_by(4) {assert_eq!(word(t.userd+off),0);}
     for off in (0..4096).step_by(4) {assert_eq!(word(t.commands.range.start+off),0);}
+}
+
+#[test] fn critical_heat_keeps_restart_disabled_and_backing_retained() {
+    let mut c=channel();
+    STATE.with(|s|s.borrow_mut().halted=true);
+    assert_eq!(c.restart(),Err("GPU thermal critical stop; backing retained"));
+    assert!(!c.confirmed);
+    STATE.with(|s|{let s=s.borrow();assert!(!s.accessible);assert!(s.vram.is_empty());});
 }
