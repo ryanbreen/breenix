@@ -14,6 +14,7 @@ class NativeResetFault(unittest.TestCase):
         reset=reset.replace('super::super::ctxctl','ctxctl').replace('super::super::hardware_error','hardware_error')
         source=r'''
 use std::cell::RefCell;
+static HALTED:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
 const RUNLIST:u64=12288; const BOUND_US:u64=100000;
 struct State {mask:u32,blocked:u32,fail_wait:usize,fail_ce:bool,fail_quiesce:bool,fail_gr:bool,fail_preempt:bool,fail_unbind:bool,writes:Vec<(usize,u32)>,events:Vec<&'static str>}
 thread_local! {static STATE:RefCell<State>=RefCell::new(State{mask:0,blocked:0x10,fail_wait:0,fail_ce:false,fail_quiesce:false,fail_gr:false,fail_preempt:false,fail_unbind:false,writes:vec![],events:vec![]});}
@@ -29,6 +30,7 @@ fn register_wait(_: &mut Registers,r:usize,_:u32,_:u32,_:u64)->Result<(),&'stati
 struct VmIo<'a>{regs:&'a mut Registers,total:u64}
 mod gpu {pub mod panic {pub struct Access;impl Access {pub fn enter()->Self{Self}}pub fn native_reset(){crate::STATE.with(|s|s.borrow_mut().events.push("invalidate"));}}}
 mod gk208 {
+ pub fn thermal_halted()->bool{crate::HALTED.load(std::sync::atomic::Ordering::Acquire)}
  pub mod ce {pub fn reset_engine(_: &mut crate::Registers,_:usize,_:u32)->Result<(),&'static str>{crate::STATE.with(|s|s.borrow_mut().events.push("ce-stop"));if crate::STATE.with(|s|s.borrow().fail_ce){Err("CE refused")}else{Ok(())}}}
  pub mod vm {
   pub struct Fault {pub unit:u8,pub instance:u64}
@@ -73,6 +75,12 @@ fn main(){
    second:if reserved {Some(Box::new(Session{second:None,
     report:Report{identity:Identity{runlist:0,id:1,instance:0x124000,engine:0}},commands:Allocation{range:Range{start:0x200000}},pbdma:0,bound:true,copy:None}))}else{None},report:Report{identity:Identity{runlist:0,id:0,instance:0x123000,engine:0}},commands:Allocation{range:Range{start:0x100000}},pbdma:0,bound:true,copy:Some(Copy{base:0x106000,reset:22,engine:2})}};
   assert_eq!(c.session.report.identity.instance,0x123000);
+  HALTED.store(true,std::sync::atomic::Ordering::Release);
+  assert_eq!(c.reset(),Err("GPU thermal critical stop; backing retained"));
+  assert!(!c.confirmed,"critical stop revokes earlier reset confirmation");
+  STATE.with(|s|{let mut s=s.borrow_mut();assert!(s.writes.is_empty());assert_eq!(s.events,["invalidate"]);s.events.clear();});
+  HALTED.store(false,std::sync::atomic::Ordering::Release);
+  c.confirmed=previously_confirmed;
   assert_eq!(c.reset().is_ok(),okay);assert_eq!(c.confirmed,okay,"a refused reset must revoke an earlier confirmation (G19)");
   STATE.with(|s|{let s=s.borrow();assert_eq!(s.events.first(),Some(&"invalidate"),"a reset refusal must still invalidate panic preparation");assert_eq!(s.mask,remaining);assert_eq!(s.blocked,0x10,"every refusal must unblock its runlist and preserve other runlists");
    if okay {assert_eq!(s.events,["invalidate","gr-stop","ce-stop","ack","quiesce"]);
