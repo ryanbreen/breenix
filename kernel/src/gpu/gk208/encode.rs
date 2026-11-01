@@ -649,12 +649,14 @@ impl Chunk {
     }
     fn address(&mut self, method: u32, offset: usize, tail: &[u32]) -> Result<(), &'static str> {
         self.relocations.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        self.words.try_reserve(tail.len() + 3).map_err(|_| NO_MEMORY)?;
         self.relocations.push(self.words.len() + 1);
-        let mut data = Vec::new();
-        data.try_reserve_exact(tail.len() + 2).map_err(|_| NO_MEMORY)?;
-        data.extend_from_slice(&[(offset as u64 >> 32) as u32, offset as u32]);
-        data.extend_from_slice(tail);
-        self.emit(method, &data)
+        // Append to retained packet storage directly. A temporary Vec here
+        // allocates and frees once per address in every native draw.
+        self.words.push(0x20000000 | (((tail.len() + 2) as u32) << 16) | (method / 4));
+        self.words.extend_from_slice(&[(offset as u64 >> 32) as u32, offset as u32]);
+        self.words.extend_from_slice(tail);
+        Ok(())
     }
 }
 fn handle(w: &(impl Words + ?Sized), at: usize) -> u64 {
