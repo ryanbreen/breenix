@@ -125,7 +125,7 @@ class ServerTarget(unittest.TestCase):
     def test_qemu_target_local_run_and_forward(self):
         import socket
         import threading
-        with tempfile.TemporaryDirectory() as scratch:
+        with tempfile.TemporaryDirectory(dir='/tmp') as scratch:
             run = Path(scratch)
             boot = '20261101T120000Z-qemu'
             directory = run / 'boots' / boot
@@ -147,6 +147,14 @@ class ServerTarget(unittest.TestCase):
             target = HOST['QemuTarget'](run, boot)
             with patch.object(target, '_qemu_alive', return_value=True), patch.object(HOST['time'], 'sleep'):
                 self.assertTrue(target.holds_lease())
+                with patch.object(target, '_qemu_alive', return_value=False):
+                    self.assertFalse(target.holds_lease())
+                (run / 'boot.lock').rmdir()
+                self.assertFalse(target.holds_lease())
+                (run / 'boot.lock').mkdir()
+                (run / 'current').write_text('another-boot\n')
+                self.assertFalse(target.holds_lease())
+                (run / 'current').write_text(boot + '\n')
                 self.assertEqual(target.identity()['mode'], 'persistent')
                 self.assertEqual(target.capture(), ('captured\n', [(1.5, 0)]))
                 self.assertEqual(target.write('result.json', {'ok': True}).returncode, 0)
@@ -169,6 +177,73 @@ class ServerTarget(unittest.TestCase):
                 self.assertEqual(calls[-1][calls[-1].index('-p') + 1], '2222')
                 services = HOST['Services'](probe, console, target.capture)
                 self.assertEqual(services.lines(0, 'captured'), [(1.5, 'captured')])
+
+    def test_qemu_cli_reaches_forwarded_probe_and_refuses_ended_boot(self):
+        with tempfile.TemporaryDirectory(dir='/tmp') as scratch:
+            run = Path(scratch)
+            boot, sha = '20261101T120000Z-qemu', 'a' * 40
+            directory = run / 'boots' / boot
+            directory.mkdir(parents=True)
+            (run / 'current').write_text(boot + '\n')
+            (run / 'boot.lock').mkdir()
+            (directory / 'run.json').write_text(json.dumps(dict(
+                id=boot, mode='persistent', bootedCommit=sha, toolsCommit=sha, evidenceEligible=True)))
+            (directory / 'serial.txt').write_text('fixture\n')
+            for name in ('docs/suites/server.json', 'docs/efforts/path.json', 'docs/boot-path.json'):
+                path = directory / 'definition' / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes((ROOT / name).read_bytes())
+            (run / '.ssh').mkdir()
+            (run / '.ssh/fixture.pub').write_text('ssh-ed25519 fixture')
+            (run / '.ssh/fixture').touch()
+            site = dict(SERVER_SSH_HOST='127.0.0.1', SERVER_SSH_PORT=2222,
+                        OPERATOR_USER='fixture', OPERATOR_SSH_PUBLIC_KEY='ssh-ed25519 fixture')
+            argv = ['server-suite', '--target', 'qemu', '--run-dir', str(run),
+                    '--boot', boot, '--sha', sha, '--milestone', 'server/ssh-keys']
+            with patch.object(sys, 'argv', argv), patch.object(Path, 'home', return_value=run), \
+                 patch.object(HOST['QemuTarget'], '_qemu_alive', return_value=True), \
+                 patch.object(HOST['QemuTarget'], 'site', return_value=site), \
+                 patch.dict(HOST['main'].__globals__, Probe=unittest.mock.Mock(side_effect=RuntimeError('probe reached'))):
+                with self.assertRaisesRegex(RuntimeError, 'probe reached'):
+                    HOST['main']()
+                self.assertEqual(HOST['main'].__globals__['Probe'].call_args.kwargs.get('port'), 2222)
+                (directory / 'ended').touch()
+                with self.assertRaisesRegex(ValueError, 'does not hold the machine lease'):
+                    HOST['main']()
+
+    def test_qemu_id_requires_qemu_and_run_directory(self):
+        for extra in ([], ['--target', 'qemu']):
+            result = subprocess.run([sys.executable, str(ROOT / 'scripts/metal/server-suite'),
+                                     '--boot', '20261101T120000Z-qemu', '--sha', 'a' * 40, *extra],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+
+    def test_forwarded_probe_checks_banner_and_pins_wrong_key_to_port(self):
+        import socket
+        with tempfile.TemporaryDirectory() as scratch:
+            run = Path(scratch)
+            def command(args, **kwargs):
+                if args[0] == 'ssh' and args[-1] == "sh -c true":
+                    self.assertEqual((run / 'known_hosts').read_text(),
+                                     '[127.0.0.1]:2222 ssh-ed25519 wrong\n')
+                    return SimpleNamespace(returncode=255, stdout='', stderr='Host key verification failed')
+                if args[0] == 'ssh':
+                    return reply('1000\n1000\nfixture\n/home/fixture\n/home/fixture\n')
+                if args[0] == 'ssh-keyscan':
+                    self.assertEqual(args[args.index('-p') + 1], '2222')
+                    return reply('[127.0.0.1]:2222 ssh-ed25519 fixture\n')
+                if args[:2] == ['ssh-keygen', '-E']:
+                    return reply('256 SHA256:fixture fixture (ED25519)\n')
+                return reply()
+            with patch.dict(HOST['Probe'].__init__.__globals__, command=command), \
+                 patch.object(socket, 'create_connection') as connect:
+                stream = connect.return_value.__enter__.return_value
+                stream.recv.return_value = b'SSH-2.0-fixture\r\n'
+                probe = HOST['Probe']('127.0.0.1', 'fixture', run / 'identity', run, port=2222)
+                probe.run_case('port-22', '')
+                connect.assert_called_once_with(('127.0.0.1', 2222), timeout=10)
+                probe.wrong.with_suffix('.pub').write_text('ssh-ed25519 wrong\n')
+                probe.run_case('strict-login', '[stdout] bsshd: host key ED25519 SHA256:fixture (loaded)\n')
 
     def test_metal_target_keeps_boot_store_and_console_calls(self):
         calls = []

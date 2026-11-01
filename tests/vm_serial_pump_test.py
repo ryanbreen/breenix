@@ -30,7 +30,7 @@ class SerialPumpTest(unittest.TestCase):
     def test_reset_creates_boot_records(self):
         with tempfile.TemporaryDirectory(prefix='pump-', dir='/tmp') as tmp:
             run = Path(tmp)
-            commit = 'a' * 40
+            commit = subprocess.check_output(['git', '-C', str(PUMP.parent.parent), 'rev-parse', 'HEAD'], text=True).strip()
             tools = 'b' * 40
             (run / 'build.json').write_text(json.dumps({'commit': commit, 'dirty': True}))
             (run / 'mode').write_text('console\n')
@@ -41,11 +41,13 @@ class SerialPumpTest(unittest.TestCase):
             process = subprocess.Popen(['python3', str(PUMP), str(run), str(run / 'whole.txt')])
             try:
                 guest = connect(run / 'serial.sock', process)
+                self.addCleanup(guest.close)
                 monitor.settimeout(5)
                 qmp, _ = monitor.accept()
                 qmp.settimeout(5)
                 qmp.sendall(b'{"QMP":{"version":{},"capabilities":[]}}\r\n')
                 stream = qmp.makefile('rb')
+                self.addCleanup(stream.close)
                 self.assertEqual(json.loads(stream.readline())['execute'], 'qmp_capabilities')
                 qmp.sendall(b'{"return":{}}\r\n')
                 first = (run / 'current').read_text().strip()
@@ -64,10 +66,15 @@ class SerialPumpTest(unittest.TestCase):
                 for directory in boots:
                     self.assertTrue((directory / 'ended').read_text().strip())
                     record = json.loads((directory / 'run.json').read_text())
-                    self.assertEqual(record, {'mode': 'persistent', 'bootMode': 'console',
+                    self.assertEqual(record, {'id': directory.name, 'mode': 'persistent', 'bootMode': 'console',
                                               'target': 'qemu', 'bootedCommit': commit,
                                               'toolsCommit': tools, 'evidenceEligible': False})
                     self.assertTrue((directory / 'events.jsonl').exists())
+                    for name in ('docs/suites/server.json', 'docs/suites/users.json',
+                                 'docs/efforts/path.json', 'docs/boot-path.json'):
+                        expected = subprocess.check_output(['git', '-C', str(PUMP.parent.parent),
+                                                            'show', commit + ':' + name])
+                        self.assertEqual((directory / 'definition' / name).read_bytes(), expected)
                 self.assertEqual(json.loads((run / 'boots' / first / 'events.jsonl').read_text().splitlines()[0])['event'], 'RESET')
                 self.assertEqual(json.loads((run / 'boots' / second / 'events.jsonl').read_text().splitlines()[0])['event'], 'SHUTDOWN')
                 guest.close()
@@ -84,6 +91,7 @@ class SerialPumpTest(unittest.TestCase):
             process = subprocess.Popen(['python3', str(PUMP), str(run), str(whole)])
             try:
                 guest = connect(run / 'serial.sock', process)
+                self.addCleanup(guest.close)
                 console = connect(run / 'console.sock', process)
                 output = b'first\x00\xff\r\n' + bytes(range(256)) * 100
                 incoming = b'input\x00\xff\r\n' + bytes(range(256))
