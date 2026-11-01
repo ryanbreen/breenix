@@ -468,6 +468,8 @@ mod limits_test {
    let mut c=good.clone();c.insert(min,c[max]+1);
    assert!(pll(&c,900000).is_err(),"inverted {min}");
   }
+  let mut oversized=good.clone();oversized.insert("max_p",64);
+  assert!(pll(&oversized,900000).is_err());
   assert!(pll(&good,0).is_err());
  }
 }
