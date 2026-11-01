@@ -5,6 +5,7 @@ This executes the production wait with a bounded queue and an independent
 receipt clock. Sleeping dispatches kgpu only on the next delivered tick.
 """
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -17,11 +18,24 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class ReadbackFenceWait(unittest.TestCase):
     def test_readback_completes_on_receipt_without_a_tick_handoff(self):
+        self.run_receipt_wait('true')
+
+    def test_submit_admission_completes_on_receipt_without_a_tick_handoff(self):
+        core = (ROOT / 'kernel/src/gpu/mod.rs').read_text()
+        admitted = core.split('let admitted = wait_for_traced', 1)[1].split('let writer = match admitted', 1)[0]
+        admitted = admitted.replace('#[cfg(target_arch = "x86_64")]', '')
+        policy = re.search(r'},\s*None,\s*(true|false),\s*trace\);', admitted)
+        self.assertIsNotNone(policy, 'run the production admission policy')
+        self.run_receipt_wait(policy[1])
+
+    def run_receipt_wait(self, selected_policy):
         core = (ROOT / 'kernel/src/gpu/mod.rs').read_text()
         wait = item(core, 'fn wait_for_traced<').replace('#[cfg(target_arch = "x86_64")]', '')
         # Accommodate the explicit readback policy argument without changing
         # the reproduction, device clock or any of the assertions.
-        policy = ', true' if 'fence_driven: bool' in wait else ''
+        policy = ', ' + selected_policy if 'fence_driven: bool' in wait else ''
+        if 'submit_trace:' in wait:
+            policy += ', None'
         fixture = r'''
 use std::{cell::{Cell,RefCell},collections::VecDeque,sync::atomic::{AtomicU64,Ordering}};
 const SPIN_POLL_NS:u64=1_000_000;
@@ -51,12 +65,13 @@ thread_local! {
  static CORE:RefCell<Core>=RefCell::new(Core::new(0,80_000));
 }
 #[derive(Debug,PartialEq)]enum Stop{Timeout,Interrupted}
+struct SubmitTrace;
 struct Device {outstanding:usize}
 impl Device {fn outstanding(&self)->usize{self.outstanding}}
 struct Core {stalled:bool,dev:Option<Device>,backlog:VecDeque<()>,receipt:u64,delay:u64,done:bool}
 impl Core {
  fn new(start:u64,delay:u64)->Self{Self{stalled:false,dev:Some(Device{outstanding:1}),backlog:VecDeque::from([()]),receipt:start+delay,delay,done:false}}
- fn poll(&mut self){
+ fn poll_traced(&mut self,_:Option<&SubmitTrace>){
   CLOCK.with(|c|c.set(c.get()+10_000));
   if self.stalled || now_ns()<self.receipt{return;}
   if self.backlog.pop_front().is_some(){self.receipt=now_ns()+self.delay;}
@@ -80,7 +95,7 @@ fn main(){
   CORE.with(|c|*c.borrow_mut()=Core::new(phase,delay));
   let trace=gk208::timing::Readback;
   assert_eq!(wait_for_traced(Some(phase+20_000_000),true,|c|c.done.then_some(7),traced.then_some((&trace,1))POLICY),Ok(7));
-  assert_eq!(SLEEPS.with(Cell::get),0,"a native readback handed an observable engine receipt to the tick-driven worker");
+  assert_eq!(SLEEPS.with(Cell::get),0,"a native fence waiter handed an observable engine receipt to the tick-driven worker");
   assert!(now_ns()-phase<=2*delay+20_000,"readback completed on a tick instead of its engine receipt");
  }}}
  // A missing receipt must still obey the caller deadline and pending signal.

@@ -12,7 +12,7 @@ class ReadbackWait(unittest.TestCase):
     def test_split_and_case_buffer_bound(self):
         source = r'''
 extern crate alloc;
-#[path="TIMING"] mod timing;
+#[path="TIMING"] pub mod timing;
 fn main() {
  assert!(!timing::collecting(false,false));
  let mut split=timing::ReadbackSplit::default();
