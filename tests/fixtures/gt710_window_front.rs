@@ -34,7 +34,8 @@ struct Ctx{state:CtxState,dropped:bool,busy:bool,inflight:Vec<u64>,objects:Objec
 struct Resource{lost:bool,invalid:bool,window_sealed:bool,reading:bool,writers:u32,
     accepted:Vec<Arc<gpu::window_targets::Writer>>,epoch:u64,generation:u64,last:Option<LastWrite>,
     backing:Arc<Pages>,pitch:u32,image:Vec<u8>}
-#[derive(Default)] struct Core{resources:BTreeMap<u32,Resource>,contexts:BTreeMap<u32,Ctx>,sequence:u64}
+struct SyncReq{reading:Vec<u32>}
+#[derive(Default)] struct Core{syncs:BTreeMap<u64,SyncReq>,resources:BTreeMap<u32,Resource>,contexts:BTreeMap<u32,Ctx>,sequence:u64}
 impl Core{fn serial(&mut self)->u64{self.sequence+=1;self.sequence} fn device_fence(&mut self)->u64{self.sequence+100}}
 thread_local!{
     static CORE:RefCell<Core>=RefCell::default();
@@ -57,7 +58,11 @@ fn wait_for<T>(_:Option<u64>,_:bool,mut f:impl FnMut(&mut Core)->Option<T>)->Res
     }
     panic!("wait failed to make progress")
 }
-fn release_other(id:Option<u32>){with_core(|c|{if let Some(r)=id.and_then(|id|c.resources.get_mut(&id)){r.reading=false;}});}
+fn release_other(id:Option<u32>){with_core(|c|{
+    if let Some(id)=id{if !c.syncs.values().any(|s|s.reading.contains(&id)){
+        c.resources.get_mut(&id).unwrap().reading=false;
+    }}
+});}
 struct Done{answer:u32,echoed:u64}
 impl Done{fn matches_fence(&self,f:u64)->bool{self.echoed==f}}
 enum Request{Attach,Virtual,Native(gk208::encode::Chunk)}
@@ -78,11 +83,11 @@ mod dev {
 fn exec_ok(build:impl FnOnce(Tag)->Option<Request>,_:u32,_:&[u32])->Result<Done,i64>{
     assert!(matches!(build(Tag::Sync(0)),Some(Request::Attach))); Ok(Done{answer:abi::gk208::SUCCESS,echoed:0})
 }
-fn exec_req(_:u64,req:Request,_:u32,holds:&[u32],reading:&[u32])->Result<Done,i64>{
+fn exec_req(serial:u64,req:Request,_:u32,holds:&[u32],reading:&[u32])->Result<Done,i64>{
     let Request::Native(chunk)=req else{event("virtual-submit");return Err(EIO);};
     event("native-submit");
     if INTERRUPT_COPY.with(|f|*f.borrow()){
-        with_core(|c|for id in reading{c.resources.get_mut(id).unwrap().reading=true;});
+        with_core(|c|{c.syncs.insert(serial,SyncReq{reading:reading.to_vec()});});
         return Err(EINTR);
     }
     if FAIL_COPY.with(|f|*f.borrow()){return Err(EIO);}
@@ -299,6 +304,9 @@ fn end(id:u32,w:&gpu::window_targets::Writer){w.end_access();with_core(|c|{c.res
     INTERRUPT_COPY.with(|f|*f.borrow_mut()=true);
     assert_eq!(dest.copy_from(&source,&[Rect::new(0,0,8,8)]),Err(EINTR as i32));
     assert_eq!(source.seal(false),Err(breengel_abi::errno::EBUSY),"source became writable under queued GPU copy");
-    with_core(|c|for r in c.resources.values_mut(){r.reading=false;});
+    assert_eq!(dest.seal(false),Err(breengel_abi::errno::EBUSY),"destination became writable under queued GPU copy");
+    assert!(!source.idle() && !dest.idle());
+    with_core(|c|c.syncs.clear());
+    release_other(Some(1));release_other(Some(2));
     assert_eq!(source.seal(false),Ok(()));
 }
