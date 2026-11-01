@@ -250,6 +250,7 @@ impl Canvas {
 pub fn expect(t: u64, want: &Canvas, what: &str) -> Result<[u8; record::SIZE], CaseError> {
     let (px, rec) = read(t, want.w, want.h)?;
     want.matches(&px, what)?;
+    breenix_suite::suite::screen_judged_readback(&px, &rec);
     Ok(rec)
 }
 
@@ -289,6 +290,7 @@ pub fn present_view(ctx: u64, source: u64) -> Result<Option<abi::Present>, CaseE
         wait_ok(ctx, present.fence, 0)?;
         let (pixels, actual) = read(0, w, h)?;
         want.matches(&pixels, "scanout source rectangle")?;
+        breenix_suite::suite::screen_judged_readback(&pixels, &actual);
         ensure(u32_at(&actual, record::TARGET_WIDTH) == mode.width
             && u32_at(&actual, record::TARGET_HEIGHT) == mode.height
             && u32_at(&actual, record::FLAGS) & 1 == 1

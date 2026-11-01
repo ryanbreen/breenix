@@ -2,7 +2,7 @@
 use crate::gpu::{self, abi::{record as r, Mode}};
 use std::{string::String, vec::Vec};
 use std::fmt::Write;
-use std::sync::{Mutex, atomic::{AtomicBool, AtomicU64, Ordering}};
+use std::sync::{Mutex, atomic::{AtomicBool, AtomicU64, AtomicPtr, Ordering}};
 
 fn word(rec: &[u8], at: usize) -> u32 {
     u32::from_le_bytes(rec[at..at + 4].try_into().unwrap())
@@ -90,26 +90,193 @@ pub(super) fn unpack<'a>(bytes: &'a [u8], suite: &str, case: &str) -> Result<&'a
     Ok(body)
 }
 
+/// A shared clock lets the parent timeout and child report exclude the same interval.
+#[repr(C)]
+pub(super) struct CheckpointClock {
+    sequence: AtomicU64,
+    excluded: AtomicU64,
+    active: AtomicU64,
+}
+impl CheckpointClock {
+    pub(super) const fn new() -> Self {
+        Self { sequence: AtomicU64::new(0), excluded: AtomicU64::new(0), active: AtomicU64::new(0) }
+    }
+    pub(super) fn start(&self, now: u64) {
+        self.sequence.fetch_add(1, Ordering::SeqCst);
+        self.active.store(now, Ordering::SeqCst);
+        self.sequence.fetch_add(1, Ordering::SeqCst);
+    }
+    pub(super) fn stop(&self, now: u64) {
+        self.sequence.fetch_add(1, Ordering::SeqCst);
+        let start = self.active.swap(0, Ordering::SeqCst);
+        self.excluded.fetch_add(now.saturating_sub(start), Ordering::SeqCst);
+        self.sequence.fetch_add(1, Ordering::SeqCst);
+    }
+    fn excluded_at(&self, now: u64) -> u64 {
+        loop {
+            let sequence = self.sequence.load(Ordering::SeqCst);
+            if sequence & 1 != 0 { core::hint::spin_loop(); continue; }
+            let excluded = self.excluded.load(Ordering::SeqCst);
+            let active = self.active.load(Ordering::SeqCst);
+            if self.sequence.load(Ordering::SeqCst) == sequence {
+                return excluded.saturating_add(if active == 0 { 0 } else { now.saturating_sub(active) });
+            }
+        }
+    }
+    pub(super) fn elapsed(&self, start: u64, now: u64) -> u64 {
+        now.saturating_sub(start).saturating_sub(self.excluded_at(now))
+    }
+}
+
+pub(super) struct ClockMap(*mut CheckpointClock);
+impl Drop for ClockMap {
+    fn drop(&mut self) {
+        CLOCK.store(core::ptr::null_mut(), Ordering::Relaxed);
+        if !self.0.is_null() { let _ = libbreenix::memory::munmap(self.0.cast(), 4096); }
+    }
+}
+
+type Snapshot = Result<([u8; 32], Mode), &'static str>;
+#[derive(Default)]
+pub(super) struct EndCheckpoint { pub(super) result: Option<Snapshot> }
+impl EndCheckpoint {
+    pub(super) fn before_drop(&mut self, observe: impl FnOnce() -> Snapshot) {
+        let result = observe();
+        // No binding owned by the case is not an observation failure.
+        if !matches!(result, Err("no-case-scanout")) { self.result = Some(result); }
+    }
+}
+static END: Mutex<EndCheckpoint> = Mutex::new(EndCheckpoint { result: None });
+static CLOCK: AtomicPtr<CheckpointClock> = AtomicPtr::new(core::ptr::null_mut());
+static CASE_PID: AtomicU64 = AtomicU64::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static COMPOSITOR: AtomicBool = AtomicBool::new(false);
 static RUNNER: AtomicU64 = AtomicU64::new(0);
+static RUNNER_RESOURCE: AtomicU64 = AtomicU64::new(0);
 static LINES: Mutex<String> = Mutex::new(String::new());
 
-pub(super) fn begin(suite: &str, gui: bool) {
-    ENABLED.store(matches!(suite, "gpu" | "breengel"), Ordering::Relaxed);
-    if !ENABLED.load(Ordering::Relaxed) { return; }
+pub(super) fn configured(suite: &str, option: &str) -> bool {
+    matches!(suite, "gpu" | "breengel") && option.trim() != "off"
+}
+
+pub(super) fn begin(suite: &str, gui: bool) -> ClockMap {
+    static OPTION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    let option = OPTION.get_or_init(|| std::fs::read_to_string("/proc/breenix/screen-checkpoints").unwrap_or_default());
+    ENABLED.store(configured(suite, option), Ordering::Relaxed);
+    if !ENABLED.load(Ordering::Relaxed) { return ClockMap(core::ptr::null_mut()); }
+    let ptr = libbreenix::memory::mmap(core::ptr::null_mut(), 4096,
+        libbreenix::memory::PROT_READ | libbreenix::memory::PROT_WRITE,
+        libbreenix::memory::MAP_SHARED | libbreenix::memory::MAP_ANONYMOUS, -1, 0)
+        .map_or(core::ptr::null_mut(), |p| p.cast::<CheckpointClock>());
+    if !ptr.is_null() {
+        // A private mapping owned until the parent finishes this case; atomics are shared by fork.
+        unsafe { ptr.write(CheckpointClock::new()); }
+    }
+    CLOCK.store(ptr, Ordering::Relaxed);
     COMPOSITOR.store(gui, Ordering::Relaxed);
-    // CONTEXT in a record is a device identity, not the opaque userspace handle.
-    // Identify the between-case runner binding without copying a whole frame.
     let mut pixel = [0; 4];
     let mut rec = [0; r::SIZE];
     let status = gpu::readback(0, [0, 0, 1, 1], &mut pixel, 4, &mut rec);
     RUNNER.store(if status == 0 { quad(&rec, r::CONTEXT) } else { 0 }, Ordering::Relaxed);
+    RUNNER_RESOURCE.store(if status == 0 { quad(&rec, r::RESOURCE) } else { 0 }, Ordering::Relaxed);
     LINES.lock().unwrap().clear();
+    END.lock().unwrap().result = None;
+    *REUSE.lock().unwrap() = None;
     let _ = std::fs::remove_file(std::format!("{}.screen", super::judged_path()));
+    ClockMap(ptr)
+}
+
+pub(super) fn enter_case() {
+    CASE_PID.store(crate::process::getpid().map_or(0, |p| p.raw()) as u64, Ordering::Relaxed);
+}
+fn in_case() -> bool {
+    ENABLED.load(Ordering::Relaxed) && CASE_PID.load(Ordering::Relaxed) != 0
+        && crate::process::getpid().map_or(0, |p| p.raw()) as u64 == CASE_PID.load(Ordering::Relaxed)
+}
+fn now_ns() -> u64 { super::monotonic_ns().unwrap_or(0).max(0) as u64 }
+fn timed<R>(f: impl FnOnce() -> R) -> R {
+    let clock = CLOCK.load(Ordering::Relaxed);
+    // A missing clock must not charge an observation to the case.
+    assert!(!clock.is_null());
+    // The mapping stays live throughout run_case, including its child and observations.
+    let clock = unsafe { &*clock };
+    clock.start(now_ns());
+    let result = f();
+    clock.stop(now_ns());
+    result
+}
+pub(super) fn elapsed_ns(start: u64, now: u64) -> u64 {
+    let clock = CLOCK.load(Ordering::Relaxed);
+    if clock.is_null() { now.saturating_sub(start) } else { unsafe { &*clock }.elapsed(start, now) }
+}
+
+/// Called by a helper's destructor before killing its display owner. Its return type carries no verdict.
+pub(super) fn before_helper_drop() {
+    if !in_case() { return; }
+    if CLOCK.load(Ordering::Relaxed).is_null() {
+        END.lock().unwrap().result = Some(Err("clock-allocation"));
+        return;
+    }
+    timed(|| END.lock().unwrap().before_drop(snapshot));
+}
+
+/// An exact whole-mode judged readback; only binding metadata may be refreshed.
+pub(super) struct ReadbackReuse {
+    pub(super) hash: [u8; 32],
+    mode: Mode,
+    record: [u8; r::SIZE],
+}
+impl ReadbackReuse {
+    pub(super) fn new(pixels: &mut [u8], rec: &[u8; r::SIZE], mode: Mode, backend: u32, runner: u64) -> Result<Self, &'static str> {
+        validate(rec, mode, backend, runner)?;
+        Ok(Self { hash: canonical_hash(pixels, mode)?, mode, record: *rec })
+    }
+    pub(super) fn matches(&self, rec: &[u8; r::SIZE]) -> bool {
+        [r::BACKEND, r::WIDTH, r::HEIGHT, r::TARGET_WIDTH, r::TARGET_HEIGHT].iter()
+            .all(|&at| word(&self.record, at) == word(rec, at))
+            && [r::CONTEXT, r::RESOURCE, r::PRESENT_FENCE, r::GENERATION, r::RENDER_SERIAL, r::RENDER_FENCE].iter()
+                .all(|&at| quad(&self.record, at) == quad(rec, at))
+    }
+}
+struct PendingReadback { pixels: Vec<u8>, record: [u8; r::SIZE], mode: Mode, backend: u32 }
+static REUSE: Mutex<Option<PendingReadback>> = Mutex::new(None);
+
+/// Called only after the existing comparator has judged this exact readback.
+pub(super) fn judged_readback(pixels: &[u8], rec: &[u8; r::SIZE]) {
+    if !in_case() || CLOCK.load(Ordering::Relaxed).is_null() { return; }
+    // Keep reuse preparation outside performance cases.
+    if super::running_case().is_some_and(|n| n.starts_with("performance/")) { return; }
+    let mode = Mode { width: word(rec, r::TARGET_WIDTH), height: word(rec, r::TARGET_HEIGHT), scale: 1, reserved: 0 };
+    let backend = word(rec, r::BACKEND);
+    if validate(rec, mode, backend, RUNNER.load(Ordering::Relaxed)).is_err()
+        || pixels.len() != mode.width as usize * mode.height as usize * 4 { return; }
+    timed(|| {
+        *REUSE.lock().unwrap() = Some(PendingReadback { pixels: pixels.to_vec(), record: *rec, mode, backend });
+    });
+}
+
+fn reuse_snapshot() -> Option<Snapshot> {
+    let pending = REUSE.lock().unwrap().take()?;
+    let mut probe = [0; 4];
+    let mut record = [0; r::SIZE];
+    if gpu::readback(0, [0, 0, 1, 1], &mut probe, 4, &mut record) != 0 { return None; }
+    // The small read supplies binding identities, not the picture or its geometry.
+    record[r::WIDTH..r::WIDTH+4].copy_from_slice(&pending.mode.width.to_le_bytes());
+    record[r::HEIGHT..r::HEIGHT+4].copy_from_slice(&pending.mode.height.to_le_bytes());
+    let mut pixels = pending.pixels;
+    let saved = ReadbackReuse::new(&mut pixels, &pending.record, pending.mode, pending.backend, RUNNER.load(Ordering::Relaxed)).ok()?;
+    saved.matches(&record).then_some(Ok((saved.hash, saved.mode)))
 }
 
 fn snapshot() -> Result<([u8; 32], Mode), &'static str> {
+    if let Some(saved) = reuse_snapshot() { return saved; }
+    let (status, modes) = gpu::modes();
+    if status != 0 { return Err("mode-failed"); }
+    if modes.binding_known == 0 || modes.scanout_resource == 0
+        || modes.scanout_resource == modes.console_resource
+        || modes.scanout_resource == RUNNER_RESOURCE.load(Ordering::Relaxed) {
+        return Err("no-case-scanout");
+    }
     if RUNNER.load(Ordering::Relaxed) == 0 { return Err("runner-unknown"); }
     let (status, caps) = gpu::caps();
     if status != 0 { return Err("caps-failed"); }
@@ -125,6 +292,7 @@ fn snapshot() -> Result<([u8; 32], Mode), &'static str> {
         if !COMPOSITOR.load(Ordering::Relaxed) { return Err("readback-failed"); }
         rec = crate::suite_stage::observe(&mut pixels).map_err(|_| "readback-failed")?.record;
     }
+    if quad(&rec, r::CONTEXT) == RUNNER.load(Ordering::Relaxed) { return Err("no-case-scanout"); }
     validate(&rec, mode, caps.backend, RUNNER.load(Ordering::Relaxed))?;
     Ok((canonical_hash(&mut pixels, mode)?, mode))
 }
@@ -133,9 +301,13 @@ fn append(name: &str, end: bool) -> Result<(), &'static str> {
     let case = super::running_case().ok_or("outside-case")?;
     let (prefix, _) = super::RECORD_NAMES.get().ok_or("outside-case")?;
     let suite = prefix.strip_prefix("SUITE ").and_then(|s| s.strip_suffix(' ')).ok_or("outside-case")?;
-    let result = snapshot();
-    // An end observation is optional when the case no longer owns a scanout.
-    if end && result.is_err() { return Ok(()); }
+    let result = if end {
+        match snapshot() {
+            Err("no-case-scanout") => END.lock().unwrap().result.take().unwrap_or(Err("no-case-scanout")),
+            result => result,
+        }
+    } else if CLOCK.load(Ordering::Relaxed).is_null() { Err("clock-allocation") } else { timed(snapshot) };
+    if end && matches!(result, Err("no-case-scanout")) { return Ok(()); }
     let line = format_record(suite, case, name, result);
     let mut lines = LINES.lock().unwrap();
     if lines.lines().any(|line| line.split_whitespace().nth(4) == Some(name)) { return Err("duplicate-checkpoint"); }
@@ -144,7 +316,7 @@ fn append(name: &str, end: bool) -> Result<(), &'static str> {
 }
 
 pub(super) fn checkpoint(name: &str) -> super::CaseResult {
-    super::check(ENABLED.load(Ordering::Relaxed), "screen checkpoints are not enabled for this suite")?;
+    if !ENABLED.load(Ordering::Relaxed) { return Ok(()); }
     super::check(named(name), "invalid or reserved screen checkpoint name")?;
     super::check(!super::running_case().is_some_and(|case| case.starts_with("performance/")),
         "performance cases cannot declare screen checkpoints")?;
@@ -153,6 +325,7 @@ pub(super) fn checkpoint(name: &str) -> super::CaseResult {
 
 pub(super) fn finish() {
     if !ENABLED.load(Ordering::Relaxed) { return; }
+    if !in_case() { return; }
     let _ = append("end", true);
     let lines = LINES.lock().unwrap();
     // A missing or corrupt handoff is an additive SCREEN error, without changing CASE.
@@ -171,5 +344,13 @@ pub(super) fn collect(suite: &str, case: &str) -> Vec<String> {
     match unpack(&bytes, suite, case) {
         Ok(body) => body.lines().map(String::from).collect(),
         Err(e) => vec![format_record(suite, case, "end", Err(e))],
+    }
+}
+
+/// Send records on the evidence path, independently of stdout and the controlling VT.
+pub(super) fn emit(line: &str) {
+    use std::io::Write;
+    if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
+        let _ = evidence.write_all(std::format!("\n{line}\n").as_bytes());
     }
 }

@@ -604,6 +604,7 @@ impl Helper {
 
 impl Drop for Helper {
     fn drop(&mut self) {
+        if self.pid > 0 { breenix_suite::suite::screen_before_helper_drop(); }
         self.kill();
         let _ = io::close(self.to);
         let _ = io::close(self.from);

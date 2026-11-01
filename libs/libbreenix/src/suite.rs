@@ -633,7 +633,10 @@ pub fn case_ms_left() -> u64 {
         return u64::MAX;
     }
     match monotonic_ns() {
-        Some(now) => ((deadline as i128 - now).max(0) / 1_000_000) as u64,
+        Some(now) => {
+            let excluded = (now as u64).saturating_sub(screen::elapsed_ns(0, now as u64));
+            deadline.saturating_add(excluded).saturating_sub(now as u64) / 1_000_000
+        },
         None => 0,
     }
 }
@@ -1050,7 +1053,7 @@ impl Suite {
                 }
                 states[c][k] = State::Done(outcome);
                 done += 1;
-                for checkpoint in screen::collect(self.id, &name) { emit(&checkpoint); }
+                for checkpoint in screen::collect(self.id, &name) { screen::emit(&checkpoint); }
                 if let Some(observe) = self.case_observer { observe(done, total, &name); }
                 if place.is_some() { sequence::progress_after(done); }
             }
@@ -1183,11 +1186,19 @@ fn ms_since(start: Option<i128>) -> u64 {
     }
 }
 
+fn screen_ms_since(start: Option<i128>) -> u64 {
+    match (start, monotonic_ns()) {
+        (Some(start), Some(now)) if now >= start => screen::elapsed_ns(start as u64, now as u64) / 1_000_000,
+        _ => 0,
+    }
+}
+
 /// Run a case in this process (the case's forked child).
 fn run_inline(case: &Case) -> Outcome {
+    screen::enter_case();
     let start = monotonic_ns();
     let result = (case.run)();
-    let ms = ms_since(start);
+    let ms = screen_ms_since(start);
     let result = result.and(publish_judged()).and(publish_input()).and(publish_values());
     match result {
         Ok(()) => Outcome::Pass { ms },
@@ -1290,7 +1301,7 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
             _ => {}
         }
         let now = monotonic_ns();
-        let ms = ms_since(start);
+        let ms = screen_ms_since(start);
         // Setup cannot outlive the existing 120-second progress watchdog. The
         // named case gets exactly limit_ms after its one-shot warm-up signal.
         let active_limit = if awaiting_window { 120_000 } else { limit_ms };
@@ -1475,7 +1486,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     JUDGED_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     // A prior interrupted boot may have left this PID/sequence on a reused disk.
     JUDGED_ENABLED.store(screen.gui, Ordering::Relaxed);
-    screen::begin(suite, screen.gui);
+    let _screen_clock = screen::begin(suite, screen.gui);
     // G1-G6 retain the runner owner they were checked against. G7's console
     // cases explicitly start above the kernel console, with no runner owner.
     if screen.gpu.is_some() && name.starts_with("present/") { let _ = graphics::give_back_display(); }
@@ -2155,3 +2166,11 @@ mod screen;
 /// hyphenated words; `end` and `intent` are reserved. Performance cases cannot call it.
 /// The runner prints the digest after CASE, independently of the case verdict.
 pub fn screen_checkpoint(name: &str) -> CaseResult { screen::checkpoint(name) }
+
+/// Preserve a scanout just before its helper is reaped; failures stay on the SCREEN path.
+pub fn screen_before_helper_drop() { screen::before_helper_drop(); }
+
+/// Offer a whole bound scanout's exact judged bytes for an end checkpoint.
+pub fn screen_judged_readback(pixels: &[u8], record: &[u8; crate::gpu::abi::record::SIZE]) {
+    screen::judged_readback(pixels, record);
+}

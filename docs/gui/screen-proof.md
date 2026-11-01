@@ -9,9 +9,9 @@ A checkpoint observes the whole bound scanout. A display-owning case uses `READB
 
 Hash canonical BGRX rows with SHA-256, forcing X to `0xff` as `suite::judged` does. Validate record fields but do not hash them. The same canonical picture has the same digest across backends.
 
-The default `end` checkpoint runs in the case process after its report and stopped timer, before `give_back_display`. If it cannot observe a binding outside the runner's context it emits no `end`; an approved table entry without its record fails. A case can call `suite::screen_checkpoint("<name>")` after present completes. Names are lowercase hyphenated words; `end` and `intent` are reserved. Performance cases declare no named checkpoints inside measured windows. Named records travel through a `.screen` side file with integrity hashing like `.values`.
+The default `end` checkpoint runs in the case process before display-owner teardown. For helpers, a suite-library pre-drop hook observes after the return expression has judged the work and before the helper is killed or reaped. The snapshot is transported after the case reports. The child case clock and parent timeout exclude the hook's own measured duration; helper cleanup retains its existing charge. A checkpoint error is a separate SCREEN record and cannot change the case verdict. If it cannot observe a binding outside the runner's context it emits no `end`; an approved table entry without its record fails. A case can call `suite::screen_checkpoint("<name>")` after present completes. Names are lowercase hyphenated words; `end` and `intent` are reserved. Performance cases declare no named checkpoints inside measured windows. Named records travel through a `.screen` side file with integrity hashing like `.values`.
 
-The runner emits each record as one serial write immediately after the case's CASE line:
+The runner emits each record through the root-only, suite-only `/dev/screen-evidence` sink immediately after the case's CASE line. That writer bypasses console, VT, kernel-log and boot-producer capture; SCREEN records do not use stdout:
 
 ```text
 SUITE <id> SCREEN <category>/<case> <checkpoint> sha256=<64 hex> mode=<W>x<H>
@@ -19,7 +19,7 @@ SUITE <id> SCREEN <category>/<case> <checkpoint> sha256=<64 hex> mode=<W>x<H> cr
 SUITE <id> SCREEN <category>/<case> <checkpoint> error=<reason-word>
 ```
 
-The second form is for backend 6. Serial carries no pixel payload. The suite verdict accepts SCREEN as a live, non-counting record before the guest emits it. Checkpoint cost is measured against a baseline; if suite elapsed time rises by more than 10%, reuse a case's last whole-mode observation only when its resource and present fence match. Staging remains charged and reclaimed under the GPU contract. A digest that changes between runs of the same commit and target is a nondeterminism defect to diagnose and fix, with no masks or tolerance.
+The second form is for backend 6. Serial carries no pixel payload. The suite verdict accepts SCREEN as a live, non-counting record before the guest emits it. Checkpoints default on. `scripts/boot-interactive.sh --screen-checkpoints on|off` sets `opt/breenix/screen-checkpoints`, exposed through `/proc/breenix/screen-checkpoints`. Cost is measured by one on boot and one off boot per suite at the same commit; if suite elapsed time rises by more than 10%, reuse a case's last whole-mode observation only when its resource and present fence match. Staging remains charged and reclaimed under the GPU contract. A digest that changes between runs of the same commit and target is a nondeterminism defect to diagnose and fix, with no masks or tolerance.
 
 ## Shared table and approval
 

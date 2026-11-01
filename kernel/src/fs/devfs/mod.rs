@@ -43,6 +43,8 @@ pub enum DeviceType {
     Null,
     /// /dev/kmsg - bounded, root-only audit messages to the kernel log
     Kmsg,
+    /// Root-only suite records sent solely to the evidence UART.
+    ScreenEvidence,
     /// /dev/zero - discards writes, reads return zero bytes
     Zero,
     /// /dev/console - system console (serial port)
@@ -125,6 +127,7 @@ impl DeviceType {
         match self {
             DeviceType::Null => "null",
             DeviceType::Kmsg => "kmsg",
+            DeviceType::ScreenEvidence => "screen-evidence",
             DeviceType::Zero => "zero",
             DeviceType::Console => "console",
             DeviceType::Tty => "tty",
@@ -143,6 +146,7 @@ impl DeviceType {
         match self {
             DeviceType::Null => 2,
             DeviceType::Kmsg => 9,
+            DeviceType::ScreenEvidence => 40,
             DeviceType::Zero => 3,
             DeviceType::Console => 4,
             DeviceType::Tty => 5,
@@ -177,7 +181,7 @@ impl DeviceType {
         let (permissions, gid) = match self {
             DeviceType::Null | DeviceType::Zero | DeviceType::Tty | DeviceType::Ptmx => (0o666, 0),
             DeviceType::Console | DeviceType::Vcs(_) | DeviceType::Vcsa(_) => (0o600, 0),
-            DeviceType::Kmsg => (0o200, 0),
+            DeviceType::Kmsg | DeviceType::ScreenEvidence => (0o200, 0),
             DeviceType::Tty0 | DeviceType::Vt(_) => return vt_attrs(self.terminal().unwrap_or(0)),
             DeviceType::Rtc => (0o444, 0),
         };
@@ -186,7 +190,7 @@ impl DeviceType {
 
     /// Check if this device is readable
     pub fn is_readable(&self) -> bool {
-        *self != DeviceType::Kmsg
+        !matches!(self, DeviceType::Kmsg | DeviceType::ScreenEvidence)
     }
 
     /// Check if this device is writable
@@ -259,6 +263,7 @@ pub fn init() {
     devfs
         .devices
         .push(DeviceNode::new(DeviceType::Console, 5, 1)); // /dev/console
+    devfs.devices.push(DeviceNode::new(DeviceType::ScreenEvidence, 240, 0));
     devfs.devices.push(DeviceNode::new(DeviceType::Tty, 5, 0)); // /dev/tty
     devfs.devices.push(DeviceNode::new(DeviceType::Ptmx, 5, 2)); // /dev/ptmx
 
@@ -351,7 +356,7 @@ pub fn is_initialized() -> bool {
 /// Device file operations - read from device
 pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32> {
     match device_type {
-        DeviceType::Kmsg => Err(-13), // Audit sink is write-only.
+        DeviceType::Kmsg | DeviceType::ScreenEvidence => Err(-13), // Audit sink is write-only.
         DeviceType::Rtc => Err(-22), // RTC data is read through RTC_RD_TIME.
         DeviceType::Ptmx => Err(-6), // Opening /dev/ptmx gives a master, never this device.
         DeviceType::Null => {
@@ -386,6 +391,7 @@ pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32
 pub fn device_write(device_type: DeviceType, buf: &[u8]) -> Result<usize, i32> {
     match device_type {
         DeviceType::Kmsg => audit_write(buf),
+        DeviceType::ScreenEvidence => screen_evidence_write(buf),
         DeviceType::Rtc => Err(13), // EACCES: no clock writes through this device.
         DeviceType::Ptmx => Err(6), // ENXIO: opening /dev/ptmx gives a master.
         DeviceType::Null | DeviceType::Zero => {
@@ -416,5 +422,15 @@ pub fn audit_write(buf: &[u8]) -> Result<usize, i32> {
     let message = text.strip_suffix('\n').unwrap_or(text);
     if message.bytes().any(|b| b.is_ascii_control()) { return Err(22); }
     log::info!(target: "audit", "{}", message);
+    Ok(buf.len())
+}
+
+/// Evidence is not terminal text, a kernel log, or a boot producer's output.
+pub fn screen_evidence_write(buf: &[u8]) -> Result<usize, i32> {
+    if !crate::test_control::enabled() { return Err(38); }
+    let caller = crate::window::Caller::current()?;
+    if !caller.is_root() { return Err(1); }
+    if buf.len() > 512 { return Err(22); }
+    crate::serial::write_bytes_atomic(crate::serial::Writer::Evidence, buf);
     Ok(buf.len())
 }
