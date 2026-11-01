@@ -114,4 +114,3 @@ mod native {
  assert_eq!(refreshed.len(),1);
  assert!(refreshed[0].0.contains("\"notifier\":3405643777"));
 }
-

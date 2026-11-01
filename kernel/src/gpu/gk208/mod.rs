@@ -595,8 +595,10 @@ pub mod caps;
 
 /// Read-only counter sample from the retained native display head.
 pub(crate) fn proc_vblank() -> Result<Vec<u8>, i32> {
-    ce::with_clock_owner(|regs, evo, _| native::vblank_counter(regs, evo.head))
-        .map(|(at, count)| format!("{at} {count}\n").into_bytes()).map_err(|_| -5)
+    let (at, count)=ce::with_clock_owner(|regs, evo, _| native::vblank_counter(regs, evo.head))
+        .map_err(|_| -5)?;
+    timing::vblank_sample(at,count);
+    Ok(format!("{at} {count}\n").into_bytes())
 }
 
 pub fn thermal_halted()->bool {
