@@ -250,6 +250,7 @@ fn select(t:&Tables,khz:u32)->Result<Config,&'static str> {
 }
 fn validate_pll(c:&Config)->Result<(),&'static str> {
  if c.get("refclk").copied().unwrap_or(0)==0 {return Err("memx reference PLL absent");}
+ if c.get("max_p").copied().unwrap_or(0)>63 {return Err("memx PLL post-divider exceeds hardware field");}
  for (min,max) in [("min_freq","max_freq"),("min_inputfreq","max_inputfreq"),
      ("min_m","max_m"),("min_n","max_n"),("min_p","max_p")] {
   let lo=c.get(min).copied().unwrap_or(0);let hi=c.get(max).copied().unwrap_or(0);
