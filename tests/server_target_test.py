@@ -122,6 +122,54 @@ class ServerTarget(unittest.TestCase):
                 ('run', init_command, dict(timeout=60)), ('capture',), ('logout',),
             ])
 
+    def test_qemu_target_local_run_and_forward(self):
+        import socket
+        import threading
+        with tempfile.TemporaryDirectory() as scratch:
+            run = Path(scratch)
+            boot = '20261101T120000Z-qemu'
+            directory = run / 'boots' / boot
+            directory.mkdir(parents=True)
+            (run / 'boot.lock').mkdir()
+            (run / 'current').write_text(boot + '\n')
+            (directory / 'run.json').write_text(json.dumps({'mode': 'persistent'}))
+            (directory / 'serial.txt').write_text('captured\n')
+            (directory / 'serial.ts').write_text('1.5\t0\n')
+            listener = socket.socket(socket.AF_UNIX)
+            listener.bind(str(run / 'console.sock'))
+            listener.listen()
+            received = []
+            def accept():
+                conn, _ = listener.accept()
+                with conn: received.append(conn.recv(100))
+            thread = threading.Thread(target=accept, daemon=True)
+            thread.start()
+            target = HOST['QemuTarget'](run, boot)
+            with patch.object(target, '_qemu_alive', return_value=True), patch.object(HOST['time'], 'sleep'):
+                self.assertTrue(target.holds_lease())
+                self.assertEqual(target.identity()['mode'], 'persistent')
+                self.assertEqual(target.capture(), ('captured\n', [(1.5, 0)]))
+                self.assertEqual(target.write('result.json', {'ok': True}).returncode, 0)
+                console = target.console('fixture', 'password')
+                self.assertEqual(console.size(), 9)
+                self.assertEqual(console.since(0), 'captured\n')
+                console.send('ok')
+                (directory / 'ended').touch()
+                self.assertFalse(target.holds_lease())
+            thread.join(timeout=2)
+            listener.close()
+            self.assertEqual(received, [b'ok\r'])
+            calls = []
+            def fake_command(args, **kwargs):
+                calls.append(args)
+                return reply()
+            with patch.dict(HOST['Probe'].__init__.__globals__, command=fake_command):
+                probe = HOST['Probe']('127.0.0.1', 'fixture', run / 'identity', run, port=2222)
+                probe.ssh('true')
+                self.assertEqual(calls[-1][calls[-1].index('-p') + 1], '2222')
+                services = HOST['Services'](probe, console, target.capture)
+                self.assertEqual(services.lines(0, 'captured'), [(1.5, 'captured')])
+
     def test_metal_target_keeps_boot_store_and_console_calls(self):
         calls = []
         identity = dict(mode='persistent', bootedCommit='a' * 40, toolsCommit='a' * 40, evidenceEligible=True)
