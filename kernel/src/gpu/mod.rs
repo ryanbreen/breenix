@@ -2194,7 +2194,7 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
         if interruptible && crate::syscall::check_signals_for_wait().is_some() {
             return Err(Stop::Interrupted);
         }
-        // Native readback owns the poll through queued continuations and the
+        // Native readback and submit admission own the poll through continuations and the
         // engine receipt. There is no native completion IRQ: handing it to
         // kgpu turns its 250 us poll request into a 5 ms timer dispatch (u8).
         // The core lock/preemption level is released between polls; signals,
@@ -4462,7 +4462,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             }
         }
         Some(Ok(writer))
-    }, #[cfg(target_arch = "x86_64")] None, #[cfg(target_arch = "x86_64")] false, #[cfg(target_arch = "x86_64")] trace);
+    }, #[cfg(target_arch = "x86_64")] None, #[cfg(target_arch = "x86_64")] true, #[cfg(target_arch = "x86_64")] trace);
     let writer = match admitted {
         Ok(Ok(writer)) => writer,
         Ok(Err(e)) => return Err(e),
