@@ -1,4 +1,4 @@
-//! Probe-only temperature observations; sensor failures never abort startup.
+//! Probe-only temperature observations; sensor failures are recorded without aborting probe startup.
 use super::{Access,Write};
 use crate::gk208::Registers;
 use alloc::{format,vec::Vec};
@@ -41,7 +41,7 @@ pub(in crate::gk208) fn read_status()->Vec<u8> {
     let state=STATE.lock();
     let Some(s)=state.as_ref() else {return b"GT710_SENSOR celsius=null raw=null down_clock=85 status=not-initialized\n".to_vec();};
     let mut io=Io {regs:Registers(s.base),raw:None};
-    // C3b always reads the ADC, including after a fuse/setup diagnostic.
+    // K9 checks the sensor-present fuse before reading the ADC.
     let value=super::temperature(&mut io);
     let registers=super::status(&mut io).iter().map(|(a,v)|format!("{a}:{v}"))
         .collect::<Vec<_>>().join(",");

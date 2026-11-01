@@ -189,7 +189,7 @@ pub fn measure(io: &mut impl CounterAccess) -> Result<Measurement, &'static str>
     // MIT nouveau pm/gf100.c:175-180 identifies the PM master bit.
     // mc/nv04.c:40-45 enables a masked unit, followed by a posted read.
     // GK208 mc/gk20a.c uses that device callback; no separate PM clock-gating
-    // register is touched by this PM/MC path. Preserve every unrelated unit.
+    // register is touched by this PM/MC path. Preserve each unrelated unit.
     let pmc = io.read(0x200);
     io.record("pm-before", &[(0x200, pmc)]);
     let before = counter_snapshot(io);

@@ -63,7 +63,7 @@ pub fn run_c2(mut observe:impl FnMut(ClockPhase)->Result<(),String>)->Result<(),
     checked(gpu::context_destroy(context),"CONTEXT_DESTROY")
 }
 
-/// C3a keeps every clock at POST. Sensor errors are records, not a benchmark
+/// C3a leaves clocks at POST. Sensor errors are records, not a benchmark
 /// failure; the observer aborts only for the temperature safety threshold.
 pub fn run_c3a(mut observe:impl FnMut(&str,u32)->Result<(),String>)->Result<(),String> {
     observe("post",0)?;

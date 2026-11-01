@@ -50,7 +50,7 @@ fn fuse(io:&mut impl Access)->Result<u32,&'static str> {
     write(io,0x22400,enable|0x800,false);
     write(io,0x21000,access|1,false);
     let value=io.read(0x212a8);
-    // Always restore both access words, including after a refused enable.
+    // Restore both access words, including after a refused enable.
     let restored_access=write(io,0x21000,access,false);
     let restored_enable=write(io,0x22400,enable,false);
     if restored_access!=access || restored_enable!=enable {return Err("fuse-restore-failed");}
