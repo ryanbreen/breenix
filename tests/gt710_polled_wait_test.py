@@ -17,6 +17,8 @@ class PolledWait(unittest.TestCase):
 use std::{cell::{Cell,RefCell},collections::{BTreeMap,VecDeque},sync::atomic::{AtomicU64,Ordering}};
 const EXAMINE_NS:u64=250_000_000;const POLL_NS:u64=250_000;const SPIN_POLL_NS:u64=1_000_000;const SPIN_POLL_PAUSE:u32=1;
 static EVENTS:AtomicU64=AtomicU64::new(0);
+static SENT:AtomicU64=AtomicU64::new(0);static WAKES:AtomicU64=AtomicU64::new(0);
+fn wake_reaper(){WAKES.fetch_add(1,Ordering::AcqRel);}
 mod abi {pub mod backend {pub const SVGA3D_DX:u32=5;pub const GK208:u32=6;}}
 mod limits {pub const WATCHDOG_NS:u64=2_000_000_000;}
 thread_local! {static BACKEND:Cell<u32>=const{Cell::new(6)};static CLOCK:Cell<u64>=const{Cell::new(0)};static SLEEPS:Cell<u32>=const{Cell::new(0)};static POLLS:Cell<u32>=const{Cell::new(0)};static CORE:RefCell<Core>=RefCell::new(core());}
@@ -52,9 +54,12 @@ fn main(){
  }
  for backend in [5,6] {
   BACKEND.with(|b|b.set(backend));CLOCK.with(|c|c.set(0));SLEEPS.with(|c|c.set(0));POLLS.with(|c|c.set(0));
+  SENT.store(0,Ordering::Release);WAKES.store(0,Ordering::Release);
   with_core(|c|c.backlog.push_back(()));
   assert_eq!(wait_for(None,true,|_|(POLLS.with(Cell::get)>=2).then_some(7)),Ok(7));
   assert_eq!(SLEEPS.with(Cell::get),u32::from(backend==6),"native queued work needs the worker, not a one-millisecond waiter spin");
+  assert_eq!(SENT.load(Ordering::Acquire),u64::from(backend==6),"handoff must invalidate a worker deadline chosen before the queue was drained");
+  assert_eq!(WAKES.load(Ordering::Acquire),u64::from(backend==6));
   CORE.with(|c|*c.borrow_mut()=core());
  }
 }
