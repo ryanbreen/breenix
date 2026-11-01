@@ -1357,18 +1357,22 @@ fn quads(
         }
     }
     for (rectangle, [x0, y0, x1, y1]) in rectangles.enumerate() {
+        let coord = |p: u32, size: u32| {
+            let n = i64::from(p) * 2 - i64::from(size);
+            gpu_abi::float::ratio_bits(n.unsigned_abs() as u32, size)
+                | if n < 0 { 1 << 31 } else { 0 }
+        };
+        // The six vertices repeat four coordinates. Convert the corners once,
+        // retaining the same integer binary32 formula and triangle ordering.
+        let (x0, x1) = (coord(x0, t.width), coord(x1, t.width));
+        let (y0, y1) = (coord(y0, t.height), coord(y1, t.height));
         for (i, [x, y]) in [[x0, y0], [x1, y0], [x1, y1], [x0, y0], [x1, y1], [x0, y1]]
             .into_iter()
             .enumerate()
         {
-            let coord = |p: u32, size: u32| {
-                let n = i64::from(p) * 2 - i64::from(size);
-                gpu_abi::float::ratio_bits(n.unsigned_abs() as u32, size)
-                    | if n < 0 { 1 << 31 } else { 0 }
-            };
             for (k, v) in [
-                coord(x, t.width),
-                coord(y, t.height),
+                x,
+                y,
                 0,
                 0x3f800000,
                 0,
