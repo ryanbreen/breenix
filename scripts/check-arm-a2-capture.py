@@ -4,7 +4,8 @@
 The input is the private run's retained boots/ directory, not Vigil's suite
 tallies alone. Keep that store and this command's JSON together under the
 Vigil boot's host-evidence directory before deleting the disposable VM run.
-This measures the five ARM server categories only. Console timing and GT 710
+Head applicability requires an ancestor capture with only this auditor and its
+host check changed afterward. This measures the five ARM server categories only. Console timing and GT 710
 graphics need separate captures. No VM is launched and no lease is acquired.
 """
 import argparse
@@ -19,6 +20,25 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 RUNNER = ROOT / 'scripts/metal/server-suite'
 CATEGORIES = ('ssh-keys', 'services', 'logs', 'time', 'console-input')
+HOST_SCORING_PATHS = {'scripts/check-arm-a2-capture.py', 'tests/arm_a2_capture_test.py'}
+
+
+def capture_delta(captured, head, repository=ROOT):
+    """Establish the narrow host-scoring exception from actual Git history."""
+    def git(*args):
+        return subprocess.check_output(['git', '-C', str(repository), *args], text=True)
+
+    ancestor = subprocess.run(['git', '-C', str(repository), 'merge-base',
+                               '--is-ancestor', captured, head],
+                              capture_output=True, text=True)
+    if ancestor.returncode not in (0, 1):
+        raise ValueError('cannot establish capture ancestry: ' + ancestor.stderr.strip())
+    changed = sorted(filter(None, git('diff', '--name-only', '-z', captured, head).split('\0')))
+    clean = not git('status', '--porcelain').strip()
+    return dict(ancestor=ancestor.returncode == 0, changedPaths=changed,
+                workingTreeClean=clean,
+                runtimeUnchanged=ancestor.returncode == 0 and clean
+                and set(changed) <= HOST_SCORING_PATHS)
 
 
 def hashes(run):
@@ -41,7 +61,15 @@ def audit(run, sha, ended_boot, previous_boot):
                   captureCommit=sha, scorerCommit=subprocess.check_output(
                       ['git', '-C', str(ROOT), 'rev-parse', 'HEAD'], text=True).strip(),
                   runnerSha256=hashlib.sha256(RUNNER.read_bytes()).hexdigest(),
-                  categories=[], controls=[], captureSha256=before, reasons=[])
+                  boots=[], newBoots=[], categories=[], controls=[],
+                  captureSha256=before, reasons=[])
+    try:
+        report['captureDelta'] = capture_delta(sha, report['scorerCommit'])
+        if not report['captureDelta']['runtimeUnchanged']:
+            report['reasons'].append('runtime changed or capture ancestry/clean worktree not established; '
+                                     'retained results do not establish acceptance at scorer head')
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
+        report['reasons'].append('capture provenance: ' + str(error))
     reasons = report['reasons']
     for category in CATEGORIES:
         candidates = []
@@ -110,6 +138,7 @@ def audit(run, sha, ended_boot, previous_boot):
         reasons.append('controls: ' + str(error))
     if hashes(run) != before:
         reasons.append('retained capture changed during scoring')
+    report['boots'] = sorted({row['boot'] for row in report['categories']})
     report['proven'] = not reasons
     return report
 
