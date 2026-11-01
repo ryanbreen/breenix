@@ -123,7 +123,7 @@ CATEGORIES = {
     'inventory': [('allocator', 'VRAM charges and reusable guarded allocations preserve reserved storage across independent nonce-bearing PRAMIN/BAR views; engine translation remains pending')],
     'flips': [('aba-handoff', 'Both EDID modes latch private A-B-A surfaces with complete pixels, suppressed-update recovery and native console handoff')],
     'switching': [('low-high-low', 'A second advertised EDID mode switches low-high-low with latched timings, link state and complete unique-pixel read-back')],
-    'native': [('preferred', 'The selected EDID mode completes on owned native scanout with advancing raster and full pixel read-back')],
+    'native': [('preferred', 'The EDID preferred raster completes on owned native scanout with advancing raster and full pixel read-back')],
     'memory': (
         ('carveout', 'Private display allocations preserve inherited VRAM and pass complete complementary physical read-back without aliasing'),
     ),
@@ -140,7 +140,7 @@ CATEGORIES = {
     'resources': [('row', 'Production CAPS admits backend 6 with executable origins 3-10, native classes and live scanouts'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 8.2 step passing, reclaimed memory and its own time within 900 s'), ('console', 'A completed production console boot passes 88/88 within 330 s of handoff')],
     'alpha': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 77-case 8.3 step passing, reclaimed memory and its own time within 900 s')],
     'shapes': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 90-case 8.4 step passing, reclaimed memory and its own time within 900 s')],
-    'presentation': [('display', 'Runtime EVO snapshots prove both G20 viewports, the selected DDC raster, latched surfaces and zero firmware writes'), ('panic', 'A separate terminal PANIC capture proves bound diagnostics under both poisons with firmware_writes=0 and no LOCKUP'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 161-case 8.6 selection passing, reclaimed memory and its own time within 900 s')],
+    'presentation': [('display', 'Runtime EVO snapshots prove both G20 viewports, the EDID preferred raster, latched surfaces and zero firmware writes'), ('panic', 'A separate terminal PANIC capture proves bound diagnostics under both poisons with firmware_writes=0 and no LOCKUP'), ('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 161-case 8.6 selection passing, reclaimed memory and its own time within 900 s')],
     'isolation': [('suite', 'A completed production GPU boot records all 170 ordered cases with zero skips, the 140-case 8.5 selection passing, reclaimed memory and its own time within 900 s')],
     'core': [('row', 'CAPS bytes match the native backend-6 row and the created board classes'), ('dispatch', 'Native draws and copies complete; copy controls reject withheld release, stale epoch and masked 3D admission and accept their clean successors'), ('producer', 'A named production GPU-suite boot reports 170 manifest-ordered unprobed-capability admission refusals without skips and reports its own time')],
     'device': (
