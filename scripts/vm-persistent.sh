@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+# Disposable ARM64 QEMU disks. Build from the normal ARM image and a prepared
+# installer-format operator-account file; boot stays in the foreground so it
+# holds the mac-boot lease. Stop from another terminal to remove the run.
+#
+# vm-persistent.sh qemu build --run-dir DIR --system-image IMAGE --operator-account FILE
+# vm-persistent.sh qemu boot --run-dir DIR [--kernel FILE]
+# vm-persistent.sh qemu stop --run-dir DIR
+set -euo pipefail
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+umask 077
+usage() { echo 'usage: vm-persistent.sh qemu build|boot|stop --run-dir DIR [--system-image IMAGE --operator-account FILE | --kernel FILE]' >&2; exit 2; }
+[ "$#" -ge 2 ] && [ "$1" = qemu ] || usage
+op=$2; shift 2
+case "$op" in build|boot|stop) ;; *) usage ;; esac
+run= system= account= kernel=
+while [ "$#" -gt 0 ]; do
+    [ "$#" -ge 2 ] && [ -n "$2" ] || usage
+    case "$1" in
+        --run-dir) [ -z "$run" ] || usage; run=$2 ;;
+        --system-image) [ -z "$system" ] || usage; system=$2 ;;
+        --operator-account) [ -z "$account" ] || usage; account=$2 ;;
+        --kernel) [ -z "$kernel" ] || usage; kernel=$2 ;;
+        *) usage ;;
+    esac
+    shift 2
+done
+[ -n "$run" ] || usage
+case "$op" in
+    build) [ -n "$system" ] && [ -n "$account" ] && [ -z "$kernel" ] || usage ;;
+    boot) [ -z "$system" ] && [ -z "$account" ] || usage ;;
+    stop) [ -z "$system" ] && [ -z "$account" ] && [ -z "$kernel" ] || usage ;;
+esac
+# debugfs command files and QEMU comma-separated options cannot safely encode
+# these characters; reject them instead of interpreting caller-supplied syntax.
+case "$run" in *[!a-zA-Z0-9_./-]*) echo 'invalid run directory path' >&2; exit 2 ;; esac
+case "$run" in /*) ;; *) run="$PWD/$run" ;; esac
+if [ "$op" = build ]; then
+    [ -f "$system" ] && [ -f "$account" ] || { echo 'system image and operator account must exist' >&2; exit 1; }
+    mkdir -m 700 "$run" || exit 1
+    run=$(cd "$run" && pwd -P)
+    trap 'rm -rf -- "$run"' EXIT
+    cp "$system" "$run/system.img"
+    cp "$account" "$run/operator-account"
+    chmod 600 "$run/system.img" "$run/operator-account"
+    PATH="$PATH:/opt/homebrew/opt/e2fsprogs/sbin:/usr/local/opt/e2fsprogs/sbin"
+    export PATH
+    command -v debugfs >/dev/null && command -v mke2fs >/dev/null || { echo 'e2fsprogs is required' >&2; exit 1; }
+    # debugfs returns success even when a command fails; read back each change.
+    debugfs -w -R 'rm /etc/breenix/boot-target' "$run/system.img" >/dev/null 2>&1 || true
+    debugfs -w -R 'rm /etc/breenix/operator-account' "$run/system.img" >/dev/null 2>&1 || true
+    debugfs -w -R "write $run/operator-account /etc/breenix/operator-account" "$run/system.img" >/dev/null 2>&1
+    debugfs -w -R 'set_inode_field /etc/breenix/operator-account mode 0100600' "$run/system.img" >/dev/null 2>&1
+    debugfs -R 'cat /etc/breenix/operator-account' "$run/system.img" 2>/dev/null > "$run/readback"
+    cmp -s "$run/operator-account" "$run/readback" || { echo 'operator account staging failed' >&2; exit 1; }
+    if debugfs -R 'stat /etc/breenix/boot-target' "$run/system.img" 2>/dev/null | grep -q 'Inode:'; then
+        echo 'boot target removal failed' >&2; exit 1
+    fi
+    rm "$run/operator-account" "$run/readback"
+    truncate -s 1G "$run/home.img"
+    mke2fs -q -t ext2 -F "$run/home.img"
+    : > "$run/.breenix-vm-persistent"
+    trap - EXIT
+    echo "$run"
+    exit 0
+fi
+[ -d "$run" ] && [ ! -L "$run" ] && [ -f "$run/.breenix-vm-persistent" ] || { echo 'not a persistent VM run directory' >&2; exit 1; }
+run=$(cd "$run" && pwd -P)
+if [ "$op" = stop ]; then
+    if [ -d "$run/boot.lock" ]; then
+        python3 - "$run/qmp.sock" <<'PY'
+import json, socket, sys
+s = socket.socket(socket.AF_UNIX)
+s.settimeout(10)
+s.connect(sys.argv[1])
+f = s.makefile('rwb', buffering=0)
+def response():
+    while True:
+        message = json.loads(f.readline())
+        if 'return' in message or 'error' in message:
+            if 'error' in message:
+                raise RuntimeError(message['error'])
+            return
+json.loads(f.readline())
+f.write(b'{"execute":"qmp_capabilities"}\n')
+response()
+f.write(b'{"execute":"quit"}\n')
+response()
+PY
+        # The boot owner removes this only after QEMU has exited.
+        for _ in {1..100}; do [ -d "$run/boot.lock" ] || break; sleep .1; done
+        [ ! -d "$run/boot.lock" ] || { echo 'QEMU has not exited; run retained' >&2; exit 1; }
+    fi
+    rm -rf -- "$run"
+    exit 0
+fi
+[ -n "$kernel" ] || kernel="$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
+[ -f "$kernel" ] && [ -f "$run/system.img" ] && [ -f "$run/home.img" ] || { echo 'missing kernel or image' >&2; exit 1; }
+[ ${#run} -lt 90 ] || { echo 'run path is too long for unix sockets' >&2; exit 1; }
+# Re-exec under the slot supervisor before taking the run lock.
+if [ -z "${BREENIX_VM_PERSISTENT_SUPERVISED:-}" ]; then
+    export BREENIX_VM_PERSISTENT_SUPERVISED=1
+    source "$ROOT/scripts/host-slots.sh"
+    host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu boot --run-dir "$run" --kernel "$kernel"
+fi
+source "$ROOT/scripts/host-slots.sh"
+mkdir "$run/boot.lock" || { echo 'run is already booting' >&2; exit 1; }
+cleanup() { rmdir "$run/boot.lock" 2>/dev/null || true; }
+trap cleanup EXIT
+host_slot_acquire mac-boot
+mkdir -p "${TMPDIR:-/tmp}/breenix-boot"
+serial=$(mktemp "${TMPDIR:-/tmp}/breenix-boot/vm-persistent.XXXXXX")
+printf '%s\n' "$serial" > "$run/serial-path"
+host_slot_serial "$serial"
+host_slot_quiet
+port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
+printf '%s\n' "$port" > "$run/ssh-port"
+qemu=qemu-system-aarch64
+display=(-display none)
+if [ "$(uname -s)" = Darwin ]; then
+    display=(-display cocoa)
+    qemu=$("$ROOT/scripts/qemu-1x-app.sh" qemu-system-aarch64)
+    if [ "$qemu" != qemu-system-aarch64 ]; then
+        real=$(realpath "$(command -v qemu-system-aarch64)")
+        display+=(-L "$(dirname "$(dirname "$real")")/share/qemu")
+    fi
+fi
+profile=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$qemu" -M virt,gic-version=3 -cpu max)
+export BREENIX_VIGIL_ARCH=aarch64 BREENIX_VIGIL_DISPLAY=false
+[ "$(uname -s)" != Darwin ] || export BREENIX_VIGIL_DISPLAY=true
+vigil=$("$ROOT/scripts/vigil-record.sh" start qemu default '' "$serial" '' "$profile")
+# On interruption stop and reap only this launch before releasing its run lock.
+child=
+stop_child() {
+    if [ -n "$child" ]; then
+        kill -TERM "$child" 2>/dev/null || true
+        wait "$child" 2>/dev/null || true
+        child=
+    fi
+    exit 143
+}
+trap stop_child TERM HUP INT
+set +e
+python3 "$ROOT/scripts/qemu-arm64.py" "$qemu" -rtc base=utc -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
+    -kernel "$kernel" "${display[@]}" -qmp "unix:$run/qmp.sock,server=on,wait=off" \
+    -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device \
+    -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/system.img" \
+    -device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/home.img" \
+    -device virtio-rng-device -device virtio-net-device,netdev=net0 \
+    -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$port-:22" \
+    -chardev "socket,id=con,path=$run/serial.sock,server=on,wait=off,logfile=$serial" -serial chardev:con &
+child=$!
+wait "$child"
+code=$?
+child=
+set -e
+host_slot_header "$serial"
+"$ROOT/scripts/vigil-record.sh" finish "$vigil" "$code"
+exit "$code"
