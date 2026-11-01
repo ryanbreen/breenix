@@ -150,13 +150,13 @@ port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); pr
 printf '%s\n' "$port" > "$run/ssh-port"
 qemu=qemu-system-aarch64
 display=(-display none)
+gpu=()
 if [ "$(uname -s)" = Darwin ]; then
-    display=(-display cocoa)
-    qemu=$("$ROOT/scripts/qemu-1x-app.sh" qemu-system-aarch64)
-    if [ "$qemu" != qemu-system-aarch64 ]; then
-        real=$(realpath "$(command -v qemu-system-aarch64)")
-        display+=(-L "$(dirname "$(dirname "$real")")/share/qemu")
-    fi
+    qemu="${BREENIX_QEMU_GL_BINARY:-$("$ROOT/scripts/build-qemu-gl.sh" --print-path)}"
+    defaults write org.breenix.qemu-gl NSAppSleepDisabled -bool YES
+    export ANGLE_DEFAULT_PLATFORM="${ANGLE_DEFAULT_PLATFORM-metal}"
+    display=(-display cocoa,gl=es)
+    gpu=(-device virtio-gpu-gl-pci)
 fi
 profile=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$qemu" -M virt,gic-version=3 -cpu max)
 printf '%s\n' "$profile" > "$run/qemu-profile"
@@ -177,9 +177,9 @@ trap stop_child TERM HUP INT
 set +e
 python3 "$ROOT/scripts/qemu-arm64.py" "$qemu" -rtc base=utc -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$kernel" -fw_cfg "name=opt/breenix/mode,string=$mode" "${display[@]}" -qmp "unix:$run/qmp.sock,server=on,wait=off" -qmp "unix:$run/events.sock,server=on,wait=off" \
-    -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device \
-    -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/system.img" \
+    "${gpu[@]}" -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device \
     -device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/home.img" \
+    -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/system.img" \
     -device virtio-rng-device -device virtio-net-device,netdev=net0 \
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$port-:22" \
     -chardev "socket,id=con,path=$run/serial.sock,server=off" -serial chardev:con &
