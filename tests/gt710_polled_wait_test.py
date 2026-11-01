@@ -8,6 +8,37 @@ ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'tests'))
 from gt710_gr_live_unwind_test import item
 class PolledWait(unittest.TestCase):
+ def test_native_poll_refills_after_reaping_before_waiting(self):
+  source=item((ROOT/'kernel/src/gpu/mod.rs').read_text(),'    fn poll(&mut self)')
+  fixture=r'''
+use std::{cell::Cell,sync::atomic::{AtomicU64,Ordering}};
+static REAPER:AtomicU64=AtomicU64::new(1);
+thread_local!{static BACKEND:Cell<u32>=const{Cell::new(6)};}
+mod abi{pub mod backend{pub const GK208:u32=6;}}
+mod dev{pub fn backend()->u32{crate::BACKEND.with(Cell::get)}use std::cell::Cell;}
+fn now_ns()->u64{123}
+struct Core{events:Vec<&'static str>,queued:usize,published:usize}
+impl Core{
+ fn reap_all(&mut self){self.events.push("reap");}
+ fn watchdog(&mut self,now:u64){assert_eq!(now,123);self.events.push("watchdog");}
+ fn flush(&mut self){self.events.push("flush");let count=self.queued.min(4);self.queued-=count;self.published+=count;}
+ POLL
+}
+fn main(){for reaper in [0,1]{for backend in [4,5,abi::backend::GK208]{
+ REAPER.store(reaper,Ordering::Release);BACKEND.with(|b|b.set(backend));assert_eq!(dev::backend(),backend);
+ let mut c=Core{events:Vec::new(),queued:9,published:0};c.poll();
+ let refilled=reaper==0||backend==6;
+ assert_eq!(c.published,if refilled{4}else{0},"native completion polling must refill available slots");
+ assert_eq!(c.queued,if refilled{5}else{9});
+ assert_eq!(c.events,if refilled{vec!["reap","watchdog","flush"]}else{vec!["reap","watchdog"]});
+}}}
+'''.replace('POLL',source)
+  priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
+  with tempfile.TemporaryDirectory() as tmp:
+   p=Path(tmp);(p/'poll.rs').write_text(fixture)
+   subprocess.run(priority+['rustc','--edition=2021','-Dwarnings',str(p/'poll.rs'),'-o',str(p/'poll')],check=True)
+   subprocess.run([str(p/'poll')],check=True)
+
  def test_native_waits_poll_without_a_quarter_second_sleep(self):
   core=(ROOT/'kernel/src/gpu/mod.rs').read_text()
   wait=item(core,'fn wait_for<')
