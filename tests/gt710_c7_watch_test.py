@@ -15,6 +15,12 @@ class Watch(unittest.TestCase):
             self.assertIsNotNone(watch.stop_reason(good.replace(old, new)))
         self.assertIsNotNone(watch.stop_reason('GT710_CLOCK_FALLBACK reason=EXEC-timeout'))
 
+    def test_startup_only_stops_at_the_record_and_keeps_fault_checks(self):
+        good='GT710_CLOCK_STARTUP full=true gpc_khz=1306451 gpc_counter_khz=81650 memory_khz=900001 temperature_c=34 status=ok'
+        self.assertEqual(watch.stop_reason(good,startup_only=True),'startup-observed')
+        self.assertIsNone(watch.stop_reason('GT710_CLOCK_PMU_READY send=1 recv=2',startup_only=True))
+        self.assertIsNotNone(watch.stop_reason(good.replace('full=true','full=false'),startup_only=True))
+
     def test_guard_display_fault_and_suite_completion(self):
         self.assertIsNone(watch.stop_reason('GT710_CLOCK_TEMPERATURE monotonic_ns=1000000000 celsius=84 tripped=false'))
         for line in ['GT710_CLOCK_TEMPERATURE monotonic_ns=2000000000 celsius=85 tripped=true',
