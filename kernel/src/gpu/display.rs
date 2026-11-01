@@ -112,9 +112,11 @@ pub(super) fn binding(c: &Core, tgid: u64, id: u32, window: bool) -> Result<Opti
     Ok(c.display.binding.filter(|b| b.id == id))
 }
 
-/// G26: storage still displayed or pending cannot be a GPU write destination.
+/// Amended G26: retain outgoing/pending storage through the pending latch.
+/// With no flip pending, a single-buffered client may draw its displayed target.
 pub(super) fn write_blocked(c: &Core, written: &[u32]) -> bool {
     dev::backend() == abi::backend::GK208
+        && c.display.outstanding != 0
         && written.iter().any(|id| c.display.holds.contains(id))
 }
 
