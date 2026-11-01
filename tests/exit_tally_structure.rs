@@ -349,7 +349,9 @@ fn kernel_source_files(directory: &Path, files: &mut Vec<PathBuf>) {
         let path = entry.expect("read kernel source directory entry").path();
         if path.is_dir() {
             kernel_source_files(&path, files);
-        } else {
+        // f3ceabdf added binary GPU fixtures beside Rust source. The tally
+        // seam is Rust code; recurse into nested modules and inspect .rs files.
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
             files.push(path);
         }
     }
