@@ -277,18 +277,18 @@ impl Device {
         }
         if self.attributed.is_some() || self.pri_pending { return Reap::Empty; }
         if self.fault { return Reap::Fault; }
-        // Handle an attributed event before checking health or sampling
-        // earlier work on the channel. IRQ top halves do not call this reaper.
-        if let Err(reason) = self.retire_error_trap() {
-            if reason == "GR PRI pending" { self.pri_pending = true; return Reap::Empty; }
-            self.first_error.get_or_insert(reason);
-            self.fault = true;
-            return Reap::Fault;
-        }
-        if self.attributed.is_some() { return Reap::Empty; }
         // Engine receipt sampling checks health itself. Idle, storage and EVO
-        // latch paths have no engine sample, so keep their explicit check.
+        // latch paths have no engine sample, so keep their explicit checks.
+        // For engine work, decode an MMU event through retry_error_trap when
+        // sampling refuses; a separate scan repeats five PCIe reads per poll.
         if self.flipping.is_some() || self.pending.front().is_none_or(|sent| sent.identity.is_none()) {
+            if let Err(reason) = self.retire_error_trap() {
+                if reason == "GR PRI pending" { self.pri_pending = true; return Reap::Empty; }
+                self.first_error.get_or_insert(reason);
+                self.fault = true;
+                return Reap::Fault;
+            }
+            if self.attributed.is_some() { return Reap::Empty; }
             if let Err(reason) = self.channel.healthy() {
                 return self.retry_error_trap(reason);
             }
