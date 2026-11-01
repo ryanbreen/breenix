@@ -2953,6 +2953,12 @@ fn native_caps_startup() -> Result<(), i64> {
         // Firmware construction and executable probes must let a pinned timer
         // window (and other work) run on the CPU performing initialization.
         if crate::task::kthread::kthread_run(|| {
+            // The boot census measures staggered pinned timer windows. Leave
+            // that idle measurement ahead of long firmware/channel startup.
+            #[cfg(not(feature = "testing"))]
+            while !crate::boot::settled::settled() {
+                crate::task::scheduler::yield_current();
+            }
             // Native startup changes BAR/channel state while the boot console
             // still uses the CPU surface. Finish that pass before takeover.
             let canvas = crate::console::hold_canvas();
