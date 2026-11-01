@@ -2027,6 +2027,44 @@ mod judged_transport_tests {
     static TRANSPORT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
+    fn gpu_readback_round_trips_without_gui_and_refuses_changed_bytes() {
+        let _serial = TRANSPORT.lock().unwrap();
+        assert!(judged_transport_enabled(false, "gpu"));
+        assert!(!judged_transport_enabled(false, "smoke"));
+        JUDGED_ENABLED.store(judged_transport_enabled(false, "gpu"), Ordering::Relaxed);
+        JUDGED_RUNNER.store(std::process::id() as u64, Ordering::Relaxed);
+        JUDGED_SEQUENCE.store(u64::MAX - 7, Ordering::Relaxed);
+        let _ = std::fs::remove_file(judged_path());
+        let _ = CASE_NAME.set(String::from("transport/readback"));
+        let first = [1, 2, 3, 0, 4, 5, 6, 17];
+        judged_readback(&first, 2, 1).unwrap();
+        let mut last = [7, 8, 9, 0, 10, 11, 12, 99];
+        judged_readback(&last, 2, 1).unwrap();
+        last[0] = 33; // the snapshot must not borrow the source
+        assert!(!std::path::Path::new(&judged_path()).exists());
+        publish_judged().unwrap();
+        let encoded = std::fs::read(judged_path()).unwrap();
+        let frame = collect_judged().unwrap().unwrap();
+        let canonical = [7, 8, 9, 255, 10, 11, 12, 255];
+        assert_eq!((frame.width, frame.height), (2, 1));
+        assert_eq!(frame.pixels, canonical);
+        assert_eq!(frame.sha256, libpixcheck::sha256(&canonical));
+        assert_eq!(frame_hash(Some(&frame)), std::format!(" sha256={}", frame.sha256.iter().map(|b| std::format!("{b:02x}")).collect::<String>()));
+        assert!(frame.expected.is_none());
+        assert_eq!(frame.bound, 0);
+        assert!(!std::path::Path::new(&judged_path()).exists());
+        let mut changed = encoded;
+        let colour = changed.len() - 4;
+        changed[colour] ^= 1;
+        std::fs::write(judged_path(), changed).unwrap();
+        assert!(collect_judged().err().unwrap().contains("SHA-256"));
+        assert!(!std::path::Path::new(&judged_path()).exists());
+        assert!(judged_readback(&canonical[..7], 2, 1).is_err());
+        assert!(judged_readback(&[], 0, 1).is_err());
+        JUDGED_ENABLED.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
     fn a_case_publishes_once_and_keeps_its_independent_reference() {
         let _serial = TRANSPORT.lock().unwrap();
         JUDGED_ENABLED.store(true,Ordering::Relaxed);
