@@ -14,9 +14,9 @@ pub(super) fn upload_slot(resources: Option<&libbreenix::gpu::abi::Caps>, final_
     upload_slot_with(resources, final_slot, &[])
 }
 pub(super) fn upload_slot_with(resources: Option<&libbreenix::gpu::abi::Caps>, final_slot: bool, extra: &[u8])->Result<(),String> {
-    upload_slot_records(resources, final_slot, extra, &[])
+    upload_slot_records(resources, final_slot, extra, &[], &[])
 }
-pub(super) fn upload_slot_records(resources: Option<&libbreenix::gpu::abi::Caps>, final_slot: bool, extra: &[u8], pictures: &[u8])->Result<(),String> {
+pub(super) fn upload_slot_records(resources: Option<&libbreenix::gpu::abi::Caps>, final_slot: bool, extra: &[u8], pictures: &[u8], allocations: &[u8])->Result<(),String> {
     let resource_row = resources.map(|caps| {
         // Caps implements Plain: repr(C), integer fields only, no padding.
         // Retain the exact syscall bytes; do not reconstruct admission here.
@@ -42,6 +42,11 @@ pub(super) fn upload_slot_records(resources: Option<&libbreenix::gpu::abi::Caps>
         data.try_reserve_exact(pictures.len()).map_err(|_| "picture manifest allocation")?;
         data.extend_from_slice(pictures);
     }
+    if !allocations.is_empty() {
+        if !final_slot { return Err("allocation census requires the final slot".into()); }
+        data.try_reserve_exact(allocations.len()).map_err(|_| "allocation census artifact allocation")?;
+        data.extend_from_slice(allocations);
+    }
     if data.is_empty() {return Ok(());}
     if data.len()>MAX_UPLOAD {return Err("native display artifact exceeds bound".into());}
     let suffix = if final_slot { "/final" } else { "" };
@@ -58,6 +63,10 @@ pub(super) fn upload_slot_records(resources: Option<&libbreenix::gpu::abi::Caps>
     if !pictures.is_empty() {
         let digest: String = sha256(pictures).iter().map(|b| format!("{b:02x}")).collect();
         println!("GT710_BREENGL_MANIFEST_BULK {} {digest}", pictures.len());
+    }
+    if !allocations.is_empty() {
+        let digest: String = sha256(allocations).iter().map(|b| format!("{b:02x}")).collect();
+        println!("GT710_ALLOCATIONS_BULK {} {digest}", allocations.len());
     }
     let anchor=if final_slot {"GT710_FINAL_BULK"} else {"GT710_BULK"};
     println!("{} {} {}",anchor,data.len(),digest);

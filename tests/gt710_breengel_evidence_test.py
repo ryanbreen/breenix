@@ -37,6 +37,7 @@ mod heap {SOURCE
 pub fn fixture()->Vec<u8>{
  let _=boundary as fn(usize,usize,&str);assert!(encode().is_err());
  let mut values=[u64::MAX;wire::WORDS];values[0]=1;
+ for i in 2..wire::WORDS{values[i]-=i as u64;}
  let mut s=Store::new();s.prepare(401).unwrap();
  assert_eq!(s.rows.len(),402,"baseline preparation must initialize the full first-touch store");
  let capacity=s.rows.capacity();s.record(0,401,"",Ok(values));
@@ -62,6 +63,12 @@ fn main(){print!("{}",String::from_utf8(heap::fixture()).unwrap());}
         self.assertEqual([r['case'] for r in rows], [''] + [f'raster/case-{n}' for n in range(1, 402)])
         self.assertTrue(all(set(r['values']) == API['CASE_HEAP_FIELDS'] for r in rows))
         self.assertEqual(rows[-1]['values']['heap_free'], 2**64 - 1)
+        wire=(ROOT/'libs/gpu-abi/src/heap_trace.rs').read_text()
+        import re
+        names=re.findall(r'"([a-z0-9_]+)"',wire[wire.index('pub const NAMES'):])[:84]
+        expected={key:(1 if index==0 else 2**64-1-(index if index>1 else 0)) for index,key in enumerate(names)}
+        self.assertEqual(rows[-1]['values'],expected)
+
         # Exercise the receiver's former <=170 check as well as the producer.
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)
@@ -71,7 +78,8 @@ fn main(){print!("{}",String::from_utf8(heap::fixture()).unwrap());}
                             bytes=len(payload), width=4, height=1, encoding="rle") for n in [1]]
             manifest = ''.join('GT710_BREENGL_PICTURE '+json.dumps(e,separators=(',', ':'))+'\n' for e in entries).encode()
             startup = b'GT710_PIX 0 1:ff003039\n'
-            final = text.encode() + manifest
+            allocations = b'GT710_BREENGL_ALLOCATIONS {"schema":1,"phase":401,"dropped":0,"count":0,"entries":[]}\n'
+            final = text.encode() + manifest + allocations
             def anchor(label, data):
                 return f'{label} {len(data)} {hashlib.sha256(data).hexdigest()}\n'
             serial = 'GT710_MODE {"schema":1}\n'+anchor('GT710_BULK', startup)
@@ -79,7 +87,7 @@ fn main(){print!("{}",String::from_utf8(heap::fixture()).unwrap());}
             serial += ''.join(f'SUITE breengel CASE raster/case-{n} PASS ms=1 sha256={digest}\n' for n in range(1, 402))
             serial += 'SUITE breengel DONE passed=401 failed=0 skipped=0 total=401\n'
             serial += 'SUITE breengel MEMORY reclaimed=PASS free_before=100 free_after=100 allowance=64\n'
-            serial += anchor('GT710_CASE_HEAP_BULK', text.encode())+anchor('GT710_BREENGL_MANIFEST_BULK', manifest)+anchor('GT710_FINAL_BULK', final)
+            serial += anchor('GT710_CASE_HEAP_BULK', text.encode())+anchor('GT710_BREENGL_MANIFEST_BULK', manifest)+anchor('GT710_ALLOCATIONS_BULK', allocations)+anchor('GT710_FINAL_BULK', final)
             serial += f'GT710_BREENGL_TOTAL bytes={len(startup)+len(payload)+len(final)} uploads=3 picture_bytes={len(payload)} pictures=1 unique=1\n'
             serial += 'SUITE_SEQUENCE READY breengel\n'
             for name, data in [('gt710-pixels.rle', startup), ('gt710-final.rle', final), ('gt710-breengel-0000.rle', payload)]:
@@ -87,6 +95,11 @@ fn main(){print!("{}",String::from_utf8(heap::fixture()).unwrap());}
             (p/'serial.txt').write_text(serial)
             recovered = API['capture_serial'](p)
             self.assertEqual(recovered.count('GT710_CASE_HEAP {'), 402)
+            self.assertEqual(recovered.count('GT710_BREENGL_ALLOCATIONS {'),1)
+            (p/'serial.txt').write_text(serial.replace(anchor('GT710_ALLOCATIONS_BULK',allocations),
+                                                       'GT710_ALLOCATIONS_BULK 1 '+'0'*64+'\n'))
+            with self.assertRaises(ValueError):API['capture_serial'](p)
+
 
     def test_picture_chunks_round_trip_deduplicate_and_reject_damage(self):
         # Use production RLE/manifest generation and the host consumer, with a
@@ -244,7 +257,7 @@ fn main(){
 
     def test_hooks_are_x86_only_and_route_is_staged_for_breengel(self):
         source = (ROOT / 'userspace/programs/src/suite_breengel/main.rs').read_text()
-        for module in ('gt710_heap', 'gt710_artifacts'):
+        for module in ('gt710_heap', 'gt710_artifacts', 'gt710_allocs'):
             self.assertRegex(source, r'#\[cfg\(target_arch\s*=\s*"x86_64"\)\]\s*#\[path\s*=\s*"../'+module+r'.rs"\]\s*mod '+module)
         self.assertIn('.with_case_observer(', source)
         self.assertIn('.with_judged_observer(', source)

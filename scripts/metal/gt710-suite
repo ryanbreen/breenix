@@ -2154,6 +2154,120 @@ def breengel_pictured(name):
     return name in breengel_picture_cases()
 
 
+def breengel_allocations(serial):
+    records = re.findall(r'^GT710_BREENGL_ALLOCATIONS (.*)$', serial, re.M)
+    if len(records) != 1:
+        raise ValueError('retained-reason accounting requires one allocation census')
+    row = json.loads(records[0])
+    if (set(row) != {'schema', 'phase', 'dropped', 'count', 'entries'} or row['schema'] != 1
+            or type(row['phase']) is not int or row['phase'] != 401
+            or type(row['dropped']) is not int or not 0 <= row['dropped'] < 1 << 64
+            or type(row['count']) is not int or not 0 <= row['count'] <= 4096
+            or not isinstance(row['entries'], list) or len(row['entries']) != row['count']):
+        raise ValueError('invalid allocation census header')
+    seen = set()
+    for entry in row['entries']:
+        if (not isinstance(entry, list) or len(entry) != 5
+                or any(type(v) is not int for v in entry[:4])):
+            raise ValueError('invalid allocation census entry')
+        pointer, size, align, birth, prefix = entry
+        if (not 0 < pointer < 1 << 47 or pointer % 4096 != 16 or pointer in seen
+                or not 0 < size <= 2048 or align not in (1, 2, 4, 8, 16) or align > size or pointer % align
+                or not 0 <= birth <= 401 or not isinstance(prefix, str)
+                or len(prefix) != min(size, 160) * 2 or re.fullmatch('[a-f0-9]*', prefix) is None):
+            raise ValueError('allocation is not a distinct native small-malloc mapping')
+        seen.add(pointer)
+    return row
+
+
+def breengel_memory_accounting(serial):
+    """Keep the raw verdict; account only the coordinator's measured intermediate exception."""
+    shapes = {
+        'START': r'SUITE breengel START cases=(\d+)',
+        'PASS': r'SUITE breengel CASE (\S+) PASS ms=\d+(?: sha256=[a-f0-9]{64})?',
+        'FAIL': r'SUITE breengel CASE (\S+) FAIL ms=\d+(?: sha256=[a-f0-9]{64})? msg=(.*)',
+        'DONE': r'SUITE breengel DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)',
+        'MEMORY': r'SUITE breengel MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+',
+        'RECLAIMED': r'SUITE breengel MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)',
+    }
+    parsed = []
+    for line in serial.splitlines():
+        for kind, shape in shapes.items():
+            match = re.fullmatch(shape, line)
+            if match:
+                parsed.append((kind, match, line));break
+    ok, why = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'scripts/suite-verdict.py'))['memory_problem'](parsed)
+    if ok:
+        return dict(status='PASS', reason_pages=0)
+    # The common validator has already checked order, counts and the actual
+    # FAIL flag's arithmetic. Other memory errors do not enter this exception.
+    if not why.startswith('memory not reclaimed:'):
+        raise ValueError('BreenGL ' + why)
+    records = [(kind, match, line) for kind, match, line in parsed if kind in ('PASS', 'FAIL')]
+    root = Path(__file__).resolve().parents[2]
+    manifest = json.loads((root / 'docs/suites/breengel.json').read_text())
+    names = [cat['id']+'/'+case['id'] for cat in manifest['categories'] for case in cat['cases']]
+    done = [m for kind, m, _ in parsed if kind == 'DONE']
+    start = [m for kind, m, _ in parsed if kind == 'START']
+    failed = [(index, m[1], m[2]) for index, (kind, m, _) in enumerate(records) if kind == 'FAIL']
+    if (len(start) != 1 or start[0][1] != '401' or len(done) != 1
+            or len(records) != 401 or [m[1] for _, m, _ in records] != names
+            or tuple(map(int, done[0].groups())) != (401-len(failed), len(failed), 0, 401)
+            or not failed):
+        raise ValueError('memory exception requires the completed intermediate failing suite')
+    census = breengel_allocations(serial)
+    if census['dropped']:
+        raise ValueError('allocation tracking was incomplete')
+    samples = {m[1]: {k: int(v) for k, v in re.findall(r'([a-z_]+)=(\d+)', line)}
+               for kind, m, line in parsed if kind == 'MEMORY'}
+    before, after = samples['before'], samples['after']
+    fields = {'free', 'heap_free_kb', 'user_stacks', 'user_pages', 'page_tables',
+              'page_cache', 'kernel_stacks', 'buffers', 'other', 'receipts', 'settle_ms'}
+    verdict = [m for kind, m, _ in parsed if kind == 'RECLAIMED'][0]
+    if (set(before) != fields or set(after) != fields or int(verdict[4]) != 48
+            or before['receipts'] or after['receipts']):
+        raise ValueError('memory accounting requires complete settled native frame ownership')
+    owner_fields = fields - {'free', 'heap_free_kb', 'receipts', 'settle_ms'}
+    loss = before['free'] - after['free']
+    if (sum(after[k]-before[k] for k in owner_fields) != loss
+            or any(after[k] != before[k] for k in ('page_cache', 'kernel_stacks', 'buffers', 'other'))):
+        raise ValueError('unexplained non-runner frame ownership change')
+    owners = {}
+    for when in ('before', 'after'):
+        matches = re.findall(r'^BREENGEL OWNERS '+when+r' (.*)$', serial, re.M)
+        if len(matches) != 1:
+            raise ValueError('runner retirement owner census missing')
+        owners[when] = {k: int(v) for k, v in re.findall(r'([a-z_]+)=(\d+)', matches[0])}
+    expected = dict(gpu_status=0, contexts=0, device_contexts=0, resources=0, resource_bytes=16384000,
+                    copy_bytes=0, picture_bytes=0, readback_bytes=0, panes=0, thumbnails=0, runner_threads=1)
+    if owners['before'] != expected or owners['after'] != expected:
+        raise ValueError('runner or GPU owners remain live outside failure reasons')
+    credited = []; used = set(); requested = 0; reason_bytes = 0
+    for phase, name, reason in failed:
+        text = reason.encode('utf-8')
+        if not 0 < len(text) <= 160 or phase == 0:
+            raise ValueError('failure reason cannot be attributed to a measured case')
+        matches = [entry for entry in census['entries'] if entry[3] == phase
+                   and entry[1] >= len(text) and bytes.fromhex(entry[4]).startswith(text)]
+        if len(matches) != 1 or matches[0][0] in used:
+            raise ValueError('failure reason lacks one distinct live case allocation')
+        pointer, size, align, birth, prefix = matches[0]
+        # Breenix malloc's <=2KiB classes use a single anonymous mapping with
+        # a 16-byte header. The measured pointer offset and layout prove one page.
+        capacity = 1 << (max(size, 16)-1).bit_length()
+        if (capacity + 16 + 4095) // 4096 != 1:
+            raise ValueError('reason allocation does not fit the one-page malloc class')
+        used.add(pointer);requested += size;reason_bytes += len(text)
+        credited.append(dict(case=name, bytes=len(text), requested=size, mapped_pages=1))
+    pages = len(credited)
+    residual = loss - pages
+    if after['user_pages'] - before['user_pages'] < pages or not 0 <= residual <= 48:
+        raise ValueError('unreclaimed memory remains beyond measured reasons and the original allowance')
+    return dict(status='ACCOUNTED_FAILURE_REASONS', raw_verdict='FAIL', lost_pages=loss,
+                reason_pages=pages, reason_bytes=reason_bytes, requested_bytes=requested,
+                mapped_bytes=pages*4096, residual_pages=residual, allowance=48, cases=credited)
+
+
 def breengel_fronts_suite(serial, boot):
     """Score the ordered BreenGL capture against the step 9.1 selection."""
     resources_identity(boot, 'breengel')
@@ -2211,9 +2325,9 @@ def breengel_fronts_suite(serial, boot):
     ready = [i for i, line in enumerate(lines) if line == 'SUITE_SEQUENCE READY breengel']
     if len(ready) != 1 or ready[0] <= lines.index(records[-1][2]):
         raise ValueError('BreenGL requires READY after ELAPSED')
-    ok, why = runpy.run_path(str(root / 'scripts/suite-verdict.py'))['memory_problem'](parsed)
-    if not ok:
-        raise ValueError('BreenGL ' + why)
+    accounting = breengel_memory_accounting(serial)
+    if accounting['status'] != 'PASS':
+        print('GT710_BREENGL_MEMORY_ACCOUNTING '+json.dumps(accounting, separators=(',', ':')))
     return cases
 
 def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
@@ -2971,7 +3085,51 @@ CASE_COST_FIELDS = (
 )
 
 
+CASE_HEAP_WORD_FIELDS = (
+    'schema',
+    'heap_free',
+    'heap_high_water',
+    'frame_frontier',
+    'frame_freelist_bytes',
+    'frame_ledger_bytes',
+    'cpu_stage_slots',
+    'cpu_stage_metadata_bytes',
+    'cpu_stage_pages',
+    'core_contexts',
+    'core_resources',
+    'core_submissions',
+    'core_syncs',
+    'core_backlog',
+    'core_backlog_bytes',
+    'core_backing_meta_sum',
+    'core_context_vector_bytes',
+    'native_resources',
+    'native_retired',
+    'native_retired_vector_bytes',
+    'native_active_region_bytes',
+    'native_vm_table_bytes',
+    'native_queue_vector_bytes',
+    'native_retired_requests_bytes',
+    'native_channel_initial_bytes',
+    'native_channel_parking_bytes',
+    'native_bulk_capacity_bytes',
+    'console_terminal_bytes',
+    'console_renderer_vector_bytes',
+    'heap_total',
+    'native_contexts',
+    'native_alias_indices_bytes',
+) + CASE_COST_FIELDS
+
+
 def expand_case_heap(row):
+    if isinstance(row, dict) and 'words_v1' in row:
+        words = row['words_v1']
+        if (set(row) != {'schema', 'boundary', 'case', 'words_v1'}
+                or not isinstance(words, list) or len(words) != len(CASE_HEAP_WORD_FIELDS)
+                or any(type(v) is not int or not 0 <= v < 1 << 64 for v in words)):
+            raise ValueError('invalid compact case heap words')
+        return dict(schema=row['schema'], boundary=row['boundary'], case=row['case'],
+                    values=dict(zip(CASE_HEAP_WORD_FIELDS, words)))
     if isinstance(row, dict) and isinstance(row.get('values'), dict) and 'costs_v1' in row['values']:
         values = row['values'].copy()
         costs = values.pop('costs_v1')
@@ -3130,7 +3288,8 @@ def capture_serial(directory):
         suite=one(r'^SUITE (gpu|console|breengel) START .*$',serial,'final-slot suite')[1]
         start=list(re.finditer(r'^SUITE '+suite+r' START .*$',serial,re.M))
         done=list(re.finditer(r'^SUITE '+suite+r' DONE .*$',serial,re.M))
-        memory=list(re.finditer(r'^SUITE '+suite+r' MEMORY reclaimed=PASS .*$',serial,re.M))
+        memory_status = r'(?:PASS|FAIL)' if suite == 'breengel' else 'PASS'
+        memory=list(re.finditer(r'^SUITE '+suite+r' MEMORY reclaimed='+memory_status+r' .*$',serial,re.M))
         ready=list(re.finditer(r'^SUITE_SEQUENCE READY '+suite+'$',serial,re.M))
         case_rows=list(re.finditer(r'^SUITE '+suite+r' CASE .*$',serial,re.M))
         if (len(matches)!=1 or len(start)!=1 or len(done)!=1 or len(memory)!=1
@@ -3172,7 +3331,7 @@ def capture_serial(directory):
         raise ValueError('graphics image rows must arrive in bulk')
     if spans and not matches:
         raise ValueError('spans evidence bulk missing')
-    if re.search(r'^GT710_CASE_HEAP ', serial, re.M):
+    if re.search(r'^(?:GT710_CASE_HEAP|GT710_BREENGL_ALLOCATIONS) ', serial, re.M):
         raise ValueError('case heap records must arrive in bulk')
     if re.search(r'^GT710_CONSOLE_SAMPLE_V1 ', serial, re.M):
         raise ValueError('console samples must arrive in bulk')
@@ -3323,6 +3482,7 @@ def capture_serial(directory):
             else:
                 key=('caps-probe', row['capability'])
         elif fields[0]=='GT710_BREENGL_PICTURE': key=('breengel-pictures',)
+        elif fields[0]=='GT710_BREENGL_ALLOCATIONS': key=('allocations',)
         elif fields[0]=='GT710_RESOURCES': key=('resources',)
         elif fields[0]=='GT710_CORE': key=('core',)
         elif fields[0]=='GT710_CORE_STARTUP': key=('core-startup',)
@@ -3340,6 +3500,8 @@ def capture_serial(directory):
                 or [row['case'] for row in measured] != names):
             raise ValueError('case heap boundaries differ from the completed suite cases')
     def report_key(line):
+        if re.fullmatch(r'GT710_ALLOCATIONS_BULK [1-9]\d* [a-f0-9]{64}\n?', line): return ('allocations',)
+        if line.startswith('GT710_ALLOCATIONS_BULK '): raise ValueError('invalid allocation census anchor')
         if re.fullmatch(r'GT710_BREENGL_MANIFEST_BULK [1-9]\d* [a-f0-9]{64}\n?', line): return ('breengel-pictures',)
         if line.startswith('GT710_BREENGL_MANIFEST_BULK '): raise ValueError('invalid BreenGL manifest anchor')
         c1=re.fullmatch(r'GT710_(C1|VBIOS)_BULK bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?',line)
@@ -3463,7 +3625,7 @@ def capture_serial(directory):
             if (len(groups[key]) != 1 or digest is None
                     or hashlib.sha256(groups[key][0].removesuffix('\n').encode('ascii')).hexdigest() != digest[1]):
                 raise ValueError('executable CAPS probe differs from serial digest')
-        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',), ('core-startup',), ('resources',), ('case-heap',), ('breengel-pictures',)):
+        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',), ('core-startup',), ('resources',), ('case-heap',), ('breengel-pictures',), ('allocations',)):
             record=''.join(groups[key]).encode('ascii')
             fields=line.split()
             if len(fields)!=3 or (key==('multi',) and len(groups[key])!=1) or len(record)!=int(fields[1]) or hashlib.sha256(record).hexdigest()!=fields[2]:
@@ -3502,6 +3664,12 @@ def capture_serial(directory):
             raise ValueError('BreenGL case heap evidence missing')
         breengel_picture_evidence(directory, serial, groups[('breengel-pictures',)], startup_bytes, len(final_data))
     joined = ''.join(result)
+    if ('allocations',) in groups:
+        if suite != 'breengel' or group_slots[('allocations',)] != 1 or len(groups[('allocations',)]) != 1:
+            raise ValueError('allocation census must occupy the final BreenGL slot')
+        breengel_allocations(joined)
+    if suite == 'breengel' and re.search(r'^SUITE breengel MEMORY reclaimed=FAIL ', serial, re.M):
+        breengel_memory_accounting(joined)
     if startup:
         core_startup(joined)
     return joined

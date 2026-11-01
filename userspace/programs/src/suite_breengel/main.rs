@@ -60,22 +60,33 @@ unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         ALLOC_CALLS.fetch_add(1, Relaxed);
         ALLOC_BYTES.fetch_add(layout.size() as u64, Relaxed);
-        System.alloc(layout)
+        let pointer = System.alloc(layout);
+        #[cfg(target_arch = "x86_64")]
+        gt710_allocs::allocated(pointer, layout.size(), layout.align());
+        pointer
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         FREE_BYTES.fetch_add(layout.size() as u64, Relaxed);
+        #[cfg(target_arch = "x86_64")]
+        gt710_allocs::deallocated(ptr, layout.size(), layout.align());
         System.dealloc(ptr, layout)
     }
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
         ALLOC_CALLS.fetch_add(1, Relaxed);
         ALLOC_BYTES.fetch_add(layout.size() as u64, Relaxed);
-        System.alloc_zeroed(layout)
+        let pointer = System.alloc_zeroed(layout);
+        #[cfg(target_arch = "x86_64")]
+        gt710_allocs::allocated(pointer, layout.size(), layout.align());
+        pointer
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         ALLOC_CALLS.fetch_add(1, Relaxed);
         ALLOC_BYTES.fetch_add(new_size as u64, Relaxed);
         FREE_BYTES.fetch_add(layout.size() as u64, Relaxed);
-        System.realloc(ptr, layout, new_size)
+        let pointer = System.realloc(ptr, layout, new_size);
+        #[cfg(target_arch = "x86_64")]
+        gt710_allocs::reallocated(ptr, layout.size(), layout.align(), pointer, new_size);
+        pointer
     }
 }
 
@@ -97,6 +108,9 @@ macro_rules! pictured {
 #[cfg(target_arch = "x86_64")]
 #[path = "../gt710_heap.rs"]
 mod gt710_heap;
+#[cfg(target_arch = "x86_64")]
+#[path = "../gt710_allocs.rs"]
+mod gt710_allocs;
 #[cfg(target_arch = "x86_64")]
 #[path = "../gt710_artifacts.rs"]
 mod gt710_artifacts;
@@ -210,6 +224,7 @@ fn evidence<T>(result: Result<T, String>) -> Option<T> {
 #[cfg(target_arch = "x86_64")]
 fn heap_boundary(index: usize, total: usize, name: &str) {
     gt710_heap::boundary(index, total, name);
+    gt710_allocs::boundary(index);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -227,12 +242,13 @@ fn judged_picture(name: &str, frame: &breenix_suite::suite::JudgedFrame, failed:
 
 #[cfg(target_arch = "x86_64")]
 fn final_upload() {
+    let Some(allocations) = evidence(gt710_allocs::encode()) else { return; };
     let (status, caps) = libbreenix::gpu::caps();
     let resources = (status == 0 && caps.backend == libbreenix::gpu::abi::backend::GK208).then_some(&caps);
     let Some(heap) = evidence(gt710_heap::encode()) else { return; };
     let pictures = NATIVE_PICTURES.lock().expect("native picture store lock");
     let manifest = evidence(pictures.manifest()).unwrap_or_default();
-    evidence(gt710_artifacts::upload_slot_records(resources, true, &heap, &manifest));
+    evidence(gt710_artifacts::upload_slot_records(resources, true, &heap, &manifest, &allocations));
     let (bytes, uploads) = gt710_artifacts::totals();
     let count = manifest.iter().filter(|&&b| b == b'\n').count();
     println!("GT710_BREENGL_TOTAL bytes={bytes} uploads={uploads} picture_bytes={} pictures={count} unique={}", pictures.bytes, pictures.unique);
@@ -241,6 +257,7 @@ fn final_upload() {
 fn main() {
     #[cfg(target_arch = "x86_64")]
     {
+        evidence(gt710_allocs::prepare());
         evidence(gt710_heap::prepare(SUITE.categories.iter().map(|c| c.cases.len()).sum()));
         evidence(NATIVE_PICTURES.lock().expect("native picture store lock").prepare());
         let _ = libbreenix::gpu::caps();

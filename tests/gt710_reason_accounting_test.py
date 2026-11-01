@@ -85,7 +85,7 @@ fn main(){census::capacity_probe();census::prepare().unwrap();
                        lambda r:r['entries'][1].__setitem__(0,r['entries'][0][0]),
                        lambda r:r['entries'][0].__setitem__(3,0),
                        lambda r:r['entries'][0].__setitem__(4,bytes(64).hex()),
-                       lambda r:r['entries'][0].__setitem__(1,4096)]:
+                       lambda r:(r['entries'][0].__setitem__(1,4096),r['entries'][0].__setitem__(4,(b'pointer unavailable'+bytes(141)).hex()))]:
             bad=copy.deepcopy(row);mutate(bad)
             with self.subTest(record=bad),self.assertRaises(ValueError):check(serial(lines,bad))
         bad=[l.replace('free=951','free=949').replace('free_after=951','free_after=949').replace('page_tables=57','page_tables=59') for l in lines]
@@ -94,6 +94,9 @@ fn main(){census::capacity_probe();census::prepare().unwrap();
         with self.assertRaises(ValueError):check(serial(lines,row).replace('resources=0','resources=1'))
         with self.assertRaises(ValueError):check(serial(lines,row).replace('CASE panel/cursor-restore FAIL','CASE panel/cursor-restore PASS'))
         with self.assertRaises(ValueError):check(serial(lines,row).replace('allowance=48','allowance=64'))
+        # A 401/401 passing run must reclaim memory without the intermediate exception.
+        all_pass=[re.sub(r'FAIL ms=1 msg=.*','PASS ms=1',l).replace('passed=399 failed=2','passed=401 failed=0') for l in lines]
+        with self.assertRaises(ValueError):check(serial(all_pass,dict(row,count=0,entries=[])))
 
 
 if __name__=='__main__':unittest.main()
