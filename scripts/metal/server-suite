@@ -335,12 +335,86 @@ class MetalTarget:
         return json.loads(site.stdout)
 
 
+class QemuTarget:
+    """A persistent QEMU run's local boot records and serial console."""
+    def __init__(self, run_dir, boot=None):
+        self.run = Path(run_dir)
+        boot = boot or (self.run / 'current').read_text().strip()
+        self.boot = boot
+        self.directory = self.run / 'boots' / boot
+
+    def read(self, name, boot=None, required=True):
+        path = (self.directory if boot is None else self.run / 'boots' / boot) / name
+        try:
+            return path.read_text()
+        except OSError as error:
+            if required: raise ValueError('boot artifact unavailable: ' + name) from error
+            return None
+
+    def write(self, name, value):
+        (self.directory / name).write_text(json.dumps(value) + '\n')
+        return subprocess.CompletedProcess([], 0)
+
+    def identity(self):
+        return json.loads(self.read('run.json'))
+
+    def _qemu_alive(self):
+        try:
+            with socket.socket(socket.AF_UNIX) as stream:
+                stream.settimeout(2)
+                stream.connect(str(self.run / 'qmp.sock'))
+                with stream.makefile('rb') as source:
+                    return 'QMP' in json.loads(source.readline())
+        except (OSError, ValueError):
+            return False
+
+    def holds_lease(self):
+        try:
+            return ((self.run / 'boot.lock').is_dir() and
+                    (self.run / 'current').read_text().strip() == self.boot and
+                    not self.ended(self.boot) and self._qemu_alive())
+        except OSError:
+            return False
+
+    def ended(self, boot):
+        return (self.run / 'boots' / boot / 'ended').exists()
+
+    def console(self, user, password):
+        def local(*cmd, **kwargs):
+            try:
+                if cmd[0] == 'stat':
+                    output = str(Path(cmd[-1]).stat().st_size)
+                else:
+                    output = Path(cmd[-1]).read_bytes()[int(cmd[2][1:]) - 1:]
+                return subprocess.CompletedProcess(cmd, 0, output)
+            except OSError:
+                return subprocess.CompletedProcess(cmd, 1)
+        def send(data):
+            if not self.holds_lease():
+                raise ValueError('this boot does not hold the machine lease')
+            with socket.socket(socket.AF_UNIX) as stream:
+                stream.settimeout(10)
+                stream.connect(str(self.run / 'console.sock'))
+                stream.sendall(data)
+        return Console(local, self.boot, str(self.directory), user, password, transport=send)
+
+    def capture(self):
+        stamps = [(float(a), int(b)) for a, b in (row.split('\t') for row in self.read('serial.ts').splitlines() if row)]
+        return self.read('serial.txt'), stamps
+
+    def site(self, fields):
+        return runpy.run_path(str(Path(__file__).resolve().parent.parent / 'vm_site.py'))['site'](self.run)
+
+
 class Probe:
-    def __init__(self, host, user, identity, directory):
+    port = 22
+
+    def __init__(self, host, user, identity, directory, port=22):
         self.host, self.user, self.identity = host, user, identity
+        self.port = port
         self.directory = directory
         self.known = directory / 'known_hosts'
-        self.common = ['ssh', '-F', '/dev/null', '-p', '22', '-o', 'ConnectTimeout=10',
+        self.common = ['ssh', '-F', '/dev/null', '-p', str(port), '-o', 'ConnectTimeout=10',
                        '-o', 'ConnectionAttempts=1', '-o', 'StrictHostKeyChecking=yes',
                        '-o', 'UserKnownHostsFile=' + str(self.known), '-o', 'GlobalKnownHostsFile=/dev/null',
                        '-o', 'HostKeyAlgorithms=ssh-ed25519', '-o', 'IdentitiesOnly=yes',
@@ -382,7 +456,7 @@ class Probe:
 
     def run_case(self, name, serial):
         if name == 'port-22':
-            with socket.create_connection((self.host, 22), timeout=10) as stream:
+            with socket.create_connection((self.host, self.port), timeout=10) as stream:
                 stream.settimeout(10)
                 data = b''
                 while b'\n' not in data and len(data) < 256:
@@ -392,7 +466,7 @@ class Probe:
                 if not data.startswith(b'SSH-2.0-') or b'\r\n' not in data:
                     raise ValueError('server sent no SSH identification before client data')
         elif name == 'host-key':
-            result = command(['ssh-keyscan', '-T', '10', '-p', '22', '-t', 'ed25519', self.host])
+            result = command(['ssh-keyscan', '-T', '10', '-p', str(self.port), '-t', 'ed25519', self.host])
             lines = [line for line in result.stdout.splitlines() if not line.startswith('#')]
             if result.returncode or len(lines) != 1:
                 raise ValueError('OpenSSH keyscan did not return exactly one Ed25519 key')
@@ -406,7 +480,8 @@ class Probe:
             self.require(result, '1000\n1000\n' + self.user + '\n/home/' + self.user + '\n/home/' + self.user)
             # A deliberately different known host must be refused, too.
             wrong = (self.wrong.with_suffix('.pub')).read_text().split()
-            self.known.write_text(self.host + ' ' + ' '.join(wrong[:2]) + '\n')
+            host = self.host if self.port == 22 else '[' + self.host + ']:' + str(self.port)
+            self.known.write_text(host + ' ' + ' '.join(wrong[:2]) + '\n')
             try:
                 rejected = self.ssh('true')
                 if rejected.returncode != 255 or 'Host key verification failed' not in rejected.stderr:
@@ -666,10 +741,11 @@ class Console:
     PROMPT = r'bsh [^>\n]*>'
     LOGIN = 'Breenix login: '
 
-    def __init__(self, in_metal, boot, directory, user, password):
+    def __init__(self, in_metal, boot, directory, user, password, transport=None):
         self.in_metal, self.tmux = in_metal, 'tmux -L metal-' + boot
         self.serial = directory + '/serial.txt'
         self.user, self.password = user, password
+        self.transport = transport
         self.step, self.logged_in = 0, False
         self.boot_id = None
 
@@ -687,6 +763,10 @@ class Console:
         data = (text + ('\r' if enter else '')).encode()
         for at in range(0, len(data), 4):
             # stdin keeps the password out of process arguments.
+            if self.transport is not None:
+                self.transport(data[at:at + 4])
+                time.sleep(0.04)
+                continue
             result = self.in_metal('sh', '-c', self.tmux + ' load-buffer - && ' + self.tmux + ' paste-buffer -d -t sol',
                                    stdin=None, input=data[at:at + 4], capture_output=True)
             if result.returncode: raise ValueError('cannot type on the SOL console')
@@ -1999,26 +2079,36 @@ def main():
     parser.add_argument('--previous-boot', help='Completed logs preparation boot at this same commit')
     parser.add_argument('--prepare-time', action='store_true', help='Record a synchronized boot before the RTC reboot case')
     parser.add_argument('--prepare-logs', action='store_true', help='Write the log whose bytes the next boot must retain')
+    parser.add_argument('--target', choices=('metal', 'qemu'), default='metal')
+    parser.add_argument('--run-dir', type=Path)
     parser.add_argument('--boot')
     parser.add_argument('--sha')
     parser.add_argument('--branch', help='Pushed candidate branch (required for watchdog fault images)')
     parser.add_argument('--milestone', default='server/ssh-keys', choices=list(MILESTONES))
     args = parser.parse_args()
     if args.probe_upgrade:
+        if args.target != 'metal': parser.error('--probe-upgrade requires metal')
         if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or ''): parser.error('invalid verification boot')
         return probe_upgrade(args)
     if args.check_manifest:
         validate_manifest(json.loads(args.check_manifest.read_text()))
         return 0
+    boot_pattern = r'\d{8}T\d{6}Z-' + args.target
+    if args.boot and not re.fullmatch(boot_pattern, args.boot):
+        parser.error('invalid boot ID for --target ' + args.target)
     # S27 suspends every host-driven category: all require a persistent session.
-    if S27_SUSPENDS_PERSISTENT:
+    if S27_SUSPENDS_PERSISTENT and args.target == 'metal':
         category = MILESTONES[args.milestone]
         for name, _ in CATEGORIES[category]:
             print(f'SKIP {SUITES[category]} {category}/{name}: S27 suspends persistent sessions')
         print('Not counted: S27 suspends persistent sessions')
         return 0
-    if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or '') or not re.fullmatch(r'[a-f0-9]{40}', args.sha or ''):
+    if args.target == 'qemu' and args.run_dir is None: parser.error('--run-dir required for qemu')
+    if not re.fullmatch(boot_pattern, args.boot or '') or not re.fullmatch(r'[a-f0-9]{40}', args.sha or ''):
         parser.error('--boot ID and --sha full commit required')
+    category = MILESTONES[args.milestone]
+    if args.target == 'qemu' and category not in ('ssh-keys', 'services', 'logs', 'time', 'console-input'):
+        parser.error('milestone is not yet implemented for qemu (resting-state is out of scope)')
     if args.milestone == 'server/resting-state':
         if not args.branch: parser.error('--branch required for resting-state')
         return runpy.run_path(str(Path(__file__).with_name('server_resting.py')))['run'](globals(), args)
@@ -2032,11 +2122,11 @@ def main():
         return runpy.run_path(str(Path(__file__).with_name('upgrade_suite.py')))['run'](args, globals())
     suite = SUITES[category]
     cases = CATEGORIES[category]
-    machine = MetalTarget(args.boot)
+    machine = MetalTarget(args.boot) if args.target == 'metal' else QemuTarget(args.run_dir, args.boot)
     read = machine.read
     previous = None
     if args.previous_boot:
-        if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.previous_boot): parser.error('invalid previous boot')
+        if not re.fullmatch(boot_pattern, args.previous_boot): parser.error('invalid previous boot')
         prepared = read('time-prepared.json' if category == 'time' else 'logs-prepared.json',
                         boot=args.previous_boot, required=False)
         if prepared is None: raise ValueError('previous boot has no log preparation record')
@@ -2077,7 +2167,8 @@ def main():
                 step()
             except Exception as error:
                 records.setdefault('cleanupErrors', []).append(type(error).__name__ + ': ' + str(error))
-        probe = None if category == 'console-input' else Probe(site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity, Path(scratch))
+        probe = None if category == 'console-input' else Probe(site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity,
+                                                             Path(scratch), port=site.get('SERVER_SSH_PORT', 22))
         target = probe
         if not site['CONSOLE_USER'] or not site['CONSOLE_PASSWORD']:
             raise ValueError('site needs CONSOLE_USER and CONSOLE_PASSWORD for the root steps')

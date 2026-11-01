@@ -5,6 +5,7 @@ import json
 import selectors
 import signal
 import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -20,6 +21,15 @@ def main(run, whole_path):
               'target': 'qemu', 'bootedCommit': build.get('commit'),
               'toolsCommit': tools_path.read_text().strip() if tools_path.exists() else '',
               'evidenceEligible': bool(build.get('commit') and build.get('dirty') is False)}
+    # Freeze the scoring definitions at the image's recorded build commit,
+    # rather than consulting a later checkout when this run reboots.
+    definition = {}
+    if build.get('commit'):
+        root = Path(__file__).resolve().parents[1]
+        for name in ('docs/suites/server.json', 'docs/suites/users.json',
+                     'docs/efforts/path.json', 'docs/boot-path.json'):
+            definition[name] = subprocess.check_output(
+                ['git', '-C', str(root), 'show', build['commit'] + ':' + name])
     serial = timestamps = events = None
     directory = None
     last_stamp = 0
@@ -44,7 +54,11 @@ def main(run, whole_path):
             except FileExistsError:
                 stamp += 1
         last_stamp = stamp
-        (directory / 'run.json').write_text(json.dumps(record) + '\n')
+        (directory / 'run.json').write_text(json.dumps(dict(record, id=boot)) + '\n')
+        for name, content in definition.items():
+            destination = directory / 'definition' / name
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            destination.write_bytes(content)
         serial = (directory / 'serial.txt').open('ab', buffering=0)
         timestamps = (directory / 'serial.ts').open('a', buffering=1)
         events = (directory / 'events.jsonl').open('a', buffering=1)
