@@ -12,7 +12,7 @@ from gt710_gr_live_unwind_test import item
 class NativeQueue(unittest.TestCase):
     def test_receipt_channel_faults_and_wrapped_publication(self):
         source = (ROOT / 'kernel/src/gpu/gk208/gr/channel.rs').read_text()
-        monitor = item(source, "    struct Monitor<'a>") + '\n' + item(source, "    impl Poll for Monitor<'_>")
+        monitor = item(source, "    struct Monitor<'a>") + '\n' + item(source, "    impl Monitor<'_>") + '\n' + item(source, "    impl Poll for Monitor<'_>")
         monitor = monitor.replace('super::super::binding', 'binding').replace('crate::gk208::queue', 'queue').replace('super::super::error', 'hardware_error')
         publisher = item(source, '        fn publish_words(').replace('crate::gk208::queue', 'queue')
         traps = (ROOT / 'kernel/src/gpu/gk208/gr/binding.rs').read_text()
@@ -59,6 +59,17 @@ MONITOR
 impl Session {PUBLISHER}
 fn session(bar:usize)->Session {Session{pages:Pages(Box::new([0;1024])),commands:Allocation{range:Range{start:0x100000}},bar,
  report:Report{identity:Identity{id:0,instance:0x123000}},pbdma:0,userd:0x200000,copy:Some(Copy{base:0x106000}),bound:true,quiesced:false}}
+#[test]fn health_checks_faults_without_sampling_completion(){
+ let s=session(0);let mut r=Registers::default();
+ let health=|r:&mut Registers|Monitor{session:&s,regs:r,total:1<<24,sequence:1,
+  stop_on_trap:true,retry_traps:false,release_slot:0,queued_put:Some(4)}.check_health();
+ assert_eq!(health(&mut r),Ok(()));
+ for a in binding::TRAP_REGISTERS.into_iter().chain([0x259c,0x40108,0x40148,0x106908]) {
+  r.values.insert(a,1);assert!(health(&mut r).is_err(),"fault {a:x} accepted");r.values.insert(a,0);
+ }
+ r.values.insert(0x400100,0xbadf1201);assert_eq!(health(&mut r),Err("GR PRI pending"));
+ for a in [0x40120,0x40014,0x40028,0x800000] {assert_eq!(r.reads.get(&a),None,"health sampled completion {a:x}");}
+}
 #[test]fn receipt_requires_the_consuming_channel_and_zero_faults(){
  let mut s=session(0);s.pages.0[..3].copy_from_slice(&[1,17,0]);s.pages.0[4..7].copy_from_slice(&[2,16,0]);
  let mut r=Registers::default();r.values.extend([(0x40120,0x2000),(0x40014,4),(0x40028,4),(0x800000,0x80000123)]);
@@ -107,6 +118,7 @@ fn sample(r:&mut Registers)->Result<(u32,u64,bool),&'static str>{
 '''
         for key, value in [('ROOT', str(ROOT)), ('BINDING_REGISTERS', registers), ('HEALTH', health), ('MONITOR', monitor), ('PUBLISHER', publisher), ('STATUS_IO', status_io), ('REFUSAL', refusal)]:
             harness = harness.replace(key, value)
+        harness = harness.replace('stop_on_trap:true,release_slot:', 'stop_on_trap:true,retry_traps:true,release_slot:')
         with tempfile.TemporaryDirectory() as directory:
             out = Path(directory)
             (out / 'queue.rs').write_text(harness)

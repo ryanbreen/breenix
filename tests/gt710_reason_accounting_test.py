@@ -51,6 +51,12 @@ mod census {SOURCE
  }
 }
 fn main(){census::capacity_probe();census::prepare().unwrap();
+ unsafe extern "C" {fn fork()->i32;fn waitpid(pid:i32,status:*mut i32,flags:i32)->i32;fn _exit(status:i32)->!;}
+ let child=unsafe{fork()};assert!(child>=0);
+ if child==0 {let mut b=vec![0u8;64];census::allocated(b.as_mut_ptr(),64,1);
+  unsafe{_exit(if census::encode().is_err(){0}else{17})};}
+ let mut status=0;assert_eq!(unsafe{waitpid(child,&mut status,0)},child);
+ assert_eq!(status,0,"forked cases must disarm their inherited census");
  let mut a=vec![0u8;80];a[..19].copy_from_slice(b"pointer unavailable");
  let b=vec![0u8;64];census::boundary(17);
  census::allocated(a.as_mut_ptr(),64,1);census::allocated(b.as_ptr() as *mut u8,64,1);
