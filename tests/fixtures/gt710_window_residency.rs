@@ -42,6 +42,7 @@ mod process {
     impl ProcessManager {pub fn get_process(&self,id:ProcessId)->Option<&Process>{(id.0==7).then_some(&self.0)}}
     pub fn with_process_manager<T>(f:impl FnOnce(&ProcessManager)->T)->Option<T>{Some(PROCESS.with(|p|f(&p.borrow())))}
 }
+mod abi {pub mod backend {pub const GK208:u32=6;}}
 mod kind {pub const BUFFER:u32=3;pub const TARGET:u32=1;}
 mod format {pub const B8G8R8A8:u32=0;pub fn bytes(f:u32)->u32{if f==2{1}else{4}}}
 #[path="ROOT/kernel/src/gpu/quota.rs"] pub(crate) mod quota;
@@ -103,9 +104,17 @@ mod gk208 {
     #[allow(dead_code)]
     #[path="ROOT/kernel/src/gpu/gk208/copy.rs"] pub mod copy;
     // RESOURCE_MODULE
+    pub use resource::present;
     pub mod adapter {
-        pub struct Request{_backing:Option<std::sync::Arc<crate::Pages>>}
-        impl Request {pub fn storage(_:crate::dev::Tag,backing:Option<std::sync::Arc<crate::Pages>>)->Self{Self{_backing:backing}}}
+        use alloc::sync::Arc;
+        use crate::dev::Tag;
+        pub struct Operation;
+        pub struct EncodedDraw;
+        #[allow(dead_code)] // Complete request record; only storage retirement runs here.
+        // STORAGE_REQUEST
+        impl Request {
+            // STORAGE_CONSTRUCTOR
+        }
     }
     pub mod ce {
         pub fn with_resources<T>(f:impl FnOnce(&mut super::resource::Resources<crate::Pages>,&mut super::memory::allocator::Allocator,&mut crate::Model)->Result<T,&'static str>)->Result<T,&'static str>{

@@ -137,11 +137,15 @@ pub(super) fn handed_off() {
     }
 }
 
-fn pitch_of(kind_: u32, fmt: u32, w: u32) -> u32 {
+pub(super) fn pitch_of(kind_: u32, fmt: u32, w: u32) -> u32 {
     if kind_ == kind::BUFFER {
         w
     } else if dev::is_svga() {
         w * format::bytes(fmt)
+    } else if dev::backend() == abi::backend::GK208 {
+        // Linear guest backing uses the native image's GOB-wide row. Tiled
+        // height padding stays in VRAM and is accounted by the native owner.
+        (w * format::bytes(fmt)).next_multiple_of(64)
     } else {
         (w * format::bytes(fmt)).next_multiple_of(256)
     }

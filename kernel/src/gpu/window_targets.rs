@@ -53,7 +53,7 @@ impl Seal {
 }
 
 pub fn backing_len(width:u32,height:u32)->u64 {
-    let pitch=if dev::is_svga() {width*4} else {(width*4).next_multiple_of(256)};
+    let pitch=console::pitch_of(kind::TARGET,format::B8G8R8A8,width);
     (pitch as u64*height as u64).div_ceil(PAGE as u64)*PAGE as u64
 }
 

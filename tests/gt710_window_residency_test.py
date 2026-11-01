@@ -20,6 +20,7 @@ class WindowResidency(unittest.TestCase):
         window = (ROOT / 'kernel/src/gpu/window_targets.rs').read_text()
         console = (ROOT / 'kernel/src/gpu/console.rs').read_text()
         native = (ROOT / 'kernel/src/gpu/gk208/resource.rs').read_text()
+        adapter = (ROOT / 'kernel/src/gpu/gk208/adapter.rs').read_text()
         # Run the allocation/adoption portion of Target::make, with the device
         # boundary below connected to the real native resource entry points.
         make = item(window, '    fn make(')
@@ -32,8 +33,10 @@ class WindowResidency(unittest.TestCase):
         fixture = fixture.replace('// PITCH', 'pub(super) ' + item(console, 'fn pitch_of('))
         fixture = fixture.replace('// CHARGE_COPY', item(
             (ROOT / 'kernel/src/gpu/dma.rs').read_text(), '    pub(super) fn charge_copy(').replace('pub(super)', 'pub(crate)'))
-        # The adapter's storage receipt retains backing until its acknowledgement
-        # is reaped. Replace only that transport, not native storage retirement.
+        # Use the real receipt record and constructor; model only the reaper's
+        # delayed drop, without channel submission or hardware completion.
+        fixture = fixture.replace('// STORAGE_REQUEST', item(adapter, 'pub struct Request {'))
+        fixture = fixture.replace('// STORAGE_CONSTRUCTOR', item(adapter, '    pub(crate) fn storage('))
         entry_points = '\n'.join(item(native, marker) for marker in (
             '    pub fn resource_create(', '    pub fn attach_backing(',
             '    pub fn resource_unref(', '    pub(crate) fn ownership_census('))
