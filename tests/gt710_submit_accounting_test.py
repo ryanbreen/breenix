@@ -1,5 +1,6 @@
 """Exclusive submit phases must account for every call, including ordinary icon draws."""
 from pathlib import Path
+import runpy
 import subprocess
 import sys
 import tempfile
@@ -53,6 +54,23 @@ fn main() {{
             (p / 'check.rs').write_text(source)
             subprocess.run(priority + ['rustc', '--edition=2021', '-Dwarnings', str(p / 'check.rs'), '-o', str(p / 'check')], check=True)
             subprocess.run([str(p / 'check')], check=True)
+
+    def test_scorer_refuses_missing_or_double_counted_phases(self):
+        api = runpy.run_path(str(ROOT / 'scripts/metal/gt710-suite'))
+        validate = api['validate_submit_costs']
+        names = ['entry', 'copy_in', 'validation', 'admission_poll', 'setup',
+                 'translate', 'frame_prepare', 'fence_bookkeeping', 'native_submit',
+                 'doorbell', 'copy_out', 'cleanup']
+        good = dict(submit_phases=names, submits=[[3, 10154, 120] + [10] * 12])
+        validate(good)
+        validate({})  # Historical captures are readable, never a new measurement.
+        for bad in [dict(good, submits=[[3, 10154, 119] + [10] * 12]),
+                    dict(good, submit_phases=names[:-1]),
+                    dict(submits=good['submits']), dict(submit_phases=names),
+                    dict(good, submits=[[3, 0, 120] + [10] * 12]),
+                    dict(good, submits=good['submits'] * 2)]:
+            with self.assertRaises(ValueError):
+                validate(bad)
 
 
 if __name__ == '__main__':
