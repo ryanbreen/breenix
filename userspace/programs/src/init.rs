@@ -295,6 +295,9 @@ fn run_console_mode() -> ! {
     console_text_mode();
     detach_console();
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
+    if pid == 1 {
+        reconcile_machine_state();
+    }
     let scope = if pid == 1 { init_services::Scope::All } else { init_services::Scope::Logins };
     init_services::Supervisor::load(scope, pid == 1).run()
 }
