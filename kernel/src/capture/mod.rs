@@ -258,26 +258,7 @@ pub fn emit(edge: Edge, arg0: u64, arg1: u64) {
         completed |= section_bit(SECTION_CPU);
     }
 
-    // The deliberate panic oracle samples at injection, before the banner
-    // gives peer scheduler activity a new opportunity to hold the lock. Keep
-    // that sample's time explicit; it predates CPU.uptime_ms. Other edges and
-    // real panics retain the nonblocking read and its truthful refusal.
-    #[cfg(feature = "capture_panic_oracle")]
-    let sampled_threads = if edge == Edge::Panic {
-        crate::capture_oracle::take_threads(cpu_id).map(|(uptime_ms, snapshot)| {
-            if writer.open("NOTE") {
-                writer.kv_text("thr_sample", "panic_oracle");
-                writer.kv_dec("uptime_ms", uptime_ms);
-                let _ = writer.close();
-            }
-            snapshot
-        })
-    } else {
-        None
-    };
-    #[cfg(not(feature = "capture_panic_oracle"))]
-    let sampled_threads = None;
-    let sampled_threads = sampled_threads.or_else(|| sections::sample_threads(cpu_id));
+    let sampled_threads = sections::sample_threads(cpu_id);
 
     if sections::events(&mut writer, cpu_id) {
         completed |= section_bit(SECTION_EV);

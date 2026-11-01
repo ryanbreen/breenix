@@ -123,7 +123,7 @@ fn complete(text: &str) {
     assert!(text.contains("truncated=0 sections_skipped=0x0"), "{text}");
     assert_eq!(text.matches("[BXCAP:THR").count(), 8, "{text}");
     assert!(text.contains("cur=1260 rq=2 threads=27 blocked=19 q=exact"), "{text}");
-    assert!(text.contains("thr_sample=panic_oracle uptime_ms=11040"), "{text}");
+    assert!(!text.contains("thr_sample=panic_oracle"), "{text}");
 }
 fn invoke(tick: u64) -> bool {
     std::panic::catch_unwind(|| capture_oracle::observe(tick)).is_err()
@@ -180,11 +180,11 @@ fn main() {
             emit_panic();
         });
         assert!(invoke(2208));
-        complete(&wire());
-        assert_eq!(READS.load(Ordering::Relaxed), if peer { 2 } else { 1 },
-            "the panic consumes its prepared snapshot without reacquiring the lock");
+        partial(&wire());
+        assert_eq!(READS.load(Ordering::Relaxed), if peer { 3 } else { 2 },
+            "the real emitter must try its own nonblocking scheduler read");
         emit_panic();
-        partial(&wire()); // An old oracle sample cannot serve a later panic.
+        partial(&wire()); // Later captures also report live contention.
         assert!(!invoke(2209));
     }
     // Panic hooks also run for failed assertions; restore readable diagnostics.
