@@ -37,4 +37,28 @@ METHOD
             p=Path(tmp); (p/'counter.rs').write_text(code)
             subprocess.run(priority+['rustc','--edition=2021','--test','-Dwarnings',str(p/'counter.rs'),'-o',str(p/'counter')],check=True)
             subprocess.run([str(p/'counter')],check=True)
+    def test_proc_samples_survive_suppressed_case_stdout(self):
+        source = (ROOT / 'kernel/src/gpu/gk208/mod.rs').read_text()
+        method = item(source, 'pub(crate) fn proc_vblank(')
+        code = r'''#![allow(dead_code)] // Mocks include the export API before the producer uses it.
+use std::cell::RefCell;
+thread_local!{static ROWS:RefCell<Vec<String>>=const{RefCell::new(vec![])}}
+struct Registers;struct Evo{head:u32}
+mod ce{pub fn with_clock_owner<R>(f:impl FnOnce(&mut super::Registers,&mut super::Evo,())->Result<R,&'static str>)->Result<R,&'static str>{f(&mut super::Registers,&mut super::Evo{head:2},())}}
+mod native{pub fn vblank_counter(_: &super::Registers,h:u32)->Result<(u64,u16),&'static str>{assert_eq!(h,2);Ok((123456789,65535))}}
+mod bulk{pub fn line(s:String)->Result<(),&'static str>{super::ROWS.with(|r|r.borrow_mut().push(s));Ok(())}}
+fn hash(_: &[u8])->String{"digest".into()}
+#[macro_export]macro_rules! serial_println{($($a:tt)*)=>{let _=format!($($a)*);}}
+METHOD
+#[test]fn retains_read_only_samples_in_the_digest_bound_bulk(){
+ assert_eq!(proc_vblank().unwrap(),b"123456789 65535\n");
+ ROWS.with(|r|assert_eq!(*r.borrow(),["GT710_VBLANK_SAMPLE ns=123456789 count=65535"]));
+}
+'''.replace('METHOD', method)
+        priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p / 'sample.rs').write_text(code)
+            subprocess.run(priority + ['rustc', '--edition=2021', '--test', '-Dwarnings', str(p / 'sample.rs'), '-o', str(p / 'sample')], check=True)
+            subprocess.run([str(p / 'sample')], check=True)
 if __name__=='__main__':unittest.main()
