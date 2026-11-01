@@ -2118,3 +2118,18 @@ The full-pipeline location and report structure fields come from NVIDIA
 open-gpu-doc `classes/3d/cla197.h`, revision
 `9fdf5c4062007929d9f4e6cbad9c9771fe61b880`, MIT, copyright 2020 NVIDIA
 CORPORATION. Its checked MIT notice is also retained in `gpu_time.rs`.
+## Native line-loop compiler optimization (E20.1)
+
+`tools/kepler/compile.cpp` uses Mesa's nv50_ir BFIND and SLCT interfaces for
+the zero-prefix optimization in `tools/kepler/line_division.h`. The unchanged
+shared TGSI input is pinned by SHA-256 before enabling that optimization.
+API and instruction semantics were checked in these MIT files at Mesa
+`769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de`:
+
+- `src/nouveau/codegen/nv50_ir.h`: Copyright 2011 Christoph Bumiller.
+- `src/nouveau/codegen/nv50_ir_peephole.cpp`: Copyright 2011 Christoph Bumiller.
+- `src/nouveau/codegen/nv50_ir_emit_gk110.cpp`: Copyright 2012 Christoph Bumiller.
+- `src/nouveau/codegen/nv50_ir_from_nir.cpp`: Copyright 2017 Red Hat Inc.
+
+The original MIT notices remain in the vendored files and `vendor/kepler/NOTICES`.
+The compiler's existing adapted frontend retains its MIT notice in its header.

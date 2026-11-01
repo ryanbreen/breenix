@@ -24,6 +24,16 @@ def json_bytes(value):
     return (json.dumps(value, indent=2, sort_keys=True) + "\n").encode()
 
 
+def native_compiler_options(path, identity):
+    if identity.get("pipeline") != 10:
+        return []
+    # Register roles below belong to this exact shared restoring-division input.
+    # A changed shared source needs a fresh compiler match, not a silent rewrite.
+    if digest(path.read_bytes()) != "1dc1da38b52d6171c2eed895e5d1120f3bb61c9af9c408e655ac7b4b84c73cec":
+        raise RuntimeError("native line division source changed; review the optimization")
+    return ["--line-leading-zero"]
+
+
 def run(args, **kwargs):
     result = subprocess.run([str(a) for a in args], capture_output=True, check=True, **kwargs)
     if result.stderr:
@@ -142,7 +152,8 @@ def generate(tools, output, cpp):
         preprocessed.unlink()
     shaders = []
     for name, path, identity in catalogue():
-        run([tools / "kepler-compile", path, output / name])
+        options = native_compiler_options(path, identity)
+        run([tools / "kepler-compile", path, output / name, *options])
         meta = json.loads((output / (name + ".json")).read_text())
         if meta["chipset"] != 0x106 or meta["builtin_calls"] != 0 or meta["relocations"] != 0:
             raise RuntimeError(f"invalid target or unresolved code dependency: {name}")
@@ -158,14 +169,15 @@ def generate(tools, output, cpp):
             files[filename] = {"bytes": len(data), "sha256": digest(data),
                                "license": "MIT" if ext == "sph" else "PolyForm-Noncommercial-1.0.0"}
         shaders.append(dict(identity, asset=name, source=str(path.relative_to(ROOT)),
-                            source_sha256=digest(path.read_bytes()), metadata=meta))
+                            source_sha256=digest(path.read_bytes()), metadata=meta,
+                            native_options=options))
     (output / "NOTICES").write_bytes((VENDOR / "NOTICES").read_bytes())
     manifest = {"schema": 1, "chipset": 0x106, "byte_order": "little", "sources": sources["projects"],
                 "source_lock_sha256": digest((VENDOR / "sources.json").read_bytes()),
                 "firmware": firmware, "shaders": shaders, "files": files,
                 "host_toolchain": json.loads((tools / "toolchain.json").read_text()),
                 "recipe_sha256": {str(p.relative_to(ROOT)): digest(p.read_bytes()) for p in
-                                  [HERE / "assets.py", HERE / "compile.cpp", HERE / "CMakeLists.txt",
+                                  [HERE / "assets.py", HERE / "compile.cpp", HERE / "line_division.h", HERE / "CMakeLists.txt",
                                    ROOT / "libs/gpu-abi/src/lib.rs"]},
                 "recipe": {"cpp": "GNU cpp 16.1.0 -P -CC -undef -nostdinc", "opt_level": 3,
                            "frontend": "Breenix fixed TGSI to nv50_ir", "helper_library": "forbidden",
