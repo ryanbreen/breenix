@@ -26,8 +26,12 @@ class PresentAcceptance(unittest.TestCase):
         # scheduler represented by a single poll of the fixture core.
         present = item(display, 'pub(super) fn present_as(')
         answer = present[present.index('    let outcome = wait_for('):present.index('    let outcome = match outcome')]
+        answer = answer.replace('#[cfg(target_arch = "x86_64")]', '')
         wait = item(core, 'fn op_wait(')
         poll = wait[wait.index('    let outcome = wait_for('):wait.index('    match outcome')]
+        watchdog = item(core, '    fn watchdog(')
+        hung = watchdog[watchdog.index('        let hung:'):watchdog.index('        for (serial, ctx, sent) in hung')]
+        fixture = fixture.replace('// WATCHDOG', hung)
         fixture = fixture.replace('// METHODS', methods).replace('// PRESENT_ANSWER', answer).replace('// WAIT_POLL', poll)
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
         with tempfile.TemporaryDirectory() as tmp:

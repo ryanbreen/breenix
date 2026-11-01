@@ -137,7 +137,7 @@ fn with_core<R>(f:impl FnOnce(&mut Core)->R)->Option<R>{Some(CORE.with(|c|f(&mut
 fn caller()->Result<u64,i64>{Ok(7)}fn owner(_:u64)->bool{true}
 fn read_arg(_:u64,_:u64)->Result<abi::SetMode,i64>{Ok(abi::SetMode{index:INPUT.load(Ordering::Acquire),reserved:[0;3]})}
 struct Transition;
-impl Transition{fn for_observation(_:u64)->Result<Self,i64>{Ok(Self)}}
+impl Transition{fn for_mutation(_:u64)->Result<Self,i64>{Ok(Self)}}
 mod arch {pub fn with_interrupts<R>(f:impl FnOnce()->R)->R{super::ENABLED.store(true,super::Ordering::Release);f()}}
 mod gk208 {pub fn set_mode(index:u32)->Result<(), &'static str>{
  assert!(super::ENABLED.load(super::Ordering::Acquire));

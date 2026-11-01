@@ -22,12 +22,16 @@ impl Answers{fn complete(&mut self,n:u32,a:u32){self.values.insert(n,a);}fn take
 struct Context{ns:u32,done_upto:u32,early:BTreeSet<u32>,outcomes:BTreeMap<u32,(u32,u32)>,errors_in_row:u32,inflight:VecDeque<u64>,owner:u64,totals:Totals,state:CtxState,flushes:Answers,native_probe_mask:u32,vertex_arena:Option<Arena>,depth:Option<Depth>}
 struct LastWrite{ctx:u32,device_ctx:u64,fence:u64,serial:u64,answer:u32,kind:u32}
 struct Resource{holds:u32,writers:u32,invalid:bool,invalidated_by:Option<u64>,generation:u64,last:Option<LastWrite>}
-struct Sub{ctx:u32,n:u32,fence:u64,native_fence:u64,present:Option<Presenting>,published:bool,requests:u32,result:Option<(u32,u32)>,error:Option<u32>,mismatch:Option<u32>,writer:Option<Writer>,written:Vec<u32>,whole:Vec<u32>,held:Vec<u32>,native_probe_mask:u32}
+struct Sub{sent_ns:Option<u64>,ctx:u32,n:u32,fence:u64,native_fence:u64,present:Option<Presenting>,published:bool,requests:u32,result:Option<(u32,u32)>,error:Option<u32>,mismatch:Option<u32>,writer:Option<Writer>,written:Vec<u32>,whole:Vec<u32>,held:Vec<u32>,native_probe_mask:u32}
 struct Done{answer:u32,fence:Option<u64>,native_fence:Option<u64>,echoed:u64}
 impl Done{fn matches_fence(&self,f:u64)->bool{self.fence==Some(f)}}
 struct Core{display:Display,contexts:BTreeMap<u32,Context>,procs:BTreeMap<u64,Proc>,resources:BTreeMap<u32,Resource>,subs:BTreeMap<u64,Sub>,stalled:bool,released:Vec<u32>}
 impl Core{
  fn unhold(&mut self,id:u32){self.resources.get_mut(&id).unwrap().holds-=1;self.released.push(id);}
+ fn pending_watchdog(&self)->Vec<(u64,u32,u64)>{let now:u64=3_000_000_000;mod limits{pub const WATCHDOG_NS:u64=2_000_000_000;}
+ // WATCHDOG
+ hung
+ }
  fn free_if_unused(&mut self,_:u32){}fn settle(&mut self,_:u32){}
  // METHODS
 }
@@ -37,7 +41,7 @@ fn fresh()->Core{
  contexts:BTreeMap::from([(1,Context{ns:7,done_upto:1,early:BTreeSet::new(),outcomes:BTreeMap::new(),errors_in_row:0,inflight:VecDeque::from([17]),owner:1,totals:Totals::default(),state:CtxState::Live,flushes:Answers::default(),native_probe_mask:0,vertex_arena:None,depth:None})]),
  procs:BTreeMap::from([(1,Proc{presents:0,totals:Totals::default()})]),
  resources:[(71,2),(72,2)].into_iter().map(|(id,holds)|(id,Resource{holds,writers:0,invalid:false,invalidated_by:None,generation:0,last:None})).collect(),
- subs:BTreeMap::from([(17,Sub{ctx:1,n:2,fence:123,native_fence:0,present:Some(Presenting{id:72,seq:2,owner:1}),published:false,requests:1,result:None,error:None,mismatch:None,writer:None,written:vec![],whole:vec![],held:vec![72],native_probe_mask:0})]),stalled:false,released:vec![]}
+ subs:BTreeMap::from([(17,Sub{sent_ns:Some(1),ctx:1,n:2,fence:123,native_fence:0,present:Some(Presenting{id:72,seq:2,owner:1}),published:false,requests:1,result:None,error:None,mismatch:None,writer:None,written:vec![],whole:vec![],held:vec![72],native_probe_mask:0})]),stalled:false,released:vec![]}
 }
 fn wait_for<T>(_:Option<u64>,_:bool,f:impl FnOnce(&mut Core)->Option<T>)->Result<T,()>{CORE.with(|c|f(&mut c.borrow_mut()).ok_or(()))}
 thread_local!{static CORE:std::cell::RefCell<Core>=std::cell::RefCell::new(fresh());}
@@ -56,20 +60,23 @@ fn wait_poll(n:u32)->Result<Result<(u32,u32),i64>,()>{let id=1;let deadline=0;co
  assert_eq!(wait_poll(2),Ok(Ok((fence_status::OK,0))),"PRESENT returned but timeout-zero WAIT did not complete");
  CORE.with(|c|{let mut c=c.borrow_mut();
   assert!(c.subs[&17].published);assert_eq!(c.subs[&17].requests,1);
+  assert!(c.contexts[&1].inflight.contains(&17),"accepted flip lost its context lifetime");
+  assert_eq!(c.pending_watchdog(),[(17,1,1)],"unlatched accepted flip escaped the watchdog");
   assert_eq!(c.display.outstanding,1);assert!(c.released.is_empty());
   assert_eq!(c.display.binding.unwrap().id,72);assert!(c.display.known);
   assert_eq!(c.resources[&71].holds,2);assert_eq!(c.resources[&72].holds,2);
   c.submit_returned(17,true,Done{answer:dev::success(),fence:Some(123),native_fence:Some(9),echoed:9});
   assert_eq!(c.display.outstanding,0);assert_eq!(c.procs[&1].presents,1);
   assert_eq!(c.contexts[&1].done_upto,2);assert!(c.contexts[&1].early.is_empty());
-  assert!(c.subs.is_empty());assert_eq!(c.resources[&71].holds,0);assert_eq!(c.resources[&72].holds,2);
+  assert!(c.subs.is_empty());assert!(c.contexts[&1].inflight.is_empty());assert_eq!(c.resources[&71].holds,0);assert_eq!(c.resources[&72].holds,2);
  });
  assert_eq!(wait_poll(2),Ok(Ok((fence_status::OK,0))));
 }
 #[test]fn acceptance_preserves_earlier_context_fence_order(){
  CORE.with(|c|{let mut c=c.borrow_mut();c.subs.get_mut(&17).unwrap().n=3;c.present_accepted(17);assert_eq!(c.contexts[&1].done_upto,1);assert!(c.contexts[&1].early.contains(&3));});
- assert_eq!(present_answer(3),Ok((fence_status::OK,dev::success())));
+ assert!(present_answer(3).is_err(),"PRESENT returned ahead of an earlier context fence");
  assert!(wait_poll(3).is_err());
  CORE.with(|c|{let mut c=c.borrow_mut();let ctx=c.contexts.get_mut(&1).unwrap();ctx.early.insert(2);while ctx.early.remove(&(ctx.done_upto+1)){ctx.done_upto+=1;}});
+ assert_eq!(present_answer(3),Ok((fence_status::OK,dev::success())));
  assert_eq!(wait_poll(3),Ok(Ok((fence_status::OK,0))));
 }

@@ -20,7 +20,7 @@ pub(super) const KERNEL_MODE: usize = 1;
 #[derive(Clone, Copy)]
 pub(super) struct Binding {
     pub id: u32,
-    /// Context fence of this binding; native G26 may still await its latch.
+    /// Context fence of this binding; the native latch is tracked separately.
     pub fence: u64,
     pub answer: u32,
 }
@@ -49,7 +49,7 @@ pub(super) struct State {
     pub sent: u64,
     /// Native G26 binding sequence most recently accepted by core-channel GET.
     pub accepted: u64,
-    /// `PRESENT`s sent whose flush has not completed.
+    /// Presents still awaiting their virtual flush or native display latch.
     pub outstanding: u32,
     /// The latest sent `PRESENT` completed OK (initially true before a send).
     pub latest_ok: bool,
@@ -122,20 +122,19 @@ pub(super) fn write_blocked(c: &Core, written: &[u32]) -> bool {
 
 impl Core {
     /// GET accepted the native UPDATE. Publish the named binding and syscall
-    /// answer, leaving the context fence and previous scanout holds pending.
+    /// answer and context fence. Previous scanout holds still await the latch.
     #[cfg(target_arch = "x86_64")]
     pub(super) fn present_accepted(&mut self, serial: u64) {
         let Some(sub) = self.subs.get(&serial) else { return };
         let Some(p) = sub.present else { return };
         let Some(ctx) = self.contexts.get_mut(&sub.ctx) else { return };
         let answer = dev::success();
-        ctx.flushes.complete(sub.n, answer);
         self.display.binding = Some(Binding {
             id: p.id, fence: (ctx.ns as u64) << 32 | sub.n as u64, answer,
         });
         self.display.accepted = p.seq;
         self.display.known = p.seq == self.display.sent;
-        notify();
+        self.publish(serial, fence_status::OK, answer);
     }
     /// A `PRESENT`'s flush came back: the latest one, completed OK, makes its binding
     /// known and ends the holds of resources only an earlier bind could have shown.
@@ -240,7 +239,7 @@ pub(super) fn present(arg: u64, len: u64) -> Result<u64, i64> {
 }
 
 /// Bind `target` of `tgid` to the scanout in `context` and wait for its flush answer
-/// (native G26: GET acceptance, with a separate latch fence): the fence,
+/// (native G26: GET acceptance, with internal latch tracking): the fence,
 /// its status and the device's answer. `on_sent` receives the fence once the bind is queued;
 /// its error, or an interrupted wait, leaves the queued present to complete on its own.
 pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(u64) -> Result<(), i64>) -> Result<(u64, u32, u32), i64> {
@@ -449,14 +448,16 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
         let Some(ctx) = c.contexts.get_mut(&ctx_id) else {
             return Some((fence_status::DEVICE_RESET, 0));
         };
+        // Acceptance publishes through the context sequence too: a PRESENT
+        // cannot return ahead of an earlier unpublished context fence.
+        if n > ctx.done_upto {
+            return None;
+        }
         #[cfg(target_arch = "x86_64")]
         if dev::backend() == abi::backend::GK208 {
             if let Some(answer) = ctx.flushes.take_ready(n) {
                 return Some((fence_status::OK, answer));
             }
-        }
-        if n > ctx.done_upto {
-            return None;
         }
         let answer = ctx.flushes.take(n);
         Some(
@@ -540,7 +541,7 @@ pub(super) fn set_mode(arg: u64, len: u64) -> Result<u64, i64> {
         return Err(EINVAL);
     }
     #[cfg(target_arch = "x86_64")]
-    let _transition=Transition::for_observation(tgid)?;
+    let _transition=Transition::for_mutation(tgid)?;
     #[cfg(target_arch = "x86_64")]
     if super::arch::with_interrupts(|| crate::gk208::set_mode(a.index)).is_err() {
         // A refused UPDATE may already have changed what the head reads.
@@ -580,8 +581,16 @@ fn publish_owner(c: &mut Core) {
 
 pub(super) struct Transition;
 impl Transition {
-    pub(super) fn for_observation(group: u64) -> Result<Self, i64> {
+    #[cfg(target_arch = "x86_64")]
+    pub(super) fn for_mutation(group: u64) -> Result<Self, i64> {
         let guard = Self::acquire()?;
+        if !owner(group) {
+            return Err(EPERM);
+        }
+        Ok(guard)
+    }
+    pub(super) fn for_observation(group: u64) -> Result<Self, i64> {
+        let guard = Self::observe()?;
         if !owner(group) {
             return Err(EPERM);
         }
@@ -590,7 +599,7 @@ impl Transition {
     /// A transition for SCANOUT_READBACK: the window layer authorized the observer, which
     /// need not own the display; the binding cannot change while it is held.
     pub(super) fn for_window_observer() -> Result<Self, i64> {
-        Self::acquire()
+        Self::observe()
     }
     /// A transition for the kernel's screen: while no process owns the display, or while
     /// the owner's terminal is released and the kernel draws the foreground one (contract
@@ -608,7 +617,20 @@ impl Transition {
         })
         .flatten()
     }
+    /// Mutations must let the adapter consume the retained latch identity before
+    /// a modeset or ownership restore can reuse the native notifier (#2624).
     fn acquire() -> Result<Self, i64> {
+        wait_for(None, true, |c| {
+            if c.display.changing || c.display.outstanding != 0 {
+                return None;
+            }
+            c.display.changing = true;
+            Some(())
+        })
+        .map_err(|_| EINTR)?;
+        Ok(Self)
+    }
+    fn observe() -> Result<Self, i64> {
         wait_for(None, true, |c| {
             // G26 observations name the accepted binding even before its latch.
             // The transition excludes a later PRESENT throughout the readback.

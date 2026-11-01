@@ -1498,8 +1498,24 @@ impl Core {
     fn publish(&mut self, serial: u64, status: u32, answer: u32) {
         let Some(sub) = self.subs.get_mut(&serial) else { return };
         if sub.published {
+            // Native PRESENT published its context fence at GET acceptance.
+            // Its later latch (or reset retirement) ends the display holds
+            // without republishing that context fence (G26 amendment 2).
+            let presenting = (sub.requests == 0).then(|| sub.present.take()).flatten();
+            if let Some(p) = presenting {
+                let ns = self.contexts.get(&sub.ctx).map_or(0, |c| c.ns);
+                let fence = (ns as u64) << 32 | sub.n as u64;
+                let ctx_id = sub.ctx;
+                if let Some(ctx) = self.contexts.get_mut(&ctx_id) {
+                    ctx.inflight.retain(|&s| s != serial);
+                }
+                self.presented(p, status == fence_status::OK, fence, answer);
+                self.retire_if_done(serial);
+                self.settle(ctx_id);
+            }
             return;
         }
+        let latched = sub.requests == 0;
         sub.published = true;
         if let Some(writer) = &sub.writer { writer.publish(status); }
         let (ctx_id, n, fence, presenting) = (sub.ctx, sub.n, sub.native_fence, sub.present);
@@ -1522,7 +1538,11 @@ impl Core {
                     Some(_) => {}
                 }
             }
-            ctx.inflight.retain(|&s| s != serial);
+            // An accepted native PRESENT still owns a live display request.
+            // Keep its context alive until the adapter retires that latch.
+            if presenting.is_none() || latched {
+                ctx.inflight.retain(|&s| s != serial);
+            }
             if status == fence_status::DEVICE_ERROR {
                 ctx.totals.device_errors += 1;
                 if let Some(p) = self.procs.get_mut(&ctx.owner) {
@@ -1537,7 +1557,7 @@ impl Core {
                 ctx.flushes.complete(n, answer);
             }
         }
-        if let Some(p) = presenting {
+        if let Some(p) = presenting.filter(|_| latched) {
             let ns = self.contexts.get(&ctx_id).map_or(0, |c| c.ns);
             self.presented(p, ok, (ns as u64) << 32 | n as u64, answer);
         }
@@ -1705,7 +1725,8 @@ impl Core {
         let hung: Vec<(u64, u32, u64)> = self
             .subs
             .iter()
-            .filter(|(_, s)| !s.published && s.sent_ns.is_some_and(|at| now.saturating_sub(at) >= limits::WATCHDOG_NS))
+            .filter(|(_, s)| (!s.published || s.present.is_some())
+                && s.sent_ns.is_some_and(|at| now.saturating_sub(at) >= limits::WATCHDOG_NS))
             .map(|(&serial, s)| (serial, s.ctx, s.sent_ns.unwrap_or(now)))
             .collect();
         for (serial, ctx, sent) in hung {
