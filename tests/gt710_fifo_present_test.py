@@ -79,6 +79,9 @@ impl Core{
  let p=Presenting{id:72,seq:2,owner:1};
  let old=Binding{id:71,fence:1,answer:dev::success()};
  let mut c=Core{display:Display{holds:[71,72].into_iter().collect(),outstanding:1,sent:2,accepted:1,latest_ok:true,known:false,binding:Some(old),stack:vec![Owner{group:1,last:Some(old)}]},resources:BTreeMap::from([(71,Resource{holds:2}),(72,Resource{holds:1})]),procs:BTreeMap::from([(1,Proc{presents:0})]),subs:BTreeMap::from([(17,Sub{present:Some(p),ctx:1,n:2})]),contexts:BTreeMap::from([(1,Context{ns:7,done_upto:0,flushes:Answers::default()})]),released:vec![]};
+ c.display.outstanding=0;
+ assert!(!display::write_blocked(&c,&[71]),"single-buffered redraw waited for a flip that does not exist");
+ c.display.outstanding=1;
  assert!(display::write_blocked(&c,&[71]),"displayed A was writable before B latched");
  assert!(display::write_blocked(&c,&[72]),"pending B was writable before latch");
  assert!(!display::write_blocked(&c,&[73]),"disjoint C must remain writable");
@@ -92,7 +95,7 @@ impl Core{
  c.presented(p,true,(7<<32)|2,dev::success());
  assert_eq!(c.display.outstanding,0);assert_eq!(c.released,[71,71]);
  assert!(!display::write_blocked(&c,&[71]),"A stays blocked after B's actual latch");
- assert!(display::write_blocked(&c,&[72]),"B remains displayed after its own latch");
+ assert!(!display::write_blocked(&c,&[72]),"single-buffered B cannot redraw after its latch with no flip pending");
 }
 '''.replace('METHOD', method).replace('ACCEPTED', accepted).replace('PRESENTED', presented).replace('pub(super)', 'pub(crate)')
         self.run_rust(harness)
