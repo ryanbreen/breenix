@@ -30,6 +30,11 @@ use policy::{Stage, Startup};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 static CONTROLLER: super::lock::Mutex<Option<Controller>> = super::lock::Mutex::new(None);
+static SENSOR_ACCESS: super::lock::Mutex<()> = super::lock::Mutex::new(());
+fn read_temperature(base:usize)->Result<u32,&'static str> {
+    let _sensor=SENSOR_ACCESS.lock();
+    super::thermal::temperature(&mut Io(Registers(base)))
+}
 static TRIPPED: AtomicBool = AtomicBool::new(false);
 static HALTED: AtomicBool = AtomicBool::new(false);
 pub(super) fn halted()->bool {HALTED.load(Ordering::Acquire)}
@@ -89,7 +94,7 @@ struct Controller {
 }
 impl Controller {
     fn temperature(&self)->Result<u32,&'static str> {
-        super::thermal::temperature(&mut Io(Registers(self.base)))
+        read_temperature(self.base)
     }
     fn cool(&self)->Result<(),&'static str> {
         if TRIPPED.load(Ordering::Acquire) || self.temperature()? >=85 {Err("temperature at least 85 C or guard latched")}
@@ -160,7 +165,7 @@ impl Startup for Controller {
         if stage!=Stage::Sensor {self.cool()?;}
         match stage {
             Stage::Sensor=>{
-                super::thermal::setup(&mut Io(Registers(self.base)))?;
+                {let _sensor=SENSOR_ACCESS.lock();super::thermal::setup(&mut Io(Registers(self.base)))?;}
                 self.cool()?;
                 let base=self.base;
                 crate::task::kthread::kthread_run(move ||guard_thread(base),"kgputherm")
@@ -187,11 +192,14 @@ impl Startup for Controller {
             Stage::Gpc=>{
                 let regs=Registers(self.base);
                 // MIT volt/gk104.c speedo read with the gf100 fuse access gates.
+                let speedo={
+                let _sensor=SENSOR_ACCESS.lock();
                 regs.write(0x122634,0);
                 let enable=regs.read(0x22400);let access=regs.read(0x21000);
                 regs.write(0x22400,enable|0x800);regs.write(0x21000,access|1);
                 let speedo=regs.read(0x214a8) as i32;
                 regs.write(0x21000,access);regs.write(0x22400,enable);regs.write(0x122634,0x41);
+                speedo};
                 let (current,required)=production_rom::voltage(&self.rom,self.target.voltage_id,self.temperature()?,speedo,&mut |a|regs.read(a as usize))?;
                 if current<required {return Err("current VID voltage below performance requirement");}
                 crate::serial_println!("GT710_CLOCK_VOLTAGE current_uv={} required_uv={} voltage_id={}",current,required,self.target.voltage_id);
@@ -267,7 +275,7 @@ fn guard_thread(base:usize) {
     let mut guard=policy::Guard::new();
     let mut logged=None;
     loop {
-        let t=super::thermal::temperature(&mut Io(Registers(base)));
+        let t=read_temperature(base);
         let trip=guard.sample(t);
         if trip {TRIPPED.store(true,Ordering::Release);}
         // A startup fallback with an unconfirmed restore also needs retrying.

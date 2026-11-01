@@ -284,8 +284,8 @@ def boot(args):
     if category:
         command += ['--gt710-category', category]
     if getattr(args,'kernel_command_line',None) is not None:
-        if payload!='image' or args.disk!='root':
-            raise SystemExit('--kernel-command-line needs a disk-root image boot')
+        if payload!='image' or args.disk!='root' or args.mode=='tests':
+            raise SystemExit('--kernel-command-line needs a production disk-root image boot')
         command += ['--kernel-command-line', args.kernel_command_line]
     if milestone:
         command += ['--milestone', milestone]

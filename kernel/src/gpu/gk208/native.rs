@@ -386,6 +386,11 @@ fn memx_pending_check(regs:&mut Registers,head:u32,sor:u32,health:super::memx_di
     let mut allow=MEMX_CLEAR_AVAILABLE.load(Ordering::Acquire);
     let result=super::memx_display::pending_check(regs,head,sor,health,&mut allow);
     MEMX_CLEAR_AVAILABLE.store(allow,Ordering::Release);
+    if let Some(readback)=result.0 {
+        crate::serial_println!("GT710_C5F_UNDERFLOW_CLEAR phase=pending register={:#x} before={:#x} clear_mask=0x111 clear_data=0x10 arm_data=0x1 readback={:#x}",
+            0x616308+head*0x800,health.underflow,readback.underflow);
+        memx_health_record("pending","clear-readback",head,sor,readback);
+    }
     result
 }
 fn memx_health_record(phase: &str, point: &str, head: u32, sor: u32,
@@ -426,12 +431,7 @@ pub(in crate::gk208) fn memx_display_boundary(regs: &mut Registers, phase: &str,
     memx_health_record(phase,if after_reply {"after-exec"}else{"before-exec"},head,sor,health);
     if !after_reply {return health.check();}
     MEMX_CLEAR_AVAILABLE.store(true,Ordering::Release);
-    let (readback,result)=memx_pending_check(regs,head,sor,health);
-    if let Some(readback)=readback {
-        crate::serial_println!("GT710_C5F_UNDERFLOW_CLEAR phase={} register={:#x} before={:#x} clear_mask=0x111 clear_data=0x10 arm_data=0x1 readback={:#x}",
-            phase,0x616308+head*0x800,health.underflow,readback.underflow);
-        memx_health_record(phase,"clear-readback",head,sor,readback);
-    }
+    let (_,result)=memx_pending_check(regs,head,sor,health);
     result?;
     MEMX_PRESENT_PHASE.store(match phase {"intermediate"=>1,"target"=>2,"return-intermediate"=>3,"return"=>4,_=>return Err("C5f unknown EXEC phase")},Ordering::Release);
     Ok(())

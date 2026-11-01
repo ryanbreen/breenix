@@ -103,7 +103,10 @@ pub fn voltage(r:&[u8],id:u8,temp:u32,speedo:i32,read:&mut impl FnMut(u32)->u32)
  }
  let ranged=v==0x40 || v==0x50 && n(r,t+4,1)?&2!=0;
  let mut current=None;let mut selected=None;
- let mut consider=|i:u32,uv:u32| {if i==vid {current=Some(uv);}if uv>=required {selected=Some(selected.map_or(uv,|old:u32|old.min(uv)));}};
+ let mut consider=|i:u32,uv:u32| {
+  if i==vid {current=Some(uv);}
+  if uv>=required {selected=Some(selected.map_or(uv,|old:u32|old.min(uv)));}
+ };
  if ranged {
   let base=n(r,t+if v==0x40 {4}else{0x12},4)?&if v==0x40 {u32::MAX}else{0xffffff};
   let step=n(r,t+if v==0x40 {8}else{0x16},2)? as i16 as i64;
