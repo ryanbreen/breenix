@@ -3,12 +3,17 @@ mod policy;
 use policy::{Stage, Startup, Guard, start, within_one_percent};
 
 #[derive(Default)]
-struct Device { fail: Option<Stage>, events: Vec<Stage>, restores: Vec<&'static str>, restore_fails: bool }
+struct Device { fail: Option<Stage>, events: Vec<Stage>, restores: Vec<&'static str>, restore_fails: bool, memory:bool, gpc:bool, fail_before:bool }
 impl Startup for Device {
     fn step(&mut self, stage: Stage) -> Result<(), &'static str> {
         self.events.push(stage);
+        if !self.fail_before {
+            self.memory |= stage==Stage::MemoryIntermediate;
+            self.gpc |= stage==Stage::Gpc;
+        }
         if self.fail == Some(stage) { Err("injected hardware failure") } else { Ok(()) }
     }
+    fn changed(&self)->(bool,bool) {(self.gpc,self.memory)}
     fn restore_gpc(&mut self) -> Result<(), &'static str> {
         self.restores.push("gpc");
         if self.restore_fails { Err("restore timeout") } else { Ok(()) }
@@ -63,4 +68,19 @@ fn guard_trips_at_85_or_sensor_loss_and_never_raises_again() {
         for t in [Ok(34), Ok(85), hot] { assert!(!g.sample(t)); }
         assert!(g.tripped());
     }
+}
+
+#[test]
+fn failure_before_the_first_write_skips_memory_restoration() {
+ let mut d=Device{fail:Some(Stage::MemoryIntermediate),fail_before:true,..Device::default()};
+ let out=start(&mut d,false);assert!(!out.full);assert!(d.restores.is_empty());
+}
+#[test]
+fn failed_guard_restores_retry_each_second_and_critical_stop_latches_once() {
+ let mut g=Guard::new();assert!(g.sample(Ok(85)));
+ assert!(g.retry_due(0,true));assert!(!g.retry_due(250_000_000,true));
+ assert!(!g.retry_due(999_999_999,true));assert!(g.retry_due(1_000_000_000,true));
+ assert!(!g.critical(Ok(94),true));assert!(!g.critical(Ok(95),false));
+ assert!(g.critical(Ok(95),true));assert!(!g.critical(Ok(96),true));
+ assert!(!g.retry_due(2_000_000_000,false));
 }
