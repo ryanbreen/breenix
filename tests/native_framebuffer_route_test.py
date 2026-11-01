@@ -19,7 +19,7 @@ use errors::ErrorCode;
 #[derive(Clone,Copy)] struct FbDrawCmd {op:u32,p1:i32,p2:i32,p3:i32,p4:i32}
 #[derive(Clone,Copy)] pub struct Pane {pub whole_screen:bool,pub user_addr:u64,pub user_stride:usize,pub height:usize,pub width:usize}
 static OWNER:AtomicBool=AtomicBool::new(true);static ROOT_USER:AtomicBool=AtomicBool::new(true);
-static ACTIVE:AtomicBool=AtomicBool::new(true);static CALLS:AtomicUsize=AtomicUsize::new(0);
+static ACTIVE:AtomicBool=AtomicBool::new(true);static RETIRED:AtomicBool=AtomicBool::new(false);static CALLS:AtomicUsize=AtomicUsize::new(0);
 fn owns_display(_:u64,_:&process::Process)->bool{OWNER.load(Ordering::SeqCst)}
 mod process {
  pub struct Cred {pub euid:u32}
@@ -39,6 +39,7 @@ mod console {
  pub mod vt {pub struct Presentation;impl Presentation {pub fn begin(_:bool)->Option<Self>{Some(Self)}}}
 }
 mod gpu {
+ pub mod console {pub fn active()->bool{super::super::RETIRED.load(super::super::Ordering::SeqCst)}}
  pub fn display_active()->bool{super::ACTIVE.load(super::Ordering::SeqCst)}
  pub mod framebuffer {
   pub fn flush(_:super::super::Pane,rows:std::ops::Range<usize>,cols:std::ops::Range<usize>)->Result<(),i64>{
@@ -58,6 +59,8 @@ fn main(){
  ROOT_USER.store(false,Ordering::SeqCst);assert_eq!(call(&cmd),SyscallResult::Err(1));
  ROOT_USER.store(true,Ordering::SeqCst);cmd.op=6;ACTIVE.store(false,Ordering::SeqCst);
  assert_eq!(call(&cmd),SyscallResult::Err(16),"pre-admission CPU-busy result remains");
+ RETIRED.store(true,Ordering::SeqCst);
+ assert_eq!(call(&cmd),SyscallResult::Ok(0),"retirement keeps GPU routing even when admission is lost");
  let _=(gpu::display_active as fn()->bool,gpu::framebuffer::pixel as fn(usize,usize)->Result<u32,i64>);
  let _=gpu::framebuffer::flush as fn(Pane,std::ops::Range<usize>,std::ops::Range<usize>)->Result<(),i64>;
 }
@@ -70,5 +73,40 @@ fn main(){
             p=Path(tmp);(p/'route.rs').write_text(fixture)
             subprocess.run(prefix+['rustc','--edition=2021','-Dwarnings',str(p/'route.rs'),'-o',str(p/'route')],check=True)
             subprocess.run([str(p/'route')],check=True)
+
+    def test_pitched_rows_keep_other_pixels_and_copy_faults_fail(self):
+        source=(ROOT/'kernel/src/gpu/framebuffer.rs').read_text()
+        fixture=r'''
+use std::ops::Range;
+use std::cell::RefCell;
+const EFAULT:i64=14;
+struct Pages(RefCell<Vec<u8>>);
+impl Pages {fn write(&self,at:usize,data:&[u8]){self.0.borrow_mut()[at..at+data.len()].copy_from_slice(data);}}
+#[derive(Clone,Copy)] struct FbMmapInfo {user_addr:u64,user_stride:usize}
+mod syscall {pub mod userptr {
+ pub fn read_user_bytes(dst:*mut u8,src:u64,n:usize)->Result<(),u64>{
+  if src==0 {return Err(14);}
+  unsafe{std::ptr::copy_nonoverlapping(src as *const u8,dst,n);}Ok(())
+ }
+}}
+// COPY
+fn main(){
+ let input:Vec<u8>=(0..80).collect();let pages=Pages(RefCell::new(vec![0x77;128]));
+ let pane=FbMmapInfo{user_addr:input.as_ptr() as u64,user_stride:20};
+ assert_eq!(copy_rows(&pages,32,pane,1..3,1..3),Ok(()));
+ let out=pages.0.borrow();
+ assert_eq!(&out[36..44],&[24,25,26,255,28,29,30,255]);
+ assert_eq!(&out[68..76],&[44,45,46,255,48,49,50,255]);
+ assert!(out[..36].iter().chain(&out[44..68]).chain(&out[76..]).all(|b|*b==0x77));drop(out);
+ assert_eq!(copy_rows(&pages,32,FbMmapInfo{user_addr:0,user_stride:20},0..1,0..1),Err(EFAULT));
+ assert_eq!(&pages.0.borrow()[..4],&[0x77;4]);
+}
+'''
+        fixture=fixture.replace('// COPY',item(source,'fn copy_rows('))
+        prefix=['taskpolicy','-b'] if sys.platform=='darwin' else []
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp);(p/'rows.rs').write_text(fixture)
+            subprocess.run(prefix+['rustc','--edition=2021','-Dwarnings',str(p/'rows.rs'),'-o',str(p/'rows')],check=True)
+            subprocess.run([str(p/'rows')],check=True)
 
 if __name__=='__main__':unittest.main()

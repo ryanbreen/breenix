@@ -34,6 +34,8 @@
 //! (section 1.4: no kernel output on any path).
 
 pub mod window_targets;
+#[cfg(target_arch = "x86_64")]
+pub mod framebuffer;
 use crate::gpu_completion as completion;
 mod present_answers;
 mod display;
@@ -248,6 +250,8 @@ struct Proc {
     creating: bool,
     /// One context initialized by window/claim setup for the next CONTEXT_CREATE.
     prepared_context: Option<u64>,
+    #[cfg(target_arch = "x86_64")]
+    framebuffer: Option<framebuffer::Pane>,
     /// `PRESENT`s whose flush completed OK (`/proc/breenix/stage-composites`).
     presents: u64,
 }
@@ -1026,6 +1030,8 @@ impl Core {
             quota: Quota::default(),
             creating: false,
             prepared_context: None,
+            #[cfg(target_arch = "x86_64")]
+            framebuffer: None,
             presents: 0,
         })
     }

@@ -117,6 +117,12 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         if cmd.p1 < 0 || cmd.p2 < 0 || cmd.p1 as usize >= width || cmd.p2 as usize >= height {
             return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
         }
+        if crate::gpu::display_active() || crate::gpu::console::active() {
+            return match crate::gpu::framebuffer::pixel(cmd.p1 as usize, cmd.p2 as usize) {
+                Ok(pixel) => SyscallResult::Ok(pixel as u64),
+                Err(errno) => SyscallResult::Err(errno as u64),
+            };
+        }
         return match crate::console::read_display_pixel(cmd.p1 as usize, cmd.p2 as usize) {
             Some(pixel) => SyscallResult::Ok(pixel as u64),
             None => SyscallResult::Err(super::ErrorCode::Busy as u64),
@@ -139,6 +145,12 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     } else {
         (0..pane.height, 0..pane.width)
     };
+    if crate::gpu::display_active() || crate::gpu::console::active() {
+        return match crate::gpu::framebuffer::flush(pane, rows, columns) {
+            Ok(()) => SyscallResult::Ok(0),
+            Err(errno) => SyscallResult::Err(errno as u64),
+        };
+    }
     // SAFETY: the pane is the caller's own fb_mmap mapping, `pane.height` rows of
     // `pane.user_stride` bytes, mapped with pre-allocated frames, and the copy is
     // clipped to it.
