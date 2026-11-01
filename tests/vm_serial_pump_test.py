@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import re
 import runpy
 import socket
 import subprocess
@@ -10,6 +11,7 @@ from pathlib import Path
 
 PUMP = Path(__file__).resolve().parents[1] / 'scripts/vm-serial-pump.py'
 CLEANER = runpy.run_path(str(PUMP.parent / 'metal/metal_lib.py'))['SerialCleaner']
+HOST = runpy.run_path(str(PUMP.parent / 'metal/server-suite'))
 
 
 def connect(path, process):
@@ -29,6 +31,59 @@ def connect(path, process):
 
 
 class SerialPumpTest(unittest.TestCase):
+    def test_retained_shell_echo_and_kill_through_target(self):
+        # Shell-only bytes from the failed 20261101T210030Z capture at 214e7a3b.
+        # No login, site values or kernel records are retained in the fixture.
+        output = (Path(__file__).parent / 'fixtures/console-input-redraw.raw').read_bytes()
+        clear = b'\rbsh root> \x1b[K'
+        echo, exit_echo, tail = output.split(clear)
+        self.assertEqual(tail, b'')
+        with tempfile.TemporaryDirectory(prefix='pump-', dir='/tmp') as tmp:
+            run = Path(tmp)
+            process = subprocess.Popen(['python3', str(PUMP), str(run), str(run / 'whole.txt')])
+            try:
+                guest = connect(run / 'serial.sock', process)
+                self.addCleanup(guest.close)
+                target = object.__new__(HOST['QemuTarget'])
+                target.run = run
+                target.boot = (run / 'current').read_text().strip()
+                target.directory = run / 'boots' / target.boot
+                target.holds_lease = lambda: True  # Socket peer replaces QEMU in this host test.
+                console = target.console('', '')
+                original_send = console.send
+                sent = []
+                def send(text, enter=True):
+                    original_send(text, enter)
+                    expected = (text + ('\r' if enter else '')).encode()
+                    received = b''
+                    while len(received) < len(expected):
+                        received += guest.recv(len(expected) - len(received))
+                    self.assertEqual(received, expected)
+                    sent.append(received)
+                    response = {b'print("xxxxxxxxx': echo, b'\x15': clear, b'exit': exit_echo}.get(received, b'')
+                    # Split a CR and an ANSI sequence across socket writes too.
+                    for at in range(0, len(response), 7):
+                        guest.sendall(response[at:at + 7])
+                console.send = send
+                original_wait = console.wait
+                console.wait = lambda offset, pattern, what, **kw: original_wait(offset, pattern, what, timeout=1)
+                console.type_line('print("xxxxxxxxx', attempts=1)
+                offset = console.size()
+                console.send('\x15', enter=False)
+                console.wait(offset, r'(?m)^' + console.PROMPT + r' *(?=\[init\]|\n|$)', 'the cleared console line')
+                console.type_line('exit', attempts=1)
+                offset = console.size()
+                console.send('\x15', enter=False)
+                console.wait(offset, r'(?m)^' + console.PROMPT + r' *(?=\[init\]|\n|$)', 'the cleared console line')
+                self.assertEqual(sent, [b'print("xxxxxxxxx', b'\r', b'\x15', b'exit', b'\r', b'\x15'])
+                guest.shutdown(socket.SHUT_WR)
+                self.assertEqual(process.wait(timeout=5), 0)
+                self.assertEqual((target.directory / 'serial.raw').read_bytes(), output)
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+
     def test_reset_creates_boot_records(self):
         with tempfile.TemporaryDirectory(prefix='pump-', dir='/tmp') as tmp:
             run = Path(tmp)
