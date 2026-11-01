@@ -3,7 +3,7 @@
 use alloc::vec::Vec;
 use core::cell::Cell;
 
-pub const PHASES: [&str; 34] = ["entry", "copy_in", "validation", "admission_poll",
+pub const PHASES: [&str; 38] = ["entry", "copy_in", "validation", "admission_poll",
     "setup", "translate", "frame_prepare", "fence_bookkeeping", "native_submit",
     "doorbell", "copy_out", "cleanup", "other",
     "publication", "command_upload", "descriptor_upload", "bar_flush", "gp_put",
@@ -11,7 +11,8 @@ pub const PHASES: [&str; 34] = ["entry", "copy_in", "validation", "admission_pol
     "frame_alloc", "frame_copy", "frame_maintain", "frame_build",
     "frame_regions", "frame_map", "frame_relocate",
     "admission_core_poll", "admission_inspect", "admission_pause", "admission_sleep",
-    "translate_validate", "translate_emit"];
+    "translate_validate", "translate_emit",
+    "native_bind", "native_payload", "native_build", "native_cache"];
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(usize)]
 pub enum Phase { Entry, Copy, Validate, Admission, Setup, Translate, FramePrepare,
@@ -20,7 +21,7 @@ pub enum Phase { Entry, Copy, Validate, Admission, Setup, Translate, FramePrepar
     TranslateEncode, TranslateCompact, TranslateBatch,
     FrameAlloc, FrameCopy, FrameMaintain, FrameBuild, FrameRegions, FrameMap, FrameRelocate,
     AdmissionPoll, AdmissionInspect, AdmissionPause, AdmissionSleep,
-    TranslateValidate, TranslateEmit }
+    TranslateValidate, TranslateEmit, NativeBind, NativePayload, NativeBuild, NativeCache }
 
 pub struct Split {
     start: u64,

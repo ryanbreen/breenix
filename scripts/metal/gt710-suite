@@ -164,13 +164,14 @@ SUBMIT_PHASES = ['entry', 'copy_in', 'validation', 'admission_poll', 'setup',
                  'frame_alloc', 'frame_copy', 'frame_maintain', 'frame_build',
                  'frame_regions', 'frame_map', 'frame_relocate',
                  'admission_core_poll', 'admission_inspect', 'admission_pause', 'admission_sleep',
-                 'translate_validate', 'translate_emit']
+                 'translate_validate', 'translate_emit',
+                 'native_bind', 'native_payload', 'native_build', 'native_cache']
 
 def validate_submit_costs(record):
     if 'submits' not in record and 'submit_phases' not in record:
         return
     rows = record.get('submits')
-    if record.get('submit_phases') not in (SUBMIT_PHASES, SUBMIT_PHASES[:13]) or not isinstance(rows, list):
+    if record.get('submit_phases') not in (SUBMIT_PHASES, SUBMIT_PHASES[:34], SUBMIT_PHASES[:13]) or not isinstance(rows, list):
         raise ValueError('invalid submit phase inventory')
     owners = set()
     for row in rows:

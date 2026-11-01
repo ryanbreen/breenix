@@ -41,7 +41,13 @@ mod gk208 {
         pub use super::gpu_time as gpu_clock;
         #[allow(dead_code)] // The guard keeps draw-group telemetry disabled.
         #[path="ROOT/kernel/src/gpu/gk208/gpu_groups.rs"] pub mod gpu_groups;
-        pub struct Submit; pub fn enabled()->bool{false}
+        #[allow(dead_code)] // The guard exercises packet lifetime, with no timer source.
+        #[path="ROOT/kernel/src/gpu/gk208/submit_cost.rs"] pub mod submit_cost;
+        pub struct Scope;
+        impl Drop for Scope { fn drop(&mut self) {} }
+        pub struct Submit;
+        impl Submit { pub fn scope(&self, _:submit_cost::Phase)->Scope { panic!("submit telemetry is disabled") } }
+        pub fn enabled()->bool{false}
     }
     pub mod adapter { pub struct EncodedDraw { pub words: Vec<u32> } }
     pub mod queue { pub struct Queue; impl Queue { pub fn slot(n: u32) -> u32 { (n - 1) % 4 } } }

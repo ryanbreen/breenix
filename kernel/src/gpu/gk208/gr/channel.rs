@@ -1655,12 +1655,17 @@ mod native {
             trace: Option<&crate::gk208::timing::Submit>) -> Result<(), &'static str> {
             if self.parking.is_empty() { return Err("native frame parking absent"); }
             let s = &self.session;
+            let binding = trace.map(|t| t.scope(crate::gk208::timing::submit_cost::Phase::NativeBind));
             crate::gk208::ce::with_resources(|r,_,io| r.bind(io,
                 s.context.space().directory.range.start,s.report.identity.instance,s.report.identity.epoch))?;
+            drop(binding);
             // Storage retains frame inputs and target holds; parking owns the code.
+            let rewriting = trace.map(|t| t.scope(crate::gk208::timing::submit_cost::Phase::NativePayload));
             let mut payload = crate::gk208::encode::channel_words(&draw.words, self.quarantine)?;
             crate::gk208::encode::channel_programs(&mut payload, &self.parking)?;
             crate::gk208::encode::compact_state(&mut payload)?;
+            drop(rewriting);
+            let building = trace.map(|t| t.scope(crate::gk208::timing::submit_cost::Phase::NativeBuild));
             let device_time = crate::gk208::timing::enabled()
                 && crate::boot::intent::command_line().is_some_and(|line|
                     line.split_ascii_whitespace().any(|word| word == "gt710-gpu-time"));
@@ -1716,7 +1721,10 @@ mod native {
             // Payload and parking both name the retained immutable catalogue.
             // Keep data/constant coherency without evicting its instructions
             // between primitive launches or while publishing parked state.
+            drop(building);
+            let cache = trace.map(|t| t.scope(crate::gk208::timing::submit_cost::Phase::NativeCache));
             crate::gk208::encode::retain_resident_instruction_cache(&mut command)?;
+            drop(cache);
             let submitted = if device_time { device_time_now() } else { 0 };
             let result = self.publish_encoded_traced(sequence,&mut command,trace);
             if result.is_ok() && device_time {
