@@ -356,6 +356,20 @@ fn kernel_source_files(directory: &Path, files: &mut Vec<PathBuf>) {
 }
 
 #[test]
+fn source_walk_includes_nested_rust_but_not_binary_assets() {
+    let root = std::env::temp_dir().join(format!("exit-tally-sources-{}", std::process::id()));
+    let nested = root.join("nested");
+    fs::create_dir_all(&nested).unwrap();
+    let rust = nested.join("transition.rs");
+    fs::write(&rust, b"self.state = ProcessState::Terminated(0);").unwrap();
+    fs::write(nested.join("colour.bgra"), [0xff, 0xfe]).unwrap();
+    let mut files = Vec::new();
+    kernel_source_files(&root, &mut files);
+    fs::remove_dir_all(&root).unwrap();
+    assert_eq!(files, vec![rust]);
+}
+
+#[test]
 fn terminated_state_assignments_are_confined_to_the_two_termination_functions() {
     let process_source = repo_text("kernel/src/process/process.rs");
     let process_code = compact_code(&process_source);

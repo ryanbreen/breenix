@@ -18588,3 +18588,19 @@ fn console_cursor_state_is_not_scheduler_thread_state() {
          fn reset(&mut self) { self.state = State { row: 0 }; } }");
     assert!(validate_opaque_thread_state_stores(&fixture).is_ok());
 }
+
+#[test]
+fn nested_state_fields_resolve_the_written_type_and_fail_closed() {
+    for (field_type, expected) in [("u32", 0), ("ThreadState", 1), ("Missing", 1)] {
+        let fixture = format!(
+            "struct Identity {{ state: {field_type} }} \
+             struct Report {{ identity: Identity }} \
+             struct Session {{ report: Report }} \
+             impl Session {{ fn execute(&mut self) {{ self.report.identity.state = read_register(); }} }}"
+        );
+        assert_eq!(opaque_thread_state_store_offsets(&fixture, &code_mask(&fixture)).len(), expected,
+            "field type {field_type}");
+    }
+    let opaque = "fn change(receiver: Unknown) { receiver.state = snapshot; }";
+    assert_eq!(opaque_thread_state_store_offsets(opaque, &code_mask(opaque)).len(), 1);
+}

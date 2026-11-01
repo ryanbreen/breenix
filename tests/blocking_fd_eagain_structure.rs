@@ -470,6 +470,20 @@ fn audit_console_route(handlers: &str, helper: &str) -> Result<(), String> {
 }
 
 #[test]
+fn revocation_predicate_is_audited_without_hiding_error_routes() {
+    let handlers = read("kernel/src/syscall/handlers.rs");
+    let helper = read("kernel/src/syscall/blocking_io.rs");
+    audit_console_route(&handlers, &helper).expect("revocation-aware read route");
+    // The predicate is a boolean helper, not an opaque syscall-result leaf.
+    // Supplying its definition must expose an injected EAGAIN or unknown call.
+    for result in ["Err(EAGAIN)", "unrecognized_error()"] {
+        let helper = format!("{helper}\nfn vt_revoked_since(number: usize, opened: u64) -> bool {{ {result} }}");
+        let error = audit_console_route(&handlers, &helper).unwrap_err();
+        assert!(error.contains("EAGAIN") || error.contains("unrecognized_error"), "{error}");
+    }
+}
+
+#[test]
 fn console_result_route_rejects_blocking_eagain_with_adapter_retained() {
     let handlers = read("kernel/src/syscall/handlers.rs");
     let helper = read("kernel/src/syscall/blocking_io.rs");
