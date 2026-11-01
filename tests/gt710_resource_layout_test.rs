@@ -349,6 +349,8 @@ fn unchanged_alias_reuses_publication_but_mapping_epoch_and_failed_bind_do_not()
     r.create(&mut a,&mut io,2,1,1,64,64).unwrap();
     let before=sample(&io);r.bind(&mut io,directory,0x123000,17).unwrap();
     assert!(io.invalidates>before.2,"new mappings must reach the channel alias");
+    assert_eq!((io.reads,io.writes),(before.0,before.1),
+        "changed PTEs require invalidation, but an owned unchanged PDE needs no PCIe read/write");
     let before=sample(&io);r.bind(&mut io,directory,0x123000,18).unwrap();
     assert!(io.invalidates>before.2,"a reset incarnation needs fresh publication");
     r.unref(2).unwrap();r.collect(&mut a,&mut io).unwrap();
