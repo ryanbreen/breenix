@@ -107,7 +107,13 @@ if [ -z "${BREENIX_VM_PERSISTENT_SUPERVISED:-}" ]; then
 fi
 source "$ROOT/scripts/host-slots.sh"
 mkdir "$run/boot.lock" || { echo 'run is already booting' >&2; exit 1; }
-cleanup() { rmdir "$run/boot.lock" 2>/dev/null || true; }
+pump=
+cleanup() {
+    if [ -n "$pump" ]; then
+        kill -TERM "$pump" 2>/dev/null || true
+        wait "$pump" 2>/dev/null || true
+    fi
+    rmdir "$run/boot.lock" 2>/dev/null || true; }
 trap cleanup EXIT
 host_slot_acquire mac-boot
 printf '%s\n' "$mode" > "$run/mode"
@@ -116,6 +122,15 @@ serial=$(mktemp "${TMPDIR:-/tmp}/breenix-boot/vm-persistent.XXXXXX")
 printf '%s\n' "$serial" > "$run/serial-path"
 host_slot_serial "$serial"
 host_slot_quiet
+rm -f "$run/serial.sock" "$run/console.sock"
+python3 "$ROOT/scripts/vm-serial-pump.py" "$run" "$serial" &
+pump=$!
+for _ in {1..100}; do
+    [ -S "$run/serial.sock" ] && [ -S "$run/console.sock" ] && break
+    kill -0 "$pump" 2>/dev/null || { echo 'serial pump exited' >&2; exit 1; }
+    sleep .05
+done
+[ -S "$run/serial.sock" ] && [ -S "$run/console.sock" ] || { echo 'serial pump did not start' >&2; exit 1; }
 port=$(python3 -c 'import socket; s=socket.socket(); s.bind(("127.0.0.1",0)); print(s.getsockname()[1]); s.close()')
 printf '%s\n' "$port" > "$run/ssh-port"
 qemu=qemu-system-aarch64
@@ -151,11 +166,21 @@ python3 "$ROOT/scripts/qemu-arm64.py" "$qemu" -rtc base=utc -M virt,gic-version=
     -device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/home.img" \
     -device virtio-rng-device -device virtio-net-device,netdev=net0 \
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$port-:22" \
-    -chardev "socket,id=con,path=$run/serial.sock,server=on,wait=off,logfile=$serial" -serial chardev:con &
+    -chardev "socket,id=con,path=$run/serial.sock,server=off" -serial chardev:con &
 child=$!
 wait "$child"
 code=$?
 child=
+# Allow the pump to consume the socket's remaining bytes before stopping it.
+for _ in {1..100}; do
+    kill -0 "$pump" 2>/dev/null || break
+    sleep .05
+done
+if kill -0 "$pump" 2>/dev/null; then
+    kill -TERM "$pump" 2>/dev/null || true
+fi
+wait "$pump" 2>/dev/null || true
+pump=
 set -e
 host_slot_header "$serial"
 "$ROOT/scripts/vigil-record.sh" finish "$vigil" "$code"

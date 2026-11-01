@@ -42,6 +42,7 @@ fixture=$(mktemp -d /tmp/vpm-test.XXXXXX)
 trap 'rm -rf "$tmp" "$fixture"' EXIT
 mkdir -p "$fixture/scripts" "$fixture/bin" "$fixture/run"
 cp "$launcher" "$fixture/scripts/vm-persistent.sh"
+cp "$root/scripts/vm-serial-pump.py" "$fixture/scripts/vm-serial-pump.py"
 cp "$root/scripts/qemu-arm64.py" "$fixture/scripts/qemu-arm64.py"
 cat > "$fixture/scripts/host-slots.sh" <<'SH'
 host_slots_start() { exec "$@"; }
