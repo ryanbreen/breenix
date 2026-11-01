@@ -5,6 +5,7 @@ import runpy
 import socket
 import subprocess
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -83,6 +84,69 @@ class SerialPumpTest(unittest.TestCase):
                 if process.poll() is None:
                     process.terminate()
                     process.wait(timeout=5)
+
+    def test_short_lived_console_connections_keep_pump_alive(self):
+        # QemuTarget opens one connection per four input bytes. Closing with
+        # unread echo can leave separate read/write events in a kqueue batch.
+        with tempfile.TemporaryDirectory(prefix='pump-', dir='/tmp') as tmp:
+            run = Path(tmp)
+            # Deliver EOF and an already-ready writable notification separately,
+            # as kqueue can. Keep the actual sockets, pump and target transport.
+            bootstrap = r'''import runpy, selectors, socket, sys
+base = selectors.DefaultSelector
+class SplitReady(base):
+    def select(self, timeout=None):
+        result = []
+        for key, mask in super().select(timeout):
+            if key.data == 'console-data' and mask & selectors.EVENT_READ:
+                try:
+                    eof = key.fileobj.recv(1, socket.MSG_PEEK) == b''
+                except (BlockingIOError, ConnectionResetError):
+                    eof = False
+                if eof:
+                    result.extend([(key, selectors.EVENT_READ), (key, selectors.EVENT_WRITE)])
+                    continue
+            result.append((key, mask))
+        return result
+selectors.DefaultSelector = SplitReady
+sys.argv = sys.argv[1:]
+runpy.run_path(sys.argv[0], run_name='__main__')
+'''
+            with (run / 'stderr').open('w+') as errors:
+                process = subprocess.Popen(['python3', '-c', bootstrap, str(PUMP), str(run), str(run / 'whole.txt')], stderr=errors)
+                guest = connect(run / 'serial.sock', process)
+                received = bytearray()
+                def echo():
+                    try:
+                        while data := guest.recv(65536):
+                            received.extend(data)
+                            guest.sendall(b'echo ' + data + b'x' * 1024 + b'\n')
+                    except OSError:
+                        pass
+                worker = threading.Thread(target=echo)
+                worker.start()
+                try:
+                    for _ in range(256):
+                        console = connect(run / 'console.sock', process)
+                        console.sendall(b'abcd')
+                        time.sleep(.002)
+                        console.close()
+                    deadline = time.monotonic() + 5
+                    while len(received) < 1024 and time.monotonic() < deadline:
+                        time.sleep(.01)
+                    self.assertEqual(bytes(received), b'abcd' * 256)
+                    self.assertIsNone(process.poll(), 'pump exited after a console disconnect')
+                    guest.shutdown(socket.SHUT_WR)
+                    self.assertEqual(process.wait(timeout=5), 0)
+                finally:
+                    guest.close()
+                    worker.join(timeout=5)
+                    if process.poll() is None:
+                        process.terminate()
+                        process.wait(timeout=5)
+                    errors.seek(0)
+                    failure = errors.read()
+                    self.assertEqual(failure, '', failure)
 
     def test_reset_creates_boot_records(self):
         with tempfile.TemporaryDirectory(prefix='pump-', dir='/tmp') as tmp:
