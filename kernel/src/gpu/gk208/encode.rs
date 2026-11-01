@@ -1561,6 +1561,76 @@ fn quads(
     Ok(())
 }
 
+/// Omit identical resident bindings within one submission. Launches, cache
+/// operations and synchronization packets retain their original order.
+pub fn compact_state(words: &mut Vec<u32>) -> Result<(), &'static str> {
+    // A197 RT, viewport/scissor, program region and shader-stage setters.
+    // Addresses are already relocated; the first binding remains frame-owned.
+    const BINDINGS: [u32; 11] = [
+        0x800, 0xa00, 0xc00, 0xe00, 0xff4, 0xd00, 0x1608,
+        0x2040, 0x204c, 0x2140, 0x214c,
+    ];
+    let mut previous = [usize::MAX; BINDINGS.len()];
+    let mut read = 0;
+    let mut write = 0;
+    while read < words.len() {
+        let header = words[read];
+        let count = ((header >> 16) & 0x1fff) as usize;
+        let end = read.checked_add(count + 1).ok_or("native state packet overflow")?;
+        if header >> 29 != 1 || count == 0 || end > words.len() {
+            return Err("native state packet extent");
+        }
+        let method = (header & 0x1fff) * 4;
+        let subchannel = (header >> 13) & 7;
+        let binding = BINDINGS.iter().position(|m| *m == method);
+        let duplicate = subchannel == 0 && binding.is_some_and(|i| {
+            let old = previous[i];
+            old != usize::MAX && words[old] == header
+                && words[old + 1..old + count + 1] == words[read + 1..end]
+        });
+        if !duplicate {
+            // Only documented setters and launch/cache actions emitted by
+            // this encoder preserve this cache. SET_OBJECT and unknown packets
+            // invalidate it; partial writes invalidate overlapping bindings.
+            let known = binding.is_some() || matches!(method,
+                0x17bc | 0x121c | 0x1538 | 0x12cc | 0x12e8 | 0x1380 |
+                0x1594 | 0x19bc | 0x194c | 0x1950 | 0xdf8 | 0x13ac |
+                0x1924 | 0x192c | 0x193c | 0x1510 | 0x1918 | 0xdac |
+                0x12e4 | 0x1360 | 0x135c | 0x19c4 | 0xf90 | 0x1a00 |
+                0x12e0 | 0x1534 | 0x15d0 | 0x153c | 0x754 | 0xfbc |
+                0x15b8 | 0x19e0 | 0x12d4 | 0x12ec | 0x37c | 0xfac |
+                0x1558 | 0x1644 | 0x15e4 | 0x10cc | 0x10e0 | 0x10ec |
+                0x74c | 0x16a8 | 0x1794 | 0x12ac | 0x218 | 0x10fc |
+                0x1290 | 0x12d8 | 0x1140 | 0x1610 | 0x161c | 0x30c |
+                0x300 | 0x2d0 | 0xfdc | 0x19c0 | 0x75c | 0x7fc |
+                0x2000 | 0x2080 | 0x20c0 | 0x2100 | 0x2380 | 0x2490 |
+                0x1574 | 0x155c | 0x1334 | 0x1330 | 0x1338 | 0x2608 |
+                0x1930 | 0x1880 | 0x1c00 | 0x1f00 | 0x1160 | 0x142c |
+                0x21c | 0xda4 | 0x1618 | 0xd74 | 0x1614 | 0x110 | 0x1b00);
+            if subchannel != 0 || !known {
+                previous.fill(usize::MAX);
+            } else {
+                for (i, old) in previous.iter_mut().enumerate() {
+                    if *old == usize::MAX { continue; }
+                    let old_count = ((words[*old] >> 16) & 0x1fff) as u32;
+                    if method < BINDINGS[i] + old_count * 4
+                        && BINDINGS[i] < method + count as u32 * 4 {
+                        *old = usize::MAX;
+                    }
+                }
+            }
+            words.copy_within(read..end, write);
+            if subchannel == 0 {
+                if let Some(i) = binding { previous[i] = write; }
+            }
+            write += count + 1;
+        }
+        read = end;
+    }
+    words.truncate(write);
+    Ok(())
+}
+
 #[cfg(target_os = "none")]
 pub(in crate::gk208) struct Storage {
     _backing: alloc::sync::Arc<crate::gpu::dma::Pages>,

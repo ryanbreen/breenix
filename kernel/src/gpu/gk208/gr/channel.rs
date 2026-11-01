@@ -1654,6 +1654,7 @@ mod native {
             // Storage retains frame inputs and target holds; parking owns the code.
             let mut payload = crate::gk208::encode::channel_words(&draw.words, self.quarantine)?;
             crate::gk208::encode::channel_programs(&mut payload, &self.parking)?;
+            crate::gk208::encode::compact_state(&mut payload)?;
             let device_time = crate::gk208::timing::enabled()
                 && crate::boot::intent::command_line().is_some_and(|line|
                     line.split_ascii_whitespace().any(|word| word == "gt710-gpu-time"));
