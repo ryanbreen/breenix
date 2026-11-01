@@ -377,6 +377,10 @@ mod native {
     use alloc::boxed::Box;
     const COMMAND: u64 = 0x01000000;
     const TARGET: u64 = 0x02000000;
+    fn device_time_now() -> u64 {
+        crate::gk208::gpu_time::ordered_now(crate::signal::monotonic_nanos,
+            || unsafe { core::arch::asm!("lfence", options(nostack, preserves_flags)); })
+    }
     const IMAGE: u64 = 0x03000000;
     const TRANSFER: u64 = TARGET + 4096;
     const COPY_BYTES: usize = 4096;
@@ -1693,7 +1697,7 @@ mod native {
                 command.extend(super::report(target+offset,value)?);
             }
             if device_time { command.extend(crate::gk208::gpu_time::end_query(TARGET, sequence)?); }
-            let submitted = if device_time { crate::signal::monotonic_nanos() } else { 0 };
+            let submitted = if device_time { device_time_now() } else { 0 };
             let result = self.publish_encoded_traced(sequence,&mut command,trace);
             if result.is_ok() && device_time {
                 // CORE excludes a reaper until publication returns. This CPU
@@ -1782,7 +1786,7 @@ mod native {
                 // SAFETY: the retained report page owns this 64-byte span.
                 let header = (self.session.pages.va(0) + offset + 48) as *mut u32;
                 if unsafe { header.read_volatile() } == sequence {
-                    let receipt_observed = crate::signal::monotonic_nanos();
+                    let receipt_observed = device_time_now();
                     let words = unsafe { header.add(1).read_volatile() };
                     let submitted = unsafe { (header.add(2) as *const u64).read_volatile() };
                     let raw = core::array::from_fn(|stage| core::array::from_fn(|word| unsafe {
@@ -1797,21 +1801,17 @@ mod native {
                         && crate::signal::monotonic_nanos().saturating_sub(receipt_observed) < 100_000 {
                         core::hint::spin_loop();
                     }
-                    let observed = crate::signal::monotonic_nanos();
+                    let observed = device_time_now();
                     let end = if unsafe { end_pointer.read_volatile() } == sequence {
                         unsafe { u64::from(end_pointer.add(2).read_volatile())
                             | u64::from(end_pointer.add(3).read_volatile()) << 32 }
                     } else { 0 };
-                    let before = crate::signal::monotonic_nanos();
-                    let mut gpu_now = 0;
-                    // Existing native PTIMER mechanism: high/low/high, ns.
-                    for _ in 0..8 {
-                        let high = regs.read(0x9410); let low = regs.read(0x9400);
-                        if high == regs.read(0x9410) {
-                            gpu_now = u64::from(high) << 32 | u64::from(low); break;
-                        }
-                    }
-                    let after = crate::signal::monotonic_nanos();
+                    // The monotonic clock's RDTSC is not serializing. Fence
+                    // both sides so the PTIMER reads stay inside its bracket.
+                    let [before,gpu_now,after] = crate::gk208::gpu_time::clock_sample(
+                        crate::signal::monotonic_nanos, |address| regs.read(address),
+                        || unsafe { core::arch::asm!("lfence", options(nostack, preserves_flags)); })
+                        .unwrap_or([0;3]);
                     unsafe { header.write_volatile(0); }
                     crate::gk208::timing::gpu_time(
                         crate::gk208::gpu_time::decode(sequence, words, raw), end,

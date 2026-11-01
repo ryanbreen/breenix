@@ -100,3 +100,19 @@ pub fn accumulate(stats: &mut [i128; 18], row: [u64; 6], end: u64, clocks: [u64;
         *max = (*max).max(value);
     }
 }
+
+/// Keep both compiler and CPU ordering barriers on the clock/MMIO boundaries.
+pub fn ordered_now(mut now: impl FnMut() -> u64, mut fence: impl FnMut()) -> u64 {
+    fence(); let value = now(); fence(); value
+}
+pub fn clock_sample(mut now: impl FnMut() -> u64, mut read: impl FnMut(usize) -> u32,
+    mut fence: impl FnMut()) -> Option<[u64; 3]> {
+    let before = ordered_now(&mut now, &mut fence);
+    let mut value = None;
+    for _ in 0..8 {
+        let high = read(0x9410); let low = read(0x9400);
+        if high == read(0x9410) { value = Some(u64::from(high) << 32 | u64::from(low)); break; }
+    }
+    let after = ordered_now(&mut now, &mut fence);
+    value.map(|gpu| [before, gpu, after])
+}
