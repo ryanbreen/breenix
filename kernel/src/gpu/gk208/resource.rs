@@ -141,6 +141,7 @@ pub struct Resources<B> {
     vram_bytes: u64,
     alias: Option<u64>,
     alias_current: bool,
+    alias_pdes_valid: bool,
     channel: u64,
     incarnation: Option<(u64,u64)>,
     alias_indices: Vec<u64>,
@@ -150,7 +151,7 @@ pub struct Resources<B> {
 impl<B> Default for Resources<B> { fn default() -> Self { Self::new() } }
 impl<B> Resources<B> {
     pub const fn new() -> Self {
-        Self { entries: BTreeMap::new(), contexts: BTreeSet::new(), space: None, vram_bytes: 0, alias: None, alias_current: false, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX - 1, retired: VecDeque::new() }
+        Self { entries: BTreeMap::new(), contexts: BTreeSet::new(), space: None, vram_bytes: 0, alias: None, alias_current: false, alias_pdes_valid: false, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX - 1, retired: VecDeque::new() }
     }
     #[cfg(target_os="none")]
     pub(in crate::gk208) fn heap_footprint(&self) -> [usize; 7] {
@@ -445,8 +446,15 @@ impl<B> Resources<B> {
             self.channel = self.channel.checked_add(1).filter(|id| *id < 1<<32)
                 .ok_or("native public context namespace exhausted")?;
             self.incarnation = Some((instance,epoch));
+            self.alias_indices.clear();
+            self.alias_pdes_valid = false;
         }
+        let pdes_valid = self.alias_pdes_valid;
+        self.alias_pdes_valid = false;
         for (index,_) in space.table_ranges() {
+            // A retained SPT keeps its PDE pointer. PTE publications still
+            // invalidate below; reclamation removes the owned index before reuse.
+            if pdes_valid && self.alias_indices.contains(&index) { continue; }
             let value = io.read(space.directory.range.start + index*8)?;
             let old = io.read(directory+index*8)?;
             if old != 0 && old != value { return Err("native resource PDE alias occupied"); }
@@ -456,6 +464,7 @@ impl<B> Resources<B> {
         io.flush()?;
         io.invalidate(directory)?;
         self.alias_current = true;
+        self.alias_pdes_valid = true;
         Ok(())
     }
     /// Preparation only. Share this owner's high-VA tables with the empty
