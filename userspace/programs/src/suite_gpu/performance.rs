@@ -102,21 +102,11 @@ fn rate_met(frames: u64, us: u64, per_s: u64) -> bool {
     frames * 1_000_000 >= per_s * us
 }
 
-#[cfg(target_arch = "x86_64")]
-fn vblank_sample() -> Option<(u64, u16)> {
-    let text = std::fs::read_to_string("/proc/gt710-vblank").ok()?;
-    let mut fields = text.split_whitespace();
-    let sample = (fields.next()?.parse().ok()?, fields.next()?.parse().ok()?);
-    fields.next().is_none().then_some(sample)
-}
-
 pub fn clear_rate_2560() -> CaseResult {
     let _case = begin()?;
     take_display_2560()?;
     let ctx = context()?;
     let targets = [scanout_target(format::B8G8R8A8, W, H)?, scanout_target(format::B8G8R8A8, W, H)?];
-    #[cfg(target_arch = "x86_64")]
-    let vblank_before = vblank_sample();
     let start = now_ns();
     for n in 0..FRAMES {
         let t = targets[(n % 2) as usize];
@@ -129,13 +119,6 @@ pub fn clear_rate_2560() -> CaseResult {
     let last = colour(FRAMES - 1);
     all(&read_rect(0, [W - 16, H - 16, 16, 16])?, last, "the scanout after the last presented clear")?;
     let us = us_since(start);
-    #[cfg(target_arch = "x86_64")]
-    match vblank_before.zip(vblank_sample()) {
-        Some(((before_ns, before), (after_ns, after))) => println!(
-            "GPU_CLEAR_RATE frames={FRAMES} us={us} vblanks={} counter_before={before} counter_after={after} bracket_ns={}",
-            after.wrapping_sub(before), after_ns.saturating_sub(before_ns)),
-        None => println!("GPU_CLEAR_RATE frames={FRAMES} us={us} vblanks=unavailable"),
-    }
     value("clears-per-second", (FRAMES * 1_000_000 / us.max(1)) as i64, "", Some((CLEARS_PER_S as i64, i64::MAX)));
     ensure(rate_met(FRAMES, us, CLEARS_PER_S), || {
         format!("{FRAMES} presented 2560x1600 clears took {us} us, under {CLEARS_PER_S} a second")
