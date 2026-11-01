@@ -360,6 +360,7 @@ fn unchanged_alias_reuses_publication_but_mapping_epoch_and_failed_bind_do_not()
     assert!(r.bind(&mut io,directory,0x123000,18).is_err());io.fail=false;
     let before=sample(&io);r.bind(&mut io,directory,0x123000,18).unwrap();
     assert!(io.invalidates>before.2,"failed publication must retry, never cache success");
+    assert!(io.reads>before.0,"uncertain alias publication must revalidate PDE contents");
     let before=sample(&io);r.bind(&mut io,directory,0x123000,18).unwrap();assert_eq!(sample(&io),before);
     r.unref(1).unwrap();r.unref(3).unwrap();r.collect(&mut a,&mut io).unwrap();
 }
