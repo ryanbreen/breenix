@@ -90,7 +90,7 @@ pub fn flush(pane: FbMmapInfo, mut rows: Range<usize>, mut columns: Range<usize>
         c.resources.get_mut(&target.id)?.reading = true;
         Some(Ok(data))
     }).map_err(|_| EINTR)??;
-    // The first frame defines every pixel, including outside the first dirty rectangle.
+    // Initialize the whole surface on its first frame, including outside the dirty rectangle.
     if first { rows = 0..pane.height; columns = 0..pane.width; }
     let written = (|| {
         copy_rows(&backing, pitch, pane, rows.clone(), columns.clone())?;
