@@ -120,7 +120,7 @@ static NATIVE_STARTING: AtomicBool = AtomicBool::new(false);
 /// is unchanged.
 static EVENTS: AtomicU64 = AtomicU64::new(0);
 static WAITERS: WaitQueueHead = WaitQueueHead::new();
-/// Counts sends to the device, and progress transfers queued for `kgpu` to send. `kgpu`
+/// Counts sends, queued progress transfers and native worker handoffs. `kgpu`
 /// blocks only while it is unchanged since kgpu chose its deadline: a send made after that
 /// would otherwise wait for that deadline, because an SVGA3 device raises no interrupt and
 /// only kgpu polls it for the answers; a queued transfer would wait for it too.
@@ -2112,10 +2112,22 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
         let seen = EVENTS.load(Ordering::Acquire);
         let (found, polled) = with_core(|c| {
             c.poll();
-            // The device's answers reach this waiter only when someone looks for them.
-            let polled = matches!(dev::backend(), abi::backend::SVGA3D_DX | abi::backend::GK208) && !c.stalled && c.dev.as_ref().is_some_and(|d| d.outstanding() > 0);
             let found = f(c);
             if found.is_none() { c.progress_readback(); }
+            // A native backlog needs kgpu to publish the next requests. A
+            // waiter cannot do that from poll(); spinning keeps that worker
+            // off this CPU even when the waiter just freed a queue slot.
+            let backend = dev::backend();
+            let native_queued = backend == abi::backend::GK208
+                && REAPER.load(Ordering::Acquire) != 0 && !c.backlog.is_empty();
+            if found.is_none() && native_queued {
+                // Also cover a worker that chose its deadline before this
+                // handoff but has not yet published its blocked state.
+                SENT.fetch_add(1, Ordering::AcqRel);
+                wake_reaper();
+            }
+            let polled = matches!(backend, abi::backend::SVGA3D_DX | abi::backend::GK208)
+                && !native_queued && !c.stalled && c.dev.as_ref().is_some_and(|d| d.outstanding() > 0);
             (found, polled)
         })
         .unwrap_or((None, false));

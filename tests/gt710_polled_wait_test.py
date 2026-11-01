@@ -16,7 +16,7 @@ class PolledWait(unittest.TestCase):
 #![allow(dead_code)] // Minimal model for the extracted scheduler functions.
 use std::{cell::{Cell,RefCell},collections::{BTreeMap,VecDeque},sync::atomic::{AtomicU64,Ordering}};
 const EXAMINE_NS:u64=250_000_000;const POLL_NS:u64=250_000;const SPIN_POLL_NS:u64=1_000_000;const SPIN_POLL_PAUSE:u32=1;
-static EVENTS:AtomicU64=AtomicU64::new(0);
+static EVENTS:AtomicU64=AtomicU64::new(0);static REAPER:AtomicU64=AtomicU64::new(1);
 static SENT:AtomicU64=AtomicU64::new(0);static WAKES:AtomicU64=AtomicU64::new(0);
 fn wake_reaper(){WAKES.fetch_add(1,Ordering::AcqRel);}
 mod abi {pub mod backend {pub const SVGA3D_DX:u32=5;pub const GK208:u32=6;}}
@@ -62,6 +62,12 @@ fn main(){
   assert_eq!(WAKES.load(Ordering::Acquire),u64::from(backend==6));
   CORE.with(|c|*c.borrow_mut()=core());
  }
+ REAPER.store(0,Ordering::Release);BACKEND.with(|b|b.set(6));CLOCK.with(|c|c.set(0));
+ SLEEPS.with(|c|c.set(0));POLLS.with(|c|c.set(0));SENT.store(0,Ordering::Release);WAKES.store(0,Ordering::Release);
+ with_core(|c|c.backlog.push_back(()));
+ assert_eq!(wait_for(None,true,|_|(POLLS.with(Cell::get)>=2).then_some(7)),Ok(7));
+ assert_eq!(SLEEPS.with(Cell::get),0,"bootstrap must keep progressing when kgpu is absent");
+ assert_eq!(SENT.load(Ordering::Acquire),0);assert_eq!(WAKES.load(Ordering::Acquire),0);
 }
 '''.replace('// DEADLINE',deadline).replace('// WAIT',wait)
   priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
