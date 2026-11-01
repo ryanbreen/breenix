@@ -2140,3 +2140,7 @@ pub fn showcase_check(name:&str)->CaseResult {crate::suite_stage::showcase_check
 pub fn render_stage_at_ui_time(fb: &mut FrameBuf, run: &mut libgfx_ref::stage::Run<'_>) -> Result<(), libgfx_ref::stage::StageError> {
     crate::suite_stage::render_at_ui_time(fb, run, 0)
 }
+
+#[cfg(test)]
+#[path = "../../../tests/suite_screen_test.rs"]
+mod screen_tests;
