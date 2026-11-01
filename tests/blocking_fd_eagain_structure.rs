@@ -313,6 +313,7 @@ fn inspect(
     defs: &BTreeMap<String, Function>,
     stack: &mut BTreeSet<String>,
 ) -> Result<(), String> {
+    let mut defs = defs.clone();
     let mut i = 0;
     while i < nodes.len() {
         let token = nodes[i].token();
@@ -326,6 +327,16 @@ fn inspect(
                         if let Some(value) = boolean(&nodes[eq + 1..semi], &bindings) {
                             bindings.insert(name.token().to_owned(), value);
                         }
+                        // 9e1ff0b3 added a live revocation predicate to reads.
+                        // Follow a local zero-argument closure just like a
+                        // named helper, inspecting its result route.
+                        if nodes.get(eq + 1).is_some_and(|n| n.token() == "||") {
+                            if let Some(body) = nodes.get(eq + 2).and_then(|n| n.group('{')) {
+                                defs.insert(name.token().to_owned(), Function {
+                                    params: Vec::new(), bool_params: Vec::new(), body: body.to_vec(),
+                                });
+                            }
+                        }
                     }
                 }
             }
@@ -337,7 +348,7 @@ fn inspect(
                     inspect(
                         nodes[open].group('{').unwrap(),
                         bindings.clone(),
-                        defs,
+                        &defs,
                         stack,
                     )?;
                 }
@@ -346,7 +357,7 @@ fn inspect(
                     i += 1;
                     if let Some(other) = nodes.get(i).and_then(|n| n.group('{')) {
                         if test != Some(true) {
-                            inspect(other, bindings.clone(), defs, stack)?;
+                            inspect(other, bindings.clone(), &defs, stack)?;
                         }
                         i += 1;
                     } else {
@@ -370,7 +381,7 @@ fn inspect(
                         call_bindings.insert(param.clone(), value);
                     }
                 }
-                inspect(&def.body, call_bindings, defs, stack)?;
+                inspect(&def.body, call_bindings, &defs, stack)?;
                 stack.remove(token);
             } else if i == 0 || nodes[i - 1].token() != "." {
                 // External primitive calls have explicit ownership elsewhere.
@@ -424,7 +435,7 @@ fn inspect(
             }
         }
         if let Node::Group(_, inner) = &nodes[i] {
-            inspect(inner, bindings.clone(), defs, stack)?;
+            inspect(inner, bindings.clone(), &defs, stack)?;
         }
         i += 1;
     }
@@ -464,9 +475,24 @@ fn audit_console_route(handlers: &str, helper: &str) -> Result<(), String> {
             return Err(format!("missing/ambiguous {family} adapter route"));
         }
     }
-    let mut defs = functions(&lex(handlers));
+    let mut defs = functions(&lex(&read("kernel/src/tty/revoke.rs")));
+    defs.extend(functions(&lex(handlers)));
     defs.extend(functions(&lex(helper)));
     inspect(route, BTreeMap::new(), &defs, &mut BTreeSet::new())
+}
+
+#[test]
+fn revocation_predicate_is_audited_without_hiding_error_routes() {
+    let handlers = read("kernel/src/syscall/handlers.rs");
+    let helper = read("kernel/src/syscall/blocking_io.rs");
+    audit_console_route(&handlers, &helper).expect("revocation-aware read route");
+    // The predicate is a boolean helper, not an opaque syscall-result leaf.
+    // Supplying its definition must expose an injected EAGAIN or unknown call.
+    for result in ["Err(EAGAIN)", "unrecognized_error()"] {
+        let helper = format!("{helper}\nfn vt_revoked_since(number: usize, opened: u64) -> bool {{ {result} }}");
+        let error = audit_console_route(&handlers, &helper).unwrap_err();
+        assert!(error.contains("EAGAIN") || error.contains("unrecognized_error"), "{error}");
+    }
 }
 
 #[test]
@@ -474,7 +500,7 @@ fn console_result_route_rejects_blocking_eagain_with_adapter_retained() {
     let handlers = read("kernel/src/syscall/handlers.rs");
     let helper = read("kernel/src/syscall/blocking_io.rs");
     audit_console_route(&handlers, &helper).expect("live Console/Tty route");
-    let call = "super::blocking_io::read_console(&mut user_buf, is_nonblocking)";
+    let call = "super::blocking_io::read_console(&mut user_buf, is_nonblocking, &live)";
     assert_eq!(handlers.matches(call).count(), 1);
     for terminal in [
         "SyscallResult::Err(errno::EAGAIN as u64)",

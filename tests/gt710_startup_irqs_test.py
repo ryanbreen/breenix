@@ -29,7 +29,7 @@ use std::time::Duration;
 const EINVAL:i64=22;const EINTR:i64=4;
 mod abi {
  #[derive(Clone,Copy)] pub struct Caps {pub backend:u32,pub status:u32}
- pub mod status {pub const NO_DEVICE:u32=1;pub const DEVICE_FAILED:u32=3;}
+ pub mod status {pub const NO_DEVICE:u32=1;pub const MISSING_CAPABILITY:u32=2;pub const DEVICE_FAILED:u32=3;}
 }
 struct Core {dev:Option<()>,status:u32,reason:&'static str}
 impl Core {
@@ -64,7 +64,7 @@ fn wait_for<T>(_:Option<u64>,_:bool,mut f:impl FnMut(&mut Core)->Option<T>)->Res
   let g=GATE.lock().unwrap();let _=CHANGED.wait_timeout(g,Duration::from_millis(1)).unwrap();
  }
 }
-mod task {pub mod kthread {
+mod task {pub mod scheduler {pub fn yield_current(){std::thread::yield_now();}} pub mod kthread {
  #[allow(dead_code)] pub fn kthread_run(f:impl FnOnce()+Send+'static,_:&str)->Result<(),()> {
   std::thread::spawn(move||{
    super::super::WORKER.with(|w|w.set(true));
@@ -78,6 +78,12 @@ mod console {
  pub fn hold_canvas()->Canvas{super::CANVAS.store(true,super::Ordering::Release);Canvas}
  impl Drop for Canvas{fn drop(&mut self){super::CANVAS.store(false,super::Ordering::Release);}}
 }
+static BOOT_READY:AtomicBool=AtomicBool::new(true);
+static SETTLED_CHECKED:AtomicBool=AtomicBool::new(false);
+mod boot {pub mod settled {pub fn settled()->bool{
+ super::super::SETTLED_CHECKED.store(true,super::super::Ordering::Release);
+ super::super::CHANGED.notify_all();super::super::BOOT_READY.load(super::super::Ordering::Acquire)
+}}}
 static CANVAS:AtomicBool=AtomicBool::new(false);
 static RACED:AtomicBool=AtomicBool::new(false);
 mod gk208 {
@@ -101,8 +107,9 @@ STARTUP
 // INSERT_CAPS
 #[test]fn first_caps_enables_irqs_for_upload_and_waits_and_restores_on_errors(){
  let _ = console::hold_canvas as fn()->console::Canvas;
- for fail in [false,true] {
-  *CORE.lock().unwrap()=Core::empty();*GATE.lock().unwrap()=(false,true,false);
+ for (fail,status) in [(false,abi::status::NO_DEVICE),(true,abi::status::NO_DEVICE),
+                      (false,abi::status::MISSING_CAPABILITY),(true,abi::status::MISSING_CAPABILITY)] {
+  *CORE.lock().unwrap()=Core::empty();CORE.lock().unwrap().status=status;*GATE.lock().unwrap()=(false,true,false);
   NATIVE_STARTING.store(false,Ordering::Release);FAIL.store(fail,Ordering::Release);
   for entry_enabled in [false,true] {
    IRQS.with(|i|i.set(entry_enabled));
@@ -134,6 +141,21 @@ STARTUP
  assert!(!CANVAS.load(Ordering::Acquire));
  }
  INSTALL_EARLY.store(false,Ordering::Release);
+}
+
+#[test]fn startup_waits_for_boot_census_before_canvas_and_firmware(){
+ let _=boot::settled::settled as fn()->bool;
+ let _=task::scheduler::yield_current as fn();
+ *CORE.lock().unwrap()=Core::empty();*GATE.lock().unwrap()=(false,false,false);
+ CALLS.store(0,Ordering::Release);NATIVE_STARTING.store(false,Ordering::Release);
+ BOOT_READY.store(false,Ordering::Release);SETTLED_CHECKED.store(false,Ordering::Release);
+ let caller=std::thread::spawn(||op_caps(0,core::mem::size_of::<abi::Caps>() as u64));
+ let g=GATE.lock().unwrap();let(mut g,timeout)=CHANGED.wait_timeout_while(g,Duration::from_secs(2),|_|!SETTLED_CHECKED.load(Ordering::Acquire)).unwrap();
+ assert!(!timeout.timed_out(),"native startup ignored boot census ordering");
+ assert_eq!(CALLS.load(Ordering::Acquire),0,"firmware began before the census finished");
+ assert!(!CANVAS.load(Ordering::Acquire),"startup held the canvas while census was pending");
+ g.1=true;BOOT_READY.store(true,Ordering::Release);CHANGED.notify_all();drop(g);
+ assert_eq!(caller.join().unwrap(),Ok(0));assert_eq!(CALLS.load(Ordering::Acquire),1);
 }
 '''
         # These harness hooks are used only after the repair adds serialization.

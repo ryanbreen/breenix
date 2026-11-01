@@ -19,6 +19,7 @@ impl<T> Mutex<T> {
  pub const fn new(v:T)->Self {Self(std::sync::Mutex::new(v))}
  pub fn lock(&self)->std::sync::MutexGuard<'_,T>{self.0.lock().unwrap()}
 }
+mod irq_safe_mutex { pub use crate::Mutex as IrqSafeMutex; }
 mod owner { SOURCE }
 fn main() {
  let a=owner::Allocation::new(8013,"Pages").unwrap();
