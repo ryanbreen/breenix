@@ -83,6 +83,10 @@ cat > "$fixture/scripts/qemu-1x-app.sh" <<'SH'
 #!/bin/sh
 echo qemu-system-aarch64
 SH
+cat > "$fixture/scripts/build-qemu-gl.sh" <<'SH'
+#!/bin/sh
+echo qemu-system-aarch64
+SH
 cat > "$fixture/scripts/vigil-record.sh" <<'SH'
 #!/bin/sh
 if [ "$1" = start ]; then
@@ -112,6 +116,10 @@ root, mode = Path(sys.argv[1]), sys.argv[2]
 args = (root / 'qemu-args').read_text().splitlines()
 settings = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == '-fw_cfg']
 assert settings == [f'name=opt/breenix/mode,string={mode}'], args
+# QEMU assigns virtio-mmio buses backwards; root must enumerate before home.
+assert args.index('virtio-blk-device,drive=home') < args.index('virtio-blk-device,drive=ext2'), args
+if sys.platform == 'darwin':
+    assert 'virtio-gpu-gl-pci' in args and 'cocoa,gl=es' in args, args
 assert (root / 'run/mode').read_text() == mode + '\n'
 assert (root / 'vigil-args').read_text().splitlines()[:3] == ['start', 'qemu', mode]
 assert not (root / 'run/boot.lock').exists()
