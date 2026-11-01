@@ -38,9 +38,9 @@ pub fn start(io: &mut impl Startup, keep_post: bool) -> Outcome {
 pub fn within_one_percent(value: Result<u32, &'static str>, target: u32) -> bool {
     value.is_ok_and(|v| v.abs_diff(target) <= target / 100)
 }
-pub struct Guard { tripped: bool, next_restore:u64, stopped:bool }
+pub struct Guard { tripped: bool, next_restore:u64, attempts:u8, stopped:bool }
 impl Guard {
-    pub const fn new() -> Self { Self { tripped: false, next_restore:0, stopped:false } }
+    pub const fn new() -> Self { Self { tripped: false, next_restore:0, attempts:0, stopped:false } }
     pub fn sample(&mut self, temperature: Result<u32, &'static str>) -> bool {
         if self.tripped { return false; }
         if temperature.is_err() || temperature.is_ok_and(|v| v >= 85) {
@@ -50,8 +50,12 @@ impl Guard {
         false
     }
     pub fn retry_due(&mut self,now:u64,armed:bool)->bool {
-        if !self.tripped || !armed || now<self.next_restore {return false;}
+        if !self.tripped || !armed || self.attempts>=3 || now<self.next_restore {return false;}
+        self.attempts+=1;
         self.next_restore=now.saturating_add(1_000_000_000);true
+    }
+    pub fn restore_finished(&mut self,now:u64) {
+        self.next_restore=now.saturating_add(1_000_000_000);
     }
     pub fn critical(&mut self,temperature:Result<u32,&'static str>,armed:bool)->bool {
         if self.stopped || !armed || !temperature.is_ok_and(|v|v>=95) {return false;}

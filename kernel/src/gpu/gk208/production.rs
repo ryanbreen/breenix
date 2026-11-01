@@ -360,8 +360,10 @@ fn guard_thread(base:usize) {
             crate::serial_println!("GT710_CLOCK_CRITICAL temperature_c={} engines_disabled=true",t.unwrap_or(u32::MAX));
         }
         if guard.retry_due(now,ARMED.load(Ordering::Acquire)) {
-            let _canvas=crate::console::hold_canvas();
-            if let Some(c)=CONTROLLER.lock().as_mut() {
+            // Only this worker uses the controller after initialization. Its
+            // waits must not pin preemption or stop the terminal's canvas.
+            let controller={CONTROLLER.lock().take()};
+            if let Some(mut c)=controller {
                 let gpc=c.restore_gpc();
                 let memory=c.restore_memory();
                 let restored=gpc.is_ok() && memory.is_ok();
@@ -369,7 +371,9 @@ fn guard_thread(base:usize) {
                 crate::serial_println!("GT710_CLOCK_GUARD trip_c=85 temperature_c={} gpc_restore={} memory_restore={} armed={}",
                     t.unwrap_or(u32::MAX),gpc.err().unwrap_or("ok"),memory.err().unwrap_or("ok"),!restored);
                 c.record(false,"thermal-guard-latched");
+                *CONTROLLER.lock()=Some(c);
             }
+            guard.restore_finished(now_ns());
         }
         let Some(tid)=crate::task::scheduler::current_thread_id() else {return;};
         crate::task::scheduler::with_current(|s|s.block_current_for_timer(now_ns().saturating_add(250_000_000)));

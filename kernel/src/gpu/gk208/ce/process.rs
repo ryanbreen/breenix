@@ -211,10 +211,18 @@ pub(in crate::gk208) fn with_clock_owner<R>(
     f: impl FnOnce(&mut Registers, &mut super::super::native::Evo,
         super::super::ConsoleSurface) -> Result<R, &'static str>,
 ) -> Result<R, &'static str> {
-    let mut owner=SESSION.lock();
-    let s=owner.as_mut().ok_or("native display session unavailable")?;
-    if s.work.is_some() {return Err("native CE work still owned");}
-    f(&mut Registers(s.registers), &mut s.evo, s.console)
+    // Move exclusive ownership out of the spin lock, as initialize_core does.
+    // Other callers observe an unavailable owner instead of spinning through
+    // seconds of PMU timeouts with preemption disabled.
+    let mut s={
+        let mut owner=SESSION.lock();
+        let s=owner.as_ref().ok_or("native display session unavailable")?;
+        if s.work.is_some() {return Err("native CE work still owned");}
+        owner.take().unwrap()
+    };
+    let result=f(&mut Registers(s.registers), &mut s.evo, s.console);
+    *SESSION.lock()=Some(s);
+    result
 }
 
 /// Borrow the allocator retained by the display/CE owner.

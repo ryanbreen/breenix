@@ -97,3 +97,17 @@ fn clock_health_reads_gr_only_when_enabled_and_names_live_faults() {
   assert_eq!((failure.check,failure.register,failure.value),(check,register,value));
  }
 }
+
+#[test]
+fn slow_failed_restores_back_off_from_completion_and_stop_after_three() {
+ let mut g=Guard::new();assert!(g.sample(Ok(85)));
+ for attempt in 0..3 {
+  let start=attempt*13_000_000_000;
+  assert!(g.retry_due(start,true));
+  let finished=start+12_000_000_000;
+  g.restore_finished(finished);
+  assert!(!g.retry_due(finished,true));
+  assert!(!g.retry_due(finished+999_999_999,true));
+ }
+ assert!(!g.retry_due(100_000_000_000,true));
+}
