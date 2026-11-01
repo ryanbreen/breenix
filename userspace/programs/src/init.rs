@@ -288,13 +288,15 @@ fn run_shell_mode() -> ! {
 }
 
 /// Explicit console mode skips the default boot script and boot checks, and supervises
-/// only the table's login terminals.
+/// the table's daemons and login terminals as PID 1. Child console fixtures start
+/// only login terminals, without duplicating the running system's daemons.
 fn run_console_mode() -> ! {
     #[cfg(target_arch = "x86_64")]
     console_text_mode();
     detach_console();
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
-    init_services::Supervisor::load(init_services::Scope::Logins, pid == 1).run()
+    let scope = if pid == 1 { init_services::Scope::All } else { init_services::Scope::Logins };
+    init_services::Supervisor::load(scope, pid == 1).run()
 }
 
 /// Release init's terminal before starting daemons or independent login sessions.
