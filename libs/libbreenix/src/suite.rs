@@ -1050,6 +1050,7 @@ impl Suite {
                 }
                 states[c][k] = State::Done(outcome);
                 done += 1;
+                for checkpoint in screen::collect(self.id, &name) { emit(&checkpoint); }
                 if let Some(observe) = self.case_observer { observe(done, total, &name); }
                 if place.is_some() { sequence::progress_after(done); }
             }
@@ -1455,9 +1456,6 @@ fn keep_record_output(suite: &str, name: &str) {
 /// date while it runs.
 fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Screen, feed: &mut Feed) -> Outcome {
     screen.judged = None;screen.timing=None;
-    // G1-G6 retain the runner owner they were checked against. G7's console
-    // cases explicitly start above the kernel console, with no runner owner.
-    if screen.gpu.is_some() && name.starts_with("present/") { let _ = graphics::give_back_display(); }
     // The live strip's copy of the case's records, when the strip is on.
     let live = if screen.live_on() || screen.gui {
         io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK).ok()
@@ -1477,6 +1475,10 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     JUDGED_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     // A prior interrupted boot may have left this PID/sequence on a reused disk.
     JUDGED_ENABLED.store(screen.gui, Ordering::Relaxed);
+    screen::begin(suite, screen.gui);
+    // G1-G6 retain the runner owner they were checked against. G7's console
+    // cases explicitly start above the kernel console, with no runner owner.
+    if screen.gpu.is_some() && name.starts_with("present/") { let _ = graphics::give_back_display(); }
     for path in [judged_path(), std::format!("{}.new", judged_path()), std::format!("{}.time",judged_path()), std::format!("{}.input",judged_path()), std::format!("{}.values",judged_path())].into_iter().filter(|_| screen.gui) {
         if let Err(e) = std::fs::remove_file(path) {
             if e.kind() != std::io::ErrorKind::NotFound {
@@ -1552,6 +1554,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
             };
             let line = report(&outcome);
             let _ = io::write(writer, line.as_bytes());
+            screen::finish();
             hand_over_picture();
             process::exit(0)
         }
@@ -2144,3 +2147,11 @@ pub fn render_stage_at_ui_time(fb: &mut FrameBuf, run: &mut libgfx_ref::stage::R
 #[cfg(test)]
 #[path = "../../../tests/suite_screen_test.rs"]
 mod screen_tests;
+
+#[path = "suite_screen.rs"]
+mod screen;
+
+/// Record a whole-scanout checkpoint after a completed present. Names are lowercase
+/// hyphenated words; `end` and `intent` are reserved. Performance cases cannot call it.
+/// The runner prints the digest after CASE, independently of the case verdict.
+pub fn screen_checkpoint(name: &str) -> CaseResult { screen::checkpoint(name) }

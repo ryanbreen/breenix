@@ -171,7 +171,8 @@ fn fault_bits() -> u32 {
 /// What the stage reads from one scanout observation: core record version 2 (contract
 /// section 20.1).
 #[derive(Clone, Copy)]
-struct Seen {
+pub(crate) struct Seen {
+    pub(crate) record: [u8; record::SIZE],
     backend: u32,
     flags: u32,
     boundary: u32,
@@ -190,7 +191,7 @@ fn mode() -> Result<gpu::abi::Mode, String> {
     gpu::current_mode().map_err(|r| std::format!("stage CURRENT_MODE: errno {}", -r))
 }
 /// Observe the whole scanout into `pixels` by the 48-byte SCANOUT_READBACK.
-fn observe(pixels: &mut Vec<u8>) -> Result<Seen, String> {
+pub(crate) fn observe(pixels: &mut Vec<u8>) -> Result<Seen, String> {
     let m = mode()?;
     pixels.resize(m.width as usize * m.height as usize * 4, 0);
     let mut rec = [0u8; record::SIZE];
@@ -213,6 +214,7 @@ fn observe(pixels: &mut Vec<u8>) -> Result<Seen, String> {
         return Err(String::from("stage readback: not a version 2 record of the whole scanout"));
     }
     Ok(Seen {
+        record: rec,
         backend: word(&rec, record::BACKEND),
         flags: word(&rec, record::FLAGS),
         boundary: word(&rec, record::BOUNDARY),
