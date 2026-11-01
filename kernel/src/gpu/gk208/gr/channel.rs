@@ -1650,15 +1650,28 @@ mod native {
             // Storage retains frame inputs and target holds; parking owns the code.
             let mut payload = crate::gk208::encode::channel_words(&draw.words, self.quarantine)?;
             crate::gk208::encode::channel_programs(&mut payload, &self.parking)?;
+            let device_time = crate::gk208::timing::enabled()
+                && crate::gk208::gpu_time::sampled(sequence)
+                && crate::boot::intent::command_line().is_some_and(|line|
+                    line.split_ascii_whitespace().any(|word| word == "gt710-gpu-time"));
+            let time_offset = crate::gk208::gpu_time::offset(sequence, 0)?;
+            if device_time {
+                // This diagnostic span is separate from receipt slots, the
+                // parked CB selector and channel 1's terminal receipt.
+                unsafe { core::ptr::write_bytes((s.pages.va(0) + time_offset) as *mut u8, 0, 64); }
+                s.pages.publish();
+            }
             // Restart reconstructs RAMFC without its old subchannel classes.
             // SET_OBJECT must precede graphics state and release methods even
             // when clipping leaves no draw (MIT cla197.h:34-36).
             let mut command = Vec::new();
-            command.try_reserve_exact(super::bind().len() + payload.len() + self.parking.len() + 64)
+            command.try_reserve_exact(super::bind().len() + payload.len() + self.parking.len() + 79)
                 .map_err(|_| "native channel packet allocation")?;
             command.extend_from_slice(&super::bind());
+            if device_time { command.extend(crate::gk208::gpu_time::query(TARGET, sequence, 0)?); }
             if payload.is_empty() { command.extend([0x20010044, 0]); }
             command.extend(payload);
+            if device_time { command.extend(crate::gk208::gpu_time::query(TARGET, sequence, 1)?); }
             // A completed draw does not revoke its persistent engine bindings.
             // Rebind code, stages, constants/handles, vertex start/limit, VAB,
             // TIC/TSC and RT to bootstrap-owned storage before releasing any
@@ -1674,9 +1687,22 @@ mod native {
             let target = TARGET + u64::from(crate::gk208::queue::Queue::slot(sequence))*16;
             for (offset,value) in [(4,s.report.identity.epoch as u32),
                 (8,(s.report.identity.epoch>>32) as u32),(0,sequence)] {
+                // The last query includes parking and both epoch releases;
+                // the unchanged final sequence release orders its visibility.
+                if device_time && offset == 0 { command.extend(crate::gk208::gpu_time::query(TARGET, sequence, 2)?); }
                 command.extend(super::report(target+offset,value)?);
             }
-            self.publish_encoded_traced(sequence,&mut command,trace)
+            let result = self.publish_encoded_traced(sequence,&mut command,trace);
+            if result.is_ok() && device_time {
+                // CORE excludes a reaper until publication returns. This CPU
+                // marker requests observation; only device words supply time.
+                unsafe {
+                    let header = (self.session.pages.va(0) + time_offset + 48) as *mut u32;
+                    header.write_volatile(sequence);
+                    header.add(1).write_volatile(command.len() as u32);
+                }
+            }
+            result
         }
         fn publish_encoded_traced(&mut self, sequence: u32, command: &mut Vec<u32>,
             trace: Option<&crate::gk208::timing::Submit>) -> Result<(), &'static str> {
@@ -1747,6 +1773,21 @@ mod native {
                 queued_put: Some(self.put) };
             let (value, epoch, consumed) = monitor.snapshot()?;
             let bound = regs.read(0x800000 + self.session.report.identity.id as usize * 8);
+            if value == sequence && epoch == self.session.report.identity.epoch && consumed
+                && bound == 0x80000000 | (self.session.report.identity.instance >> 12) as u32 {
+                let offset = crate::gk208::gpu_time::offset(sequence, 0)?;
+                // SAFETY: the retained report page owns this 64-byte span.
+                let header = (self.session.pages.va(0) + offset + 48) as *mut u32;
+                if unsafe { header.read_volatile() } == sequence {
+                    let words = unsafe { header.add(1).read_volatile() };
+                    let raw = core::array::from_fn(|stage| core::array::from_fn(|word| unsafe {
+                        ((self.session.pages.va(0) + offset + stage as u64 * 16) as *const u32)
+                            .add(word).read_volatile()
+                    }));
+                    unsafe { header.write_volatile(0); }
+                    crate::gk208::timing::gpu_time(crate::gk208::gpu_time::decode(sequence, words, raw));
+                }
+            }
             Ok(crate::gpu_completion::CeSample { context: u64::from(bound & 0x0fffffff) << 12,
                 epoch, sequence: value, consumed: if consumed { sequence } else { 0 },
                 healthy: bound & 0x80000000 != 0 })

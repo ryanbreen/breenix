@@ -2104,3 +2104,17 @@ https://github.com/Distrotech/libdrm/blob/6eed04824b488f546fde7df5d267ef109c82dd
 The original full MIT notice is preserved in channel.rs. Breenix supplies its
 own coherent pages, retained GPU VM mapping and publication ordering; no DRM
 runtime code is imported.
+
+## Native GPU timestamp diagnosis
+
+`kernel/src/gpu/gk208/gpu_time.rs` adapts timestamp query packet construction
+and the four-word result layout from Mesa `nvc0_query_hw.c`, revision
+`769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de`, MIT, copyright 2011 Christoph
+Bumiller and 2015 Samuel Pitoiset. The file's MIT header was checked before use
+and is retained in the adapted file. Source:
+https://github.com/chaotic-cx/mesa-mirror/blob/769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de/src/gallium/drivers/nouveau/nvc0/nvc0_query_hw.c
+
+The full-pipeline location and report structure fields come from NVIDIA
+open-gpu-doc `classes/3d/cla197.h`, revision
+`9fdf5c4062007929d9f4e6cbad9c9771fe61b880`, MIT, copyright 2020 NVIDIA
+CORPORATION. Its checked MIT notice is also retained in `gpu_time.rs`.

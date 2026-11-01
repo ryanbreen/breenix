@@ -33,9 +33,15 @@ pub struct Recorder {
     submits: submit_cost::Totals,
     submit_bytes: Vec<[u64; 7]>,
     admission_waits: Vec<[u64; 8]>,
+    gpu_times: Vec<[u64; 6]>,
 }
 impl Recorder {
-    pub const fn new() -> Self { Self { owner: 0, draw: 0, rows: Vec::new(), dropped: 0, readbacks: Vec::new(), blocked: Vec::new(), vblank: [[0; 2]; 2], vblank_used: 0, submits: submit_cost::Totals::new(), submit_bytes: Vec::new(), admission_waits: Vec::new() } }
+    pub const fn new() -> Self { Self { owner: 0, draw: 0, rows: Vec::new(), dropped: 0, readbacks: Vec::new(), blocked: Vec::new(), vblank: [[0; 2]; 2], vblank_used: 0, submits: submit_cost::Totals::new(), submit_bytes: Vec::new(), admission_waits: Vec::new(), gpu_times: Vec::new() } }
+    pub fn gpu_time(&mut self, row: [u64; 6]) {
+        if self.gpu_times.len() == 1024 || self.gpu_times.try_reserve(1).is_err() {
+            self.dropped += 1;
+        } else { self.gpu_times.push(row); }
+    }
     /// The clear-rate client brackets its timed work with two read-only samples.
     pub fn sample_vblank(&mut self, at: u64, count: u16) {
         if self.vblank_used < self.vblank.len() {
@@ -90,11 +96,11 @@ impl Recorder {
         }
     }
     pub fn drain(&mut self, batch: u64) -> Option<String> {
-        if self.rows.is_empty() && self.readbacks.is_empty() && self.blocked.is_empty() && self.dropped == 0 && self.vblank_used == 0 && self.submits.is_empty() { return None; }
+        if self.rows.is_empty() && self.readbacks.is_empty() && self.blocked.is_empty() && self.dropped == 0 && self.vblank_used == 0 && self.submits.is_empty() && self.gpu_times.is_empty() { return None; }
         let capacity = self.rows.len().checked_mul(128)?
             .checked_add(self.readbacks.len().checked_mul(192)?)?
             .checked_add(self.blocked.len().checked_mul(168)?)?.checked_add(self.submits.len().checked_mul(1024)?)?.checked_add(self.submit_bytes.len().checked_mul(192)?)?
-            .checked_add(self.admission_waits.len().checked_mul(256)?)?.checked_add(2048)?;
+            .checked_add(self.admission_waits.len().checked_mul(256)?)?.checked_add(self.gpu_times.len().checked_mul(160)?)?.checked_add(2048)?;
         let mut text = String::new();
         text.try_reserve_exact(capacity).ok()?;
         let _ = write!(text, "GT710_TIMING_V1 {{\"batch\":{},\"dropped\":{},\"rows\":[", batch, self.dropped);
@@ -166,6 +172,14 @@ impl Recorder {
             // Publication mapping types from the allocation and aperture setup.
             text.push_str(r#"],"submit_mappings":{"command":"coherent WB system memory GPU DMA","descriptor":"coherent WB system memory GPU DMA","receipt":"coherent WB system memory","frame":"coherent WB system memory GPU DMA","frame_zero":"coherent WB system memory","gp_put":"write-combined BAR1 USERD","page_tables":"uncached BAR0 PRAMIN to VRAM","encoder_heap":"WB system memory"}"#);
         }
+        if !self.gpu_times.is_empty() {
+            text.push_str(",\"gpu_times\":[");
+            for (i, row) in self.gpu_times.drain(..).enumerate() {
+                if i != 0 { text.push(','); }
+                let _ = write!(text, "[{},{},{},{},{},{}]", row[0],row[1],row[2],row[3],row[4],row[5]);
+            }
+            text.push(']');
+        }
         text.push('}');
         Some(text)
     }
@@ -200,6 +214,7 @@ mod runtime {
     }
     pub fn phase(kind: u64) -> Option<Guard> { enabled().then(|| Guard::new(crate::gpu::caller().unwrap_or(0), kind)) }
     pub fn vblank_sample(at: u64, count: u16) { with(|r| r.sample_vblank(at, count)); }
+    pub fn gpu_time(row: [u64; 6]) { with(|r| r.gpu_time(row)); }
     /// Diagnostic only: no wait policy or completion authority is changed.
     pub struct Readback {
         owner: u64, draw: u64, start: u64,
@@ -277,4 +292,4 @@ mod runtime {
     }
 }
 #[cfg(target_os = "none")]
-pub use runtime::{enable, enabled, begin_draw, phase, export, vblank_sample, Guard, Readback, Submit};
+pub use runtime::{enable, enabled, begin_draw, phase, export, vblank_sample, gpu_time, Guard, Readback, Submit};
