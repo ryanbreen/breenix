@@ -21,7 +21,7 @@ def log(message):
     print(message, flush=True)
 
 
-def stop_reason(line):
+def stop_reason(line, startup_only=False):
     if line.startswith(('GT710_CLOCK_FALLBACK ', 'GT710_CLOCK_GUARD ', 'GT710_C5F_ERROR ',
                         'GT710_NATIVE_RESET_REFUSAL ', 'GT710_GR_REFUSAL_CAPTURE_FAILED ',
                         'PANIC', 'LOCKUP', 'panicked at')):
@@ -43,6 +43,8 @@ def stop_reason(line):
                 return key+'-outside-one-percent'
         if int(row['temperature_c'])>=85:
             return 'temperature-85C'
+        if startup_only:
+            return 'startup-observed'
     if line.startswith('GT710_CLOCK_TEMPERATURE '):
         row = dict(re.findall(r'(\w+)=([^ ]+)', line))
         if int(row['celsius'])>=85 or row['tripped']=='true':
@@ -50,7 +52,7 @@ def stop_reason(line):
     return None
 
 
-def capture(boot, head):
+def capture(boot, head, startup_only=False):
     directory = Path('/var/lib/breenix-metal/boots') / boot
     offset, pending = 0, ''
     record=json.loads((directory / 'run.json').read_text())
@@ -69,7 +71,7 @@ def capture(boot, head):
                     line, pending = pending.split('\n', 1)
                     log(line)
                     try:
-                        reason = stop_reason(line)
+                        reason = stop_reason(line,startup_only=startup_only)
                     except (ValueError, KeyError) as error:
                         log(f'WATCH_PARSE_ERROR {error}; continuing')
                         reason = None
@@ -84,12 +86,12 @@ def capture(boot, head):
         time.sleep(.02)
 
 
-def run_on_host(boot, head):
+def run_on_host(boot, head, startup_only=False):
     # Read the deployed file on the boot host and run those identical bytes in
     # the service container. METAL_INSTANCE comes only from the host site file.
     child = subprocess.Popen(
         ['sudo', '-n', 'incus', 'exec', os.environ['METAL_INSTANCE'], '--',
-         'python3', '-u', '-c', Path(__file__).read_text(), '--capture', boot, head],
+         'python3', '-u', '-c', Path(__file__).read_text(), '--capture', *(['--startup-only'] if startup_only else []), boot, head],
         stdout=subprocess.PIPE, text=True)
     for line in child.stdout:
         print(line, end='', flush=True)
@@ -106,6 +108,7 @@ def run_on_host(boot, head):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--capture', action='store_true', help=argparse.SUPPRESS)
+    parser.add_argument('--startup-only', action='store_true', help='stop after the clock startup record')
     parser.add_argument('boot')
     parser.add_argument('head')
     args = parser.parse_args()
@@ -113,7 +116,7 @@ def main():
         parser.error('invalid boot id')
     if not re.fullmatch(r'[0-9a-f]{40}', args.head):
         parser.error('invalid commit')
-    return capture(args.boot, args.head) if args.capture else run_on_host(args.boot, args.head)
+    return capture(args.boot, args.head, args.startup_only) if args.capture else run_on_host(args.boot, args.head, args.startup_only)
 
 
 if __name__ == '__main__':
