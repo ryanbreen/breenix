@@ -1,6 +1,6 @@
 //! Bounded, parent-owned heap observations; only the final G12 payload carries them.
 use libbreenix::gpu::abi::heap_trace as wire;
-use std::{fmt::Write, io::Read, sync::Mutex};
+use std::{fmt::Write, io::Read, sync::Mutex, time::{Duration, Instant}};
 const MAX_NAME: usize = 80;
 const MAX_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Copy)]
@@ -62,6 +62,21 @@ impl Store {
     }
 }
 static STORE: Mutex<Store> = Mutex::new(Store::new());
+static LAST_COST: Mutex<Option<(Instant, [u64; wire::WORDS])>> = Mutex::new(None);
+
+/// Scalar diagnostics survive a later refused picture. Full heap records still
+/// require the complete final G12 payload; these lines cannot certify a boot.
+fn cost_report(name: &str, before: &[u64; wire::WORDS], after: &[u64; wire::WORDS], elapsed: Duration) -> Option<String> {
+    if name.is_empty() || elapsed < Duration::from_secs(1) { return None; }
+    let mut text = format!("GT710_CASE_COSTS case={name} sample_ms={}", elapsed.as_millis());
+    for (index, key) in wire::NAMES.iter().enumerate().skip(wire::COST_START) {
+        match after[index].checked_sub(before[index]) {
+            Some(delta) => write!(text, " {key}={delta}").ok()?,
+            None => write!(text, " {key}=reset").ok()?,
+        }
+    }
+    Some(text)
+}
 // Called before suite entry, so the dynamically sized parent store is in the
 // memory baseline rather than appearing as a case leak.
 pub(super) fn prepare(total: usize) -> Result<(), String> {
@@ -78,6 +93,19 @@ pub(super) fn boundary(index: usize, total: usize, name: &str) {
         let mut extra = [0];if file.read(&mut extra).map_err(|_| -5)? != 0 { return Err(-5); }
         wire::decode(&bytes).ok_or(-5)
     })();
+    if let Ok(after) = &values {
+        let now = Instant::now();
+        if let Ok(mut last) = LAST_COST.lock() {
+            if index != 0 {
+                if let Some((at, before)) = last.as_ref() {
+                    if let Some(text) = cost_report(name, before, after, now.duration_since(*at)) {
+                        println!("{text}");
+                    }
+                }
+            }
+            *last = Some((now, *after));
+        }
+    }
     if let Ok(mut store) = STORE.lock() { store.record(index, total, name, values); }
 }
 pub(super) fn encode() -> Result<Vec<u8>, String> {
