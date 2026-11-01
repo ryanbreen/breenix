@@ -37,7 +37,12 @@ mod gk208 {
     pub use crate::encode;
     #[allow(dead_code)] // This guard exercises retirement with telemetry disabled.
     #[path="ROOT/kernel/src/gpu/gk208/gpu_time.rs"] pub mod gpu_time;
-    pub mod timing { pub struct Submit; pub fn enabled()->bool{false} }
+    pub mod timing {
+        pub use super::gpu_time as gpu_clock;
+        #[allow(dead_code)] // The guard keeps draw-group telemetry disabled.
+        #[path="ROOT/kernel/src/gpu/gk208/gpu_groups.rs"] pub mod gpu_groups;
+        pub struct Submit; pub fn enabled()->bool{false}
+    }
     pub mod adapter { pub struct EncodedDraw { pub words: Vec<u32> } }
     pub mod queue { pub struct Queue; impl Queue { pub fn slot(n: u32) -> u32 { (n - 1) % 4 } } }
     pub mod ce {
@@ -72,7 +77,7 @@ mod gk208 {
             pub struct Identity { pub instance: u64, pub epoch: u64 }
             pub struct Report { pub identity: Identity }
             pub struct Session { pub context: Context, pub report: Report, pub pages: Pages }
-            pub struct NativeChannel { pub session: Session, pub quarantine: u64, pub sent: Vec<u32>, pub parking: Vec<u32> }
+            pub struct NativeChannel { pub session: Session, pub quarantine: u64, pub sent: Vec<u32>, pub parking: Vec<u32>, pub draw_groups: [Option<(u32, Vec<crate::gk208::timing::gpu_groups::State>)>; 4] }
             impl NativeChannel {
                 pub fn new() -> Self {
                     Self { session: Session { context: Context { space: Space { directory: Directory { range: Range { start: 0x100000 } } } },

@@ -2133,3 +2133,11 @@ API and instruction semantics were checked in these MIT files at Mesa
 
 The original MIT notices remain in the vendored files and `vendor/kepler/NOTICES`.
 The compiler's existing adapted frontend retains its MIT notice in its header.
+
+`kernel/src/gpu/gk208/gpu_groups.rs` uses the checked MIT query packet and
+pipeline-statistics layout in Mesa `nvc0_query_hw.c` at that same revision,
+and MIT NVIDIA `cla197.h` at
+`9fdf5c4062007929d9f4e6cbad9c9771fe61b880`. The report-19 counter is called
+PS invocations by NVIDIA and ROP pixels in Mesa's query comments. The
+original Christoph Bumiller, Samuel Pitoiset and NVIDIA notices are retained
+in the new module's header.

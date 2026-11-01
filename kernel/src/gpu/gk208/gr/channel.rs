@@ -1437,7 +1437,8 @@ mod native {
             let session = self.session.take().unwrap();
             let channel = NativeChannel { session, registers: h.regs.0, total: h.total,
                 mmu: [0; 2], _scratch: None, topology: [[0; 2]; 3], initial: Vec::new(),
-                quarantine: 0, terminal_quarantine: 0, parking: Vec::new(), put: last, health_after: 0, confirmed: false, _bootstrap: None };
+                quarantine: 0, terminal_quarantine: 0, parking: Vec::new(), put: last, health_after: 0,
+                draw_groups: core::array::from_fn(|_| None), confirmed: false, _bootstrap: None };
             let mut device = crate::gpu::dev::Device::Gk208(adapter::Device::probe(channel, board, last));
             let result = self.producer.run(&mut device, operation, name);
             let crate::gpu::dev::Device::Gk208(device) = device else { unreachable!() };
@@ -1486,6 +1487,7 @@ mod native {
         parking: Vec<u32>,
         put: u32,
         health_after: u64,
+        draw_groups: [Option<(u32, Vec<crate::gk208::timing::gpu_groups::State>)>; 4],
         confirmed: bool,
         _bootstrap: Option<ManuallyDrop<crate::gk208::lifetime::Context>>,
     }
@@ -1511,13 +1513,16 @@ mod native {
             let put = session.next_sequence - 1;
             Ok(NativeChannel { session: owner.take().unwrap(), registers, total,
                 mmu: mmu.map(|a| a.range.start), _scratch: Some(scratch), topology,
-                initial, quarantine, terminal_quarantine, parking, put, health_after: 0, confirmed: false, _bootstrap: None })
+                initial, quarantine, terminal_quarantine, parking, put, health_after: 0,
+                draw_groups: core::array::from_fn(|_| None), confirmed: false, _bootstrap: None })
         }
     }
 
     impl NativeChannel {
         pub(crate) fn heap_footprint(&self) -> [usize; 2] {
-            [self.initial.capacity(), self.parking.capacity() * core::mem::size_of::<u32>()]
+            let groups = self.draw_groups.iter().flatten().map(|(_, v)|
+                v.capacity() * core::mem::size_of::<crate::gk208::timing::gpu_groups::State>()).sum::<usize>();
+            [self.initial.capacity(), self.parking.capacity() * core::mem::size_of::<u32>() + groups]
         }
 
         pub(in crate::gk208::gr) fn retain_bootstrap(&mut self, context: crate::gk208::lifetime::Context) {
@@ -1660,11 +1665,20 @@ mod native {
                 && crate::boot::intent::command_line().is_some_and(|line|
                     line.split_ascii_whitespace().any(|word| word == "gt710-gpu-time"));
             let time_offset = crate::gk208::gpu_time::offset(sequence, 0)?;
+            let mut group_states = Vec::new();
             if device_time {
+                (payload, group_states) = crate::gk208::timing::gpu_groups::instrument(payload, sequence)?;
+                if !group_states.is_empty() && self.draw_groups[crate::gk208::queue::Queue::slot(sequence) as usize].is_some() {
+                    return Err("native draw-group metadata still live");
+                }
                 // This diagnostic span is separate from receipt slots, the
                 // parked CB selector and channel 1's terminal receipt.
                 unsafe { core::ptr::write_bytes((s.pages.va(0) + time_offset) as *mut u8, 0, 64); }
                 unsafe { core::ptr::write_bytes((s.pages.va(0) + crate::gk208::gpu_time::end_offset(sequence)?) as *mut u8, 0, 16); }
+                if !group_states.is_empty() {
+                    let (at, bytes) = crate::gk208::timing::gpu_groups::span(sequence)?;
+                    unsafe { core::ptr::write_bytes((s.pages.va(0) + at) as *mut u8, 0, bytes as usize); }
+                }
                 s.pages.publish();
             }
             // Restart reconstructs RAMFC without its old subchannel classes.
@@ -1706,6 +1720,9 @@ mod native {
             let submitted = if device_time { device_time_now() } else { 0 };
             let result = self.publish_encoded_traced(sequence,&mut command,trace);
             if result.is_ok() && device_time {
+                if !group_states.is_empty() {
+                    self.draw_groups[crate::gk208::queue::Queue::slot(sequence) as usize] = Some((sequence, group_states));
+                }
                 // CORE excludes a reaper until publication returns. This CPU
                 // marker requests observation; only device words supply time.
                 unsafe {
@@ -1846,6 +1863,18 @@ mod native {
                     crate::gk208::timing::gpu_time(
                         crate::gk208::gpu_time::decode(sequence, words, raw), end,
                         [submitted, observed, before, gpu_now, after], receipt_observed);
+                    if let Some((owner, states)) = self.draw_groups[crate::gk208::queue::Queue::slot(sequence) as usize].take() {
+                        if owner != sequence { return Err("native draw-group receipt identity"); }
+                        for (draw, state) in states.iter().enumerate() {
+                            let raw = core::array::from_fn(|stage| {
+                                let at = crate::gk208::timing::gpu_groups::offset(sequence, draw, stage).unwrap();
+                                core::array::from_fn(|word| unsafe {
+                                    ((self.session.pages.va(0) + at) as *const u32).add(word).read_volatile()
+                                })
+                            });
+                            crate::gk208::timing::gpu_group(crate::gk208::timing::gpu_groups::decode(sequence, draw, state, raw));
+                        }
+                    }
                 }
             }
             Ok(crate::gpu_completion::CeSample { context: u64::from(bound & 0x0fffffff) << 12,
