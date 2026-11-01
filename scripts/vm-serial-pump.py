@@ -141,8 +141,17 @@ def main(run, whole_path):
                                     end_boot()
                                     start_boot()
                         continue
+                    # kqueue can return separate read and write notifications
+                    # for one client. Its EOF event may already have closed it.
+                    if kind == 'console-data' and sock not in clients:
+                        continue
                     if mask & selectors.EVENT_READ:
-                        data = sock.recv(65536)
+                        try:
+                            data = sock.recv(65536)
+                        except ConnectionResetError:
+                            if kind == 'guest-data':
+                                raise
+                            data = b''
                         if not data:
                             if kind == 'guest-data':
                                 return
