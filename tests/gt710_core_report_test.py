@@ -59,6 +59,7 @@ from io import StringIO
 import json
 from pathlib import Path
 import runpy
+import re
 import struct
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -233,20 +234,26 @@ class CoreReport(unittest.TestCase):
                 (path/'serial.txt').write_text(changed)
                 with self.assertRaises(ValueError): API['core_row'](API['capture_serial'](path))
 
-    def test_named_producer_requires_complete_refusals_in_manifest_order(self):
-        serial=self.joined()
-        API['core_producer'](gpu_serial(), API['core_row'](serial), gpu_boot())
-        text=gpu_serial()
-        changes=[text.replace(' FAIL ', ' SKIP ',1), text.replace(' FAIL ', ' PASS ',1),
-                 text.replace('CAPS status 2 (missing b8g8r8a8-render)', 'CAPS status 1 (no GPU core backend)'),
-                 text.replace('CAPS status 2','CAPS status 1'), text.replace('b8g8r8a8-render','feature-3d'),
-                 text.replace('ms=1 msg=','ms=1 msg=another failure; ',1),
+    def test_named_producer_requires_probes_and_complete_real_results_in_manifest_order(self):
+        serial = self.joined()
+        resources = runpy.run_path(str(ROOT / 'tests/gt710_resources_report_test.py'))
+        with tempfile.TemporaryDirectory() as tmp:
+            text = resources['stage'](Path(tmp)) + resources['transcript']()
+        API['core_producer'](text, API['core_row'](serial), gpu_boot())
+        with self.assertRaises(ValueError):
+            API['core_producer'](gpu_serial(), API['core_row'](serial), gpu_boot())
+        changes=[text.replace(' PASS ', ' SKIP ',1), text.replace(' FAIL ', ' PASS ',1),
+                 text.replace(' PASS ms=1', ' UNKNOWN ms=1',1),
+                 text.replace(' PASS ms=1', ' PASS ms=1 msg=contradiction',1),
+                 text.replace('passed=52 failed=118', 'passed=53 failed=117'),
                  text.replace('SUITE gpu START cases=170\n',''), text.replace('SUITE gpu DONE','SUITE other DONE'),
-                 text.replace('SUITE gpu ELAPSED ms=210\n',''), text.replace('ms=210','ms=900001'),
+                 text.replace('SUITE gpu ELAPSED ms=900000\n',''), text.replace('ms=900000','ms=900001'),
                  text.replace('SUITE_SEQUENCE READY gpu\n',''), text+'KERNEL PANIC: broken\n',
                  text+'SUITE_SEQUENCE STALLED gpu cases=170/170\n',
                  text.replace('MEMORY before','MEMORY lost'),text.replace('free_after=1000','free_after=10')]
-        lines=text.splitlines(keepends=True); lines[2],lines[3]=lines[3],lines[2]; changes.append(''.join(lines))
+        lines=text.splitlines(keepends=True)
+        case_indices=[i for i,l in enumerate(lines) if l.startswith('SUITE gpu CASE ')]
+        first,second=case_indices[:2];lines[first],lines[second]=lines[second],lines[first];changes.append(''.join(lines))
         for changed in changes:
             with self.subTest(capture=changed[:100]), self.assertRaises(ValueError):
                 API['core_producer'](changed, API['core_row'](serial), gpu_boot())
@@ -267,9 +274,16 @@ class CoreReport(unittest.TestCase):
                    'ended':'1\n','exit-status':'1\n','dirty':'0\n','commit':SHA+'\n'}
             startup = b'GT710_CORE_STARTUP {"schema":1,"irq_masked_max_us":37,"ready":true}\n'
             anchor = f'{len(startup)} {hashlib.sha256(startup).hexdigest()}\n'
-            files['serial.txt'] = 'GT710_CORE_STARTUP_BULK ' + anchor + 'GT710_BULK ' + anchor + files['serial.txt']
+            resources = runpy.run_path(str(ROOT / 'tests/gt710_resources_report_test.py'))
+            resources['stage'](companion)
+            admission = (companion / 'serial.txt').read_text()
+            admission = re.sub(r'^GT710_BULK [^\n]+\n', '', admission, flags=re.M)
+            bulk = startup + (companion / 'gt710-pixels.rle').read_bytes()
+            bulk_anchor = f'{len(bulk)} {hashlib.sha256(bulk).hexdigest()}\n'
+            files['serial.txt'] = ('GT710_CORE_STARTUP_BULK ' + anchor + admission
+                + 'GT710_BULK ' + bulk_anchor + resources['transcript']())
             for name,text in files.items(): (companion/name).write_text(text)
-            (companion/'gt710-pixels.rle').write_bytes(startup)
+            (companion/'gt710-pixels.rle').write_bytes(bulk)
             diagnostic=path/'core-diagnostic'; diagnostic.mkdir()
             diagnostic_boot=dict(gpu_boot(), id='20261028T160000Z-metal', mode='probe',
                                  suite=None, suites=None, gt710Category='core',
