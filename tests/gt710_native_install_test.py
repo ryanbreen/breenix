@@ -75,13 +75,14 @@ const EINVAL:i64=22;
 const EINTR:i64=4;
 static NATIVE_STARTING:AtomicBool=AtomicBool::new(false);
 mod arch {pub fn with_interrupts<R>(f:impl FnOnce()->R)->R{f()}}
+mod console {pub struct Canvas;pub fn hold_canvas()->Canvas{Canvas}}
 fn notify(){}
 fn wait_for<T>(_:Option<u64>,_:bool,mut f:impl FnMut(&mut Core)->Option<T>)->Result<T,()>{
  Ok(with_core(&mut f).unwrap().expect("single caller must not wait"))
 }
 mod abi {
     #[derive(Clone,Copy,Default)] pub struct Caps { pub backend:u32,pub status:u32,pub missing:u32 }
-    pub mod status {pub const NO_DEVICE:u32=1;pub const DEVICE_FAILED:u32=3;}
+    pub mod status {pub const NO_DEVICE:u32=1;pub const MISSING_CAPABILITY:u32=2;pub const DEVICE_FAILED:u32=3;}
 }
 struct Core {dev:Option<()>,status:u32,reason:&'static str}
 impl Core {
@@ -112,6 +113,22 @@ fn main(){
  let c=OUTPUT.with(Cell::get);assert_eq!((c.backend,c.status,c.missing),(6,2,3));
  assert_eq!(op_caps(0,core::mem::size_of::<abi::Caps>() as u64),Ok(0));
  assert_eq!(CALLS.with(Cell::get),1,"CAPS must initialize exactly once");
+ // An early diagnostic records refusal without installing a live device.
+ // Both first CAPS and display takeover must still initialize that device.
+ for direct in [false,true] {
+  with_core(|c|{*c=Core::empty();c.status=abi::status::MISSING_CAPABILITY;});
+  CALLS.with(|c|c.set(0));
+  if direct { assert_eq!(native_caps_startup(),Ok(())); }
+  else { assert_eq!(op_caps(0,core::mem::size_of::<abi::Caps>() as u64),Ok(0)); }
+  assert_eq!(CALLS.with(Cell::get),1,"diagnostic refusal suppressed live native startup");
+  assert!(with_core(|c|c.dev.is_some()).unwrap());
+ }
+ // A genuine failed startup is terminal, including with no installed device.
+ with_core(|c|{*c=Core::empty();c.status=abi::status::DEVICE_FAILED;});
+ CALLS.with(|c|c.set(0));
+ assert_eq!(op_caps(0,core::mem::size_of::<abi::Caps>() as u64),Ok(0));
+ assert_eq!(native_caps_startup(),Ok(()));
+ assert_eq!(CALLS.with(Cell::get),0,"failed startup must not retry hardware");
 }
 """.replace('// CAPS', function)
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
