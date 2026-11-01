@@ -19,6 +19,7 @@ impl Store {
         if self.rows.capacity() < expected {
             self.rows.try_reserve_exact(expected).map_err(|_| "case heap boundary allocation")?;
         }
+        self.rows.resize(expected, Row::EMPTY);
         Ok(())
     }
     fn record(&mut self, index: usize, total: usize, name: &str, values: Result<[u64; wire::WORDS], i32>) {
@@ -34,7 +35,6 @@ impl Store {
         }
         let Ok(values) = values else { self.bad = true; return; };
         if values[0] != 1 { self.bad = true; return; }
-        self.rows.push(Row::EMPTY);
         let row = &mut self.rows[index];
         row.name[..name.len()].copy_from_slice(name.as_bytes());row.len = name.len();row.values = values;
         self.used += 1;

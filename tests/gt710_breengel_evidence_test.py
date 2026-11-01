@@ -108,7 +108,7 @@ fn main(){
  let mut chunks=Vec::new();
  let mut send=|data:&[u8]|{chunks.push(data.to_vec());Ok(())};
  let pixels:Vec<u8>=(0..600000u32).flat_map(|v|[v as u8,(v>>8)as u8,(v>>16)as u8,255]).collect();
- for case in ["raster/first","raster/second"] {
+ for case in ["raster/fill-rect","raster/blit"] {
   store.record(case, true,1000,600,&pixels,crypto::sha256::sha256(&pixels),&mut send).unwrap();
  }
  let manifest=store.manifest().unwrap();
@@ -120,6 +120,19 @@ fn main(){
  store.record("text/later",false,1,1,&solid,crypto::sha256::sha256(&solid),&mut sample_send).unwrap();
  assert_eq!(store.manifest().unwrap().split(|b|*b==b'\n').filter(|b|!b.is_empty()).count(),3);
  assert_eq!(samples,1);
+ let patterned:Vec<u8>=(0..250000u32).flat_map(|v| (0..4).flat_map(move |_|[v as u8,(v>>8)as u8,(v>>16)as u8,255])).collect();
+ let mut streamed=pictures::Pictures::new();let mut output=Vec::new();
+ streamed.record("text/rle",false,1000,1000,&patterned,crypto::sha256::sha256(&patterned),&mut |b|{output.push(b.to_vec());Ok(())}).unwrap();
+ assert_eq!(output.len(),2);assert!(output.iter().all(|b|b.len()<=pictures::MAX_UPLOAD));
+ let encoded=String::from_utf8(output.concat()).unwrap();assert_eq!(encoded.len(),2750000);
+ let mut decoded=Vec::new();
+ for token in encoded.trim_end().split(',') {
+  let (count,word)=token.split_once(':').unwrap();let count=usize::from_str_radix(count,16).unwrap();
+  let word=u32::from_str_radix(word,16).unwrap().to_le_bytes();
+  for _ in 0..count{decoded.extend_from_slice(&word);}
+ }
+ assert_eq!(decoded,patterned,"streaming across slots must retain the exact canonical pixels");
+ pictures::check_prepared(&streamed);
  let mut failed=pictures::Pictures::new(); failed.bytes=pictures::MAX_TOTAL-1;
  let mut sent=0;
  let mut sink=|_:&[u8]|{sent+=1;Ok(())};

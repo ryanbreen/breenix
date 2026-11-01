@@ -242,6 +242,7 @@ fn main() {
     #[cfg(target_arch = "x86_64")]
     {
         evidence(gt710_heap::prepare(SUITE.categories.iter().map(|c| c.cases.len()).sum()));
+        evidence(NATIVE_PICTURES.lock().expect("native picture store lock").prepare());
         let _ = libbreenix::gpu::caps();
         evidence(gt710_artifacts::upload());
     }
