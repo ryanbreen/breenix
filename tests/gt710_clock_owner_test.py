@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class ClockOwner(unittest.TestCase):
     def test_callback_releases_lock_and_returns_session_on_error(self):
         source = (ROOT/'kernel/src/gpu/gk208/ce/process.rs').read_text()
-        method = item(source, 'pub(in crate::gk208) fn with_clock_owner<R>(')
+        method = item(source, 'pub(in crate::gk208) fn with_clock_wait<R>(')
         method = method.replace('pub(in crate::gk208) ', '').replace('super::super::', 'super::')
         harness = r'''
 use std::sync::Mutex;
@@ -27,7 +27,7 @@ mod gk208 {
   pub fn exercise(){
    *SESSION.lock().unwrap()=Some(Session{registers:7,evo:super::native::Evo,console:super::ConsoleSurface,work:None});
    for fail in [false,true] {
-    let result=with_clock_owner(|r,_,_|{
+    let result=with_clock_wait(|r,_,_|{
      assert!(SESSION.try_lock().expect("clock wait retained SESSION lock").is_none());
      assert_eq!(r.0,7);
      if fail {Err("PMU timeout")} else {Ok(())}

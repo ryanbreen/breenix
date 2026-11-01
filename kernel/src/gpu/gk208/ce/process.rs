@@ -211,6 +211,19 @@ pub(in crate::gk208) fn with_clock_owner<R>(
     f: impl FnOnce(&mut Registers, &mut super::super::native::Evo,
         super::super::ConsoleSurface) -> Result<R, &'static str>,
 ) -> Result<R, &'static str> {
+    let mut owner=SESSION.lock();
+    let s=owner.as_mut().ok_or("native display session unavailable")?;
+    if s.work.is_some() {return Err("native CE work still owned");}
+    f(&mut Registers(s.registers), &mut s.evo, s.console)
+}
+
+/// Long clock operations move the owner out; short counter reads keep the
+/// ordinary session serialization used by rendering.
+#[cfg(not(feature = "gt710_clock_probe"))]
+pub(in crate::gk208) fn with_clock_wait<R>(
+    f: impl FnOnce(&mut Registers, &mut super::super::native::Evo,
+        super::super::ConsoleSurface) -> Result<R, &'static str>,
+) -> Result<R, &'static str> {
     // Move exclusive ownership out of the spin lock, as initialize_core does.
     // Other callers observe an unavailable owner instead of spinning through
     // seconds of PMU timeouts with preemption disabled.

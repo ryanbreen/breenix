@@ -126,7 +126,7 @@ impl Controller {
     fn memory_pass(&mut self,phase:&str,former:u32,target:u32,intermediate:bool,recovery:bool)->Result<(),&'static str> {
         let frequency=if intermediate {former.min(target)}else{target};
         let mut io=Io(Registers(self.base));
-        super::ce::with_clock_owner(|_,evo,console| {
+        super::ce::with_clock_wait(|_,evo,console| {
             if !recovery {self.cool()?;self.gpu_health()?;}
             self.context("memx-session",format!("phase={},former={},target={},intermediate={}",phase,former,target,intermediate));
             let session=memx::Session::init(&mut io)?;
@@ -174,7 +174,7 @@ impl Controller {
     }
     fn record(&mut self,full:bool,reason:&str) {
         if !full {
-            self.counter=super::ce::with_clock_owner(|_,_,_|c2::observe::measure(&mut Io(Registers(self.base))))
+            self.counter=super::ce::with_clock_wait(|_,_,_|c2::observe::measure(&mut Io(Registers(self.base))))
                 .ok().map(|m|m.khz);
         }
         let s=self.sample();
@@ -210,7 +210,7 @@ impl Controller {
             }
             Stage::Pmu=>{
                 self.context("pmu-start",format!("pmc={:#x},pmu_control={:#x}",Registers(self.base).read(0x200),Registers(self.base).read(0x10a100)));
-                super::ce::with_clock_owner(|_,_,_| {
+                super::ce::with_clock_wait(|_,_,_| {
                 let rings=super::pmu::start(&mut Io(Registers(self.base)),
                     include_bytes!("../../../assets/kepler/pmu.code.bin"),
                     include_bytes!("../../../assets/kepler/pmu.data.bin"))?;
@@ -221,7 +221,7 @@ impl Controller {
                 self.context("ram-init-decode",format!("strap={:#x},rom_bytes={}",self.strap,self.rom.len()));
                 let scripts=super::ram_init::scripts(&self.rom,self.strap).inspect_err(|e|crate::serial_println!("GT710_CLOCK_CHECK check=ram-init-decode error={:?}",e)).map_err(|_|"RAM init script decode failed")?;
                 self.context("ram-init-execute",format!("scripts={},memory_before={:?}",scripts.len(),self.sample().memory_khz));
-                super::ce::with_clock_owner(|_,_,_| {
+                super::ce::with_clock_wait(|_,_,_| {
                     super::ram_init::execute(&mut Registers(self.base),&scripts);Ok(())
                 })?;
                 let memory=self.sample().memory_khz;
@@ -256,7 +256,7 @@ impl Controller {
                 crate::serial_println!("GT710_CLOCK_GPC requested_khz={} calculated_khz={}",self.target.gpc_khz,plan.khz);
                 self.context("gpc-program",format!("target={},calculated={},coefficient={:#x}",self.target.gpc_khz,plan.khz,plan.coefficient));
                 self.gpc_changed=true;
-                super::ce::with_clock_owner(|_,_,_|c2::program(&mut Io(Registers(self.base)),&plan))
+                super::ce::with_clock_wait(|_,_,_|c2::program(&mut Io(Registers(self.base)),&plan))
             }
             Stage::Verify=>{
                 let s=self.sample();
@@ -265,7 +265,7 @@ impl Controller {
                     return Err("clock readback more than 1 percent off");
                 }
                 self.context("gpc-counter",format!("target_khz={}",self.target.gpc_khz.div_ceil(16)));
-                let m=super::ce::with_clock_owner(|_,_,_|c2::observe::measure(&mut Io(Registers(self.base))))?;
+                let m=super::ce::with_clock_wait(|_,_,_|c2::observe::measure(&mut Io(Registers(self.base))))?;
                 self.counter=Some(m.khz);
                 crate::serial_println!("GT710_CLOCK_COUNTER khz={} cycles={} interval_ns={} bracket_ns={} restored=true",m.khz,m.cycles,m.ptimer_ns,m.bracket_ns);
                 self.context("gpc-counter-readback",format!("actual={},expected={}",m.khz,self.target.gpc_khz.div_ceil(16)));
@@ -278,7 +278,7 @@ impl Controller {
     }
     fn restore_gpc_clock(&mut self)->Result<(),&'static str> {
         if !self.gpc_changed {return Ok(());}
-        super::ce::with_clock_owner(|_,_,_|c2::observe::restore(&mut Io(Registers(self.base)),&self.post))?;
+        super::ce::with_clock_wait(|_,_,_|c2::observe::restore(&mut Io(Registers(self.base)),&self.post))?;
         self.gpc_changed=false;Ok(())
     }
     fn restore_memory_clock(&mut self)->Result<(),&'static str> {
@@ -298,7 +298,7 @@ fn keep_post()->bool {
 pub(super) fn initialize() {
     let mut prepare_check="session-owner";
     let mut prepare_values=String::new();
-    let result=super::ce::with_clock_owner(|regs,_,_| {
+    let result=super::ce::with_clock_wait(|regs,_,_| {
         let base=regs.0;
         prepare_check="rom-read";
         prepare_values=format!("prom_control={:#x}",Registers(base).read(0x1800));

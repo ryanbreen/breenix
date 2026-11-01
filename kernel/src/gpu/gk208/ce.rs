@@ -724,4 +724,4 @@ pub(in crate::gk208) use process::{console_allocation,terminal_display};
 pub(crate) mod readback;
 
 #[cfg(not(feature = "gt710_clock_probe"))]
-pub(super) use process::with_clock_owner;
+pub(super) use process::{with_clock_owner, with_clock_wait};
