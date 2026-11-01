@@ -1437,7 +1437,7 @@ mod native {
             let session = self.session.take().unwrap();
             let channel = NativeChannel { session, registers: h.regs.0, total: h.total,
                 mmu: [0; 2], _scratch: None, topology: [[0; 2]; 3], initial: Vec::new(),
-                quarantine: 0, terminal_quarantine: 0, parking: Vec::new(), put: last, confirmed: false, _bootstrap: None };
+                quarantine: 0, terminal_quarantine: 0, parking: Vec::new(), put: last, health_after: 0, confirmed: false, _bootstrap: None };
             let mut device = crate::gpu::dev::Device::Gk208(adapter::Device::probe(channel, board, last));
             let result = self.producer.run(&mut device, operation, name);
             let crate::gpu::dev::Device::Gk208(device) = device else { unreachable!() };
@@ -1485,6 +1485,7 @@ mod native {
         terminal_quarantine: u64,
         parking: Vec<u32>,
         put: u32,
+        health_after: u64,
         confirmed: bool,
         _bootstrap: Option<ManuallyDrop<crate::gk208::lifetime::Context>>,
     }
@@ -1510,7 +1511,7 @@ mod native {
             let put = session.next_sequence - 1;
             Ok(NativeChannel { session: owner.take().unwrap(), registers, total,
                 mmu: mmu.map(|a| a.range.start), _scratch: Some(scratch), topology,
-                initial, quarantine, terminal_quarantine, parking, put, confirmed: false, _bootstrap: None })
+                initial, quarantine, terminal_quarantine, parking, put, health_after: 0, confirmed: false, _bootstrap: None })
         }
     }
 
@@ -1778,7 +1779,31 @@ mod native {
         pub(crate) fn sample_wait(&mut self, sequence: u32) -> Result<crate::gpu_completion::CeSample, &'static str> {
             self.sample_with(sequence, true)
         }
+        /// An absent coherent receipt cannot retire work. Between bounded health
+        /// scans, observe it without issuing PCIe reads for consumption/identity.
+        /// A matching receipt falls through to the complete monitor scan.
+        fn pending_receipt(&mut self, sequence: u32) -> Option<crate::gpu_completion::CeSample> {
+            self.session.pages.observe();
+            let slot = crate::gk208::queue::Queue::slot(sequence);
+            // SAFETY: this request retains its channel-owned coherent slot.
+            let (value, epoch) = unsafe {
+                let p = (self.session.pages.va(0) + u64::from(slot) * 16) as *const u32;
+                (p.read_volatile(), u64::from(p.add(1).read_volatile())
+                    | u64::from(p.add(2).read_volatile()) << 32)
+            };
+            if value == sequence && epoch == self.session.report.identity.epoch { return None; }
+            let now = elapsed(0);
+            if now >= self.health_after {
+                self.health_after = now.saturating_add(50);
+                return None;
+            }
+            Some(crate::gpu_completion::CeSample {
+                context: self.session.report.identity.instance, epoch, sequence: value,
+                consumed: 0, healthy: true,
+            })
+        }
         fn sample_with(&mut self, sequence: u32, retry_traps: bool) -> Result<crate::gpu_completion::CeSample, &'static str> {
+            if let Some(pending) = self.pending_receipt(sequence) { return Ok(pending); }
             let mut regs = Registers(self.registers);
             let mut monitor = Monitor { session: &self.session, regs: &mut regs, total: self.total,
                 sequence, stop_on_trap: true, retry_traps, release_slot: crate::gk208::queue::Queue::slot(sequence) as usize,
