@@ -933,6 +933,7 @@ fn translate_inner(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras, resi
                         Some(scratch)
                     } else { None }
                 } else { None };
+                let mut colour_bits = None;
                 for n in 0..count {
                     let i = instance(n);
                     if let Some(r) = draw::source_clip(pipe, i, None)
@@ -943,8 +944,8 @@ fn translate_inner(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras, resi
                         constants[27] = data.map_or(gpu_abi::gk208::MAX_2D_SIZE.trailing_zeros(), |d| d.width.trailing_zeros());
                         let colour = w.word(at + 3);
                         if matches!(pipe, pipeline::GRADIENT_V | pipeline::COVERAGE_SPANS) { constants[20] = colour; }
-                        else { constants[20..24].copy_from_slice(&[16, 8, 0, 24]
-                            .map(|shift| gpu_abi::float::ratio_bits(colour >> shift & 255, 255))); }
+                        else { constants[20..24].copy_from_slice(colour_bits.get_or_insert_with(||
+                            [16, 8, 0, 24].map(|shift| gpu_abi::float::ratio_bits(colour >> shift & 255, 255)))); }
                         quad(&mut f, t, r, clip, &constants, pipe, None, scratch, data)?;
                     }
                 }
@@ -1365,8 +1366,12 @@ fn quads(
     for (rectangle, [x0, y0, x1, y1]) in rectangles.enumerate() {
         let coord = |p: u32, size: u32| {
             let n = i64::from(p) * 2 - i64::from(size);
-            gpu_abi::float::ratio_bits(n.unsigned_abs() as u32, size)
-                | if n < 0 { 1 << 31 } else { 0 }
+            if size.is_power_of_two() {
+                gpu_abi::float::scaled_int_bits(n, size.trailing_zeros())
+            } else {
+                gpu_abi::float::ratio_bits(n.unsigned_abs() as u32, size)
+                    | if n < 0 { 1 << 31 } else { 0 }
+            }
         };
         // The six vertices repeat four coordinates. Convert the corners once,
         // retaining the same integer binary32 formula and triangle ordering.
