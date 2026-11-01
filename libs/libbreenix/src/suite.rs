@@ -861,10 +861,15 @@ pub struct Suite {
     defer_display: bool,
     finalizer: Option<fn()>,
     case_observer: Option<fn(usize, usize, &str)>,
+    #[cfg(target_arch = "x86_64")]
+    judged_observer: Option<fn(&str, &JudgedFrame)>,
 }
 
 pub const fn suite(id: &'static str, title: &'static str, categories: &'static [Category]) -> Suite {
-    Suite { id, title, categories, case_limit_ms: DEFAULT_CASE_LIMIT_MS, gui: false, defer_display: false, finalizer: None, case_observer: None }
+    Suite { id, title, categories, case_limit_ms: DEFAULT_CASE_LIMIT_MS, gui: false, defer_display: false, finalizer: None, case_observer: None,
+        #[cfg(target_arch = "x86_64")]
+        judged_observer: None,
+    }
 }
 
 impl Suite {
@@ -876,6 +881,13 @@ impl Suite {
     /// Observe the parent at the initial boundary and after each completed case.
     pub const fn with_case_observer(self, observe: fn(usize, usize, &str)) -> Suite {
         Suite { case_observer: Some(observe), ..self }
+    }
+
+    /// Export the verified judged snapshot outside the case's measured window.
+    /// Native evidence consumers do not change the verdict or the stage's source.
+    #[cfg(target_arch = "x86_64")]
+    pub const fn with_judged_observer(self, observe: fn(&str, &JudgedFrame)) -> Suite {
+        Suite { judged_observer: Some(observe), ..self }
     }
 
     /// Hand the display to each isolated case; draw only between measured windows.
@@ -1015,6 +1027,10 @@ impl Suite {
                 let mut outcome = run_case(case, limit_ms, self.id, &name, &mut screen, &mut feed);
                 if let Some(error) = screen.stage_error.take() { outcome = with_note(outcome, &error); }
                 let picture_hash = frame_hash(screen.judged.as_ref());
+                #[cfg(target_arch = "x86_64")]
+                if let (Some(observe), Some(frame)) = (self.judged_observer, screen.judged.as_ref()) {
+                    observe(&name, frame);
+                }
                 let make_line = |outcome: &Outcome| match outcome {
                     Outcome::Pass { ms } => std::format!("SUITE {} CASE {} PASS ms={}{}", self.id, name, ms, picture_hash),
                     Outcome::Fail { ms, msg } => std::format!("SUITE {} CASE {} FAIL ms={}{} msg={}", self.id, name, ms, picture_hash, msg),

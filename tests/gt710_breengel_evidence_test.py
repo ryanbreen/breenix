@@ -58,6 +58,31 @@ fn main(){print!("{}",String::from_utf8(heap::fixture()).unwrap());}
         self.assertEqual([r['case'] for r in rows], [''] + [f'raster/case-{n}' for n in range(1, 402)])
         self.assertTrue(all(set(r['values']) == API['CASE_HEAP_FIELDS'] for r in rows))
         self.assertEqual(rows[-1]['values']['heap_free'], 2**64 - 1)
+        # Exercise the receiver's former <=170 check as well as the producer.
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            pixels = bytes([0, 0, 0, 255]); digest = hashlib.sha256(pixels).hexdigest()
+            payload = b'1:ff000000\n'
+            entries = [dict(case=f'raster/case-{n}', picture=n-1, sha256=digest,
+                            bytes=len(payload), width=1, height=1) for n in range(1, 402)]
+            manifest = ''.join('GT710_BREENGL_PICTURE '+json.dumps(e,separators=(',', ':'))+'\n' for e in entries).encode()
+            startup = b'GT710_PIX 0 1:ff003039\n'
+            final = text.encode() + manifest
+            def anchor(label, data):
+                return f'{label} {len(data)} {hashlib.sha256(data).hexdigest()}\n'
+            serial = 'GT710_MODE {"schema":1}\n'+anchor('GT710_BULK', startup)
+            serial += 'SUITE breengel START cases=401\n'+anchor('GT710_BREENGL_CHUNK 0', payload)
+            serial += ''.join(f'SUITE breengel CASE raster/case-{n} PASS ms=1 sha256={digest}\n' for n in range(1, 402))
+            serial += 'SUITE breengel DONE passed=401 failed=0 skipped=0 total=401\n'
+            serial += 'SUITE breengel MEMORY reclaimed=PASS free_before=100 free_after=100 allowance=64\n'
+            serial += anchor('GT710_CASE_HEAP_BULK', text.encode())+anchor('GT710_BREENGL_MANIFEST_BULK', manifest)+anchor('GT710_FINAL_BULK', final)
+            serial += f'GT710_BREENGL_TOTAL bytes={len(startup)+len(payload)+len(final)} uploads=3 picture_bytes={len(payload)} pictures=401 unique=1\n'
+            serial += 'SUITE_SEQUENCE READY breengel\n'
+            for name, data in [('gt710-pixels.rle', startup), ('gt710-final.rle', final), ('gt710-breengel-0000.rle', payload)]:
+                (p/name).write_bytes(data)
+            (p/'serial.txt').write_text(serial)
+            recovered = API['capture_serial'](p)
+            self.assertEqual(recovered.count('GT710_CASE_HEAP {'), 402)
 
     def test_picture_chunks_round_trip_deduplicate_and_reject_damage(self):
         # Use production RLE/manifest generation and the host consumer, with a
@@ -165,7 +190,7 @@ fn main(){
                     self.assertEqual(h.code, 404)
                 for length, changes in [(2**21+1, {}), (20, {'bytes': 64*2**20-10})]:
                     reset(pictureUploads=1, **changes)
-                    h = Handler(route+'/pictures/1', b'1:ff000000\n', length); upload.receive(h)
+                    h = Handler(route+'/pictures/1', b'x'*20, length); upload.receive(h)
                     self.assertEqual(h.code, 400)
                 reset(complete=False)
                 h = Handler(route+'/pictures/0', b'1:ff000000\n'); upload.receive(h)

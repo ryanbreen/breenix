@@ -94,6 +94,20 @@ macro_rules! pictured {
     };
 }
 
+#[cfg(target_arch = "x86_64")]
+#[path = "../gt710_heap.rs"]
+mod gt710_heap;
+#[cfg(target_arch = "x86_64")]
+#[path = "../gt710_artifacts.rs"]
+mod gt710_artifacts;
+#[cfg(target_arch = "x86_64")]
+#[path = "../gt710_artifacts/pictures.rs"]
+mod native_pictures;
+#[cfg(target_arch = "x86_64")]
+static NATIVE_PICTURES: Mutex<native_pictures::Pictures> = Mutex::new(native_pictures::Pictures::new());
+#[cfg(target_arch = "x86_64")]
+static PICTURE_UPLOADS: AtomicU64 = AtomicU64::new(0);
+
 mod images;
 mod raster;
 mod gpu_checks;
@@ -155,7 +169,7 @@ static COMPOSITION: [Case; total(COMPOSITION_PARTS)] = join(COMPOSITION_PARTS);
 const PANEL_PARTS: &[&[Case]] = &[show::PANEL, window_cases::PANEL];
 static PANEL: [Case; total(PANEL_PARTS)] = join(PANEL_PARTS);
 
-static SUITE: Suite = suite("breengel", "BreenGL graphics library", &[
+static SUITE: Suite = native_evidence(suite("breengel", "BreenGL graphics library", &[
     category("raster", "shapes, blits, clipping & alpha", raster::RASTER),
     category("text", "TrueType & bitmap text", &TEXT),
     category("font-parser", "font parsing safety", raster::FONT_PARSER),
@@ -172,9 +186,62 @@ static SUITE: Suite = suite("breengel", "BreenGL graphics library", &[
     category("events", "window input events", window_cases::EVENTS),
     category("scanout", "display observation on every target", window_cases::SCANOUT),
     category("panel", "suite & probe panels", &PANEL),
-]).gui();
+]).gui());
+
+const fn native_evidence(suite: Suite) -> Suite {
+    #[cfg(target_arch = "x86_64")]
+    { suite.with_case_observer(heap_boundary).with_judged_observer(judged_picture).with_finalizer(final_upload) }
+    #[cfg(not(target_arch = "x86_64"))]
+    { suite }
+}
+
+#[cfg(target_arch = "x86_64")]
+fn evidence<T>(result: Result<T, String>) -> T {
+    result.unwrap_or_else(|reason| {
+        let (bytes, uploads) = gt710_artifacts::totals();
+        println!("GT710_BREENGL_REFUSED bytes={bytes} uploads={uploads} reason={reason}");
+        panic!("native BreenGL evidence refused");
+    })
+}
+
+#[cfg(target_arch = "x86_64")]
+fn heap_boundary(index: usize, total: usize, name: &str) {
+    gt710_heap::boundary(index, total, name);
+}
+
+#[cfg(target_arch = "x86_64")]
+fn judged_picture(name: &str, frame: &breenix_suite::suite::JudgedFrame) {
+    let mut pictures = NATIVE_PICTURES.lock().expect("native picture store lock");
+    evidence(pictures.record(name, frame.width, frame.height, &frame.pixels, frame.sha256, &mut |data| {
+        let index = PICTURE_UPLOADS.load(Relaxed);
+        gt710_artifacts::transfer(data, &format!("/pictures/{index}"))?;
+        let digest: String = sha256(data).iter().map(|b| format!("{b:02x}")).collect();
+        println!("GT710_BREENGL_CHUNK {index} {} {digest}", data.len());
+        PICTURE_UPLOADS.fetch_add(1, Relaxed);
+        Ok(())
+    }));
+}
+
+#[cfg(target_arch = "x86_64")]
+fn final_upload() {
+    let (status, caps) = libbreenix::gpu::caps();
+    let resources = (status == 0 && caps.backend == libbreenix::gpu::abi::backend::GK208).then_some(&caps);
+    let heap = evidence(gt710_heap::encode());
+    let pictures = NATIVE_PICTURES.lock().expect("native picture store lock");
+    let manifest = evidence(pictures.manifest());
+    evidence(gt710_artifacts::upload_slot_records(resources, true, &heap, &manifest));
+    let (bytes, uploads) = gt710_artifacts::totals();
+    let count = manifest.iter().filter(|&&b| b == b'\n').count();
+    println!("GT710_BREENGL_TOTAL bytes={bytes} uploads={uploads} picture_bytes={} pictures={count} unique={}", pictures.bytes, pictures.unique);
+}
 
 fn main() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        evidence(gt710_heap::prepare(SUITE.categories.iter().map(|c| c.cases.len()).sum()));
+        let _ = libbreenix::gpu::caps();
+        evidence(gt710_artifacts::upload());
+    }
     breenix_suite::suite::set_painter(Box::new(stage_painter::StagePainter::new()));
     if let Err(error) = prepare_raster_audit() {
         std::env::set_var("BREENIX_RASTER_AUDIT_ERROR",error);
