@@ -1,6 +1,6 @@
 //! Native-only live small-allocation census for retained failure-reason accounting.
 //! Callbacks use fixed storage, made resident before the memory baseline.
-use std::{cell::UnsafeCell, fmt::Write, sync::atomic::{AtomicBool, AtomicU64, Ordering}};
+use std::{cell::UnsafeCell, fmt::Write, sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering}};
 const SLOTS: usize = 4096;
 const PREFIX: usize = 160;
 const MAX_BYTES: usize = 1 << 20;
@@ -51,6 +51,7 @@ unsafe impl Sync for Storage {}
 static DATA: Storage = Storage(UnsafeCell::new(Table::new()));
 static LOCK: AtomicBool = AtomicBool::new(false);
 static ARMED: AtomicBool = AtomicBool::new(false);
+static OWNER: AtomicU32 = AtomicU32::new(0);
 static DROPPED: AtomicU64 = AtomicU64::new(0);
 struct Held;
 impl Drop for Held { fn drop(&mut self) { LOCK.store(false, Ordering::Release); } }
@@ -62,6 +63,15 @@ fn with_table<R>(f: impl FnOnce(&mut Table) -> R) -> Option<R> {
     // SAFETY: the guard provides exclusive access, with no allocator recursion.
     Some(f(unsafe { &mut *DATA.0.get() }))
 }
+fn tracking() -> bool {
+    if !ARMED.load(Ordering::Acquire) { return false; }
+    // fork copies the census. Only the runner parent owns retained reasons;
+    // a case disarms its private copy on its first allocator callback.
+    if std::process::id() != OWNER.load(Ordering::Relaxed) {
+        ARMED.store(false, Ordering::Release);return false;
+    }
+    true
+}
 fn eligible(size: usize, align: usize) -> bool { size > 0 && size <= 2048 && align > 0 && align <= 16 && align <= size }
 pub(super) fn prepare() -> Result<(), String> {
     if ARMED.load(Ordering::Acquire) { return Err("allocation census already armed".into()); }
@@ -70,10 +80,11 @@ pub(super) fn prepare() -> Result<(), String> {
         for slot in &mut table.slots { unsafe { std::ptr::write_volatile(slot, Slot::EMPTY); } }
         table.phase = 0;
     }).ok_or("allocation census preparation lock")?;
-    DROPPED.store(0, Ordering::Relaxed);ARMED.store(true, Ordering::Release);Ok(())
+    DROPPED.store(0, Ordering::Relaxed);OWNER.store(std::process::id(), Ordering::Relaxed);
+    ARMED.store(true, Ordering::Release);Ok(())
 }
 pub(super) fn allocated(pointer: *mut u8, size: usize, align: usize) {
-    if pointer.is_null() || !eligible(size, align) || !ARMED.load(Ordering::Acquire) { return; }
+    if pointer.is_null() || !eligible(size, align) || !tracking() { return; }
     let _ = with_table(|table| {
         if !table.insert(Slot { pointer: pointer as usize, size, align, birth: table.phase }) {
             DROPPED.fetch_add(1, Ordering::Relaxed);
@@ -81,12 +92,12 @@ pub(super) fn allocated(pointer: *mut u8, size: usize, align: usize) {
     });
 }
 pub(super) fn deallocated(pointer: *mut u8, size: usize, align: usize) {
-    if pointer.is_null() || !eligible(size, align) || !ARMED.load(Ordering::Acquire) { return; }
+    if pointer.is_null() || !eligible(size, align) || !tracking() { return; }
     let _ = with_table(|table| { table.remove(pointer as usize); });
 }
 pub(super) fn reallocated(old: *mut u8, old_size: usize, align: usize, new: *mut u8, size: usize) {
     // A failed realloc retains the original allocation and its evidence.
-    if new.is_null() || !ARMED.load(Ordering::Acquire) { return; }
+    if new.is_null() || !tracking() { return; }
     let _ = with_table(|table| {
         if eligible(old_size, align) { table.remove(old as usize); }
         if eligible(size, align) && !table.insert(Slot { pointer: new as usize, size, align, birth: table.phase }) {

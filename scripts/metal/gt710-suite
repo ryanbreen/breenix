@@ -2253,7 +2253,7 @@ def breengel_memory_accounting(serial):
             raise ValueError('failure reason lacks one distinct live case allocation')
         pointer, size, align, birth, prefix = matches[0]
         # Breenix malloc's <=2KiB classes use a single anonymous mapping with
-        # a 16-byte header. The measured pointer offset and layout prove one page.
+        # a 16-byte header. malloc.rs maps capacity + HEADER; the captured offset and layout fit one page.
         capacity = 1 << (max(size, 16)-1).bit_length()
         if (capacity + 16 + 4095) // 4096 != 1:
             raise ValueError('reason allocation does not fit the one-page malloc class')
