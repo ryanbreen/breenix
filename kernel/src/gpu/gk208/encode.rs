@@ -513,7 +513,13 @@ pub fn parking_frame(target: Target, source: Target, address: u64, quarantine: u
             // quad(). Keep the complete state, including both program offsets.
             if !matches!((words[at] & 0x1fff)*4, 0x1618 | 0xd74 | 0x1614) {
                 parked.try_reserve(count+1).map_err(|_| NO_MEMORY)?;
+                let start = parked.len();
                 parked.extend_from_slice(&words[at..at+count+1]);
+                // The explicit idle above drained shader use. Preserve the
+                // cache mask without another implicit WFI (MIT cla197.h).
+                if (words[at] & 0x1fff)*4 == 0x21c {
+                    parked[start] = (parked[start] & !0x1fff) | (0xda4 / 4);
+                }
             }
             at += count+1;
         }
@@ -1500,7 +1506,12 @@ fn quads(
 
     if f.removed_prefix == DATA_START { c.emit(0x1608, &[0, 0])?; }
     else { c.address(0x1608, CODE, &[])?; }
-    c.emit(0x021c, &[0x1011])?; // invalidate instruction cache, all graphics stages
+    // A197 INVALIDATE_SHADER_CACHES_NO_WFI has the same instruction/data/
+    // constant bits as 0x21c (MIT cla197.h:273-282,974-983). Resident frame
+    // inputs are immutable through this batch; their invalidation need not
+    // drain the preceding draw. Upload/bootstrap frames keep the idle form.
+    let cache_method = if f.removed_prefix == DATA_START { 0xda4 } else { 0x21c };
+    c.emit(cache_method, &[0x1011])?;
     for slot in [0, 2, 3, 4] {
         c.emit(0x2000 + slot * 64, &[slot << 4])?;
     }
@@ -1538,7 +1549,7 @@ fn quads(
     c.address(0x1f00, end - 1, &[])?;
     c.emit(0x1160, &[0x38200000, 0x38200800])?;
     c.emit(0x142c, &[0])?;
-    c.emit(0x21c, &[1])?;
+    c.emit(cache_method, &[1])?;
     // MIT Mesa nvc0_vbo.c:592-597: VERTEX_BEGIN_GL,
     // VERTEX_BUFFER_FIRST/COUNT, VERTEX_END_GL. A single triangle-list draw
     // consumes 6 * count vertices; ordinary draws need no trailing SERIALIZE.
