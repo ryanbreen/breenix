@@ -17,7 +17,7 @@ pub(super) fn validate(rec: &[u8; r::SIZE], mode: Mode, backend: u32, runner: u6
     }
     if mode.width == 0 || mode.height == 0
         || (word(rec, r::WIDTH), word(rec, r::HEIGHT)) != (mode.width, mode.height)
-        || (word(rec, r::TARGET_WIDTH), word(rec, r::TARGET_HEIGHT)) != (mode.width, mode.height)
+        || word(rec, r::TARGET_WIDTH) < mode.width || word(rec, r::TARGET_HEIGHT) < mode.height
         || word(rec, r::X) != 0 || word(rec, r::Y) != 0 || quad(rec, r::TARGET) != 0 {
         return Err("not-whole-mode");
     }
@@ -43,13 +43,13 @@ pub(super) fn named(name: &str) -> bool {
         !word.is_empty() && word.bytes().all(|b| b.is_ascii_lowercase()))
 }
 
-pub(super) fn format_record(suite: &str, case: &str, name: &str, result: Result<([u8; 32], Mode), &str>) -> String {
+pub(super) fn format_record(suite: &str, case: &str, name: &str, result: Result<([u8; 32], Mode, Mode), &str>) -> String {
     let mut line = std::format!("SUITE {suite} SCREEN {case} {name}");
     match result {
-        Ok((hash, mode)) => {
+        Ok((hash, mode, binding)) => {
             line.push_str(" sha256=");
             for byte in hash { let _ = write!(line, "{byte:02x}"); }
-            let _ = write!(line, " mode={}x{}", mode.width, mode.height);
+            let _ = write!(line, " mode={}x{} binding={}x{}", mode.width, mode.height, binding.width, binding.height);
         }
         Err(reason) => { let _ = write!(line, " error={reason}"); }
     }
@@ -74,13 +74,20 @@ pub(super) fn unpack<'a>(bytes: &'a [u8], suite: &str, case: &str) -> Result<&'a
             return Err("side-file-case");
         }
         match fields {
-            [hash, mode] => {
+            [hash, mode, binding] => {
                 let hash = hash.strip_prefix("sha256=").ok_or("side-file-digest")?;
                 if hash.len() != 64 || !hash.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) {
                     return Err("side-file-digest");
                 }
-                let (w, h) = mode.strip_prefix("mode=").and_then(|v| v.split_once('x')).ok_or("side-file-mode")?;
-                if [w, h].iter().any(|v| v.parse::<u32>().ok().is_none_or(|n| n == 0)) { return Err("side-file-mode"); }
+                let dimensions = |field: &str, prefix: &str| -> Result<(u32, u32), &'static str> {
+                    let (w, h) = field.strip_prefix(prefix).and_then(|v| v.split_once('x')).ok_or("side-file-mode")?;
+                    let w = w.parse::<u32>().ok().filter(|&v| v != 0).ok_or("side-file-mode")?;
+                    let h = h.parse::<u32>().ok().filter(|&v| v != 0).ok_or("side-file-mode")?;
+                    Ok((w, h))
+                };
+                let (w, h) = dimensions(mode, "mode=")?;
+                let (bw, bh) = dimensions(binding, "binding=")?;
+                if bw < w || bh < h { return Err("side-file-mode"); }
             }
             [error] if error.strip_prefix("error=").is_some_and(named) => {}
             _ => return Err("side-file-fields"),
@@ -136,7 +143,7 @@ impl Drop for ClockMap {
     }
 }
 
-type Snapshot = Result<([u8; 32], Mode), &'static str>;
+type Snapshot = Result<([u8; 32], Mode, Mode), &'static str>;
 #[derive(Default)]
 pub(super) struct EndCheckpoint { pub(super) result: Option<Snapshot> }
 impl EndCheckpoint {
@@ -150,7 +157,6 @@ static END: Mutex<EndCheckpoint> = Mutex::new(EndCheckpoint { result: None });
 static CLOCK: AtomicPtr<CheckpointClock> = AtomicPtr::new(core::ptr::null_mut());
 static CASE_PID: AtomicU64 = AtomicU64::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
-static COMPOSITOR: AtomicBool = AtomicBool::new(false);
 static RUNNER: AtomicU64 = AtomicU64::new(0);
 static RUNNER_RESOURCE: AtomicU64 = AtomicU64::new(0);
 static LINES: Mutex<String> = Mutex::new(String::new());
@@ -159,7 +165,7 @@ pub(super) fn configured(suite: &str, option: &str) -> bool {
     matches!(suite, "gpu" | "breengel") && option.trim() != "off"
 }
 
-pub(super) fn begin(suite: &str, gui: bool) -> ClockMap {
+pub(super) fn begin(suite: &str) -> ClockMap {
     static OPTION: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     let option = OPTION.get_or_init(|| std::fs::read_to_string("/proc/breenix/screen-checkpoints").unwrap_or_default());
     ENABLED.store(configured(suite, option), Ordering::Relaxed);
@@ -173,7 +179,6 @@ pub(super) fn begin(suite: &str, gui: bool) -> ClockMap {
         unsafe { ptr.write(CheckpointClock::new()); }
     }
     CLOCK.store(ptr, Ordering::Relaxed);
-    COMPOSITOR.store(gui, Ordering::Relaxed);
     let mut pixel = [0; 4];
     let mut rec = [0; r::SIZE];
     let status = gpu::readback(0, [0, 0, 1, 1], &mut pixel, 4, &mut rec);
@@ -232,7 +237,7 @@ impl ReadbackReuse {
         Ok(Self { hash: canonical_hash(pixels, mode)?, mode, record: *rec })
     }
     pub(super) fn matches(&self, rec: &[u8; r::SIZE]) -> bool {
-        [r::BACKEND, r::WIDTH, r::HEIGHT, r::TARGET_WIDTH, r::TARGET_HEIGHT].iter()
+        [r::BACKEND, r::X, r::Y, r::WIDTH, r::HEIGHT, r::TARGET_WIDTH, r::TARGET_HEIGHT].iter()
             .all(|&at| word(&self.record, at) == word(rec, at))
             && [r::CONTEXT, r::RESOURCE, r::PRESENT_FENCE, r::GENERATION, r::RENDER_SERIAL, r::RENDER_FENCE].iter()
                 .all(|&at| quad(&self.record, at) == quad(rec, at))
@@ -257,6 +262,8 @@ pub(super) fn judged_readback(pixels: &[u8], rec: &[u8; r::SIZE]) {
 
 fn reuse_snapshot() -> Option<Snapshot> {
     let pending = REUSE.lock().unwrap().take()?;
+    let mode = gpu::current_mode().ok()?;
+    if (mode.width, mode.height) != (pending.mode.width, pending.mode.height) { return None; }
     let mut probe = [0; 4];
     let mut record = [0; r::SIZE];
     if gpu::readback(0, [0, 0, 1, 1], &mut probe, 4, &mut record) != 0 { return None; }
@@ -265,10 +272,11 @@ fn reuse_snapshot() -> Option<Snapshot> {
     record[r::HEIGHT..r::HEIGHT+4].copy_from_slice(&pending.mode.height.to_le_bytes());
     let mut pixels = pending.pixels;
     let saved = ReadbackReuse::new(&mut pixels, &pending.record, pending.mode, pending.backend, RUNNER.load(Ordering::Relaxed)).ok()?;
-    saved.matches(&record).then_some(Ok((saved.hash, saved.mode)))
+    let binding = Mode { width: word(&record, r::TARGET_WIDTH), height: word(&record, r::TARGET_HEIGHT), scale: 1, reserved: 0 };
+    saved.matches(&record).then_some(Ok((saved.hash, saved.mode, binding)))
 }
 
-fn snapshot() -> Result<([u8; 32], Mode), &'static str> {
+fn snapshot() -> Result<([u8; 32], Mode, Mode), &'static str> {
     if let Some(saved) = reuse_snapshot() { return saved; }
     let (status, modes) = gpu::modes();
     if status != 0 { return Err("mode-failed"); }
@@ -287,14 +295,15 @@ fn snapshot() -> Result<([u8; 32], Mode), &'static str> {
     pixels.try_reserve_exact(len).map_err(|_| "allocation-failed")?;
     pixels.resize(len, 0);
     let mut rec = [0u8; r::SIZE];
-    let status = gpu::readback(0, [0, 0, mode.width, mode.height], &mut pixels, mode.width * 4, &mut rec);
-    if status != 0 {
-        if !COMPOSITOR.load(Ordering::Relaxed) { return Err("readback-failed"); }
-        rec = crate::suite_stage::observe(&mut pixels).map_err(|_| "readback-failed")?.record;
-    }
+    use std::io::Write;
+    let request = gpu::abi::screen::Request { pixels: pixels.as_mut_ptr() as u64, len: pixels.len() as u64,
+        record: rec.as_mut_ptr() as u64 }.encode();
+    let mut device = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence").map_err(|_| "readback-open")?;
+    device.write_all(&request).map_err(|_| "readback-failed")?;
     if quad(&rec, r::CONTEXT) == RUNNER.load(Ordering::Relaxed) { return Err("no-case-scanout"); }
     validate(&rec, mode, caps.backend, RUNNER.load(Ordering::Relaxed))?;
-    Ok((canonical_hash(&mut pixels, mode)?, mode))
+    let binding = Mode { width: word(&rec, r::TARGET_WIDTH), height: word(&rec, r::TARGET_HEIGHT), scale: 1, reserved: 0 };
+    Ok((canonical_hash(&mut pixels, mode)?, mode, binding))
 }
 
 fn append(name: &str, end: bool) -> Result<(), &'static str> {

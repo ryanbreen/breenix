@@ -18,6 +18,7 @@ HEX64 = r'[0-9a-f]{64}'
 RECORD = re.compile(
     rf'SUITE (?P<suite>{NAME}) SCREEN (?P<case>{CASE}) (?P<checkpoint>{NAME}) '
     rf'(?:error=(?P<error>{NAME})|sha256=(?P<sha>{HEX64}) mode=(?P<mode>{MODE})'
+    rf' binding=(?P<binding>{MODE})'
     rf'(?: crc=(?P<crc>[0-9a-f]{{8}}) crc2=(?P<crc2>[0-9a-f]{{8}})'
     rf' raster=(?P<raster>{MODE}) out=(?P<out>sor[0-9]+))?)\Z')
 
@@ -43,6 +44,11 @@ def score(manifest, serial, table, native=False, config=None, captures=None):
         if not match:
             raise ValueError(f'malformed SCREEN line: {line}')
         record = match.groupdict()
+        if record['binding']:
+            w, h = map(int, record['mode'].split('x'))
+            bw, bh = map(int, record['binding'].split('x'))
+            if bw < w or bh < h:
+                raise ValueError('binding smaller than mode')
         key = (record['case'], record['checkpoint'])
         if key[0] not in cases:
             raise ValueError(f'SCREEN names unknown case {key[0]}')

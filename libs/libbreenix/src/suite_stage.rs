@@ -172,7 +172,6 @@ fn fault_bits() -> u32 {
 /// section 20.1).
 #[derive(Clone, Copy)]
 pub(crate) struct Seen {
-    pub(crate) record: [u8; record::SIZE],
     backend: u32,
     flags: u32,
     boundary: u32,
@@ -214,7 +213,6 @@ pub(crate) fn observe(pixels: &mut Vec<u8>) -> Result<Seen, String> {
         return Err(String::from("stage readback: not a version 2 record of the whole scanout"));
     }
     Ok(Seen {
-        record: rec,
         backend: word(&rec, record::BACKEND),
         flags: word(&rec, record::FLAGS),
         boundary: word(&rec, record::BOUNDARY),

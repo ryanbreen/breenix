@@ -5,8 +5,13 @@ Screen proof adds checkpoints and a separate verdict alongside the GPU and Breen
 
 ## Observation and records
 
-A checkpoint observes the whole bound scanout. A display-owning case uses `READBACK` target 0; a root case whose compositor child owns the display uses `SCANOUT_READBACK` through `suite_stage::observe()`. Validate a version 2 record with flags bit 0 set, nonzero `present_fence`, `unwritten = 0`, backend equal to `CAPS.backend`, dimensions equal to `CURRENT_MODE`, and context different from the runner's stage context. A stage picture contains changing status text and is not a case picture.
+<!-- claim-lint:ok: Observation contract here; scan origins from kernel/src/gpu/virgl/mod.rs set_scanout, kernel/src/gpu/svga/mod.rs set_scanout and kernel/src/gpu/gk208/modeset.rs Viewport::methods. -->
+A checkpoint observes exactly the mode-sized rectangle scanned out from the bound resource. A larger binding is valid; a smaller binding or unknown scan origin is an error. All current backends program scan origin (0,0): VirGL SET_SCANOUT, SVGA screen binding and GK208 viewport-in. The record's rectangle must match that origin and `CURRENT_MODE`; target dimensions describe the binding and must contain the rectangle. The SCREEN line records both mode and binding dimensions.
 
+<!-- claim-lint:ok: Endpoint semantics specified here and implemented by kernel/src/gpu/mod.rs observe_screen and read_back. -->
+Checkpoint readback uses the root-only, suite-only `/dev/screen-evidence` binary request: exactly 32 bytes, `SCREENRB` followed by little-endian u64 pixel pointer, buffer length and record pointer. The GPU core pins the binding, observes the visible mode rectangle with its ordinary poison/transfer checks, and writes canonical pixels plus record v2. This pixel-only endpoint carries no composition provenance (flag bit 1, composite serial and window entries stay zero), so the number of windows cannot truncate its record. Ordinary READBACK and SCANOUT_READBACK retain their complete-provenance requirement and reason-11 refusal above 16 windows, with untouched outputs. No syscall operation or reserved record field changes.
+
+Validate record version 2, flags bit 0 set, nonzero `present_fence`, `unwritten = 0`, backend equal to `CAPS.backend`, rectangle equal to the mode at the known scan origin, and context different from the runner's stage context. A stage picture contains changing status text and is not a case picture.
 Hash canonical BGRX rows with SHA-256, forcing X to `0xff` as `suite::judged` does. Validate record fields but do not hash them. The same canonical picture has the same digest across backends.
 
 The default `end` checkpoint runs in the case process before display-owner teardown. For helpers, a suite-library pre-drop hook observes after the return expression has judged the work and before the helper is killed or reaped. The snapshot is transported after the case reports. The child case clock and parent timeout exclude the hook's own measured duration; helper cleanup retains its existing charge. A checkpoint error is a separate SCREEN record and cannot change the case verdict. If it cannot observe a binding outside the runner's context it emits no `end`; an approved table entry without its record fails. A case can call `suite::screen_checkpoint("<name>")` after present completes. Names are lowercase hyphenated words; `end` and `intent` are reserved. Performance cases declare no named checkpoints inside measured windows. Named records travel through a `.screen` side file with integrity hashing like `.values`.
@@ -14,8 +19,8 @@ The default `end` checkpoint runs in the case process before display-owner teard
 The runner emits each record through the root-only, suite-only `/dev/screen-evidence` sink immediately after the case's CASE line. That writer bypasses console, VT, kernel-log and boot-producer capture; SCREEN records do not use stdout:
 
 ```text
-SUITE <id> SCREEN <category>/<case> <checkpoint> sha256=<64 hex> mode=<W>x<H>
-SUITE <id> SCREEN <category>/<case> <checkpoint> sha256=<64 hex> mode=<W>x<H> crc=<8 hex> crc2=<8 hex> raster=<W>x<H> out=sor<N>
+SUITE <id> SCREEN <category>/<case> <checkpoint> sha256=<64 hex> mode=<W>x<H> binding=<BW>x<BH>
+SUITE <id> SCREEN <category>/<case> <checkpoint> sha256=<64 hex> mode=<W>x<H> binding=<BW>x<BH> crc=<8 hex> crc2=<8 hex> raster=<W>x<H> out=sor<N>
 SUITE <id> SCREEN <category>/<case> <checkpoint> error=<reason-word>
 ```
 

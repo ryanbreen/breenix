@@ -20,7 +20,7 @@ fn observation_requires_case_owned_whole_presented_scanout() {
     assert!(screen::validate(&good, mode(), 4, 99).is_ok());
     for (at, value) in [(r::VERSION_OFF, 1), (r::SIZE_OFF, 512), (r::BACKEND, 5),
         (r::FLAGS, 0), (r::UNWRITTEN, 1), (r::WIDTH, 1), (r::HEIGHT, 2),
-        (r::X, 1), (r::Y, 1), (r::TARGET_WIDTH, 3), (r::TARGET_HEIGHT, 2),
+        (r::X, 1), (r::Y, 1), (r::TARGET_WIDTH, 1), (r::TARGET_HEIGHT, 0),
         (r::PRESENT_FENCE, 0), (r::CONTEXT, 99), (r::CONTEXT, 0), (r::TARGET, 1)] {
         let mut rec = good;
         rec[at..at+4].copy_from_slice(&u32::to_le_bytes(value));
@@ -35,9 +35,9 @@ fn canonical_digest_and_record_format() {
     assert_eq!(pixels, [1, 2, 3, 255, 4, 5, 6, 255]);
     assert_eq!(hash, libpixcheck::sha256(&pixels));
     assert!(screen::canonical_hash(&mut pixels[..4], mode()).is_err());
-    let line = screen::format_record("gpu", "draw/one", "end", Ok((hash, mode())));
+    let line = screen::format_record("gpu", "draw/one", "end", Ok((hash, mode(), mode())));
     let hex: String = hash.iter().map(|v| format!("{v:02x}")).collect();
-    assert_eq!(line, format!("SUITE gpu SCREEN draw/one end sha256={hex} mode=2x1\n"));
+    assert_eq!(line, format!("SUITE gpu SCREEN draw/one end sha256={hex} mode=2x1 binding=2x1\n"));
     assert_eq!(screen::format_record("gpu", "draw/one", "after-present", Err("readback-failed")),
         "SUITE gpu SCREEN draw/one after-present error=readback-failed\n");
 }
@@ -48,8 +48,8 @@ fn named_checkpoints_and_hashed_side_file() {
     for name in ["", "end", "intent", "-a", "a-", "a--b", "A", "a1", "a b", "a\nb"] {
         assert!(!screen::named(name), "accepted {name:?}");
     }
-    let line = screen::format_record("breengel", "composition/one", "after-present", Ok(([3; 32], mode())));
-    let end = screen::format_record("breengel", "composition/one", "end", Ok(([4; 32], mode())));
+    let line = screen::format_record("breengel", "composition/one", "after-present", Ok(([3; 32], mode(), mode())));
+    let end = screen::format_record("breengel", "composition/one", "end", Ok(([4; 32], mode(), mode())));
     let body = format!("{line}{end}");
     let bytes = screen::pack(&body);
     assert_eq!(&bytes[..32], &libpixcheck::sha256(body.as_bytes()));
@@ -83,13 +83,13 @@ fn end_is_observed_before_teardown_and_errors_are_separate_from_verdict() {
     let mut end = screen::EndCheckpoint::default();
     let mut live = true;
     let verdict: Result<(), &str> = Err("judged mismatch");
-    end.before_drop(|| { assert!(live); Ok(([5; 32], mode())) });
+    end.before_drop(|| { assert!(live); Ok(([5; 32], mode(), mode())) });
     live = false;
     assert!(!live);
     assert_eq!(verdict, Err("judged mismatch"));
     assert_eq!(end.result.as_ref().unwrap().as_ref().unwrap().0, [5; 32]);
     // An explicit mid-case teardown may be followed by a new compositor.
-    end.before_drop(|| Ok(([6; 32], mode())));
+    end.before_drop(|| Ok(([6; 32], mode(), mode())));
     assert_eq!(end.result.as_ref().unwrap().as_ref().unwrap().0, [6; 32]);
     let verdict: Result<(), &str> = Ok(());
     end.before_drop(|| Err("readback-failed"));
@@ -121,4 +121,22 @@ fn reuse_requires_the_same_whole_scanout_and_present_fence() {
     }
     assert_eq!(saved.hash, libpixcheck::sha256(&[1,2,3,255,4,5,6,255]));
     assert!(screen::ReadbackReuse::new(&mut pixels[..4], &rec, mode(), 4, 99).is_err());
+}
+
+#[test]
+fn larger_binding_hashes_only_the_visible_mode_and_records_its_dimensions() {
+    let mut rec = record();
+    rec[r::TARGET_WIDTH..r::TARGET_WIDTH+4].copy_from_slice(&4u32.to_le_bytes());
+    rec[r::TARGET_HEIGHT..r::TARGET_HEIGHT+4].copy_from_slice(&2u32.to_le_bytes());
+    assert!(screen::validate(&rec, mode(), 4, 99).is_ok());
+    let binding = Mode { width: 4, height: 2, scale: 1, reserved: 0 };
+    let line = screen::format_record("gpu", "present/takeover-giveback", "end", Ok(([1;32],mode(),binding)));
+    assert!(line.ends_with(" mode=2x1 binding=4x2\n"));
+    assert!(screen::unpack(&screen::pack(&line), "gpu", "present/takeover-giveback").is_ok());
+    let mut visible = vec![1,2,3,0,4,5,6,0];
+    let saved = screen::ReadbackReuse::new(&mut visible, &rec, mode(), 4, 99).unwrap();
+    assert!(saved.matches(&rec));
+    rec[r::X..r::X+4].copy_from_slice(&1u32.to_le_bytes());
+    assert!(screen::validate(&rec, mode(), 4, 99).is_err(), "unknown scan offset");
+    assert!(!saved.matches(&rec), "reuse must pin the scan offset");
 }

@@ -23,7 +23,7 @@ class ScreenVerdictTest(unittest.TestCase):
                       'sha256': DIGEST, 'mode': '1280x800',
                       'native': [{'out': 'sor0', 'raster': '1280x1024', 'config': CONFIG,
                                   'crc': '12345678', 'crc2': '87654321'}]}
-        self.line = f'SUITE gpu SCREEN draw/one end sha256={DIGEST} mode=1280x800'
+        self.line = f'SUITE gpu SCREEN draw/one end sha256={DIGEST} mode=1280x800 binding=1280x800'
 
     def run_score(self, lines, *, entries=None, args=()):
         (self.dir / 'manifest.json').write_text(json.dumps(self.manifest))
@@ -34,7 +34,7 @@ class ScreenVerdictTest(unittest.TestCase):
                                *args], capture_output=True, text=True)
 
     def test_match_and_unapproved(self):
-        extra = f'SUITE gpu SCREEN draw/two intent sha256={DIGEST} mode=1280x800'
+        extra = f'SUITE gpu SCREEN draw/two intent sha256={DIGEST} mode=1280x800 binding=1280x800'
         result = self.run_score([self.line, extra])
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('SCREENS PASS approved=1 matched=1 unapproved=1', result.stdout)
@@ -51,6 +51,13 @@ class ScreenVerdictTest(unittest.TestCase):
                 result = self.run_score(lines)
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertIn('SCREENS FAIL:', result.stdout)
+
+    def test_binding_geometry(self):
+        line = self.line.replace('binding=1280x800', 'binding=2560x1600')
+        self.assertEqual(self.run_score([line]).returncode, 0)
+        self.assertNotEqual(self.run_score([self.line.split(' binding=')[0]]).returncode, 0)
+        for binding in ['640x480', '2560x0', 'unknown', '2560x1600 extra=1']:
+            self.assertNotEqual(self.run_score([self.line.replace('binding=1280x800', 'binding=' + binding)]).returncode, 0)
 
     def test_native_crc_and_configuration(self):
         args = ('--native', '--config', CONFIG)

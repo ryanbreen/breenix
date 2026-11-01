@@ -888,3 +888,16 @@ Op 22 errors: EPERM for an unauthorized observer; EINVAL for layout/reserved/len
 **ObservationRecord stays exactly core v2, 1,024 bytes.** In particular: version/size 0/4; observation serial 8; backend/boundary 16/20; flags/format 24/28; rectangle 32; target size 48; stride/canonical 56/60; device context 64; target handle 72; actual device resource 80; target generation 88; render serial/fence 96/104 and native status/kind 112/116; readback fence/status/kind 120/128/132; VMware surface/MOB 136/144 and copy kind/status 152/156; poison/unwritten 160/164; commit/composite serial 168/176; present context fence/status/count 184/192/196; sixteen 32-byte window entries at 200 (`window, commit, native render fence, sampled target generation`); renderer bytes at 712; reserved 776–1023 zero. Unused window entries are zero. For privileged scanout observation target is 0, never a foreign handle. Window pixel_gen remains in COMPOSITE_RECORD, not substituted for the core's sampled resource generation.
 
 Flags are exactly 3 for a composed scanout. Backend 4 requires native draw/readback kinds 0x207/0x206 and success 0x1100, VMware-only fields zero. Backend 5 requires draw 1152, readback 1104, copy 1042 and success 1, with dedicated nonzero readback surface/MOB distinct from the judged resource. Backend 6 requires draw 0xA1971B0C, readback/copy 0xA0B50300, success 0x60000000 and boundary 5, with VMware-only identities zero. Boundary is 4 for backends 4/5; unwritten is zero; render/readback/present fences are genuine and nonzero for a rendered composite. No legacy 512-byte record is accepted. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
+
+## Suite screen observation
+
+<!-- claim-lint:ok: Normative endpoint contract in docs/gui/screen-proof.md; not an acceptance result. -->
+The root-only suite-boot `/dev/screen-evidence` write endpoint accepts a 32-byte
+`SCREENRB` request (8-byte tag, then little-endian u64 pixels pointer, buffer length,
+and record pointer). It observes the pinned binding's mode rectangle, at the known
+scan origin, with the GPU core's poison/transfer checks. Pixels and record v2 are
+written only after successful observation; errors return an errno. This endpoint
+omits composition provenance (flag bit 1 and composite fields zero), so any number
+of windows can be pictured. Ordinary READBACK and SCANOUT_READBACK still refuse
+composition provenance overflow with reason 11 and untouched outputs. The record's
+reserved bytes remain zero. See [screen-proof.md](screen-proof.md).

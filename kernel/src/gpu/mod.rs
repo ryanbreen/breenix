@@ -5380,6 +5380,23 @@ pub fn observe_scanout(dst: u64, dst_len: u64, record: u64) -> Result<u64, (i64,
     }
 }
 
+/// Pixel-only screen evidence, authorized by the suite-only root device. Ordinary
+/// READBACK and SCANOUT_READBACK still require complete composition provenance.
+pub fn observe_screen(request: abi::screen::Request) -> Result<(), i64> {
+    crate::console::await_repaint();
+    let _path = GpuPath::enter();
+    if !matches!(with_core(|c| c.admission()), Some(Ok(()))) { return Err(ENODEV); }
+    let mut a = abi::Readback::ZERO;
+    a.pixels = request.pixels;
+    a.pixels_len = request.len;
+    a.record = request.record;
+    match read_back(caller()?, &mut a, Observer::Screen, None) {
+        Ok(_) => Ok(()),
+        Err(Refused::Errno(e)) => Err(e),
+        Err(Refused::Eio(_, _)) => Err(EIO),
+    }
+}
+
 /// Who observes target 0, the scanout.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Observer {
@@ -5389,6 +5406,12 @@ enum Observer {
     /// target. It neither owns the display nor names the target, and an EIO leaves its
     /// record untouched.
     Window,
+    /// Visible mode pixels, without the bounded window-provenance record.
+    Screen,
+}
+
+impl Observer {
+    fn records_composition(self) -> bool { self != Self::Screen }
 }
 
 /// Why an observation was refused: an errno, or EIO with its reason and, for reason 4,
@@ -5410,7 +5433,7 @@ impl From<i64> for Refused {
 fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u64>) -> Result<u64, Refused> {
     #[cfg(target_arch = "x86_64")]
     let cost_prepare = crate::gk208::cost::phase(crate::gk208::cost::Slot::ReadPrepare);
-    let window = observer == Observer::Window;
+    let window = observer != Observer::Owner;
     // Count owner observation with presentation so a VT release cannot expose the
     // next foreground terminal while readback holds the current binding.
     let _presentation = if a.target == 0 && !window {
@@ -5465,7 +5488,20 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     // Privileged window observation can read the foreground console. Protect its
     // backing throughout the poison/transfer observation.
     let canvas = core::cell::Cell::new(screen::is_target(id).then(crate::console::hold_canvas));
-    if window {
+    if observer == Observer::Screen {
+        // Scan origin is (0,0): VirGL SET_SCANOUT (virgl/mod.rs set_scanout),
+        // SVGA screen binding (svga/mod.rs set_scanout), GK208 viewport-in
+        // (gk208/modeset.rs Viewport::methods).
+        // Keep this inside the binding transition that excludes mode changes.
+        let mode = with_core(|c| display::MODES[c.display.mode as usize]).ok_or(ENODEV)?;
+        let [x, y, w, h] = abi::screen::rectangle([mode.width, mode.height], [tw, th], Some([0, 0]))
+            .ok_or(EIO)?;
+        a.x = x;
+        a.y = y;
+        a.width = w;
+        a.height = h;
+        a.stride = w * format::bytes(fmt);
+    } else if window {
         // The whole bound target, in canonical rows.
         a.x = 0;
         a.y = 0;
@@ -5543,7 +5579,7 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
             return None;
         }
         r.reading = true;
-        let composition = r.composition.clone().filter(|p| p.generation == r.generation);
+        let composition = r.composition.clone().filter(|p| observer.records_composition() && p.generation == r.generation);
         Some(Ok((r.invalid, r.invalidated_by, r.generation, r.last, composition)))
     });
     let (invalid, invalidated_by, generation, last, composition) = match taken {

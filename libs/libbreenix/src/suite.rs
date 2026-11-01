@@ -1529,7 +1529,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     // A prior interrupted boot may have left this PID/sequence on a reused disk.
     JUDGED_ENABLED.store(screen.gui, Ordering::Relaxed);
     READBACK_ENABLED.store(suite == "gpu", Ordering::Relaxed);
-    let _screen_clock = screen::begin(suite, screen.gui);
+    let _screen_clock = screen::begin(suite);
     // G1-G6 retain the runner owner they were checked against. G7's console
     // cases explicitly start above the kernel console, with no runner owner.
     if screen.gpu.is_some() && name.starts_with("present/") { let _ = graphics::give_back_display(); }

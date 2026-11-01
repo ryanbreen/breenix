@@ -43,8 +43,17 @@ static CONSOLE:Mutex<Vec<u8>>=Mutex::new(Vec::new());
 use serial_writer::Writer;
 mod graphics { pub mod boot_ribbon { pub fn byte(b:u8){crate::CAPTURE.lock().unwrap().push(b);} } }
 mod serial_writer {use std::sync::atomic::{AtomicU8,Ordering}; #[derive(PartialEq,Eq,Clone,Copy)] WRITER }
-mod test_control {pub fn enabled()->bool{true}}
-mod window {pub struct Caller;impl Caller {pub fn current()->Result<Self,i32>{Ok(Self)}pub fn is_root(&self)->bool{true}}}
+mod gpu_abi { pub mod screen {
+ pub const MAGIC:[u8;8]=*b"SCREENRB";
+ pub struct Request;
+ impl Request {pub fn decode(b: &[u8])->Option<Self>{(b.len()==32).then_some(Self)}}
+} }
+static READS:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
+static ROOT:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(true);
+static SUITE:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(true);
+mod gpu {pub fn observe_screen(_:crate::gpu_abi::screen::Request)->Result<(),i64>{super::READS.fetch_add(1,std::sync::atomic::Ordering::Relaxed);Ok(())}}
+mod test_control {pub fn enabled()->bool{super::SUITE.load(std::sync::atomic::Ordering::Relaxed)}}
+mod window {pub struct Caller;impl Caller {pub fn current()->Result<Self,i32>{Ok(Self)}pub fn is_root(&self)->bool{super::ROOT.load(std::sync::atomic::Ordering::Relaxed)}}}
 mod serial {pub use crate::serial_writer::Writer;pub fn write_bytes_atomic(w:Writer,b:&[u8]){let lead=super::serial_writer::lead(w,b);for &v in lead.iter().chain(b) {super::WIRE.lock().unwrap().push(v);super::wrote(w,v);}}}
 WROTE
 SINK
@@ -58,7 +67,19 @@ fn run(on:bool)->(Vec<u8>,Vec<u8>,Vec<u8>){
  ordinary(Writer::Console,b"producer two\n");
  (CONSOLE.lock().unwrap().clone(),CAPTURE.lock().unwrap().clone(),WIRE.lock().unwrap().clone())
 }
-#[test] fn isolation(){let off=run(false);let on=run(true);assert_eq!(off.0,on.0);assert_eq!(off.1,on.1);assert!(on.2.len()>off.2.len());}
+#[test] fn isolation(){let off=run(false);let on=run(true);assert_eq!(off.0,on.0);assert_eq!(off.1,on.1);assert!(on.2.len()>off.2.len());
+ let mut request=[0u8;32];request[..8].copy_from_slice(b"SCREENRB");
+ let wire=WIRE.lock().unwrap().len();
+ assert_eq!(screen_evidence_write(&request),Ok(32));
+ assert_eq!(WIRE.lock().unwrap().len(),wire,"binary requests cannot reach serial");
+ assert_eq!(screen_evidence_write(&request[..31]),Err(22));
+ ROOT.store(false,std::sync::atomic::Ordering::Relaxed);
+ assert_eq!(screen_evidence_write(&request),Err(1));
+ ROOT.store(true,std::sync::atomic::Ordering::Relaxed);
+ SUITE.store(false,std::sync::atomic::Ordering::Relaxed);
+ assert_eq!(screen_evidence_write(&request),Err(38));
+ assert_eq!(READS.load(std::sync::atomic::Ordering::Relaxed),1);
+}
 '''.replace('WROTE', wrote).replace('SINK', sink).replace('WRITER', writer)
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
