@@ -193,6 +193,12 @@ impl Device {
         super::caps::Profile::from_board(&self.board, self.channel.identity()).admission(masked)
     }
     pub fn send(&mut self, request: Request) -> Result<(), Request> {
+        self.send_traced(request, #[cfg(target_os = "none")] None)
+    }
+    pub fn send_traced(&mut self, request: Request,
+        #[cfg(target_os = "none")] trace: Option<&super::timing::Submit>) -> Result<(), Request> {
+        #[cfg(target_os = "none")]
+        let _submit = trace.map(|t| t.scope(super::timing::submit_cost::Phase::Native));
         #[cfg(target_os = "none")]
         let _cost = super::cost::phase(super::cost::Slot::NativeSubmit);
         if !self.has_room(1) || self.needs_reset() || self.pending.try_reserve(1).is_err() { return Err(request); }
@@ -216,18 +222,21 @@ impl Device {
         // BAR flush leaves backing in pending until confirmed recovery.
         let result = if let Some(draw) = request.encoded.as_ref() {
             if let Some(plan) = draw.transfer {
-                self.channel.publish(sequence, &Operation::Transfer(plan))
+                self.channel.publish(sequence, &Operation::Transfer(plan), #[cfg(target_os = "none")] trace)
             } else {
-                self.channel.publish_draw(sequence, draw)
+                #[cfg(target_os = "none")]
+                { self.channel.publish_draw_traced(sequence, draw, trace) }
+                #[cfg(not(target_os = "none"))]
+                { self.channel.publish_draw(sequence, draw) }
             }
         } else {
             let operation = request.operation.as_ref().unwrap();
             #[cfg(not(any(feature = "testing", feature = "gt710_core_probe")))]
-            { self.channel.publish(sequence, operation) }
+            { self.channel.publish(sequence, operation, #[cfg(target_os = "none")] trace) }
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             { if request.control == super::core_record::Control::Clean {
-                self.channel.publish(sequence, operation)
-            } else { self.channel.publish_probe(sequence, operation, request.control) } }
+                self.channel.publish(sequence, operation, #[cfg(target_os = "none")] trace)
+            } else { self.channel.publish_probe(sequence, operation, request.control, #[cfg(target_os = "none")] trace) } }
         };
         if result.is_err() && !self.channel.published(sequence) {
             return Err(request);

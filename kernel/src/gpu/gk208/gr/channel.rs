@@ -1571,6 +1571,7 @@ mod native {
         pub(crate) fn published(&self, sequence: u32) -> bool { self.put == sequence }
         pub(crate) fn publish(
             &mut self, sequence: u32, operation: &crate::gk208::adapter::Operation,
+            trace: Option<&crate::gk208::timing::Submit>,
         ) -> Result<(), &'static str> {
             use crate::gk208::{adapter::Operation, queue::Queue};
             let s = &self.session;
@@ -1606,10 +1607,10 @@ mod native {
                     super::super::draw::commands(draw)?
                 }
             };
-            self.publish_encoded(sequence, &mut command)
+            self.publish_encoded_traced(sequence, &mut command, trace)
         }
-        pub(crate) fn publish_draw(&mut self, sequence: u32, draw: &crate::gk208::adapter::EncodedDraw)
-            -> Result<(), &'static str> {
+        pub(crate) fn publish_draw_traced(&mut self, sequence: u32, draw: &crate::gk208::adapter::EncodedDraw,
+            trace: Option<&crate::gk208::timing::Submit>) -> Result<(), &'static str> {
             if self.parking.is_empty() { return Err("native frame parking absent"); }
             let s = &self.session;
             crate::gk208::ce::with_resources(|r,_,io| r.bind(io,
@@ -1643,9 +1644,11 @@ mod native {
                 (8,(s.report.identity.epoch>>32) as u32),(0,sequence)] {
                 command.extend(super::report(target+offset,value)?);
             }
-            self.publish_encoded(sequence,&mut command)
+            self.publish_encoded_traced(sequence,&mut command,trace)
         }
-        fn publish_encoded(&mut self, sequence: u32, command: &mut Vec<u32>) -> Result<(), &'static str> {
+        fn publish_encoded_traced(&mut self, sequence: u32, command: &mut Vec<u32>,
+            trace: Option<&crate::gk208::timing::Submit>) -> Result<(), &'static str> {
+            let _doorbell = trace.map(|t| t.scope(crate::gk208::timing::submit_cost::Phase::Doorbell));
             let s = &self.session;
             let slot = crate::gk208::queue::Queue::slot(sequence);
             command.try_reserve(2).map_err(|_| "native release packet allocation")?;
@@ -1665,6 +1668,7 @@ mod native {
         #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
         pub(crate) fn publish_probe(&mut self, sequence: u32, operation: &crate::gk208::adapter::Operation,
             control: crate::gk208::core_record::Control,
+            trace: Option<&crate::gk208::timing::Submit>,
         ) -> Result<(), &'static str> {
             let crate::gk208::adapter::Operation::Copy(rect) = *operation else {
                 return Err("core completion controls require CE copy");
@@ -1672,7 +1676,7 @@ mod native {
             let report = TARGET + u64::from(crate::gk208::queue::Queue::slot(sequence)) * 16;
             let mut command = crate::gk208::copy::probe_encode(rect, report,
                 self.session.report.identity.epoch, sequence, control)?;
-            self.publish_encoded(sequence, &mut command)
+            self.publish_encoded_traced(sequence, &mut command, trace)
         }
         #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
         pub(crate) fn probe_drained(&mut self, sequence: u32) -> Result<bool, &'static str> {

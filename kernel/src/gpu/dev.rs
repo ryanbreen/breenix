@@ -151,11 +151,15 @@ impl Request {
 
 impl Device {
     pub fn send(&mut self, req: Request) -> Result<(), Request> {
+        self.send_traced(req, #[cfg(target_arch = "x86_64")] None)
+    }
+    pub fn send_traced(&mut self, req: Request,
+        #[cfg(target_arch = "x86_64")] trace: Option<&crate::gk208::timing::Submit>) -> Result<(), Request> {
         match (self, req) {
             (Device::Virgl(d), Request::Virgl(r)) => d.send(r).map_err(Request::Virgl),
             (Device::Svga(d), Request::Svga(r)) => d.send(r).map_err(Request::Svga),
             #[cfg(target_arch = "x86_64")]
-            (Device::Gk208(d), Request::Gk208(r)) => d.send(r).map_err(Request::Gk208),
+            (Device::Gk208(d), Request::Gk208(r)) => d.send_traced(r, trace).map_err(Request::Gk208),
             (_, r) => Err(r),
         }
     }

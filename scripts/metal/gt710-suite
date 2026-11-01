@@ -156,6 +156,26 @@ HEX = r'0x[0-9a-f]+'
 FB = (r'\[fbcon\] framebuffer in display BAR: (\d+)x(\d+) (Rgb|Bgr) ([34]) bytes/pixel stride (\d+) at (' + HEX + r') length (\d+), (' + BDF + r') ([0-9a-f]{4}:[0-9a-f]{4}) class 03/[0-9a-f]{2} BAR([0-5]) (' + HEX + r')/(' + HEX + r') prefetchable$')
 
 
+SUBMIT_PHASES = ['entry', 'copy_in', 'validation', 'admission_poll', 'setup',
+                 'translate', 'frame_prepare', 'fence_bookkeeping', 'native_submit',
+                 'doorbell', 'copy_out', 'cleanup', 'other']
+
+def validate_submit_costs(record):
+    if 'submits' not in record and 'submit_phases' not in record:
+        return
+    rows = record.get('submits')
+    if record.get('submit_phases') != SUBMIT_PHASES or not isinstance(rows, list):
+        raise ValueError('invalid submit phase inventory')
+    owners = set()
+    for row in rows:
+        if (not isinstance(row, list) or len(row) != 3 + len(SUBMIT_PHASES)
+                or any(type(v) is not int or v < 0 for v in row)
+                or row[0] == 0 or row[1] == 0 or row[0] in owners
+                or sum(row[3:]) != row[2]):
+            raise ValueError('submit phases do not partition elapsed time')
+        owners.add(row[0])
+
+
 def one(pattern, serial, why):
     matches = list(pattern.finditer(serial) if hasattr(pattern, 'finditer') else re.finditer(pattern, serial, re.M))
     if len(matches) != 1:
@@ -3425,6 +3445,7 @@ def capture_serial(directory):
                     or any(not isinstance(r, list) or len(r) != 5
                            or any(type(v) is not int or v < 0 for v in r) for r in row['rows'])):
                 raise ValueError('invalid timing record')
+            validate_submit_costs(row)
             key=('timing', row['batch'])
         elif fields[0]=='GT710_GR_REFUSAL_V1':
             row = json.loads(line.removeprefix('GT710_GR_REFUSAL_V1 '))

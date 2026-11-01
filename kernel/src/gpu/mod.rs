@@ -66,6 +66,8 @@
 
 pub mod window_targets;
 use crate::gpu_completion as completion;
+#[cfg(target_arch = "x86_64")]
+use crate::gk208::timing::{Submit as SubmitTrace, submit_cost::Phase as SubmitPhase};
 mod present_answers;
 mod display;
 pub mod console;
@@ -1100,6 +1102,9 @@ impl Core {
     /// Move queued requests into the control queue, in order, while they fit; nothing
     /// more once a device fault has asked for a reset.
     fn flush(&mut self) {
+        self.flush_traced(#[cfg(target_arch = "x86_64")] None);
+    }
+    fn flush_traced(&mut self, #[cfg(target_arch = "x86_64")] trace: Option<&SubmitTrace>) {
         if self.reset_wanted {
             return;
         }
@@ -1111,7 +1116,7 @@ impl Core {
             }
             let Some((epoch, req)) = self.backlog.pop_front() else { break };
             let tag = req.tag();
-            if let Err(req) = dev.send(req) {
+            if let Err(req) = dev.send_traced(req, #[cfg(target_arch = "x86_64")] trace) {
                 self.backlog.push_front((epoch, req));
                 break;
             }
@@ -1313,11 +1318,11 @@ impl Core {
     /// slots just released by those completions, without a worker/timer round
     /// trip between bounded batches on this interrupt-free channel. Other
     /// backends leave publication to kgpu after its startup.
-    fn poll(&mut self) {
+    fn poll_traced(&mut self, #[cfg(target_arch = "x86_64")] trace: Option<&SubmitTrace>) {
         self.reap_all();
         self.watchdog(now_ns());
         if REAPER.load(Ordering::Acquire) == 0 || dev::backend() == abi::backend::GK208 {
-            self.flush();
+            self.flush_traced(#[cfg(target_arch = "x86_64")] trace);
         }
     }
 
@@ -2140,12 +2145,13 @@ enum Stop {
 /// the absolute `deadline` passes, or a signal arrives.
 fn wait_for<T>(deadline: Option<u64>, interruptible: bool, f: impl FnMut(&mut Core) -> Option<T>) -> Result<T, Stop> {
     wait_for_traced(deadline, interruptible, f, #[cfg(target_arch = "x86_64")] None,
-        #[cfg(target_arch = "x86_64")] false)
+        #[cfg(target_arch = "x86_64")] false, #[cfg(target_arch = "x86_64")] None)
 }
 
 fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mut Core) -> Option<T>,
     #[cfg(target_arch = "x86_64")] trace: Option<(&crate::gk208::timing::Readback, u64)>,
     #[cfg(target_arch = "x86_64")] fence_driven: bool,
+    #[cfg(target_arch = "x86_64")] submit_trace: Option<&SubmitTrace>,
 ) -> Result<T, Stop> {
     #[cfg(target_arch = "x86_64")]
     let fence_driven = fence_driven && dev::backend() == abi::backend::GK208;
@@ -2157,7 +2163,7 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
         if let Some((t, _)) = trace { t.poll(); }
         let seen = EVENTS.load(Ordering::Acquire);
         let (found, polled) = with_core(|c| {
-            c.poll();
+            c.poll_traced(#[cfg(target_arch = "x86_64")] submit_trace);
             let found = f(c);
             if found.is_none() { c.progress_readback(); }
             // Native poll has refilled available slots. Hand any remaining
@@ -2306,7 +2312,7 @@ fn await_sync_traced(serial: u64,
         }
         c.syncs.get(&serial).filter(|s| s.failed).map(|s| Err(s.why))
     }, #[cfg(target_arch = "x86_64")] trace.map(|t| (t, 2)),
-        #[cfg(target_arch = "x86_64")] fence_driven);
+        #[cfg(target_arch = "x86_64")] fence_driven, #[cfg(target_arch = "x86_64")] None);
     match outcome {
         Ok(Ok(d)) => Ok(d),
         other => {
@@ -2961,15 +2967,17 @@ fn hold_irqs_masked(ns: u64) {
 /// The native device leaves the core while its restored epoch is measured.
 /// Wait through that interval instead of exposing the empty fallback table.
 #[cfg(target_arch = "x86_64")]
-fn native_reset_barrier() -> Result<(), i64> {
+fn native_reset_barrier(trace: Option<&SubmitTrace>) -> Result<(), i64> {
     if dev::backend() != abi::backend::GK208 { return Ok(()); }
-    arch::with_interrupts(|| wait_for(None, true, |c| {
+    arch::with_interrupts(|| wait_for_traced(None, true, |c| {
         (!c.reset_wanted && !c.resetting).then_some(())
-    })).map_err(|_| EINTR)
+    }, None, false, trace)).map_err(|_| EINTR)
 }
 
 /// `gpu(op, arg, len)`.
 pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
+    #[cfg(target_arch = "x86_64")]
+    let submit_trace = SubmitTrace::begin(op);
     #[cfg(target_arch="x86_64")]
     if crate::gk208::thermal_halted() {return result(Err(ENODEV));}
     let _path = GpuPath::enter();
@@ -2986,9 +2994,9 @@ pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
     let Ok(op) = u32::try_from(op) else { return result(Err(EINVAL)) };
     #[cfg(target_arch = "x86_64")]
     if op != abi::op::VERSION && op <= abi::op::LAST {
-        if let Err(error) = native_reset_barrier() { return result(Err(error)); }
+        if let Err(error) = native_reset_barrier(submit_trace.as_ref()) { return result(Err(error)); }
     }
-    result(match op {
+    let answer = result(match op {
         abi::op::VERSION => {
             if len != 0 {
                 Err(EINVAL)
@@ -3007,7 +3015,7 @@ pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
                 abi::op::RESOURCE_CREATE => op_resource_create(arg, len),
                 abi::op::RESOURCE_DESTROY => op_resource_destroy(arg, len),
                 abi::op::UPLOAD => op_upload(arg, len),
-                abi::op::SUBMIT => op_submit(arg, len),
+                abi::op::SUBMIT => op_submit(arg, len, #[cfg(target_arch = "x86_64")] submit_trace.as_ref()),
                 abi::op::WAIT => op_wait(arg, len),
                 abi::op::READBACK => op_readback(arg, len),
                 abi::op::PRESENT => display::present(arg, len),
@@ -3018,7 +3026,10 @@ pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
                 _ => Err(ENOSYS),
             },
         },
-    })
+    });
+    #[cfg(target_arch = "x86_64")]
+    if let Some(trace) = &submit_trace { trace.other(); }
+    answer
 }
 
 fn op_caps(arg: u64, len: u64) -> Result<u64, i64> {
@@ -4275,13 +4286,15 @@ fn reserve_profile_violation(
     None
 }
 
-fn op_submit(arg: u64, len: u64) -> Result<u64, i64> {
+fn op_submit(arg: u64, len: u64, #[cfg(target_arch = "x86_64")] trace: Option<&SubmitTrace>) -> Result<u64, i64> {
+    #[cfg(target_arch = "x86_64")]
+    let _copy = trace.map(|t| t.scope(SubmitPhase::Copy));
     let mut a: abi::Submit = read_arg(arg, len)?;
     if a.fence != 0 || a.error_index != 0 || a.error != 0 || a.estimate != 0 || a.reserved != [0; 2] {
         return Err(EINVAL);
     }
     let tgid = caller()?;
-    submit_stream(tgid, &mut a, None, &|a| write_arg(arg, a))
+    submit_stream(tgid, &mut a, None, &|a| write_arg(arg, a), #[cfg(target_arch = "x86_64")] trace)
 }
 
 /// A source alias of window composition (414 op 19, ruling B13): a handle private to one
@@ -4319,7 +4332,9 @@ fn prepare_device_error(extra: bool, tag: Tag, ctx: u32, fence: u64)
     Ok((request, point))
 }
 
-fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, out: &dyn Fn(&abi::Submit) -> Result<(), i64>) -> Result<u64, i64> {
+fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, out: &dyn Fn(&abi::Submit) -> Result<(), i64>, #[cfg(target_arch = "x86_64")] trace: Option<&SubmitTrace>) -> Result<u64, i64> {
+    #[cfg(target_arch = "x86_64")]
+    let mut phase = trace.map(|t| t.scope(SubmitPhase::Copy));
     let aliases: &[Alias] = extra.as_ref().map_or(&[], |e| e.aliases);
     let alias = |rid: &u32| aliases.iter().any(|x| x.id == *rid);
     let refuse = |a: &mut abi::Submit, index: u32, error: u32, errno: i64| -> Result<u64, i64> {
@@ -4353,6 +4368,8 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         Err(ENOMEM) => return refuse(a, 0, stream::error::NO_MEMORY, ENOMEM),
         Err(e) => return Err(e),
     };
+    #[cfg(target_arch = "x86_64")]
+    { drop(phase.take()); phase = trace.map(|t| t.scope(SubmitPhase::Validate)); }
     let resolved = Resolved {
         view: &view,
         snap: &snap,
@@ -4394,9 +4411,11 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         }
         pins
     };
+    #[cfg(target_arch = "x86_64")]
+    { drop(phase.take()); phase = trace.map(|t| t.scope(SubmitPhase::Admission)); }
     // Take the context's submission slot: one sender at a time, at most four in flight.
     let mut waited = false;
-    let admitted = wait_for(None, true, |c| {
+    let admitted = wait_for_traced(None, true, |c| {
         let scanout_busy = display::write_blocked(c, &written);
         // An alias's window keeps its target after the client destroyed the handle.
         if named_ids.iter().any(|rid| !c.resources.get(rid).is_some_and(|r| (!r.dropped || alias(rid)) && !r.lost)) { return Some(Err(EINVAL)); }
@@ -4443,12 +4462,14 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             }
         }
         Some(Ok(writer))
-    });
+    }, #[cfg(target_arch = "x86_64")] None, #[cfg(target_arch = "x86_64")] false, #[cfg(target_arch = "x86_64")] trace);
     let writer = match admitted {
         Ok(Ok(writer)) => writer,
         Ok(Err(e)) => return Err(e),
         Err(_) => return Err(EINTR),
     };
+    #[cfg(target_arch = "x86_64")]
+    { drop(phase.take()); phase = trace.map(|t| t.scope(SubmitPhase::Setup)); }
     let admitted_ids = named_ids.clone();
     let release_slot = |accepted: bool| {
         with_core(|c| {
@@ -4690,6 +4711,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                     }
                     None => None,
                 };
+                let translating_submit = trace.map(|t| t.scope(SubmitPhase::Translate));
                 let cost_translate = crate::gk208::cost::phase(crate::gk208::cost::Slot::Translate);
                 let translating = crate::gk208::timing::phase(110);
                 let mut frame = if corrupt.is_none() && suppress.is_none() && swap.is_none() {
@@ -4703,6 +4725,8 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 frame.batch_draws(1400).map_err(|_| ENOMEM)?;
                 drop(translating);
                 drop(cost_translate);
+                drop(translating_submit);
+                let _preparing_submit = trace.map(|t| t.scope(SubmitPhase::FramePrepare));
                 let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::FramePrepare);
                 let _timing = crate::gk208::timing::phase(111);
                 let backing = Arc::new(Pages::new(frame.data.len().div_ceil(PAGE)).ok_or(ENOMEM)?);
@@ -4881,6 +4905,8 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     // Recheck the context and the resources after translation, then hand the whole
     // submission to the device's queue at once: nothing of a refused submission is sent,
     // and nothing of an accepted one is left unsent.
+    #[cfg(target_arch = "x86_64")]
+    { drop(phase.take()); phase = trace.map(|t| t.scope(SubmitPhase::Fence)); }
     let prepared = with_core(|c| -> Result<u64, i64> {
         let ctx = c.contexts.get(&id).ok_or(EINVAL)?;
         if ctx.state != CtxState::Live || !ctx.device_alive || ctx.dropped {
@@ -5017,7 +5043,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         if let Some(fault) = corruption { fault.fire(); }
         if let Some(fault) = suppression { fault.fire(); }
         if let Some(fault) = swapping { fault.fire(); }
-        c.flush();
+        c.flush_traced(#[cfg(target_arch = "x86_64")] trace);
         Ok((ns as u64) << 32 | n as u64)
     })
     .unwrap_or(Err(ENODEV));
@@ -5031,7 +5057,12 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
     };
     a.fence = bgl_fence;
     a.estimate = plan.estimate;
+    #[cfg(target_arch = "x86_64")]
+    { let _output = trace.map(|t| t.scope(SubmitPhase::Output)); out(a)?; }
+    #[cfg(not(target_arch = "x86_64"))]
     out(a)?;
+    #[cfg(target_arch = "x86_64")]
+    { drop(phase.take()); if let Some(t) = trace { let _ = phase.insert(t.scope(SubmitPhase::Cleanup)); } }
     Ok(0)
 }
 
@@ -5563,7 +5594,7 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         wait_for_traced(None, true, |c| {
             (!console::restoring(c.display.owner_sequence)).then_some(c.display.known)
         }, #[cfg(target_arch = "x86_64")] trace.as_ref().map(|t| (t, 3)),
-            #[cfg(target_arch = "x86_64")] false)
+            #[cfg(target_arch = "x86_64")] false, #[cfg(target_arch = "x86_64")] None)
         .map_err(|_| EINTR)?;
         Some(if window {
             display::Transition::for_window_observer()?
@@ -5678,7 +5709,7 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         let composition = r.composition.clone().filter(|p| p.generation == r.generation);
         Some(Ok((r.invalid, r.invalidated_by, r.generation, r.last, composition)))
     }, #[cfg(target_arch = "x86_64")] trace.as_ref().map(|t| (t, 1)),
-        #[cfg(target_arch = "x86_64")] true);
+        #[cfg(target_arch = "x86_64")] true, #[cfg(target_arch = "x86_64")] None);
     let (invalid, invalidated_by, generation, last, composition) = match taken {
         Ok(Ok(t)) => t,
         Ok(Err(reason)) => return refuse(reason, 0),

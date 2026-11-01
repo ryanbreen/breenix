@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class Timing(unittest.TestCase):
     def test_elapsed_rows_keep_owner_draw_phase_and_report_overflow(self):
         source = f'''extern crate alloc;
-#[path="{ROOT / 'kernel/src/gpu/gk208/timing.rs'}"] mod timing;
+#[path="{ROOT / 'kernel/src/gpu/gk208/timing.rs'}"] pub mod timing;
 fn main() {{
  assert!(!timing::collecting(false,false));
  assert!(timing::collecting(false,true));assert!(timing::collecting(true,false));assert!(timing::collecting(true,true));
@@ -45,7 +45,7 @@ fn main() {{
     def test_large_timing_export_refuses_allocation_failure_and_retains_rows(self):
         sys.path.insert(0,str(ROOT/'tests'))
         from gt710_allocation_failure_test import ALLOC,run
-        fixture=f'#[path="{ROOT / "kernel/src/gpu/gk208/timing.rs"}"] mod timing;\n'+ALLOC+r'''
+        fixture=f'#[path="{ROOT / "kernel/src/gpu/gk208/timing.rs"}"] pub mod timing;\n'+ALLOC+r'''
 #[test]fn timing_export_allocation_is_a_refusal(){
  let mut split=timing::ReadbackSplit::default();split.wait(1,2);split.copy(2,3);
  assert!(!timing::collecting(false,false));let mut r=timing::Recorder::new();r.begin_draw(42);r.readback([42,0,1,2,split.wait_ns,split.copy_ns,0,0]);r.blocked([1,1,1,1,1,0,1]);
