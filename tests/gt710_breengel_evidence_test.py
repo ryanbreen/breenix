@@ -64,7 +64,7 @@ fn main(){print!("{}",String::from_utf8(heap::fixture()).unwrap());}
             pixels = bytes([0, 0, 0, 255]); digest = hashlib.sha256(pixels).hexdigest()
             payload = b'1:ff000000\n'
             entries = [dict(case=f'raster/case-{n}', picture=n-1, sha256=digest,
-                            bytes=len(payload), width=1, height=1) for n in range(1, 402)]
+                            bytes=len(payload), width=1, height=1, encoding="rle") for n in [1]]
             manifest = ''.join('GT710_BREENGL_PICTURE '+json.dumps(e,separators=(',', ':'))+'\n' for e in entries).encode()
             startup = b'GT710_PIX 0 1:ff003039\n'
             final = text.encode() + manifest
@@ -76,7 +76,7 @@ fn main(){print!("{}",String::from_utf8(heap::fixture()).unwrap());}
             serial += 'SUITE breengel DONE passed=401 failed=0 skipped=0 total=401\n'
             serial += 'SUITE breengel MEMORY reclaimed=PASS free_before=100 free_after=100 allowance=64\n'
             serial += anchor('GT710_CASE_HEAP_BULK', text.encode())+anchor('GT710_BREENGL_MANIFEST_BULK', manifest)+anchor('GT710_FINAL_BULK', final)
-            serial += f'GT710_BREENGL_TOTAL bytes={len(startup)+len(payload)+len(final)} uploads=3 picture_bytes={len(payload)} pictures=401 unique=1\n'
+            serial += f'GT710_BREENGL_TOTAL bytes={len(startup)+len(payload)+len(final)} uploads=3 picture_bytes={len(payload)} pictures=1 unique=1\n'
             serial += 'SUITE_SEQUENCE READY breengel\n'
             for name, data in [('gt710-pixels.rle', startup), ('gt710-final.rle', final), ('gt710-breengel-0000.rle', payload)]:
                 (p/name).write_bytes(data)
@@ -98,19 +98,23 @@ fn main(){
  let mut store=pictures::Pictures::new();
  let mut chunks=Vec::new();
  let mut send=|data:&[u8]|{chunks.push(data.to_vec());Ok(())};
- let pixels:Vec<u8>=(0..250000u32).flat_map(|v|[v as u8,(v>>8)as u8,(v>>16)as u8,255]).collect();
+ let pixels:Vec<u8>=(0..600000u32).flat_map(|v|[v as u8,(v>>8)as u8,(v>>16)as u8,255]).collect();
  for case in ["raster/first","raster/second"] {
-  store.record(case,500,500,&pixels,crypto::sha256::sha256(&pixels),&mut send).unwrap();
+  store.record(case, true,1000,600,&pixels,crypto::sha256::sha256(&pixels),&mut send).unwrap();
  }
  let manifest=store.manifest().unwrap();
  assert_eq!(chunks.len(),2);assert!(chunks.iter().all(|b|b.len()<=2<<20));
  for (n,b) in chunks.iter().enumerate(){std::fs::write(format!("{dir}/gt710-breengel-{n:04}.rle"),b).unwrap();}
  std::fs::write(format!("{dir}/manifest"),manifest).unwrap();
- let mut failed=pictures::Pictures::new();
+ let solid=vec![0,0,0,255];
+ store.record("text/first",false,1,1,&solid,crypto::sha256::sha256(&solid),&mut send).unwrap();
+ store.record("text/later",false,1,1,&solid,crypto::sha256::sha256(&solid),&mut send).unwrap();
+ assert_eq!(store.manifest().unwrap().split(|b|*b==b'\n').filter(|b|!b.is_empty()).count(),3);
+ let mut failed=pictures::Pictures::new(); failed.bytes=pictures::MAX_TOTAL-1;
  let mut sent=0;
  let mut sink=|_:&[u8]|{sent+=1;Ok(())};
  let excessive:Vec<u8>=(0..6400000u32).flat_map(|v|[v as u8,(v>>8)as u8,(v>>16)as u8,255]).collect();
- assert!(failed.record("raster/huge",3200,2000,&excessive,crypto::sha256::sha256(&excessive),&mut sink).is_err());
+ assert!(failed.record("raster/huge",true,3200,2000,&excessive,crypto::sha256::sha256(&excessive),&mut sink).is_err());
  assert_eq!(sent,0,"over-bound pictures must refuse before upload");
  assert!(failed.manifest().is_err(),"a refused picture must never disappear from a successful manifest");
 }
@@ -122,7 +126,8 @@ fn main(){
             entries = [json.loads(line.removeprefix('GT710_BREENGL_PICTURE ')) for line in manifest.decode().splitlines()]
             self.assertEqual(len(entries), 2)
             self.assertEqual(entries[0]['sha256'], entries[1]['sha256'])
-            self.assertEqual(entries[0]['bytes'], 2750000)
+            self.assertEqual(entries[0]['bytes'], 2400000)
+            self.assertEqual(entries[0]['encoding'], 'raw')
             self.assertEqual([e['picture'] for e in entries], [0, 1])
             startup = b'GT710_PIX 0 1:ff003039\n'
             final = manifest
@@ -133,15 +138,15 @@ fn main(){
             serial = 'GT710_MODE {"schema":1}\n' + anchor('GT710_BULK', startup)
             serial += 'SUITE breengel START cases=2\n'
             for index, entry in enumerate(entries):
-                serial += f"SUITE breengel CASE {entry['case']} PASS ms=1 sha256={entry['sha256']}\n"
+                serial += f"SUITE breengel CASE {entry['case']} {'PASS' if index == 0 else 'FAIL'} ms=1 sha256={entry['sha256']}\n"
                 if index == 0:
                     for n in range(2):
                         data = (p / f'gt710-breengel-{n:04}.rle').read_bytes()
                         serial += anchor(f'GT710_BREENGL_CHUNK {n}', data)
-            serial += 'SUITE breengel DONE passed=2 failed=0 skipped=0 total=2\n'
+            serial += 'SUITE breengel DONE passed=1 failed=1 skipped=0 total=2\n'
             serial += 'SUITE breengel MEMORY reclaimed=PASS free_before=100 free_after=100 allowance=64\n'
             serial += anchor('GT710_BREENGL_MANIFEST_BULK', manifest) + anchor('GT710_FINAL_BULK', final)
-            serial += f'GT710_BREENGL_TOTAL bytes={len(startup)+len(final)+2750000} uploads=4 picture_bytes=2750000 pictures=2 unique=1\n'
+            serial += f'GT710_BREENGL_TOTAL bytes={len(startup)+len(final)+2400000} uploads=4 picture_bytes=2400000 pictures=2 unique=1\n'
             serial += 'SUITE_SEQUENCE READY breengel\n'
             (p / 'serial.txt').write_text(serial)
             result = API['capture_serial'](p)
@@ -150,14 +155,14 @@ fn main(){
             for bad in [serial.replace(entries[1]['sha256'], '0'*64, 1),
                         serial.replace('GT710_BREENGL_CHUNK 1 ', 'GT710_BREENGL_CHUNK 2 '),
                         serial.replace('uploads=4', 'uploads=3'),
-                        serial.replace('picture_bytes=2750000', 'picture_bytes=1'),
+                        serial.replace('picture_bytes=2400000', 'picture_bytes=1'),
                         serial + manifest.decode()]:
                 (p / 'serial.txt').write_text(bad)
                 with self.assertRaises(ValueError): API['capture_serial'](p)
             (p / 'serial.txt').write_text(serial)
             file = p / 'gt710-breengel-0001.rle'
             original = file.read_bytes()
-            for data in [original[:-1], original.replace(b'ff', b'fe', 1)]:
+            for data in [original[:-1], bytes([original[0] ^ 1]) + original[1:]]:
                 file.write_bytes(data)
                 with self.assertRaises(ValueError): API['capture_serial'](p)
 
@@ -209,6 +214,11 @@ fn main(){
         self.assertIn('.with_finalizer(', source)
         self.assertIn('gt710_artifacts::upload()', source)
         self.assertIn('gt710_heap::encode()', source)
+        evidence = source[source.index('fn evidence<'):source.index('fn heap_boundary')]
+        self.assertNotIn('panic!', evidence, 'G28 refuses evidence without stopping the suite')
+        runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
+        self.assertLess(runner.index('if let Err(error) = result {'), runner.index('observe(&name, frame,'))
+        self.assertIn('matches!(outcome, Outcome::Fail', runner[runner.index('observe(&name, frame,'):])
         # The guest-side module imports and callback storage must be compiled out
         # on ARM; target ELF inspection accompanies the requested ARM build.
         runner = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
