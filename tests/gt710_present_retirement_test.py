@@ -34,11 +34,11 @@ fn with_core<R>(f:impl FnOnce(&mut Core)->R)->Option<R>{Some(CORE.with(|c|f(&mut
 fn notify(){NOTIFIED.fetch_add(1,Ordering::Relaxed);}
 static NOTIFIED:AtomicU64=AtomicU64::new(0);
 static FIXTURE:AtomicU64=AtomicU64::new(0);static HASH:AtomicU64=AtomicU64::new(0);
-static HANDOFF:AtomicBool=AtomicBool::new(false);static BOUND:AtomicBool=AtomicBool::new(true);
+static HANDOFF:AtomicBool=AtomicBool::new(false);static BOUND:AtomicBool=AtomicBool::new(true);static SCREEN_ACTIVE:AtomicBool=AtomicBool::new(false);
 fn active()->bool{false}fn caller()->Result<u64,()>{Ok(1)}fn firmware_hash()->u64{0}
-mod display {pub fn owner(_:u64)->bool{false}}
+mod display {pub fn owner(_:u64)->bool{false}pub fn active()->bool{super::SCREEN_ACTIVE.load(super::Ordering::Acquire)}}
 mod arch {pub fn firmware_writes()->u64{0}}
-mod screen {pub fn describe()->(u64,u64){(0,0)}}
+mod screen {pub fn describe()->(u64,u64){(732,0)}}
 mod gk208 {pub fn console_state()->Option<(gpu_abi::Mode,u64,bool,u64)>{Some((gpu_abi::Mode{width:1280,height:1024,scale:1,reserved:0},0xffff_ffff,super::BOUND.load(super::Ordering::Acquire),0))}}
 mod gpu {use super::screen;pub mod console {use super::super::*; // HELPER
 // DESCRIBE
@@ -49,6 +49,8 @@ fn repaint(complete:bool){let screen=Frame{complete,epoch:1};let snapshot=&scree
 // COMPLETED
 }
 fn modes()->abi::Modes {let mut m=abi::Modes::ZERO;
+ // Model MODES awaiting the console's next completed binding after retirement.
+ with_core(|c|{if c.display.binding.is_none() {c.display.binding=Some(732);SCREEN_ACTIVE.store(true,Ordering::Release);}});
  with_core(|c|{m.owner_depth=c.display.stack.len() as u32;m.binding_known=u32::from(c.display.known);m.scanout_resource=c.display.binding.map_or(0,u64::from);});
  gpu::console::describe(&mut m);m
 }
