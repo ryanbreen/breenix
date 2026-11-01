@@ -195,7 +195,7 @@ impl Device {
     pub fn send(&mut self, request: Request) -> Result<(), Request> {
         #[cfg(target_os = "none")]
         let _cost = super::cost::phase(super::cost::Slot::NativeSubmit);
-        if !self.has_room(1) || self.pending.try_reserve(1).is_err() { return Err(request); }
+        if !self.has_room(1) || self.needs_reset() || self.pending.try_reserve(1).is_err() { return Err(request); }
         #[cfg(target_os = "none")]
         if self.recent.len() < 16 && self.recent.try_reserve(1).is_err() { return Err(request); }
         if request.storage {
@@ -277,8 +277,12 @@ impl Device {
             return Reap::Fault;
         }
         if self.attributed.is_some() { return Reap::Empty; }
-        if let Err(reason) = self.channel.healthy() {
-            return self.retry_error_trap(reason);
+        // Engine receipt sampling checks health itself. Idle, storage and EVO
+        // latch paths have no engine sample, so keep their explicit check.
+        if self.flipping.is_some() || self.pending.front().is_none_or(|sent| sent.identity.is_none()) {
+            if let Err(reason) = self.channel.healthy() {
+                return self.retry_error_trap(reason);
+            }
         }
         if let Some((sent, sample)) = self.flipping.as_ref() {
             match self.channel.present_complete(sent.request.scanout.unwrap()) {
@@ -386,7 +390,7 @@ impl Device {
         Ok(true)
     }
     pub fn has_room(&self, segments: usize) -> bool {
-        !self.pri_pending && !self.needs_reset() && self.attributed.is_none() && self.retired.is_empty()
+        !self.pri_pending && !self.fault && self.attributed.is_none() && self.retired.is_empty()
             && self.resetting.is_none() && segments <= 4
             && self.pending.len() + usize::from(self.flipping.is_some()) + segments <= 4 && self.queue.next().is_ok()
     }
