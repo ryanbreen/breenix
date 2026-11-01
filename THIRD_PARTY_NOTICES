@@ -2096,3 +2096,11 @@ The file's complete MIT permission grant was checked before use; Copyright
 are retained in the consuming file's header. Breenix retains its own queue,
 engine-receipt validation, lock release, watchdog, deadline and signal handling;
 no Linux scheduling or DMA-fence implementation is imported.
+
+Native primary command transport: kernel/src/gpu/gk208/gr/channel.rs follows
+libdrm nouveau/pushbuf.c's mapped GART pushbuffer placement (lines 581-593),
+MIT, Copyright 2012 Red Hat Inc., author Ben Skeggs. Inspected at
+https://github.com/Distrotech/libdrm/blob/6eed04824b488f546fde7df5d267ef109c82ddf8/nouveau/pushbuf.c
+The original full MIT notice is preserved in channel.rs. Breenix supplies its
+own coherent pages, retained GPU VM mapping and publication ordering; no DRM
+runtime code is imported.

@@ -164,7 +164,7 @@ impl Recorder {
                 text.push(']');
             }
             // Publication mapping types from the allocation and aperture setup.
-            text.push_str(r#"],"submit_mappings":{"command":"uncached BAR0 PRAMIN to VRAM","descriptor":"uncached BAR0 PRAMIN to VRAM","receipt":"coherent WB system memory","frame":"coherent WB system memory GPU DMA","frame_zero":"coherent WB system memory","gp_put":"write-combined BAR1 USERD","page_tables":"uncached BAR0 PRAMIN to VRAM","encoder_heap":"WB system memory"}"#);
+            text.push_str(r#"],"submit_mappings":{"command":"coherent WB system memory GPU DMA","descriptor":"coherent WB system memory GPU DMA","receipt":"coherent WB system memory","frame":"coherent WB system memory GPU DMA","frame_zero":"coherent WB system memory","gp_put":"write-combined BAR1 USERD","page_tables":"uncached BAR0 PRAMIN to VRAM","encoder_heap":"WB system memory"}"#);
         }
         text.push('}');
         Some(text)

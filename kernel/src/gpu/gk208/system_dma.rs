@@ -75,6 +75,27 @@ impl Pages {
     pub fn va(&self, index: usize) -> u64 {
         crate::memory::physical_memory_offset().as_u64() + self.address(index)
     }
+    /// Write words across independently allocated coherent pages. The caller
+    /// owns the command slot until its engine receipt; publication is separate.
+    pub fn write(&self, offset: usize, words: &[u32]) -> Result<(), &'static str> {
+        let bytes = words.len().checked_mul(4).ok_or("DMA write extent")?;
+        if offset % 4 != 0 || offset.checked_add(bytes).is_none_or(|end| end > self.frames.len() * 4096) {
+            return Err("DMA write extent");
+        }
+        let mut done = 0;
+        while done < words.len() {
+            let at = offset + done * 4;
+            let count = ((4096 - at % 4096) / 4).min(words.len() - done);
+            // SAFETY: this allocation owns each bounded WB frame; the caller
+            // holds its unpublished/retired slot, and source storage is separate.
+            unsafe {
+                core::ptr::copy_nonoverlapping(words[done..].as_ptr(),
+                    (self.va(at / 4096) + (at % 4096) as u64) as *mut u32, count);
+            }
+            done += count;
+        }
+        Ok(())
+    }
     pub fn publish(&self) {
         for i in 0..self.frames.len() {
             crate::gpu_cache::clean(self.va(i), 4096);

@@ -77,7 +77,7 @@ fn main() {
             self.assertEqual(sum(row['submits'][0][3:]), row['submits'][0][2])
             self.assertEqual(row['submit_bytes'], [[3, 1536, 16, 32, 2048, 8192, 8]])
             self.assertEqual(row['admission_waits'], [[3, 0, 4, 140, 101, 102, 5, 9]])
-            self.assertEqual(row['submit_mappings']['command'], 'uncached BAR0 PRAMIN to VRAM')
+            self.assertEqual(row['submit_mappings']['command'], 'coherent WB system memory GPU DMA')
             self.assertEqual(row['submit_mappings']['gp_put'], 'write-combined BAR1 USERD')
 
 

@@ -381,6 +381,8 @@ mod native {
     const TRANSFER: u64 = TARGET + 4096;
     const COPY_BYTES: usize = 4096;
     const READBACK_BYTES: usize = 65536;
+    const REPORT_PAGES: usize = 1 + READBACK_BYTES / 4096;
+    const COMMAND_PAGES: usize = 65536 / 4096;
     struct DrawCopy {
         base: usize,
         engine: u32,
@@ -585,6 +587,9 @@ mod native {
                 let mmio = h.layout.allocator.allocate(4096, 4096, Kind::Engine)?;
                 owned.push(mmio);
                 for (va, a) in [(COMMAND, commands), (IMAGE, image), (golden.buffers[3].va, mmio)] {
+                    // The primary FIFO fetches its ring and pushbuffer from WB
+                    // system pages. The independent terminal channel stays VRAM.
+                    if va == COMMAND && id == 0 { continue; }
                     context.map(
                         &mut h.layout.allocator,
                         &mut VmIo {
@@ -597,14 +602,14 @@ mod native {
                     )?;
                 }
                 pages = Some(ManuallyDrop::new(system_dma::Pages::new(
-                    1 + READBACK_BYTES / 4096,
+                    REPORT_PAGES + if id == 0 { COMMAND_PAGES } else { 0 },
                     &system_dma::translation_status()?,
                 )?));
                 let dma = pages.as_ref().unwrap();
                 dma.identify("GR-channel", id);
                 let mut dma_pages = Vec::new();
-                dma_pages.try_reserve_exact(1 + READBACK_BYTES / 4096).map_err(|_| "GR page vector allocation")?;
-                dma_pages.extend((0..1 + READBACK_BYTES / 4096).map(|i| dma.address(i)));
+                dma_pages.try_reserve_exact(REPORT_PAGES + COMMAND_PAGES).map_err(|_| "GR page vector allocation")?;
+                dma_pages.extend((0..REPORT_PAGES).map(|i| dma.address(i)));
                 context.map_system(
                     &mut h.layout.allocator,
                     &mut VmIo {
@@ -614,6 +619,16 @@ mod native {
                     TARGET,
                     &dma_pages,
                 )?;
+                if id == 0 {
+                    dma_pages.clear();
+                    dma_pages.extend((REPORT_PAGES..REPORT_PAGES + COMMAND_PAGES).map(|i| dma.address(i)));
+                    context.map_system(
+                        &mut h.layout.allocator,
+                        &mut VmIo { regs: h.regs, total: h.total },
+                        COMMAND,
+                        &dma_pages,
+                    )?;
+                }
                 for offset in (0..65536).step_by(4096) {
                     words(h.regs, h.total, commands.range.start + offset, &[0; 1024])?;
                 }
@@ -867,7 +882,8 @@ mod native {
             trace: Option<&crate::gk208::timing::Submit>,
         ) -> Result<(), &'static str> {
             if !self.bound || self.quiesced || sequence == 0
-                || command.is_empty() || command.len() * 4 > capacity {
+                || command.is_empty() || command.len() * 4 > capacity
+                || offset.checked_add(command.len() as u64 * 4).is_none_or(|end| end > 65536) {
                 return Err("GR command slot unavailable");
             }
             // One immutable slot, reused only after the preceding stream was
@@ -876,22 +892,29 @@ mod native {
             use crate::gk208::timing::submit_cost::{Phase, Bytes};
             {
                 let _phase = trace.map(|t| t.scope(Phase::CommandUpload));
-                words(regs, total, self.commands.range.start + offset, &command)?;
+                if self.report.identity.id == 0 {
+                    self.pages.write(REPORT_PAGES * 4096 + offset as usize, command)?;
+                } else {
+                    words(regs, total, self.commands.range.start + offset, command)?;
+                }
                 if let Some(t) = trace { t.bytes(Bytes::Command, command.len() as u64 * 4); }
             }
             let descriptor = trace.map(|t| t.scope(Phase::DescriptorUpload));
-            words(
-                regs,
-                total,
-                self.commands.range.start + u64::from(crate::gk208::queue::Queue::entry(sequence)) * 8,
-                &[
-                    (COMMAND + offset) as u32,
-                    ((command.len() as u32) << 10) | 0x100,
-                ],
-            )?;
+            let at = u64::from(crate::gk208::queue::Queue::entry(sequence)) * 8;
+            let entry = [(COMMAND + offset) as u32, ((command.len() as u32) << 10) | 0x100];
+            if self.report.identity.id == 0 {
+                self.pages.write(REPORT_PAGES * 4096 + at as usize, &entry)?;
+                // Like MIT libdrm nouveau/pushbuf.c's mapped GART command BOs,
+                // this channel uses CPU-mapped system memory for commands.
+                // VM PTE target SYS_MEM_COHERENT supplies device visibility;
+                // publish CPU stores before USERD GP_PUT. No BAR writes to flush.
+                self.pages.publish();
+            } else {
+                words(regs, total, self.commands.range.start + at, &entry)?;
+            }
             if let Some(t) = trace { t.bytes(Bytes::Descriptor, 8); }
             drop(descriptor);
-            {
+            if self.report.identity.id != 0 {
                 let _phase = trace.map(|t| t.scope(Phase::BarFlush));
                 modeset::bar_flush(regs)?;
             }
