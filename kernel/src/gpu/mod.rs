@@ -1278,13 +1278,14 @@ impl Core {
         self.flush();
     }
 
-    /// A waiter's turn: take the device's completions and the watchdog's decisions. Queued
-    /// requests are left to `kgpu`, which sends them (`pump`) and notifies the device; only
-    /// before `kgpu` starts does a waiter send them.
+    /// Take completions and watchdog decisions. Native polling also refills
+    /// slots just released by those completions, without a worker/timer round
+    /// trip between bounded batches on this interrupt-free channel. Other
+    /// backends leave publication to kgpu after its startup.
     fn poll(&mut self) {
         self.reap_all();
         self.watchdog(now_ns());
-        if REAPER.load(Ordering::Acquire) == 0 {
+        if REAPER.load(Ordering::Acquire) == 0 || dev::backend() == abi::backend::GK208 {
             self.flush();
         }
     }
@@ -2114,9 +2115,9 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
             c.poll();
             let found = f(c);
             if found.is_none() { c.progress_readback(); }
-            // A native backlog needs kgpu to publish the next requests. A
-            // waiter cannot do that from poll(); spinning keeps that worker
-            // off this CPU even when the waiter just freed a queue slot.
+            // Native poll has refilled available slots. Hand any remaining
+            // queued continuation to kgpu rather than spending the caller's
+            // spin window waiting to publish that continuation too.
             let backend = dev::backend();
             let native_queued = backend == abi::backend::GK208
                 && REAPER.load(Ordering::Acquire) != 0 && !c.backlog.is_empty();
