@@ -112,6 +112,9 @@ mod gt710_heap;
 #[path = "../gt710_allocs.rs"]
 mod gt710_allocs;
 #[cfg(target_arch = "x86_64")]
+#[path = "../gt710_cpu.rs"]
+mod gt710_cpu;
+#[cfg(target_arch = "x86_64")]
 #[path = "../gt710_artifacts.rs"]
 mod gt710_artifacts;
 #[cfg(target_arch = "x86_64")]
@@ -225,6 +228,7 @@ fn evidence<T>(result: Result<T, String>) -> Option<T> {
 fn heap_boundary(index: usize, total: usize, name: &str) {
     gt710_heap::boundary(index, total, name);
     gt710_allocs::boundary(index);
+    gt710_cpu::boundary(index, name);
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -258,6 +262,7 @@ fn main() {
     #[cfg(target_arch = "x86_64")]
     {
         evidence(gt710_allocs::prepare());
+        gt710_cpu::prepare();
         evidence(gt710_heap::prepare(SUITE.categories.iter().map(|c| c.cases.len()).sum()));
         evidence(NATIVE_PICTURES.lock().expect("native picture store lock").prepare());
         let _ = libbreenix::gpu::caps();
