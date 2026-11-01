@@ -93,6 +93,13 @@ def input_kind(args):
 
 def kernel_profile(args):
     """Expected build identity for this boot's requested mode and suite."""
+    case = getattr(args, 'case', None)
+    suite = getattr(args, 'suite', None)
+    if case is not None:
+        if (args.mode != 'suite' or args.payload != 'image' or not suite or suite == 'all' or ',' in suite
+                or args.inject or getattr(args, 'gt710_category', None)
+                or not re.fullmatch(r'[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)?', case)):
+            raise ValueError('--case needs one production suite and a category[/case] selector')
     category = getattr(args, 'gt710_category', None)
     if category is not None:
         if category not in ('core', 'panic', 'clocks') or args.mode not in ('default', 'probe') or getattr(args, 'suite', None) or args.inject:
@@ -120,6 +127,14 @@ def validate_xhci_fault(args):
                             or getattr(args, 'input', None) != 'sol'
                             or session(args) or getattr(args, 'disk', None)):
         raise ValueError('xHCI faults need a RAM-disk console boot with --input sol')
+
+
+def suite_target(args):
+    kernel_profile(args)
+    target = 'suite ' + suites(args)[0]
+    if getattr(args, 'case', None) is not None:
+        target += ' case ' + args.case
+    return target + ' hostkeys ' + metal_root.HOSTKEYS
 
 
 def suites(args):
@@ -312,7 +327,7 @@ class Driver:
         run = {'id': self.id, 'platform': 'metal', 'arch': 'x86_64', 'mode': self.args.mode, 'target': target,
                'commit': self.args.commit,
                'catchup': bool(getattr(self.args, 'catchup', False)),
-               'taskName': self.args.task or self.id, 'watch': False, 'display': False, 'startedAt': m.now(),
+               'taskName': self.args.task or self.id, 'watch': getattr(self.args, 'case', None) is not None, 'display': False, 'startedAt': m.now(),
                'payload': self.args.payload, 'kind': kind, 'inject': self.args.inject or None,
                # `suite` names the one suite of a single-suite boot; `suites` every suite the boot runs, in order.
                'suite': suites(self.args)[0] if len(suites(self.args)) == 1 else None, 'suites': suites(self.args) or None,
@@ -330,7 +345,9 @@ class Driver:
                'input': input_kind(self.args),
                'session': session(self.args),
                'idleMinutes': getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
-               'evidenceEligible': not fault and (persistent(self.args) or not session(self.args))}
+               'evidenceEligible': not fault and (persistent(self.args) or not session(self.args)) and getattr(self.args, 'case', None) is None}
+        if getattr(self.args, 'case', None) is not None:
+            run['onlyCase'] = self.args.case
         m.write_json(self.dir / 'run.json', run)
         m.write_text(self.dir / 'commit', (self.args.commit or 'none') + '\n')
         m.write_text(self.dir / 'dirty', '0\n')
@@ -544,7 +561,7 @@ class Driver:
             target = self.args.mode
             if target == 'suite':
                 # The intent replaces the root's boot target, so it carries the same host-key declaration.
-                target += ' ' + suites(self.args)[0] + ' hostkeys ' + metal_root.HOSTKEYS
+                target = suite_target(self.args)
             elif target == 'console':
                 self.console_intent = 'session' if session(self.args) else 'measure'
                 self.delivery['consoleIntent'] = self.console_intent
@@ -1966,7 +1983,7 @@ class Driver:
                 # A multi-suite boot scores each suite even when it stopped part way, so a stalled suite keeps
                 # the cases it reported.
                 several = len(suites(self.args)) > 1 and self.kernel_started is not None
-                if (self.args.mode == 'suite' and (status == m.EXIT_DONE or several)
+                if (self.args.mode == 'suite' and getattr(self.args, 'case', None) is None and (status == m.EXIT_DONE or several)
                         and status not in (m.EXIT_CANCELLED, m.EXIT_STOPPED, m.EXIT_INCOMPLETE)):
                     with contextlib.suppress(Finish):
                         self.pump_serial()
@@ -2010,7 +2027,7 @@ class Driver:
                 self.power_off(False)
             status = m.EXIT_INCOMPLETE if self.t0 is not None else m.EXIT_CANCELLED
         # Persistent sessions are scored like default boots; console sessions and fault tests never are.
-        scored = (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args) and self.args.inject not in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS)
+        scored = getattr(self.args, 'case', None) is None and (not session(self.args) or persistent(self.args)) and not xhci_fault(self.args) and self.args.inject not in (FENCE_FAULT, 'panic-reboot', *WATCHDOG_FAULTS)
         if scored and (self.dir / 'definition/docs/metal/boot-path.json').is_file():
             try:
                 verdict = metal_score.score(self.dir)
@@ -2231,6 +2248,7 @@ def main():
         p.add_argument('--session', action='store_true', help='hold the console for operator input, without scoring')
         p.add_argument('--idle-minutes', type=int, default=30, help='session input idle limit (1 through 240; default 30)')
         p.add_argument('--suite')
+        p.add_argument('--case')
         p.add_argument('--kernel-command-line')
         p.add_argument('--gt710-category', choices=('core', 'panic', 'clocks'))
         p.add_argument('--milestone')

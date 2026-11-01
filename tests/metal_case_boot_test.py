@@ -2,7 +2,7 @@
 import sys
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 import unittest
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 import metal_tools_test as existing
@@ -21,6 +21,7 @@ class CaseBoot(existing.StateTest):
   row=m.read_json(d.dir/'run.json')
   self.assertFalse(row['evidenceEligible']);self.assertTrue(row['watch'])
   self.assertEqual(row['onlyCase'],'text/size-range')
+  with self.assertRaisesRegex(ValueError,'filtered suite'):boot.metal_score.score(d.dir)
  def test_intent_uses_existing_case_and_hostkeys_grammar(self):
   self.assertTrue(callable(getattr(boot,'suite_target',None)),'compose the existing suite case boot intent')
   self.assertEqual(boot.suite_target(self.args()),'suite breengel case text/size-range hostkeys '+boot.metal_root.HOSTKEYS)
@@ -29,13 +30,22 @@ class CaseBoot(existing.StateTest):
   for changes in [dict(mode='default'),dict(payload='persistent'),dict(suite='all'),dict(suite='breengel,gpu'),
     dict(suite=None),dict(inject='panic-reboot'),dict(case='x y'),dict(case='x,y'),dict(case='x\ny')]:
    with self.subTest(changes=changes),self.assertRaises(ValueError):boot.kernel_profile(self.args(**changes))
+ def test_stopped_case_watch_skips_scoring(self):
+  with patch.object(m,'load_site',return_value={}):d=boot.Driver(self.args())
+  d.dir.mkdir(parents=True);d.t0=100
+  definition=d.dir/'definition/docs/metal/boot-path.json';definition.parent.mkdir(parents=True);definition.write_text('{}')
+  d.create_record=Mock();d.claim=d.prepare_payload=d.preflight=d.do_stage=d.start_console=d.power_on=Mock()
+  d.watch=Mock(side_effect=boot.Finish(m.EXIT_STOPPED,'targeted records captured'));d.power_off=Mock(return_value=True);d.cleanup=Mock();d.score_suite=Mock()
+  with patch.object(boot.metal_score,'score') as score:self.assertEqual(d.run(),m.EXIT_STOPPED)
+  d.score_suite.assert_not_called();score.assert_not_called()
  def test_host_forwards_case_to_driver(self):
   runner=existing.load_script('metal-run');args=self.args()
   with patch.object(runner,'host_env',return_value={'METAL_INSTANCE':'fixture'}), \
    patch.object(runner,'resolve',return_value='a'*40),patch.object(runner,'resolve_suites',return_value='breengel'), \
    patch.object(runner,'in_metal',return_value=SimpleNamespace(returncode=0,stdout='claimed',stderr='')) as send, \
-   patch.object(runner.subprocess,'Popen'),patch.object(runner.Path,'home',return_value=m.STATE):
+   patch.object(runner.subprocess,'Popen') as processes,patch.object(runner.Path,'home',return_value=m.STATE):
    self.assertEqual(runner.boot(args),0)
   command=send.call_args.args
   self.assertIn('--case',command);self.assertEqual(command[command.index('--case')+1],'text/size-range')
+  self.assertFalse(any('_resume' in call.args[0] for call in processes.call_args_list),'a stopped diagnostic must not spawn another boot')
 if __name__=='__main__':unittest.main()

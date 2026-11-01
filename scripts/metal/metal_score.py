@@ -40,6 +40,8 @@ def score(directory):
     directory = Path(directory)
     read = lambda name: json.loads((directory / name).read_text())
     run = read('run.json')
+    if run.get('onlyCase') is not None:
+        raise ValueError('filtered suite boots are not full-suite evidence')
     require_suite_profile(run)
     if run.get('kind') == 'fault-test' or run.get('inject') in ('xhci-reset-device', 'xhci-short-read'):
         raise ValueError('fault tests are never milestone evidence')
