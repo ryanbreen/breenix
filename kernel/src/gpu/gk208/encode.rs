@@ -270,7 +270,7 @@ pub fn channel_programs(input: &mut [u32], parking: &[u32]) -> Result<(), &'stat
 // Reserve the complete committed shader catalogue before per-draw data.
 pub const DATA_START: usize = (1 << 20) + shaders::CATALOGUE_CODE_SIZE;
 const CODE: usize = 1 << 20;
-/// Bound native payload and method storage after shared validation. `drawn`
+/// Bound resident native payload and method storage after shared validation. `drawn`
 /// counts clipped rectangles, not empty DRAW declarations or clipped instances.
 /// Shared CLEAR uses a virtual clear packet and only counts its scissored form
 /// in `drawn`; native CLEAR needs a quad for a nonempty clip. COPY emits a chunk
@@ -289,12 +289,13 @@ pub fn reservation_bytes(w: &(impl Words + ?Sized), plan: &stream::Plan, corrupt
         at += w.word(at + 1) as usize;
     }
     // A 4 KiB allowance covers a quad's aligned inputs and bounded methods,
-    // or a copy chunk. Keep one for a fenced no-op, plus the temporary shader
-    // prefix and page padding. Scratch pixels are reserved separately.
+    // or a copy chunk. Keep one for a fenced no-op plus page padding. Resident
+    // translation starts after the channel-owned shader prefix. Scratch
+    // pixels are reserved separately.
     plan.drawn.checked_add(fixed)?
         .checked_add(plan.drawn.min(snapshots))?
         .checked_add(u64::from(corrupt))?.max(1)
-        .checked_mul(4096)?.checked_add(DATA_START as u64 + 4096)
+        .checked_mul(4096)?.checked_add(4096)
 }
 #[derive(Clone, Copy)]
 pub struct Target {
