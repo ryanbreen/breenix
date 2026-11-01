@@ -27,7 +27,12 @@ extern crate alloc;
 use std::collections::{BTreeMap,VecDeque};
 #[path="ROOT/kernel/src/gpu/gk208/queue.rs"] pub mod queue;
 #[path="ROOT/kernel/src/gpu/gk208/gr/error.rs"] pub mod hardware_error;
-const SLOT:u64=(8<<20)-4096;const COMMAND:u64=0x01000000;
+const SLOT:u64=(8<<20)-4096;const COMMAND:u64=0x01000000;const REPORT_PAGES:usize=17;
+#[allow(dead_code)] // The publisher's optional trace is disabled in this IO fixture.
+mod gk208 {pub mod timing {pub mod submit_cost {
+ pub enum Phase{CommandUpload,DescriptorUpload,BarFlush,GpPut}pub enum Bytes{Command,Descriptor,GpPut}}
+ pub struct Scope;pub struct Submit;impl Submit {
+ pub fn scope(&self,_:submit_cost::Phase)->Scope{Scope}pub fn bytes(&self,_:submit_cost::Bytes,_:u64){}}}}
 #[derive(Default)] struct Registers {values:BTreeMap<usize,u32>,vram:BTreeMap<u64,u32>,
  scripted:BTreeMap<usize,VecDeque<u32>>,reads:BTreeMap<usize,usize>,now:u64,refusals:Vec<[u32;4]>,captures:Vec<([u32;4],[u32;7],[u32;4])>}
 impl Registers {
@@ -50,14 +55,21 @@ mod modeset {
  pub fn bar_flush(_:&mut super::Registers)->Result<(),&'static str>{Ok(())}}
 mod gpu_cache {pub fn drain_wc(){}}
 mod binding {BINDING_REGISTERS HEALTH}
-struct Pages(Box<[u32;1024]>);impl Pages {fn va(&self,_:usize)->u64{self.0.as_ptr() as u64}fn observe(&self){}}
+struct Pages(Vec<u32>);impl Pages {
+ fn va(&self,i:usize)->u64{self.0.as_ptr() as u64+i as u64*4096}fn observe(&self){}fn publish(&self){}
+ fn write(&self,at:usize,words:&[u32])->Result<(),&'static str>{
+  if at%4!=0||at/4+words.len()>self.0.len(){return Err("fixture command extent");}
+  // SAFETY: the fixture owns this stable backing and runs on one thread.
+  unsafe{std::ptr::copy_nonoverlapping(words.as_ptr(),self.0.as_ptr().add(at/4)as *mut u32,words.len());}Ok(())}
+ fn command(&self,at:u64)->u32{self.0[REPORT_PAGES*1024+at as usize/4]}
+}
 struct Range {start:u64}struct Allocation {range:Range}
 struct Identity {id:u32,instance:u64}struct Report {identity:Identity}struct Copy {base:usize}
 struct Session {pages:Pages,commands:Allocation,bar:usize,report:Report,pbdma:usize,userd:u64,copy:Option<Copy>,bound:bool,quiesced:bool}
 trait Poll {fn snapshot(&mut self)->Result<(u32,u64,bool),&'static str>;fn now_us(&mut self)->u64;fn relax(&mut self);}
 MONITOR
 impl Session {PUBLISHER}
-fn session(bar:usize)->Session {Session{pages:Pages(Box::new([0;1024])),commands:Allocation{range:Range{start:0x100000}},bar,
+fn session(bar:usize)->Session {Session{pages:Pages(vec![0;(REPORT_PAGES+16)*1024]),commands:Allocation{range:Range{start:0x100000}},bar,
  report:Report{identity:Identity{id:0,instance:0x123000}},pbdma:0,userd:0x200000,copy:Some(Copy{base:0x106000}),bound:true,quiesced:false}}
 #[test]fn health_checks_faults_without_sampling_completion(){
  let s=session(0);let mut r=Registers::default();
@@ -111,9 +123,10 @@ fn sample(r:&mut Registers)->Result<(u32,u64,bool),&'static str>{
 }
 #[test]fn four_immutable_stream_slots_and_descriptor_wrap(){
  let mut bar=vec![0u32;2<<20];let s=session(bar.as_mut_ptr() as usize);let mut r=Registers::default();
- for seq in 1..=4 {let offset=16384+u64::from(queue::Queue::slot(seq))*8192;s.publish_words(&mut r,1<<24,seq,&[seq,0x20010014,seq],offset,8192).unwrap();}
- for seq in 1..=4 {let offset=16384+u64::from(queue::Queue::slot(seq))*8192;assert_eq!(r.vram[&(0x100000+offset)],seq);assert_eq!(r.vram[&(0x100000+u64::from(seq-1)*8)],(COMMAND+offset) as u32);}
- for seq in [511,512,513] {let offset=16384+u64::from(queue::Queue::slot(seq))*8192;s.publish_words(&mut r,1<<24,seq,&[seq],offset,8192).unwrap();assert_eq!(bar[(SLOT as usize+0x8c)/4],seq%512);assert_eq!(r.vram[&(0x100000+u64::from(queue::Queue::entry(seq))*8)],(COMMAND+offset) as u32);}
+ for seq in 1..=4 {let offset=16384+u64::from(queue::Queue::slot(seq))*8192;s.publish_words(&mut r,1<<24,seq,&[seq,0x20010014,seq],offset,8192,None).unwrap();}
+ for seq in 1..=4 {let offset=16384+u64::from(queue::Queue::slot(seq))*8192;assert_eq!(s.pages.command(offset),seq);assert_eq!(s.pages.command(u64::from(seq-1)*8),(COMMAND+offset) as u32);}
+ for seq in [511,512,513] {let offset=16384+u64::from(queue::Queue::slot(seq))*8192;s.publish_words(&mut r,1<<24,seq,&[seq],offset,8192,None).unwrap();assert_eq!(bar[(SLOT as usize+0x8c)/4],seq%512);assert_eq!(s.pages.command(u64::from(queue::Queue::entry(seq))*8),(COMMAND+offset) as u32);}
+ assert!(r.vram.is_empty(),"primary publication must use coherent command backing");
 }
 '''
         for key, value in [('ROOT', str(ROOT)), ('BINDING_REGISTERS', registers), ('HEALTH', health), ('MONITOR', monitor), ('PUBLISHER', publisher), ('STATUS_IO', status_io), ('REFUSAL', refusal)]:
