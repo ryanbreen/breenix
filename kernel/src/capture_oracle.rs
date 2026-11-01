@@ -13,9 +13,9 @@
 //! `tests/capture_path_lock_free_structure.rs` forbid `panic!` there,
 //! because a panic raised from inside a capture re-enters the very path the
 //! capture is reporting from. This module's whole job is to raise one, so it
-//! is a sibling of that directory rather than a member of it. The denylist
-//! is not being worked around: the emitter still may not panic, and no code
-//! in this module runs inside it.
+//! is a sibling of that directory rather than a member of it. The emitter
+//! still may not panic. Its only call back here is `take_threads`, a
+//! nonblocking read of an immutable, one-use snapshot.
 //!
 //! # Why the timer tick
 //!
@@ -35,6 +35,7 @@
 //! is the thing most likely to meet it, so it is stated here too.
 
 use core::sync::atomic::{AtomicBool, Ordering};
+use crate::task::scheduler::SchedulerLivenessSnapshot;
 
 /// Minimum guest uptime at which the hook panics, in milliseconds.
 /// GPU boots also wait for handoff and acquire the display locks before firing.
@@ -47,6 +48,18 @@ use core::sync::atomic::{AtomicBool, Ordering};
 const PANIC_AT_MS: u64 = 3_000;
 
 static FIRED: AtomicBool = AtomicBool::new(false);
+// FIRED selects the sole publisher. Once::get does not wait for publication;
+// a capture on another CPU cannot take this CPU's snapshot.
+static THREADS: spin::Once<(usize, u64, SchedulerLivenessSnapshot)> = spin::Once::new();
+static THREADS_TAKEN: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn take_threads(cpu_id: usize) -> Option<(u64, SchedulerLivenessSnapshot)> {
+    let &(owner, uptime_ms, snapshot) = THREADS.get()?;
+    if owner != cpu_id || THREADS_TAKEN.swap(true, Ordering::AcqRel) {
+        return None;
+    }
+    Some((uptime_ms, snapshot))
+}
 
 /// Called on each timer tick. Returns immediately once latched; the load and
 /// the comparison are the only per-tick cost, and only in a build that
@@ -71,15 +84,31 @@ pub fn observe(tick_count: u64) {
     // takeover, preparation or lock acquisition fails, still exercise serial.
     if elapsed_ms < preparation_deadline && crate::gpu::console::active() {
         crate::gpu::panic::test_with_locks(|| {
-            if !FIRED.swap(true, Ordering::AcqRel) {
-                fire(elapsed_ms, tick_count);
-            }
+            try_fire(elapsed_ms, tick_count, preparation_deadline);
         });
+        return;
+    }
+    try_fire(elapsed_ms, tick_count, preparation_deadline);
+}
+
+fn try_fire(elapsed_ms: u64, tick_count: u64, preparation_deadline: u64) {
+    let cpu_id = crate::capture::current_cpu_id();
+    let uptime_ms = crate::time::timer::get_monotonic_time();
+    let snapshot = crate::task::scheduler::try_liveness_snapshot(cpu_id);
+    // This is a controlled injection, so defer it rather than knowingly lose
+    // THR. Do not hold the scheduler guard through panic or check availability
+    // and then reacquire: peers keep scheduling during the serial banner.
+    if snapshot.is_none() && elapsed_ms < preparation_deadline {
         return;
     }
     if FIRED.swap(true, Ordering::AcqRel) {
         return;
     }
+    if let Some(snapshot) = snapshot {
+        THREADS.call_once(|| (cpu_id, uptime_ms, snapshot));
+    }
+    // At the deadline, a refused read still fires. The terminal emitter then
+    // tries its normal nonblocking read and truthfully reports any refusal.
     fire(elapsed_ms, tick_count);
 }
 
