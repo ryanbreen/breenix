@@ -4,16 +4,16 @@
 # holds the mac-boot lease. Stop from another terminal to remove the run.
 #
 # vm-persistent.sh qemu build --run-dir DIR --system-image IMAGE --operator-account FILE
-# vm-persistent.sh qemu boot --run-dir DIR [--kernel FILE]
+# vm-persistent.sh qemu boot --run-dir DIR --mode console|desktop [--kernel FILE]
 # vm-persistent.sh qemu stop --run-dir DIR
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 umask 077
-usage() { echo 'usage: vm-persistent.sh qemu build|boot|stop --run-dir DIR [--system-image IMAGE --operator-account FILE | --kernel FILE]' >&2; exit 2; }
+usage() { echo 'usage: vm-persistent.sh qemu build|boot|stop --run-dir DIR [--system-image IMAGE --operator-account FILE | --mode console|desktop [--kernel FILE]]' >&2; exit 2; }
 [ "$#" -ge 2 ] && [ "$1" = qemu ] || usage
 op=$2; shift 2
 case "$op" in build|boot|stop) ;; *) usage ;; esac
-run= system= account= kernel=
+run= system= account= kernel= mode=
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] && [ -n "$2" ] || usage
     case "$1" in
@@ -21,15 +21,17 @@ while [ "$#" -gt 0 ]; do
         --system-image) [ -z "$system" ] || usage; system=$2 ;;
         --operator-account) [ -z "$account" ] || usage; account=$2 ;;
         --kernel) [ -z "$kernel" ] || usage; kernel=$2 ;;
+        --mode) [ -z "$mode" ] || usage; mode=$2 ;;
         *) usage ;;
     esac
     shift 2
 done
 [ -n "$run" ] || usage
 case "$op" in
-    build) [ -n "$system" ] && [ -n "$account" ] && [ -z "$kernel" ] || usage ;;
-    boot) [ -z "$system" ] && [ -z "$account" ] || usage ;;
-    stop) [ -z "$system" ] && [ -z "$account" ] && [ -z "$kernel" ] || usage ;;
+    build) [ -n "$system" ] && [ -n "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage ;;
+    boot) [ -z "$system" ] && [ -z "$account" ] || usage
+          case "$mode" in console|desktop) ;; *) usage ;; esac ;;
+    stop) [ -z "$system" ] && [ -z "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage ;;
 esac
 # debugfs command files and QEMU comma-separated options cannot safely encode
 # these characters; reject them instead of interpreting caller-supplied syntax.
@@ -101,13 +103,14 @@ fi
 if [ -z "${BREENIX_VM_PERSISTENT_SUPERVISED:-}" ]; then
     export BREENIX_VM_PERSISTENT_SUPERVISED=1
     source "$ROOT/scripts/host-slots.sh"
-    host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu boot --run-dir "$run" --kernel "$kernel"
+    host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu boot --run-dir "$run" --kernel "$kernel" --mode "$mode"
 fi
 source "$ROOT/scripts/host-slots.sh"
 mkdir "$run/boot.lock" || { echo 'run is already booting' >&2; exit 1; }
 cleanup() { rmdir "$run/boot.lock" 2>/dev/null || true; }
 trap cleanup EXIT
 host_slot_acquire mac-boot
+printf '%s\n' "$mode" > "$run/mode"
 mkdir -p "${TMPDIR:-/tmp}/breenix-boot"
 serial=$(mktemp "${TMPDIR:-/tmp}/breenix-boot/vm-persistent.XXXXXX")
 printf '%s\n' "$serial" > "$run/serial-path"
@@ -128,7 +131,7 @@ fi
 profile=$(python3 "$ROOT/scripts/qemu-arm64.py" --print-profile "$qemu" -M virt,gic-version=3 -cpu max)
 export BREENIX_VIGIL_ARCH=aarch64 BREENIX_VIGIL_DISPLAY=false
 [ "$(uname -s)" != Darwin ] || export BREENIX_VIGIL_DISPLAY=true
-vigil=$("$ROOT/scripts/vigil-record.sh" start qemu default '' "$serial" '' "$profile")
+vigil=$("$ROOT/scripts/vigil-record.sh" start qemu "$mode" '' "$serial" '' "$profile")
 # On interruption stop and reap only this launch before releasing its run lock.
 child=
 stop_child() {
@@ -142,7 +145,7 @@ stop_child() {
 trap stop_child TERM HUP INT
 set +e
 python3 "$ROOT/scripts/qemu-arm64.py" "$qemu" -rtc base=utc -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
-    -kernel "$kernel" "${display[@]}" -qmp "unix:$run/qmp.sock,server=on,wait=off" \
+    -kernel "$kernel" -fw_cfg "name=opt/breenix/mode,string=$mode" "${display[@]}" -qmp "unix:$run/qmp.sock,server=on,wait=off" \
     -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device \
     -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/system.img" \
     -device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/home.img" \
