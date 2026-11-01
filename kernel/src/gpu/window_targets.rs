@@ -253,12 +253,13 @@ impl Target {
             if context.state != CtxState::Live || context.dropped { return Some(Err(EIO)); }
             let r = c.resources.get(&self.id)?;
             if context.busy || !context.inflight.is_empty() || r.writers != 0 || r.reading { return None; }
-            if c.syncs.values().any(|s| s.reading.contains(&self.id)
-                || source.is_some_and(|src| s.reading.contains(&src.id))) { return None; }
+            if c.syncs.values().any(|s| s.reading.contains(&self.id)) { return None; }
             if let Some(src) = source {
                 let r = c.resources.get(&src.id)?;
                 if r.lost || r.invalid { return Some(Err(EIO)); }
-                if r.writers != 0 || r.reading || r.accepted.iter().any(|w| !w.ended()) { return None; }
+                // The copy only reads its source. A concurrent CAPTURE may keep
+                // it pinned for CPU copyout while RESIZE reads the same front.
+                if r.writers != 0 || r.accepted.iter().any(|w| !w.ended()) { return None; }
             }
             c.contexts.get_mut(&ctx)?.busy = true;
             c.resources.get_mut(&self.id)?.writers += 1;
@@ -275,7 +276,6 @@ impl Target {
         // An interrupted wait leaves the request's read exclusions alive until the
         // device returns it or a confirmed reset ends its access.
         release_other(Some(self.id));
-        release_other(source.map(|src| src.id));
         notify();
         result
     }
