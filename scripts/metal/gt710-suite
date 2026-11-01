@@ -158,17 +158,23 @@ FB = (r'\[fbcon\] framebuffer in display BAR: (\d+)x(\d+) (Rgb|Bgr) ([34]) bytes
 
 SUBMIT_PHASES = ['entry', 'copy_in', 'validation', 'admission_poll', 'setup',
                  'translate', 'frame_prepare', 'fence_bookkeeping', 'native_submit',
-                 'doorbell', 'copy_out', 'cleanup', 'other']
+                 'doorbell', 'copy_out', 'cleanup', 'other',
+                 'publication', 'command_upload', 'descriptor_upload', 'bar_flush', 'gp_put',
+                 'translate_encode', 'translate_compact', 'translate_batch',
+                 'frame_alloc', 'frame_copy', 'frame_maintain', 'frame_build',
+                 'frame_regions', 'frame_map', 'frame_relocate',
+                 'admission_core_poll', 'admission_inspect', 'admission_pause', 'admission_sleep',
+                 'translate_validate', 'translate_emit']
 
 def validate_submit_costs(record):
     if 'submits' not in record and 'submit_phases' not in record:
         return
     rows = record.get('submits')
-    if record.get('submit_phases') != SUBMIT_PHASES or not isinstance(rows, list):
+    if record.get('submit_phases') not in (SUBMIT_PHASES, SUBMIT_PHASES[:13]) or not isinstance(rows, list):
         raise ValueError('invalid submit phase inventory')
     owners = set()
     for row in rows:
-        if (not isinstance(row, list) or len(row) != 3 + len(SUBMIT_PHASES)
+        if (not isinstance(row, list) or len(row) != 3 + len(record['submit_phases'])
                 or any(type(v) is not int or v < 0 for v in row)
                 or row[0] == 0 or row[1] == 0 or row[0] in owners
                 or sum(row[3:]) != row[2]):

@@ -57,7 +57,10 @@ thread_local! {static BACKEND:Cell<u32>=const{Cell::new(6)};static CLOCK:Cell<u6
 mod dev {pub fn backend()->u32{crate::BACKEND.with(std::cell::Cell::get)} pub fn is_svga()->bool{backend()==5}}
 mod syscall {pub fn check_signals_for_wait()->Option<()>{None}}
 mod time {pub fn get_ticks()->u64{crate::now_ns()/5_000_000}}
+enum SubmitPhase { AdmissionPoll, AdmissionInspect, AdmissionPause, AdmissionSleep }
 struct SubmitTrace;
+struct Scope;
+impl SubmitTrace {fn scope(&self,_:SubmitPhase)->Scope{Scope}}
 mod gk208 {pub mod timing {
  pub struct Readback;
  impl Readback {pub fn phase(&self,_:bool){} pub fn poll(&self){} pub fn spin(&self){}

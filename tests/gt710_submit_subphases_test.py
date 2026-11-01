@@ -1,5 +1,6 @@
 """Compile the production exclusive partition and submit facts without hardware."""
 from pathlib import Path
+import json
 import subprocess
 import sys
 import tempfile
@@ -12,13 +13,14 @@ class SubmitSubphases(unittest.TestCase):
     def test_nested_subphases_bytes_and_slot_waits(self):
         source = r'''
 extern crate alloc;
-#[path="MODULE"] pub mod cost;
+#[path="MODULE"] pub mod timing;
+use timing::submit_cost as cost;
 use cost::{Split, Phase, Facts, PHASES};
 fn main() {
  let s=Split::new(0);
  let phases=[Phase::Admission, Phase::AdmissionPoll, Phase::AdmissionInspect,
    Phase::AdmissionPause, Phase::AdmissionSleep, Phase::Translate,
-   Phase::TranslateEncode, Phase::TranslateCompact, Phase::TranslateBatch,
+   Phase::TranslateEncode, Phase::TranslateValidate, Phase::TranslateEmit, Phase::TranslateCompact, Phase::TranslateBatch,
    Phase::FramePrepare, Phase::FrameAlloc, Phase::FrameCopy, Phase::FrameMaintain,
    Phase::FrameBuild, Phase::FrameRegions, Phase::FrameMap, Phase::FrameRelocate,
    Phase::Native, Phase::Doorbell, Phase::Publication, Phase::CommandUpload,
@@ -30,7 +32,7 @@ fn main() {
  s.switch(Phase::Native,at);at+=10;
  s.switch(Phase::Cleanup,at);at+=10;
  let (total,ns)=s.finish(at);
- assert_eq!(total,280);
+ assert_eq!(total,300);
  assert_eq!(ns.iter().sum::<u64>(),total);
  for p in phases { assert!(ns[p as usize]>=10,"missing {p:?}"); }
  assert_eq!(ns[Phase::Doorbell as usize],20);
@@ -58,14 +60,25 @@ fn main() {
  assert!(totals.record(3,total,&ns));
  let rows=totals.drain();assert_eq!(rows[0][1],2);
  assert_eq!(rows[0][3..].iter().sum::<u64>(),2*total);
+ let mut r=timing::Recorder::new();
+ r.submit(3,total,&ns);r.facts(3,bytes,waits);
+ r.submit(3,total,&ns);r.facts(3,bytes,waits);
+ println!("{}",r.drain(1).unwrap());assert!(r.drain(2).is_none());
 }
-'''.replace('MODULE', str(ROOT / 'kernel/src/gpu/gk208/submit_cost.rs'))
+'''.replace('MODULE', str(ROOT / 'kernel/src/gpu/gk208/timing.rs'))
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
         with tempfile.TemporaryDirectory() as d:
             p = Path(d)
             (p / 'check.rs').write_text(source)
             subprocess.run(priority + ['rustc', '--edition=2021', '-Dwarnings', str(p / 'check.rs'), '-o', str(p / 'check')], check=True)
-            subprocess.run([str(p / 'check')], check=True)
+            result = subprocess.run([str(p / 'check')], check=True, capture_output=True, text=True)
+            row = json.loads(result.stdout.removeprefix('GT710_TIMING_V1 '))
+            self.assertEqual(row['dropped'], 0)
+            self.assertEqual(sum(row['submits'][0][3:]), row['submits'][0][2])
+            self.assertEqual(row['submit_bytes'], [[3, 1536, 16, 32, 2048, 8192, 8]])
+            self.assertEqual(row['admission_waits'], [[3, 0, 4, 140, 101, 102, 5, 9]])
+            self.assertEqual(row['submit_mappings']['command'], 'uncached BAR0 PRAMIN to VRAM')
+            self.assertEqual(row['submit_mappings']['gp_put'], 'write-combined BAR1 USERD')
 
 
 if __name__ == '__main__':

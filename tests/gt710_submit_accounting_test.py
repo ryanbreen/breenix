@@ -32,7 +32,9 @@ fn main() {{
  s.switch(Phase::Other, 420);
  let (total, phases) = s.finish(430);
  assert_eq!(total,330);
- assert_eq!(phases, [10,20,20,30,20,50,20,40,50,30,10,20,10]);
+ let mut expected=[0;PHASES.len()];
+ expected[..13].copy_from_slice(&[10,20,20,30,20,50,20,40,50,30,10,20,10]);
+ assert_eq!(phases,expected);
  assert_eq!(phases.iter().sum::<u64>(),total);
  // Refusals/early returns are partitioned too; no call to begin_draw is needed.
  let early=Split::new(500);early.switch(Phase::Copy,510);
@@ -61,14 +63,20 @@ fn main() {{
         validate = api['validate_submit_costs']
         names = ['entry', 'copy_in', 'validation', 'admission_poll', 'setup',
                  'translate', 'frame_prepare', 'fence_bookkeeping', 'native_submit',
-                 'doorbell', 'copy_out', 'cleanup', 'other']
-        good = dict(submit_phases=names, submits=[[3, 10154, 130] + [10] * 13])
+                 'doorbell', 'copy_out', 'cleanup', 'other',
+                 'publication', 'command_upload', 'descriptor_upload', 'bar_flush', 'gp_put',
+                 'translate_encode', 'translate_compact', 'translate_batch',
+                 'frame_alloc', 'frame_copy', 'frame_maintain', 'frame_build',
+                 'frame_regions', 'frame_map', 'frame_relocate',
+                 'admission_core_poll', 'admission_inspect', 'admission_pause', 'admission_sleep',
+                 'translate_validate', 'translate_emit']
+        good = dict(submit_phases=names, submits=[[3, 10154, 130] + [10] * 13 + [0] * 21])
         validate(good)
         validate({})  # Historical captures are readable, never a new measurement.
-        for bad in [dict(good, submits=[[3, 10154, 129] + [10] * 13]),
+        for bad in [dict(good, submits=[[3, 10154, 129] + [10] * 13 + [0] * 21]),
                     dict(good, submit_phases=names[:-1]),
                     dict(submits=good['submits']), dict(submit_phases=names),
-                    dict(good, submits=[[3, 0, 130] + [10] * 13]),
+                    dict(good, submits=[[3, 0, 130] + [10] * 13 + [0] * 21]),
                     dict(good, submits=good['submits'] * 2)]:
             with self.assertRaises(ValueError):
                 validate(bad)

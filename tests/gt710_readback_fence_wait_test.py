@@ -65,7 +65,10 @@ thread_local! {
  static CORE:RefCell<Core>=RefCell::new(Core::new(0,80_000));
 }
 #[derive(Debug,PartialEq)]enum Stop{Timeout,Interrupted}
+enum SubmitPhase { AdmissionPoll, AdmissionInspect, AdmissionPause, AdmissionSleep }
 struct SubmitTrace;
+struct Scope;
+impl SubmitTrace {fn scope(&self,_:SubmitPhase)->Scope{Scope}}
 struct Device {outstanding:usize}
 impl Device {fn outstanding(&self)->usize{self.outstanding}}
 struct Core {stalled:bool,dev:Option<Device>,backlog:VecDeque<()>,receipt:u64,delay:u64,done:bool}

@@ -55,13 +55,17 @@ mod window_targets {
 mod display {pub fn write_blocked(_: &mut crate::Core,_:&[u32])->bool{false}}
 #[derive(Debug,PartialEq)]enum Stop{Timeout,Interrupted}
 #[derive(PartialEq)]enum CtxState{Live}
+enum SubmitPhase { AdmissionPoll, AdmissionInspect, AdmissionPause, AdmissionSleep }
 struct SubmitTrace;
+struct Scope;
+impl SubmitTrace {fn scope(&self,_:SubmitPhase)->Scope{Scope} fn wait_on(&self,_:Option<(usize,u64,u64)>){}}
 struct Device {outstanding:usize}
 impl Device {fn outstanding(&self)->usize{self.outstanding}}
 struct ContextState {state:CtxState,dropped:bool,inflight:VecDeque<(u64,u64)>,depth:Option<()>,busy:bool,issued:u64}
 struct Resource {dropped:bool,lost:bool,window_sealed:bool,reading:bool,progress_context:Option<()>,holds:u32,writers:u32,accepted:Vec<Arc<window_targets::Writer>>}
 struct Core {stalled:bool,dev:Option<Device>,backlog:VecDeque<()>,contexts:BTreeMap<u32,ContextState>,resources:BTreeMap<u32,Resource>,serial:u64,doorbells:u64}
 impl Core {
+ fn trace_admission(&self,_:u32,_:usize,_:Option<&SubmitTrace>){}
  fn new()->Self{Self{stalled:false,dev:Some(Device{outstanding:0}),backlog:VecDeque::new(),
   contexts:BTreeMap::from([(1,ContextState{state:CtxState::Live,dropped:false,inflight:VecDeque::new(),depth:None,busy:false,issued:0})]),
   resources:BTreeMap::from([(7,Resource{dropped:false,lost:false,window_sealed:false,reading:false,progress_context:None,holds:0,writers:0,accepted:Vec::new()})]),serial:0,doorbells:0}}

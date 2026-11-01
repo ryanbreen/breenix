@@ -833,7 +833,7 @@ mod native {
                 ((self.pages.va(0) + 8) as *mut u32).write_volatile(0);
             }
             self.pages.publish();
-            self.publish_words(h.regs, h.total, sequence, command, 16384, 16384)?;
+            self.publish_words(h.regs, h.total, sequence, command, 16384, 16384, None)?;
             let mut monitor = Monitor {
                 session: self,
                 regs: h.regs,
@@ -864,6 +864,7 @@ mod native {
         fn publish_words(
             &self, regs: &mut Registers, total: u64, sequence: u32,
             command: &[u32], offset: u64, capacity: usize,
+            trace: Option<&crate::gk208::timing::Submit>,
         ) -> Result<(), &'static str> {
             if !self.bound || self.quiesced || sequence == 0
                 || command.is_empty() || command.len() * 4 > capacity {
@@ -872,12 +873,13 @@ mod native {
             // One immutable slot, reused only after the preceding stream was
             // consumed and its engine receipt observed by the caller. A draw
             // exceeds the old 256-byte stride; keep it beyond USERD/runlist.
-            words(
-                regs,
-                total,
-                self.commands.range.start + offset,
-                &command,
-            )?;
+            use crate::gk208::timing::submit_cost::{Phase, Bytes};
+            {
+                let _phase = trace.map(|t| t.scope(Phase::CommandUpload));
+                words(regs, total, self.commands.range.start + offset, &command)?;
+                if let Some(t) = trace { t.bytes(Bytes::Command, command.len() as u64 * 4); }
+            }
+            let descriptor = trace.map(|t| t.scope(Phase::DescriptorUpload));
             words(
                 regs,
                 total,
@@ -887,13 +889,20 @@ mod native {
                     ((command.len() as u32) << 10) | 0x100,
                 ],
             )?;
-            modeset::bar_flush(regs)?;
+            if let Some(t) = trace { t.bytes(Bytes::Descriptor, 8); }
+            drop(descriptor);
+            {
+                let _phase = trace.map(|t| t.scope(Phase::BarFlush));
+                modeset::bar_flush(regs)?;
+            }
+            let _phase = trace.map(|t| t.scope(Phase::GpPut));
             // SAFETY: the owned USERD page's WC BAR1 alias is installed above.
             unsafe {
                 ((self.bar + SLOT as usize + self.report.identity.id as usize * 512 + 0x8c) as *mut u32).write_volatile(sequence % 512);
             }
             crate::gpu_cache::drain_wc();
             let _ = regs.read(0x2254);
+            if let Some(t) = trace { t.bytes(Bytes::GpPut, 4); }
             Ok(())
         }
         pub(in crate::gk208::gr) fn bind_shaders(
@@ -1655,11 +1664,15 @@ mod native {
             command.extend([0x20010014, sequence]);
             if command.len() * 4 > 8192 { return Err("native command slot extent"); }
             // Only this slot is poisoned; the other three may still be live.
-            unsafe { core::ptr::write_bytes((s.pages.va(0) + u64::from(slot) * 16) as *mut u8, 0, 16); }
-            s.pages.publish();
+            {
+                let _phase = trace.map(|t| t.scope(crate::gk208::timing::submit_cost::Phase::Publication));
+                unsafe { core::ptr::write_bytes((s.pages.va(0) + u64::from(slot) * 16) as *mut u8, 0, 16); }
+                s.pages.publish();
+                if let Some(t) = trace { t.bytes(crate::gk208::timing::submit_cost::Bytes::Receipt, 16); }
+            }
             let next = sequence.checked_add(1).ok_or("probe sequence exhausted")?;
             s.publish_words(&mut Registers(self.registers), self.total, sequence, command,
-                16384 + u64::from(slot) * 8192, 8192)?;
+                16384 + u64::from(slot) * 8192, 8192, trace)?;
             // publish_words has crossed USERD GP_PUT and drained the WC write.
             self.put = sequence;
             self.session.next_sequence = next;

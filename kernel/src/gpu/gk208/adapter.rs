@@ -403,6 +403,13 @@ impl Device {
             && self.resetting.is_none() && segments <= 4
             && self.pending.len() + usize::from(self.flipping.is_some()) + segments <= 4 && self.queue.next().is_ok()
     }
+    #[cfg(target_os = "none")]
+    pub(crate) fn waiting_slot(&self, serial: u64) -> Option<(u32, usize)> {
+        self.pending.iter().find_map(|sent| match sent.request.tag {
+            Tag::Submit { serial: s, .. } if s == serial => sent.identity.map(|i| (i.sequence, Queue::slot(i.sequence) as usize)),
+            _ => None,
+        })
+    }
     pub fn outstanding(&self) -> usize { self.pending.len() + self.retired.len() + usize::from(self.flipping.is_some()) }
     pub fn queue_size(&self) -> usize { 4 }
     pub fn needs_reset(&self) -> bool {

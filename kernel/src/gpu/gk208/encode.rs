@@ -705,7 +705,7 @@ pub fn translate(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, 
     translate_with_extras(w, b, Extras::default())
 }
 pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras) -> Result<Frame, &'static str> {
-    translate_inner(w, b, x, false)
+    translate_inner(w, b, x, false, #[cfg(target_os = "none")] None)
 }
 /// Runtime draws use the catalogue retained by NativeChannel::publish_draw.
 /// Build only their mutable inputs; bootstrap and diagnostic encoders still
@@ -714,12 +714,25 @@ pub fn translate_resident(w: &(impl Words + ?Sized), b: &impl Bindings) -> Resul
     translate_resident_with_extras(w, b, Extras::default())
 }
 pub fn translate_resident_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras) -> Result<Frame, &'static str> {
-    translate_inner(w, b, x, true)
+    translate_inner(w, b, x, true, #[cfg(target_os = "none")] None)
 }
-fn translate_inner(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras, resident: bool) -> Result<Frame, &'static str> {
+#[cfg(target_os = "none")]
+pub(crate) fn translate_resident_traced(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras,
+    trace: Option<&super::timing::Submit>) -> Result<Frame, &'static str> {
+    translate_inner(w,b,x,true,trace)
+}
+fn translate_inner(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras, resident: bool,
+    #[cfg(target_os = "none")] trace: Option<&super::timing::Submit>,
+) -> Result<Frame, &'static str> {
     let Extras { mut corrupt, mut suppress, swap } = x;
+    #[cfg(target_os = "none")]
+    let validation = trace.map(|t| t.scope(super::timing::submit_cost::Phase::TranslateValidate));
     stream::validate(w, b).map_err(|_| "invalid BGL draw stream")?;
     if pipeline_refusal(w).is_some() { return Err("native pipeline not implemented"); }
+    #[cfg(target_os = "none")]
+    drop(validation);
+    #[cfg(target_os = "none")]
+    let _emitting = trace.map(|t| t.scope(super::timing::submit_cost::Phase::TranslateEmit));
     let mut f = Frame {
         probe_mask: 0,
         chunks: Vec::new(),
@@ -1548,11 +1561,18 @@ impl Drop for Storage {
     }
 }
 #[cfg(target_os = "none")]
-pub(crate) fn prepare(
+pub(crate) fn prepare(frame: Frame, backing: alloc::sync::Arc<crate::gpu::dma::Pages>)
+    -> Result<Vec<super::adapter::EncodedDraw>, &'static str> {
+    prepare_traced(frame,backing,None)
+}
+#[cfg(target_os = "none")]
+pub(crate) fn prepare_traced(
     mut frame: Frame,
     backing: alloc::sync::Arc<crate::gpu::dma::Pages>,
+    trace: Option<&super::timing::Submit>,
 ) -> Result<Vec<super::adapter::EncodedDraw>, &'static str> {
     use alloc::sync::Arc;
+    let regions_phase = trace.map(|t| t.scope(super::timing::submit_cost::Phase::FrameRegions));
     let mut pages = Vec::new();
     pages.try_reserve_exact(backing.count()).map_err(|_| NO_MEMORY)?;
     pages.extend((0..backing.count()).map(|i| backing.page_addr(i)));
@@ -1597,6 +1617,8 @@ pub(crate) fn prepare(
             at += count+1;
         }
     }
+    drop(regions_phase);
+    let mapping = trace.map(|t| t.scope(super::timing::submit_cost::Phase::FrameMap));
     let (id, address, holds, transfers) = super::ce::with_resources(|r, a, io| {
         let mut holds = Vec::new();
         let mut transfers = Vec::new();
@@ -1624,6 +1646,8 @@ pub(crate) fn prepare(
         r.unref(id)?;
         Ok((id, address, holds, transfers))
     })?;
+    drop(mapping);
+    let _relocating = trace.map(|t| t.scope(super::timing::submit_cost::Phase::FrameRelocate));
     let storage = Arc::new(Storage {
         _backing: backing,
         holds,

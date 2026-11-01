@@ -31,9 +31,11 @@ pub struct Recorder {
     vblank: [[u64; 2]; 2],
     vblank_used: usize,
     submits: submit_cost::Totals,
+    submit_bytes: Vec<[u64; 7]>,
+    admission_waits: Vec<[u64; 8]>,
 }
 impl Recorder {
-    pub const fn new() -> Self { Self { owner: 0, draw: 0, rows: Vec::new(), dropped: 0, readbacks: Vec::new(), blocked: Vec::new(), vblank: [[0; 2]; 2], vblank_used: 0, submits: submit_cost::Totals::new() } }
+    pub const fn new() -> Self { Self { owner: 0, draw: 0, rows: Vec::new(), dropped: 0, readbacks: Vec::new(), blocked: Vec::new(), vblank: [[0; 2]; 2], vblank_used: 0, submits: submit_cost::Totals::new(), submit_bytes: Vec::new(), admission_waits: Vec::new() } }
     /// The clear-rate client brackets its timed work with two read-only samples.
     pub fn sample_vblank(&mut self, at: u64, count: u16) {
         if self.vblank_used < self.vblank.len() {
@@ -66,11 +68,33 @@ impl Recorder {
     pub fn submit(&mut self, owner: u64, total: u64, phases: &[u64; submit_cost::PHASES.len()]) {
         if !self.submits.record(owner, total, phases) { self.dropped += 1; }
     }
+    pub fn facts(&mut self, owner: u64, bytes: [u64; 6], waits: [submit_cost::Wait; 8]) {
+        let index = match self.submit_bytes.iter().position(|r| r[0] == owner) {
+            Some(i) => i,
+            None => {
+                if self.submit_bytes.len() == 1024 || self.submit_bytes.try_reserve(1).is_err() { self.dropped += 1; return; }
+                let mut row = [0; 7]; row[0] = owner; self.submit_bytes.push(row); self.submit_bytes.len()-1
+            }
+        };
+        for (sum, value) in self.submit_bytes[index][1..].iter_mut().zip(bytes) { *sum += value; }
+        for (bucket, wait) in waits.iter().enumerate().filter(|(_, w)| w[0] != 0) {
+            let index = match self.admission_waits.iter().position(|r| r[0] == owner && r[1] == bucket as u64) {
+                Some(i) => i,
+                None => {
+                    if self.admission_waits.len() == 8192 || self.admission_waits.try_reserve(1).is_err() { self.dropped += 1; continue; }
+                    self.admission_waits.push([owner,bucket as u64,0,0,wait[2],0,wait[4],0]); self.admission_waits.len()-1
+                }
+            };
+            let row = &mut self.admission_waits[index]; row[2] += wait[0]; row[3] += wait[1];
+            row[5] = wait[3]; row[7] = wait[5];
+        }
+    }
     pub fn drain(&mut self, batch: u64) -> Option<String> {
         if self.rows.is_empty() && self.readbacks.is_empty() && self.blocked.is_empty() && self.dropped == 0 && self.vblank_used == 0 && self.submits.is_empty() { return None; }
         let capacity = self.rows.len().checked_mul(128)?
             .checked_add(self.readbacks.len().checked_mul(192)?)?
-            .checked_add(self.blocked.len().checked_mul(168)?)?.checked_add(self.submits.len().checked_mul(384)?)?.checked_add(1024)?;
+            .checked_add(self.blocked.len().checked_mul(168)?)?.checked_add(self.submits.len().checked_mul(1024)?)?.checked_add(self.submit_bytes.len().checked_mul(192)?)?
+            .checked_add(self.admission_waits.len().checked_mul(256)?)?.checked_add(2048)?;
         let mut text = String::new();
         text.try_reserve_exact(capacity).ok()?;
         let _ = write!(text, "GT710_TIMING_V1 {{\"batch\":{},\"dropped\":{},\"rows\":[", batch, self.dropped);
@@ -117,6 +141,30 @@ impl Recorder {
                 text.push(']');
             }
             text.push(']');
+        }
+        if !self.submit_bytes.is_empty() {
+            text.push_str(",\"submit_byte_names\":[");
+            for (i, name) in submit_cost::BYTE_NAMES.iter().enumerate() {
+                if i != 0 { text.push(','); } let _ = write!(text, "\"{}\"", name);
+            }
+            text.push_str("],\"submit_bytes\":[");
+            for (i, row) in self.submit_bytes.drain(..).enumerate() {
+                if i != 0 { text.push(','); } text.push('[');
+                for (n,v) in row.iter().enumerate() { if n != 0 { text.push(','); } let _=write!(text,"{}",v); }
+                text.push(']');
+            }
+            text.push_str("],\"admission_wait_names\":[");
+            for (i, name) in submit_cost::WAIT_NAMES.iter().enumerate() {
+                if i != 0 { text.push(','); } let _ = write!(text, "\"{}\"", name);
+            }
+            text.push_str("],\"admission_waits\":[");
+            for (i,row) in self.admission_waits.drain(..).enumerate() {
+                if i != 0 { text.push(','); } text.push('[');
+                for (n,v) in row.iter().enumerate() { if n != 0 { text.push(','); } let _=write!(text,"{}",v); }
+                text.push(']');
+            }
+            // Publication mapping types from the allocation and aperture setup.
+            text.push_str(r#"],"submit_mappings":{"command":"uncached BAR0 PRAMIN to VRAM","descriptor":"uncached BAR0 PRAMIN to VRAM","receipt":"coherent WB system memory","frame":"coherent WB system memory GPU DMA","frame_zero":"coherent WB system memory","gp_put":"write-combined BAR1 USERD","page_tables":"uncached BAR0 PRAMIN to VRAM","encoder_heap":"WB system memory"}"#);
         }
         text.push('}');
         Some(text)
@@ -193,16 +241,18 @@ mod runtime {
     }
     /// Lives on one syscall stack; nested scopes restore their parent's phase.
     /// Recording begins at sys_gpu entry and ends after its local cleanup.
-    pub struct Submit { owner: u64, split: submit_cost::Split }
+    pub struct Submit { owner: u64, split: submit_cost::Split, facts: submit_cost::Facts }
     impl Submit {
         pub fn begin(op: u64) -> Option<Self> {
             (op == gpu_abi::op::SUBMIT as u64 && enabled()
                 && crate::gpu::dev::backend() == gpu_abi::backend::GK208)
                 .then(|| {
                     let start = crate::signal::monotonic_nanos();
-                    Self { owner: crate::gpu::caller().unwrap_or(0), split: submit_cost::Split::new(start) }
+                    Self { owner: crate::gpu::caller().unwrap_or(0), split: submit_cost::Split::new(start), facts: submit_cost::Facts::new() }
                 })
         }
+        pub fn bytes(&self, kind: submit_cost::Bytes, count: u64) { self.facts.bytes(kind,count); }
+        pub fn wait_on(&self, key: Option<(usize,u64,u64)>) { self.facts.wait_on(key,crate::signal::monotonic_nanos()); }
         pub fn other(&self) { self.split.switch(submit_cost::Phase::Other, crate::signal::monotonic_nanos()); }
         pub fn scope(&self, phase: submit_cost::Phase) -> SubmitPhase<'_> {
             SubmitPhase { trace: self, previous: self.split.switch(phase, crate::signal::monotonic_nanos()) }
@@ -211,7 +261,8 @@ mod runtime {
     impl Drop for Submit {
         fn drop(&mut self) {
             let (total, phases) = self.split.finish(crate::signal::monotonic_nanos());
-            with(|r| r.submit(self.owner, total, &phases));
+            let (bytes,waits) = self.facts.finish(crate::signal::monotonic_nanos());
+            with(|r| { r.submit(self.owner, total, &phases); r.facts(self.owner,bytes,waits); });
         }
     }
     pub struct SubmitPhase<'a> { trace: &'a Submit, previous: submit_cost::Phase }

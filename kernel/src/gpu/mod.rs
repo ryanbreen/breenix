@@ -740,6 +740,17 @@ pub fn init_vmware() {
 }
 
 impl Core {
+    #[cfg(target_arch = "x86_64")]
+    fn trace_admission(&self, id: u32, reason: usize, trace: Option<&SubmitTrace>) {
+        let Some(t) = trace else { return; };
+        let serial = self.contexts.get(&id).and_then(|ctx| ctx.inflight.front()).copied().unwrap_or(0);
+        let sequence = match self.dev.as_ref() {
+            Some(dev::Device::Gk208(d)) => d.waiting_slot(serial), _ => None,
+        };
+        let bucket = if reason == 4 { sequence.map(|(_,slot)| slot).unwrap_or(4) } else { reason };
+        t.wait_on(Some((bucket, serial, u64::from(sequence.map(|(n,_)|n).unwrap_or(0)))));
+    }
+
     fn empty() -> Core {
         let mut caps = abi::Caps::ZERO;
         caps.version = 1;
@@ -2163,8 +2174,16 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
         if let Some((t, _)) = trace { t.poll(); }
         let seen = EVENTS.load(Ordering::Acquire);
         let (found, polled) = with_core(|c| {
+            #[cfg(target_arch = "x86_64")]
+            let poll_phase = submit_trace.map(|t| t.scope(SubmitPhase::AdmissionPoll));
             c.poll_traced(#[cfg(target_arch = "x86_64")] submit_trace);
+            #[cfg(target_arch = "x86_64")]
+            drop(poll_phase);
+            #[cfg(target_arch = "x86_64")]
+            let inspect_phase = submit_trace.map(|t| t.scope(SubmitPhase::AdmissionInspect));
             let found = f(c);
+            #[cfg(target_arch = "x86_64")]
+            drop(inspect_phase);
             if found.is_none() { c.progress_readback(); }
             // Native poll has refilled available slots. Hand any remaining
             // queued continuation to kgpu rather than spending the caller's
@@ -2206,6 +2225,8 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
         if direct_poll {
             #[cfg(target_arch = "x86_64")]
             if let Some((t, _)) = trace { t.spin(); }
+            #[cfg(target_arch = "x86_64")]
+            let _pause = submit_trace.map(|t| t.scope(SubmitPhase::AdmissionPause));
             for _ in 0..SPIN_POLL_PAUSE {
                 core::hint::spin_loop();
             }
@@ -2224,7 +2245,11 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
         }
         #[cfg(target_arch = "x86_64")]
         let blocked = trace.map(|_| (now_ns(), crate::time::get_ticks()));
+        #[cfg(target_arch = "x86_64")]
+        let sleeping = submit_trace.map(|t| t.scope(SubmitPhase::AdmissionSleep));
         let woke = wait_event(seen, wake);
+        #[cfg(target_arch = "x86_64")]
+        drop(sleeping);
         #[cfg(target_arch = "x86_64")]
         if let (Some((t, stage)), Some((at, tick))) = (trace, blocked) {
             // 1: device outstanding after spin budget; 2: queued/stalled/no
@@ -4425,13 +4450,19 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         if ctx.state != CtxState::Live || ctx.dropped {
             return Some(Err(EIO));
         }
-        if scanout_busy { return None; }
+        if scanout_busy {
+            #[cfg(target_arch = "x86_64")]
+            c.trace_admission(id, 5, trace);
+            return None;
+        }
         if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.window_sealed)) {
             return Some(Err(breengel_abi::errno::EBUSY as i64));
         }
         // Progress DMA has no CPU consumer. Later GPU writes can follow it;
         // ordinary CPU readbacks still exclude writes until observation finishes.
         if written.iter().any(|rid| c.resources.get(rid).is_some_and(|r| r.reading && r.progress_context.is_none())) {
+            #[cfg(target_arch = "x86_64")]
+            c.trace_admission(id, 6, trace);
             return None;
         }
         if ctx.inflight.len() >= limits::IN_FLIGHT {
@@ -4439,9 +4470,13 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             if ctx.depth.is_some() {
                 c.release_depth(id);
             }
+            #[cfg(target_arch = "x86_64")]
+            c.trace_admission(id, 4, trace);
             return None;
         }
         if ctx.busy {
+            #[cfg(target_arch = "x86_64")]
+            c.trace_admission(id, 7, trace);
             return None;
         }
         ctx.busy = true;
@@ -4463,6 +4498,8 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
         }
         Some(Ok(writer))
     }, #[cfg(target_arch = "x86_64")] None, #[cfg(target_arch = "x86_64")] true, #[cfg(target_arch = "x86_64")] trace);
+    #[cfg(target_arch = "x86_64")]
+    if let Some(t) = trace { t.wait_on(None); }
     let writer = match admitted {
         Ok(Ok(writer)) => writer,
         Ok(Err(e)) => return Err(e),
@@ -4714,25 +4751,38 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
                 let translating_submit = trace.map(|t| t.scope(SubmitPhase::Translate));
                 let cost_translate = crate::gk208::cost::phase(crate::gk208::cost::Slot::Translate);
                 let translating = crate::gk208::timing::phase(110);
-                let mut frame = if corrupt.is_none() && suppress.is_none() && swap.is_none() {
-                    crate::gk208::encode::translate_resident(&words, &resolved)
-                } else {
-                    crate::gk208::encode::translate_resident_with_extras(&words, &resolved,
-                        crate::gk208::encode::Extras { corrupt, suppress, swap })
-                }.map_err(|e| if e == crate::gk208::encode::NO_MEMORY { ENOMEM } else { EINVAL })?;
+                let encoding_submit = trace.map(|t| t.scope(SubmitPhase::TranslateEncode));
+                let mut frame = crate::gk208::encode::translate_resident_traced(&words, &resolved,
+                    crate::gk208::encode::Extras { corrupt, suppress, swap }, trace).map_err(|e| if e == crate::gk208::encode::NO_MEMORY { ENOMEM } else { EINVAL })?;
+                drop(encoding_submit);
                 native_probe_mask = frame.probe_mask;
+                let compact_submit = trace.map(|t| t.scope(SubmitPhase::TranslateCompact));
                 frame.compact().map_err(|e| if e == crate::gk208::encode::NO_MEMORY { ENOMEM } else { EINVAL })?;
+                drop(compact_submit);
+                let batch_submit = trace.map(|t| t.scope(SubmitPhase::TranslateBatch));
                 frame.batch_draws(1400).map_err(|_| ENOMEM)?;
+                drop(batch_submit);
                 drop(translating);
                 drop(cost_translate);
                 drop(translating_submit);
                 let _preparing_submit = trace.map(|t| t.scope(SubmitPhase::FramePrepare));
                 let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::FramePrepare);
                 let _timing = crate::gk208::timing::phase(111);
+                let allocating = trace.map(|t| t.scope(SubmitPhase::FrameAlloc));
                 let backing = Arc::new(Pages::new(frame.data.len().div_ceil(PAGE)).ok_or(ENOMEM)?);
-                backing.write(0,&frame.data);
-                backing.maintain(0,frame.data.len(),false);
-                let chunks = crate::gk208::encode::prepare(frame,backing).map_err(|_| ENOMEM)?;
+                if let Some(t) = trace { t.bytes(crate::gk208::timing::submit_cost::Bytes::FrameZero, backing.bytes() as u64); }
+                drop(allocating);
+                {
+                    let _copying = trace.map(|t| t.scope(SubmitPhase::FrameCopy));
+                    backing.write(0,&frame.data);
+                    if let Some(t) = trace { t.bytes(crate::gk208::timing::submit_cost::Bytes::Frame, frame.data.len() as u64); }
+                }
+                {
+                    let _maintaining = trace.map(|t| t.scope(SubmitPhase::FrameMaintain));
+                    backing.maintain(0,frame.data.len(),false);
+                }
+                let _building = trace.map(|t| t.scope(SubmitPhase::FrameBuild));
+                let chunks = crate::gk208::encode::prepare_traced(frame,backing,trace).map_err(|_| ENOMEM)?;
                 Ok::<_,i64>((charge,Some(Chunks::Gk208(chunks))))
             })();
             match prepared {
