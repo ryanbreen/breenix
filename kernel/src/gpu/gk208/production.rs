@@ -30,8 +30,10 @@ use super::{Registers, c2, clock, memx, modeset, native, production_policy as po
 use policy::{Stage, Startup};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
-static CONTROLLER: spin::Mutex<Option<Controller>> = spin::Mutex::new(None);
+static CONTROLLER: super::lock::Mutex<Option<Controller>> = super::lock::Mutex::new(None);
 static TRIPPED: AtomicBool = AtomicBool::new(false);
+static HALTED: AtomicBool = AtomicBool::new(false);
+pub(super) fn halted()->bool {HALTED.load(Ordering::Acquire)}
 static ARMED: AtomicBool = AtomicBool::new(false);
 
 fn now_ns() -> u64 {
@@ -84,7 +86,7 @@ impl super::thermal::Access for Io {
 }
 struct Controller {
     base:usize, strap:u32, rom:Vec<u8>, post:Vec<(u32,u32)>, counter:Option<u32>,
-    target:production_rom::Target, post_memory:u32,
+    target:production_rom::Target, post_memory:u32, memory_changed:bool, gpc_changed:bool,
 }
 impl Controller {
     fn temperature(&self)->Result<u32,&'static str> {
@@ -117,6 +119,7 @@ impl Controller {
             if !recovery {
                 if let Err(e)=before {io.0.write(0x10a580,0);return Err(e);}
             }
+            self.memory_changed=true;
             for &(a,v) in &plan.cpu_before {io.0.write(a as usize,v);}
             let reply=session.exec(&mut io);
             let health=native::memx_display_boundary(&mut io.0,phase,true);
@@ -153,6 +156,7 @@ impl Controller {
     }
 }
 impl Startup for Controller {
+    fn changed(&self)->(bool,bool) {(self.gpc_changed,self.memory_changed)}
     fn step(&mut self,stage:Stage)->Result<(),&'static str> {
         if stage!=Stage::Sensor {self.cool()?;}
         match stage {
@@ -196,6 +200,7 @@ impl Startup for Controller {
                 let reference=clock::gpc_reference(|a|Registers(self.base).read(a as usize))?;
                 let plan=c2::pll_plan("gpc",self.target.gpc_khz,&limits,reference)?;
                 crate::serial_println!("GT710_CLOCK_GPC requested_khz={} calculated_khz={}",self.target.gpc_khz,plan.khz);
+                self.gpc_changed=true;
                 super::ce::with_clock_owner(|_,_,_|c2::program(&mut Io(Registers(self.base)),&plan))
             }
             Stage::Verify=>{
@@ -213,14 +218,18 @@ impl Startup for Controller {
         }
     }
     fn restore_gpc(&mut self)->Result<(),&'static str> {
-        super::ce::with_clock_owner(|_,_,_|c2::observe::restore(&mut Io(Registers(self.base)),&self.post))
+        if !self.gpc_changed {return Ok(());}
+        super::ce::with_clock_owner(|_,_,_|c2::observe::restore(&mut Io(Registers(self.base)),&self.post))?;
+        self.gpc_changed=false;Ok(())
     }
     fn restore_memory(&mut self)->Result<(),&'static str> {
         // Issue both live-calculated nouveau downclock passes, including
         // after an uncertain target EXEC; use live RAM timings for restoration.
+        if !self.memory_changed {return Ok(());}
         let first=self.memory_pass("return-intermediate",self.target.memory_khz,self.post_memory,true,true);
         let last=self.memory_pass("return",self.target.memory_khz,self.post_memory,false,true);
-        first.and(last)
+        first.and(last)?;
+        self.memory_changed=false;Ok(())
     }
 }
 fn keep_post()->bool {
@@ -241,7 +250,7 @@ pub(super) fn initialize() {
         let post=c2::observe::capture(&mut Io(Registers(base)));
         let target=production_rom::target(&rom,strap)?;
         let post_memory=clock::sample(|a|Registers(base).read(a as usize)).memory_khz?;
-        Ok(Controller {base,strap,rom,post,counter:None,target,post_memory})
+        Ok(Controller {base,strap,rom,post,counter:None,target,post_memory,memory_changed:false,gpc_changed:false})
     });
     let mut controller=match result {Ok(c)=>c,Err(e)=>{
         crate::serial_println!("GT710_CLOCK_STARTUP full=false gpc_khz=0 gpc_counter_khz=0 memory_khz=0 temperature_c=0 status={}",e);return;
@@ -253,29 +262,47 @@ pub(super) fn initialize() {
             outcome.gpc_restore.unwrap_or("ok"),outcome.memory_restore.unwrap_or("ok"));
     }
     controller.record(outcome.full,outcome.failure.unwrap_or(if post {"post-option"}else{"ok"}));
+    let armed=controller.gpc_changed || controller.memory_changed;
+    if !outcome.full && armed {TRIPPED.store(true,Ordering::Release);}
     *CONTROLLER.lock()=Some(controller);
-    ARMED.store(outcome.full,Ordering::Release);
+    ARMED.store(armed,Ordering::Release);
 }
 fn guard_thread(base:usize) {
     // As with the existing timer-sleeping kernel workers, enable preemption
     // before sampling and sleeping. This worker is outside interrupt paths.
     unsafe {crate::arch_enable_interrupts();}
     let mut guard=policy::Guard::new();
-    let mut logged=0;
+    let mut logged=None;
     loop {
         let t=super::thermal::temperature(&mut Io(Registers(base)));
-        if guard.sample(t) {TRIPPED.store(true,Ordering::Release);}
+        let trip=guard.sample(t);
+        if trip {TRIPPED.store(true,Ordering::Release);}
+        // A startup fallback with an unconfirmed restore also needs retrying.
+        if TRIPPED.load(Ordering::Acquire) {guard.sample(Err("startup fallback"));}
         let now=now_ns();
-        if now.saturating_sub(logged)>=1_000_000_000 || guard.tripped() {
+        if logged!=Some(t) || trip {
             crate::serial_println!("GT710_CLOCK_TEMPERATURE monotonic_ns={} celsius={} tripped={}",now,t.unwrap_or(u32::MAX),guard.tripped());
-            logged=now;
+            logged=Some(t);
         }
-        if guard.tripped() && ARMED.swap(false,Ordering::AcqRel) {
+        if guard.critical(t,ARMED.load(Ordering::Acquire)) {
+            HALTED.store(true,Ordering::Release);
+            crate::gpu::panic::native_reset();
+            // Existing reset paths stop runlists before disabling PGRAPH/PFIFO
+            // through PMC_ENABLE. Keep them disabled at the critical threshold.
+            let r=Registers(base);
+            r.mask(0x2630,u32::MAX,u32::MAX);
+            r.mask(0x200,0x1100,0);
+            crate::serial_println!("GT710_CLOCK_CRITICAL temperature_c={} engines_disabled=true",t.unwrap_or(u32::MAX));
+        }
+        if guard.retry_due(now,ARMED.load(Ordering::Acquire)) {
+            let _canvas=crate::console::hold_canvas();
             if let Some(c)=CONTROLLER.lock().as_mut() {
                 let gpc=c.restore_gpc();
                 let memory=c.restore_memory();
-                crate::serial_println!("GT710_CLOCK_GUARD trip_c=85 temperature_c={} gpc_restore={} memory_restore={}",
-                    t.unwrap_or(u32::MAX),gpc.err().unwrap_or("ok"),memory.err().unwrap_or("ok"));
+                let restored=gpc.is_ok() && memory.is_ok();
+                if restored {ARMED.store(false,Ordering::Release);}
+                crate::serial_println!("GT710_CLOCK_GUARD trip_c=85 temperature_c={} gpc_restore={} memory_restore={} armed={}",
+                    t.unwrap_or(u32::MAX),gpc.err().unwrap_or("ok"),memory.err().unwrap_or("ok"),!restored);
                 c.record(false,"thermal-guard-latched");
             }
         }

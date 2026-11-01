@@ -593,6 +593,13 @@ mod spans_diagnostic;
 pub mod adapter;
 pub mod caps;
 
+pub fn thermal_halted()->bool {
+    #[cfg(not(feature = "gt710_clock_probe"))]
+    { production::halted() }
+    #[cfg(feature = "gt710_clock_probe")]
+    { false }
+}
+
 /// Complete clock startup independently of GPU admission, after native handoff.
 pub fn initialize_clocks() {
     #[cfg(not(feature = "gt710_clock_probe"))]
@@ -604,6 +611,7 @@ pub fn initialize_clocks() {
 
 /// Serialize first-use native startup with the existing allocator/CE owner.
 pub(crate) fn initialize_core() -> Result<(), &'static str> {
+    if thermal_halted() {return Err("GPU thermal critical stop");}
     let result = ce::initialize_core();
     #[cfg(feature = "gt710_clock_probe")]
     if let Err(e)=result {crate::serial_println!("GT710_C1_ERROR {}",e);}

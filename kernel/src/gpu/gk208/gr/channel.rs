@@ -1768,6 +1768,7 @@ mod native {
             }
         }
         pub(crate) fn reset(&mut self) -> Result<(), &'static str> {
+            if crate::gk208::thermal_halted() {return Err("GPU thermal critical stop; backing retained");}
             let _access = crate::gpu::panic::Access::enter();
             // Revoke prepared panic work before touching either channel.
             crate::gpu::panic::native_reset();
