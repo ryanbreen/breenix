@@ -60,6 +60,7 @@ if [ "$op" = build ]; then
         echo 'boot target removal failed' >&2; exit 1
     fi
     rm "$run/operator-account" "$run/readback"
+    python3 "$ROOT/scripts/vm-image.py" "$run/system.img" "$account"
     truncate -s 1G "$run/home.img"
     mke2fs -q -t ext2 -F "$run/home.img"
     python3 - "$ROOT" "$run/build.json" <<'PYCODE'

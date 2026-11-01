@@ -15,7 +15,7 @@ REQUIRED = ('OPERATOR_USER', 'OPERATOR_UID', 'OPERATOR_PASSWORD',
 
 
 def load_site(path=None):
-    path = Path(path) if path is not None else Path.home() / '.config/breenix/vm-site'
+    path = Path(path or os.environ.get('BREENIX_VM_SITE') or Path.home() / '.config/breenix/vm-site')
     fd = os.open(path, os.O_RDONLY | getattr(os, 'O_NOFOLLOW', 0))
     with os.fdopen(fd, 'r') as source:
         info = os.fstat(source.fileno())
