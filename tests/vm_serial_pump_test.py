@@ -237,11 +237,48 @@ runpy.run_path(sys.argv[0], run_name='__main__')
                 self.assertTrue(rows)
                 stamps = [(float(t), int(offset)) for t, offset in rows]
                 offsets = [offset for _, offset in stamps]
-                self.assertEqual(offsets, sorted(offsets))
-                self.assertEqual(offsets[-1], len(cleaned))
+                self.assertEqual(offsets, [0] + [i + 1 for i, byte in enumerate(cleaned)
+                                                  if byte == 10 and i + 1 < len(cleaned)])
                 self.assertTrue(all(t > 0 for t, _ in stamps))
                 guest.close()
                 console.close()
+            finally:
+                if process.poll() is None:
+                    process.terminate()
+                    process.wait(timeout=5)
+
+    def test_fragmented_crash_loop_has_one_line_start(self):
+        with tempfile.TemporaryDirectory(prefix='pump-', dir='/tmp') as tmp:
+            run = Path(tmp)
+            process = subprocess.Popen(['python3', str(PUMP), str(run), str(run / 'whole.txt')])
+            try:
+                guest = connect(run / 'serial.sock', process)
+                self.addCleanup(guest.close)
+                boot = (run / 'current').read_text().strip()
+                directory = run / 'boots' / boot
+                prefix = b'previous line\r\n'
+                fragments = [prefix + b'[init] svc-suite-fail is crash-',
+                             b'looping: 5 failures in a row', b', each within 10 s of starting\r\n']
+                sent = b''
+                for fragment in fragments:
+                    guest.sendall(fragment)
+                    sent += fragment
+                    deadline = time.monotonic() + 5
+                    while (directory / 'serial.raw').stat().st_size < len(sent):
+                        if time.monotonic() >= deadline:
+                            self.fail('pump did not capture a fragment')
+                        time.sleep(.01)
+                guest.shutdown(socket.SHUT_WR)
+                self.assertEqual(process.wait(timeout=5), 0)
+                target = object.__new__(HOST['QemuTarget'])
+                target.directory = directory
+                target.holds_lease = lambda: True
+                text, stamps = target.capture()
+                self.assertEqual([offset for _, offset in stamps], [0, len(b'previous line\n')])
+                services = HOST['Services'](None, None, target.capture)
+                matches = services.lines(len(b'previous line\n'),
+                                         r'\[init\] svc-suite-fail is crash-looping: 5 failures in a row')
+                self.assertEqual(matches, [(stamps[1][0], text.splitlines()[1])])
             finally:
                 if process.poll() is None:
                     process.terminate()
