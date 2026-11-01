@@ -1698,6 +1698,10 @@ mod native {
                 command.extend(super::report(target+offset,value)?);
             }
             if device_time { command.extend(crate::gk208::gpu_time::end_query(TARGET, sequence)?); }
+            // Payload and parking both name the retained immutable catalogue.
+            // Keep data/constant coherency without evicting its instructions
+            // between primitive launches or while publishing parked state.
+            crate::gk208::encode::retain_resident_instruction_cache(&mut command)?;
             let submitted = if device_time { device_time_now() } else { 0 };
             let result = self.publish_encoded_traced(sequence,&mut command,trace);
             if result.is_ok() && device_time {

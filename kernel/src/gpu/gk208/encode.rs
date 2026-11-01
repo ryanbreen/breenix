@@ -1561,6 +1561,36 @@ fn quads(
     Ok(())
 }
 
+/// Apply after channel_programs binds the immutable retained catalogue. Code
+/// upload/bootstrap invalidation is separate; resident draws only need data
+/// and constant invalidation. MIT Mesa nvc0_program.c:937-942 invalidates
+/// instructions after code upload, not each launch; cla197.h:974-983 names
+/// the independent NO_WFI instruction, data and constant bits.
+pub fn retain_resident_instruction_cache(words: &mut Vec<u32>) -> Result<(), &'static str> {
+    let mut read = 0;
+    let mut write = 0;
+    while read < words.len() {
+        let header = words[read];
+        let count = ((header >> 16) & 0x1fff) as usize;
+        let end = read.checked_add(count + 1).ok_or("resident cache packet overflow")?;
+        if header >> 29 != 1 || count == 0 || end > words.len() {
+            return Err("resident cache packet extent");
+        }
+        let resident_cache = header & 0xffff == 0xda4 / 4;
+        if resident_cache {
+            if count != 1 { return Err("resident cache packet size"); }
+            words[read + 1] &= !1;
+        }
+        if !resident_cache || words[read + 1] != 0 {
+            words.copy_within(read..end, write);
+            write += count + 1;
+        }
+        read = end;
+    }
+    words.truncate(write);
+    Ok(())
+}
+
 /// Omit identical resident bindings within one submission. Launches, cache
 /// operations and synchronization packets retain their original order.
 pub fn compact_state(words: &mut Vec<u32>) -> Result<(), &'static str> {
