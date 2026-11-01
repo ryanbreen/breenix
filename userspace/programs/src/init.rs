@@ -601,7 +601,7 @@ fn run_boot_script() {
     #[cfg(target_arch = "aarch64")]
     {
         // Start background services before handing the splash to the console.
-        const SERVICES: &[&[u8]] = &[b"/usr/bin/xhci_counters\0", b"/usr/sbin/telnetd\0"];
+        const SERVICES: &[&[u8]] = &[b"/usr/bin/xhci_counters\0"];
         for path in SERVICES {
             if let Err(e) = spawn(path) {
                 print!("[init] Warning: failed to spawn service: {}\n", e);
