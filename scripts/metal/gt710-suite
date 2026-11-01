@@ -3036,7 +3036,7 @@ CASE_HEAP_FIELDS = {
 LEGACY_CASE_HEAP_FIELDS = CASE_HEAP_FIELDS - set(CASE_COST_FIELDS[24:])
 
 def breengel_picture_evidence(directory, serial, records, startup_bytes, final_bytes):
-    """Verify retained native RLE pictures against the exact judged CASE digests."""
+    """G28: require category samples and failing pictures; verify every retained pixel."""
     if re.search(r'^GT710_BREENGL_(?:PICTURE|PIX|REFUSED) ', serial, re.M):
         raise ValueError('picture bytes on serial or evidence refused')
     root = Path(directory)
@@ -3062,26 +3062,55 @@ def breengel_picture_evidence(directory, serial, records, startup_bytes, final_b
     if len(list(root.glob('gt710-breengel-*.rle'))) != len(anchors):
         raise ValueError('unanchored picture upload')
     body = b''.join(chunks)
-    cases = re.findall(r'^SUITE breengel CASE ([a-z0-9/-]+) (?:PASS|FAIL) ms=\d+ sha256=([a-f0-9]{64})(?: .*)?$', serial, re.M)
+    cases = re.findall(r'^SUITE breengel CASE ([a-z0-9/-]+) (PASS|FAIL) ms=\d+(?: sha256=([a-f0-9]{64}))?(?: .*)?$', serial, re.M)
+    required = []; categories = set()
+    for name, status, digest in cases:
+        if breengel_pictured(name) and not digest:
+            raise ValueError('judged CASE digest missing')
+        if not digest:
+            continue
+        category = name.split('/')[0]
+        if category not in categories or status == 'FAIL':
+            required.append((name, digest))
+        categories.add(category)
     entries = [json.loads(line.removeprefix('GT710_BREENGL_PICTURE ')) for line in records]
-    if ([(e.get('case'), e.get('sha256')) for e in entries] != cases
-            or len(entries) > 401 or len(set(name for name, _ in cases)) != len(cases)):
-        raise ValueError('picture manifest differs from judged CASE records')
+    if ([(e.get('case'), e.get('sha256')) for e in entries] != required
+            or len(entries) > 401 or len(set(name for name, _, _ in cases)) != len(cases)):
+        raise ValueError('picture manifest differs from G28 samples and failing CASE records')
     seen = {}; offset = 0
     for index, entry in enumerate(entries):
-        if (set(entry) != {'case', 'picture', 'sha256', 'bytes', 'width', 'height'}
+        if (set(entry) != {'case', 'picture', 'sha256', 'bytes', 'width', 'height', 'encoding'}
                 or any(type(entry[k]) is not int for k in ('picture', 'bytes', 'width', 'height'))
+                or entry['encoding'] not in ('rle', 'raw')
                 or entry['picture'] != index or not 0 < entry['bytes'] <= 64 << 20
                 or not 0 < entry['width'] <= 16384 or not 0 < entry['height'] <= 16384):
             raise ValueError('invalid picture manifest entry')
         digest = entry['sha256']; pixels = entry['width'] * entry['height']
         if digest in seen:
-            if seen[digest] != (entry['bytes'], pixels):
+            if seen[digest] != (entry['bytes'], pixels, entry['encoding']):
                 raise ValueError('duplicate picture has different length or geometry')
             continue
         encoded = body[offset:offset + entry['bytes']]; offset += entry['bytes']
-        if len(encoded) != entry['bytes'] or not encoded.endswith(b'\n'):
+        if len(encoded) != entry['bytes']:
             raise ValueError('picture payload missing or truncated')
+        if entry['encoding'] == 'raw':
+            if (len(encoded) != pixels * 4 or any(encoded[n] != 255 for n in range(3, len(encoded), 4))
+                    or hashlib.sha256(encoded).hexdigest() != digest):
+                raise ValueError('raw picture differs from canonical judged SHA-256')
+            # Refuse raw when the existing RLE would have been smaller.
+            at = 0; rle_bytes = 0
+            while at < len(encoded) and rle_bytes < len(encoded):
+                end = at + 4
+                while end < len(encoded) and encoded[end:end+4] == encoded[at:at+4]:
+                    end += 4
+                rle_bytes += len(f'{(end-at)//4:x}') + 10
+                at = end
+            if at == len(encoded) and rle_bytes < len(encoded):
+                raise ValueError('raw picture is larger than native RLE')
+            seen[digest] = (entry['bytes'], pixels, entry['encoding'])
+            continue
+        if not encoded.endswith(b'\n') or len(encoded) >= pixels * 4:
+            raise ValueError('native RLE missing terminator or not smaller than raw')
         # Existing native encoding: lowercase hex run count and canonical BGRX
         # word. Hash decoded bytes incrementally, bounded by the declared geometry.
         count = 0; sha = hashlib.sha256()
@@ -3098,7 +3127,7 @@ def breengel_picture_evidence(directory, serial, records, startup_bytes, final_b
             count += int(match[1], 16)
         if count != pixels or sha.hexdigest() != digest:
             raise ValueError('decoded picture differs from judged SHA-256')
-        seen[digest] = (entry['bytes'], pixels)
+        seen[digest] = (entry['bytes'], pixels, entry['encoding'])
     if offset != len(body):
         raise ValueError('extra or duplicated picture bytes')
     summary = one(r'^GT710_BREENGL_TOTAL bytes=(\d+) uploads=(\d+) picture_bytes=(\d+) pictures=(\d+) unique=(\d+)$', serial, 'BreenGL evidence totals missing')

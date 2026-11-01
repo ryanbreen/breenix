@@ -196,12 +196,15 @@ const fn native_evidence(suite: Suite) -> Suite {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn evidence<T>(result: Result<T, String>) -> T {
-    result.unwrap_or_else(|reason| {
-        let (bytes, uploads) = gt710_artifacts::totals();
-        println!("GT710_BREENGL_REFUSED bytes={bytes} uploads={uploads} reason={reason}");
-        panic!("native BreenGL evidence refused");
-    })
+fn evidence<T>(result: Result<T, String>) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(reason) => {
+            let (bytes, uploads) = gt710_artifacts::totals();
+            println!("GT710_BREENGL_REFUSED bytes={bytes} uploads={uploads} reason={reason}");
+            None
+        }
+    }
 }
 
 #[cfg(target_arch = "x86_64")]
@@ -210,9 +213,9 @@ fn heap_boundary(index: usize, total: usize, name: &str) {
 }
 
 #[cfg(target_arch = "x86_64")]
-fn judged_picture(name: &str, frame: &breenix_suite::suite::JudgedFrame) {
+fn judged_picture(name: &str, frame: &breenix_suite::suite::JudgedFrame, failed: bool) {
     let mut pictures = NATIVE_PICTURES.lock().expect("native picture store lock");
-    evidence(pictures.record(name, frame.width, frame.height, &frame.pixels, frame.sha256, &mut |data| {
+    evidence(pictures.record(name, failed, frame.width, frame.height, &frame.pixels, frame.sha256, &mut |data| {
         let index = PICTURE_UPLOADS.load(Relaxed);
         gt710_artifacts::transfer(data, &format!("/pictures/{index}"))?;
         let digest: String = sha256(data).iter().map(|b| format!("{b:02x}")).collect();
@@ -226,9 +229,9 @@ fn judged_picture(name: &str, frame: &breenix_suite::suite::JudgedFrame) {
 fn final_upload() {
     let (status, caps) = libbreenix::gpu::caps();
     let resources = (status == 0 && caps.backend == libbreenix::gpu::abi::backend::GK208).then_some(&caps);
-    let heap = evidence(gt710_heap::encode());
+    let Some(heap) = evidence(gt710_heap::encode()) else { return; };
     let pictures = NATIVE_PICTURES.lock().expect("native picture store lock");
-    let manifest = evidence(pictures.manifest());
+    let manifest = evidence(pictures.manifest()).unwrap_or_default();
     evidence(gt710_artifacts::upload_slot_records(resources, true, &heap, &manifest));
     let (bytes, uploads) = gt710_artifacts::totals();
     let count = manifest.iter().filter(|&&b| b == b'\n').count();

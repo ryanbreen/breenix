@@ -61,10 +61,10 @@ fn main(){print!("{}",String::from_utf8(heap::fixture()).unwrap());}
         # Exercise the receiver's former <=170 check as well as the producer.
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)
-            pixels = bytes([0, 0, 0, 255]); digest = hashlib.sha256(pixels).hexdigest()
-            payload = b'1:ff000000\n'
+            pixels = bytes([0, 0, 0, 255])*4; digest = hashlib.sha256(pixels).hexdigest()
+            payload = b'4:ff000000\n'
             entries = [dict(case=f'raster/case-{n}', picture=n-1, sha256=digest,
-                            bytes=len(payload), width=1, height=1, encoding="rle") for n in [1]]
+                            bytes=len(payload), width=4, height=1, encoding="rle") for n in [1]]
             manifest = ''.join('GT710_BREENGL_PICTURE '+json.dumps(e,separators=(',', ':'))+'\n' for e in entries).encode()
             startup = b'GT710_PIX 0 1:ff003039\n'
             final = text.encode() + manifest
@@ -106,10 +106,11 @@ fn main(){
  assert_eq!(chunks.len(),2);assert!(chunks.iter().all(|b|b.len()<=2<<20));
  for (n,b) in chunks.iter().enumerate(){std::fs::write(format!("{dir}/gt710-breengel-{n:04}.rle"),b).unwrap();}
  std::fs::write(format!("{dir}/manifest"),manifest).unwrap();
- let solid=vec![0,0,0,255];
- store.record("text/first",false,1,1,&solid,crypto::sha256::sha256(&solid),&mut send).unwrap();
- store.record("text/later",false,1,1,&solid,crypto::sha256::sha256(&solid),&mut send).unwrap();
+ let solid=vec![0,0,0,255]; let mut samples=0; let mut sample_send=|_:&[u8]|{samples+=1;Ok(())};
+ store.record("text/first",false,1,1,&solid,crypto::sha256::sha256(&solid),&mut sample_send).unwrap();
+ store.record("text/later",false,1,1,&solid,crypto::sha256::sha256(&solid),&mut sample_send).unwrap();
  assert_eq!(store.manifest().unwrap().split(|b|*b==b'\n').filter(|b|!b.is_empty()).count(),3);
+ assert_eq!(samples,1);
  let mut failed=pictures::Pictures::new(); failed.bytes=pictures::MAX_TOTAL-1;
  let mut sent=0;
  let mut sink=|_:&[u8]|{sent+=1;Ok(())};
@@ -150,6 +151,11 @@ fn main(){
             serial += 'SUITE_SEQUENCE READY breengel\n'
             (p / 'serial.txt').write_text(serial)
             result = API['capture_serial'](p)
+            records = manifest.decode().splitlines()
+            with self.assertRaisesRegex(ValueError, 'G28 samples and failing CASE'):
+                API['breengel_picture_evidence'](p, serial, records[:1], len(startup), len(final))
+            with self.assertRaisesRegex(ValueError, 'judged CASE digest missing'):
+                API['breengel_picture_evidence'](p, serial.replace(' sha256='+entries[0]['sha256'], '', 1), records, len(startup), len(final))
             self.assertIn('GT710_BREENGL_PICTURE ', result)
             self.assertNotIn('1:ff000000', serial, 'serial must contain digests, never pixel runs')
             for bad in [serial.replace(entries[1]['sha256'], '0'*64, 1),

@@ -862,7 +862,7 @@ pub struct Suite {
     finalizer: Option<fn()>,
     case_observer: Option<fn(usize, usize, &str)>,
     #[cfg(target_arch = "x86_64")]
-    judged_observer: Option<fn(&str, &JudgedFrame)>,
+    judged_observer: Option<fn(&str, &JudgedFrame, bool)>,
 }
 
 pub const fn suite(id: &'static str, title: &'static str, categories: &'static [Category]) -> Suite {
@@ -886,7 +886,7 @@ impl Suite {
     /// Export the verified judged snapshot outside the case's measured window.
     /// Native evidence consumers do not change the verdict or the stage's source.
     #[cfg(target_arch = "x86_64")]
-    pub const fn with_judged_observer(self, observe: fn(&str, &JudgedFrame)) -> Suite {
+    pub const fn with_judged_observer(self, observe: fn(&str, &JudgedFrame, bool)) -> Suite {
         Suite { judged_observer: Some(observe), ..self }
     }
 
@@ -1026,11 +1026,10 @@ impl Suite {
                     .map_or(self.case_limit_ms, |&(_, _, limit)| limit);
                 let mut outcome = run_case(case, limit_ms, self.id, &name, &mut screen, &mut feed);
                 if let Some(error) = screen.stage_error.take() { outcome = with_note(outcome, &error); }
-                let picture_hash = frame_hash(screen.judged.as_ref());
+                let picture_hash = frame_hash(screen.judged.as_deref());
+                // Share ownership with the stage until its final outcome is known.
                 #[cfg(target_arch = "x86_64")]
-                if let (Some(observe), Some(frame)) = (self.judged_observer, screen.judged.as_ref()) {
-                    observe(&name, frame);
-                }
+                let observed_frame = self.judged_observer.and(screen.judged.clone());
                 let make_line = |outcome: &Outcome| match outcome {
                     Outcome::Pass { ms } => std::format!("SUITE {} CASE {} PASS ms={}{}", self.id, name, ms, picture_hash),
                     Outcome::Fail { ms, msg } => std::format!("SUITE {} CASE {} FAIL ms={}{} msg={}", self.id, name, ms, picture_hash, msg),
@@ -1054,6 +1053,10 @@ impl Suite {
                         screen.stage_result(crate::suite_stage::record(&line,&outcome,None,None,fps,readings,limit_ms,None));
                         screen.stage_result(crate::suite_stage::redraw());
                     }
+                }
+                #[cfg(target_arch = "x86_64")]
+                if let (Some(observe), Some(frame)) = (self.judged_observer, observed_frame.as_deref()) {
+                    observe(&name, frame, matches!(outcome, Outcome::Fail { .. }));
                 }
                 match &outcome { Outcome::Pass { .. } => counts.passed += 1, Outcome::Fail { .. } => counts.failed += 1, Outcome::Skip { .. } => counts.skipped += 1 }
                 emit(&line);
@@ -1641,7 +1644,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                 None => outcome,
             };
             let outcome = match collect_judged() {
-                Ok(frame) => { screen.judged = frame; outcome }
+                Ok(frame) => { screen.judged = frame.map(std::sync::Arc::new); outcome }
                 Err(note) => with_note(outcome, &note),
             };
             let outcome=match collect_timing(){Ok(timing)=>{screen.timing=timing;outcome},Err(note)=>with_note(outcome,&note)};
@@ -1830,7 +1833,7 @@ mod gpu_screen;
 struct Screen {
     gui:bool,
     stage_error: Option<String>,
-    judged: Option<JudgedFrame>,
+    judged: Option<std::sync::Arc<JudgedFrame>>,
     timing:Option<FrameTiming>,
     fb: Option<FrameBuf>,
     gpu: Option<gpu_screen::GpuScreen>,
