@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import runpy
 import socket
 import subprocess
 import tempfile
@@ -8,6 +9,7 @@ import unittest
 from pathlib import Path
 
 PUMP = Path(__file__).resolve().parents[1] / 'scripts/vm-serial-pump.py'
+CLEANER = runpy.run_path(str(PUMP.parent / 'metal/metal_lib.py'))['SerialCleaner']
 
 
 def connect(path, process):
@@ -93,6 +95,7 @@ class SerialPumpTest(unittest.TestCase):
                 guest = connect(run / 'serial.sock', process)
                 self.addCleanup(guest.close)
                 console = connect(run / 'console.sock', process)
+                self.addCleanup(console.close)
                 output = b'first\x00\xff\r\n' + bytes(range(256)) * 100
                 incoming = b'input\x00\xff\r\n' + bytes(range(256))
                 guest.sendall(output)
@@ -106,14 +109,17 @@ class SerialPumpTest(unittest.TestCase):
                 boot = (run / 'current').read_text().strip()
                 self.assertRegex(boot, r'^\d{8}T\d{6}Z-qemu$')
                 directory = run / 'boots' / boot
-                self.assertEqual((directory / 'serial.txt').read_bytes(), output)
+                # The target boundary consumes the boot-store contract in docs/metal/README.md.
+                self.assertEqual((directory / 'serial.raw').read_bytes(), output)
+                cleaned = CLEANER().feed(output).encode()
+                self.assertEqual((directory / 'serial.txt').read_bytes(), cleaned)
                 self.assertEqual(whole.read_bytes(), output)
                 rows = [line.split('\t') for line in (directory / 'serial.ts').read_text().splitlines()]
                 self.assertTrue(rows)
                 stamps = [(float(t), int(offset)) for t, offset in rows]
                 offsets = [offset for _, offset in stamps]
                 self.assertEqual(offsets, sorted(offsets))
-                self.assertEqual(offsets[-1], len(output))
+                self.assertEqual(offsets[-1], len(cleaned))
                 self.assertTrue(all(t > 0 for t, _ in stamps))
                 guest.close()
                 console.close()
