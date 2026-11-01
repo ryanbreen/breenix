@@ -3,6 +3,9 @@ import json
 from pathlib import Path
 import re
 import runpy
+import subprocess
+import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,33 +25,14 @@ SELECTED = [n for n in NAMES if n.split('/')[0] in WHOLE or
 
 
 def pictured_cases():
-    """Read picture declarations independently of the scorer and CASE hash fields."""
-    source = ROOT / 'userspace/programs/src/suite_breengel'
-    names = set()
-    for path in source.rglob('*.rs'):
-        for table, body in re.findall(r'const (\w+): &\[Case\] = &\[(.*?)\];',
-                                      path.read_text(), re.S):
-            category = 'text' if table == 'FONTWATCH' else table.lower().replace('_', '-')
-            names.update(category + '/' + name for name in re.findall(
-                r'pictured!\(\s*"([a-z0-9-]+)"', body))
-    # These use judged() directly, through stage_fixture/scaled_stage or the
-    # images.rs picture_case -> handoff_images path, rather than pictured!.
-    names.update('panel/' + name for name in PANEL)
-    names.update('bmp/' + name for name in
-                 ('decode-fixtures', 'orientation', 'padding', 'roundtrip', 'truncated'))
-    names.update('png-decode/' + name for name in (
-        'gray-depths', 'gray-alpha', 'rgb', 'rgba', 'palette-depths', 'trns-gray',
-        'trns-rgb', 'trns-palette', 'rounding-16bit', 'filters', 'interlace',
-        'interlace-small', 'multi-idat', 'chunk-order', 'ancillary-ignored',
-        'independent-fixtures', 'blit', 'from-disk'))
-    names.update('png-encode/' + name for name in ('decodes', 'stable', 'sizes'))
-    return names
+    """Read the coordinator's ARM judged-set data independently of the scorer."""
+    return set(json.loads((ROOT / 'docs/gui/gt710-breengel-pictured.json').read_text())['cases'])
 
 
 def capture():
     rows = ['SUITE breengel START cases=401',
             'SUITE breengel MEMORY before free=1000 heap_free_kb=500 user_pages=100']
-    rows += [f'SUITE breengel CASE {n} PASS ms=1 sha256=' + 'a' * 64 for n in NAMES]
+    rows += [f'SUITE breengel CASE {n} PASS ms=1' + (' sha256=' + 'a' * 64 if n in pictured_cases() else '') for n in NAMES]
     rows += ['SUITE breengel DONE passed=401 failed=0 skipped=0 total=401',
              'SUITE breengel MEMORY after free=1000 heap_free_kb=500 user_pages=100',
              'SUITE breengel MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=64',
@@ -64,6 +48,29 @@ def boot():
 
 
 class BreengelSelection(unittest.TestCase):
+    def test_inventory_tool_requires_successful_arm_and_rejects_judged_set_drift(self):
+        tool = ROOT / 'scripts/gt710-picture-inventory.py'
+        self.assertTrue(tool.exists(), 'generate inventory from an accepted ARM capture')
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p/'run.json').write_text(json.dumps(dict(id='20261101T000000Z-qemu-1', arch='aarch64', platform='qemu', mode='suite', suite='breengel')))
+            for name, value in [('dirty','0'), ('commit','a'*40), ('exit-status','0')]:
+                (p/name).write_text(value+'\n')
+            original = capture()
+            (p/'serial.txt').write_text(original)
+            command = [sys.executable,str(tool),str(p),'--check',str(ROOT/'docs/gui/gt710-breengel-pictured.json')]
+            self.assertEqual(subprocess.run(command,capture_output=True).returncode,0)
+            pictured = next(n for n in NAMES if n in pictured_cases())
+            ordinary = next(n for n in NAMES if n not in pictured_cases())
+            for changed in [original.replace(f'CASE {pictured} PASS ms=1 sha256='+'a'*64,f'CASE {pictured} PASS ms=1'),
+                            original.replace(f'CASE {ordinary} PASS ms=1',f'CASE {ordinary} PASS ms=1 sha256='+'a'*64),
+                            original.replace('DONE passed=401 failed=0','DONE passed=400 failed=1')]:
+                (p/'serial.txt').write_text(changed)
+                self.assertNotEqual(subprocess.run(command,capture_output=True).returncode,0)
+            (p/'serial.txt').write_text(original)
+            run=json.loads((p/'run.json').read_text());run['arch']='x86_64';(p/'run.json').write_text(json.dumps(run))
+            self.assertNotEqual(subprocess.run(command,capture_output=True).returncode,0)
+
     def test_scorer_requires_each_picture_digest(self):
         pictured = pictured_cases()
         self.assertFalse(pictured - set(NAMES))
@@ -86,15 +93,14 @@ class BreengelSelection(unittest.TestCase):
         outside = [name for name in NAMES if name not in SELECTED]
         for name in outside:
             original = original.replace(f'CASE {name} PASS ms=1', f'CASE {name} FAIL ms=1')
-            original = original.replace(f'CASE {name} FAIL ms=1 sha256=' + 'a' * 64,
-                                        f'CASE {name} FAIL ms=1 sha256=' + 'a' * 64 + ' msg=not-implemented')
+            original = re.sub(r'(CASE '+re.escape(name)+r' FAIL ms=1(?: sha256=[a-f0-9]{64})?)(?=\n)', r'\1 msg=not-implemented', original)
         original = original.replace('DONE passed=401 failed=0',
                                     f'DONE passed=304 failed={len(outside)}')
         producer = {'breengel': {'serial': original, 'boot': boot()}}
         self.assertEqual(API['cases']('breengel-fronts', '', producer)[0]['result'], 'PASS')
         producer['breengel']['serial'] = original.replace(
-            'CASE windows/every-target FAIL ms=1 sha256=' + 'a' * 64,
-            'CASE windows/every-target FAIL ms=1')
+            'CASE composition/compose-fullscreen FAIL ms=1 sha256=' + 'a' * 64,
+            'CASE composition/compose-fullscreen FAIL ms=1')
         self.assertEqual(API['cases']('breengel-fronts', '', producer)[0]['result'], 'FAIL')
 
     def test_selection(self):
@@ -122,7 +128,7 @@ class BreengelSelection(unittest.TestCase):
         self.assertEqual(score(), 'PASS')
         original = capture()
         for name in SELECTED:
-            line = f'SUITE breengel CASE {name} PASS ms=1 sha256=' + 'a' * 64
+            line = f'SUITE breengel CASE {name} PASS ms=1' + (' sha256=' + 'a' * 64 if name in pictured_cases() else '')
             for replacement in ('', line.replace(' PASS ', ' FAIL ').replace(' sha256=', ' sha256=') + ' msg=broken'):
                 producer['breengel']['serial'] = original.replace(line + '\n', replacement + ('\n' if replacement else ''))
                 with self.subTest(case=name, replacement=bool(replacement)):

@@ -10,9 +10,9 @@ use resource::{Layout, Resources};
 use std::{collections::BTreeMap, sync::Arc};
 
 #[derive(Default)]
-struct Model { words: BTreeMap<u64, u64>, writes: usize, invalidates: usize, fail: bool }
+struct Model { words: BTreeMap<u64, u64>, writes: usize, reads: usize, invalidates: usize, fail: bool }
 impl vm::Io for Model {
-    fn read(&mut self, at: u64) -> Result<u64, &'static str> { Ok(*self.words.get(&at).unwrap_or(&0)) }
+    fn read(&mut self, at: u64) -> Result<u64, &'static str> { self.reads += 1; Ok(*self.words.get(&at).unwrap_or(&0)) }
     fn write(&mut self, at: u64, value: u64) -> Result<(), &'static str> {
         self.writes += 1; self.words.insert(at, value); Ok(())
     }
@@ -334,4 +334,30 @@ fn span_ce_upload_geometry_matches_the_sampled_image() {
         assert_eq!(&transfer[4..],&[l.pitch,0,width,height]);
         r.unref(id).unwrap();r.collect(&mut a,&mut io).unwrap();
     }
+}
+
+#[test]
+fn unchanged_alias_reuses_publication_but_mapping_epoch_and_failed_bind_do_not() {
+    let mut a=Allocator::new(1<<30,&[]).unwrap(); let mut io=Model::default();
+    let mut r=Resources::<Vec<u8>>::new(); let directory=0x30000000;
+    r.create(&mut a,&mut io,1,1,1,64,64).unwrap();
+    r.bind(&mut io,directory,0x123000,17).unwrap();
+    let sample=|io:&Model|(io.reads,io.writes,io.invalidates);
+    let before=sample(&io);
+    r.bind(&mut io,directory,0x123000,17).unwrap();
+    assert_eq!(sample(&io),before,"unchanged alias repeats PRAMIN reads and TLB invalidation");
+    r.create(&mut a,&mut io,2,1,1,64,64).unwrap();
+    let before=sample(&io);r.bind(&mut io,directory,0x123000,17).unwrap();
+    assert!(io.invalidates>before.2,"new mappings must reach the channel alias");
+    let before=sample(&io);r.bind(&mut io,directory,0x123000,18).unwrap();
+    assert!(io.invalidates>before.2,"a reset incarnation needs fresh publication");
+    r.unref(2).unwrap();r.collect(&mut a,&mut io).unwrap();
+    let before=sample(&io);r.bind(&mut io,directory,0x123000,18).unwrap();
+    assert!(io.invalidates>before.2,"retirement must invalidate the publication cache");
+    r.create(&mut a,&mut io,3,1,1,64,64).unwrap();io.fail=true;
+    assert!(r.bind(&mut io,directory,0x123000,18).is_err());io.fail=false;
+    let before=sample(&io);r.bind(&mut io,directory,0x123000,18).unwrap();
+    assert!(io.invalidates>before.2,"failed publication must retry, never cache success");
+    let before=sample(&io);r.bind(&mut io,directory,0x123000,18).unwrap();assert_eq!(sample(&io),before);
+    r.unref(1).unwrap();r.unref(3).unwrap();r.collect(&mut a,&mut io).unwrap();
 }
