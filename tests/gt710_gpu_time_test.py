@@ -9,6 +9,29 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class GpuTime(unittest.TestCase):
+    def test_ptimer_read_is_inside_serialized_cpu_clock_brackets(self):
+        source = r'''
+#[allow(dead_code)] // Import the complete timestamp API for the clock IO check.
+#[path="MODULE"] mod gpu_time;
+fn main(){
+ use std::cell::{Cell,RefCell};
+ let events=RefCell::new(Vec::new());let calls=Cell::new(0);let reads=Cell::new(0);
+ let sample=gpu_time::clock_sample(
+  ||{events.borrow_mut().push(2);let n=calls.get();calls.set(n+1);100+n*100},
+  |address|{events.borrow_mut().push(address);let n=reads.get();reads.set(n+1);[3,123,3][n]},
+  ||events.borrow_mut().push(1));
+ assert_eq!(sample,Some([100,(3u64<<32)+123,200]));
+ assert_eq!(*events.borrow(),[1,2,1,0x9410,0x9400,0x9410,1,2,1]);
+}
+'''.replace('MODULE', str(ROOT / 'kernel/src/gpu/gk208/gpu_time.rs'))
+        priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
+        with tempfile.TemporaryDirectory(prefix='gt710-clock-order-') as directory:
+            p = Path(directory)
+            (p / 'order.rs').write_text(source)
+            subprocess.run(priority + ['rustc', '--edition=2021', '-Dwarnings',
+                           str(p / 'order.rs'), '-o', str(p / 'order')], check=True)
+            subprocess.run([str(p / 'order')], check=True)
+
     def test_cpu_clock_brackets_and_complete_request_aggregation(self):
         source = r'''
 #[path="MODULE"] mod gpu_time;
@@ -30,6 +53,7 @@ fn main() {
  assert!(gpu_time::sampled(256));assert_eq!(gpu_time::offset(256,0).unwrap(),1216);
  assert_eq!(gpu_time::query(0x02000000,256,0).unwrap()[4],0xf002);
  assert_eq!(gpu_time::decode(256,1,[[256,0,1,0];3])[5],1);
+ assert_eq!(gpu_time::clock_sample(||1,|_|0,||{}),Some([1,0,1]));
 }
 '''.replace('MODULE', str(ROOT / 'kernel/src/gpu/gk208/gpu_time.rs'))
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
@@ -71,6 +95,7 @@ fn main() {
  assert_eq!(gpu_time::end_query(0x02000000,256).unwrap()[4],0xf002);
  let mut stats=[0;18];gpu_time::accumulate(&mut stats,[1,1,1,2,3,1],4,[1,5,6,7,8]);
  assert_eq!(stats[0],1);
+ assert_eq!(gpu_time::clock_sample(||1,|_|0,||{}),Some([1,0,1]));
 }
 '''.replace('MODULE', str(module))
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
