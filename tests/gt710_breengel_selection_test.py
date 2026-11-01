@@ -1,6 +1,7 @@
 """Step 9.1 selection and BreenGL capture scoring."""
 import json
 from pathlib import Path
+import re
 import runpy
 import unittest
 
@@ -18,6 +19,30 @@ PANEL = {'stage-layout', 'tile-stamps', 'tile-thumbnail', 'spotlight-picture', '
 SELECTED = [n for n in NAMES if n.split('/')[0] in WHOLE or
             (n.split('/')[0] in {'windows', 'isolation'} and n not in EXCLUDED) or
             (n.startswith('panel/') and n.split('/')[1] in PANEL)]
+
+
+def pictured_cases():
+    """Read picture declarations independently of the scorer and CASE hash fields."""
+    source = ROOT / 'userspace/programs/src/suite_breengel'
+    names = set()
+    for path in source.rglob('*.rs'):
+        for table, body in re.findall(r'const (\w+): &\[Case\] = &\[(.*?)\];',
+                                      path.read_text(), re.S):
+            category = 'text' if table == 'FONTWATCH' else table.lower().replace('_', '-')
+            names.update(category + '/' + name for name in re.findall(
+                r'pictured!\(\s*"([a-z0-9-]+)"', body))
+    # These use judged() directly, through stage_fixture/scaled_stage or the
+    # images.rs picture_case -> handoff_images path, rather than pictured!.
+    names.update('panel/' + name for name in PANEL)
+    names.update('bmp/' + name for name in
+                 ('decode-fixtures', 'orientation', 'padding', 'roundtrip', 'truncated'))
+    names.update('png-decode/' + name for name in (
+        'gray-depths', 'gray-alpha', 'rgb', 'rgba', 'palette-depths', 'trns-gray',
+        'trns-rgb', 'trns-palette', 'rounding-16bit', 'filters', 'interlace',
+        'interlace-small', 'multi-idat', 'chunk-order', 'ancillary-ignored',
+        'independent-fixtures', 'blit', 'from-disk'))
+    names.update('png-encode/' + name for name in ('decodes', 'stable', 'sizes'))
+    return names
 
 
 def capture():
@@ -39,6 +64,39 @@ def boot():
 
 
 class BreengelSelection(unittest.TestCase):
+    def test_scorer_requires_each_picture_digest(self):
+        pictured = pictured_cases()
+        self.assertFalse(pictured - set(NAMES))
+        # Hashless ordinary records are valid; this rules out requiring hashes
+        # indiscriminately on the complete manifest.
+        original = capture()
+        for name in set(NAMES) - pictured:
+            original = original.replace(f'CASE {name} PASS ms=1 sha256=' + 'a' * 64,
+                                        f'CASE {name} PASS ms=1')
+        producer = {'breengel': {'serial': original, 'boot': boot()}}
+        self.assertEqual(API['cases']('breengel-fronts', '', producer)[0]['result'], 'PASS')
+        for name in sorted(pictured):
+            producer['breengel']['serial'] = original.replace(
+                f'CASE {name} PASS ms=1 sha256=' + 'a' * 64, f'CASE {name} PASS ms=1')
+            with self.subTest(pictured=name):
+                self.assertEqual(API['cases']('breengel-fronts', '', producer)[0]['result'], 'FAIL')
+
+    def test_scorer_allows_failures_only_outside_selection(self):
+        original = capture()
+        outside = [name for name in NAMES if name not in SELECTED]
+        for name in outside:
+            original = original.replace(f'CASE {name} PASS ms=1', f'CASE {name} FAIL ms=1')
+            original = original.replace(f'CASE {name} FAIL ms=1 sha256=' + 'a' * 64,
+                                        f'CASE {name} FAIL ms=1 sha256=' + 'a' * 64 + ' msg=not-implemented')
+        original = original.replace('DONE passed=401 failed=0',
+                                    f'DONE passed=304 failed={len(outside)}')
+        producer = {'breengel': {'serial': original, 'boot': boot()}}
+        self.assertEqual(API['cases']('breengel-fronts', '', producer)[0]['result'], 'PASS')
+        producer['breengel']['serial'] = original.replace(
+            'CASE windows/every-target FAIL ms=1 sha256=' + 'a' * 64,
+            'CASE windows/every-target FAIL ms=1')
+        self.assertEqual(API['cases']('breengel-fronts', '', producer)[0]['result'], 'FAIL')
+
     def test_selection(self):
         step = json.loads((ROOT / 'docs/gui/gt710-step-9-1.json').read_text())
         self.assertEqual(set(step), {'id', 'suite', 'cases'})
