@@ -162,48 +162,57 @@ fn the_gate_pins_the_marker_on_three_smp_legs() {
     );
 }
 
+// fe622d7d added a separate, allocating DMAR copy for GPU DMA admission.
+// Keep the original denylist over the rest of this module (including MADT's
+// structs and helpers), and refuse an edge back into that excluded entry point.
+fn madt_allocation_violations(acpi: &str) -> Vec<String> {
+    let dmar = function_body(acpi, "dma_remapping_table");
+    let reader = acpi.replacen(&dmar, "", 1);
+    let mut violations = Vec::new();
+    if reader.contains("dma_remapping_table") {
+        violations.push("MADT reader may reach the allocating DMAR reader".to_owned());
+    }
+    // This remains a spelling denylist, with the limitation in the header.
+    let denied = [
+        "alloc::", "Vec<", "vec![", "Box<", "Box::", "String", "format!",
+        "to_string", "to_vec", "collect()", "BTreeMap", "VecDeque",
+    ];
+    for (index, line) in reader.lines().enumerate() {
+        let code = line.trim_start();
+        if code.starts_with("//") || code.starts_with('*') { continue; }
+        for spelling in denied {
+            if code.contains(spelling) {
+                violations.push(format!("MADT allocation `{spelling}` at line {}: {code}", index + 1));
+            }
+        }
+    }
+    if reader.contains(".lock()") {
+        violations.push("the MADT reader must not take a lock".to_owned());
+    }
+    violations
+}
+
 #[test]
 fn the_madt_reader_allocates_nothing() {
     let acpi = read("kernel/src/arch_impl/x86_64/acpi.rs");
+    assert_eq!(madt_allocation_violations(&acpi), Vec::<String>::new());
+}
 
-    // The alloc surface a no_std kernel can reach. A denylist sees only what
-    // it lists; see this file's header for that limitation.
-    let denied = [
-        "alloc::",
-        "Vec<",
-        "vec![",
-        "Box<",
-        "Box::",
-        "String",
-        "format!",
-        "to_string",
-        "to_vec",
-        "collect()",
-        "BTreeMap",
-        "VecDeque",
-    ];
-    for (index, line) in acpi.lines().enumerate() {
-        let code = line.trim_start();
-        if code.starts_with("//") || code.starts_with('*') {
-            continue;
-        }
-        for spelling in denied {
-            assert!(
-                !code.contains(spelling),
-                "the MADT reader must not allocate; `{spelling}` at \
-                 kernel/src/arch_impl/x86_64/acpi.rs:{}: {}",
-                index + 1,
-                line.trim()
-            );
+#[test]
+fn madt_allocation_boundary_includes_helpers_and_rejects_a_dmar_call() {
+    let acpi = read("kernel/src/arch_impl/x86_64/acpi.rs");
+    for name in ["read_madt", "census_of_madt", "root_table", "checksum_ok", "record"] {
+        let body = function_body(&acpi, name);
+        let open = body.find('{').unwrap();
+        for injected in ["let x = alloc::vec::Vec::<u8>::new();", "let x = SHARED.lock();",
+            "dma_remapping_table(None, 0);"] {
+            let mut mutated_body = body.clone();
+            mutated_body.insert_str(open + 1, injected);
+            let mutated = acpi.replacen(&body, &mutated_body, 1);
+            assert_ne!(mutated, acpi, "mutation did not reach {name}");
+            assert!(!madt_allocation_violations(&mutated).is_empty(), "accepted {injected} in {name}");
         }
     }
-
-    // It must also not take a lock: it runs once at boot, but the property is
-    // what makes the module safe to call from anywhere later.
-    assert!(
-        !acpi.contains(".lock()"),
-        "the MADT reader must not take a lock"
-    );
 }
 
 #[test]
