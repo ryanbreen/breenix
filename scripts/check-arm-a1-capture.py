@@ -15,14 +15,16 @@ import re
 def score(capture: Path) -> dict:
     reasons = []
 
-    def read(name):
+    def read(name, errors="strict"):
         try:
-            return (capture / name).read_text()
+            return (capture / name).read_text(encoding="utf-8", errors=errors)
         except (OSError, UnicodeError):
             reasons.append(f"missing or unreadable {name}")
             return ""
 
-    serial = read("serial.txt").replace("\r", "")
+    # Serial is a byte stream. Preserve non-text bytes without merging or
+    # inventing ASCII records; keep identity and exit-status decoding strict.
+    serial = read("serial.txt", errors="surrogateescape").replace("\r", "")
     status = read("exit-status").strip()
     commit = read("commit").strip()
     dirty = read("dirty").strip()
