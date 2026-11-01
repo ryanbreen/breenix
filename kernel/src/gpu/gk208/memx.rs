@@ -441,3 +441,24 @@ impl Session {
   send(io,1,[self.base,finish])
  }
 }
+
+#[cfg(test)]
+mod limits_test {
+ use super::*;
+ #[test]
+ fn invalid_pll_limits_return_errors_without_panicking() {
+  let good=Config::from([("refclk",27000),("min_freq",600000),("max_freq",1200000),
+   ("min_inputfreq",10000),("max_inputfreq",50000),("min_m",1),("max_m",31),
+   ("min_n",1),("max_n",255),("min_p",1),("max_p",63)]);
+  assert!(pll(&good,900000).is_ok());
+  for name in ["refclk","min_freq","max_freq","min_inputfreq","max_inputfreq","min_m","max_m","min_n","max_n","min_p","max_p"] {
+   let mut c=good.clone();c.insert(name,0);
+   assert!(pll(&c,900000).is_err(),"zero {name}");
+  }
+  for (min,max) in [("min_freq","max_freq"),("min_inputfreq","max_inputfreq"),("min_m","max_m"),("min_n","max_n"),("min_p","max_p")] {
+   let mut c=good.clone();c.insert(min,c[max]+1);
+   assert!(pll(&c,900000).is_err(),"inverted {min}");
+  }
+  assert!(pll(&good,0).is_err());
+ }
+}
