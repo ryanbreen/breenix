@@ -130,6 +130,24 @@ fn unref(id:u32)->Option<gk208::adapter::Request>{
     gk208::resource::resource_unref(dev::Tag,id,backing)
 }
 #[test]
+fn hundred_window_cycles_return_native_census_and_charges_after_unref(){
+    let baseline=gk208::resource::ownership_census();
+    let baseline_usage=usage();
+    for cycle in 0..100 {
+        PROCESS.with(|p|p.borrow().0.tree.set(3*64*1024));
+        let ids:Vec<_>=(0..3).map(|_|make(128,64).unwrap()).collect();
+        let holds:Vec<_>=ids.iter().map(|&id|gk208::ce::with_resources(|r,_,_|r.hold(id)).unwrap()).collect();
+        let receipts:Vec<_>=ids.into_iter().map(|id|unref(id).unwrap()).collect();
+        PROCESS.with(|p|p.borrow().0.tree.set(0));
+        drop(receipts);
+        assert_eq!(usage().0,baseline_usage.0+98_304,"cycle {cycle}: device holds lost their charge");
+        drop(holds);
+        gk208::ce::with_resources(|r,a,io|r.collect(a,io)).unwrap();
+        assert_eq!(usage(),baseline_usage,"cycle {cycle}: charges did not return");
+        assert_eq!(gk208::resource::ownership_census(),baseline,"cycle {cycle}: native registry did not return");
+    }
+}
+#[test]
 fn b12_split_and_native_census_keep_vram_out_of_vmsize(){
     PROCESS.with(|p|p.borrow().0.tree.set(3*64*1024));
     let ids:Vec<_>=(0..3).map(|_|make(128,64).unwrap()).collect();
