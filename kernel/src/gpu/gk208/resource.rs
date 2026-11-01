@@ -451,6 +451,7 @@ impl<B> Resources<B> {
         }
         let pdes_valid = self.alias_pdes_valid;
         self.alias_pdes_valid = false;
+        let mut written = false;
         for (index,_) in space.table_ranges() {
             // A retained SPT keeps its PDE pointer. PTE publications still
             // invalidate below; reclamation removes the owned index before reuse.
@@ -460,8 +461,11 @@ impl<B> Resources<B> {
             if old != 0 && old != value { return Err("native resource PDE alias occupied"); }
             if !self.alias_indices.contains(&index) { self.alias_indices.push(index); }
             io.write(directory+index*8,value)?;
+            written = true;
         }
-        io.flush()?;
+        // Space::publish already drained PTE writes. Only new PDE writes
+        // need this additional publication before the channel invalidation.
+        if written { io.flush()?; }
         io.invalidate(directory)?;
         self.alias_current = true;
         self.alias_pdes_valid = true;
