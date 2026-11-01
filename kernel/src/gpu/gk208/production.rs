@@ -106,18 +106,18 @@ impl Controller {
     fn memory_pass(&mut self,phase:&str,former:u32,target:u32,intermediate:bool,recovery:bool)->Result<(),&'static str> {
         let frequency=if intermediate {former.min(target)}else{target};
         let mut io=Io(Registers(self.base));
-        super::ce::with_clock_owner(|_,_,_| {
+        super::ce::with_clock_owner(|_,evo,console| {
             if !recovery {self.cool()?;self.gpu_health()?;}
             let session=memx::Session::init(&mut io)?;
             let calculated=memx::calculate_pass(&self.rom,self.strap,former,target,intermediate,&mut |a|io.0.read(a as usize));
             let plan=match calculated {Ok(p)=>p,Err(e)=>{io.0.write(0x10a580,0);return Err(e);}};
             session.load(&mut io,&plan.words())?;
-            for &(a,v) in &plan.cpu_before {io.0.write(a as usize,v);}
             // Recovery must still run when the display is already unhealthy.
             let before=native::memx_display_boundary(&mut io.0,phase,false);
             if !recovery {
                 if let Err(e)=before {io.0.write(0x10a580,0);return Err(e);}
             }
+            for &(a,v) in &plan.cpu_before {io.0.write(a as usize,v);}
             let reply=session.exec(&mut io);
             let health=native::memx_display_boundary(&mut io.0,phase,true);
             // Preserve C6's EXEC -> reply/health -> CPU-after ordering. The
@@ -129,7 +129,16 @@ impl Controller {
             }
             if !policy::within_one_percent(self.sample().memory_khz,frequency) {return Err("memory readback more than 1 percent off");}
             health?;
-            if !recovery {self.cool()?;self.gpu_health()?;}
+            if !recovery {
+                // Complete the retained console's first present after each EXEC
+                // before accepting the transition or publishing full clocks.
+                native::present(evo,&mut io.0,super::present::Surface {
+                    resource:u32::MAX,address:console.vram,width:console.width as u32,
+                    height:console.height as u32,pitch:console.pitch as u32,
+                    block_height:0,format:0,dma:1,
+                })?;
+                self.cool()?;self.gpu_health()?;
+            }
             Ok(())
         })
     }

@@ -374,11 +374,20 @@ fn complete(
         regs, total, notifier, limits, coefficients, route, scripts,
     })
 }
-// Probe-only route and one pending first-present observation. The CE owner
+// Clock-transition route and one pending first-present observation. The CE owner
 // serializes these EXEC boundaries against native publication.
 static MEMX_ROUTE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
+static MEMX_CLEAR_AVAILABLE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 static MEMX_PRESENT_PHASE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
+fn memx_pending_check(regs:&mut Registers,head:u32,sor:u32,health:super::memx_display::Health)
+    -> (Option<super::memx_display::Health>,Result<(),&'static str>) {
+    use core::sync::atomic::Ordering;
+    let mut allow=MEMX_CLEAR_AVAILABLE.load(Ordering::Acquire);
+    let result=super::memx_display::pending_check(regs,head,sor,health,&mut allow);
+    MEMX_CLEAR_AVAILABLE.store(allow,Ordering::Release);
+    result
+}
 fn memx_health_record(phase: &str, point: &str, head: u32, sor: u32,
     health: super::memx_display::Health,
 ) {
@@ -399,7 +408,7 @@ pub(in crate::gk208) fn memx_display_guard(regs: &Registers) -> Result<(), &'sta
     if route==u32::MAX {return Err("C5f native display route absent");}
     let (head,sor)=(route&255,route>>8);
     let health=super::memx_display::Health::read(&mut Registers(regs.0),head,sor);
-    let result=health.check();
+    let result=memx_pending_check(&mut Registers(regs.0),head,sor,health).1;
     if let Err(reason)=result {
         memx_health_record("guard","fresh-fault",head,sor,health);
         crate::serial_println!("GT710_C5F_ERROR {}",reason);
@@ -416,8 +425,8 @@ pub(in crate::gk208) fn memx_display_boundary(regs: &mut Registers, phase: &str,
     let health=super::memx_display::Health::read(regs,head,sor);
     memx_health_record(phase,if after_reply {"after-exec"}else{"before-exec"},head,sor,health);
     if !after_reply {return health.check();}
-    // K6 admits the isolated sticky fault only for the target and return EXECs.
-    let (readback,result)=super::memx_display::after_exec(regs,head,sor,health,phase!="intermediate");
+    MEMX_CLEAR_AVAILABLE.store(true,Ordering::Release);
+    let (readback,result)=memx_pending_check(regs,head,sor,health);
     if let Some(readback)=readback {
         crate::serial_println!("GT710_C5F_UNDERFLOW_CLEAR phase={} register={:#x} before={:#x} clear_mask=0x111 clear_data=0x10 arm_data=0x1 readback={:#x}",
             phase,0x616308+head*0x800,health.underflow,readback.underflow);
@@ -577,14 +586,12 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface,
 ) -> Result<super::present::Receipt, &'static str> {
     let _cost = super::cost::phase(super::cost::Slot::Evo);
-    {
-        let phase=MEMX_PRESENT_PHASE.swap(0,core::sync::atomic::Ordering::AcqRel);
-        if phase!=0 {
-            let name=match phase {1=>"intermediate",2=>"target",3=>"return-intermediate",_=>"return"};
-            let health=super::memx_display::Health::read(regs,evo.head,evo.sor);
-            memx_health_record(name,"first-present",evo.head,evo.sor,health);
-            health.check()?;
-        }
+    let phase=MEMX_PRESENT_PHASE.load(core::sync::atomic::Ordering::Acquire);
+    if phase!=0 {
+        let name=match phase {1=>"intermediate",2=>"target",3=>"return-intermediate",_=>"return"};
+        let health=super::memx_display::Health::read(regs,evo.head,evo.sor);
+        memx_health_record(name,"first-present-before",evo.head,evo.sor,health);
+        memx_pending_check(regs,evo.head,evo.sor,health).1?;
     }
     let h=evo.head as usize*0x300;
     let blank=regs.read(0x64041c+h);
@@ -649,11 +656,13 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
         }
     };
     view.verify(regs,head)?;
-    if regs.read(0x61009c) != 0 || regs.read(0x616308+head as usize*0x800)&0x111 != 1
-        || regs.read(0x61c004+evo.sor as usize*0x800)&0x80000001 != 1
-        || regs.read(0x61c030+evo.sor as usize*0x800)&0x10000000 != 0 {
-        return Err("native present lost display health");
-    }
+    let health=super::memx_display::Health::read(regs,evo.head,evo.sor);
+    if phase!=0 {
+        memx_health_record("present","first-present",evo.head,evo.sor,health);
+        memx_pending_check(regs,evo.head,evo.sor,health).1?;
+        MEMX_CLEAR_AVAILABLE.store(false,core::sync::atomic::Ordering::Release);
+        MEMX_PRESENT_PHASE.store(0,core::sync::atomic::Ordering::Release);
+    }else{health.check()?;}
     super::display_evidence::record(regs, head, surface, &receipt);
     Ok(receipt)
 }

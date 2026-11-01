@@ -89,8 +89,7 @@ impl Health {
     }
 }
 
-/// Called once at the reply boundary, under the native resource-owner lock.
-/// Later samples use Health::check, with no path to this one-time clear.
+/// Clear one isolated underflow while the post-EXEC allowance is available.
 pub fn after_exec(io: &mut impl Io, head: u32, sor: u32, health: Health,
     allow_clear: bool,
 ) -> (Option<Health>, Result<(), &'static str>) {
@@ -106,4 +105,14 @@ pub fn after_exec(io: &mut impl Io, head: u32, sor: u32, health: Health,
     io.write(reg, (old & !0x111) | 1);
     let readback = Health::read(io, head, sor);
     (Some(readback), readback.check())
+}
+
+/// Keep the allowance through a healthy EXEC boundary until the first present.
+/// A clear consumes it even when the readback fails; callers close the window
+/// once that present completes.
+pub fn pending_check(io:&mut impl Io,head:u32,sor:u32,health:Health,allow:&mut bool)
+    -> (Option<Health>,Result<(),&'static str>) {
+    let result=after_exec(io,head,sor,health,*allow);
+    if result.0.is_some() {*allow=false;}
+    result
 }
