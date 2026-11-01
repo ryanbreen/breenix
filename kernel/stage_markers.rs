@@ -364,3 +364,30 @@ pub fn arm64_ribbon(repo:&Path)->Result<Vec<String>,String> {
     }
     Ok(out)
 }
+
+/// Guest serial stages from the metal path, in its declared order. Host-only
+/// delivery events have no guest producer and are excluded.
+pub fn metal_ribbon(repo: &Path) -> Result<Vec<String>, String> {
+    let path = read_json(&repo.join("docs/metal/boot-path.json"))?;
+    let catalog = read_json(&catalog_path(repo, "x86_64"))?;
+    let names: BTreeMap<_, _> = catalog.get("stages").as_array().ok_or("no stages")?.iter()
+        .filter_map(|s| Some((s.get("name").as_str()?, s.get("marker").as_str()?))).collect();
+    let mut out = Vec::new();
+    for milestone in path.get("milestones").as_array().ok_or("no milestones")? {
+        if let Some(stages) = milestone.get("stages").get("x86_64").as_array() {
+            for stage in stages {
+                let marker = if let Some(name) = stage.as_str() {
+                    *names.get(name).ok_or_else(|| format!("unknown metal stage {name}"))?
+                } else if let Some(marker) = stage.get("marker").as_str() {
+                    marker
+                } else if stage.get("host").as_str().is_some() {
+                    continue;
+                } else {
+                    return Err("missing metal stage marker".into());
+                };
+                out.push(marker.to_owned());
+            }
+        }
+    }
+    Ok(out)
+}
