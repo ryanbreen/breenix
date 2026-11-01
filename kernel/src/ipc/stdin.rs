@@ -19,15 +19,15 @@ pub const STDIN_BUF_SIZE: usize = 4096;
 /// Thread IDs blocked waiting for stdin input
 static BLOCKED_READERS: Mutex<VecDeque<u64>> = Mutex::new(VecDeque::new());
 
-/// The global stdin buffer
+/// Raw ARM UART bytes await task-context line discipline admission here.
 #[cfg(target_arch = "aarch64")]
-static STDIN_BUFFER: StdinBufferLock = StdinBufferLock::new(SerialRx {
+static SERIAL_BUFFER: StdinBufferLock = StdinBufferLock::new(SerialRx {
     mask: crate::serial_aarch64::disable_rx_interrupt,
     rearm: crate::serial_aarch64::resume_rx_interrupt,
     acknowledge_drained: crate::serial_aarch64::clear_rx_interrupt,
 });
 
-#[cfg(not(target_arch = "aarch64"))]
+/// Cooked console input, populated only after terminal processing.
 static STDIN_BUFFER: Mutex<StdinBuffer> = Mutex::new(StdinBuffer::new());
 
 #[path = "stdin_buffer.rs"]
@@ -72,6 +72,7 @@ impl StdinBufferLock {
         }
     }
 
+    #[cfg(feature = "boot_tests")]
     fn lock(&self) -> StdinGuard<'_> {
         StdinGuard::new(self.ring.lock(), self)
     }
@@ -166,10 +167,32 @@ impl Drop for StdinGuard<'_> {
     }
 }
 
-/// The ARM64 UART interrupt's receiver for the live stdin ring.
+/// The ARM64 UART interrupt's receiver for the raw input ring.
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn receive_serial_from_irq(next: impl FnMut() -> Option<u8>) {
-    STDIN_BUFFER.receive_serial(next);
+    SERIAL_BUFFER.receive_serial(next);
+}
+
+/// Admit UART bytes to the console, independently of the visible VT. A busy
+/// discipline leaves the oldest byte queued; releasing room rearms UART RX.
+/// Called by the console worker after the receive interrupt queues input.
+#[cfg(target_arch = "aarch64")]
+pub(crate) fn drain_serial_input() {
+    let Some(tty) = crate::tty::console() else { return };
+    // Bound one worker pass; neither UART nor terminal contention may spin.
+    for _ in 0..256 {
+        let admitted = crate::arch_without_interrupts(|| {
+            let Some(mut ring) = SERIAL_BUFFER.try_lock() else { return false };
+            let Some(byte) = ring.front_byte() else { return false };
+            if !tty.input_char_from_nonblock(byte, crate::tty::InputSource::Serial) {
+                return false;
+            }
+            let mut consumed = [0];
+            ring.read_bytes(&mut consumed);
+            true
+        });
+        if !admitted { break; }
+    }
 }
 
 #[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]

@@ -57,6 +57,12 @@ impl StdinBuffer {
         self.len + self.eof_len >= STDIN_BUF_SIZE - 1
     }
 
+    /// Observe the next raw UART byte without consuming it before admission.
+    #[cfg(target_arch = "aarch64")]
+    pub(super) fn front_byte(&self) -> Option<u8> {
+        (self.len != 0).then(|| self.buffer[self.read_pos])
+    }
+
     /// How many more bytes or EOF records the buffer takes.
     pub(super) fn room(&self) -> usize {
         (STDIN_BUF_SIZE - 1).saturating_sub(self.len + self.eof_len)
