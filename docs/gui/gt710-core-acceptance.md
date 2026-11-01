@@ -118,10 +118,10 @@ with the console's 330 s bound.
 Current production admission (coordinator G2 ruling, 2026-11-01): main
 `f3ceabdf` added the executable format/profile probes. The producer now requires
 admitted CAPS and their paired probe images, as `resources_row` checks them,
-and all 170 real shared-suite results in manifest order. DONE must agree with
-those results, with no skips; identity, profile, timing, READY and memory checks
-remain. The diagnostic's row, dispatch and negative controls are unchanged.
-The refusal-only production outcome below records the historical 8.1 context.
+and 170 PASS results in manifest order. DONE must report passed=170,
+failed=0, skipped=0, total=170, and the capture must exit 0. Identity, profile,
+timing, READY and memory checks remain. The diagnostic's row, dispatch and negative controls are unchanged.
+The refusal-only production outcome was the historical 8.1 context.
 
 
 The host-run `core` category has `row`, `dispatch` and `producer`; its metal
@@ -226,10 +226,10 @@ startup-window maximum above 500 µs, dirty or mismatched builds/tools, a failed
 console or diagnostic exit, gaps or missing captures fail acceptance.
 
 `producer` requires its own named production GPU capture: START, the shared manifest's 170 CASE identities
-in order, DONE with 170 failures and no skips, elapsed time and READY. Each
-case's sole failure must name CAPS status 2 and `missing b8g8r8a8-render`;
-NO_DEVICE and other admission failures fail. The memory and 900-second rules
-apply to that GPU boot, whose exit 1 is expected for 170 honest refusals.
+in order with PASS results, DONE passed=170 failed=0 skipped=0 total=170,
+elapsed time and READY. Executable CAPS origins and paired probe images must
+satisfy `resources_row`. The memory and 900-second rules apply to that GPU
+boot, which must exit 0.
 The milestone 8 rendering gate remains 170 passing cases with its shared pixels
 and existing bounds.
 

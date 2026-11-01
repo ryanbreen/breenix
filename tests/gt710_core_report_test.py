@@ -238,14 +238,14 @@ class CoreReport(unittest.TestCase):
         serial = self.joined()
         resources = runpy.run_path(str(ROOT / 'tests/gt710_resources_report_test.py'))
         with tempfile.TemporaryDirectory() as tmp:
-            text = resources['stage'](Path(tmp)) + resources['transcript']()
+            text = resources['stage'](Path(tmp)) + resources['transcript'](all_pass=True)
         API['core_producer'](text, API['core_row'](serial), gpu_boot())
         with self.assertRaises(ValueError):
             API['core_producer'](gpu_serial(), API['core_row'](serial), gpu_boot())
-        changes=[text.replace(' PASS ', ' SKIP ',1), text.replace(' FAIL ', ' PASS ',1),
+        changes=[text.replace(' PASS ', ' SKIP ',1), text.replace(' PASS ms=1', ' FAIL ms=1 msg=broken',1),
                  text.replace(' PASS ms=1', ' UNKNOWN ms=1',1),
                  text.replace(' PASS ms=1', ' PASS ms=1 msg=contradiction',1),
-                 text.replace('passed=52 failed=118', 'passed=53 failed=117'),
+                 text.replace('passed=170 failed=0', 'passed=169 failed=1'),
                  text.replace('SUITE gpu START cases=170\n',''), text.replace('SUITE gpu DONE','SUITE other DONE'),
                  text.replace('SUITE gpu ELAPSED ms=900000\n',''), text.replace('ms=900000','ms=900001'),
                  text.replace('SUITE_SEQUENCE READY gpu\n',''), text+'KERNEL PANIC: broken\n',
@@ -271,7 +271,7 @@ class CoreReport(unittest.TestCase):
             # Ordinary RAM-disk run.json has no bootedCommit; the retained commit file is authoritative.
             boot=gpu_boot(); del boot['bootedCommit']
             files={'run.json':json.dumps(boot),'serial.txt':gpu_serial(),'events.jsonl':json.dumps(dict(event='final-marker',seconds=30))+'\n',
-                   'ended':'1\n','exit-status':'1\n','dirty':'0\n','commit':SHA+'\n'}
+                   'ended':'1\n','exit-status':'0\n','dirty':'0\n','commit':SHA+'\n'}
             startup = b'GT710_CORE_STARTUP {"schema":1,"irq_masked_max_us":37,"ready":true}\n'
             anchor = f'{len(startup)} {hashlib.sha256(startup).hexdigest()}\n'
             resources = runpy.run_path(str(ROOT / 'tests/gt710_resources_report_test.py'))
@@ -281,7 +281,7 @@ class CoreReport(unittest.TestCase):
             bulk = startup + (companion / 'gt710-pixels.rle').read_bytes()
             bulk_anchor = f'{len(bulk)} {hashlib.sha256(bulk).hexdigest()}\n'
             files['serial.txt'] = ('GT710_CORE_STARTUP_BULK ' + anchor + admission
-                + 'GT710_BULK ' + bulk_anchor + resources['transcript']())
+                + 'GT710_BULK ' + bulk_anchor + resources['transcript'](all_pass=True))
             for name,text in files.items(): (companion/name).write_text(text)
             (companion/'gt710-pixels.rle').write_bytes(bulk)
             diagnostic=path/'core-diagnostic'; diagnostic.mkdir()
@@ -302,7 +302,7 @@ class CoreReport(unittest.TestCase):
             self.assertEqual([c['result'] for c in cases],['PASS']*3)
             report=dict(boot=primary['id'],commit=SHA,milestone='metal-gt710/gpu-core',producerBoot=boot['id'],cases=cases)
             self.assertIn('3 cases passed',API['score'](manifest,effort,report,serial,primary,SHA,[],producer))
-            for name,text in [('commit','b'*40),('dirty','1'),('ended',''),('exit-status','124'),
+            for name,text in [('commit','b'*40),('dirty','1'),('ended',''),('exit-status','1'),('exit-status','124'),
                               ('events.jsonl',json.dumps(dict(event='console-gap'))+'\n')]:
                 (companion/name).write_text(text)
                 with self.subTest(name=name),self.assertRaises(ValueError): API['core_capture'](path,SHA)
