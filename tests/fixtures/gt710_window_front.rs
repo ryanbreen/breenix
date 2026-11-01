@@ -23,7 +23,9 @@ impl Pages {
     fn charge_copy(&mut self,_:Charge){}
 }
 struct Charge;
-impl Charge {fn new(_:u64,_:u64,_:bool)->Result<Self,i64>{Ok(Self)}}
+impl Charge {fn new(_:u64,bytes:u64,_:bool)->Result<Self,i64>{
+    if CHARGE_LIMIT.with(|limit|bytes>limit.get()){Err(ENOMEM)}else{Ok(Self)}
+}}
 struct Staging{pages:Pages}
 impl Staging {fn new(_:u64,n:usize)->Result<Self,i64>{Ok(Self{pages:Pages::new(n.div_ceil(PAGE)).unwrap()})}}
 #[derive(Clone,Copy)] struct LastWrite{ctx:u32,device_ctx:u32,fence:u64,serial:u64,answer:u32,kind:u32}
@@ -45,6 +47,7 @@ thread_local!{
     static CAPTURE_ACTION:RefCell<Option<Box<dyn FnOnce()>>>=RefCell::new(None);
     static INTERRUPT_COPY:RefCell<bool>=const{RefCell::new(false)};
     static FAIL_COPY:RefCell<bool>=const{RefCell::new(false)};
+    static CHARGE_LIMIT:std::cell::Cell<u64>=const{std::cell::Cell::new(u64::MAX)};
 }
 fn event(e:&'static str){EVENTS.with(|v|v.borrow_mut().push(e));}
 fn with_core<T>(f:impl FnOnce(&mut Core)->T)->Option<T>{Some(CORE.with(|v|f(&mut v.borrow_mut())))}
@@ -244,6 +247,7 @@ mod window {
     pub fn len()->usize{REGISTRY.lock().windows[&1].buffers.len()}
 }
 fn setup(){
+    CHARGE_LIMIT.with(|limit|limit.set(u64::MAX));
     INTERRUPT_COPY.with(|f|*f.borrow_mut()=false);
     window::reset();USER.with(|u|u.borrow_mut().fill(0));EVENTS.with(|e|e.borrow_mut().clear());FAIL_COPY.with(|f|*f.borrow_mut()=false);
     with_core(|c|{*c=Core::default();c.contexts.insert(1,Ctx{state:CtxState::Live,dropped:false,busy:false,inflight:vec![],objects:Objects,dx:Dx,vb:3,scratch:4,scratch_texture:5});
@@ -298,6 +302,13 @@ fn end(id:u32,w:&gpu::window_targets::Writer){w.end_access();with_core(|c|{c.res
     }
 }
 #[test] fn private_clear_uses_native_draw_release(){setup();assert_eq!(window::target(1).clear(),Ok(()));assert!(EVENTS.with(|e|e.borrow().contains(&"gpu-clear-complete")));}
+
+#[test] fn resident_private_copy_and_clear_fit_the_existing_rlimit_slack(){
+    setup();CHARGE_LIMIT.with(|limit|limit.set(64*1024));
+    assert_eq!(window::target(1).copy_from(&window::target(0),&[Rect::new(0,0,8,8)]),Ok(()),
+        "resident replay must not charge the channel-owned shader prefix");
+    assert_eq!(window::target(1).clear(),Ok(()));
+}
 
 #[test] fn replay_can_read_a_source_while_capture_keeps_its_tree_pinned(){
     setup();
