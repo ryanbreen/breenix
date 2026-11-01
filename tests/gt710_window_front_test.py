@@ -56,6 +56,7 @@ class WindowFronts(unittest.TestCase):
             'struct TreePin {', 'impl Drop for TreePin {', 'pub fn capture(')))
         # Exercise backend 6 on the ARM host, without selecting a guest target.
         fixture = fixture.replace('#[cfg(target_arch = "x86_64")]', '').replace('pub(super)', 'pub(crate)')
+        fixture = fixture.replace('#[cfg(not(target_arch = "x86_64"))]', '#[cfg(any())]')
         with tempfile.TemporaryDirectory(prefix='gt710-window-front-') as tmp:
             p = Path(tmp)
             native = (ROOT / 'kernel/src/gpu/gk208/encode.rs').read_text()

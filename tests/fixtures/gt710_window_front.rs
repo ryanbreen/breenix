@@ -1,7 +1,7 @@
 #![allow(dead_code)] // Production records expose fields covered by other host harnesses.
 extern crate alloc;
 use std::{cell::RefCell, collections::{BTreeMap, VecDeque}, sync::{Arc, Mutex, MutexGuard, atomic::Ordering}};
-use gpu_abi::{self as abi, fence_status, format, stream::{self, TargetInfo}};
+use gpu_abi::{self as abi, fence_status, format, stream::{self, Resolver, TargetInfo}};
 use breengel_abi::{Plain, Rect};
 use gpu_abi::Plain as GpuPlain;
 const PAGE:usize=4096;
@@ -42,6 +42,7 @@ thread_local!{
     static EVENTS:RefCell<Vec<&'static str>>=const{RefCell::new(Vec::new())};
     static PROGRESS:RefCell<Option<Box<dyn FnOnce()>>>=RefCell::new(None);
     static CAPTURE_ACTION:RefCell<Option<Box<dyn FnOnce()>>>=RefCell::new(None);
+    static INTERRUPT_COPY:RefCell<bool>=const{RefCell::new(false)};
     static FAIL_COPY:RefCell<bool>=const{RefCell::new(false)};
 }
 fn event(e:&'static str){EVENTS.with(|v|v.borrow_mut().push(e));}
@@ -77,9 +78,13 @@ mod dev {
 fn exec_ok(build:impl FnOnce(Tag)->Option<Request>,_:u32,_:&[u32])->Result<Done,i64>{
     assert!(matches!(build(Tag::Sync(0)),Some(Request::Attach))); Ok(Done{answer:abi::gk208::SUCCESS,echoed:0})
 }
-fn exec_req(_:u64,req:Request,_:u32,holds:&[u32],_:&[u32])->Result<Done,i64>{
+fn exec_req(_:u64,req:Request,_:u32,holds:&[u32],reading:&[u32])->Result<Done,i64>{
     let Request::Native(chunk)=req else{event("virtual-submit");return Err(EIO);};
     event("native-submit");
+    if INTERRUPT_COPY.with(|f|*f.borrow()){
+        with_core(|c|for id in reading{c.resources.get_mut(id).unwrap().reading=true;});
+        return Err(EINTR);
+    }
     if FAIL_COPY.with(|f|*f.borrow()){return Err(EIO);}
     if let Some((src,dst,r))=chunk.copy {
         assert!(holds.contains(&src) && holds.contains(&dst));
@@ -234,6 +239,7 @@ mod window {
     pub fn len()->usize{REGISTRY.lock().windows[&1].buffers.len()}
 }
 fn setup(){
+    INTERRUPT_COPY.with(|f|*f.borrow_mut()=false);
     window::reset();USER.with(|u|u.borrow_mut().fill(0));EVENTS.with(|e|e.borrow_mut().clear());FAIL_COPY.with(|f|*f.borrow_mut()=false);
     with_core(|c|{*c=Core::default();c.contexts.insert(1,Ctx{state:CtxState::Live,dropped:false,busy:false,inflight:vec![],objects:Objects,dx:Dx,vb:3,scratch:4,scratch_texture:5});
         for id in [1,2]{let mut image=vec![id as u8*0x11;256];for p in image.chunks_exact_mut(4){p[3]=0x13;}
@@ -287,3 +293,12 @@ fn end(id:u32,w:&gpu::window_targets::Writer){w.end_access();with_core(|c|{c.res
     }
 }
 #[test] fn private_clear_uses_native_draw_release(){setup();assert_eq!(window::target(1).clear(),Ok(()));assert!(EVENTS.with(|e|e.borrow().contains(&"gpu-clear-complete")));}
+
+#[test] fn interrupted_replay_retains_source_exclusion_until_device_completion(){
+    setup();let source=window::target(0);let dest=window::target(1);
+    INTERRUPT_COPY.with(|f|*f.borrow_mut()=true);
+    assert_eq!(dest.copy_from(&source,&[Rect::new(0,0,8,8)]),Err(EINTR as i32));
+    assert_eq!(source.seal(false),Err(breengel_abi::errno::EBUSY),"source became writable under queued GPU copy");
+    with_core(|c|for r in c.resources.values_mut(){r.reading=false;});
+    assert_eq!(source.seal(false),Ok(()));
+}
