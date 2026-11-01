@@ -380,7 +380,7 @@ impl Target {
                 let count = rows.min(self.height as usize - first);
                 let args = abi::Readback { target:self.handle,y:first as u32,
                     width:self.width,height:count as u32,..abi::Readback::ZERO };
-                let seen = observe(owner,self.id,last,&backing,pitch,format::B8G8R8A8,args,&stage.pages,Some(context.id))
+                let seen = observe(owner,self.id,last,&backing,pitch,format::B8G8R8A8,args,&stage.pages,Some(context.id), #[cfg(target_arch = "x86_64")] None)
                     .map_err(|(errno,_)| errno)?;
                 if seen.unwritten != 0 { return Err(EIO); }
                 for local in 0..count {

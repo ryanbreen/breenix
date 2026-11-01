@@ -2107,9 +2107,19 @@ enum Stop {
 
 /// Wait until `f` (run under the core's lock after taking completions) returns a value,
 /// the absolute `deadline` passes, or a signal arrives.
-fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mut Core) -> Option<T>) -> Result<T, Stop> {
+fn wait_for<T>(deadline: Option<u64>, interruptible: bool, f: impl FnMut(&mut Core) -> Option<T>) -> Result<T, Stop> {
+    wait_for_traced(deadline, interruptible, f, #[cfg(target_arch = "x86_64")] None)
+}
+
+fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mut Core) -> Option<T>,
+    #[cfg(target_arch = "x86_64")] trace: Option<(&crate::gk208::timing::Readback, u64)>,
+) -> Result<T, Stop> {
+    #[cfg(target_arch = "x86_64")]
+    let _wait = trace.map(|(t, _)| t.phase(false));
     let start = now_ns();
     loop {
+        #[cfg(target_arch = "x86_64")]
+        if let Some((t, _)) = trace { t.poll(); }
         let seen = EVENTS.load(Ordering::Acquire);
         let (found, polled) = with_core(|c| {
             c.poll();
@@ -2142,6 +2152,8 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
             return Err(Stop::Interrupted);
         }
         if polled && now_ns().saturating_sub(start) < SPIN_POLL_NS {
+            #[cfg(target_arch = "x86_64")]
+            if let Some((t, _)) = trace { t.spin(); }
             for _ in 0..SPIN_POLL_PAUSE {
                 core::hint::spin_loop();
             }
@@ -2158,7 +2170,15 @@ fn wait_for<T>(deadline: Option<u64>, interruptible: bool, mut f: impl FnMut(&mu
         if unheld {
             crate::per_cpu::preempt_disable();
         }
+        #[cfg(target_arch = "x86_64")]
+        let blocked = trace.map(|_| (now_ns(), crate::time::get_ticks()));
         let woke = wait_event(seen, wake);
+        #[cfg(target_arch = "x86_64")]
+        if let (Some((t, stage)), Some((at, tick))) = (trace, blocked) {
+            // 1: device outstanding after spin budget; 2: queued/stalled/no
+            // outstanding work, for which the caller hands progress to kgpu.
+            t.blocked(stage, if polled { 1 } else { 2 }, at, tick);
+        }
         if unheld {
             crate::per_cpu::preempt_enable();
         }
@@ -2226,12 +2246,18 @@ fn send_sync(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32]
 /// The waiting half of [`exec_req_why`]: the answer to sent request `serial`, or its EIO
 /// cause, or EINTR. A request that ends without its answer is abandoned.
 fn await_sync(serial: u64) -> Result<Done, (i64, u32)> {
-    let outcome = wait_for(None, true, |c| {
+    await_sync_traced(serial, #[cfg(target_arch = "x86_64")] None)
+}
+
+fn await_sync_traced(serial: u64,
+    #[cfg(target_arch = "x86_64")] trace: Option<&crate::gk208::timing::Readback>,
+) -> Result<Done, (i64, u32)> {
+    let outcome = wait_for_traced(None, true, |c| {
         if let Some(d) = c.done.remove(&serial) {
             return Some(Ok(d));
         }
         c.syncs.get(&serial).filter(|s| s.failed).map(|s| Err(s.why))
-    });
+    }, #[cfg(target_arch = "x86_64")] trace.map(|t| (t, 2)));
     match outcome {
         Ok(Ok(d)) => Ok(d),
         other => {
@@ -5462,6 +5488,9 @@ impl From<i64> for Refused {
 /// checked writable before any device work.
 fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u64>) -> Result<u64, Refused> {
     #[cfg(target_arch = "x86_64")]
+    let trace = (dev::backend() == abi::backend::GK208)
+        .then(|| crate::gk208::timing::Readback::begin(tgid)).flatten();
+    #[cfg(target_arch = "x86_64")]
     let cost_prepare = crate::gk208::cost::phase(crate::gk208::cost::Slot::ReadPrepare);
     let window = observer == Observer::Window;
     // Count owner observation with presentation so a VT release cannot expose the
@@ -5482,9 +5511,9 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         if window && with_core(|c| c.display.stack.is_empty()).unwrap_or(false) {
             screen::await_binding()?;
         }
-        wait_for(None, true, |c| {
+        wait_for_traced(None, true, |c| {
             (!console::restoring(c.display.owner_sequence)).then_some(c.display.known)
-        })
+        }, #[cfg(target_arch = "x86_64")] trace.as_ref().map(|t| (t, 3)))
         .map_err(|_| EINTR)?;
         Some(if window {
             display::Transition::for_window_observer()?
@@ -5574,7 +5603,7 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     drop(cost_prepare);
     // Wait for the target's accepted writes to complete, then take it for reading.
     // The handle is looked up each time: one destroyed meanwhile is target-dropped.
-    let taken = wait_for(None, true, |c| {
+    let taken = wait_for_traced(None, true, |c| {
         if a.target == 0 {
             if (!window && !display::owner(tgid))
                 || !c.display.known
@@ -5598,7 +5627,7 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         r.reading = true;
         let composition = r.composition.clone().filter(|p| p.generation == r.generation);
         Some(Ok((r.invalid, r.invalidated_by, r.generation, r.last, composition)))
-    });
+    }, #[cfg(target_arch = "x86_64")] trace.as_ref().map(|t| (t, 1)));
     let (invalid, invalidated_by, generation, last, composition) = match taken {
         Ok(Ok(t)) => t,
         Ok(Err(reason)) => return refuse(reason, 0),
@@ -5627,7 +5656,8 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         release();
         return refuse(readback_reason::COMPOSITE_OVERFLOW, 0);
     }
-    let observation = match observe(tgid, id, last, &backing, pitch, fmt, *a, &staging.pages, None) {
+    let observation = match observe(tgid, id, last, &backing, pitch, fmt, *a, &staging.pages, None,
+        #[cfg(target_arch = "x86_64")] trace.as_ref()) {
         Ok(o) => o,
         Err((errno, reason)) => {
             release();
@@ -5743,6 +5773,8 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     rec[record::RENDERER..record::RENDERER + 64].copy_from_slice(&renderer);
     // Publish pixels after the complete rectangle passed both observations.
     let output = (|| {
+        #[cfg(target_arch = "x86_64")]
+        let _copy = trace.as_ref().map(|t| t.phase(true));
         #[cfg(target_arch = "x86_64")]
         let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::CopyOut);
         if unwritten == 0 {
@@ -5898,6 +5930,7 @@ fn observe(
     a: abi::Readback,
     staging: &Pages,
     preferred_ctx: Option<u32>,
+    #[cfg(target_arch = "x86_64")] trace: Option<&crate::gk208::timing::Readback>,
 ) -> Result<Observation, (i64, u32)> {
     let ctx = with_core(|c| {
         // The scanout's writer may belong to any process, but not to a context being destroyed.
@@ -6039,7 +6072,7 @@ fn observe(
     // Take band `b`'s transfer back from the device and check its answer.
     let mut finish = |b: &mut Band| -> Result<(), (i64, u32)> {
         let Some(s) = b.sent.take() else { return Ok(()) };
-        let done = await_sync(s.serial);
+        let done = await_sync_traced(s.serial, #[cfg(target_arch = "x86_64")] trace);
         #[cfg(target_arch = "x86_64")]
         drop(s.cost);
         release_other(s.other);
@@ -6066,6 +6099,8 @@ fn observe(
     // The first observation lands straight in the staging; the second is compared with it
     // a frame at a time.
     let mut read = |b: &Band| {
+        #[cfg(target_arch = "x86_64")]
+        let _copy = trace.map(|t| t.phase(true));
         #[cfg(target_arch = "x86_64")]
         let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::Compare);
         let at = offset(b);
@@ -6117,6 +6152,8 @@ fn observe(
                     continue;
                 }
                 if fmt == format::R8G8B8A8 {
+                    #[cfg(target_arch = "x86_64")]
+                    let _copy = trace.map(|t| t.phase(true));
                     #[cfg(target_arch = "x86_64")]
                     let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::Compare);
                     // Canonical bytes are BGRA (record v2's `canonical` 0).
