@@ -68,6 +68,9 @@ fn main() {
  let mut backwards=raw;backwards[2][2]=149;
  assert_eq!(gpu_time::decode(256,1400,backwards)[5],0);
  assert_eq!(gpu_time::decode(256,1400,[[0;4];3])[5],0);
+ assert_eq!(gpu_time::end_query(0x02000000,256).unwrap()[4],0xf002);
+ let mut stats=[0;18];gpu_time::accumulate(&mut stats,[1,1,1,2,3,1],4,[1,5,6,7,8]);
+ assert_eq!(stats[0],1);
 }
 '''.replace('MODULE', str(module))
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []

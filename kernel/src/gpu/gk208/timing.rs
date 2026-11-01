@@ -6,6 +6,8 @@ use core::fmt::Write;
 
 #[path = "submit_cost.rs"]
 pub mod submit_cost;
+#[path = "gpu_time.rs"]
+pub mod gpu_clock;
 
 pub fn collecting(probe: bool, requested: bool) -> bool { probe || requested }
 
@@ -34,13 +36,22 @@ pub struct Recorder {
     submit_bytes: Vec<[u64; 7]>,
     admission_waits: Vec<[u64; 8]>,
     gpu_times: Vec<[u64; 6]>,
+    gpu_clocks: Vec<[u64; 8]>,
+    gpu_stats: [[i128; 18]; 4],
 }
 impl Recorder {
-    pub const fn new() -> Self { Self { owner: 0, draw: 0, rows: Vec::new(), dropped: 0, readbacks: Vec::new(), blocked: Vec::new(), vblank: [[0; 2]; 2], vblank_used: 0, submits: submit_cost::Totals::new(), submit_bytes: Vec::new(), admission_waits: Vec::new(), gpu_times: Vec::new() } }
-    pub fn gpu_time(&mut self, row: [u64; 6]) {
+    pub const fn new() -> Self { Self { owner: 0, draw: 0, rows: Vec::new(), dropped: 0, readbacks: Vec::new(), blocked: Vec::new(), vblank: [[0; 2]; 2], vblank_used: 0, submits: submit_cost::Totals::new(), submit_bytes: Vec::new(), admission_waits: Vec::new(), gpu_times: Vec::new(), gpu_clocks: Vec::new(), gpu_stats: [[0; 18]; 4] } }
+    pub fn gpu_time(&mut self, row: [u64; 6], end: u64, clocks: [u64; 5], first_observed: u64) {
+        if row[0] == 0 { self.dropped += 1; return; }
+        gpu_clock::accumulate(&mut self.gpu_stats[((row[0] - 1) % 4) as usize], row, end, clocks);
+        if !gpu_clock::sampled(row[0] as u32) { return; }
         if self.gpu_times.len() == 1024 || self.gpu_times.try_reserve(1).is_err() {
             self.dropped += 1;
-        } else { self.gpu_times.push(row); }
+        } else if self.gpu_clocks.try_reserve(1).is_err() { self.dropped += 1; }
+        else {
+            self.gpu_times.push(row);
+            self.gpu_clocks.push([row[0],end,clocks[0],first_observed,clocks[1],clocks[2],clocks[3],clocks[4]]);
+        }
     }
     /// The clear-rate client brackets its timed work with two read-only samples.
     pub fn sample_vblank(&mut self, at: u64, count: u16) {
@@ -96,11 +107,11 @@ impl Recorder {
         }
     }
     pub fn drain(&mut self, batch: u64) -> Option<String> {
-        if self.rows.is_empty() && self.readbacks.is_empty() && self.blocked.is_empty() && self.dropped == 0 && self.vblank_used == 0 && self.submits.is_empty() && self.gpu_times.is_empty() { return None; }
+        if self.rows.is_empty() && self.readbacks.is_empty() && self.blocked.is_empty() && self.dropped == 0 && self.vblank_used == 0 && self.submits.is_empty() && self.gpu_times.is_empty() && self.gpu_stats.iter().all(|s|s[0]==0) { return None; }
         let capacity = self.rows.len().checked_mul(128)?
             .checked_add(self.readbacks.len().checked_mul(192)?)?
             .checked_add(self.blocked.len().checked_mul(168)?)?.checked_add(self.submits.len().checked_mul(1024)?)?.checked_add(self.submit_bytes.len().checked_mul(192)?)?
-            .checked_add(self.admission_waits.len().checked_mul(256)?)?.checked_add(self.gpu_times.len().checked_mul(160)?)?.checked_add(2048)?;
+            .checked_add(self.admission_waits.len().checked_mul(256)?)?.checked_add(self.gpu_times.len().checked_mul(160)?)?.checked_add(self.gpu_clocks.len().checked_mul(192)?)?.checked_add(4096)?;
         let mut text = String::new();
         text.try_reserve_exact(capacity).ok()?;
         let _ = write!(text, "GT710_TIMING_V1 {{\"batch\":{},\"dropped\":{},\"rows\":[", batch, self.dropped);
@@ -180,6 +191,23 @@ impl Recorder {
             }
             text.push(']');
         }
+        if !self.gpu_clocks.is_empty() {
+            text.push_str(",\"gpu_clock_samples\":[");
+            for (i,row) in self.gpu_clocks.drain(..).enumerate() {
+                if i != 0 { text.push(','); }
+                let _=write!(text,"[{},{},{},{},{},{},{},{}]",row[0],row[1],row[2],row[3],row[4],row[5],row[6],row[7]);
+            }
+            text.push(']');
+        }
+        if self.gpu_stats.iter().any(|s|s[0]!=0) {
+            text.push_str(r#","gpu_time_stat_fields":["count","valid","queue_lo_sum","queue_hi_sum","draw_sum","parking_epoch_sum","release_sum","detect_lo_sum","detect_hi_sum","clock_bracket_max","host_total_sum","queue_hi_max","draw_max","parking_epoch_max","release_max","detect_hi_max","first_sequence","last_sequence"],"gpu_time_stats":["#);
+            for (i,row) in self.gpu_stats.iter().enumerate() {
+                if i != 0 { text.push(','); } text.push('[');
+                for (n,value) in row.iter().enumerate() { if n!=0 { text.push(','); } let _=write!(text,"{}",value); }
+                text.push(']');
+            }
+            text.push(']');self.gpu_stats=[[0;18];4];
+        }
         text.push('}');
         Some(text)
     }
@@ -214,7 +242,9 @@ mod runtime {
     }
     pub fn phase(kind: u64) -> Option<Guard> { enabled().then(|| Guard::new(crate::gpu::caller().unwrap_or(0), kind)) }
     pub fn vblank_sample(at: u64, count: u16) { with(|r| r.sample_vblank(at, count)); }
-    pub fn gpu_time(row: [u64; 6]) { with(|r| r.gpu_time(row)); }
+    pub fn gpu_time(row: [u64; 6], end: u64, clocks: [u64; 5], first_observed: u64) {
+        with(|r| r.gpu_time(row,end,clocks,first_observed));
+    }
     /// Diagnostic only: no wait policy or completion authority is changed.
     pub struct Readback {
         owner: u64, draw: u64, start: u64,

@@ -1651,7 +1651,6 @@ mod native {
             let mut payload = crate::gk208::encode::channel_words(&draw.words, self.quarantine)?;
             crate::gk208::encode::channel_programs(&mut payload, &self.parking)?;
             let device_time = crate::gk208::timing::enabled()
-                && crate::gk208::gpu_time::sampled(sequence)
                 && crate::boot::intent::command_line().is_some_and(|line|
                     line.split_ascii_whitespace().any(|word| word == "gt710-gpu-time"));
             let time_offset = crate::gk208::gpu_time::offset(sequence, 0)?;
@@ -1659,13 +1658,14 @@ mod native {
                 // This diagnostic span is separate from receipt slots, the
                 // parked CB selector and channel 1's terminal receipt.
                 unsafe { core::ptr::write_bytes((s.pages.va(0) + time_offset) as *mut u8, 0, 64); }
+                unsafe { core::ptr::write_bytes((s.pages.va(0) + crate::gk208::gpu_time::end_offset(sequence)?) as *mut u8, 0, 16); }
                 s.pages.publish();
             }
             // Restart reconstructs RAMFC without its old subchannel classes.
             // SET_OBJECT must precede graphics state and release methods even
             // when clipping leaves no draw (MIT cla197.h:34-36).
             let mut command = Vec::new();
-            command.try_reserve_exact(super::bind().len() + payload.len() + self.parking.len() + 79)
+            command.try_reserve_exact(super::bind().len() + payload.len() + self.parking.len() + 84)
                 .map_err(|_| "native channel packet allocation")?;
             command.extend_from_slice(&super::bind());
             if device_time { command.extend(crate::gk208::gpu_time::query(TARGET, sequence, 0)?); }
@@ -1692,6 +1692,8 @@ mod native {
                 if device_time && offset == 0 { command.extend(crate::gk208::gpu_time::query(TARGET, sequence, 2)?); }
                 command.extend(super::report(target+offset,value)?);
             }
+            if device_time { command.extend(crate::gk208::gpu_time::end_query(TARGET, sequence)?); }
+            let submitted = if device_time { crate::signal::monotonic_nanos() } else { 0 };
             let result = self.publish_encoded_traced(sequence,&mut command,trace);
             if result.is_ok() && device_time {
                 // CORE excludes a reaper until publication returns. This CPU
@@ -1700,6 +1702,7 @@ mod native {
                     let header = (self.session.pages.va(0) + time_offset + 48) as *mut u32;
                     header.write_volatile(sequence);
                     header.add(1).write_volatile(command.len() as u32);
+                    (header.add(2) as *mut u64).write_volatile(submitted);
                 }
             }
             result
@@ -1779,13 +1782,40 @@ mod native {
                 // SAFETY: the retained report page owns this 64-byte span.
                 let header = (self.session.pages.va(0) + offset + 48) as *mut u32;
                 if unsafe { header.read_volatile() } == sequence {
+                    let receipt_observed = crate::signal::monotonic_nanos();
                     let words = unsafe { header.add(1).read_volatile() };
+                    let submitted = unsafe { (header.add(2) as *const u64).read_volatile() };
                     let raw = core::array::from_fn(|stage| core::array::from_fn(|word| unsafe {
                         ((self.session.pages.va(0) + offset + stage as u64 * 16) as *const u32)
                             .add(word).read_volatile()
                     }));
+                    let end_pointer = (self.session.pages.va(0) + crate::gk208::gpu_time::end_offset(sequence)?) as *const u32;
+                    // The diagnostic end query follows the original receipt.
+                    // Its storage is channel-owned; wait only for telemetry,
+                    // with a 100 us cap and no change to completion validity.
+                    while unsafe { end_pointer.read_volatile() } != sequence
+                        && crate::signal::monotonic_nanos().saturating_sub(receipt_observed) < 100_000 {
+                        core::hint::spin_loop();
+                    }
+                    let observed = crate::signal::monotonic_nanos();
+                    let end = if unsafe { end_pointer.read_volatile() } == sequence {
+                        unsafe { u64::from(end_pointer.add(2).read_volatile())
+                            | u64::from(end_pointer.add(3).read_volatile()) << 32 }
+                    } else { 0 };
+                    let before = crate::signal::monotonic_nanos();
+                    let mut gpu_now = 0;
+                    // Existing native PTIMER mechanism: high/low/high, ns.
+                    for _ in 0..8 {
+                        let high = regs.read(0x9410); let low = regs.read(0x9400);
+                        if high == regs.read(0x9410) {
+                            gpu_now = u64::from(high) << 32 | u64::from(low); break;
+                        }
+                    }
+                    let after = crate::signal::monotonic_nanos();
                     unsafe { header.write_volatile(0); }
-                    crate::gk208::timing::gpu_time(crate::gk208::gpu_time::decode(sequence, words, raw));
+                    crate::gk208::timing::gpu_time(
+                        crate::gk208::gpu_time::decode(sequence, words, raw), end,
+                        [submitted, observed, before, gpu_now, after], receipt_observed);
                 }
             }
             Ok(crate::gpu_completion::CeSample { context: u64::from(bound & 0x0fffffff) << 12,

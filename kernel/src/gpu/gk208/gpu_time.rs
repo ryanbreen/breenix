@@ -44,7 +44,7 @@
 
 *******************************************************************************/
 
-//! Sparse device-clock observations for diagnosis.
+//! Device-clock observations for native diagnosis.
 //! Packet/layout: MIT Mesa nvc0_query_hw.c at 769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de,
 //! query_get and timestamp result; MIT NVIDIA cla197.h at
 //! 9fdf5c4062007929d9f4e6cbad9c9771fe61b880, REPORT_SEMAPHORE_D.
@@ -67,4 +67,36 @@ pub fn decode(sequence: u32, words: u32, raw: [[u32; 4]; 3]) -> [u64; 6] {
     let valid = raw.iter().all(|r| r[0] == sequence) && stamps[0] != 0
         && stamps[0] <= stamps[1] && stamps[1] <= stamps[2];
     [u64::from(sequence), u64::from(words), stamps[0], stamps[1], stamps[2], u64::from(valid)]
+}
+
+pub fn end_offset(sequence: u32) -> Result<u64, &'static str> {
+    if sequence == 0 { return Err("GPU end timestamp extent"); }
+    Ok(2048 + u64::from((sequence - 1) % 4) * 16)
+}
+pub fn end_query(base: u64, sequence: u32) -> Result<[u32; 5], &'static str> {
+    let address = base.checked_add(end_offset(sequence)?).filter(|a| *a < 1 << 40)
+        .ok_or("GPU end timestamp address")?;
+    Ok([0x200406c0, (address >> 32) as u32, address as u32, sequence, 0x0000f002])
+}
+
+/// Aggregate clock-converted interval bounds without dropping requests.
+/// clocks: CPU submit, CPU end-query observation, CPU-before/PTIMER/CPU-after.
+pub fn accumulate(stats: &mut [i128; 18], row: [u64; 6], end: u64, clocks: [u64; 5]) {
+    stats[0] += 1;
+    if stats[0] == 1 { stats[16] = i128::from(row[0]); }
+    stats[17] = i128::from(row[0]);
+    if row[5] != 1 || end < row[4] || clocks[4] < clocks[2]
+        || clocks[3] < end || clocks[1] < clocks[0] { return; }
+    stats[1] += 1;
+    let [submit, observed, before, gpu_now, after] = clocks.map(i128::from);
+    let begin = i128::from(row[2]); let end = i128::from(end);
+    let values = [begin - gpu_now + before - submit, begin - gpu_now + after - submit,
+        i128::from(row[3] - row[2]), i128::from(row[4] - row[3]), end - i128::from(row[4]),
+        observed - after + gpu_now - end, observed - before + gpu_now - end];
+    for (sum, value) in stats[2..9].iter_mut().zip(values) { *sum += value; }
+    stats[9] = stats[9].max(after - before);
+    stats[10] += observed - submit;
+    for (max, value) in stats[11..16].iter_mut().zip([values[1],values[2],values[3],values[4],values[6]]) {
+        *max = (*max).max(value);
+    }
 }
