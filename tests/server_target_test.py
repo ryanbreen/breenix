@@ -218,6 +218,21 @@ class ServerTarget(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
 
+    def test_qemu_does_not_dispatch_later_milestones_to_metal(self):
+        import contextlib
+        import io
+        for milestone in ('server/reboot', 'server/watchdog', 'server/remote-upgrade',
+                          'server/resting-state', 'users/operator-login'):
+            argv = ['server-suite', '--target', 'qemu', '--run-dir', '/unused',
+                    '--boot', '20261101T120000Z-qemu', '--sha', 'a' * 40,
+                    '--milestone', milestone, '--branch', 'server/vm-runner']
+            with self.subTest(milestone=milestone), patch.object(sys, 'argv', argv), \
+                 patch.object(HOST['runpy'], 'run_path', side_effect=AssertionError('metal helper reached')), \
+                 contextlib.redirect_stderr(io.StringIO()):
+                with self.assertRaises(SystemExit) as error:
+                    HOST['main']()
+                self.assertEqual(error.exception.code, 2)
+
     def test_forwarded_probe_checks_banner_and_pins_wrong_key_to_port(self):
         import socket
         with tempfile.TemporaryDirectory() as scratch:
