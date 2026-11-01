@@ -16,7 +16,7 @@ spec = importlib.util.spec_from_file_location('vm_site', ROOT / 'scripts' / 'vm_
 vm_site = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(vm_site)
 
-# Public test key and synthetic credentials, never used by a real account.
+# Synthetic site fields for the loader tests below.
 KEY = 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
 VALUES = {
     'OPERATOR_USER': 'example', 'OPERATOR_UID': '1000', 'OPERATOR_PASSWORD': 'example-password',
