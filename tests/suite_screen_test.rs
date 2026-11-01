@@ -64,3 +64,61 @@ fn named_checkpoints_and_hashed_side_file() {
     assert!(screen::unpack(&screen::pack(&line.replace("after-present", "bad name")), "breengel", "composition/one").is_err());
     assert!(screen::unpack(&screen::pack(&line.replace("mode=2x1", "mode=0x1")), "breengel", "composition/one").is_err());
 }
+
+#[test]
+fn checkpoint_clock_excludes_only_its_own_measured_interval() {
+    let clock = screen::CheckpointClock::new();
+    assert_eq!(clock.elapsed(100, 150), 50);
+    clock.start(150);
+    assert_eq!(clock.elapsed(100, 180), 50, "parent timeout must pause during observation");
+    clock.stop(190);
+    assert_eq!(clock.elapsed(100, 200), 60, "helper cleanup still belongs to the case");
+    clock.start(210);
+    clock.stop(217);
+    assert_eq!(clock.elapsed(100, 230), 83);
+}
+
+#[test]
+fn end_is_observed_before_teardown_and_errors_are_separate_from_verdict() {
+    let mut end = screen::EndCheckpoint::default();
+    let mut live = true;
+    let verdict: Result<(), &str> = Err("judged mismatch");
+    end.before_drop(|| { assert!(live); Ok(([5; 32], mode())) });
+    live = false;
+    assert!(!live);
+    assert_eq!(verdict, Err("judged mismatch"));
+    assert_eq!(end.result.as_ref().unwrap().as_ref().unwrap().0, [5; 32]);
+    // An explicit mid-case teardown may be followed by a new compositor.
+    end.before_drop(|| Ok(([6; 32], mode())));
+    assert_eq!(end.result.as_ref().unwrap().as_ref().unwrap().0, [6; 32]);
+    let verdict: Result<(), &str> = Ok(());
+    end.before_drop(|| Err("readback-failed"));
+    assert_eq!(verdict, Ok(()));
+    assert_eq!(end.result.unwrap().unwrap_err(), "readback-failed");
+}
+
+#[test]
+fn runtime_switch_defaults_on_and_disables_all_checkpoint_work() {
+    for option in ["", "on", "on\n"] {
+        assert!(screen::configured("gpu", option));
+        assert!(screen::configured("breengel", option));
+    }
+    assert!(!screen::configured("gpu", "off\n"));
+    assert!(!screen::configured("breengel", "off"));
+    assert!(!screen::configured("time", "on"));
+}
+
+#[test]
+fn reuse_requires_the_same_whole_scanout_and_present_fence() {
+    let rec = record();
+    let mut pixels = vec![1,2,3,0,4,5,6,0];
+    let saved = screen::ReadbackReuse::new(&mut pixels, &rec, mode(), 4, 99).unwrap();
+    assert!(saved.matches(&rec));
+    for at in [r::RESOURCE, r::PRESENT_FENCE, r::CONTEXT, r::WIDTH, r::BACKEND] {
+        let mut changed = rec;
+        changed[at] ^= 1;
+        assert!(!saved.matches(&changed), "reused changed binding at {at}");
+    }
+    assert_eq!(saved.hash, libpixcheck::sha256(&[1,2,3,255,4,5,6,255]));
+    assert!(screen::ReadbackReuse::new(&mut pixels[..4], &rec, mode(), 4, 99).is_err());
+}
