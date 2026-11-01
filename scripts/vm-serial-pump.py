@@ -38,6 +38,7 @@ def main(run, whole_path):
     directory = None
     last_stamp = 0
     offset = 0
+    line_open = False
 
     def end_boot():
         if directory is not None:
@@ -48,7 +49,7 @@ def main(run, whole_path):
             (directory / 'ended').write_text(datetime.datetime.now(datetime.timezone.utc).isoformat() + '\n')
 
     def start_boot():
-        nonlocal directory, serial, raw, cleaner, timestamps, events, last_stamp, offset
+        nonlocal directory, serial, raw, cleaner, timestamps, events, last_stamp, offset, line_open
         stamp = max(int(time.time()), last_stamp + 1)
         while True:
             boot = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ-qemu')
@@ -72,6 +73,7 @@ def main(run, whole_path):
         events = (directory / 'events.jsonl').open('a', buffering=1)
         (run / 'current').write_text(boot + '\n')
         offset = 0
+        line_open = False
 
     start_boot()
     def terminate(_signum, _frame):
@@ -161,11 +163,16 @@ def main(run, whole_path):
                             continue
                         if kind == 'guest-data':
                             raw.write(data)
-                            cleaned = cleaner.feed(data).encode()
-                            serial.write(cleaned)
+                            cleaned = cleaner.feed(data)
+                            arrived = time.time()
+                            for line in cleaned.splitlines(keepends=True):
+                                if not line_open:
+                                    timestamps.write(f'{arrived:.3f}\t{offset}\n')
+                                encoded = line.encode()
+                                serial.write(encoded)
+                                offset += len(encoded)
+                                line_open = not line.endswith('\n')
                             whole.write(data)
-                            offset += len(cleaned)
-                            timestamps.write(f'{time.time()}\t{offset}\n')
                             for client, pending in clients.items():
                                 pending.extend(data)
                                 selector.modify(client, selectors.EVENT_READ | selectors.EVENT_WRITE, 'console-data')
