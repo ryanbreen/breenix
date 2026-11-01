@@ -99,8 +99,18 @@ class BreengelSelection(unittest.TestCase):
 
     def test_selection(self):
         step = json.loads((ROOT / 'docs/gui/gt710-step-9-1.json').read_text())
-        self.assertEqual(set(step), {'id', 'suite', 'cases'})
+        self.assertEqual(set(step), {'id', 'suite', 'cases', 'boardMilestone',
+                                     'title', 'basis', 'added', 'total', 'reasons'})
         self.assertEqual((step['id'], step['suite']), ('gt710-step-9-1', 'breengel'))
+        self.assertEqual(step['boardMilestone'], '25.1')
+        self.assertEqual((step['added'], step['total']), (304, 304))
+        self.assertTrue(step['title'])
+        self.assertTrue(step['basis'])
+        for category, reason in step['reasons'].items():
+            self.assertEqual(reason['added'], sum(
+                name.startswith(category + '/') for name in SELECTED))
+            self.assertTrue(reason['why'])
+        self.assertEqual(sum(reason['added'] for reason in step['reasons'].values()), 304)
         self.assertEqual(len(SELECTED), 304)
         self.assertEqual(step['cases'], SELECTED)
         self.assertIn('docs/gui/gt710-step-9-1.json', (ROOT / 'scripts/metal/metal-build').read_text())
