@@ -40,11 +40,16 @@ class A1Capture(unittest.TestCase):
             path = Path(directory)
             for name, value in {"serial.txt": serial, "exit-status": status,
                                 "commit": "a" * 40, "dirty": dirty}.items():
-                (path / name).write_text(value)
+                (path / name).write_bytes(value if isinstance(value, bytes) else value.encode())
             return SCORER.score(path)
 
     def test_complete_single_capture(self):
         self.assertTrue(self.score()["proven"])
+
+    def test_serial_bytes_do_not_discard_complete_records(self):
+        result = self.score(b"\xff\n" + SERIAL.encode())
+        self.assertTrue(result["proven"], result["reasons"])
+        self.assertEqual(result["users"]["passed"], 110)
 
     def test_wrapper_success_cannot_override_boot_exit(self):
         result = self.score(status="1")
