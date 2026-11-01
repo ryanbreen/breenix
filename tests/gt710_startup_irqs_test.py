@@ -29,7 +29,7 @@ use std::time::Duration;
 const EINVAL:i64=22;const EINTR:i64=4;
 mod abi {
  #[derive(Clone,Copy)] pub struct Caps {pub backend:u32,pub status:u32}
- pub mod status {pub const NO_DEVICE:u32=1;pub const DEVICE_FAILED:u32=3;}
+ pub mod status {pub const NO_DEVICE:u32=1;pub const MISSING_CAPABILITY:u32=2;pub const DEVICE_FAILED:u32=3;}
 }
 struct Core {dev:Option<()>,status:u32,reason:&'static str}
 impl Core {
@@ -101,8 +101,9 @@ STARTUP
 // INSERT_CAPS
 #[test]fn first_caps_enables_irqs_for_upload_and_waits_and_restores_on_errors(){
  let _ = console::hold_canvas as fn()->console::Canvas;
- for fail in [false,true] {
-  *CORE.lock().unwrap()=Core::empty();*GATE.lock().unwrap()=(false,true,false);
+ for (fail,status) in [(false,abi::status::NO_DEVICE),(true,abi::status::NO_DEVICE),
+                      (false,abi::status::MISSING_CAPABILITY),(true,abi::status::MISSING_CAPABILITY)] {
+  *CORE.lock().unwrap()=Core::empty();CORE.lock().unwrap().status=status;*GATE.lock().unwrap()=(false,true,false);
   NATIVE_STARTING.store(false,Ordering::Release);FAIL.store(fail,Ordering::Release);
   for entry_enabled in [false,true] {
    IRQS.with(|i|i.set(entry_enabled));

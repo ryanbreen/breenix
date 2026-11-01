@@ -2917,7 +2917,7 @@ fn op_caps(arg: u64, len: u64) -> Result<u64, i64> {
     #[cfg(target_arch = "x86_64")]
     if crate::gk208::takeover_started()
         && with_core(|c| NATIVE_STARTING.load(Ordering::Acquire)
-            || (c.dev.is_none() && c.status == abi::status::NO_DEVICE)).unwrap_or(false) {
+            || (c.dev.is_none() && matches!(c.status, abi::status::NO_DEVICE | abi::status::MISSING_CAPABILITY))).unwrap_or(false) {
         arch::with_interrupts(native_caps_startup)?;
     }
     let caps = with_core(|c| c.caps_record()).unwrap_or_else(|| Core::empty().caps_record());
@@ -2930,9 +2930,11 @@ fn op_caps(arg: u64, len: u64) -> Result<u64, i64> {
 #[cfg(target_arch = "x86_64")]
 fn native_caps_startup() -> Result<(), i64> {
     let start = wait_for(None, true, |c| {
+        // An early diagnostic may publish a refusal snapshot without a live
+        // device. It is evidence, not a completed startup attempt.
         if NATIVE_STARTING.load(Ordering::Acquire) {
             None
-        } else if c.dev.is_some() || c.status != abi::status::NO_DEVICE {
+        } else if c.dev.is_some() || !matches!(c.status, abi::status::NO_DEVICE | abi::status::MISSING_CAPABILITY) {
             Some(false)
         } else if !NATIVE_STARTING.swap(true, Ordering::AcqRel) {
             Some(true)
