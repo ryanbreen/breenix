@@ -1544,9 +1544,9 @@ class SntpFixture:
 
 
 class TimeCases:
-    def __init__(self, probe, console, previous, capture, site):
+    def __init__(self, probe, console, previous, capture, site, arch):
         self.probe, self.console, self.previous, self.capture = probe, console, previous, capture
-        self.site = site
+        self.site, self.arch = site, arch
         self.fixture_host = urlsplit(site['BOOT_URL']).hostname
         self.stopped = False
 
@@ -1714,7 +1714,9 @@ class TimeCases:
         elif name == 'rtc-reboot':
             self.require_preparation()
             serial, stamps = self.capture()
-            match = re.search(r'^\[clock\] UTC epoch=([0-9]+) source=CMOS\r?$', serial, re.M)
+            source = {'x86_64': 'CMOS', 'aarch64': 'PL031'}.get(self.arch)
+            if source is None: raise ValueError('unknown boot architecture for hardware RTC')
+            match = re.search(r'^\[clock\] UTC epoch=([0-9]+) source=' + source + r'\r?$', serial, re.M)
             if not match: raise ValueError('no hardware RTC sample in reboot capture')
             byte = len(serial[:match.start()].encode())
             arrived = max((stamp for stamp, start in stamps if start <= byte), default=None)
@@ -2193,7 +2195,8 @@ def main():
                                   '\n'.join(site['operatorKeys']))
             else:
                 target = Services(probe, console, capture) if category == 'services' \
-                    else TimeCases(probe, console, previous, capture, site) if category == 'time' \
+                    else TimeCases(probe, console, previous, capture, site,
+                                   'aarch64' if args.target == 'qemu' else boot.get('arch')) if category == 'time' \
                     else Logs(probe, console, previous, prepare=args.prepare_logs)
             cleanup.callback(cleanup_step, target.cleanup)
         if args.prepare_time:
