@@ -44,6 +44,24 @@ class FakeTarget:
 
 
 class ServerTarget(unittest.TestCase):
+    def test_rtc_reboot_requires_the_boot_architecture_hardware_source(self):
+        previous = {'corrected': True, 'skewSeconds': 172800}
+        for arch, source, accepted in (
+            ('x86_64', 'CMOS', True), ('aarch64', 'PL031', True),
+            ('x86_64', 'PL031', False), ('aarch64', 'CMOS', False),
+            ('x86_64', 'other', False), ('aarch64', 'other', False),
+            ('unknown', 'CMOS', False),
+        ):
+            with self.subTest(arch=arch, source=source):
+                serial = '[clock] UTC epoch=1000 source=' + source + '\n'
+                case = HOST['TimeCases'](None, None, previous, lambda: (serial, [(1000, 0)]),
+                                         {'BOOT_URL': 'http://fixture.invalid'}, arch)
+                if accepted:
+                    case.run_case('rtc-reboot')
+                else:
+                    with self.assertRaises(ValueError):
+                        case.run_case('rtc-reboot')
+
     def test_check_manifest(self):
         for suite in ('server', 'users'):
             with self.subTest(suite=suite):
