@@ -55,6 +55,7 @@ fn main(){print!("{}",String::from_utf8(heap::fixture()).unwrap());}
                 '--cfg', 'feature="alloc"', '--crate-type', 'rlib',
                 str(ROOT / 'libs/gpu-abi/src/lib.rs'), '-o', str(p / 'libgpu_abi.rlib')], check=True)
             text = rust(code, p, 'heap', ['--extern', f'gpu_abi={p / "libgpu_abi.rlib"}'])
+        self.assertTrue('words_v1' in text, 'compact the complete ABI words so allocation evidence fits the final slot')
         rows = [API['expand_case_heap'](json.loads(line.removeprefix('GT710_CASE_HEAP ')))
                 for line in text.splitlines()]
         self.assertEqual([r['boundary'] for r in rows], list(range(402)))
