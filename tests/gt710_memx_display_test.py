@@ -80,6 +80,21 @@ impl modeset::Io for Card {
     assert!(result.is_err());assert_eq!(clear.unwrap().underflow,0x11);
     assert_eq!(c.writes,[(0x616308,0x10),(0x616308,1)]);
 }
+#[test] fn delayed_underflow_uses_one_allowance_and_other_failures_still_refuse() {
+    let mut c=Card::new(0,0);let mut allow=true;
+    let h=Health::read(&mut c,0,0);
+    assert!(memx_display::pending_check(&mut c,0,0,h,&mut allow).1.is_ok());
+    assert!(allow); // A healthy EXEC boundary leaves the first present covered.
+    c.raw.insert(0x616308,0x11);let h=Health::read(&mut c,0,0);
+    assert!(memx_display::pending_check(&mut c,0,0,h,&mut allow).1.is_ok());
+    assert!(!allow);assert_eq!(c.writes.len(),2);
+    c.raw.insert(0x616308,0x11);let h=Health::read(&mut c,0,0);
+    assert!(memx_display::pending_check(&mut c,0,0,h,&mut allow).1.is_err());
+    assert_eq!(c.writes.len(),2);
+    c.raw.insert(0x61009c,1);allow=true;let h=Health::read(&mut c,0,0);
+    assert!(memx_display::pending_check(&mut c,0,0,h,&mut allow).1.is_err());
+    assert_eq!(c.writes.len(),2);
+}
 '''.replace('@ROOT@', str(ROOT))
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
