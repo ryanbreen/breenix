@@ -91,6 +91,7 @@ import hashlib
 import json
 from pathlib import Path
 import runpy
+import functools
 import tempfile
 
 # Canonical record digests; independent C/Rust check: tests/gt710_gr_tables_test.py.
@@ -2141,41 +2142,16 @@ def resources_identity(boot, suite, sha=None):
 STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json', 'isolation': 'gt710-step-8-5.json', 'presentation': 'gt710-step-8-6.json', 'performance': 'gt710-step-8-7.json'}
 
 
-# pictured! tables in suite_breengel/{raster,widgets,window_cases/*.rs}.
-# Keep this inventory separate from the optional wire hash: removing the field
-# must not turn a declared picture into an ordinary CASE. The host deployment
-# carries this scorer and the manifest, without needing the Rust source tree.
-BREENGEL_PICTURE_CATEGORIES = frozenset((
-    'raster', 'text', 'font-parser', 'widgets', 'text-entry', 'icons',
-    'windows', 'isolation', 'events', 'scanout',
-))
-BREENGEL_PICTURE_CASES = frozenset((
-    # show.rs: pictured! stage-layout, direct judged(), and scaled_stage.
-    'panel/stage-layout', 'panel/tile-stamps', 'panel/tile-thumbnail',
-    'panel/spotlight-picture', 'panel/spotlight-timing', 'panel/milestone-ribbon',
-    'panel/finale', 'panel/deterministic', 'panel/stage-hidpi',
-    # window_cases/panel.rs: pictured! tables.
-    'panel/handoff', 'panel/between-cases', 'panel/cursor-restore',
-    'panel/cursor-trail-detected', 'panel/kernel-screens',
-    # images.rs: picture_case/handoff_images; libimg/tests/checks.rs:
-    # decoded/decoded_named and encoder record_image calls.
-    'bmp/decode-fixtures', 'bmp/orientation', 'bmp/padding', 'bmp/roundtrip',
-    'bmp/truncated', 'png-decode/gray-depths', 'png-decode/gray-alpha',
-    'png-decode/rgb', 'png-decode/rgba', 'png-decode/palette-depths',
-    'png-decode/trns-gray', 'png-decode/trns-rgb', 'png-decode/trns-palette',
-    'png-decode/rounding-16bit', 'png-decode/filters', 'png-decode/interlace',
-    'png-decode/interlace-small', 'png-decode/multi-idat', 'png-decode/chunk-order',
-    'png-decode/ancillary-ignored', 'png-decode/independent-fixtures',
-    'png-decode/blit', 'png-decode/from-disk',
-    'png-encode/decodes', 'png-encode/stable', 'png-encode/sizes',
-))
+# Coordinator 06:00 EST correction: pictured! is only opt-in. The retained
+# ARM 401/401 judged set is generated/checked by gt710-picture-inventory.py.
+@functools.cache
+def breengel_picture_cases():
+    return frozenset(json.loads(
+        (Path(__file__).resolve().parents[2] / 'docs/gui/gt710-breengel-pictured.json').read_text())['cases'])
 
 
 def breengel_pictured(name):
-    return (name.split('/')[0] in BREENGEL_PICTURE_CATEGORIES
-            or (name.startswith('composition/') and name != 'composition/fbinfo-geometry')
-            or name in BREENGEL_PICTURE_CASES)
-
+    return name in breengel_picture_cases()
 
 
 def breengel_fronts_suite(serial, boot):
