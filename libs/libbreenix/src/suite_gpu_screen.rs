@@ -7,12 +7,13 @@ use std::vec::Vec;
 
 pub(super) struct GpuScreen {
     context: u64,
-    target: u64,
+    targets: [u64; 2],
+    next: usize,
 }
 impl GpuScreen {
-    pub fn new() -> Self { Self { context: 0, target: 0 } }
+    pub fn new() -> Self { Self { context: 0, targets: [0; 2], next: 0 } }
 
-    /// Create the view's context and scanout target before the first case, as the first
+    /// Create the view's context and scanout targets before the first case, as the first
     /// `draw` would. The runner opens the view before its memory record's first sample and
     /// keeps it for the final panel, so both samples count it.
     pub fn open(&mut self) -> Result<(), String> {
@@ -32,15 +33,19 @@ impl GpuScreen {
             let (r, c) = gpu::counters(self.context);
             // A context still warming (state 3) accepts the same work as a warmed one.
             if r != 0 || !matches!(c.state, abi::context_state::LIVE | abi::context_state::WARMING) {
-                let _ = gpu::resource_destroy(self.target);
+                for target in self.targets { let _ = gpu::resource_destroy(target); }
                 let _ = gpu::context_destroy(self.context);
                 self.context = 0;
-                self.target = 0;
+                self.targets = [0; 2];
+                self.next = 0;
             }
         }
         self.create()?;
+        // A shown target stays held until another binding latches. Render the
+        // next view into the other target, including on FIFO native displays.
+        let target = self.targets[self.next];
         let mut stream = Vec::new();
-        encode::begin(&mut stream, self.target);
+        encode::begin(&mut stream, target);
         encode::clear(&mut stream, 0xFF18_1512);
         // One row per category; within a row one tile per case in manifest order.
         // Blue is running, grey pending, green pass and red fail. No skipped colour:
@@ -64,29 +69,34 @@ impl GpuScreen {
         let (r, w) = gpu::wait(self.context, s.fence, 2_000_000_000);
         if r != 0 { return Err(std::format!("wait: errno {}, status {}", -r, w.status)); }
         graphics::take_over_display().map_err(|e| std::format!("display ownership: {e:?}"))?;
-        let (r, p) = gpu::present(self.context, self.target);
+        let (r, p) = gpu::present(self.context, target);
         // The device's native success answer (gpu.md section 1.8, ruling 47).
         let success = crate::suite_gpu_backend::backend_values(gpu::caps().1.backend)
             .ok_or("unknown GPU backend")?.success;
         if r != 0 || p.answer != success {
             return Err(std::format!("present: errno {}, answer {:#x}", -r, p.answer));
         }
+        self.next ^= 1;
         Ok(())
     }
 
-    /// Create the context and its 2560x1600 scanout target unless the view has them, and
+    /// Create the context and its 2560x1600 scanout targets unless the view has them, and
     /// wait for the context's warm-up.
     fn create(&mut self) -> Result<(), String> {
         if self.context != 0 {
             return Ok(());
         }
         self.context = gpu::context_create().map_err(|e| std::format!("context: errno {}", -e))?;
-        match gpu::scanout_target_create(abi::format::B8G8R8A8, 2560, 1600) {
-            Ok(t) => self.target = t,
-            Err(e) => {
-                let _ = gpu::context_destroy(self.context);
-                self.context = 0;
-                return Err(std::format!("target: errno {}", -e));
+        for index in 0..self.targets.len() {
+            match gpu::scanout_target_create(abi::format::B8G8R8A8, 2560, 1600) {
+                Ok(t) => self.targets[index] = t,
+                Err(e) => {
+                    for &target in &self.targets[..index] { let _ = gpu::resource_destroy(target); }
+                    let _ = gpu::context_destroy(self.context);
+                    self.context = 0;
+                    self.targets = [0; 2];
+                    return Err(std::format!("target: errno {}", -e));
+                }
             }
         }
         self.settle();
