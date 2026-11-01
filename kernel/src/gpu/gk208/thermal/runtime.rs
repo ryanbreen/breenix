@@ -13,7 +13,7 @@ impl Access for Io {
     }
     fn write(&mut self,a:u32,v:u32) {self.regs.write(a as usize,v)}
     fn record(&mut self,w:Write) {
-        crate::serial_println!("GT710_SENSOR_WRITE {{\"address\":{},\"before\":{},\"written\":{},\"readback\":{},\"retained\":{}}}",w.address,w.before,w.written,w.readback,w.retained);
+        crate::serial_println!("GT710_SENSOR_WRITE {{\"address\":{},\"before\":{},\"written\":{},\"readback\":{},\"retained\":{},\"restoring\":{}}}",w.address,w.before,w.written,w.readback,w.retained,w.restoring);
     }
     fn fuse_note(&mut self,result:Result<u32,&'static str>) {
         let status=match result {Ok(1)=>"ok",Ok(_)=>"sensor-unavailable",Err(e)=>e};

@@ -86,7 +86,10 @@ pub fn limits(r:&[u8])->Result<Limits,&'static str> {
             min_p:d[12] as u32,max_p:d[13] as u32};
         if l.min_vco==0 || l.min_vco>l.max_vco || l.min_input==0 || l.min_input>l.max_input ||
             l.min_m==0 || l.min_m>l.max_m || l.min_n==0 || l.min_n>l.max_n ||
-            l.min_p==0 || l.min_p>l.max_p || l.max_p>63 {return Err("GPC PLL limits invalid");}
+            l.min_p==0 || l.min_p>l.max_p || l.max_p>63 {
+            #[cfg(target_os="none")] crate::serial_println!("GT710_CLOCK_CHECK check=gpc-pll-limits limits={:?} max_p_allowed=63",l);
+            return Err("GPC PLL limits invalid");
+        }
         found=Some(l);
     }
     found.ok_or("GPC PLL missing")

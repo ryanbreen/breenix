@@ -20,7 +20,8 @@ impl Access for Io {
         (0x21000,0xc0040001,0xc0040000,false),(0x22400,0x800,0,false),
         (0x20008,0x12348000,0x92340000,true),(0x2000c,0x92340003,0x12340000,true)];
     assert_eq!(io.writes.len(),expected.len());
-    for (w,(a,b,v,retained)) in io.writes.iter().zip(expected) {
+    for (i,(w,(a,b,v,retained))) in io.writes.iter().zip(expected).enumerate() {
+        assert_eq!(w.restoring, i==2 || i==3);
         assert_eq!((w.address,w.before,w.written,w.readback,w.retained),(a,b,v,v,retained));
     }
     assert_eq!(io.sleeps,[20]);

@@ -249,12 +249,21 @@ fn select(t:&Tables,khz:u32)->Result<Config,&'static str> {
  t.configs.iter().find(|c|c["rammap_min"]<=khz/1000 && khz/1000<=c["rammap_max"]).cloned().ok_or("memx RAMMAP range")
 }
 fn validate_pll(c:&Config)->Result<(),&'static str> {
- if c.get("refclk").copied().unwrap_or(0)==0 {return Err("memx reference PLL absent");}
- if c.get("max_p").copied().unwrap_or(0)>63 {return Err("memx PLL post-divider exceeds hardware field");}
+ if c.get("refclk").copied().unwrap_or(0)==0 {
+  #[cfg(target_os="none")] crate::serial_println!("GT710_CLOCK_CHECK check=memory-pll-reference limits={:?}",c);
+  return Err("memx reference PLL absent");
+ }
+ if c.get("max_p").copied().unwrap_or(0)>63 {
+  #[cfg(target_os="none")] crate::serial_println!("GT710_CLOCK_CHECK check=memory-pll-post-divider limits={:?} max_p_allowed=63",c);
+  return Err("memx PLL post-divider exceeds hardware field");
+ }
  for (min,max) in [("min_freq","max_freq"),("min_inputfreq","max_inputfreq"),
      ("min_m","max_m"),("min_n","max_n"),("min_p","max_p")] {
   let lo=c.get(min).copied().unwrap_or(0);let hi=c.get(max).copied().unwrap_or(0);
-  if lo==0 || lo>hi {return Err("memx PLL limits invalid");}
+  if lo==0 || lo>hi {
+   #[cfg(target_os="none")] crate::serial_println!("GT710_CLOCK_CHECK check=memory-pll-limits minimum={} actual_min={} maximum={} actual_max={} limits={:?}",min,lo,max,hi,c);
+   return Err("memx PLL limits invalid");
+  }
  }
  Ok(())
 }
@@ -323,7 +332,10 @@ pub fn calculate_pass(r:&[u8],strap:u32,former:u32,target:u32,intermediate:bool,
  if former==0 || target==0 {return Err("zero memory clock");}
  let t=tables(r,strap)?;
  let freq=if intermediate {former.min(target)}else{target};
- if freq>t.pll["max_freq"] {return Err("DDR3 mode 2 unsupported");}
+ if freq>t.pll["max_freq"] {
+  #[cfg(target_os="none")] crate::serial_println!("GT710_CLOCK_CHECK check=reference-pll-mode frequency_khz={} max_frequency_khz={} mode=2 supported=1",freq,t.pll["max_freq"]);
+  return Err("DDR3 mode 2 unsupported");
+ }
  let mut c=select(&t,freq)?;
  if intermediate {
   let other=select(&t,former.max(target))?;

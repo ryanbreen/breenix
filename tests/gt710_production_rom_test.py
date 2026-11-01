@@ -28,7 +28,8 @@ fn main() {
  assert_eq!((target.gpc_khz,target.memory_khz,target.voltage_id),(1307000,900000,1));
  assert_eq!(production_rom::voltage(&r,1,32,0,&mut |a|{assert_eq!(a,0xd61c);0x4000}).unwrap(),(925000,925000));
  assert_eq!(production_rom::voltage(&r,1,32,0,&mut |_|0).unwrap(),(900000,925000));
- r[0x909]=0x15;assert!(production_rom::target(&r,4).is_err());
+ r[0x909]=0x15;let refusal=production_rom::target(&r,4).unwrap_err();
+ assert_eq!(refusal.check,"ram-type");assert_eq!(refusal.reason,"production memory reclock requires DDR3");
  // A new highest perf level must change the target, without constants.
  r[0x909]=0x11;r[0x13a..0x13c].copy_from_slice(&1450u16.to_le_bytes());
  assert_eq!(production_rom::target(&r,4).unwrap().gpc_khz,1450000);

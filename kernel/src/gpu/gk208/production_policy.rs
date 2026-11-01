@@ -14,15 +14,17 @@ pub trait Startup {
 pub struct Outcome {
     pub full: bool,
     pub failure: Option<&'static str>,
+    pub failed_stage: Option<Stage>,
     pub gpc_restore: Option<&'static str>,
     pub memory_restore: Option<&'static str>,
 }
 pub fn start(io: &mut impl Startup, keep_post: bool) -> Outcome {
-    let mut out = Outcome { full: false, failure: None, gpc_restore: None, memory_restore: None };
+    let mut out = Outcome { full: false, failure: None, failed_stage: None, gpc_restore: None, memory_restore: None };
     if keep_post { return out; }
     for stage in Stage::ALL {
         if let Err(reason) = io.step(stage) {
             out.failure = Some(reason);
+            out.failed_stage = Some(stage);
             let (gpc,memory)=io.changed();
             // Attempt the second domain even when the first restore fails.
             if gpc { out.gpc_restore = io.restore_gpc().err(); }
@@ -56,4 +58,20 @@ impl Guard {
         self.stopped=true;true
     }
     pub fn tripped(&self) -> bool { self.tripped }
+}
+
+#[derive(Debug)]
+pub struct HealthFailure {pub check:&'static str,pub register:u32,pub value:u32}
+/// GR PRI is available after PMC enables PGRAPH; PMC/PFIFO/PMU remain readable
+/// before GPU admission (the same accessibility rule as gr/ctxctl.rs).
+pub fn clock_health(read:&mut impl FnMut(u32)->u32)->Result<(),HealthFailure> {
+ let disp=read(0x10a01c);let raw=read(0x10a008);let pending=raw&disp&!(disp>>16);
+ if pending&!0xc0!=0 {return Err(HealthFailure {check:"pmu-pending",register:0x10a008,value:raw});}
+ let fifo=read(0x259c);
+ if fifo!=0 {return Err(HealthFailure {check:"fifo-fault",register:0x259c,value:fifo});}
+ if read(0x200)&0x1000!=0 {
+  let gr=read(0x400100);
+  if gr!=0 {return Err(HealthFailure {check:"pgraph-fault",register:0x400100,value:gr});}
+ }
+ Ok(())
 }

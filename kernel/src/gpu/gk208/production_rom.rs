@@ -37,21 +37,29 @@ fn n(r:&[u8],p:usize,s:usize)->Result<u32,&'static str> {
  let bytes=r.get(p..p.checked_add(s).ok_or("voltage table overflow")?).ok_or("voltage table bounds")?;
  Ok(bytes.iter().enumerate().fold(0,|v,(i,b)|v|u32::from(*b)<<(8*i)))
 }
-pub fn target(r:&[u8],strap:u32)->Result<Target,&'static str> {
+#[derive(Debug)]
+pub struct TargetFailure {pub check:&'static str,pub reason:&'static str}
+impl From<&'static str> for TargetFailure {
+ fn from(reason:&'static str)->Self {Self {check:"ram-type",reason}}
+}
+pub fn target(r:&[u8],strap:u32)->Result<Target,TargetFailure> {
  let (v,m,len)=modeset::bit(r,b'M').map_err(|_|"BIT M missing")?;
- if v!=2 || len<5 {return Err("RAM type table unavailable");}
+ if v!=2 || len<5 {return Err("RAM type table unavailable".into());}
  let t=n(r,m+3,2)? as usize;
- if t==0 || n(r,t,1)?!=0x10 || n(r,t+1,1)?<7 || n(r,t+2,1)?<2 || n(r,t+4,1)?!=0 {return Err("RAM type geometry");}
+ if t==0 || n(r,t,1)?!=0x10 || n(r,t+1,1)?<7 || n(r,t+2,1)?<2 || n(r,t+4,1)?!=0 {return Err("RAM type geometry".into());}
  let mut ty=None;
  for i in 0..n(r,t+3,1)? as usize {
   let q=t+n(r,t+1,1)? as usize+i*n(r,t+2,1)? as usize;
   let b=n(r,q,1)?;
   if b&15!=15 && b>>4==(strap&0x3c)>>2 {ty=Some(b&15);break;}
  }
- if ty!=Some(1) {return Err("production memory reclock requires DDR3");}
- let table=perf::decode(r)?;
- let level=table.levels.iter().max_by_key(|l|l.gpc_khz).ok_or("no performance level")?;
- if level.gpc_khz==0 || level.memory_khz==0 {return Err("zero performance clock");}
+ if ty!=Some(1) {
+  #[cfg(target_os="none")] crate::serial_println!("GT710_CLOCK_CHECK check=ram-type strap={} actual={:?} expected=1",(strap&0x3c)>>2,ty);
+  return Err("production memory reclock requires DDR3".into());
+ }
+ let table=perf::decode(r).map_err(|reason|TargetFailure {check:"performance-table",reason})?;
+ let level=table.levels.iter().max_by_key(|l|l.gpc_khz).ok_or(TargetFailure {check:"performance-target",reason:"no performance level"})?;
+ if level.gpc_khz==0 || level.memory_khz==0 {return Err(TargetFailure {check:"performance-target",reason:"zero performance clock"});}
  Ok(Target {gpc_khz:level.gpc_khz,memory_khz:level.memory_khz,voltage_id:level.voltage_id})
 }
 fn requirement(r:&[u8],t:usize,id:u8,temp:u32,speedo:i32,seen:&mut [bool;256])->Result<u32,&'static str> {
@@ -80,7 +88,10 @@ pub fn voltage(r:&[u8],id:u8,temp:u32,speedo:i32,read:&mut impl FnMut(u32)->u32)
  let (v,p,len)=modeset::bit(r,b'P').map_err(|_|"BIT P missing")?;
  if v!=2 || len<0x24 {return Err("BIT P voltage pointers unavailable");}
  let t=n(r,p+0x20,4)? as usize;
- let required=requirement(r,t,id,temp,speedo,&mut [false;256])?;
+ let required=requirement(r,t,id,temp,speedo,&mut [false;256]).inspect_err(|e| {
+  #[cfg(target_os="none")] crate::serial_println!("GT710_CLOCK_CHECK check=vmap table_offset={:#x} voltage_id={} temperature={} speedo={} reason={}",t,id,temp,speedo,e);
+  #[cfg(not(target_os="none"))] let _=e;
+ })?;
  let t=n(r,p+0x0c,4)? as usize;
  if t==0 {return Err("voltage table absent");}
  let v=n(r,t,1)?;let h=if v==0x12 {5}else{n(r,t+1,1)? as usize};

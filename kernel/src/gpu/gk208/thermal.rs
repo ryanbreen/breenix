@@ -31,7 +31,7 @@
 //! No clock, voltage, fan, alarm or calibration-coefficient writes.
 #[derive(Clone, Copy, Debug)]
 pub struct Write {
-    pub address:u32, pub before:u32, pub written:u32, pub readback:u32, pub retained:bool,
+    pub address:u32, pub before:u32, pub written:u32, pub readback:u32, pub retained:bool, pub restoring:bool,
 }
 pub trait Access {
     fn read(&mut self,address:u32)->u32;
@@ -40,19 +40,19 @@ pub trait Access {
     fn fuse_note(&mut self,result:Result<u32,&'static str>);
     fn sleep_ms(&mut self,milliseconds:u32);
 }
-fn write(io:&mut impl Access,address:u32,value:u32,retained:bool)->u32 {
+fn write(io:&mut impl Access,address:u32,value:u32,retained:bool,restoring:bool)->u32 {
     let before=io.read(address);io.write(address,value);let readback=io.read(address);
-    io.record(Write {address,before,written:value,readback,retained});readback
+    io.record(Write {address,before,written:value,readback,retained,restoring});readback
 }
 fn fuse(io:&mut impl Access)->Result<u32,&'static str> {
     let enable=io.read(0x22400);let access=io.read(0x21000);
     if [enable,access].iter().any(|v|*v==u32::MAX || *v==0xbadf1201) {return Err("fuse-access-unavailable");}
-    write(io,0x22400,enable|0x800,false);
-    write(io,0x21000,access|1,false);
+    write(io,0x22400,enable|0x800,false,false);
+    write(io,0x21000,access|1,false,false);
     let value=io.read(0x212a8);
     // Restore both access words, including after a refused enable.
-    let restored_access=write(io,0x21000,access,false);
-    let restored_enable=write(io,0x22400,enable,false);
+    let restored_access=write(io,0x21000,access,false,true);
+    let restored_enable=write(io,0x22400,enable,false,true);
     if restored_access!=access || restored_enable!=enable {return Err("fuse-restore-failed");}
     Ok(value)
 }
@@ -62,8 +62,8 @@ pub fn setup(io:&mut impl Access)->Result<(),&'static str> {
     let a=io.read(0x20008);let b=io.read(0x2000c);
     if [a,b].iter().any(|v|*v==u32::MAX || *v==0xbadf1201) {return Err("sensor-control-unavailable");}
     // Nouveau leaves these controls in place for continuous hardware readings.
-    let a=write(io,0x20008,(a&!0x80008000)|0x80000000,true);
-    let b=write(io,0x2000c,b&!0x80000003,true);
+    let a=write(io,0x20008,(a&!0x80008000)|0x80000000,true,false);
+    let b=write(io,0x2000c,b&!0x80000003,true,false);
     io.sleep_ms(20);
     if a&0x80008000!=0x80000000 || b&0x80000003!=0 {return Err("sensor-enable-failed");}
     Ok(())
