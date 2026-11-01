@@ -25,23 +25,22 @@ impl Access for Io {
     }
     assert_eq!(io.sleeps,[20]);
     let sample=thermal::temperature(&mut io);assert_eq!(sample,Ok(47));
-    assert_eq!(io.writes.len(),6); // hardware calibration does not need another fuse transaction
+    assert_eq!(io.writes.len(),10); // Each read honors the sensor-present fuse (K9).
     assert_eq!(io.r[&0x22400],0);assert_eq!(io.r[&0x21000],0xc0040000);
     assert_eq!(io.r[&0x20008],0x92340000);assert_eq!(io.r[&0x2000c],0x12340000);
 }
 #[test] fn unavailable_sensor_and_failed_restore_are_reported_with_cleanup() {
     let mut io=Io::new();io.r.insert(0x212a8,0);
-    assert_eq!(thermal::setup(&mut io),Ok(()));
-    assert_eq!(io.writes.len(),6);assert_eq!(io.sleeps,[20]);
-    assert_eq!(thermal::temperature(&mut io),Ok(47));
+    assert_eq!(thermal::setup(&mut io),Err("sensor-unavailable"));
+    assert_eq!(io.writes.len(),4);assert!(io.sleeps.is_empty());
+    assert_eq!(thermal::temperature(&mut io),Err("sensor-unavailable"));
     assert_eq!(io.notes,[Ok(0)]);
     assert_eq!(io.r[&0x21000],0xc0040000);assert_eq!(io.r[&0x22400],0);
     let mut io=Io::new();io.fail_restore=true;
-    assert_eq!(thermal::setup(&mut io),Ok(()));
+    assert_eq!(thermal::setup(&mut io),Err("fuse-restore-failed"));
     assert_eq!(io.notes,[Err("fuse-restore-failed")]);
-    assert_eq!(io.writes.len(),6);assert_eq!(io.writes[2].readback,0xc0040001);
-    assert_eq!(io.r[&0x22400],0);assert_eq!(io.sleeps,[20]);
-    assert_eq!(thermal::temperature(&mut io),Ok(47));
+    assert_eq!(io.writes.len(),4);assert_eq!(io.writes[2].readback,0xc0040001);
+    assert_eq!(io.r[&0x22400],0);assert!(io.sleeps.is_empty());
     let mut io=Io::new();io.r.insert(0x20400,0xffffffff);
     assert_eq!(thermal::temperature(&mut io),Err("sensor-read-error"));
 }
