@@ -130,7 +130,7 @@ def suites(args):
 def ceiling_seconds(args):
     if args.mode == 'suite':
         # Each further suite of a multi-suite boot brings its own DONE deadline.
-        return CEILING_SECONDS['suite'] + MODE_DEADLINE_SECONDS['suite'] * (len(suites(args)) - 1)
+        return CEILING_SECONDS['suite'] + sum(mode_deadline_seconds(args, name) for name in suites(args)[1:])
     if persistent(args) and session(args):
         # A persistent session keeps the machine with no deadline until it is stopped or powered off.
         return None
@@ -139,6 +139,13 @@ def ceiling_seconds(args):
 
 MODE_DEADLINE_SECONDS = {'default': 300, 'shell': 180, 'probe': 300, 'suite': 420, 'console': 300, 'tests': 600,
                          'persistent-install': 1200, 'persistent': 600}
+
+
+def mode_deadline_seconds(args, suite=None):
+    """E25 BreenGL uses its 900-second suite gate; other mode bounds stay fixed."""
+    name = suite or (suites(args)[0] if args.mode == 'suite' else None)
+    return 900 if args.mode == 'suite' and name == 'breengel' else MODE_DEADLINE_SECONDS[args.mode]
+
 # The testing kernel's last report line (kernel/src/syscall/handlers.rs), where a testing boot ends. x86-64 prints it
 # through the logger, after a level and module prefix.
 TESTS_DONE = 'USERSPACE TEST REPORT DONE'
@@ -229,6 +236,7 @@ class Driver:
         self.kernel_started = None
         # The latest suite progress record; failed cases and resets are progress too.
         self.suite_started = None
+        self.suite_name = None
         self.input_clock_alive = None
         self.last_stage = None
         self.complete_at = None
@@ -1163,8 +1171,10 @@ class Driver:
                 and (panic_line or dead_suite or any(p.search(line) for p in self.fatal_patterns))):
             self.fatal_at = observed_at
             self.event('fatal', observed_at=observed_at, seconds=seconds)
-        if len(suites(self.args)) > 1 and re.fullmatch(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+', line):
-            self.suite_started = observed_at
+        if self.args.mode == 'suite' and re.fullmatch(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+', line):
+            self.suite_name = line.split()[1 if line.startswith('SUITE ') else 2]
+            if len(suites(self.args)) > 1 or self.suite_name == 'breengel':
+                self.suite_started = observed_at
         if self.args.mode == 'probe' and re.fullmatch(r'PROBE DONE passed=\d+ failed=[1-9]\d*', line):
             self.probe_failed = True
         if '[init] shell ready' in line:
@@ -1798,7 +1808,7 @@ class Driver:
         if quiet > SILENCE_SECONDS:
             raise Finish(m.EXIT_HUNG, f'silent for {SILENCE_SECONDS} s after {self.last_stage}', hung=True)
         # Each suite has a DONE deadline independent of progress and the fixed attempt ceiling.
-        if m.now() - (self.suite_started or self.kernel_started) > MODE_DEADLINE_SECONDS[self.args.mode]:
+        if m.now() - (self.suite_started or self.kernel_started) > mode_deadline_seconds(self.args, self.suite_name):
             raise Finish(m.EXIT_SHORT, 'the mode deadline passed with stages missing')
 
     # Power.
