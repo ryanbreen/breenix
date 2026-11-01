@@ -299,6 +299,21 @@ fn end(id:u32,w:&gpu::window_targets::Writer){w.end_access();with_core(|c|{c.res
 }
 #[test] fn private_clear_uses_native_draw_release(){setup();assert_eq!(window::target(1).clear(),Ok(()));assert!(EVENTS.with(|e|e.borrow().contains(&"gpu-clear-complete")));}
 
+#[test] fn replay_can_read_a_source_while_capture_keeps_its_tree_pinned(){
+    setup();
+    CAPTURE_ACTION.with(|a|*a.borrow_mut()=Some(Box::new(||{
+        assert_eq!(window::tree_pins(),[1,0,0]);
+        let source=window::target(0);let dest=window::target(1);
+        assert_eq!(dest.copy_from(&source,&[Rect::new(0,0,8,8)]),Ok(()),
+            "a source read must not wait for the paused capture's read to end");
+        assert!(with_core(|c|c.resources[&1].reading).unwrap(),
+            "the completed copy must not release the capture's read mark");
+        assert_eq!(window::tree_pins(),[1,0,0]);
+    })));
+    let c=window::capture();assert_eq!(c.commit_id,1);
+    assert_eq!(window::tree_pins(),[0;3]);
+}
+
 #[test] fn interrupted_replay_retains_source_exclusion_until_device_completion(){
     setup();let source=window::target(0);let dest=window::target(1);
     INTERRUPT_COPY.with(|f|*f.borrow_mut()=true);
