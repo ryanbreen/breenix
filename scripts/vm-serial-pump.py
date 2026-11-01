@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Capture a persistent QEMU run's serial stream and expose its console."""
 import datetime
+import json
 import selectors
+import signal
 import socket
 import sys
 import time
@@ -10,15 +12,56 @@ from pathlib import Path
 
 def main(run, whole_path):
     run = Path(run)
-    boot = datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ-qemu')
-    directory = run / 'boots' / boot
-    directory.mkdir(parents=True, exist_ok=False)
-    (run / 'current').write_text(boot + '\n')
+    build_path = run / 'build.json'
+    build = json.loads(build_path.read_text()) if build_path.exists() else {}
+    mode_path = run / 'mode'
+    tools_path = run / 'tools-commit'
+    record = {'mode': 'persistent', 'bootMode': mode_path.read_text().strip() if mode_path.exists() else '',
+              'target': 'qemu', 'bootedCommit': build.get('commit'),
+              'toolsCommit': tools_path.read_text().strip() if tools_path.exists() else '',
+              'evidenceEligible': bool(build.get('commit') and build.get('dirty') is False)}
+    serial = timestamps = events = None
+    directory = None
+    last_stamp = 0
+    offset = 0
+
+    def end_boot():
+        if directory is not None:
+            serial.close()
+            timestamps.close()
+            events.close()
+            (directory / 'ended').write_text(datetime.datetime.now(datetime.timezone.utc).isoformat() + '\n')
+
+    def start_boot():
+        nonlocal directory, serial, timestamps, events, last_stamp, offset
+        stamp = max(int(time.time()), last_stamp + 1)
+        while True:
+            boot = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ-qemu')
+            directory = run / 'boots' / boot
+            try:
+                directory.mkdir(parents=True)
+                break
+            except FileExistsError:
+                stamp += 1
+        last_stamp = stamp
+        (directory / 'run.json').write_text(json.dumps(record) + '\n')
+        serial = (directory / 'serial.txt').open('ab', buffering=0)
+        timestamps = (directory / 'serial.ts').open('a', buffering=1)
+        events = (directory / 'events.jsonl').open('a', buffering=1)
+        (run / 'current').write_text(boot + '\n')
+        offset = 0
+
+    start_boot()
+    def terminate(_signum, _frame):
+        raise SystemExit(0)
+    signal.signal(signal.SIGTERM, terminate)
     selector = selectors.DefaultSelector()
     listeners = []
     clients = {}
     guest = None
     pending_guest = bytearray()
+    qmp = None
+    qmp_buffer = bytearray()
     paths = [run / 'serial.sock', run / 'console.sock']
     try:
         for path, kind in zip(paths, ('guest', 'console')):
@@ -29,12 +72,19 @@ def main(run, whole_path):
             listener.setblocking(False)
             listeners.append(listener)
             selector.register(listener, selectors.EVENT_READ, kind)
-        with (directory / 'serial.txt').open('ab', buffering=0) as serial, \
-             (directory / 'serial.ts').open('a', buffering=1) as timestamps, \
-             open(whole_path, 'ab', buffering=0) as whole:
-            offset = 0
+        with open(whole_path, 'ab', buffering=0) as whole:
             while True:
-                for key, mask in selector.select():
+                if qmp is None:
+                    candidate = socket.socket(socket.AF_UNIX)
+                    try:
+                        candidate.connect(str(run / 'events.sock'))
+                    except (FileNotFoundError, ConnectionRefusedError):
+                        candidate.close()
+                    else:
+                        qmp = candidate
+                        qmp.setblocking(False)
+                        selector.register(qmp, selectors.EVENT_READ, 'qmp')
+                for key, mask in selector.select(timeout=.05 if qmp is None else None):
                     sock, kind = key.fileobj, key.data
                     if sock in listeners:
                         connection, _ = sock.accept()
@@ -48,6 +98,26 @@ def main(run, whole_path):
                         else:
                             clients[connection] = bytearray()
                             selector.register(connection, selectors.EVENT_READ, 'console-data')
+                        continue
+                    if kind == 'qmp':
+                        data = sock.recv(65536)
+                        if not data:
+                            selector.unregister(sock)
+                            sock.close()
+                            qmp = None
+                            continue
+                        qmp_buffer.extend(data)
+                        while b'\n' in qmp_buffer:
+                            line, _, rest = qmp_buffer.partition(b'\n')
+                            qmp_buffer[:] = rest
+                            message = json.loads(line)
+                            if 'QMP' in message:
+                                sock.sendall(b'{"execute":"qmp_capabilities"}\n')
+                            elif 'event' in message:
+                                events.write(json.dumps(message) + '\n')
+                                if message['event'] == 'RESET':
+                                    end_boot()
+                                    start_boot()
                         continue
                     if mask & selectors.EVENT_READ:
                         data = sock.recv(65536)
@@ -86,6 +156,9 @@ def main(run, whole_path):
                         if not pending:
                             selector.modify(sock, selectors.EVENT_READ, kind)
     finally:
+        end_boot()
+        if qmp is not None:
+            qmp.close()
         selector.close()
         for sock in [*listeners, *clients, *([guest] if guest else [])]:
             sock.close()

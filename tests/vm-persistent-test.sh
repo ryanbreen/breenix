@@ -41,6 +41,8 @@ echo 'vm-persistent argument and image layout checks passed'
 fixture=$(mktemp -d /tmp/vpm-test.XXXXXX)
 trap 'rm -rf "$tmp" "$fixture"' EXIT
 mkdir -p "$fixture/scripts" "$fixture/bin" "$fixture/run"
+git -C "$fixture" init -q
+git -C "$fixture" -c user.name=Fixture -c user.email=fixture@example.invalid commit -q --allow-empty -m fixture
 cp "$launcher" "$fixture/scripts/vm-persistent.sh"
 cp "$root/scripts/vm-serial-pump.py" "$fixture/scripts/vm-serial-pump.py"
 cp "$root/scripts/qemu-arm64.py" "$fixture/scripts/qemu-arm64.py"

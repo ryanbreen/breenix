@@ -61,6 +61,15 @@ if [ "$op" = build ]; then
     rm "$run/operator-account" "$run/readback"
     truncate -s 1G "$run/home.img"
     mke2fs -q -t ext2 -F "$run/home.img"
+    python3 - "$ROOT" "$run/build.json" <<'PYCODE'
+import json, subprocess, sys
+root, output = sys.argv[1:]
+commit = subprocess.check_output(['git', '-C', root, 'rev-parse', 'HEAD'], text=True).strip()
+dirty = bool(subprocess.check_output(['git', '-C', root, 'status', '--porcelain', '--untracked-files=normal'], text=True))
+with open(output, 'w') as f:
+    json.dump({'commit': commit, 'dirty': dirty}, f)
+    f.write('\n')
+PYCODE
     : > "$run/.breenix-vm-persistent"
     trap - EXIT
     echo "$run"
@@ -117,6 +126,7 @@ cleanup() {
 trap cleanup EXIT
 host_slot_acquire mac-boot
 printf '%s\n' "$mode" > "$run/mode"
+git -C "$ROOT" rev-parse HEAD > "$run/tools-commit"
 mkdir -p "${TMPDIR:-/tmp}/breenix-boot"
 serial=$(mktemp "${TMPDIR:-/tmp}/breenix-boot/vm-persistent.XXXXXX")
 printf '%s\n' "$serial" > "$run/serial-path"
@@ -160,7 +170,7 @@ stop_child() {
 trap stop_child TERM HUP INT
 set +e
 python3 "$ROOT/scripts/qemu-arm64.py" "$qemu" -rtc base=utc -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
-    -kernel "$kernel" -fw_cfg "name=opt/breenix/mode,string=$mode" "${display[@]}" -qmp "unix:$run/qmp.sock,server=on,wait=off" \
+    -kernel "$kernel" -fw_cfg "name=opt/breenix/mode,string=$mode" "${display[@]}" -qmp "unix:$run/qmp.sock,server=on,wait=off" -qmp "unix:$run/events.sock,server=on,wait=off" \
     -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device \
     -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/system.img" \
     -device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/home.img" \
