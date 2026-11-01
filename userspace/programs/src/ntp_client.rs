@@ -396,7 +396,16 @@ fn run() -> Result<(), String> {
         }
         let (names, source) = match &server {
             Some(name) => (vec![name.clone()], "manual"),
-            None => sources()?,
+            None => match sources() {
+                Ok(sources) => sources,
+                Err(error) if once => return Err(error),
+                Err(error) => {
+                    // Configuration and DHCP sources may arrive after startup.
+                    // Keep the daemon alive and use the normal retry backoff.
+                    eprintln!("[ntp] sources unavailable: {error}");
+                    (Vec::new(), "")
+                }
+            },
         };
         let attempted = mono();
         let mut success = false;
