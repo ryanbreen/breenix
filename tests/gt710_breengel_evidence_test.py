@@ -193,6 +193,14 @@ fn main(){
             for data in [original[:-1], bytes([original[0] ^ 1]) + original[1:]]:
                 file.write_bytes(data)
                 with self.assertRaises(ValueError): API['capture_serial'](p)
+            # Re-sign the transport anchor: the picture's judged digest must
+            # still reject changed canonical pixels, beyond HTTP/chunk integrity.
+            damaged = bytes([original[0] ^ 1]) + original[1:]
+            file.write_bytes(damaged)
+            (p/'serial.txt').write_text(serial.replace(hashlib.sha256(original).hexdigest(),
+                                                       hashlib.sha256(damaged).hexdigest()))
+            with self.assertRaisesRegex(ValueError, 'raw picture differs from canonical judged SHA-256'):
+                API['capture_serial'](p)
 
     def test_receiver_enforces_sequence_lease_slot_and_per_boot_bounds(self):
         class Handler:
