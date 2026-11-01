@@ -60,11 +60,57 @@ fn init_does_not_start_telnetd() {
 }
 '''
 
+
+CONSOLE_TEST = r"""
+#[cfg(test)]
+mod console_mode {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static PID: AtomicU64 = AtomicU64::new(1);
+    struct Pid(u64);
+    impl Pid { fn raw(self) -> u64 { self.0 } }
+    fn getpid() -> Result<Pid, ()> { Ok(Pid(PID.load(Ordering::Relaxed))) }
+    fn detach_console() {}
+    #[cfg(target_arch = "x86_64")]
+    fn console_text_mode() {}
+    mod init_services {
+        #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+        pub enum Scope { All, Logins }
+        pub struct Supervisor(Scope, bool);
+        impl Supervisor {
+            pub fn load(scope: Scope, publish: bool) -> Self { Self(scope, publish) }
+            pub fn run(self) -> ! { std::panic::panic_any((self.0, self.1)) }
+        }
+    }
+    __CONSOLE_FUNCTION__
+    #[test]
+    fn production_console_starts_daemons_without_changing_child_login_fixtures() {
+        for (pid, scope) in [(1, init_services::Scope::All), (42, init_services::Scope::Logins)] {
+            PID.store(pid, Ordering::Relaxed);
+            let stopped = std::panic::catch_unwind(run_console_mode).expect_err("supervisor runs forever");
+            let actual = *stopped.downcast::<(init_services::Scope, bool)>().expect("supervisor selection");
+            assert_eq!(actual, (scope, pid == 1), "console init PID {pid}");
+        }
+    }
+}
+"""
+
+
+def console_function():
+    source = (ROOT / "userspace/programs/src/init.rs").read_text()
+    start = source.index("fn run_console_mode()")
+    opening = source.index("{", start)
+    depth = 0
+    for at in range(opening, len(source)):
+        depth += (source[at] == "{") - (source[at] == "}")
+        if depth == 0:
+            return source[start:at + 1]
+    raise ValueError("unterminated run_console_mode")
+
 if __name__ == "__main__":
     with tempfile.TemporaryDirectory(prefix="breenix-boot-hygiene-") as directory:
         crate = Path(directory)
         (crate / "src").mkdir()
-        (crate / "src/lib.rs").write_text(RUST_TEST)
+        (crate / "src/lib.rs").write_text(RUST_TEST + CONSOLE_TEST.replace("__CONSOLE_FUNCTION__", console_function()))
         library = ROOT / "libs/libbreenix"
         (crate / "Cargo.toml").write_text(
             '[package]\nname = "boot-hygiene-check"\nversion = "0.1.0"\nedition = "2021"\n'
