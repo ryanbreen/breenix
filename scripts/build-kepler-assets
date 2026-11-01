@@ -87,6 +87,13 @@ def main():
         if rejected.returncode == 0 or b"unsupported opcode" not in rejected.stderr or list(attempt.glob("invalid.*")):
             raise RuntimeError("unsupported instruction did not fail closed")
         print(f"PASS: two independent builds produced {len(hashes)} byte-identical assets; embedding and rejection checks passed")
+    # C4's host rebuild also checks the embedded PMU image, not just two
+    # freshly generated copies. The source and committed bytes must agree.
+    if args.check:
+        for part in ("code", "data"):
+            name = f"pmu.{part}.bin"
+            if (first / name).read_bytes() != (ROOT / "kernel/assets/kepler" / name).read_bytes():
+                raise RuntimeError(f"committed PMU firmware differs from source rebuild: {name}")
     # A stable path for later include_bytes!, C includes or disk image packaging.
     link = base / "assets"
     temporary = attempt / "publish"

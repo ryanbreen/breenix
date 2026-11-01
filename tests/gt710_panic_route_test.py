@@ -11,19 +11,38 @@ from gt710_panic_report_test import API, ROOT, VALID, producer
 
 
 class PanicRoute(unittest.TestCase):
-    def test_argument_parsers_accept_explicit_feature_and_panic_choice(self):
+    def test_argument_parsers_accept_explicit_features_and_diagnostic_choices(self):
         run = runpy.run_path(str(ROOT / 'scripts/metal/metal-run'))
+        builder = runpy.run_path(str(ROOT / 'scripts/metal/metal-build'))
+        driver = runpy.run_path(str(ROOT / 'scripts/metal/metal-boot'))
         main = run['main']
         build = Mock(return_value=0)
         boot = Mock(return_value=0)
         with patch.dict(main.__globals__, build=build, boot=boot):
-            with patch.object(sys, 'argv', ['metal-run', '_build', '20261030T000000Z-metal', 'a'*40,
-                                            '--features', 'capture_panic_oracle']):
-                self.assertEqual(main(), 0)
-            self.assertEqual(build.call_args.args[2], 'capture_panic_oracle')
-            with patch.object(sys, 'argv', ['metal-run', 'boot', '--gt710-category', 'panic']):
-                self.assertEqual(main(), 0)
-            self.assertEqual(boot.call_args.args[0].gt710_category, 'panic')
+            for feature in filter(None, builder['PROFILES']):
+                with self.subTest(feature=feature), patch.object(sys, 'argv', [
+                        'metal-run', '_build', '20261030T000000Z-metal', 'a'*40,
+                        '--features', feature]):
+                    self.assertEqual(main(), 0)
+                    self.assertEqual(build.call_args.args[2], feature)
+            for category in ('panic', 'core', 'clocks'):
+                with self.subTest(category=category), patch.object(sys, 'argv', [
+                        'metal-run', 'boot', '--gt710-category', category]):
+                    self.assertEqual(main(), 0)
+                    args = boot.call_args.args[0]
+                    self.assertEqual(args.gt710_category, category)
+                    features = run['kernel_features']('probe', None, None, category)
+                    self.assertEqual(driver['kernel_profile'](args),
+                                     ([features[1]], builder['PROFILES'][features[1]]))
+        outer = Mock(return_value=0)
+        with patch.dict(builder['main'].__globals__, outer=outer):
+            for feature in filter(None, builder['PROFILES']):
+                with self.subTest(builder_feature=feature), patch.object(sys, 'argv', [
+                        'metal-build', '--id', '20261030T000000Z-metal', '--sha', 'a'*40,
+                        '--repo', '.', '--rust-fork', '.', '--cache', '.', '--root', '.',
+                        '--stub', '.', '--features', feature]):
+                    self.assertEqual(builder['main'](), 0)
+                    self.assertEqual(outer.call_args.args[0].features, feature)
 
     def test_stopped_panic_companion_rejects_bad_lifecycle_or_build(self):
         sha = 'a'*40

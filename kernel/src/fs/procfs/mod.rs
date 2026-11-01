@@ -134,6 +134,8 @@ pub enum ProcEntryType {
     ConsoleCheck,
     #[cfg(target_arch="x86_64")]
     Gt710Ce,
+    #[cfg(all(target_arch="x86_64",feature="gt710_clock_probe"))]
+    Gt710Clock,
     #[cfg(target_arch="x86_64")]
     Gt710Wait,
     #[cfg(target_arch="x86_64")]
@@ -219,6 +221,8 @@ impl ProcEntryType {
             ProcEntryType::ConsoleDir => "console",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Ce => "gt710-ce",
+            #[cfg(all(target_arch="x86_64",feature="gt710_clock_probe"))]
+            ProcEntryType::Gt710Clock => "gt710-clock",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Wait => "gt710-wait",
             #[cfg(target_arch="x86_64")]
@@ -291,6 +295,8 @@ impl ProcEntryType {
             ProcEntryType::ConsoleDir => "/proc/console",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Ce => "/proc/gt710-ce",
+            #[cfg(all(target_arch="x86_64",feature="gt710_clock_probe"))]
+            ProcEntryType::Gt710Clock => "/proc/gt710-clock",
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Wait => "/proc/gt710-wait",
             #[cfg(target_arch="x86_64")]
@@ -368,6 +374,8 @@ impl ProcEntryType {
             ProcEntryType::ConsoleDir => 502,
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Ce => 504,
+            #[cfg(all(target_arch="x86_64",feature="gt710_clock_probe"))]
+            ProcEntryType::Gt710Clock => 510,
             #[cfg(target_arch="x86_64")]
             ProcEntryType::Gt710Wait => 505,
             #[cfg(target_arch="x86_64")]
@@ -520,6 +528,8 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::NetTcp));
     #[cfg(target_arch="x86_64")]
     procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Pixels));
+    #[cfg(all(target_arch="x86_64",feature="gt710_clock_probe"))]
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710Clock));
     #[cfg(target_arch="x86_64")]
     procfs.entries.push(ProcEntry::new(ProcEntryType::Gt710CaseHeap));
 
@@ -917,6 +927,8 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::ConsoleDir => text(String::from("check\n")),
         #[cfg(target_arch="x86_64")]
         ProcEntryType::Gt710Ce => require(Operation::Trace).and_then(|()|crate::gk208::proc_ce(0)),
+        #[cfg(all(target_arch="x86_64",feature="gt710_clock_probe"))]
+        ProcEntryType::Gt710Clock => require(Operation::Trace).and_then(|()|crate::gk208::c2::read_status()),
         #[cfg(target_arch="x86_64")]
         ProcEntryType::Gt710Wait => require(Operation::Trace).and_then(|()|crate::gk208::proc_ce(1)),
         #[cfg(target_arch="x86_64")]

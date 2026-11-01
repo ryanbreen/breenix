@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/envytools/envytools",
+  "revision": "f102b82381f3f11cee113d16374c87091db039d9",
+  "files": [
+    {
+      "path": "rnndb/gf100_pcounter.xml",
+      "license": "MIT (imported copyright.xml)",
+      "sha256": "948d443b2d49fefb810d2d14068fb6b75fbd0261e48646ef6fb486a0a3863bd9"
+    },
+    {
+      "path": "rnndb/copyright.xml",
+      "license": "MIT",
+      "sha256": "689484f97d5c003a6c3bb84ee09ab4b4f79266250b9b44dc3edaf859930db7a6"
+    }
+  ],
+  "result": "PCOUNTER GPC/PART/HUB domains and generic selector fields are documented; no named GK208 memory-clock signal is documented. No memory counter selector is guessed."
+}

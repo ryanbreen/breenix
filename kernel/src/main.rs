@@ -642,6 +642,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
     log::info!("Temporarily enabling interrupts for driver post-init self-tests...");
     x86_64::instructions::interrupts::enable();
     drivers::run_post_init_self_tests();
+    kernel::gk208::initialize_clocks();
 
     // A storage-lane install copies the RAM disk to the hardware disk while the
     // RAM disk is still unmounted, so the copy is the image as delivered.

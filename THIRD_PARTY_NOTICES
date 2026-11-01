@@ -1745,3 +1745,330 @@ f102b82381f3f11cee113d16374c87091db039d9. The file imports the MIT grant
 and author list in rnndb/copyright.xml. Those original notices are retained
 in both consumer headers. G25 defines the post-modeset measurement window;
 the 40 ms settle and fresh-fault refusal are Breenix policy.
+
+## GT 710 C1 clock baseline (K1, G1)
+
+Sources are pinned to nouveau in Linux v6.8
+(e8f897f4afef0031fe618a8e94127a0934896aba), individually checked MIT headers:
+
+- nvkm/subdev/clk/gk104.c: Copyright 2013 Red Hat Inc.; clock read paths
+  in kernel/src/gpu/gk208/clock.rs and scripts/metal/gt710_clock.py.
+- nvkm/subdev/therm/g84.c: Copyright 2012 Red Hat Inc.;
+  nvkm/subdev/fuse/gf100.c: Copyright 2014 Martin Peres;
+  read-only sensor helper in kernel/src/gpu/gk208/sensor.rs and capture
+  in kernel/src/gpu/gk208/c1.rs; validation in scripts/metal/gt710_clock.py.
+- nvkm/subdev/bios/{perf,volt,vmap,therm}.c: Copyright 2012 Nouveau Community;
+  nvkm/subdev/bios/{cstep,boost,timing,rammap}.c: Copyright 2013 Red Hat Inc.;
+  nvkm/subdev/bios/gpio.c: Copyright 2012 Red Hat Inc.; bounded offline
+  layouts in scripts/metal/gt710_clock.py and tests/gt710_c1_test.py.
+- nvkm/subdev/volt/gpio.c and volt/base.c: Copyright 2013 Red Hat Inc.;
+  nvkm/subdev/volt/gk104.c: Copyright 2015 Martin Peres;
+  nvkm/subdev/gpio/gf119.c: Copyright 2012 Red Hat Inc.;
+  nvkm/subdev/gpio/base.c: Copyright 2011 Red Hat Inc.; VID/polarity and
+  PWM readback decoding in scripts/metal/gt710_clock.py, with GPIO words
+  captured by kernel/src/gpu/gk208/c1.rs.
+
+The complete MIT grants and original copyrights are retained in the adapted
+Rust/Python files. Clock/domain and read-only sensor vectors in
+tests/gt710_c1_test.py use the same sources. No GPL implementation or
+proprietary driver/firmware material is used. Sources, exact line citations
+and supported layouts are documented in docs/gui/gt710-c1.md. Board ROM
+bytes are private runtime artifacts and are not redistributed in this tree.
+
+### C2 GPC coefficient oracle (MIT)
+
+`tests/fixtures/gt710_pll_oracle.c` retains the original nonfractional
+`gt215_pll_calc` from Linux v6.8, commit
+e8f897f4afef0031fe618a8e94127a0934896aba,
+`drivers/gpu/drm/nouveau/nvkm/subdev/clk/pllgt215.c:31-100`.
+Copyright 2010 Red Hat Inc.; MIT grant retained in the fixture header.
+The surrounding host declarations replace kernel dependencies for the oracle.
+
+### C2 bounded GPC control (MIT)
+
+`kernel/src/gpu/gk208/c2.rs` adapts these individually inspected MIT files
+at Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba, relative to
+`drivers/gpu/drm/nouveau/nvkm/`:
+
+- `subdev/clk/gk104.c:222-335,356-473`: integer divider/PLL selection and
+  GPC index-0 source switching/programming; Copyright 2013 Red Hat Inc.
+- `subdev/clk/pllgt215.c:31-100`: integer PLL coefficient calculation;
+  Copyright 2010 Red Hat Inc.
+- `subdev/bios/pll.c:81-107,142-159,352-365`: BIT C and v40 GPC PLL limits;
+  Copyright 2005-2006 Erik Waling, 2006 Stephane Marchesin,
+  2007-2009 Stuart Bennett.
+
+The original copyright and full MIT grants are retained in `c2.rs`.
+`c2/runtime.rs` supplies Breenix descriptor and MMIO integration;
+`clock.rs` supplies the existing MIT C1 decoder and GPC reference/step
+queries. No memory, voltage, thermal, or other domain programming is adapted.
+
+## C2b/C2c clock snapshots and independent measurement
+
+`kernel/src/gpu/gk208/c2/observe.rs` adapts the following individually checked
+MIT sources; their copyright and full permission notices are in its header:
+
+- Nouveau `nvkm/subdev/clk/gk104.c` (Copyright 2013 Red Hat Inc.), at Linux
+  v6.8 `e8f897f4afef0031fe618a8e94127a0934896aba`, for source/PLL ordering
+  and the complete inactive/shared register set.
+- Nouveau `nvkm/engine/pm/gf100.c` (Copyright 2013 Red Hat Inc.), same revision,
+  identifies the GPC counter base and cycle sampler. `pm/gk104.c` was checked
+  as MIT for the inherited GF100 counter functions; no code is copied from it.
+- Envytools `nva/nvatiming.c` (Copyright 2011 Martin Peres and Marcelina
+  Kościelnicka), at `f102b82381f3f11cee113d16374c87091db039d9`, for the
+  GPC PRE constant-true cycle-count method.
+- Envytools `rnndb/gf100_pcounter.xml`, `rnndb/pm/gf100_pclock.xml`, and
+  `rnndb/bus/ptimer.xml`, at that revision. Each imports the MIT
+  `rnndb/copyright.xml`; its 2006 author list and grant are retained in the
+  adapted file. The files identify the counter, PLL, divider and PTIMER fields.
+- Nouveau `nvkm/subdev/timer/nv04.c:43-55` (Copyright 2012 Red Hat Inc.),
+  same Linux v6.8 revision, MIT, for high/low/high PTIMER sampling.
+
+C2c rechecks the same MIT `nva/nvatiming.c`, `rnndb/gf100_pcounter.xml`,
+`rnndb/bus/ptimer.xml` and imported `rnndb/copyright.xml` at the pinned
+envytools revision above. `c2/observe.rs` uses CTRL.MODE=HALTED while saving
+and reinstating the PRE sampler, with halted and resumed restore readbacks.
+No additional source or license is introduced.
+
+
+### C2d PM master enable (MIT)
+
+`kernel/src/gpu/gk208/c2/observe.rs` adapts the PM-only PMC mask and posted
+readback from nouveau Linux v6.8, commit
+`e8f897f4afef0031fe618a8e94127a0934896aba`:
+
+- `nvkm/engine/pm/gf100.c:175-180`, Copyright 2013 Red Hat Inc. (MIT).
+- `nvkm/subdev/mc/nv04.c:39-46`, Copyright 2012 Red Hat Inc. (MIT).
+
+The full original notices and permission text are in that file's header.
+The individually checked MIT source chain also includes
+`nvkm/engine/pm/gk104.c` (Copyright 2013 Red Hat Inc.),
+`nvkm/subdev/mc/gk20a.c`, `nvkm/subdev/mc/nv50.c`, and
+`nvkm/engine/device/base.c` (Copyright 2012 Red Hat Inc.). It establishes
+chip dispatch and MC enable behavior; no Linux integration code is imported.
+`docs/gui/gt710-c2.md` records the exact lines and the absence of a separate
+PM clock-gating write in the inspected path.
+
+## GT 710 C3a sensor setup and thermal v24 (K1, G1)
+
+Individually checked MIT headers at Linux v6.8 commit
+`e8f897f4afef0031fe618a8e94127a0934896aba`:
+
+- `nvkm/subdev/therm/g84.c`, Copyright 2012 Red Hat Inc.; sensor
+  enable masks, 20 ms stabilization and direct hardware Celsius read in
+  `kernel/src/gpu/gk208/thermal.rs`.
+- `nvkm/subdev/fuse/gf100.c`, Copyright 2014 Martin Peres; temporary
+  fuse access and restoration in the same file.
+- `nvkm/subdev/bios/therm.c`, Copyright 2012 Nouveau Community; core
+  threshold section and v24 entry interpretation in the same file and
+  `scripts/metal/gt710_clock.py`. Synthetic vectors are in
+  `tests/gt710_c3a_test.py` and `tests/gt710_c3a_test.rs`.
+- `nvkm/subdev/therm/gk104.c`, Copyright 2018 Red Hat Inc., and
+  `nvkm/subdev/therm/gf119.c`, Copyright 2012 Red Hat Inc.; inspected
+  only to establish dispatch to g84_sensor_setup/g84_temp_get. No fan,
+  tachometer, clock-gating or alarm code is adapted.
+- `nvkm/subdev/therm/temp.c`, Copyright 2012 The Nouveau community;
+  MIT header checked, defaults reference only in docs/gui/gt710-c3a.md.
+
+The adapted file retains the original copyrights and complete MIT grant.
+The hardware conversion is returned directly, not calibrated again from
+legacy BIOS slope/offset fields. The fuse at offset 0x1a8 is the availability
+flag, not a temperature calibration coefficient. No fuse is programmed.
+
+C3a's documentation additionally references the individually checked MIT
+`rnndb/pm/ptherm.xml:352-380` and its imported `rnndb/copyright.xml`
+author list/grant at envytools revision
+`f102b82381f3f11cee113d16374c87091db039d9` for ADC and hardware/software
+calibration field meanings. This is a reference in docs/gui/gt710-c3a.md;
+no XML implementation or register-generation code is adapted.
+
+## GT 710 C3b ADC and read-only slowdown capture
+
+The C3a MIT sources above also supply C3b's non-echo-gated fuse read,
+hardware-calibration ADC masks and raw alarm register addresses in
+`kernel/src/gpu/gk208/thermal.rs`, `thermal/runtime.rs`, and
+`thermal/status.rs`. C3b intentionally enables/reads the ADC independently
+of the availability fuse, as the coordinator directs; this is not claimed
+as nouveau's availability policy. The original MIT copyright/grant remains.
+
+`thermal/status.rs` additionally adapts raw register addresses from MIT
+nouveau v6.8 `nvkm/subdev/therm/gk104.c` (Copyright 2018 Red Hat Inc.)
+and the individually checked MIT envytools `rnndb/pm/ptherm.xml` at
+`f102b82381f3f11cee113d16374c87091db039d9`, which imports the full
+MIT grant and author list from `rnndb/copyright.xml`. The complete original
+author list and grant accompany the register list in that file. XML is
+used only for raw register addresses; no unknown fields are decoded as a
+proven cause of slowdown. No alarm, clock-gating or slowdown control is written.
+
+### C3-0 offline VID and clock-voltage joins (K1, G1)
+
+Consumers: scripts/metal/gt710_clock.py, tests/gt710_c3_voltage_test.py;
+source and interpretation references: docs/gui/gt710-c3-0.md.
+Nouveau sources remain pinned to Linux v6.8
+(e8f897f4afef0031fe618a8e94127a0934896aba), individually checked MIT:
+
+- nvkm/subdev/volt/base.c, volt/gpio.c and clk/base.c: Copyright 2013
+  Red Hat Inc.; linked vmap arithmetic, upward VID rounding, pstate voltage
+  floor, cstep inheritance and boost clamps.
+- nvkm/subdev/bios/{volt,vmap,perf,gpio}.c: Copyright 2012 Nouveau Community
+  for volt/vmap/perf, Copyright 2012 Red Hat Inc. for gpio;
+  nvkm/subdev/bios/{cstep,boost}.c: Copyright 2013 Red Hat Inc.; table layouts.
+- nvkm/subdev/gpio/base.c: Copyright 2011 Red Hat Inc.;
+  nvkm/subdev/gpio/gf119.c: Copyright 2012 Red Hat Inc.; VID polarity/sense.
+- include/nvkm/subdev/bios/gpio.h: SPDX-License-Identifier: MIT; DCB VID tags.
+
+The original copyrights and complete MIT grant are retained in both Python
+headers. The C3-0 report also cites the already-noticed MIT volt/gk104.c,
+clk/gk104.c, engine/pm/gf100.c, envytools nva/nvatiming.c and
+rnndb/{gf100_pcounter.xml,pm/gf100_pclock.xml,copyright.xml} at the C2 pin
+f102b82381f3f11cee113d16374c87091db039d9. No counter programming code is
+adapted by C3-0; its source comparison leaves the observed factor of 16
+unresolved. No board ROM bytes are redistributed.
+
+C3-1 GPC PLL-only probe
+----------------------
+`kernel/src/gpu/gk208/c2.rs`, `c2/runtime.rs` and
+`tests/gt710_c2_test.rs` extend the C2 mechanism with a bounded PLL-only
+plan and lock-sequence checks. Sources remain nouveau Linux v6.8 commit
+ e8f897f4afef0031fe618a8e94127a0934896aba:
+- nvkm/subdev/clk/gk104.c:259-280,356-473, Copyright 2013 Red Hat Inc., MIT;
+- nvkm/subdev/clk/pllgt215.c:31-100, Copyright 2010 Red Hat Inc., MIT;
+- nvkm/subdev/bios/pll.c:352-365, Copyright 2005-2006 Erik Waling,
+  Copyright 2006 Stephane Marchesin, Copyright 2007-2009 Stuart Bennett, MIT.
+The full original grants and notices remain in c2.rs and the C oracle.
+C3-1 r2 uses gk104.c:397-406 for the lock-test window and post-sync
+validation in c2/runtime.rs, whose header also retains the full MIT grant.
+
+C4 PMU firmware and loader (K1 / corrected C4 brief)
+------------------------------------------------
+Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba, MIT, from
+https://github.com/torvalds/linux/tree/e8f897f4afef0031fe618a8e94127a0934896aba/drivers/gpu/drm/nouveau/nvkm/subdev/
+
+Firmware: pmu/fuc/gk208.fuc5, macros.fuc, os.h, kernel.fuc, arith.fuc,
+host.fuc, memx.fuc, perf.fuc, i2c_.fuc, test.fuc, idle.fuc.
+Consumers: vendor/kepler/nouveau-pmu/ (unchanged, original MIT notices),
+tools/kepler/assets.py, kernel/assets/kepler/pmu.{code,data}.bin and
+kernel/src/gpu/gk208/c2/runtime.rs. Complete notices are also retained in
+vendor/kepler/NOTICES; individual source hashes are in vendor/kepler/sources.json.
+Copyright 2013 Red Hat Inc.; arith.fuc Copyright 2014 Martin Peres.
+os.h declares SPDX-License-Identifier: MIT.
+
+Loader sequence: pmu/gk208.c, gf100.c, gt215.c, base.c; mc/base.c,
+gk104.c and nv04.c. Consumers: kernel/src/gpu/gk208/pmu.rs and
+kernel/src/gpu/gk208/c2/runtime.rs. MIT notices retained in the adapted
+module header (Copyright 2012/2013 Red Hat Inc.).
+pmu/gk110.c (Copyright 2015 Red Hat Inc., MIT) was read to distinguish
+PGOB from the loader; its existing consumer remains gr/ctxctl.rs.
+pmu/gk208.c SHA-256 a28cccfaa35ed74eddc961173b9ca34f43eb4a5029849d281e1a4302e6e501ae
+pmu/gf100.c SHA-256 459bcd9a396dbc27b0c6a9bcc9cae6cd5cc158ed17cac7dce1ec9ca0bb413baa
+pmu/gt215.c SHA-256 6f89bca71e1059afbc4c852443ff679bb38e974461b505c6fb2cf254635ea455
+pmu/base.c SHA-256 822bc80f760a5e329bde3cff7460e3f6647d080ba6d1d7f1ba6daf2a6518fcaa
+pmu/gk110.c SHA-256 55ce3a1aa3468664da5ddf1eb8e86cdb975147d3d074e58a40281e1ff27dc4f6
+mc/base.c SHA-256 aca570e3b6d297b7d0bf7997aac8c6766c09d531da47f066d814540088a81171
+mc/gk104.c SHA-256 15dd9fd27d86890a2d5cb9278903a3f95267b3d2743c626e59f6351c95ea8d7a
+mc/nv04.c SHA-256 bdf95057dc095b6e0f09fee47ab8d461b0b60b3af153edd4c3325955a5fc84e2
+
+C5a offline DDR3 memx generator and host oracle (MIT)
+--------------------------------------------------
+Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba, paths relative to
+https://github.com/torvalds/linux/tree/e8f897f4afef0031fe618a8e94127a0934896aba/drivers/gpu/drm/nouveau/
+
+nvkm/subdev/bios/{bit.c,gpio.c,ramcfg.c,M0203.c,rammap.c,timing.c,pll.c},
+nvkm/subdev/clk/pllgt215.c, nvkm/subdev/fb/{ramgk104.c,sddr3.c,ramfuc.h},
+nvkm/subdev/pmu/memx.c, include/nvkm/{core/device.h,subdev/bios/M0203.h}.
+Consumers: scripts/metal/gt710_memx.py; tests/fixtures/gt710_ddr3_oracle.c;
+tests/gt710_memx_test.py and docs/gui/gt710-c5a*, docs/gui/gt710-c5b*
+(source-derived expectations and ordered offline traces).
+Source headers/SPDX checked individually.
+Copyright 2012, 2013, 2014 Red Hat Inc.; Copyright 2010 Red Hat Inc.;
+Copyright 2005-2006 Erik Waling; Copyright 2006 Stephane Marchesin;
+Copyright 2007-2009 Stuart Bennett. sddr3.c authors: Ben Skeggs, Roy Spliet.
+Original copyright notices and MIT grants are retained in adapted headers.
+ramfuc.h, memx.c, core/device.h and M0203.h declare SPDX-License-Identifier: MIT.
+
+Firmware interpretation references unchanged MIT
+nvkm/subdev/pmu/fuc/{memx.fuc,kernel.fuc,macros.fuc,os.h}, already vendored and
+attributed in the C4 entry above. Individual source hashes for C5a are in
+docs/gui/provenance/gt710-c5a-sources.json. No firmware image changes here.
+The test fixture builder generates synthetic tables from the documented layouts.
+Board ROM bytes and card-specific table/script decodes remain private (K9).
+
+C5c RAMMAP initialization audit and interpreter
+---------------------------------------------
+The interpreter and synthetic RAM-script tests follow the MIT nouveau files at Linux v6.8
+(e8f897f4afef0031fe618a8e94127a0934896aba): nvkm/subdev/bios/init.c
+(Copyright 2012 Red Hat Inc.), bios/ramcfg.c, bios/rammap.c and
+fb/ramgk104.c (Copyright 2013 Red Hat Inc.), bios/M0203.c (Copyright 2014
+Red Hat Inc.). Source hashes: docs/gui/provenance/gt710-c5c-sources.json.
+The adapted modeset.rs and ram_init.rs retain the original MIT grants.
+
+C5d live intermediate memory reclock (MIT)
+-----------------------------------------
+`kernel/src/gpu/gk208/memx.rs` adapts the C5a/C5b live-table calculation from
+nouveau Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba:
+`nvkm/subdev/bios/{bit,gpio,ramcfg,M0203,rammap,timing,pll}.c`,
+`nvkm/subdev/clk/pllgt215.c`, `nvkm/subdev/fb/{ramgk104,sddr3}.c`,
+`nvkm/subdev/fb/ramfuc.h`, `nvkm/subdev/pmu/{memx,gt215}.c`, and
+`nvkm/subdev/pmu/fuc/os.h`. Each source's MIT header/SPDX was checked;
+original copyrights and permission grants are retained in the adapted file.
+The callback integration in `kernel/src/gpu/gk208/c2/runtime.rs` follows the
+same MIT calc/prog sequence. The source hashes for the calculator are in
+`docs/gui/provenance/gt710-c5a-sources.json`; C5d's additional transport hash
+is in `docs/gui/provenance/gt710-c5d-sources.json`.
+
+C5e live target and return memory reclock (MIT)
+---------------------------------------------
+`kernel/src/gpu/gk208/memx.rs` and `c2/runtime.rs` extend the C5d adaptation
+with target and descending intermediate/final passes from MIT nouveau
+`nvkm/subdev/fb/ramgk104.c` (Copyright 2013 Red Hat Inc.), revision and
+source hashes as listed in the C5d entry above. Original permission grants
+remain in those files. The existing table/PLL/DDR3 calculation sources and
+PMU transport are unchanged sources for this extension.
+
+Envytools rnndb at f102b82381f3f11cee113d16374c87091db039d9 was inspected
+for an independent memory-clock PCOUNTER signal. `rnndb/gf100_pcounter.xml`
+imports the full MIT grant and author list in `rnndb/copyright.xml`; both
+were checked. It describes GPC/PART/HUB domains and generic selector fields,
+but no named GK208 memory-clock signal, so C5e adds no selector programming
+or generated definitions from that inspection. Hashes and this limitation:
+`docs/gui/provenance/gt710-c5e-counter-sources.json`.
+
+## GT 710 C5f post-EXEC display observation (K6, G1)
+
+`kernel/src/gpu/gk208/memx_display.rs` uses the REPORT_UNDERFLOW fields
+from envytools rnndb/display/g80_pdisplay.xml at
+f102b82381f3f11cee113d16374c87091db039d9, importing the MIT grant and
+author list in rnndb/copyright.xml. The new file retains that author list
+and grant. Its two masked writes reuse the clear-then-arm order already
+adapted in modeset.rs under G25 (0a12e2fc). K6 defines the one-time
+post-EXEC exception; subsequent display samples retain the native predicate.
+`native.rs` records the four existing health terms at the EXEC boundary
+and the first following present. Memory programming and PMU code are unchanged.
+
+GT 710 C6 composed clock diagnostic
+----------------------------------
+`c2/runtime.rs` composes the existing C3 PLL and exact GPC restore with the
+existing C5f memory EXEC/health paths. The MIT nouveau clk/gk104.c,
+clk/pllgt215.c, fb/ramgk104.c and PMU sources listed above remain the
+hardware sources; no new hardware sequence or third-party source is added.
+`native.rs` emits the existing C5f health terms during the load interval.
+The original notices and grants remain in their adapted files.
+
+## GT 710 production clock startup (C7 / K8)
+
+`kernel/src/gpu/gk208/production.rs` orchestrates the existing checked MIT
+mechanisms in `c2.rs`, `c2/observe.rs`, `thermal.rs`, `pmu.rs`, `ram_init.rs`,
+`memx.rs` and `memx_display.rs`. Their original per-file grants remain in
+those files. The production wrapper retains the Red Hat 2010/2013 MIT grant.
+Sources are nouveau Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba:
+`nvkm/subdev/clk/{gk104,pllgt215}.c`, `bios/pll.c`,
+`fb/ramgk104.c`, `pmu/{gt215,memx}.c`, and `therm/g84.c`.
+The sensor, RAM script, PMU firmware and counter dependency notices and pinned
+source manifests listed above continue to apply to the shared helpers.
+`production_policy.rs` is Breenix policy, with no imported hardware mechanism.
+
+The runtime production policy in `kernel/src/gpu/gk208/production_rom.rs`
+uses the same pinned MIT BIOS performance, M0203, voltage, vmap and GPIO
+layouts and voltage arithmetic cited in the C1 and C3-0 sections above.
+Its source notice retains the corresponding Nouveau Community, Red Hat and
+Martin Peres copyrights. No board ROM data is embedded in this decoder.

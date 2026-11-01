@@ -82,3 +82,19 @@ pub fn read(regs: &mut impl Access) -> Result<Vec<u8>, &'static str> {
     regs.write(0x88050, saved);
     result
 }
+
+/// C1 retains the full bounded PROM aperture, including chained images/padding.
+/// Selection and exact restoration follow the same MIT shadowrom path as read().
+#[cfg(feature = "gt710_clock_probe")]
+pub fn read_full(regs: &mut impl Access) -> Result<Vec<u8>, &'static str> {
+    let mut data=Vec::new();
+    data.try_reserve_exact(256*1024).map_err(|_|"PROM dump allocation")?;
+    data.resize(256*1024,0);
+    let saved=regs.read(0x88050);regs.write(0x88050,saved&!1);
+    for p in (0..data.len()).step_by(4) {
+        data[p..p+4].copy_from_slice(&regs.read(0x300000+p).to_le_bytes());
+    }
+    regs.write(0x88050,saved);
+    if regs.read(0x88050)!=saved {return Err("PROM selection restore failed");}
+    Ok(data)
+}

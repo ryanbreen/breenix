@@ -4,6 +4,8 @@ mod probe_signal;
 mod probe_metal;
 #[cfg(target_arch="x86_64")]
 mod gt710_artifacts;
+#[cfg(target_arch="x86_64")]
+mod probe_gpu_bench;
 mod probe_panel;
 #[cfg(target_arch = "x86_64")]
 mod probe_framebuffer;
@@ -597,6 +599,210 @@ fn reap_forever() -> ! {
 }
 
 fn probe() {
+    #[cfg(target_arch="x86_64")]
+    let gt710_probe=std::fs::read_to_string("/proc/gt710-ce");
+    #[cfg(target_arch="x86_64")]
+    if gt710_probe.as_ref().is_ok_and(|s|s=="clock-probe\n" || s=="thermal-probe\n" || s=="pll-probe\n" || s=="pmu-probe\n" || s=="memx-inputs-probe\n" || s=="ram-init-probe\n" || s=="memx-memory-probe\n" || s=="full-clocks-probe\n") {
+        // Inventory has retained the C1/VBIOS records already. Upload them
+        // before CAPS starts GR, even if native startup fails.
+        gt710_artifacts::upload().expect("C1 private artifact upload");
+        if gt710_probe.as_ref().is_ok_and(|s|s=="full-clocks-probe\n") {
+            let observe=|phase:&str,n|->Result<(),String> {
+                println!("GT710_C6_OBSERVE phase={phase} trial={n}");
+                if n==0 && matches!(phase,"pmu"|"baseline"|"full"|"return") {
+                    use std::io::Write;
+                    let mut file=std::fs::OpenOptions::new().write(true).open("/proc/gt710-clock").map_err(|e|format!("clock open: {e}"))?;
+                    let commands:&[&[u8]]=match phase {
+                        "pmu"=>&[b"pmu start",b"ram init"],
+                        "baseline"=>&[b"c6 post"],
+                        "full"=>&[b"memx intermediate",b"memx target",b"c6 full"],
+                        _=>&[b"c6 restore",b"memx return"],
+                    };
+                    for &command in commands {
+                        if command==b"c6 full" {println!("GT710_C6_GPC_TARGET khz=1307000");}
+                        if command==b"c6 restore" {println!("GT710_C6_GPC_TARGET khz=810000");}
+                        file.write_all(command).map_err(|e|format!("C6 step: {e}"))?;
+                    }
+                }
+                let status=std::fs::read_to_string("/proc/gt710-clock").map_err(|e|format!("C6 status: {e}"))?;
+                for row in status.lines().filter(|r|r.starts_with("GT710_PMU_STATE ") || r.starts_with("GT710_MEMORY_READ ") || r.starts_with("GT710_CLOCK_READ ")) {println!("{row}");}
+                probe_gpu_bench::temperature_record(&status,phase,n)?;
+                let sensor=status.lines().find(|r|r.starts_with("GT710_SENSOR ")).ok_or("sensor missing")?;
+                let c=sensor.split_whitespace().find_map(|s|s.strip_prefix("celsius=")).ok_or("temperature missing")?.parse::<u32>().map_err(|_|"temperature unavailable")?;
+                if c>=85 || !sensor.split_whitespace().any(|f|f=="status=ok") {return Err("C6 sensor invalid or at least 85 C".into());}
+                if n==0 && matches!(phase,"baseline"|"full"|"return") {probe_gpu_bench::console_c5e(phase)?;}
+                Ok(())
+            };
+            if let Err(e)=observe("startup",0) {println!("GT710_C6_ERROR {e}");reap_forever();}
+            let (status,caps)=libbreenix::gpu::caps();
+            if status!=0 || caps.backend!=libbreenix::gpu::abi::backend::GK208 || caps.status!=libbreenix::gpu::abi::status::ADMITTED {
+                println!("GT710_C6_ERROR CAPS result={} backend={} status={}",status,caps.backend,caps.status);reap_forever();
+            }
+            if let Err(e)=probe_gpu_bench::run_c6(observe) {println!("GT710_C6_ERROR {e}");reap_forever();}
+            println!("GT710_C6_DONE");reap_forever();
+        }
+        if gt710_probe.as_ref().is_ok_and(|s|s=="memx-memory-probe\n") {
+            let observe=|phase:&str,n|->Result<(),String> {
+                if n==0 && matches!(phase,"pmu"|"target"|"return") {
+                    use std::io::Write;
+                    let mut file=std::fs::OpenOptions::new().write(true).open("/proc/gt710-clock").map_err(|e|format!("clock open: {e}"))?;
+                    let commands:&[&[u8]]=match phase {
+                        "pmu"=>&[b"pmu start",b"ram init"],
+                        "target"=>&[b"memx intermediate",b"memx target"],
+                        _=>&[b"memx return"],
+                    };
+                    for &command in commands {file.write_all(command).map_err(|e|format!("memory step: {e}"))?;}
+                }
+                let status=std::fs::read_to_string("/proc/gt710-clock").map_err(|e|format!("C5e status: {e}"))?;
+                for row in status.lines().filter(|r|r.starts_with("GT710_PMU_STATE ") || r.starts_with("GT710_MEMORY_READ ")) {println!("{row}");}
+                probe_gpu_bench::temperature_record(&status,phase,n)?;
+                let sensor=status.lines().find(|r|r.starts_with("GT710_SENSOR ")).ok_or("sensor missing")?;
+                let c=sensor.split_whitespace().find_map(|s|s.strip_prefix("celsius=")).ok_or("temperature missing")?.parse::<u32>().map_err(|_|"temperature unavailable")?;
+                if c>=85 || !sensor.split_whitespace().any(|f|f=="status=ok") {return Err("C5e sensor invalid or at least 85 C".into());}
+                if n==0 && matches!(phase,"baseline"|"target"|"return") {probe_gpu_bench::console_c5e(phase)?;}
+                Ok(())
+            };
+            if let Err(e)=observe("startup",0) {println!("GT710_C5E_ERROR {e}");reap_forever();}
+            let (status,caps)=libbreenix::gpu::caps();
+            if status!=0 || caps.backend!=libbreenix::gpu::abi::backend::GK208 || caps.status!=libbreenix::gpu::abi::status::ADMITTED {
+                println!("GT710_C5E_ERROR CAPS result={} backend={} status={}",status,caps.backend,caps.status);reap_forever();
+            }
+            println!("GT710_MEMORY_COUNTER status=unavailable reason=no-memory-clock-signal-documented-in-MIT-rnndb-gf100-pcounter");
+            if let Err(e)=probe_gpu_bench::run_c5e(observe) {println!("GT710_C5E_ERROR {e}");reap_forever();}
+            println!("GT710_C5E_DONE");reap_forever();
+        }
+        if gt710_probe.as_ref().is_ok_and(|s|s=="ram-init-probe\n") {
+            let observe=|phase:&str,n|->Result<(),String> {
+                if phase=="pmu" {
+                    use std::io::Write;
+                    let mut file=std::fs::OpenOptions::new().write(true).open("/proc/gt710-clock").map_err(|e|format!("clock open: {e}"))?;
+                    file.write_all(b"pmu start").map_err(|e|format!("PMU start: {e}"))?;
+                    file.write_all(b"ram init").map_err(|e|format!("RAM init: {e}"))?;
+                }
+                let status=std::fs::read_to_string("/proc/gt710-clock").map_err(|e|format!("C5c status: {e}"))?;
+                for row in status.lines().filter(|r|r.starts_with("GT710_PMU_STATE ") || r.starts_with("GT710_MEMORY_READ ")) {println!("{row}");}
+                probe_gpu_bench::temperature_record(&status,phase,n)?;
+                let sensor=status.lines().find(|r|r.starts_with("GT710_SENSOR ")).ok_or("sensor missing")?;
+                let c=sensor.split_whitespace().find_map(|s|s.strip_prefix("celsius=")).ok_or("temperature missing")?.parse::<u32>().map_err(|_|"temperature unavailable")?;
+                if c>=85 || !sensor.split_whitespace().any(|f|f=="status=ok") {return Err("C5c sensor invalid or at least 85 C".into());}
+                Ok(())
+            };
+            if let Err(e)=observe("startup",0) {println!("GT710_C5C_ERROR {e}");reap_forever();}
+            let (status,caps)=libbreenix::gpu::caps();
+            if status!=0 || caps.backend!=libbreenix::gpu::abi::backend::GK208 || caps.status!=libbreenix::gpu::abi::status::ADMITTED {
+                println!("GT710_C5C_ERROR CAPS result={} backend={} status={}",status,caps.backend,caps.status);reap_forever();
+            }
+            if let Err(e)=probe_gpu_bench::run_c4(observe) {println!("GT710_C5C_ERROR {e}");reap_forever();}
+            println!("GT710_C5C_DONE");reap_forever();
+        }
+        if gt710_probe.as_ref().is_ok_and(|s|s=="memx-inputs-probe\n") {
+            let (status,caps)=libbreenix::gpu::caps();
+            if status!=0 || caps.backend!=libbreenix::gpu::abi::backend::GK208 || caps.status!=libbreenix::gpu::abi::status::ADMITTED {
+                println!("GT710_C5B_ERROR CAPS result={} backend={} status={}",status,caps.backend,caps.status);reap_forever();
+            }
+            let capture=||->Result<(),String> {
+                use std::io::Write;
+                let mut file=std::fs::OpenOptions::new().write(true).open("/proc/gt710-clock").map_err(|e|format!("PMU open: {e}"))?;
+                file.write_all(b"pmu memx-inputs").map_err(|e|format!("MEMX input capture: {e}"))
+            };
+            if let Err(e)=capture() {println!("GT710_C5B_ERROR {e}");reap_forever();}
+            println!("GT710_C5B_DONE");reap_forever();
+        }
+        if gt710_probe.as_ref().is_ok_and(|s|s=="pmu-probe\n") {
+            let observe=|phase:&str,n|->Result<(),String> {
+                if phase=="pmu" {
+                    use std::io::Write;
+                    let mut file=std::fs::OpenOptions::new().write(true).open("/proc/gt710-clock").map_err(|e|format!("PMU open: {e}"))?;
+                    file.write_all(b"pmu start").map_err(|e|format!("PMU start: {e}"))?;
+                }
+                let status=std::fs::read_to_string("/proc/gt710-clock").map_err(|e|format!("sensor read: {e}"))?;
+                for row in status.lines().filter(|r|r.starts_with("GT710_PMU_STATE ")) {println!("{row}");}
+                probe_gpu_bench::temperature_record(&status,phase,n)?;
+                let sensor=status.lines().find(|r|r.starts_with("GT710_SENSOR ")).ok_or("sensor missing")?;
+                let c=sensor.split_whitespace().find_map(|s|s.strip_prefix("celsius=")).ok_or("temperature missing")?.parse::<u32>().map_err(|_|"temperature unavailable")?;
+                if c>=85 || !sensor.split_whitespace().any(|f|f=="status=ok") {return Err("C4 sensor invalid or at least 85 C".into());}
+                Ok(())
+            };
+            if let Err(e)=observe("startup",0) {println!("GT710_C4_ERROR {e}");reap_forever();}
+            let (status,caps)=libbreenix::gpu::caps();
+            if status!=0 || caps.backend!=libbreenix::gpu::abi::backend::GK208 || caps.status!=libbreenix::gpu::abi::status::ADMITTED {
+                println!("GT710_C4_ERROR CAPS result={} backend={} status={}",status,caps.backend,caps.status);reap_forever();
+            }
+            if let Err(e)=probe_gpu_bench::run_c4(observe) {println!("GT710_C4_ERROR {e}");reap_forever();}
+            println!("GT710_C4_DONE");reap_forever();
+        }
+        if gt710_probe.as_ref().is_ok_and(|s|s=="pll-probe\n") {
+            let temperature=|phase:&str,n|->Result<(),String> {
+                let status=std::fs::read_to_string("/proc/gt710-clock").map_err(|e|format!("sensor read: {e}"))?;
+                probe_gpu_bench::temperature_record(&status,phase,n)?;
+                let sensor=status.lines().find(|r|r.starts_with("GT710_SENSOR ")).ok_or("sensor missing")?;
+                let c=sensor.split_whitespace().find_map(|s|s.strip_prefix("celsius=")).ok_or("temperature missing")?
+                    .parse::<u32>().map_err(|_|"temperature unavailable")?;
+                if c>=85 || !sensor.split_whitespace().any(|f|f=="status=ok") {return Err("C3 sensor invalid or at least 85 C".into());}
+                Ok(())
+            };
+            if let Err(e)=temperature("startup",0) {println!("GT710_C3_ERROR {e}");reap_forever();}
+            let (status,caps)=libbreenix::gpu::caps();
+            if status!=0 || caps.backend!=libbreenix::gpu::abi::backend::GK208 || caps.status!=libbreenix::gpu::abi::status::ADMITTED {
+                println!("GT710_C3_ERROR CAPS result={} backend={} status={}",status,caps.backend,caps.status);reap_forever();
+            }
+            let observe=|stage:&str,n|->Result<(),String> {
+                if n==0 {
+                    use std::io::Write;
+                    temperature("before-set",0)?;
+                    let command=match stage {"post"=>"c3 post","low"=>"c3-low 540000","A"=>"pll 810000","B"=>"pll 1080000","C"=>"pll 1307000","D"=>"c3-restore post",_=>return Err("invalid C3 stage".into())};
+                    let mut file=std::fs::OpenOptions::new().write(true).open("/proc/gt710-clock").map_err(|e|format!("clock open: {e}"))?;
+                    file.write_all(command.as_bytes()).map_err(|e|format!("clock control write: {e}"))?;
+                }
+                temperature(stage,n)
+            };
+            if let Err(e)=probe_gpu_bench::run_c3(observe) {println!("GT710_C3_ERROR {e}");reap_forever();}
+            println!("GT710_C3_DONE");reap_forever();
+        }
+        if gt710_probe.as_ref().is_ok_and(|s|s=="thermal-probe\n") {
+            let observe=|phase:&str,trial:u32|->Result<(),String> {
+                let status=std::fs::read_to_string("/proc/gt710-clock").map_err(|e|format!("sensor read: {e}"))?;
+                probe_gpu_bench::temperature_record(&status,phase,trial)
+            };
+            // POST temperature precedes native CAPS and catalogue warm-up.
+            if let Err(error)=observe("post",0) {println!("GT710_C3A_ERROR {error}");reap_forever();}
+            let (status,caps)=libbreenix::gpu::caps();
+            if status!=0 || caps.backend!=libbreenix::gpu::abi::backend::GK208 ||
+                caps.status!=libbreenix::gpu::abi::status::ADMITTED {
+                println!("GT710_C3A_ERROR CAPS result={} backend={} status={}",status,caps.backend,caps.status);reap_forever();
+            }
+            // The sequence's post callback has already run before CAPS.
+            let sequence=|phase:&str,trial|if phase=="post" {Ok(())}else{observe(phase,trial)};
+            if let Err(error)=probe_gpu_bench::run_c3a(sequence) {println!("GT710_C3A_ERROR {error}");reap_forever();}
+            println!("GT710_C3A_DONE");reap_forever();
+        }
+        let (status,caps)=libbreenix::gpu::caps();
+        if status != 0 || caps.backend != libbreenix::gpu::abi::backend::GK208 ||
+            caps.status != libbreenix::gpu::abi::status::ADMITTED {
+            println!("GT710_C1_ERROR CAPS result={} backend={} status={}",status,caps.backend,caps.status);
+            reap_forever();
+        }
+        // This path exists only in the C2 feature kernel; a production probe
+        // does not create the writable control node.
+        match std::fs::read_to_string("/proc/gt710-clock") {
+            Ok(status)=>print!("{}",status),
+            Err(error)=>{println!("GT710_C2_ERROR initial clock read: {error}");reap_forever();}
+        }
+        let observe=|phase|->Result<(),String> {
+            use probe_gpu_bench::ClockPhase;
+            let command=match phase {ClockPhase::Post=>"observe post",ClockPhase::Low=>"gpc 540000",ClockPhase::Restore=>"restore post"};
+            use std::io::Write;
+            let mut file=std::fs::OpenOptions::new().write(true).open("/proc/gt710-clock")
+                .map_err(|e|format!("clock control open: {e}"))?;
+            file.write_all(command.as_bytes()).map_err(|e|format!("clock control write: {e}"))
+        };
+        if let Err(error)=probe_gpu_bench::run_c2(observe) {
+            println!("GT710_C2_ERROR {error}");reap_forever();
+        }
+        println!("GT710_C2_DONE");
+        reap_forever();
+    }
+
     let mut states = [None; 16];
     let mut details: [String; 16] = std::array::from_fn(|_| String::new());
     let mut fb = open_screen();

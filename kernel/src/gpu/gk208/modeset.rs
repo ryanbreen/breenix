@@ -1,4 +1,27 @@
 /*
+ * Copyright 2012 Red Hat Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * Authors: Ben Skeggs
+ */
+/*
  * Copyright 2017 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -490,7 +513,7 @@ fn u16at(r: &[u8], p: usize) -> Result<usize, &'static str> {
 fn u32at(r: &[u8], p: usize) -> Result<u32, &'static str> {
     Ok(u32::from_le_bytes(bytes(r, p, 4)?.try_into().unwrap()))
 }
-fn bit(r: &[u8], id: u8) -> Result<(u8, usize, usize), &'static str> {
+pub(super) fn bit(r: &[u8], id: u8) -> Result<(u8, usize, usize), &'static str> {
     let p = r
         .windows(6)
         .position(|b| b == b"\xff\xb8BIT\0")
@@ -804,10 +827,20 @@ pub fn script(
     sor: u32,
     link: u32,
 ) -> Result<Vec<Op>, ScriptError> {
+    script_decode(r, pointer, (head, sor, link), None)
+}
+/// RAM init uses the same opcode interpreter with RAM-restriction context.
+/// MIT nouveau bios/init.c:1976-2011; the caller caches the strap-derived index.
+pub fn ram_script(r:&[u8], pointer:usize, groups:u8, index:u8)->Result<Vec<Op>,ScriptError> {
+    script_decode(r, pointer, (0,0,1), Some((groups,index)))
+}
+fn script_decode(r:&[u8],pointer:usize,route:(u32,u32,u32),ram:Option<(u8,u8)>)->Result<Vec<Op>,ScriptError> {
+    let (head,sor,link)=route;
     fn decode(
         r: &[u8],
         mut p: usize,
         route: (u32, u32, u32),
+        ram: Option<(u8,u8)>,
         depth: u8,
         ops: &mut Vec<Op>,
         budget: &mut usize,
@@ -832,7 +865,11 @@ pub fn script(
                     raw = (raw & !0x20000000) + (link - 1) * 0x80;
                 }
             }
-            if !(0x610000..0x620000).contains(&raw) {
+            if ram.is_some() {
+                if !(0x110000..0x120000).contains(&raw) {
+                    return Err("script register outside RAM MMIO");
+                }
+            } else if !(0x610000..0x620000).contains(&raw) {
                 return Err("script register outside display MMIO");
             }
             Ok(raw as usize)
@@ -846,6 +883,23 @@ pub fn script(
             p += 1;
             match op {
                 0x71 => return Ok(()),
+                0x8f if ram.is_some() => {
+                    // MIT nouveau bios/init.c:1980-2011: consume the group alternatives,
+                    // write the selected group, then advance the register by incr.
+                    let (groups,index)=ram.unwrap();
+                    let base=u32at(r,p)?;
+                    let incr=bytes(r,p+4,1)?[0];
+                    let num=bytes(r,p+5,1)?[0];
+                    p+=6;
+                    for i in 0..num {
+                        bytes(r,p,usize::from(groups)*4)?;
+                        if index<groups {
+                            ops.push(Op::Register(register(base+u32::from(i)*u32::from(incr))?,0,
+                                u32at(r,p+usize::from(index)*4)?));
+                        }
+                        p+=usize::from(groups)*4;
+                    }
+                }
                 0x72 => ops.push(Op::Resume),
                 0x56 => {
                     let cond=bytes(r,p,1)?[0] as usize;
@@ -883,7 +937,7 @@ pub fn script(
                     let sub = u16at(r, p)?;
                     p += 2;
                     let mut body=Vec::new();
-                    decode(r, sub, route, depth + 1, &mut body, budget)?;
+                    decode(r, sub, route, ram, depth + 1, &mut body, budget)?;
                     ops.push(Op::Call(body));
                 }
                 0x5f => {
@@ -933,7 +987,7 @@ pub fn script(
         return Err("invalid script route".into());
     }
     let mut ops = Vec::new();
-    decode(r, pointer, (head, sor, link), 0, &mut ops, &mut 1024)?;
+    decode(r, pointer, (head, sor, link), ram, 0, &mut ops, &mut 1024)?;
     fn delay_cost(ops:&[Op])->(u64,u64) {
         let mut delays=0;
         let mut polling=0;

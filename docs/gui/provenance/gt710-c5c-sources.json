@@ -1,0 +1,36 @@
+{
+  "repository": "https://github.com/torvalds/linux",
+  "revision": "e8f897f4afef0031fe618a8e94127a0934896aba",
+  "files": [
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/bios/M0203.c",
+      "license": "MIT",
+      "sha256": "f1138c6ae8616ab554f2390d2ea2e251a0b0c9732a3f1977e74345380c699789"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/bios/ramcfg.c",
+      "license": "MIT",
+      "sha256": "7e727829ac5db539c20d1584b87dafd068be82ea5f769ece0fcb7ff733a35435"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/bios/rammap.c",
+      "license": "MIT",
+      "sha256": "c44ca2d5f2dede2835593ae8d59b072c5a21bd4aacb540a1cbfbd69bda3aae83"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/devinit/gf100.c",
+      "license": "MIT",
+      "sha256": "260e57fd22b56e7f765b26ef014900e8e2e43e0fa9aac750734ffa7e9b0872be"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/bios/init.c",
+      "license": "MIT",
+      "sha256": "3c461e3db10ef047d9a9dd73ab0d99402679fa557e98366d3a1a0abccc483566"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/fb/ramgk104.c",
+      "license": "MIT",
+      "sha256": "99aa20855f0029918873fe0e598b341a91ad5049834df4b98033f34012fffa45"
+    }
+  ]
+}

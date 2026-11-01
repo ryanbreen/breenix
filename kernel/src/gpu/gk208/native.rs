@@ -221,7 +221,7 @@ pub fn suite_requested() -> bool {
 pub fn memory_requested()->bool {
     // The terminal oracle uses probe transport, but needs normal display/core
     // startup before its deliberate panic, not the CPU VRAM experiments.
-    if cfg!(feature = "capture_panic_oracle") { return false; }
+    if cfg!(any(feature = "capture_panic_oracle", feature = "gt710_clock_probe")) { return false; }
     crate::boot::intent::get()
         .and_then(|bytes| core::str::from_utf8(bytes).ok())
         .and_then(|text| crate::boot::target::parse(text).ok())
@@ -374,6 +374,69 @@ fn complete(
         regs, total, notifier, limits, coefficients, route, scripts,
     })
 }
+// Clock-transition route and one pending first-present observation. The CE owner
+// serializes these EXEC boundaries against native publication.
+static MEMX_ROUTE: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(u32::MAX);
+static MEMX_CLEAR_AVAILABLE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static MEMX_PRESENT_PHASE: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+fn memx_pending_check(regs:&mut Registers,head:u32,sor:u32,health:super::memx_display::Health)
+    -> (Option<super::memx_display::Health>,Result<(),&'static str>) {
+    use core::sync::atomic::Ordering;
+    let mut allow=MEMX_CLEAR_AVAILABLE.load(Ordering::Acquire);
+    let result=super::memx_display::pending_check(regs,head,sor,health,&mut allow);
+    MEMX_CLEAR_AVAILABLE.store(allow,Ordering::Release);
+    if let Some(readback)=result.0 {
+        crate::serial_println!("GT710_C5F_UNDERFLOW_CLEAR phase=pending register={:#x} before={:#x} clear_mask=0x111 clear_data=0x10 arm_data=0x1 readback={:#x}",
+            0x616308+head*0x800,health.underflow,readback.underflow);
+        memx_health_record("pending","clear-readback",head,sor,readback);
+    }
+    result
+}
+fn memx_health_record(phase: &str, point: &str, head: u32, sor: u32,
+    health: super::memx_display::Health,
+) {
+    crate::serial_println!("GT710_C5F_HEALTH {{\"phase\":\"{}\",\"point\":\"{}\",\"head\":{},\"sor\":{},\"raw\":[[{},{}],[{},{}],[{},{}],[{},{}]],\"healthy\":{}}}",
+        phase,point,head,sor,0x61009c,health.errors,0x616308+head*0x800,health.underflow,
+        0x61c004+sor*0x800,health.power,0x61c030+sor*0x800,health.link,health.check().is_ok());
+}
+pub(in crate::gk208) fn clock_display_check(regs: &Registers, phase: &str) -> Result<(), &'static str> {
+    let route=MEMX_ROUTE.load(core::sync::atomic::Ordering::Acquire);
+    if route==u32::MAX {return Err("C6 native display route absent");}
+    let (head,sor)=(route&255,route>>8);
+    let health=super::memx_display::Health::read(&mut Registers(regs.0),head,sor);
+    memx_health_record(phase,"clock-check",head,sor,health);
+    health.check()
+}
+pub(in crate::gk208) fn memx_display_guard(regs: &Registers) -> Result<(), &'static str> {
+    let route=MEMX_ROUTE.load(core::sync::atomic::Ordering::Acquire);
+    if route==u32::MAX {return Err("C5f native display route absent");}
+    let (head,sor)=(route&255,route>>8);
+    let health=super::memx_display::Health::read(&mut Registers(regs.0),head,sor);
+    let result=memx_pending_check(&mut Registers(regs.0),head,sor,health).1;
+    if let Err(reason)=result {
+        memx_health_record("guard","fresh-fault",head,sor,health);
+        crate::serial_println!("GT710_C5F_ERROR {}",reason);
+    }
+    result
+}
+pub(in crate::gk208) fn memx_display_boundary(regs: &mut Registers, phase: &str,
+    after_reply: bool,
+) -> Result<(), &'static str> {
+    use core::sync::atomic::Ordering;
+    let route=MEMX_ROUTE.load(Ordering::Acquire);
+    if route==u32::MAX {return Err("C5f native display route absent");}
+    let (head,sor)=(route&255,route>>8);
+    let health=super::memx_display::Health::read(regs,head,sor);
+    memx_health_record(phase,if after_reply {"after-exec"}else{"before-exec"},head,sor,health);
+    if !after_reply {return health.check();}
+    MEMX_CLEAR_AVAILABLE.store(true,Ordering::Release);
+    let (_,result)=memx_pending_check(regs,head,sor,health);
+    result?;
+    MEMX_PRESENT_PHASE.store(match phase {"intermediate"=>1,"target"=>2,"return-intermediate"=>3,"return"=>4,_=>return Err("C5f unknown EXEC phase")},Ordering::Release);
+    Ok(())
+}
+
 #[derive(Clone, Copy)]
 pub struct ConsoleSurface {
     pub pointer: usize,
@@ -523,6 +586,13 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface,
 ) -> Result<super::present::Receipt, &'static str> {
     let _cost = super::cost::phase(super::cost::Slot::Evo);
+    let phase=MEMX_PRESENT_PHASE.load(core::sync::atomic::Ordering::Acquire);
+    if phase!=0 {
+        let name=match phase {1=>"intermediate",2=>"target",3=>"return-intermediate",_=>"return"};
+        let health=super::memx_display::Health::read(regs,evo.head,evo.sor);
+        memx_health_record(name,"first-present-before",evo.head,evo.sor,health);
+        memx_pending_check(regs,evo.head,evo.sor,health).1?;
+    }
     let h=evo.head as usize*0x300;
     let blank=regs.read(0x64041c+h);
     let end=regs.read(0x640420+h);
@@ -586,11 +656,13 @@ pub(in crate::gk208) fn present(evo: &mut Evo, regs: &mut Registers,
         }
     };
     view.verify(regs,head)?;
-    if regs.read(0x61009c) != 0 || regs.read(0x616308+head as usize*0x800)&0x111 != 1
-        || regs.read(0x61c004+evo.sor as usize*0x800)&0x80000001 != 1
-        || regs.read(0x61c030+evo.sor as usize*0x800)&0x10000000 != 0 {
-        return Err("native present lost display health");
-    }
+    let health=super::memx_display::Health::read(regs,evo.head,evo.sor);
+    if phase!=0 {
+        memx_health_record("present","first-present",evo.head,evo.sor,health);
+        memx_pending_check(regs,evo.head,evo.sor,health).1?;
+        MEMX_CLEAR_AVAILABLE.store(false,core::sync::atomic::Ordering::Release);
+        MEMX_PRESENT_PHASE.store(0,core::sync::atomic::Ordering::Release);
+    }else{health.check()?;}
     super::display_evidence::record(regs, head, surface, &receipt);
     Ok(receipt)
 }
@@ -864,6 +936,7 @@ pub fn takeover(
         regs: regs.0, head, phys: device.bars[1].address + displacement as u64,
         firmware_baseline,
     };
+    MEMX_ROUTE.store(head | (u32::from(route.sor)<<8),core::sync::atomic::Ordering::Release);
     if !measuring() {
         crate::serial_println!("GT710_MODE_STAGE console-ready diagnostics=off");
         return Ok((console, Evo {

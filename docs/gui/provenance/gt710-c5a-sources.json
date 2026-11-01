@@ -1,0 +1,96 @@
+{
+  "repository": "https://github.com/torvalds/linux",
+  "revision": "e8f897f4afef0031fe618a8e94127a0934896aba",
+  "files": [
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/bios/bit.c",
+      "license": "MIT",
+      "sha256": "955da1bbd3288f978830d2d713406cbfe2929627a36769354fac8515495a9af8"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/bios/gpio.c",
+      "license": "MIT",
+      "sha256": "00408520241fe398517e2e3f99c8d52bf81f186c992375934dfd8ba684b61260"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/bios/ramcfg.c",
+      "license": "MIT",
+      "sha256": "7e727829ac5db539c20d1584b87dafd068be82ea5f769ece0fcb7ff733a35435"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/bios/M0203.c",
+      "license": "MIT",
+      "sha256": "f1138c6ae8616ab554f2390d2ea2e251a0b0c9732a3f1977e74345380c699789"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/bios/rammap.c",
+      "license": "MIT",
+      "sha256": "c44ca2d5f2dede2835593ae8d59b072c5a21bd4aacb540a1cbfbd69bda3aae83"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/bios/timing.c",
+      "license": "MIT",
+      "sha256": "5cae01b85f9c7251d94cf046f075f5624de8b19b91037c328abbd944ac186ce7"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/bios/pll.c",
+      "license": "MIT",
+      "sha256": "31b051120e80bcb546c5b1ab43abf10a05c9c5e029cf316223b828237ad12da4"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/clk/pllgt215.c",
+      "license": "MIT",
+      "sha256": "71cc116d01df5ca95223afc0c07b634594e412c1bd9aa5b2e4348773ff3b2950"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/fb/sddr3.c",
+      "license": "MIT",
+      "sha256": "84de61ab6a6af2d66683f0797cc9228760f117f107d5add352c2c6839d94b8e9"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/fb/ramgk104.c",
+      "license": "MIT",
+      "sha256": "99aa20855f0029918873fe0e598b341a91ad5049834df4b98033f34012fffa45"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/fb/ramfuc.h",
+      "license": "MIT",
+      "sha256": "9ff7f56afbac1741123f70f1c3b4af58aee55dbefc9dabb2b83015baf5aa34c8"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/pmu/memx.c",
+      "license": "MIT",
+      "sha256": "70822223f442a6c1e8bdfbcef5507cf0870adbda9fafd871b2332fdaa90b79e9"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/include/nvkm/core/device.h",
+      "license": "MIT",
+      "sha256": "ad5b85de24cdbd6f53679f41f675cdda049b1d8fb8fdaef2cbd236a3be5a0791"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/pmu/fuc/os.h",
+      "license": "MIT",
+      "sha256": "c58ed3cc2c45673796d8bf56720da082e8772750de0ba585859d221568561fed"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/pmu/fuc/memx.fuc",
+      "license": "MIT",
+      "sha256": "8683173f58dde006e6064ad45894309ea4f8cfd30147638613ed5b03ecdeb610"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/pmu/fuc/kernel.fuc",
+      "license": "MIT",
+      "sha256": "18a2ece7443ec1444261f1d5246ff7b7861ad2aa318ecb1a632481fdd856b103"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/nvkm/subdev/pmu/fuc/macros.fuc",
+      "license": "MIT",
+      "sha256": "ab7faace60c11d151626353a64aa185e03695dcb11ec1177efc83a9a6ab29b89"
+    },
+    {
+      "path": "drivers/gpu/drm/nouveau/include/nvkm/subdev/bios/M0203.h",
+      "license": "MIT",
+      "sha256": "23f32ce2578f0cd2802518fa69cd244c22cd48da8638bfc94af490bdf7a7e208"
+    }
+  ]
+}

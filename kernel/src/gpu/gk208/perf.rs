@@ -12,7 +12,6 @@
  *
  * The above copyright notice and this permission notice shall be included in
  * all copies or substantial portions of the Software.
-// claim-lint:ok: MIT grant; sources in docs/gui/gt710-clock-record.md.
  *
  * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
  * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
@@ -34,6 +33,8 @@ use core::fmt::Write;
 #[derive(Debug)]
 pub struct Level {
     pub pstate: u8,
+    #[cfg(not(feature="gt710_clock_probe"))]
+    pub voltage_id: u8,
     pub gpc_khz: u32,
     pub core_khz: u32,
     pub memory_khz: u32,
@@ -112,6 +113,8 @@ pub fn decode(r: &[u8]) -> Result<Table, &'static str> {
         // PLL/domain kHz (mdiv=500 is the source's effective DDR MHz display).
         decoded.push(Level {
             pstate,
+            #[cfg(not(feature="gt710_clock_probe"))]
+            voltage_id: raw[p+2],
             gpc_khz,
             core_khz: gpc_khz / 2,
             memory_khz,

@@ -15,6 +15,8 @@ const FORMAT_2_MAX: usize = 1024;
 struct Captured {
     target: [u8; TARGET_MAX],
     target_len: usize,
+    cmdline: [u8;256],
+    cmdline_len: Option<usize>,
     root: Option<[u8; 36]>,
     home: Option<[u8; 36]>,
     tests: Option<(usize, usize)>,
@@ -45,7 +47,7 @@ fn parse_format_2(body: &[u8]) -> Result<Captured, &'static str> {
     }
     let text = core::str::from_utf8(&body[..end]).map_err(|_| "the boot intent is not text")?;
     let mut captured =
-        Captured { target: [0; TARGET_MAX], target_len: 0, root: None, home: None, tests: None, userland: None, userland_len: 0, previous: None, previous_len: 0, refused: None };
+        Captured { target: [0; TARGET_MAX], target_len: 0, cmdline:[0;256], cmdline_len:None, root: None, home: None, tests: None, userland: None, userland_len: 0, previous: None, previous_len: 0, refused: None };
     let mut target = false;
     for line in text.split('\n').filter(|line| !line.is_empty()) {
         let (item, value) = line.split_once(' ').ok_or("a boot intent line has no value")?;
@@ -55,6 +57,11 @@ fn parse_format_2(body: &[u8]) -> Result<Captured, &'static str> {
                 captured.target[value.len()] = b'\n';
                 captured.target_len = value.len() + 1;
                 target = true;
+            }
+            "cmdline" if captured.cmdline_len.is_none() && value.len()<256
+                && value.bytes().all(|b| (32..=126).contains(&b)) => {
+                captured.cmdline[..value.len()].copy_from_slice(value.as_bytes());
+                captured.cmdline_len=Some(value.len());
             }
             "root" if captured.root.is_none() => captured.root = Some(guid_text(value).ok_or("the root is not a GUID")?),
             "home" if captured.home.is_none() => captured.home = Some(guid_text(value).ok_or("the home is not a GUID")?),
@@ -92,7 +99,7 @@ pub fn capture(bytes: &[u8]) -> bool {
     if let Some(line) = bytes.strip_prefix(FORMAT_1) {
         if line.is_empty() || line.len() > TARGET_MAX { return false; }
         let mut captured =
-            Captured { target: [0; TARGET_MAX], target_len: line.len(), root: None, home: None, tests: None, userland: None, userland_len: 0, previous: None, previous_len: 0, refused: None };
+            Captured { target: [0; TARGET_MAX], target_len: line.len(), cmdline:[0;256], cmdline_len:None, root: None, home: None, tests: None, userland: None, userland_len: 0, previous: None, previous_len: 0, refused: None };
         captured.target[..line.len()].copy_from_slice(line);
         BOOT_INTENT.call_once(|| captured);
         return true;
@@ -101,6 +108,8 @@ pub fn capture(bytes: &[u8]) -> bool {
     let captured = parse_format_2(body).unwrap_or_else(|why| Captured {
         target: [0; TARGET_MAX],
         target_len: 0,
+        cmdline:[0;256],
+        cmdline_len:None,
         root: None,
         home: None,
         tests: None,
@@ -154,4 +163,10 @@ pub fn valid_generation(id: &str) -> bool {
 pub fn previous_userland() -> Option<&'static str> {
     let captured = BOOT_INTENT.get()?;
     core::str::from_utf8(&captured.previous.as_ref()?[..captured.previous_len]).ok()
+}
+
+/// Kernel command line captured with the boot intent, before root discovery.
+pub fn command_line()->Option<&'static str> {
+    let captured=BOOT_INTENT.get().filter(|c|c.refused.is_none())?;
+    core::str::from_utf8(&captured.cmdline[..captured.cmdline_len?]).ok()
 }

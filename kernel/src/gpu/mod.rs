@@ -2824,6 +2824,8 @@ fn native_reset_barrier() -> Result<(), i64> {
 
 /// `gpu(op, arg, len)`.
 pub fn sys_gpu(op: u64, arg: u64, len: u64) -> SyscallResult {
+    #[cfg(target_arch="x86_64")]
+    if crate::gk208::thermal_halted() {return result(Err(ENODEV));}
     let _path = GpuPath::enter();
     #[cfg(target_arch = "x86_64")]
     let _cost = (dev::backend() == abi::backend::GK208).then(|| crate::gk208::cost::for_op(op));

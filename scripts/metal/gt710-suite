@@ -2999,6 +2999,8 @@ def capture_serial(directory):
         raise ValueError('stall records must arrive in bulk')
     if timings and not matches: raise ValueError('timing evidence bulk missing')
     if re.search(r'^GT710_TIMING_V1 ', serial, re.M): raise ValueError('timing records must arrive in bulk')
+    if re.search(r'^GT710_(?:CLOCK_C1|VBIOS_V1) ', serial, re.M): raise ValueError('C1 records must arrive in bulk')
+    if ('GT710_C1_BULK ' in serial or 'GT710_VBIOS_BULK ' in serial) and not matches: raise ValueError('C1 bulk missing')
     if re.search(r'^GT710_CLOCK_V1 ', serial, re.M): raise ValueError('clock records must arrive in bulk')
     if 'GT710_CLOCK_BULK ' in serial and not matches: raise ValueError('clock evidence bulk missing')
     if re.search(r'^GT710_GR_REFUSAL_V1 ', serial, re.M):
@@ -3047,6 +3049,17 @@ def capture_serial(directory):
                     or row['values']['schema'] != 1):
                 raise ValueError('invalid case heap record')
             key=('case-heap',)
+        elif fields[0] in ('GT710_CLOCK_C1','GT710_VBIOS_V1'):
+            if slot != 0: raise ValueError('C1 data in wrong upload slot')
+            row=json.loads(line.split(' ',1)[1])
+            if fields[0]=='GT710_CLOCK_C1':
+                from gt710_clock import c1_record
+                c1_record(row)
+            else:
+                blob=bytes.fromhex(row['hex'])
+                if len(blob)!=row['bytes'] or hashlib.sha256(blob).hexdigest()!=row['sha256']:
+                    raise ValueError('VBIOS raw image digest differs')
+            key=('c1' if fields[0]=='GT710_CLOCK_C1' else 'vbios',)
         elif fields[0]=='GT710_CLOCK_V1':
             row = clock_record(json.loads(line.removeprefix('GT710_CLOCK_V1 ')))
             if slot != int(row['phase'] == 'final'):
@@ -3133,6 +3146,9 @@ def capture_serial(directory):
                 or [row['case'] for row in measured] != names):
             raise ValueError('case heap boundaries differ from the completed GPU cases')
     def report_key(line):
+        c1=re.fullmatch(r'GT710_(C1|VBIOS)_BULK bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?',line)
+        if c1:return ('c1' if c1[1]=='C1' else 'vbios',)
+        if line.startswith(('GT710_C1_BULK ','GT710_VBIOS_BULK ')):raise ValueError('invalid C1 anchor')
         clock = re.fullmatch(r'GT710_CLOCK_BULK phase=(startup|final) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
         if clock: return ('clock', clock[1])
         if line.startswith('GT710_CLOCK_BULK '): raise ValueError('invalid clock anchor')
@@ -3216,6 +3232,11 @@ def capture_serial(directory):
             record = groups[key][0].removesuffix('\n').encode('ascii')
             if len(groups[key]) != 1 or len(record) != int(anchor[1]) or hashlib.sha256(record).hexdigest() != anchor[2]:
                 raise ValueError('GR refusal record differs from serial length/digest')
+        if key is not None and key[0] in ('c1','vbios'):
+            anchor=re.fullmatch(r'GT710_(C1|VBIOS)_BULK bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?',line)
+            record=groups[key][0].removesuffix('\n').encode('ascii')
+            if len(groups[key])!=1 or len(record)!=int(anchor[2]) or hashlib.sha256(record).hexdigest()!=anchor[3]:
+                raise ValueError('C1 record differs from serial digest')
         if key is not None and key[0] == 'clock':
             anchor = re.fullmatch(r'GT710_CLOCK_BULK phase=(startup|final) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?', line)
             record = groups[key][0].removesuffix('\n').encode('ascii')
