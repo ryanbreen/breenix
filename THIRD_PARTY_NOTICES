@@ -2068,3 +2068,9 @@ Sources are nouveau Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba:
 The sensor, RAM script, PMU firmware and counter dependency notices and pinned
 source manifests listed above continue to apply to the shared helpers.
 `production_policy.rs` is Breenix policy, with no imported hardware mechanism.
+
+The runtime production policy in `kernel/src/gpu/gk208/production_rom.rs`
+uses the same pinned MIT BIOS performance, M0203, voltage, vmap and GPIO
+layouts and voltage arithmetic cited in the C1 and C3-0 sections above.
+Its source notice retains the corresponding Nouveau Community, Red Hat and
+Martin Peres copyrights. No board ROM data is embedded in this decoder.

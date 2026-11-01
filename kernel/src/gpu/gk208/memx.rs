@@ -202,7 +202,7 @@ fn tables(r:&[u8],strap:u32)->Result<Tables,&'static str> {
   if t!=0 && word(r,t,1)?==0x10 && word(r,t+4,1)?==0 {
    for i in 0..word(r,t+3,1)? as usize {
     let e=t+word(r,t+1,1)? as usize+i*word(r,t+2,1)? as usize;
-    if word(r,e,1)?>>4==strap as u32 {index=word(r,e+1,1)?&15;break;}
+    if word(r,e,1)?&15!=15 && word(r,e,1)?>>4==strap as u32 {index=word(r,e+1,1)?&15;break;}
    }
   }
  }
@@ -314,6 +314,7 @@ fn prog(t:&Tables,c:&Config,read:&mut impl FnMut(u32)->u32)->Vec<(u32,u32)> {
 }
 /// K4 authorizes only the first xition of a future 900000 kHz request.
 /// Current register values are read through the caller at calculation time.
+#[cfg(any(feature="gt710_clock_probe",not(target_os="none")))]
 pub fn calculate(r:&[u8],strap:u32,current:u32,read:&mut impl FnMut(u32)->u32)->Result<Plan,&'static str> {
  if current.abs_diff(405000)>4050 {return Err("outside C5d intermediate envelope");}
  calculate_pass(r,strap,405000,900000,true,read)
@@ -322,9 +323,10 @@ pub fn calculate(r:&[u8],strap:u32,current:u32,read:&mut impl FnMut(u32)->u32)->
 /// The descending transition uses target config plus the former's three
 /// transition fields, then calculates the final target in a separate pass.
 pub fn calculate_pass(r:&[u8],strap:u32,former:u32,target:u32,intermediate:bool,read:&mut impl FnMut(u32)->u32)->Result<Plan,&'static str> {
- if !matches!((former,target),(405000,900000)|(900000,405000)) {return Err("outside C5e memory envelope");}
+ if former==0 || target==0 {return Err("zero memory clock");}
  let t=tables(r,strap)?;
  let freq=if intermediate {former.min(target)}else{target};
+ if freq>t.pll["max_freq"] {return Err("DDR3 mode 2 unsupported");}
  let mut c=select(&t,freq)?;
  if intermediate {
   let other=select(&t,former.max(target))?;

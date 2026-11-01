@@ -584,6 +584,8 @@ mod ram_init;
 #[cfg(not(feature = "gt710_clock_probe"))]
 mod production;
 #[cfg(not(feature = "gt710_clock_probe"))]
+mod production_rom;
+#[cfg(not(feature = "gt710_clock_probe"))]
 mod production_policy;
 pub mod resource;
 #[cfg(feature = "gt710_core_probe")]

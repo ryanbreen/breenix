@@ -14,12 +14,13 @@ class ProductionRom(unittest.TestCase):
    # Add BIT M v2 with a RAMCFG type table: disabled match then DDR3.
    r[0x4a]=2;r[0x4b]=0;r[0x4b]=-sum(r[0x40:0x4c])&255
    r[0x52:0x58]=bytes([77,2,7,0,0x90,0]);r[0x90:0x97]=bytes([1,0,0,0,9,0,0])
-   r[0x900:0x90b]=bytes([0x10,7,2,2,0,0,0,0x1f,0,0x12,1])
+   r[0x900:0x90b]=bytes([0x10,7,2,2,0,0,0,0x1f,0,0x11,1])
    (p/'rom').write_bytes(r)
    (p/'check.rs').write_text('''extern crate alloc;
 #[allow(dead_code)] #[path="%s"] mod edid;
 #[allow(dead_code)] #[path="%s"] mod modeset;
-#[allow(dead_code)] #[path="%s"] mod perf;
+#[allow(dead_code)] #[path="%s"] pub mod perf;
+mod clock {pub use super::perf;}
 #[path="%s"] mod production_rom;
 fn main() {
  let mut r=include_bytes!("rom").to_vec();
@@ -29,7 +30,7 @@ fn main() {
  assert_eq!(production_rom::voltage(&r,1,32,0,&mut |_|0).unwrap(),(900000,925000));
  r[0x909]=0x15;assert!(production_rom::target(&r,4).is_err());
  // A new highest perf level must change the target, without constants.
- r[0x909]=0x12;r[0x13a..0x13c].copy_from_slice(&1450u16.to_le_bytes());
+ r[0x909]=0x11;r[0x13a..0x13c].copy_from_slice(&1450u16.to_le_bytes());
  assert_eq!(production_rom::target(&r,4).unwrap().gpc_khz,1450000);
  r.truncate(0x901);assert!(production_rom::target(&r,4).is_err());
 }

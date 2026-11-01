@@ -26,7 +26,7 @@
 //! K8 production startup. Hardware operations reuse the C3/C4/C5 hardware helpers.
 //! MIT nouveau v6.8 clk/gk104.c, fb/ramgk104.c, pmu/{gt215,memx}.c;
 //! notices and the per-file audited source revisions remain in the shared helpers.
-use super::{Registers, c2, clock, memx, modeset, native, production_policy as policy};
+use super::{Registers, c2, clock, memx, modeset, native, production_policy as policy, production_rom};
 use policy::{Stage, Startup};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -84,6 +84,7 @@ impl super::thermal::Access for Io {
 }
 struct Controller {
     base:usize, strap:u32, rom:Vec<u8>, post:Vec<(u32,u32)>, counter:Option<u32>,
+    target:production_rom::Target, post_memory:u32,
 }
 impl Controller {
     fn temperature(&self)->Result<u32,&'static str> {
@@ -107,11 +108,8 @@ impl Controller {
         let mut io=Io(Registers(self.base));
         super::ce::with_resources(|_,_,_| {
             if !recovery {self.cool()?;self.gpu_health()?;}
-            let current=self.sample().memory_khz?;
             let session=memx::Session::init(&mut io)?;
-            let calculated=if phase=="intermediate" {
-                memx::calculate(&self.rom,self.strap,current,&mut |a|io.0.read(a as usize))
-            } else {memx::calculate_pass(&self.rom,self.strap,former,target,intermediate,&mut |a|io.0.read(a as usize))};
+            let calculated=memx::calculate_pass(&self.rom,self.strap,former,target,intermediate,&mut |a|io.0.read(a as usize));
             let plan=match calculated {Ok(p)=>p,Err(e)=>{io.0.write(0x10a580,0);return Err(e);}};
             session.load(&mut io,&plan.words())?;
             for &(a,v) in &plan.cpu_before {io.0.write(a as usize,v);}
@@ -169,27 +167,37 @@ impl Startup for Controller {
                 super::ce::with_resources(|_,_,_| {
                     super::ram_init::execute(&mut Registers(self.base),&scripts);Ok(())
                 })?;
-                if !policy::within_one_percent(self.sample().memory_khz,405000) {return Err("RAM init memory readback changed");}
+                if !policy::within_one_percent(self.sample().memory_khz,self.post_memory) {return Err("RAM init memory readback changed");}
                 self.gpu_health()
             }
-            Stage::MemoryIntermediate=>self.memory_pass("intermediate",405000,900000,true,false),
-            Stage::MemoryTarget=>self.memory_pass("target",405000,900000,false,false),
+            Stage::MemoryIntermediate=>self.memory_pass("intermediate",self.post_memory,self.target.memory_khz,true,false),
+            Stage::MemoryTarget=>self.memory_pass("target",self.post_memory,self.target.memory_khz,false,false),
             Stage::Gpc=>{
+                let regs=Registers(self.base);
+                // MIT volt/gk104.c speedo read with the gf100 fuse access gates.
+                regs.write(0x122634,0);
+                let enable=regs.read(0x22400);let access=regs.read(0x21000);
+                regs.write(0x22400,enable|0x800);regs.write(0x21000,access|1);
+                let speedo=regs.read(0x214a8) as i32;
+                regs.write(0x21000,access);regs.write(0x22400,enable);regs.write(0x122634,0x41);
+                let (current,required)=production_rom::voltage(&self.rom,self.target.voltage_id,self.temperature()?,speedo,&mut |a|regs.read(a as usize))?;
+                if current<required {return Err("current VID voltage below performance requirement");}
+                crate::serial_println!("GT710_CLOCK_VOLTAGE current_uv={} required_uv={} voltage_id={}",current,required,self.target.voltage_id);
                 let limits=c2::limits(&self.rom)?;
                 let reference=clock::gpc_reference(|a|Registers(self.base).read(a as usize))?;
-                let plan=c2::pll_plan("gpc",1307000,&limits,reference)?;
-                crate::serial_println!("GT710_CLOCK_GPC requested_khz=1307000 calculated_khz={}",plan.khz);
+                let plan=c2::pll_plan("gpc",self.target.gpc_khz,&limits,reference)?;
+                crate::serial_println!("GT710_CLOCK_GPC requested_khz={} calculated_khz={}",self.target.gpc_khz,plan.khz);
                 super::ce::with_resources(|_,_,_|c2::program(&mut Io(Registers(self.base)),&plan))
             }
             Stage::Verify=>{
                 let s=self.sample();
-                if !policy::within_one_percent(s.gpc_khz,1307000) || !policy::within_one_percent(s.memory_khz,900000) {
+                if !policy::within_one_percent(s.gpc_khz,self.target.gpc_khz) || !policy::within_one_percent(s.memory_khz,self.target.memory_khz) {
                     return Err("clock readback more than 1 percent off");
                 }
                 let m=super::ce::with_resources(|_,_,_|c2::observe::measure(&mut Io(Registers(self.base))))?;
                 self.counter=Some(m.khz);
                 crate::serial_println!("GT710_CLOCK_COUNTER khz={} cycles={} interval_ns={} bracket_ns={} restored=true",m.khz,m.cycles,m.ptimer_ns,m.bracket_ns);
-                if !policy::within_one_percent(Ok(m.khz),1307000u32.div_ceil(16)) {return Err("GPC counter more than 1 percent off");}
+                if !policy::within_one_percent(Ok(m.khz),self.target.gpc_khz.div_ceil(16)) {return Err("GPC counter more than 1 percent off");}
                 self.cool()?;
                 native::clock_display_check(&Registers(self.base),"startup")
             }
@@ -201,8 +209,8 @@ impl Startup for Controller {
     fn restore_memory(&mut self)->Result<(),&'static str> {
         // Issue both live-calculated nouveau downclock passes, including
         // after an uncertain target EXEC; use live RAM timings for restoration.
-        let first=self.memory_pass("return-intermediate",900000,405000,true,true);
-        let last=self.memory_pass("return",900000,405000,false,true);
+        let first=self.memory_pass("return-intermediate",self.target.memory_khz,self.post_memory,true,true);
+        let last=self.memory_pass("return",self.target.memory_khz,self.post_memory,false,true);
         first.and(last)
     }
 }
@@ -222,7 +230,9 @@ pub(super) fn initialize() {
         let rom=super::rom::read(&mut Registers(base))?;
         let strap=Registers(base).read(0x101000);
         let post=c2::observe::capture(&mut Io(Registers(base)));
-        Ok(Controller {base,strap,rom,post,counter:None})
+        let target=production_rom::target(&rom,strap)?;
+        let post_memory=clock::sample(|a|Registers(base).read(a as usize)).memory_khz?;
+        Ok(Controller {base,strap,rom,post,counter:None,target,post_memory})
     });
     let mut controller=match result {Ok(c)=>c,Err(e)=>{
         crate::serial_println!("GT710_CLOCK_STARTUP full=false gpc_khz=0 gpc_counter_khz=0 memory_khz=0 temperature_c=0 status={}",e);return;

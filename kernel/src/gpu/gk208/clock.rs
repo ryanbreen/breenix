@@ -32,7 +32,7 @@
 use alloc::vec::Vec;
 #[cfg(target_os = "none")]
 #[path = "perf.rs"]
-mod perf;
+pub(super) mod perf;
 
 pub struct Sample {
     pub raw: Vec<(u32, u32)>,

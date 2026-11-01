@@ -48,7 +48,7 @@ pub fn scripts(r:&[u8],strap:u32)->Result<Vec<Vec<Op>>,ScriptError> {
             let h=byte(r,t+1)? as usize;let l=byte(r,t+2)? as usize;
             for i in 0..byte(r,t+3)? as usize {
                 let e=t+h+i*l;
-                if byte(r,e)?>>4==strap {index=Some(byte(r,e+1)?&15);break;}
+                if byte(r,e)?&15!=15 && byte(r,e)?>>4==strap {index=Some(byte(r,e+1)?&15);break;}
             }
         }
     }
