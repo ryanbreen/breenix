@@ -260,6 +260,93 @@ class ServerTarget(unittest.TestCase):
                 probe.wrong.with_suffix('.pub').write_text('ssh-ed25519 wrong\n')
                 probe.run_case('strict-login', '[stdout] bsshd: host key ED25519 SHA256:fixture (loaded)\n')
 
+    def test_vigil_filing_for_scored_qemu_categories_only(self):
+        import contextlib
+        import io
+        import os
+        with tempfile.TemporaryDirectory(dir='/tmp') as scratch:
+            run = Path(scratch)
+            boot, sha = '20261101T120000Z-qemu', 'a' * 40
+            directory = run / 'boots' / boot
+            directory.mkdir(parents=True)
+            (directory / 'started').write_text('1793534400.125\n')
+            (directory / 'serial.txt').write_text('boot serial\n')
+            (run / 'qemu-profile').write_text('fixture-profile\n')
+            cli = run / 'vigil-cli'
+            calls = run / 'calls'
+            cli.write_text('#!/usr/bin/env python3\nimport json,os,sys\n'
+                           'if len(sys.argv) == 2: print("breenix start"); sys.exit()\n'
+                           'with open(os.environ["CALLS"], "a") as f: f.write(json.dumps(sys.argv[1:]) + "\\n")\n')
+            cli.chmod(0o755)
+            (run / '.ssh').mkdir()
+            (run / '.ssh/key.pub').write_text('ssh-ed25519 fixture')
+            (run / '.ssh/key').touch()
+            site = dict(SERVER_SSH_HOST='127.0.0.1', OPERATOR_USER='fixture',
+                        OPERATOR_SSH_PUBLIC_KEY='ssh-ed25519 fixture', CONSOLE_USER='fixture',
+                        CONSOLE_PASSWORD='fixture')
+            class Machine:
+                def __init__(self, *args): self.directory = directory
+                def identity(self): return dict(mode='persistent', bootedCommit=sha, toolsCommit=sha, evidenceEligible=True)
+                def holds_lease(self): return True
+                def read(self, name, **kwargs):
+                    if name.startswith('definition/'): return (ROOT / name.removeprefix('definition/')).read_text()
+                    if name == 'events.jsonl': return ''
+                    return (directory / name).read_text()
+                def site(self, fields): return site
+                def console(self, *args): return Stub()
+                def capture(self): return ('', [])
+                def write(self, name, value): return reply()
+            class Stub:
+                transcript = []
+                init_log = ''
+                def __init__(self, *args, **kwargs): pass
+                def service_log(self, *args): return ''
+                def run_case(self, *args): pass
+                def prepare(self): return {}
+                def cleanup(self): pass
+                def logout(self): pass
+            env = dict(VIGIL_CLI=str(cli), CALLS=str(calls), VIGIL_BOOT_ID='', VIGIL_TEST_HOME=str(run))
+            globals_ = HOST['main'].__globals__
+            replacements = dict(QemuTarget=Machine, MetalTarget=Machine, Probe=Stub, ConsoleInput=Stub,
+                                Services=Stub, Logs=Stub, TimeCases=Stub, score=lambda *a: 'PASS',
+                                S27_SUSPENDS_PERSISTENT=False)
+            with patch.dict(os.environ, env), patch.dict(globals_, replacements), \
+                 patch.object(Path, 'home', return_value=run), contextlib.redirect_stdout(io.StringIO()):
+                for category in ('ssh-keys', 'services', 'logs', 'time', 'console-input'):
+                    argv = ['server-suite', '--target', 'qemu', '--run-dir', str(run), '--boot', boot,
+                            '--sha', sha, '--milestone', 'server/' + category]
+                    with patch.object(sys, 'argv', argv): self.assertEqual(HOST['main'](), 0)
+                    rows = [json.loads(row) for row in calls.read_text().splitlines()]
+                    args = rows[-1]
+                    self.assertEqual(len(rows), ('ssh-keys', 'services', 'logs', 'time', 'console-input').index(category) + 1)
+                    def arg(name): return args[args.index(name) + 1]
+                    self.assertEqual((arg('--arch'), arg('--platform'), arg('--suite'), arg('--profile'),
+                                      arg('--commit'), arg('--started')), ('aarch64', 'qemu', 'server',
+                                      'fixture-profile', sha, '1793534400.125'))
+                    self.assertEqual(arg('--serial'), str(directory / (category + '-suite.txt')))
+                    self.assertEqual(arg('--serial-user'), str(directory / 'serial.txt'))
+                    self.assertNotEqual(arg('--id'), boot)
+                    self.assertEqual(args[:2], ['breenix', 'record'])
+                    self.assertRegex(arg('--started'), r'^\d+(?:\.\d+)?$')
+                    self.assertRegex(arg('--ended'), r'^\d+(?:\.\d+)?$')
+                    self.assertGreaterEqual(float(arg('--ended')), float(arg('--started')))
+                    self.assertEqual(arg('--exit-status'), '0')
+                    lines = Path(arg('--serial')).read_text().splitlines()
+                    self.assertEqual(lines[0], 'SUITE server START cases=' + str(len(HOST['CATEGORIES'][category])))
+                    self.assertEqual(len(lines), len(HOST['CATEGORIES'][category]) + 2)
+                    self.assertTrue(all(line.startswith('SUITE server CASE ' + category + '/') for line in lines[1:-1]))
+                    self.assertTrue(lines[-1].startswith('SUITE server DONE '))
+                ids = [row[row.index('--id') + 1] for row in rows]
+                self.assertEqual(len(set(ids)), len(ids))
+                for category, flag in (('logs', '--prepare-logs'), ('time', '--prepare-time')):
+                    argv = ['server-suite', '--target', 'qemu', '--run-dir', str(run), '--boot', boot,
+                            '--sha', sha, '--milestone', 'server/' + category, flag]
+                    with patch.object(sys, 'argv', argv): self.assertEqual(HOST['main'](), 0)
+                argv = ['server-suite', '--boot', '20261101T120000Z-metal', '--sha', sha,
+                        '--milestone', 'server/console-input']
+                with patch.object(sys, 'argv', argv): self.assertEqual(HOST['main'](), 0)
+                self.assertEqual(len(calls.read_text().splitlines()), 5)
+
     def test_metal_target_keeps_boot_store_and_console_calls(self):
         calls = []
         identity = dict(mode='persistent', bootedCommit='a' * 40, toolsCommit='a' * 40, evidenceEligible=True)
