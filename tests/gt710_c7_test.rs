@@ -81,8 +81,8 @@ fn failed_guard_restores_retry_each_second_and_critical_stop_latches_once() {
  let mut g=Guard::new();assert!(g.sample(Ok(85)));
  assert!(g.retry_due(0,true));assert!(!g.retry_due(250_000_000,true));
  assert!(!g.retry_due(999_999_999,true));assert!(g.retry_due(1_000_000_000,true));
- assert!(!g.critical(Ok(94),true));assert!(!g.critical(Ok(95),false));
- assert!(g.critical(Ok(95),true));assert!(!g.critical(Ok(96),true));
+ assert!(!g.critical(Ok(94)));assert!(g.critical(Ok(95)));
+ assert!(!g.critical(Ok(95)));assert!(!g.critical(Ok(96)));
  assert!(!g.retry_due(2_000_000_000,false));
 }
 

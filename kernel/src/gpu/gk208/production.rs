@@ -201,12 +201,13 @@ impl Controller {
             Stage::Sensor=>{
                 self.context("sensor-setup",format!("adc={:#x},control_a={:#x},control_b={:#x}",Registers(self.base).read(0x20400),Registers(self.base).read(0x20008),Registers(self.base).read(0x2000c)));
                 {let _sensor=SENSOR_ACCESS.lock();super::thermal::setup(&mut Io(Registers(self.base)))?;}
-                self.cool()?;
+                // Keep the guard alive even when the initial temperature
+                // already refuses full clocks (K10's unconditional 95 C stop).
                 let base=self.base;
                 self.context("thermal-worker-start",String::from("worker=kgputherm"));
                 crate::task::kthread::kthread_run(move ||guard_thread(base),"kgputherm")
                     .map_err(|_|"thermal guard worker creation failed")?;
-                Ok(())
+                self.cool()
             }
             Stage::Pmu=>{
                 self.context("pmu-start",format!("pmc={:#x},pmu_control={:#x}",Registers(self.base).read(0x200),Registers(self.base).read(0x10a100)));
@@ -349,7 +350,7 @@ fn guard_thread(base:usize) {
             crate::serial_println!("GT710_CLOCK_TEMPERATURE monotonic_ns={} celsius={} tripped={}",now,t.unwrap_or(u32::MAX),guard.tripped());
             logged=Some(t);
         }
-        if guard.critical(t,ARMED.load(Ordering::Acquire)) {
+        if guard.critical(t) {
             HALTED.store(true,Ordering::Release);
             crate::gpu::panic::native_reset();
             // Existing reset paths stop runlists before disabling PGRAPH/PFIFO

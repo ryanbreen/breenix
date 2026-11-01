@@ -57,8 +57,8 @@ impl Guard {
     pub fn restore_finished(&mut self,now:u64) {
         self.next_restore=now.saturating_add(1_000_000_000);
     }
-    pub fn critical(&mut self,temperature:Result<u32,&'static str>,armed:bool)->bool {
-        if self.stopped || !armed || !temperature.is_ok_and(|v|v>=95) {return false;}
+    pub fn critical(&mut self,temperature:Result<u32,&'static str>)->bool {
+        if self.stopped || !temperature.is_ok_and(|v|v>=95) {return false;}
         self.stopped=true;true
     }
     pub fn tripped(&self) -> bool { self.tripped }
