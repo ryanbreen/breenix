@@ -40,6 +40,7 @@ use std::sync::Mutex;
 static WIRE:Mutex<Vec<u8>>=Mutex::new(Vec::new());
 static CAPTURE:Mutex<Vec<u8>>=Mutex::new(Vec::new());
 static CONSOLE:Mutex<Vec<u8>>=Mutex::new(Vec::new());
+static QUEUED:Mutex<Vec<u8>>=Mutex::new(Vec::new());
 use serial_writer::Writer;
 mod graphics { pub mod boot_ribbon { pub fn byte(b:u8){crate::CAPTURE.lock().unwrap().push(b);} } }
 mod serial_writer {use std::sync::atomic::{AtomicU8,Ordering}; #[derive(PartialEq,Eq,Clone,Copy)] WRITER }
@@ -54,7 +55,8 @@ static SUITE:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(tr
 mod gpu {pub fn observe_screen(_:crate::gpu_abi::screen::Request)->Result<(),i64>{super::READS.fetch_add(1,std::sync::atomic::Ordering::Relaxed);Ok(())}}
 mod test_control {pub fn enabled()->bool{super::SUITE.load(std::sync::atomic::Ordering::Relaxed)}}
 mod window {pub struct Caller;impl Caller {pub fn current()->Result<Self,i32>{Ok(Self)}pub fn is_root(&self)->bool{super::ROOT.load(std::sync::atomic::Ordering::Relaxed)}}}
-mod serial {pub use crate::serial_writer::Writer;pub fn write_bytes_atomic(w:Writer,b:&[u8]){let lead=super::serial_writer::lead(w,b);for &v in lead.iter().chain(b) {super::WIRE.lock().unwrap().push(v);super::wrote(w,v);}}}
+mod serial {pub use crate::serial_writer::Writer;
+pub fn drain_output(){let bytes=std::mem::take(&mut *super::QUEUED.lock().unwrap());write_bytes_atomic(Writer::Tty,&bytes);}pub fn write_bytes_atomic(w:Writer,b:&[u8]){let lead=super::serial_writer::lead(w,b);for &v in lead.iter().chain(b) {super::WIRE.lock().unwrap().push(v);super::wrote(w,v);}}}
 WROTE
 SINK
 fn ordinary(w:Writer,b:&[u8]){CONSOLE.lock().unwrap().extend_from_slice(b);serial::write_bytes_atomic(w,b);}
@@ -68,6 +70,12 @@ fn run(on:bool)->(Vec<u8>,Vec<u8>,Vec<u8>){
  (CONSOLE.lock().unwrap().clone(),CAPTURE.lock().unwrap().clone(),WIRE.lock().unwrap().clone())
 }
 #[test] fn isolation(){let off=run(false);let on=run(true);assert_eq!(off.0,on.0);assert_eq!(off.1,on.1);assert!(on.2.len()>off.2.len());
+ WIRE.lock().unwrap().clear();
+ QUEUED.lock().unwrap().extend_from_slice(b"\nSUITE gpu CASE draw/one PASS ms=1\n");
+ screen_evidence_write(b"\nSUITE gpu SCREEN draw/one end error=readback-failed\n").unwrap();
+ serial::drain_output();
+ let wire=String::from_utf8(WIRE.lock().unwrap().clone()).unwrap();
+ assert!(wire.find(" CASE ").unwrap()<wire.find(" SCREEN ").unwrap(),"SCREEN overtook queued CASE: {wire}");
  let mut request=[0u8;32];request[..8].copy_from_slice(b"SCREENRB");
  let wire=WIRE.lock().unwrap().len();
  assert_eq!(screen_evidence_write(&request),Ok(32));

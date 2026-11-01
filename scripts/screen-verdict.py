@@ -37,7 +37,11 @@ def score(manifest, serial, table, native=False, config=None, captures=None):
     if table['version'] != 1:
         raise ValueError('unsupported table version')
     records = {}
+    reported = set()
     for line in serial.splitlines():
+        case = re.match(rf'^SUITE {re.escape(suite)} CASE ({CASE}) ', line)
+        if case:
+            reported.add(case[1])
         if not re.match(rf'^SUITE {re.escape(suite)}\s+SCREEN(?:\s|$)', line):
             continue
         match = RECORD.fullmatch(line)
@@ -52,6 +56,8 @@ def score(manifest, serial, table, native=False, config=None, captures=None):
         key = (record['case'], record['checkpoint'])
         if key[0] not in cases:
             raise ValueError(f'SCREEN names unknown case {key[0]}')
+        if key[0] not in reported:
+            raise ValueError(f'SCREEN precedes CASE for {key[0]}')
         if key in records:
             raise ValueError(f'duplicate checkpoint {key[0]} {key[1]}')
         if record['error']:

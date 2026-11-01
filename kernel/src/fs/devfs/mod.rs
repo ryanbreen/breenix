@@ -436,6 +436,9 @@ pub fn screen_evidence_write(buf: &[u8]) -> Result<usize, i32> {
         return Ok(buf.len());
     }
     if buf.len() > 512 { return Err(22); }
+    // CASE uses the terminal transmit queue; evidence must not overtake it.
+    // drain_output also waits for a record already popped by the transmitter.
+    crate::serial::drain_output();
     crate::serial::write_bytes_atomic(crate::serial::Writer::Evidence, buf);
     Ok(buf.len())
 }

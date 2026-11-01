@@ -25,10 +25,11 @@ class ScreenVerdictTest(unittest.TestCase):
                                   'crc': '12345678', 'crc2': '87654321'}]}
         self.line = f'SUITE gpu SCREEN draw/one end sha256={DIGEST} mode=1280x800 binding=1280x800'
 
-    def run_score(self, lines, *, entries=None, args=()):
+    def run_score(self, lines, *, entries=None, args=(), include_cases=True):
         (self.dir / 'manifest.json').write_text(json.dumps(self.manifest))
         (self.dir / 'table.json').write_text(json.dumps({'version': 1, 'entries': [self.entry] if entries is None else entries}))
-        (self.dir / 'serial.txt').write_text('\n'.join(lines) + '\n')
+        prefix = ['SUITE gpu CASE draw/one PASS ms=1', 'SUITE gpu CASE draw/two PASS ms=1'] if include_cases else []
+        (self.dir / 'serial.txt').write_text('\n'.join(prefix + lines) + '\n')
         return subprocess.run([sys.executable, str(SCORER), str(self.dir / 'manifest.json'),
                                str(self.dir / 'serial.txt'), '--table', str(self.dir / 'table.json'),
                                *args], capture_output=True, text=True)
@@ -51,6 +52,11 @@ class ScreenVerdictTest(unittest.TestCase):
                 result = self.run_score(lines)
                 self.assertNotEqual(result.returncode, 0, result.stdout)
                 self.assertIn('SCREENS FAIL:', result.stdout)
+
+    def test_checkpoint_must_follow_its_case(self):
+        result = self.run_score([self.line, 'SUITE gpu CASE draw/one PASS ms=1'], include_cases=False)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertIn('precedes CASE', result.stdout)
 
     def test_binding_geometry(self):
         line = self.line.replace('binding=1280x800', 'binding=2560x1600')

@@ -180,8 +180,8 @@ class SuiteVerdictTests(unittest.TestCase):
             original = (FIXTURES / "all-pass.txt").read_text()
             digest = "a" * 64
             records = (
-                f"SUITE fixture SCREEN first/one end sha256={digest} mode=2560x1600\n",
-                f"SUITE fixture SCREEN first/one named-point sha256={digest} mode=1280x800 crc=1234abcd crc2=5678abcd raster=1280x1024 out=sor0\n",
+                f"SUITE fixture SCREEN first/one end sha256={digest} mode=2560x1600 binding=2560x1600\n",
+                f"SUITE fixture SCREEN first/one named-point sha256={digest} mode=1280x800 binding=2560x1600 crc=1234abcd crc2=5678abcd raster=1280x1024 out=sor0\n",
                 "SUITE fixture SCREEN first/one intent error=readback-failed\n",
             )
             lines = original.splitlines(keepends=True)
