@@ -9,6 +9,15 @@ sys.path.insert(0, str(ROOT / 'tests'))
 from gt710_gr_live_unwind_test import item
 
 class FifoPresent(unittest.TestCase):
+    def test_sync_present_acceptance_does_not_fault_or_complete_early(self):
+        source = item((ROOT / 'kernel/src/gpu/mod.rs').read_text(), '    fn reap_all(')
+        # The kernel screen uses Tag::Sync; GET acceptance must leave that
+        # synchronous request pending until its actual latch completion.
+        self.assertIn('Reap::Accepted(Tag::Sync(_)) => {', source)
+        arm = source.split('Reap::Accepted(Tag::Sync(_)) => {', 1)[1].split('}', 1)[0]
+        self.assertNotIn('fault(', arm)
+        self.assertNotIn('sync_ended(', arm)
+
     def test_present_waits_for_the_earlier_latch(self):
         source = item((ROOT / 'kernel/src/gpu/display.rs').read_text(), 'pub(super) fn present_as(')
         code = source[source.index('        if !owner(tgid)', source.index('let sent =')):source.index('        // Count admitted display work')]
