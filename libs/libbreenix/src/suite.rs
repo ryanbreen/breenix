@@ -172,6 +172,8 @@ struct PendingFrame { width: usize, height: usize, pixels: Vec<u8>, reference: O
 static PENDING_FRAME: std::sync::Mutex<Option<PendingFrame>> = std::sync::Mutex::new(None);
 
 static JUDGED_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static READBACK_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static READBACK_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 static JUDGED_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static JUDGED_RUNNER: AtomicU64 = AtomicU64::new(0);
@@ -216,9 +218,47 @@ pub fn judged_with_bound(frame:&FrameBuf,expected:Option<&FrameBuf>,bound:usize)
     *pending = Some(PendingFrame { width: frame.width, height: frame.height, pixels, reference, bound });
     Ok(())
 }
+/// Snapshot tightly packed read-back BGRX rows, without creating a CPU canvas or GUI stage.
+/// Repeated GPU comparisons replace the snapshot with the last picture actually judged.
+/// Publication and hashing wait until the case timer has stopped, as for `judged`.
+/// X is canonicalized to 255; the caller compares the original bytes before this handoff.
+pub fn judged_readback(bytes: &[u8], width: u32, height: u32) -> CaseResult {
+    let result = snapshot_readback(bytes, width, height);
+    // Comparators also serve negative checks. Retain transport failures for publication
+    // so a caller can preserve its pixel result without silently losing evidence.
+    if let Err(CaseError::Fail(message)) = &result {
+        *READBACK_ERROR.lock().unwrap() = Some(message.clone());
+    }
+    result
+}
+
+fn snapshot_readback(bytes: &[u8], width: u32, height: u32) -> CaseResult {
+    check(JUDGED_ENABLED.load(Ordering::Relaxed) || READBACK_ENABLED.load(Ordering::Relaxed), "judged transport is not enabled for this suite")?;
+    check(running_case().is_some(), "judged_readback() called outside a suite case")?;
+    check(width > 0 && height > 0 && width <= 16384 && height <= 16384,
+        "judged readback dimensions outside surface contract")?;
+    let size = (width as usize).checked_mul(height as usize).and_then(|n| n.checked_mul(4))
+        .filter(|&n| n <= i32::MAX as usize).ok_or("judged readback dimensions overflow")?;
+    check(bytes.len() == size, "judged readback length differs from dimensions")?;
+    let mut pixels = Vec::new();
+    pixels.try_reserve_exact(size).map_err(|_| "judged readback allocation failed")?;
+    pixels.extend_from_slice(bytes);
+    for pixel in pixels.chunks_exact_mut(4) { pixel[3] = 255; }
+    *PENDING_FRAME.lock().unwrap() = Some(PendingFrame {
+        width: width as usize, height: height as usize, pixels, reference: None, bound: 0,
+    });
+    Ok(())
+}
+
+fn judged_transport_enabled(gui: bool, suite: &str) -> bool {
+    gui || suite == "gpu"
+}
+
 fn publish_judged() -> CaseResult {
     use std::io::Write;
-    let Some(PendingFrame { width, height, pixels, reference, bound }) = PENDING_FRAME.lock().unwrap().take() else { return Ok(()); };
+    let pending = PENDING_FRAME.lock().unwrap().take();
+    if let Some(error) = READBACK_ERROR.lock().unwrap().take() { return fail(error); }
+    let Some(PendingFrame { width, height, pixels, reference, bound }) = pending else { return Ok(()); };
     let digest = libpixcheck::sha256(&pixels);
     let path = judged_path();
     let write = || -> std::io::Result<()> {
@@ -239,7 +279,7 @@ fn publish_judged() -> CaseResult {
 
 fn collect_judged() -> Result<Option<JudgedFrame>, String> {
     use std::io::Read;
-    if !JUDGED_ENABLED.load(Ordering::Relaxed) { return Ok(None); }
+    if !JUDGED_ENABLED.load(Ordering::Relaxed) && !READBACK_ENABLED.load(Ordering::Relaxed) { return Ok(None); }
     let path = judged_path();
     let result = (|| {
         let mut file = match std::fs::File::open(&path) {
@@ -1018,6 +1058,8 @@ impl Suite {
                 let mut outcome = run_case(case, limit_ms, self.id, &name, &mut screen, &mut feed);
                 if let Some(error) = screen.stage_error.take() { outcome = with_note(outcome, &error); }
                 let picture_hash = frame_hash(screen.judged.as_ref());
+                // Non-GUI suites consume only the digest; release pixels before memory accounting.
+                if !self.gui { screen.judged = None; }
                 let make_line = |outcome: &Outcome| match outcome {
                     Outcome::Pass { ms } => std::format!("SUITE {} CASE {} PASS ms={}{}", self.id, name, ms, picture_hash),
                     Outcome::Fail { ms, msg } => std::format!("SUITE {} CASE {} FAIL ms={}{} msg={}", self.id, name, ms, picture_hash, msg),
@@ -1486,11 +1528,12 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     JUDGED_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     // A prior interrupted boot may have left this PID/sequence on a reused disk.
     JUDGED_ENABLED.store(screen.gui, Ordering::Relaxed);
+    READBACK_ENABLED.store(suite == "gpu", Ordering::Relaxed);
     let _screen_clock = screen::begin(suite, screen.gui);
     // G1-G6 retain the runner owner they were checked against. G7's console
     // cases explicitly start above the kernel console, with no runner owner.
     if screen.gpu.is_some() && name.starts_with("present/") { let _ = graphics::give_back_display(); }
-    for path in [judged_path(), std::format!("{}.new", judged_path()), std::format!("{}.time",judged_path()), std::format!("{}.input",judged_path()), std::format!("{}.values",judged_path())].into_iter().filter(|_| screen.gui) {
+    for path in [judged_path(), std::format!("{}.new", judged_path()), std::format!("{}.time",judged_path()), std::format!("{}.input",judged_path()), std::format!("{}.values",judged_path())].into_iter().filter(|_| judged_transport_enabled(screen.gui, suite)) {
         if let Err(e) = std::fs::remove_file(path) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 let _ = (io::close(reader),io::close(writer));
@@ -2031,7 +2074,8 @@ mod judged_transport_tests {
         let _serial = TRANSPORT.lock().unwrap();
         assert!(judged_transport_enabled(false, "gpu"));
         assert!(!judged_transport_enabled(false, "smoke"));
-        JUDGED_ENABLED.store(judged_transport_enabled(false, "gpu"), Ordering::Relaxed);
+        JUDGED_ENABLED.store(false, Ordering::Relaxed);
+        READBACK_ENABLED.store(true, Ordering::Relaxed);
         JUDGED_RUNNER.store(std::process::id() as u64, Ordering::Relaxed);
         JUDGED_SEQUENCE.store(u64::MAX - 7, Ordering::Relaxed);
         let _ = std::fs::remove_file(judged_path());
@@ -2061,7 +2105,8 @@ mod judged_transport_tests {
         assert!(!std::path::Path::new(&judged_path()).exists());
         assert!(judged_readback(&canonical[..7], 2, 1).is_err());
         assert!(judged_readback(&[], 0, 1).is_err());
-        JUDGED_ENABLED.store(false, Ordering::Relaxed);
+        assert!(publish_judged().is_err(), "a consumed transport error must still fail publication");
+        READBACK_ENABLED.store(false, Ordering::Relaxed);
     }
 
     #[test]

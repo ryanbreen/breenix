@@ -97,6 +97,12 @@ fn all(px: &[u8], c: u32, what: &str) -> R<()> {
     }
 }
 
+/// Retain a judged final readback after the performance sample has ended.
+fn all_judged(px: &[u8], c: u32, what: &str, w: u32, h: u32) -> R<()> {
+    let comparison = all(px, c, what);
+    comparison.and(breenix_suite::suite::judged_readback(px, w, h))
+}
+
 /// Whether `us` microseconds for `frames` frames is at least `per_s` frames a second.
 fn rate_met(frames: u64, us: u64, per_s: u64) -> bool {
     frames * 1_000_000 >= per_s * us
@@ -123,7 +129,7 @@ pub fn clear_rate_2560() -> CaseResult {
     ensure(rate_met(FRAMES, us, CLEARS_PER_S), || {
         format!("{FRAMES} presented 2560x1600 clears took {us} us, under {CLEARS_PER_S} a second")
     })?;
-    all(&read_rect(0, [0, 0, W, H])?, last, "the whole scanout after the last presented clear")
+    all_judged(&read_rect(0, [0, 0, W, H])?, last, "the whole scanout after the last presented clear", W, H)
 }
 
 pub fn rect_throughput() -> CaseResult {
@@ -317,7 +323,7 @@ pub fn readback_time_2560() -> CaseResult {
     let us = us_since(start);
     value("readback-us", us as i64, "us", Some((0, READBACK_US as i64)));
     ensure(us <= READBACK_US, || format!("a full 2560x1600 readback took {us} us"))?;
-    all(&px, FG, "the full readback")
+    all_judged(&px, FG, "the full readback", W, H)
 }
 
 pub fn upload_bandwidth() -> CaseResult {
@@ -448,7 +454,7 @@ pub fn wait_no_spin() -> CaseResult {
         // The last solid draw's pixel.
         let last = (draws - 1) / cycle.len() * cycle.len();
         let p = read_rect(t, [(last % W as usize) as u32, (last / W as usize) as u32, 1, 1])?;
-        all(&p, c, "the last solid pixel after the wait")?;
+        all_judged(&p, c, "the last solid pixel after the wait", 1, 1)?;
         if wall < 20_000_000 {
             continue;
         }
@@ -481,5 +487,5 @@ pub fn present_rate_2560() -> CaseResult {
     ensure(rate_met(FRAMES, us, PRESENTS_PER_S), || {
         format!("{FRAMES} presents alternating two 2560x1600 targets took {us} us, under {PRESENTS_PER_S} a second")
     })?;
-    all(&read_rect(0, [0, 0, W, H])?, colours[(FRAMES as usize - 1) % 2], "the whole final scanout")
+    all_judged(&read_rect(0, [0, 0, W, H])?, colours[(FRAMES as usize - 1) % 2], "the whole final scanout", W, H)
 }

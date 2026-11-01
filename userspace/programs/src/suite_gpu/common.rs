@@ -229,12 +229,12 @@ impl Canvas {
         }
     }
 
-    /// `Ok` when `got` equals the canvas byte for byte, or the first pixel that differs.
+    /// Compare byte for byte, then hand off the exact readback (including a mismatch).
     pub fn matches(&self, got: &[u8], what: &str) -> Result<(), CaseError> {
         if got.len() != self.px.len() {
             return Err(fail_msg(format!("{what}: read {} bytes, expected {}", got.len(), self.px.len())));
         }
-        match got.chunks_exact(4).zip(self.px.chunks_exact(4)).position(|(a, b)| a != b) {
+        let comparison = match got.chunks_exact(4).zip(self.px.chunks_exact(4)).position(|(a, b)| a != b) {
             None => Ok(()),
             Some(i) => {
                 let (x, y) = (i as u32 % self.w, i as u32 / self.w);
@@ -242,11 +242,15 @@ impl Canvas {
                 let e = &self.px[i * 4..i * 4 + 4];
                 Err(fail_msg(format!("{what}: pixel ({x},{y}) read {g:02x?}, expected {e:02x?}")))
             }
-        }
+        };
+        // Publication reports transport errors separately; they must not satisfy an
+        // intentional negative comparison made with matches(...).is_err().
+        let _ = breenix_suite::suite::judged_readback(got, self.w, self.h);
+        comparison
     }
 }
 
-/// Read target `t` back and compare it with `want`.
+/// Read target `t` back, compare with `want`, and hand off the bytes through `matches`.
 pub fn expect(t: u64, want: &Canvas, what: &str) -> Result<[u8; record::SIZE], CaseError> {
     let (px, rec) = read(t, want.w, want.h)?;
     want.matches(&px, what)?;
