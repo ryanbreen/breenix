@@ -57,9 +57,8 @@ fn fuse(io:&mut impl Access)->Result<u32,&'static str> {
     Ok(value)
 }
 pub fn setup(io:&mut impl Access)->Result<(),&'static str> {
-    // C3b: availability is diagnostic only. Hardware calibration does not
-    // depend on software fuse coefficients; a non-echoing access bit is valid.
     let note=fuse(io);io.fuse_note(note);
+    if note?!=1 {return Err("sensor-unavailable");}
     let a=io.read(0x20008);let b=io.read(0x2000c);
     if [a,b].iter().any(|v|*v==u32::MAX || *v==0xbadf1201) {return Err("sensor-control-unavailable");}
     // Nouveau leaves these controls in place for continuous hardware readings.
@@ -72,6 +71,7 @@ pub fn setup(io:&mut impl Access)->Result<(),&'static str> {
 pub fn temperature(io:&mut impl Access)->Result<u32,&'static str> {
     // G84+ is already hardware-calibrated: g84_temp_get returns this register
     // as integer Celsius, without applying the older NV40 BIOS slope/offset.
+    if fuse(io)?!=1 {return Err("sensor-unavailable");}
     let raw=io.read(0x20400);
     if raw>i32::MAX as u32 {Err("sensor-read-error")}else{Ok(raw)}
 }
