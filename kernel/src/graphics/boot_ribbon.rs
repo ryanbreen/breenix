@@ -14,8 +14,8 @@ static SCAN: spin::Mutex<(usize, [u8; 1024], usize)> = spin::Mutex::new((0, [0; 
 /// Constant work per byte under UART ownership, including before the framebuffer exists.
 pub fn byte(b: u8) {
     let tail = TAIL.load(Ordering::Relaxed);
-    if tail == CAPACITY { OVERFLOW.store(true, Ordering::Release); return; }
-    SERIAL[tail].store(b, Ordering::Relaxed);
+    let Some(slot) = SERIAL.get(tail) else { OVERFLOW.store(true, Ordering::Release); return; };
+    slot.store(b, Ordering::Relaxed);
     TAIL.store(tail + 1, Ordering::Release);
 }
 /// Drain in thread context; a bounded byte batch avoids monopolizing the render thread.

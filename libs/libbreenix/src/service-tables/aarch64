@@ -14,6 +14,15 @@ command = /sbin/init bssh-oracle
 restart = never
 needs = entropy, bsshd
 
+[blogd]
+command = /usr/sbin/blogd
+
+# SNTP stays supervised, polls hourly and slews after its first synchronization.
+[ntp]
+command = /usr/sbin/ntp_client
+restart = on-failure
+needs = network-up
+
 [getty-tty2]
 command = /bin/getty tty2
 

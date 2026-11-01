@@ -349,10 +349,26 @@ fn kernel_source_files(directory: &Path, files: &mut Vec<PathBuf>) {
         let path = entry.expect("read kernel source directory entry").path();
         if path.is_dir() {
             kernel_source_files(&path, files);
-        } else {
+        // f3ceabdf added binary GPU fixtures beside Rust source. The tally
+        // seam is Rust code; recurse into nested modules and inspect .rs files.
+        } else if path.extension().is_some_and(|extension| extension == "rs") {
             files.push(path);
         }
     }
+}
+
+#[test]
+fn source_walk_includes_nested_rust_but_not_binary_assets() {
+    let root = std::env::temp_dir().join(format!("exit-tally-sources-{}", std::process::id()));
+    let nested = root.join("nested");
+    fs::create_dir_all(&nested).unwrap();
+    let rust = nested.join("transition.rs");
+    fs::write(&rust, b"self.state = ProcessState::Terminated(0);").unwrap();
+    fs::write(nested.join("colour.bgra"), [0xff, 0xfe]).unwrap();
+    let mut files = Vec::new();
+    kernel_source_files(&root, &mut files);
+    fs::remove_dir_all(&root).unwrap();
+    assert_eq!(files, vec![rust]);
 }
 
 #[test]

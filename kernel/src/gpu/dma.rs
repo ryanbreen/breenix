@@ -180,7 +180,7 @@ impl Drop for FrameRun {
 #[cfg(target_arch = "x86_64")]
 const CPU_BUFFER_SLOT_BYTES: usize = 128 * 1024 * 1024;
 #[cfg(target_arch = "x86_64")]
-static CPU_MAPPINGS: spin::Mutex<()> = spin::Mutex::new(());
+static CPU_MAPPINGS: crate::irq_safe_mutex::IrqSafeMutex<()> = crate::irq_safe_mutex::IrqSafeMutex::new(());
 #[cfg(target_arch = "x86_64")]
 static CPU_BUFFER_SLOTS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 #[cfg(target_arch = "x86_64")]
@@ -202,7 +202,7 @@ const CPU_REUSE_MIN: usize = 1 << 20;
 #[cfg(target_arch = "x86_64")]
 const CPU_REUSE_BYTES: usize = 2 << 20;
 #[cfg(target_arch = "x86_64")]
-static CPU_BUFFER_CACHE: spin::Mutex<Option<CpuStorage>> = spin::Mutex::new(None);
+static CPU_BUFFER_CACHE: crate::irq_safe_mutex::IrqSafeMutex<Option<CpuStorage>> = crate::irq_safe_mutex::IrqSafeMutex::new(None);
 
 #[cfg(target_arch = "x86_64")]
 pub(crate) struct CpuBox { storage: Option<CpuStorage> }

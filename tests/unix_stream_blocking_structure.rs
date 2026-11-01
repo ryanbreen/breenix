@@ -1,4 +1,11 @@
 //! Bounded source ratchets for Unix direction, mode, and wait publication.
+//!
+//! #2629 audit: main 9e1ff0b3 added the terminal revocation predicate to the
+//! Console/Tty read route inspected by this module's imported census tests.
+//! Unix descriptor-mode forwarding, bounded send space, deadline-only blocking
+//! EAGAIN and receiver-drain wakeups remain in the inspected code. The shared
+//! callback traversal repair is 2253e6a4; the two inherited failures needed no
+//! Unix production change. Keep the imported tests and the Unix mutations.
 #[path = "blocking_fd_eagain_structure.rs"]
 mod census;
 use census::{compact, function, lex, match_arms, read};

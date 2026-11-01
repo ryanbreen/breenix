@@ -328,7 +328,7 @@
         },
         {
           "id": "producer",
-          "title": "A named production GPU-suite boot reports 170 manifest-ordered unprobed-capability admission refusals without skips and reports its own time"
+          "title": "A named production GPU-suite boot reports 170 manifest-ordered real results after executable capability probes, without skips, with its own time"
         }
       ]
     },
