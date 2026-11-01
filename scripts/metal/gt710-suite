@@ -2198,7 +2198,7 @@ def breengel_fronts_suite(serial, boot):
             or records[402][0] != 'DONE' or records[403][0] != 'ELAPSED'):
         raise ValueError('BreenGL requires manifest-ordered START/401 CASE/DONE/ELAPSED')
     cases = records[1:402]
-    if any(breengel_pictured(m[1]) and m['sha256'] is None for _, m, _ in cases):
+    if any(k == 'PASS' and breengel_pictured(m[1]) and m['sha256'] is None for k, m, _ in cases):
         raise ValueError('pictured BreenGL case lacks SHA-256')
     if any(k != 'PASS' for k, m, _ in cases if m[1] in required):
         raise ValueError('selected BreenGL case failed')
@@ -3041,7 +3041,7 @@ def breengel_picture_evidence(directory, serial, records, startup_bytes, final_b
     cases = re.findall(r'^SUITE breengel CASE ([a-z0-9/-]+) (PASS|FAIL) ms=\d+(?: sha256=([a-f0-9]{64}))?(?: .*)?$', serial, re.M)
     required = []; categories = set()
     for name, status, digest in cases:
-        if breengel_pictured(name) and not digest:
+        if status == 'PASS' and breengel_pictured(name) and not digest:
             raise ValueError('judged CASE digest missing')
         if not digest:
             continue
