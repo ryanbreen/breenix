@@ -4568,6 +4568,9 @@ const INIT_GROUP_REFUSAL_CONSULTATIONS: &[(&str, &str, usize)] = &[
 const DESIGNATED_INIT_READS: &[(&str, &str, usize)] = &[
     ("kernel/src/main_aarch64.rs", "#[cfg(target_arch=aarch64)] fn launch_init_from_elf", 1),
     ("kernel/src/syscall/clone.rs", "fn refuses_init_group_clone", 1),
+    // #2629 repairs a395d3ec's literal-PID shutdown authority. Pin the one
+    // designation read used for both caller authorization and survivor checks.
+    ("kernel/src/syscall/reboot.rs", "fn sys_reboot", 1),
     ("kernel/src/syscall/signal.rs", "fn send_signal_to_all_processes", 1),
     ("kernel/src/task/process_task.rs", "impl ProcessScheduler::fn handle_thread_exit", 1),
     ("kernel/src/tracing/providers/teardown.rs", "#[cfg(feature=boot_tests)] fn init_designation_oracle_test", 10),
@@ -5044,27 +5047,50 @@ fn validate_blocked_state_publication_family(
 /// type counts as ThreadState only when that field's written type is
 /// `ThreadState`, not because the field is named `state`.
 fn known_non_thread_state_field(source: &str, mask: &[bool], offset: usize) -> bool {
-    let Some(dot) = previous_code(source, mask, offset) else { return false; };
-    if preceding_identifier(source, mask, dot).as_deref() != Some("self") {
-        return false;
+    // 916dee1a added self.report.identity.state, a u32 GPU register snapshot.
+    // Resolve a field chain from self through written local struct types.
+    // Unknown receivers, fields and types remain in the opaque-store census.
+    let mut fields = vec!["state".to_owned()];
+    let mut cursor = offset;
+    loop {
+        let Some(dot) = previous_code(source, mask, cursor) else { return false; };
+        if source.as_bytes()[dot] != b'.' { return false; }
+        let Some(receiver) = preceding_identifier(source, mask, dot) else { return false; };
+        if receiver == "self" { break; }
+        cursor = match previous_code(source, mask, dot) {
+            Some(end) => end + 1 - receiver.len(),
+            None => return false,
+        };
+        fields.push(receiver);
     }
     let spans = item_spans(source, mask);
     let Some((_, _, implementation)) = spans.iter()
         .filter(|(open, close, name)| *open < offset && offset < *close && name.starts_with("impl "))
         .min_by_key(|(open, close, _)| close - open) else { return false; };
     let Some(name) = implementation.strip_prefix("impl ") else { return false; };
-    let Some((_, fields)) = struct_item_header_and_body(source, name) else { return false; };
-    let fields_mask = code_mask(fields);
-    for field in identifier_offsets(fields, &fields_mask, "state") {
-        let Some(colon) = next_code(fields, &fields_mask, field + 5) else { continue; };
-        if fields.as_bytes()[colon] != b':' { continue; }
-        let Some(start) = next_code(fields, &fields_mask, colon + 1) else { continue; };
-        let end = fields[start..].find([',', '}']).map_or(fields.len(), |n| start + n);
-        let ty = normalized_code(&fields[start..end]);
-        return !thread_state_spellings(source, mask).iter().any(|spelling|
-            ty == *spelling || ty.ends_with(&format!("::{spelling}")));
+    let mut ty = name.to_owned();
+    for field_name in fields.iter().rev() {
+        let Some((_, body)) = struct_item_header_and_body(source, &ty) else { return false; };
+        let body_mask = code_mask(body);
+        let mut field_type = None;
+        for field in identifier_offsets(body, &body_mask, field_name) {
+            let Some(colon) = next_code(body, &body_mask, field + field_name.len()) else { continue; };
+            if body.as_bytes()[colon] != b':' { continue; }
+            let Some(start) = next_code(body, &body_mask, colon + 1) else { continue; };
+            let end = body[start..].find([',', '}']).map_or(body.len(), |n| start + n);
+            field_type = Some(normalized_code(&body[start..end]));
+            break;
+        }
+        let Some(field_type) = field_type else { return false; };
+        ty = field_type;
     }
-    false
+    if thread_state_spellings(source, mask).iter().any(|spelling|
+        ty == *spelling || ty.ends_with(&format!("::{spelling}"))) {
+        return false;
+    }
+    matches!(ty.as_str(), "bool" | "u8" | "u16" | "u32" | "u64" | "usize" |
+        "i8" | "i16" | "i32" | "i64" | "isize")
+        || struct_item_header_and_body(source, &ty).is_some()
 }
 
 fn opaque_thread_state_store_offsets(source: &str, mask: &[bool]) -> Vec<usize> {

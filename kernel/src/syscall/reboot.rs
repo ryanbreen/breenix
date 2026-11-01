@@ -12,13 +12,23 @@ pub fn sys_reboot(magic: u64, magic2: u64, command: u64) -> SyscallResult {
     }
     // The service supervisor owns shutdown ordering; root's CLI asks it over
     // the credential-checked control socket rather than bypassing it.
-    if !matches!(crate::syscall::handlers::sys_getpid(), SyscallResult::Ok(1)) {
-        return SyscallResult::Err(super::errno::EPERM as u64);
-    }
+    let caller = match crate::syscall::handlers::sys_getpid() {
+        SyscallResult::Ok(pid) => crate::process::ProcessId::new(pid),
+        SyscallResult::Err(errno) => return SyscallResult::Err(errno),
+    };
     {
         let manager = crate::process::manager();
-        if manager.as_ref().is_none_or(|m| m.all_pids().into_iter().any(|pid|
-            pid.as_u64() != 1 && m.get_process(pid).is_some_and(|p| !p.is_terminated()))) {
+        let Some(manager) = manager.as_ref() else {
+            return SyscallResult::Err(super::errno::EPERM as u64);
+        };
+        let Some(init) = manager.designated_init() else {
+            return SyscallResult::Err(super::errno::EPERM as u64);
+        };
+        if caller != init {
+            return SyscallResult::Err(super::errno::EPERM as u64);
+        }
+        if manager.all_pids().into_iter().any(|pid|
+            pid != init && manager.get_process(pid).is_some_and(|p| !p.is_terminated())) {
             return SyscallResult::Err(super::errno::EBUSY as u64);
         }
     }
