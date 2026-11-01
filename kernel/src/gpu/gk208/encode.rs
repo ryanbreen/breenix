@@ -1395,11 +1395,17 @@ fn quads(
             }
         }
     }
+    // The fixed A197 quad state fits 256 words and eight address relocations.
+    // Reserve its two buffers once, rather than grow them at method boundaries.
+    let mut words = Vec::new();
+    words.try_reserve_exact(256).map_err(|_| NO_MEMORY)?;
+    let mut relocations = Vec::new();
+    relocations.try_reserve_exact(8).map_err(|_| NO_MEMORY)?;
     let mut c = Chunk {
         command: 0,
         target: t.id,
-        words: Vec::new(),
-        relocations: Vec::new(),
+        words,
+        relocations,
         source: source.or(data).map(|s| s.id),
         copy: None,
     };
