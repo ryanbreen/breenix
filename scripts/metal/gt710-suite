@@ -2141,6 +2141,42 @@ def resources_identity(boot, suite, sha=None):
 STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json', 'isolation': 'gt710-step-8-5.json', 'presentation': 'gt710-step-8-6.json', 'performance': 'gt710-step-8-7.json'}
 
 
+# pictured! tables in suite_breengel/{raster,widgets,window_cases/*.rs}.
+# Keep this inventory separate from the optional wire hash: removing the field
+# must not turn a declared picture into an ordinary CASE. The host deployment
+# carries this scorer and the manifest, without needing the Rust source tree.
+BREENGEL_PICTURE_CATEGORIES = frozenset((
+    'raster', 'text', 'font-parser', 'widgets', 'text-entry', 'icons',
+    'windows', 'isolation', 'events', 'scanout',
+))
+BREENGEL_PICTURE_CASES = frozenset((
+    # show.rs: pictured! stage-layout, direct judged(), and scaled_stage.
+    'panel/stage-layout', 'panel/tile-stamps', 'panel/tile-thumbnail',
+    'panel/spotlight-picture', 'panel/spotlight-timing', 'panel/milestone-ribbon',
+    'panel/finale', 'panel/deterministic', 'panel/stage-hidpi',
+    # window_cases/panel.rs: pictured! tables.
+    'panel/handoff', 'panel/between-cases', 'panel/cursor-restore',
+    'panel/cursor-trail-detected', 'panel/kernel-screens',
+    # images.rs: picture_case/handoff_images; libimg/tests/checks.rs:
+    # decoded/decoded_named and encoder record_image calls.
+    'bmp/decode-fixtures', 'bmp/orientation', 'bmp/padding', 'bmp/roundtrip',
+    'bmp/truncated', 'png-decode/gray-depths', 'png-decode/gray-alpha',
+    'png-decode/rgb', 'png-decode/rgba', 'png-decode/palette-depths',
+    'png-decode/trns-gray', 'png-decode/trns-rgb', 'png-decode/trns-palette',
+    'png-decode/rounding-16bit', 'png-decode/filters', 'png-decode/interlace',
+    'png-decode/interlace-small', 'png-decode/multi-idat', 'png-decode/chunk-order',
+    'png-decode/ancillary-ignored', 'png-decode/independent-fixtures',
+    'png-decode/blit', 'png-decode/from-disk',
+    'png-encode/decodes', 'png-encode/stable', 'png-encode/sizes',
+))
+
+
+def breengel_pictured(name):
+    return (name.split('/')[0] in BREENGEL_PICTURE_CATEGORIES
+            or (name.startswith('composition/') and name != 'composition/fbinfo-geometry')
+            or name in BREENGEL_PICTURE_CASES)
+
+
 
 def breengel_fronts_suite(serial, boot):
     """Score the ordered BreenGL capture against the step 9.1 selection."""
@@ -2159,8 +2195,8 @@ def breengel_fronts_suite(serial, boot):
         raise ValueError('incomplete or fatal BreenGL capture')
     shapes = {
         'START': r'SUITE breengel START cases=(\d+)',
-        'PASS': r'SUITE breengel CASE ([a-z0-9/-]+) PASS ms=(\d+)(?: sha256=[0-9a-f]{64})?',
-        'FAIL': r'SUITE breengel CASE ([a-z0-9/-]+) FAIL ms=(\d+)(?: sha256=[0-9a-f]{64})? msg=(\S.*)',
+        'PASS': r'SUITE breengel CASE ([a-z0-9/-]+) PASS ms=(\d+)(?: sha256=(?P<sha256>[0-9a-f]{64}))?',
+        'FAIL': r'SUITE breengel CASE ([a-z0-9/-]+) FAIL ms=(\d+)(?: sha256=(?P<sha256>[0-9a-f]{64}))? msg=(\S.*)',
         'DONE': r'SUITE breengel DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)',
         'ELAPSED': r'SUITE breengel ELAPSED ms=(\d+)',
         'MEMORY': r'SUITE breengel MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+',
@@ -2186,8 +2222,7 @@ def breengel_fronts_suite(serial, boot):
             or records[402][0] != 'DONE' or records[403][0] != 'ELAPSED'):
         raise ValueError('BreenGL requires manifest-ordered START/401 CASE/DONE/ELAPSED')
     cases = records[1:402]
-    if any(m[1] == 'panel/stage-layout' and k == 'PASS' and ' sha256=' not in line
-           for k, m, line in cases):
+    if any(breengel_pictured(m[1]) and m['sha256'] is None for _, m, _ in cases):
         raise ValueError('pictured BreenGL case lacks SHA-256')
     if any(k != 'PASS' for k, m, _ in cases if m[1] in required):
         raise ValueError('selected BreenGL case failed')
