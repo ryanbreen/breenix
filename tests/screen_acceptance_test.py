@@ -13,6 +13,20 @@ class ScreenAcceptance(unittest.TestCase):
     def setUp(self):
         self.api = runpy.run_path(str(ROOT / 'scripts/screen-proof-acceptance.py'))
 
+    def test_cross_target_pictures_and_unobservable_are_distinct(self):
+        digest = 'a' * 64
+        native = (f'SUITE gpu SCREEN profile/example end sha256={digest} mode=2x1 binding=2x1\n'
+                  'SUITE gpu SCREEN readback/lost end unobservable reason=target-invalidated errno=5 eio_reason=1 failed_submission=1\n')
+        arm = native.replace(' unobservable reason=target-invalidated errno=5 eio_reason=1 failed_submission=1',
+                             f' sha256={digest} mode=2x1 binding=2x1')
+        pictures, declarations = self.api['screen_inventory']('gpu', native)
+        self.assertEqual(len(pictures), 1)
+        self.assertEqual(len(declarations), 1)
+        self.assertNotIn(('readback/lost', 'end'), pictures)
+        self.assertEqual(self.api['compare_pictures'](pictures, self.api['screen_inventory']('gpu', arm)[0]), 1)
+        with self.assertRaisesRegex(ValueError, 'digest'):
+            self.api['compare_pictures'](pictures, self.api['screen_inventory']('gpu', arm.replace(digest, 'b' * 64, 1))[0])
+
     def test_native_pair_cannot_prove_tandem_acceptance(self):
         failures = self.api['missing_captures']({'console': Path('c'), 'gpu': Path('g')})
         self.assertEqual(failures, ['missing arm-gpu capture', 'missing arm-breengel capture'])
