@@ -923,10 +923,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         }
         ProcEntryType::XhciTrace => text(xhci::generate_xhci_trace()),
         ProcEntryType::XhciCounters => text(xhci::generate_xhci_counters()),
-        #[cfg(target_arch = "aarch64")]
         ProcEntryType::XhciPointers => text(crate::drivers::xhci::describe_pointers()),
-        #[cfg(not(target_arch = "aarch64"))]
-        ProcEntryType::XhciPointers => text(String::from("")),
         ProcEntryType::Ext2 => generate_ext2().map(String::into_bytes),
         ProcEntryType::Filesystems => crate::fs::ext2::filesystem_states().map(String::into_bytes).map_err(|_| -5),
         ProcEntryType::Frames => generate_frames().map(String::into_bytes),
