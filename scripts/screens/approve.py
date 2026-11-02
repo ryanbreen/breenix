@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Import Vigil operator decisions or derive native rows from a stopped run.
+"""Import Vigil operator or delegated agent decisions or derive native rows from a stopped run.
 
 See README.md for the approval export and screen-crc.json evidence formats.
 PNG verification uses Pillow; no guest code or display access is involved.
@@ -25,6 +25,13 @@ NAME = r'[a-z0-9]+(?:-[a-z0-9]+)*'
 MODE = r'[1-9][0-9]*x[1-9][0-9]*'
 IDENTITY = {'suite', 'case', 'checkpoint'}
 PICTURE = IDENTITY | {'mode', 'sha256'}
+DELEGATION = ('can you have an agent do most of these approvals and validations? '
+              'most of these seem like they would be super easy for you to verify without my help.')
+
+
+def agent_evidence(row):
+    require(nonempty(row.get('evidence')) and row.get('delegation') == DELEGATION,
+            'agent requires nonempty evidence and the G29 delegation sentence')
 
 
 def require(ok, message):
@@ -97,11 +104,17 @@ def indexed(rows, check):
 
 def approval_export(doc):
     fields(doc, {'candidates', 'by', 'entries'})
-    require(matches(HEX64, doc['candidates']) and doc['by'] == 'operator',
-            'approval must name candidates and be by operator')
+    require(matches(HEX64, doc['candidates']) and doc['by'] in ('operator', 'agent'),
+            'approval must name candidates and be by operator or agent')
 
     def decision(row):
-        fields(row, PICTURE | {'verdict', 'decided_at'}, {'reason'})
+        required = PICTURE | {'verdict', 'decided_at'}
+        if doc['by'] == 'agent':
+            required |= {'evidence', 'delegation'}
+        fields(row, required, {'reason'})
+        if doc['by'] == 'agent':
+            agent_evidence(row)
+            require(row['verdict'] == 'approve', 'agent may only approve')
         key = picture(row)
         require(row['verdict'] in ('approve', 'reject'), 'invalid verdict')
         require('reason' not in row or type(row['reason']) is str, 'invalid reason')
@@ -172,8 +185,13 @@ def validate_table(table, path, pending=None):
         key = picture(row)
         require(nonempty(row['intent']), 'invalid intent')
         a = row['approval']
-        fields(a, {'by', 'file', 'candidates', 'capture_run', 'capture_commit'})
-        require(a['by'] == 'operator' and matches(HEX64, a['candidates']) and
+        require(type(a) is dict, 'expected approval object')
+        required = {'by', 'file', 'candidates', 'capture_run', 'capture_commit'}
+        if a.get('by') == 'agent':
+            required |= {'evidence', 'delegation'}
+            agent_evidence(a)
+        fields(a, required)
+        require(a['by'] in ('operator', 'agent') and matches(HEX64, a['candidates']) and
                 nonempty(a['capture_run']) and matches(HEX40, a['capture_commit']), 'invalid approval metadata')
         require(matches(r'approvals/[a-zA-Z0-9][a-zA-Z0-9._-]*\.json', a['file']), 'invalid approval path')
         evidence_path = path.parent / a['file']
@@ -182,6 +200,14 @@ def validate_table(table, path, pending=None):
         evidence = pending[a['file']] if pending and a['file'] in pending else read_json(evidence_path)
         require(type(evidence) is dict and evidence.get('candidates') == a['candidates'] and
                 type(evidence.get('entries')) is list, 'approval candidates mismatch')
+        if a['by'] == 'agent':
+            require(evidence.get('by') == 'agent', 'agent attribution mismatch')
+            approved = approval_export(evidence).get(key)
+            require(approved is not None and all(approved[k] == row[k] for k in PICTURE) and
+                    all(approved[k] == a[k] for k in ('evidence', 'delegation')),
+                    'agent verification evidence mismatch')
+        else:
+            require(evidence.get('by', 'operator') == 'operator', 'operator attribution mismatch')
         require(any(type(item) is dict and all(item.get(k) == row[k] for k in
                     (*IDENTITY, 'sha256')) and item.get('verdict') == 'approve'
                     for item in evidence['entries']), 'digest not approved')
@@ -212,8 +238,10 @@ def import_decisions(table, path, manifest, approval):
             continue
         row = rows[key]
         entry = {k: row[k] for k in PICTURE | {'intent'}}
-        entry['approval'] = dict(by='operator', file=filename, candidates=candidate_id,
+        entry['approval'] = dict(by=doc['by'], file=filename, candidates=candidate_id,
                                  capture_run=row['boot_id'], capture_commit=row['commit'])
+        if doc['by'] == 'agent':
+            entry['approval'].update({k: decision[k] for k in ('evidence', 'delegation')})
         previous = entries.get(key)
         if previous and previous['sha256'] == row['sha256'] and previous['mode'] == row['mode'] and 'native' in previous:
             entry['native'] = previous['native']

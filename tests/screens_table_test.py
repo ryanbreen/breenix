@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the shared screen table and its operator approval evidence."""
+"""Validate the shared screen table and its operator or delegated agent approval evidence."""
 import json
 import re
 import tempfile
@@ -14,6 +14,8 @@ HEX8 = re.compile(r'[0-9a-f]{8}\Z')
 NAME = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*\Z')
 CASE = re.compile(r'[a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*\Z')
 MODE = re.compile(r'[1-9][0-9]*x[1-9][0-9]*\Z')
+DELEGATION = ('can you have an agent do most of these approvals and validations? '
+              'most of these seem like they would be super easy for you to verify without my help.')
 
 
 def require(condition, message):
@@ -65,8 +67,12 @@ def validate(table_path):
         require(matches(MODE, row['mode']) and matches(HEX64, row['sha256']) and
                 nonempty(row['intent']), 'invalid picture fields')
         approval = row['approval']
-        fields(approval, {'by', 'file', 'candidates', 'capture_run', 'capture_commit'})
-        require(approval['by'] == 'operator', 'approval is not by operator')
+        require(type(approval) is dict, 'expected approval object')
+        required = {'by', 'file', 'candidates', 'capture_run', 'capture_commit'}
+        if approval.get('by') == 'agent':
+            required |= {'evidence', 'delegation'}
+        fields(approval, required)
+        require(approval['by'] in ('operator', 'agent'), 'invalid approval author')
         require(matches(HEX64, approval['candidates']) and nonempty(approval['capture_run']) and
                 matches(HEX40, approval['capture_commit']), 'invalid approval metadata')
         filename = approval['file']
@@ -78,6 +84,20 @@ def validate(table_path):
         evidence = read_json(path)
         require(type(evidence) is dict and evidence.get('candidates') == approval['candidates'] and
                 type(evidence.get('entries')) is list, 'approval candidates mismatch or missing entries')
+        if approval['by'] == 'agent':
+            require(nonempty(approval['evidence']) and approval['delegation'] == DELEGATION,
+                    'agent requires evidence and G29 delegation')
+            require(evidence.get('by') == 'agent', 'agent attribution mismatch')
+            for decision in evidence['entries']:
+                require(type(decision) is dict and decision.get('verdict') == 'approve' and
+                        nonempty(decision.get('evidence')) and decision.get('delegation') == DELEGATION,
+                        'agent decision must approve with evidence and delegation')
+            require(any(all(item.get(k) == row[k] for k in
+                        ('suite', 'case', 'checkpoint', 'mode', 'sha256')) and
+                        all(item.get(k) == approval[k] for k in ('evidence', 'delegation'))
+                        for item in evidence['entries']), 'agent evidence mismatch')
+        else:
+            require(evidence.get('by', 'operator') == 'operator', 'operator attribution mismatch')
         require(any(type(item) is dict and all(item.get(k) == row[k] for k in
                     ('suite', 'case', 'checkpoint', 'sha256')) and item.get('verdict') == 'approve'
                     for item in evidence['entries']), 'digest not approved')

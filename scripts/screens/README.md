@@ -40,6 +40,45 @@ The example below is a schema illustration, not operator approval evidence.
 }
 ```
 
+Under the G29 amendment (2026-11-02), a decision file may instead use
+`"by": "agent"`. Its entries require `"verdict": "approve"`, a nonblank `evidence`
+string describing the checks and findings, and `delegation` containing the exact
+operator quote in [the approval contract](../../docs/suites/frames/approvals/README.md).
+These fields are copied into the table's approval metadata and checked against
+the retained decision. The operator format above is unchanged.
+
+## Mechanical Expect report
+
+```sh
+python3 scripts/screens/verify_expect.py /path/to/candidates --output /path/to/report.json
+```
+
+The argument may also name `manifest.json`. The verifier checks the candidate
+identity and PNG digests, then reports a result for each row. It does not write
+approvals or change expectations. Exit status is 0 for mechanically passing rows,
+1 if a row fails, or 2 for unresolved claims without a failure. The JSON retains
+checked claims and measurements, failed claims, unresolved claims, crop bounds,
+scale and divisor, the Expect documentation commit, candidate identity, and hashes
+of the manifest and verifier source. A failed claim takes precedence over
+unresolved prose in the row verdict.
+
+Intent crops use the centred layout in `libs/libbreenix/src/suite_intent.rs`,
+checking the 16 px checkerboard, 2 px white border and uniform integer enlargement
+blocks. Source dimensions come from the surface described in Expect; pixels
+establish compatibility with that layout, not an independent record of the
+original source dimensions. End frames and mode-sized pictures are checked as
+captured. Decimation leaves unsampled source pixels unresolved.
+
+Checks measure named hexadecimal colours and their shares, unambiguous uniform
+fills and exclusive palettes, literal points, half-open rectangles, and rectangle
+sizes stated before or after an origin. Explicitly described later overlays
+exclude hidden pixels from the earlier rectangle's check. Coordinates are
+zero-based from the picture's top left. Text origins, curves, procedural patterns,
+spatial descriptions without literal coordinates, temporal claims and other
+unsupported prose remain `unparseable` with the original claim and a reason.
+Only a complete supported sentence can receive `pass`; the report alone is
+insufficient for the G29 independent-review requirement.
+
 The manifest identifier is recomputed from canonical JSON of
 `{"version":1,"rows":...}`, projecting each row without the optional documentation
 fields `expect` and `expectCommit`, using sorted keys, compact separators and
