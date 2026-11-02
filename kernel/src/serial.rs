@@ -276,6 +276,7 @@ pub fn start_transmitter() {
 /// the queue itself, a byte at a time with interrupts masked for each, and
 /// waits for room with interrupts as the caller has them.
 pub fn drain_output() {
+    crate::serial_writer::drain_terminal_all();
     let mut done = false;
     while !done {
         done = crate::arch_without_interrupts(|| {
@@ -307,6 +308,7 @@ pub fn set_output_stopped(stopped: bool) {
 
 /// Discard terminal output, retaining kernel records in the shared COM1 queue.
 pub fn flush_output() {
+    crate::serial_writer::discard_terminal();
     crate::arch_without_interrupts(|| {
         let mut serial = SERIAL1.lock();
         if let Some(last) = serial.queue.flush_terminal() {
@@ -685,6 +687,7 @@ pub fn drain_log_while(go_on: impl Fn() -> bool) {
 pub fn flush_log() {
     use core::sync::atomic::Ordering;
     const ATTEMPTS: u32 = 1 << 20;
+    crate::serial_writer::drain_terminal_emergency();
     crate::arch_without_interrupts(|| {
         flush_com1(ATTEMPTS);
         if log_on_console() {
@@ -1094,11 +1097,25 @@ impl Drop for Line {
     }
 }
 
+/// Pending terminal fragments on a fatal path: direct, bounded port polling,
+/// independent of the COM1 queue and any lock held by the stopped thread.
+pub(crate) fn write_terminal_emergency(bytes: &[u8]) {
+    use x86_64::instructions::port::Port;
+    for &byte in bytes {
+        for _ in 0..(1 << 20) {
+            if com1_status() & LSR_TRANSMITTER_EMPTY != 0 { break; }
+            core::hint::spin_loop();
+        }
+        unsafe { Port::<u8>::new(COM1_PORT).write(byte) };
+    }
+}
+
 /// Emergency print for panics - uses direct port I/O without locking
 /// WARNING: May corrupt output if racing with normal serial output
 #[allow(dead_code)]
 pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
     use core::fmt::Write;
+    crate::serial_writer::drain_terminal_emergency();
 
     // Use a simple global flag to reduce corruption
     static EMERGENCY_IN_USE: core::sync::atomic::AtomicBool =
@@ -1261,6 +1278,7 @@ fn enqueue_log_unaccounted(args: fmt::Arguments) -> u64 {
 /// Append the lines posted on paths that may not log (`log_notice`) to the
 /// kernel log, oldest first, with interrupts masked until every one taken is in.
 pub fn write_notices() {
+    crate::serial_writer::drain_terminal();
     if !crate::log_notice::pending() {
         return;
     }

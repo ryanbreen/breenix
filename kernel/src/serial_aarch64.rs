@@ -393,10 +393,16 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
         .map_err(|_| ())
 }
 
+/// Fatal-path fragments bypass the terminal queue and deferred notices.
+pub(crate) fn write_terminal_emergency(bytes: &[u8]) {
+    crate::serial_line::Line::for_writer(Writer::Tty).bytes(bytes);
+}
+
 /// Print from a panic or fatal path: `try_print`'s record, counted as unattributed
 /// output (`output_accounting`).
 pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
     use core::fmt::Write;
+    crate::serial_writer::drain_terminal_emergency();
     crate::serial_line::TeeLine::unattributed()
         .write_fmt(args)
         .map_err(|_| ())
@@ -421,11 +427,13 @@ pub fn write_str_bounded(s: &str) {
 /// (TCSETSW, TCSETSF). Kernel records are written before they return; queued
 /// terminal output is written out here (`serial_line`).
 pub fn drain_output() {
+    crate::serial_writer::drain_terminal_all();
     crate::serial_line::drain_output();
 }
 
 /// Discard queued terminal output.
 pub fn flush_output() {
+    crate::serial_writer::discard_terminal();
     crate::serial_line::flush_output();
 }
 
@@ -436,6 +444,7 @@ pub fn set_output_stopped(stopped: bool) {
 
 /// Write out the lines posted on paths that may not log (`log_notice`).
 pub fn write_notices() {
+    crate::serial_writer::drain_terminal();
     crate::serial_line::write_notices();
 }
 
