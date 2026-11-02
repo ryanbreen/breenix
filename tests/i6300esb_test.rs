@@ -19,6 +19,7 @@ enum Write {
 
 struct Device {
     config: u16,
+    qemu_config_readback: bool,
     lock: u8,
     preload: [u32; 2],
     unlock: u8,
@@ -32,6 +33,7 @@ impl Device {
     fn new(expired: bool) -> Self {
         Self {
             config: 0,
+            qemu_config_readback: false,
             lock: 0,
             preload: [0xfffff; 2],
             unlock: 0,
@@ -65,7 +67,8 @@ struct FakeBus(Rc<RefCell<Device>>);
 impl Bus for FakeBus {
     fn config_read16(&mut self, offset: u16) -> u16 {
         assert_eq!(offset, 0x60);
-        self.0.borrow().config
+        let d = self.0.borrow();
+        if d.qemu_config_readback { d.config & !2 } else { d.config }
     }
     fn config_write16(&mut self, offset: u16, value: u16) {
         assert_eq!(offset, 0x60);
@@ -209,4 +212,19 @@ fn configuration_readback_detects_reset_and_repairs_settings() {
     let reloads = d.borrow().reloads;
     assert!(watchdog_round::feed(&mut watchdog, || Ok(())).is_err());
     assert_eq!(d.borrow().reloads, reloads);
+}
+
+#[test]
+fn qemu_interrupt_type_readback_is_decoded_after_exact_configuration_write() {
+    let (mut watchdog, d) = device(false);
+    d.borrow_mut().qemu_config_readback = true;
+    assert_eq!(watchdog_round::feed(&mut watchdog, || Ok(())), Ok(true));
+    assert_eq!(d.borrow().config, 3, "program the disabled-interrupt encoding");
+    assert_eq!(d.borrow().lock, 3);
+    assert_eq!(d.borrow().reloads, 1);
+    assert_eq!(watchdog_round::feed(&mut watchdog, || Ok(())), Ok(false));
+    assert_eq!(d.borrow().reloads, 2);
+    d.borrow_mut().config = 0x24;
+    assert_eq!(watchdog_round::feed(&mut watchdog, || Ok(())), Ok(true));
+    assert_eq!(d.borrow().config, 3, "repair reset-disabled and fast-clock state");
 }
