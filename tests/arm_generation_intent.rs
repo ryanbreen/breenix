@@ -16,3 +16,13 @@ fn only_persistent_format_two_selects_a_root_generation() {
     assert_eq!(select(None), Ok(None));
     assert_eq!(select(Some(b"BREENIX-BOOT 2\ntarget persistent\nuserland bad/id\n")), Err("invalid userland generation"));
 }
+
+#[path = "../kernel/src/boot/arm_install.rs"]
+mod arm_install;
+
+#[test]
+fn install_argv_requires_userland_and_preserves_previous() {
+    assert_eq!(arm_install::argv(None, None), Err("install intent names no userland generation"));
+    assert_eq!(arm_install::argv(Some("install-42"), None), Ok(vec![b"/sbin/persistent-install".as_slice(), b"install-42".as_slice()]));
+    assert_eq!(arm_install::argv(Some("install-42"), Some("install-41")), Ok(vec![b"/sbin/persistent-install".as_slice(), b"install-42".as_slice(), b"install-41".as_slice()]));
+}
