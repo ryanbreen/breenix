@@ -28,8 +28,74 @@ fn intent_commands_fit_the_existing_gpu_work_budget() {
             }
             let l = layout(picture, mode).unwrap();
             let border = l.border.map_or(0, |r| r[2] as u64 * r[3] as u64);
-            assert_eq!(area, mode[0] as u64 * mode[1] as u64 + border
+            let mut light_area = 0;
+            for y in (0..mode[1]).step_by(16) {
+                for x in (0..mode[0]).step_by(16) {
+                    if (x / 16 + y / 16) % 2 == 1 {
+                        light_area += u64::from(16.min(mode[0] - x))
+                            * u64::from(16.min(mode[1] - y));
+                    }
+                }
+            }
+            assert_eq!(area, mode[0] as u64 * mode[1] as u64 + light_area + border
                 + l.picture[2] as u64 * l.picture[3] as u64);
+        }
+    }
+}
+
+#[test]
+fn intent_background_alternates_at_frame_origin_behind_border_and_picture() {
+    const PICTURE: u32 = 0xFF12_3456;
+    for (picture, mode) in [
+        ([17, 9], [1280, 800]),
+        ([1, 1], [1301, 815]),
+        ([2560, 1600], [1280, 800]),
+        ([1280, 800], [1280, 800]),
+        ([17, 9], [2560, 1600]),
+    ] {
+        let mut pixels = vec![0; (mode[0] * mode[1]) as usize];
+        for words in super::intent::streams(picture, mode, 1, 2).unwrap() {
+            stream::validate(&words[..], &IntentResources { picture, mode }).unwrap();
+            let mut at = 0;
+            while at < words.len() {
+                let command = &words[at..at + words[at + 1] as usize];
+                let mut paint = |rect: &[u32], colour| {
+                    for y in rect[1]..rect[3] {
+                        for x in rect[0]..rect[2] {
+                            pixels[(y * mode[0] + x) as usize] = colour;
+                        }
+                    }
+                };
+                match command[0] {
+                    stream::cmd::BEGIN => assert_eq!(&command[2..], &[1, 0]),
+                    stream::cmd::CLEAR => paint(&[0, 0, mode[0], mode[1]], command[2]),
+                    stream::cmd::DRAW => {
+                        assert_eq!(command[2], abi::pipeline::SOLID);
+                        for rect in command[5..].chunks_exact(4) { paint(rect, command[3]); }
+                    }
+                    abi::draw::COMMAND => {
+                        assert_eq!(command[2], abi::pipeline::NEAREST_SCALED);
+                        for instance in command[abi::draw::HEADER..].chunks_exact(abi::draw::INSTANCE) {
+                            paint(&instance[..4], PICTURE);
+                        }
+                    }
+                    other => panic!("unexpected intent command {other}"),
+                }
+                at += command.len();
+            }
+        }
+        let l = layout(picture, mode).unwrap();
+        let contains = |[left, top, width, height]: [u32; 4], x, y|
+            x >= left && x < left + width && y >= top && y < top + height;
+        for y in 0..mode[1] {
+            for x in 0..mode[0] {
+                let expected = if contains(l.picture, x, y) { PICTURE }
+                    else if l.border.is_some_and(|b| contains(b, x, y)) { 0xFFFF_FFFF }
+                    else if (x / 16 + y / 16) % 2 == 0 { 0xFF5A_5A5A }
+                    else { 0xFF7A_7A7A };
+                assert_eq!(pixels[(y * mode[0] + x) as usize], expected,
+                    "picture {picture:?} mode {mode:?} pixel ({x},{y})");
+            }
         }
     }
 }
