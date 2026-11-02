@@ -62,9 +62,14 @@ def main(run, whole_path):
     receipt_line = ''
     expected_receipt = None
     shutdown_action = None
+    watchdog_triggered = False
+    watchdog_reset = False
 
     def on_line(line):
-        nonlocal expected_receipt, shutdown_action
+        nonlocal expected_receipt, shutdown_action, watchdog_triggered
+        if re.fullmatch(r'\[watchdog-fault\] trigger(?: (?:health-hang|feeder-hang))?', line) and not watchdog_triggered:
+            events.write(json.dumps(dict(event='watchdog-trigger', t=time.time())) + '\n')
+            watchdog_triggered = True
         challenge = re.fullmatch(r'\[init\] shutdown nonce=([a-f0-9]{64})', line)
         if challenge and token:
             expected_receipt = hashlib.sha256((token + challenge[1]).encode()).hexdigest()
@@ -84,7 +89,7 @@ def main(run, whole_path):
 
     def start_boot(reserved_stamp=None):
         nonlocal directory, serial, raw, cleaner, timestamps, events, last_stamp, offset, line_open
-        nonlocal receipt_line, expected_receipt, shutdown_action
+        nonlocal receipt_line, expected_receipt, shutdown_action, watchdog_triggered, watchdog_reset
         stamp = reserved_stamp if reserved_stamp is not None else max(int(time.time()), last_stamp + 1)
         while True:
             boot = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ-qemu')
@@ -112,6 +117,8 @@ def main(run, whole_path):
         receipt_line = ''
         expected_receipt = None
         shutdown_action = None
+        watchdog_triggered = False
+        watchdog_reset = False
 
     start_boot()
     def terminate(_signum, _frame):
@@ -190,6 +197,8 @@ def main(run, whole_path):
                             elif 'event' in message:
                                 events.write(json.dumps(message) + '\n')
                                 reason = message.get('data', {}).get('reason')
+                                if message['event'] == 'WATCHDOG':
+                                    watchdog_reset = message.get('data', {}).get('action') == 'reset'
                                 if fault and message['event'] == 'SHUTDOWN' and reason == 'guest-reset':
                                     events.write(json.dumps(dict(event='panic-reset-observed', t=time.time())) + '\n')
                                 if message['event'] == 'SHUTDOWN' and reason == 'guest-shutdown':
@@ -197,15 +206,18 @@ def main(run, whole_path):
                                 if message['event'] == 'RESET':
                                     previous_events = events
                                     requested = shutdown_action == 'reboot' and reason == 'guest-reset'
-                                    if requested:
+                                    if requested or watchdog_reset:
                                         # Reserve the successor identity before closing the ending boot.
                                         stamp = max(int(time.time()), last_stamp + 1)
                                         while (run / 'boots' / datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ-qemu')).exists():
                                             stamp += 1
                                         successor = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ-qemu')
-                                        previous_events.write(json.dumps(dict(event='requested-reset-observed', successor=successor, t=time.time())) + '\n')
+                                        if requested:
+                                            previous_events.write(json.dumps(dict(event='requested-reset-observed', successor=successor, t=time.time())) + '\n')
+                                        if watchdog_reset:
+                                            previous_events.write(json.dumps(dict(event='watchdog-reset-observed', successor=successor, t=time.time())) + '\n')
                                     end_boot()
-                                    start_boot(stamp if requested else None)
+                                    start_boot(stamp if requested or watchdog_reset else None)
                         continue
                     # kqueue can return separate read and write notifications
                     # for one client. Its EOF event may already have closed it.
