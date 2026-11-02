@@ -72,7 +72,17 @@ pub(super) fn streams(source: [u32; 2], mode: [u32; 2], target: u64, texture: u6
     let layout = layout(source, mode)?;
     let mut stream = Vec::new();
     encode::begin(&mut stream, target);
-    encode::clear(&mut stream, 0xFF0C_131F);
+    encode::clear(&mut stream, 0xFF5A_5A5A);
+    let mut light = Vec::new();
+    for y in (0..mode[1]).step_by(16) {
+        for x in (0..mode[0]).step_by(16) {
+            if (x / 16 + y / 16) % 2 == 1 {
+                light.push([x as i32, y as i32,
+                    (x + 16).min(mode[0]) as i32, (y + 16).min(mode[1]) as i32]);
+            }
+        }
+    }
+    encode::draw(&mut stream, abi::pipeline::SOLID, 0xFF7A_7A7A, &light);
     if let Some([x, y, w, h]) = layout.border {
         encode::draw(&mut stream, abi::pipeline::SOLID, 0xFFFF_FFFF,
             &[[x as i32, y as i32, (x + w) as i32, (y + h) as i32]]);
