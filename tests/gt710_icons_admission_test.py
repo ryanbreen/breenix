@@ -37,6 +37,10 @@ mod abi {pub mod backend {pub const SVGA3D_DX:u32=5;pub const GK208:u32=6;}}
 mod dev {pub fn backend()->u32{6}}
 mod limits {pub const IN_FLIGHT:usize=4;}
 mod breengel_abi {pub mod errno {pub const EBUSY:i32=16;}}
+mod arch {
+ pub fn with_interrupts<R>(f:impl FnOnce()->R)->R{f()}
+ // NATIVE_PAUSE
+}
 mod per_cpu {pub fn preempt_count()->u32{1} pub fn preempt_disable(){} pub fn preempt_enable(){}}
 mod syscall {pub fn check_signals_for_wait()->Option<()>{None}}
 mod time {pub fn get_ticks()->u64{crate::now_ns()/5_000_000}}
@@ -141,7 +145,7 @@ fn main(){
  assert_eq!(CORE.with(|c|c.borrow().doorbells),before);
  assert_eq!(SLEEPS.with(Cell::get),0,"native admission handed its receipt to the tick worker");
 }
-'''.replace('// WAIT', wait).replace('// ADMISSION', admission).replace('// CALLER', caller)
+'''.replace('// WAIT', wait).replace('// NATIVE_PAUSE',item((ROOT/'kernel/src/gpu/arch.rs').read_text(),'pub(super) fn poll_pause(')).replace('// ADMISSION', admission).replace('// CALLER', caller)
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
         with tempfile.TemporaryDirectory(prefix='gt710-icons-admission-') as directory:
             folder = Path(directory)

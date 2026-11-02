@@ -2222,8 +2222,8 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
         // Native readback and submit admission own the poll through continuations and the
         // engine receipt. There is no native completion IRQ: handing it to
         // kgpu turns its 250 us poll request into a 5 ms timer dispatch (u8).
-        // The core lock/preemption level is released between polls; signals,
-        // caller deadlines and the unchanged watchdog are checked each time.
+        // Between native polls, allow IRQ delivery and release the syscall's
+        // preemption level. Signals, deadlines and the watchdog are still checked.
         // A stalled/resetting device still hands recovery back to kgpu.
         let direct_poll = polled && now_ns().saturating_sub(start) < SPIN_POLL_NS;
         #[cfg(target_arch = "x86_64")]
@@ -2233,6 +2233,11 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
             if let Some((t, _)) = trace { t.spin(); }
             #[cfg(target_arch = "x86_64")]
             let _pause = submit_trace.map(|t| t.scope(SubmitPhase::AdmissionPause));
+            #[cfg(target_arch = "x86_64")]
+            if fence_driven {
+                arch::poll_pause(SPIN_POLL_PAUSE);
+                continue;
+            }
             for _ in 0..SPIN_POLL_PAUSE {
                 core::hint::spin_loop();
             }

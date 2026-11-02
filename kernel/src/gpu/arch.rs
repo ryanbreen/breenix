@@ -17,6 +17,19 @@ pub(super) fn with_interrupts<R>(f: impl FnOnce() -> R) -> R {
     result
 }
 
+/// Let a native receipt waiter service IRQs and be preempted between core polls.
+/// Called with no core/session lock held. Release only the syscall's single
+/// preemption level; an unheld kernel-thread caller already permits scheduling.
+#[cfg(target_arch = "x86_64")]
+pub(super) fn poll_pause(count: u32) {
+    with_interrupts(|| {
+        let held = crate::per_cpu::preempt_count() == 1;
+        if held { crate::per_cpu::preempt_enable(); }
+        for _ in 0..count { core::hint::spin_loop(); }
+        if held { crate::per_cpu::preempt_disable(); }
+    });
+}
+
 #[cfg(target_arch = "aarch64")]
 pub(super) const MAX_CPUS: usize = crate::arch_impl::aarch64::constants::MAX_CPUS;
 #[cfg(target_arch = "x86_64")]

@@ -66,6 +66,10 @@ mod gk208 {pub mod timing {
  impl Readback {pub fn phase(&self,_:bool){} pub fn poll(&self){} pub fn spin(&self){}
  pub fn blocked(&self,_:u64,_:u64,_:u64,_:u64){}}
 }}
+mod arch {
+ pub fn with_interrupts<R>(f:impl FnOnce()->R)->R{f()}
+ // NATIVE_PAUSE
+}
 mod per_cpu {pub fn preempt_count()->u32{1} pub fn preempt_disable(){} pub fn preempt_enable(){}}
 #[derive(Debug,PartialEq)]enum Stop{Timeout,Interrupted}
 struct Device;impl Device{fn outstanding(&self)->usize{1}}
@@ -111,7 +115,7 @@ fn main(){
  assert_eq!(SLEEPS.with(Cell::get),0,"bootstrap must keep progressing when kgpu is absent");
  assert_eq!(SENT.load(Ordering::Acquire),0);assert_eq!(WAKES.load(Ordering::Acquire),0);
 }
-'''.replace('// DEADLINE',deadline).replace('// WAIT',wait)
+'''.replace('// DEADLINE',deadline).replace('// WAIT',wait).replace('// NATIVE_PAUSE',item((ROOT/'kernel/src/gpu/arch.rs').read_text(),'pub(super) fn poll_pause('))
   priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
   with tempfile.TemporaryDirectory() as tmp:
    p=Path(tmp);(p/'wait.rs').write_text(fixture)
