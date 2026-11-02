@@ -62,10 +62,13 @@ pub fn sys_reboot(magic: u64, magic2: u64, command: u64) -> SyscallResult {
         loop { x86_64::instructions::hlt(); }
     }
     #[cfg(target_arch = "aarch64")]
-    unsafe {
-        // PSCI SYSTEM_RESET / SYSTEM_OFF; the persistent VM path is catch-up work.
-        core::arch::asm!("hvc #0", in("x0") if command == 0x01234567 { 0x84000009u64 } else { 0x84000008u64 },
-                         options(nomem, nostack));
+    {
+        crate::serial::drain_output();
+        if command == 0x01234567 {
+            crate::arch_impl::aarch64::psci::system_reset();
+        } else {
+            crate::arch_impl::aarch64::psci::system_off();
+        }
         crate::hlt_loop();
     }
 }

@@ -779,6 +779,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     serial_println!("  BUILD_ID: {}", env!("BREENIX_BUILD_ID"));
     serial_println!("========================================");
     serial_println!();
+    #[cfg(feature = "server_reboot_fault")]
+    trigger_reboot_panic();
+
     splash::stage(Stage::KernelStarting);
 
     // #596 anti-vacuity: name the inline-save resume-point oracle and whether
@@ -2562,6 +2565,7 @@ fn panic(info: &PanicInfo) -> ! {
     serial_println!("========================================");
     serial_println!("  KERNEL PANIC!");
     serial_println!("========================================");
+    serial_println!("KERNEL PANIC: {}", info.message());
     serial_println!("{}", info);
     serial_println!();
 
@@ -2606,11 +2610,21 @@ fn panic(info: &PanicInfo) -> ! {
     // locks.
     kernel::graphics::boot_screen::show_panic(info);
 
+    // Test profiles retain the panic for inspection; production requests reset.
+    // If firmware returns, keep the terminal WFI fallback below.
+    #[cfg(not(any(feature = "testing", feature = "boot_tests")))]
+    kernel::arch_impl::aarch64::psci::system_reset();
+
     loop {
         unsafe {
             core::arch::asm!("wfi", options(nomem, nostack));
         }
     }
+}
+
+#[cfg(all(target_arch = "aarch64", feature = "server_reboot_fault"))]
+fn trigger_reboot_panic() {
+    panic!("reboot fault test");
 }
 
 // =============================================================================
