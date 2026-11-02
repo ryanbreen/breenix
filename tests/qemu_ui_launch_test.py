@@ -33,6 +33,7 @@ PROBE = r"""
 #include <stdlib.h>
 #include <sys/proc_info.h>
 #include <unistd.h>
+#include <time.h>
 
 // Thread IDs of main, child (created by main) and grandchild (created by child), and the class
 // the utility thread finds itself in. Each thread stores its value and then counts itself ready
@@ -88,6 +89,16 @@ int main(int argc, char **argv) {
             return 0;
         }
     }
+    if (argc == 2 && strcmp(argv[1], "--clock") == 0) {
+        struct timespec monotonic, uptime, realtime;
+        if (clock_gettime(CLOCK_MONOTONIC, &monotonic) != 0 ||
+            clock_gettime(CLOCK_UPTIME_RAW, &uptime) != 0 ||
+            clock_gettime(CLOCK_REALTIME, &realtime) != 0) return 1;
+        printf("%.9f %.9f %.9f %s\n", monotonic.tv_sec + monotonic.tv_nsec / 1e9,
+               uptime.tv_sec + uptime.tv_nsec / 1e9, realtime.tv_sec + realtime.tv_nsec / 1e9,
+               getenv("BREENIX_QEMU_SUSPEND_CLOCK") ? "inherited" : "cleared");
+        return 0;
+    }
     pthread_t thread;
     pthread_attr_t attr, utility;
     const char *inserted = getenv("DYLD_INSERT_LIBRARIES");
@@ -141,6 +152,57 @@ class LauncherTest(unittest.TestCase):
         self.assertEqual(process.returncode, 0)
         values = dict(line.split("=", 1) for line in out.splitlines())
         return process.pid, values
+
+    def test_persistent_clock_stops_for_simulated_host_suspend(self):
+        source = r'''#include <time.h>
+#include <stdio.h>
+static time_t sleep_seconds;
+static time_t awake_seconds;
+static int host_clock(clockid_t clock, struct timespec *value) {
+    value->tv_sec = 1000 + awake_seconds + (clock == CLOCK_UPTIME_RAW ? 0 : sleep_seconds);
+    value->tv_nsec = 0;
+    return 0;
+}
+#define clock_gettime host_clock
+#include "CLOCK_SOURCE"
+#undef clock_gettime
+int main(void) {
+    struct timespec before, asleep, awake, realtime;
+    clock_without_host_sleep(CLOCK_MONOTONIC, &before);
+    sleep_seconds = 180;
+    clock_without_host_sleep(CLOCK_MONOTONIC, &asleep);
+    awake_seconds = 20;
+    clock_without_host_sleep(CLOCK_MONOTONIC, &awake);
+    clock_without_host_sleep(CLOCK_REALTIME, &realtime);
+    printf("%ld %ld %ld\n", asleep.tv_sec - before.tv_sec,
+           awake.tv_sec - asleep.tv_sec, realtime.tv_sec - before.tv_sec);
+}
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory)
+            (path / "clock.c").write_text(source.replace("CLOCK_SOURCE", str(ROOT / "scripts/qemu-ui-threads.c")))
+            subprocess.run(["taskpolicy", "-b", "cc", "-Wall", "-Werror", str(path / "clock.c"),
+                            "-o", str(path / "clock")], check=True)
+            for enabled, expected in (("1", "0 20 200"), ("0", "180 20 200")):
+                result = subprocess.run([str(path / "clock")], check=True, capture_output=True, text=True,
+                                        env={**os.environ, "BREENIX_QEMU_SUSPEND_CLOCK": enabled})
+                self.assertEqual(result.stdout.strip(), expected)
+
+    def test_persistent_clock_excludes_host_sleep_and_keeps_realtime(self):
+        def sample(prefix, enabled):
+            env = {**os.environ, "BREENIX_QEMU_SUSPEND_CLOCK": enabled}
+            result = subprocess.run([*prefix, str(self.probe), "--clock"], env=env,
+                                    capture_output=True, text=True, timeout=30, check=True)
+            monotonic, uptime, realtime, inherited = result.stdout.split()
+            return float(monotonic), float(uptime), float(realtime), inherited
+        direct = sample([], "0")
+        ordinary = sample([self.launcher], "0")
+        persistent = sample([self.launcher], "1")
+        self.assertAlmostEqual(ordinary[0] - ordinary[1], direct[0] - direct[1], delta=0.1)
+        self.assertAlmostEqual(persistent[0], persistent[1], delta=0.1)
+        self.assertAlmostEqual(persistent[2], time.time(), delta=1)
+        self.assertEqual(persistent[3], "cleared")
+        self.assertEqual(ordinary[3], "cleared")
 
     def test_helper_prints_a_built_launcher(self):
         self.assertTrue(self.launcher.endswith("/qemu-ui-launch"), self.launcher)

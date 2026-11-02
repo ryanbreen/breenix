@@ -219,6 +219,8 @@ gpu=()
 if [ "$(uname -s)" = Darwin ]; then
     qemu="${BREENIX_QEMU_GL_BINARY:-$("$ROOT/scripts/build-qemu-gl.sh" --print-path)}"
     defaults write org.breenix.qemu-gl NSAppSleepDisabled -bool YES
+    # The QoS library selects a sleep-excluding clock for this QEMU process.
+    export BREENIX_QEMU_SUSPEND_CLOCK=1
     export ANGLE_DEFAULT_PLATFORM="${ANGLE_DEFAULT_PLATFORM-metal}"
     display=(-display cocoa,gl=es)
     gpu=(-device virtio-gpu-gl-pci)

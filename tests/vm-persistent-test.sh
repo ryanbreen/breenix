@@ -103,6 +103,7 @@ SH
 cat > "$fixture/bin/qemu-system-aarch64" <<'SH'
 #!/bin/sh
 printf '%s\n' "$@" > "$CAPTURE/qemu-args"
+printf '%s\n' "${BREENIX_QEMU_SUSPEND_CLOCK:-}" > "$CAPTURE/qemu-clock"
 SH
 chmod +x "$fixture/scripts/"*.sh "$fixture/bin/qemu-system-aarch64"
 printf '%064d\n' 0 > "$fixture/run/power-token"
@@ -129,6 +130,7 @@ assert 'i6300esb' in args and 'watchdog=reset' in args
 assert args.index('virtio-blk-device,drive=home') < args.index('virtio-blk-device,drive=ext2'), args
 if sys.platform == 'darwin':
     assert 'virtio-gpu-gl-pci' in args and 'cocoa,gl=es' in args, args
+    assert (root / 'qemu-clock').read_text().strip() == '1'
 assert (root / 'run/mode').read_text() == mode + '\n'
 assert (root / 'vigil-args').read_text().splitlines()[:3] == ['start', 'qemu', mode]
 assert not (root / 'run/boot.lock').exists()
