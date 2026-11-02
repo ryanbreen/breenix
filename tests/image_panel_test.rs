@@ -91,3 +91,41 @@ fn readable_tiles_keep_labels_and_exact_enlarged_pixels_separate() {
     } }
     assert_eq!(frame.get_pixel(0,0),Color::rgb(12,19,31));
 }
+
+#[test]
+fn capped_panel_reduces_large_images_and_paginates_dense_cases() {
+    let fixture = |width, height| checks::JudgedImage {
+        label: "fixture".into(),
+        actual: libimg::png::Image { width, height, pixels: Vec::new() },
+        expected: libimg::png::Image { width, height, pixels: Vec::new() },
+    };
+    let dense: Vec<_> = (0..72).map(|_| fixture(32,32)).collect();
+    let plan = plan_panel(&dense);
+    assert!(plan.target < 256);
+    assert_eq!(plan.pages.len(),1);
+    assert!(plan.pages.iter().all(|p| p.width*p.height<=16*1024*1024));
+    for target in [256,192,128,96,64].into_iter().filter(|&t| t>plan.target) {
+        let larger = panel_layout(&dense,target,0);
+        assert!(larger.width*larger.height>16*1024*1024,"largest eligible target");
+    }
+    let crowded: Vec<_> = (0..1000).map(|_| fixture(32,32)).collect();
+    let pages = plan_panel(&crowded);
+    assert_eq!(pages.target,64);
+    assert!(pages.pages.len()>1);
+    assert_eq!(pages.pages.iter().map(|p| p.tiles.len()).sum::<usize>(),1000);
+    assert!(pages.pages.iter().all(|p| p.width*p.height<=16*1024*1024));
+
+    let pixels: Vec<_> = (0..1280*800usize).flat_map(|i| [i as u8,(i/1280) as u8,23,255]).collect();
+    let image = checks::JudgedImage {label:"1280x800".into(),
+        actual:libimg::png::Image {width:1280,height:800,pixels:pixels.clone()},
+        expected:libimg::png::Image {width:1280,height:800,pixels}};
+    TEXT.with_borrow_mut(Vec::clear);
+    handoff_images(vec![image]).unwrap();
+    let frame = FRAME.with_borrow_mut(|f| f.take().unwrap());
+    let text = TEXT.with_borrow_mut(std::mem::take);
+    let label = text.iter().find(|t| t.bytes==b"actual shown at 1/5").expect("reduction labelled");
+    for y in 0..160 { for x in 0..256 {
+        assert_eq!(frame.get_pixel(label.x+1+x,label.y+17+y),
+            Color::rgb(23,(y*5) as u8,(y*5*1280+x*5) as u8));
+    } }
+}
