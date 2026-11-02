@@ -49,6 +49,12 @@ class ReceiptTest(unittest.TestCase):
                             self.fail('reset not captured')
                         time.sleep(.01)
                     successor = (run / 'current').read_text().strip()
+                    first_run = json.loads((directory / 'run.json').read_text())
+                    next_run = json.loads((run / 'boots' / successor / 'run.json').read_text())
+                    self.assertEqual(first_run['runId'], hashlib.sha256(token.encode()).hexdigest())
+                    self.assertRegex(first_run['qemuProcess'], r'^[a-f0-9]{32}$')
+                    self.assertEqual((first_run['runId'], first_run['qemuProcess']),
+                                     (next_run['runId'], next_run['qemuProcess']))
                 else:
                     deadline = time.monotonic() + 5
                     while 'SHUTDOWN' not in (directory / 'events.jsonl').read_text():

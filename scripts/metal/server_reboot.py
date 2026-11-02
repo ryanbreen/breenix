@@ -25,37 +25,20 @@ def verify_root_readback(root, token, output):
 def run(api, args):
     cases = api['REBOOT']
     print('SUITE server START cases=' + str(len(cases)), flush=True)
-    runner = api['runpy'].run_path(str(Path(api['__file__']).with_name('metal-run')))
-    env = runner['host_env']()
-    remote = lambda *cmd, **kw: runner['in_metal'](env, *cmd, capture_output=True, text=True, **kw)
+    machine = api['QemuTarget'](args.run_dir, args.boot) if args.target == 'qemu' else api['MetalTarget'](args.boot)
     def read(boot, name):
-        result = remote('cat', '/var/lib/breenix-metal/boots/' + boot + '/' + name)
-        if result.returncode: raise ValueError('missing boot artifact ' + name)
-        return result.stdout
+        return machine.read(name, boot=boot)
     def save(boot, name, value):
-        result = remote('tee', '/var/lib/breenix-metal/boots/' + boot + '/' + name,
-                        stdin=None, input=json.dumps(value) + '\n')
+        result = machine.select(boot).write(name, value)
         if result.returncode: raise ValueError('cannot save reboot evidence')
     def ended(boot):
-        return remote('test', '-e', '/var/lib/breenix-metal/boots/' + boot + '/ended').returncode == 0
+        return machine.ended(boot)
     def await_end(boot, seconds=120):
         deadline = time.monotonic() + seconds
         while not ended(boot):
             if time.monotonic() >= deadline: raise ValueError('requested shutdown did not end the boot')
             time.sleep(1)
-    def boot_command(*words):
-        result = subprocess.run(['python3', str(Path(api['__file__']).with_name('metal-run')), *words],
-                                capture_output=True, text=True, timeout=15000)
-        if result.returncode: raise ValueError('metal-run refused the next case boot: ' + result.stdout + result.stderr)
-        found = re.search(r'\d{8}T\d{6}Z-metal', result.stdout)
-        if not found: raise ValueError('metal-run returned no boot ID')
-        return found[0]
-    site_result = remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
-                         'import metal_lib; s=metal_lib.load_site(); print(json.dumps({k:s.get(k) for k in '
-                         '("SERVER_SSH_HOST","OPERATOR_USER","OPERATOR_PASSWORD","OPERATOR_SSH_PUBLIC_KEY",'
-                         '"CONSOLE_USER","CONSOLE_PASSWORD")}))')
-    if site_result.returncode: raise ValueError('cannot read private site fields')
-    site = json.loads(site_result.stdout)
+    site = machine.reboot_site()
     if not all(site.values()): raise ValueError('reboot cases need the operator and console site fields')
     identity = next((p.with_suffix('') for p in (Path.home() / '.ssh').glob('*.pub')
                      if p.read_text().split()[:2] == site['OPERATOR_SSH_PUBLIC_KEY'].split()[:2]
@@ -65,24 +48,27 @@ def run(api, args):
     records = dict(boot=current, commit=args.sha, milestone='server/reboot', cases=[], cleanup=True,
                    consoleGaps=[], transitions=[])
     with tempfile.TemporaryDirectory(prefix='server-reboot-') as scratch:
-        probe = api['Probe'](site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity, Path(scratch))
+        probe = api['Probe'](site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity, Path(scratch),
+                             **(dict(port=int(site['SERVER_SSH_PORT'])) if args.target == 'qemu' else {}))
         def connect():
+            nonlocal machine
+            machine = machine.select(current)
             deadline = time.monotonic() + 600
             while True:
                 boot = json.loads(read(current, 'run.json'))
                 if ended(current): raise ValueError('boot ended before the reboot case could connect')
-                capture = remote('cat', '/var/lib/breenix-metal/boots/' + current + '/serial.txt')
-                if capture.returncode == 0 and 'bsshd: listening on 0.0.0.0:22' in capture.stdout: break
+                capture = machine.read('serial.txt', required=False)
+                if capture is not None and 'bsshd: listening on 0.0.0.0:22' in capture: break
                 if time.monotonic() >= deadline: raise ValueError('persistent boot never reached SSH')
                 time.sleep(2)
             if (boot.get('bootedCommit'), boot.get('toolsCommit'), boot.get('mode'), boot.get('evidenceEligible')) != (args.sha, args.sha, 'persistent', True):
                 raise ValueError('reboot evidence needs the exact kernel and tools commits')
-            lease = remote('cat', '/var/lib/breenix-metal/lease.json')
-            if lease.returncode or json.loads(lease.stdout).get('id') != current:
+            if not machine.holds_lease():
                 raise ValueError('case boot has no machine lease')
-            console = api['Console'](lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), current,
-                                    '/var/lib/breenix-metal/boots/' + current,
-                                    site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
+            if args.target == 'qemu':
+                probe.port = int(machine.reboot_site()['SERVER_SSH_PORT'])
+                probe.common[probe.common.index('-p') + 1] = str(probe.port)
+            console = machine.console(site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
             probe.run_case('host-key', console.service_log('bsshd'))
             return console
         console = connect()
@@ -140,14 +126,11 @@ def run(api, args):
                     console.run('svc reload')
                     records['refusalRecovery'] = dict(serial=read(current, 'serial.txt')[offset:], before=before, after=after)
                 elif name == 'panic-reset':
-                    help_text = subprocess.run(['python3', str(Path(api['__file__']).with_name('metal-run')), 'boot', '--help'], capture_output=True, text=True, check=True).stdout
-                    if 'panic-reboot' not in help_text:
-                        raise ValueError('boot loop has no panic-reboot fault-test mode')
-                    # The fault boot is deliberately fatal, and cannot supply ordinary milestone evidence.
+                    # The fault boot cannot supply ordinary milestone evidence.
                     console.logout()
-                    subprocess.run(['python3', str(Path(api['__file__']).with_name('metal-run')), 'stop', current], check=True)
+                    machine.stop_for_fault(site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
                     await_end(current)
-                    fault = boot_command('boot', '--branch', args.branch or 'main', '--sha', args.sha, '--inject', 'panic-reboot')
+                    fault = machine.start_fault(args.branch, args.sha)
                     await_end(fault, 1200)
                     serial = read(fault, 'serial.txt')
                     events = [json.loads(line) for line in read(fault, 'events.jsonl').splitlines()]
@@ -155,11 +138,11 @@ def run(api, args):
                         raise ValueError('panic did not print and reset autonomously')
                     fault_run = json.loads(read(fault, 'run.json'))
                     # S22: nonpersistent boots retain their validated image identity in delivery.json.
-                    fault_build = json.loads(read(fault, 'delivery.json'))['build']
-                    if fault_build.get('commit') != args.sha or fault_run.get('toolsCommit') != args.sha or fault_run.get('kind') != 'fault-test':
+                    fault_build = machine.select(fault).fault_build()
+                    if fault_build.get('commit') != args.sha or fault_run.get('toolsCommit') != args.sha or fault_run.get('kind') != 'fault-test' or (args.target == 'qemu' and (fault_run.get('bootedCommit') != args.sha or not fault_run.get('evidenceEligible'))):
                         raise ValueError('panic fault boot has the wrong tools or boot kind')
                     records['panicBoot'] = dict(id=fault, run=fault_run, build=fault_build, serial=serial, events=events)
-                    current = boot_command('boot', '--persistent')
+                    current = machine.start_persistent()
                     console = connect()
                 else:
                     transition_offset = len(read(current, 'serial.txt'))
@@ -205,9 +188,9 @@ def run(api, args):
                         if name == 'reboot':
                             deadline = time.monotonic() + 650
                             while True:
-                                events = [json.loads(line) for line in read(current, 'events.jsonl').splitlines()]
-                                if any(e['event'] == 'requested-reboot-ready' and e.get('commit') == args.sha for e in events): break
-                                if ended(current) or time.monotonic() >= deadline:
+                                successor = machine.reboot_successor(args.sha)
+                                if successor is not None: break
+                                if time.monotonic() >= deadline:
                                     raise ValueError('requested reboot did not return autonomously to SSH')
                                 time.sleep(2)
                         else:
@@ -225,13 +208,17 @@ def run(api, args):
                     if not all('[shutdown] ' + m + ' clean read-only' in old for m in ('home', 'root')):
                         raise ValueError('shutdown did not flush and remount both filesystems read-only')
                     if name != 'reboot':
-                        current = boot_command('boot', '--persistent')
+                        current = machine.start_persistent()
+                    else:
+                        current = successor
                     console = connect()
                     fresh = read(current, 'serial.txt')
                     if name == 'reboot':
                         # Only the autonomous return's serial can supply clean readback.
-                        fresh = fresh[fresh.rfind('UEFI bootloader started'):]
-                        old = old[:old.rfind('UEFI bootloader started')]
+                        marker = machine.boot_start_marker
+                        if marker not in fresh: raise ValueError('successor has no boot-start marker')
+                        fresh = fresh[fresh.rfind(marker):]
+                        if args.target == 'metal': old = old[:old.rfind(marker)]
                     stops = [old.find('[shutdown] stopping ' + service) for service in ('reboot-child', 'reboot-base')]
                     if not (0 <= stops[0] < stops[1]):
                         raise ValueError('supervisor did not stop the dependent before its provider')
@@ -251,7 +238,7 @@ def run(api, args):
             except Exception as error:
                 result, reason = 'FAIL', type(error).__name__ + ': ' + str(error)
                 if ended(current):
-                    current = boot_command('boot', '--persistent')
+                    current = machine.start_persistent()
                     console = connect()
                 if name == 'refusal-recovery':
                     console.run('chmod 400 /etc/breenix/power-token')
@@ -286,5 +273,84 @@ def run(api, args):
         print(verdict, flush=True)
     passed = sum(case['result'] == 'PASS' for case in records['cases'])
     print(f'SUITE server DONE passed={passed} failed={len(cases)-passed} skipped=0 total={len(cases)}', flush=True)
+    if args.target == 'qemu':
+        file_vigil(api, args, machine, records, verdict, passed)
     print('Final reboot evidence boot: ' + current, flush=True)
     return int(passed != len(cases) or not verdict.startswith('PASS:'))
+
+
+def score_qemu(records, boot, sha, fatal_patterns):
+    """Judge ARM64 QEMU transitions independently of metal's session model."""
+    recovery = records.get('refusalRecovery', {})
+    if ('[shutdown] kernel refused transition: -13' not in recovery.get('serial', '') or
+            '[shutdown] refused; resuming services' not in recovery.get('serial', '')):
+        raise ValueError('no kernel refusal and service recovery evidence')
+    transitions = records.get('transitions', [])
+    if [t['action'] for t in transitions] != ['reboot', 'poweroff']:
+        raise ValueError('reboot needs both completed shutdown transitions')
+    if not boot.get('runId') or not boot.get('qemuProcess'):
+        raise ValueError('QEMU evidence has no run or process identity')
+    for transition in transitions:
+        before, after = transition['beforeRun'], transition['afterRun']
+        for field, run in (('before', before), ('after', after)):
+            if (run.get('id') != transition[field] or run.get('target') != 'qemu' or
+                    run.get('runId') != boot['runId'] or not run.get('qemuProcess') or
+                    (run.get('bootedCommit'), run.get('toolsCommit'), run.get('mode'), run.get('evidenceEligible')) !=
+                    (sha, sha, 'persistent', True)):
+                raise ValueError('transition needs this kernel and tools in this QEMU run')
+        events = transition['events']
+        action = transition['action']
+        receipts = [e for e in events if e.get('event') == 'requested-shutdown']
+        if len(receipts) != 1 or receipts[0].get('action') != action:
+            raise ValueError('missing authenticated shutdown receipt')
+        if 'bsshd: listening on 0.0.0.0:22' not in transition['afterSerial']:
+            raise ValueError('successor did not reach SSH at this commit')
+        if action == 'reboot':
+            resets = [e for e in events if e.get('event') == 'requested-reset-observed']
+            raw = [e for e in events if e.get('event') == 'RESET']
+            if (transition['before'] == transition['after'] or len(resets) != 1 or
+                    resets[0].get('successor') != transition['after'] or
+                    before['qemuProcess'] != after['qemuProcess'] or len(raw) != 1 or
+                    raw[0].get('data', {}).get('reason') != 'guest-reset' or
+                    events.index(receipts[0]) > events.index(raw[0]) or
+                    events.index(raw[0]) > events.index(resets[0])):
+                raise ValueError('reboot has no authenticated successor in the same QEMU process')
+        elif (transition['exit'] != '0' or before['qemuProcess'] == after['qemuProcess'] or
+              not any(e.get('event') == 'SHUTDOWN' and e.get('data', {}).get('reason') == 'guest-shutdown'
+                      for e in events[events.index(receipts[0]) + 1:])):
+            raise ValueError('poweroff did not end ordinarily before relaunch')
+        for mount in ('home', 'root'):
+            if ('[shutdown] ' + mount + ' clean read-only' not in transition['beforeSerial'] or
+                    '[storage] ' + mount + ' prior state=clean' not in transition['afterSerial']):
+                raise ValueError('transition has no durable clean filesystem evidence')
+        if any(re.search(pattern, transition[field]) for pattern in fatal_patterns + [r'KERNEL PANIC:']
+               for field in ('beforeSerial', 'afterSerial')):
+            raise ValueError('fatal output in a clean shutdown transition')
+    panic = records.get('panicBoot', {})
+    fault = panic.get('run', {})
+    if (panic.get('build', {}).get('commit') != sha or fault.get('bootedCommit') != sha or
+            fault.get('toolsCommit') != sha or fault.get('kind') != 'fault-test' or
+            fault.get('target') != 'qemu' or fault.get('evidenceEligible') is not True or
+            fault.get('runId') != boot['runId'] or not fault.get('qemuProcess') or
+            panic.get('id') != fault.get('id') or
+            'KERNEL PANIC: reboot fault test' not in panic.get('serial', '') or
+            not any(e.get('event') == 'panic-reset-observed' for e in panic.get('events', [])) or
+            not any(e.get('event') == 'SHUTDOWN' and e.get('data', {}).get('reason') == 'guest-reset'
+                    for e in panic.get('events', []))):
+        raise ValueError('panic reset has no matching fault-test boot evidence')
+
+
+def file_vigil(api, args, machine, records, verdict, passed):
+    lines = ['SUITE server START cases=' + str(len(api['REBOOT']))]
+    lines += [f"SUITE server CASE {case['id']} {case['result']} ms={case['ms']} msg={case['reason']}"
+              for case in records['cases']]
+    lines += [f"SUITE server DONE passed={passed} failed={len(api['REBOOT'])-passed} skipped=0 total={len(api['REBOOT'])}"]
+    suite_file = machine.directory / 'reboot-suite.txt'
+    suite_file.write_text('\n'.join(lines) + '\n')
+    status = int(passed != len(api['REBOOT']) or not verdict.startswith('PASS:'))
+    subprocess.run([str(Path(api['__file__']).resolve().parent.parent / 'vigil-record.sh'),
+                    'record', 'qemu', 'persistent', 'server', str(suite_file),
+                    str(machine.directory / 'serial.txt'), (args.run_dir / 'qemu-profile').read_text().strip(),
+                    time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-qemu-' + uuid.uuid4().hex,
+                    args.sha, (machine.directory / 'started').read_text().strip(), str(time.time()), str(status)],
+                   check=True, env=dict(os.environ, BREENIX_VIGIL_ARCH='aarch64'))
