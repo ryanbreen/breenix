@@ -246,6 +246,16 @@ fn native_arm64_launches_use_wrapper(script: &str) -> bool {
 }
 
 #[test]
+fn variable_launches_must_use_the_accelerator_wrapper() {
+    let wrapped = "qemu=qemu-system-aarch64\npython3 \"$ROOT/scripts/qemu-arm64.py\" \"$qemu\" -M virt \\\n";
+    assert!(native_arm64_launches_use_wrapper(wrapped));
+    let unwrapped = wrapped.replace("python3 \"$ROOT/scripts/qemu-arm64.py\" ", "");
+    assert!(!native_arm64_launches_use_wrapper(&unwrapped));
+    let mixed = format!("{wrapped}\n\"$qemu\" -M virt\n");
+    assert!(!native_arm64_launches_use_wrapper(&mixed));
+}
+
+#[test]
 fn native_arm64_launchers_use_the_accelerator_wrapper() {
     assert!(!native_arm64_launches_use_wrapper("\"$QEMU_UI\" qemu-system-aarch64 \\\n"));
     assert!(native_arm64_launches_use_wrapper("python3 \"$ROOT/scripts/qemu-arm64.py\" qemu-system-aarch64 \\\n"));
