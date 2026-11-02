@@ -32,6 +32,63 @@ def connect(path, process):
 
 
 class SerialPumpTest(unittest.TestCase):
+    def test_watchdog_streams(self):
+        scenarios = (
+            ('reset', b'[watchdog-fault] trigger\r\n',
+             b'{"event":"WATCHDOG","data":{"action":"reset"}}\r\n', True, 1),
+            ('duplicate-trigger', b'[watchdog-fault] trigger\r\n[watchdog-fault] trigger\r\n', b'', False, 1),
+            ('action-none', b'', b'{"event":"WATCHDOG","data":{"action":"none"}}\r\n', False, 0),
+            ('host-reset', b'', b'', False, 0),
+        )
+        for name, serial, watchdog, observed, triggers in scenarios:
+            with self.subTest(name=name), tempfile.TemporaryDirectory(prefix='pump-', dir='/tmp') as tmp:
+                run = Path(tmp)
+                monitor = socket.socket(socket.AF_UNIX)
+                monitor.bind(str(run / 'events.sock'))
+                monitor.listen()
+                process = subprocess.Popen(['python3', str(PUMP), str(run), str(run / 'whole.txt')])
+                try:
+                    guest = connect(run / 'serial.sock', process)
+                    monitor.settimeout(5)
+                    qmp, _ = monitor.accept()
+                    qmp.sendall(b'{"QMP":{"version":{},"capabilities":[]}}\r\n')
+                    self.assertIn(b'qmp_capabilities', qmp.recv(1024))
+                    first = (run / 'current').read_text().strip()
+                    directory = run / 'boots' / first
+                    before = time.time()
+                    guest.sendall(serial)
+                    deadline = time.monotonic() + 5
+                    while (directory / 'serial.raw').stat().st_size < len(serial):
+                        self.assertLess(time.monotonic(), deadline)
+                        time.sleep(.01)
+                    qmp.sendall(watchdog + b'{"event":"RESET","data":{"guest":false,"reason":"host-qmp-system-reset"}}\r\n')
+                    while (run / 'current').read_text().strip() == first:
+                        self.assertLess(time.monotonic(), deadline)
+                        time.sleep(.01)
+                    second = (run / 'current').read_text().strip()
+                    qmp.close()
+                    guest.shutdown(socket.SHUT_WR)
+                    self.assertEqual(process.wait(timeout=5), 0)
+                    guest.close()
+                    events = [json.loads(line) for line in (directory / 'events.jsonl').read_text().splitlines()]
+                    trigger_events = [e for e in events if e.get('event') == 'watchdog-trigger']
+                    resets = [e for e in events if e.get('event') == 'watchdog-reset-observed']
+                    self.assertEqual(len(trigger_events), triggers)
+                    for event in trigger_events:
+                        self.assertGreaterEqual(event['t'], before)
+                        self.assertLessEqual(event['t'], time.time())
+                    self.assertEqual(len(resets), int(observed))
+                    if observed:
+                        self.assertEqual(resets[0]['successor'], second)
+                    self.assertEqual(len(list((run / 'boots').iterdir())), 2)
+                    records = [json.loads((run / 'boots' / boot / 'run.json').read_text()) for boot in (first, second)]
+                    self.assertEqual(records[0]['qemuProcess'], records[1]['qemuProcess'])
+                finally:
+                    monitor.close()
+                    if process.poll() is None:
+                        process.terminate()
+                        process.wait(timeout=5)
+
     def test_retained_shell_echo_and_kill_through_target(self):
         # Shell-only bytes from the failed 20261101T210030Z capture at 214e7a3b.
         # No login, site values or kernel records are retained in the fixture.
