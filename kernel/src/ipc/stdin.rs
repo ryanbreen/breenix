@@ -175,7 +175,7 @@ pub(crate) fn receive_serial_from_irq(next: impl FnMut() -> Option<u8>) {
 
 /// Admit UART bytes to the console, independently of the visible VT. A busy
 /// discipline leaves the oldest byte queued; releasing room rearms UART RX.
-/// Called by the console worker after the receive interrupt queues input.
+/// Called by the terminal worker and opportunistically by the renderer.
 #[cfg(target_arch = "aarch64")]
 pub(crate) fn drain_serial_input() {
     let Some(tty) = crate::tty::console() else { return };

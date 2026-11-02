@@ -192,6 +192,10 @@ fn foreground_signal_thread() {
 
     let tid = scheduler::current_thread_id().expect("foreground signal worker identity");
     loop {
+        // UART admission must survive absent displays and blocked GPU presents.
+        // This task runs independently of the renderer, including in desktop mode.
+        #[cfg(target_arch = "aarch64")]
+        crate::ipc::stdin::drain_serial_input();
         for slot in &FG_SIGNAL_QUEUE {
             let entry = slot.swap(0, Ordering::AcqRel);
             if entry != 0 {
