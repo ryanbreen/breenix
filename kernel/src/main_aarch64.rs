@@ -459,6 +459,12 @@ fn launch_init_from_elf(
         }
     };
 
+    // Init's filesystem setup is complete. The watchdog workers may now
+    // contend on the root mount without parking the boot continuation
+    // inside process construction, before it has a schedulable init thread.
+    #[cfg(not(any(feature = "testing", feature = "boot_tests")))]
+    kernel::drivers::i6300esb::start();
+
     // Re-enable preemption now that the boot sequence is complete.
     // It was disabled in kernel_main after per-CPU init to prevent the scheduler
     // from context-switching the boot CPU away from its boot stack (which would
@@ -1771,9 +1777,6 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     if online_cpus == reported_cpus {
         splash::stage(Stage::AllCpusOnline);
     }
-
-    #[cfg(not(any(feature = "testing", feature = "boot_tests")))]
-    kernel::drivers::i6300esb::start();
 
     kernel::task::softirqd::init_online_daemons();
     kernel::drivers::ahci::start_completion_pollers();
