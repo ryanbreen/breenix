@@ -137,8 +137,8 @@ def accept(commit, captures):
                 raise ValueError('companion captures must have distinct boot IDs')
             seen_boots.add(boot['id'])
             row.update(id=boot['id'], commit=commit, toolsCommit=boot.get('toolsCommit'))
-            events = [json.loads(l) for l in (path / 'events.jsonl').read_text().splitlines()]
             if platform == 'metal':
+                events = [json.loads(l) for l in (path / 'events.jsonl').read_text().splitlines()]
                 if (not any(e.get('event') == 'power-off' and e.get('off') is True for e in events)
                         or not events or events[-1].get('event') != 'closed'
                         or any(e.get('event') in ('fatal', 'console-gap') for e in events)):
