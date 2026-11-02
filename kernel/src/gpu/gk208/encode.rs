@@ -658,7 +658,7 @@ impl Chunk {
         self.words.try_reserve(tail.len() + 3).map_err(|_| NO_MEMORY)?;
         self.relocations.push(self.words.len() + 1);
         // Append to retained packet storage directly. A temporary Vec here
-        // allocates and frees once per address in every native draw.
+        // would allocate and free storage for the address packet.
         self.words.push(0x20000000 | (((tail.len() + 2) as u32) << 16) | (method / 4));
         self.words.extend_from_slice(&[(offset as u64 >> 32) as u32, offset as u32]);
         self.words.extend_from_slice(tail);

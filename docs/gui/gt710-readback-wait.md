@@ -88,9 +88,9 @@ Hardware results are retained in the E25 ledger under the diagnostic boot ID.
 ## Fence-driven native readback (25.1-u9)
 
 The retained u8 split found 2,389 case readbacks: 6,040.968 ms waiting,
-13.257 ms copying and 270.060 ms residual. All 748 readbacks above 5 ms
+13.257 ms copying and 270.060 ms residual. 748 of 748 readbacks above 5 ms
 entered blocking and crossed a delivered tick. Their return phases were spread,
-so the capture does not measure GPU-complete-to-wake latency or prove a single
+so the capture does not measure GPU-complete-to-wake latency or establish a single
 phase lock. It does expose the queued-continuation handoff described above:
 `Core::poll` refills native slots, but a remaining backlog makes the caller
 immediately hand the queue to the tick-driven worker.
@@ -100,11 +100,13 @@ Each turn reaps real engine receipts and refills the bounded native queue, then
 releases the core lock before the next turn. A queued continuation no longer
 forces a worker handoff, and a readback receipt beyond the 1 ms general spin
 window is still consumed directly. Signals, caller deadlines and the existing
-watchdog run on every turn. A stalled device or a wait with no outstanding
+watchdog run in the wait loop. A stalled device or a wait with no outstanding
 native work still blocks for worker recovery. Console restoration and ordinary
 fence waits retain the existing blocking policy; the suite's wait-CPU bound is
-unchanged. The policy is independent of whether timing recording is enabled.
-All new arguments and policy expressions compile only on x86; ARM execution
+unchanged. The policy is independent of whether timing recording is enabled. Native
+poll pauses now enable IRQs and release the syscall preemption hold outside
+the core lock, restoring both before the next poll.
+The native policy arguments and expressions compile only on x86; ARM execution
 retains its original path.
 
 Reference: MIT `nouveau_fence_wait_busy` / `nouveau_fence_wait` in

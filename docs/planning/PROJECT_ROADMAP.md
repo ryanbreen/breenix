@@ -16,6 +16,12 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Native GT 710 BreenGL window fronts for E20.1 are tracked in
+[PR #2627](https://github.com/ryanbreen/breenix/pull/2627), including the
+coordinator-approved intermediate memory accounting and native wait review fix.
+Acceptance and landing records live in that PR; nontrivial review follow-ups
+are tracked in [#2650](https://github.com/ryanbreen/breenix/issues/2650).
+
 Native GK208B milestone 8 step 8.5 adds isolation, warm-up and MMU recovery
 through the shared GPU core in [PR #2587](https://github.com/ryanbreen/breenix/pull/2587).
 Its acceptance record reports console 88/88 and GPU 140/140 selected cases at
