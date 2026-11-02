@@ -196,6 +196,7 @@ fn foreground_signal_thread() {
         // This task runs independently of the renderer, including in desktop mode.
         #[cfg(target_arch = "aarch64")]
         crate::ipc::stdin::drain_serial_input();
+        if let Some(tty) = console() { tty.drain_echo(); }
         for slot in &FG_SIGNAL_QUEUE {
             let entry = slot.swap(0, Ordering::AcqRel);
             if entry != 0 {
@@ -899,6 +900,9 @@ impl TtyDevice {
     }
 
     fn drain_echo(&self) {
+        // IRQ input only enqueues console echo. The terminal worker handles
+        // serial backpressure and older fragments from thread context.
+        if self.is_console() && crate::per_cpu::in_interrupt() { return; }
         if self.transmission_stopped() { return; }
         let Some(mut pending) = self.pending_echo.try_lock() else { return; };
         let mut drain = || {

@@ -31,6 +31,7 @@ impl<T> Mutex<T> {
     pub fn lock(&self) -> std::sync::MutexGuard<'_, T> { self.0.lock().unwrap() }
     pub fn try_lock(&self) -> Option<std::sync::MutexGuard<'_, T>> { self.0.try_lock().ok() }
 }
+static IN_IRQ: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 static CLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 mod time {
     pub fn get_monotonic_time() -> u64 { super::CLOCK.load(std::sync::atomic::Ordering::Relaxed) }
@@ -39,6 +40,7 @@ mod per_cpu {
     pub fn preempt_disable() {}
     pub fn preempt_enable() {}
     pub fn is_initialized() -> bool { true }
+    pub fn in_interrupt() -> bool { super::IN_IRQ.load(std::sync::atomic::Ordering::Relaxed) }
     pub fn current_thread_id_lock_free() -> Option<u64> { Some(super::TID.load(std::sync::atomic::Ordering::Relaxed)) }
 }
 mod task { pub mod scheduler {
@@ -145,6 +147,16 @@ fn exercise(write_unprocessed: fn(&[u8])) {
     Tty.to_echo_sinks(b"new");
     Tty.drain_echo();
     assert_eq!(*WIRE.lock(), b"echo contention\noldnew", "new echo overtook deferred echo");
+    serial::write_bytes_atomic(serial::Writer::Tty, b"\n");
+    WIRE.lock().clear();
+    write_unprocessed(b"irq prompt> ");
+    IN_IRQ.store(true, std::sync::atomic::Ordering::Relaxed);
+    Tty.to_echo_sinks(b"a");
+    Tty.to_echo_sinks(b"b");
+    assert!(WIRE.lock().is_empty(), "IRQ echo drained UART output");
+    IN_IRQ.store(false, std::sync::atomic::Ordering::Relaxed);
+    Tty.drain_echo();
+    assert_eq!(*WIRE.lock(), b"irq prompt> ab", "thread drain lost IRQ echo order");
     serial::write_bytes_atomic(serial::Writer::Tty, b"\n");
     // Crossing both former chunk boundaries must still be one port handoff.
     WIRE.lock().clear();
