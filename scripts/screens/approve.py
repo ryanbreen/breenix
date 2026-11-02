@@ -109,7 +109,8 @@ def approval_export(doc):
         stamp = row['decided_at']
         require(matches(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})', stamp),
                 'decision time must be timezone-qualified ISO 8601')
-        require(datetime.fromisoformat(stamp).utcoffset() is not None, 'missing decision timezone')
+        require(datetime.fromisoformat(stamp.replace('Z', '+00:00')).utcoffset() is not None,
+                'missing decision timezone')
         return key
     return indexed(doc['entries'], decision)
 

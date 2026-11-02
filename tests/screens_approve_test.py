@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -27,6 +28,20 @@ def canonical_id(rows):
 
 
 class ApproveTest(unittest.TestCase):
+    def test_utc_decision_works_with_python39_timestamp_parser(self):
+        parser = approve.datetime
+
+        class Python39Datetime:
+            @staticmethod
+            def fromisoformat(stamp):
+                if stamp.endswith('Z'):
+                    raise ValueError('Invalid isoformat string')
+                return parser.fromisoformat(stamp)
+
+        self.decisions['entries'][0]['decided_at'] = '2026-11-02T13:00:00Z'
+        with patch.object(approve, 'datetime', Python39Datetime):
+            approve.approval_export(self.decisions)
+
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
