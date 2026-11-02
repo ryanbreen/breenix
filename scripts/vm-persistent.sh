@@ -7,16 +7,17 @@
 # vm-persistent.sh qemu boot --run-dir DIR --mode console|desktop [--kernel FILE] [--slot current|next]
 # vm-persistent.sh qemu promote|rollback --run-dir DIR
 # vm-persistent.sh qemu stage-candidate --run-dir DIR [--inject upgrade-no-ssh|upgrade-service-down]
+# vm-persistent.sh qemu install --run-dir DIR
 # vm-persistent.sh qemu fault-boot --run-dir DIR [--inject feeder-hang|health-hang]
 # vm-persistent.sh qemu reboot --run-dir DIR
 # vm-persistent.sh qemu stop --run-dir DIR
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 umask 077
-usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--kernel FILE] [--slot current|next] | --inject feeder-hang|health-hang|upgrade-no-ssh|upgrade-service-down]' >&2; exit 2; }
+usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--kernel FILE] [--slot current|next] | --inject feeder-hang|health-hang|upgrade-no-ssh|upgrade-service-down]' >&2; exit 2; }
 [ "$#" -ge 2 ] && [ "$1" = qemu ] || usage
 op=$2; shift 2
-case "$op" in build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate) ;; *) usage ;; esac
+case "$op" in build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install) ;; *) usage ;; esac
 run= system= account= kernel= mode= fault= inject= slot=
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] && [ -n "$2" ] || usage
@@ -45,7 +46,7 @@ case "$op" in
                 case "$inject" in ""|feeder-hang|health-hang) ;; *) usage ;; esac; mode=console ;;
     stage-candidate) [ -z "$fault$system$account$kernel$mode$slot" ] || usage
                      case "$inject" in ""|upgrade-no-ssh|upgrade-service-down) ;; *) usage ;; esac ;;
-    reboot|stop|promote|rollback) [ -z "$inject$fault$system$account$kernel$mode$slot" ] || usage ;;
+    reboot|stop|promote|rollback|install) [ -z "$inject$fault$system$account$kernel$mode$slot" ] || usage ;;
 esac
 # debugfs command files and QEMU comma-separated options cannot safely encode
 # these characters; reject them instead of interpreting caller-supplied syntax.
@@ -196,6 +197,7 @@ PY
     rm -rf -- "$run"
     exit 0
 fi
+if [ "$op" = install ]; then mode=console; fi
 if [ "$op" = fault-boot ]; then kernel="$run/fault-kernel"; fi
 if [ -z "$kernel" ]; then
     kernel="$run/kernel"
@@ -211,6 +213,8 @@ if [ -z "${BREENIX_VM_PERSISTENT_SUPERVISED:-}" ]; then
         args=()
         [ -z "$inject" ] || args=(--inject "$inject")
         host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu fault-boot --run-dir "$run" "${args[@]}"
+    elif [ "$op" = install ]; then
+        host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu install --run-dir "$intent_run"
     else
         host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu boot --run-dir "$intent_run" --kernel "$kernel" --mode "$mode" --slot "$slot"
     fi
@@ -218,7 +222,12 @@ fi
 source "$ROOT/scripts/host-slots.sh"
 mkdir "$run/boot.lock" || { echo 'run is already booting' >&2; exit 1; }
 pump=
+monitor=
 cleanup() {
+    if [ -n "$monitor" ]; then
+        kill -TERM "$monitor" 2>/dev/null || true
+        wait "$monitor" 2>/dev/null || true
+    fi
     if [ -n "$pump" ]; then
         kill -TERM "$pump" 2>/dev/null || true
         wait "$pump" 2>/dev/null || true
@@ -234,6 +243,10 @@ if [ "$op" = boot ] && { [ -e "$run/slots.json" ] || [ -L "$run/slots.json" ]; }
 else
     [ -f "$kernel" ] || { echo 'missing kernel' >&2; exit 1; }
     python3 "$ROOT/scripts/vm-artifacts.py" "$verify" "$ROOT" "$run" "$kernel"
+fi
+if [ "$op" = install ]; then
+    python3 "$ROOT/scripts/vm_install.py" prepare "$run"
+    slot_args=(-fw_cfg "name=opt/breenix/intent,file=$intent_run/boot-intent")
 fi
 fault_kind=
 if [ "$op" = fault-boot ]; then
@@ -305,8 +318,23 @@ stop_child() {
 trap stop_child TERM HUP INT
 disks=(-device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/home.img"
        -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/system.img")
+if [ "$op" = install ]; then
+    disks=(-device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/system.img"
+           -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/install-root.img")
+fi
 action=(-device i6300esb -action watchdog=reset)
 if [ "$op" = fault-boot ] && [ "$fault_kind" = panic-reboot ]; then disks=(); action+=(-action reboot=shutdown); fi
+if [ "$op" = install ]; then
+    rm -f "$run/install-monitor-ready" "$run/install-qemu-pid"
+    python3 "$ROOT/scripts/vm_install.py" monitor "$run" &
+    monitor=$!
+    for _ in {1..100}; do
+        [ -f "$run/install-monitor-ready" ] && break
+        kill -0 "$monitor" 2>/dev/null || { echo 'install monitor exited' >&2; "$ROOT/scripts/vigil-record.sh" finish "$vigil" 1; exit 1; }
+        sleep .05
+    done
+    [ -f "$run/install-monitor-ready" ] || { echo 'install monitor did not start' >&2; "$ROOT/scripts/vigil-record.sh" finish "$vigil" 1; exit 1; }
+fi
 set +e
 python3 "$ROOT/scripts/qemu-arm64.py" "$qemu" -rtc base=utc -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$kernel" -fw_cfg "name=opt/breenix/mode,string=$mode" "${slot_args[@]}" "${display[@]}" -qmp "unix:$run/qmp.sock,server=on,wait=off" -qmp "unix:$run/events.sock,server=on,wait=off" \
@@ -316,6 +344,13 @@ python3 "$ROOT/scripts/qemu-arm64.py" "$qemu" -rtc base=utc -M virt,gic-version=
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$port-:22" \
     -chardev "socket,id=con,path=$run/serial.sock,server=off" -serial chardev:con &
 child=$!
+if [ "$op" = install ]; then printf '%s\n' "$child" > "$run/install-qemu-pid"; fi
+install_code=0
+if [ "$op" = install ]; then
+    wait "$monitor" || install_code=$?
+    monitor=
+    if [ "$install_code" -ne 0 ]; then kill -TERM "$child" 2>/dev/null || true; fi
+fi
 wait "$child"
 code=$?
 child=
@@ -330,6 +365,22 @@ fi
 wait "$pump" 2>/dev/null || true
 pump=
 set -e
+if [ "$op" = install ]; then
+    # The installer may have written the system disk even on failure.
+    python3 "$ROOT/scripts/vm-artifacts.py" stage-intent "$ROOT" "$run" '' || code=1
+    if [ "$code" -eq 0 ] && [ "$install_code" -eq 0 ]; then
+        candidate_kernel=$(python3 "$ROOT/scripts/vm_install.py" publish "$run") || code=1
+        if [ "$code" -eq 0 ]; then
+            python3 "$ROOT/scripts/vm-artifacts.py" seal-slot "$ROOT" "$run" "$run/$candidate_kernel" || code=1
+        fi
+        if [ "$code" -eq 0 ]; then
+            python3 "$ROOT/scripts/vm_install.py" commit "$run" || code=1
+        fi
+    else
+        code=1
+    fi
+    rm -f "$run/install-root.img" "$run/install-references" "$run/install-monitor-ready" "$run/install-qemu-pid"
+fi
 if [ "$code" -eq 0 ] && [ "$op" = boot ]; then
     python3 "$ROOT/scripts/vm-artifacts.py" continuation "$ROOT" "$run" ""
 fi
