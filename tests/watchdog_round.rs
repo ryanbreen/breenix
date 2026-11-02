@@ -1,6 +1,7 @@
 #[path = "../kernel/src/drivers/watchdog_round.rs"]
 mod policy;
-use policy::{Transport, TIMER};
+use policy::Transport;
+const TIMER: [u8; 6] = [4, 1, 0, 0x10, 0xb0, 4];
 
 struct Bmc { timer: [u8; 8], fail: Option<&'static str>, sets: usize, feeds: usize }
 impl Bmc {

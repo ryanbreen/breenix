@@ -5,6 +5,7 @@
 
 #[cfg(target_arch = "x86_64")]
 pub mod watchdog;
+pub mod watchdog_round;
 pub mod ahci;
 #[cfg(target_arch = "x86_64")]
 pub mod bcm5720;
