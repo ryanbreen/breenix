@@ -220,7 +220,9 @@ def score(manifest, effort_path, records, serial, boot, sha, fatal_patterns):
                 raise ValueError('boot captured no line ' + line)
     if category == 'logs' and (not records.get('previous') or records['previous'].get('commit') != sha):
         raise ValueError('logs need prior persistent boot evidence at this commit')
-    if category == 'reboot':
+    if category == 'reboot' and boot.get('target') == 'qemu':
+        runpy.run_path(str(Path(__file__).with_name('server_reboot.py')))['score_qemu'](records, boot, sha, fatal_patterns)
+    if category == 'reboot' and boot.get('target') != 'qemu':
         recovery = records.get('refusalRecovery', {})
         if '[shutdown] kernel refused transition: -13' not in recovery.get('serial', '') or '[shutdown] refused; resuming services' not in recovery.get('serial', ''):
             raise ValueError('no kernel refusal and service recovery evidence')
@@ -285,9 +287,11 @@ class MetalTarget:
     """The runner's boot store, lease and console on the metal host.
 
     Case classes receive the console and capture operations, never host commands.
-    SSH remains the boot host's OpenSSH, as before. Destructive metal categories
-    retain their separate boot orchestration.
+    SSH remains the boot host's OpenSSH, as before. Reboot operations retain
+    the metal-run command arguments.
     """
+    boot_start_marker = 'UEFI bootloader started'
+
     def __init__(self, boot):
         self.boot = boot
         self.directory = '/var/lib/breenix-metal/boots/' + boot
@@ -335,9 +339,52 @@ class MetalTarget:
         if site.returncode: raise ValueError('cannot read suite site fields')
         return json.loads(site.stdout)
 
+    def select(self, boot):
+        return MetalTarget(boot)
+
+    def _boot_command(self, *words):
+        result = subprocess.run(['python3', str(Path(__file__).with_name('metal-run')), *words],
+                                capture_output=True, text=True, timeout=15000)
+        if result.returncode: raise ValueError('metal-run refused the next case boot: ' + result.stdout + result.stderr)
+        found = re.search(r'\d{8}T\d{6}Z-metal', result.stdout)
+        if not found: raise ValueError('metal-run returned no boot ID')
+        return found[0]
+
+    def stop_for_fault(self, user, password):
+        help_text = subprocess.run(['python3', str(Path(__file__).with_name('metal-run')), 'boot', '--help'], capture_output=True, text=True, check=True).stdout
+        if 'panic-reboot' not in help_text:
+            raise ValueError('boot loop has no panic-reboot fault-test mode')
+        subprocess.run(['python3', str(Path(__file__).with_name('metal-run')), 'stop', self.boot], check=True)
+
+    def start_fault(self, branch, sha):
+        return self._boot_command('boot', '--branch', branch or 'main', '--sha', sha, '--inject', 'panic-reboot')
+
+    def start_persistent(self):
+        return self._boot_command('boot', '--persistent')
+
+    def reboot_site(self):
+        site = self._remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
+                         'import metal_lib; s=metal_lib.load_site(); print(json.dumps({k:s.get(k) for k in '
+                         '("SERVER_SSH_HOST","OPERATOR_USER","OPERATOR_PASSWORD","OPERATOR_SSH_PUBLIC_KEY",'
+                         '"CONSOLE_USER","CONSOLE_PASSWORD")}))')
+        if site.returncode: raise ValueError('cannot read private site fields')
+        return json.loads(site.stdout)
+
+    def fault_build(self):
+        return json.loads(self.read('delivery.json'))['build']
+
+    def reboot_successor(self, sha):
+        events = [json.loads(line) for line in self.read('events.jsonl').splitlines()]
+        if any(e['event'] == 'requested-reboot-ready' and e.get('commit') == sha for e in events):
+            return self.boot
+        if self.ended(self.boot): raise ValueError('requested reboot ended before returning to SSH')
+        return None
+
 
 class QemuTarget:
     """A persistent QEMU run's local boot records and serial console."""
+    boot_start_marker = 'Breenix ARM64 Kernel Starting'
+
     def __init__(self, run_dir, boot=None):
         self.run = Path(run_dir)
         boot = boot or (self.run / 'current').read_text().strip()
@@ -405,6 +452,74 @@ class QemuTarget:
 
     def site(self, fields):
         return runpy.run_path(str(Path(__file__).resolve().parent.parent / 'vm_site.py'))['site'](self.run)
+
+    def select(self, boot):
+        return QemuTarget(self.run, boot)
+
+    def reboot_site(self):
+        return self.site(())
+
+    def fault_build(self):
+        # verify-fault seals the selected kernel against this source build.
+        return json.loads((self.run / 'verified-build.json').read_text())
+
+    def _launch(self, operation):
+        deadline = time.monotonic() + 120
+        while (self.run / 'boot.lock').exists():
+            if time.monotonic() >= deadline: raise ValueError('previous QEMU launch has not finished')
+            time.sleep(.2)
+        previous = (self.run / 'current').read_text().strip()
+        log = self.run / (operation + '-launcher.log')
+        command = [str(Path(__file__).resolve().parent.parent / 'vm-persistent.sh'),
+                   'qemu', operation, '--run-dir', str(self.run)]
+        if operation == 'boot': command += ['--mode', (self.run / 'mode').read_text().strip()]
+        with log.open('ab') as output:
+            process = subprocess.Popen(command,
+                                       stdout=output, stderr=subprocess.STDOUT, start_new_session=True)
+        # Retain the child handle while waiting for its boot record.
+        self._launch_process = process
+        deadline = time.monotonic() + 1200
+        while time.monotonic() < deadline:
+            current = (self.run / 'current').read_text().strip()
+            if current != previous: return current
+            if process.poll() is not None: raise ValueError('QEMU launch failed; see ' + str(log))
+            time.sleep(.2)
+        raise ValueError('QEMU launch did not create a boot; see ' + str(log))
+
+    def start_persistent(self):
+        return self._launch('boot')
+
+    def start_fault(self, branch, sha):
+        build = json.loads((self.run / 'build.json').read_text())
+        if build.get('commit') != sha: raise ValueError('fault boot requires this commit')
+        return self._launch('fault-boot')
+
+    def stop_for_fault(self, user, password):
+        # Preserve the disposable run and seal clean disks for its next launch.
+        console = self.console(user, password)
+        console.login()
+        console.type_line('/sbin/poweroff')
+
+    def reboot_successor(self, sha):
+        events = [json.loads(line) for line in self.read('events.jsonl').splitlines()]
+        resets = [e for e in events if e.get('event') == 'requested-reset-observed']
+        if not resets:
+            if self.ended(self.boot): raise ValueError('no authenticated guest reset observed')
+            return None
+        if len(resets) != 1 or not resets[0].get('successor'):
+            raise ValueError('ambiguous guest reset successor')
+        successor = resets[0]['successor']
+        candidate = self.select(successor)
+        run = candidate.read('run.json', required=False)
+        serial = candidate.read('serial.txt', required=False)
+        if run is None or serial is None or 'bsshd: listening on 0.0.0.0:22' not in serial:
+            return None
+        before, after = self.identity(), json.loads(run)
+        if (after.get('bootedCommit') != sha or after.get('toolsCommit') != sha or
+                not before.get('runId') or not before.get('qemuProcess') or
+                any(before.get(k) != after.get(k) for k in ('runId', 'qemuProcess'))):
+            raise ValueError('reboot successor has a different run, QEMU process or commit')
+        return successor
 
 
 class Probe:
@@ -2110,7 +2225,7 @@ def main():
     if not re.fullmatch(boot_pattern, args.boot or '') or not re.fullmatch(r'[a-f0-9]{40}', args.sha or ''):
         parser.error('--boot ID and --sha full commit required')
     category = MILESTONES[args.milestone]
-    if args.target == 'qemu' and category not in ('ssh-keys', 'services', 'logs', 'time', 'console-input'):
+    if args.target == 'qemu' and category not in ('ssh-keys', 'services', 'logs', 'time', 'console-input', 'reboot'):
         parser.error('milestone is not yet implemented for qemu (resting-state is out of scope)')
     if args.milestone == 'server/resting-state':
         if not args.branch: parser.error('--branch required for resting-state')

@@ -3,18 +3,19 @@
 # installer-format operator-account file; boot stays in the foreground so it
 # holds the mac-boot lease. Stop from another terminal to remove the run.
 #
-# vm-persistent.sh qemu build --run-dir DIR [--system-image IMAGE] --operator-account FILE
+# vm-persistent.sh qemu build --run-dir DIR [--system-image IMAGE] --operator-account FILE [--fault panic-reboot]
 # vm-persistent.sh qemu boot --run-dir DIR --mode console|desktop [--kernel FILE]
+# vm-persistent.sh qemu fault-boot --run-dir DIR
 # vm-persistent.sh qemu reboot --run-dir DIR
 # vm-persistent.sh qemu stop --run-dir DIR
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 umask 077
-usage() { echo 'usage: vm-persistent.sh qemu build|boot|reboot|stop --run-dir DIR [--operator-account FILE [--system-image IMAGE] | --mode console|desktop [--kernel FILE]]' >&2; exit 2; }
+usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot] | --mode console|desktop [--kernel FILE]]' >&2; exit 2; }
 [ "$#" -ge 2 ] && [ "$1" = qemu ] || usage
 op=$2; shift 2
-case "$op" in build|boot|reboot|stop) ;; *) usage ;; esac
-run= system= account= kernel= mode=
+case "$op" in build|boot|fault-boot|reboot|stop) ;; *) usage ;; esac
+run= system= account= kernel= mode= fault=
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] && [ -n "$2" ] || usage
     case "$1" in
@@ -22,6 +23,7 @@ while [ "$#" -gt 0 ]; do
         --system-image) [ -z "$system" ] || usage; system=$2 ;;
         --operator-account) [ -z "$account" ] || usage; account=$2 ;;
         --kernel) [ -z "$kernel" ] || usage; kernel=$2 ;;
+        --fault) [ -z "$fault" ] || usage; fault=$2 ;;
         --mode) [ -z "$mode" ] || usage; mode=$2 ;;
         *) usage ;;
     esac
@@ -29,10 +31,13 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$run" ] || usage
 case "$op" in
-    build) [ -n "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage ;;
-    boot) [ -z "$system" ] && [ -z "$account" ] || usage
+    build) [ -n "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage
+           case "$fault" in ""|panic-reboot) ;; *) usage ;; esac
+           [ -z "$fault" ] || [ -z "$system" ] || usage ;;
+    boot) [ -z "$fault" ] && [ -z "$system" ] && [ -z "$account" ] || usage
           case "$mode" in console|desktop) ;; *) usage ;; esac ;;
-    reboot|stop) [ -z "$system" ] && [ -z "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage ;;
+    fault-boot) [ -z "$system$account$kernel$mode$fault" ] || usage; mode=console ;;
+    reboot|stop) [ -z "$fault" ] && [ -z "$system" ] && [ -z "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage ;;
 esac
 # debugfs command files and QEMU comma-separated options cannot safely encode
 # these characters; reject them instead of interpreting caller-supplied syntax.
@@ -52,11 +57,16 @@ if [ "$op" = build ]; then
         export CARGO_BUILD_JOBS=4
         unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR
         (cd "$ROOT" && taskpolicy -b cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64)
+        cp "$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64" "$run/kernel"
+        if [ "$fault" = panic-reboot ]; then
+            (cd "$ROOT" && taskpolicy -b cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 --features server_reboot_fault)
+            cp "$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64" "$run/fault-kernel"
+            cp "$run/kernel" "$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
+        fi
         taskpolicy -b "$ROOT/userspace/programs/build.sh" --arch aarch64
         BREENIX_REPRODUCIBLE_EXT2=1 taskpolicy -b "$ROOT/scripts/create_ext2_disk.sh" --arch aarch64
         [ "$source_commit" = "$(git -C "$ROOT" rev-parse HEAD)" ] && [ -z "$(git -C "$ROOT" status --porcelain)" ] || { echo 'sources changed during build' >&2; exit 1; }
         system="$ROOT/target/ext2-aarch64.img"
-        cp "$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64" "$run/kernel"
     fi
     cp "$system" "$run/system.img"
     cp "$account" "$run/operator-account"
@@ -64,8 +74,18 @@ if [ "$op" = build ]; then
     PATH="$PATH:/opt/homebrew/opt/e2fsprogs/sbin:/usr/local/opt/e2fsprogs/sbin"
     export PATH
     command -v debugfs >/dev/null && command -v mke2fs >/dev/null || { echo 'e2fsprogs is required' >&2; exit 1; }
+    python3 "$ROOT/scripts/vm_site.py" power-token --out "$run/power-token"
     # debugfs returns success even when a command fails; read back each change.
     debugfs -w -R 'rm /etc/breenix/boot-target' "$run/system.img" >/dev/null 2>&1 || true
+    debugfs -w -R 'rm /etc/breenix/power-token' "$run/system.img" >/dev/null 2>&1 || true
+    debugfs -w -R "write $run/power-token /etc/breenix/power-token" "$run/system.img" >/dev/null 2>&1
+    debugfs -w -R 'set_inode_field /etc/breenix/power-token mode 0100400' "$run/system.img" >/dev/null 2>&1
+    debugfs -w -R 'set_inode_field /etc/breenix/power-token uid 0' "$run/system.img" >/dev/null 2>&1
+    debugfs -w -R 'set_inode_field /etc/breenix/power-token gid 0' "$run/system.img" >/dev/null 2>&1
+    debugfs -R 'cat /etc/breenix/power-token' "$run/system.img" 2>/dev/null > "$run/readback"
+    cmp -s "$run/power-token" "$run/readback" || { echo 'power token staging failed' >&2; exit 1; }
+    token_stat=$(debugfs -R 'stat /etc/breenix/power-token' "$run/system.img" 2>/dev/null)
+    [[ $token_stat =~ Mode:[[:space:]]+0400 ]] && [[ $token_stat =~ User:[[:space:]]+0[[:space:]]+Group:[[:space:]]+0 ]] || { echo 'power token metadata staging failed' >&2; exit 1; }
     debugfs -w -R 'rm /etc/breenix/operator-account' "$run/system.img" >/dev/null 2>&1 || true
     debugfs -w -R "write $run/operator-account /etc/breenix/operator-account" "$run/system.img" >/dev/null 2>&1
     debugfs -w -R 'set_inode_field /etc/breenix/operator-account mode 0100600' "$run/system.img" >/dev/null 2>&1
@@ -117,6 +137,7 @@ PY
     rm -rf -- "$run"
     exit 0
 fi
+if [ "$op" = fault-boot ]; then kernel="$run/fault-kernel"; fi
 if [ -z "$kernel" ]; then
     kernel="$run/kernel"
     [ -f "$kernel" ] || kernel="$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
@@ -127,7 +148,11 @@ fi
 if [ -z "${BREENIX_VM_PERSISTENT_SUPERVISED:-}" ]; then
     export BREENIX_VM_PERSISTENT_SUPERVISED=1
     source "$ROOT/scripts/host-slots.sh"
-    host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu boot --run-dir "$run" --kernel "$kernel" --mode "$mode"
+    if [ "$op" = fault-boot ]; then
+        host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu fault-boot --run-dir "$run"
+    else
+        host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu boot --run-dir "$run" --kernel "$kernel" --mode "$mode"
+    fi
 fi
 source "$ROOT/scripts/host-slots.sh"
 mkdir "$run/boot.lock" || { echo 'run is already booting' >&2; exit 1; }
@@ -139,7 +164,10 @@ cleanup() {
     fi
     rmdir "$run/boot.lock" 2>/dev/null || true; }
 trap cleanup EXIT
-python3 "$ROOT/scripts/vm-artifacts.py" verify "$ROOT" "$run" "$kernel"
+verify=verify
+if [ "$op" = fault-boot ]; then verify=verify-fault; fi
+python3 "$ROOT/scripts/vm-artifacts.py" "$verify" "$ROOT" "$run" "$kernel"
+if [ "$op" = fault-boot ]; then printf "fault-test\n" > "$run/boot-kind"; else rm -f "$run/boot-kind"; fi
 kernel="$run/boot-kernel"
 host_slot_acquire mac-boot
 printf '%s\n' "$mode" > "$run/mode"
@@ -187,12 +215,15 @@ stop_child() {
     exit 143
 }
 trap stop_child TERM HUP INT
+disks=(-device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/home.img"
+       -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/system.img")
+action=()
+if [ "$op" = fault-boot ]; then disks=(); action=(-action reboot=shutdown); fi
 set +e
 python3 "$ROOT/scripts/qemu-arm64.py" "$qemu" -rtc base=utc -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$kernel" -fw_cfg "name=opt/breenix/mode,string=$mode" "${display[@]}" -qmp "unix:$run/qmp.sock,server=on,wait=off" -qmp "unix:$run/events.sock,server=on,wait=off" \
     "${gpu[@]}" -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device \
-    -device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/home.img" \
-    -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/system.img" \
+    "${disks[@]}" "${action[@]}" \
     -device virtio-rng-device -device virtio-net-device,netdev=net0 \
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$port-:22" \
     -chardev "socket,id=con,path=$run/serial.sock,server=off" -serial chardev:con &
@@ -211,6 +242,9 @@ fi
 wait "$pump" 2>/dev/null || true
 pump=
 set -e
+if [ "$code" -eq 0 ] && [ "$op" = boot ]; then
+    python3 "$ROOT/scripts/vm-artifacts.py" continuation "$ROOT" "$run" ""
+fi
 host_slot_header "$serial"
 "$ROOT/scripts/vigil-record.sh" finish "$vigil" "$code"
 exit "$code"

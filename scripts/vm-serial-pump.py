@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Capture a persistent QEMU run's serial stream and expose its console."""
 import datetime
+import hashlib
+import hmac
+import re
 import json
 import selectors
 import signal
@@ -8,6 +11,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'metal'))
@@ -25,7 +29,12 @@ def main(run, whole_path):
     record = {'mode': 'persistent', 'bootMode': mode_path.read_text().strip() if mode_path.exists() else '',
               'target': 'qemu', 'bootedCommit': build.get('commit'),
               'toolsCommit': tools_path.read_text().strip() if tools_path.exists() else '',
-              'evidenceEligible': bool(verified.get('evidenceEligible') is True and verified.get('commit') == build.get('commit') and verified.get('artifacts') == build.get('artifacts'))}
+              'evidenceEligible': bool(verified.get('evidenceEligible') is True and verified.get('commit') == build.get('commit') and
+                                       {k: v for k, v in verified.get('artifacts', {}).items() if k not in ('system.img', 'home.img')} ==
+                                       {k: v for k, v in build.get('artifacts', {}).items() if k not in ('system.img', 'home.img')})}
+    fault = (run / 'boot-kind').exists() and (run / 'boot-kind').read_text().strip() == 'fault-test'
+    if fault:
+        record['kind'] = 'fault-test'
     if record['evidenceEligible']:
         record['artifacts'] = verified['artifacts']
     # Freeze the scoring definitions at the image's recorded build commit,
@@ -43,6 +52,27 @@ def main(run, whole_path):
     last_stamp = 0
     offset = 0
     line_open = False
+    token_path = run / 'power-token'
+    token = token_path.read_text().strip() if token_path.exists() else ''
+    if token and not re.fullmatch(r'[a-f0-9]{64}', token):
+        raise ValueError('invalid VM power token')
+    # One pump belongs to one QEMU launch; resets retain this launch identity.
+    record['qemuProcess'] = uuid.uuid4().hex
+    record['runId'] = hashlib.sha256(token.encode()).hexdigest() if token else None
+    receipt_line = ''
+    expected_receipt = None
+    shutdown_action = None
+
+    def on_line(line):
+        nonlocal expected_receipt, shutdown_action
+        challenge = re.fullmatch(r'\[init\] shutdown nonce=([a-f0-9]{64})', line)
+        if challenge and token:
+            expected_receipt = hashlib.sha256((token + challenge[1]).encode()).hexdigest()
+        request = re.fullmatch(r'\[shutdown\] requested (reboot|poweroff) token=([a-f0-9]{64})', line)
+        if request and expected_receipt and hmac.compare_digest(request[2], expected_receipt):
+            shutdown_action = request[1]
+            events.write(json.dumps(dict(event='requested-shutdown', action=shutdown_action, t=time.time())) + '\n')
+            expected_receipt = None
 
     def end_boot():
         if directory is not None:
@@ -52,9 +82,10 @@ def main(run, whole_path):
             events.close()
             (directory / 'ended').write_text(datetime.datetime.now(datetime.timezone.utc).isoformat() + '\n')
 
-    def start_boot():
+    def start_boot(reserved_stamp=None):
         nonlocal directory, serial, raw, cleaner, timestamps, events, last_stamp, offset, line_open
-        stamp = max(int(time.time()), last_stamp + 1)
+        nonlocal receipt_line, expected_receipt, shutdown_action
+        stamp = reserved_stamp if reserved_stamp is not None else max(int(time.time()), last_stamp + 1)
         while True:
             boot = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ-qemu')
             directory = run / 'boots' / boot
@@ -78,6 +109,9 @@ def main(run, whole_path):
         (run / 'current').write_text(boot + '\n')
         offset = 0
         line_open = False
+        receipt_line = ''
+        expected_receipt = None
+        shutdown_action = None
 
     start_boot()
     def terminate(_signum, _frame):
@@ -89,6 +123,9 @@ def main(run, whole_path):
     guest = None
     pending_guest = bytearray()
     qmp = None
+    guest_closed = False
+    drain_deadline = None
+    qmp_closed = False
     qmp_buffer = bytearray()
     paths = [run / 'serial.sock', run / 'console.sock']
     try:
@@ -102,7 +139,7 @@ def main(run, whole_path):
             selector.register(listener, selectors.EVENT_READ, kind)
         with open(whole_path, 'ab', buffering=0) as whole:
             while True:
-                if qmp is None:
+                if qmp is None and not qmp_closed:
                     candidate = socket.socket(socket.AF_UNIX)
                     try:
                         candidate.connect(str(run / 'events.sock'))
@@ -112,7 +149,13 @@ def main(run, whole_path):
                         qmp = candidate
                         qmp.setblocking(False)
                         selector.register(qmp, selectors.EVENT_READ, 'qmp')
-                for key, mask in selector.select(timeout=.05 if qmp is None else None):
+                timeout = max(0, drain_deadline - time.monotonic()) if drain_deadline is not None else None
+                if qmp is None and not qmp_closed:
+                    timeout = min(timeout, .05) if timeout is not None else .05
+                ready = selector.select(timeout=timeout)
+                if not ready and drain_deadline is not None and time.monotonic() >= drain_deadline:
+                    return
+                for key, mask in ready:
                     sock, kind = key.fileobj, key.data
                     if sock in listeners:
                         connection, _ = sock.accept()
@@ -133,6 +176,9 @@ def main(run, whole_path):
                             selector.unregister(sock)
                             sock.close()
                             qmp = None
+                            qmp_closed = True
+                            if guest_closed:
+                                return
                             continue
                         qmp_buffer.extend(data)
                         while b'\n' in qmp_buffer:
@@ -143,9 +189,23 @@ def main(run, whole_path):
                                 sock.sendall(b'{"execute":"qmp_capabilities"}\n')
                             elif 'event' in message:
                                 events.write(json.dumps(message) + '\n')
+                                reason = message.get('data', {}).get('reason')
+                                if fault and message['event'] == 'SHUTDOWN' and reason == 'guest-reset':
+                                    events.write(json.dumps(dict(event='panic-reset-observed', t=time.time())) + '\n')
+                                if message['event'] == 'SHUTDOWN' and reason == 'guest-shutdown':
+                                    (directory / 'exit-status').write_text('0\n')
                                 if message['event'] == 'RESET':
+                                    previous_events = events
+                                    requested = shutdown_action == 'reboot' and reason == 'guest-reset'
+                                    if requested:
+                                        # Reserve the successor identity before closing the ending boot.
+                                        stamp = max(int(time.time()), last_stamp + 1)
+                                        while (run / 'boots' / datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ-qemu')).exists():
+                                            stamp += 1
+                                        successor = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ-qemu')
+                                        previous_events.write(json.dumps(dict(event='requested-reset-observed', successor=successor, t=time.time())) + '\n')
                                     end_boot()
-                                    start_boot()
+                                    start_boot(stamp if requested else None)
                         continue
                     # kqueue can return separate read and write notifications
                     # for one client. Its EOF event may already have closed it.
@@ -160,7 +220,14 @@ def main(run, whole_path):
                             data = b''
                         if not data:
                             if kind == 'guest-data':
-                                return
+                                selector.unregister(sock)
+                                sock.close()
+                                guest = None
+                                guest_closed = True
+                                drain_deadline = time.monotonic() + .25
+                                if qmp_closed:
+                                    return
+                                continue
                             selector.unregister(sock)
                             del clients[sock]
                             sock.close()
@@ -169,6 +236,10 @@ def main(run, whole_path):
                             raw.write(data)
                             cleaned = cleaner.feed(data)
                             arrived = time.time()
+                            receipt_line += cleaned
+                            while '\n' in receipt_line:
+                                complete, receipt_line = receipt_line.split('\n', 1)
+                                on_line(complete)
                             for line in cleaned.splitlines(keepends=True):
                                 if not line_open:
                                     timestamps.write(f'{arrived:.3f}\t{offset}\n')
