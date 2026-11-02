@@ -9,7 +9,8 @@ pub fn write(request: &[u8]) -> Result<usize,i32> {
     use crate::block::{virtio::VirtioBlockWrapper, BlockDevice};
     use screen_capture::{CaptureLog, DISK_MAGIC, MAX_RECORD};
     static LOG: spin::Mutex<CaptureLog> = spin::Mutex::new(CaptureLog::new());
-    if crate::drivers::fw_cfg::read_string("opt/breenix/screen-capture").as_deref() != Some("on") {
+    if !crate::platform_config::is_qemu()
+        || crate::drivers::fw_cfg::read_string("opt/breenix/screen-capture").as_deref() != Some("on") {
         return Err(19);
     }
     if request.len() != 24 { return Err(22); }
