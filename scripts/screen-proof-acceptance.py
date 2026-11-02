@@ -31,7 +31,9 @@ def missing_captures(captures):
 def capture_identity(path, commit, suite, platform):
     def read(name):
         return (path / name).read_text().strip()
-    metadata = path / 'metal-run.json' if platform == 'metal' else path / 'run.json'
+    metadata = path / 'metal-run.json'
+    if platform != 'metal' or not metadata.exists():
+        metadata = path / 'run.json'
     boot = json.loads(metadata.read_text())
     if (read('commit') != commit or boot.get('commit', commit) != commit):
         raise ValueError('capture commit differs from measured commit')
