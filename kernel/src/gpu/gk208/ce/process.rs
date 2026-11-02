@@ -351,8 +351,12 @@ pub(crate) fn observed_scanout() -> Result<u32, &'static str> {
     let owner = SESSION.lock();
     let s = owner.as_ref().ok_or("native display owner absent")?;
     if s.pending_present.is_some() { return Err("native observation flip still pending"); }
-    super::super::native::observed_scanout(&mut Registers(s.registers), s.evo.head,
-        s.resources.scanouts())
+    let id = super::super::native::observed_scanout(&mut Registers(s.registers), s.evo.head,
+        s.resources.scanouts())?;
+    // Convert the independently resolved head surface into record v2's namespace.
+    let resource = s.resources.identity(id).ok_or("native observed identity absent")?;
+    super::super::timing::scanout_latched(resource);
+    Ok(id)
 }
 /// Serialize a logical mode switch with client display readers through the
 /// shared ownership transition. No core spin lock is held across EVO waits.

@@ -333,6 +333,8 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
         });
         let wrong =
             other.and_then(|_| crate::test_control::reserve(test_point::WRONG_SCANOUT, a.target));
+        #[cfg(target_arch = "x86_64")]
+        let requested = id;
         let id = if wrong.is_some() {
             other.unwrap_or(id)
         } else {
@@ -370,6 +372,13 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
         let (Some(bind), Some(flush)) = (bind, flush) else {
             return Some(Err(EIO));
         };
+        #[cfg(target_arch = "x86_64")]
+        if dev::backend() == abi::backend::GK208 {
+            // Record the submitted resources, not the test point's fired flag.
+            crate::gk208::timing::scanout_binding(
+                u64::from(dev::resource_id(requested).unwrap_or(0)),
+                u64::from(dev::resource_id(id).unwrap_or(0)));
+        }
         c.display.sent += 1;
         c.display.outstanding += 1;
         // MODES keeps naming the latest accepted native binding while the next

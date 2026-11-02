@@ -2301,6 +2301,53 @@ def breengel_memory_accounting(serial):
                 mapped_bytes=pages*4096, residual_pages=residual, allowance=48, cases=credited)
 
 
+SCANOUT_FIELDS = (
+    'schema', 'observations', 'latched_confirmed', 'refused', 'pending',
+    'wait_ns', 'wait_max_ns', 'last_latched_resource', 'last_record_resource',
+    'mismatches', 'wrong_bindings', 'wrong_requested_resource',
+    'wrong_latched_resource', 'wrong_record_resource',
+)
+SCANOUT_COUNTERS = SCANOUT_FIELDS[1:7] + ('mismatches', 'wrong_bindings')
+
+
+def scanout_sample(sample):
+    if (not isinstance(sample, dict) or set(sample) != set(SCANOUT_FIELDS)
+            or any(type(v) is not int or not 0 <= v < 1 << 64 for v in sample.values())
+            or sample['schema'] != 1 or sample['wait_max_ns'] > sample['wait_ns']):
+        raise ValueError('invalid latched scanout sample')
+    return sample
+
+
+def breengel_scanout_evidence(serial, names):
+    rows = [expand_case_heap(json.loads(line.removeprefix('GT710_CASE_HEAP ')))
+            for line in serial.splitlines() if line.startswith('GT710_CASE_HEAP ')]
+    if (len(rows) != len(names) + 1
+            or [r.get('boundary') for r in rows] != list(range(len(names) + 1))
+            or [r.get('case') for r in rows] != [''] + names):
+        raise ValueError('latched scanout boundaries differ from completed cases')
+    before = None
+    for row in rows:
+        sample = scanout_sample(row.get('scanout'))
+        if before is not None:
+            delta = {key: sample[key] - before[key] for key in SCANOUT_COUNTERS}
+            if any(v < 0 for v in delta.values()):
+                raise ValueError('latched scanout counters reset within a case')
+            if (delta['observations'] != delta['latched_confirmed'] or delta['mismatches'] != 0
+                    or (delta['observations'] and (sample['last_latched_resource'] == 0
+                        or sample['last_record_resource'] != sample['last_latched_resource']))):
+                raise ValueError('observation record lacks matching latched confirmation: ' + row['case'])
+            # Test point 26 binds an alternate surface. Keep that observation even
+            # though gpu_fault takes a clean successor before the case boundary.
+            if row['case'] == 'scanout/fault-wrong-resource':
+                requested = sample['wrong_requested_resource']
+                latched = sample['wrong_latched_resource']
+                recorded = sample['wrong_record_resource']
+                if (delta['wrong_bindings'] != 1 or delta['observations'] < 2
+                        or requested == 0 or latched == 0 or latched == requested or recorded != latched):
+                    raise ValueError('wrong binding record does not name the actual wrong binding')
+        before = sample
+
+
 def breengel_fronts_suite(serial, boot, step_number=1):
     """Score the ordered BreenGL capture against the selected step."""
     resources_identity(boot, 'breengel')
@@ -2358,6 +2405,8 @@ def breengel_fronts_suite(serial, boot, step_number=1):
     ready = [i for i, line in enumerate(lines) if line == 'SUITE_SEQUENCE READY breengel']
     if len(ready) != 1 or ready[0] <= lines.index(records[-1][2]):
         raise ValueError('BreenGL requires READY after ELAPSED')
+    if step_number == 2:
+        breengel_scanout_evidence(serial, names)
     accounting = breengel_memory_accounting(serial)
     if accounting['status'] != 'PASS':
         print('GT710_BREENGL_MEMORY_ACCOUNTING '+json.dumps(accounting, separators=(',', ':')))
@@ -3157,12 +3206,15 @@ CASE_HEAP_WORD_FIELDS = (
 def expand_case_heap(row):
     if isinstance(row, dict) and 'words_v1' in row:
         words = row['words_v1']
-        if (set(row) != {'schema', 'boundary', 'case', 'words_v1'}
+        if (set(row) not in ({'schema', 'boundary', 'case', 'words_v1'},
+                             {'schema', 'boundary', 'case', 'words_v1', 'scanout'})
                 or not isinstance(words, list) or len(words) != len(CASE_HEAP_WORD_FIELDS)
                 or any(type(v) is not int or not 0 <= v < 1 << 64 for v in words)):
             raise ValueError('invalid compact case heap words')
-        return dict(schema=row['schema'], boundary=row['boundary'], case=row['case'],
-                    values=dict(zip(CASE_HEAP_WORD_FIELDS, words)))
+        expanded = dict(schema=row['schema'], boundary=row['boundary'], case=row['case'],
+                        values=dict(zip(CASE_HEAP_WORD_FIELDS, words)))
+        if 'scanout' in row: expanded['scanout'] = scanout_sample(row['scanout'])
+        return expanded
     if isinstance(row, dict) and isinstance(row.get('values'), dict) and 'costs_v1' in row['values']:
         values = row['values'].copy()
         costs = values.pop('costs_v1')
@@ -3424,7 +3476,7 @@ def capture_serial(directory):
             key=('spans', row['id'])
         elif fields[0]=='GT710_CASE_HEAP':
             row = expand_case_heap(json.loads(line.removeprefix('GT710_CASE_HEAP ')))
-            if (not isinstance(row, dict) or set(row) != {'schema','boundary','case','values'}
+            if (not isinstance(row, dict) or set(row) not in ({'schema','boundary','case','values'}, {'schema','boundary','case','values','scanout'})
                     or type(row['schema']) is not int or row['schema'] != 1
                     or type(row['boundary']) is not int or not 0 <= row['boundary'] <= len(case_rows)
                     or not isinstance(row['case'], str) or len(row['case']) > 80
@@ -3433,6 +3485,7 @@ def capture_serial(directory):
                     or any(type(v) is not int or not 0 <= v < 1 << 64 for v in row['values'].values())
                     or row['values']['schema'] != 1):
                 raise ValueError('invalid case heap record')
+            if 'scanout' in row: scanout_sample(row['scanout'])
             key=('case-heap',)
         elif fields[0] in ('GT710_CLOCK_C1','GT710_VBIOS_V1'):
             if slot != 0: raise ValueError('C1 data in wrong upload slot')

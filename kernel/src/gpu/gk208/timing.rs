@@ -10,6 +10,8 @@ pub mod submit_cost;
 pub mod gpu_clock;
 #[path = "gpu_groups.rs"]
 pub mod gpu_groups;
+#[path = "scanout_trace.rs"]
+mod scanout_trace;
 
 pub fn collecting(probe: bool, requested: bool) -> bool { probe || requested }
 
@@ -42,22 +44,29 @@ pub struct Recorder {
     gpu_stats: [[i128; 18]; 4],
     gpu_groups: Vec<gpu_groups::Row>,
     scanout: [u64; 5],
+    provenance: scanout_trace::Scanout,
 }
 impl Recorder {
-    pub const fn new() -> Self { Self { owner: 0, draw: 0, rows: Vec::new(), dropped: 0, readbacks: Vec::new(), blocked: Vec::new(), vblank: [[0; 2]; 2], vblank_used: 0, submits: submit_cost::Totals::new(), submit_bytes: Vec::new(), admission_waits: Vec::new(), gpu_times: Vec::new(), gpu_clocks: Vec::new(), gpu_stats: [[0; 18]; 4], gpu_groups: Vec::new(), scanout: [0; 5] } }
+    pub const fn new() -> Self { Self { owner: 0, draw: 0, rows: Vec::new(), dropped: 0, readbacks: Vec::new(), blocked: Vec::new(), vblank: [[0; 2]; 2], vblank_used: 0, submits: submit_cost::Totals::new(), submit_bytes: Vec::new(), admission_waits: Vec::new(), gpu_times: Vec::new(), gpu_clocks: Vec::new(), gpu_stats: [[0; 18]; 4], gpu_groups: Vec::new(), scanout: [0; 5], provenance: scanout_trace::Scanout::new() } }
     /// Window observations only; retained even without detailed GPU timing.
     pub fn scanout_result(&mut self, confirmed: bool) {
         self.scanout[usize::from(!confirmed)] += 1;
+        self.provenance.result(confirmed);
     }
     /// Count encounters, not polls. Time includes interruption and contention
     /// while acquiring a transition that began with a pending native flip.
     pub fn scanout_wait(&mut self, pending: bool, elapsed: u64) {
+        self.provenance.wait(pending, elapsed);
         if pending {
             self.scanout[2] += 1;
             self.scanout[3] += elapsed;
             self.scanout[4] = self.scanout[4].max(elapsed);
         }
     }
+    pub fn scanout_binding(&mut self, requested: u64, actual: u64) { self.provenance.binding(requested, actual); }
+    pub fn scanout_latched(&mut self, resource: u64) { self.provenance.latched(resource); }
+    pub fn scanout_published(&mut self, resource: u64) { self.provenance.published(resource); }
+    pub fn scanout_snapshot(&self) -> [u64; 14] { self.provenance.snapshot() }
     pub fn gpu_group(&mut self, row: gpu_groups::Row) {
         if self.gpu_groups.len() == 4096 || self.gpu_groups.try_reserve(1).is_err() { self.dropped += 1; }
         else { self.gpu_groups.push(row); }
@@ -271,6 +280,10 @@ mod runtime {
     pub fn begin_draw(owner: u64) { if enabled() { with(|r| { r.begin_draw(owner); }); } }
     pub fn scanout_result(confirmed: bool) { with(|r| r.scanout_result(confirmed)); }
     pub fn scanout_wait(pending: bool, elapsed: u64) { with(|r| r.scanout_wait(pending, elapsed)); }
+    pub fn scanout_binding(requested: u64, actual: u64) { with(|r| r.scanout_binding(requested, actual)); }
+    pub fn scanout_latched(resource: u64) { with(|r| r.scanout_latched(resource)); }
+    pub fn scanout_published(resource: u64) { with(|r| r.scanout_published(resource)); }
+    pub fn scanout_snapshot() -> [u64; 14] { with(|r| r.scanout_snapshot()) }
     pub struct Guard { owner: u64, kind: u64, start: u64 }
     impl Guard {
         pub fn new(owner: u64, kind: u64) -> Self {
@@ -366,4 +379,4 @@ mod runtime {
     }
 }
 #[cfg(target_os = "none")]
-pub use runtime::{scanout_wait, scanout_result, enable, enabled, begin_draw, phase, export, vblank_sample, gpu_time, gpu_group, Guard, Readback, Submit};
+pub use runtime::{scanout_binding, scanout_latched, scanout_published, scanout_snapshot, scanout_wait, scanout_result, enable, enabled, begin_draw, phase, export, vblank_sample, gpu_time, gpu_group, Guard, Readback, Submit};

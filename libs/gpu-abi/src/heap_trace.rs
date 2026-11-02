@@ -34,3 +34,15 @@ pub fn decode(bytes: &[u8]) -> Option<[u64; WORDS]> {
     }
     (words[0] == 1).then_some(words)
 }
+
+/// Native-only trailer of /proc/gt710-case-heap; the heap words stay version 1.
+pub mod scanout {
+    pub const WORDS: usize = 14;
+    pub const SIZE: usize = WORDS * 8;
+    pub const NAMES: [&str; WORDS] = [
+        "schema", "observations", "latched_confirmed", "refused", "pending",
+        "wait_ns", "wait_max_ns", "last_latched_resource", "last_record_resource",
+        "mismatches", "wrong_bindings", "wrong_requested_resource",
+        "wrong_latched_resource", "wrong_record_resource",
+    ];
+}

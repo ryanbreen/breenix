@@ -150,8 +150,9 @@ class BreengelSelection(unittest.TestCase):
         self.assertIn('docs/gui/gt710-step-9-2.json', (ROOT / 'scripts/metal/metal-build').read_text())
 
     def test_composition_scorer_rejects_missing_and_failed_selected_cases(self):
+        from gt710_breengel_evidence_test import composition_capture
         selected = json.loads((ROOT / 'docs/gui/gt710-step-9-2.json').read_text())['cases']
-        original = capture()
+        original = composition_capture()
         producer = {'breengel': {'serial': original, 'boot': boot()}}
         def score():
             return API['cases']('breengel-composition', '', producer)[0]['result']
