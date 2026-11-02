@@ -71,6 +71,8 @@ def reset_faults(serial, names):
     reset of an otherwise healthy channel. These three cases arm WITHHOLD_ALL,
     observe RESET and judge fresh rendering afterwards. Their PASS and reset-ms
     witnesses are required; the generic fault label alone proves none of that.
+    VALUE and native diagnostics have separate producers: either can arrive
+    first, but both must belong to the same pending manifest case.
     """
     lines = serial.splitlines()
     result, completed, start = [], 0, 0
@@ -94,7 +96,7 @@ def reset_faults(serial, names):
                     if lines[i].startswith('SUITE gpu CASE ')), len(lines))
         if end == len(lines) or not lines[end].startswith(f'SUITE gpu CASE {name} PASS '):
             raise ValueError('reset case did not pass: ' + name)
-        values = [l for l in lines[at + 1:end] if re.fullmatch(
+        values = [l for l in lines[start:end] if re.fullmatch(
             rf'SUITE gpu VALUE {re.escape(name)} reset-ms=[1-9][0-9]*ms(?: expect=\d+\.\.\d+ms)?', l)]
         if len(values) != 1:
             raise ValueError('reset lacks its case reset-ms witness: ' + name)

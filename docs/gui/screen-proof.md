@@ -67,6 +67,27 @@ One-shot test-control point 32, `display-output-perturb`, enables dithering for 
 <!-- claim-lint:ok: Proposed host-surface experiment and observation boundary in docs/gui/screen-proof.md, not an acceptance result. -->
 ARM64 QEMU has no equivalent display CRC. A proof-mode host-surface capture spike may compare QEMU's displayed surface with serial during the held intent frame. If it cannot produce a valid current surface, the stated ARM boundary is the latched-binding readback and host-renderer attestation, not proof of the host window.
 
+## Retained phase-one acceptance
+
+Run `scripts/screen-proof-acceptance.py` with `--commit <runtime SHA>`,
+`--console <complete metal console capture>`, `--gpu <complete metal GPU capture>`,
+`--arm-gpu <QEMU GPU capture>`, `--arm-breengel <QEMU BreenGL capture>` and
+`--output <report.json>`. Keep the measured runtime commit distinct from the
+report's scorer commit when only host scoring code changes.
+
+Use complete metal exports, including `gt710-pixels.rle` and `gt710-final.rle`,
+whose lengths and hashes must match their serial anchors. Vigil's top-level
+metal boot summaries omit these bulk files (`BreenixMetal.importedFiles` in
+Vigil); they are insufficient inputs. When a complete export was retained under
+a boot's `host-evidence` directory, select that export explicitly. Keep missing
+or corrupt artifacts as failures; do not substitute serial anchors for bytes.
+
+Attribute each intentional native reset to its pending manifest case interval,
+ending at that case's passing CASE record. Require exactly one matching
+`reset-ms` VALUE inside that interval. The VALUE and native FAULT have separate
+serial producers, so either may arrive first within the interval; a witness
+from a completed or different case does not qualify.
+
 ## Intent frame
 
 <!-- claim-lint:ok: Normative intent-frame requirements in docs/gui/screen-proof.md, not a measured result. -->
