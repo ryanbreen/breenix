@@ -39,19 +39,31 @@ counters, explicit bounded retention and freezing before a simulated reset.
 ## Host capture
 
 Use the installed GL bundle, without rebuilding or patching QEMU or its
-renderer. `scripts/gpu-queue-trace-qemu.py` selects existing trace events and
-refuses a binary missing a requested event. It records its binary/version and
-event names in `qemu-gpu-trace.json`, and raw log-backend output in
+renderer. `scripts/gpu-queue-trace-qemu.py` enables existing trace events over
+QMP and refuses a missing requested event. It records the reported version,
+activation time and event names in `qemu-gpu-trace.json`, and raw log output in
 `qemu-gpu-trace.log`, beside the run's serial. The existing boot launcher still
 owns the Mac boot slot, window, Vigil registration and suite verdict.
 
 ```sh
 export CARGO_BUILD_JOBS=4
 export BREENIX_KERNEL_FEATURES=gpu_queue_trace
-export BREENIX_QEMU_GL_BINARY="$PWD/scripts/gpu-queue-trace-qemu.py"
-scripts/boot-interactive.sh --mode suite --suite gpu --gpu-gl --display \
-  --serial-log /tmp/warmup-trace/run-01/serial.txt
+export BREENIX_SUITE_ATTEMPT=1
+mkdir -p /tmp/warmup-trace/run-01
+scripts/gpu-queue-trace-qemu.py /tmp/warmup-trace/run-01/qmp.sock \
+  /tmp/warmup-trace/run-01/qemu-gpu-trace.log &
+scripts/boot-interactive.sh --mode suite --suite gpu --gpu-gl --display --no-build \
+  --qmp /tmp/warmup-trace/run-01/qmp.sock --serial-log /tmp/warmup-trace/run-01/serial.txt
 ```
+
+Build the trace kernel and normal disk before this command. The observer connects
+when QMP opens and exits after activating the events; it does not pause or resume
+the VM. Check activation succeeded and the trace includes initialization before
+counting a run. The first adapter tried to wrap the binary inside the QoS launcher;
+that launcher correctly refused it before QEMU ran. Its empty Vigil record is
+`20261102T125203Z-qemu-80702`, a launch failure, not a GPU run. The external QMP
+adapter leaves that executable check intact. Its two host transcript checks cover
+the command exchange and refusal when a requested host event is absent.
 
 The installed bundle exposes these relevant events:
 

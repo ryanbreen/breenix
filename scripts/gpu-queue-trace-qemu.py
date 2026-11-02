@@ -1,16 +1,16 @@
 #!/usr/bin/env python3
-"""Run the installed GL QEMU with its existing queue/fence trace events.
+"""Enable existing QEMU queue/fence trace events through its QMP socket.
 
-Select with BREENIX_QEMU_GL_BINARY; boot-interactive owns the Mac slot, window,
-Vigil registration and suite verdict. This wrapper changes none of those.
+Start this observer before boot-interactive --qmp SOCKET. The real installed
+QEMU runs through its normal QoS launcher, Mac slot, window and Vigil recorder.
 """
+import argparse
 import json
-import os
 from pathlib import Path
-import subprocess
+import socket
 import sys
+import time
 
-ROOT = Path(__file__).resolve().parents[1]
 EVENTS = (
     "virtio_pci_notify_write", "virtio_queue_notify", "virtqueue_pop",
     "virtqueue_fill", "virtqueue_flush", "virtio_gpu_cmd_ctx_submit",
@@ -22,34 +22,69 @@ EVENTS = (
 )
 
 
+def enable(stream, log):
+    if "QMP" not in json.loads(stream.readline()):
+        raise RuntimeError("missing QMP greeting")
+
+    def command(name, arguments=None):
+        request = {"execute": name}
+        if arguments is not None:
+            request["arguments"] = arguments
+        stream.write(json.dumps(request) + "\n")
+        stream.flush()
+        while True:
+            line = stream.readline()
+            if not line:
+                raise RuntimeError("QMP closed before trace activation")
+            reply = json.loads(line)
+            if "error" in reply:
+                raise RuntimeError(str(reply["error"]))
+            if "return" in reply:
+                return reply["return"]
+
+    command("qmp_capabilities")
+    result = command("human-monitor-command", {"command-line": "logfile " + json.dumps(str(log))})
+    if result.strip():
+        raise RuntimeError("QEMU refused trace logfile: " + result)
+    version = command("query-version")
+    for event in EVENTS:
+        command("trace-event-set-state", {"name": event, "enable": True})
+    return version
+
+
 def main():
-    binary = os.environ.get("BREENIX_QEMU_TRACE_BINARY") or subprocess.check_output(
-        [str(ROOT / "scripts/build-qemu-gl.sh"), "--print-path"], text=True).strip()
-    arguments = sys.argv[1:]
-    if "-kernel" not in arguments:
-        os.execv(binary, [binary, *arguments])
-    renderer = os.environ.get("BREENIX_HOST_RENDERER_JSON")
-    if not renderer:
-        sys.exit("queue trace needs boot-interactive --gpu-gl and its per-run renderer path")
-    directory = Path(renderer).parent
-    available = subprocess.run([binary, "-trace", "help"], capture_output=True, text=True, check=True)
-    names = set((available.stdout + available.stderr).splitlines())
-    missing = set(EVENTS) - names
-    if missing:
-        sys.exit("installed QEMU lacks required trace events: " + ", ".join(sorted(missing)))
-    events = directory / "qemu-gpu-events"
-    events.write_text("\n".join(EVENTS) + "\n")
-    (directory / "qemu-gpu-trace.json").write_text(json.dumps({
-        "binary": binary,
-        "version": subprocess.check_output([binary, "--version"], text=True),
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("socket", type=Path)
+    parser.add_argument("log", type=Path)
+    parser.add_argument("--wait", type=float, default=1800)
+    args = parser.parse_args()
+    deadline = time.monotonic() + args.wait
+    while True:
+        connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        connection.settimeout(10)
+        try:
+            connection.connect(str(args.socket))
+            break
+        except (FileNotFoundError, ConnectionRefusedError):
+            connection.close()
+            if time.monotonic() >= deadline:
+                raise RuntimeError("QMP socket did not become ready")
+            time.sleep(0.02)
+    with connection, connection.makefile("rw") as stream:
+        version = enable(stream, args.log.resolve())
+    args.log.with_suffix(".json").write_text(json.dumps({
+        "version": version,
         "events": EVENTS,
-        "log": "qemu-gpu-trace.log",
+        "log": str(args.log),
+        "enabledAt": time.time(),
         "guestFeature": "gpu_queue_trace",
         "hostPatchesAdded": False,
     }, indent=2) + "\n")
-    os.execv(binary, [binary, "-msg", "timestamp=on", "-D", str(directory / "qemu-gpu-trace.log"),
-                         "-trace", f"events={events}", *arguments])
+    print("GPU host tracing enabled: " + str(args.log), flush=True)
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except (OSError, ValueError, RuntimeError) as error:
+        sys.exit(str(error))
