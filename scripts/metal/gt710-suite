@@ -4090,16 +4090,17 @@ def main():
         if any(event.get('event') in ('console-gap', 'fatal') for event in events):
             raise ValueError('BreenGL capture has a gap or fatal event')
         resources_identity(boot, 'breengel', args.sha)
-        verified = runner['in_metal'](env, 'python3', '-c',
-            'import runpy,sys;from pathlib import Path;p=Path(sys.argv[1]);'
-            'a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));print(a["capture_serial"](p),end="")',
-            directory, capture_output=True, text=True, check=True).stdout
-        rows = cases('breengel-composition' if args.breengel_composition else 'breengel-fronts', '', {'breengel': {'boot': dict(boot, bootedCommit=args.sha),
-                                                        'serial': verified}})
-        for row in rows:
-            print('SUITE gt710 CASE ' + row['id'] + ' ' + row['result'] + ' ms=0'
-                  + (' msg=' + row['reason'] if row['reason'] else ''))
-        return 0 if all(row['result'] == 'PASS' for row in rows) else 1
+        category = 'breengel-composition' if args.breengel_composition else 'breengel-fronts'
+        result = runner['in_metal'](env, 'python3', '-c',
+            'import json,runpy,sys;from pathlib import Path;'
+            'p=Path(sys.argv[1]);a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
+            'b=json.loads((p/"run.json").read_text());s=a["capture_serial"](p);'
+            'rows=a["cases"](sys.argv[2],"",{"breengel":{"boot":dict(b,bootedCommit=b["commit"]),"serial":s}});'
+            '[print("SUITE gt710 CASE "+r["id"]+" "+r["result"]+" ms=0"+'
+            '(" msg="+r["reason"] if r["reason"] else "")) for r in rows];'
+            'sys.exit(0 if all(r["result"]=="PASS" for r in rows) else 1)',
+            directory, category)
+        return result.returncode
     if (not read('ended').strip() or read('exit-status').strip() != '0' or read('dirty').strip() != '0'
             or read('commit').strip() != args.sha):
         raise ValueError('a completed, clean, successful boot of the requested commit is required')
