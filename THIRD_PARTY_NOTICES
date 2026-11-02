@@ -2142,7 +2142,7 @@ PS invocations by NVIDIA and ROP pixels in Mesa's query comments. The
 original Christoph Bumiller, Samuel Pitoiset and NVIDIA notices are retained
 in the new module's header.
 
-## Native window scanout observations (E20 milestone 20.2)
+## Native window scanout observations (E25 plan step 9.2)
 
 `kernel/src/gpu/gk208/present.rs` and its reader in `native.rs` resolve
 SCANOUT_READBACK from both display surface banks. The surface methods come

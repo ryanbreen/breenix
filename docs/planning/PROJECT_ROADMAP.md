@@ -16,6 +16,11 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Native GT 710 BreenGL composition and latched scanout observations for E25
+plan step 9.2 land through [PR #2655](https://github.com/ryanbreen/breenix/pull/2655).
+The PR records native acceptance and the scoped main-merge verification;
+nonblocking review follow-ups are grouped in [#2662](https://github.com/ryanbreen/breenix/issues/2662).
+
 Native GT 710 BreenGL window fronts for E20.1 are tracked in
 [PR #2627](https://github.com/ryanbreen/breenix/pull/2627), including the
 coordinator-approved intermediate memory accounting and native wait review fix.
