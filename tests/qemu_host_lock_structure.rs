@@ -203,13 +203,59 @@ fn calls_qemu_host_lock_acquire(script: &str) -> bool {
     })
 }
 
+fn arm_host_lock_held(script: &str) -> bool {
+    if sources_qemu_host_lock(script) && calls_qemu_host_lock_acquire(script) {
+        return true;
+    }
+    // A2 (820b1349, PR #2636) enrolls the persistent VM directly in the
+    // same mac-boot slot qemu_host_lock_acquire takes on Darwin. Require
+    // the helper, supervisor enrollment and acquisition, not just a mention.
+    let lines: Vec<_> = script.lines().map(str::trim)
+        .filter(|line| !line.starts_with('#')).collect();
+    lines.iter().any(|line| line.starts_with("source ") && line.contains("/scripts/host-slots.sh"))
+        && lines.iter().any(|line| line.starts_with("host_slots_start "))
+        && lines.contains(&"host_slot_acquire mac-boot")
+}
+
+#[test]
+fn persistent_launcher_uses_the_shared_mac_boot_slot() {
+    let launcher = repo_text("scripts/vm-persistent.sh");
+    assert!(arm_host_lock_held(&launcher));
+    for missing in ["source \"$ROOT/scripts/host-slots.sh\"", "host_slots_start ", "host_slot_acquire mac-boot"] {
+        assert!(launcher.contains(missing));
+        assert!(!arm_host_lock_held(&launcher.replace(missing, "# removed")), "must reject missing {missing}");
+    }
+    assert!(!arm_host_lock_held("# source scripts/host-slots.sh\n# host_slots_start \"$0\"\n# host_slot_acquire mac-boot"));
+}
+
 fn native_arm64_launches_use_wrapper(script: &str) -> bool {
-    let lines: Vec<&str> = script.lines().collect();
+    // Resolve shell variables assigned the ARM binary by A2's launcher and
+    // the older QEMU/QEMU_BIN launchers before judging their command lines.
+    let assignments: Vec<_> = script.lines().filter_map(|line| {
+        let (name, value) = line.trim().split_once('=')?;
+        (value == "qemu-system-aarch64" && !name.is_empty()
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            .then_some(name)
+    }).filter(|name| !script.lines().any(|line| line.trim() == format!("{name}=qemu-system-x86_64")))
+        .collect();
+    let lines: Vec<String> = script.lines().map(|line| {
+        let mut expanded = line.to_string();
+        for name in &assignments {
+            expanded = expanded.replace(&format!("\"${name}\""), "qemu-system-aarch64")
+                .replace(&format!("\"${{{name}}}\""), "qemu-system-aarch64");
+        }
+        expanded
+    }).collect();
     for (index, line) in lines.iter().enumerate() {
-        if !is_qemu_aarch64_launch_line(line) { continue; }
         let launch = line.trim();
-        if launch.starts_with("QEMU_BIN=") || launch.starts_with("QEMU=")
+        if launch.starts_with("QEMU_BIN=") || launch.starts_with("QEMU=") { continue; }
+        if assignments.iter().any(|name| launch.starts_with(&format!("{name}=")))
             || launch.starts_with("qemu_host_lock_") { continue; }
+        if !is_qemu_aarch64_launch_line(line)
+            && !(script.lines().nth(index).is_some_and(|raw| raw != line)
+                && launch.split_whitespace().collect::<Vec<_>>().windows(2)
+                    .any(|words| words[0] == "qemu-system-aarch64" && words[1].starts_with('-'))) { continue; }
+        if launch.starts_with('#') { continue; }
         let mut start = index;
         while start > 0 && lines[start - 1].trim_end().ends_with('\\') { start -= 1; }
         let command = lines[start..=index].join(" ");
@@ -218,6 +264,16 @@ fn native_arm64_launches_use_wrapper(script: &str) -> bool {
         if !command.contains("qemu-arm64.py") { return false; }
     }
     true
+}
+
+#[test]
+fn variable_launches_must_use_the_accelerator_wrapper() {
+    let wrapped = "qemu=qemu-system-aarch64\npython3 \"$ROOT/scripts/qemu-arm64.py\" \"$qemu\" -M virt \\\n";
+    assert!(native_arm64_launches_use_wrapper(wrapped));
+    let unwrapped = wrapped.replace("python3 \"$ROOT/scripts/qemu-arm64.py\" ", "");
+    assert!(!native_arm64_launches_use_wrapper(&unwrapped));
+    let mixed = format!("{wrapped}\n\"$qemu\" -M virt\n");
+    assert!(!native_arm64_launches_use_wrapper(&mixed));
 }
 
 #[test]
@@ -255,7 +311,7 @@ fn every_aarch64_qemu_launch_script_sources_and_acquires_the_host_lock() {
     for (path, text) in &launching {
         let sourced = sources_qemu_host_lock(text);
         let acquires = calls_qemu_host_lock_acquire(text);
-        if !sourced || !acquires {
+        if !arm_host_lock_held(text) {
             let missing = match (sourced, acquires) {
                 (false, false) => "sources lib/qemu-host-lock.sh AND calls qemu_host_lock_acquire",
                 (false, true) => "sources lib/qemu-host-lock.sh",
