@@ -1,4 +1,5 @@
 //! Host exercise of the real syscall and pointer state on x86.
+#![cfg(target_arch = "x86_64")]
 extern crate self as breengel_abi;
 pub mod tc_point { pub const MOVE_POINTER: u32 = 17; }
 #[path = "../kernel/src/drivers/hid_boot/pointer.rs"]
