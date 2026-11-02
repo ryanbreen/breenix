@@ -2397,11 +2397,11 @@ fn sys_write(fd: u64, buf: u64, count: u64) -> SyscallResult {
         return SyscallResult::Err(14); // EFAULT
     }
 
-    // Write each byte to serial
-    for i in 0..count {
-        let byte = unsafe { *((buf + i) as *const u8) };
-        crate::serial_print!("{}", byte as char);
-    }
+    // The legacy exception dispatcher shares the same record producer as
+    // the normal stdio and /dev/console paths, rather than printing bytes as
+    // unrelated kernel diagnostics.
+    let bytes = unsafe { core::slice::from_raw_parts(buf as *const u8, count as usize) };
+    crate::tty::driver::write_unprocessed(bytes);
 
     SyscallResult::Ok(count)
 }

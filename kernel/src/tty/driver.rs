@@ -196,6 +196,7 @@ fn foreground_signal_thread() {
         // This task runs independently of the renderer, including in desktop mode.
         #[cfg(target_arch = "aarch64")]
         crate::ipc::stdin::drain_serial_input();
+        if let Some(tty) = console() { tty.drain_echo(); }
         for slot in &FG_SIGNAL_QUEUE {
             let entry = slot.swap(0, Ordering::AcqRel);
             if entry != 0 {
@@ -229,7 +230,7 @@ pub fn start_foreground_signal_thread() {
     });
 }
 
-/// Maximum UART bytes emitted while interrupts are masked for one TTY write.
+/// Stack buffer for ONLCR expansion; serial assembles these fragments into lines.
 const SERIAL_ATOMIC_OUTPUT_BYTES: usize = 256;
 
 fn for_each_line_segment(buf: &[u8], mut visit: impl FnMut(&[u8])) {
@@ -869,12 +870,28 @@ impl TtyDevice {
             if let Some(mut pending) = self.pending_echo.try_lock() { pending.write(unit); }
             return;
         }
-        self.to_sinks(unit);
+        self.to_echo_sinks(unit);
     }
 
     /// Output to this terminal's sinks: its screen grid and, for the console,
     /// serial, which carries what the console's grid forwards to it.
     fn to_sinks(&self, unit: &[u8]) {
+        if self.is_console() {
+            crate::console::write_tty(unit, |bytes| crate::serial_writer::terminal(bytes, |line| crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, line)));
+        } else {
+            crate::console::write_vt(self.vt(), unit);
+        }
+    }
+
+    // Queue before draining so new echo stays behind deferred echo.
+    fn to_echo_sinks(&self, unit: &[u8]) {
+        let Some(mut pending) = self.pending_echo.try_lock() else { return; };
+        pending.write(unit);
+        drop(pending);
+        self.drain_echo();
+    }
+
+    fn emit_echo_sinks(&self, unit: &[u8]) {
         if self.is_console() {
             crate::console::write_tty(unit, |bytes| crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, bytes));
         } else {
@@ -883,14 +900,25 @@ impl TtyDevice {
     }
 
     fn drain_echo(&self) {
+        // IRQ input only enqueues console echo. The terminal worker handles
+        // serial backpressure and older fragments from thread context.
+        if self.is_console() && crate::per_cpu::in_interrupt() { return; }
         if self.transmission_stopped() { return; }
         let Some(mut pending) = self.pending_echo.try_lock() else { return; };
-        let mut scratch = [0; 256];
-        // At most the fixed echo ring is drained; no allocation or input lock.
-        loop {
-            let n = pending.read(&mut scratch);
-            if n == 0 { break; }
-            self.to_sinks(&scratch[..n]);
+        let mut drain = || {
+            let mut scratch = [0; 256];
+            loop {
+                let n = pending.read(&mut scratch);
+                if n == 0 { break; }
+                self.emit_echo_sinks(&scratch[..n]);
+            }
+        };
+        // Acquire assembly before consuming echo, so contention retains its
+        // original FIFO position in the fixed pending ring.
+        if self.is_console() {
+            crate::serial_writer::terminal_echo(drain);
+        } else {
+            drain();
         }
     }
 
@@ -906,7 +934,7 @@ impl TtyDevice {
         } else {
             &crlf[1..]
         };
-        self.to_sinks(unit);
+        self.to_echo_sinks(unit);
     }
 
     /// Write a buffer of bytes to the terminal output
@@ -922,18 +950,17 @@ impl TtyDevice {
     pub fn write_bytes(&self, buf: &[u8]) {
         while self.transmission_stopped() { crate::arch_halt(); }
         // Thread-side output orders suite records after older log evidence.
-        // IRQ echo uses to_sinks directly and does not wait on the log ring.
+        // IRQ echo uses to_echo_sinks directly and does not wait on the log ring.
         #[cfg(target_arch = "x86_64")]
         if self.is_console() { crate::serial::sync_log_to_console(); }
         self.drain_echo();
         // Get termios settings once for the entire buffer
         let termios = self.ldisc.lock().termios().clone();
         let do_onlcr = termios.is_opost() && termios.is_onlcr();
-        // Each lock acquisition covers at most one line and one bounded UART
-        // chunk, never the whole userspace buffer. Build ONLCR expansion before
-        // entering the serial primitive so CR-LF stays in the same atomic write.
-        // The whole write holds `serial_writer::exclusive`, so the console's
-        // prompt and echo do not land between its chunks.
+        // Expand ONLCR in bounded stack chunks. The serial sink assembles the
+        // chunks (and later write(2)s) into a line before taking UART ownership.
+        // Screen output remains immediate. The whole write holds exclusive so
+        // the kernel console's prompt and echo stay out of its screen chunks.
         crate::serial_writer::exclusive(|| {
             for_each_line_segment(buf, |line| {
                 let mut expanded = [0u8; SERIAL_ATOMIC_OUTPUT_BYTES];
@@ -996,7 +1023,7 @@ impl TtyDevice {
         let crlf = [b'\r', c];
         let unit = if do_crlf { &crlf[..] } else { &crlf[1..] };
         // The console's grid takes writes from interrupt context.
-        self.to_sinks(unit);
+        self.to_echo_sinks(unit);
     }
 
     /// Send a signal to the foreground process group
@@ -1246,16 +1273,14 @@ pub fn write_output(buf: &[u8]) -> usize {
 }
 
 /// Write `buf` to the console serial port as it is, without output
-/// processing, a line segment (at most one bounded chunk) per serial unit,
-/// holding `serial_writer::exclusive` for the whole write.
+/// processing. Assemble fragments by thread, then hand each line to serial
+/// under one port exclusion, including its newline.
 pub fn write_unprocessed(buf: &[u8]) {
     #[cfg(target_arch = "x86_64")]
     crate::serial::sync_log_to_console();
-    crate::serial_writer::exclusive(|| {
-        for_each_line_segment(buf, |line| {
-            for chunk in line.chunks(SERIAL_ATOMIC_OUTPUT_BYTES) {
-                crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, chunk);
-            }
+    crate::serial_writer::terminal(buf, |record| {
+        for_each_line_segment(record, |line| {
+            crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, line);
         });
     });
 }
