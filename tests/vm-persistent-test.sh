@@ -203,6 +203,11 @@ import json, sys
 from pathlib import Path
 run = Path(sys.argv[1])
 assert json.loads((run / 'verified-build.json').read_text())['evidenceEligible'] is True
+import hashlib
+record = json.loads((run / 'boots' / (run / 'current').read_text().strip() / 'run.json').read_text())
+assert record['evidenceEligible'] is True
+for disk in ('system.img', 'home.img'):
+    assert record['artifacts'][disk] == hashlib.sha256((run / disk).read_bytes()).hexdigest()
 PY
 printf x >> "$fixture/run/system.img"
 if STUB_SCENARIO=host boot_fixture --mode console > /dev/null 2>&1; then fail 'changed continuation disk accepted'; fi
