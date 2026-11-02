@@ -212,3 +212,88 @@ mod hardware {
 
 #[cfg(all(target_arch = "aarch64", not(test)))]
 pub use hardware::{discover, MmioBus};
+
+#[cfg(all(target_arch = "aarch64", not(any(test, feature = "testing", feature = "boot_tests"))))]
+mod feeder {
+    use super::{discover, Bus, Watchdog};
+    use crate::drivers::watchdog_round::{feed, health, wait};
+
+    fn run<B: Bus>(mut device: Watchdog<B>) -> Result<(), &'static str> {
+        crate::serial_println!("[watchdog] previous-expired={}", u8::from(device.previous_expired()));
+        let mut announced = false;
+        let mut rounds = 0u64;
+        loop {
+            match feed(&mut device, health) {
+                Ok(rearmed) => {
+                    if announced {
+                        rounds += 1;
+                        if rounds % 3 == 0 { crate::serial_println!("[watchdog] healthy feeds={}", rounds); }
+                    }
+                    if rearmed || !announced {
+                        crate::serial_println!("[watchdog] armed seconds=120 action=hard-reset health=root-io,root-inode");
+                        announced = true;
+                    }
+                }
+                Err(reason) => crate::serial_println!("[watchdog] round failed; retrying: {}", reason),
+            }
+            wait(20_000)?;
+        }
+    }
+
+    pub fn start() {
+        let device = discover();
+        if device.is_err() { crate::serial_println!("[watchdog] disabled: no device"); }
+        // The boot CPU can remain in its boot/idle context; secondary CPUs
+        // dispatch ordinary pinned kthreads after SMP bring-up.
+        let Some(cpu) = (1..crate::arch_impl::aarch64::smp::MAX_CPUS)
+            .find(|&cpu| crate::arch_impl::aarch64::smp::is_cpu_online(cpu)) else {
+                crate::serial_println!("[watchdog] feeder could not start: no scheduling CPU");
+                return;
+            };
+        #[cfg(feature = "watchdog_fault_inject")]
+        if crate::task::kthread::kthread_run_on_cpu(|| {
+            if let Err(reason) = fault() { crate::serial_println!("[watchdog-fault] request failed: {}", reason); }
+        }, "watchdog-fault", cpu).is_err() {
+            crate::serial_println!("[watchdog-fault] thread could not start");
+        }
+        let Ok(device) = device else { return; };
+        if crate::task::kthread::kthread_run_on_cpu(move || {
+            if let Err(reason) = run(device) { crate::serial_println!("[watchdog] stopped: {}", reason); }
+        }, "watchdog", cpu).is_err() {
+            crate::serial_println!("[watchdog] feeder could not start");
+        }
+    }
+
+    #[cfg(feature = "watchdog_fault_inject")]
+    fn fault() -> Result<(), &'static str> {
+        use crate::drivers::watchdog_fault_intent::{parse, Mode};
+        let mut guard = crate::fs::ext2::root_fs_write()?;
+        let fs = guard.as_mut().ok_or("fault root absent")?;
+        let number = fs.resolve_path("/etc/breenix/watchdog-fault")?;
+        let inode = fs.read_inode(number)?;
+        if inode.size() > 32 { return Err("fault intent too long"); }
+        let bytes = fs.read_file_content_coherent(number, &inode)?;
+        let Some(mode) = parse(&bytes)? else { return Ok(()); };
+        let ticket = fs.begin_resize_file_as(number, 0, false)?;
+        if let Some(ticket) = ticket {
+            guard.finish_shrink(ticket)?;
+        } else {
+            drop(guard);
+        }
+        let guard = crate::fs::ext2::root_fs_write()?;
+        guard.as_ref().ok_or("fault root absent")?.sync()?;
+        drop(guard);
+        wait(180_000)?;
+        if mode == Mode::HealthHang {
+            let _guard = crate::fs::ext2::root_fs_write()?;
+            crate::serial_println!("\n[watchdog-fault] trigger health-hang");
+            loop { crate::arch_halt_with_interrupts(); }
+        }
+        crate::serial_println!("\n[watchdog-fault] trigger feeder-hang");
+        unsafe { core::arch::asm!("msr daifset, #0xf", options(nomem, nostack)); }
+        loop { unsafe { core::arch::asm!("wfi", options(nomem, nostack)); } }
+    }
+}
+
+#[cfg(all(target_arch = "aarch64", not(any(test, feature = "testing", feature = "boot_tests"))))]
+pub use feeder::start;

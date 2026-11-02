@@ -1772,6 +1772,9 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
         splash::stage(Stage::AllCpusOnline);
     }
 
+    #[cfg(not(any(feature = "testing", feature = "boot_tests")))]
+    kernel::drivers::i6300esb::start();
+
     kernel::task::softirqd::init_online_daemons();
     kernel::drivers::ahci::start_completion_pollers();
     #[cfg(all(feature = "boot_tests", not(feature = "testing")))]
