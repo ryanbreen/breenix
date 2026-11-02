@@ -140,3 +140,15 @@ fn larger_binding_hashes_only_the_visible_mode_and_records_its_dimensions() {
     assert!(screen::validate(&rec, mode(), 4, 99).is_err(), "unknown scan offset");
     assert!(!saved.matches(&rec), "reuse must pin the scan offset");
 }
+
+#[test]
+fn transient_unknown_binding_must_reach_the_pinned_observer() {
+    assert!(!screen::non_case_binding(false, 0, 10, 20));
+    assert!(!screen::non_case_binding(false, 30, 10, 20));
+    assert!(!screen::non_case_binding(false, 10, 10, 20));
+    assert!(!screen::non_case_binding(false, 20, 10, 20));
+    assert!(!screen::non_case_binding(true, 0, 10, 20));
+    assert!(!screen::non_case_binding(true, 30, 10, 20));
+    assert!(screen::non_case_binding(true, 10, 10, 20));
+    assert!(screen::non_case_binding(true, 20, 10, 20));
+}
