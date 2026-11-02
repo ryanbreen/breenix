@@ -524,10 +524,15 @@ impl Device {
             // a persistent refusal and requests confirmed reset.
             return Ok(());
         }
+        // The accepted UPDATE belongs to EVO, which GR reset does not stop.
+        // Retain its original completion separately while restart retires GR
+        // requests and CAPS reprobes consume only their own receipts.
+        let flipping = self.flipping.take();
         self.begin_reset();
         let (held, result) = self.restart();
         debug_assert!(held.is_empty());
         if let Err(error) = result {
+            self.flipping = flipping;
             self.channel.record_refusal()?;
             return Err(error);
         }
@@ -537,6 +542,7 @@ impl Device {
         let result = self.reprobe();
         retired.append(&mut self.retired);
         self.retired = retired;
+        self.flipping = flipping;
         result
     }
 }
