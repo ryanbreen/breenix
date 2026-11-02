@@ -543,7 +543,15 @@ from pathlib import Path
 record = Path(sys.argv[1])
 data = json.loads(record.read_text())
 data['screenCapture'] = sys.argv[2]
-record.write_text(json.dumps(data, indent=2) + '\n')
+import tempfile
+with tempfile.NamedTemporaryFile(mode='w', dir=record.parent, delete=False) as output:
+    json.dump(data, output, indent=2)
+    output.write('\n')
+    temporary = Path(output.name)
+try:
+    temporary.replace(record)
+finally:
+    temporary.unlink(missing_ok=True)
 PYCAP
 fi
 host_slot_header "$SERIAL_LOG"
