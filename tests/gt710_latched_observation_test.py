@@ -150,6 +150,25 @@ fn head(s:Surface)->Head{let m=s.methods(1).unwrap();let words=core::array::from
 }
 '''.replace('TIMING', str(ROOT / 'kernel/src/gpu/gk208/timing.rs')))
 
+    def test_only_window_records_publish_window_provenance(self):
+        source = (ROOT / 'kernel/src/gpu/mod.rs').read_text()
+        begin = source.index('    if output.is_ok() && unwritten == 0 && window')
+        publication = item(source[begin:], '    if output.is_ok()')
+        self.run_rust(r'''
+use std::sync::atomic::{AtomicU64,Ordering};
+#[derive(Clone,Copy,PartialEq)]enum Observer{Owner,Window,Screen}
+mod abi{pub mod backend{pub const GK208:u32=6;}}
+mod dev{pub fn backend()->u32{6}}
+mod record{pub const RESOURCE:usize=0;}
+static COUNT:AtomicU64=AtomicU64::new(0);
+mod gk208{pub mod timing{pub fn scanout_published(_:u64){super::super::COUNT.fetch_add(1,super::super::Ordering::Relaxed);}}}
+fn publish(observer:Observer){let window=observer!=Observer::Owner;let output:Result<(),()>=Ok(());let unwritten=0;let rec=[0;8];PUBLICATION}
+#[test]fn window_counter_excludes_screen_checkpoints(){
+ publish(Observer::Owner);publish(Observer::Screen);assert_eq!(COUNT.load(Ordering::Relaxed),0);
+ publish(Observer::Window);assert_eq!(COUNT.load(Ordering::Relaxed),1);
+}
+'''.replace('PUBLICATION',publication))
+
     def test_scanout_target_mismatch_is_eio_before_record_or_pixels(self):
         core = (ROOT / 'kernel/src/gpu/mod.rs').read_text()
         source = item(core, 'fn read_back(')
@@ -178,17 +197,23 @@ mod gk208{pub fn observed_scanout()->Result<u32,&'static str>{super::QUERIES.wit
 fn with_core<T>(f:impl FnOnce(&mut Core)->T)->Option<T>{let mut c=Core{
  display:Display{binding:Some(Binding{id:72})},resources:[71,72].into_iter().map(|id|(id,
  Resource{kind:1,format:0,width:2560,height:1600,pitch:10240,backing:()})).collect()};Some(f(&mut c))}
-fn select(window:bool,target:u64)->Result<u32,Refused>{let tgid=7;let a=Arg{target};
+#[derive(Clone,Copy,PartialEq)]enum Observer{Owner,Window,Screen}
+fn select(observer:Observer,target:u64)->Result<u32,Refused>{let window=observer!=Observer::Owner;let tgid=7;let a=Arg{target};
  SELECT
  let _=(fmt,tw,th,pitch,backing);Ok(id)
 }
 #[test]fn mismatch_refuses_and_owner_does_not_query_hardware(){
- assert_eq!(select(true,0),Err(Refused::Eio(10,0)));
- HARDWARE.with(|h|h.set(Err(EIO)));assert_eq!(select(true,0),Err(Refused::Eio(10,0)));
- HARDWARE.with(|h|h.set(Ok(72)));assert_eq!(select(true,0),Ok(72));
+ assert_eq!(select(Observer::Window,0),Err(Refused::Eio(10,0)));
+ HARDWARE.with(|h|h.set(Err(EIO)));assert_eq!(select(Observer::Window,0),Err(Refused::Eio(10,0)));
+ HARDWARE.with(|h|h.set(Ok(72)));assert_eq!(select(Observer::Window,0),Ok(72));
  QUERIES.with(|q|q.set(0));HARDWARE.with(|h|h.set(Ok(71)));
- assert_eq!(select(false,0),Ok(72),"owner target 0 must name latest accepted binding");
- assert_eq!(select(true,71),Ok(71));QUERIES.with(|q|assert_eq!(q.get(),0));
+ assert_eq!(select(Observer::Owner,0),Ok(72),"owner target 0 must name latest accepted binding");
+ assert_eq!(select(Observer::Window,71),Ok(71));QUERIES.with(|q|assert_eq!(q.get(),0));
+}
+#[test]fn screen_keeps_main_accepted_binding_without_window_certification(){
+ HARDWARE.with(|h|h.set(Err(EIO)));QUERIES.with(|q|q.set(0));
+ assert_eq!(select(Observer::Screen,0),Ok(72),"SCREEN inherited the latched window certificate");
+ QUERIES.with(|q|assert_eq!(q.get(),0));
 }
 '''.replace('SELECT', select))
 
