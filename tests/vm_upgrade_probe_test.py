@@ -11,6 +11,13 @@ import vm_upgrade_driver_test as fixture
 class UpgradeProbeTest(unittest.TestCase):
     setUp = fixture.DriverTest.setUp
 
+    def test_known_host_pin_accepts_integer_vm_site_port(self):
+        self.driver.known = '[127.0.0.1]:2222 ssh-ed25519 synthetic\n'
+        site = dict(fixture.SITE, SERVER_SSH_PORT=2222)
+        with patch.object(self.ops.machine, 'reboot_site', return_value=site):
+            probe = self.driver.new_probe()
+        self.assertEqual(probe.known.read_text(), self.driver.known)
+
     def test_lease_and_strict_pin_are_required_before_ssh(self):
         probe = fixture.Probe(self.ops, Path(self.scratch.name))
         probe.run_case('host-key', '')
