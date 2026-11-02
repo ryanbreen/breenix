@@ -52,6 +52,14 @@ POLICY
  assert!(screen::Request::decode(&bytes[..31]).is_none());
  let mut bad=bytes;bad[0]^=1;assert!(screen::Request::decode(&bad).is_none());
 }
+#[test] fn failure_status(){
+ let bytes=screen::Failure{errno:5,reason:10,failed_submission:42,declared:1}.encode();
+ assert_eq!(&bytes[..8],b"SCREENER");
+ let failure=screen::Failure::decode(&bytes).unwrap();
+ assert_eq!((failure.errno,failure.reason,failure.failed_submission,failure.declared),(5,10,42,1));
+ assert!(screen::Failure::decode(&bytes[..31]).is_none());
+ let mut bad=bytes;bad[0]^=1;assert!(screen::Failure::decode(&bad).is_none());
+}
 '''
         fixture=fixture.replace('use std::convert::TryInto;','').replace('ABI',abi.read_text()).replace('POLICY',policy)
         with tempfile.TemporaryDirectory() as d:
