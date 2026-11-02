@@ -8,6 +8,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class WatchdogWorker(unittest.TestCase):
+    def test_workers_start_after_init_publication_before_boot_pin_release(self):
+        source = (ROOT / 'kernel/src/main_aarch64.rs').read_text()
+        begin = source.index('fn launch_init_from_elf(')
+        end = source.index('\n#[cfg(target_arch = "aarch64")]\nuse ', begin)
+        launch = source[begin:end]
+        call = 'kernel::drivers::i6300esb::start();'
+        self.assertEqual(source.count(call), 1)
+        self.assertIn(call, launch, 'workers must not contend with init construction on the boot continuation')
+        self.assertLess(launch.index('manager.publish_init(publication)'), launch.index(call))
+        self.assertLess(launch.index(call), launch.index('release_boot_preempt_pin();'))
+
     def test_timer_wait_switches_inline_and_health_io_can_sleep(self):
         source = (ROOT / 'kernel/src/drivers/watchdog_round.rs').read_text()
         source = source[source.index('#[cfg(not(test))]\npub fn wait'):]
