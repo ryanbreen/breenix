@@ -57,7 +57,8 @@ mod per_cpu {
 mod arch {
  pub fn with_interrupts<R>(f:impl FnOnce()->R)->R {
   let was=crate::IRQS.with(std::cell::Cell::get);
-  crate::IRQS.with(|c|c.set(true));
+  assert_eq!(crate::PREEMPT.with(std::cell::Cell::get),0,"pending IRQ delivered before releasing syscall preemption");
+  crate::IRQS.with(|c|c.set(true));crate::now_ns();
   let result=f();crate::IRQS.with(|c|c.set(was));result
  }
  // PAUSE

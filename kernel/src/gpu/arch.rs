@@ -22,12 +22,14 @@ pub(super) fn with_interrupts<R>(f: impl FnOnce() -> R) -> R {
 /// preemption level; an unheld kernel-thread caller already permits scheduling.
 #[cfg(target_arch = "x86_64")]
 pub(super) fn poll_pause(count: u32) {
+    let held = crate::per_cpu::preempt_count() == 1;
+    // A pending timer must see the released hold at the first STI, rather than
+    // deferring its reschedule until another timer lands inside the pause.
+    if held { crate::per_cpu::preempt_enable(); }
     with_interrupts(|| {
-        let held = crate::per_cpu::preempt_count() == 1;
-        if held { crate::per_cpu::preempt_enable(); }
         for _ in 0..count { core::hint::spin_loop(); }
-        if held { crate::per_cpu::preempt_disable(); }
     });
+    if held { crate::per_cpu::preempt_disable(); }
 }
 
 #[cfg(target_arch = "aarch64")]
