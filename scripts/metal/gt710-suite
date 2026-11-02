@@ -2214,7 +2214,7 @@ def breengel_allocations(serial):
 
 
 def breengel_memory_accounting(serial):
-    """Keep the raw verdict; account only the coordinator's measured intermediate exception."""
+    """Diagnose retained failure reasons without overriding the raw memory verdict."""
     shapes = {
         'START': r'SUITE breengel START cases=(\d+)',
         'PASS': r'SUITE breengel CASE (\S+) PASS ms=\d+(?: sha256=[a-f0-9]{64})?',
@@ -2360,7 +2360,9 @@ def breengel_fronts_suite(serial, boot):
         raise ValueError('BreenGL requires READY after ELAPSED')
     accounting = breengel_memory_accounting(serial)
     if accounting['status'] != 'PASS':
-        print('GT710_BREENGL_MEMORY_ACCOUNTING '+json.dumps(accounting, separators=(',', ':')))
+        raise ValueError('BreenGL memory not reclaimed: raw verdict FAIL '
+                         f"(lost={accounting['lost_pages']} allowance={accounting['allowance']} pages); "
+                         'retained failure reasons are diagnostic only')
     return cases
 
 def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
