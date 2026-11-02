@@ -2278,6 +2278,10 @@ mod screen_tests;
 #[path = "suite_screen.rs"]
 mod screen;
 
+#[cfg(test)]
+#[path = "../../../tests/suite_intent_test.rs"]
+mod intent_tests;
+
 /// Record a whole-scanout checkpoint after a completed present. Names are lowercase
 /// hyphenated words; `end` and `intent` are reserved. Performance cases cannot call it.
 /// The runner prints the digest after CASE, independently of the case verdict.
