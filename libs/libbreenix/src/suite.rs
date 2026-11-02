@@ -1318,8 +1318,9 @@ const FRAME_MS: i128 = 66;
 /// `CLOCK_STALL_WAKES`, which ends the wait as a stopped clock. (A poll's timeout runs on
 /// that clock, so a stopped clock wakes the runner only through the pipes.)
 fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut(), window: Option<Fd>, published: Option<Fd>, mut report: Option<Fd>, mut stage: Option<(Fd, Fd)>) -> Waited {
+    let case_clock = report.is_some();
     let mut awaiting_window = window.is_some();
-    let mut excluded_before = screen::excluded_ns(monotonic_ns().unwrap_or(0) as u64);
+    let mut excluded_before = 0;
     let mut last = monotonic_ns();
     let mut still = 0;
     let mut drawn = last;
@@ -1348,13 +1349,13 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
             _ => {}
         }
         let now = monotonic_ns();
-        let ms = match (start, now) {
+        let ms = if !case_clock { ms_since(start) } else { match (start, now) {
             (Some(start), Some(now)) => (now.saturating_sub(start) as u64)
                 .saturating_sub(screen::excluded_ns(now as u64).saturating_sub(excluded_before)) / 1_000_000,
             _ => 0,
-        };
+        }};
         // Observation has its own wall-clock supervision even while case time pauses.
-        if now.is_some_and(|now| screen::overdue(now as u64)) {
+        if case_clock && now.is_some_and(|now| screen::overdue(now as u64)) {
             return Waited::TimedOut(ms);
         }
         // Setup cannot outlive the existing 120-second progress watchdog. The
