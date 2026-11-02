@@ -1853,7 +1853,11 @@ mod native {
             })
         }
         fn sample_with(&mut self, sequence: u32, retry_traps: bool) -> Result<crate::gpu_completion::CeSample, &'static str> {
-            if let Some(pending) = self.pending_receipt(sequence) { return Ok(pending); }
+            // Diagnostic waits must resample consumption and binding even when
+            // their negative control deliberately withholds a matching receipt.
+            if !retry_traps {
+                if let Some(pending) = self.pending_receipt(sequence) { return Ok(pending); }
+            }
             let mut regs = Registers(self.registers);
             let mut monitor = Monitor { session: &self.session, regs: &mut regs, total: self.total,
                 sequence, stop_on_trap: true, retry_traps, release_slot: crate::gk208::queue::Queue::slot(sequence) as usize,

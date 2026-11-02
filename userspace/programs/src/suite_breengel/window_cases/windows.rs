@@ -1370,18 +1370,19 @@ fn windows_raw_client() -> CaseResult {
 }
 
 // claim-lint:ok: docs/gui/breengel.md specifies this assertion; the GPU lanes supply its implementation.
-// gpu-window: §2.2 and ruling 47 use GPU backend 4 or 5, never a legacy framebuffer backend.
+// gpu-window: §20.2 identifies each admitted GPU backend and its boundary.
 fn windows_every_target() -> CaseResult {
 interface()?;
     let w=W::new(16,16,2)?;want_ok(w.register(b"every-target"),"17.1","REGISTER")?;
     let info=listed(w.id()).cite("17.1")?.ok_or("window not listed")?;
     let (r,caps)=libbreenix::gpu::caps();
-    ensure(r==0 && [4,5].contains(&caps.backend) && info.backend==caps.backend,"20.2",
+    let row=crate::backend_row::backend_row(caps.backend).ok_or("gpu-window: unknown backend")?;
+    ensure(r==0 && info.backend==caps.backend,"20.2",
         format!("gpu-window: WinInfo backend {} does not match admitted GPU backend {}",info.backend,caps.backend))?;
     let mut pixels=vec![0;16*16*4];let mut record=[0;libbreenix::gpu::abi::record::SIZE];
     want_ok(libbreenix::gpu::readback(w.c.buffer[0],[0,0,16,16],&mut pixels,64,&mut record),"20.2","gpu-window: backend target readback")?;
     let word=|o|u32::from_le_bytes(record[o..o+4].try_into().unwrap());
-    ensure(word(0)==2 && word(16)==caps.backend && word(20)==4,"20.2","gpu-window: target readback is not this GPU backend's record v2")
+    ensure(word(0)==2 && word(16)==caps.backend && word(20)==row.boundary,"20.2","gpu-window: target readback is not this GPU backend's record v2")
 }
 // gpu-window: §2.2 render handoff must not publish a pending target, and must refuse a failed render fence.
 fn windows_commit_waits_render()->CaseResult {

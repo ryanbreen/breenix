@@ -69,15 +69,18 @@ fn scanout_device_path() -> CaseResult {
 interface()?;let (mut k,w,_p,serial)=one_window(2)?;
     let s=super::composition::gpu_snapshot(&mut k)?;
     let (ret,caps)=libbreenix::gpu::caps();let backend=s.word(16);
-    ensure(ret==0 && [4,5].contains(&backend) && backend==caps.backend,"20.2","gpu-display: record backend differs from admitted GPU backend")?;
+    let row=crate::backend_row::backend_row(backend).ok_or("gpu-display: unknown backend")?;
+    ensure(ret==0 && backend==caps.backend,"20.2","gpu-display: record backend differs from admitted GPU backend")?;
     ensure(listed(w.id()).cite("17.1")?.ok_or("window not listed")?.backend==backend,"20.2","gpu-display: window backend differs from readback backend")?;
-    let (status,render,readback)=if backend==4 {(0x1100,0x207,0x206)}else{(1,1152,1104)};
+    let (status,render,readback)=(row.status,row.render,row.readback);
     ensure(s.word(112)==status && s.word(116)==render && s.word(128)==status && s.word(132)==readback,"20.2","gpu-display: record does not contain native render and readback completions")?;
     ensure(s.quad(104)!=0 && s.quad(120)!=0 && s.quad(184)!=0 && s.word(192)==status && s.quad(176)==serial,
         "20.2","gpu-display: record lacks this composite's render/readback/present fences")?;
-    if backend==4 {ensure(s.quad(136)==0 && s.quad(144)==0 && s.word(152)==0 && s.word(156)==0,"20.2","gpu-display: VirGL record invented VMware copy fields")?;}
-    else {ensure(s.quad(136)!=0 && s.quad(136)!=s.quad(80) && s.quad(144)!=0 && s.word(152)==1042 && s.word(156)==1,"20.2","gpu-display: VMware record lacks its dedicated readback surface/MOB and completed copy")?;}
-    ensure(s.word(164)==0 && s.word(20)==4,"20.2","gpu-display: readback has unwritten bytes or the wrong boundary")
+    match row.copy_fields {
+        crate::backend_row::CopyFields::Zero => ensure(s.quad(136)==0 && s.quad(144)==0 && s.word(152)==0 && s.word(156)==0,"20.2","gpu-display: record invented VMware copy fields")?,
+        crate::backend_row::CopyFields::Vmware => ensure(s.quad(136)!=0 && s.quad(136)!=s.quad(80) && s.quad(144)!=0 && s.word(152)==1042 && s.word(156)==1,"20.2","gpu-display: VMware record lacks its dedicated readback surface/MOB and completed copy")?,
+    }
+    ensure(s.word(164)==0 && s.word(20)==row.boundary,"20.2","gpu-display: readback has unwritten bytes or the wrong boundary")
 }
 
 fn scanout_changing_scene() -> CaseResult {
@@ -152,10 +155,12 @@ fn scanout_completion() -> CaseResult {
     wb.frame(8).cite("17.3")?;
     let (serial, _) = compose(&mut k)?;
     let (_, rec) = screen()?;
-    let (status, render, readback) = match word(&rec,16) {
-        4 => (0x1100, 0x207, 0x206), 5 => (1, 1152, 1104),
-        other => return at("20.2", format!("gpu-display: B13 native backend missing: {other}")),
+    let backend = word(&rec,16);
+    let row = match crate::backend_row::backend_row(backend) {
+        Some(row) => row,
+        None => return at("20.2", format!("gpu-display: B13 native backend missing: {backend}")),
     };
+    let (status, render, readback) = (row.status, row.render, row.readback);
     ensure(quad(&rec,176)==serial && quad(&rec,104)!=0 && quad(&rec,120)!=0 && quad(&rec,184)!=0,
         "20.1", "gpu-display: render/readback/present completions do not identify this composite")?;
     let fences = [quad(&rec,104), quad(&rec,120), quad(&rec,184)];
@@ -338,11 +343,12 @@ let (status,reason,s,_)=gpu_fault(libbreenix::gpu::abi::test_point::CORRUPT_PIXE
     ensure(outside>0,"20.3","gpu-display: full-destination comparison did not detect planted corruption outside damage")
 }
 
-// gpu-display: §2.2 record v2 uses boundary 4 on both GPU backends; no legacy device-copy boundary remains.
+// gpu-display: §20.2 states the observation boundary for each GPU backend.
 fn scanout_boundary_stated() -> CaseResult {
 interface()?;let (mut k,_w,_p,_)=one_window(26)?;
     let s=super::composition::gpu_snapshot(&mut k)?;
-    ensure([4,5].contains(&s.word(16)) && s.word(20)==4,"20.2","gpu-display: record must state that the host renderer and host window lie outside guest observation")?;
+    let row=crate::backend_row::backend_row(s.word(16)).ok_or("gpu-display: unknown backend")?;
+    ensure(s.word(20)==row.boundary,"20.2","gpu-display: record must state the backend observation boundary")?;
     ensure(s.word(24)==3,"20.2","gpu-display: composed scanout must set exactly the scanout and composite bits")
 }
 fn gpu_fault(point:u32,seed:u32)->Result<(i64,u32,super::composition::GpuSnapshot,u64),breenix_suite::suite::CaseError>{

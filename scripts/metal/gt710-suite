@@ -2301,15 +2301,62 @@ def breengel_memory_accounting(serial):
                 mapped_bytes=pages*4096, residual_pages=residual, allowance=48, cases=credited)
 
 
-def breengel_fronts_suite(serial, boot):
-    """Score the ordered BreenGL capture against the step 9.1 selection."""
+SCANOUT_FIELDS = (
+    'schema', 'observations', 'latched_confirmed', 'refused', 'pending',
+    'wait_ns', 'wait_max_ns', 'last_latched_resource', 'last_record_resource',
+    'mismatches', 'wrong_bindings', 'wrong_requested_resource',
+    'wrong_latched_resource', 'wrong_record_resource',
+)
+SCANOUT_COUNTERS = SCANOUT_FIELDS[1:7] + ('mismatches', 'wrong_bindings')
+
+
+def scanout_sample(sample):
+    if (not isinstance(sample, dict) or set(sample) != set(SCANOUT_FIELDS)
+            or any(type(v) is not int or not 0 <= v < 1 << 64 for v in sample.values())
+            or sample['schema'] != 1 or sample['wait_max_ns'] > sample['wait_ns']):
+        raise ValueError('invalid latched scanout sample')
+    return sample
+
+
+def breengel_scanout_evidence(serial, names):
+    rows = [expand_case_heap(json.loads(line.removeprefix('GT710_CASE_HEAP ')))
+            for line in serial.splitlines() if line.startswith('GT710_CASE_HEAP ')]
+    if (len(rows) != len(names) + 1
+            or [r.get('boundary') for r in rows] != list(range(len(names) + 1))
+            or [r.get('case') for r in rows] != [''] + names):
+        raise ValueError('latched scanout boundaries differ from completed cases')
+    before = None
+    for row in rows:
+        sample = scanout_sample(row.get('scanout'))
+        if before is not None:
+            delta = {key: sample[key] - before[key] for key in SCANOUT_COUNTERS}
+            if any(v < 0 for v in delta.values()):
+                raise ValueError('latched scanout counters reset within a case')
+            if (delta['observations'] != delta['latched_confirmed'] or delta['mismatches'] != 0
+                    or (delta['observations'] and (sample['last_latched_resource'] == 0
+                        or sample['last_record_resource'] != sample['last_latched_resource']))):
+                raise ValueError('observation record lacks matching latched confirmation: ' + row['case'])
+            # Test point 26 binds an alternate surface. Keep that observation even
+            # though gpu_fault takes a clean successor before the case boundary.
+            if row['case'] == 'scanout/fault-wrong-resource':
+                requested = sample['wrong_requested_resource']
+                latched = sample['wrong_latched_resource']
+                recorded = sample['wrong_record_resource']
+                if (delta['wrong_bindings'] != 1 or delta['observations'] < 2
+                        or requested == 0 or latched == 0 or latched == requested or recorded != latched):
+                    raise ValueError('wrong binding record does not name the actual wrong binding')
+        before = sample
+
+
+def breengel_fronts_suite(serial, boot, step_number=1):
+    """Score the ordered BreenGL capture against the selected step."""
     resources_identity(boot, 'breengel')
     root = Path(__file__).resolve().parents[2]
     manifest = json.loads((root / 'docs/suites/breengel.json').read_text())
     names = [c['id'] + '/' + case['id'] for c in manifest['categories'] for case in c['cases']]
-    step = json.loads((root / 'docs/gui/gt710-step-9-1.json').read_text())
+    step = json.loads((root / f'docs/gui/gt710-step-9-{step_number}.json').read_text())
     required = step['cases']
-    if (len(names) != 401 or step.get('suite') != 'breengel' or len(required) != 304
+    if (len(names) != 401 or step.get('suite') != 'breengel' or len(required) != {1: 304, 2: 385}[step_number]
             or required != [name for name in names if name in required]):
         raise ValueError('invalid BreenGL selection or manifest order')
     fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal']
@@ -2327,6 +2374,9 @@ def breengel_fronts_suite(serial, boot):
         'VALUE': r'SUITE breengel VALUE .*',
         'WAIT': r'SUITE breengel WAIT .*',
     }
+    screen = runpy.run_path(str(root / 'scripts/screen-verdict.py'))
+    screen['score'](manifest, serial, json.loads((root / 'docs/suites/frames/screens.json').read_text()))
+    shapes['SCREEN'] = screen['RECORD'].pattern
     parsed = []
     for line in serial.splitlines():
         if not line.startswith('SUITE breengel '):
@@ -2358,6 +2408,8 @@ def breengel_fronts_suite(serial, boot):
     ready = [i for i, line in enumerate(lines) if line == 'SUITE_SEQUENCE READY breengel']
     if len(ready) != 1 or ready[0] <= lines.index(records[-1][2]):
         raise ValueError('BreenGL requires READY after ELAPSED')
+    if step_number == 2:
+        breengel_scanout_evidence(serial, names)
     accounting = breengel_memory_accounting(serial)
     if accounting['status'] != 'PASS':
         print('GT710_BREENGL_MEMORY_ACCOUNTING '+json.dumps(accounting, separators=(',', ':')))
@@ -2793,11 +2845,11 @@ def display_snapshots(rows, preferred):
 
 
 def check_case(category, case, serial, producer=None):
-    if category == 'breengel-fronts':
+    if category in ('breengel-fronts', 'breengel-composition'):
         if producer is None or 'breengel' not in producer or case != 'suite':
-            raise ValueError('breengel-fronts needs a production BreenGL capture')
+            raise ValueError(f'{category} needs a production BreenGL capture')
         capture = producer['breengel']
-        breengel_fronts_suite(capture['serial'], capture['boot'])
+        breengel_fronts_suite(capture['serial'], capture['boot'], 2 if category == 'breengel-composition' else 1)
         return
     if category == 'presentation' and case == 'display':
         if producer is None: raise ValueError('presentation needs named GPU and console captures')
@@ -2978,7 +3030,7 @@ def check_case(category, case, serial, producer=None):
 
 def cases(category, serial, producer=None):
     results = []
-    entries = [('suite', 'A completed production BreenGL boot records the selected window front cases')] if category == 'breengel-fronts' else CATEGORIES[category]
+    entries = [('suite', 'A completed production BreenGL boot records the selected window front cases')] if category in ('breengel-fronts', 'breengel-composition') else CATEGORIES[category]
     for name, title in entries:
         try:
             check_case(category, name, serial, producer)
@@ -3160,12 +3212,15 @@ CASE_HEAP_WORD_FIELDS = (
 def expand_case_heap(row):
     if isinstance(row, dict) and 'words_v1' in row:
         words = row['words_v1']
-        if (set(row) != {'schema', 'boundary', 'case', 'words_v1'}
+        if (set(row) not in ({'schema', 'boundary', 'case', 'words_v1'},
+                             {'schema', 'boundary', 'case', 'words_v1', 'scanout'})
                 or not isinstance(words, list) or len(words) != len(CASE_HEAP_WORD_FIELDS)
                 or any(type(v) is not int or not 0 <= v < 1 << 64 for v in words)):
             raise ValueError('invalid compact case heap words')
-        return dict(schema=row['schema'], boundary=row['boundary'], case=row['case'],
-                    values=dict(zip(CASE_HEAP_WORD_FIELDS, words)))
+        expanded = dict(schema=row['schema'], boundary=row['boundary'], case=row['case'],
+                        values=dict(zip(CASE_HEAP_WORD_FIELDS, words)))
+        if 'scanout' in row: expanded['scanout'] = scanout_sample(row['scanout'])
+        return expanded
     if isinstance(row, dict) and isinstance(row.get('values'), dict) and 'costs_v1' in row['values']:
         values = row['values'].copy()
         costs = values.pop('costs_v1')
@@ -3427,7 +3482,7 @@ def capture_serial(directory):
             key=('spans', row['id'])
         elif fields[0]=='GT710_CASE_HEAP':
             row = expand_case_heap(json.loads(line.removeprefix('GT710_CASE_HEAP ')))
-            if (not isinstance(row, dict) or set(row) != {'schema','boundary','case','values'}
+            if (not isinstance(row, dict) or set(row) not in ({'schema','boundary','case','values'}, {'schema','boundary','case','values','scanout'})
                     or type(row['schema']) is not int or row['schema'] != 1
                     or type(row['boundary']) is not int or not 0 <= row['boundary'] <= len(case_rows)
                     or not isinstance(row['case'], str) or len(row['case']) > 80
@@ -3436,6 +3491,7 @@ def capture_serial(directory):
                     or any(type(v) is not int or not 0 <= v < 1 << 64 for v in row['values'].values())
                     or row['values']['schema'] != 1):
                 raise ValueError('invalid case heap record')
+            if 'scanout' in row: scanout_sample(row['scanout'])
             key=('case-heap',)
         elif fields[0] in ('GT710_CLOCK_C1','GT710_VBIOS_V1'):
             if slot != 0: raise ValueError('C1 data in wrong upload slot')
@@ -3967,7 +4023,9 @@ def main():
     parser.add_argument('--boot')
     parser.add_argument('--sha')
     parser.add_argument('--gpu-boot', help='completed companion GPU-only suite boot for core/producer')
-    parser.add_argument('--breengel-fronts', action='store_true', help='score a completed BreenGL boot against step 9.1')
+    breengel = parser.add_mutually_exclusive_group()
+    breengel.add_argument('--breengel-fronts', action='store_true', help='score a completed BreenGL boot against step 9.1')
+    breengel.add_argument('--breengel-composition', action='store_true', help='score a completed BreenGL boot against step 9.2')
     parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
     parser.add_argument('--isolation', action='store_true', help='score PR 8.5 isolation and preceding selections from the same captures')
     parser.add_argument('--shapes', action='store_true', help='score PR 8.4 shapes and preceding selections from the same captures')
@@ -4030,7 +4088,7 @@ def main():
         return result.stdout
 
     boot = json.loads(read('run.json'))
-    if args.breengel_fronts:
+    if args.breengel_fronts or args.breengel_composition:
         if (not read('ended').strip() or read('exit-status').strip() not in ('0', '1')
                 or read('dirty').strip() != '0' or read('commit').strip() != args.sha):
             raise ValueError('a completed clean BreenGL boot of the requested commit is required')
@@ -4038,16 +4096,17 @@ def main():
         if any(event.get('event') in ('console-gap', 'fatal') for event in events):
             raise ValueError('BreenGL capture has a gap or fatal event')
         resources_identity(boot, 'breengel', args.sha)
-        verified = runner['in_metal'](env, 'python3', '-c',
-            'import runpy,sys;from pathlib import Path;p=Path(sys.argv[1]);'
-            'a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));print(a["capture_serial"](p),end="")',
-            directory, capture_output=True, text=True, check=True).stdout
-        rows = cases('breengel-fronts', '', {'breengel': {'boot': dict(boot, bootedCommit=args.sha),
-                                                        'serial': verified}})
-        for row in rows:
-            print('SUITE gt710 CASE ' + row['id'] + ' ' + row['result'] + ' ms=0'
-                  + (' msg=' + row['reason'] if row['reason'] else ''))
-        return 0 if all(row['result'] == 'PASS' for row in rows) else 1
+        category = 'breengel-composition' if args.breengel_composition else 'breengel-fronts'
+        result = runner['in_metal'](env, 'python3', '-c',
+            'import json,runpy,sys;from pathlib import Path;'
+            'p=Path(sys.argv[1]);a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
+            'b=json.loads((p/"run.json").read_text());s=a["capture_serial"](p);'
+            'rows=a["cases"](sys.argv[2],"",{"breengel":{"boot":dict(b,bootedCommit=b["commit"]),"serial":s}});'
+            '[print("SUITE gt710 CASE "+r["id"]+" "+r["result"]+" ms=0"+'
+            '(" msg="+r["reason"] if r["reason"] else "")) for r in rows];'
+            'sys.exit(0 if all(r["result"]=="PASS" for r in rows) else 1)',
+            directory, category)
+        return result.returncode
     if (not read('ended').strip() or read('exit-status').strip() != '0' or read('dirty').strip() != '0'
             or read('commit').strip() != args.sha):
         raise ValueError('a completed, clean, successful boot of the requested commit is required')

@@ -117,9 +117,7 @@ pub fn write_backend_fields(out: &mut [u8; gpu_abi::record::SIZE], fields: Backe
         (r::BACKEND, backend::GK208),
         (r::BOUNDARY, r::BOUNDARY_NATIVE),
         (r::READBACK_KIND, gk208::TRANSFER_RELEASE),
-        (r::COPY_KIND, gk208::TRANSFER_RELEASE),
         (r::READBACK_STATUS, fields.answer),
-        (r::COPY_STATUS, fields.answer),
     ] {
         out[at..at + 4].copy_from_slice(&value.to_le_bytes());
     }
@@ -132,7 +130,5 @@ pub fn write_backend_fields(out: &mut [u8; gpu_abi::record::SIZE], fields: Backe
         out[r::RENDER_KIND..r::RENDER_KIND+4].copy_from_slice(&kind.to_le_bytes());
         out[r::RENDER_STATUS..r::RENDER_STATUS+4].copy_from_slice(&answer.to_le_bytes());
     }
-    for at in [r::READBACK_SURFACE, r::READBACK_MOB] {
-        out[at..at + 8].fill(0);
-    }
+    out[r::READBACK_SURFACE..r::POISON].fill(0);
 }

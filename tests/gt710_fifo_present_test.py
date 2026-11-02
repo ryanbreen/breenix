@@ -106,21 +106,22 @@ impl Core{
 
     def test_readback_pins_the_latest_accepted_binding_before_latch(self):
         source = (ROOT / 'kernel/src/gpu/display.rs').read_text()
-        acquire = item(source, '    fn observe() -> Result<Self, i64>' if '    fn observe()' in source else '    fn acquire() -> Result<Self, i64>').replace('fn observe()', 'fn acquire()')
+        acquire = item(source, '    fn observe(deadline: Option<u64>) -> Result<Self, i64>')
         harness = r'''
 mod abi{pub mod backend{pub const GK208:u32=6;}}
 mod dev{pub fn backend()->u32{6}}
-const EINTR:i64=4;
+const EINTR:i64=4;const ETIMEDOUT:i64=110;
+enum Stop{Timeout,Interrupted}
 struct Display{changing:bool,outstanding:u32,known:bool,accepted:u64,sent:u64}
 struct Core{display:Display}
 thread_local!{static CORE:std::cell::RefCell<Core>=const{std::cell::RefCell::new(Core{display:Display{changing:false,outstanding:1,known:true,accepted:1,sent:2}})};}
-fn wait_for<T>(_:Option<u64>,_:bool,f:impl FnOnce(&mut Core)->Option<T>)->Result<T,()>{CORE.with(|c|f(&mut c.borrow_mut()).ok_or(()))}
+fn wait_for<T>(_:Option<u64>,_:bool,f:impl FnOnce(&mut Core)->Option<T>)->Result<T,Stop>{CORE.with(|c|f(&mut c.borrow_mut()).ok_or(Stop::Interrupted))}
 struct Transition;
 impl Transition{ACQUIRE}
 #[test]fn a_readback_waits_for_acceptance_then_pins_without_waiting_for_latch(){
- assert!(Transition::acquire().is_err(),"unaccepted UPDATE could change binding inside the readback");
+ assert!(Transition::observe(None).is_err(),"unaccepted UPDATE could change binding inside the readback");
  CORE.with(|c|c.borrow_mut().display.accepted=2);
- assert!(Transition::acquire().is_ok(),"accepted binding readback unnecessarily waited for latch");
+ assert!(Transition::observe(None).is_ok(),"accepted binding readback unnecessarily waited for latch");
  CORE.with(|c|{assert!(c.borrow().display.changing);assert_eq!(c.borrow().display.outstanding,1);});
 }
 '''.replace('ACQUIRE', acquire)
@@ -128,28 +129,29 @@ impl Transition{ACQUIRE}
 
     def test_mutations_wait_for_the_pending_flip_to_retire(self):
         source = (ROOT / 'kernel/src/gpu/display.rs').read_text()
-        acquire = item(source, '    fn acquire() -> Result<Self, i64>')
+        acquire = item(source, '    fn acquire(deadline: Option<u64>) -> Result<Self, i64>')
         harness = r'''
 mod abi{pub mod backend{pub const GK208:u32=6;}}
 mod dev{pub fn backend()->u32{6}}
-const EINTR:i64=4;
+const EINTR:i64=4;const ETIMEDOUT:i64=110;
+enum Stop{Timeout,Interrupted}
 struct Display{changing:bool,outstanding:u32,known:bool,accepted:u64,sent:u64}
 struct Core{display:Display}
 thread_local!{static CORE:std::cell::RefCell<Core>=const{std::cell::RefCell::new(Core{display:Display{changing:false,outstanding:1,known:true,accepted:2,sent:2}})};}
-fn wait_for<T>(_:Option<u64>,_:bool,f:impl FnOnce(&mut Core)->Option<T>)->Result<T,()>{CORE.with(|c|f(&mut c.borrow_mut()).ok_or(()))}
+fn wait_for<T>(_:Option<u64>,_:bool,f:impl FnOnce(&mut Core)->Option<T>)->Result<T,Stop>{CORE.with(|c|f(&mut c.borrow_mut()).ok_or(Stop::Interrupted))}
 struct Transition;
 impl Transition{ACQUIRE}
 #[test]fn accepted_flip_cannot_be_consumed_behind_the_adapter_by_a_mutation(){
- assert!(Transition::acquire().is_err(),"mode/ownership mutation entered with adapter flip still outstanding");
+ assert!(Transition::acquire(None).is_err(),"mode/ownership mutation entered with adapter flip still outstanding");
  CORE.with(|c|{assert!(!c.borrow().display.changing);c.borrow_mut().display.outstanding=0;});
- assert!(Transition::acquire().is_ok());
+ assert!(Transition::acquire(None).is_ok());
  CORE.with(|c|assert!(c.borrow().display.changing));
 }
 '''.replace('ACQUIRE', acquire)
         self.run_rust(harness)
         self.assertIn('Transition::for_mutation(tgid)?', item(source, 'pub(super) fn set_mode('))
         for marker in ['pub(super) fn back(', 'pub(super) fn restore_pending(']:
-            self.assertIn('Transition::acquire()?', item(source, marker))
+            self.assertIn('Transition::acquire(None)?', item(source, marker))
 
     def run_rust(self, harness):
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
