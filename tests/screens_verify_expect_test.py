@@ -136,6 +136,43 @@ class VerifyExpectTest(unittest.TestCase):
         self.assertEqual(result['verdict'], 'unparseable', result)
         self.assertTrue(any('decimat' in str(c) for c in result['unparseable_claims']))
 
+    def test_uniform_prose_does_not_hide_additional_claims(self):
+        image = Image.new('RGB', (8, 6), '#000000')
+        for sentence in ('A solid black (#000000) 8x6 rectangle with a dragon.',
+                         'A solid black (#000000) 8x6 rectangle, restored after an earlier frame.'):
+            result = self.verify(image, sentence, 'end')
+            self.assertEqual(result['verdict'], 'unparseable', result)
+
+    def test_overlapping_rectangles_check_visible_pixels(self):
+        image = Image.new('RGB', (8, 6), '#404040')
+        draw = ImageDraw.Draw(image)
+        draw.rectangle((1,1,2,2), fill='#FF0000')
+        draw.rectangle((2,0,4,1), fill='#0000FF')
+        sentence = ('An 8x6 grey (#404040) patch with red (#FF0000) at (1,1)-(3,3) '
+                    'and blue (#0000FF) at (2,0)-(5,2), blue covering the overlap; no text.')
+        result = self.verify(image, sentence, 'end')
+        self.assertFalse(result['failed_claims'], result)
+        self.assertEqual(len([c for c in result['checked_claims'] if c['kind'] == 'region']), 2)
+        image.putpixel((1,2), (0,0,0))
+        self.assertEqual(self.verify(image, sentence, 'end')['verdict'], 'fail')
+
+    def test_size_after_coordinate_checks_the_whole_rectangle(self):
+        image = Image.new('RGB', (32,24), '#0A141E')
+        ImageDraw.Draw(image).rectangle((10,2,21,6), fill='#FA0000')
+        sentence = 'On navy (#0A141E), red (#FA0000) at (10,2), size 12x5, in a 32x24 picture.'
+        self.assertFalse(self.verify(image, sentence, 'end')['failed_claims'])
+        image.putpixel((21,6), (0,0,0))
+        self.assertEqual(self.verify(image, sentence, 'end')['verdict'], 'fail')
+
+    def test_end_frame_uses_its_explicit_dimensions(self):
+        image = Image.new('RGB', (160,128), '#0000FF')
+        ImageDraw.Draw(image).rectangle((3,3,8,8), fill='#FF0000')
+        sentence = ('A red (#FF0000) 6x6 square at (3,3) on blue (#0000FF); '
+                    'the judged crop is 16x12, while the end screen extends the same blue field '
+                    'across 160x128, with no text.')
+        result = self.verify(image, sentence, 'end')
+        self.assertFalse(result['failed_claims'], result)
+
     def test_cli_reports_every_row_and_refuses_tampering(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
