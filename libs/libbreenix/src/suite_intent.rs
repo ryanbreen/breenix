@@ -77,14 +77,24 @@ pub(super) fn streams(source: [u32; 2], mode: [u32; 2], target: u64, texture: u6
         encode::draw(&mut stream, abi::pipeline::SOLID, 0xFFFF_FFFF,
             &[[x as i32, y as i32, (x + w) as i32, (y + h) as i32]]);
     }
+    let mut streams = vec![stream];
+    let steps = abi::draw::steps(abi::pipeline::NEAREST_SCALED).ok_or("intent-pipeline")?;
     for (dst, src) in samples(source, layout) {
         let mut params = [0; 16];
         for (slot, value) in params.iter_mut().zip(dst.iter().chain(&src)) { *slot = *value; }
         let [x, y, w, h] = dst;
-        abi::draw::encode(&mut stream, abi::pipeline::NEAREST_SCALED, 0, texture, 0, 0,
-            &[abi::draw::Instance { rect: [x as i32, y as i32, (x + w) as i32, (y + h) as i32], params }]);
+        let rows = (abi::limits::WORK / steps / u64::from(w)).max(1) as u32;
+        for offset in (0..h).step_by(rows as usize) {
+            let mut strip = Vec::new();
+            encode::begin(&mut strip, target);
+            // Clip only the draw rectangle; the source mapping stays the whole tile's.
+            abi::draw::encode(&mut strip, abi::pipeline::NEAREST_SCALED, 0, texture, 0, 0,
+                &[abi::draw::Instance { rect: [x as i32, (y + offset) as i32,
+                    (x + w) as i32, (y + (offset + rows).min(h)) as i32], params }]);
+            streams.push(strip);
+        }
     }
-    Ok(vec![stream])
+    Ok(streams)
 }
 
 struct Frame { context: u64, texture: u64, target: u64, display: bool }
@@ -135,6 +145,13 @@ impl Frame {
     }
 
     fn snapshot(&self, mode: abi::Mode) -> Result<([u8; 32], abi::Mode, abi::Mode), &'static str> {
+        // Records name device IDs, not userspace handles. Resolve this target's
+        // identity through its readback before comparing the latched binding.
+        let mut probe = [0; 4];
+        let mut expected = [0; abi::record::SIZE];
+        if gpu::readback(self.target, [0, 0, 1, 1], &mut probe, 4, &mut expected) != 0 {
+            return Err("intent-target-readback");
+        }
         let mut pixels = Vec::new();
         let len = mode.width as usize * mode.height as usize * 4;
         pixels.try_reserve_exact(len).map_err(|_| "intent-allocation")?;
@@ -144,8 +161,9 @@ impl Frame {
             return Err("intent-readback");
         }
         super::screen::validate(&record, mode, gpu::caps().1.backend, 0)?;
-        let quad = |at| u64::from_le_bytes(record[at..at+8].try_into().unwrap());
-        if quad(abi::record::RESOURCE) != self.target { return Err("intent-binding"); }
+        for at in [abi::record::CONTEXT, abi::record::RESOURCE, abi::record::GENERATION] {
+            if record[at..at+8] != expected[at..at+8] { return Err("intent-binding"); }
+        }
         Ok((super::screen::canonical_hash(&mut pixels, mode)?, mode, mode))
     }
 }
