@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import shutil
 import socket
+import subprocess
 import sys
 import time
 
@@ -73,6 +74,22 @@ def prepare(run):
     (run / 'boot-intent').write_text(intent, encoding='ascii')
     (run / 'install-references').write_text(' '.join(refs), encoding='ascii')
     shutil.copyfile(run / 'candidate.img', run / 'install-root.img')
+
+
+def prepare_capacity(run):
+    run = Path(run)
+    image = run / 'system.img'
+    # Keep the raw tree, three referenced slots, an unfinished generation and
+    # shared state. The build image's full capacity bounds one generation.
+    capacity = 6 * (run / 'candidate.img').stat().st_size
+    if image.stat().st_size >= capacity:
+        return
+    search = os.environ.get('PATH', '') + ':/opt/homebrew/opt/e2fsprogs/sbin:/usr/local/opt/e2fsprogs/sbin'
+    resize = shutil.which('resize2fs', path=search)
+    if resize is None:
+        raise ValueError('e2fsprogs resize2fs is required')
+    os.truncate(image, capacity)
+    subprocess.run([resize, str(image)], check=True)
 
 
 def monitor(run):
@@ -148,6 +165,7 @@ if __name__ == '__main__':
         operation, run = sys.argv[1:]
         if operation == 'prepare':
             prepare(run)
+            prepare_capacity(run)
         elif operation == 'monitor':
             sys.exit(0 if monitor(run) else 1)
         elif operation == 'publish':
