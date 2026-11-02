@@ -105,6 +105,9 @@ pub fn emit_diagnostic(path: u64) {
         }
         p::WRITE_BYTES_ATOMIC => crate::serial::write_bytes_atomic(Writer::Kernel, PAYLOAD),
         p::TRY_PRINT => {
+            #[cfg(target_arch = "x86_64")]
+            emit_try_print(text);
+            #[cfg(not(target_arch = "x86_64"))]
             let _ = crate::serial::try_print(format_args!("{}", text));
         }
         p::WRITE_STR_BOUNDED => crate::serial::write_str_bounded(text),
@@ -118,6 +121,20 @@ pub fn emit_diagnostic(path: u64) {
             let _ = crate::serial::emergency_print(format_args!("{}", text));
         }
         _ => {}
+    }
+}
+
+/// The suite's producer needs an accepted write. The x86 nonblocking writer can
+/// refuse contention; retry it for at most 100 ms without substituting another
+/// path or attributing bytes that were not written.
+#[cfg(target_arch = "x86_64")]
+fn emit_try_print(text: &str) {
+    let until = crate::signal::monotonic_nanos().saturating_add(100_000_000);
+    loop {
+        if crate::serial::try_print(format_args!("{}", text)).is_ok()
+            || crate::signal::monotonic_nanos() > until { break; }
+        crate::task::scheduler::yield_current();
+        core::hint::spin_loop();
     }
 }
 

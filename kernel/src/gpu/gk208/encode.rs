@@ -270,7 +270,7 @@ pub fn channel_programs(input: &mut [u32], parking: &[u32]) -> Result<(), &'stat
 // Reserve the complete committed shader catalogue before per-draw data.
 pub const DATA_START: usize = (1 << 20) + shaders::CATALOGUE_CODE_SIZE;
 const CODE: usize = 1 << 20;
-/// Bound native payload and method storage after shared validation. `drawn`
+/// Bound resident native payload and method storage after shared validation. `drawn`
 /// counts clipped rectangles, not empty DRAW declarations or clipped instances.
 /// Shared CLEAR uses a virtual clear packet and only counts its scissored form
 /// in `drawn`; native CLEAR needs a quad for a nonempty clip. COPY emits a chunk
@@ -289,12 +289,13 @@ pub fn reservation_bytes(w: &(impl Words + ?Sized), plan: &stream::Plan, corrupt
         at += w.word(at + 1) as usize;
     }
     // A 4 KiB allowance covers a quad's aligned inputs and bounded methods,
-    // or a copy chunk. Keep one for a fenced no-op, plus the temporary shader
-    // prefix and page padding. Scratch pixels are reserved separately.
+    // or a copy chunk. Keep one for a fenced no-op plus page padding. Resident
+    // translation starts after the channel-owned shader prefix. Scratch
+    // pixels are reserved separately.
     plan.drawn.checked_add(fixed)?
         .checked_add(plan.drawn.min(snapshots))?
         .checked_add(u64::from(corrupt))?.max(1)
-        .checked_mul(4096)?.checked_add(DATA_START as u64 + 4096)
+        .checked_mul(4096)?.checked_add(4096)
 }
 #[derive(Clone, Copy)]
 pub struct Target {
@@ -512,7 +513,13 @@ pub fn parking_frame(target: Target, source: Target, address: u64, quarantine: u
             // quad(). Keep the complete state, including both program offsets.
             if !matches!((words[at] & 0x1fff)*4, 0x1618 | 0xd74 | 0x1614) {
                 parked.try_reserve(count+1).map_err(|_| NO_MEMORY)?;
+                let start = parked.len();
                 parked.extend_from_slice(&words[at..at+count+1]);
+                // The explicit idle above drained shader use. Preserve the
+                // cache mask without another implicit WFI (MIT cla197.h).
+                if (words[at] & 0x1fff)*4 == 0x21c {
+                    parked[start] = (parked[start] & !0x1fff) | (0xda4 / 4);
+                }
             }
             at += count+1;
         }
@@ -648,12 +655,14 @@ impl Chunk {
     }
     fn address(&mut self, method: u32, offset: usize, tail: &[u32]) -> Result<(), &'static str> {
         self.relocations.try_reserve(1).map_err(|_| NO_MEMORY)?;
+        self.words.try_reserve(tail.len() + 3).map_err(|_| NO_MEMORY)?;
         self.relocations.push(self.words.len() + 1);
-        let mut data = Vec::new();
-        data.try_reserve_exact(tail.len() + 2).map_err(|_| NO_MEMORY)?;
-        data.extend_from_slice(&[(offset as u64 >> 32) as u32, offset as u32]);
-        data.extend_from_slice(tail);
-        self.emit(method, &data)
+        // Append to retained packet storage directly. A temporary Vec here
+        // would allocate and free storage for the address packet.
+        self.words.push(0x20000000 | (((tail.len() + 2) as u32) << 16) | (method / 4));
+        self.words.extend_from_slice(&[(offset as u64 >> 32) as u32, offset as u32]);
+        self.words.extend_from_slice(tail);
+        Ok(())
     }
 }
 fn handle(w: &(impl Words + ?Sized), at: usize) -> u64 {
@@ -702,7 +711,7 @@ pub fn translate(w: &(impl Words + ?Sized), b: &impl Bindings) -> Result<Frame, 
     translate_with_extras(w, b, Extras::default())
 }
 pub fn translate_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras) -> Result<Frame, &'static str> {
-    translate_inner(w, b, x, false)
+    translate_inner(w, b, x, false, #[cfg(target_os = "none")] None)
 }
 /// Runtime draws use the catalogue retained by NativeChannel::publish_draw.
 /// Build only their mutable inputs; bootstrap and diagnostic encoders still
@@ -711,12 +720,25 @@ pub fn translate_resident(w: &(impl Words + ?Sized), b: &impl Bindings) -> Resul
     translate_resident_with_extras(w, b, Extras::default())
 }
 pub fn translate_resident_with_extras(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras) -> Result<Frame, &'static str> {
-    translate_inner(w, b, x, true)
+    translate_inner(w, b, x, true, #[cfg(target_os = "none")] None)
 }
-fn translate_inner(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras, resident: bool) -> Result<Frame, &'static str> {
+#[cfg(target_os = "none")]
+pub(crate) fn translate_resident_traced(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras,
+    trace: Option<&super::timing::Submit>) -> Result<Frame, &'static str> {
+    translate_inner(w,b,x,true,trace)
+}
+fn translate_inner(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras, resident: bool,
+    #[cfg(target_os = "none")] trace: Option<&super::timing::Submit>,
+) -> Result<Frame, &'static str> {
     let Extras { mut corrupt, mut suppress, swap } = x;
+    #[cfg(target_os = "none")]
+    let validation = trace.map(|t| t.scope(super::timing::submit_cost::Phase::TranslateValidate));
     stream::validate(w, b).map_err(|_| "invalid BGL draw stream")?;
     if pipeline_refusal(w).is_some() { return Err("native pipeline not implemented"); }
+    #[cfg(target_os = "none")]
+    drop(validation);
+    #[cfg(target_os = "none")]
+    let _emitting = trace.map(|t| t.scope(super::timing::submit_cost::Phase::TranslateEmit));
     let mut f = Frame {
         probe_mask: 0,
         chunks: Vec::new(),
@@ -911,6 +933,7 @@ fn translate_inner(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras, resi
                         Some(scratch)
                     } else { None }
                 } else { None };
+                let mut colour_bits = None;
                 for n in 0..count {
                     let i = instance(n);
                     if let Some(r) = draw::source_clip(pipe, i, None)
@@ -921,8 +944,8 @@ fn translate_inner(w: &(impl Words + ?Sized), b: &impl Bindings, x: Extras, resi
                         constants[27] = data.map_or(gpu_abi::gk208::MAX_2D_SIZE.trailing_zeros(), |d| d.width.trailing_zeros());
                         let colour = w.word(at + 3);
                         if matches!(pipe, pipeline::GRADIENT_V | pipeline::COVERAGE_SPANS) { constants[20] = colour; }
-                        else { constants[20..24].copy_from_slice(&[16, 8, 0, 24]
-                            .map(|shift| gpu_abi::float::ratio_bits(colour >> shift & 255, 255))); }
+                        else { constants[20..24].copy_from_slice(colour_bits.get_or_insert_with(||
+                            [16, 8, 0, 24].map(|shift| gpu_abi::float::ratio_bits(colour >> shift & 255, 255)))); }
                         quad(&mut f, t, r, clip, &constants, pipe, None, scratch, data)?;
                     }
                 }
@@ -1341,18 +1364,26 @@ fn quads(
         }
     }
     for (rectangle, [x0, y0, x1, y1]) in rectangles.enumerate() {
+        let coord = |p: u32, size: u32| {
+            let n = i64::from(p) * 2 - i64::from(size);
+            if size.is_power_of_two() {
+                gpu_abi::float::scaled_int_bits(n, size.trailing_zeros())
+            } else {
+                gpu_abi::float::ratio_bits(n.unsigned_abs() as u32, size)
+                    | if n < 0 { 1 << 31 } else { 0 }
+            }
+        };
+        // The six vertices repeat four coordinates. Convert the corners once,
+        // retaining the same integer binary32 formula and triangle ordering.
+        let (x0, x1) = (coord(x0, t.width), coord(x1, t.width));
+        let (y0, y1) = (coord(y0, t.height), coord(y1, t.height));
         for (i, [x, y]) in [[x0, y0], [x1, y0], [x1, y1], [x0, y0], [x1, y1], [x0, y1]]
             .into_iter()
             .enumerate()
         {
-            let coord = |p: u32, size: u32| {
-                let n = i64::from(p) * 2 - i64::from(size);
-                gpu_abi::float::ratio_bits(n.unsigned_abs() as u32, size)
-                    | if n < 0 { 1 << 31 } else { 0 }
-            };
             for (k, v) in [
-                coord(x, t.width),
-                coord(y, t.height),
+                x,
+                y,
                 0,
                 0x3f800000,
                 0,
@@ -1369,11 +1400,17 @@ fn quads(
             }
         }
     }
+    // The fixed A197 quad state fits 256 words and eight address relocations.
+    // Reserve its two buffers once, rather than grow them at method boundaries.
+    let mut words = Vec::new();
+    words.try_reserve_exact(256).map_err(|_| NO_MEMORY)?;
+    let mut relocations = Vec::new();
+    relocations.try_reserve_exact(8).map_err(|_| NO_MEMORY)?;
     let mut c = Chunk {
         command: 0,
         target: t.id,
-        words: Vec::new(),
-        relocations: Vec::new(),
+        words,
+        relocations,
         source: source.or(data).map(|s| s.id),
         copy: None,
     };
@@ -1480,7 +1517,12 @@ fn quads(
 
     if f.removed_prefix == DATA_START { c.emit(0x1608, &[0, 0])?; }
     else { c.address(0x1608, CODE, &[])?; }
-    c.emit(0x021c, &[0x1011])?; // invalidate instruction cache, all graphics stages
+    // A197 INVALIDATE_SHADER_CACHES_NO_WFI has the same instruction/data/
+    // constant bits as 0x21c (MIT cla197.h:273-282,974-983). Resident frame
+    // inputs are immutable through this batch; their invalidation need not
+    // drain the preceding draw. Upload/bootstrap frames keep the idle form.
+    let cache_method = if f.removed_prefix == DATA_START { 0xda4 } else { 0x21c };
+    c.emit(cache_method, &[0x1011])?;
     for slot in [0, 2, 3, 4] {
         c.emit(0x2000 + slot * 64, &[slot << 4])?;
     }
@@ -1518,7 +1560,7 @@ fn quads(
     c.address(0x1f00, end - 1, &[])?;
     c.emit(0x1160, &[0x38200000, 0x38200800])?;
     c.emit(0x142c, &[0])?;
-    c.emit(0x21c, &[1])?;
+    c.emit(cache_method, &[1])?;
     // MIT Mesa nvc0_vbo.c:592-597: VERTEX_BEGIN_GL,
     // VERTEX_BUFFER_FIRST/COUNT, VERTEX_END_GL. A single triangle-list draw
     // consumes 6 * count vertices; ordinary draws need no trailing SERIALIZE.
@@ -1527,6 +1569,128 @@ fn quads(
     c.emit(0x1614, &[0])?;
     f.chunks.try_reserve(1).map_err(|_| NO_MEMORY)?;
     f.chunks.push(c);
+    Ok(())
+}
+
+/// Apply after channel_programs binds the immutable retained catalogue. Code
+/// upload/bootstrap invalidation is separate; resident draws only need data
+/// and constant invalidation. MIT Mesa nvc0_program.c:937-942 invalidates
+/// instructions after code upload, not each launch; cla197.h:974-983 names
+/// the independent NO_WFI instruction, data and constant bits.
+pub fn retain_resident_instruction_cache(words: &mut Vec<u32>) -> Result<(), &'static str> {
+    let mut read = 0;
+    let mut write = 0;
+    let mut kept_start = 0;
+    while read < words.len() {
+        let header = words[read];
+        let count = ((header >> 16) & 0x1fff) as usize;
+        let end = read.checked_add(count + 1).ok_or("resident cache packet overflow")?;
+        if header >> 29 != 1 || count == 0 || end > words.len() {
+            return Err("resident cache packet extent");
+        }
+        let resident_cache = header & 0xffff == 0xda4 / 4;
+        if resident_cache {
+            if count != 1 { return Err("resident cache packet size"); }
+            words[read + 1] &= !1;
+        }
+        if resident_cache && words[read + 1] == 0 {
+            if write != kept_start && read != kept_start {
+                words.copy_within(kept_start..read, write);
+            }
+            write += read - kept_start;
+            kept_start = end;
+        }
+        read = end;
+    }
+    if write != kept_start && read != kept_start {
+        words.copy_within(kept_start..read, write);
+    }
+    write += read - kept_start;
+    words.truncate(write);
+    Ok(())
+}
+
+/// Omit identical resident bindings within one submission. Launches, cache
+/// operations and synchronization packets retain their original order.
+pub fn compact_state(words: &mut Vec<u32>) -> Result<(), &'static str> {
+    // A197 RT, viewport/scissor, program region and shader-stage setters.
+    // Addresses are already relocated; the first binding remains frame-owned.
+    const BINDINGS: [u32; 11] = [
+        0x800, 0xa00, 0xc00, 0xe00, 0xff4, 0xd00, 0x1608,
+        0x2040, 0x204c, 0x2140, 0x214c,
+    ];
+    let mut previous = [usize::MAX; BINDINGS.len()];
+    let mut read = 0;
+    let mut write = 0;
+    let mut kept_start = 0;
+    while read < words.len() {
+        let header = words[read];
+        let count = ((header >> 16) & 0x1fff) as usize;
+        let end = read.checked_add(count + 1).ok_or("native state packet overflow")?;
+        if header >> 29 != 1 || count == 0 || end > words.len() {
+            return Err("native state packet extent");
+        }
+        let method = (header & 0x1fff) * 4;
+        let subchannel = (header >> 13) & 7;
+        let binding = BINDINGS.iter().position(|m| *m == method);
+        let duplicate = subchannel == 0 && binding.is_some_and(|i| {
+            let old = previous[i];
+            if old == usize::MAX { return false; }
+            // Cache positions name the final output. Its unflushed suffix
+            // still resides in the current contiguous input span.
+            let source = if old >= write { kept_start + old - write } else { old };
+            words[source] == header
+                && words[source + 1..source + count + 1] == words[read + 1..end]
+        });
+        if duplicate {
+            if write != kept_start && read != kept_start {
+                words.copy_within(kept_start..read, write);
+            }
+            write += read - kept_start;
+            kept_start = end;
+        } else {
+            // Only documented setters and launch/cache actions emitted by
+            // this encoder preserve this cache. SET_OBJECT and unknown packets
+            // invalidate it; partial writes invalidate overlapping bindings.
+            let known = binding.is_some() || matches!(method,
+                0x17bc | 0x121c | 0x1538 | 0x12cc | 0x12e8 | 0x1380 |
+                0x1594 | 0x19bc | 0x194c | 0x1950 | 0xdf8 | 0x13ac |
+                0x1924 | 0x192c | 0x193c | 0x1510 | 0x1918 | 0xdac |
+                0x12e4 | 0x1360 | 0x135c | 0x19c4 | 0xf90 | 0x1a00 |
+                0x12e0 | 0x1534 | 0x15d0 | 0x153c | 0x754 | 0xfbc |
+                0x15b8 | 0x19e0 | 0x12d4 | 0x12ec | 0x37c | 0xfac |
+                0x1558 | 0x1644 | 0x15e4 | 0x10cc | 0x10e0 | 0x10ec |
+                0x74c | 0x16a8 | 0x1794 | 0x12ac | 0x218 | 0x10fc |
+                0x1290 | 0x12d8 | 0x1140 | 0x1610 | 0x161c | 0x30c |
+                0x300 | 0x2d0 | 0xfdc | 0x19c0 | 0x75c | 0x7fc |
+                0x2000 | 0x2080 | 0x20c0 | 0x2100 | 0x2380 | 0x2490 |
+                0x1574 | 0x155c | 0x1334 | 0x1330 | 0x1338 | 0x2608 |
+                0x1930 | 0x1880 | 0x1c00 | 0x1f00 | 0x1160 | 0x142c |
+                0x21c | 0xda4 | 0x1618 | 0xd74 | 0x1614 | 0x110 | 0x1b00);
+            if subchannel != 0 || !known {
+                previous.fill(usize::MAX);
+            } else {
+                for (i, old) in previous.iter_mut().enumerate() {
+                    if *old == usize::MAX { continue; }
+                    let source = if *old >= write { kept_start + *old - write } else { *old };
+                    let old_count = ((words[source] >> 16) & 0x1fff) as u32;
+                    if method < BINDINGS[i] + old_count * 4
+                        && BINDINGS[i] < method + count as u32 * 4 {
+                        *old = usize::MAX;
+                    }
+                }
+            }
+            if subchannel == 0 {
+                if let Some(i) = binding { previous[i] = write + read - kept_start; }
+            }
+        }
+        read = end;
+    }
+    if write != kept_start && read != kept_start {
+        words.copy_within(kept_start..read, write);
+    }
+    write += read - kept_start;
+    words.truncate(write);
     Ok(())
 }
 
@@ -1545,11 +1709,18 @@ impl Drop for Storage {
     }
 }
 #[cfg(target_os = "none")]
-pub(crate) fn prepare(
+pub(crate) fn prepare(frame: Frame, backing: alloc::sync::Arc<crate::gpu::dma::Pages>)
+    -> Result<Vec<super::adapter::EncodedDraw>, &'static str> {
+    prepare_traced(frame,backing,None)
+}
+#[cfg(target_os = "none")]
+pub(crate) fn prepare_traced(
     mut frame: Frame,
     backing: alloc::sync::Arc<crate::gpu::dma::Pages>,
+    trace: Option<&super::timing::Submit>,
 ) -> Result<Vec<super::adapter::EncodedDraw>, &'static str> {
     use alloc::sync::Arc;
+    let regions_phase = trace.map(|t| t.scope(super::timing::submit_cost::Phase::FrameRegions));
     let mut pages = Vec::new();
     pages.try_reserve_exact(backing.count()).map_err(|_| NO_MEMORY)?;
     pages.extend((0..backing.count()).map(|i| backing.page_addr(i)));
@@ -1594,6 +1765,8 @@ pub(crate) fn prepare(
             at += count+1;
         }
     }
+    drop(regions_phase);
+    let mapping = trace.map(|t| t.scope(super::timing::submit_cost::Phase::FrameMap));
     let (id, address, holds, transfers) = super::ce::with_resources(|r, a, io| {
         let mut holds = Vec::new();
         let mut transfers = Vec::new();
@@ -1621,6 +1794,8 @@ pub(crate) fn prepare(
         r.unref(id)?;
         Ok((id, address, holds, transfers))
     })?;
+    drop(mapping);
+    let _relocating = trace.map(|t| t.scope(super::timing::submit_cost::Phase::FrameRelocate));
     let storage = Arc::new(Storage {
         _backing: backing,
         holds,

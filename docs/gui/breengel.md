@@ -1325,7 +1325,8 @@ render-failure event: late EIO is delivered once by ACQUIRE, with WindowEvent st
 Root or the current claimant observes the whole composed destination produced by the userspace GPU
 compositor through the core's pinned-binding observation service, as canonical BGRX rows and the same **1,024-byte record version 2** as GPU READBACK.
 The complete little-endian offset table is normative in `gpu.md` §1.8 and `gpu-abi.md`.
-It includes version/size, backend 4 or 5, boundary 4, scanout/composite flags, physical rectangle,
+It includes version/size, backend 4 or 5 with boundary 4, or backend 6 with boundary 5,
+scanout/composite flags, physical rectangle,
 stride/format, actual resource identity, generation, native render/readback/present fences
 and statuses, complementary-poison result, composite serial and the 16 window entries
 (window, commit, render fence and generation). All reserved bytes are zero.
@@ -1362,10 +1363,15 @@ presentation; snapshot/provenance metadata or an op-19 success alone cannot cert
 |---|---|---|---|---|
 | ARM64 QEMU; Parallels in the B5 catch-up | 4, VirGL | SUBMIT_3D, two TRANSFER_FROM_HOST_3D observations under complementary poisons, cache invalidation | native kinds 0x207 and 0x206, status 0x1100, nonzero render/readback/present fences | 4, host renderer and window outside guest view |
 | VMware in the B5 catch-up | 5, SVGA3D DX | DX_DRAW, host SURFACE_COPY to dedicated readback surface/MOB, two poisoned READBACK_GB_SURFACE observations | render 1152, readback 1104, copy 1042; status 1; dedicated nonzero surface/MOB | 4, host renderer and window outside guest view |
+| Native GK208 (G27) | 6, GK208B | A197 render release followed by two complementary-poison A0B5 CE observations of the pinned native resource; native scanout observation names the latched resource and sampled generations | render 0xa1971b0c, readback/copy 0xa0b50300, status 0x60000000; caller fences resolve to the actual engine sequence, channel/instance and reset epoch; present follows the G26 EVO acceptance contract | 5, device memory and measured display state; external light is outside guest view |
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 Backend must equal CAPS and the window's backend. Backend 4 has zero VMware copy fields;
 backend 5 has its own native values and a readback surface distinct from the judged resource.
+Backend 6 follows `gpu.md` §§1.6.4 and 1.8: native context/resource identities and
+completion kinds, with zero VMware surface/MOB fields. A submission or front-end
+semaphore alone does not establish completion. Binding pins and atomic pixels/metadata
+span both poisoned CE copies; a lost or reset resource cannot produce a successful record.
 `unwritten` is zero on success. Flags contain only scanout bit 0 and composite bit 1;
 a composed scanout sets exactly both. Legacy CPU backends and boundary codes are retired.
 The initial effort runs ARM64 QEMU `--gpu-gl` under B5; its catch-up adds Parallels
@@ -1621,7 +1627,8 @@ The finale preserves the last judged picture on an all-pass run as well as the f
 on a failed run. A stage error fails the affected case and preserves the serial DONE record.
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
-The stage validates boundary 4 on GPU backends 4 and 5 without drawing a caption.
+The stage validates boundary 4 on GPU backends 4 and 5, and boundary 5 on native
+backend 6 under G27, without drawing a caption. Both rows accept only flags 1 or 3.
 `panel/boundary-notice` retains its case identity and checks that observation combination
 and the empty footer.
 An unknown or inconsistent backend/flags/boundary combination is an error, never a stronger observation.

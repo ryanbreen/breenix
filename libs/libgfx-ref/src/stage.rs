@@ -656,6 +656,8 @@ pub fn boundary_notice(
         // Record version 2 of a GPU backend's scanout (contract section 23.8): flags carry
         // only the scanout bit and, for a composed scanout, the composite bit.
         (4 | 5, 1 | 3, 4) => Ok("host renderer and window outside guest view"),
+        // G27: native records certify device memory and measured display state.
+        (6, 1 | 3, 5) => Ok("device memory and display state; external light outside guest view"),
         _ => Err(StageError::Boundary),
     }
 }

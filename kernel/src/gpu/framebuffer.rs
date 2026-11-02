@@ -134,7 +134,8 @@ pub fn pixel(x: usize, y: usize) -> Result<u32, i64> {
     let observed = (|| {
         let stage = Staging::new(owner, 4)?;
         let args = abi::Readback { x: x as u32, y: y as u32, width: 1, height: 1, ..abi::Readback::ZERO };
-        let seen = observe(owner, id, last, &backing, pitch, fmt, args, &stage.pages, None)
+        let seen = observe(owner, id, last, &backing, pitch, fmt, args, &stage.pages, None,
+            #[cfg(target_arch = "x86_64")] None)
             .map_err(|(errno, _)| errno)?;
         if seen.unwritten != 0 { return Err(EIO); }
         let mut pixel = [0; 4]; stage.pages.read(0, &mut pixel);

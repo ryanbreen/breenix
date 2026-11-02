@@ -26,6 +26,7 @@
 #include "nv50_ir.h"
 #include "nv50_ir_target.h"
 #include "nv50_ir_build_util.h"
+#include "line_division.h"
 #include <array>
 #include <fstream>
 #include <sstream>
@@ -72,6 +73,8 @@ class Frontend : public BuildUtil {
    unsigned loopDepth=0, ifDepth=0;
    std::vector<BasicBlock *> loopTails;
    bool vertex, discard=false;
+   bool lineLeadingZero;
+   unsigned lineLoops=0;
    unsigned samplers=0, cbBytes=0;
 
    Vec &reg(std::map<unsigned,Vec> &regs, unsigned i) {
@@ -179,7 +182,35 @@ class Frontend : public BuildUtil {
       if (insertJoins && ifDepth<=6) mkFlow(OP_JOIN,NULL,CC_ALWAYS,NULL)->fixed=1;
       --ifDepth;
    }
+   struct DivisionOps {
+      using V = Value *;
+      Frontend &f;
+      V imm(uint32_t value) { return f.loadImm(f.getSSA(), value); }
+      V binary(operation op, V a, V b) {
+         V result=f.getSSA(); f.mkOp2(op,TYPE_U32,result,a,b); return result;
+      }
+      V or_(V a,V b) { return binary(OP_OR,a,b); }
+      V and_(V a,V b) { return binary(OP_AND,a,b); }
+      V add(V a,V b) { return binary(OP_ADD,a,b); }
+      V eqzero(V a) { V r=f.getSSA(); f.mkCmp(OP_SET,CC_EQ,TYPE_U32,r,TYPE_U32,a,imm(0)); return r; }
+      V nonzero(V a) { V r=f.getSSA(); f.mkCmp(OP_SET,CC_NE,TYPE_U32,r,TYPE_U32,a,imm(0)); return r; }
+      V highest(V a) { V r=f.getSSA(); f.mkOp1(OP_BFIND,TYPE_U32,r,a); return r; }
+      V select(V c,V a,V b) {
+         V r=f.getSSA(); f.mkCmp(OP_SLCT,CC_NE,TYPE_U32,r,TYPE_U32,a,b,c); return r;
+      }
+   };
    void loop() {
+      if (lineLeadingZero) {
+         require(lineLoops++==0 && cursor<lines.size() &&
+                 lines[cursor]=="UADD TEMP[7].x, TEMP[7].xxxx, TEMP[36].xxxx",
+                 "native line division loop mismatch");
+         DivisionOps op{*this};
+         auto value=kepler_line_division_start(op,reg(temps,7)[0],
+             reg(temps,1)[0],reg(temps,16)[0],reg(temps,4)[0],
+             reg(temps,14)[0],reg(temps,11)[0],reg(temps,15)[0],
+             read(Operand("CONST[4].zzzz"),0));
+         mkMov(reg(temps,7)[0],value);
+      }
       BasicBlock *body=block(), *tail=block();
       getBB()->cfg.attach(&body->cfg,Graph::Edge::TREE);
       mkFlow(OP_PREBREAK,tail,CC_ALWAYS,NULL);
@@ -250,7 +281,7 @@ class Frontend : public BuildUtil {
       }
    }
 public:
-   Frontend(Program *p, const std::string &text, bool isVertex):BuildUtil(p),vertex(isVertex) {
+   Frontend(Program *p, const std::string &text, bool isVertex, bool optimizeLine):BuildUtil(p),vertex(isVertex),lineLeadingZero(optimizeLine) {
       auto *entry=block(); exitBlock=block();
       p->main->setEntry(entry); p->main->setExit(exitBlock); setPosition(entry,true);
       std::istringstream in(text); std::string line;
@@ -258,6 +289,7 @@ public:
       require(!lines.empty() && lines[0]==(vertex?"VERT":"FRAG"),"invalid shader stage"); cursor=1;
       while(cursor<lines.size() && (lines[cursor].rfind("DCL ",0)==0 || lines[cursor].rfind("IMM[",0)==0)) declaration(lines[cursor++]);
       sequence(); require(cursor<lines.size() && lines[cursor]=="END" && cursor+1==lines.size(),"missing END or trailing input");
+      require(!lineLeadingZero || lineLoops==1,"native line division loop absent");
       branch(exitBlock); setPosition(exitBlock,true);
       for (auto &[index, values]:outputs) for (unsigned c=0;c<4;++c) if(outputMask[index]&(1u<<c)) {
          Value *v=mkMov(getSSA(),values[c])->getDef(0);
@@ -296,7 +328,8 @@ public:
 
 int main(int argc, char **argv) {
    try {
-      require(argc==3,"usage: kepler-compile INPUT.tgsi OUTPUT_PREFIX");
+      require(argc==3 || (argc==4 && std::string(argv[3])=="--line-leading-zero"),
+              "usage: kepler-compile INPUT.tgsi OUTPUT_PREFIX [--line-leading-zero]");
       std::ifstream input(argv[1],std::ios::binary); require(bool(input),"cannot open input");
       std::string text((std::istreambuf_iterator<char>(input)),{});
       bool vertex=text.rfind("VERT",0)==0;
@@ -309,7 +342,7 @@ int main(int argc, char **argv) {
       out.target=0x106; out.type=info.type; out.io.fragDepth=out.io.sampleMask=0xff;
       out.prop.fp.numColourResults=1;
       prog.driver=&info; prog.driver_out=&out; prog.optLevel=3;
-      Frontend frontend(&prog,text,vertex);
+      Frontend frontend(&prog,text,vertex,argc==4);
       target->parseDriverInfo(&info,&out);
       require(target->runLegalizePass(&prog,CG_STAGE_PRE_SSA),"pre-SSA legalization failed");
       require(prog.convertToSSA(),"SSA conversion failed");

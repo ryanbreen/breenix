@@ -16,10 +16,11 @@ const EINTR:i64=4;
 mod abi {pub mod backend {pub const GK208:u32=6;}}
 mod dev {pub fn backend()->u32{crate::BACKEND.with(Cell::get)}use std::cell::Cell;}
 thread_local! {static BACKEND:Cell<u32>=const{Cell::new(6)};static CALLS:Cell<u32>=const{Cell::new(0)};static INTERRUPT:Cell<bool>=const{Cell::new(false)};}
+struct SubmitTrace;
 struct Core {reset_wanted:bool,resetting:bool}
 mod arch {pub fn with_interrupts<R>(f:impl FnOnce()->R)->R {f()}}
-fn wait_for<T>(_:Option<u64>,interruptible:bool,mut f:impl FnMut(&mut Core)->Option<T>)->Result<T,()>{
- assert!(interruptible);CALLS.with(|x|x.set(x.get()+1));
+fn wait_for_traced<T>(_:Option<u64>,interruptible:bool,mut f:impl FnMut(&mut Core)->Option<T>,_:Option<()>,fence_driven:bool,_:Option<&SubmitTrace>)->Result<T,()>{
+ assert!(!fence_driven);assert!(interruptible);CALLS.with(|x|x.set(x.get()+1));
  if INTERRUPT.with(Cell::get){return Err(());}
  for (reset_wanted,resetting) in [(true,false),(false,true),(false,false)] {
   let result=f(&mut Core{reset_wanted,resetting});
@@ -30,9 +31,9 @@ fn wait_for<T>(_:Option<u64>,interruptible:bool,mut f:impl FnMut(&mut Core)->Opt
 }
 // HELPER
 fn main(){
- assert_eq!(native_reset_barrier(),Ok(()));assert_eq!(CALLS.with(Cell::get),1);
- INTERRUPT.with(|x|x.set(true));assert_eq!(native_reset_barrier(),Err(EINTR));
- BACKEND.with(|x|x.set(4));assert_eq!(native_reset_barrier(),Ok(()));
+ assert_eq!(native_reset_barrier(None),Ok(()));assert_eq!(CALLS.with(Cell::get),1);
+ INTERRUPT.with(|x|x.set(true));assert_eq!(native_reset_barrier(None),Err(EINTR));
+ BACKEND.with(|x|x.set(4));assert_eq!(native_reset_barrier(None),Ok(()));
  assert_eq!(CALLS.with(Cell::get),2);
 }
 '''.replace('// HELPER',helper)

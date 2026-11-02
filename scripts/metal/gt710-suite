@@ -91,6 +91,7 @@ import hashlib
 import json
 from pathlib import Path
 import runpy
+import functools
 import tempfile
 
 # Canonical record digests; independent C/Rust check: tests/gt710_gr_tables_test.py.
@@ -153,6 +154,33 @@ CATEGORIES = {
 BDF = r'[0-9a-f]{2}:[0-9a-f]{2}\.[0-7]'
 HEX = r'0x[0-9a-f]+'
 FB = (r'\[fbcon\] framebuffer in display BAR: (\d+)x(\d+) (Rgb|Bgr) ([34]) bytes/pixel stride (\d+) at (' + HEX + r') length (\d+), (' + BDF + r') ([0-9a-f]{4}:[0-9a-f]{4}) class 03/[0-9a-f]{2} BAR([0-5]) (' + HEX + r')/(' + HEX + r') prefetchable$')
+
+
+SUBMIT_PHASES = ['entry', 'copy_in', 'validation', 'admission_poll', 'setup',
+                 'translate', 'frame_prepare', 'fence_bookkeeping', 'native_submit',
+                 'doorbell', 'copy_out', 'cleanup', 'other',
+                 'publication', 'command_upload', 'descriptor_upload', 'bar_flush', 'gp_put',
+                 'translate_encode', 'translate_compact', 'translate_batch',
+                 'frame_alloc', 'frame_copy', 'frame_maintain', 'frame_build',
+                 'frame_regions', 'frame_map', 'frame_relocate',
+                 'admission_core_poll', 'admission_inspect', 'admission_pause', 'admission_sleep',
+                 'translate_validate', 'translate_emit',
+                 'native_bind', 'native_payload', 'native_build', 'native_cache']
+
+def validate_submit_costs(record):
+    if 'submits' not in record and 'submit_phases' not in record:
+        return
+    rows = record.get('submits')
+    if record.get('submit_phases') not in (SUBMIT_PHASES, SUBMIT_PHASES[:34], SUBMIT_PHASES[:13]) or not isinstance(rows, list):
+        raise ValueError('invalid submit phase inventory')
+    owners = set()
+    for row in rows:
+        if (not isinstance(row, list) or len(row) != 3 + len(record['submit_phases'])
+                or any(type(v) is not int or v < 0 for v in row)
+                or row[0] == 0 or row[1] == 0 or row[0] in owners
+                or sum(row[3:]) != row[2]):
+            raise ValueError('submit phases do not partition elapsed time')
+        owners.add(row[0])
 
 
 def one(pattern, serial, why):
@@ -2147,6 +2175,194 @@ def resources_identity(boot, suite, sha=None):
 STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json', 'isolation': 'gt710-step-8-5.json', 'presentation': 'gt710-step-8-6.json', 'performance': 'gt710-step-8-7.json'}
 
 
+# Coordinator 06:00 EST correction: pictured! is only opt-in. The retained
+# ARM 401/401 judged set is generated/checked by gt710-picture-inventory.py.
+@functools.cache
+def breengel_picture_cases():
+    return frozenset(json.loads(
+        (Path(__file__).resolve().parents[2] / 'docs/gui/gt710-breengel-pictured.json').read_text())['cases'])
+
+
+def breengel_pictured(name):
+    return name in breengel_picture_cases()
+
+
+def breengel_allocations(serial):
+    records = re.findall(r'^GT710_BREENGL_ALLOCATIONS (.*)$', serial, re.M)
+    if len(records) != 1:
+        raise ValueError('retained-reason accounting requires one allocation census')
+    row = json.loads(records[0])
+    if (set(row) != {'schema', 'phase', 'dropped', 'count', 'entries'} or row['schema'] != 1
+            or type(row['phase']) is not int or row['phase'] != 401
+            or type(row['dropped']) is not int or not 0 <= row['dropped'] < 1 << 64
+            or type(row['count']) is not int or not 0 <= row['count'] <= 4096
+            or not isinstance(row['entries'], list) or len(row['entries']) != row['count']):
+        raise ValueError('invalid allocation census header')
+    seen = set()
+    for entry in row['entries']:
+        if (not isinstance(entry, list) or len(entry) != 5
+                or any(type(v) is not int for v in entry[:4])):
+            raise ValueError('invalid allocation census entry')
+        pointer, size, align, birth, prefix = entry
+        if (not 0 < pointer < 1 << 47 or pointer % 4096 != 16 or pointer in seen
+                or not 0 < size <= 2048 or align not in (1, 2, 4, 8, 16) or align > size or pointer % align
+                or not 0 <= birth <= 401 or not isinstance(prefix, str)
+                or len(prefix) != min(size, 160) * 2 or re.fullmatch('[a-f0-9]*', prefix) is None):
+            raise ValueError('allocation is not a distinct native small-malloc mapping')
+        seen.add(pointer)
+    return row
+
+
+def breengel_memory_accounting(serial):
+    """Keep the raw verdict; account only the coordinator's measured intermediate exception."""
+    shapes = {
+        'START': r'SUITE breengel START cases=(\d+)',
+        'PASS': r'SUITE breengel CASE (\S+) PASS ms=\d+(?: sha256=[a-f0-9]{64})?',
+        'FAIL': r'SUITE breengel CASE (\S+) FAIL ms=\d+(?: sha256=[a-f0-9]{64})? msg=(.*)',
+        'DONE': r'SUITE breengel DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)',
+        'MEMORY': r'SUITE breengel MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+',
+        'RECLAIMED': r'SUITE breengel MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)',
+    }
+    parsed = []
+    for line in serial.splitlines():
+        for kind, shape in shapes.items():
+            match = re.fullmatch(shape, line)
+            if match:
+                parsed.append((kind, match, line));break
+    ok, why = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'scripts/suite-verdict.py'))['memory_problem'](parsed)
+    if ok:
+        return dict(status='PASS', reason_pages=0)
+    # The common validator has already checked order, counts and the actual
+    # FAIL flag's arithmetic. Other memory errors do not enter this exception.
+    if not why.startswith('memory not reclaimed:'):
+        raise ValueError('BreenGL ' + why)
+    records = [(kind, match, line) for kind, match, line in parsed if kind in ('PASS', 'FAIL')]
+    root = Path(__file__).resolve().parents[2]
+    manifest = json.loads((root / 'docs/suites/breengel.json').read_text())
+    names = [cat['id']+'/'+case['id'] for cat in manifest['categories'] for case in cat['cases']]
+    done = [m for kind, m, _ in parsed if kind == 'DONE']
+    start = [m for kind, m, _ in parsed if kind == 'START']
+    failed = [(index, m[1], m[2]) for index, (kind, m, _) in enumerate(records) if kind == 'FAIL']
+    if (len(start) != 1 or start[0][1] != '401' or len(done) != 1
+            or len(records) != 401 or [m[1] for _, m, _ in records] != names
+            or tuple(map(int, done[0].groups())) != (401-len(failed), len(failed), 0, 401)
+            or not failed):
+        raise ValueError('memory exception requires the completed intermediate failing suite')
+    census = breengel_allocations(serial)
+    if census['dropped']:
+        raise ValueError('allocation tracking was incomplete')
+    samples = {m[1]: {k: int(v) for k, v in re.findall(r'([a-z_]+)=(\d+)', line)}
+               for kind, m, line in parsed if kind == 'MEMORY'}
+    before, after = samples['before'], samples['after']
+    fields = {'free', 'heap_free_kb', 'user_stacks', 'user_pages', 'page_tables',
+              'page_cache', 'kernel_stacks', 'buffers', 'other', 'receipts', 'settle_ms'}
+    verdict = [m for kind, m, _ in parsed if kind == 'RECLAIMED'][0]
+    if (set(before) != fields or set(after) != fields or int(verdict[4]) != 48
+            or before['receipts'] or after['receipts']):
+        raise ValueError('memory accounting requires complete settled native frame ownership')
+    owner_fields = fields - {'free', 'heap_free_kb', 'receipts', 'settle_ms'}
+    loss = before['free'] - after['free']
+    if (sum(after[k]-before[k] for k in owner_fields) != loss
+            or any(after[k] != before[k] for k in ('page_cache', 'kernel_stacks', 'buffers', 'other'))):
+        raise ValueError('unexplained non-runner frame ownership change')
+    owners = {}
+    for when in ('before', 'after'):
+        matches = re.findall(r'^BREENGEL OWNERS '+when+r' (.*)$', serial, re.M)
+        if len(matches) != 1:
+            raise ValueError('runner retirement owner census missing')
+        owners[when] = {k: int(v) for k, v in re.findall(r'([a-z_]+)=(\d+)', matches[0])}
+    expected = dict(gpu_status=0, contexts=0, device_contexts=0, resources=0, resource_bytes=16384000,
+                    copy_bytes=0, picture_bytes=0, readback_bytes=0, panes=0, thumbnails=0, runner_threads=1)
+    if owners['before'] != expected or owners['after'] != expected:
+        raise ValueError('runner or GPU owners remain live outside failure reasons')
+    credited = []; used = set(); requested = 0; reason_bytes = 0
+    for phase, name, reason in failed:
+        text = reason.encode('utf-8')
+        if not 0 < len(text) <= 160 or phase == 0:
+            raise ValueError('failure reason cannot be attributed to a measured case')
+        matches = [entry for entry in census['entries'] if entry[3] == phase
+                   and entry[1] >= len(text) and bytes.fromhex(entry[4]).startswith(text)]
+        if len(matches) != 1 or matches[0][0] in used:
+            raise ValueError('failure reason lacks one distinct live case allocation')
+        pointer, size, align, birth, prefix = matches[0]
+        # Breenix malloc's <=2KiB classes use a single anonymous mapping with
+        # a 16-byte header. malloc.rs maps capacity + HEADER; the captured offset and layout fit one page.
+        capacity = 1 << (max(size, 16)-1).bit_length()
+        if (capacity + 16 + 4095) // 4096 != 1:
+            raise ValueError('reason allocation does not fit the one-page malloc class')
+        used.add(pointer);requested += size;reason_bytes += len(text)
+        credited.append(dict(case=name, bytes=len(text), requested=size, mapped_pages=1))
+    pages = len(credited)
+    residual = loss - pages
+    if after['user_pages'] - before['user_pages'] < pages or not 0 <= residual <= 48:
+        raise ValueError('unreclaimed memory remains beyond measured reasons and the original allowance')
+    return dict(status='ACCOUNTED_FAILURE_REASONS', raw_verdict='FAIL', lost_pages=loss,
+                reason_pages=pages, reason_bytes=reason_bytes, requested_bytes=requested,
+                mapped_bytes=pages*4096, residual_pages=residual, allowance=48, cases=credited)
+
+
+def breengel_fronts_suite(serial, boot):
+    """Score the ordered BreenGL capture against the step 9.1 selection."""
+    resources_identity(boot, 'breengel')
+    root = Path(__file__).resolve().parents[2]
+    manifest = json.loads((root / 'docs/suites/breengel.json').read_text())
+    names = [c['id'] + '/' + case['id'] for c in manifest['categories'] for case in c['cases']]
+    step = json.loads((root / 'docs/gui/gt710-step-9-1.json').read_text())
+    required = step['cases']
+    if (len(names) != 401 or step.get('suite') != 'breengel' or len(required) != 304
+            or required != [name for name in names if name in required]):
+        raise ValueError('invalid BreenGL selection or manifest order')
+    fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal']
+    if not serial.endswith('\n') or any(re.search(p, serial) for p in
+            fatal + [r'KERNEL PANIC[:!]', r'SUITE_SEQUENCE (?:STALLED|FAIL)']):
+        raise ValueError('incomplete or fatal BreenGL capture')
+    shapes = {
+        'START': r'SUITE breengel START cases=(\d+)',
+        'PASS': r'SUITE breengel CASE ([a-z0-9/-]+) PASS ms=(\d+)(?: sha256=(?P<sha256>[0-9a-f]{64}))?',
+        'FAIL': r'SUITE breengel CASE ([a-z0-9/-]+) FAIL ms=(\d+)(?: sha256=(?P<sha256>[0-9a-f]{64}))? msg=(\S.*)',
+        'DONE': r'SUITE breengel DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)',
+        'ELAPSED': r'SUITE breengel ELAPSED ms=(\d+)',
+        'MEMORY': r'SUITE breengel MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+',
+        'RECLAIMED': r'SUITE breengel MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)',
+        'VALUE': r'SUITE breengel VALUE .*',
+        'WAIT': r'SUITE breengel WAIT .*',
+    }
+    parsed = []
+    for line in serial.splitlines():
+        if not line.startswith('SUITE breengel '):
+            continue
+        for kind, shape in shapes.items():
+            match = re.fullmatch(shape, line)
+            if match:
+                parsed.append((kind, match, line))
+                break
+        else:
+            raise ValueError('malformed BreenGL record: ' + line[:180])
+    records = [(k, m, line) for k, m, line in parsed if k in ('START', 'PASS', 'FAIL', 'DONE', 'ELAPSED')]
+    if (len(records) != 404 or records[0][0] != 'START' or records[0][1][1] != '401'
+            or [k for k, _, _ in records[1:401+1] if k not in ('PASS', 'FAIL')]
+            or [m[1] for _, m, _ in records[1:401+1]] != names
+            or records[402][0] != 'DONE' or records[403][0] != 'ELAPSED'):
+        raise ValueError('BreenGL requires manifest-ordered START/401 CASE/DONE/ELAPSED')
+    cases = records[1:402]
+    if any(k == 'PASS' and breengel_pictured(m[1]) and m['sha256'] is None for k, m, _ in cases):
+        raise ValueError('pictured BreenGL case lacks SHA-256')
+    if any(k != 'PASS' for k, m, _ in cases if m[1] in required):
+        raise ValueError('selected BreenGL case failed')
+    tally = (sum(k == 'PASS' for k, _, _ in cases), sum(k == 'FAIL' for k, _, _ in cases), 0, 401)
+    if tuple(map(int, records[402][1].groups())) != tally:
+        raise ValueError('BreenGL DONE disagrees with cases')
+    if not 0 < int(records[403][1][1]) <= 900000:
+        raise ValueError('BreenGL elapsed time exceeds 900 seconds')
+    lines = serial.splitlines()
+    ready = [i for i, line in enumerate(lines) if line == 'SUITE_SEQUENCE READY breengel']
+    if len(ready) != 1 or ready[0] <= lines.index(records[-1][2]):
+        raise ValueError('BreenGL requires READY after ELAPSED')
+    accounting = breengel_memory_accounting(serial)
+    if accounting['status'] != 'PASS':
+        print('GT710_BREENGL_MEMORY_ACCOUNTING '+json.dumps(accounting, separators=(',', ':')))
+    return cases
+
 def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
     """Score a selected step while recording every real result of the shared suite."""
     resources_identity(boot, 'gpu')
@@ -2574,6 +2790,12 @@ def display_snapshots(rows, preferred):
 
 
 def check_case(category, case, serial, producer=None):
+    if category == 'breengel-fronts':
+        if producer is None or 'breengel' not in producer or case != 'suite':
+            raise ValueError('breengel-fronts needs a production BreenGL capture')
+        capture = producer['breengel']
+        breengel_fronts_suite(capture['serial'], capture['boot'])
+        return
     if category == 'presentation' and case == 'display':
         if producer is None: raise ValueError('presentation needs named GPU and console captures')
         preferred, _ = native_mode(producer['console']['serial'])
@@ -2753,7 +2975,8 @@ def check_case(category, case, serial, producer=None):
 
 def cases(category, serial, producer=None):
     results = []
-    for name, title in CATEGORIES[category]:
+    entries = [('suite', 'A completed production BreenGL boot records the selected window front cases')] if category == 'breengel-fronts' else CATEGORIES[category]
+    for name, title in entries:
         try:
             check_case(category, name, serial, producer)
             result, reason = 'PASS', ''
@@ -2895,7 +3118,51 @@ CASE_COST_FIELDS = (
 )
 
 
+CASE_HEAP_WORD_FIELDS = (
+    'schema',
+    'heap_free',
+    'heap_high_water',
+    'frame_frontier',
+    'frame_freelist_bytes',
+    'frame_ledger_bytes',
+    'cpu_stage_slots',
+    'cpu_stage_metadata_bytes',
+    'cpu_stage_pages',
+    'core_contexts',
+    'core_resources',
+    'core_submissions',
+    'core_syncs',
+    'core_backlog',
+    'core_backlog_bytes',
+    'core_backing_meta_sum',
+    'core_context_vector_bytes',
+    'native_resources',
+    'native_retired',
+    'native_retired_vector_bytes',
+    'native_active_region_bytes',
+    'native_vm_table_bytes',
+    'native_queue_vector_bytes',
+    'native_retired_requests_bytes',
+    'native_channel_initial_bytes',
+    'native_channel_parking_bytes',
+    'native_bulk_capacity_bytes',
+    'console_terminal_bytes',
+    'console_renderer_vector_bytes',
+    'heap_total',
+    'native_contexts',
+    'native_alias_indices_bytes',
+) + CASE_COST_FIELDS
+
+
 def expand_case_heap(row):
+    if isinstance(row, dict) and 'words_v1' in row:
+        words = row['words_v1']
+        if (set(row) != {'schema', 'boundary', 'case', 'words_v1'}
+                or not isinstance(words, list) or len(words) != len(CASE_HEAP_WORD_FIELDS)
+                or any(type(v) is not int or not 0 <= v < 1 << 64 for v in words)):
+            raise ValueError('invalid compact case heap words')
+        return dict(schema=row['schema'], boundary=row['boundary'], case=row['case'],
+                    values=dict(zip(CASE_HEAP_WORD_FIELDS, words)))
     if isinstance(row, dict) and isinstance(row.get('values'), dict) and 'costs_v1' in row['values']:
         values = row['values'].copy()
         costs = values.pop('costs_v1')
@@ -2935,6 +3202,108 @@ CASE_HEAP_FIELDS = {
 # every current slot in performance_evidence.
 LEGACY_CASE_HEAP_FIELDS = CASE_HEAP_FIELDS - set(CASE_COST_FIELDS[24:])
 
+def breengel_picture_evidence(directory, serial, records, startup_bytes, final_bytes):
+    """G28: require category samples and failing pictures; verify every retained pixel."""
+    if re.search(r'^GT710_BREENGL_(?:PICTURE|PIX|REFUSED) ', serial, re.M):
+        raise ValueError('picture bytes on serial or evidence refused')
+    root = Path(directory)
+    anchors = list(re.finditer(r'^GT710_BREENGL_CHUNK (0|[1-9]\d*) ([1-9]\d*) ([a-f0-9]{64})$', serial, re.M))
+    starts = list(re.finditer(r'^SUITE breengel START cases=(\d+)$', serial, re.M))
+    final = one(r'^GT710_FINAL_BULK \d+ [a-f0-9]{64}$', serial, 'BreenGL final upload missing')
+    if len(starts) != 1 or len(anchors) > 401 * 32:
+        raise ValueError('invalid picture upload sequence')
+    total = startup_bytes + final_bytes
+    chunks = []
+    for index, anchor in enumerate(anchors):
+        file = root / f'gt710-breengel-{index:04}.rle'
+        if (int(anchor[1]) != index or not starts[0].end() < anchor.start() < final.start()
+                or not 0 < int(anchor[2]) <= 2 << 20 or file.stat().st_size != int(anchor[2])):
+            raise ValueError('picture upload order, position or slot size differs')
+        total += int(anchor[2])
+        if total > 64 << 20:
+            raise ValueError('BreenGL per-boot evidence exceeds 64 MiB')
+        data = file.read_bytes()
+        if hashlib.sha256(data).hexdigest() != anchor[3]:
+            raise ValueError('picture upload digest differs')
+        chunks.append(data)
+    if len(list(root.glob('gt710-breengel-*.rle'))) != len(anchors):
+        raise ValueError('unanchored picture upload')
+    body = b''.join(chunks)
+    cases = re.findall(r'^SUITE breengel CASE ([a-z0-9/-]+) (PASS|FAIL) ms=\d+(?: sha256=([a-f0-9]{64}))?(?: .*)?$', serial, re.M)
+    required = []; categories = set()
+    for name, status, digest in cases:
+        if status == 'PASS' and breengel_pictured(name) and not digest:
+            raise ValueError('judged CASE digest missing')
+        if not digest:
+            continue
+        category = name.split('/')[0]
+        if category not in categories or status == 'FAIL':
+            required.append((name, digest))
+        categories.add(category)
+    entries = [json.loads(line.removeprefix('GT710_BREENGL_PICTURE ')) for line in records]
+    if ([(e.get('case'), e.get('sha256')) for e in entries] != required
+            or len(entries) > 401 or len(set(name for name, _, _ in cases)) != len(cases)):
+        raise ValueError('picture manifest differs from G28 samples and failing CASE records')
+    seen = {}; offset = 0
+    for index, entry in enumerate(entries):
+        if (set(entry) != {'case', 'picture', 'sha256', 'bytes', 'width', 'height', 'encoding'}
+                or any(type(entry[k]) is not int for k in ('picture', 'bytes', 'width', 'height'))
+                or entry['encoding'] not in ('rle', 'raw')
+                or entry['picture'] != index or not 0 < entry['bytes'] <= 64 << 20
+                or not 0 < entry['width'] <= 16384 or not 0 < entry['height'] <= 16384):
+            raise ValueError('invalid picture manifest entry')
+        digest = entry['sha256']; pixels = entry['width'] * entry['height']
+        if digest in seen:
+            if seen[digest] != (entry['bytes'], pixels, entry['encoding']):
+                raise ValueError('duplicate picture has different length or geometry')
+            continue
+        encoded = body[offset:offset + entry['bytes']]; offset += entry['bytes']
+        if len(encoded) != entry['bytes']:
+            raise ValueError('picture payload missing or truncated')
+        if entry['encoding'] == 'raw':
+            if (len(encoded) != pixels * 4 or any(encoded[n] != 255 for n in range(3, len(encoded), 4))
+                    or hashlib.sha256(encoded).hexdigest() != digest):
+                raise ValueError('raw picture differs from canonical judged SHA-256')
+            # Refuse raw when the existing RLE would have been smaller.
+            at = 0; rle_bytes = 0
+            while at < len(encoded) and rle_bytes < len(encoded):
+                end = at + 4
+                while end < len(encoded) and encoded[end:end+4] == encoded[at:at+4]:
+                    end += 4
+                rle_bytes += len(f'{(end-at)//4:x}') + 10
+                at = end
+            if at == len(encoded) and rle_bytes < len(encoded):
+                raise ValueError('raw picture is larger than native RLE')
+            seen[digest] = (entry['bytes'], pixels, entry['encoding'])
+            continue
+        if not encoded.endswith(b'\n') or len(encoded) >= pixels * 4:
+            raise ValueError('native RLE missing terminator or not smaller than raw')
+        # Existing native encoding: lowercase hex run count and canonical BGRX
+        # word. Hash decoded bytes incrementally, bounded by the declared geometry.
+        count = 0; sha = hashlib.sha256()
+        for token in encoded[:-1].split(b','):
+            match = re.fullmatch(rb'([1-9a-f][0-9a-f]*):([0-9a-f]{8})', token)
+            if not match:
+                raise ValueError('invalid native picture run')
+            run = int(match[1], 16); word = int(match[2], 16).to_bytes(4, 'little')
+            if word[3] != 255 or count + run > pixels:
+                raise ValueError('picture run exceeds geometry or is not canonical')
+            block = word * min(run, 16384)
+            while run:
+                n = min(run, 16384); sha.update(block[:n * 4]); run -= n
+            count += int(match[1], 16)
+        if count != pixels or sha.hexdigest() != digest:
+            raise ValueError('decoded picture differs from judged SHA-256')
+        seen[digest] = (entry['bytes'], pixels, entry['encoding'])
+    if offset != len(body):
+        raise ValueError('extra or duplicated picture bytes')
+    summary = one(r'^GT710_BREENGL_TOTAL bytes=(\d+) uploads=(\d+) picture_bytes=(\d+) pictures=(\d+) unique=(\d+)$', serial, 'BreenGL evidence totals missing')
+    ready = one(r'^SUITE_SEQUENCE READY breengel$', serial, 'BreenGL ready missing')
+    if (tuple(map(int, summary.groups())) != (total, 2 + len(anchors), len(body), len(entries), len(seen))
+            or not final.end() < summary.start() < ready.start() or total > 64 << 20):
+        raise ValueError('BreenGL evidence totals differ')
+
+
 def capture_serial(directory):
     # claim-lint:ok: normative bulk framing; tests/gt710_bulk_test.py and tests/gt710_contexts_report_test.py mutate anchors and bodies.
     serial=(Path(directory)/'serial.txt').read_text()
@@ -2946,11 +3315,14 @@ def capture_serial(directory):
     final_path=Path(directory)/'gt710-final.rle'
     if len(finals)>1 or final_path.exists()!=bool(finals):
         raise ValueError('final artifact slot missing or duplicated')
+    suite = None
+    case_rows = []
     if finals:
-        suite=one(r'^SUITE (gpu|console) START .*$',serial,'final-slot suite')[1]
+        suite=one(r'^SUITE (gpu|console|breengel) START .*$',serial,'final-slot suite')[1]
         start=list(re.finditer(r'^SUITE '+suite+r' START .*$',serial,re.M))
         done=list(re.finditer(r'^SUITE '+suite+r' DONE .*$',serial,re.M))
-        memory=list(re.finditer(r'^SUITE '+suite+r' MEMORY reclaimed=PASS .*$',serial,re.M))
+        memory_status = r'(?:PASS|FAIL)' if suite == 'breengel' else 'PASS'
+        memory=list(re.finditer(r'^SUITE '+suite+r' MEMORY reclaimed='+memory_status+r' .*$',serial,re.M))
         ready=list(re.finditer(r'^SUITE_SEQUENCE READY '+suite+'$',serial,re.M))
         case_rows=list(re.finditer(r'^SUITE '+suite+r' CASE .*$',serial,re.M))
         if (len(matches)!=1 or len(start)!=1 or len(done)!=1 or len(memory)!=1
@@ -2992,7 +3364,7 @@ def capture_serial(directory):
         raise ValueError('graphics image rows must arrive in bulk')
     if spans and not matches:
         raise ValueError('spans evidence bulk missing')
-    if re.search(r'^GT710_CASE_HEAP ', serial, re.M):
+    if re.search(r'^(?:GT710_CASE_HEAP|GT710_BREENGL_ALLOCATIONS) ', serial, re.M):
         raise ValueError('case heap records must arrive in bulk')
     if re.search(r'^GT710_CONSOLE_SAMPLE_V1 ', serial, re.M):
         raise ValueError('console samples must arrive in bulk')
@@ -3016,6 +3388,10 @@ def capture_serial(directory):
         raise ValueError('GR refusal records must arrive in bulk')
     if 'GT710_GR_REFUSAL_BULK ' in serial and not matches:
         raise ValueError('GR refusal evidence bulk missing')
+    if 'SUITE breengel START ' in serial and not finals:
+        raise ValueError('BreenGL final evidence missing')
+    if re.search(r'^GT710_BREENGL_(?:PICTURE|PIX|REFUSED) ', serial, re.M):
+        raise ValueError('picture bytes on serial or evidence refused')
     if not matches: return serial
     if len(matches)!=1: raise ValueError('duplicate display artifact digest')
     data=(Path(directory)/'gt710-pixels.rle').read_bytes()
@@ -3050,7 +3426,7 @@ def capture_serial(directory):
             row = expand_case_heap(json.loads(line.removeprefix('GT710_CASE_HEAP ')))
             if (not isinstance(row, dict) or set(row) != {'schema','boundary','case','values'}
                     or type(row['schema']) is not int or row['schema'] != 1
-                    or type(row['boundary']) is not int or not 0 <= row['boundary'] <= 170
+                    or type(row['boundary']) is not int or not 0 <= row['boundary'] <= len(case_rows)
                     or not isinstance(row['case'], str) or len(row['case']) > 80
                     or re.fullmatch(r'[A-Za-z0-9_./-]*', row['case']) is None
                     or not isinstance(row['values'], dict) or set(row['values']) not in (CASE_HEAP_FIELDS, LEGACY_CASE_HEAP_FIELDS)
@@ -3082,6 +3458,7 @@ def capture_serial(directory):
                     or any(not isinstance(r, list) or len(r) != 5
                            or any(type(v) is not int or v < 0 for v in r) for r in row['rows'])):
                 raise ValueError('invalid timing record')
+            validate_submit_costs(row)
             key=('timing', row['batch'])
         elif fields[0]=='GT710_GR_REFUSAL_V1':
             row = json.loads(line.removeprefix('GT710_GR_REFUSAL_V1 '))
@@ -3138,6 +3515,8 @@ def capture_serial(directory):
                 key=('caps-reprobe', row['epoch'], row['capability'])
             else:
                 key=('caps-probe', row['capability'])
+        elif fields[0]=='GT710_BREENGL_PICTURE': key=('breengel-pictures',)
+        elif fields[0]=='GT710_BREENGL_ALLOCATIONS': key=('allocations',)
         elif fields[0]=='GT710_RESOURCES': key=('resources',)
         elif fields[0]=='GT710_CORE': key=('core',)
         elif fields[0]=='GT710_CORE_STARTUP': key=('core-startup',)
@@ -3149,12 +3528,16 @@ def capture_serial(directory):
         groups.setdefault(key,[]).append(line);previous=key
     if ('case-heap',) in groups:
         measured = [json.loads(row.removeprefix('GT710_CASE_HEAP ')) for row in groups[('case-heap',)]]
-        names = [''] + re.findall(r'^SUITE gpu CASE (\S+) (?:PASS|FAIL|SKIP) ', serial, re.M)
+        names = [''] + re.findall(r'^SUITE ' + str(suite) + r' CASE (\S+) (?:PASS|FAIL|SKIP) ', serial, re.M)
         if (group_slots[('case-heap',)] != 1 or len(measured) != len(names)
                 or [row['boundary'] for row in measured] != list(range(len(names)))
                 or [row['case'] for row in measured] != names):
-            raise ValueError('case heap boundaries differ from the completed GPU cases')
+            raise ValueError('case heap boundaries differ from the completed suite cases')
     def report_key(line):
+        if re.fullmatch(r'GT710_ALLOCATIONS_BULK [1-9]\d* [a-f0-9]{64}\n?', line): return ('allocations',)
+        if line.startswith('GT710_ALLOCATIONS_BULK '): raise ValueError('invalid allocation census anchor')
+        if re.fullmatch(r'GT710_BREENGL_MANIFEST_BULK [1-9]\d* [a-f0-9]{64}\n?', line): return ('breengel-pictures',)
+        if line.startswith('GT710_BREENGL_MANIFEST_BULK '): raise ValueError('invalid BreenGL manifest anchor')
         c1=re.fullmatch(r'GT710_(C1|VBIOS)_BULK bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n?',line)
         if c1:return ('c1' if c1[1]=='C1' else 'vbios',)
         if line.startswith(('GT710_C1_BULK ','GT710_VBIOS_BULK ')):raise ValueError('invalid C1 anchor')
@@ -3276,7 +3659,7 @@ def capture_serial(directory):
             if (len(groups[key]) != 1 or digest is None
                     or hashlib.sha256(groups[key][0].removesuffix('\n').encode('ascii')).hexdigest() != digest[1]):
                 raise ValueError('executable CAPS probe differs from serial digest')
-        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',), ('core-startup',), ('resources',), ('case-heap',)):
+        if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',), ('core-startup',), ('resources',), ('case-heap',), ('breengel-pictures',), ('allocations',)):
             record=''.join(groups[key]).encode('ascii')
             fields=line.split()
             if len(fields)!=3 or (key==('multi',) and len(groups[key])!=1) or len(record)!=int(fields[1]) or hashlib.sha256(record).hexdigest()!=fields[2]:
@@ -3308,7 +3691,19 @@ def capture_serial(directory):
         elif key is not None:
             result.extend(groups[key])
         result.append(line)
+    if suite == 'breengel':
+        if ('breengel-pictures',) not in groups or group_slots[('breengel-pictures',)] != 1:
+            raise ValueError('BreenGL final picture manifest missing')
+        if len(case_rows) == 401 and ('case-heap',) not in groups:
+            raise ValueError('BreenGL case heap evidence missing')
+        breengel_picture_evidence(directory, serial, groups[('breengel-pictures',)], startup_bytes, len(final_data))
     joined = ''.join(result)
+    if ('allocations',) in groups:
+        if suite != 'breengel' or group_slots[('allocations',)] != 1 or len(groups[('allocations',)]) != 1:
+            raise ValueError('allocation census must occupy the final BreenGL slot')
+        breengel_allocations(joined)
+    if suite == 'breengel' and re.search(r'^SUITE breengel MEMORY reclaimed=FAIL ', serial, re.M):
+        breengel_memory_accounting(joined)
     if startup:
         core_startup(joined)
     return joined
@@ -3569,6 +3964,7 @@ def main():
     parser.add_argument('--boot')
     parser.add_argument('--sha')
     parser.add_argument('--gpu-boot', help='completed companion GPU-only suite boot for core/producer')
+    parser.add_argument('--breengel-fronts', action='store_true', help='score a completed BreenGL boot against step 9.1')
     parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
     parser.add_argument('--isolation', action='store_true', help='score PR 8.5 isolation and preceding selections from the same captures')
     parser.add_argument('--shapes', action='store_true', help='score PR 8.4 shapes and preceding selections from the same captures')
@@ -3631,6 +4027,24 @@ def main():
         return result.stdout
 
     boot = json.loads(read('run.json'))
+    if args.breengel_fronts:
+        if (not read('ended').strip() or read('exit-status').strip() not in ('0', '1')
+                or read('dirty').strip() != '0' or read('commit').strip() != args.sha):
+            raise ValueError('a completed clean BreenGL boot of the requested commit is required')
+        events = [json.loads(line) for line in read('events.jsonl').splitlines()]
+        if any(event.get('event') in ('console-gap', 'fatal') for event in events):
+            raise ValueError('BreenGL capture has a gap or fatal event')
+        resources_identity(boot, 'breengel', args.sha)
+        verified = runner['in_metal'](env, 'python3', '-c',
+            'import runpy,sys;from pathlib import Path;p=Path(sys.argv[1]);'
+            'a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));print(a["capture_serial"](p),end="")',
+            directory, capture_output=True, text=True, check=True).stdout
+        rows = cases('breengel-fronts', '', {'breengel': {'boot': dict(boot, bootedCommit=args.sha),
+                                                        'serial': verified}})
+        for row in rows:
+            print('SUITE gt710 CASE ' + row['id'] + ' ' + row['result'] + ' ms=0'
+                  + (' msg=' + row['reason'] if row['reason'] else ''))
+        return 0 if all(row['result'] == 'PASS' for row in rows) else 1
     if (not read('ended').strip() or read('exit-status').strip() != '0' or read('dirty').strip() != '0'
             or read('commit').strip() != args.sha):
         raise ValueError('a completed, clean, successful boot of the requested commit is required')

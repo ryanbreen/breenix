@@ -101,6 +101,7 @@ mod bulk;
 mod clock;
 mod display_evidence;
 pub(crate) mod timing;
+pub(crate) use timing::gpu_clock as gpu_time;
 pub(crate) mod cost;
 mod memory;
 mod lock;

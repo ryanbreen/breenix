@@ -30,3 +30,19 @@ fn rejects_spotlight_statistics_that_disagree_with_pixels() {
 }
 
 #[test] fn stage_hidpi(){fixtures::check("stage-hidpi").unwrap();}
+
+#[test]
+fn native_stage_boundary_requires_the_g27_row() {
+    for flags in [1, 3] {
+        assert!(stage::boundary_notice(6, flags, 5).is_ok());
+        for backend in [4, 5] {
+            assert!(stage::boundary_notice(backend, flags, 4).is_ok());
+            assert_eq!(stage::boundary_notice(backend, flags, 5), Err(stage::StageError::Boundary));
+        }
+        assert_eq!(stage::boundary_notice(6, flags, 4), Err(stage::StageError::Boundary));
+    }
+    for flags in [0, 2, 4, 5, 7, u32::MAX] {
+        assert_eq!(stage::boundary_notice(6, flags, 5), Err(stage::StageError::Boundary));
+    }
+    assert_eq!(stage::boundary_notice(7, 1, 5), Err(stage::StageError::Boundary));
+}

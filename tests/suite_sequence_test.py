@@ -23,6 +23,35 @@ def skeleton(suite):
 
 
 class ResolveTests(unittest.TestCase):
+    def test_metal_all_excludes_breengel_until_native_admission(self):
+        result = subprocess.run([sys.executable, str(ROOT / "scripts/suite-sequence.py"),
+                                 "resolve", "all", "--target", "x86-metal"],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        suites = result.stdout.strip().split(",")
+        self.assertEqual(suites[0], "console")
+        self.assertEqual(suites[-1], "files-io")
+        self.assertNotIn("breengel", suites)
+        self.assertIn("leaving out breengel: native BreenGL is not ADMITTED (E25 step 25.4); "
+                      "run --suite breengel explicitly", result.stderr)
+
+    def test_metal_named_breengel_remains_runnable_before_admission(self):
+        for spec in ("breengel", "console,breengel,files-io"):
+            with self.subTest(spec=spec):
+                result = subprocess.run([sys.executable, str(ROOT / "scripts/suite-sequence.py"),
+                                         "resolve", spec, "--target", "x86-metal"],
+                                        capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.strip(), spec)
+                self.assertEqual(result.stderr, "")
+
+    def test_arm_all_keeps_breengel(self):
+        for target in ("arm64-qemu", "parallels", "vmware"):
+            with self.subTest(target=target):
+                ids, skipped = SEQUENCE["resolve"]("all", target, True)
+                self.assertIn("breengel", ids)
+                self.assertNotIn("breengel", dict(skipped))
+
     def test_metal_all_excludes_gpu_until_native_admission(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts/suite-sequence.py"),
                                  "resolve", "all", "--target", "x86-metal"],

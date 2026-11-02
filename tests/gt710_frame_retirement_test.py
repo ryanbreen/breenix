@@ -13,7 +13,7 @@ from gt710_gr_live_unwind_test import item
 class FrameRetirement(unittest.TestCase):
     def test_release_rebinds_the_whole_frame_before_unmap(self):
         source = (ROOT / 'kernel/src/gpu/gk208/gr/channel.rs').read_text()
-        publisher = item(source, '        pub(crate) fn publish_draw(')
+        publisher = item(source, '        pub(crate) fn publish_draw_traced(')
         report = item(source, 'pub fn report(')
         bind = item(source, 'pub fn bind(')
         harness = (ROOT / 'tests/fixtures/gt710_frame_retirement.rs').read_text()

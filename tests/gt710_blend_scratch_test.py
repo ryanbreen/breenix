@@ -122,7 +122,7 @@ class BlendScratch(unittest.TestCase):
         preparation = preparation.replace('tgid', '42').replace('plan.scratch', 'sizes').replace('&written', '&[7]')
         harness += (ROOT / 'tests/fixtures/gt710_coverage_scratch.rs').read_text().replace('PREPARE', preparation)
         harness = boundary + harness.replace('// OWNERSHIP', ownership).replace(
-            '// RETIRE', item(core, '    fn retire_if_done('))
+            '// RETIRE', item(core, '    fn retire_if_done(').replace('#[cfg(target_arch = "x86_64")]', ''))
         priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)

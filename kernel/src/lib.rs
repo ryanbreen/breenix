@@ -101,6 +101,12 @@ pub mod graphics;
 #[cfg(target_arch = "x86_64")]
 #[path = "graphics/firmware_writes.rs"]
 pub mod firmware_writes;
+#[cfg(target_arch = "x86_64")]
+#[path = "graphics/boot_ribbon.rs"]
+pub mod boot_ribbon;
+#[cfg(target_arch = "x86_64")]
+#[path = "graphics/boot_producer.rs"]
+mod boot_producer;
 // Boot utilities (test disk loader, etc.)
 pub mod boot;
 // Lock-free tracing for critical paths (interrupt handlers, context switch, etc.)
