@@ -24,7 +24,7 @@ class VmArtifacts(unittest.TestCase):
             source.write_text('A')
             git('add', '.'); git('commit', '-qm', 'Build A')
             a = git('rev-parse', 'HEAD')
-            for path in ('kernel', 'system.img', 'home.img'):
+            for path in ('kernel', 'system.img', 'home.img', 'power-token'):
                 (run / path).write_bytes(b'artifact A ' + path.encode())
             ARTIFACTS['seal'](repo, run, a)
             receipt = ARTIFACTS['verify'](repo, run, run / 'kernel')
@@ -43,6 +43,9 @@ class VmArtifacts(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'artifacts differ'):
                     ARTIFACTS['verify'](repo, run, run / 'kernel')
                 (run / path).write_bytes(original)
+            (run / 'power-token').write_text('changed')
+            with self.assertRaisesRegex(ValueError, 'sealed token'):
+                ARTIFACTS['verify'](repo, run, run / 'kernel')
             self.assertEqual(json.loads((run / 'build.json').read_text())['commit'], b)
 
 
