@@ -13,13 +13,23 @@ class Readback(unittest.TestCase):
         abi=ROOT/'libs/gpu-abi/src/screen.rs'
         fixture = r'''use std::convert::TryInto;
 mod screen { ABI }
-#[derive(Clone,Copy,PartialEq,Eq)] enum Observer {Owner,Window,Screen}
+#[derive(Clone,Copy,PartialEq,Eq)] enum Observer {Owner,Window,Screen(u64)}
 POLICY
 #[test] fn provenance(){
  for observer in [Observer::Owner,Observer::Window] {
    assert!(observer.records_composition());
  }
- assert!(!Observer::Screen.records_composition());
+ assert!(!Observer::Screen(77).records_composition());
+}
+#[test] fn ownership(){
+ for observer in [Observer::Owner,Observer::Window] {
+  assert!(!observer.excludes_owner(None));
+  assert!(!observer.excludes_owner(Some(77)));
+ }
+ let screen=Observer::Screen(77);
+ assert!(screen.excludes_owner(None));
+ assert!(screen.excludes_owner(Some(77)),"runner ownership after reset is not a case");
+ assert!(!screen.excludes_owner(Some(88)),"an active case must still be observed");
 }
 #[test] fn rectangle(){
  assert_eq!(screen::rectangle([2,1],[4,2],Some([0,0])),Some([0,0,2,1]));
@@ -29,10 +39,11 @@ POLICY
  }
 }
 #[test] fn request(){
- let bytes=screen::Request{pixels:1,len:2,record:3}.encode();
+ assert_eq!(screen::NO_CASE,61,"suite endpoint no-case errno");
+ let bytes=screen::Request{pixels:1,len:2,record:3,runner:77}.encode();
  let r=screen::Request::decode(&bytes).unwrap();
- assert_eq!((r.pixels,r.len,r.record),(1,2,3));
- assert!(screen::Request::decode(&bytes[..31]).is_none());
+ assert_eq!((r.pixels,r.len,r.record,r.runner),(1,2,3,77));
+ assert!(screen::Request::decode(&bytes[..39]).is_none());
  let mut bad=bytes;bad[0]^=1;assert!(screen::Request::decode(&bad).is_none());
 }
 '''

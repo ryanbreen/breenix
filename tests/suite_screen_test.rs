@@ -143,17 +143,12 @@ fn larger_binding_hashes_only_the_visible_mode_and_records_its_dimensions() {
 
 #[test]
 fn transient_unknown_binding_must_reach_the_pinned_observer() {
-    assert!(!screen::non_case_binding(false, 0, 10, 20, 1));
-    assert!(!screen::non_case_binding(false, 30, 10, 20, 1));
-    assert!(!screen::non_case_binding(false, 10, 10, 20, 1));
-    assert!(!screen::non_case_binding(false, 20, 10, 20, 1));
-    assert!(!screen::non_case_binding(true, 0, 10, 20, 1));
-    assert!(!screen::non_case_binding(true, 30, 10, 20, 1));
-    assert!(screen::non_case_binding(true, 10, 10, 20, 1));
-    assert!(screen::non_case_binding(true, 20, 10, 20, 1));
-    // Device reset can remove the console binding in an offscreen-only case.
-    assert!(screen::non_case_binding(false, 0, 10, 20, 0));
-    assert!(screen::non_case_binding(true, 0, 10, 20, 0));
-    // Ownership absence alone cannot discard an existing case resource.
-    assert!(!screen::non_case_binding(true, 30, 10, 20, 0));
+    assert!(!screen::non_case_binding(false, 0, 10, 20));
+    assert!(!screen::non_case_binding(false, 30, 10, 20));
+    assert!(!screen::non_case_binding(false, 10, 10, 20));
+    assert!(!screen::non_case_binding(false, 20, 10, 20));
+    assert!(!screen::non_case_binding(true, 0, 10, 20));
+    assert!(!screen::non_case_binding(true, 30, 10, 20));
+    assert!(screen::non_case_binding(true, 10, 10, 20));
+    assert!(screen::non_case_binding(true, 20, 10, 20));
 }
