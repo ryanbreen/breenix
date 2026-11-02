@@ -12,55 +12,68 @@
       "cases": [
         {
           "id": "fill-rect",
-          "title": "fill_rect writes exactly the pixels of a half-open rectangle and no others"
+          "title": "fill_rect writes exactly the pixels of a half-open rectangle and no others",
+          "expect": "A crimson (#C81E5A) rectangle fills the entire 32x24 picture; no text."
         },
         {
           "id": "fill-rect-clip-left",
-          "title": "A rectangle partly off the left edge fills only its visible columns"
+          "title": "A rectangle partly off the left edge fills only its visible columns",
+          "expect": "A crimson (#C81E5A) 6x5 rectangle at (0,2) on a navy (#0A141E) 32x24 background; no text."
         },
         {
           "id": "fill-rect-offscreen-left",
-          "title": "A rectangle wholly left of the surface changes no pixel"
+          "title": "A rectangle wholly left of the surface changes no pixel",
+          "expect": "An entirely navy (#0A141E) 32x24 rectangle; no shapes or text."
         },
         {
           "id": "fill-rect-offscreen-top",
-          "title": "A rectangle wholly above the surface changes no pixel"
+          "title": "A rectangle wholly above the surface changes no pixel",
+          "expect": "An entirely navy (#0A141E) 32x24 rectangle; no shapes or text."
         },
         {
           "id": "fill-rect-overflow",
-          "title": "A rectangle whose x + w overflows i32 clips to the surface without wrapping"
+          "title": "A rectangle whose x + w overflows i32 clips to the surface without wrapping",
+          "expect": "A crimson (#C81E5A) 1x2 rectangle at (0,4) on a navy (#0A141E) 32x24 background; no text."
         },
         {
           "id": "fill-rect-empty",
-          "title": "Zero or negative width or height draws nothing"
+          "title": "Zero or negative width or height draws nothing",
+          "expect": "An entirely navy (#0A141E) 32x24 rectangle; no shapes or text."
         },
         {
           "id": "draw-rect",
-          "title": "draw_rect writes exactly the one-pixel perimeter"
+          "title": "draw_rect writes exactly the one-pixel perimeter",
+          "expect": "A crimson (#C81E5A) one-pixel right edge at x=8, y=0..5 and bottom edge at y=5, x=0..8 on navy (#0A141E), in a 32x24 picture."
         },
         {
           "id": "line-axes",
-          "title": "Horizontal and vertical lines cover exactly their spans, endpoints included"
+          "title": "Horizontal and vertical lines cover exactly their spans, endpoints included",
+          "expect": "One crimson (#C81E5A) pixel at (4,4) on a navy (#0A141E) 32x24 background; no text."
         },
         {
           "id": "line-bresenham",
-          "title": "Shallow, steep and 45-degree lines write exactly the pixels in the contract's literal tables"
+          "title": "Shallow, steep and 45-degree lines write exactly the pixels in the contract's literal tables",
+          "expect": "A crimson (#C81E5A) stepped line from (5,12) to (3,3) on a navy (#0A141E) 20x20 background; no text."
         },
         {
           "id": "line-clip",
-          "title": "A line crossing the edges writes only the in-surface pixels of its unclipped path"
+          "title": "A line crossing the edges writes only the in-surface pixels of its unclipped path",
+          "expect": "One crimson (#C81E5A) pixel at (5,23), at the bottom of a navy (#0A141E) 32x24 picture; no text."
         },
         {
           "id": "circle-fill",
-          "title": "fill_circle sets exactly the pixels the contract's x² + y² ≤ r² rule selects"
+          "title": "fill_circle sets exactly the pixels the contract's x² + y² ≤ r² rule selects",
+          "expect": "An entirely navy (#0A141E) 40x40 rectangle; the final negative-radius circle leaves no mark or text."
         },
         {
           "id": "circle-fill-offscreen-left",
-          "title": "A circle partly or wholly off the left edge writes nothing outside the surface"
+          "title": "A circle partly or wholly off the left edge writes nothing outside the surface",
+          "expect": "An entirely navy (#0A141E) 32x24 rectangle; no visible circle or text."
         },
         {
           "id": "circle-outline",
-          "title": "draw_circle writes the midpoint-algorithm pixels listed in the contract for radii 0 to 40"
+          "title": "draw_circle writes the midpoint-algorithm pixels listed in the contract for radii 0 to 40",
+          "expect": "A crimson (#C81E5A) one-pixel circle outline of radius 40 centred at (45,45) on a navy (#0A141E) 91x91 background."
         },
         {
           "id": "guard-pages",
@@ -68,7 +81,8 @@
         },
         {
           "id": "extreme-work-bound",
-          "title": "CPU geometry setup and GPU fragment work stay within the clipped primitive bounds"
+          "title": "CPU geometry setup and GPU fragment work stay within the clipped primitive bounds",
+          "expect": "An entirely navy (#0A141E) 32x24 rectangle; the final text starts offscreen and leaves no visible mark."
         },
         {
           "id": "stride-padding",
@@ -84,11 +98,13 @@
         },
         {
           "id": "bgr-order",
-          "title": "The BGR flag swaps the channel order and nothing else"
+          "title": "The BGR flag swaps the channel order and nothing else",
+          "expect": "On black (#000000), a 14x18 scene has a red (#FA0A14) rectangle at (2,2), green (#0AF01E) outline at (1,9), blue (#141EFA) diagonal, yellow (#C8C80A) disc, cyan (#0AC8C8) ring and brown (#5A5046) 'A1' near the bottom."
         },
         {
           "id": "x-byte",
-          "title": "Every primitive writes the X byte of a BGRX pixel as 0xFF"
+          "title": "Every primitive writes the X byte of a BGRX pixel as 0xFF",
+          "expect": "A crimson (#C81E5A) bitmap 'A' at the top left of a black (#000000) 16x16 picture."
         },
         {
           "id": "copy-row-clip",
@@ -108,51 +124,63 @@
         },
         {
           "id": "alpha-extremes",
-          "title": "Alpha 255 replaces the destination and alpha 0 leaves it unchanged"
+          "title": "Alpha 255 replaces the destination and alpha 0 leaves it unchanged",
+          "expect": "A crimson (#C81E5A) pixel at (6,9) and a white (#FFFFFF) pixel at (8,9) on a navy (#0A141E) 32x24 background."
         },
         {
           "id": "alpha-output",
-          "title": "The output alpha over a translucent destination follows the contract's formula"
+          "title": "The output alpha over a translucent destination follows the contract's formula",
+          "expect": "A 16x16 grid of blended colour samples, from black (#000000) at the top left to bright green (#33F055) at the bottom right; red increases across the upper rows and green down the lower rows, with no text."
         },
         {
           "id": "blit",
-          "title": "blit copies a source surface to a position exactly"
+          "title": "blit copies a source surface to a position exactly",
+          "expect": "A 5x4 patch at (20,18) on black (#000000), in a 32x24 picture; its tiny tiles run from deep blue (#070B64) at the patch's top left to pale purple (#A7BFEF) at its bottom right."
         },
         {
           "id": "blit-clip",
-          "title": "A blit partly off the surface copies only the visible intersection"
+          "title": "A blit partly off the surface copies only the visible intersection",
+          "expect": "An entirely navy (#0A141E) 32x24 rectangle; the final source patch is wholly offscreen, with no text."
         },
         {
           "id": "blit-alpha",
-          "title": "A premultiplied blit blends each pixel by the formula"
+          "title": "A premultiplied blit blends each pixel by the formula",
+          "expect": "A 5x4 patch at (6,5) on navy (#0A141E), with columns fading from the background to opaque colours; its right edge runs from purple (#A70B98) to pale purple (#A7BFEF), with no text."
         },
         {
           "id": "blit-straight",
-          "title": "A straight-alpha source is premultiplied exactly once before blending"
+          "title": "A straight-alpha source is premultiplied exactly once before blending",
+          "expect": "A 5x4 patch at (20,2) on navy (#0A141E), with columns fading from the background through half opacity to pink (#C864BE) at the upper right and pale pink (#C8BEBE) at the lower right."
         },
         {
           "id": "blit-scale",
-          "title": "An integer-scale blit replicates each source pixel into an exact square"
+          "title": "An integer-scale blit replicates each source pixel into an exact square",
+          "expect": "An entirely navy (#0A141E) 32x24 rectangle; the final negative-scale blit leaves no shapes or text."
         },
         {
           "id": "clip-rect",
-          "title": "With a clip rectangle set, every primitive draws only inside it"
+          "title": "With a clip rectangle set, every primitive draws only inside it",
+          "expect": "A cropped, enlarged pixel mosaic in x=5..14, y=4..11 on a navy (#0A141E) 32x24 background; the visible tiles run from dark blue (#2F478E) at the top left to pale purple (#A7BFEF) at the bottom right, with no text."
         },
         {
           "id": "clip-stack",
-          "title": "Nested clips intersect, and popping one restores the outer clip"
+          "title": "Nested clips intersect, and popping one restores the outer clip",
+          "expect": "On navy (#0A141E), red (#FA0000) at (10,2), size 12x5; green (#00FA00) at (2,12), size 20x5; blue (#0000FA) across the bottom four rows; and a yellow (#FAFA00) 2x2 square at (30,0), in a 32x24 picture."
         },
         {
           "id": "clip-empty",
-          "title": "An empty clip draws nothing and marks no damage"
+          "title": "An empty clip draws nothing and marks no damage",
+          "expect": "An entirely navy (#0A141E) 32x24 rectangle; no shapes or text."
         },
         {
           "id": "rounded-rect",
-          "title": "Rounded-rectangle corners match the contract's corner predicate"
+          "title": "Rounded-rectangle corners match the contract's corner predicate",
+          "expect": "The upper-left portion of a crimson (#C81E5A) rounded 20x20 rectangle starting at (20,15), radius 7, clipped by a navy (#0A141E) 32x24 picture's right and bottom edges."
         },
         {
           "id": "gradient",
-          "title": "A vertical gradient's rows equal the contract's integer interpolation"
+          "title": "A vertical gradient's rows equal the contract's integer interpolation",
+          "expect": "A 30-pixel-wide vertical gradient at (1,1), cropped at the bottom of a navy (#0A141E) 32x24 picture; it begins red (#FA0011) and reaches coral (#E51621) on the last visible row."
         },
         {
           "id": "damage-exact",
@@ -164,7 +192,8 @@
         },
         {
           "id": "damage-sound",
-          "title": "Over a seeded random scene, every changed pixel lies inside the accumulated damage"
+          "title": "Over a seeded random scene, every changed pixel lies inside the accumulated damage",
+          "expect": "Overlapping seeded coloured rectangles, lines, filled circles and circle outlines cover a 64x48 navy (#0A141E) picture, clipped at its edges; no text."
         },
         {
           "id": "surface-owned",
@@ -202,31 +231,38 @@
         },
         {
           "id": "bitmap-glyph",
-          "title": "The built-in 5x7 font draws 'A' exactly as its table defines it"
+          "title": "The built-in 5x7 font draws 'A' exactly as its table defines it",
+          "expect": "A crimson (#C81E5A) 5x7 pixel 'A' at (2,3) on a navy (#0A141E) 12x12 background."
         },
         {
           "id": "bitmap-scale",
-          "title": "Scale 3 turns each glyph pixel into a 3x3 block"
+          "title": "Scale 3 turns each glyph pixel into a 3x3 block",
+          "expect": "A crimson (#C81E5A) pixel 'A' at (1,1), each original pixel enlarged to 3x3, on a navy (#0A141E) 20x24 background."
         },
         {
           "id": "bitmap-unknown",
-          "title": "A byte without a glyph draws the contract's replacement box"
+          "title": "A byte without a glyph draws the contract's replacement box",
+          "expect": "A solid crimson (#C81E5A) 5x7 replacement block at (2,1) on a navy (#0A141E) 10x10 background."
         },
         {
           "id": "noto-ascii",
-          "title": "noto-sans-mono-bitmap draws every printable ASCII character matching its reference cell"
+          "title": "noto-sans-mono-bitmap draws every printable ASCII character matching its reference cell",
+          "expect": "A white (#FFFFFF), antialiased '~' at (0,2) on a black (#000000) 16x20 background, using the 16-pixel Noto Sans Mono bitmap cell."
         },
         {
           "id": "noto-coverage",
-          "title": "Bitmap coverage blends with the background by the alpha contract"
+          "title": "Bitmap coverage blends with the background by the alpha contract",
+          "expect": "An antialiased brown-orange (#C86432) '&' at (0,0) on a blue-grey (#14283C) 16x16 background."
         },
         {
           "id": "ttf-glyph",
-          "title": "DejaVu Sans Mono \"Hg\" at 16 px matches its reviewed reference"
+          "title": "DejaVu Sans Mono \"Hg\" at 16 px matches its reviewed reference",
+          "expect": "White (#FFFFFF), antialiased 'Hg' in 16-pixel DejaVu Sans Mono at (8,6) on a black (#000000) 48x32 background, matching the pinned reference."
         },
         {
           "id": "ttf-sizes",
-          "title": "One string at 8, 12, 16, 24 and 48 px matches each size's reviewed reference"
+          "title": "One string at 8, 12, 16, 24 and 48 px matches each size's reviewed reference",
+          "expect": "Five white (#FFFFFF) 'Breenix' lines in DejaVu Sans on black (#000000), at x=4 and y=2,14,30,52,86, in sizes 8,12,16,24,48 pixels respectively; the picture is 256x160."
         },
         {
           "id": "ttf-advance",
@@ -242,27 +278,33 @@
         },
         {
           "id": "ttf-clip-left",
-          "title": "Text starting at negative x draws its visible part"
+          "title": "Text starting at negative x draws its visible part",
+          "expect": "An entirely black (#000000) 64x32 rectangle; the final text is wholly offscreen, with no visible letters."
         },
         {
           "id": "ttf-clip-top",
-          "title": "Glyphs partly above row 0 draw their visible part"
+          "title": "Glyphs partly above row 0 draw their visible part",
+          "expect": "An entirely black (#000000) 64x32 rectangle; the final text is wholly offscreen, with no visible letters."
         },
         {
           "id": "ttf-subpixel",
-          "title": "LCD subpixel text matches its reviewed reference per channel"
+          "title": "LCD subpixel text matches its reviewed reference per channel",
+          "expect": "White (#FFFFFF) 'Subpixel LCD' in 16-pixel DejaVu Sans at (4,4) on a black (#000000) 160x28 background, with coloured LCD antialiasing at glyph edges as in the pinned reference."
         },
         {
           "id": "ttf-notdef",
-          "title": "A codepoint the font lacks draws glyph 0"
+          "title": "A codepoint the font lacks draws glyph 0",
+          "expect": "The white (#FFFFFF) outlined missing-glyph box from 24-pixel DejaVu Sans Mono, positioned at (10,4) on a black (#000000) 48x40 background."
         },
         {
           "id": "utf8-text",
-          "title": "UTF-8 input draws \"é\" from the font's glyph for U+00E9"
+          "title": "UTF-8 input draws \"é\" from the font's glyph for U+00E9",
+          "expect": "A white (#FFFFFF), antialiased 'é' in 24-pixel DejaVu Sans Mono at (10,4) on a black (#000000) 48x40 background."
         },
         {
           "id": "utf8-invalid",
-          "title": "Invalid UTF-8 draws one U+FFFD per maximal invalid subpart and does not panic"
+          "title": "Invalid UTF-8 draws one U+FFFD per maximal invalid subpart and does not panic",
+          "expect": "White (#FFFFFF) 14-pixel text 'a���b�c��d' at (2,2) on black (#000000), in a 160x24 picture; the replacement glyphs mark the invalid byte subparts."
         },
         {
           "id": "compound-glyph",
@@ -270,7 +312,8 @@
         },
         {
           "id": "compound-transform",
-          "title": "Scaled and 2x2-transformed components match their reviewed reference"
+          "title": "Scaled and 2x2-transformed components match their reviewed reference",
+          "expect": "White (#FFFFFF) transformed 'BA' glyphs from the compound-transform fixture font, at (4,8), size 48, on a black (#000000) 200x64 background, matching the pinned reference."
         },
         {
           "id": "line-metrics",
@@ -282,7 +325,8 @@
         },
         {
           "id": "many-args-abi",
-          "title": "The text calls with ten or more parameters, including trailing f32 or 26.6 values, give the reference output on this target"
+          "title": "The text calls with ten or more parameters, including trailing f32 or 26.6 values, give the reference output on this target",
+          "expect": "White (#FFFFFF), antialiased 'Ag' in 22.5-pixel DejaVu Sans at (6,4) on a black (#000000) 96x40 background."
         },
         {
           "id": "cache-hit",
@@ -298,23 +342,28 @@
         },
         {
           "id": "hidpi-sizes",
-          "title": "Scale-2 text equals twice-size coverage and differs from replicated pixels"
+          "title": "Scale-2 text equals twice-size coverage and differs from replicated pixels",
+          "expect": "One white (#FFFFFF), antialiased 'H' in 32-pixel DejaVu Sans at physical (32,16) on a black (#000000) 192x128 background; glyph edges are rasterized at that size."
         },
         {
           "id": "fontwatch-reload",
-          "title": "Changing the configured font makes later text use newly rasterized glyphs of the new font"
+          "title": "Changing the configured font makes later text use newly rasterized glyphs of the new font",
+          "expect": "White (#FFFFFF), antialiased 'Wi é A' in 16-pixel DejaVu Sans at (8,40) on a navy (#0A141E) 200x70 background."
         },
         {
           "id": "fontwatch-size",
-          "title": "Changing the configured size changes the rasterized glyphs and their metrics"
+          "title": "Changing the configured size changes the rasterized glyphs and their metrics",
+          "expect": "White (#FFFFFF), antialiased 'Wi é A' in 32-pixel DejaVu Sans Mono at (8,40) on a navy (#0A141E) 200x70 background."
         },
         {
           "id": "fontwatch-missing",
-          "title": "A configured font file that is missing keeps the previous font and reports the error"
+          "title": "A configured font file that is missing keeps the previous font and reports the error",
+          "expect": "White (#FFFFFF), antialiased 'Wi é A' in 24-pixel DejaVu Sans at (8,40) on a navy (#0A141E) 200x70 background."
         },
         {
           "id": "fontwatch-malformed-config",
-          "title": "A malformed fonts.conf keeps the previous fonts and reports the error"
+          "title": "A malformed fonts.conf keeps the previous fonts and reports the error",
+          "expect": "White (#FFFFFF), antialiased 'Wi é A' in 16-pixel DejaVu Sans Mono at (8,40) on a navy (#0A141E) 200x70 background."
         },
         {
           "id": "fontwatch-partial",
@@ -322,19 +371,23 @@
         },
         {
           "id": "fontwatch-repeated",
-          "title": "Five changes in a row end with the last one in use"
+          "title": "Five changes in a row end with the last one in use",
+          "expect": "White (#FFFFFF), antialiased 'Wi é A' in 24-pixel DejaVu Sans Mono at (8,40) on a navy (#0A141E) 200x70 background."
         },
         {
           "id": "fontwatch-independent",
-          "title": "Mono and display fonts change independently"
+          "title": "Mono and display fonts change independently",
+          "expect": "White (#FFFFFF), antialiased 'Wi é A' in 24-pixel DejaVu Sans Mono at (8,40) on a navy (#0A141E) 200x70 background."
         },
         {
           "id": "fontwatch-idle",
-          "title": "A window that receives no events, with fonts.conf changed at UI time *t*, draws the new font in its first commit at or after the watcher's first 250 ms check after *t*"
+          "title": "A window that receives no events, with fonts.conf changed at UI time *t*, draws the new font in its first commit at or after the watcher's first 250 ms check after *t*",
+          "expect": "White (#FFFFFF), antialiased 'Wi é A' in 16-pixel DejaVu Sans at (8,40) on a navy (#0A141E) 200x70 background."
         },
         {
           "id": "fontwatch-file-replaced",
-          "title": "Replacing the configured font file at the same path by rename, with fonts.conf unchanged, makes later text use newly rasterized glyphs of the new file by the next check"
+          "title": "Replacing the configured font file at the same path by rename, with fonts.conf unchanged, makes later text use newly rasterized glyphs of the new file by the next check",
+          "expect": "White (#FFFFFF), antialiased 'Wi é A' in 16-pixel DejaVu Sans at (8,40) on a navy (#0A141E) 200x70 background."
         }
       ]
     },
@@ -528,15 +581,18 @@
       "cases": [
         {
           "id": "decode-fixtures",
-          "title": "Independent BMP fixtures decode to their literal pixels"
+          "title": "Independent BMP fixtures decode to their literal pixels",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Two tiny tiles show 3x2 RGB primaries then 2x2 near-black (#010203) samples; alpha is white (#FFFFFF)."
         },
         {
           "id": "orientation",
-          "title": "Bottom-up and top-down (negative height) BMPs decode to the same pixels"
+          "title": "Bottom-up and top-down (negative height) BMPs decode to the same pixels",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Two identical 5x4 colour mosaics sit side by side, beginning mustard (#C5B521), with white alpha patches."
         },
         {
           "id": "padding",
-          "title": "Widths 1 to 4 decode correctly across row padding"
+          "title": "Widths 1 to 4 decode correctly across row padding",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Four colour mosaics, 1x3 through 4x3, run left to right, the first beginning muted red (#A63235), with white alpha."
         },
         {
           "id": "encode-bytes",
@@ -544,11 +600,13 @@
         },
         {
           "id": "roundtrip",
-          "title": "Encoding then decoding returns the original pixels"
+          "title": "Encoding then decoding returns the original pixels",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Four colour mosaics, 1x1, 5x3, 7x7 and 64x2, run left to right, the first pale green (#A5DF7B), with white alpha."
         },
         {
           "id": "truncated",
-          "title": "A BMP shorter than its header claims is rejected"
+          "title": "A BMP shorter than its header claims is rejected",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). One 3x3 colour mosaic sits at the top left, beginning pale yellow-green (#D6E490), with white alpha."
         },
         {
           "id": "size-overflow",
@@ -570,35 +628,43 @@
       "cases": [
         {
           "id": "gray-depths",
-          "title": "Grayscale at depths 1, 2, 4, 8 and 16 decodes exactly"
+          "title": "Grayscale at depths 1, 2, 4, 8 and 16 decodes exactly",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Five 3x1 strips run from black through grey to white (#FFFFFF), with white alpha."
         },
         {
           "id": "gray-alpha",
-          "title": "Grayscale with alpha at depths 8 and 16 decodes exactly"
+          "title": "Grayscale with alpha at depths 8 and 16 decodes exactly",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Two 2x1 strips show mid-grey (#7F7F7F) samples; alpha pairs half grey with white (#FFFFFF)."
         },
         {
           "id": "rgb",
-          "title": "RGB at depths 8 and 16 decodes exactly"
+          "title": "RGB at depths 8 and 16 decodes exactly",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Two 2x1 strips pair azure (#007FFF) with pink (#FF007F); alpha is white (#FFFFFF)."
         },
         {
           "id": "rgba",
-          "title": "RGBA at depths 8 and 16 decodes to premultiplied pixels exactly"
+          "title": "RGBA at depths 8 and 16 decodes to premultiplied pixels exactly",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Two 2x1 strips pair brown (#7F3F00) with cyan (#00FFFF); alpha is grey then white (#FFFFFF)."
         },
         {
           "id": "palette-depths",
-          "title": "Palette images at depths 1, 2, 4 and 8 decode exactly"
+          "title": "Palette images at depths 1, 2, 4 and 8 decode exactly",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Four 4x1 strips show near-black (#010203), slate (#28323C), slate, near-black; alpha is white (#FFFFFF)."
         },
         {
           "id": "trns-gray",
-          "title": "A grayscale tRNS key colour becomes transparent"
+          "title": "A grayscale tRNS key colour becomes transparent",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Tiny 2x1 strips pair black with grey or white (#FFFFFF); the alpha strips alternate black and white."
         },
         {
           "id": "trns-rgb",
-          "title": "An RGB tRNS key colour becomes transparent"
+          "title": "An RGB tRNS key colour becomes transparent",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Tiny 2x1 strips show transparent black then near-black (#030201), fading to black at 16 bits; alpha is black then white (#FFFFFF)."
         },
         {
           "id": "trns-palette",
-          "title": "Palette tRNS alphas apply per entry"
+          "title": "Palette tRNS alphas apply per entry",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). A 3x1 strip is black, green (#008000), blue (#0000FF); alpha is black, grey (#808080), white (#FFFFFF)."
         },
         {
           "id": "invalid-combos",
@@ -606,11 +672,13 @@
         },
         {
           "id": "rounding-16bit",
-          "title": "16-bit samples convert to 8 bits by the contract's formula"
+          "title": "16-bit samples convert to 8 bits by the contract's formula",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). A 12x1 strip steps from black through near-black and mid-grey (#808080) to white (#FFFFFF); alpha is white."
         },
         {
           "id": "filters",
-          "title": "Rows using each of the five filter types decode exactly, at every bytes-per-pixel width"
+          "title": "Rows using each of the five filter types decode exactly, at every bytes-per-pixel width",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Eight 7x5 striped sample tiles repeat samples down rows, in greys and colours, with white (#FFFFFF) or varying grey alpha."
         },
         {
           "id": "filter-invalid",
@@ -618,15 +686,18 @@
         },
         {
           "id": "interlace",
-          "title": "An Adam7 image decodes to the same pixels as its non-interlaced twin"
+          "title": "An Adam7 image decodes to the same pixels as its non-interlaced twin",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). One 17x19 mosaic begins black, gaining blue across columns, green down rows and red diagonally; alpha is white (#FFFFFF)."
         },
         {
           "id": "interlace-small",
-          "title": "Images from 1x1 to 9x9, where some passes are empty, decode correctly"
+          "title": "Images from 1x1 to 9x9, where some passes are empty, decode correctly",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Eighty-one tiny mosaics from 1x1 to 9x9 pack across the page with blue, green and red ramps; alpha is white (#FFFFFF)."
         },
         {
           "id": "multi-idat",
-          "title": "Image data split across many IDAT chunks, including empty ones, decodes identically"
+          "title": "Image data split across many IDAT chunks, including empty ones, decodes identically",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). A single dark grey (#2A2A2A) pixel sits at the top left with white (#FFFFFF) alpha."
         },
         {
           "id": "crc",
@@ -634,7 +705,8 @@
         },
         {
           "id": "chunk-order",
-          "title": "IDAT before IHDR, PLTE after IDAT and a missing IEND are each rejected"
+          "title": "IDAT before IHDR, PLTE after IDAT and a missing IEND are each rejected",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). A single dark grey (#2A2A2A) pixel sits at the top left with white (#FFFFFF) alpha."
         },
         {
           "id": "plte-required",
@@ -654,7 +726,8 @@
         },
         {
           "id": "ancillary-ignored",
-          "title": "gAMA, iCCP, sRGB and tEXt are ignored, as the contract states (no colour management)"
+          "title": "gAMA, iCCP, sRGB and tEXt are ignored, as the contract states (no colour management)",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Six 1x1 patches show dark grey (#2A2A2A) or near-black (#010203), each with white (#FFFFFF) alpha."
         },
         {
           "id": "ihdr-invalid",
@@ -682,15 +755,18 @@
         },
         {
           "id": "independent-fixtures",
-          "title": "The public PngSuite fixtures decode to the pixels an independent decoder recorded at authoring time"
+          "title": "The public PngSuite fixtures decode to the pixels an independent decoder recorded at authoring time",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Seventy-two labelled 32x32 PngSuite tiles pack left to right: greyscale, coloured and transparent patterns."
         },
         {
           "id": "blit",
-          "title": "A decoded RGBA image blitted into a surface gives the literal blended values"
+          "title": "A decoded RGBA image blitted into a surface gives the literal blended values",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). A 3x1 strip is light grey (#C8C8C8), muted red (#A46464), light grey; alpha is white (#FFFFFF)."
         },
         {
           "id": "from-disk",
-          "title": "A pinned PNG read from the ext2 disk decodes to its recorded pixels"
+          "title": "A pinned PNG read from the ext2 disk decodes to its recorded pixels",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). One 32x32 colour ramp sits top left: red (#FF0008) at top right, blue (#0020FF) at bottom right; alpha brightens left to right."
         }
       ]
     },
@@ -700,11 +776,13 @@
       "cases": [
         {
           "id": "decodes",
-          "title": "An encoded frame decodes to the same pixels"
+          "title": "An encoded frame decodes to the same pixels",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Two 2x1 strips pair near-black (#010203) with purple (#800080) or brown (#0A141E); alpha is half-grey or white (#FFFFFF)."
         },
         {
           "id": "stable",
-          "title": "Encoding the same frame twice gives identical bytes"
+          "title": "Encoding the same frame twice gives identical bytes",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). One 13x7 mosaic starts black, with blue column ramps, green row ramps and a red diagonal ramp; alpha is white (#FFFFFF)."
         },
         {
           "id": "format",
@@ -720,7 +798,8 @@
         },
         {
           "id": "sizes",
-          "title": "Frames of 1x1, odd widths and 1280x800 encode and decode"
+          "title": "Frames of 1x1, odd widths and 1280x800 encode and decode",
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Four mosaics, 1x1, 3x7, 17x9 and 1280x800, have blue, green and red ramps; alpha is white (#FFFFFF)."
         },
         {
           "id": "limits",
@@ -734,7 +813,8 @@
       "cases": [
         {
           "id": "button-draw",
-          "title": "A button draws its label and frame in the theme's literal colours and positions"
+          "title": "A button draws its label and frame in the theme's literal colours and positions",
+          "expect": "A dark grey (#3C3C3C) 120x40 button at (20,16), grey (#787878) border and centred white (#FFFFFF) 'OK', on a navy (#0A141E) 200x80 background."
         },
         {
           "id": "button-click",
@@ -746,11 +826,13 @@
         },
         {
           "id": "button-disabled",
-          "title": "A disabled button draws dimmed and reports no click"
+          "title": "A disabled button draws dimmed and reports no click",
+          "expect": "A dark grey (#3C3C3C) 120x40 button at (20,16), grey (#787878) border and centred light grey (#B4B4B4) 'OK', on a navy (#0A141E) 200x80 background."
         },
         {
           "id": "checkbox-toggle",
-          "title": "Clicking a checkbox toggles it and redraws the mark"
+          "title": "Clicking a checkbox toggles it and redraws the mark",
+          "expect": "A blue (#4682DC) 28x28 checkbox at (20,26), with white (#FFFFFF) check mark and 'Opt' at (56,24), grey (#787878) border, on a navy (#0A141E) 280x80 background."
         },
         {
           "id": "checkbox-space",
@@ -770,7 +852,8 @@
         },
         {
           "id": "label-clip",
-          "title": "A label wider than its bounds is clipped at the bounds with an ellipsis"
+          "title": "A label wider than its bounds is clipped at the bounds with an ellipsis",
+          "expect": "An entirely navy (#0D1B29) 160x80 rectangle; the final three-pixel-high label clip hides the ellipsis, leaving no text."
         },
         {
           "id": "tabbar-select",
@@ -778,7 +861,8 @@
         },
         {
           "id": "tabbar-overflow",
-          "title": "More tabs than fit scroll, and every tab stays reachable"
+          "title": "More tabs than fit scroll, and every tab stays reachable",
+          "expect": "A clipped tab strip at (20,16), size 140x48, on navy (#0A141E); the selected 'First' tab has a periwinkle (#648CDC) fill and blue (#4682DC) underline, with white (#FFFFFF) text."
         },
         {
           "id": "scrollbar-drag",
@@ -790,11 +874,13 @@
         },
         {
           "id": "scrollbar-thumb",
-          "title": "The thumb's length is proportional to visible over total"
+          "title": "The thumb's length is proportional to visible over total",
+          "expect": "A dark slate (#282A30) vertical track at physical x=8..31 in a navy (#0A141E) 40x400 picture, with a slate-grey (#505564) thumb near the top, 40 pixels high including its inset; no text."
         },
         {
           "id": "menubar-open",
-          "title": "Clicking a menu title opens its menu below it"
+          "title": "Clicking a menu title opens its menu below it",
+          "expect": "A dark grey (#3C3C3C) File menu drops below the bar at physical (20,54), with grey (#787878) borders, white (#FFFFFF) 'New', 'Save As', 'Quit' and shortcuts, and disabled light grey (#B4B4B4) 'Save', on navy (#0A141E)."
         },
         {
           "id": "menubar-shortcut",
@@ -806,7 +892,8 @@
         },
         {
           "id": "menu-disabled",
-          "title": "A disabled item draws dimmed and cannot be chosen"
+          "title": "A disabled item draws dimmed and cannot be chosen",
+          "expect": "An open dark grey (#3C3C3C) File menu below physical (20,54), grey (#787878) border, white (#FFFFFF) enabled labels and light grey (#B4B4B4) disabled 'Save' at (56,104), on navy (#0A141E)."
         },
         {
           "id": "menu-dismiss",
@@ -818,7 +905,8 @@
         },
         {
           "id": "focus-ring",
-          "title": "Each focusable widget draws the theme's focus ring when focused and none otherwise"
+          "title": "Each focusable widget draws the theme's focus ring when focused and none otherwise",
+          "expect": "A dark grey (#3C3C3C) 200x48 button at (40,40), grey (#787878) border and centred white (#FFFFFF) 'OK', surrounded by a gold (#FFC83C) focus outline at (36,36), on navy (#0A141E)."
         },
         {
           "id": "no-change-ack",
@@ -826,7 +914,8 @@
         },
         {
           "id": "scale-2",
-          "title": "Scale-2 widgets double logical geometry and rasterize TrueType labels at twice the size"
+          "title": "Scale-2 widgets double logical geometry and rasterize TrueType labels at twice the size",
+          "expect": "A dark grey (#3C3C3C) 240x80 button at (40,32), two-pixel grey (#787878) border and centred white (#FFFFFF) 32-pixel 'OK', on a navy (#0A141E) 400x160 background."
         }
       ]
     },
@@ -860,7 +949,8 @@
         },
         {
           "id": "scroll-to-cursor",
-          "title": "Text wider than the field scrolls to keep the cursor visible"
+          "title": "Text wider than the field scrolls to keep the cursor visible",
+          "expect": "A dark grey (#3C3C3C) text field at physical (20,20), size 120x40, with grey (#787878) border, gold (#FFC83C) focus ring, white (#FFFFFF) beginning of 'abcdefghijklmnopqrstuvwxyz' and caret at x=28, on navy (#0A141E)."
         },
         {
           "id": "selection-text",
@@ -908,7 +998,8 @@
         },
         {
           "id": "filepicker-errors",
-          "title": "A directory that cannot be read shows its error in the picker"
+          "title": "A directory that cannot be read shows its error in the picker",
+          "expect": "A charcoal (#2D2D2D) file picker at the top left of a navy (#0A141E) 640x500 picture, with '/data' in its path bar and white (#FFFFFF) 'Permission denied' at physical (10,58); no file rows."
         }
       ]
     },
@@ -926,11 +1017,13 @@
         },
         {
           "id": "step-invariance",
-          "title": "One step of 1,000 ms, a thousand steps of 1 ms and steps of 16 ms give identical states at equal times"
+          "title": "One step of 1,000 ms, a thousand steps of 1 ms and steps of 16 ms give identical states at equal times",
+          "expect": "A pale grey (#DCDCE6) right-pointing arrow, nominal size 48, centred near (128,128) on a navy (#0A141E) 256x256 picture; its shaft is horizontal with a chevron at the right."
         },
         {
           "id": "settles",
-          "title": "Every catalogue animation settles within 2,000 ms of UI time after its last input and never draws outside its box"
+          "title": "Every catalogue animation settles within 2,000 ms of UI time after its last input and never draws outside its box",
+          "expect": "A pale grey (#DCDCE6) right-pointing arrow in its settled hover pose, nominal size 48, near (128,128) on a navy (#0A141E) 256x256 picture; no text."
         },
         {
           "id": "interrupt",
@@ -942,11 +1035,13 @@
         },
         {
           "id": "reset",
-          "title": "Reset after a resize returns the icon to idle at its new geometry"
+          "title": "Reset after a resize returns the icon to idle at its new geometry",
+          "expect": "A pale grey (#DCDCE6) right-pointing arrow in its idle pose, nominal size 56, centred at (128,128) on a navy (#0A141E) 256x256 picture."
         },
         {
           "id": "bounded",
-          "title": "Over 10,000 steps of seeded random pointer input, the trajectory stays inside its box"
+          "title": "Over 10,000 steps of seeded random pointer input, the trajectory stays inside its box",
+          "expect": "A small pale grey (#DCDCE6) right-pointing arrow and accumulated dim cyan speed trails cluster around (128,128) on a navy (#0A141E) 256x256 picture, within its 68x68 bounds; no text."
         },
         {
           "id": "easing",
@@ -958,11 +1053,13 @@
         },
         {
           "id": "particles-bounded",
-          "title": "Particle counts stay at or below the cap, and positions stay inside the box"
+          "title": "Particle counts stay at or below the cap, and positions stay inside the box",
+          "expect": "White (#FFFFFF) particles and their fading trails remain inside the 24x20 box at (28,30) on a navy (#0A141E) 80x80 picture; no text."
         },
         {
           "id": "assets",
-          "title": "Each icon in each state draws to its reviewed reference"
+          "title": "Each icon in each state draws to its reviewed reference",
+          "expect": "A 4-row, 5-column icon grid on navy (#0C131F), spaced 128 pixels apart from (64,64): home, pale blue (#B4D2F0) search lens, save and pale grey (#DCDCE6) right arrow, showing five animation states across each row; no text."
         }
       ]
     },
@@ -972,11 +1069,13 @@
       "cases": [
         {
           "id": "create",
-          "title": "Window creation returns distinct zeroed GPU target handles and mapped tree pages"
+          "title": "Window creation returns distinct zeroed GPU target handles and mapped tree pages",
+          "expect": "An entirely black (#000000) 64x48 rectangle; no text or shapes."
         },
         {
           "id": "create-zeroed",
-          "title": "A new window's buffers are all zero"
+          "title": "A new window's buffers are all zero",
+          "expect": "An entirely black (#000000) 37x29 rectangle; no text or shapes."
         },
         {
           "id": "register-listed",
@@ -1008,11 +1107,13 @@
         },
         {
           "id": "multi-window",
-          "title": "One process creates and draws four windows independently"
+          "title": "One process creates and draws four windows independently",
+          "expect": "A 9x50 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is leaf green (#67AB3B), with no text."
         },
         {
           "id": "destroy",
-          "title": "Destroy removes the window, revokes GPU target handles and releases backing"
+          "title": "Destroy removes the window, revokes GPU target handles and releases backing",
+          "expect": "An entirely black (#000000) 64x48 rectangle from the last readable window target; no shapes or text."
         },
         {
           "id": "drop-destroys",
@@ -1036,7 +1137,8 @@
         },
         {
           "id": "fork-no-mapping",
-          "title": "A forked child inherits no window GPU handles"
+          "title": "A forked child inherits no window GPU handles",
+          "expect": "An entirely black (#000000) 16x16 rectangle; no text or shapes."
         },
         {
           "id": "fork-no-authority",
@@ -1044,23 +1146,28 @@
         },
         {
           "id": "commit-swaps",
-          "title": "After a commit, acquire returns a different buffer holding the committed pixels"
+          "title": "After a commit, acquire returns a different buffer holding the committed pixels",
+          "expect": "A 20x10 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is green (#059141), with no text."
         },
         {
           "id": "acquire-replays-damage",
-          "title": "With three buffers and alternating disjoint updates (A commits `[1,0]`, B commits `[1,2]` with only the second cell damaged), the next acquired buffer holds `[1,2]`, and every acquire over 300 such commits equals the newest front"
+          "title": "With three buffers and alternating disjoint updates (A commits `[1,0]`, B commits `[1,2]` with only the second cell damaged), the next acquired buffer holds `[1,2]`, and every acquire over 300 such commits equals the newest front",
+          "expect": "Two 32x16 mosaics meet at x=32 in a 64x16 picture, with blue column ramps, green row ramps and red diagonal flecks; the upper-left pixel is bright green (#2CFC3C), and the right half begins green (#0BDF0F), with no text."
         },
         {
           "id": "acquire-full-copy",
-          "title": "A buffer with no base, or whose missing commits have left the 8-entry damage log, is replayed in full by the kernel and equals the newest front, for a Breengel client and a raw client alike"
+          "title": "A buffer with no base, or whose missing commits have left the 8-entry damage log, is replayed in full by the kernel and equals the newest front, for a Breengel client and a raw client alike",
+          "expect": "A 48x12 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is violet (#361EBE), with no text."
         },
         {
           "id": "stale-base-commit",
-          "title": "Of two concurrently acquired buffers, committing the one with the older base gives exactly that buffer's pixels, with damage widened to cover every pixel that changed. With `acquire-stall` holding thread 1's replay copy from front A halfway, thread 2 commits C and then acquires: it does not get A until the copy ends, and thread 1's buffer equals exactly the commit its returned base names. A stale buffer committed after more than eight intervening commits gets whole-window damage. Every step compares whole pixels to the formula and checks that the damage covers every changed pixel"
+          "title": "Of two concurrently acquired buffers, committing the one with the older base gives exactly that buffer's pixels, with damage widened to cover every pixel that changed. With `acquire-stall` holding thread 1's replay copy from front A halfway, thread 2 commits C and then acquires: it does not get A until the copy ends, and thread 1's buffer equals exactly the commit its returned base names. A stale buffer committed after more than eight intervening commits gets whole-window damage. Every step compares whole pixels to the formula and checks that the damage covers every changed pixel",
+          "expect": "A 64x16 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is very dark green (#011D0D), with no text."
         },
         {
           "id": "commit-immutable",
-          "title": "Committed GPU targets refuse later writes while accepted renders complete and tree pages stay protected"
+          "title": "Committed GPU targets refuse later writes while accepted renders complete and tree pages stay protected",
+          "expect": "A solid dark blue-grey (#112233) 16x16 rectangle; no text or shapes."
         },
         {
           "id": "commit-busy",
@@ -1072,7 +1179,8 @@
         },
         {
           "id": "release-order",
-          "title": "A retired buffer returns to free only after its composite and any capture copy in progress are done"
+          "title": "A retired buffer returns to free only after its composite and any capture copy in progress are done",
+          "expect": "A 256x128 mosaic with repeating blue column ramps and green row ramps, overlaid with red diagonal flecks; the palette spans black (#000000) to bright mixed colours as the captured commit changes, with no text."
         },
         {
           "id": "acquire-timeout",
@@ -1080,7 +1188,8 @@
         },
         {
           "id": "resize",
-          "title": "The owner's resize gives buffers of the new size holding the old contents in the intersection, also while another thread of the owner resizes the window"
+          "title": "The owner's resize gives buffers of the new size holding the old contents in the intersection, also while another thread of the owner resizes the window",
+          "expect": "One dark green (#059141) pixel, the retained upper-left corner after the resize race; no text or other shapes."
         },
         {
           "id": "resize-error",
@@ -1100,7 +1209,8 @@
         },
         {
           "id": "capture-across-destroy",
-          "title": "A capture in progress when its window is destroyed or resized returns the whole commit, with the tree page of that same commit when a tree destination is given; a capture begun after the destroy is ENOENT; and the buffer is freed when the copy ends"
+          "title": "A capture in progress when its window is destroyed or resized returns the whole commit, with the tree page of that same commit when a tree destination is given; a capture begun after the destroy is ENOENT; and the buffer is freed when the copy ends",
+          "expect": "A 64x64 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is lime green (#3CCC0C), with no text."
         },
         {
           "id": "two-buffer-capture-load",
@@ -1108,7 +1218,8 @@
         },
         {
           "id": "remnant-on-death",
-          "title": "When the owner of a window with an evidence holder is killed, the holder reads its last front and tree, and releasing the remnant returns memory to the baseline"
+          "title": "When the owner of a window with an evidence holder is killed, the holder reads its last front and tree, and releasing the remnant returns memory to the baseline",
+          "expect": "A 64x32 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is dark green (#156111), with no text."
         },
         {
           "id": "churn",
@@ -1116,11 +1227,13 @@
         },
         {
           "id": "distinct-content",
-          "title": "Sixteen live windows each composite their own pixels, never another window's"
+          "title": "Sixteen live windows each composite their own pixels, never another window's",
+          "expect": "Sixteen 80x50 mosaic rectangles form a 4x4 grid, starting at (10,10) with 100-pixel column and 60-pixel row spacing on black (#000000); blue column ramps, green row ramps and red diagonal flecks differ with each window's id, with no text."
         },
         {
           "id": "raw-client",
-          "title": "A client using the raw libbreenix calls, without Breengel, creates, commits and destroys a window"
+          "title": "A client using the raw libbreenix calls, without Breengel, creates, commits and destroys a window",
+          "expect": "A 32x16 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is navy (#090575), with no text."
         },
         {
           "id": "every-target",
@@ -1128,7 +1241,8 @@
         },
         {
           "id": "commit-waits-render",
-          "title": "Pending render fences are not composed and failed renders cannot replace the front"
+          "title": "Pending render fences are not composed and failed renders cannot replace the front",
+          "expect": "A solid dark blue-grey (#112233) 16x16 rectangle from the completed render; no text or shapes."
         }
       ]
     },
@@ -1138,7 +1252,8 @@
       "cases": [
         {
           "id": "list-by-user",
-          "title": "LIST filters entries and counts by owner uid while root and the compositor see the registry"
+          "title": "LIST filters entries and counts by owner uid while root and the compositor see the registry",
+          "expect": "A 16x16 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is slate blue (#2E3656), with no text."
         },
         {
           "id": "other-register",
@@ -1146,7 +1261,8 @@
         },
         {
           "id": "other-commit",
-          "title": "An unrelated process committing another's window fails with EPERM"
+          "title": "An unrelated process committing another's window fails with EPERM",
+          "expect": "A 16x16 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is dark green (#047434), with no text."
         },
         {
           "id": "other-position",
@@ -1162,15 +1278,18 @@
         },
         {
           "id": "other-map",
-          "title": "Foreign GPU target handles are refused before submission or readback"
+          "title": "Foreign GPU target handles are refused before submission or readback",
+          "expect": "A 24x12 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is green (#07CB5B), with no text."
         },
         {
           "id": "other-resize",
-          "title": "An unrelated process resizing another's window fails with EPERM"
+          "title": "An unrelated process resizing another's window fails with EPERM",
+          "expect": "A 16x16 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is navy (#090575), with no text."
         },
         {
           "id": "other-destroy",
-          "title": "An unrelated process destroying another's window fails with EPERM"
+          "title": "An unrelated process destroying another's window fails with EPERM",
+          "expect": "A 16x16 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is navy (#0A2282), with no text."
         },
         {
           "id": "other-tree",
@@ -1178,7 +1297,8 @@
         },
         {
           "id": "texture-map",
-          "title": "An unrelated process cannot sample the compositor scanout through GPU resource handles"
+          "title": "An unrelated process cannot sample the compositor scanout through GPU resource handles",
+          "expect": "A solid dark blue-grey (#112233) full screen from the compositor's private scanout fixture; no shapes or text."
         },
         {
           "id": "composite-denied",
@@ -1198,7 +1318,8 @@
         },
         {
           "id": "compositor-authorized",
-          "title": "The compositor's position, inject, capture and composite calls succeed on every window"
+          "title": "The compositor's position, inject, capture and composite calls succeed on every window",
+          "expect": "A 12x8 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is teal (#0E96B6), with no text."
         },
         {
           "id": "pid-reuse",
@@ -1238,7 +1359,8 @@
         },
         {
           "id": "efault-commit",
-          "title": "An unmapped commit metadata pointer fails with EFAULT, metadata with a nonzero reserved field fails with EINVAL, and neither commits anything"
+          "title": "An unmapped commit metadata pointer fails with EFAULT, metadata with a nonzero reserved field fails with EINVAL, and neither commits anything",
+          "expect": "A 16x16 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is dark green (#144404), with no text."
         },
         {
           "id": "efault-readback",
@@ -1300,23 +1422,28 @@
       "cases": [
         {
           "id": "compose-position",
-          "title": "A committed pattern appears at the window's position in the composed frame, exactly"
+          "title": "A committed pattern appears at the window's position in the composed frame, exactly",
+          "expect": "A 100x60 mosaic rectangle at (200,150) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is very dark green (#011D0D), with no text."
         },
         {
           "id": "compose-overlap",
-          "title": "Two overlapping windows compose in z order, exactly"
+          "title": "Two overlapping windows compose in z order, exactly",
+          "expect": "Two 200x120 mosaics overlap on black (#000000), at (100,100) and (180,150); the first covers the second in the overlap, with blue and green ramps and red flecks, beginning dark green (#023A1A) and dark green (#035727)."
         },
         {
           "id": "compose-offscreen",
-          "title": "A window partly off the screen is clipped at the screen edge"
+          "title": "A window partly off the screen is clipped at the screen edge",
+          "expect": "Three blue-green-red mosaics are cropped by a black (#000000) 2560x1600 screen: 70x40 at top left, 60x30 at bottom right, and 30x40 at (0,500); no text."
         },
         {
           "id": "compose-fullscreen",
-          "title": "A full-mode window at 0,0 fills the frame exactly"
+          "title": "A full-mode window at 0,0 fills the frame exactly",
+          "expect": "A full-screen repeating mosaic of blue horizontal ramps, green vertical ramps and fine red diagonal flecks, beginning dark green (#07CB5B) at (0,0); no text."
         },
         {
           "id": "compose-many",
-          "title": "Sixteen windows in a fixed stack compose to the formula, exactly"
+          "title": "Sixteen windows in a fixed stack compose to the formula, exactly",
+          "expect": "Sixteen 160x120 mosaics descend diagonally from (40,30), each 60 pixels right and 40 down, earlier rectangles on top, against black (#000000); blue and green ramps with red flecks, starting dark blue (#0A2282)."
         },
         {
           "id": "generation",
@@ -1324,7 +1451,8 @@
         },
         {
           "id": "no-compositor",
-          "title": "A commit with no compositor returns within 250 ms and is composed once a compositor claims"
+          "title": "A commit with no compositor returns within 250 ms and is composed once a compositor claims",
+          "expect": "A 120x80 mosaic rectangle at (300,200) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is dark green (#144404), with no text."
         },
         {
           "id": "compositor-dies",
@@ -1340,75 +1468,93 @@
         },
         {
           "id": "damage-work",
-          "title": "A composite processes exactly the pixels in its damage union, by the compositor's counter, and with `ignore-damage` armed the excess is reported by count"
+          "title": "A composite processes exactly the pixels in its damage union, by the compositor's counter, and with `ignore-damage` armed the excess is reported by count",
+          "expect": "A 200x150 mosaic at (100,100) on black (#000000), with a changed 10x10 patch at (120,130); blue column ramps, green row ramps and red flecks, with dark green (#035727) at the window's upper left."
         },
         {
           "id": "damage-screen",
-          "title": "A partial composite gives the same frame as a full recomposition"
+          "title": "A partial composite gives the same frame as a full recomposition",
+          "expect": "Two blue-green-red mosaics overlap on black (#000000): 300x200 at (50,60), and 200x150 above it at (250,160); a changed 140x140 patch starts at (200,110) in the lower window, partly hidden by the upper one."
         },
         {
           "id": "composite-record",
-          "title": "Each composite publishes its serial and the commit id and pixel generation of every presentation-required window it accounts for, a wholly occluded one included with zero composed pixels"
+          "title": "Each composite publishes its serial and the commit id and pixel generation of every presentation-required window it accounts for, a wholly occluded one included with zero composed pixels",
+          "expect": "A 120x90 mosaic at (100,100) and a 200x150 mosaic at (380,280) on black (#000000); blue-green ramps with red flecks begin dark blue (#0B3F8F) and dark teal (#0D79A9), and the second completely hides a smaller window."
         },
         {
           "id": "backend-error",
-          "title": "A forced backend failure leaves the commit uncomposited, is reported to the compositor, and the retry succeeds"
+          "title": "A forced backend failure leaves the commit uncomposited, is reported to the compositor, and the retry succeeds",
+          "expect": "A 100x100 mosaic rectangle at (200,200) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is turquoise (#11EDDD), with no text."
         },
         {
           "id": "inflight-bound",
-          "title": "At most one composite per window is in flight"
+          "title": "At most one composite per window is in flight",
+          "expect": "A 640x400 mosaic rectangle at (0,0) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is blue (#1327F7), with no text."
         },
         {
           "id": "no-change-commit",
-          "title": "commit_no_change publishes new metadata with empty damage and the same pixel generation, causes no composite, and is presented by the composite that already holds that generation"
+          "title": "commit_no_change publishes new metadata with empty damage and the same pixel generation, causes no composite, and is presented by the composite that already holds that generation",
+          "expect": "A 100x80 mosaic rectangle at (500,300) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is dark green (#156111), with no text."
         },
         {
           "id": "cursor-hidden",
-          "title": "With the cursor hidden, no cursor pixel appears in the frame"
+          "title": "With the cursor hidden, no cursor pixel appears in the frame",
+          "expect": "A 300x200 mosaic rectangle at (200,200) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is green (#167E1E), with no text."
         },
         {
           "id": "cursor-no-trail",
-          "title": "Moving the cursor over a static scene restores every pixel it covered"
+          "title": "Moving the cursor over a static scene restores every pixel it covered",
+          "expect": "A 600x400 mosaic rectangle at (100,100) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is green (#179B2B), with no text."
         },
         {
           "id": "cursor-shape",
-          "title": "Setting a cursor shape draws that shape at the pointer"
+          "title": "Setting a cursor shape draws that shape at the pointer",
+          "expect": "A diagonal resize cursor near (640,400), pointing northeast and southwest, on an otherwise black (#000000) full screen; all cursor pixels lie within 32 pixels of that point, with no text."
         },
         {
           "id": "cursor-stationary-repaint",
-          "title": "Content committed under a stationary cursor is shown, with the cursor redrawn above it"
+          "title": "Content committed under a stationary cursor is shown, with the cursor redrawn above it",
+          "expect": "A 400x300 blue-green-red mosaic at (200,150) on black (#000000), starting green (#19D545), with the unchanged arrow cursor at (380,290); no text."
         },
         {
           "id": "irq-bound",
-          "title": "The longest IRQ-masked interval during full-screen damage stays within 500 µs, after `irq-hold` has shown the gauge reads a 2 ms hold"
+          "title": "The longest IRQ-masked interval during full-screen damage stays within 500 µs, after `irq-hold` has shown the gauge reads a 2 ms hold",
+          "expect": "A full-screen mosaic of repeating blue column ramps, green row ramps and red diagonal flecks, beginning slate blue (#2F5363) at (0,0); no text."
         },
         {
           "id": "present-rate",
-          "title": "One 256x256 window composes at least 60 commits a second"
+          "title": "One 256x256 window composes at least 60 commits a second",
+          "expect": "A 256x256 animated mosaic at (100,100) on black (#000000), with blue column ramps, green row ramps and red diagonal flecks; the final seed is 299, giving green (#2BDF2F) at its upper-left corner, with no text."
         },
         {
           "id": "takeover-giveback",
-          "title": "Display takeover and giveback restore the previous owner's frame exactly"
+          "title": "Display takeover and giveback restore the previous owner's frame exactly",
+          "expect": "The previous owner's navy (#0C131F) stage returns exactly, with its matrix of case tiles on the left and selected-case panel on the right; the child's solid orange (#E08020) screen is gone."
         },
         {
           "id": "ownership-stack",
-          "title": "When a compositor dies, the display returns to the process that gave it, not to the runner"
+          "title": "When a compositor dies, the display returns to the process that gave it, not to the runner",
+          "expect": "A solid green (#339911) full screen; no shapes or text."
         },
         {
           "id": "gpu-composite",
-          "title": "GPU composition draws client targets without CPU pixel uploads"
+          "title": "GPU composition draws client targets without CPU pixel uploads",
+          "expect": "A 64x48 mosaic rectangle at (20,30) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is navy (#090575), with no text."
         },
         {
           "id": "scale-2",
-          "title": "Scale-2 GPU composition preserves placement, clipping and exact pixels"
+          "title": "Scale-2 GPU composition preserves placement, clipping and exact pixels",
+          "expect": "Three blue-green-red mosaics with 2x2 pixel blocks on black (#000000): 256x192 at (80,120), 320x160 above it at (200,200), and a cropped 160x40 strip at (0,1560); no text."
         },
         {
           "id": "target-lifetime",
-          "title": "Compositor, scanout, capture and replay holds retain GPU targets until their final release"
+          "title": "Compositor, scanout, capture and replay holds retain GPU targets until their final release",
+          "expect": "A 64x48 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is turquoise (#11EDDD), with no text."
         },
         {
           "id": "fbinfo-geometry",
-          "title": "GPU MODES and the composed binding agree on physical dimensions and scale"
+          "title": "GPU MODES and the composed binding agree on physical dimensions and scale",
+          "expect": "A black (#000000) full screen: eighteen zero-filled 1x1 windows sit along its top row at x=0..17, so no window edge or text is visible."
         }
       ]
     },
@@ -1466,7 +1612,8 @@
         },
         {
           "id": "resize-request",
-          "title": "A window that answers a compositor's resize request takes the asked size; one that ignores it keeps its own"
+          "title": "A window that answers a compositor's resize request takes the asked size; one that ignores it keeps its own",
+          "expect": "A solid near-black blue-grey (#070809) 32x24 rectangle from the window that ignored the resize request; no shapes or text."
         },
         {
           "id": "font-changed",
@@ -1506,7 +1653,8 @@
         },
         {
           "id": "processed-ack",
-          "title": "commit_no_change publishes the processed serial without changing pixels"
+          "title": "commit_no_change publishes the processed serial without changing pixels",
+          "expect": "A solid near-black blue-grey (#070809) 32x24 rectangle; no shapes or text."
         },
         {
           "id": "overflow",
@@ -1556,71 +1704,88 @@
       "cases": [
         {
           "id": "mode-set",
-          "title": "GPU MODES and full readback agree on 2560x1600 at scale 2"
+          "title": "GPU MODES and full readback agree on 2560x1600 at scale 2",
+          "expect": "A 200x120 mosaic rectangle at (320,200) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is very dark green (#011D0D), with no text."
         },
         {
           "id": "device-path",
-          "title": "Readback uses this backend's observation path from the contract and names it"
+          "title": "Readback uses this backend's observation path from the contract and names it",
+          "expect": "A 200x120 mosaic rectangle at (320,200) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is dark green (#023A1A), with no text."
         },
         {
           "id": "changing-scene",
-          "title": "Three successive known scenes each read back equal to their formulas"
+          "title": "Three successive known scenes each read back equal to their formulas",
+          "expect": "A full-screen mosaic of blue horizontal ramps, green vertical ramps and red diagonal flecks, beginning blue-green (#22DABA), with a second 300x250 mosaic above it at (900,500), beginning turquoise (#23F7C7); no text."
         },
         {
           "id": "full-destination",
-          "title": "Readback covers the whole destination, and a change in its last row is seen"
+          "title": "Readback covers the whole destination, and a change in its last row is seen",
+          "expect": "A black (#000000) 2560x1600 screen with one coloured row along the bottom, beginning blue (#2531E1); blue varies across that row with red flecks, and there is no text."
         },
         {
           "id": "binding",
-          "title": "Every GPU present record names its actual completed scanout binding and composite"
+          "title": "Every GPU present record names its actual completed scanout binding and composite",
+          "expect": "A 200x120 mosaic rectangle at (320,200) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is dark green (#047434), with no text."
         },
         {
           "id": "completion",
-          "title": "The record carries answered completion for every damaged rectangle of its composite serial"
+          "title": "The record carries answered completion for every damaged rectangle of its composite serial",
+          "expect": "Two 100x100 mosaics at (100,100) and (800,500) on black (#000000), with blue column ramps, green row ramps and red flecks; their upper-left pixels are dark green (#07CB5B) and dark green (#08E868), with no text."
         },
         {
           "id": "atomic-record",
-          "title": "The pixels and the record always belong to the same composite serial under continuous commits"
+          "title": "The pixels and the record always belong to the same composite serial under continuous commits",
+          "expect": "A 64x64 mosaic at (600,400) on black (#000000), with blue column ramps, green row ramps and red diagonal flecks; its changing colours identify the observed commit, with no text."
         },
         {
           "id": "window-commits",
-          "title": "The record lists the commit id of each window composed"
+          "title": "The record lists the commit id of each window composed",
+          "expect": "Three 100x100 mosaics at (50,50), (300,50) and (550,50) on black (#000000); blue-green ramps and red flecks begin dark blue (#090575), dark teal (#0C5C9C) and dark blue (#0B3F8F), with no text."
         },
         {
           "id": "format-canonical",
-          "title": "RGB and BGR destinations read back as the same canonical BGRX pixels"
+          "title": "RGB and BGR destinations read back as the same canonical BGRX pixels",
+          "expect": "A 200x120 mosaic rectangle at (320,200) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is blue (#0D79A9), with no text."
         },
         {
           "id": "root-only",
-          "title": "A non-root, non-compositor process cannot read back the scanout"
+          "title": "A non-root, non-compositor process cannot read back the scanout",
+          "expect": "A 200x120 mosaic rectangle at (320,200) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is teal (#0E96B6), with no text."
         },
         {
           "id": "fault-skipped-transfer",
-          "title": "GPU point 19 yields EIO unwritten without partial output and the next composite recovers"
+          "title": "GPU point 19 yields EIO unwritten without partial output and the next composite recovers",
+          "expect": "A 200x120 mosaic rectangle at (320,200) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is turquoise (#11EDDD), with no text."
         },
         {
           "id": "fault-wrong-resource",
-          "title": "GPU point 26 exposes the wrong actual scanout binding and the next composite recovers"
+          "title": "GPU point 26 exposes the wrong actual scanout binding and the next composite recovers",
+          "expect": "A 200x120 mosaic rectangle at (320,200) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is dark green (#144404), with no text."
         },
         {
           "id": "fault-stale-fence",
-          "title": "GPU point 20 yields EIO fence-mismatch without partial output and the next composite recovers"
+          "title": "GPU point 20 yields EIO fence-mismatch without partial output and the next composite recovers",
+          "expect": "A 200x120 mosaic rectangle at (320,200) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is green (#179B2B), with no text."
         },
         {
           "id": "fault-outside-damage",
-          "title": "Corruption written outside any damage is found by comparing the full destination"
+          "title": "Corruption written outside any damage is found by comparing the full destination",
+          "expect": "A 200x120 mosaic rectangle at (320,200) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is bright green (#1AF252), with no text."
         },
         {
           "id": "boundary-stated",
-          "title": "The record states what lies outside the guest's view for this backend"
+          "title": "The record states what lies outside the guest's view for this backend",
+          "expect": "A 200x120 mosaic rectangle at (320,200) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is bright green (#1AF252), with no text."
         },
         {
           "id": "present-flip",
-          "title": "Every flip records its actual target and completed present fence"
+          "title": "Every flip records its actual target and completed present fence",
+          "expect": "A 200x120 mosaic rectangle at (320,200) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is green (#2AC222), with no text."
         },
         {
           "id": "hidpi-mode",
-          "title": "The complete 2560x1600 scanout is read back and changes in its final row are observed"
+          "title": "The complete 2560x1600 scanout is read back and changes in its final row are observed",
+          "expect": "A black (#000000) 2560x1600 screen with one coloured row at y=1599, beginning green (#33C797), with blue varying across the row and red flecks; no text."
         }
       ]
     },
@@ -1630,35 +1795,43 @@
       "cases": [
         {
           "id": "stage-layout",
-          "title": "Stage fixture header, wall and spotlight occupy the contract rectangles; the footer is empty"
+          "title": "Stage fixture header, wall and spotlight occupy the contract rectangles; the footer is empty",
+          "expect": "A solid deep blue (#135393) 2x2 square; no shapes or text."
         },
         {
           "id": "tile-stamps",
-          "title": "Tile order, milestone grouping, stamp states and key numbers match the fixture"
+          "title": "Tile order, milestone grouping, stamp states and key numbers match the fixture",
+          "expect": "On navy (#0C131F), 430 small pending tiles with slate-blue (#304360) outlines fill the left matrix under 'one'; white (#FFFFFF) 'BREENIX / fixture' heads the screen, and the right panel selects case '0'."
         },
         {
           "id": "tile-thumbnail",
-          "title": "Every thumbnail is the integer box filter of the judged frame"
+          "title": "Every thumbnail is the integer box filter of the judged frame",
+          "expect": "A navy (#0C131F) stage with white (#FFFFFF) 'BREENIX / fixture', alpha/beta tiles at left and case 'fail' at right; the first tile contains a tiny dark red-green-blue gradient thumbnail beginning near black (#010101)."
         },
         {
           "id": "spotlight-picture",
-          "title": "Expected, actual and difference panes show the first mismatch and comparison bound"
+          "title": "Expected, actual and difference panes show the first mismatch and comparison bound",
+          "expect": "A navy (#0C131F) stage with the alpha/beta tile matrix at left; at right, 'actual (reference not supplied)' labels a brown (#1E140A) rectangle with a slightly greener (#1E190A) upper-right quarter, all text white (#FFFFFF)."
         },
         {
           "id": "spotlight-timing",
-          "title": "Frame-time bars and the budget line match the fixture numbers"
+          "title": "Frame-time bars and the budget line match the fixture numbers",
+          "expect": "A navy (#0C131F) stage with white (#FFFFFF) 'frame times us; budget 1000' above four time-bar slots at right: zero, two blue (#40A0E0) bars and a tall muted red (#91323A) bar, crossed by a white budget line."
         },
         {
           "id": "milestone-ribbon",
-          "title": "Category counts stay in the matrix and the removed ribbon leaves an empty footer"
+          "title": "Category counts stay in the matrix and the removed ribbon leaves an empty footer",
+          "expect": "A navy (#0C131F) stage with green (#1A704D) alpha pass tiles and white (#FFFFFF) '2/2 pass' in the left matrix, '0/3 pass' for beta; the bottom 200 physical rows remain empty navy."
         },
         {
           "id": "finale",
-          "title": "The summary shows counts and the slowest case and holds for five seconds of UI time"
+          "title": "The summary shows counts and the slowest case and holds for five seconds of UI time",
+          "expect": "A blue-grey (#18273B) summary box at physical (96,480), size 1440x480, overlays the left matrix on navy (#0C131F); white (#FFFFFF) text reads 'RUN COMPLETE', '1 passed  1 failed  1 not reached' and 'slowest alpha/fail 9 ms'."
         },
         {
           "id": "deterministic",
-          "title": "The same results at the same UI time draw byte-identical stage pixels without real clock reads"
+          "title": "The same results at the same UI time draw byte-identical stage pixels without real clock reads",
+          "expect": "A navy (#0C131F) 1280x800 stage headed 'BREENIX / clock' in white (#FFFFFF), with one cyan (#40FFE0) running tile for 'clock/running' at left and an empty dark blue (#121D2C) panel at right; the header shows 500 ms."
         },
         {
           "id": "judged-frame-shown",
@@ -1682,27 +1855,33 @@
         },
         {
           "id": "stage-hidpi",
-          "title": "The full HiDPI stage has scaled geometry and independently rasterized text"
+          "title": "The full HiDPI stage has scaled geometry and independently rasterized text",
+          "expect": "Navy (#0C131F) stage: blue-grey (#18273B) header 'BREENIX / fixture' in white (#FFFFFF), green (#1A704D), red (#91323A), grey (#394350), pending blue (#304360) and cyan (#40BFE0) tiles at left; dark blue (#121D2C) 'CASE 2 / alpha', 'fail', 'key 9' panel at right."
         },
         {
           "id": "handoff",
-          "title": "A display-taking child under probe takes the display, gives it back, and the panel is restored exactly"
+          "title": "A display-taking child under probe takes the display, gives it back, and the panel is restored exactly",
+          "expect": "The navy (#0C131F) live suite stage is restored: case tiles on the left, selected-case panel on the right, white (#FFFFFF) labels and coloured verdict stamps; counts and names reflect the preceding cases."
         },
         {
           "id": "between-cases",
-          "title": "In a GUI suite the panel is drawn only between cases and restored exactly after each"
+          "title": "In a GUI suite the panel is drawn only between cases and restored exactly after each",
+          "expect": "The navy (#0C131F) live suite stage stays still, with case tiles on the left, selected-case panel on the right, white (#FFFFFF) labels and coloured verdict stamps; counts and names reflect the preceding cases."
         },
         {
           "id": "cursor-restore",
-          "title": "Moving the pointer over the panel leaves no cursor trail"
+          "title": "Moving the pointer over the panel leaves no cursor trail",
+          "expect": "The navy (#0C131F) live suite stage has white (#FFFFFF) labels, coloured case tiles and a pointer at (1200,40); the five positions crossed by the pointer have their original pixels restored."
         },
         {
           "id": "cursor-trail-detected",
-          "title": "With the panel cursor's save and restore disabled by a test control, the trail is detected"
+          "title": "With the panel cursor's save and restore disabled by a test control, the trail is detected",
+          "expect": "The navy (#0C131F) live suite stage has white (#FFFFFF) labels and extra pointer marks near (200,300), (400,320), (640,400), (900,500), (1100,600); the pointer also sits at (1200,40)."
         },
         {
           "id": "kernel-screens",
-          "title": "The kernel's console screen redraws exactly after the display is given back"
+          "title": "The kernel's console screen redraws exactly after the display is given back",
+          "expect": "The kernel console's saved text returns in pale grey (#CDD7EB) on midnight blue (#0F1423), with its boot-stage ribbon at the bottom; the text is the existing console contents, not a fixed test string."
         }
       ]
     }
