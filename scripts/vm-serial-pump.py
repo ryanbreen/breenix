@@ -11,6 +11,7 @@ import socket
 import subprocess
 import sys
 import time
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent / 'metal'))
@@ -53,6 +54,9 @@ def main(run, whole_path):
     token = token_path.read_text().strip() if token_path.exists() else ''
     if token and not re.fullmatch(r'[a-f0-9]{64}', token):
         raise ValueError('invalid VM power token')
+    # One pump belongs to one QEMU launch; resets retain this launch identity.
+    record['qemuProcess'] = uuid.uuid4().hex
+    record['runId'] = hashlib.sha256(token.encode()).hexdigest() if token else None
     receipt_line = ''
     expected_receipt = None
     shutdown_action = None

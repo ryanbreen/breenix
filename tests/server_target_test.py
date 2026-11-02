@@ -126,6 +126,79 @@ class ServerTarget(unittest.TestCase):
                 mutate(bad)
                 with self.assertRaises(ValueError): score(bad)
 
+    def test_qemu_reboot_target_lifecycle_without_vm(self):
+        with tempfile.TemporaryDirectory(dir='/tmp') as scratch:
+            run = Path(scratch)
+            (run / 'current').write_text('old')
+            (run / 'mode').write_text('console')
+            (run / 'build.json').write_text(json.dumps(dict(commit='a' * 40)))
+            target = HOST['QemuTarget'](run, 'old')
+            calls = []
+            def launch(args, **kwargs):
+                calls.append(args)
+                (run / 'current').write_text('new-' + str(len(calls)))
+                return SimpleNamespace(poll=lambda: None)
+            with patch.object(HOST['subprocess'], 'Popen', side_effect=launch):
+                self.assertEqual(target.start_persistent(), 'new-1')
+                self.assertEqual(target.start_fault(None, 'a' * 40), 'new-2')
+                with self.assertRaisesRegex(ValueError, 'this commit'):
+                    target.start_fault(None, 'b' * 40)
+            launcher = str(ROOT / 'scripts/vm-persistent.sh')
+            self.assertEqual(calls, [
+                [launcher, 'qemu', 'boot', '--run-dir', str(run), '--mode', 'console'],
+                [launcher, 'qemu', 'fault-boot', '--run-dir', str(run)],
+            ])
+            console = unittest.mock.Mock()
+            with patch.object(target, 'console', return_value=console):
+                target.stop_for_fault('fixture', 'password')
+                self.assertEqual(console.method_calls, [unittest.mock.call.login(),
+                                                       unittest.mock.call.type_line('/sbin/poweroff')])
+            self.assertEqual(target.boot_start_marker, 'Breenix ARM64 Kernel Starting')
+
+    def test_qemu_target_waits_for_the_named_successor_at_this_commit(self):
+        sha = 'a' * 40
+        with tempfile.TemporaryDirectory(dir='/tmp') as scratch:
+            run = Path(scratch)
+            for name in ('old', 'next'):
+                directory = run / 'boots' / name
+                directory.mkdir(parents=True)
+                (directory / 'run.json').write_text(json.dumps(dict(
+                    bootedCommit=sha, toolsCommit=sha, runId='run', qemuProcess='launch')))
+                (directory / 'serial.txt').write_text('')
+            old, fresh = run / 'boots/old', run / 'boots/next'
+            (old / 'events.jsonl').write_text(json.dumps(dict(event='requested-reset-observed', successor='next')) + '\n')
+            (old / 'ended').touch()
+            target = HOST['QemuTarget'](run, 'old')
+            self.assertIsNone(target.reboot_successor(sha))
+            (fresh / 'serial.txt').write_text('bsshd: listening on 0.0.0.0:22')
+            self.assertEqual(target.reboot_successor(sha), 'next')
+            with self.assertRaisesRegex(ValueError, 'different run, QEMU process or commit'):
+                target.reboot_successor('b' * 40)
+            (old / 'events.jsonl').write_text('')
+            with self.assertRaisesRegex(ValueError, 'no authenticated guest reset'):
+                target.reboot_successor(sha)
+
+    def test_qemu_reboot_files_cases_and_judge_exit_in_vigil(self):
+        helper = runpy.run_path(str(ROOT / 'scripts/metal/server_reboot.py'))
+        with tempfile.TemporaryDirectory() as scratch:
+            run = Path(scratch)
+            (run / 'started').write_text('123.25')
+            (run / 'qemu-profile').write_text('fixture-profile')
+            records = dict(cases=[dict(id='reboot/' + name, result='PASS', ms=1, reason='')
+                                  for name, _ in HOST['REBOOT']])
+            args = SimpleNamespace(run_dir=run, sha='a' * 40)
+            with patch.object(helper['subprocess'], 'run', return_value=reply()) as execute:
+                helper['file_vigil'](HOST, args, SimpleNamespace(directory=run), records, 'FAIL: judge refused', 6)
+            command = execute.call_args.args[0]
+            self.assertEqual(command[1:5], ['record', 'qemu', 'persistent', 'server'])
+            self.assertEqual(command[-4], args.sha)
+            self.assertEqual(command[-3], '123.25')
+            self.assertEqual(command[-1], '1')
+            self.assertEqual(execute.call_args.kwargs['env']['BREENIX_VIGIL_ARCH'], 'aarch64')
+            lines = (run / 'reboot-suite.txt').read_text().splitlines()
+            self.assertEqual(len(lines), 8)
+            self.assertEqual(lines[-1], 'SUITE server DONE passed=6 failed=0 skipped=0 total=6')
+
     def test_rtc_reboot_requires_the_boot_architecture_hardware_source(self):
         previous = {'corrected': True, 'skewSeconds': 172800}
         for arch, source, accepted in (
