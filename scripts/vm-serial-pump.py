@@ -18,12 +18,16 @@ def main(run, whole_path):
     run = Path(run)
     build_path = run / 'build.json'
     build = json.loads(build_path.read_text()) if build_path.exists() else {}
+    verified_path = run / 'verified-build.json'
+    verified = json.loads(verified_path.read_text()) if verified_path.exists() else {}
     mode_path = run / 'mode'
     tools_path = run / 'tools-commit'
     record = {'mode': 'persistent', 'bootMode': mode_path.read_text().strip() if mode_path.exists() else '',
               'target': 'qemu', 'bootedCommit': build.get('commit'),
               'toolsCommit': tools_path.read_text().strip() if tools_path.exists() else '',
-              'evidenceEligible': bool(build.get('commit') and build.get('dirty') is False)}
+              'evidenceEligible': bool(verified.get('evidenceEligible') is True and verified.get('commit') == build.get('commit') and verified.get('artifacts') == build.get('artifacts'))}
+    if record['evidenceEligible']:
+        record['artifacts'] = verified['artifacts']
     # Freeze the scoring definitions at the image's recorded build commit,
     # rather than consulting a later checkout when this run reboots.
     definition = {}

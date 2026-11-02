@@ -66,11 +66,13 @@ echo 'vm-persistent argument and image layout checks passed'
 # Keep socket paths short even when macOS supplies a long TMPDIR.
 fixture=$(mktemp -d /tmp/vpm-test.XXXXXX)
 trap 'rm -rf "$tmp" "$fixture"' EXIT
-mkdir -p "$fixture/scripts" "$fixture/bin" "$fixture/run"
+mkdir -p "$fixture/scripts/metal" "$fixture/bin" "$fixture/run"
 git -C "$fixture" init -q
 git -C "$fixture" -c user.name=Fixture -c user.email=fixture@example.invalid commit -q --allow-empty -m fixture
+cp "$root/scripts/metal/metal_lib.py" "$fixture/scripts/metal/metal_lib.py"
 cp "$launcher" "$fixture/scripts/vm-persistent.sh"
 cp "$root/scripts/vm-serial-pump.py" "$fixture/scripts/vm-serial-pump.py"
+cp "$root/scripts/vm-artifacts.py" "$fixture/scripts/vm-artifacts.py"
 cp "$root/scripts/qemu-arm64.py" "$fixture/scripts/qemu-arm64.py"
 cat > "$fixture/scripts/host-slots.sh" <<'SH'
 host_slots_start() { exec "$@"; }
@@ -100,6 +102,7 @@ printf '%s\n' "$@" > "$CAPTURE/qemu-args"
 SH
 chmod +x "$fixture/scripts/"*.sh "$fixture/bin/qemu-system-aarch64"
 touch "$fixture/kernel" "$fixture/run/system.img" "$fixture/run/home.img" "$fixture/run/.breenix-vm-persistent"
+python3 "$fixture/scripts/vm-artifacts.py" seal "$fixture" "$fixture/run" ""
 boot_fixture() {
     env -u BREENIX_VM_PERSISTENT_SUPERVISED \
         PATH="$fixture/bin:$PATH" CAPTURE="$fixture" TMPDIR="$fixture" \

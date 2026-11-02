@@ -32,7 +32,8 @@ class ArmA2Capture(unittest.TestCase):
             directory = self.run / 'boots' / boot
             directory.mkdir(parents=True)
             (directory / 'run.json').write_text(json.dumps(dict(id=boot, mode='persistent',
-                bootedCommit=sha, toolsCommit=sha, evidenceEligible=True, target='qemu')))
+                bootedCommit=sha, toolsCommit=sha, evidenceEligible=True, target='qemu', artifacts={name: 'a' * 64
+                    for name in ('kernel', 'system.img', 'home.img')})))
             (directory / 'ended').write_text('2026-11-01T12:01:00Z\n')
             (directory / 'logs-prepared.json').write_text(json.dumps(dict(boot=boot, commit=sha)))
             for name in ('docs/suites/server.json', 'docs/efforts/path.json', 'docs/boot-path.json'):
@@ -78,6 +79,15 @@ class ArmA2Capture(unittest.TestCase):
         self.assertEqual(self.digest(), before)
         for name, digest in before.items():
             self.assertEqual(result['captureSha256'][name], digest)
+
+    def test_unhashed_legacy_head_label_is_not_accepted(self):
+        path = self.directory / 'run.json'
+        identity = json.loads(path.read_text())
+        del identity['artifacts']
+        path.write_text(json.dumps(identity))
+        result = self.audit(self.run, SHA, BOOT, OTHER)
+        self.assertFalse(result['proven'])
+        self.assertIn('old HEAD labels are insufficient', ' '.join(result['reasons']))
 
     def test_changed_runtime_prevents_applying_retained_results_to_head(self):
         self.delta.update(runtimeUnchanged=False, changedPaths=['kernel/src/lib.rs'])

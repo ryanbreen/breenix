@@ -3,7 +3,7 @@
 # installer-format operator-account file; boot stays in the foreground so it
 # holds the mac-boot lease. Stop from another terminal to remove the run.
 #
-# vm-persistent.sh qemu build --run-dir DIR --system-image IMAGE --operator-account FILE
+# vm-persistent.sh qemu build --run-dir DIR [--system-image IMAGE] --operator-account FILE
 # vm-persistent.sh qemu boot --run-dir DIR --mode console|desktop [--kernel FILE]
 # vm-persistent.sh qemu reboot --run-dir DIR
 # vm-persistent.sh qemu stop --run-dir DIR
@@ -29,7 +29,7 @@ while [ "$#" -gt 0 ]; do
 done
 [ -n "$run" ] || usage
 case "$op" in
-    build) [ -n "$system" ] && [ -n "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage ;;
+    build) [ -n "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage ;;
     boot) [ -z "$system" ] && [ -z "$account" ] || usage
           case "$mode" in console|desktop) ;; *) usage ;; esac ;;
     reboot|stop) [ -z "$system" ] && [ -z "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage ;;
@@ -39,10 +39,25 @@ esac
 case "$run" in *[!a-zA-Z0-9_./-]*) echo 'invalid run directory path' >&2; exit 2 ;; esac
 case "$run" in /*) ;; *) run="$PWD/$run" ;; esac
 if [ "$op" = build ]; then
-    [ -f "$system" ] && [ -f "$account" ] || { echo 'system image and operator account must exist' >&2; exit 1; }
+    [ -f "$account" ] && { [ -z "$system" ] || [ -f "$system" ]; } || { echo 'system image and operator account must exist' >&2; exit 1; }
     mkdir -m 700 "$run" || exit 1
     run=$(cd "$run" && pwd -P)
     trap 'rm -rf -- "$run"' EXIT
+    # Supplied images remain usable for diagnostics, but cannot attest a commit.
+    # The source path rebuilds both outputs before sealing their actual bytes.
+    source_commit=
+    if [ -z "$system" ]; then
+        [ -z "$(git -C "$ROOT" status --porcelain)" ] || { echo 'source build requires a clean checkout' >&2; exit 1; }
+        source_commit=$(git -C "$ROOT" rev-parse HEAD)
+        export CARGO_BUILD_JOBS=4
+        unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR
+        (cd "$ROOT" && taskpolicy -b cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64)
+        taskpolicy -b "$ROOT/userspace/programs/build.sh" --arch aarch64
+        BREENIX_REPRODUCIBLE_EXT2=1 taskpolicy -b "$ROOT/scripts/create_ext2_disk.sh" --arch aarch64
+        [ "$source_commit" = "$(git -C "$ROOT" rev-parse HEAD)" ] && [ -z "$(git -C "$ROOT" status --porcelain)" ] || { echo 'sources changed during build' >&2; exit 1; }
+        system="$ROOT/target/ext2-aarch64.img"
+        cp "$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64" "$run/kernel"
+    fi
     cp "$system" "$run/system.img"
     cp "$account" "$run/operator-account"
     chmod 600 "$run/system.img" "$run/operator-account"
@@ -63,15 +78,7 @@ if [ "$op" = build ]; then
     python3 "$ROOT/scripts/vm-image.py" "$run/system.img" "$account"
     truncate -s 1G "$run/home.img"
     mke2fs -q -t ext2 -F "$run/home.img"
-    python3 - "$ROOT" "$run/build.json" <<'PYCODE'
-import json, subprocess, sys
-root, output = sys.argv[1:]
-commit = subprocess.check_output(['git', '-C', root, 'rev-parse', 'HEAD'], text=True).strip()
-dirty = bool(subprocess.check_output(['git', '-C', root, 'status', '--porcelain', '--untracked-files=normal'], text=True))
-with open(output, 'w') as f:
-    json.dump({'commit': commit, 'dirty': dirty}, f)
-    f.write('\n')
-PYCODE
+    python3 "$ROOT/scripts/vm-artifacts.py" seal "$ROOT" "$run" "$source_commit"
     : > "$run/.breenix-vm-persistent"
     trap - EXIT
     echo "$run"
@@ -110,7 +117,10 @@ PY
     rm -rf -- "$run"
     exit 0
 fi
-[ -n "$kernel" ] || kernel="$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
+if [ -z "$kernel" ]; then
+    kernel="$run/kernel"
+    [ -f "$kernel" ] || kernel="$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
+fi
 [ -f "$kernel" ] && [ -f "$run/system.img" ] && [ -f "$run/home.img" ] || { echo 'missing kernel or image' >&2; exit 1; }
 [ ${#run} -lt 90 ] || { echo 'run path is too long for unix sockets' >&2; exit 1; }
 # Re-exec under the slot supervisor before taking the run lock.
@@ -129,6 +139,8 @@ cleanup() {
     fi
     rmdir "$run/boot.lock" 2>/dev/null || true; }
 trap cleanup EXIT
+python3 "$ROOT/scripts/vm-artifacts.py" verify "$ROOT" "$run" "$kernel"
+kernel="$run/boot-kernel"
 host_slot_acquire mac-boot
 printf '%s\n' "$mode" > "$run/mode"
 git -C "$ROOT" rev-parse HEAD > "$run/tools-commit"

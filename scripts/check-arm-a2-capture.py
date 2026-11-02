@@ -88,6 +88,10 @@ def audit(run, sha, ended_boot, previous_boot):
             boot = json.loads((directory / 'run.json').read_text())
             if boot.get('id') != directory.name or boot.get('target') != 'qemu':
                 raise ValueError('capture identity does not match its QEMU directory')
+            artifacts = boot.get('artifacts', {})
+            if set(artifacts) != {'kernel', 'system.img', 'home.img'} or not all(
+                    re.fullmatch('[a-f0-9]{64}', value) for value in artifacts.values()):
+                raise ValueError('capture has no source-built artifact digests; old HEAD labels are insufficient')
             definition = directory / 'definition'
             manifest = json.loads((definition / 'docs/suites/server.json').read_text())
             effort = json.loads((definition / 'docs/efforts/path.json').read_text())
