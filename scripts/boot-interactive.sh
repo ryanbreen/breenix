@@ -19,6 +19,7 @@
 #                        "Several suites in one boot"); the word all names the ARM64 QEMU effort suites (the GPU suite
 #                        with --gpu-gl); --gate-timeout bounds each suite's wait for DONE
 #                        claim-lint:ok: scripts/suite-sequence.py (resolve) expands the word.
+#   --screen-checkpoints on|off  enable end/named scanout checkpoints (default on)
 #   --pace MS            hold each completed case on screen, outside its measured window (default 0)
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
@@ -64,13 +65,14 @@ PROGRAM=
 SUITE=
 ONLY=
 PACE=
+SCREEN_CHECKPOINTS=on
 QMP_SOCKET=
 QMP_REQUESTED=0
 GPU_GL=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--program|--suite|--case|--pace|--serial-log|--idle-exit|--gate-timeout|--qmp|--accel|--cpus|--cpu)
+        --mode|--program|--suite|--case|--screen-checkpoints|--pace|--serial-log|--idle-exit|--gate-timeout|--qmp|--accel|--cpus|--cpu)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
@@ -80,6 +82,7 @@ while [ "$#" -gt 0 ]; do
         --program) PROGRAM="$2"; shift 2 ;;
         --suite) SUITE="$2"; shift 2 ;;
         --case) [ -n "$2" ] || { echo "--case needs a category or category/case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
+        --screen-checkpoints) SCREEN_CHECKPOINTS="$2"; shift 2 ;;
         --pace) [ -n "$2" ] || { echo "--pace needs milliseconds" >&2; exit 2; }; PACE="$2"; shift 2 ;;
         --qmp) QMP_SOCKET="$2"; QMP_REQUESTED=1; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
@@ -99,6 +102,7 @@ case "$MODE" in
     tests|probe|shell|desktop|program|suite) ;;
     *) echo "unknown mode: $MODE (expected tests, probe, shell, desktop, program or suite)" >&2; exit 2 ;;
 esac
+case "$SCREEN_CHECKPOINTS" in on|off) ;; *) echo "--screen-checkpoints needs on or off" >&2; exit 2 ;; esac
 if [ "$MODE" = program ]; then
     case "$PROGRAM" in
         /*) ;;
@@ -198,6 +202,7 @@ if [ "$MODE" = suite ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/hostkeys,string=qmp")
     [ -z "$ONLY" ] || MODE_ARGS+=(-fw_cfg "name=opt/breenix/case,string=$ONLY")
 fi
+MODE_ARGS+=(-fw_cfg "name=opt/breenix/screen-checkpoints,string=$SCREEN_CHECKPOINTS")
 if [ -n "$PACE" ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/pace,string=$PACE")
 fi

@@ -28,7 +28,10 @@ def seal(root, run, source_commit):
         artifacts['kernel'] = digest(run / 'kernel')
         if (run / 'fault-kernel').exists():
             artifacts['fault-kernel'] = digest(run / 'fault-kernel')
-    build = dict(commit=commit if source_commit else None, dirty=dirty, sourceBuilt=bool(source_commit), artifacts=artifacts)
+    fault_kind = (run / 'fault-kind').read_text().strip() if (run / 'fault-kind').exists() else None
+    if fault_kind not in (None, 'panic-reboot', 'watchdog') or bool(fault_kind) != ('fault-kernel' in artifacts):
+        raise ValueError('invalid fault kernel kind')
+    build = dict(commit=commit if source_commit else None, dirty=dirty, sourceBuilt=bool(source_commit), artifacts=artifacts, faultKind=fault_kind)
     (run / 'build.json').write_text(json.dumps(build) + '\n')
 
 
@@ -94,6 +97,16 @@ if __name__ == '__main__':
         seal(root, run, value)
     elif operation in ('verify', 'verify-fault'):
         verify(root, run, value, operation == 'verify-fault')
+    elif operation == 'stage-intent':
+        build = json.loads((Path(run) / 'build.json').read_text())
+        seal = {'buildCommit': build.get('commit'), 'disks': {name: digest(Path(run) / name) for name in ('system.img', 'home.img')}}
+        tmp = Path(run) / 'continuation.json.tmp'
+        tmp.write_text(json.dumps(seal) + '\n')
+        tmp.replace(Path(run) / 'continuation.json')
+        receipt_path = Path(run) / 'verified-build.json'
+        receipt = json.loads(receipt_path.read_text())
+        receipt['artifacts'].update(seal['disks'])
+        receipt_path.write_text(json.dumps(receipt) + '\n')
     elif operation == 'continuation':
         continuation(run)
     else:

@@ -648,6 +648,10 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                     Ok(n) => SyscallResult::Ok(n as u64),
                     Err(e) => SyscallResult::Err(e as u64),
                 },
+                DeviceType::ScreenEvidence => match crate::fs::devfs::screen_evidence_write(&buffer) {
+                    Ok(n) => SyscallResult::Ok(n as u64),
+                    Err(e) => SyscallResult::Err(e as u64),
+                },
                 DeviceType::Rtc => SyscallResult::Err(13),
                 DeviceType::Ptmx => SyscallResult::Err(6), // ENXIO: open gives a master.
                 DeviceType::Null | DeviceType::Zero => {
