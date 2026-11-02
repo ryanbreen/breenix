@@ -508,3 +508,15 @@ fn sparse_tpc_mask_uses_logical_sm_registers() {
     assert!(!m.events.contains(&Event::Write(0x504e98, 0)));
     assert!(m.events.contains(&Event::Write(0x500c10, 0)));
 }
+
+#[test]
+fn context_generation_waits_for_fifo_switch_before_programming_state() {
+    for state in [0x80008000, 0xbadf1201] {
+        let mut m = Mock::new();
+        m.regs.insert(0x2640, state);
+        assert!(run(&mut m).is_err(),
+                "GR busy=0 must not admit context programming while FIFO context state is {state:#x}");
+        assert!(m.now >= ctxctl::BOUND_US);
+        assert!(!m.events.contains(&Event::Write(0x404154, 0)));
+    }
+}

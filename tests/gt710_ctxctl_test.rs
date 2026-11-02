@@ -455,3 +455,22 @@ fn active_reset_never_writes_a_pri_sentinel_or_calls_it_fifo_refusal() {
     assert_eq!(error.value, 0x10001);
     assert!(!m.events.iter().any(|e| matches!(e, Event::Write(0x200, v) if *v & 0x1000 == 0)));
 }
+
+#[test]
+fn idle_requires_context_switch_completion_before_firmware_upload() {
+    for state in [0x80008000, 0xbadf1201] {
+        let mut m = Mock::new();
+        reset(&mut m).unwrap();
+        m.regs.insert(0x2640, state);
+        let begin = m.now;
+        assert!(Controller::upload(&mut m, &topo(), [0x100000, 0x101000]).is_err(),
+                "GR busy=0 must not admit firmware while FIFO context state is {state:#x}");
+        assert!(m.now - begin >= BOUND_US);
+        assert!(!m.events.iter().any(|e| matches!(e, Event::Write(0x409184 | 0x41a184, _))));
+    }
+    for state in [0, 0x80000000, 0x8000] {
+        let mut m = Mock::new();
+        m.regs.insert(0x2640, state);
+        prepared(&mut m);
+    }
+}
