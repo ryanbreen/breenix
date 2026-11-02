@@ -45,6 +45,96 @@ class FakeTarget:
 
 
 class ServerTarget(unittest.TestCase):
+    def test_qemu_watchdog_cli_dispatches_without_metal(self):
+        argv = ['server-suite', '--target', 'qemu', '--run-dir', '/unused',
+                '--boot', '20261101T120000Z-qemu', '--sha', 'a' * 40,
+                '--milestone', 'server/watchdog', '--branch', 'server/arm-watchdog']
+        with patch.object(sys, 'argv', argv), \
+             patch.object(HOST['runpy'], 'run_path', return_value={'run': lambda api, args: 73}):
+            self.assertEqual(HOST['main'](), 73)
+
+    def test_qemu_watchdog_launch_passes_fault_intent(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            run = Path(scratch)
+            (run / 'build.json').write_text(json.dumps(dict(commit='a' * 40)))
+            target = HOST['QemuTarget'](run, 'baseline')
+            with patch.object(target, '_launch', return_value='fault') as launch:
+                self.assertEqual(target.start_watchdog_fault('a' * 40, 'health-hang'), 'fault')
+                launch.assert_called_once_with('fault-boot', inject='health-hang')
+                with self.assertRaises(ValueError): target.start_watchdog_fault('b' * 40, 'health-hang')
+                with self.assertRaises(ValueError): target.start_watchdog_fault('a' * 40, 'other')
+
+    def test_qemu_watchdog_scorer_accepts_only_unaided_same_process_recovery(self):
+        sha = 'a' * 40
+        def boot(name, process):
+            return dict(id=name, target='qemu', mode='persistent', bootedCommit=sha,
+                        toolsCommit=sha, evidenceEligible=True, runId='private-run', qemuProcess=process)
+        baseline = boot('baseline', 'baseline-process')
+        serial = '[stdout] bsshd: host key ED25519 SHA256:fixture (loaded)\n'
+        records = dict(boot='baseline', commit=sha, milestone='server/watchdog', cleanup=True,
+                       cases=[dict(id='watchdog/' + name, result='PASS') for name, _ in HOST['WATCHDOG']],
+                       faultBoots=[])
+        for name, _ in HOST['WATCHDOG']:
+            before = dict(boot(name, name), kind='fault-test')
+            after = dict(boot(name + '-after', name), kind='fault-test')
+            records['faultBoots'].append(dict(boot=name, commit=sha, passed=True,
+                beforeRun=before, afterRun=after, build=dict(commit=sha, faultKind='watchdog', evidenceEligible=True),
+                beforeSerial='[watchdog] armed seconds=120 action=hard-reset health=root-io,root-inode\n'
+                             '[watchdog] healthy feeds=3\n[watchdog] healthy feeds=6\n'
+                             '[init] log boot-id=1-2-3\n[watchdog-fault] trigger ' + name + '\n',
+                afterSerial='[watchdog] previous-expired=1\n[init] log boot-id=4-5-6\n'
+                            'bsshd: listening on 0.0.0.0:22\n',
+                events=[dict(event='watchdog-trigger', t=100),
+                        dict(event='WATCHDOG', data=dict(action='reset')),
+                        dict(event='RESET', data=dict(guest=True, reason='guest-reset')),
+                        dict(event='watchdog-reset-observed', successor=after['id'], t=220)], afterEvents=[],
+                receipt=dict(boot=after['id'], case=name, commit=sha, trigger=100, sshAt=250,
+                             bootId='4-5-6', strictHostKey=True, exit=0)))
+        manifest = json.loads((ROOT / 'docs/suites/server.json').read_text())
+        effort = json.loads((ROOT / 'docs/efforts/path.json').read_text())
+        def score(value):
+            return HOST['score'](manifest, effort, value, serial, baseline, sha, ['FATAL'])
+        self.assertTrue(score(records).startswith('PASS: server/watchdog'))
+        mutations = [
+            lambda v: v['events'].pop(0),
+            lambda v: v['events'].append(dict(event='watchdog-trigger', t=101)),
+            lambda v: v['events'].pop(1),
+            lambda v: v['events'][1]['data'].update(action='none'),
+            lambda v: v['events'].reverse(),
+            lambda v: v['events'][2]['data'].update(reason='host-qmp-system-reset', guest=False),
+            lambda v: v['events'].insert(1, dict(event='STOP')),
+            lambda v: v['events'].insert(1, dict(event='SHUTDOWN')),
+            lambda v: v['events'].insert(1, dict(event='RESET', data=dict(reason='host-qmp-system-reset'))),
+            lambda v: v['events'][-1].update(successor='foreign'),
+            lambda v: v['afterRun'].update(qemuProcess='replacement'),
+            lambda v: v['beforeRun'].update(runId='foreign'),
+            lambda v: v['afterRun'].update(bootedCommit='b' * 40),
+            lambda v: v['beforeRun'].update(evidenceEligible=False),
+            lambda v: v['build'].update(faultKind='panic-reboot'),
+            lambda v: v.update(beforeSerial=v['beforeSerial'].replace('seconds=120', 'seconds=60')),
+            lambda v: v.update(beforeSerial=v['beforeSerial'].replace('feeds=6', 'feeds=5')),
+            lambda v: v.update(beforeSerial=v['beforeSerial'].replace('trigger feeder-hang', 'trigger health-hang')),
+            lambda v: v.update(afterSerial=v['afterSerial'].replace('previous-expired=1', 'previous-expired=0')),
+            lambda v: v.update(afterSerial=v['afterSerial'] + 'FATAL'),
+            lambda v: v['receipt'].update(sshAt=700.001),
+            lambda v: v['receipt'].update(sshAt=99),
+            lambda v: v['receipt'].update(strictHostKey=False),
+            lambda v: v['receipt'].update(exit=255),
+            lambda v: v['receipt'].update(bootId='1-2-3'),
+            lambda v: v['receipt'].update(boot='foreign'),
+            lambda v: v['afterEvents'].append(dict(event='STOP', t=240)),
+        ]
+        for i, mutate in enumerate(mutations):
+            value = copy.deepcopy(records)
+            mutate(value['faultBoots'][0])
+            with self.subTest(refusal=i), self.assertRaises(ValueError): score(value)
+        # The existing metal verdict contract remains the metal contract.
+        metal = dict(baseline, target='metal')
+        metal_records = copy.deepcopy(records)
+        metal_records['faultBoots'] = [dict(boot=name, commit=sha, passed=True, receipt=dict(case=name))
+                                      for name, _ in HOST['WATCHDOG']]
+        self.assertTrue(HOST['score'](manifest, effort, metal_records, serial, metal, sha, []).startswith('PASS:'))
+
     def test_reboot_metal_operations_keep_existing_commands(self):
         calls = []
         def execute(args, **kwargs):
@@ -394,7 +484,7 @@ class ServerTarget(unittest.TestCase):
     def test_qemu_does_not_dispatch_later_milestones_to_metal(self):
         import contextlib
         import io
-        for milestone in ('server/watchdog', 'server/remote-upgrade',
+        for milestone in ('server/remote-upgrade',
                           'server/resting-state', 'users/operator-login'):
             argv = ['server-suite', '--target', 'qemu', '--run-dir', '/unused',
                     '--boot', '20261101T120000Z-qemu', '--sha', 'a' * 40,

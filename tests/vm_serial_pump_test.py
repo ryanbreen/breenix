@@ -34,6 +34,10 @@ def connect(path, process):
 class SerialPumpTest(unittest.TestCase):
     def test_watchdog_streams(self):
         scenarios = (
+            ('health-hang', b'[watchdog-fault] trigger health-hang\r\n',
+             b'{"event":"WATCHDOG","data":{"action":"reset"}}\r\n', True, 1),
+            ('feeder-hang', b'[watchdog-fault] trigger feeder-hang\r\n',
+             b'{"event":"WATCHDOG","data":{"action":"reset"}}\r\n', True, 1),
             ('reset', b'[watchdog-fault] trigger\r\n',
              b'{"event":"WATCHDOG","data":{"action":"reset"}}\r\n', True, 1),
             ('duplicate-trigger', b'[watchdog-fault] trigger\r\n[watchdog-fault] trigger\r\n', b'', False, 1),
