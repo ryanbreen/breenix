@@ -504,6 +504,8 @@ fn seed_missing(copier: &mut Copier, source: &Path, target: &Path) -> Result<(),
             let entry = entry.map_err(|e| fail("read seed", source, e))?;
             seed_missing(copier, &entry.path(), &target.join(entry.file_name()))?;
         }
+    } else if !meta.is_file() && !meta.file_type().is_symlink() {
+        println!("[persistent] left out {}: not a file, directory or link", source.display());
     } else if !present(target)? {
         let scratch = target.with_file_name(format!(".{}.seed-new", target.file_name().unwrap().to_string_lossy()));
         if present(&scratch)? { copier.change("remove seed scratch", &scratch, || fs::remove_file(&scratch))?; }
