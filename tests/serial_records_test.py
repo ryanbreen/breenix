@@ -1,6 +1,7 @@
 """Run the real unprocessed TTY producer against an interleaved serial sink."""
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -51,6 +52,7 @@ mod serial {
     pub use super::serial_writer::Writer;
     pub fn sync_log_to_console() {}
     pub fn write_bytes_atomic(writer: Writer, bytes: &[u8]) {
+        assert!(bytes.len() <= 4096, "unbounded UART handoff: {}", bytes.len());
         let mut wire = super::WIRE.lock();
         wire.extend_from_slice(super::serial_writer::lead(writer, bytes));
         wire.extend_from_slice(bytes);
@@ -92,6 +94,7 @@ fn exercise(write_unprocessed: fn(&[u8])) {
     assert!(wire.windows(b"first writer finished\n".len()).any(|s| s == b"first writer finished\n"),
         "another userspace writer split the line: {:?}", String::from_utf8_lossy(&wire));
     assert!(wire.windows(b"second writer\n".len()).any(|s| s == b"second writer\n"));
+    assert_eq!(wire, b"first writer finished\nsecond writer\n", "cross-thread records reordered");
     WIRE.lock().clear();
     write_unprocessed(b"prompt> ");
     CLOCK.fetch_add(1000, std::sync::atomic::Ordering::Relaxed);
@@ -105,6 +108,11 @@ fn exercise(write_unprocessed: fn(&[u8])) {
     write_unprocessed(b"drain this fragment");
     serial_writer::drain_terminal_all();
     assert!(WIRE.lock().windows(b"drain this fragment".len()).any(|s| s == b"drain this fragment"));
+    WIRE.lock().clear();
+    let huge = vec![b'z'; 1024 * 1024];
+    write_unprocessed(&huge);
+    serial_writer::drain_terminal_all();
+    assert_eq!(*WIRE.lock(), huge, "large newline-free output lost bytes");
     // Crossing both former chunk boundaries must still be one port handoff.
     WIRE.lock().clear();
     let long = [b'x'; 2048];
@@ -126,7 +134,8 @@ fn main() {
         with tempfile.TemporaryDirectory(prefix='serial-records-') as temporary:
             path = Path(temporary)
             (path / 'check.rs').write_text(harness)
-            subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings',
+            prefix = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
+            subprocess.run(prefix + ['rustc', '--edition=2021', '-Dwarnings',
                             str(path / 'check.rs'), '-o', str(path / 'check')], check=True)
             subprocess.run([str(path / 'check')], check=True)
 

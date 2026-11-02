@@ -882,7 +882,7 @@ impl TtyDevice {
         }
     }
 
-    // IRQ echo is immediate and never allocates or takes the line-assembly lock.
+    // IRQ echo uses fixed storage and bypasses line assembly.
     fn to_echo_sinks(&self, unit: &[u8]) {
         if self.is_console() {
             crate::console::write_tty(unit, |bytes| crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, bytes));
