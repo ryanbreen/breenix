@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Seal source-built VM artifacts and verify the bytes selected for launch."""
 import hashlib
+import importlib.util
 import json
 from pathlib import Path
 import shutil
@@ -35,7 +36,7 @@ def seal(root, run, source_commit):
     (run / 'build.json').write_text(json.dumps(build) + '\n')
 
 
-def verify(root, run, kernel, fault=False):
+def verify(root, run, kernel, fault=False, slot_digest=None):
     run = Path(run)
     build = json.loads((run / 'build.json').read_text())
     # QEMU uses this private copy, rather than a mutable shared target output.
@@ -44,6 +45,12 @@ def verify(root, run, kernel, fault=False):
         raise ValueError('VM run predates power-token sealing; build a new run')
     if digest(run / 'power-token') != build['artifacts']['power-token']:
         raise ValueError('VM power token differs from the sealed token')
+    if slot_digest is not None:
+        seals = json.loads((run / 'slot-kernels.json').read_text())
+        if seals.get('buildCommit') != build.get('commit') or slot_digest not in seals.get('kernels', []):
+            raise ValueError('slot kernel is not sealed for this run')
+        if digest(run / 'boot-kernel') != slot_digest:
+            raise ValueError('slot kernel differs from its seal')
     if fault and build.get('sourceBuilt') is not True:
         raise ValueError('fault boot requires a source-built kernel')
     eligible = False
@@ -60,15 +67,48 @@ def verify(root, run, kernel, fault=False):
                 raise ValueError('VM artifacts differ from the latest seal (disk)')
     if build.get('sourceBuilt') is True:
         kernel_name = 'fault-kernel' if fault else 'kernel'
-        if digest(run / 'boot-kernel') != expected.get(kernel_name):
+        if slot_digest is None and digest(run / 'boot-kernel') != expected.get(kernel_name):
             raise ValueError('VM artifacts differ from the source build (kernel)')
         if build['commit'] != git(root, 'rev-parse', 'HEAD') or git(root, 'status', '--porcelain'):
             raise ValueError('source build does not match the clean tools commit')
         eligible = build.get('dirty') is False
     actual = dict(expected)
     actual.update({name: digest(run / name) for name in ('system.img', 'home.img')})
+    if slot_digest is not None:
+        actual['kernel'] = slot_digest
     receipt = dict(build, artifacts=actual, evidenceEligible=eligible)
     (run / 'verified-build.json').write_text(json.dumps(receipt) + '\n')
+    return receipt
+
+
+def seal_slot(root, run, kernel):
+    run, kernel = Path(run), Path(kernel)
+    if kernel.is_symlink() or kernel.resolve().parent != run.resolve():
+        raise ValueError('slot kernel must be a private file in the run directory')
+    build = json.loads((run / 'build.json').read_text())
+    path = run / 'slot-kernels.json'
+    seals = json.loads(path.read_text()) if path.exists() else {'buildCommit': build.get('commit'), 'kernels': []}
+    if seals.get('buildCommit') != build.get('commit'):
+        raise ValueError('slot seal belongs to a different build')
+    if build.get('sourceBuilt') and (build.get('commit') != git(root, 'rev-parse', 'HEAD') or git(root, 'status', '--porcelain')):
+        raise ValueError('source build does not match the clean tools commit')
+    sha = digest(kernel)
+    if sha not in seals['kernels']:
+        seals['kernels'].append(sha)
+    tmp = path.with_suffix('.json.tmp')
+    tmp.write_text(json.dumps(seals) + '\n')
+    tmp.replace(path)
+
+
+def verify_slot(root, run, slot):
+    spec = importlib.util.spec_from_file_location('vm_slots', Path(__file__).with_name('vm_slots.py'))
+    slots = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(slots)
+    selected = slots.select(run, slot)
+    if selected is None:
+        raise ValueError('slot record missing')
+    receipt = verify(root, run, Path(run) / selected['kernel'], slot_digest=selected['kernelSha256'])
+    (Path(run) / 'boot-intent').write_bytes(slots.intent(selected))
     return receipt
 
 
@@ -95,6 +135,10 @@ if __name__ == '__main__':
     operation, root, run, value = sys.argv[1:]
     if operation == 'seal':
         seal(root, run, value)
+    elif operation == 'seal-slot':
+        seal_slot(root, run, value)
+    elif operation == 'verify-slot':
+        verify_slot(root, run, value)
     elif operation in ('verify', 'verify-fault'):
         verify(root, run, value, operation == 'verify-fault')
     elif operation == 'stage-intent':

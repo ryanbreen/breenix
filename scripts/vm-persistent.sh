@@ -4,18 +4,19 @@
 # holds the mac-boot lease. Stop from another terminal to remove the run.
 #
 # vm-persistent.sh qemu build --run-dir DIR [--system-image IMAGE] --operator-account FILE [--fault panic-reboot|watchdog]
-# vm-persistent.sh qemu boot --run-dir DIR --mode console|desktop [--kernel FILE]
+# vm-persistent.sh qemu boot --run-dir DIR --mode console|desktop [--kernel FILE] [--slot current|next]
+# vm-persistent.sh qemu promote|rollback --run-dir DIR
 # vm-persistent.sh qemu fault-boot --run-dir DIR [--inject feeder-hang|health-hang]
 # vm-persistent.sh qemu reboot --run-dir DIR
 # vm-persistent.sh qemu stop --run-dir DIR
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 umask 077
-usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--kernel FILE] | --inject feeder-hang|health-hang]' >&2; exit 2; }
+usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop|promote|rollback --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--kernel FILE] [--slot current|next] | --inject feeder-hang|health-hang]' >&2; exit 2; }
 [ "$#" -ge 2 ] && [ "$1" = qemu ] || usage
 op=$2; shift 2
-case "$op" in build|boot|fault-boot|reboot|stop) ;; *) usage ;; esac
-run= system= account= kernel= mode= fault= inject=
+case "$op" in build|boot|fault-boot|reboot|stop|promote|rollback) ;; *) usage ;; esac
+run= system= account= kernel= mode= fault= inject= slot=
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] && [ -n "$2" ] || usage
     case "$1" in
@@ -26,20 +27,22 @@ while [ "$#" -gt 0 ]; do
         --fault) [ -z "$fault" ] || usage; fault=$2 ;;
         --mode) [ -z "$mode" ] || usage; mode=$2 ;;
         --inject) [ -z "$inject" ] || usage; inject=$2 ;;
+        --slot) [ -z "$slot" ] || usage; slot=$2 ;;
         *) usage ;;
     esac
     shift 2
 done
 [ -n "$run" ] || usage
 case "$op" in
-    build) [ -z "$inject" ] && [ -n "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage
+    build) [ -z "$inject$slot" ] && [ -n "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage
            case "$fault" in ""|panic-reboot|watchdog) ;; *) usage ;; esac
            [ -z "$fault" ] || [ -z "$system" ] || usage ;;
     boot) [ -z "$inject" ] && [ -z "$fault" ] && [ -z "$system" ] && [ -z "$account" ] || usage
-          case "$mode" in console|desktop) ;; *) usage ;; esac ;;
-    fault-boot) [ -z "$system$account$kernel$mode$fault" ] || usage
+          case "$mode" in console|desktop) ;; *) usage ;; esac
+          case "$slot" in ''|current|next) ;; *) usage ;; esac; slot=${slot:-current} ;;
+    fault-boot) [ -z "$system$account$kernel$mode$fault$slot" ] || usage
                 case "$inject" in ""|feeder-hang|health-hang) ;; *) usage ;; esac; mode=console ;;
-    reboot|stop) [ -z "$inject" ] && [ -z "$fault" ] && [ -z "$system" ] && [ -z "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage ;;
+    reboot|stop|promote|rollback) [ -z "$inject$fault$system$account$kernel$mode$slot" ] || usage ;;
 esac
 # debugfs command files and QEMU comma-separated options cannot safely encode
 # these characters; reject them instead of interpreting caller-supplied syntax.
@@ -110,7 +113,16 @@ if [ "$op" = build ]; then
     exit 0
 fi
 [ -d "$run" ] && [ ! -L "$run" ] && [ -f "$run/.breenix-vm-persistent" ] || { echo 'not a persistent VM run directory' >&2; exit 1; }
+# Retain the caller's path for the new intent argument across supervision.
+# Existing disk, socket and kernel arguments continue to use physical paths.
+intent_run=$run
 run=$(cd "$run" && pwd -P)
+if [ "$op" = promote ] || [ "$op" = rollback ]; then
+    mkdir "$run/boot.lock" || { echo 'run is already booting' >&2; exit 1; }
+    trap 'rmdir "$run/boot.lock"' EXIT
+    python3 "$ROOT/scripts/vm_slots.py" "$op" "$run"
+    exit 0
+fi
 if [ "$op" = reboot ]; then
     exec python3 "$ROOT/scripts/vm-reboot.py" "$run"
 fi
@@ -147,7 +159,7 @@ if [ -z "$kernel" ]; then
     kernel="$run/kernel"
     [ -f "$kernel" ] || kernel="$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 fi
-[ -f "$kernel" ] && [ -f "$run/system.img" ] && [ -f "$run/home.img" ] || { echo 'missing kernel or image' >&2; exit 1; }
+[ -f "$run/system.img" ] && [ -f "$run/home.img" ] || { echo 'missing image' >&2; exit 1; }
 [ ${#run} -lt 90 ] || { echo 'run path is too long for unix sockets' >&2; exit 1; }
 # Re-exec under the slot supervisor before taking the run lock.
 if [ -z "${BREENIX_VM_PERSISTENT_SUPERVISED:-}" ]; then
@@ -158,7 +170,7 @@ if [ -z "${BREENIX_VM_PERSISTENT_SUPERVISED:-}" ]; then
         [ -z "$inject" ] || args=(--inject "$inject")
         host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu fault-boot --run-dir "$run" "${args[@]}"
     else
-        host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu boot --run-dir "$run" --kernel "$kernel" --mode "$mode"
+        host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu boot --run-dir "$intent_run" --kernel "$kernel" --mode "$mode" --slot "$slot"
     fi
 fi
 source "$ROOT/scripts/host-slots.sh"
@@ -173,7 +185,14 @@ cleanup() {
 trap cleanup EXIT
 verify=verify
 if [ "$op" = fault-boot ]; then verify=verify-fault; fi
-python3 "$ROOT/scripts/vm-artifacts.py" "$verify" "$ROOT" "$run" "$kernel"
+slot_args=()
+if [ "$op" = boot ] && { [ -e "$run/slots.json" ] || [ -L "$run/slots.json" ]; }; then
+    python3 "$ROOT/scripts/vm-artifacts.py" verify-slot "$ROOT" "$run" "$slot"
+    slot_args=(-fw_cfg "name=opt/breenix/intent,file=$intent_run/boot-intent")
+else
+    [ -f "$kernel" ] || { echo 'missing kernel' >&2; exit 1; }
+    python3 "$ROOT/scripts/vm-artifacts.py" "$verify" "$ROOT" "$run" "$kernel"
+fi
 fault_kind=
 if [ "$op" = fault-boot ]; then
     fault_kind=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("faultKind", ""))' "$run/verified-build.json")
@@ -248,7 +267,7 @@ action=(-device i6300esb -action watchdog=reset)
 if [ "$op" = fault-boot ] && [ "$fault_kind" = panic-reboot ]; then disks=(); action+=(-action reboot=shutdown); fi
 set +e
 python3 "$ROOT/scripts/qemu-arm64.py" "$qemu" -rtc base=utc -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
-    -kernel "$kernel" -fw_cfg "name=opt/breenix/mode,string=$mode" "${display[@]}" -qmp "unix:$run/qmp.sock,server=on,wait=off" -qmp "unix:$run/events.sock,server=on,wait=off" \
+    -kernel "$kernel" -fw_cfg "name=opt/breenix/mode,string=$mode" "${slot_args[@]}" "${display[@]}" -qmp "unix:$run/qmp.sock,server=on,wait=off" -qmp "unix:$run/events.sock,server=on,wait=off" \
     "${gpu[@]}" -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device \
     "${disks[@]}" "${action[@]}" \
     -device virtio-rng-device -device virtio-net-device,netdev=net0 \
