@@ -2301,15 +2301,15 @@ def breengel_memory_accounting(serial):
                 mapped_bytes=pages*4096, residual_pages=residual, allowance=48, cases=credited)
 
 
-def breengel_fronts_suite(serial, boot):
-    """Score the ordered BreenGL capture against the step 9.1 selection."""
+def breengel_fronts_suite(serial, boot, step_number=1):
+    """Score the ordered BreenGL capture against the selected step."""
     resources_identity(boot, 'breengel')
     root = Path(__file__).resolve().parents[2]
     manifest = json.loads((root / 'docs/suites/breengel.json').read_text())
     names = [c['id'] + '/' + case['id'] for c in manifest['categories'] for case in c['cases']]
-    step = json.loads((root / 'docs/gui/gt710-step-9-1.json').read_text())
+    step = json.loads((root / f'docs/gui/gt710-step-9-{step_number}.json').read_text())
     required = step['cases']
-    if (len(names) != 401 or step.get('suite') != 'breengel' or len(required) != 304
+    if (len(names) != 401 or step.get('suite') != 'breengel' or len(required) != {1: 304, 2: 385}[step_number]
             or required != [name for name in names if name in required]):
         raise ValueError('invalid BreenGL selection or manifest order')
     fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal']
@@ -2790,11 +2790,11 @@ def display_snapshots(rows, preferred):
 
 
 def check_case(category, case, serial, producer=None):
-    if category == 'breengel-fronts':
+    if category in ('breengel-fronts', 'breengel-composition'):
         if producer is None or 'breengel' not in producer or case != 'suite':
-            raise ValueError('breengel-fronts needs a production BreenGL capture')
+            raise ValueError(f'{category} needs a production BreenGL capture')
         capture = producer['breengel']
-        breengel_fronts_suite(capture['serial'], capture['boot'])
+        breengel_fronts_suite(capture['serial'], capture['boot'], 2 if category == 'breengel-composition' else 1)
         return
     if category == 'presentation' and case == 'display':
         if producer is None: raise ValueError('presentation needs named GPU and console captures')
@@ -2975,7 +2975,7 @@ def check_case(category, case, serial, producer=None):
 
 def cases(category, serial, producer=None):
     results = []
-    entries = [('suite', 'A completed production BreenGL boot records the selected window front cases')] if category == 'breengel-fronts' else CATEGORIES[category]
+    entries = [('suite', 'A completed production BreenGL boot records the selected window front cases')] if category in ('breengel-fronts', 'breengel-composition') else CATEGORIES[category]
     for name, title in entries:
         try:
             check_case(category, name, serial, producer)
@@ -3964,7 +3964,9 @@ def main():
     parser.add_argument('--boot')
     parser.add_argument('--sha')
     parser.add_argument('--gpu-boot', help='completed companion GPU-only suite boot for core/producer')
-    parser.add_argument('--breengel-fronts', action='store_true', help='score a completed BreenGL boot against step 9.1')
+    breengel = parser.add_mutually_exclusive_group()
+    breengel.add_argument('--breengel-fronts', action='store_true', help='score a completed BreenGL boot against step 9.1')
+    breengel.add_argument('--breengel-composition', action='store_true', help='score a completed BreenGL boot against step 9.2')
     parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
     parser.add_argument('--isolation', action='store_true', help='score PR 8.5 isolation and preceding selections from the same captures')
     parser.add_argument('--shapes', action='store_true', help='score PR 8.4 shapes and preceding selections from the same captures')
@@ -4027,7 +4029,7 @@ def main():
         return result.stdout
 
     boot = json.loads(read('run.json'))
-    if args.breengel_fronts:
+    if args.breengel_fronts or args.breengel_composition:
         if (not read('ended').strip() or read('exit-status').strip() not in ('0', '1')
                 or read('dirty').strip() != '0' or read('commit').strip() != args.sha):
             raise ValueError('a completed clean BreenGL boot of the requested commit is required')
@@ -4039,7 +4041,7 @@ def main():
             'import runpy,sys;from pathlib import Path;p=Path(sys.argv[1]);'
             'a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));print(a["capture_serial"](p),end="")',
             directory, capture_output=True, text=True, check=True).stdout
-        rows = cases('breengel-fronts', '', {'breengel': {'boot': dict(boot, bootedCommit=args.sha),
+        rows = cases('breengel-composition' if args.breengel_composition else 'breengel-fronts', '', {'breengel': {'boot': dict(boot, bootedCommit=args.sha),
                                                         'serial': verified}})
         for row in rows:
             print('SUITE gt710 CASE ' + row['id'] + ' ' + row['result'] + ' ms=0'
