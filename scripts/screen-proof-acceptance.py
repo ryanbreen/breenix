@@ -4,8 +4,9 @@
 --commit identifies the measured kernel and tools, independently of scorerCommit.
 Native console and GPU are distinct companion boots. ARM GPU and BreenGL must
 also be at that measured commit. Missing companions make proven false.
-Gallery mode also requires pictured-case intent checkpoints and two verified
-candidates manifests from the separate ARM captures. Candidates are not approvals.
+Gallery mode also requires pictured-case intent checkpoints and verified
+candidates covering both ARM suites. U09 allows one combined boot and set.
+Candidates are not approvals.
 """
 import argparse
 from contextlib import redirect_stdout
@@ -41,7 +42,15 @@ def capture_identity(path, commit, suite, platform):
         raise ValueError('capture commit differs from measured commit')
     if (read('dirty') != '0' or read('exit-status') != '0' or not read('ended')):
         raise ValueError('capture is dirty, unsuccessful or incomplete')
-    if (boot.get('suite') != suite or boot.get('mode') != 'suite'
+    selection = boot.get('suites') if platform == 'qemu' else None
+    if platform == 'qemu' and 'suites' in boot:
+        suite_matches = (type(selection) is list and bool(selection)
+                         and all(type(s) is str for s in selection)
+                         and len(set(selection)) == len(selection) and suite in selection
+                         and ('suite' not in boot or boot['suite'] == selection[0]))
+    else:
+        suite_matches = boot.get('suite') == suite
+    if (not suite_matches or boot.get('mode') != 'suite'
             or boot.get('platform') != platform
             or boot.get('arch') != ('x86_64' if platform == 'metal' else 'aarch64')):
         raise ValueError('capture target or suite differs')
@@ -52,6 +61,20 @@ def capture_identity(path, commit, suite, platform):
         if boot.get('kind') != 'boot' or boot.get('evidenceEligible') is not True or boot.get('session'):
             raise ValueError('native capture is not an eligible production boot')
     return dict(boot, bootedCommit=commit)
+
+
+def register_capture(seen, boot, name, path):
+    """Native companions stay distinct; U09 may cover both ARM suites in one folder."""
+    previous = seen.get(boot['id'])
+    if previous is not None:
+        other_name, other_path = previous
+        if (set((name, other_name)) != {'arm-gpu', 'arm-breengel'}
+                or path.resolve() != other_path
+                or boot.get('platform') != 'qemu'
+                or boot.get('suites') != ['gpu', 'breengel']):
+            raise ValueError('companion captures must have distinct boot IDs outside combined ARM U09')
+    else:
+        seen[boot['id']] = (name, path.resolve())
 
 
 def check_inventory(by_boot):
@@ -157,6 +180,12 @@ def checkpoint_inventory(suite, serial, ends, phase):
 def check_gallery_set(path, suite, boot_id, commit, serial):
     importer = runpy.run_path(str(ROOT / 'scripts/screens/approve.py'))
     candidate_id, rows = importer['candidates'](path)
+    for key, row in rows.items():
+        if key[0] not in ('gpu', 'breengel'):
+            raise ValueError('candidates inventory contains an unrelated suite')
+        if row['boot_id'] != boot_id or row['commit'] != commit:
+            raise ValueError('candidates capture provenance differs')
+    rows = {key: row for key, row in rows.items() if key[0] == suite}
     screens = runpy.run_path(str(ROOT / 'scripts/screen-verdict.py'))
     expected = {}
     for line in serial.splitlines():
@@ -173,8 +202,6 @@ def check_gallery_set(path, suite, boot_id, commit, serial):
     if not expected or rows.keys() != expected.keys():
         raise ValueError('candidates inventory differs from capture SCREEN pictures')
     for key, row in rows.items():
-        if row['boot_id'] != boot_id or row['commit'] != commit:
-            raise ValueError('candidates capture provenance differs')
         record = expected[key]
         if any(row[field] != record[source] for field, source in
                [('mode', 'mode'), ('binding', 'binding'), ('sha256', 'sha')]):
@@ -182,14 +209,15 @@ def check_gallery_set(path, suite, boot_id, commit, serial):
     return dict(id=candidate_id, rows=len(rows), boot=boot_id, commit=commit)
 
 
-def capture_facts(path):
+def capture_facts(path, suite=None):
     """Keep serial evidence in the report even when boot eligibility fails."""
     serial = (path / 'serial.txt').read_text()
+    name = re.escape(suite) if suite else r'\S+'
     return dict(exitStatus=(path / 'exit-status').read_text().strip(),
                 serialSHA256=hashlib.sha256((path / 'serial.txt').read_bytes()).hexdigest(),
-                done=re.findall(r'^SUITE \S+ DONE .*$', serial, re.M),
-                memory=re.findall(r'^SUITE \S+ MEMORY reclaimed=.*$', serial, re.M),
-                failedCases=re.findall(r'^SUITE \S+ CASE \S+ FAIL .*$', serial, re.M))
+                done=re.findall(rf'^SUITE {name} DONE .*$', serial, re.M),
+                memory=re.findall(rf'^SUITE {name} MEMORY reclaimed=.*$', serial, re.M),
+                failedCases=re.findall(rf'^SUITE {name} CASE \S+ FAIL .*$', serial, re.M))
 
 
 def accept(commit, captures, phase='checkpoints', candidates=None):
@@ -208,7 +236,7 @@ def accept(commit, captures, phase='checkpoints', candidates=None):
         report['candidateSets'] = {}
         report['failures'] += [f'missing {suite} candidates' for suite in ('gpu', 'breengel')
                                if not candidates.get(suite)]
-    native_rows, seen_boots, pictures_by_capture = {}, set(), {}
+    native_rows, seen_boots, pictures_by_capture = {}, {}, {}
     for name in REQUIRED:
         path = captures.get(name)
         if not path:
@@ -217,11 +245,14 @@ def accept(commit, captures, phase='checkpoints', candidates=None):
         platform = 'qemu' if name.startswith('arm-') else 'metal'
         row = report['captures'][name] = dict(path=str(path))
         try:
-            row.update(capture_facts(path))
+            row.update(capture_facts(path, suite))
+            manifest = json.loads((ROOT / f'docs/suites/{suite}.json').read_text())
+            if platform == 'qemu':
+                # Record the suite's own result even if the combined boot failed its sibling.
+                row['suitePassed'], row['suiteVerdict'] = suites['verdict'](
+                    manifest, path / 'serial.txt', [path / 'serial.txt'])
             boot = capture_identity(path, commit, suite, platform)
-            if boot['id'] in seen_boots:
-                raise ValueError('companion captures must have distinct boot IDs')
-            seen_boots.add(boot['id'])
+            register_capture(seen_boots, boot, name, path)
             row.update(id=boot['id'], commit=commit, toolsCommit=boot.get('toolsCommit'))
             if phase == 'gallery' and platform == 'qemu' and boot.get('screenProof') is not True:
                 raise ValueError('gallery requires a screen-proof capture')
@@ -235,7 +266,6 @@ def accept(commit, captures, phase='checkpoints', candidates=None):
             else:
                 serial = (path / 'serial.txt').read_text()
             row['serialSHA256'] = hashlib.sha256((path / 'serial.txt').read_bytes()).hexdigest()
-            manifest = json.loads((ROOT / f'docs/suites/{suite}.json').read_text())
             names = [c['id'] + '/' + t['id'] for c in manifest['categories'] for t in c['cases']]
             if platform == 'metal' and suite == 'console':
                 row['handoffToDoneMS'] = native['resources_console'](serial, boot, events)
@@ -248,10 +278,8 @@ def accept(commit, captures, phase='checkpoints', candidates=None):
                 check_runtime_display(serial, native)
                 row['resetFaults'] = reset_faults(serial, names)
             else:
-                okay, reason = suites['verdict'](manifest, path / 'serial.txt', [path / 'serial.txt'])
-                if not okay:
-                    raise ValueError(reason)
-                row['suiteVerdict'] = reason
+                if not row['suitePassed']:
+                    raise ValueError(row['suiteVerdict'])
             row['passedCases'] = len(names)
             row['done'] = re.findall(rf'^SUITE {suite} DONE .*$', serial, re.M)
             row['memory'] = re.findall(rf'^SUITE {suite} MEMORY reclaimed=.*$', serial, re.M)
