@@ -61,6 +61,7 @@ if [ "$op" = build ]; then
         if [ "$fault" = panic-reboot ]; then
             (cd "$ROOT" && taskpolicy -b cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 --features server_reboot_fault)
             cp "$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64" "$run/fault-kernel"
+            cp "$run/kernel" "$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
         fi
         taskpolicy -b "$ROOT/userspace/programs/build.sh" --arch aarch64
         BREENIX_REPRODUCIBLE_EXT2=1 taskpolicy -b "$ROOT/scripts/create_ext2_disk.sh" --arch aarch64
