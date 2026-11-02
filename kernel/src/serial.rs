@@ -276,6 +276,7 @@ pub fn start_transmitter() {
 /// the queue itself, a byte at a time with interrupts masked for each, and
 /// waits for room with interrupts as the caller has them.
 pub fn drain_output() {
+    crate::serial_writer::drain_terminal_all();
     let mut done = false;
     while !done {
         done = crate::arch_without_interrupts(|| {
@@ -307,6 +308,7 @@ pub fn set_output_stopped(stopped: bool) {
 
 /// Discard terminal output, retaining kernel records in the shared COM1 queue.
 pub fn flush_output() {
+    crate::serial_writer::discard_terminal();
     crate::arch_without_interrupts(|| {
         let mut serial = SERIAL1.lock();
         if let Some(last) = serial.queue.flush_terminal() {
@@ -1261,6 +1263,7 @@ fn enqueue_log_unaccounted(args: fmt::Arguments) -> u64 {
 /// Append the lines posted on paths that may not log (`log_notice`) to the
 /// kernel log, oldest first, with interrupts masked until every one taken is in.
 pub fn write_notices() {
+    crate::serial_writer::drain_terminal();
     if !crate::log_notice::pending() {
         return;
     }

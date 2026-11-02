@@ -187,8 +187,9 @@ pub fn write_notices() {
 /// softirq, nor with interrupts masked, so interrupt paths and the timer's
 /// lockup report never write the list.
 pub fn write_notices_from_thread() {
-    if crate::log_notice::pending() && in_thread_context() {
-        write_notices();
+    if in_thread_context() {
+        crate::serial_writer::drain_terminal();
+        if crate::log_notice::pending() { write_notices(); }
     }
 }
 
@@ -450,7 +451,7 @@ pub type TeeLine = Buffer<true>;
 /// this entry point. Raw diagnostic buffers cannot link the scheduler wake.
 pub fn write_bytes(writer: Writer, bytes: &[u8]) {
     if writer == Writer::Tty {
-        Buffer::<false, true>::for_writer(writer).bytes(bytes);
+        emit::<false, true>(writer, bytes, log::Level::Info, true);
     } else {
         Line::for_writer(writer).bytes(bytes);
     }

@@ -8,20 +8,19 @@
 //! another writer's line is open starts a fresh line first, so a record that a
 //! writer begins on a fresh line is not appended to another writer's line.
 //!
-//! A writer here is a class of output, not a thread or a CPU: two processes
-//! that each write part of a line to the TTY share that line, as they do on
-//! other terminals. Output written without the port's exclusion (the
+//! UART ownership distinguishes output classes. The TTY producer additionally
+//! separates userspace threads before emitting their records. Output written
+//! without the port's exclusion (the
 //! lock-free fatal, trace and capture writers, which must not wait on a holder
 //! that may never release) neither reads nor updates this state.
 //!
-//! The TTY writes a long line as several units of at most 256 bytes, so it
-//! does not mask interrupts for the whole line. [`exclusive`] keeps the
-//! console's prompt and echo out of the gaps between those units: a TTY write
-//! holds it from its first unit to its last, as Linux's tty write lock does,
-//! and so does each console write. Its holder runs with preemption disabled. Kernel output does not wait for it, since
-//! it is also written from interrupt and fault paths, so a kernel line that
-//! arrives between two units of one TTY line still starts a line of its own
-//! inside that TTY line.
+//! The TTY assembles userspace line fragments before handing a line to the
+//! port. Kernel diagnostics therefore cannot appear between write(2)s in a
+//! record, and different threads assemble different lines. Unterminated output
+//! (including prompts) is handed on after 100 ms by the idle drain. The screen
+//! grid still receives terminal bytes immediately; only shared serial needs
+//! record assembly. Fatal, lock-free hardware writers remain emergency paths.
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU8, Ordering};
 
 /// A writer to the console port.
@@ -87,4 +86,109 @@ pub fn exclusive<R>(write: impl FnOnce() -> R) -> R {
 /// Write one unit of the kernel serial console's prompt or echo.
 pub fn console(unit: &[u8]) {
     exclusive(|| crate::serial::write_bytes_atomic(Writer::Console, unit));
+}
+
+/// Maximum time a userspace line waits for its newline. A fixed deadline from
+/// its first fragment also bounds a writer that keeps producing without LF.
+const PARTIAL_LINE_MS: u64 = 100;
+
+struct PartialLine {
+    thread: u64,
+    started: u64,
+    bytes: Vec<u8>,
+}
+
+struct TerminalLines {
+    partial: Vec<PartialLine>,
+    /// A timed-out fragment may leave the UART in this thread's line. Start
+    /// another thread's record on its own line, even though both are TTY output.
+    open_thread: Option<u64>,
+}
+
+impl TerminalLines {
+    const fn new() -> Self {
+        Self { partial: Vec::new(), open_thread: None }
+    }
+
+    fn emit(&mut self, thread: u64, bytes: &[u8], write: &mut impl FnMut(&[u8])) {
+        if bytes.is_empty() { return; }
+        if self.open_thread.is_some_and(|old| old != thread)
+            && !matches!(bytes, [b'\n', ..] | [b'\r', b'\n', ..])
+        {
+            write(b"\r\n");
+        }
+        write(bytes);
+        self.open_thread = (bytes.last() != Some(&b'\n')).then_some(thread);
+    }
+
+    fn drain(&mut self, now: u64, all: bool, write: &mut impl FnMut(&[u8])) {
+        let mut at = 0;
+        while at < self.partial.len() {
+            if all || now.saturating_sub(self.partial[at].started) >= PARTIAL_LINE_MS {
+                let line = self.partial.remove(at);
+                self.emit(line.thread, &line.bytes, write);
+            } else {
+                at += 1;
+            }
+        }
+    }
+
+    fn append(&mut self, thread: u64, now: u64, bytes: &[u8], write: &mut impl FnMut(&[u8])) {
+        self.drain(now, false, write);
+        for segment in bytes.split_inclusive(|&byte| byte == b'\n') {
+            let existing = self.partial.iter().position(|line| line.thread == thread);
+            if let Some(at) = existing {
+                self.partial[at].bytes.extend_from_slice(segment);
+                if segment.last() == Some(&b'\n') {
+                    let line = self.partial.remove(at);
+                    self.emit(thread, &line.bytes, write);
+                }
+            } else if segment.last() == Some(&b'\n') {
+                // A whole line needs no allocation and takes the existing
+                // serial exclusion once, including its newline.
+                self.emit(thread, segment, write);
+            } else if !segment.is_empty() {
+                self.partial.push(PartialLine { thread, started: now, bytes: segment.to_vec() });
+            }
+        }
+    }
+}
+
+// Thread-context producers only. IRQ echo and kernel diagnostics never take
+// this lock. Interrupts stay masked across the copy and port handoff, so a
+// holder cannot be switched out underneath another producer on the same CPU.
+static TERMINAL_LINES: spin::Mutex<TerminalLines> = spin::Mutex::new(TerminalLines::new());
+
+/// Assemble console userspace output at its producer, across write(2)s and
+/// ONLCR chunks. The sink must hand each supplied slice to serial in one piece.
+/// Distinct threads never contribute bytes to the same pending line.
+pub fn terminal(bytes: &[u8], mut write: impl FnMut(&[u8])) {
+    let thread = crate::task::scheduler::current_thread_id().unwrap_or(0);
+    let now = crate::time::get_monotonic_time();
+    crate::arch_without_interrupts(|| {
+        TERMINAL_LINES.lock().append(thread, now, bytes, &mut write);
+    });
+}
+
+/// Service unterminated output from the existing idle serial drain, even if
+/// neither its writer nor a kernel diagnostic produces any more output.
+pub fn drain_terminal() {
+    let now = crate::time::get_monotonic_time();
+    crate::arch_without_interrupts(|| {
+        if let Some(mut lines) = TERMINAL_LINES.try_lock() {
+            lines.drain(now, false, &mut |line| crate::serial::write_bytes_atomic(Writer::Tty, line));
+        }
+    });
+}
+
+/// tcdrain must also hand pending producer fragments to the serial queue.
+pub fn drain_terminal_all() {
+    crate::arch_without_interrupts(|| {
+        TERMINAL_LINES.lock().drain(0, true, &mut |line| crate::serial::write_bytes_atomic(Writer::Tty, line));
+    });
+}
+
+/// A terminal flush discards its pending fragments as well as queued bytes.
+pub fn discard_terminal() {
+    crate::arch_without_interrupts(|| TERMINAL_LINES.lock().partial.clear());
 }

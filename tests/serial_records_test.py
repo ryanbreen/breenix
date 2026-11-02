@@ -40,6 +40,9 @@ mod per_cpu {
     pub fn is_initialized() -> bool { true }
     pub fn current_thread_id_lock_free() -> Option<u64> { Some(super::TID.load(std::sync::atomic::Ordering::Relaxed)) }
 }
+mod task { pub mod scheduler {
+    pub fn current_thread_id() -> Option<u64> { Some(crate::TID.load(std::sync::atomic::Ordering::Relaxed)) }
+} }
 fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R { f() }
 #[path = "WRITER"] mod serial_writer;
 static TID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -54,11 +57,22 @@ mod serial {
         if let Some(&last) = bytes.last() { super::serial_writer::wrote(writer, last); }
     }
 }
+mod console {
+    pub fn write_tty(bytes: &[u8], mut emit: impl FnMut(&[u8])) { emit(bytes); }
+    pub fn write_vt(_: usize, _: &[u8]) { unreachable!(); }
+}
+struct Tty;
+impl Tty {
+    fn is_console(&self) -> bool { true }
+    fn vt(&self) -> usize { 0 }
+    COOKED
+}
 const SERIAL_ATOMIC_OUTPUT_BYTES: usize = 256;
 SEGMENTS
 PRODUCER
 fn diagnostic() { serial::write_bytes_atomic(serial::Writer::Kernel, b"[syscall] exit(0)\n"); }
-fn main() {
+fn exercise(write_unprocessed: fn(&[u8])) {
+    TID.store(1, std::sync::atomic::Ordering::Relaxed);
     // Same fragmentation as #2660: a diagnostic between two write(2)s.
     write_unprocessed(b"SUITE gpu V");
     diagnostic();
@@ -80,12 +94,33 @@ fn main() {
     assert!(wire.windows(b"second writer\n".len()).any(|s| s == b"second writer\n"));
     WIRE.lock().clear();
     write_unprocessed(b"prompt> ");
-    CLOCK.store(1000, std::sync::atomic::Ordering::Relaxed);
-    write_unprocessed(b"");
+    CLOCK.fetch_add(1000, std::sync::atomic::Ordering::Relaxed);
+    serial_writer::drain_terminal();
     assert!(WIRE.lock().windows(b"prompt> ".len()).any(|s| s == b"prompt> "), "unterminated output never reached the serial port");
+    WIRE.lock().clear();
+    write_unprocessed(b"discard this fragment");
+    serial_writer::discard_terminal();
+    serial_writer::drain_terminal_all();
+    assert!(WIRE.lock().is_empty(), "flush retained a producer fragment");
+    write_unprocessed(b"drain this fragment");
+    serial_writer::drain_terminal_all();
+    assert!(WIRE.lock().windows(b"drain this fragment".len()).any(|s| s == b"drain this fragment"));
+    // Crossing both former chunk boundaries must still be one port handoff.
+    WIRE.lock().clear();
+    let long = [b'x'; 2048];
+    write_unprocessed(&long);
+    diagnostic();
+    write_unprocessed(b"\n");
+    let mut expected = long.to_vec(); expected.push(b'\n');
+    assert!(WIRE.lock().windows(expected.len()).any(|s| s == expected), "long record split");
+}
+fn main() {
+    exercise(write_unprocessed);
+    exercise(|bytes| Tty.to_sinks(bytes));
 }
 '''
         harness = (harness.replace('WRITER', str(ROOT / 'kernel/src/serial_writer.rs'))
+                   .replace('COOKED', function(tty, 'fn to_sinks('))
                    .replace('SEGMENTS', function(tty, 'fn for_each_line_segment('))
                    .replace('PRODUCER', function(tty, 'pub fn write_unprocessed(')))
         with tempfile.TemporaryDirectory(prefix='serial-records-') as temporary:
