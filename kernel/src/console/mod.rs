@@ -67,7 +67,7 @@ pub mod splash;
 pub mod vcs;
 pub mod vt;
 #[path = "../../../libs/libbreenix/src/crypto/sha256.rs"]
-mod sha256;
+pub(crate) mod sha256;
 
 use alloc::string::String;
 use alloc::vec::Vec;
