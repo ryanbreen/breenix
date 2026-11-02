@@ -436,8 +436,10 @@ pub fn screen_evidence_write(buf: &[u8]) -> Result<usize, i32> {
         return Ok(buf.len());
     }
     if buf.len() > 512 { return Err(22); }
-    // CASE and evidence share the serial FIFO. Queue behind CASE without
-    // waiting for the UART while syscall entry has interrupts masked.
+    // x86 CASE and evidence share the serial FIFO; do not wait for the UART
+    // while syscall entry has interrupts masked. ARM has a separate TTY queue.
+    #[cfg(not(target_arch = "x86_64"))]
+    crate::serial::drain_output();
     crate::serial::write_bytes_atomic(crate::serial::Writer::Evidence, buf);
     Ok(buf.len())
 }
