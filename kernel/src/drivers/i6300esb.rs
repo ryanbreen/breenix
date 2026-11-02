@@ -266,7 +266,7 @@ mod feeder {
                         if rounds % 3 == 0 { crate::serial_println!("[watchdog] healthy feeds={}", rounds); }
                     }
                     if rearmed || !announced {
-                        crate::serial_println!("[watchdog] armed seconds=120 action=hard-reset health=root-io,root-inode");
+                        crate::serial_println!("\n[watchdog] armed seconds=120 action=hard-reset health=root-io,root-inode");
                         announced = true;
                     }
                 }
