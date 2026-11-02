@@ -130,6 +130,42 @@ class BreengelSelection(unittest.TestCase):
         self.assertEqual(step['cases'], SELECTED)
         self.assertIn('docs/gui/gt710-step-9-1.json', (ROOT / 'scripts/metal/metal-build').read_text())
 
+    def test_composition_selection(self):
+        step = json.loads((ROOT / 'docs/gui/gt710-step-9-2.json').read_text())
+        added = {'windows/release-order', 'windows/distinct-content',
+                 'windows/every-target', 'windows/commit-waits-render',
+                 'isolation/compositor-authorized', 'isolation/efault-readback'}
+        deferred = {'composition/present-rate', 'composition/takeover-giveback',
+                    'composition/ownership-stack'}
+        added.update(n for n in NAMES if n.split('/')[0] in
+                     {'composition', 'scanout', 'events'} and n not in deferred)
+        expected = [n for n in NAMES if n in set(SELECTED) | added]
+        self.assertEqual(set(step), {'id', 'suite', 'cases'})
+        self.assertEqual((step['id'], step['suite']), ('gt710-step-9-2', 'breengel'))
+        self.assertEqual(len(expected), 385)
+        self.assertEqual(step['cases'], expected)
+        for category, count in {'windows': 4, 'isolation': 2, 'composition': 25,
+                                'scanout': 17, 'events': 33}.items():
+            self.assertEqual(sum(n.startswith(category + '/') for n in added), count)
+        self.assertIn('docs/gui/gt710-step-9-2.json', (ROOT / 'scripts/metal/metal-build').read_text())
+
+    def test_composition_scorer_rejects_missing_and_failed_selected_cases(self):
+        selected = json.loads((ROOT / 'docs/gui/gt710-step-9-2.json').read_text())['cases']
+        original = capture()
+        producer = {'breengel': {'serial': original, 'boot': boot()}}
+        def score():
+            return API['cases']('breengel-composition', '', producer)[0]['result']
+        self.assertEqual(score(), 'PASS')
+        for name in selected:
+            line = f'SUITE breengel CASE {name} PASS ms=1' + (' sha256=' + 'a' * 64 if name in pictured_cases() else '')
+            for replacement in ('', line.replace(' PASS ', ' FAIL ') + ' msg=broken'):
+                producer['breengel']['serial'] = original.replace(line + '\n', replacement + ('\n' if replacement else ''))
+                if replacement:
+                    producer['breengel']['serial'] = producer['breengel']['serial'].replace(
+                        'DONE passed=401 failed=0', 'DONE passed=400 failed=1')
+                with self.subTest(case=name, failed=bool(replacement)):
+                    self.assertEqual(score(), 'FAIL')
+
     def test_scorer_rejects_missing_and_failed_selected_cases(self):
         producer = {'breengel': {'serial': capture(), 'boot': boot()}}
         def score():
