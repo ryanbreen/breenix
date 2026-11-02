@@ -260,7 +260,7 @@ def derive_native(table, path, directory):
                 uint(capture['elapsed_us']) and capture['elapsed_us'] <= 250000 and
                 capture['disarmed'] is True and type(capture['display_error']) is int and
                 capture['display_error'] == 0, 'invalid native capture outcome')
-        # Context status: MIT crc907d.c, pinned in docs/gui/screen-proof.md.
+        # Context status: MIT crc907d.c, pinned in THIRD_PARTY_NOTICES.
         # Bit 0 is completion; bits 1..5 are overflow.
         require(uint(capture['status']) and capture['status'] & 1 and not capture['status'] & 0x3e,
                 'unfinished or overflowed CRC context')

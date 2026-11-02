@@ -121,8 +121,8 @@ undocumented hardware entry-status word. A primary CRC of `00000000` is unwritte
 following the pinned MIT `crc.c` reader. Context `status` must have bit 0 set and no bits in mask 0x3e.
 These status meanings follow the pinned MIT
 [`crc907d.c`](https://github.com/torvalds/linux/blob/e8f897f4afef0031fe618a8e94127a0934896aba/drivers/gpu/drm/nouveau/dispnv50/crc907d.c)
-notifier layout and context-status decoding, as described in screen-proof design
-section 2. This importer implements validation from that contract; it contains
+notifier layout and context-status decoding, recorded in THIRD_PARTY_NOTICES.
+This importer implements validation from those facts; it contains
 no copied driver code.
 
 <!-- claim-lint:ok: U12 input validation requirements, covered by tests/screens_approve_test.py. -->
