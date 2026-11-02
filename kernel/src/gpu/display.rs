@@ -568,6 +568,8 @@ pub(super) fn set_mode(arg: u64, len: u64) -> Result<u64, i64> {
         #[cfg(target_arch = "x86_64")]
         c.native_console_restored();
         c.display.mode = a.index;
+        #[cfg(target_arch = "x86_64")]
+        crate::input::pointer::set_screen(MODES[a.index as usize].width, MODES[a.index as usize].height);
         if let Some(o) = c.display.stack.last_mut() {
             o.mode = a.index;
         }
