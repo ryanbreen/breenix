@@ -58,7 +58,10 @@ def promote(run):
     record = read(run)
     if record is None:
         raise ValueError('missing slot record')
-    entry(record['current'])
+    # Only the first install has neither a current nor a previous generation.
+    # An established record must still have a complete current slot.
+    if record['current'] is not None or record['previous'] is not None:
+        entry(record['current'])
     entry(record['next'])
     record['previous'], record['current'], record['next'] = record['current'], record['next'], None
     write(run, record)
