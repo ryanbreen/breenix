@@ -2,6 +2,7 @@
 """Private site configuration for per-run QEMU server tests."""
 import argparse
 import os
+import secrets
 from pathlib import Path
 import stat
 import sys
@@ -58,8 +59,10 @@ def main():
     sub = parser.add_subparsers(dest='command', required=True)
     account = sub.add_parser('operator-account')
     account.add_argument('--out', type=Path, required=True)
+    token = sub.add_parser('power-token')
+    token.add_argument('--out', type=Path, required=True)
     args = parser.parse_args()
-    rendered = metal_root.operator_account(load_site()).encode()
+    rendered = secrets.token_hex(32).encode() if args.command == 'power-token' else metal_root.operator_account(load_site()).encode()
     fd = os.open(args.out, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
     with os.fdopen(fd, 'wb') as output:
         output.write(rendered)
