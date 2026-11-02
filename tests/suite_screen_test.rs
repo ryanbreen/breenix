@@ -92,7 +92,7 @@ fn end_is_observed_before_teardown_and_errors_are_separate_from_verdict() {
     end.before_drop(|| Ok(([6; 32], mode(), mode())));
     assert_eq!(end.result.as_ref().unwrap().as_ref().unwrap().0, [6; 32]);
     let verdict: Result<(), &str> = Ok(());
-    end.before_drop(|| Err("readback-failed"));
+    end.before_drop(|| Err("readback-failed".into()));
     assert_eq!(verdict, Ok(()));
     assert_eq!(end.result.unwrap().unwrap_err(), "readback-failed");
 }
@@ -186,7 +186,7 @@ fn endpoint_errors_keep_exact_causes_and_only_known_end_states_are_declared() {
     use crate::gpu::abi::screen::Failure;
     for (reason, failed, declared) in [(4, 1234, true), (4, 0, false), (5, 0, false),
         (6, 0, false), (7, 0, false), (8, 0, true), (10, 0, false)] {
-        let failure = Failure { errno: 5, reason, failed_submission: failed };
+        let failure = Failure { errno: 5, reason, failed_submission: failed, declared: if declared { 1 } else { 0 } };
         let error = screen::endpoint_error(5, &failure.encode());
         assert_eq!(error.starts_with("unobservable reason="), declared);
         assert!(error.contains(&format!("errno=5 eio_reason={reason} failed_submission={failed}")));
@@ -195,4 +195,12 @@ fn endpoint_errors_keep_exact_causes_and_only_known_end_states_are_declared() {
     }
     let error = screen::endpoint_error(110, &[0; 32]);
     assert_eq!(error, "readback-failed errno=110 eio_reason=0 failed_submission=0");
+}
+
+#[test]
+fn unexpected_target_invalidation_cannot_be_declared() {
+    let failure = crate::gpu::abi::screen::Failure { errno: 5, reason: 4,
+        failed_submission: 1234, declared: 0 };
+    let error = screen::endpoint_error(5, &failure.encode());
+    assert!(error.starts_with("readback-failed "));
 }
