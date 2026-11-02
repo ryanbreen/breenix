@@ -112,12 +112,107 @@ impl CaptureLog {
     pub fn append(&mut self, bytes: &[u8], capacity: u64,
         mut write: impl FnMut(u64,&[u8])->Result<(),&'static str>) -> Result<bool,&'static str> {
         if self.failed { return Err("capture-disk-failed"); }
-        let (record,length) = decode(bytes)?;
-        if length != bytes.len() { return Err("capture-trailing"); }
-        if self.seen.contains(&record.digest) { return Ok(false); }
+        let length = bytes.len();
+        let digest = validate_stream(length,|at,buf| {
+            buf.copy_from_slice(&bytes[at..at+buf.len()]); Ok(())
+        },|_,_| Ok(()))?;
+        if self.seen.contains(&digest) { return Ok(false); }
         let end = self.next.checked_add(length as u64).filter(|&n| n <= capacity).ok_or("capture-disk-full")?;
         self.seen.try_reserve(1).map_err(|_| "capture-allocation")?;
         if let Err(e) = write(self.next,bytes) { self.failed = true; return Err(e); }
-        self.seen.push(record.digest); self.next = end; Ok(true)
+        self.seen.push(digest); self.next = end; Ok(true)
+    }
+}
+
+/// Validate sector bytes without constructing a second framebuffer.
+fn validate_stream(length: usize,
+    mut read: impl FnMut(usize,&mut [u8])->Result<(),&'static str>,
+    mut consume: impl FnMut(usize,&[u8])->Result<(),&'static str>) -> Result<[u8;32],&'static str> {
+    if !(512..=MAX_RECORD).contains(&length) || length % 512 != 0 { return Err("capture-length"); }
+    let mut sector = [0;512]; read(0,&mut sector)?;
+    if &sector[..4] != b"SCR1" { return Err("capture-magic"); }
+    let raw = dimensions(u32_at(&sector,16),u32_at(&sector,20))?;
+    let payload = u32_at(&sector,12) as usize;
+    let encoding = u32_at(&sector,8);
+    let sizes: [usize;3] = [24,26,28].map(|at| u16::from_le_bytes(sector[at..at+2].try_into().unwrap()) as usize);
+    if sizes.iter().any(|&n| n == 0 || n > 255) { return Err("capture-text"); }
+    let meta_end = HEADER + sizes.iter().sum::<usize>();
+    let payload_end = meta_end.checked_add(payload).ok_or("capture-length")?;
+    if u32_at(&sector,4) as usize != length || u32_at(&sector,64) as usize != raw
+        || sector[30..32] != [0;2] || sector[68..HEADER].iter().any(|&b| b != 0)
+        || payload_end > length || payload_end.div_ceil(512)*512 != length {
+        return Err("capture-length");
+    }
+    if !matches!(encoding,0|1) || (encoding == 0 && payload != raw)
+        || (encoding == 1 && (payload % 8 != 0 || payload >= raw)) { return Err("capture-encoding"); }
+    let expected: [u8;32] = sector[32..64].try_into().unwrap();
+    let mut metadata = [0;HEADER+3*255];
+    let mut sha = libpixcheck::Sha256::new();
+    let mut produced = 0usize;
+    let mut run = [0;8]; let mut pending = 0;
+    let mut repeated = [0;4096];
+    for at in (0..length).step_by(512) {
+        if at != 0 { read(at,&mut sector)?; }
+        let end = (at+512).min(meta_end);
+        if at < end { metadata[at..end].copy_from_slice(&sector[..end-at]); }
+        let (start,end) = (at.max(meta_end),(at+512).min(payload_end));
+        if start < end {
+            let part = &sector[start-at..end-at];
+            if encoding == 0 {
+                if part.iter().enumerate().any(|(i,&b)| (start-meta_end+i)%4 == 3 && b != 255) {
+                    return Err("capture-digest");
+                }
+                sha.update(part); produced += part.len();
+            } else {
+                for &byte in part {
+                    run[pending] = byte; pending += 1;
+                    if pending != 8 { continue; }
+                    let count = u32_at(&run,0) as usize;
+                    if count == 0 || count > (raw-produced)/4 || run[7] != 255 { return Err("capture-run"); }
+                    let tile = count.min(1024)*4;
+                    for pixel in repeated[..tile].chunks_exact_mut(4) { pixel.copy_from_slice(&run[4..]); }
+                    let mut left = count*4;
+                    while left > 0 { let n=left.min(tile); sha.update(&repeated[..n]); left -= n; }
+                    produced += count*4; pending = 0;
+                }
+            }
+        }
+        let padding = at.max(payload_end);
+        if padding < at+512 && sector[padding-at..].iter().any(|&b| b != 0) { return Err("capture-padding"); }
+        consume(at,&sector)?;
+    }
+    let mut at = HEADER;
+    for (n,slash) in sizes.into_iter().zip([false,true,false]) {
+        let name = core::str::from_utf8(&metadata[at..at+n]).map_err(|_| "capture-text")?;
+        if !text(name,slash) { return Err("capture-text"); } at += n;
+    }
+    if pending != 0 || produced != raw || sha.finish() != expected { return Err("capture-digest"); }
+    Ok(expected)
+}
+
+impl CaptureLog {
+    /// Write payload sectors before committing their first sector and index entry.
+    pub fn append_stream(&mut self, length: usize, capacity: u64,
+        mut read: impl FnMut(usize,&mut [u8])->Result<(),&'static str>,
+        mut write: impl FnMut(u64,&[u8])->Result<(),&'static str>,
+        mut flush: impl FnMut()->Result<(),&'static str>) -> Result<bool,&'static str> {
+        if self.failed { return Err("capture-disk-failed"); }
+        if !(512..=MAX_RECORD).contains(&length) || length%512 != 0 { return Err("capture-length"); }
+        let mut first = [0;512]; read(0,&mut first)?;
+        let digest: [u8;32] = first[32..64].try_into().unwrap();
+        let duplicate = self.seen.contains(&digest);
+        let end = self.next.checked_add(length as u64).filter(|&n| duplicate || n <= capacity).ok_or("capture-disk-full")?;
+        self.seen.try_reserve(1).map_err(|_| "capture-allocation")?;
+        let result = validate_stream(length,|at,buf| {
+            if at == 0 { buf.copy_from_slice(&first); Ok(()) } else { read(at,buf) }
+        },|at,buf| {
+            if duplicate || at == 0 { Ok(()) } else { write(self.next+at as u64,buf) }
+        }).and_then(|_| {
+            if !duplicate { write(self.next,&first)?; flush()?; }
+            Ok(())
+        });
+        if let Err(e) = result { self.failed = true; return Err(e); }
+        if duplicate { return Ok(false); }
+        self.seen.push(digest); self.next = end; Ok(true)
     }
 }

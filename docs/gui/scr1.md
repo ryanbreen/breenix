@@ -26,7 +26,8 @@ encoded record through the root-only suite evidence endpoint. A `SCRWRITE`
 request contains an eight-byte tag followed by a little-endian u64 userspace
 address and u64 byte length. On ARM QEMU, the endpoint additionally requires
 `opt/breenix/screen-capture=on` and exactly one disk carrying the marker below.
-It copies and validates the record before appending, flushes before success,
+It validates sector data with bounded buffers, commits the first sector after
+the digest matches, flushes before success,
 and remembers digests across case forks and suite execs. An I/O failure
 poisons subsequent capture writes. Capture errors become additive SCREEN
 errors, leaving CASE expectations and suite scoring unchanged.

@@ -102,3 +102,36 @@ fn capture_writer_needs_no_second_frame_sized_allocation() {
     ALLOCATION_LIMIT.with(|n| n.set(usize::MAX));
     assert_eq!(result,Ok(true),"valid raw capture must not allocate a decoded frame in the writer");
 }
+
+#[test]
+fn streamed_capture_is_bounded_and_commits_header_after_verified_payload() {
+    let pixels: Vec<u8> = (0..2560*1600u32).flat_map(|i| [i as u8,(i>>8) as u8,(i>>16) as u8,255]).collect();
+    let bytes=encode(&Record { width:2560,height:1600,..record(&pixels) }).unwrap();
+    let mut disk=vec![0;bytes.len()+512];
+    let mut offsets=Vec::with_capacity(bytes.len()/512);
+    let mut flushed=false;
+    let mut log=CaptureLog::new();
+    ALLOCATION_LIMIT.with(|n| n.set(4096));
+    let result=log.append_stream(bytes.len(),disk.len() as u64,|at,buf| {
+        assert!(buf.len()<=512);buf.copy_from_slice(&bytes[at..at+buf.len()]);Ok(())
+    },|at,buf| { offsets.push(at);disk[at as usize..at as usize+buf.len()].copy_from_slice(buf);Ok(()) },
+        || {flushed=true;Ok(())});
+    ALLOCATION_LIMIT.with(|n| n.set(usize::MAX));
+    assert_eq!(result,Ok(true)); assert!(flushed);
+    assert_eq!(offsets[0],1024);assert_eq!(offsets.last(),Some(&512));
+    assert_eq!(&disk[512..],&bytes);
+    assert_eq!(log.append_stream(bytes.len(),disk.len() as u64,|at,buf| {
+        buf.copy_from_slice(&bytes[at..at+buf.len()]);Ok(())
+    },|_,_|panic!("duplicate write"),||panic!("duplicate flush")),Ok(false));
+    let mut bad=encode(&record(&[1,2,3,255])).unwrap();bad[32]^=1;
+    let mut log=CaptureLog::new();
+    assert!(log.append_stream(bad.len(),4096,|at,buf| {
+        buf.copy_from_slice(&bad[at..at+buf.len()]);Ok(())
+    },|_,_|panic!("invalid digest committed"),||panic!("invalid digest flushed")).is_err());
+    let mut log=CaptureLog::new();
+    assert!(log.append_stream(bytes.len(),disk.len() as u64,|at,buf| {
+        buf.copy_from_slice(&bytes[at..at+buf.len()]);Ok(())
+    },|_,_|Err("io"),||Ok(())).is_err());
+    assert!(log.append_stream(bytes.len(),disk.len() as u64,|_,_|panic!("poisoned read"),
+        |_,_|panic!("poisoned write"),||Ok(())).is_err());
+}
