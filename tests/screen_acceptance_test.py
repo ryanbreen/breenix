@@ -84,6 +84,17 @@ class ScreenAcceptance(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'tools'):
                 self.api['capture_identity'](p, HEAD, 'gpu', 'metal')
 
+    def test_native_raster_join_uses_the_edid_dimensions(self):
+        fixture = runpy.run_path(str(ROOT / 'tests/gt710_display_evidence_test.py'))
+        native = dict(fixture['API'])
+        mode = dict(width=1280, height=1024, clock_khz=108000)
+        native['board_inventory'] = lambda serial: dict(modes=[mode])
+        serial = fixture['text']([fixture['row'](0), fixture['row'](1)])
+        self.api['check_runtime_display'](serial, native)
+        mode['height'] = 800
+        with self.assertRaisesRegex(ValueError, 'runtime raster differs'):
+            self.api['check_runtime_display'](serial, native)
+
 
 if __name__ == '__main__':
     unittest.main()
