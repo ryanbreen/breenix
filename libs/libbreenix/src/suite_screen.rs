@@ -276,8 +276,11 @@ fn reuse_snapshot() -> Option<Snapshot> {
     saved.matches(&record).then_some(Ok((saved.hash, saved.mode, binding)))
 }
 
-pub(super) fn non_case_binding(known: bool, resource: u64, console: u64, runner: u64) -> bool {
-    known && resource != 0 && (resource == console || resource == runner)
+pub(super) fn non_case_binding(known: bool, resource: u64, console: u64, runner: u64, owner_depth: u32) -> bool {
+    // A reset may remove the console binding even though no case took the display.
+    // An active owner with an unknown binding must still reach the pinned observer.
+    (resource == 0 && owner_depth == 0)
+        || (known && resource != 0 && (resource == console || resource == runner))
 }
 
 fn snapshot() -> Result<([u8; 32], Mode, Mode), &'static str> {
@@ -287,7 +290,7 @@ fn snapshot() -> Result<([u8; 32], Mode, Mode), &'static str> {
     // An in-flight PRESENT may make MODES transiently unknown. Only the pinned
     // observer settles that transition; unknown does not identify a non-case frame.
     if non_case_binding(modes.binding_known != 0, modes.scanout_resource, modes.console_resource,
-        RUNNER_RESOURCE.load(Ordering::Relaxed)) {
+        RUNNER_RESOURCE.load(Ordering::Relaxed), modes.owner_depth) {
         return Err("no-case-scanout");
     }
     if RUNNER.load(Ordering::Relaxed) == 0 { return Err("runner-unknown"); }
@@ -307,7 +310,7 @@ fn snapshot() -> Result<([u8; 32], Mode, Mode), &'static str> {
     device.write_all(&request).map_err(|_| "readback-failed")?;
     if quad(&rec, r::CONTEXT) == RUNNER.load(Ordering::Relaxed)
         || non_case_binding(true, quad(&rec, r::RESOURCE), modes.console_resource,
-            RUNNER_RESOURCE.load(Ordering::Relaxed)) { return Err("no-case-scanout"); }
+            RUNNER_RESOURCE.load(Ordering::Relaxed), modes.owner_depth) { return Err("no-case-scanout"); }
     validate(&rec, mode, caps.backend, RUNNER.load(Ordering::Relaxed))?;
     let binding = Mode { width: word(&rec, r::TARGET_WIDTH), height: word(&rec, r::TARGET_HEIGHT), scale: 1, reserved: 0 };
     Ok((canonical_hash(&mut pixels, mode)?, mode, binding))
