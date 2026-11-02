@@ -5666,10 +5666,12 @@ enum Observer {
     Screen,
 }
 
+const OBSERVATION_TIMEOUT_NS: u64 = 5_000_000_000;
+
 impl Observer {
     fn records_composition(self) -> bool { self != Self::Screen }
     fn deadline(self, now: u64) -> Option<u64> {
-        (self == Self::Screen).then(|| now.saturating_add(5_000_000_000))
+        (self == Self::Screen).then(|| now.saturating_add(OBSERVATION_TIMEOUT_NS))
     }
     fn excludes_binding(self, known: bool, bound: bool) -> bool {
         self == Self::Screen && known && !bound
@@ -5724,7 +5726,11 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
             #[cfg(target_arch = "x86_64")] false, #[cfg(target_arch = "x86_64")] None)
         .map_err(|stop| match stop { Stop::Timeout => ETIMEDOUT, Stop::Interrupted => EINTR })?;
         Some(if window {
-            display::Transition::for_window_observer(deadline)?
+            display::Transition::for_window_observer(deadline).map_err(|errno| {
+                if observer == Observer::Window && errno == ETIMEDOUT {
+                    Refused::Eio(readback_reason::BINDING_UNKNOWN, 0)
+                } else { Refused::Errno(errno) }
+            })?
         } else {
             display::Transition::for_observation(tgid)?
         })

@@ -595,7 +595,7 @@ pub(super) struct Transition;
 impl Transition {
     #[cfg(target_arch = "x86_64")]
     pub(super) fn for_mutation(group: u64) -> Result<Self, i64> {
-        let guard = Self::acquire()?;
+        let guard = Self::acquire(None)?;
         if !owner(group) {
             return Err(EPERM);
         }
@@ -622,7 +622,7 @@ impl Transition {
         let start = crate::signal::monotonic_nanos();
         // Unlike owner READBACK (G26(d)), a window record certifies a latched
         // frame. Let the adapter retire its notifier before pinning the head.
-        let result = Self::acquire();
+        let result = Self::acquire(Some(now_ns().saturating_add(OBSERVATION_TIMEOUT_NS)));
         #[cfg(target_arch = "x86_64")]
         if native {
             crate::gk208::timing::scanout_wait(pending,
@@ -648,15 +648,15 @@ impl Transition {
     }
     /// Mutations must let the adapter consume the retained latch identity before
     /// a modeset or ownership restore can reuse the native notifier (#2624).
-    fn acquire() -> Result<Self, i64> {
-        wait_for(None, true, |c| {
+    fn acquire(deadline: Option<u64>) -> Result<Self, i64> {
+        wait_for(deadline, true, |c| {
             if c.display.changing || c.display.outstanding != 0 {
                 return None;
             }
             c.display.changing = true;
             Some(())
         })
-        .map_err(|_| EINTR)?;
+        .map_err(|stop| match stop { Stop::Timeout => ETIMEDOUT, Stop::Interrupted => EINTR })?;
         Ok(Self)
     }
     fn observe(deadline: Option<u64>) -> Result<Self, i64> {
@@ -765,7 +765,7 @@ pub(super) fn give(giver: u64, pid: u32) -> Result<(), i64> {
 }
 
 pub(super) fn back(group: u64) -> Result<(), i64> {
-    let _transition = Transition::acquire()?;
+    let _transition = Transition::acquire(None)?;
     let removed = with_core(|c| {
         if !owner(group) {
             return Err(EPERM);
@@ -883,7 +883,7 @@ pub(super) fn restored(b: Binding) {
 }
 
 pub(super) fn restore_pending() -> Result<(), i64> {
-    let _transition = Transition::acquire()?;
+    let _transition = Transition::acquire(None)?;
     // Owner exit publishes its request under the core lock too: deciding that a request
     // is obsolete and clearing it must not straddle publication of the next request.
     let seq = with_core(|c| {

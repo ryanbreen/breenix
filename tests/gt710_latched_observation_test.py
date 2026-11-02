@@ -23,7 +23,7 @@ class LatchedObservation(unittest.TestCase):
     def test_window_waits_for_latch_while_owner_keeps_g26d(self):
         display = (ROOT / 'kernel/src/gpu/display.rs').read_text()
         methods = '\n'.join(item(display, marker) for marker in [
-            '    fn acquire() -> Result<Self, i64>',
+            '    fn acquire(deadline: Option<u64>) -> Result<Self, i64>',
             '    fn observe(deadline: Option<u64>) -> Result<Self, i64>',
             'pub(super) fn for_window_observer(',
             'pub(super) fn for_observation(',
@@ -69,6 +69,24 @@ impl Transition {METHODS}
  assert_eq!(Transition::for_window_observer(Some(200)).err(),Some(ETIMEDOUT));
 }
 '''.replace('METHODS', methods))
+
+    def test_window_timeout_preserves_the_existing_eio_reason(self):
+        source = (ROOT / 'kernel/src/gpu/mod.rs').read_text()
+        begin = source.index('.map_err(|errno| {', source.index('display::Transition::for_window_observer(deadline)'))
+        end = source.index('})?', begin) + 2
+        mapping = source[begin:end]
+        self.run_rust(r'''
+const ETIMEDOUT:i64=110;const EINTR:i64=4;
+#[derive(PartialEq,Eq,Debug)]enum Observer{Window,Screen}
+#[derive(PartialEq,Eq,Debug)]enum Refused{Errno(i64),Eio(u32,u64)}
+mod readback_reason{pub const BINDING_UNKNOWN:u32=10;}
+fn result(observer:Observer,errno:i64)->Result<(),Refused>{Err::<(),i64>(errno)MAPPING}
+#[test]fn only_window_transition_timeout_is_binding_unknown(){
+ assert_eq!(result(Observer::Window,ETIMEDOUT),Err(Refused::Eio(10,0)));
+ assert_eq!(result(Observer::Window,EINTR),Err(Refused::Errno(EINTR)));
+ assert_eq!(result(Observer::Screen,ETIMEDOUT),Err(Refused::Errno(ETIMEDOUT)));
+}
+'''.replace('MAPPING', mapping))
 
     def test_head_state_selects_the_resource_and_refuses_unknown_or_mixed_banks(self):
         self.run_rust(r'''
