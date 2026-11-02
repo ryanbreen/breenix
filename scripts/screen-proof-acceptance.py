@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Score retained phase-one captures; never launch a boot or approve a picture.
+"""Score retained checkpoint or gallery captures without booting or approving.
 
 --commit identifies the measured kernel and tools, independently of scorerCommit.
 Native console and GPU are distinct companion boots. ARM GPU and BreenGL must
 also be at that measured commit. Missing companions make proven false.
+Gallery mode also requires pictured-case intent checkpoints and two verified
+candidates manifests from the separate ARM captures. Candidates are not approvals.
 """
 import argparse
 from contextlib import redirect_stdout
@@ -143,7 +145,57 @@ def check_runtime_display(serial, native):
     return native['runtime_display'](serial, (preferred['width'], preferred['height']))
 
 
-def accept(commit, captures):
+def checkpoint_inventory(suite, serial, ends, phase):
+    expected = list(ends)
+    if phase == 'gallery':
+        expected += [[m[1], 'intent'] for m in re.finditer(
+            rf'^SUITE {re.escape(suite)} CASE (\S+) (?:PASS|FAIL) [^\n]*\bsha256=[0-9a-f]{{64}}(?: |$)',
+            serial, re.M)]
+    return sorted(expected)
+
+
+def check_gallery_set(path, suite, boot_id, commit, serial):
+    importer = runpy.run_path(str(ROOT / 'scripts/screens/approve.py'))
+    candidate_id, rows = importer['candidates'](path)
+    screens = runpy.run_path(str(ROOT / 'scripts/screen-verdict.py'))
+    expected = {}
+    for line in serial.splitlines():
+        if not line.startswith(f'SUITE {suite} SCREEN '):
+            continue
+        match = screens['RECORD'].fullmatch(line)
+        if not match:
+            raise ValueError('malformed SCREEN record: ' + line)
+        if match['sha']:
+            key = (suite, match['case'], match['checkpoint'])
+            if key in expected:
+                raise ValueError('duplicate SCREEN checkpoint')
+            expected[key] = match
+    if not expected or rows.keys() != expected.keys():
+        raise ValueError('candidates inventory differs from capture SCREEN pictures')
+    for key, row in rows.items():
+        if row['boot_id'] != boot_id or row['commit'] != commit:
+            raise ValueError('candidates capture provenance differs')
+        record = expected[key]
+        if any(row[field] != record[source] for field, source in
+               [('mode', 'mode'), ('binding', 'binding'), ('sha256', 'sha')]):
+            raise ValueError('candidate differs from capture SCREEN record')
+    return dict(id=candidate_id, rows=len(rows), boot=boot_id, commit=commit)
+
+
+def capture_facts(path):
+    """Keep serial evidence in the report even when boot eligibility fails."""
+    serial = (path / 'serial.txt').read_text()
+    return dict(exitStatus=(path / 'exit-status').read_text().strip(),
+                serialSHA256=hashlib.sha256((path / 'serial.txt').read_bytes()).hexdigest(),
+                done=re.findall(r'^SUITE \S+ DONE .*$', serial, re.M),
+                memory=re.findall(r'^SUITE \S+ MEMORY reclaimed=.*$', serial, re.M),
+                failedCases=re.findall(r'^SUITE \S+ CASE \S+ FAIL .*$', serial, re.M))
+
+
+def accept(commit, captures, phase='checkpoints', candidates=None):
+    if phase not in ('checkpoints', 'gallery'):
+        raise ValueError('unknown acceptance phase')
+    candidates = candidates or {}
     native = runpy.run_path(str(ROOT / 'scripts/metal/gt710-suite'))
     suites = runpy.run_path(str(ROOT / 'scripts/suite-verdict.py'))
     screens = runpy.run_path(str(ROOT / 'scripts/screen-verdict.py'))
@@ -151,7 +203,11 @@ def accept(commit, captures):
     inventories = json.loads((ROOT / 'docs/suites/frames/checkpoints.json').read_text())
     report = dict(measuredCommit=commit, scorerCommit=subprocess.check_output(
         ['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
-        proven=False, captures={}, failures=missing_captures(captures))
+        phase=phase, proven=False, captures={}, failures=missing_captures(captures))
+    if phase == 'gallery':
+        report['candidateSets'] = {}
+        report['failures'] += [f'missing {suite} candidates' for suite in ('gpu', 'breengel')
+                               if not candidates.get(suite)]
     native_rows, seen_boots, pictures_by_capture = {}, set(), {}
     for name in REQUIRED:
         path = captures.get(name)
@@ -161,11 +217,14 @@ def accept(commit, captures):
         platform = 'qemu' if name.startswith('arm-') else 'metal'
         row = report['captures'][name] = dict(path=str(path))
         try:
+            row.update(capture_facts(path))
             boot = capture_identity(path, commit, suite, platform)
             if boot['id'] in seen_boots:
                 raise ValueError('companion captures must have distinct boot IDs')
             seen_boots.add(boot['id'])
             row.update(id=boot['id'], commit=commit, toolsCommit=boot.get('toolsCommit'))
+            if phase == 'gallery' and platform == 'qemu' and boot.get('screenProof') is not True:
+                raise ValueError('gallery requires a screen-proof capture')
             if platform == 'metal':
                 events = [json.loads(l) for l in (path / 'events.jsonl').read_text().splitlines()]
                 if (not any(e.get('event') == 'power-off' and e.get('off') is True for e in events)
@@ -202,7 +261,7 @@ def accept(commit, captures):
                     screens['score'](manifest, serial, table)
                 actual = [list(m.groups()) for m in re.finditer(
                     rf'^SUITE {suite} SCREEN (\S+) (\S+) ', serial, re.M)]
-                expected = inventories[suite]
+                expected = checkpoint_inventory(suite, serial, inventories[suite], phase)
                 if sorted(actual) != expected:
                     raise ValueError('SCREEN inventory differs: missing=' + str(
                         [v for v in expected if v not in actual]) + ' extra=' + str(
@@ -214,6 +273,9 @@ def accept(commit, captures):
                 row['screenDeclarations'] = [l for l in serial.splitlines()
                                              if l.startswith(f'SUITE {suite} SCREEN ') and ' unobservable ' in l]
                 row['unobservableRecords'] = len(declarations)
+                if phase == 'gallery' and platform == 'qemu' and candidates.get(suite):
+                    report['candidateSets'][suite] = check_gallery_set(
+                        candidates[suite], suite, boot['id'], commit, serial)
             if platform == 'metal':
                 checked = []
                 for category in native['capture_categories'](boot):
@@ -258,11 +320,15 @@ def main():
     parser.add_argument('--commit', required=True, help='measured runtime commit, not scorer commit')
     for name in REQUIRED:
         parser.add_argument('--' + name, type=Path)
+    parser.add_argument('--phase', choices=('checkpoints', 'gallery'), default='checkpoints')
+    for suite in ('gpu', 'breengel'):
+        parser.add_argument('--' + suite + '-candidates', type=Path)
     parser.add_argument('--output', required=True, type=Path)
     args = parser.parse_args()
     if not re.fullmatch('[0-9a-f]{40}', args.commit):
         parser.error('--commit requires a full commit SHA')
-    report = accept(args.commit, {n: getattr(args, n.replace('-', '_')) for n in REQUIRED})
+    report = accept(args.commit, {n: getattr(args, n.replace('-', '_')) for n in REQUIRED},
+                    args.phase, {s: getattr(args, s + '_candidates') for s in ('gpu', 'breengel')})
     args.output.write_text(json.dumps(report, indent=2) + '\n')
     print('SCREEN ACCEPTANCE ' + ('PASS' if report['proven'] else 'FAIL'))
     print(f"GT710 distinct={report['distinctGT710Checks']} observations={report['gt710CheckObservations']}")

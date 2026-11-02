@@ -42,6 +42,24 @@ Controlled ARM64 QEMU off/on captures at `a89655ad` measured GPU 226800/231850 m
 
 This phase-one gate reports unapproved checkpoints. Picture approval, the gallery, intent frames and native output CRC acceptance remain subsequent work under the contract below.
 
+## Gallery capture acceptance
+
+Pass `--phase gallery` to the retained-capture gate for phase two, together with
+`--gpu-candidates <manifest.json>` and `--breengel-candidates <manifest.json>`.
+This mode retains the phase-one boot, commit, console time, suite, memory and
+native startup checks. Its checkpoint inventory adds an `intent` for each CASE
+carrying a judged-picture digest. The two candidates manifests must contain the
+corresponding ARM boot's SCREEN pictures, with matching mode, binding, digest,
+boot and runtime commit; the approval importer's existing validator checks the
+manifest identity and PNG pixels. Separate ARM boot IDs are still required.
+The report identifies its phase and retains exit status, failed CASE lines,
+DONE lines and memory records even when boot eligibility fails.
+
+This checks capture evidence for review; it does not approve candidates,
+supersede operator decisions or establish the later approved-table/native-CRC
+milestone. A failed boot or missing companion leaves `proven:false`, covered by
+the failed-boot regression in `tests/screen_acceptance_test.py`.
+
 ## Shared table and approval
 
 `docs/suites/frames/screens.json` is a version 1 table shared by targets. Its unique key is `(suite, case, checkpoint)`; mode and SHA-256 are expected values. A different mode fails and does not create another entry. An entry records the intent, operator approval file, candidates digest, capture run and commit. Native rows record output, raster, output-configuration digest, CRC values, deriving run and commit. Approval files under `docs/suites/frames/approvals/` are append-only.
