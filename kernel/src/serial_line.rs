@@ -143,9 +143,11 @@ fn emit<const TEE: bool, const TERMINAL: bool>(writer: Writer, bytes: &[u8], lev
     // Terminal output queued before this record goes first, from thread context:
     // raw kernel records (the timer's lockup capture among them) and interrupt
     // handlers skip it, as they skip the notices.
-    if (TEE || TERMINAL) && in_thread_context() {
-        write_queued();
-    }
+    // Terminal producers also arrive with IRQs masked by line assembly.
+    // Keep their fallback behind older queued records under the same UART
+    // ownership; raw diagnostic paths still bypass the scheduler and queue.
+    let terminal_thread = TERMINAL && crate::per_cpu::is_initialized()
+        && !crate::per_cpu::in_interrupt();
     // Raw diagnostics (including the timer's lockup capture) must stay on
     // their fixed-width writer path. Notice draining tees into the log rings
     // and can reach bounds-panic formatting, even though its runtime context
@@ -154,7 +156,12 @@ fn emit<const TEE: bool, const TERMINAL: bool>(writer: Writer, bytes: &[u8], lev
     if TEE {
         write_notices_from_thread();
     }
-    uart_owner::write::<Uart, TEE>(writer, bytes, Kind::Plain, &mut Ownership::acquire());
+    let mut ownership = Ownership::acquire();
+    if terminal_thread || (TEE && in_thread_context()) {
+        write_queued(&mut ownership);
+    }
+    uart_owner::write::<Uart, TEE>(writer, bytes, Kind::Plain, &mut ownership);
+    drop(ownership);
     // The kernel log, as the log rings keep it, also goes to the screen console.
     if TEE && writer == Writer::Kernel {
         crate::console::log_bytes_at(level, bytes);
@@ -346,13 +353,13 @@ fn send_queued_owned(ownership: &mut Ownership) -> usize {
 /// Write out the terminal records queued so far, one at a time, unless the
 /// terminal's output is stopped. Records queued meanwhile are the transmit
 /// thread's.
-fn write_queued() {
+fn write_queued(ownership: &mut Ownership) {
     if TX_STOPPED.load(Ordering::Acquire) {
         return;
     }
     let mut left = with_ring(|ring| ring.len);
     while left != 0 {
-        let n = send_queued();
+        let n = send_queued_owned(ownership);
         if n == 0 {
             break;
         }
