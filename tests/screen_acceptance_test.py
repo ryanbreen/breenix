@@ -37,6 +37,15 @@ class ScreenAcceptance(unittest.TestCase):
         failures = self.api['missing_captures']({'console': Path('c'), 'gpu': Path('g')})
         self.assertEqual(failures, ['missing arm-gpu capture', 'missing arm-breengel capture'])
 
+    def test_cross_target_requires_a_compared_picture(self):
+        digest = 'a' * 64
+        native = {('draw/one', 'end'): digest}
+        arm = {('draw/two', 'end'): digest}
+        for left, right in (({}, {}), ({}, arm), (native, {}), (native, arm)):
+            with self.subTest(native=left, arm=right):
+                with self.assertRaisesRegex(ValueError, 'no cross-target pictures compared'):
+                    self.api['compare_pictures'](left, right)
+
     def test_stale_arm_and_mismatched_native_tools_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)

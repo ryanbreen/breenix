@@ -83,6 +83,8 @@ def screen_inventory(suite, serial):
 
 def compare_pictures(native, arm):
     common = native.keys() & arm.keys()
+    if not common:
+        raise ValueError('no cross-target pictures compared')
     for key in sorted(common):
         if native[key] != arm[key]:
             raise ValueError(f'cross-target digest differs: {key[0]} {key[1]}')
