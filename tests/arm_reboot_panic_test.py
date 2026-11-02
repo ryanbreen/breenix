@@ -25,6 +25,7 @@ class ArmRebootPanic(unittest.TestCase):
         self.assertRegex(psci, r'inout\("x0"\)\s*function_id\s*=>\s*_')
         self.assertNotRegex(psci, r"lock\(|alloc::|format!|serial|log::")
         reboot = code(ROOT / "kernel/src/syscall/reboot.rs")
+        reboot = reboot[reboot.index("pub fn sys_reboot("):reboot.index("\nfn power_token(")]
         arm = reboot[reboot.rindex('#[cfg(target_arch = "aarch64")]'):]
         arm = arm[:arm.index("\n}")]
         drain = arm.index("crate::serial::drain_output();")
