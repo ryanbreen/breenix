@@ -23,7 +23,7 @@ def seal(root, run, source_commit):
     dirty = bool(git(root, 'status', '--porcelain'))
     if source_commit and (source_commit != commit or dirty):
         raise ValueError('sources changed during build')
-    artifacts = {name: digest(run / name) for name in ('system.img', 'home.img')}
+    artifacts = {name: digest(run / name) for name in ('system.img', 'home.img', 'power-token')}
     if source_commit:
         artifacts['kernel'] = digest(run / 'kernel')
     build = dict(commit=commit if source_commit else None, dirty=dirty, sourceBuilt=bool(source_commit), artifacts=artifacts)
@@ -35,11 +35,13 @@ def verify(root, run, kernel):
     build = json.loads((run / 'build.json').read_text())
     # QEMU uses this private copy, rather than a mutable shared target output.
     shutil.copyfile(kernel, run / 'boot-kernel')
+    if digest(run / 'power-token') != build['artifacts']['power-token']:
+        raise ValueError('VM power token differs from the sealed token')
     eligible = False
     if build.get('sourceBuilt') is True:
         expected = build['artifacts']
         actual = {name: digest(run / ('boot-kernel' if name == 'kernel' else name))
-                  for name in ('kernel', 'system.img', 'home.img')}
+                  for name in ('kernel', 'system.img', 'home.img', 'power-token')}
         if actual != expected:
             raise ValueError('VM artifacts differ from the source build')
         if build['commit'] != git(root, 'rev-parse', 'HEAD') or git(root, 'status', '--porcelain'):

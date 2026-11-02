@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Capture a persistent QEMU run's serial stream and expose its console."""
 import datetime
+import hashlib
+import hmac
+import re
 import json
 import selectors
 import signal
@@ -43,6 +46,24 @@ def main(run, whole_path):
     last_stamp = 0
     offset = 0
     line_open = False
+    token_path = run / 'power-token'
+    token = token_path.read_text().strip() if token_path.exists() else ''
+    if token and not re.fullmatch(r'[a-f0-9]{64}', token):
+        raise ValueError('invalid VM power token')
+    receipt_line = ''
+    expected_receipt = None
+    shutdown_action = None
+
+    def on_line(line):
+        nonlocal expected_receipt, shutdown_action
+        challenge = re.fullmatch(r'\[init\] shutdown nonce=([a-f0-9]{64})', line)
+        if challenge and token:
+            expected_receipt = hashlib.sha256((token + challenge[1]).encode()).hexdigest()
+        request = re.fullmatch(r'\[shutdown\] requested (reboot|poweroff) token=([a-f0-9]{64})', line)
+        if request and expected_receipt and hmac.compare_digest(request[2], expected_receipt):
+            shutdown_action = request[1]
+            events.write(json.dumps(dict(event='requested-shutdown', action=shutdown_action, t=time.time())) + '\n')
+            expected_receipt = None
 
     def end_boot():
         if directory is not None:
@@ -52,9 +73,10 @@ def main(run, whole_path):
             events.close()
             (directory / 'ended').write_text(datetime.datetime.now(datetime.timezone.utc).isoformat() + '\n')
 
-    def start_boot():
+    def start_boot(reserved_stamp=None):
         nonlocal directory, serial, raw, cleaner, timestamps, events, last_stamp, offset, line_open
-        stamp = max(int(time.time()), last_stamp + 1)
+        nonlocal receipt_line, expected_receipt, shutdown_action
+        stamp = reserved_stamp if reserved_stamp is not None else max(int(time.time()), last_stamp + 1)
         while True:
             boot = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ-qemu')
             directory = run / 'boots' / boot
@@ -78,6 +100,9 @@ def main(run, whole_path):
         (run / 'current').write_text(boot + '\n')
         offset = 0
         line_open = False
+        receipt_line = ''
+        expected_receipt = None
+        shutdown_action = None
 
     start_boot()
     def terminate(_signum, _frame):
@@ -143,9 +168,21 @@ def main(run, whole_path):
                                 sock.sendall(b'{"execute":"qmp_capabilities"}\n')
                             elif 'event' in message:
                                 events.write(json.dumps(message) + '\n')
+                                reason = message.get('data', {}).get('reason')
+                                if message['event'] == 'SHUTDOWN' and reason == 'guest-shutdown':
+                                    (directory / 'exit-status').write_text('0\n')
                                 if message['event'] == 'RESET':
+                                    previous_events = events
+                                    requested = shutdown_action == 'reboot' and reason == 'guest-reset'
+                                    if requested:
+                                        # Reserve the successor identity before closing the ending boot.
+                                        stamp = max(int(time.time()), last_stamp + 1)
+                                        while (run / 'boots' / datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ-qemu')).exists():
+                                            stamp += 1
+                                        successor = datetime.datetime.fromtimestamp(stamp, datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ-qemu')
+                                        previous_events.write(json.dumps(dict(event='requested-reset-observed', successor=successor, t=time.time())) + '\n')
                                     end_boot()
-                                    start_boot()
+                                    start_boot(stamp if requested else None)
                         continue
                     # kqueue can return separate read and write notifications
                     # for one client. Its EOF event may already have closed it.
@@ -169,6 +206,10 @@ def main(run, whole_path):
                             raw.write(data)
                             cleaned = cleaner.feed(data)
                             arrived = time.time()
+                            receipt_line += cleaned
+                            while '\n' in receipt_line:
+                                complete, receipt_line = receipt_line.split('\n', 1)
+                                on_line(complete)
                             for line in cleaned.splitlines(keepends=True):
                                 if not line_open:
                                     timestamps.write(f'{arrived:.3f}\t{offset}\n')

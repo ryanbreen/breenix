@@ -64,8 +64,18 @@ if [ "$op" = build ]; then
     PATH="$PATH:/opt/homebrew/opt/e2fsprogs/sbin:/usr/local/opt/e2fsprogs/sbin"
     export PATH
     command -v debugfs >/dev/null && command -v mke2fs >/dev/null || { echo 'e2fsprogs is required' >&2; exit 1; }
+    python3 "$ROOT/scripts/vm_site.py" power-token --out "$run/power-token"
     # debugfs returns success even when a command fails; read back each change.
     debugfs -w -R 'rm /etc/breenix/boot-target' "$run/system.img" >/dev/null 2>&1 || true
+    debugfs -w -R 'rm /etc/breenix/power-token' "$run/system.img" >/dev/null 2>&1 || true
+    debugfs -w -R "write $run/power-token /etc/breenix/power-token" "$run/system.img" >/dev/null 2>&1
+    debugfs -w -R 'set_inode_field /etc/breenix/power-token mode 0100400' "$run/system.img" >/dev/null 2>&1
+    debugfs -w -R 'set_inode_field /etc/breenix/power-token uid 0' "$run/system.img" >/dev/null 2>&1
+    debugfs -w -R 'set_inode_field /etc/breenix/power-token gid 0' "$run/system.img" >/dev/null 2>&1
+    debugfs -R 'cat /etc/breenix/power-token' "$run/system.img" 2>/dev/null > "$run/readback"
+    cmp -s "$run/power-token" "$run/readback" || { echo 'power token staging failed' >&2; exit 1; }
+    token_stat=$(debugfs -R 'stat /etc/breenix/power-token' "$run/system.img" 2>/dev/null)
+    [[ $token_stat =~ Mode:[[:space:]]+0400 ]] && [[ $token_stat =~ User:[[:space:]]+0[[:space:]]+Group:[[:space:]]+0 ]] || { echo 'power token metadata staging failed' >&2; exit 1; }
     debugfs -w -R 'rm /etc/breenix/operator-account' "$run/system.img" >/dev/null 2>&1 || true
     debugfs -w -R "write $run/operator-account /etc/breenix/operator-account" "$run/system.img" >/dev/null 2>&1
     debugfs -w -R 'set_inode_field /etc/breenix/operator-account mode 0100600' "$run/system.img" >/dev/null 2>&1
