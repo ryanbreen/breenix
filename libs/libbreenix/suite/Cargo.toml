@@ -17,3 +17,6 @@ path = "../src/suite_lib.rs"
 libbreenix = { path = "..", features = ["std", "suite"] }
 libgfx-ref = { path = "../../libgfx-ref" }
 libpixcheck = { path = "../../libpixcheck" }
+
+[dev-dependencies]
+gpu-abi = { path = "../../gpu-abi", features = ["alloc"] }

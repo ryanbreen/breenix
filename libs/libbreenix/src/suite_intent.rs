@@ -66,6 +66,27 @@ pub(super) fn pace_ms() -> u64 {
         .find_map(|s| s.trim().parse::<u32>().ok()).map_or(1000, u64::from)
 }
 
+pub(super) fn streams(source: [u32; 2], mode: [u32; 2], target: u64, texture: u64)
+    -> Result<Vec<Vec<u32>>, &'static str>
+{
+    let layout = layout(source, mode)?;
+    let mut stream = Vec::new();
+    encode::begin(&mut stream, target);
+    encode::clear(&mut stream, 0xFF0C_131F);
+    if let Some([x, y, w, h]) = layout.border {
+        encode::draw(&mut stream, abi::pipeline::SOLID, 0xFFFF_FFFF,
+            &[[x as i32, y as i32, (x + w) as i32, (y + h) as i32]]);
+    }
+    for (dst, src) in samples(source, layout) {
+        let mut params = [0; 16];
+        for (slot, value) in params.iter_mut().zip(dst.iter().chain(&src)) { *slot = *value; }
+        let [x, y, w, h] = dst;
+        abi::draw::encode(&mut stream, abi::pipeline::NEAREST_SCALED, 0, texture, 0, 0,
+            &[abi::draw::Instance { rect: [x as i32, y as i32, (x + w) as i32, (y + h) as i32], params }]);
+    }
+    Ok(vec![stream])
+}
+
 struct Frame { context: u64, texture: u64, target: u64, display: bool }
 impl Drop for Frame {
     fn drop(&mut self) {
@@ -79,7 +100,6 @@ impl Drop for Frame {
 impl Frame {
     fn present(&mut self, picture: &super::JudgedFrame, mode: abi::Mode) -> Result<(), &'static str> {
         let source = [picture.width as u32, picture.height as u32];
-        let layout = layout(source, [mode.width, mode.height])?;
         self.context = gpu::context_create().map_err(|_| "intent-context")?;
         let start = super::monotonic_ns().ok_or("intent-clock")?;
         loop {
@@ -101,23 +121,11 @@ impl Frame {
         let (r, _) = gpu::upload(self.context, self.texture, [0, 0, source[0], source[1]],
             &picture.pixels, source[0] * 4, abi::upload_source::B8G8R8A8, abi::purpose::IMAGE);
         if r != 0 { return Err("intent-upload"); }
-        let mut stream = Vec::new();
-        encode::begin(&mut stream, self.target);
-        encode::clear(&mut stream, 0xFF0C_131F);
-        if let Some([x, y, w, h]) = layout.border {
-            encode::draw(&mut stream, abi::pipeline::SOLID, 0xFFFF_FFFF,
-                &[[x as i32, y as i32, (x + w) as i32, (y + h) as i32]]);
+        for stream in streams(source, [mode.width, mode.height], self.target, self.texture)? {
+            let (r, submitted) = gpu::submit(self.context, &stream);
+            if r != 0 { return Err("intent-submit"); }
+            if gpu::wait(self.context, submitted.fence, 10_000_000_000).0 != 0 { return Err("intent-wait"); }
         }
-        for (dst, src) in samples(source, layout) {
-            let mut params = [0; 16];
-            for (slot, value) in params.iter_mut().zip(dst.iter().chain(&src)) { *slot = *value; }
-            let [x, y, w, h] = dst;
-            abi::draw::encode(&mut stream, abi::pipeline::NEAREST_SCALED, 0, self.texture, 0, 0,
-                &[abi::draw::Instance { rect: [x as i32, y as i32, (x + w) as i32, (y + h) as i32], params }]);
-        }
-        let (r, submitted) = gpu::submit(self.context, &stream);
-        if r != 0 { return Err("intent-submit"); }
-        if gpu::wait(self.context, submitted.fence, 10_000_000_000).0 != 0 { return Err("intent-wait"); }
         graphics::take_over_display().map_err(|_| "intent-display")?;
         self.display = true;
         let (r, presented) = gpu::present(self.context, self.target);

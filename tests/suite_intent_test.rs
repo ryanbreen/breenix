@@ -1,4 +1,38 @@
 use super::intent::{layout, samples};
+use crate::gpu::abi::{self, stream::{self, Resolver, SourceInfo, TargetInfo}};
+
+struct IntentResources { picture: [u32; 2], mode: [u32; 2] }
+impl Resolver for IntentResources {
+    fn target(&self, handle: u64) -> Option<TargetInfo> {
+        (handle == 1).then_some(TargetInfo { width: self.mode[0], height: self.mode[1],
+            invalid: false, format: abi::format::B8G8R8A8 })
+    }
+    fn source(&self, handle: u64) -> Option<SourceInfo> {
+        (handle == 2).then_some(SourceInfo { width: self.picture[0], height: self.picture[1],
+            invalid: false, format: abi::format::B8G8R8A8 })
+    }
+    fn buffer_size(&self, _: u64) -> Option<u64> { None }
+    fn buffer_rect(&self, _: u64, _: u64) -> [i32; 4] { unreachable!() }
+}
+
+#[test]
+fn intent_commands_fit_the_existing_gpu_work_budget() {
+    for mode in [[1280, 800], [2560, 1600]] {
+        for picture in [[1, 1], [17, 9], [1216, 736], [1217, 737], [1280, 800], [2560, 1600]] {
+            let resources = IntentResources { picture, mode };
+            let mut area = 0;
+            for words in super::intent::streams(picture, mode, 1, 2).unwrap() {
+                let plan = stream::validate(&words[..], &resources)
+                    .unwrap_or_else(|e| panic!("picture {picture:?} mode {mode:?}: {e:?}"));
+                area += plan.area;
+            }
+            let l = layout(picture, mode).unwrap();
+            let border = l.border.map_or(0, |r| r[2] as u64 * r[3] as u64);
+            assert_eq!(area, mode[0] as u64 * mode[1] as u64 + border
+                + l.picture[2] as u64 * l.picture[3] as u64);
+        }
+    }
+}
 
 #[test]
 fn intent_layout_covers_scale_full_screen_and_integer_decimation() {
