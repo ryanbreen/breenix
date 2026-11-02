@@ -9,6 +9,11 @@ scripts/vm-persistent.sh qemu build --run-dir PRIVATE_RUN --operator-account PRI
 scripts/vm-persistent.sh qemu boot --run-dir PRIVATE_RUN --mode console
 ```
 
+For the reboot suite, add `--fault panic-reboot` to the build command. It seals
+a separate fault kernel for `fault-boot` and restores the production kernel at
+the shared build path before building the image. Fault launch verifies the
+sealed fault kernel digest as well as the source commit.
+
 The source build runs the production ARM kernel and userspace builders, packs a
 new system image, stages the private account, and seals SHA-256 digests of the
 kernel and both disks. Boot verifies those digests against the clean tools
