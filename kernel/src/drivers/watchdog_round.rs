@@ -24,9 +24,16 @@ pub fn wait(ms: u64) -> Result<(), &'static str> {
     let until = seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
         .saturating_add(ms.saturating_mul(1_000_000));
     scheduler::with_current(|scheduler| scheduler.block_current_for_timer(until));
+    #[cfg(target_arch = "x86_64")]
     scheduler::yield_current();
     loop {
+        #[cfg(target_arch = "x86_64")]
         crate::arch_halt_with_interrupts();
+        #[cfg(target_arch = "aarch64")]
+        {
+            let _ = scheduler::check_and_clear_need_resched();
+            scheduler::schedule();
+        }
         match scheduler::thread_state(tid) {
             Some(ThreadState::BlockedOnTimer) => {},
             Some(_) => return Ok(()),
@@ -36,6 +43,19 @@ pub fn wait(ms: u64) -> Result<(), &'static str> {
 }
 #[cfg(not(test))]
 pub fn health() -> Result<(), &'static str> {
+    // ARM filesystem waits release and restore one preemption level around
+    // their inline context switch, as they do for syscall-initiated I/O.
+    #[cfg(target_arch = "aarch64")]
+    struct IoContext;
+    #[cfg(target_arch = "aarch64")]
+    impl Drop for IoContext {
+        fn drop(&mut self) { crate::per_cpu_aarch64::preempt_enable(); }
+    }
+    #[cfg(target_arch = "aarch64")]
+    let _io_context = {
+        crate::per_cpu_aarch64::preempt_disable();
+        IoContext
+    };
     let guard = crate::fs::ext2::root_fs_read()?;
     let fs = guard.as_ref().ok_or("root absent")?;
     let (superblock, groups) = fs.persisted_metadata()?;

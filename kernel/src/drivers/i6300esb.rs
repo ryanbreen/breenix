@@ -219,7 +219,7 @@ mod feeder {
     use crate::drivers::watchdog_round::{feed, health, wait};
 
     fn run<B: Bus>(mut device: Watchdog<B>) -> Result<(), &'static str> {
-        crate::serial_println!("[watchdog] previous-expired={}", u8::from(device.previous_expired()));
+        crate::serial_println!("\n[watchdog] previous-expired={}", u8::from(device.previous_expired()));
         let mut announced = false;
         let mut rounds = 0u64;
         loop {
