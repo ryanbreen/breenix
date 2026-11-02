@@ -10,7 +10,7 @@
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 umask 077
-usage() { echo 'usage: vm-persistent.sh qemu build|boot|reboot|stop --run-dir DIR [--system-image IMAGE --operator-account FILE | --mode console|desktop [--kernel FILE]]' >&2; exit 2; }
+usage() { echo 'usage: vm-persistent.sh qemu build|boot|reboot|stop --run-dir DIR [--operator-account FILE [--system-image IMAGE] | --mode console|desktop [--kernel FILE]]' >&2; exit 2; }
 [ "$#" -ge 2 ] && [ "$1" = qemu ] || usage
 op=$2; shift 2
 case "$op" in build|boot|reboot|stop) ;; *) usage ;; esac
