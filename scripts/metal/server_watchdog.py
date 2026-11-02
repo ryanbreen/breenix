@@ -53,6 +53,12 @@ def score_case(value, baseline, sha, fatal_patterns):
     if (not all(isinstance(t, (int, float)) and math.isfinite(t) for t in (start, observed, ssh_at)) or
             not start <= observed <= ssh_at <= start + 600 or receipt.get('trigger') != start):
         raise ValueError('watchdog SSH proof is outside its trigger deadline')
+    # Fault injection follows the preceding 20-second feed interval, leaving
+    # at least 100 seconds on the programmed 120-second timer.
+    expired_at = expired.get('t')
+    if (not isinstance(expired_at, (int, float)) or not math.isfinite(expired_at) or
+            not start + 100 <= expired_at <= observed):
+        raise ValueError('watchdog expiry is outside its 120-second timer window')
     serial, returned = value.get('beforeSerial', ''), value.get('afterSerial', '')
     lines = serial.splitlines()
     triggers = [i for i, line in enumerate(lines) if line.startswith('[watchdog-fault] trigger')]

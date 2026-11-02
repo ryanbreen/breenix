@@ -104,7 +104,7 @@ class ServerTarget(unittest.TestCase):
                     (run / 'current').write_text(state['current'])
                     fault, after = self.select(name), self.select(state['current'])
                     (fault.directory / 'ended').touch()
-                    events = [dict(event='watchdog-trigger', t=100), dict(event='WATCHDOG', data=dict(action='reset')),
+                    events = [dict(event='watchdog-trigger', t=100), dict(event='WATCHDOG', t=200, data=dict(action='reset')),
                               dict(event='RESET', data=dict(guest=True, reason='guest-reset')),
                               dict(event='watchdog-reset-observed', successor=after.boot, t=220)]
                     (fault.directory / 'events.jsonl').write_text('\n'.join(map(json.dumps, events)))
@@ -181,7 +181,7 @@ class ServerTarget(unittest.TestCase):
                 afterSerial='[watchdog] previous-expired=1\n[init] log boot-id=4-5-6\n'
                             'bsshd: listening on 0.0.0.0:22\n',
                 events=[dict(event='watchdog-trigger', t=100),
-                        dict(event='WATCHDOG', data=dict(action='reset')),
+                        dict(event='WATCHDOG', t=200, data=dict(action='reset')),
                         dict(event='RESET', data=dict(guest=True, reason='guest-reset')),
                         dict(event='watchdog-reset-observed', successor=after['id'], t=220)], afterEvents=[],
                 receipt=dict(boot=after['id'], case=name, commit=sha, trigger=100, sshAt=250,
@@ -196,6 +196,10 @@ class ServerTarget(unittest.TestCase):
             lambda v: v['events'].append(dict(event='watchdog-trigger', t=101)),
             lambda v: v['events'].pop(1),
             lambda v: v['events'][1]['data'].update(action='none'),
+            lambda v: v['events'][1].update(t=199.999),
+            lambda v: v['events'][1].update(t=221),
+            lambda v: v['events'][1].update(t=float('nan')),
+            lambda v: v['events'][1].pop('t'),
             lambda v: v['events'].reverse(),
             lambda v: v['events'][2]['data'].update(reason='host-qmp-system-reset', guest=False),
             lambda v: v['events'].insert(1, dict(event='STOP')),
