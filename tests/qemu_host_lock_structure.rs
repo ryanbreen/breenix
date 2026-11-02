@@ -204,14 +204,24 @@ fn calls_qemu_host_lock_acquire(script: &str) -> bool {
 }
 
 fn arm_host_lock_held(script: &str) -> bool {
-    sources_qemu_host_lock(script) && calls_qemu_host_lock_acquire(script)
+    if sources_qemu_host_lock(script) && calls_qemu_host_lock_acquire(script) {
+        return true;
+    }
+    // A2 (820b1349, PR #2636) enrolls the persistent VM directly in the
+    // same mac-boot slot qemu_host_lock_acquire takes on Darwin. Require
+    // the helper, supervisor enrollment and acquisition, not just a mention.
+    let lines: Vec<_> = script.lines().map(str::trim)
+        .filter(|line| !line.starts_with('#')).collect();
+    lines.iter().any(|line| line.starts_with("source ") && line.contains("/scripts/host-slots.sh"))
+        && lines.iter().any(|line| line.starts_with("host_slots_start "))
+        && lines.contains(&"host_slot_acquire mac-boot")
 }
 
 #[test]
 fn persistent_launcher_uses_the_shared_mac_boot_slot() {
     let launcher = repo_text("scripts/vm-persistent.sh");
     assert!(arm_host_lock_held(&launcher));
-    for missing in ["source \"$ROOT/scripts/host-slots.sh\"", "host_slots_start \"$0\"", "host_slot_acquire mac-boot"] {
+    for missing in ["source \"$ROOT/scripts/host-slots.sh\"", "host_slots_start ", "host_slot_acquire mac-boot"] {
         assert!(launcher.contains(missing));
         assert!(!arm_host_lock_held(&launcher.replace(missing, "# removed")), "must reject missing {missing}");
     }
