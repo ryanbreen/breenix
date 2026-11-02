@@ -183,6 +183,7 @@ stop_child() {
         wait "$child" 2>/dev/null || true
         child=
     fi
+    "$ROOT/scripts/vigil-record.sh" finish "$vigil" 143
     exit 143
 }
 trap stop_child TERM HUP INT
