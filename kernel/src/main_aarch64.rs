@@ -2595,6 +2595,7 @@ fn panic(info: &PanicInfo) -> ! {
     kernel::arch_impl::aarch64::irq_mask_account::opened();
     // Output from here on names no thread (docs/gui/breengel.md section 22).
     kernel::output_accounting::panicking();
+    kernel::serial_writer::drain_terminal_emergency();
 
     serial_println!();
     serial_println!("========================================");
