@@ -174,6 +174,16 @@ class ApproveTest(unittest.TestCase):
         (directory / 'screen-crc.json').write_text(json.dumps(evidence))
         return directory, evidence
 
+    def test_native_refuses_unwritten_zero_crc_entries(self):
+        self.run_import()
+        directory, evidence = self.native_fixture()
+        for sample in evidence['checkpoints'][0]['samples']:
+            sample['crc'] = '00000000'
+        (directory / 'screen-crc.json').write_text(json.dumps(evidence))
+        serial = directory / 'serial.txt'
+        serial.write_text(serial.read_text().replace('crc=12345678', 'crc=00000000'))
+        self.run_import(native=directory, good=False)
+
     def test_native_requires_matched_parent_and_stable_capture(self):
         self.run_import()
         directory, evidence = self.native_fixture()
