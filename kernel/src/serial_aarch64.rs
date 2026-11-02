@@ -304,16 +304,18 @@ pub(crate) fn resume_rx_interrupt() {
     }
 }
 
-/// Acknowledge the receive interrupt once the FIFO has reported empty.
+/// Acknowledge the receive timeout once the FIFO has reported empty.
 ///
-/// It does not read the receive register: a byte that arrived after the
-/// empty report would be consumed and lost (#1803).
+/// Reading the data register clears RX (PL011 TRM, section 2.8.2). A byte
+/// arriving after the empty report owns a new RX event: clearing RXIC here
+/// would strand that unread byte. Only the timeout needs acknowledgement.
+/// Do not read the receive register here either (#1803).
 pub fn clear_rx_interrupt() {
     // The 16550's received-data and character-timeout interrupts are cleared
     // by the reads that drained the FIFO, so an empty 16550 FIFO needs no
     // acknowledgement.
     if !is_16550() {
-        write_reg(reg::ICR, int::RX | int::RT);
+        write_reg(reg::ICR, int::RT);
     }
 }
 
@@ -347,13 +349,8 @@ impl log::Log for KernelLogger {
     fn log(&self, record: &log::Record) {
         if self.enabled(record.metadata()) {
             use core::fmt::Write;
-            if record.level() <= log::Level::Warn {
-                let _ = writeln!(crate::serial_line::TeeLine::with_level(record.level()),
-                    "[{:>5}] {}: {}", record.level(), record.target(), record.args());
-            } else {
-                let _ = writeln!(crate::serial_line::TeeLine::with_level(record.level()),
-                    "{:>5}: {}", record.level(), record.args());
-            }
+            let _ = writeln!(crate::serial_line::TeeLine::with_level(record.level()),
+                "[{:>5}] {}: {}", record.level(), record.target(), record.args());
         }
     }
 
