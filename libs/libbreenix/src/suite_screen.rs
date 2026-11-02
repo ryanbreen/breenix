@@ -159,7 +159,6 @@ static CASE_PID: AtomicU64 = AtomicU64::new(0);
 static ENABLED: AtomicBool = AtomicBool::new(false);
 static RUNNER: AtomicU64 = AtomicU64::new(0);
 static RUNNER_RESOURCE: AtomicU64 = AtomicU64::new(0);
-static RUNNER_PROCESS: AtomicU64 = AtomicU64::new(0);
 static LINES: Mutex<String> = Mutex::new(String::new());
 
 pub(super) fn configured(suite: &str, option: &str) -> bool {
@@ -185,7 +184,6 @@ pub(super) fn begin(suite: &str) -> ClockMap {
     let status = gpu::readback(0, [0, 0, 1, 1], &mut pixel, 4, &mut rec);
     RUNNER.store(if status == 0 { quad(&rec, r::CONTEXT) } else { 0 }, Ordering::Relaxed);
     RUNNER_RESOURCE.store(if status == 0 { quad(&rec, r::RESOURCE) } else { 0 }, Ordering::Relaxed);
-    RUNNER_PROCESS.store(crate::process::getpid().map_or(0, |pid| pid.raw()) as u64, Ordering::Relaxed);
     LINES.lock().unwrap().clear();
     END.lock().unwrap().result = None;
     *REUSE.lock().unwrap() = None;
@@ -279,7 +277,7 @@ fn reuse_snapshot() -> Option<Snapshot> {
 }
 
 pub(super) fn non_case_binding(known: bool, resource: u64, console: u64, runner: u64) -> bool {
-    known && resource != 0 && (resource == console || resource == runner)
+    known && (resource == 0 || resource == console || resource == runner)
 }
 
 fn snapshot() -> Result<([u8; 32], Mode, Mode), &'static str> {
@@ -304,7 +302,7 @@ fn snapshot() -> Result<([u8; 32], Mode, Mode), &'static str> {
     let mut rec = [0u8; r::SIZE];
     use std::io::Write;
     let request = gpu::abi::screen::Request { pixels: pixels.as_mut_ptr() as u64, len: pixels.len() as u64,
-        record: rec.as_mut_ptr() as u64, runner: RUNNER_PROCESS.load(Ordering::Relaxed) }.encode();
+        record: rec.as_mut_ptr() as u64 }.encode();
     let mut device = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence").map_err(|_| "readback-open")?;
     device.write_all(&request).map_err(|error| {
         if error.raw_os_error() == Some(gpu::abi::screen::NO_CASE as i32) { "no-case-scanout" }

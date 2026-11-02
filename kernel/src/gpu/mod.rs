@@ -5383,7 +5383,6 @@ pub fn observe_scanout(dst: u64, dst_len: u64, record: u64) -> Result<u64, (i64,
 /// Pixel-only screen evidence, authorized by the suite-only root device. Ordinary
 /// READBACK and SCANOUT_READBACK still require complete composition provenance.
 pub fn observe_screen(request: abi::screen::Request) -> Result<(), i64> {
-    if request.runner == 0 { return Err(EINVAL); }
     crate::console::await_repaint();
     let _path = GpuPath::enter();
     if !matches!(with_core(|c| c.admission()), Some(Ok(()))) { return Err(ENODEV); }
@@ -5391,7 +5390,7 @@ pub fn observe_screen(request: abi::screen::Request) -> Result<(), i64> {
     a.pixels = request.pixels;
     a.pixels_len = request.len;
     a.record = request.record;
-    match read_back(caller()?, &mut a, Observer::Screen(request.runner), None) {
+    match read_back(caller()?, &mut a, Observer::Screen, None) {
         Ok(_) => Ok(()),
         Err(Refused::Errno(e)) => Err(e),
         Err(Refused::Eio(_, _)) => Err(EIO),
@@ -5408,13 +5407,13 @@ enum Observer {
     /// record untouched.
     Window,
     /// Visible mode pixels, without the bounded window-provenance record.
-    Screen(u64),
+    Screen,
 }
 
 impl Observer {
-    fn records_composition(self) -> bool { !matches!(self, Self::Screen(_)) }
-    fn excludes_owner(self, owner: Option<u64>) -> bool {
-        matches!(self, Self::Screen(runner) if owner.is_none_or(|group| group == runner))
+    fn records_composition(self) -> bool { self != Self::Screen }
+    fn excludes_binding(self, known: bool, bound: bool) -> bool {
+        self == Self::Screen && known && !bound
     }
 }
 
@@ -5468,13 +5467,11 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     } else {
         None
     };
-    // Custody is stable under the transition, including after a device reset
-    // clears the binding. Runner/console absence is not an unreadable case frame.
-    if matches!(observer, Observer::Screen(_)) {
-        let owner = with_core(|c| c.display.stack.last().map(|o| o.group)).ok_or(ENODEV)?;
-        if observer.excludes_owner(owner) {
-            return Err(Refused::Errno(abi::screen::NO_CASE));
-        }
+    // display_reset explicitly confirms an empty scanout. An unknown binding
+    // instead continues to the existing refusal below, after presentation settles.
+    if a.target == 0 && with_core(|c| observer.excludes_binding(c.display.known, c.display.binding.is_some()))
+        .unwrap_or(false) {
+        return Err(Refused::Errno(abi::screen::NO_CASE));
     }
     if a.target == 0
         && !with_core(|c| c.display.known && c.display.binding.is_some()).unwrap_or(false)
@@ -5500,7 +5497,7 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     // Privileged window observation can read the foreground console. Protect its
     // backing throughout the poison/transfer observation.
     let canvas = core::cell::Cell::new(screen::is_target(id).then(crate::console::hold_canvas));
-    if matches!(observer, Observer::Screen(_)) {
+    if observer == Observer::Screen {
         // Scan origin is (0,0): VirGL SET_SCANOUT (virgl/mod.rs set_scanout),
         // SVGA screen binding (svga/mod.rs set_scanout), GK208 viewport-in
         // (gk208/modeset.rs Viewport::methods).

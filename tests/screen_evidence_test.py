@@ -47,7 +47,7 @@ mod serial_writer {use std::sync::atomic::{AtomicU8,Ordering}; #[derive(PartialE
 mod gpu_abi { pub mod screen {
  pub const MAGIC:[u8;8]=*b"SCREENRB";
  pub struct Request;
- impl Request {pub fn decode(b: &[u8])->Option<Self>{(b.len()==40).then_some(Self)}}
+ impl Request {pub fn decode(b: &[u8])->Option<Self>{(b.len()==32).then_some(Self)}}
 } }
 static READS:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
 static ROOT:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(true);
@@ -76,11 +76,11 @@ fn run(on:bool)->(Vec<u8>,Vec<u8>,Vec<u8>){
  serial::drain_output();
  let wire=String::from_utf8(WIRE.lock().unwrap().clone()).unwrap();
  assert!(wire.find(" CASE ").unwrap()<wire.find(" SCREEN ").unwrap(),"SCREEN overtook queued CASE: {wire}");
- let mut request=[0u8;40];request[..8].copy_from_slice(b"SCREENRB");
+ let mut request=[0u8;32];request[..8].copy_from_slice(b"SCREENRB");
  let wire=WIRE.lock().unwrap().len();
- assert_eq!(screen_evidence_write(&request),Ok(40));
+ assert_eq!(screen_evidence_write(&request),Ok(32));
  assert_eq!(WIRE.lock().unwrap().len(),wire,"binary requests cannot reach serial");
- assert_eq!(screen_evidence_write(&request[..39]),Err(22));
+ assert_eq!(screen_evidence_write(&request[..31]),Err(22));
  ROOT.store(false,std::sync::atomic::Ordering::Relaxed);
  assert_eq!(screen_evidence_write(&request),Err(1));
  ROOT.store(true,std::sync::atomic::Ordering::Relaxed);
