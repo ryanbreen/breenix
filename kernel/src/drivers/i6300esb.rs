@@ -94,8 +94,13 @@ impl<B: Bus> Transport for Watchdog<B> {
     }
 
     fn get(&mut self) -> Result<State, &'static str> {
+        let raw = self.bus.config_read16(CONFIG);
+        // QEMU's ESB_WDT_INTTYPE mask is 0x11, so writing the disabled
+        // encoding 3 reads back as 1. Decode that emulator encoding here;
+        // reset, prescaler and enable/lock readback stay independently checked.
+        let config = if raw & 3 == 1 { raw | 2 } else { raw };
         Ok(State {
-            config: self.bus.config_read16(CONFIG),
+            config,
             lock: self.bus.config_read8(LOCK),
             preloads_programmed: self.preloads_programmed,
         })
