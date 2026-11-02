@@ -4,8 +4,9 @@ The retained failure has sync 1500, context 40, SUBMIT_3D, publication 1572,
 descriptor head 59, and used/taken 1571/1571 after the 2000 ms watchdog.
 That capture does not locate the loss. No root cause or repair is claimed here.
 
-`gpu_queue_trace` implies the kernel's `testing` feature. Its runtime code is
-also gated to aarch64. Production builds and the native GPU backend carry no
+`gpu_queue_trace` is an opt-in testing profile feature, separate from `testing`
+(which forces the boot test harness rather than the requested suite). Its
+runtime code is also gated to aarch64. Default production builds and the native GPU backend carry no
 trace recording calls. The watchdog, suite and scoring remain unchanged.
 
 ## Guest record
