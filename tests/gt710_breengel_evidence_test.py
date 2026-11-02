@@ -27,7 +27,70 @@ def rust(source, directory, name, args=()):
     return subprocess.check_output([str(directory / name)], text=True)
 
 
+def composition_capture():
+    from gt710_breengel_selection_test import capture, NAMES
+    sample = dict(schema=1, observations=0, latched_confirmed=0, refused=0,
+                  pending=0, wait_ns=0, wait_max_ns=0, last_latched_resource=0,
+                  last_record_resource=0, mismatches=0, wrong_bindings=0,
+                  wrong_requested_resource=0, wrong_latched_resource=0, wrong_record_resource=0)
+    rows = []
+    for index, name in enumerate([''] + NAMES):
+        if name.startswith('scanout/'):
+            sample['observations'] += 1
+            sample['latched_confirmed'] += 1
+            sample['last_latched_resource'] = sample['last_record_resource'] = 44
+        if name == 'scanout/fault-wrong-resource':
+            # The clean successor has already replaced the last observation.
+            sample.update(wrong_bindings=1, wrong_requested_resource=42,
+                          wrong_latched_resource=43, wrong_record_resource=43)
+        values = dict.fromkeys(API['CASE_HEAP_FIELDS'], 0); values['schema'] = 1
+        rows.append(dict(schema=1, boundary=index, case=name, values=values, scanout=sample.copy()))
+    return capture() + ''.join('GT710_CASE_HEAP ' + json.dumps(r) + '\n' for r in rows)
+
+
+def composition_score(serial):
+    from gt710_breengel_selection_test import boot
+    return API['cases']('breengel-composition', '', {'breengel': dict(serial=serial, boot=boot())})[0]
+
+
 class Evidence(unittest.TestCase):
+    def test_composition_accepts_matching_latched_observations(self):
+        self.assertEqual(composition_score(composition_capture())['result'], 'PASS')
+
+    def test_composition_rejects_unconfirmed_observation(self):
+        serial = composition_capture()
+        lines = serial.splitlines()
+        index = next(i for i, line in enumerate(lines) if line.startswith('GT710_CASE_HEAP ') and
+                     json.loads(line.removeprefix('GT710_CASE_HEAP '))['case'] == 'scanout/binding')
+        row = json.loads(lines[index].removeprefix('GT710_CASE_HEAP '))
+        row['scanout']['observations'] += 1
+        row['scanout']['last_record_resource'] = 42  # requested, rather than latched
+        lines[index] = 'GT710_CASE_HEAP ' + json.dumps(row)
+        result = composition_score('\n'.join(lines) + '\n')
+        self.assertEqual(result['result'], 'FAIL')
+        self.assertIn('latched', result['reason'])
+
+    def test_composition_rejects_missing_scanout_row(self):
+        serial = composition_capture()
+        serial = '\n'.join(line for line in serial.splitlines() if not
+            (line.startswith('GT710_CASE_HEAP ') and
+             json.loads(line.removeprefix('GT710_CASE_HEAP '))['case'] == 'scanout/completion')) + '\n'
+        result = composition_score(serial)
+        self.assertEqual(result['result'], 'FAIL')
+        self.assertIn('boundaries', result['reason'])
+
+    def test_composition_rejects_wrong_binding_record_naming_requested_resource(self):
+        lines = composition_capture().splitlines()
+        for index, line in enumerate(lines):
+            if line.startswith('GT710_CASE_HEAP '):
+                row = json.loads(line.removeprefix('GT710_CASE_HEAP '))
+                if row['case'] == 'scanout/fault-wrong-resource':
+                    row['scanout']['wrong_record_resource'] = row['scanout']['wrong_requested_resource']
+                    lines[index] = 'GT710_CASE_HEAP ' + json.dumps(row)
+        result = composition_score('\n'.join(lines) + '\n')
+        self.assertEqual(result['result'], 'FAIL')
+        self.assertIn('wrong binding', result['reason'])
+
     def test_401_heap_boundaries_round_trip_and_refuse_over_bound(self):
         source = (ROOT / 'userspace/programs/src/gt710_heap.rs').read_text()
         code = r'''
