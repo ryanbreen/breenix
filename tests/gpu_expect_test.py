@@ -1,4 +1,4 @@
-"""GPU gallery descriptions cover judged pictures and meaningful end screens.
+"""GPU and BreenGL gallery descriptions cover judged pictures and meaningful end screens.
 
 Inventory: suite_gpu.rs case table and its helpers in suite_gpu/*.rs. The two
 end-only cases draw/present their scanout but never hand off a judged picture.
@@ -24,6 +24,44 @@ PICTURED = {
 END_ONLY = {"isolation/irq-masked-bound", "isolation/no-addresses"}
 
 
+# BreenGL handoffs: raster.rs, images.rs, widgets.rs, show.rs and window_cases/.
+# End-only cases compare/present a scanout without handing a picture to the stage.
+BREENGL_PICTURED = {
+    "bmp": "decode-fixtures orientation padding roundtrip truncated".split(),
+    "composition": "compose-position compose-overlap compose-offscreen compose-fullscreen compose-many no-compositor backend-error cursor-hidden cursor-no-trail cursor-shape cursor-stationary-repaint takeover-giveback ownership-stack gpu-composite scale-2 target-lifetime".split(),
+    "events": "resize-request processed-ack".split(),
+    "icons": "step-invariance settles reset bounded particles-bounded assets".split(),
+    "isolation": "list-by-user other-commit other-map other-resize other-destroy compositor-authorized efault-commit".split(),
+    "panel": "stage-layout tile-stamps tile-thumbnail spotlight-picture spotlight-timing milestone-ribbon finale deterministic stage-hidpi handoff between-cases cursor-restore cursor-trail-detected kernel-screens".split(),
+    "png-decode": "gray-depths gray-alpha rgb rgba palette-depths trns-gray trns-rgb trns-palette rounding-16bit filters interlace interlace-small multi-idat chunk-order ancillary-ignored independent-fixtures blit from-disk".split(),
+    "png-encode": "decodes stable sizes".split(),
+    "raster": "fill-rect fill-rect-clip-left fill-rect-offscreen-left fill-rect-offscreen-top fill-rect-overflow fill-rect-empty draw-rect line-axes line-bresenham line-clip circle-fill circle-fill-offscreen-left circle-outline extreme-work-bound bgr-order x-byte alpha-extremes alpha-output blit blit-clip blit-alpha blit-straight blit-scale clip-rect clip-stack clip-empty rounded-rect gradient damage-sound".split(),
+    "scanout": "changing-scene full-destination binding atomic-record format-canonical fault-skipped-transfer fault-wrong-resource fault-stale-fence fault-outside-damage present-flip hidpi-mode".split(),
+    "text": "bitmap-glyph bitmap-scale bitmap-unknown noto-ascii noto-coverage ttf-glyph ttf-sizes ttf-clip-left ttf-clip-top ttf-subpixel ttf-notdef utf8-text utf8-invalid compound-transform many-args-abi hidpi-sizes fontwatch-reload fontwatch-size fontwatch-missing fontwatch-malformed-config fontwatch-repeated fontwatch-independent fontwatch-idle fontwatch-file-replaced".split(),
+    "text-entry": "scroll-to-cursor filepicker-errors".split(),
+    "widgets": "button-draw button-disabled checkbox-toggle label-clip tabbar-overflow scrollbar-thumb menubar-open menu-disabled focus-ring scale-2".split(),
+    "windows": "create create-zeroed multi-window destroy fork-no-mapping commit-swaps acquire-replays-damage acquire-full-copy stale-base-commit commit-immutable release-order resize capture-across-destroy remnant-on-death raw-client commit-waits-render".split(),
+}
+BREENGL_END_ONLY = {
+    "composition/composite-record",
+    "composition/damage-screen",
+    "composition/damage-work",
+    "composition/fbinfo-geometry",
+    "composition/inflight-bound",
+    "composition/irq-bound",
+    "composition/no-change-commit",
+    "composition/present-rate",
+    "isolation/texture-map",
+    "scanout/boundary-stated",
+    "scanout/completion",
+    "scanout/device-path",
+    "scanout/mode-set",
+    "scanout/root-only",
+    "scanout/window-commits",
+    "windows/distinct-content",
+}
+
+
 class GpuExpect(unittest.TestCase):
     def test_pictured_gpu_cases_have_visual_expectations(self):
         pictured = {f"{cat}/{case}" for cat, cases in PICTURED.items() for case in cases}
@@ -32,6 +70,26 @@ class GpuExpect(unittest.TestCase):
         manifest = json.loads((ROOT / "docs/suites/gpu.json").read_text())
         cases = {f"{cat['id']}/{case['id']}": case
                  for cat in manifest["categories"] for case in cat["cases"]}
+        self.assertTrue(wanted <= cases.keys())
+        for name, case in cases.items():
+            with self.subTest(case=name):
+                if name not in wanted:
+                    self.assertNotIn("expect", case)
+                    continue
+                description = case.get("expect")
+                self.assertIsInstance(description, str)
+                self.assertTrue(description.strip())
+                self.assertLessEqual(len(description), 300)
+                self.assertRegex(description, r"[A-Za-z][A-Za-z -]* \(#[0-9A-Fa-f]{6}\)")
+
+    def test_pictured_breengel_cases_have_visual_expectations(self):
+        pictured = {f"{cat}/{case}" for cat, cases in BREENGL_PICTURED.items() for case in cases}
+        self.assertEqual(len(pictured), 163)
+        wanted = pictured | BREENGL_END_ONLY
+        manifest = json.loads((ROOT / "docs/suites/breengel.json").read_text())
+        cases = {f"{cat['id']}/{case['id']}": case
+                 for cat in manifest["categories"] for case in cat["cases"]}
+        self.assertEqual(len(cases), 401)
         self.assertTrue(wanted <= cases.keys())
         for name, case in cases.items():
             with self.subTest(case=name):
