@@ -78,6 +78,18 @@ class ExportTest(unittest.TestCase):
             self.assertEqual(updated['rows'][0]['expectCommit'], expect_commit)
             self.assertNotIn('expect', updated['rows'][1])
             self.assertNotIn('expectCommit', updated['rows'][1])
+            source['categories'][0]['cases'][0]['expectEnd'] = 'End screen with RGB (1, 2, 3).'
+            source['categories'][0]['cases'][1]['expect'] = 'Intent picture with RGB (1, 2, 3).'
+            source['categories'][0]['cases'][1]['expectEnd'] = 'This end text must not replace intent.'
+            manifest.write_text(json.dumps(source))
+            git('add', '.')
+            git('-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', 'commit', '-qm', 'Describe end separately')
+            refreshed = subprocess.run(cmd + ['--refresh'], capture_output=True, text=True)
+            self.assertEqual(refreshed.returncode, 0, refreshed.stderr)
+            distinct = json.loads((dirs[0] / 'manifest.json').read_text())
+            self.assertEqual(distinct['candidates_id'], doc['candidates_id'])
+            self.assertEqual(distinct['rows'][0]['expect'], 'End screen with RGB (1, 2, 3).')
+            self.assertEqual(distinct['rows'][1]['expect'], 'Intent picture with RGB (1, 2, 3).')
             projected = [{k: v for k, v in row.items() if k not in ('expect', 'expectCommit')} for row in updated['rows']]
             self.assertEqual(projected, doc['rows'])
             self.assertEqual({name: (dirs[0] / name).read_bytes() for name in previous_pngs}, previous_pngs)

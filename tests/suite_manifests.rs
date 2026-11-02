@@ -944,6 +944,11 @@ fn case_expect_is_optional_bounded_text_and_other_unknown_keys_are_refused() {
         let errors = read(serde_json::json!({"expect": bad}));
         assert!(!errors.is_empty(), "accepted {bad}");
     }
+    assert!(read(serde_json::json!({"expectEnd": "A black end screen."})).is_empty());
+    for bad in [Value::Null, serde_json::json!(""), serde_json::json!("x".repeat(301))] {
+        let errors = read(serde_json::json!({"expectEnd": bad}));
+        assert!(!errors.is_empty(), "accepted end description {bad}");
+    }
     fs::remove_dir_all(dir).unwrap();
 }
 

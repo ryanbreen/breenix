@@ -194,6 +194,37 @@ class VerifyExpectTest(unittest.TestCase):
         self.assertEqual(result['picture']['box'], [0,0,160,128])
         self.assertEqual(result['verdict'], 'unparseable')
 
+    def test_text_colour_is_near_anchor_not_at_origin(self):
+        sentence = ("A 96x48 picture on black (#000000) background; the text 'Wi é A', "
+                    "white (#FFFFFF), starting near x=8, y=12, font size 16.")
+        image = Image.new('RGB', (96,48), 'black')
+        # Glyph ink need not touch the origin. No font renderer is under test here.
+        image.putpixel((13,18), (255,255,255))
+        result = self.verify(image, sentence, 'end')
+        text = [c for c in result['checked_claims'] if c['kind'] == 'text-colour']
+        self.assertEqual(len(text), 1, result)
+        self.assertEqual(text[0]['verdict'], 'pass')
+        self.assertEqual(result['verdict'], 'unparseable')  # no OCR proof of the string
+        image.putpixel((13,18), (0,0,0))
+        image.putpixel((95,47), (255,255,255))
+        result = self.verify(image, sentence, 'end')
+        self.assertTrue(any(c['kind'] == 'text-colour' for c in result['failed_claims']), result)
+
+    def test_text_background_must_be_majority_inside_picture(self):
+        sentence = ("A 96x48 picture on black (#000000) background; the text 'A', "
+                    "white (#FFFFFF), starting near x=8, y=12, font size 16.")
+        image = Image.new('RGB', (96,48), '#000080')
+        image.putpixel((0,0), (0,0,0))
+        image.putpixel((13,18), (255,255,255))
+        result = self.verify(intent(image, (256,192)), sentence)
+        self.assertTrue(any(c['kind'] == 'background' for c in result['failed_claims']), result)
+        image = Image.new('RGB', (96,48), 'black')
+        image.putpixel((13,18), (255,255,255))
+        result = self.verify(intent(image, (256,192)), sentence)
+        background = next(c for c in result['checked_claims'] if c['kind'] == 'background')
+        self.assertEqual(background['verdict'], 'pass')
+        self.assertEqual(background['measured']['total'], 96*48)
+
     def test_cli_reports_every_row_and_refuses_tampering(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
