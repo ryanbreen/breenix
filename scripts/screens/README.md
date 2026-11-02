@@ -41,13 +41,24 @@ The example below is a schema illustration, not operator approval evidence.
 ```
 
 The manifest identifier is recomputed from canonical JSON of
-`{"version":1,"rows":...}`, using sorted keys, compact separators and unescaped
-Unicode, as the exporter does. PNG dimensions must equal the row's mode. The
+`{"version":1,"rows":...}`, projecting each row without the optional documentation
+fields `expect` and `expectCommit`, using sorted keys, compact separators and
+unescaped Unicode, as the exporter does. The original row fields remain part of
+the identity; unknown fields are refused. PNG dimensions must equal the row's mode. The
 canonical pixels are BGRX with X set to FF; their SHA-256 must equal the row's
 digest. PNGs must be opaque RGB PNGs inside the candidates directory.
 Decisions must match a manifest row's suite, case, checkpoint, mode and digest.
 A subset of the candidates may be decided. Rejected or undecided rows do not
 modify existing expectations.
+
+The exporter reads manifests from its own checkout's HEAD commit, including the
+case's optional `expect` sentence. A row with that sentence records its source
+commit as `expectCommit`; both fields are omitted when the case has no `expect`.
+The row's `commit` continues to identify the captured run. `--manifests` must name
+a directory tracked in the exporter's repository. To refresh retained candidates
+from their capture disk and serial log, pass `--refresh` with the original boot id
+and capture commit. The exporter requires the same candidate identity, evidence
+rows and PNG bytes before atomically replacing only `manifest.json` in place.
 
 The imported decision file is retained byte for byte at
 `approvals/approval-<SHA-256 of decision-file bytes>.json` beside the table.

@@ -68,6 +68,11 @@ def digest(obj):
                                      ensure_ascii=False, allow_nan=False).encode()).hexdigest()
 
 
+def candidates_id(rows):
+    evidence = [{k: v for k, v in row.items() if k not in ('expect', 'expectCommit')} for row in rows]
+    return digest({'version': 1, 'rows': evidence})
+
+
 def identity(row):
     require(matches(NAME, row['suite']) and matches(f'{NAME}/{NAME}', row['case']) and
             matches(NAME, row['checkpoint']), 'invalid checkpoint identity')
@@ -114,11 +119,16 @@ def candidates(path):
     fields(doc, {'version', 'candidates_id', 'rows'})
     require(type(doc['version']) is int and doc['version'] == 1, 'invalid candidates version')
     require(matches(HEX64, doc['candidates_id']) and
-            digest({'version': 1, 'rows': doc['rows']}) == doc['candidates_id'], 'candidates id mismatch')
+            candidates_id(doc['rows']) == doc['candidates_id'], 'candidates id mismatch')
 
     def candidate(row):
-        fields(row, PICTURE | {'title', 'contract_section', 'binding', 'boot_id', 'commit', 'intent', 'png'})
+        fields(row, PICTURE | {'title', 'contract_section', 'binding', 'boot_id', 'commit', 'intent', 'png'},
+               {'expect', 'expectCommit'})
         key = picture(row)
+        require('expect' not in row or nonempty(row['expect']) and len(row['expect']) <= 300,
+                'invalid expected-picture documentation')
+        require('expectCommit' not in row or matches(HEX40, row['expectCommit']),
+                'invalid documentation commit')
         require(all(nonempty(row[k]) for k in ('title', 'contract_section', 'boot_id', 'intent')) and
                 matches(HEX40, row['commit']), 'invalid capture metadata')
         require(matches(MODE, row['binding']), 'invalid binding')

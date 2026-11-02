@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import re
 import struct
+import subprocess
 import sys
 import tempfile
 import zlib
@@ -15,6 +16,14 @@ ROOT = Path(__file__).resolve().parents[2]
 NAME = r'[a-z0-9]+(?:-[a-z0-9]+)*'
 SCREEN = re.compile(rf'SUITE ({NAME}) SCREEN ({NAME}/{NAME}) ({NAME}) sha256=([0-9a-f]{{64}}) mode=([1-9][0-9]*x[1-9][0-9]*) binding=([1-9][0-9]*x[1-9][0-9]*)(?: crc=[0-9a-f]{{8}} crc2=[0-9a-f]{{8}} raster=[1-9][0-9]*x[1-9][0-9]* out=sor[0-9]+)?')
 MAX_PIXELS = 2560 * 1600 * 4
+
+
+def git(*args):
+    return subprocess.check_output(['git', '-C', str(ROOT), *args], stderr=subprocess.PIPE, text=True).strip()
+
+
+def evidence_rows(rows):
+    return [{k: v for k, v in row.items() if k not in ('expect', 'expectCommit')} for row in rows]
 
 
 def serial_records(path):
@@ -125,11 +134,13 @@ def export(args):
     for digest, (identity, mode) in first.items():
         if pictures[digest][:2] != (identity, mode):
             raise ValueError(f'first occurrence mismatch: {identity}')
+    expect_commit = git('rev-parse', 'HEAD')
+    manifest_path = args.manifests.resolve().relative_to(ROOT)
     manifests = {}
     rows = []
     for suite, case, checkpoint, digest, mode, binding in records:
         if suite not in manifests:
-            doc = json.loads((args.manifests / f'{suite}.json').read_text(encoding='utf-8'))
+            doc = json.loads(git('show', f'{expect_commit}:{manifest_path}/{suite}.json'))
             if doc['id'] != suite:
                 raise ValueError('manifest suite mismatch')
             manifests[suite] = {f"{c['id']}/{item['id']}": item for c in doc['categories'] for item in c['cases']}
@@ -142,11 +153,18 @@ def export(args):
                          checkpoint=checkpoint, mode=mode, binding=binding, sha256=digest,
                          boot_id=args.boot_id, commit=args.commit, intent=title,
                          png=f'{len(rows):05d}.png'))
-    canonical = json.dumps({'version': 1, 'rows': rows}, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
+        if 'expect' in item:
+            expect = item['expect']
+            if not isinstance(expect, str) or not expect.strip() or len(expect) > 300:
+                raise ValueError(f'invalid expect documentation: {suite} {case}')
+            rows[-1].update(expect=expect, expectCommit=expect_commit)
+    canonical = json.dumps({'version': 1, 'rows': evidence_rows(rows)}, sort_keys=True, separators=(',', ':'), ensure_ascii=False).encode()
     candidates_id = hashlib.sha256(canonical).hexdigest()
     args.output.mkdir(parents=True, exist_ok=True)
     target = args.output / candidates_id
-    if target.exists():
+    if args.refresh and not target.is_dir():
+        raise ValueError(f'refresh requires existing candidates: {target}')
+    if target.exists() and not args.refresh:
         raise ValueError(f'candidates already exist: {target}')
     with tempfile.TemporaryDirectory(prefix='.export-', dir=args.output) as temporary:
         directory = Path(temporary)
@@ -154,7 +172,17 @@ def export(args):
             width, height = map(int, row['mode'].split('x'))
             (directory / row['png']).write_bytes(png(width, height, pictures[row['sha256']][2]))
         (directory / 'manifest.json').write_text(json.dumps({'version': 1, 'candidates_id': candidates_id, 'rows': rows}, ensure_ascii=False, indent=2) + '\n', encoding='utf-8')
-        os.rename(directory, target)
+        if args.refresh:
+            previous = json.loads((target / 'manifest.json').read_text(encoding='utf-8'))
+            if (previous.get('version') != 1 or previous.get('candidates_id') != candidates_id
+                    or evidence_rows(previous['rows']) != evidence_rows(rows)):
+                raise ValueError('retained candidate evidence differs')
+            for row in rows:
+                if (target / row['png']).read_bytes() != (directory / row['png']).read_bytes():
+                    raise ValueError(f'retained PNG differs: {row["png"]}')
+            os.replace(directory / 'manifest.json', target / 'manifest.json')
+        else:
+            os.rename(directory, target)
     print(target)
 
 
@@ -163,13 +191,14 @@ def main():
     parser.add_argument('disk', type=Path); parser.add_argument('serial', type=Path)
     parser.add_argument('--boot-id', required=True); parser.add_argument('--commit', required=True)
     parser.add_argument('--manifests', type=Path, default=ROOT / 'docs/suites')
+    parser.add_argument('--refresh', action='store_true', help='update documentation in place, requiring unchanged evidence and PNGs')
     parser.add_argument('--output', type=Path, default=Path.home() / 'Library/Application Support/Vigil/breenix/screens/candidates')
     args = parser.parse_args()
     try:
         if not args.boot_id or not re.fullmatch(r'[0-9a-f]{40}', args.commit):
             raise ValueError('boot id and 40-hex commit required')
         export(args)
-    except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
+    except (OSError, UnicodeError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         print(f'export failed: {exc}', file=sys.stderr)
         return 1
     return 0
