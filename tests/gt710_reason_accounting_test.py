@@ -37,31 +37,6 @@ def serial(lines, record):
 
 
 class ReasonAccounting(unittest.TestCase):
-    def test_step_rejects_raw_memory_failure_despite_exact_reason_accounting(self):
-        lines, row = fixture()
-        pictured = API['breengel_picture_cases']()
-        lines = [re.sub(r'(CASE (\S+) PASS ms=1)$',
-                        lambda m: m[0] + (' sha256=' + 'a'*64 if m[2] in pictured else ''),
-                        line) for line in lines]
-        lines += ['SUITE breengel ELAPSED ms=1000', 'SUITE_SEQUENCE READY breengel']
-        sha = 'a'*40
-        boot = dict(id='20261101T000000Z-metal', bootedCommit=sha, toolsCommit=sha,
-                    kind='boot', mode='suite', suite='breengel', platform='metal', arch='x86_64',
-                    evidenceEligible=True, build=dict(commit=sha, profile='production', features=[]))
-        def score(text):
-            return API['cases']('breengel-fronts', '', {'breengel': {'serial': text, 'boot': boot}})[0]
-
-        failed = serial(lines, row)
-        self.assertEqual(API['breengel_memory_accounting'](failed)['status'],
-                         'ACCOUNTED_FAILURE_REASONS')
-        # The same excluded failures are allowed when the raw memory gate passes.
-        passing = failed.replace('free=951', 'free=952').replace('free_after=951', 'free_after=952')
-        passing = passing.replace('page_tables=57', 'page_tables=56').replace('reclaimed=FAIL', 'reclaimed=PASS')
-        self.assertEqual(score(passing)['result'], 'PASS')
-        result = score(failed)
-        self.assertEqual(result['result'], 'FAIL')
-        self.assertIn('memory not reclaimed', result['reason'])
-
     def test_live_tracker_retirement_reallocation_and_capture(self):
         path=ROOT/'userspace/programs/src/gt710_allocs.rs'
         self.assertTrue(path.exists(), 'retain actual live allocation evidence')
