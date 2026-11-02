@@ -55,9 +55,13 @@ def score_case(value, baseline, sha, fatal_patterns):
         raise ValueError('watchdog SSH proof is outside its trigger deadline')
     # Fault injection follows the preceding 20-second feed interval, leaving
     # at least 100 seconds on the programmed 120-second timer.
-    expired_at = expired.get('t')
-    if (not isinstance(expired_at, (int, float)) or not math.isfinite(expired_at) or
-            not start + 100 <= expired_at <= observed):
+    stamp = expired.get('timestamp', {})
+    if (not isinstance(stamp, dict) or
+            any(type(stamp.get(key)) is not int for key in ('seconds', 'microseconds')) or
+            not 0 <= stamp['microseconds'] < 1_000_000):
+        raise ValueError('watchdog expiry has no QMP timestamp')
+    expired_at = stamp['seconds'] + stamp['microseconds'] / 1_000_000
+    if not start + 100 <= expired_at <= observed:
         raise ValueError('watchdog expiry is outside its 120-second timer window')
     serial, returned = value.get('beforeSerial', ''), value.get('afterSerial', '')
     lines = serial.splitlines()
