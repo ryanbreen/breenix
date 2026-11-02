@@ -202,6 +202,27 @@ class SuiteVerdictTests(unittest.TestCase):
             serial.write_text(original + records[0])
             self.assertIn('outside START..DONE', SCORER.verdict(MANIFEST, serial, [serial])[1])
 
+    def test_screen_endpoint_detail_and_declared_end_shapes(self):
+        original = (FIXTURES / 'all-pass.txt').read_text()
+        records = [
+            'SUITE fixture SCREEN first/one end error=readback-failed errno=5 eio_reason=5 failed_submission=0',
+            'SUITE fixture SCREEN first/one end unobservable reason=target-invalidated errno=5 eio_reason=4 failed_submission=1234',
+            'SUITE fixture SCREEN first/one end unobservable reason=device-reset errno=5 eio_reason=8 failed_submission=0',
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'serial.txt'
+            first, rest = original.split('\n', 1)
+            for record in records:
+                path.write_text(first + '\n' + record + '\n' + rest)
+                self.assertTrue(SCORER.verdict(MANIFEST, path, [path])[0])
+                path.write_text((first + '\n' + record + '\n' + rest).replace(
+                    'SUITE fixture CASE first/one PASS ms=1\n', ''))
+                self.assertFalse(SCORER.verdict(MANIFEST, path, [path])[0])
+            for record in [records[1].replace('target-invalidated', 'device-error'),
+                           records[0].replace('errno=5', 'errno=unknown')]:
+                path.write_text(first + '\n' + record + '\n' + rest)
+                self.assertFalse(SCORER.verdict(MANIFEST, path, [path])[0])
+
     def test_hostkey_live_record(self):
         with tempfile.TemporaryDirectory() as temporary:
             serial = Path(temporary) / "serial"
