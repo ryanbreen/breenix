@@ -25,6 +25,29 @@
 
 
 /*
+ * Copyright 2012 Red Hat Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * Authors: Ben Skeggs
+ */
+/*
  * Copyright 2017 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -207,6 +230,8 @@
 //! Privileged graphics sessions on one owned runlist; waits poll.
 //! Adapted hardware fields: MIT nouveau v6.8 FIFO gk208/gk110/gk104/gf100,
 //! GR gf100 (channel copy/header), TOP gk104; MIT open-gpu-doc cla197/cla06f.
+//! Command placement: MIT libdrm nouveau/pushbuf.c (Copyright 2012 Red Hat Inc.),
+//! revision 6eed04824b488f546fde7df5d267ef109c82ddf8, mapped GART pushbuffers.
 use alloc::{format, string::String, vec::Vec};
 pub const SUBCHANNEL: u32 = 0;
 const RELEASE: u32 = 0x1000f010;
