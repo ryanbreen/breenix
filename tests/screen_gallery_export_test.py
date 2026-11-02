@@ -12,6 +12,48 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPORT = ROOT / 'tools/screen-gallery/export.py'
 
 class ExportTest(unittest.TestCase):
+    def test_case_filter_keeps_selected_aliases_and_validates_unselected_evidence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / 'repo'
+            script = repo / 'tools/screen-gallery/export.py'
+            script.parent.mkdir(parents=True)
+            shutil.copyfile(EXPORT, script)
+            manifests = repo / 'manifests'; manifests.mkdir()
+            (manifests / 'breengel.json').write_text(json.dumps({'id':'breengel','categories':[
+                {'id':'bmp','cases':[{'id':'one','title':'BMP'}]},
+                {'id':'png-decode','cases':[{'id':'two','title':'PNG'}]}]}))
+            def git(*args):
+                return subprocess.check_output(['git','-C',str(repo),*args],text=True).strip()
+            git('init','-q'); git('add','.')
+            git('-c','user.name=Fixture','-c','user.email=fixture@example.com','commit','-qm','Capture')
+            pixels = bytes([3,2,1,255]); digest = hashlib.sha256(pixels).hexdigest()
+            names = [b'breengel',b'bmp/one',b'end']
+            rec = bytearray(512); rec[:4] = b'SCR1'
+            struct.pack_into('<IIIIIHHH',rec,4,512,0,4,1,1,*map(len,names))
+            rec[32:64] = bytes.fromhex(digest); struct.pack_into('<I',rec,64,4)
+            body = b''.join(names)+pixels; rec[80:80+len(body)] = body
+            disk = root / 'disk'; disk.write_bytes(b'SCRDISK1'+bytes(504)+rec+bytes(512))
+            serial = root / 'serial'
+            line = f'SUITE breengel SCREEN bmp/one end sha256={digest} mode=1x1 binding=2x2\n'
+            serial.write_text(line+line.replace('bmp/one end','png-decode/two intent')+line.replace('end','intent'))
+            cmd = [sys.executable,str(script),str(disk),str(serial),'--boot-id','boot-1',
+                   '--commit','a'*40,'--manifests',str(manifests),'--output',str(root/'out')]
+            result = subprocess.run(cmd+['--cases','breengel:png-decode/*:intent,breengel:bmp/one:intent'],capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stderr)
+            folder = Path(result.stdout.strip())
+            rows = json.loads((folder/'manifest.json').read_text())['rows']
+            self.assertEqual([(r['case'],r['checkpoint'],r['png']) for r in rows],
+                             [('png-decode/two','intent','00000.png'),('bmp/one','intent','00001.png')])
+            self.assertEqual(len(list(folder.glob('*.png'))),2)
+            unmatched = subprocess.run(cmd+['--cases','breengel:bmp/missing'],capture_output=True,text=True)
+            self.assertNotEqual(unmatched.returncode,0)
+            # The first occurrence is excluded, but its evidence must still be verified.
+            serial.write_text(line.replace(digest,'0'*64)+line.replace('bmp/one end','png-decode/two intent'))
+            damaged = subprocess.run(cmd+['--cases','breengel:png-decode/*'],capture_output=True,text=True)
+            self.assertNotEqual(damaged.returncode,0)
+            self.assertIn('serial and disk digest sets differ',damaged.stderr)
+
     def test_export_and_refuse_digest_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
