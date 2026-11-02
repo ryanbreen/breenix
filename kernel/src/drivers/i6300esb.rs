@@ -167,12 +167,24 @@ mod hardware {
     // pci's byte/word helpers use dword RMW, which QEMU does not dispatch to
     // the watchdog config callbacks. Use native ECAM widths instead.
     // DSB orders each Device access, including between ECAM and BAR0.
-    fn ordered_read<T: Copy>(address: usize) -> T {
+    fn ordered_read8(address: usize) -> u8 {
+        let value: u32;
         unsafe {
-            let value = core::ptr::read_volatile(address as *const T);
-            core::arch::asm!("dsb osh", options(nostack, preserves_flags));
-            value
+            core::arch::asm!("ldrb {value:w}, [{address}]", "dsb osh",
+                address = in(reg) address, value = out(reg) value,
+                options(nostack, preserves_flags));
         }
+        value as u8
+    }
+
+    fn ordered_read16(address: usize) -> u16 {
+        let value: u32;
+        unsafe {
+            core::arch::asm!("ldrh {value:w}, [{address}]", "dsb osh",
+                address = in(reg) address, value = out(reg) value,
+                options(nostack, preserves_flags));
+        }
+        value as u16
     }
 
     fn ordered_write<T: Into<u32>>(address: usize, value: T) {
@@ -203,19 +215,19 @@ mod hardware {
 
     impl Bus for MmioBus {
         fn config_read16(&mut self, offset: u16) -> u16 {
-            u16::from_le(ordered_read(self.config + usize::from(offset)))
+            u16::from_le(ordered_read16(self.config + usize::from(offset)))
         }
         fn config_write16(&mut self, offset: u16, value: u16) {
             ordered_write(self.config + usize::from(offset), value.to_le());
         }
         fn config_read8(&mut self, offset: u16) -> u8 {
-            ordered_read(self.config + usize::from(offset))
+            ordered_read8(self.config + usize::from(offset))
         }
         fn config_write8(&mut self, offset: u16, value: u8) {
             ordered_write(self.config + usize::from(offset), value);
         }
         fn mmio_read16(&mut self, offset: u16) -> u16 {
-            u16::from_le(ordered_read(self.bar0 + usize::from(offset)))
+            u16::from_le(ordered_read16(self.bar0 + usize::from(offset)))
         }
         fn mmio_write8(&mut self, offset: u16, value: u8) {
             ordered_write(self.bar0 + usize::from(offset), value);
