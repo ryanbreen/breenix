@@ -152,7 +152,7 @@ fn head(s:Surface)->Head{let m=s.methods(1).unwrap();let words=core::array::from
 
     def test_only_window_records_publish_window_provenance(self):
         source = (ROOT / 'kernel/src/gpu/mod.rs').read_text()
-        begin = source.index('    if output.is_ok() && unwritten == 0 && window')
+        begin = source.index('    if output.is_ok() && unwritten == 0 && observer == Observer::Window')
         publication = item(source[begin:], '    if output.is_ok()')
         self.run_rust(r'''
 use std::sync::atomic::{AtomicU64,Ordering};
@@ -162,7 +162,7 @@ mod dev{pub fn backend()->u32{6}}
 mod record{pub const RESOURCE:usize=0;}
 static COUNT:AtomicU64=AtomicU64::new(0);
 mod gk208{pub mod timing{pub fn scanout_published(_:u64){super::super::COUNT.fetch_add(1,super::super::Ordering::Relaxed);}}}
-fn publish(observer:Observer){let window=observer!=Observer::Owner;let output:Result<(),()>=Ok(());let unwritten=0;let rec=[0;8];PUBLICATION}
+fn publish(observer:Observer){let output:Result<(),()>=Ok(());let unwritten=0;let rec=[0;8];PUBLICATION}
 #[test]fn window_counter_excludes_screen_checkpoints(){
  publish(Observer::Owner);publish(Observer::Screen);assert_eq!(COUNT.load(Ordering::Relaxed),0);
  publish(Observer::Window);assert_eq!(COUNT.load(Ordering::Relaxed),1);

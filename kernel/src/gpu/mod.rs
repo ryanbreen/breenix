@@ -5750,7 +5750,7 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     }
     let (id, fmt, tw, th, pitch, backing) = {
         #[cfg(target_arch = "x86_64")]
-        let native_scanout = if window && a.target == 0 && dev::backend() == abi::backend::GK208 {
+        let native_scanout = if observer == Observer::Window && a.target == 0 && dev::backend() == abi::backend::GK208 {
             Some(crate::gk208::observed_scanout()
                 .map_err(|_| Refused::Eio(readback_reason::BINDING_UNKNOWN, 0))?)
         } else { None };
@@ -6055,7 +6055,7 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
             .map_err(|_| EFAULT)
     })();
     #[cfg(target_arch = "x86_64")]
-    if output.is_ok() && unwritten == 0 && window && dev::backend() == abi::backend::GK208 {
+    if output.is_ok() && unwritten == 0 && observer == Observer::Window && dev::backend() == abi::backend::GK208 {
         // Sample the bytes actually published while the display transition is pinned.
         let resource = u64::from_le_bytes(rec[record::RESOURCE..record::RESOURCE + 8].try_into().unwrap());
         crate::gk208::timing::scanout_published(resource);
