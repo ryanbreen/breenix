@@ -16,6 +16,9 @@ SCRIPT = ROOT / 'scripts/screens/approve.py'
 spec = importlib.util.spec_from_file_location('screens_table', ROOT / 'tests/screens_table_test.py')
 table_check = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(table_check)
+spec = importlib.util.spec_from_file_location('screens_approve', SCRIPT)
+approve = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(approve)
 
 
 def canonical_id(rows):
@@ -71,6 +74,30 @@ class ApproveTest(unittest.TestCase):
         self.assertIn('approve failed:', result.stderr)
         self.assertEqual(self.table.read_bytes(), before)
         self.assertEqual({p.name: p.read_bytes() for p in (self.root / 'approvals').glob('*')}, saved)
+
+    def test_documentation_preserves_candidate_identity(self):
+        original = canonical_id(self.rows)
+        for patch in ({'expect': 'A blue rectangle.'}, {'expectCommit': 'b' * 40},
+                      {'expect': 'A blue rectangle.', 'expectCommit': 'b' * 40}):
+            rows = copy.deepcopy(self.rows)
+            rows[0].update(patch)
+            self.manifest.write_text(json.dumps({'version': 1, 'candidates_id': original, 'rows': rows}))
+            self.assertEqual(approve.candidates(self.manifest)[0], original)
+            self.assertEqual(approve.candidates_id(rows), original)
+        self.run_import()  # Existing operator decisions still import with documentation attached.
+        for field, value in [('sha256', 'e' * 64), ('mode', '1x2'), ('case', 'draw/changed')]:
+            with self.subTest(field=field):
+                rows = copy.deepcopy(self.rows)
+                rows[0][field] = value
+                self.assertNotEqual(approve.candidates_id(rows), original)
+                self.manifest.write_text(json.dumps({'version': 1, 'candidates_id': original, 'rows': rows}))
+                with self.assertRaisesRegex(ValueError, 'candidates id mismatch'):
+                    approve.candidates(self.manifest)
+        rows = copy.deepcopy(self.rows)
+        rows[0]['foo'] = 'unknown'
+        self.manifest.write_text(json.dumps({'version': 1, 'candidates_id': approve.candidates_id(rows), 'rows': rows}))
+        with self.assertRaisesRegex(ValueError, 'missing or unknown fields'):
+            approve.candidates(self.manifest)
 
     def test_approve_reject_and_append_only_evidence(self):
         rows = self.run_import()
