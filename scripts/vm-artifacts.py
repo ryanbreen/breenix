@@ -26,24 +26,36 @@ def seal(root, run, source_commit):
     artifacts = {name: digest(run / name) for name in ('system.img', 'home.img', 'power-token')}
     if source_commit:
         artifacts['kernel'] = digest(run / 'kernel')
+        if (run / 'fault-kernel').exists():
+            artifacts['fault-kernel'] = digest(run / 'fault-kernel')
     build = dict(commit=commit if source_commit else None, dirty=dirty, sourceBuilt=bool(source_commit), artifacts=artifacts)
     (run / 'build.json').write_text(json.dumps(build) + '\n')
 
 
-def verify(root, run, kernel):
+def verify(root, run, kernel, fault=False):
     run = Path(run)
     build = json.loads((run / 'build.json').read_text())
     # QEMU uses this private copy, rather than a mutable shared target output.
     shutil.copyfile(kernel, run / 'boot-kernel')
     if digest(run / 'power-token') != build['artifacts']['power-token']:
         raise ValueError('VM power token differs from the sealed token')
+    if fault and build.get('sourceBuilt') is not True:
+        raise ValueError('fault boot requires a source-built kernel')
     eligible = False
+    expected = build['artifacts'].copy()
+    continuation = run / 'continuation.json'
+    if continuation.exists():
+        seal = json.loads(continuation.read_text())
+        if seal['buildCommit'] != build.get('commit'):
+            raise ValueError('continuation belongs to a different build')
+        expected.update(seal['disks'])
+    for name in ('system.img', 'home.img'):
+        if digest(run / name) != expected[name]:
+            raise ValueError('VM artifacts differ from the latest seal (disk)')
     if build.get('sourceBuilt') is True:
-        expected = build['artifacts']
-        actual = {name: digest(run / ('boot-kernel' if name == 'kernel' else name))
-                  for name in ('kernel', 'system.img', 'home.img', 'power-token')}
-        if actual != expected:
-            raise ValueError('VM artifacts differ from the source build')
+        kernel_name = 'fault-kernel' if fault else 'kernel'
+        if digest(run / 'boot-kernel') != expected.get(kernel_name):
+            raise ValueError('VM artifacts differ from the source build (kernel)')
         if build['commit'] != git(root, 'rev-parse', 'HEAD') or git(root, 'status', '--porcelain'):
             raise ValueError('source build does not match the clean tools commit')
         eligible = build.get('dirty') is False
@@ -52,11 +64,32 @@ def verify(root, run, kernel):
     return receipt
 
 
+def continuation(run):
+    run = Path(run)
+    boot = run / 'boots' / (run / 'current').read_text().strip()
+    events = [json.loads(line) for line in (boot / 'events.jsonl').read_text().splitlines()]
+    requested = False
+    verified = False
+    for event in events:
+        if event.get('event') == 'requested-shutdown':
+            requested = event.get('action') == 'poweroff'
+        if event.get('event') == 'SHUTDOWN' and event.get('data', {}).get('reason') == 'guest-shutdown' and requested:
+            verified = True
+    if verified:
+        build = json.loads((run / 'build.json').read_text())
+        seal = {'buildCommit': build.get('commit'), 'disks': {name: digest(run / name) for name in ('system.img', 'home.img')}}
+        tmp = run / 'continuation.json.tmp'
+        tmp.write_text(json.dumps(seal) + '\n')
+        tmp.replace(run / 'continuation.json')
+
+
 if __name__ == '__main__':
     operation, root, run, value = sys.argv[1:]
     if operation == 'seal':
         seal(root, run, value)
-    elif operation == 'verify':
-        verify(root, run, value)
+    elif operation in ('verify', 'verify-fault'):
+        verify(root, run, value, operation == 'verify-fault')
+    elif operation == 'continuation':
+        continuation(run)
     else:
         raise SystemExit('expected seal or verify')
