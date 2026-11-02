@@ -203,6 +203,21 @@ fn calls_qemu_host_lock_acquire(script: &str) -> bool {
     })
 }
 
+fn arm_host_lock_held(script: &str) -> bool {
+    sources_qemu_host_lock(script) && calls_qemu_host_lock_acquire(script)
+}
+
+#[test]
+fn persistent_launcher_uses_the_shared_mac_boot_slot() {
+    let launcher = repo_text("scripts/vm-persistent.sh");
+    assert!(arm_host_lock_held(&launcher));
+    for missing in ["source \"$ROOT/scripts/host-slots.sh\"", "host_slots_start \"$0\"", "host_slot_acquire mac-boot"] {
+        assert!(launcher.contains(missing));
+        assert!(!arm_host_lock_held(&launcher.replace(missing, "# removed")), "must reject missing {missing}");
+    }
+    assert!(!arm_host_lock_held("# source scripts/host-slots.sh\n# host_slots_start \"$0\"\n# host_slot_acquire mac-boot"));
+}
+
 fn native_arm64_launches_use_wrapper(script: &str) -> bool {
     let lines: Vec<&str> = script.lines().collect();
     for (index, line) in lines.iter().enumerate() {
@@ -255,7 +270,7 @@ fn every_aarch64_qemu_launch_script_sources_and_acquires_the_host_lock() {
     for (path, text) in &launching {
         let sourced = sources_qemu_host_lock(text);
         let acquires = calls_qemu_host_lock_acquire(text);
-        if !sourced || !acquires {
+        if !arm_host_lock_held(text) {
             let missing = match (sourced, acquires) {
                 (false, false) => "sources lib/qemu-host-lock.sh AND calls qemu_host_lock_acquire",
                 (false, true) => "sources lib/qemu-host-lock.sh",
