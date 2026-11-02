@@ -124,6 +124,7 @@ root, mode = Path(sys.argv[1]), sys.argv[2]
 args = (root / 'qemu-args').read_text().splitlines()
 settings = [args[i + 1] for i, arg in enumerate(args[:-1]) if arg == '-fw_cfg']
 assert settings == [f'name=opt/breenix/mode,string={mode}'], args
+assert 'i6300esb' in args and 'watchdog=reset' in args
 # QEMU assigns virtio-mmio buses backwards; root must enumerate before home.
 assert args.index('virtio-blk-device,drive=home') < args.index('virtio-blk-device,drive=ext2'), args
 if sys.platform == 'darwin':
@@ -195,6 +196,7 @@ git -C "$fixture" add -f .gitignore
 git -C "$fixture" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm ignore
 cp "$fixture/kernel" "$fixture/run/kernel"
 cp "$fixture/kernel" "$fixture/run/fault-kernel"
+printf "panic-reboot\n" > "$fixture/run/fault-kind"
 python3 "$fixture/scripts/vm-artifacts.py" seal "$fixture" "$fixture/run" "$(git -C "$fixture" rev-parse HEAD)"
 STUB_SCENARIO=poweroff boot_fixture --mode console || fail 'authenticated poweroff launch failed'
 STUB_SCENARIO=host boot_fixture --mode console || fail 'continuation rejected'
@@ -222,7 +224,8 @@ import json, sys
 from pathlib import Path
 root, scenario = Path(sys.argv[1]), sys.argv[2]
 args = (root / 'qemu-args').read_text().splitlines()
-assert args[args.index('-action') + 1] == 'reboot=shutdown'
+assert 'reboot=shutdown' in args and 'watchdog=reset' in args
+assert 'i6300esb' in args
 assert '-drive' not in args and not any('virtio-blk' in a for a in args)
 run = root / 'run'
 boot = run / 'boots' / (run / 'current').read_text().strip()
@@ -233,3 +236,30 @@ assert any(e['event'] == 'panic-reset-observed' for e in events) == (scenario ==
 PY
 done
 echo 'vm-persistent continuation and fault boot checks passed'
+
+# Watchdog faults retain both disks and stage the requested intent before launch.
+reject_fault() {
+    if env -u BREENIX_VM_PERSISTENT_SUPERVISED PATH="$fixture/bin:$PATH" CAPTURE="$fixture" TMPDIR="$fixture" BREENIX_QEMU_UI_LAUNCHER=env STUB_SCENARIO=host "$fixture/scripts/vm-persistent.sh" qemu fault-boot --run-dir "$fixture/run" "$@" > /dev/null 2>&1; then fail "accepted fault: $*"; fi
+}
+reject_fault --inject feeder-hang
+reject_fault --inject unknown
+rm "$fixture/run/fault-kind" "$fixture/run/fault-kernel"
+python3 "$fixture/scripts/vm-artifacts.py" seal "$fixture" "$fixture/run" "$(git -C "$fixture" rev-parse HEAD)"
+reject_fault --inject feeder-hang
+# Use a real ext2 image for debugfs staging and seal it as a watchdog build.
+cp "$tmp/source.img" "$fixture/run/system.img"
+cp "$fixture/kernel" "$fixture/run/fault-kernel"
+printf 'watchdog\n' > "$fixture/run/fault-kind"
+rm -f "$fixture/run/continuation.json"
+python3 "$fixture/scripts/vm-artifacts.py" seal "$fixture" "$fixture/run" "$(git -C "$fixture" rev-parse HEAD)"
+for inject in feeder-hang health-hang; do
+    env -u BREENIX_VM_PERSISTENT_SUPERVISED PATH="$fixture/bin:$PATH" CAPTURE="$fixture" TMPDIR="$fixture" BREENIX_QEMU_UI_LAUNCHER=env STUB_SCENARIO=host "$fixture/scripts/vm-persistent.sh" qemu fault-boot --run-dir "$fixture/run" --inject "$inject" || fail "watchdog fault boot $inject"
+    [ "$(debugfs -R 'cat /etc/breenix/watchdog-fault' "$fixture/run/system.img" 2>/dev/null)" = "$inject" ] || fail 'watchdog intent readback'
+    python3 - "$fixture/qemu-args" <<'PYARGS'
+import sys
+a = open(sys.argv[1]).read().splitlines()
+assert 'i6300esb' in a and 'watchdog=reset' in a and 'reboot=shutdown' not in a
+assert 'virtio-blk-device,drive=home' in a and 'virtio-blk-device,drive=ext2' in a
+PYARGS
+done
+echo 'vm-persistent watchdog fault checks passed'

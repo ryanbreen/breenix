@@ -11,6 +11,25 @@ ARTIFACTS = runpy.run_path(str(ROOT / 'scripts/vm-artifacts.py'))
 
 
 class VmArtifacts(unittest.TestCase):
+    def test_watchdog_fault_kernel_is_sealed_and_verified(self):
+        with tempfile.TemporaryDirectory() as name:
+            repo, run = Path(name) / 'repo', Path(name) / 'run'
+            repo.mkdir(); run.mkdir()
+            def git(*args):
+                return subprocess.check_output(['git', '-C', str(repo), *args], text=True).strip()
+            git('init', '-q'); git('config', 'user.name', 'Fixture')
+            git('config', 'user.email', 'fixture@example.invalid')
+            git('commit', '--allow-empty', '-qm', 'fixture')
+            for path in ('kernel', 'fault-kernel', 'system.img', 'home.img', 'power-token'):
+                (run / path).write_bytes(path.encode())
+            (run / 'fault-kind').write_text('watchdog\n')
+            ARTIFACTS['seal'](repo, run, git('rev-parse', 'HEAD'))
+            receipt = ARTIFACTS['verify'](repo, run, run / 'fault-kernel', True)
+            self.assertEqual(receipt['faultKind'], 'watchdog')
+            (run / 'fault-kernel').write_bytes(b'replaced')
+            with self.assertRaisesRegex(ValueError, 'artifacts differ'):
+                ARTIFACTS['verify'](repo, run, run / 'fault-kernel', True)
+
     def test_imported_disks_can_change_between_diagnostic_launches(self):
         with tempfile.TemporaryDirectory() as name:
             run = Path(name)
