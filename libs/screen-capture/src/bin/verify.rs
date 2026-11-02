@@ -17,8 +17,9 @@ fn verify(disk: &str, serial: &str) -> Result<(),String> {
         let hash = words[5].strip_prefix("sha256=").unwrap();
         let mode = words[6].strip_prefix("mode=").ok_or("serial mode")?;
         if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) { return Err("serial digest".into()); }
-        first.entry(hash.to_string()).or_insert_with(||
+        let previous = first.entry(hash.to_string()).or_insert_with(||
             (words[1].to_string(),words[3].to_string(),words[4].to_string(),mode.to_string()));
+        if previous.3 != mode { return Err(format!("serial mode differs for repeated digest: {hash}")); }
     }
     if first.is_empty() { return Err("serial has no SCREEN pictures".into()); }
     let mut input = File::open(disk).map_err(|e| e.to_string())?;
@@ -79,6 +80,7 @@ mod tests {
         std::fs::write(&serial,&line).unwrap();
         assert!(verify(disk.to_str().unwrap(),serial.to_str().unwrap()).is_ok());
         for bad in [line.replace("mode=1x1","mode=2x1"),line.replace("draw/one","draw/two"),
+            format!("{line}{}", line.replace("draw/one", "draw/two").replace("mode=1x1", "mode=2x1")),
             format!("{line}SUITE gpu SCREEN draw/two end sha256={} mode=1x1\n","0".repeat(64))] {
             std::fs::write(&serial,bad).unwrap();
             assert!(verify(disk.to_str().unwrap(),serial.to_str().unwrap()).is_err());
