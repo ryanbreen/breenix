@@ -32,3 +32,34 @@ pub fn rectangle(mode: [u32; 2], binding: [u32; 2], origin: Option<[u32; 2]>) ->
     (w != 0 && h != 0 && x.checked_add(w)? <= binding[0] && y.checked_add(h)? <= binding[1])
         .then_some([x, y, w, h])
 }
+
+// On a refused request the suite endpoint publishes this status in the record
+// buffer. Ordinary READBACK and SCANOUT_READBACK records are unchanged.
+#[derive(Clone, Copy)]
+pub struct Failure {
+    pub errno: i64,
+    pub reason: u32,
+    pub failed_submission: u64,
+    /// One for an end state the producer deliberately invalidated.
+    pub declared: u32,
+}
+impl Failure {
+    pub fn encode(self) -> [u8; 32] {
+        let mut bytes = [0; 32];
+        bytes[..8].copy_from_slice(b"SCREENER");
+        bytes[8..16].copy_from_slice(&self.errno.to_le_bytes());
+        bytes[16..20].copy_from_slice(&self.reason.to_le_bytes());
+        bytes[20..24].copy_from_slice(&self.declared.to_le_bytes());
+        bytes[24..32].copy_from_slice(&self.failed_submission.to_le_bytes());
+        bytes
+    }
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 32 || &bytes[..8] != b"SCREENER" { return None; }
+        Some(Self {
+            errno: i64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+            reason: u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
+            failed_submission: u64::from_le_bytes(bytes[24..32].try_into().unwrap()),
+            declared: u32::from_le_bytes(bytes[20..24].try_into().unwrap()),
+        })
+    }
+}

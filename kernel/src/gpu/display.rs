@@ -395,6 +395,7 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
         c.subs.insert(
             serial,
             Sub {
+                deliberate_error: false,
                 writer: None,
                 ctx: ctx_id,
                 n,

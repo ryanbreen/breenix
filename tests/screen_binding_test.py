@@ -42,7 +42,7 @@ SNAPSHOT
  BOUND.store(resource,Ordering::Relaxed);
  assert!(matches!(snapshot(),Err(e) if e=="no-case-scanout"),"published resource {resource}");
 }}
-'''.replace('ABI',(ROOT/'libs/gpu-abi/src/screen.rs').read_text()).replace('POLICY',function(source,'pub(super) fn non_case_binding(')).replace('SNAPSHOT',function(source,'fn snapshot('))
+'''.replace('ABI',(ROOT/'libs/gpu-abi/src/screen.rs').read_text()).replace('POLICY',function(source,'pub(super) fn non_case_binding(')).replace('SNAPSHOT',function(source,'fn snapshot(')).replace('pub(super)', 'pub')
         with tempfile.TemporaryDirectory() as directory:
             p=Path(directory);(p/'test.rs').write_text(fixture)
             priority=['taskpolicy','-b'] if sys.platform=='darwin' else []

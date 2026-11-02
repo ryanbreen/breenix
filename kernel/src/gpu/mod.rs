@@ -394,6 +394,7 @@ struct Depth {
 }
 
 struct Sub {
+    deliberate_error: bool,
     ctx: u32,
     n: u32,
     fence: u64,
@@ -484,6 +485,7 @@ struct Res {
     writers: u32,
     invalid: bool,
     invalidated_by: u64,
+    deliberate_invalidation: u64,
     dropped: bool,
     holds: u32,
     lost: bool,
@@ -1592,6 +1594,7 @@ impl Core {
         sub.published = true;
         if let Some(writer) = &sub.writer { writer.publish(status); }
         let (ctx_id, n, fence, presenting) = (sub.ctx, sub.n, sub.native_fence, sub.present);
+        let deliberate_error = sub.deliberate_error;
         let written = core::mem::take(&mut sub.written);
         let whole = core::mem::take(&mut sub.whole);
         let ok = status == fence_status::OK;
@@ -1638,6 +1641,7 @@ impl Core {
             if let Some(r) = self.resources.get_mut(id) {
                 r.writers = r.writers.saturating_sub(1);
                 completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, ok, whole.contains(id));
+                if deliberate_error && r.invalidated_by == serial { r.deliberate_invalidation = serial; }
                 if ok {
                     r.generation += 1;
                     r.last = Some(LastWrite { ctx: ctx_id, device_ctx: dev::context_id(ctx_id), fence, serial, answer, kind: dev::draw_kind() });
@@ -3185,6 +3189,7 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
         writers: 0,
         invalid: false,
         invalidated_by: 0,
+        deliberate_invalidation: 0,
         dropped: false,
         holds: 0,
         lost: false,
@@ -5082,6 +5087,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             if let Some(r) = c.resources.get_mut(rid) { r.holds += 1; }
         }
         c.subs.insert(serial, Sub {
+            deliberate_error: forced,
             writer: Some(writer.clone()),
             ctx: id,
             n,
@@ -5611,18 +5617,35 @@ pub fn observe_scanout(dst: u64, dst_len: u64, record: u64) -> Result<u64, (i64,
 /// Pixel-only screen evidence, authorized by the suite-only root device. Ordinary
 /// READBACK and SCANOUT_READBACK still require complete composition provenance.
 pub fn observe_screen(request: abi::screen::Request) -> Result<(), i64> {
+    // A refusal has its own small output, even when read_back stops before its
+    // full record probe. An invalid status destination is still EFAULT.
+    probe_writable(request.record, 32)?;
     crate::console::await_repaint();
     let _path = GpuPath::enter();
-    if !matches!(with_core(|c| c.admission()), Some(Ok(()))) { return Err(ENODEV); }
-    let mut a = abi::Readback::ZERO;
-    a.pixels = request.pixels;
-    a.pixels_len = request.len;
-    a.record = request.record;
-    match read_back(caller()?, &mut a, Observer::Screen, None) {
-        Ok(_) => Ok(()),
-        Err(Refused::Errno(e)) => Err(e),
-        Err(Refused::Eio(_, _)) => Err(EIO),
+    let result = if !matches!(with_core(|c| c.admission()), Some(Ok(()))) {
+        Err(Refused::Errno(ENODEV))
+    } else {
+        let mut a = abi::Readback::ZERO;
+        a.pixels = request.pixels;
+        a.pixels_len = request.len;
+        a.record = request.record;
+        caller().map_err(Refused::Errno).and_then(|tgid| read_back(tgid, &mut a, Observer::Screen, None))
+    };
+    let mut failure = match result {
+        Ok(_) => return Ok(()),
+        Err(Refused::Errno(errno)) => abi::screen::Failure { errno, reason: 0, failed_submission: 0, declared: 0 },
+        Err(Refused::Eio(reason, failed_submission)) => abi::screen::Failure { errno: EIO, reason, failed_submission, declared: 0 },
+    };
+    if failure.errno == EIO && failure.reason == readback_reason::TARGET_INVALID {
+        failure.declared = with_core(|c| c.display.binding.and_then(|b| c.resources.get(&b.id))
+            .is_some_and(|r| r.invalid && r.invalidated_by == failure.failed_submission
+                && r.deliberate_invalidation == failure.failed_submission
+                && failure.failed_submission != 0)).unwrap_or(false) as u32;
     }
+    let bytes = failure.encode();
+    crate::syscall::userptr::write_user_bytes(request.record, bytes.as_ptr(), bytes.len())
+        .map_err(|_| EFAULT)?;
+    Err(failure.errno)
 }
 
 /// Who observes target 0, the scanout.

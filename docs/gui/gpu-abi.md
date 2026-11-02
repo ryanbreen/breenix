@@ -896,8 +896,14 @@ The root-only suite-boot `/dev/screen-evidence` write endpoint accepts a 32-byte
 `SCREENRB` request (8-byte tag, then little-endian u64 pixels pointer, buffer length,
 and record pointer). It observes the pinned binding's mode rectangle, at the known
 scan origin, with the GPU core's poison/transfer checks. Pixels and record v2 are
-written only after successful observation; errors return an errno. This endpoint
+written only after successful observation. Errors return the endpoint errno and
+write a 32-byte status to the record pointer: `SCREENER` (8 bytes), errno (i64),
+EIO reason (u32), declared end-state flag (u32), invalidating submission (u64),
+all integers little-endian. The flag is one only when the bound target's
+invalidating submission is the deliberate error-producing submission. Unrelated
+or unexpected errors keep the flag zero. An invalid status destination returns
+EFAULT. This endpoint
 omits composition provenance (flag bit 1 and composite fields zero), so any number
 of windows can be pictured. Ordinary READBACK and SCANOUT_READBACK still refuse
-composition provenance overflow with reason 11 and untouched outputs. The record's
+composition provenance overflow with reason 11 and untouched outputs. A successful record's
 reserved bytes remain zero. See [screen-proof.md](screen-proof.md).

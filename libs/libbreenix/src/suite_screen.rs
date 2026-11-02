@@ -25,7 +25,9 @@ pub(super) fn validate(rec: &[u8; r::SIZE], mode: Mode, backend: u32, runner: u6
         || word(rec, r::UNWRITTEN) != 0 || word(rec, r::BACKEND) != backend {
         return Err("invalid-scanout");
     }
-    if quad(rec, r::CONTEXT) == 0 || quad(rec, r::CONTEXT) == runner {
+    // Native records name one shared hardware channel. Its resource identifies
+    // the runner surface; snapshot and reuse exclude that resource separately.
+    if quad(rec, r::CONTEXT) == 0 || (backend != gpu::abi::backend::GK208 && quad(rec, r::CONTEXT) == runner) {
         return Err("runner-context");
     }
     Ok(())
@@ -51,7 +53,15 @@ pub(super) fn format_record(suite: &str, case: &str, name: &str, result: Result<
             for byte in hash { let _ = write!(line, "{byte:02x}"); }
             let _ = write!(line, " mode={}x{} binding={}x{}", mode.width, mode.height, binding.width, binding.height);
         }
-        Err(reason) => { let _ = write!(line, " error={reason}"); }
+        Err(reason) => {
+            if let Some(detail) = reason.strip_prefix("unobservable reason=") {
+                if name == "end" { let _ = write!(line, " {reason}"); }
+                else {
+                    let fields = detail.split_once(' ').map_or("", |(_, fields)| fields);
+                    let _ = write!(line, " error=readback-failed {fields}");
+                }
+            } else { let _ = write!(line, " error={reason}"); }
+        }
     }
     line.push('\n');
     line
@@ -61,6 +71,12 @@ pub(super) fn pack(body: &str) -> Vec<u8> {
     let mut bytes = libpixcheck::sha256(body.as_bytes()).to_vec();
     bytes.extend_from_slice(body.as_bytes());
     bytes
+}
+
+fn detail_fields(errno: &str, reason: &str, failed: &str) -> bool {
+    errno.strip_prefix("errno=").is_some_and(|n| n.parse::<i32>().is_ok_and(|n| n > 0))
+        && reason.strip_prefix("eio_reason=").is_some_and(|n| n.parse::<u32>().is_ok())
+        && failed.strip_prefix("failed_submission=").is_some_and(|n| n.parse::<u64>().is_ok())
 }
 
 pub(super) fn unpack<'a>(bytes: &'a [u8], suite: &str, case: &str) -> Result<&'a str, &'static str> {
@@ -90,6 +106,11 @@ pub(super) fn unpack<'a>(bytes: &'a [u8], suite: &str, case: &str) -> Result<&'a
                 if bw < w || bh < h { return Err("side-file-mode"); }
             }
             [error] if error.strip_prefix("error=").is_some_and(named) => {}
+            [error, errno, reason, failed] if error.strip_prefix("error=").is_some_and(named)
+                && detail_fields(errno, reason, failed) => {}
+            ["unobservable", reason, errno, eio, failed] if *name == "end"
+                && matches!(*reason, "reason=device-reset" | "reason=target-invalidated")
+                && detail_fields(errno, eio, failed) => {}
             _ => return Err("side-file-fields"),
         }
         names.push(*name);
@@ -153,14 +174,14 @@ impl Drop for ClockMap {
     }
 }
 
-type Snapshot = Result<([u8; 32], Mode, Mode), &'static str>;
+type Snapshot = Result<([u8; 32], Mode, Mode), String>;
 #[derive(Default)]
 pub(super) struct EndCheckpoint { pub(super) result: Option<Snapshot> }
 impl EndCheckpoint {
     pub(super) fn before_drop(&mut self, observe: impl FnOnce() -> Snapshot) {
         let result = observe();
         // No binding owned by the case is not an observation failure.
-        if !matches!(result, Err("no-case-scanout")) { self.result = Some(result); }
+        if !matches!(&result, Err(e) if e == "no-case-scanout") { self.result = Some(result); }
     }
 }
 static END: Mutex<EndCheckpoint> = Mutex::new(EndCheckpoint { result: None });
@@ -249,7 +270,7 @@ pub(super) fn overdue(now: u64) -> bool {
 pub(super) fn before_helper_drop() {
     if !in_case() { return; }
     if CLOCK.load(Ordering::Relaxed).is_null() {
-        END.lock().unwrap().result = Some(Err("clock-allocation"));
+        END.lock().unwrap().result = Some(Err("clock-allocation".into()));
         return;
     }
     timed(|| END.lock().unwrap().before_drop(snapshot));
@@ -284,6 +305,7 @@ pub(super) fn judged_readback(pixels: &[u8], rec: &[u8; r::SIZE]) {
     let mode = Mode { width: word(rec, r::TARGET_WIDTH), height: word(rec, r::TARGET_HEIGHT), scale: 1, reserved: 0 };
     let backend = word(rec, r::BACKEND);
     if validate(rec, mode, backend, RUNNER.load(Ordering::Relaxed)).is_err()
+        || non_case_binding(true, quad(rec, r::RESOURCE), 0, RUNNER_RESOURCE.load(Ordering::Relaxed))
         || pixels.len() != mode.width as usize * mode.height as usize * 4 { return; }
     timed(|| {
         *REUSE.lock().unwrap() = Some(PendingReadback { pixels: pixels.to_vec(), record: *rec, mode, backend });
@@ -310,19 +332,34 @@ pub(super) fn non_case_binding(known: bool, resource: u64, console: u64, runner:
     known && (resource == 0 || resource == console || resource == runner)
 }
 
-fn snapshot() -> Result<([u8; 32], Mode, Mode), &'static str> {
-    if let Some(saved) = reuse_snapshot() { return saved; }
+/// Classify only facts established by the endpoint; an error during a transfer
+/// (including DEVICE_RESET) remains an observation defect, not a declaration.
+pub(super) fn endpoint_error(errno: i32, record: &[u8]) -> String {
+    if i64::from(errno) == gpu::abi::screen::NO_CASE { return "no-case-scanout".into(); }
+    let failure = gpu::abi::screen::Failure::decode(record).filter(|f| f.errno == i64::from(errno));
+    let (reason, failed) = failure.map_or((0, 0), |f| (f.reason, f.failed_submission));
+    let declared = failure.is_some_and(|f| f.declared == 1);
+    let state = match (errno, reason, failed, declared) {
+        (5, gpu::abi::readback_reason::TARGET_INVALID, 1.., true) => "unobservable reason=target-invalidated",
+        (5, gpu::abi::readback_reason::TARGET_LOST, _, true) => "unobservable reason=device-reset",
+        _ => "readback-failed",
+    };
+    std::format!("{state} errno={errno} eio_reason={reason} failed_submission={failed}")
+}
+
+fn snapshot() -> Snapshot {
     let (status, modes) = gpu::modes();
-    if status != 0 { return Err("mode-failed"); }
+    if status != 0 { return Err("mode-failed".into()); }
     // An in-flight PRESENT may make MODES transiently unknown. Only the pinned
     // observer settles that transition; unknown does not identify a non-case frame.
     if non_case_binding(modes.binding_known != 0, modes.scanout_resource, modes.console_resource,
         RUNNER_RESOURCE.load(Ordering::Relaxed)) {
-        return Err("no-case-scanout");
+        return Err("no-case-scanout".into());
     }
-    if RUNNER.load(Ordering::Relaxed) == 0 { return Err("runner-unknown"); }
+    if let Some(saved) = reuse_snapshot() { return saved; }
+    if RUNNER.load(Ordering::Relaxed) == 0 { return Err("runner-unknown".into()); }
     let (status, caps) = gpu::caps();
-    if status != 0 { return Err("caps-failed"); }
+    if status != 0 { return Err("caps-failed".into()); }
     let mode = gpu::current_mode().map_err(|_| "mode-failed")?;
     let len = (mode.width as usize).checked_mul(mode.height as usize).and_then(|n| n.checked_mul(4))
         .filter(|n| *n <= i32::MAX as usize).ok_or("mode-size")?;
@@ -334,13 +371,10 @@ fn snapshot() -> Result<([u8; 32], Mode, Mode), &'static str> {
     let request = gpu::abi::screen::Request { pixels: pixels.as_mut_ptr() as u64, len: pixels.len() as u64,
         record: rec.as_mut_ptr() as u64 }.encode();
     let mut device = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence").map_err(|_| "readback-open")?;
-    device.write_all(&request).map_err(|error| {
-        if error.raw_os_error() == Some(gpu::abi::screen::NO_CASE as i32) { "no-case-scanout" }
-        else { "readback-failed" }
-    })?;
-    if quad(&rec, r::CONTEXT) == RUNNER.load(Ordering::Relaxed)
+    device.write_all(&request).map_err(|error| endpoint_error(error.raw_os_error().unwrap_or(0), &rec))?;
+    if (caps.backend != gpu::abi::backend::GK208 && quad(&rec, r::CONTEXT) == RUNNER.load(Ordering::Relaxed))
         || non_case_binding(true, quad(&rec, r::RESOURCE), modes.console_resource,
-            RUNNER_RESOURCE.load(Ordering::Relaxed)) { return Err("no-case-scanout"); }
+            RUNNER_RESOURCE.load(Ordering::Relaxed)) { return Err("no-case-scanout".into()); }
     validate(&rec, mode, caps.backend, RUNNER.load(Ordering::Relaxed))?;
     let binding = Mode { width: word(&rec, r::TARGET_WIDTH), height: word(&rec, r::TARGET_HEIGHT), scale: 1, reserved: 0 };
     Ok((canonical_hash(&mut pixels, mode)?, mode, binding))
@@ -352,12 +386,12 @@ fn append(name: &str, end: bool) -> Result<(), &'static str> {
     let suite = prefix.strip_prefix("SUITE ").and_then(|s| s.strip_suffix(' ')).ok_or("outside-case")?;
     let result = if end {
         match snapshot() {
-            Err("no-case-scanout") => END.lock().unwrap().result.take().unwrap_or(Err("no-case-scanout")),
+            Err(e) if e == "no-case-scanout" => END.lock().unwrap().result.take().unwrap_or(Err(e)),
             result => result,
         }
-    } else if CLOCK.load(Ordering::Relaxed).is_null() { Err("clock-allocation") } else { timed(snapshot) };
-    if end && matches!(result, Err("no-case-scanout")) { return Ok(()); }
-    let line = format_record(suite, case, name, result);
+    } else if CLOCK.load(Ordering::Relaxed).is_null() { Err("clock-allocation".into()) } else { timed(snapshot) };
+    if end && matches!(&result, Err(e) if e == "no-case-scanout") { return Ok(()); }
+    let line = format_record(suite, case, name, result.as_ref().map(|v| *v).map_err(String::as_str));
     let mut lines = LINES.lock().unwrap();
     if lines.lines().any(|line| line.split_whitespace().nth(4) == Some(name)) { return Err("duplicate-checkpoint"); }
     lines.push_str(&line);

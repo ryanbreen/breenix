@@ -15,15 +15,16 @@ NAME = r'[a-z0-9]+(?:-[a-z0-9]+)*'
 CASE = rf'{NAME}/{NAME}'
 MODE = r'[1-9][0-9]*x[1-9][0-9]*'
 HEX64 = r'[0-9a-f]{64}'
+DETAIL = r' errno=[1-9][0-9]* eio_reason=[0-9]+ failed_submission=[0-9]+'
 RECORD = re.compile(
     rf'SUITE (?P<suite>{NAME}) SCREEN (?P<case>{CASE}) (?P<checkpoint>{NAME}) '
-    rf'(?:error=(?P<error>{NAME})|sha256=(?P<sha>{HEX64}) mode=(?P<mode>{MODE})'
+    rf'(?:error=(?P<error>{NAME})(?:{DETAIL})?|unobservable reason=(?P<unobservable>device-reset|target-invalidated)(?:{DETAIL})?|sha256=(?P<sha>{HEX64}) mode=(?P<mode>{MODE})'
     rf' binding=(?P<binding>{MODE})'
     rf'(?: crc=(?P<crc>[0-9a-f]{{8}}) crc2=(?P<crc2>[0-9a-f]{{8}})'
     rf' raster=(?P<raster>{MODE}) out=(?P<out>sor[0-9]+))?)\Z')
 
 
-def score(manifest, serial, table, native=False, config=None, captures=None):
+def score(manifest, serial, table, native=False, config=None, captures=None, ineligible=None):
     suite = manifest['id']
     cases = {f"{category['id']}/{case['id']}" for category in manifest['categories']
              for case in category['cases']}
@@ -38,6 +39,7 @@ def score(manifest, serial, table, native=False, config=None, captures=None):
         raise ValueError('unsupported table version')
     records = {}
     reported = set()
+    seen = set()
     for line in serial.splitlines():
         case = re.match(rf'^SUITE {re.escape(suite)} CASE ({CASE}) ', line)
         if case:
@@ -58,8 +60,15 @@ def score(manifest, serial, table, native=False, config=None, captures=None):
             raise ValueError(f'SCREEN names unknown case {key[0]}')
         if key[0] not in reported:
             raise ValueError(f'SCREEN precedes CASE for {key[0]}')
-        if key in records:
+        if key in seen:
             raise ValueError(f'duplicate checkpoint {key[0]} {key[1]}')
+        seen.add(key)
+        if record['unobservable']:
+            if key[1] != 'end':
+                raise ValueError('only end checkpoints may declare an unobservable state')
+            if ineligible is not None:
+                ineligible.append((key[0], key[1], record['unobservable']))
+            continue
         if record['error']:
             raise ValueError(f'checkpoint {key[0]} {key[1]} error={record["error"]}')
         records[key] = record
@@ -105,12 +114,15 @@ def main():
             raise ValueError('--native requires a 64-hex --config')
         manifest = json.loads(args.manifest.read_text(encoding='utf-8'))
         table = json.loads(args.table.read_text(encoding='utf-8'))
+        ineligible = []
         count, extra = score(manifest, args.serial_log.read_text(encoding='utf-8'), table,
-                             args.native, args.config, args.host_captures)
+                             args.native, args.config, args.host_captures, ineligible)
     except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
         print(f'SCREENS FAIL: {exc}')
         return 1
     print(f'SCREENS PASS approved={count} matched={count} unapproved={len(extra)}')
+    for case, checkpoint, reason in ineligible:
+        print(f'INELIGIBLE {case} {checkpoint} reason={reason}')
     for case, checkpoint in extra:
         print(f'UNAPPROVED {case} {checkpoint}')
     return 0
