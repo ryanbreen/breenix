@@ -24,6 +24,7 @@ class CandidateTest(unittest.TestCase):
             for name in ('vm-persistent.sh', 'vm-artifacts.py', 'vm_slots.py', 'vm_site.py'):
                 shutil.copy(ROOT / 'scripts' / name, root / 'scripts' / name)
             shutil.copy(ROOT / 'scripts/metal/metal_root.py', root / 'scripts/metal/metal_root.py')
+            shutil.copy(ROOT / 'scripts/metal/metal_probe.py', root / 'scripts/metal/metal_probe.py')
             for name, body in {
                 'bin/taskpolicy': '#!/bin/sh\nshift\nexec "$@"\n',
                 'bin/cargo': '#!/bin/sh\nmkdir -p target/aarch64-breenix-kernel/release\nprintf kernel > target/aarch64-breenix-kernel/release/kernel-aarch64\n',
