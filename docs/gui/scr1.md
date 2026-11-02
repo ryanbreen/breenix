@@ -28,8 +28,9 @@ address and u64 byte length. On ARM QEMU, the endpoint additionally requires
 `opt/breenix/screen-capture=on` and exactly one disk carrying the marker below.
 It validates sector data with bounded buffers, commits the first sector after
 the digest matches, flushes before success,
-and remembers digests across case forks and suite execs. An I/O failure
-poisons subsequent capture writes. Capture errors become additive SCREEN
+and remembers digests across case forks and suite execs. A validation, payload
+read, write or flush failure during streaming poisons subsequent capture writes
+for that boot, since payload sectors may already have been written. Capture errors become additive SCREEN
 errors, leaving CASE expectations and suite scoring unchanged.
 
 ## Disk and records
