@@ -7,7 +7,6 @@ mod watchdog_round;
 
 use i6300esb::{Bus, Watchdog};
 use std::{cell::RefCell, rc::Rc};
-use watchdog_round::Transport;
 
 #[derive(Debug, PartialEq)]
 enum Write {

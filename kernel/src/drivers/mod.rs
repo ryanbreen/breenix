@@ -5,6 +5,8 @@
 
 #[cfg(target_arch = "x86_64")]
 pub mod watchdog;
+#[cfg(target_arch = "aarch64")]
+pub mod i6300esb;
 pub mod watchdog_round;
 pub mod ahci;
 #[cfg(target_arch = "x86_64")]
