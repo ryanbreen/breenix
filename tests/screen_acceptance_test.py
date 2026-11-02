@@ -67,6 +67,23 @@ class ScreenAcceptance(unittest.TestCase):
             with self.assertRaises(ValueError):
                 self.api['reset_faults'](bad, names)
 
+    def test_exported_metal_metadata_uses_full_run_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            boot = dict(id='fixture-metal', platform='metal', arch='x86_64', mode='suite',
+                        suite='gpu', commit=HEAD, toolsCommit=HEAD, kind='boot',
+                        evidenceEligible=True,
+                        build=dict(commit=HEAD, profile='production', features=[]))
+            (p / 'run.json').write_text(json.dumps(boot))
+            for name, text in [('commit', HEAD), ('dirty', '0'), ('ended', '1'), ('exit-status', '0')]:
+                (p / name).write_text(text)
+            self.assertEqual(self.api['capture_identity'](p, HEAD, 'gpu', 'metal')['toolsCommit'], HEAD)
+            # Falling back to run.json must still verify its actual tools commit.
+            boot['toolsCommit'] = 'b' * 40
+            (p / 'run.json').write_text(json.dumps(boot))
+            with self.assertRaisesRegex(ValueError, 'tools'):
+                self.api['capture_identity'](p, HEAD, 'gpu', 'metal')
+
 
 if __name__ == '__main__':
     unittest.main()
