@@ -1,4 +1,5 @@
 """Host-only call parity for the server runner's target boundary."""
+import copy
 import json
 from pathlib import Path
 import runpy
@@ -44,6 +45,87 @@ class FakeTarget:
 
 
 class ServerTarget(unittest.TestCase):
+    def test_reboot_metal_operations_keep_existing_commands(self):
+        calls = []
+        def execute(args, **kwargs):
+            calls.append((args, kwargs))
+            if args[-1] == '--help': return reply('panic-reboot')
+            return reply(BOOT)
+        runner = dict(host_env=lambda: {}, in_metal=lambda *a, **kw: reply())
+        with patch.object(HOST['runpy'], 'run_path', return_value=runner), \
+             patch.object(HOST['subprocess'], 'run', side_effect=execute):
+            target = HOST['MetalTarget'](BOOT)
+            self.assertEqual(target.boot_start_marker, 'UEFI bootloader started')
+            target.stop_for_fault('fixture', 'password')
+            self.assertEqual(target.start_fault('server/arm-reboot', 'a' * 40), BOOT)
+            self.assertEqual(target.start_persistent(), BOOT)
+        command = ['python3', str(ROOT / 'scripts/metal/metal-run')]
+        self.assertEqual(calls, [
+            (command + ['boot', '--help'], dict(capture_output=True, text=True, check=True)),
+            (command + ['stop', BOOT], dict(check=True)),
+            (command + ['boot', '--branch', 'server/arm-reboot', '--sha', 'a' * 40,
+                        '--inject', 'panic-reboot'], dict(capture_output=True, text=True, timeout=15000)),
+            (command + ['boot', '--persistent'], dict(capture_output=True, text=True, timeout=15000)),
+        ])
+
+    def test_qemu_reboot_cli_dispatches_to_target_runner(self):
+        argv = ['server-suite', '--target', 'qemu', '--run-dir', '/unused',
+                '--boot', '20261101T120000Z-qemu', '--sha', 'a' * 40,
+                '--milestone', 'server/reboot']
+        called = []
+        def run(api, args):
+            called.append(args.target)
+            return 0
+        with patch.object(sys, 'argv', argv), \
+             patch.object(HOST['runpy'], 'run_path', return_value={'run': run}):
+            self.assertEqual(HOST['main'](), 0)
+        self.assertEqual(called, ['qemu'])
+
+    def test_qemu_reboot_scorer_requires_guest_successor_and_fault_identity(self):
+        sha = 'a' * 40
+        def boot(name, process='launch-one'):
+            return dict(id=name, target='qemu', mode='persistent', bootedCommit=sha,
+                        toolsCommit=sha, evidenceEligible=True, runId='private-run', qemuProcess=process)
+        before, after = boot('before'), boot('after')
+        final = boot('final', 'launch-two')
+        serial = '[stdout] bsshd: host key ED25519 SHA256:fixture (loaded)\nbsshd: listening on 0.0.0.0:22\n'
+        records = dict(boot=final['id'], commit=sha, milestone='server/reboot', cleanup=True,
+                       cases=[dict(id='reboot/' + name, result='PASS') for name, _ in HOST['REBOOT']],
+                       refusalRecovery=dict(serial='[shutdown] kernel refused transition: -13\n[shutdown] refused; resuming services'),
+                       transitions=[], panicBoot=dict(id='fault', run=dict(boot('fault', 'fault-launch'), kind='fault-test'),
+                           build=dict(commit=sha), serial='KERNEL PANIC: reboot fault test',
+                           events=[dict(event='SHUTDOWN', data=dict(reason='guest-reset')),
+                                   dict(event='panic-reset-observed')]))
+        for action, old, fresh in [('reboot', before, after), ('poweroff', after, final)]:
+            records['transitions'].append(dict(action=action, before=old['id'], after=fresh['id'], exit='0',
+                beforeRun=old, afterRun=fresh,
+                beforeSerial='[shutdown] home clean read-only\n[shutdown] root clean read-only',
+                afterSerial=serial + '[storage] root prior state=clean\n[storage] home prior state=clean',
+                events=[dict(event='requested-shutdown', action=action),
+                        dict(event='RESET' if action == 'reboot' else 'SHUTDOWN',
+                             data=dict(reason='guest-reset' if action == 'reboot' else 'guest-shutdown')),
+                        dict(event='requested-reset-observed', successor=fresh['id'])]))
+        manifest = json.loads((ROOT / 'docs/suites/server.json').read_text())
+        path = json.loads((ROOT / 'docs/efforts/path.json').read_text())
+        def score(value): return HOST['score'](manifest, path, value, serial, final, sha, [])
+        self.assertTrue(score(records).startswith('PASS: server/reboot'))
+        mutations = {
+            'host reset': lambda r: r['transitions'][0]['events'][1]['data'].update(reason='host-qmp-system-reset'),
+            'non-successor': lambda r: r['transitions'][0].update(after='other'),
+            'missing receipt': lambda r: r['transitions'][0]['events'].pop(0),
+            'missing poweroff receipt': lambda r: r['transitions'][1]['events'].pop(0),
+            'wrong-commit fault': lambda r: r['panicBoot']['run'].update(bootedCommit='b' * 40),
+            'other run': lambda r: r['transitions'][0]['afterRun'].update(runId='another-run'),
+            'other process': lambda r: r['transitions'][0]['afterRun'].update(qemuProcess='another-launch'),
+            'missing process': lambda r: r['transitions'][0]['beforeRun'].pop('qemuProcess'),
+            'no SSH': lambda r: r['transitions'][0].update(afterSerial='[storage] root prior state=clean\n[storage] home prior state=clean'),
+        }
+        for name, mutate in mutations.items():
+            with self.subTest(name=name):
+                bad = copy.deepcopy(records)
+                mutate(bad)
+                with self.assertRaises(ValueError): score(bad)
+
     def test_rtc_reboot_requires_the_boot_architecture_hardware_source(self):
         previous = {'corrected': True, 'skewSeconds': 172800}
         for arch, source, accepted in (
@@ -239,7 +321,7 @@ class ServerTarget(unittest.TestCase):
     def test_qemu_does_not_dispatch_later_milestones_to_metal(self):
         import contextlib
         import io
-        for milestone in ('server/reboot', 'server/watchdog', 'server/remote-upgrade',
+        for milestone in ('server/watchdog', 'server/remote-upgrade',
                           'server/resting-state', 'users/operator-login'):
             argv = ['server-suite', '--target', 'qemu', '--run-dir', '/unused',
                     '--boot', '20261101T120000Z-qemu', '--sha', 'a' * 40,
