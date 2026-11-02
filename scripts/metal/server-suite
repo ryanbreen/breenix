@@ -77,7 +77,7 @@ REMOTE_UPGRADE = (
     ('reclamation', 'Reclamation uses recovered on-disk slot userlands and preserves current, previous, in-flight and shared data across failures and rollback'),
 )
 WATCHDOG = (
-    ('feeder-hang', 'A halted feeder CPU expires the 120-second KCS watchdog and returns to persistent SSH unaided within 600 seconds'),
+    ('feeder-hang', 'A halted feeder CPU expires the 120-second watchdog (KCS on metal, 6300ESB on QEMU) and returns to persistent SSH unaided within 600 seconds'),
     ('health-hang', 'A wedged filesystem health check stops feeding and returns to persistent SSH unaided within 600 seconds'),
 )
 
