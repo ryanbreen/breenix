@@ -989,6 +989,14 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Initialize filesystem layer (requires VirtIO block device)
     serial_println!("[boot] Initializing filesystem...");
 
+    if kernel::platform_config::is_qemu() {
+        let mut intent = [0u8; 1040];
+        let size = kernel::drivers::fw_cfg::read_file("opt/breenix/intent", &mut intent);
+        if size != 0 {
+            kernel::boot::intent::capture(&intent[..size.min(intent.len())]);
+        }
+    }
+
     // Initialize ext2 root filesystem (if block device present)
     match kernel::fs::ext2::init_root_fs() {
         Ok(()) => {

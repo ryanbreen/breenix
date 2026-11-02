@@ -12,7 +12,9 @@ const TARGET_MAX: usize = 256;
 const FORMAT_2_MAX: usize = 1024;
 
 #[derive(Clone, Copy)]
-struct Captured {
+pub struct Captured {
+    #[cfg(any(target_arch = "aarch64", test))]
+    format_2: bool,
     target: [u8; TARGET_MAX],
     target_len: usize,
     cmdline: [u8;256],
@@ -47,7 +49,7 @@ fn parse_format_2(body: &[u8]) -> Result<Captured, &'static str> {
     }
     let text = core::str::from_utf8(&body[..end]).map_err(|_| "the boot intent is not text")?;
     let mut captured =
-        Captured { target: [0; TARGET_MAX], target_len: 0, cmdline:[0;256], cmdline_len:None, root: None, home: None, tests: None, userland: None, userland_len: 0, previous: None, previous_len: 0, refused: None };
+        Captured { #[cfg(any(target_arch = "aarch64", test))] format_2: true, target: [0; TARGET_MAX], target_len: 0, cmdline:[0;256], cmdline_len:None, root: None, home: None, tests: None, userland: None, userland_len: 0, previous: None, previous_len: 0, refused: None };
     let mut target = false;
     for line in text.split('\n').filter(|line| !line.is_empty()) {
         let (item, value) = line.split_once(' ').ok_or("a boot intent line has no value")?;
@@ -92,20 +94,19 @@ fn parse_format_2(body: &[u8]) -> Result<Captured, &'static str> {
     Ok(captured)
 }
 
-/// Retain the current-format payload before root discovery. Parsing of the target is deferred until PID 1
-/// selection, after allocator initialization. Returns whether the payload was a boot intent (format 1 or 2), so it
-/// is not a RAM-disk root.
-pub fn capture(bytes: &[u8]) -> bool {
+/// Parse an intent without changing the captured boot state.
+pub fn parse(bytes: &[u8]) -> Option<Captured> {
     if let Some(line) = bytes.strip_prefix(FORMAT_1) {
-        if line.is_empty() || line.len() > TARGET_MAX { return false; }
+        if line.is_empty() || line.len() > TARGET_MAX { return None; }
         let mut captured =
-            Captured { target: [0; TARGET_MAX], target_len: line.len(), cmdline:[0;256], cmdline_len:None, root: None, home: None, tests: None, userland: None, userland_len: 0, previous: None, previous_len: 0, refused: None };
+            Captured { #[cfg(any(target_arch = "aarch64", test))] format_2: false, target: [0; TARGET_MAX], target_len: line.len(), cmdline:[0;256], cmdline_len:None, root: None, home: None, tests: None, userland: None, userland_len: 0, previous: None, previous_len: 0, refused: None };
         captured.target[..line.len()].copy_from_slice(line);
-        BOOT_INTENT.call_once(|| captured);
-        return true;
+        return Some(captured);
     }
-    let Some(body) = bytes.strip_prefix(FORMAT_2) else { return false };
+    let body = bytes.strip_prefix(FORMAT_2)?;
     let captured = parse_format_2(body).unwrap_or_else(|why| Captured {
+        #[cfg(any(target_arch = "aarch64", test))]
+        format_2: true,
         target: [0; TARGET_MAX],
         target_len: 0,
         cmdline:[0;256],
@@ -119,8 +120,33 @@ pub fn capture(bytes: &[u8]) -> bool {
         previous_len: 0,
         refused: Some(why),
     });
+    Some(captured)
+}
+
+/// Retain a boot intent before root discovery, returning whether it was recognized.
+pub fn capture(bytes: &[u8]) -> bool {
+    let Some(captured) = parse(bytes) else { return false };
     BOOT_INTENT.call_once(|| captured);
     true
+}
+
+/// Select a root generation only for a valid persistent boot.
+#[cfg(any(target_arch = "aarch64", test))]
+pub fn root_userland(captured: Option<&Captured>) -> Result<Option<&str>, &'static str> {
+    let Some(captured) = captured else { return Ok(None) };
+    if let Some(reason) = captured.refused { return Err(reason); }
+    if !captured.format_2 || &captured.target[..captured.target_len] != b"persistent\n" { return Ok(None); }
+    Ok(captured.userland.as_ref().and_then(|id| core::str::from_utf8(&id[..captured.userland_len]).ok()))
+}
+
+#[cfg(target_arch = "aarch64")]
+pub fn root_generation() -> Result<Option<&'static str>, &'static str> {
+    let captured = BOOT_INTENT.get();
+    let id = root_userland(captured)?;
+    if id.is_none() && captured.is_some_and(|intent| intent.format_2 && &intent.target[..intent.target_len] == b"persistent\n") {
+        return Err("persistent intent names no userland generation");
+    }
+    Ok(id)
 }
 
 /// The selected target line, without the format header; absent for a refused intent.
