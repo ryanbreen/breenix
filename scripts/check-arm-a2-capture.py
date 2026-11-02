@@ -101,6 +101,9 @@ def audit(run, sha, ended_boot, previous_boot):
             row['error'] = str(error)
             reasons.append(category + ': ' + str(error))
 
+    # This offline replay checks inactive-run refusal, not the ended-marker
+    # predicate: no lease or live QMP exists here. The ended guard is exercised
+    # in tests/server_target_test.py with the other lease conditions satisfied.
     # Use genuine retained identities. A mismatched request SHA is not a
     # substitute for a preparation actually produced by another commit.
     try:
@@ -119,7 +122,7 @@ def audit(run, sha, ended_boot, previous_boot):
                 or preparation.get('commit') != old.get('bootedCommit')):
             raise ValueError('cross-commit preparation identity is inconsistent')
         for name, category, extra, expected in (
-                ('ended-boot', 'ssh-keys', [], 'this boot does not hold the machine lease'),
+                ('offline-inactive-run', 'ssh-keys', [], 'this boot does not hold the machine lease'),
                 ('cross-commit', 'logs', ['--previous-boot', previous_boot],
                  'previous log preparation must be a completed persistent boot at this commit')):
             args = [sys.executable, str(RUNNER), '--target', 'qemu', '--run-dir', str(run),
