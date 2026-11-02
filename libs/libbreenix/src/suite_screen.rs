@@ -218,6 +218,7 @@ pub(super) fn begin(suite: &str) -> ClockMap {
     LINES.lock().unwrap().clear();
     END.lock().unwrap().result = None;
     *REUSE.lock().unwrap() = None;
+    *CAPTURE_PIXELS.lock().unwrap() = None;
     let _ = std::fs::remove_file(std::format!("{}.screen", super::judged_path()));
     ClockMap(ptr)
 }
@@ -295,6 +296,7 @@ impl ReadbackReuse {
     }
 }
 struct PendingReadback { pixels: Vec<u8>, record: [u8; r::SIZE], mode: Mode, backend: u32 }
+static CAPTURE_PIXELS: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 static REUSE: Mutex<Option<PendingReadback>> = Mutex::new(None);
 
 /// Called only after the existing comparator has judged this exact readback.
@@ -325,7 +327,10 @@ fn reuse_snapshot() -> Option<Snapshot> {
     let mut pixels = pending.pixels;
     let saved = ReadbackReuse::new(&mut pixels, &pending.record, pending.mode, pending.backend, RUNNER.load(Ordering::Relaxed)).ok()?;
     let binding = Mode { width: word(&record, r::TARGET_WIDTH), height: word(&record, r::TARGET_HEIGHT), scale: 1, reserved: 0 };
-    saved.matches(&record).then_some(Ok((saved.hash, saved.mode, binding)))
+    let hash = saved.hash;
+    if !saved.matches(&record) { return None; }
+    if capture_enabled() { *CAPTURE_PIXELS.lock().unwrap() = Some(pixels); }
+    Some(Ok((hash, saved.mode, binding)))
 }
 
 pub(super) fn non_case_binding(known: bool, resource: u64, console: u64, runner: u64) -> bool {
@@ -377,20 +382,29 @@ fn snapshot() -> Snapshot {
             RUNNER_RESOURCE.load(Ordering::Relaxed)) { return Err("no-case-scanout".into()); }
     validate(&rec, mode, caps.backend, RUNNER.load(Ordering::Relaxed))?;
     let binding = Mode { width: word(&rec, r::TARGET_WIDTH), height: word(&rec, r::TARGET_HEIGHT), scale: 1, reserved: 0 };
-    Ok((canonical_hash(&mut pixels, mode)?, mode, binding))
+    let hash = canonical_hash(&mut pixels, mode)?;
+    if capture_enabled() { *CAPTURE_PIXELS.lock().unwrap() = Some(pixels); }
+    Ok((hash, mode, binding))
 }
 
 fn append(name: &str, end: bool) -> Result<(), &'static str> {
     let case = super::running_case().ok_or("outside-case")?;
     let (prefix, _) = super::RECORD_NAMES.get().ok_or("outside-case")?;
     let suite = prefix.strip_prefix("SUITE ").and_then(|s| s.strip_suffix(' ')).ok_or("outside-case")?;
-    let result = if end {
+    let mut result = if end {
         match snapshot() {
             Err(e) if e == "no-case-scanout" => END.lock().unwrap().result.take().unwrap_or(Err(e)),
             result => result,
         }
     } else if CLOCK.load(Ordering::Relaxed).is_null() { Err("clock-allocation".into()) } else { timed(snapshot) };
     if end && matches!(&result, Err(e) if e == "no-case-scanout") { return Ok(()); }
+    if let Ok((hash, mode, _)) = &result {
+        if capture_enabled() {
+            let pixels = CAPTURE_PIXELS.lock().unwrap().take();
+            if let Err(e) = pixels.ok_or("capture-pixels").and_then(|pixels|
+                capture(suite, case, name, *mode, *hash, &pixels)) { result = Err(e.into()); }
+        }
+    }
     let line = format_record(suite, case, name, result.as_ref().map(|v| *v).map_err(String::as_str));
     let mut lines = LINES.lock().unwrap();
     if lines.lines().any(|line| line.split_whitespace().nth(4) == Some(name)) { return Err("duplicate-checkpoint"); }
@@ -438,4 +452,25 @@ pub(super) fn emit(line: &str) {
     if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
         let _ = evidence.write_all(std::format!("\n{line}\n").as_bytes());
     }
+}
+
+
+fn capture_enabled() -> bool {
+    static SETTING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SETTING.get_or_init(|| std::fs::read_to_string("/etc/breenix/screen-capture")
+        .is_ok_and(|s| s.trim() == "on"))
+}
+
+pub(super) fn capture(suite: &str, case: &str, checkpoint: &str, mode: Mode,
+    digest: [u8;32], pixels: &[u8]) -> Result<(), &'static str> {
+    if !capture_enabled() { return Ok(()); }
+    use std::io::Write;
+    let bytes = screen_capture::encode(&screen_capture::Record {
+        suite,case,checkpoint,width: mode.width,height: mode.height,digest,pixels })?;
+    let mut request = [0;24];
+    request[..8].copy_from_slice(screen_capture::REQUEST_MAGIC);
+    request[8..16].copy_from_slice(&(bytes.as_ptr() as u64).to_le_bytes());
+    request[16..24].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
+    std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence")
+        .map_err(|_| "capture-open")?.write_all(&request).map_err(|_| "capture-write")
 }

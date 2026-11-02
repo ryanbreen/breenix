@@ -144,7 +144,7 @@ impl Frame {
         Ok(())
     }
 
-    fn snapshot(&self, mode: abi::Mode) -> Result<([u8; 32], abi::Mode, abi::Mode), &'static str> {
+    fn snapshot(&self, suite: &str, case: &str, mode: abi::Mode) -> Result<([u8; 32], abi::Mode, abi::Mode), &'static str> {
         // Records name device IDs, not userspace handles. Resolve this target's
         // identity through its readback before comparing the latched binding.
         let mut probe = [0; 4];
@@ -164,14 +164,16 @@ impl Frame {
         for at in [abi::record::CONTEXT, abi::record::RESOURCE, abi::record::GENERATION] {
             if record[at..at+8] != expected[at..at+8] { return Err("intent-binding"); }
         }
-        Ok((super::screen::canonical_hash(&mut pixels, mode)?, mode, mode))
+        let hash = super::screen::canonical_hash(&mut pixels, mode)?;
+        super::screen::capture(suite, case, "intent", mode, hash, &pixels)?;
+        Ok((hash, mode, mode))
     }
 }
 
 pub(super) fn show(suite: &str, case: &str, picture: &super::JudgedFrame, pace: u64) {
     let mut frame = Frame { context: 0, texture: 0, target: 0, display: false };
     let result = gpu::current_mode().map_err(|_| "intent-mode").and_then(|mode|
-        frame.present(picture, mode).and_then(|()| frame.snapshot(mode)));
+        frame.present(picture, mode).and_then(|()| frame.snapshot(suite, case, mode)));
     super::screen::emit(&super::screen::format_record(suite, case, "intent", result));
     if frame.display {
         if time::sleep_ms(pace).is_err() {
