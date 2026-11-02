@@ -893,7 +893,9 @@ mod native {
                 // the negative-control observation window starts.
                 let start = monitor.now_us();
                 while !monitor.snapshot()?.2 {
-                    if monitor.now_us().saturating_sub(start) >= BOUND_US {
+                    let elapsed_us = monitor.now_us().saturating_sub(start);
+                    if elapsed_us >= BOUND_US {
+                        monitor.record_control_timeout(nonce, elapsed_us);
                         return Err("GR control stream not consumed; backing retained");
                     }
                     monitor.relax();
@@ -2188,6 +2190,46 @@ mod native {
         queued_put: Option<u32>,
     }
     impl Monitor<'_> {
+        /// One read-only snapshot at the actual refusal, before FIFO unwind,
+        /// trap acknowledgement or PGRAPH reset destroys the failing state.
+        fn record_control_timeout(&mut self, nonce: u32, elapsed_us: u64) {
+            let c = self.session.report.identity;
+            let dma = self.session.pbdma * 0x2000;
+            let fifo = [0x200, 0x204, 0x2100, 0x256c, 0x259c, 0x262c,
+                0x2630, 0x2634, 0x2640 + c.engine as usize * 8,
+                0x2284 + c.runlist as usize * 8,
+                0x800000 + c.id as usize * 8, 0x800004 + c.id as usize * 8,
+                0x40014 + dma, 0x40028 + dma, 0x40120 + dma,
+                0x40108 + dma, 0x40148 + dma, 0x40084 + dma, 0x40088 + dma]
+                .map(|a| (a, self.regs.read(a)));
+            let gr = [0x400100, 0x400108, 0x400110, 0x400118, 0x400500,
+                0x40060c, 0x400700, 0x400704, 0x400708, 0x40070c,
+                0x404154, 0x404170, 0x409614,
+                0x409100, 0x409104, 0x40910c, 0x409400, 0x409800, 0x409804,
+                0x409b00, 0x409b04, 0x409c18,
+                0x502100, 0x502104, 0x50210c, 0x502400, 0x502800, 0x502804]
+                .map(|a| (a, self.regs.read(a)));
+            let power = [0x10a100, 0x10a104, 0x10a10c, 0x10a4d0, 0x10a4dc,
+                0x10a78c, 0x20520, 0x20524, 0x20528, 0x2052c, 0x20530,
+                0x20008, 0x2000c, 0x20400]
+                .map(|a| (a, self.regs.read(a)));
+            let clock = crate::gk208::clock::sample(|a| self.regs.read(a as usize));
+            let userd_get = read(self.regs, self.total, self.session.userd + 0x88);
+            let userd_put = read(self.regs, self.total, self.session.userd + 0x8c);
+            // SAFETY: this still-owned report page has not entered cleanup.
+            let receipt = unsafe {
+                let p = self.session.pages.va(0) as *const u32;
+                [p.read_volatile(), p.add(1).read_volatile(), p.add(2).read_volatile()]
+            };
+            crate::serial_println!("GT710_GR_CONTROL_TIMEOUT instance={:#x} chid={} epoch={} sequence={} nonce={} elapsed_us={} bound_us={} userd_get={:?} userd_put={:?} receipt={:?}",
+                c.instance, c.id, c.epoch, self.sequence, nonce, elapsed_us, BOUND_US,
+                userd_get, userd_put, receipt);
+            crate::serial_println!("GT710_GR_CONTROL_FIFO {:?}", fifo);
+            crate::serial_println!("GT710_GR_CONTROL_FALCON {:?}", gr);
+            crate::serial_println!("GT710_GR_CONTROL_POWER {:?}", power);
+            crate::serial_println!("GT710_GR_CONTROL_CLOCK raw={:?} gpc_khz={:?} memory_khz={:?} temperature_c={:?}",
+                clock.raw, clock.gpc_khz, clock.memory_khz, clock.temperature_c);
+        }
         fn check_health(&mut self) -> Result<(), &'static str> {
             if self.stop_on_trap {
                 let words = if self.retry_traps {

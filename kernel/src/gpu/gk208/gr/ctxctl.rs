@@ -447,6 +447,23 @@ pub fn enable(io: &mut impl Access) -> Result<(), Fault> {
     Ok(())
 }
 
+/// GR can be between save and restore while its execution busy bit is clear.
+/// GK208's GR engine is FIFO engine 0. Refresh ENG_STATE in the polling loop and
+/// require both execution and context switching to be idle before programming.
+/// A PRI refusal cannot certify either state. Keep the existing two-second bound.
+pub fn wait_idle(io: &mut impl Access) -> Result<(), Fault> {
+    poll(io, BOUND_US, "GR idle timeout", |io| {
+        io.read(0x400700);
+        let busy = io.read(0x40060c);
+        let engine = io.read(0x2640);
+        let accessible = busy >> 16 != 0xbadf && engine >> 16 != 0xbadf;
+        // ENG_STATE_0: BUSY bit 31, CHSW bit 15 (GK104+).
+        let switching = engine & 0x80008000 == 0x80008000;
+        (accessible && busy & 1 == 0 && !switching, 0x2640, engine)
+    })?;
+    Ok(())
+}
+
 fn init(io: &mut impl Access, t: &Topology<'_>, mmu: [u64; 2]) -> Result<(), Fault> {
     // This first startup is board-specific. Do not silently invent tile maps
     // for another chip; GK208B has one GPC and at most two active TPCs.
@@ -482,11 +499,7 @@ fn init(io: &mut impl Access, t: &Topology<'_>, mmu: [u64; 2]) -> Result<(), Fau
             }
         }
     }
-    poll(io, BOUND_US, "GR idle timeout", |io| {
-        io.read(0x400700); // updates FIFO_ENGINE_STATUS
-        let busy = io.read(0x40060c);
-        (busy & 1 == 0, 0x40060c, busy)
-    })?;
+    wait_idle(io)?;
     io.write(0x503018, 1); // gk104 VSC stream master
     let count = u32::from(t.tpc_nr[0]);
     let magic = 0x00800000u32.div_ceil(count);

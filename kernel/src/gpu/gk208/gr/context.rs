@@ -322,8 +322,7 @@ fn delay(io: &mut impl ctxctl::Access) -> Result<(), Error> {
     Err("GR context delay clock stalled".into())
 }
 fn idle(io: &mut impl ctxctl::Access) -> Result<(), Error> {
-    io.read(0x400700);
-    wait(io, 0x40060c, 1, 0)
+    ctxctl::wait_idle(io).map_err(Error::from)
 }
 fn replay(io: &mut impl ctxctl::Access, index: usize) -> Result<Receipt, Error> {
     let list = &tables::INIT_LISTS[index];
