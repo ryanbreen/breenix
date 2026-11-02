@@ -144,3 +144,87 @@ for invalid in missing unknown; do
         [ ! -e "$fixture/run/mode" ] && [ ! -d "$fixture/run/boot.lock" ] || fail "$invalid mode reached launch setup"
 done
 echo 'vm-persistent boot mode checks passed'
+
+# Exercise the actual launcher and pump with a socket-speaking QEMU stand-in.
+# The stub writes guest disk bytes and supplies either an authenticated poweroff
+# or a QMP termination reason, without starting a virtual machine.
+cat > "$fixture/bin/qemu-system-aarch64" <<'PY'
+#!/usr/bin/env python3
+import hashlib, json, os, socket, sys, time
+from pathlib import Path
+args = sys.argv[1:]
+root = Path(os.environ['CAPTURE'])
+run = root / 'run'
+(root / 'qemu-args').write_text('\n'.join(args) + '\n')
+serial = socket.socket(socket.AF_UNIX)
+serial.connect(str(run / 'serial.sock'))
+listener = socket.socket(socket.AF_UNIX)
+path = run / 'events.sock'
+path.unlink(missing_ok=True)
+listener.bind(str(path)); listener.listen(1); listener.settimeout(5)
+qmp, _ = listener.accept()
+qmp.sendall(b'{"QMP":{}}\n')
+qmp.recv(4096)
+scenario = os.environ['STUB_SCENARIO']
+if scenario == 'poweroff':
+    nonce = 'a' * 64
+    token = (run / 'power-token').read_text().strip()
+    receipt = hashlib.sha256((token + nonce).encode()).hexdigest()
+    serial.sendall(f'[init] shutdown nonce={nonce}\n[shutdown] requested poweroff token={receipt}\n'.encode())
+    time.sleep(.2)
+    for name in ('system.img', 'home.img'):
+        with (run / name).open('ab') as f: f.write(b'guest writes')
+    reason = 'guest-shutdown'
+elif scenario == 'reset':
+    reason = 'guest-reset'
+else:
+    reason = 'host-qmp-quit'
+qmp.sendall(json.dumps({'event':'SHUTDOWN','data':{'reason':reason}}).encode() + b'\n')
+time.sleep(.3)
+serial.close(); qmp.close(); listener.close(); path.unlink()
+PY
+chmod +x "$fixture/bin/qemu-system-aarch64"
+# Ensure source attestation sees a clean commit while retaining fixture scripts.
+printf '*\n' > "$fixture/.gitignore"
+for file in docs/suites/server.json docs/suites/users.json docs/efforts/path.json docs/boot-path.json; do
+    mkdir -p "$fixture/$(dirname "$file")"
+    cp "$root/$file" "$fixture/$file"
+    git -C "$fixture" add -f "$file"
+done
+git -C "$fixture" add -f .gitignore
+git -C "$fixture" -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm ignore
+cp "$fixture/kernel" "$fixture/run/kernel"
+cp "$fixture/kernel" "$fixture/run/fault-kernel"
+python3 "$fixture/scripts/vm-artifacts.py" seal "$fixture" "$fixture/run" "$(git -C "$fixture" rev-parse HEAD)"
+STUB_SCENARIO=poweroff boot_fixture --mode console || fail 'authenticated poweroff launch failed'
+STUB_SCENARIO=host boot_fixture --mode console || fail 'continuation rejected'
+python3 - "$fixture/run" <<'PY'
+import json, sys
+from pathlib import Path
+run = Path(sys.argv[1])
+assert json.loads((run / 'verified-build.json').read_text())['evidenceEligible'] is True
+PY
+printf x >> "$fixture/run/system.img"
+if STUB_SCENARIO=host boot_fixture --mode console > /dev/null 2>&1; then fail 'changed continuation disk accepted'; fi
+# Restore the sealed continuation bytes before testing the diskless fault run.
+truncate -s -1 "$fixture/run/system.img"
+for scenario in reset host; do
+    env -u BREENIX_VM_PERSISTENT_SUPERVISED PATH="$fixture/bin:$PATH" CAPTURE="$fixture" TMPDIR="$fixture" \
+        BREENIX_QEMU_UI_LAUNCHER=env STUB_SCENARIO="$scenario" \
+        "$fixture/scripts/vm-persistent.sh" qemu fault-boot --run-dir "$fixture/run" || fail 'fault boot failed'
+    python3 - "$fixture" "$scenario" <<'PY'
+import json, sys
+from pathlib import Path
+root, scenario = Path(sys.argv[1]), sys.argv[2]
+args = (root / 'qemu-args').read_text().splitlines()
+assert args[args.index('-action') + 1] == 'reboot=shutdown'
+assert '-drive' not in args and not any('virtio-blk' in a for a in args)
+run = root / 'run'
+boot = run / 'boots' / (run / 'current').read_text().strip()
+record = json.loads((boot / 'run.json').read_text())
+assert record['kind'] == 'fault-test' and record['bootedCommit'] == record['toolsCommit']
+events = [json.loads(x) for x in (boot / 'events.jsonl').read_text().splitlines()]
+assert any(e['event'] == 'panic-reset-observed' for e in events) == (scenario == 'reset')
+PY
+done
+echo 'vm-persistent continuation and fault boot checks passed'
