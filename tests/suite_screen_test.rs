@@ -167,3 +167,32 @@ fn checkpoint_watchdog_and_window_baseline_are_independent_of_paused_time() {
     clock.stop(270);
     assert_eq!(clock.elapsed_from(200, 300, baseline), 60);
 }
+
+#[test]
+fn native_shared_channel_does_not_identify_the_runner_surface() {
+    let mut rec = record();
+    rec[r::BACKEND..r::BACKEND+4].copy_from_slice(&6u32.to_le_bytes());
+    rec[r::CONTEXT..r::CONTEXT+8].copy_from_slice(&99u64.to_le_bytes());
+    rec[r::RESOURCE..r::RESOURCE+8].copy_from_slice(&30u64.to_le_bytes());
+    assert!(!screen::non_case_binding(true, 30, 10, 20));
+    assert!(screen::validate(&rec, mode(), 6, 99).is_ok(), "native channel is shared by distinct surfaces");
+    assert!(screen::non_case_binding(true, 20, 10, 20), "runner resource still excluded");
+    rec[r::CONTEXT..r::CONTEXT+8].fill(0);
+    assert!(screen::validate(&rec, mode(), 6, 99).is_err(), "missing native identity still refused");
+}
+
+#[test]
+fn endpoint_errors_keep_exact_causes_and_only_known_end_states_are_declared() {
+    use crate::gpu::abi::screen::Failure;
+    for (reason, failed, declared) in [(4, 1234, true), (4, 0, false), (5, 0, false),
+        (6, 0, false), (7, 0, false), (8, 0, true), (10, 0, false)] {
+        let failure = Failure { errno: 5, reason, failed_submission: failed };
+        let error = screen::endpoint_error(5, &failure.encode());
+        assert_eq!(error.starts_with("unobservable reason="), declared);
+        assert!(error.contains(&format!("errno=5 eio_reason={reason} failed_submission={failed}")));
+        let line = screen::format_record("gpu", "draw/one", "end", Err(&error));
+        assert!(screen::unpack(&screen::pack(&line), "gpu", "draw/one").is_ok());
+    }
+    let error = screen::endpoint_error(110, &[0; 32]);
+    assert_eq!(error, "readback-failed errno=110 eio_reason=0 failed_submission=0");
+}

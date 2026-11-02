@@ -76,6 +76,22 @@ class ScreenVerdictTest(unittest.TestCase):
                 self.assertNotEqual(self.run_score([line], args=args).returncode, 0)
         self.assertNotEqual(self.run_score([self.line + suffix], args=('--native', '--config', 'd' * 64)).returncode, 0)
 
+    def test_declared_end_is_listed_but_not_eligible(self):
+        for reason in ['device-reset', 'target-invalidated']:
+            line = f'SUITE gpu SCREEN draw/one end unobservable reason={reason} errno=5 eio_reason=4 failed_submission=1234'
+            result = self.run_score([line], entries=[])
+            self.assertEqual(result.returncode, 0, result.stdout)
+            self.assertIn('unapproved=0', result.stdout)
+            self.assertIn(f'INELIGIBLE draw/one end reason={reason}', result.stdout)
+            self.assertNotEqual(self.run_score([line]).returncode, 0,
+                                'a declared record cannot satisfy an approved digest')
+        for line in [
+            'SUITE gpu SCREEN draw/one end unobservable reason=device-error',
+            'SUITE gpu SCREEN draw/one intent unobservable reason=device-reset',
+            'SUITE gpu SCREEN draw/one end error=readback-failed errno=110 eio_reason=0 failed_submission=0',
+        ]:
+            self.assertNotEqual(self.run_score([line], entries=[]).returncode, 0)
+
     def test_host_capture_mismatch(self):
         capture = self.dir / 'captures/gpu/draw/one/end.sha256'
         capture.parent.mkdir(parents=True)
