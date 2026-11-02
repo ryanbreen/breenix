@@ -56,6 +56,23 @@ class UpgradeProbeTest(unittest.TestCase):
         self.assertNotEqual(failed['verification']['boot'], failed['rollback']['boot'])
         self.assertTrue(failed['rollback']['passed'])
 
+    def test_launch_failure_recovers_current_without_claiming_a_probe_attempt(self):
+        self.driver.prepare()
+        self.driver.run_case('good')
+        boot = self.ops.boot
+        def refused_boot(slot):
+            if slot == 'next': raise ValueError('synthetic launch refused')
+            return boot(slot)
+        with patch.object(self.ops, 'boot', side_effect=refused_boot):
+            with self.assertRaises(ValueError):
+                self.driver.run_case('broken')
+        result = self.driver.results['broken']
+        self.assertTrue(result.get('rollback', {}).get('passed'))
+        self.assertEqual(result.get('verification', {}).get('sshAttempts', 0), 0)
+        self.assertIn('synthetic launch refused', result.get('launchError', ''))
+        self.assertIsNone(self.ops.slots['next'])
+        self.assertEqual(self.ops.machine.generation, self.ops.slots['current'])
+
 
 if __name__ == '__main__':
     unittest.main()
