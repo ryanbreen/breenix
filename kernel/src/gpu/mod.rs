@@ -5601,7 +5601,12 @@ pub fn observe_scanout(dst: u64, dst_len: u64, record: u64) -> Result<u64, (i64,
     a.pixels = dst;
     a.pixels_len = dst_len;
     a.record = record;
-    match read_back(tgid, &mut a, Observer::Window, None) {
+    let result = read_back(tgid, &mut a, Observer::Window, None);
+    #[cfg(target_arch = "x86_64")]
+    if dev::backend() == abi::backend::GK208 {
+        crate::gk208::timing::scanout_result(result.is_ok());
+    }
+    match result {
         Ok(serial) => Ok(serial),
         Err(Refused::Errno(e)) => Err((e, readback_reason::NONE)),
         Err(Refused::Eio(reason, _)) => Err((EIO, reason)),
@@ -5678,22 +5683,40 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     {
         return Err(Refused::Eio(readback_reason::BINDING_UNKNOWN, 0));
     }
-    let (id, fmt, tw, th, pitch, backing) = with_core(|c| {
-        let id = if a.target == 0 {
-            if !window && !display::owner(tgid) {
-                return Err(abi::errno::EPERM);
+    let (id, fmt, tw, th, pitch, backing) = {
+        #[cfg(target_arch = "x86_64")]
+        let native_scanout = if window && a.target == 0 && dev::backend() == abi::backend::GK208 {
+            Some(crate::gk208::observed_scanout()
+                .map_err(|_| Refused::Eio(readback_reason::BINDING_UNKNOWN, 0))?)
+        } else { None };
+        #[cfg(not(target_arch = "x86_64"))]
+        let native_scanout: Option<u32> = None;
+        with_core(|c| {
+            let id = if a.target == 0 {
+                if !window && !display::owner(tgid) {
+                    return Err(abi::errno::EPERM);
+                }
+                let accepted = c.display.binding.ok_or(EIO)?.id;
+                // The native window observer names the surface resolved from the
+                // head's armed state. A stale software binding is no observation.
+                let observed = native_scanout.unwrap_or(accepted);
+                if observed != accepted { return Err(EIO); }
+                observed
+            } else {
+                c.res_of(tgid, a.target).ok_or(EINVAL)?
+            };
+            let r = c.resources.get(&id).ok_or(EINVAL)?;
+            if !matches!(r.kind, kind::TARGET | kind::TEXTURE) {
+                return Err(EINVAL);
             }
-            c.display.binding.ok_or(EIO)?.id
-        } else {
-            c.res_of(tgid, a.target).ok_or(EINVAL)?
-        };
-        let r = c.resources.get(&id).ok_or(EINVAL)?;
-        if !matches!(r.kind, kind::TARGET | kind::TEXTURE) {
-            return Err(EINVAL);
-        }
-        Ok((id, r.format, r.width, r.height, r.pitch, r.backing.clone()))
-    })
-    .ok_or(ENODEV)??;
+            Ok((id, r.format, r.width, r.height, r.pitch, r.backing.clone()))
+        })
+        .ok_or(ENODEV)?.map_err(|e| {
+            if e == EIO && native_scanout.is_some() {
+                Refused::Eio(readback_reason::BINDING_UNKNOWN, 0)
+            } else { Refused::Errno(e) }
+        })?
+    };
     // Privileged window observation can read the foreground console. Protect its
     // backing throughout the poison/transfer observation.
     let canvas = core::cell::Cell::new(screen::is_target(id).then(crate::console::hold_canvas));

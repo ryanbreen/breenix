@@ -131,7 +131,7 @@ mod native;
 pub(crate) use resource::present;
 mod core_record;
 pub use native::{ConsoleSurface,console_binding,takeover_started,caps_scanout};
-pub(crate) use ce::{console_state,set_mode,console_receipt};
+pub(crate) use ce::{console_state,set_mode,console_receipt,observed_scanout};
 pub(crate) fn console_surface() -> Option<ConsoleSurface> {
     ce::console_allocation().map(|(surface, _)| surface)
 }

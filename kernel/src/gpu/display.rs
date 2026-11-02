@@ -601,7 +601,21 @@ impl Transition {
     /// A transition for SCANOUT_READBACK: the window layer authorized the observer, which
     /// need not own the display; the binding cannot change while it is held.
     pub(super) fn for_window_observer() -> Result<Self, i64> {
-        Self::observe()
+        #[cfg(target_arch = "x86_64")]
+        let native = dev::backend() == abi::backend::GK208;
+        #[cfg(target_arch = "x86_64")]
+        let pending = native && with_core(|c| c.display.outstanding != 0).unwrap_or(false);
+        #[cfg(target_arch = "x86_64")]
+        let start = crate::signal::monotonic_nanos();
+        // Unlike owner READBACK (G26(d)), a window record certifies a latched
+        // frame. Let the adapter retire its notifier before pinning the head.
+        let result = Self::acquire();
+        #[cfg(target_arch = "x86_64")]
+        if native {
+            crate::gk208::timing::scanout_wait(pending,
+                crate::signal::monotonic_nanos().saturating_sub(start));
+        }
+        result
     }
     /// A transition for the kernel's screen: while no process owns the display, or while
     /// the owner's terminal is released and the kernel draws the foreground one (contract

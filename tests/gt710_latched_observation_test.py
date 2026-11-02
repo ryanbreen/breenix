@@ -90,13 +90,15 @@ fn head(s:Surface)->Head{let m=s.methods(1).unwrap();let words=core::array::from
 }
 #[test]fn each_surface_field_and_both_banks_are_required(){
  let a=surface(71,0x1000000);let b=surface(72,0x2000000);
- for field in 0..5{for bank in 0..2{
-  let mut io=head(a);if bank==0{io.active[field]^=1;}else{io.armed[field]^=1;}
+ for field in 0..5{for bank in 0..3{
+  let mut io=head(a);if bank!=1{io.active[field]^=1;}if bank!=0{io.armed[field]^=1;}
   assert!(present::observed_surface(&mut io,1,[a,b].into_iter()).is_err());
  }}
  let mut io=head(b);assert!(present::observed_surface(&mut io,1,[a].into_iter()).is_err());
  let mut io=head(a);assert!(present::observed_surface(&mut io,4,[a].into_iter()).is_err());
  assert!(io.reads.is_empty(),"invalid head read MMIO");
+ let mut io=head(a);let alias=Surface{resource:99,..a};
+ assert!(present::observed_surface(&mut io,1,[a,alias].into_iter()).is_err(),"ambiguous VRAM identity");
 }
 '''.replace('PRESENT', str(ROOT / 'kernel/src/gpu/gk208/present.rs')))
 
@@ -121,7 +123,9 @@ fn head(s:Surface)->Head{let m=s.methods(1).unwrap();let words=core::array::from
         source = item(core, 'fn read_back(')
         begin = source.index('    let (id, fmt, tw, th, pitch, backing) =')
         end = source.index('    // Privileged window observation', begin)
-        select = source[begin:end]
+        # Execute the x86 branch on an ARM host; the fixture models backend 6.
+        select = source[begin:end].replace('#[cfg(target_arch = "x86_64")]', '')
+        select = select.replace('#[cfg(not(target_arch = "x86_64"))]\n        let native_scanout: Option<u32> = None;', '')
         self.run_rust(r'''
 #![allow(dead_code)] // The real selection returns format, geometry and backing too.
 use std::collections::BTreeMap;

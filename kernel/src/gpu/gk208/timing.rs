@@ -41,9 +41,23 @@ pub struct Recorder {
     gpu_clocks: Vec<[u64; 8]>,
     gpu_stats: [[i128; 18]; 4],
     gpu_groups: Vec<gpu_groups::Row>,
+    scanout: [u64; 5],
 }
 impl Recorder {
-    pub const fn new() -> Self { Self { owner: 0, draw: 0, rows: Vec::new(), dropped: 0, readbacks: Vec::new(), blocked: Vec::new(), vblank: [[0; 2]; 2], vblank_used: 0, submits: submit_cost::Totals::new(), submit_bytes: Vec::new(), admission_waits: Vec::new(), gpu_times: Vec::new(), gpu_clocks: Vec::new(), gpu_stats: [[0; 18]; 4], gpu_groups: Vec::new() } }
+    pub const fn new() -> Self { Self { owner: 0, draw: 0, rows: Vec::new(), dropped: 0, readbacks: Vec::new(), blocked: Vec::new(), vblank: [[0; 2]; 2], vblank_used: 0, submits: submit_cost::Totals::new(), submit_bytes: Vec::new(), admission_waits: Vec::new(), gpu_times: Vec::new(), gpu_clocks: Vec::new(), gpu_stats: [[0; 18]; 4], gpu_groups: Vec::new(), scanout: [0; 5] } }
+    /// Window observations only; retained even without detailed GPU timing.
+    pub fn scanout_result(&mut self, confirmed: bool) {
+        self.scanout[usize::from(!confirmed)] += 1;
+    }
+    /// Count encounters, not polls. Time includes interruption and contention
+    /// while acquiring a transition that began with a pending native flip.
+    pub fn scanout_wait(&mut self, pending: bool, elapsed: u64) {
+        if pending {
+            self.scanout[2] += 1;
+            self.scanout[3] += elapsed;
+            self.scanout[4] = self.scanout[4].max(elapsed);
+        }
+    }
     pub fn gpu_group(&mut self, row: gpu_groups::Row) {
         if self.gpu_groups.len() == 4096 || self.gpu_groups.try_reserve(1).is_err() { self.dropped += 1; }
         else { self.gpu_groups.push(row); }
@@ -114,7 +128,7 @@ impl Recorder {
         }
     }
     pub fn drain(&mut self, batch: u64) -> Option<String> {
-        if self.rows.is_empty() && self.readbacks.is_empty() && self.blocked.is_empty() && self.dropped == 0 && self.vblank_used == 0 && self.submits.is_empty() && self.gpu_times.is_empty() && self.gpu_groups.is_empty() && self.gpu_stats.iter().all(|s|s[0]==0) { return None; }
+        if self.rows.is_empty() && self.readbacks.is_empty() && self.blocked.is_empty() && self.dropped == 0 && self.vblank_used == 0 && self.submits.is_empty() && self.gpu_times.is_empty() && self.gpu_groups.is_empty() && self.gpu_stats.iter().all(|s|s[0]==0) && self.scanout == [0; 5] { return None; }
         let capacity = self.rows.len().checked_mul(128)?
             .checked_add(self.readbacks.len().checked_mul(192)?)?
             .checked_add(self.blocked.len().checked_mul(168)?)?.checked_add(self.submits.len().checked_mul(1024)?)?.checked_add(self.submit_bytes.len().checked_mul(192)?)?
@@ -224,6 +238,12 @@ impl Recorder {
             }
             text.push(']');self.gpu_stats=[[0;18];4];
         }
+        if self.scanout != [0; 5] {
+            let [confirmed, refused, pending, wait, maximum] = self.scanout;
+            let _ = write!(text, ",\"scanout_fields\":[\"confirmed\",\"refused\",\"pending\",\"wait_ns\",\"wait_max_ns\"],\"scanout_counts\":[{},{},{},{},{}]",
+                confirmed, refused, pending, wait, maximum);
+            self.scanout = [0; 5];
+        }
         text.push('}');
         Some(text)
     }
@@ -249,6 +269,8 @@ mod runtime {
         result
     }
     pub fn begin_draw(owner: u64) { if enabled() { with(|r| { r.begin_draw(owner); }); } }
+    pub fn scanout_result(confirmed: bool) { with(|r| r.scanout_result(confirmed)); }
+    pub fn scanout_wait(pending: bool, elapsed: u64) { with(|r| r.scanout_wait(pending, elapsed)); }
     pub struct Guard { owner: u64, kind: u64, start: u64 }
     impl Guard {
         pub fn new(owner: u64, kind: u64) -> Self {
@@ -344,4 +366,4 @@ mod runtime {
     }
 }
 #[cfg(target_os = "none")]
-pub use runtime::{enable, enabled, begin_draw, phase, export, vblank_sample, gpu_time, gpu_group, Guard, Readback, Submit};
+pub use runtime::{scanout_wait, scanout_result, enable, enabled, begin_draw, phase, export, vblank_sample, gpu_time, gpu_group, Guard, Readback, Submit};
