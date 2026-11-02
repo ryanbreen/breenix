@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Export a stopped VM's SCR1 disk and serial inventory to Vigil candidates."""
 import argparse
+from fnmatch import fnmatchcase
 import hashlib
 import json
 import os
@@ -134,6 +135,23 @@ def export(args):
     for digest, (identity, mode) in first.items():
         if pictures[digest][:2] != (identity, mode):
             raise ValueError(f'first occurrence mismatch: {identity}')
+    if args.cases:
+        patterns = args.cases.split(',')
+        selected = []
+        matched = set()
+        for record in records:
+            suite, case, checkpoint = record[:3]
+            for pattern in patterns:
+                identity = f'{suite}:{case}:{checkpoint}' if pattern.count(':') == 2 else f'{suite}:{case}'
+                if pattern.count(':') not in (1, 2):
+                    raise ValueError('--cases requires suite:category/case[:checkpoint] patterns')
+                if fnmatchcase(identity, pattern):
+                    matched.add(pattern)
+                    if record not in selected:
+                        selected.append(record)
+        if matched != set(patterns):
+            raise ValueError(f'unmatched case filters: {sorted(set(patterns) - matched)}')
+        records = selected
     expect_commit = git('rev-parse', 'HEAD')
     manifest_path = args.manifests.resolve().relative_to(ROOT)
     manifests = {}
@@ -192,6 +210,7 @@ def main():
     parser.add_argument('disk', type=Path); parser.add_argument('serial', type=Path)
     parser.add_argument('--boot-id', required=True); parser.add_argument('--commit', required=True)
     parser.add_argument('--manifests', type=Path, default=ROOT / 'docs/suites')
+    parser.add_argument('--cases', help='comma-separated suite:category/case[:checkpoint] patterns; validate the full capture before selecting rows')
     parser.add_argument('--refresh', action='store_true', help='update documentation in place, requiring unchanged evidence and PNGs')
     parser.add_argument('--output', type=Path, default=Path.home() / 'Library/Application Support/Vigil/breenix/screens/candidates')
     args = parser.parse_args()

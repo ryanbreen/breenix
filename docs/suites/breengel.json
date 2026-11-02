@@ -99,7 +99,7 @@
         {
           "id": "bgr-order",
           "title": "The BGR flag swaps the channel order and nothing else",
-          "expect": "A 14x18 black (#000000) picture with a red (#FA0A14) filled rectangle, green (#0AF01E) outline, blue (#141EFA) diagonal, yellow (#C8C80A) disc, cyan (#0AC8C8) ring and brown (#5A5046) bitmap text A1; later shapes cover earlier ones."
+          "expect": "A 14x18 black (#000000) picture with a red (#FA0A14) rectangle, green (#0AF01E) outline, blue (#141EFA) diagonal, yellow (#C8C80A) disc, cyan (#0AC8C8) ring, brown (#5A5046) text A1 and one crimson (#7B2D43) probe pixel at (13,1); later shapes cover earlier ones."
         },
         {
           "id": "x-byte",
