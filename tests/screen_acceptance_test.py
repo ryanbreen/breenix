@@ -84,6 +84,24 @@ class ScreenAcceptance(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'tools'):
                 self.api['capture_identity'](p, HEAD, 'gpu', 'metal')
 
+    def test_events_are_required_only_for_metal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name, platform, arch in [('arm-gpu', 'qemu', 'aarch64'),
+                                         ('gpu', 'metal', 'x86_64')]:
+                p = root / name
+                p.mkdir()
+                boot = dict(id=name, platform=platform, arch=arch, mode='suite', suite='gpu',
+                            commit=HEAD, toolsCommit=HEAD, kind='boot', evidenceEligible=True,
+                            build=dict(commit=HEAD, profile='production', features=[]))
+                (p / 'run.json').write_text(json.dumps(boot))
+                for filename, value in [('commit', HEAD), ('dirty', '0'), ('ended', '1'),
+                                        ('exit-status', '0'), ('serial.txt', '')]:
+                    (p / filename).write_text(value)
+            report = self.api['accept'](HEAD, {'arm-gpu': root / 'arm-gpu', 'gpu': root / 'gpu'})
+            self.assertNotIn('events.jsonl', report['captures']['arm-gpu']['failure'])
+            self.assertIn('events.jsonl', report['captures']['gpu']['failure'])
+
     def test_native_raster_join_uses_the_edid_dimensions(self):
         fixture = runpy.run_path(str(ROOT / 'tests/gt710_display_evidence_test.py'))
         native = dict(fixture['API'])
