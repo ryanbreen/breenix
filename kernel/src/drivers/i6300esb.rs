@@ -175,10 +175,29 @@ mod hardware {
         }
     }
 
-    fn ordered_write<T>(address: usize, value: T) {
+    fn ordered_write<T: Into<u32>>(address: usize, value: T) {
+        let value = value.into();
+        // HVF cannot decode a stage-2 MMIO abort from pre/post-indexed
+        // stores (ISV=0). A volatile Rust store can be folded into that
+        // form, so fix the addressing mode as well as the access width.
+        macro_rules! store {
+            ($instruction:literal) => {
+                core::arch::asm!(
+                    concat!($instruction, " {value:w}, [{address}]"),
+                    "dsb osh",
+                    address = in(reg) address,
+                    value = in(reg) value,
+                    options(nostack, preserves_flags),
+                )
+            };
+        }
         unsafe {
-            core::ptr::write_volatile(address as *mut T, value);
-            core::arch::asm!("dsb osh", options(nostack, preserves_flags));
+            match core::mem::size_of::<T>() {
+                1 => store!("strb"),
+                2 => store!("strh"),
+                4 => store!("str"),
+                _ => unreachable!(),
+            }
         }
     }
 
