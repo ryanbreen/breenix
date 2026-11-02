@@ -114,6 +114,34 @@ class ApproveTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'missing or unknown fields'):
             approve.candidates(self.manifest)
 
+    def test_agent_import_preserves_evidence_and_forbids_rejection(self):
+        delegation = ('can you have an agent do most of these approvals and validations? '
+                      'most of these seem like they would be super easy for you to verify without my help.')
+        self.decisions['by'] = 'agent'
+        self.decisions['entries'] = [self.decisions['entries'][0]]
+        decision = self.decisions['entries'][0]
+        decision.update(evidence='Synthetic pixel check passes; independent review agrees.',
+                        delegation=delegation)
+        self.save_decisions()
+        row = self.run_import()[0]
+        self.assertEqual(row['approval']['by'], 'agent')
+        for field in ('evidence', 'delegation'):
+            self.assertEqual(row['approval'][field], decision[field])
+        for field, value in [('evidence', ''), ('evidence', '  '), ('evidence', False),
+                             ('delegation', ''), ('delegation', 'Delegated'),
+                             ('verdict', 'reject')]:
+            with self.subTest(field=field, value=value):
+                original = decision[field]
+                decision[field] = value
+                self.save_decisions()
+                self.run_import(good=False)
+                decision[field] = original
+        for field in ('evidence', 'delegation'):
+            value = decision.pop(field)
+            self.save_decisions()
+            self.run_import(good=False)
+            decision[field] = value
+
     def test_approve_reject_and_append_only_evidence(self):
         rows = self.run_import()
         self.assertEqual([r['case'] for r in rows], ['draw/picture-0'])

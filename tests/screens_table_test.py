@@ -152,6 +152,49 @@ class ScreensTableTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate(self.path)
 
+    def agent_fixture(self):
+        delegation = ('can you have an agent do most of these approvals and validations? '
+                      'most of these seem like they would be super easy for you to verify without my help.')
+        self.row['approval'].update(by='agent', evidence='Pixels pass; Opus sample agrees.',
+                                    delegation=delegation)
+        self.evidence['by'] = 'agent'
+        self.evidence['entries'][0].update(mode=self.row['mode'],
+            decided_at='2026-11-02T15:00:00-05:00', evidence=self.row['approval']['evidence'],
+            delegation=delegation)
+
+    def test_agent_approval_requires_matching_evidence_and_delegation(self):
+        self.agent_fixture()
+        self.approve()
+        self.write([self.row])
+        validate(self.path)
+        for field, value in [('evidence', ''), ('evidence', '   '), ('evidence', 3),
+                             ('delegation', ''), ('delegation', 'Someone delegated this.')]:
+            with self.subTest(field=field, value=value):
+                original = self.row['approval'][field]
+                self.row['approval'][field] = value
+                self.write([self.row])
+                with self.assertRaises(ValueError):
+                    validate(self.path)
+                self.row['approval'][field] = original
+        self.write([self.row])
+        self.evidence['entries'][0]['evidence'] = 'Different checks'
+        self.approve()
+        with self.assertRaises(ValueError):
+            validate(self.path)
+
+    def test_agent_cannot_reject_or_borrow_operator_evidence(self):
+        self.agent_fixture()
+        self.write([self.row])
+        for change in ('reject', 'operator'):
+            if change == 'reject':
+                self.evidence['entries'][0]['verdict'] = 'reject'
+            else:
+                self.evidence['entries'][0]['verdict'] = 'approve'
+                self.evidence['by'] = 'operator'
+            self.approve()
+            with self.assertRaises(ValueError):
+                validate(self.path)
+
     def test_native_requires_approved_parent(self):
         self.row['native'] = [{'out': 'sor0', 'raster': '1280x1024', 'config': 'f' * 64,
                                'crc': '12345678', 'crc2': 'abcdef12',
