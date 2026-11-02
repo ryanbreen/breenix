@@ -100,6 +100,7 @@ pub enum ProcEntryType {
     StageComposites,
     ShowcasePace,
     ScreenCheckpoints,
+    ScreenProof,
     /// /proc/breenix/ext2 - mounted ext2 allocation counters
     Ext2,
     /// /proc/breenix/frames - allocated physical frames by allocation site
@@ -202,6 +203,7 @@ impl ProcEntryType {
             ProcEntryType::StageControl => "stage-control",
             ProcEntryType::ShowcasePace => "pace",
             ProcEntryType::ScreenCheckpoints => "screen-checkpoints",
+            ProcEntryType::ScreenProof => "screen-proof",
             ProcEntryType::BootRibbon => "boot-ribbon",
             ProcEntryType::BootSerial => "boot-serial",
             ProcEntryType::StageComposites => "stage-composites",
@@ -279,6 +281,7 @@ impl ProcEntryType {
             ProcEntryType::StageControl => "/proc/breenix/stage-control",
             ProcEntryType::ShowcasePace => "/proc/breenix/pace",
             ProcEntryType::ScreenCheckpoints => "/proc/breenix/screen-checkpoints",
+            ProcEntryType::ScreenProof => "/proc/breenix/screen-proof",
             ProcEntryType::BootRibbon => "/proc/breenix/boot-ribbon",
             ProcEntryType::BootSerial => "/proc/breenix/boot-serial",
             ProcEntryType::StageComposites => "/proc/breenix/stage-composites",
@@ -356,6 +359,7 @@ impl ProcEntryType {
             ProcEntryType::BreenixTesting => 201,
             ProcEntryType::StageControl => 208,
             ProcEntryType::ScreenCheckpoints => 213,
+            ProcEntryType::ScreenProof => 214,
             ProcEntryType::ShowcasePace => 207,
             ProcEntryType::BootRibbon => 204,
             ProcEntryType::BootSerial => 205,
@@ -510,6 +514,7 @@ pub fn init() {
         .push(ProcEntry::new(ProcEntryType::BreenixTesting));
 
     procfs.entries.push(ProcEntry::new(ProcEntryType::ScreenCheckpoints));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::ScreenProof));
     procfs.entries.push(ProcEntry::new(ProcEntryType::StageControl));
     procfs.entries.push(ProcEntry::new(ProcEntryType::ShowcasePace));
     procfs.entries.push(ProcEntry::new(ProcEntryType::BootRibbon));
@@ -824,7 +829,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -843,6 +848,12 @@ pub fn is_initialized() -> bool {
 /// The content as a String, or an error code
 pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
     match entry_type {
+        ProcEntryType::ScreenProof => {
+            #[cfg(target_arch="aarch64")]
+            if !crate::platform_config::is_qemu() { return text(String::from("off\n")); }
+            let setting = crate::drivers::fw_cfg::read_string("opt/breenix/screen-proof").unwrap_or_default();
+            text(String::from(if setting.trim() == "on" { "on\n" } else { "off\n" }))
+        }
         ProcEntryType::ScreenCheckpoints => {
             #[cfg(target_arch="aarch64")]
             if !crate::platform_config::is_qemu() { return text(String::from("on\n")); }

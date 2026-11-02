@@ -96,3 +96,20 @@ from a completed or different case does not qualify.
 
 <!-- claim-lint:ok: Normative intent-frame requirements in docs/gui/screen-proof.md, not a measured result. -->
 Proof mode uses `opt/breenix/screen-proof`; it is opt-in. After a pictured case's verdict, timer and `end` checkpoint, the runner uses BGL `solid` and `nearest-scale` pipelines to present a text-free frame: background RGB (12,19,31), the judged picture centered at the largest integer scale that fits with 64 pixels of margin in each dimension, and a two-pixel white border immediately outside it. Center coordinates use floor division. The runner takes an `intent` checkpoint and holds the frame for `pace_ms` (default 1,000 ms), outside measured windows. The next stage frame then follows. This adds a screen verdict without changing the case verdict, timing or VALUE records.
+
+The coordinator's 2026-11-02 5:30 AM EST large-picture ruling gives three layouts.
+When an integer scale of at least one fits within mode width minus 64 and mode
+height minus 64, use the largest such scale and the border described above.
+A picture equal to the mode in both dimensions fills the screen at 1:1, without
+a border. Otherwise choose the smallest integer divisor k whose k-spaced samples
+fit those inner bounds. Take source coordinates 0, k, 2k and so on on both axes,
+including a final partial row or column; center the resulting picture and add the
+border. The `intent` digest hashes the actual displayed screen. These layouts
+serve the viewer and do not change the picture judged by the case.
+
+<!-- claim-lint:ok: Normative launch interface in scripts/boot-interactive.sh and renderer in libs/libbreenix/src/suite_intent.rs. -->
+On ARM64 QEMU, `scripts/boot-interactive.sh --mode suite --suite gpu|breengel
+--gpu-gl --screen-proof [--pace MS]` selects this view through fw_cfg. Intent
+rendering transports the verified snapshot unchanged to a separate GPU texture;
+GPU solid and nearest-scale draws compose it. Its context is released after the
+checkpoint and hold, before the next case starts.

@@ -20,6 +20,7 @@
 #                        with --gpu-gl); --gate-timeout bounds each suite's wait for DONE
 #                        claim-lint:ok: scripts/suite-sequence.py (resolve) expands the word.
 #   --screen-checkpoints on|off  enable end/named scanout checkpoints (default on)
+#   --screen-proof       show text-free intent frames after pictured cases (default pace 1000 ms)
 #   --pace MS            hold each completed case on screen, outside its measured window (default 0)
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
@@ -66,6 +67,7 @@ SUITE=
 ONLY=
 PACE=
 SCREEN_CHECKPOINTS=on
+SCREEN_PROOF=0
 QMP_SOCKET=
 QMP_REQUESTED=0
 GPU_GL=0
@@ -83,6 +85,7 @@ while [ "$#" -gt 0 ]; do
         --suite) SUITE="$2"; shift 2 ;;
         --case) [ -n "$2" ] || { echo "--case needs a category or category/case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
         --screen-checkpoints) SCREEN_CHECKPOINTS="$2"; shift 2 ;;
+        --screen-proof) SCREEN_PROOF=1; shift ;;
         --pace) [ -n "$2" ] || { echo "--pace needs milliseconds" >&2; exit 2; }; PACE="$2"; shift 2 ;;
         --qmp) QMP_SOCKET="$2"; QMP_REQUESTED=1; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
@@ -131,12 +134,36 @@ if [ -n "$ONLY" ]; then
         echo "--case needs --mode suite and a category or category/case id" >&2; exit 2;
     }
 fi
+if [ "$SCREEN_PROOF" -eq 1 ]; then
+    [ "$MODE" = suite ] && { [ "$SUITE" = gpu ] || [ "$SUITE" = breengel ]; } || {
+        echo "--screen-proof needs one gpu or breengel suite" >&2; exit 2;
+    }
+    [ "$SCREEN_CHECKPOINTS" = on ] || { echo "--screen-proof needs screen checkpoints on" >&2; exit 2; }
+    PACE=${PACE:-1000}
+fi
 if [ -n "$PACE" ]; then
     [ "$MODE" = suite ] && [[ "$PACE" =~ ^[0-9]+$ ]] && [ "${#PACE}" -le 10 ] && [ "$PACE" -le 4294967295 ] || {
         echo "--pace needs --mode suite and milliseconds from 0 to 4294967295" >&2; exit 2;
     }
-    python3 "$ROOT/scripts/showcase-pace.py" --suite "$SUITE" --pace "$PACE" \
-        --cases "${ONLY:+1}" --gate-timeout "$GATE_TIMEOUT" --idle-exit "$IDLE_EXIT"
+    if [ "$SCREEN_PROOF" -eq 1 ]; then
+        # Count the intent hold as well as BreenGL's existing stage spotlight.
+        python3 - "$ROOT" "$SUITE" "$PACE" "$GATE_TIMEOUT" "$IDLE_EXIT" "${ONLY:+1}" <<'PY'
+import json
+import sys
+from pathlib import Path
+root, suite, pace, deadline, idle, selected = sys.argv[1:]
+pace, deadline, idle = int(pace), float(deadline), float(idle)
+manifest = json.loads((Path(root) / 'docs/suites' / (suite + '.json')).read_text())
+count = int(selected) if selected else sum(len(c['cases']) for c in manifest['categories'])
+holds = count * (2 if suite == 'breengel' else 1)
+if deadline <= 0 or idle < 0 or (pace and (pace + 1000 >= 120000
+        or (idle and pace + 1000 >= idle * 1000) or pace * holds + 60000 >= deadline * 1000)):
+    sys.exit('screen intent pace exceeds the progress, idle or completion budget')
+PY
+    else
+        python3 "$ROOT/scripts/showcase-pace.py" --suite "$SUITE" --pace "$PACE" \
+            --cases "${ONLY:+1}" --gate-timeout "$GATE_TIMEOUT" --idle-exit "$IDLE_EXIT"
+    fi
 fi
 if [ -z "$DISPLAY_MODE" ]; then
     # On the operator's Mac every boot opens QEMU's window, as Parallels and VMware boots do, so a boot can be watched.
@@ -203,6 +230,9 @@ if [ "$MODE" = suite ]; then
     [ -z "$ONLY" ] || MODE_ARGS+=(-fw_cfg "name=opt/breenix/case,string=$ONLY")
 fi
 MODE_ARGS+=(-fw_cfg "name=opt/breenix/screen-checkpoints,string=$SCREEN_CHECKPOINTS")
+if [ "$SCREEN_PROOF" -eq 1 ]; then
+    MODE_ARGS+=(-fw_cfg "name=opt/breenix/screen-proof,string=on")
+fi
 if [ -n "$PACE" ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/pace,string=$PACE")
 fi
@@ -346,9 +376,29 @@ VIGIL_CPUS=
 export BREENIX_VIGIL_DISPLAY=false
 [ "$DISPLAY_MODE" != none ] && export BREENIX_VIGIL_DISPLAY=true
 [ -n "$ONLY" ] || VIGIL_ID=$(BREENIX_VIGIL_CPUS="$VIGIL_CPUS" "$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
+if [ -n "$VIGIL_ID" ] && [ "$SCREEN_PROOF" -eq 1 ]; then
+    VIGIL_HOME=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
+    python3 - "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/run.json" "$QEMU_PROFILE" "$PACE" <<'PY'
+import json
+import sys
+import tempfile
+from pathlib import Path
+record = Path(sys.argv[1])
+data = json.loads(record.read_text())
+data.update(profile=sys.argv[2], screenProof=True, intentPaceMS=int(sys.argv[3]))
+with tempfile.NamedTemporaryFile(mode='w', dir=record.parent, delete=False) as output:
+    json.dump(data, output, indent=2)
+    output.write('\n')
+    temporary = Path(output.name)
+try:
+    temporary.replace(record)
+finally:
+    temporary.unlink(missing_ok=True)
+PY
+fi
 # Vigil currently discards --profile for non-beast platforms. Preserve the actual
 # watch configuration on the same record, without registering a second boot.
-if [ -n "$VIGIL_ID" ] && [ "${PACE:-0}" -gt 0 ]; then
+if [ -n "$VIGIL_ID" ] && [ "${PACE:-0}" -gt 0 ] && [ "$SCREEN_PROOF" -eq 0 ]; then
     VIGIL_HOME=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
     python3 "$ROOT/scripts/showcase-pace.py" --suite "$SUITE" --pace "$PACE" \
         --cases "${ONLY:+1}" --gate-timeout "$GATE_TIMEOUT" --idle-exit "$IDLE_EXIT" \

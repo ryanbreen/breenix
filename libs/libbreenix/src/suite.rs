@@ -1003,6 +1003,8 @@ impl Suite {
             Screen::open(self.gui, self.id == "gpu")
         };
         let pace_ms = if self.gui {crate::suite_stage::init(self)} else {0};
+        let proof = intent::configured(self.id);
+        let intent_pace_ms = if proof { intent::pace_ms() } else { 0 };
         let title = std::format!("BREENIX / {} SUITE", self.title.to_uppercase());
         let subtitle = match only {
             Some(name) => std::format!("suite {}: selection {name} (not full-suite evidence)", self.id),
@@ -1017,7 +1019,8 @@ impl Suite {
         }
         let suite_start = monotonic_ns();
 
-        let pace_suffix = if pace_ms > 0 { std::format!(" pace_ms={pace_ms}") } else { String::new() };
+        let reported_pace = if proof { intent_pace_ms } else { pace_ms };
+        let pace_suffix = if reported_pace > 0 { std::format!(" pace_ms={reported_pace}") } else { String::new() };
         emit(&std::format!("SUITE {} START cases={}{}{}", self.id, total, suffix, pace_suffix));
         if let Some(message) = &error {
             emit(&std::format!("SUITE {} ERROR {}", self.id, message));
@@ -1073,6 +1076,7 @@ impl Suite {
                 let mut outcome = run_case(case, limit_ms, self.id, &name, &mut screen, &mut feed);
                 if let Some(error) = screen.stage_error.take() { outcome = with_note(outcome, &error); }
                 let picture_hash = frame_hash(screen.judged.as_deref());
+                let intent_picture = if proof { screen.judged.clone() } else { None };
                 // Share ownership with the native observer until the final outcome is known.
                 #[cfg(target_arch = "x86_64")]
                 let observed_frame = self.judged_observer.and(screen.judged.clone());
@@ -1118,6 +1122,10 @@ impl Suite {
                 states[c][k] = State::Done(outcome);
                 done += 1;
                 for checkpoint in screen::collect(self.id, &name) { screen::emit(&checkpoint); }
+                if let Some(picture) = intent_picture.as_deref() {
+                    intent::show(self.id, &name, picture, intent_pace_ms);
+                    if self.gui { let _ = crate::suite_stage::redraw(); }
+                }
                 if let Some(observe) = self.case_observer { observe(done, total, &name); }
                 if place.is_some() { sequence::progress_after(done); }
             }
@@ -2277,6 +2285,9 @@ mod screen_tests;
 
 #[path = "suite_screen.rs"]
 mod screen;
+
+#[path = "suite_intent.rs"]
+mod intent;
 
 #[cfg(test)]
 #[path = "../../../tests/suite_intent_test.rs"]
