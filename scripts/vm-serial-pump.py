@@ -29,6 +29,9 @@ def main(run, whole_path):
               'target': 'qemu', 'bootedCommit': build.get('commit'),
               'toolsCommit': tools_path.read_text().strip() if tools_path.exists() else '',
               'evidenceEligible': bool(verified.get('evidenceEligible') is True and verified.get('commit') == build.get('commit') and verified.get('artifacts') == build.get('artifacts'))}
+    fault = (run / 'boot-kind').exists() and (run / 'boot-kind').read_text().strip() == 'fault-test'
+    if fault:
+        record['kind'] = 'fault-test'
     if record['evidenceEligible']:
         record['artifacts'] = verified['artifacts']
     # Freeze the scoring definitions at the image's recorded build commit,
@@ -114,6 +117,9 @@ def main(run, whole_path):
     guest = None
     pending_guest = bytearray()
     qmp = None
+    guest_closed = False
+    drain_deadline = None
+    qmp_closed = False
     qmp_buffer = bytearray()
     paths = [run / 'serial.sock', run / 'console.sock']
     try:
@@ -127,7 +133,7 @@ def main(run, whole_path):
             selector.register(listener, selectors.EVENT_READ, kind)
         with open(whole_path, 'ab', buffering=0) as whole:
             while True:
-                if qmp is None:
+                if qmp is None and not qmp_closed:
                     candidate = socket.socket(socket.AF_UNIX)
                     try:
                         candidate.connect(str(run / 'events.sock'))
@@ -137,7 +143,13 @@ def main(run, whole_path):
                         qmp = candidate
                         qmp.setblocking(False)
                         selector.register(qmp, selectors.EVENT_READ, 'qmp')
-                for key, mask in selector.select(timeout=.05 if qmp is None else None):
+                timeout = max(0, drain_deadline - time.monotonic()) if drain_deadline is not None else None
+                if qmp is None and not qmp_closed:
+                    timeout = min(timeout, .05) if timeout is not None else .05
+                ready = selector.select(timeout=timeout)
+                if not ready and drain_deadline is not None and time.monotonic() >= drain_deadline:
+                    return
+                for key, mask in ready:
                     sock, kind = key.fileobj, key.data
                     if sock in listeners:
                         connection, _ = sock.accept()
@@ -158,6 +170,9 @@ def main(run, whole_path):
                             selector.unregister(sock)
                             sock.close()
                             qmp = None
+                            qmp_closed = True
+                            if guest_closed:
+                                return
                             continue
                         qmp_buffer.extend(data)
                         while b'\n' in qmp_buffer:
@@ -169,6 +184,8 @@ def main(run, whole_path):
                             elif 'event' in message:
                                 events.write(json.dumps(message) + '\n')
                                 reason = message.get('data', {}).get('reason')
+                                if fault and message['event'] == 'SHUTDOWN' and reason == 'guest-reset':
+                                    events.write(json.dumps(dict(event='panic-reset-observed', t=time.time())) + '\n')
                                 if message['event'] == 'SHUTDOWN' and reason == 'guest-shutdown':
                                     (directory / 'exit-status').write_text('0\n')
                                 if message['event'] == 'RESET':
@@ -197,7 +214,14 @@ def main(run, whole_path):
                             data = b''
                         if not data:
                             if kind == 'guest-data':
-                                return
+                                selector.unregister(sock)
+                                sock.close()
+                                guest = None
+                                guest_closed = True
+                                drain_deadline = time.monotonic() + .25
+                                if qmp_closed:
+                                    return
+                                continue
                             selector.unregister(sock)
                             del clients[sock]
                             sock.close()
