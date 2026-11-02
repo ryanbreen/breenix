@@ -45,5 +45,7 @@ fn encode(words: [u64; abi::heap_trace::WORDS]) -> Result<Vec<u8>, i32> {
     let mut bytes = Vec::new();
     bytes.try_reserve_exact(abi::heap_trace::SIZE).map_err(|_| -12)?;
     for word in words { bytes.extend_from_slice(&word.to_le_bytes()); }
+    bytes.try_reserve_exact(abi::heap_trace::scanout::SIZE).map_err(|_| -12)?;
+    for word in crate::gk208::timing::scanout_snapshot() { bytes.extend_from_slice(&word.to_le_bytes()); }
     Ok(bytes)
 }

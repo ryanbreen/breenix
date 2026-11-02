@@ -27,7 +27,93 @@ def rust(source, directory, name, args=()):
     return subprocess.check_output([str(directory / name)], text=True)
 
 
+def composition_capture():
+    from gt710_breengel_selection_test import capture, NAMES
+    sample = dict(schema=1, observations=0, latched_confirmed=0, refused=0,
+                  pending=0, wait_ns=0, wait_max_ns=0, last_latched_resource=0,
+                  last_record_resource=0, mismatches=0, wrong_bindings=0,
+                  wrong_requested_resource=0, wrong_latched_resource=0, wrong_record_resource=0)
+    rows = []
+    for index, name in enumerate([''] + NAMES):
+        if name.startswith('scanout/'):
+            sample['observations'] += 1
+            sample['latched_confirmed'] += 1
+            sample['last_latched_resource'] = sample['last_record_resource'] = 44
+        if name == 'scanout/fault-wrong-resource':
+            # The clean successor has already replaced the last observation.
+            sample['observations'] += 1; sample['latched_confirmed'] += 1
+            sample.update(wrong_bindings=1, wrong_requested_resource=42,
+                          wrong_latched_resource=43, wrong_record_resource=43)
+        values = dict.fromkeys(API['CASE_HEAP_FIELDS'], 0); values['schema'] = 1
+        rows.append(dict(schema=1, boundary=index, case=name, values=values, scanout=sample.copy()))
+    return capture() + ''.join('GT710_CASE_HEAP ' + json.dumps(r) + '\n' for r in rows)
+
+
+def composition_score(serial):
+    from gt710_breengel_selection_test import boot
+    return API['cases']('breengel-composition', '', {'breengel': dict(serial=serial, boot=boot())})[0]
+
+
 class Evidence(unittest.TestCase):
+    def test_composition_accepts_matching_latched_observations(self):
+        self.assertEqual(composition_score(composition_capture())['result'], 'PASS')
+
+    def test_composition_rejects_unconfirmed_observation(self):
+        serial = composition_capture()
+        lines = serial.splitlines()
+        index = next(i for i, line in enumerate(lines) if line.startswith('GT710_CASE_HEAP ') and
+                     json.loads(line.removeprefix('GT710_CASE_HEAP '))['case'] == 'scanout/binding')
+        row = json.loads(lines[index].removeprefix('GT710_CASE_HEAP '))
+        row['scanout']['observations'] += 1
+        row['scanout']['last_record_resource'] = 42  # requested, rather than latched
+        lines[index] = 'GT710_CASE_HEAP ' + json.dumps(row)
+        result = composition_score('\n'.join(lines) + '\n')
+        self.assertEqual(result['result'], 'FAIL')
+        self.assertIn('latched', result['reason'])
+
+    def test_composition_rejects_missing_scanout_row(self):
+        serial = composition_capture()
+        serial = '\n'.join(line for line in serial.splitlines() if not
+            (line.startswith('GT710_CASE_HEAP ') and
+             json.loads(line.removeprefix('GT710_CASE_HEAP '))['case'] == 'scanout/completion')) + '\n'
+        result = composition_score(serial)
+        self.assertEqual(result['result'], 'FAIL')
+        self.assertIn('boundaries', result['reason'])
+
+    def test_composition_rejects_wrong_binding_record_naming_requested_resource(self):
+        lines = composition_capture().splitlines()
+        for index, line in enumerate(lines):
+            if line.startswith('GT710_CASE_HEAP '):
+                row = json.loads(line.removeprefix('GT710_CASE_HEAP '))
+                if row['case'] == 'scanout/fault-wrong-resource':
+                    row['scanout']['wrong_record_resource'] = row['scanout']['wrong_requested_resource']
+                    lines[index] = 'GT710_CASE_HEAP ' + json.dumps(row)
+        result = composition_score('\n'.join(lines) + '\n')
+        self.assertEqual(result['result'], 'FAIL')
+        self.assertIn('wrong binding', result['reason'])
+
+    def test_cumulative_provenance_survives_drain_and_clean_successor(self):
+        code = r'''
+extern crate alloc;
+#[path="TIMING"]mod timing;
+fn main(){
+ let mut r=timing::Recorder::new();
+ r.scanout_wait(true,17);r.scanout_result(false);
+ r.scanout_binding(42,43);r.scanout_latched(43);r.scanout_published(43);r.scanout_result(true);
+ let before=r.scanout_snapshot();assert_eq!(&before[1..7],&[1,1,1,1,17,17]);
+ assert!(r.drain(1).is_some());assert_eq!(r.scanout_snapshot(),before);
+ r.scanout_binding(44,44);r.scanout_latched(44);r.scanout_published(44);r.scanout_result(true);
+ let after=r.scanout_snapshot();assert_eq!(&after[7..9],&[44,44]);
+ assert_eq!(&after[10..14],&[1,42,43,43],"clean successor must retain wrong-binding provenance");
+ r.scanout_binding(42,43);r.scanout_latched(43);r.scanout_published(42);
+ let bad=r.scanout_snapshot();assert_eq!(bad[1],3);assert_eq!(bad[2],2);assert_eq!(bad[9],1);
+ assert_eq!(&bad[11..14],&[42,43,42],"retain the published lie as evidence, not as confirmation");
+}
+'''.replace('TIMING', str(ROOT/'kernel/src/gpu/gk208/timing.rs'))
+        with tempfile.TemporaryDirectory() as tmp:
+            # The production timing module also exposes unrelated diagnostics.
+            rust(code, Path(tmp), 'scanout', ['-Adead_code'])
+
     def test_401_heap_boundaries_round_trip_and_refuse_over_bound(self):
         source = (ROOT / 'userspace/programs/src/gt710_heap.rs').read_text()
         code = r'''
@@ -43,6 +129,9 @@ pub fn fixture()->Vec<u8>{
  let capacity=s.rows.capacity();s.record(0,401,"",Ok(values));
  for n in 1..=401{s.record(n,401,&format!("raster/case-{n}"),Ok(values));}
  assert_eq!(s.rows.capacity(),capacity);
+ for (index,row) in s.rows.iter_mut().enumerate(){
+  row.scanout[0]=1;row.scanout[1]=index as u64;row.scanout[2]=index as u64;
+ }
  let bytes=s.encode().expect("401 cases plus the initial boundary must fit");
  let mut bad=Store::new();bad.record(0,usize::MAX,"",Ok(values));
  assert!(bad.encode().is_err(),"overflow must refuse, never truncate");
@@ -63,6 +152,7 @@ fn main(){print!("{}",String::from_utf8(heap::fixture()).unwrap());}
         self.assertEqual([r['case'] for r in rows], [''] + [f'raster/case-{n}' for n in range(1, 402)])
         self.assertTrue(all(set(r['values']) == API['CASE_HEAP_FIELDS'] for r in rows))
         self.assertEqual(rows[-1]['values']['heap_free'], 2**64 - 1)
+        self.assertEqual(rows[-1]['scanout']['observations'], 401)
         wire=(ROOT/'libs/gpu-abi/src/heap_trace.rs').read_text()
         import re
         names=re.findall(r'"([a-z0-9_]+)"',wire[wire.index('pub const NAMES'):])[:84]
@@ -95,6 +185,8 @@ fn main(){print!("{}",String::from_utf8(heap::fixture()).unwrap());}
             (p/'serial.txt').write_text(serial)
             recovered = API['capture_serial'](p)
             self.assertEqual(recovered.count('GT710_CASE_HEAP {'), 402)
+            decoded = [json.loads(line.removeprefix('GT710_CASE_HEAP ')) for line in recovered.splitlines() if line.startswith('GT710_CASE_HEAP ')]
+            self.assertEqual(decoded[-1]['scanout'], rows[-1]['scanout'])
             self.assertEqual(recovered.count('GT710_BREENGL_ALLOCATIONS {'),1)
             (p/'serial.txt').write_text(serial.replace(anchor('GT710_ALLOCATIONS_BULK',allocations),
                                                        'GT710_ALLOCATIONS_BULK 1 '+'0'*64+'\n'))

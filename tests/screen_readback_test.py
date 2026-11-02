@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class Readback(unittest.TestCase):
     def test_provenance_limit_and_visible_rectangle(self):
         source=(ROOT/'kernel/src/gpu/mod.rs').read_text()
-        policy=function(source,'impl Observer')
+        policy=source[source.index('const OBSERVATION_TIMEOUT_NS:'):source.index('impl Observer')] + function(source,'impl Observer')
         abi=ROOT/'libs/gpu-abi/src/screen.rs'
         fixture = r'''use std::convert::TryInto;
 mod screen { ABI }

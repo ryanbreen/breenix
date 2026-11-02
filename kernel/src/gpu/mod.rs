@@ -5607,7 +5607,12 @@ pub fn observe_scanout(dst: u64, dst_len: u64, record: u64) -> Result<u64, (i64,
     a.pixels = dst;
     a.pixels_len = dst_len;
     a.record = record;
-    match read_back(tgid, &mut a, Observer::Window, None) {
+    let result = read_back(tgid, &mut a, Observer::Window, None);
+    #[cfg(target_arch = "x86_64")]
+    if dev::backend() == abi::backend::GK208 {
+        crate::gk208::timing::scanout_result(result.is_ok());
+    }
+    match result {
         Ok(serial) => Ok(serial),
         Err(Refused::Errno(e)) => Err((e, readback_reason::NONE)),
         Err(Refused::Eio(reason, _)) => Err((EIO, reason)),
@@ -5661,10 +5666,12 @@ enum Observer {
     Screen,
 }
 
+const OBSERVATION_TIMEOUT_NS: u64 = 5_000_000_000;
+
 impl Observer {
     fn records_composition(self) -> bool { self != Self::Screen }
     fn deadline(self, now: u64) -> Option<u64> {
-        (self == Self::Screen).then(|| now.saturating_add(5_000_000_000))
+        (self == Self::Screen).then(|| now.saturating_add(OBSERVATION_TIMEOUT_NS))
     }
     fn excludes_binding(self, known: bool, bound: bool) -> bool {
         self == Self::Screen && known && !bound
@@ -5719,7 +5726,11 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
             #[cfg(target_arch = "x86_64")] false, #[cfg(target_arch = "x86_64")] None)
         .map_err(|stop| match stop { Stop::Timeout => ETIMEDOUT, Stop::Interrupted => EINTR })?;
         Some(if window {
-            display::Transition::for_window_observer(deadline)?
+            display::Transition::for_window_observer(deadline).map_err(|errno| {
+                if observer == Observer::Window && errno == ETIMEDOUT {
+                    Refused::Eio(readback_reason::BINDING_UNKNOWN, 0)
+                } else { Refused::Errno(errno) }
+            })?
         } else {
             display::Transition::for_observation(tgid)?
         })
@@ -5737,22 +5748,40 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     {
         return Err(Refused::Eio(readback_reason::BINDING_UNKNOWN, 0));
     }
-    let (id, fmt, tw, th, pitch, backing) = with_core(|c| {
-        let id = if a.target == 0 {
-            if !window && !display::owner(tgid) {
-                return Err(abi::errno::EPERM);
+    let (id, fmt, tw, th, pitch, backing) = {
+        #[cfg(target_arch = "x86_64")]
+        let native_scanout = if observer == Observer::Window && a.target == 0 && dev::backend() == abi::backend::GK208 {
+            Some(crate::gk208::observed_scanout()
+                .map_err(|_| Refused::Eio(readback_reason::BINDING_UNKNOWN, 0))?)
+        } else { None };
+        #[cfg(not(target_arch = "x86_64"))]
+        let native_scanout: Option<u32> = None;
+        with_core(|c| {
+            let id = if a.target == 0 {
+                if !window && !display::owner(tgid) {
+                    return Err(abi::errno::EPERM);
+                }
+                let accepted = c.display.binding.ok_or(EIO)?.id;
+                // The native window observer names the surface resolved from the
+                // head's armed state. A stale software binding is no observation.
+                let observed = native_scanout.unwrap_or(accepted);
+                if observed != accepted { return Err(EIO); }
+                observed
+            } else {
+                c.res_of(tgid, a.target).ok_or(EINVAL)?
+            };
+            let r = c.resources.get(&id).ok_or(EINVAL)?;
+            if !matches!(r.kind, kind::TARGET | kind::TEXTURE) {
+                return Err(EINVAL);
             }
-            c.display.binding.ok_or(EIO)?.id
-        } else {
-            c.res_of(tgid, a.target).ok_or(EINVAL)?
-        };
-        let r = c.resources.get(&id).ok_or(EINVAL)?;
-        if !matches!(r.kind, kind::TARGET | kind::TEXTURE) {
-            return Err(EINVAL);
-        }
-        Ok((id, r.format, r.width, r.height, r.pitch, r.backing.clone()))
-    })
-    .ok_or(ENODEV)??;
+            Ok((id, r.format, r.width, r.height, r.pitch, r.backing.clone()))
+        })
+        .ok_or(ENODEV)?.map_err(|e| {
+            if e == EIO && native_scanout.is_some() {
+                Refused::Eio(readback_reason::BINDING_UNKNOWN, 0)
+            } else { Refused::Errno(e) }
+        })?
+    };
     // Privileged window observation can read the foreground console. Protect its
     // backing throughout the poison/transfer observation.
     let canvas = core::cell::Cell::new(screen::is_target(id).then(crate::console::hold_canvas));
@@ -5981,6 +6010,12 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
             writer:last.map(|l| (l.fence,l.kind,l.answer)),
             transfer_fence,answer:transfer_answer,
         });
+        // GPU READBACK exposes the native copy completion; window scanout
+        // records reserve these bytes under the BreenGL backend-6 row.
+        if !window {
+            put32(&mut rec, record::COPY_KIND, abi::gk208::TRANSFER_RELEASE);
+            put32(&mut rec, record::COPY_STATUS, transfer_answer);
+        }
     } else if dev::is_svga() {
         // The host copy into the readback surface answered as the readback did: both run
         // in the same command buffer, whose status is the answer.
@@ -6019,6 +6054,12 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         crate::syscall::userptr::write_user_bytes(a.record, rec.as_ptr(), record::SIZE)
             .map_err(|_| EFAULT)
     })();
+    #[cfg(target_arch = "x86_64")]
+    if output.is_ok() && unwritten == 0 && observer == Observer::Window && dev::backend() == abi::backend::GK208 {
+        // Sample the bytes actually published while the display transition is pinned.
+        let resource = u64::from_le_bytes(rec[record::RESOURCE..record::RESOURCE + 8].try_into().unwrap());
+        crate::gk208::timing::scanout_published(resource);
+    }
     release();
     output?;
     if unwritten != 0 {
