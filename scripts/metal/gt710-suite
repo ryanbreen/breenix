@@ -2374,6 +2374,9 @@ def breengel_fronts_suite(serial, boot, step_number=1):
         'VALUE': r'SUITE breengel VALUE .*',
         'WAIT': r'SUITE breengel WAIT .*',
     }
+    screen = runpy.run_path(str(root / 'scripts/screen-verdict.py'))
+    screen['score'](manifest, serial, json.loads((root / 'docs/suites/frames/screens.json').read_text()))
+    shapes['SCREEN'] = screen['RECORD'].pattern
     parsed = []
     for line in serial.splitlines():
         if not line.startswith('SUITE breengel '):
