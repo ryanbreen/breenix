@@ -1,5 +1,6 @@
 """Regression checks for the incomplete PR #2642 acceptance report."""
 import json
+import hashlib
 from pathlib import Path
 import runpy
 import tempfile
@@ -12,6 +13,69 @@ HEAD = 'a' * 40
 class ScreenAcceptance(unittest.TestCase):
     def setUp(self):
         self.api = runpy.run_path(str(ROOT / 'scripts/screen-proof-acceptance.py'))
+
+    def test_gallery_inventory_requires_intents_for_judged_pictures(self):
+        sha = 'a' * 64
+        serial = (f'SUITE gpu CASE draw/one PASS ms=1 sha256={sha}\n'
+                  'SUITE gpu CASE draw/two PASS ms=1\n')
+        ends = [['draw/one', 'end'], ['draw/two', 'end']]
+        expected = self.api['checkpoint_inventory']('gpu', serial, ends, 'gallery')
+        self.assertEqual(expected, [ends[0], ['draw/one', 'intent'], ends[1]])
+        self.assertEqual(self.api['checkpoint_inventory']('gpu', serial, ends, 'checkpoints'), ends)
+        self.assertEqual(self.api['checkpoint_inventory']('gpu', serial.replace(' sha256=' + sha, ''), ends, 'gallery'), ends)
+
+    def test_gallery_gate_keeps_failed_boot_records_and_requires_both_sets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p / 'run.json').write_text(json.dumps(dict(id='failed', platform='qemu',
+                arch='aarch64', mode='suite', suites=['gpu', 'breengel'], screenProof=True)))
+            for name, value in [('commit', HEAD), ('dirty', '0'), ('ended', '1'), ('exit-status', '1')]:
+                (p / name).write_text(value)
+            failure = 'SUITE gpu CASE isolation/irq-masked-bound FAIL ms=1 msg=1370 us; bound 500'
+            done = 'SUITE gpu DONE passed=169 failed=1 skipped=0 total=170'
+            (p / 'serial.txt').write_text(failure + '\n' + done + '\n')
+            report = self.api['accept'](HEAD, {'arm-gpu': p}, phase='gallery')
+            self.assertFalse(report['proven'])
+            self.assertEqual(report['phase'], 'gallery')
+            row = report['captures']['arm-gpu']
+            self.assertEqual(row['exitStatus'], '1')
+            self.assertEqual(row['failedCases'], [failure])
+            self.assertEqual(row['done'], [done])
+            self.assertIn('unsuccessful', row['failure'])
+            for suite in ('gpu', 'breengel'):
+                self.assertIn(f'missing {suite} candidates', report['failures'])
+
+    def test_gallery_set_requires_exact_serial_pixels_and_capture_provenance(self):
+        exporter = runpy.run_path(str(ROOT / 'tools/screen-gallery/export.py'))
+        importer = runpy.run_path(str(ROOT / 'scripts/screens/approve.py'))
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / 'manifest.json'
+            pixels = bytes([3, 2, 1, 255])
+            sha = hashlib.sha256(pixels).hexdigest()
+            row = dict(suite='gpu', case='draw/one', checkpoint='intent', mode='1x1',
+                       binding='1x1', sha256=sha, boot_id='boot-gpu', commit=HEAD,
+                       title='One', contract_section='test', intent='One', png='one.png')
+            def write(rows):
+                p.write_text(json.dumps(dict(version=1,
+                    candidates_id=importer['candidates_id'](rows), rows=rows)))
+            (p.parent / 'one.png').write_bytes(exporter['png'](1, 1, pixels))
+            serial = f'SUITE gpu SCREEN draw/one intent sha256={sha} mode=1x1 binding=1x1\n'
+            write([row])
+            checked = self.api['check_gallery_set'](p, 'gpu', 'boot-gpu', HEAD, serial)
+            self.assertEqual(checked['rows'], 1)
+            for field, value in [('suite', 'breengel'), ('boot_id', 'other'),
+                                 ('commit', 'b' * 40), ('binding', '2x2')]:
+                with self.subTest(field=field):
+                    write([dict(row, **{field: value})])
+                    with self.assertRaises(ValueError):
+                        self.api['check_gallery_set'](p, 'gpu', 'boot-gpu', HEAD, serial)
+            write([])
+            with self.assertRaisesRegex(ValueError, 'inventory'):
+                self.api['check_gallery_set'](p, 'gpu', 'boot-gpu', HEAD, serial)
+            write([row])
+            (p.parent / 'one.png').write_bytes(exporter['png'](1, 1, bytes([4, 2, 1, 255])))
+            with self.assertRaisesRegex(ValueError, 'digest'):
+                self.api['check_gallery_set'](p, 'gpu', 'boot-gpu', HEAD, serial)
 
     def test_truncated_screen_records_are_reported_as_invalid(self):
         for suffix in ('', 'draw/one', 'draw/one end'):
