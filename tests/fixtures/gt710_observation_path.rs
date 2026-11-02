@@ -7,7 +7,11 @@ use gpu_abi::{self as abi, capability, record, format, Plain};
 const EIO: i64 = 5;
 const ENODEV: i64 = 19;
 const POISON: u32 = 0x3c5aa5c3;
+mod console { pub fn request_repaint() {} }
+mod compose { pub fn register() {} }
+fn native_console_backing(_: &()) -> Result<(), &'static str> { Ok(()) }
 mod gk208 {
+    pub fn console_surface() -> Option<()> { Some(()) }
     pub mod adapter {
         pub struct Device(pub crate::caps::BoardState);
         impl Device {
@@ -97,8 +101,9 @@ fn production_caps_and_readback_publish_native_fields() {
         assert_eq!((wide(&r, record::CONTEXT), wide(&r, record::RESOURCE), wide(&r, record::GENERATION)), (0x123, 0x456, 9));
         assert_eq!((wide(&r, record::RENDER_SERIAL), wide(&r, record::RENDER_FENCE), wide(&r, record::READBACK_FENCE)), (9001,42,123));
         assert_eq!(word(&r, record::RENDER_KIND), kind);
-        for at in [record::READBACK_KIND, record::COPY_KIND] { assert_eq!(word(&r, at), abi::gk208::TRANSFER_RELEASE); }
-        for at in [record::RENDER_STATUS, record::READBACK_STATUS, record::COPY_STATUS] { assert_eq!(word(&r, at), abi::gk208::SUCCESS); }
+        assert_eq!(word(&r, record::READBACK_KIND), abi::gk208::TRANSFER_RELEASE);
+        assert!(r[136..160].iter().all(|b| *b == 0));
+        for at in [record::RENDER_STATUS, record::READBACK_STATUS] { assert_eq!(word(&r, at), abi::gk208::SUCCESS); }
         for at in [record::READBACK_SURFACE, record::READBACK_MOB] { assert_eq!(wide(&r, at), 0); }
         assert_eq!((word(&r, record::X),word(&r, record::Y),word(&r, record::WIDTH),word(&r, record::HEIGHT)), (2,3,4,5));
         assert_eq!((word(&r, record::FLAGS),wide(&r, record::PRESENT_FENCE),wide(&r, record::COMPOSITE_SERIAL)), (3,401,99));
@@ -109,7 +114,7 @@ fn production_caps_and_readback_publish_native_fields() {
     // turn an unsuccessful transfer into the native success evidence tag.
     let r = row(LastWrite { device_ctx: Some(3), serial: 2, fence: 1,
         answer: 0x60010002, kind: abi::gk208::DRAW_RELEASE }, 0x60010002, 7).unwrap();
-    for at in [record::RENDER_STATUS, record::READBACK_STATUS, record::COPY_STATUS] { assert_eq!(word(&r, at), 0x60010002); }
+    for at in [record::RENDER_STATUS, record::READBACK_STATUS] { assert_eq!(word(&r, at), 0x60010002); }
     assert_eq!(word(&r, record::UNWRITTEN), 7);
 }
 #[test]
@@ -130,4 +135,24 @@ fn production_virtual_rows_keep_their_own_evidence() {
         assert_eq!((word(&r,record::RENDER_KIND),word(&r,record::READBACK_KIND),word(&r,record::COPY_KIND)),(draw,read,copy));
         assert_eq!((wide(&r,record::READBACK_SURFACE),wide(&r,record::READBACK_MOB)),surface);
     }
+}
+
+#[test]
+fn composed_native_scanout_record_has_v2_provenance() {
+    dev::BACKEND.with(|b| b.set(6));
+    let r = row(LastWrite { device_ctx: Some(0x123), serial: 9001, fence: 42,
+        answer: abi::gk208::SUCCESS, kind: abi::gk208::DRAW_RELEASE }, abi::gk208::SUCCESS, 0).unwrap();
+    assert_eq!((word(&r, 0), word(&r, 16), word(&r, 20), word(&r, 24)), (2, 6, 5, 3));
+    for at in [112, 128, 192] { assert_eq!(word(&r, at), abi::gk208::SUCCESS); }
+    assert_eq!(word(&r, 116), abi::gk208::DRAW_RELEASE);
+    assert_eq!(word(&r, 132), abi::gk208::TRANSFER_RELEASE);
+    let fences = [wide(&r, 104), wide(&r, 120), wide(&r, 184)];
+    assert!(fences.iter().all(|f| *f != 0));
+    assert!(fences[0] != fences[1] && fences[0] != fences[2] && fences[1] != fences[2]);
+    assert_eq!(wide(&r, 176), 99);
+    assert!(r[136..160].iter().all(|b| *b == 0));
+    assert_eq!(word(&r, 164), 0);
+    assert_eq!(word(&r, 196), 1);
+    assert_eq!([wide(&r, 200), wide(&r, 208), wide(&r, 216), wide(&r, 224)], [21, 22, 23, 24]);
+    assert!(r[776..1024].iter().all(|b| *b == 0));
 }

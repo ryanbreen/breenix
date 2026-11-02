@@ -6,6 +6,7 @@ GT710_OBSERVATION_REV selects the source revision for the red check.
 """
 from pathlib import Path
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -37,6 +38,7 @@ class ObservationPath(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix='gt710-observation-') as directory:
             out = Path(directory)
             (out / 'observation.rs').write_text(source('kernel/src/gpu/observation.rs'))
+            shutil.copytree(ROOT / 'kernel/src/gpu/gk208/caps', out / 'caps')
             for name, path in [('caps', 'kernel/src/gpu/gk208/caps.rs'),
                                ('completion', 'kernel/src/gpu/completion.rs')]:
                 (out / f'{name}.rs').write_text(source(path))
