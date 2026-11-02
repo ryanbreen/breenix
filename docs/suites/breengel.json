@@ -99,7 +99,7 @@
         {
           "id": "bgr-order",
           "title": "The BGR flag swaps the channel order and nothing else",
-          "expect": "On black (#000000), a 14x18 scene has a red (#FA0A14) rectangle at (2,2), green (#0AF01E) outline at (1,9), blue (#141EFA) diagonal, yellow (#C8C80A) disc, cyan (#0AC8C8) ring and brown (#5A5046) 'A1' near the bottom."
+          "expect": "A 14x18 black (#000000) picture with a red (#FA0A14) filled rectangle, green (#0AF01E) outline, blue (#141EFA) diagonal, yellow (#C8C80A) disc, cyan (#0AC8C8) ring and brown (#5A5046) bitmap text A1; later shapes cover earlier ones."
         },
         {
           "id": "x-byte",
@@ -175,7 +175,7 @@
         {
           "id": "rounded-rect",
           "title": "Rounded-rectangle corners match the contract's corner predicate",
-          "expect": "The upper-left portion of a crimson (#C81E5A) rounded 20x20 rectangle starting at (20,15), radius 7, clipped by a navy (#0A141E) 32x24 picture's right and bottom edges."
+          "expect": "A navy (#0A141E) 32x24 picture with the clipped upper-left portion of a crimson (#C81E5A) rounded rectangle; its geometric origin is x=20, y=15, size 20 by 20, radius 7."
         },
         {
           "id": "gradient",
@@ -232,12 +232,12 @@
         {
           "id": "bitmap-glyph",
           "title": "The built-in 5x7 font draws 'A' exactly as its table defines it",
-          "expect": "A crimson (#C81E5A) 5x7 pixel 'A' at (2,3) on a navy (#0A141E) 12x12 background."
+          "expect": "A 12x12 picture on navy (#0A141E) background; the text 'A', crimson (#C81E5A), starting near x=2, y=3, font size 7; literal 5x7 bitmap."
         },
         {
           "id": "bitmap-scale",
           "title": "Scale 3 turns each glyph pixel into a 3x3 block",
-          "expect": "A crimson (#C81E5A) pixel 'A' at (1,1), each original pixel enlarged to 3x3, on a navy (#0A141E) 20x24 background."
+          "expect": "A 20x24 picture on navy (#0A141E) background; the text 'A', crimson (#C81E5A), starting near x=1, y=1, font size 21; literal 5x7 bitmap enlarged by 3."
         },
         {
           "id": "bitmap-unknown",
@@ -247,17 +247,17 @@
         {
           "id": "noto-ascii",
           "title": "noto-sans-mono-bitmap draws every printable ASCII character matching its reference cell",
-          "expect": "A white (#FFFFFF), antialiased '~' at (0,2) on a black (#000000) 16x20 background, using the 16-pixel Noto Sans Mono bitmap cell."
+          "expect": "A 16x20 picture on black (#000000) background; antialiased text '~' starts near x=0, y=2 in the 16-pixel Noto Sans Mono cell; each grey channel equals the pinned bitmap coverage, which need not reach white."
         },
         {
           "id": "noto-coverage",
           "title": "Bitmap coverage blends with the background by the alpha contract",
-          "expect": "An antialiased brown-orange (#C86432) '&' at (0,0) on a blue-grey (#14283C) 16x16 background."
+          "expect": "A 16x16 picture on blue-grey (#14283C) background; the text '&', brown-orange (#C86432), starting near x=0, y=0, font size 16; antialiased Noto Sans Mono."
         },
         {
           "id": "ttf-glyph",
           "title": "DejaVu Sans Mono \"Hg\" at 16 px matches its reviewed reference",
-          "expect": "White (#FFFFFF), antialiased 'Hg' in 16-pixel DejaVu Sans Mono at (8,6) on a black (#000000) 48x32 background, matching the pinned reference."
+          "expect": "A 48x32 picture on black (#000000) background; the text 'Hg', white (#FFFFFF), starting near x=8, y=6, font size 16; antialiased DejaVu Sans Mono, pinned reference."
         },
         {
           "id": "ttf-sizes",
@@ -289,7 +289,7 @@
         {
           "id": "ttf-subpixel",
           "title": "LCD subpixel text matches its reviewed reference per channel",
-          "expect": "White (#FFFFFF) 'Subpixel LCD' in 16-pixel DejaVu Sans at (4,4) on a black (#000000) 160x28 background, with coloured LCD antialiasing at glyph edges as in the pinned reference."
+          "expect": "A 160x28 picture on black (#000000) background; the text 'Subpixel LCD', white (#FFFFFF), starting near x=4, y=4, font size 16; DejaVu Sans with coloured LCD edges, pinned reference."
         },
         {
           "id": "ttf-notdef",
@@ -299,7 +299,7 @@
         {
           "id": "utf8-text",
           "title": "UTF-8 input draws \"é\" from the font's glyph for U+00E9",
-          "expect": "A white (#FFFFFF), antialiased 'é' in 24-pixel DejaVu Sans Mono at (10,4) on a black (#000000) 48x40 background."
+          "expect": "A 48x40 picture on black (#000000) background; the text 'é', white (#FFFFFF), starting near x=10, y=4, font size 24; antialiased DejaVu Sans Mono."
         },
         {
           "id": "utf8-invalid",
@@ -313,7 +313,7 @@
         {
           "id": "compound-transform",
           "title": "Scaled and 2x2-transformed components match their reviewed reference",
-          "expect": "White (#FFFFFF) transformed 'BA' glyphs from the compound-transform fixture font, at (4,8), size 48, on a black (#000000) 200x64 background, matching the pinned reference."
+          "expect": "A 200x64 picture on black (#000000) background; the text 'BA', white (#FFFFFF), starting near x=4, y=8, font size 48; fixture glyphs built from transformed F contours and dots, not ordinary letterforms; pinned reference."
         },
         {
           "id": "line-metrics",
@@ -326,7 +326,7 @@
         {
           "id": "many-args-abi",
           "title": "The text calls with ten or more parameters, including trailing f32 or 26.6 values, give the reference output on this target",
-          "expect": "White (#FFFFFF), antialiased 'Ag' in 22.5-pixel DejaVu Sans at (6,4) on a black (#000000) 96x40 background."
+          "expect": "A 96x40 picture on black (#000000) background; the text 'Ag', white (#FFFFFF), starting near x=6, y=4, font size 22.5; antialiased DejaVu Sans."
         },
         {
           "id": "cache-hit",
@@ -343,27 +343,27 @@
         {
           "id": "hidpi-sizes",
           "title": "Scale-2 text equals twice-size coverage and differs from replicated pixels",
-          "expect": "One white (#FFFFFF), antialiased 'H' in 32-pixel DejaVu Sans at physical (32,16) on a black (#000000) 192x128 background; glyph edges are rasterized at that size."
+          "expect": "A 192x128 picture on black (#000000) background; the text 'H', white (#FFFFFF), starting near x=32, y=16, font size 32; antialiased DejaVu Sans in physical pixels."
         },
         {
           "id": "fontwatch-reload",
           "title": "Changing the configured font makes later text use newly rasterized glyphs of the new font",
-          "expect": "White (#FFFFFF), antialiased 'Wi é A' in 16-pixel DejaVu Sans at (8,40) on a navy (#0A141E) 200x70 background."
+          "expect": "A 200x70 picture on navy (#0A141E) background; the text 'Wi é A', white (#FFFFFF), starting near x=8, y=40, font size 16; antialiased DejaVu Sans."
         },
         {
           "id": "fontwatch-size",
           "title": "Changing the configured size changes the rasterized glyphs and their metrics",
-          "expect": "White (#FFFFFF), antialiased 'Wi é A' in 32-pixel DejaVu Sans Mono at (8,40) on a navy (#0A141E) 200x70 background."
+          "expect": "A 200x70 picture on navy (#0A141E) background; the text 'Wi é A', white (#FFFFFF), starting near x=8, y=40, font size 32; antialiased DejaVu Sans Mono."
         },
         {
           "id": "fontwatch-missing",
           "title": "A configured font file that is missing keeps the previous font and reports the error",
-          "expect": "White (#FFFFFF), antialiased 'Wi é A' in 24-pixel DejaVu Sans at (8,40) on a navy (#0A141E) 200x70 background."
+          "expect": "A 200x70 picture on navy (#0A141E) background; the text 'Wi é A', white (#FFFFFF), starting near x=8, y=40, font size 24; antialiased DejaVu Sans."
         },
         {
           "id": "fontwatch-malformed-config",
           "title": "A malformed fonts.conf keeps the previous fonts and reports the error",
-          "expect": "White (#FFFFFF), antialiased 'Wi é A' in 16-pixel DejaVu Sans Mono at (8,40) on a navy (#0A141E) 200x70 background."
+          "expect": "A 200x70 picture on navy (#0A141E) background; the text 'Wi é A', white (#FFFFFF), starting near x=8, y=40, font size 16; antialiased DejaVu Sans Mono."
         },
         {
           "id": "fontwatch-partial",
@@ -372,22 +372,22 @@
         {
           "id": "fontwatch-repeated",
           "title": "Five changes in a row end with the last one in use",
-          "expect": "White (#FFFFFF), antialiased 'Wi é A' in 24-pixel DejaVu Sans Mono at (8,40) on a navy (#0A141E) 200x70 background."
+          "expect": "A 200x70 picture on navy (#0A141E) background; the text 'Wi é A', white (#FFFFFF), starting near x=8, y=40, font size 24; antialiased DejaVu Sans Mono."
         },
         {
           "id": "fontwatch-independent",
           "title": "Mono and display fonts change independently",
-          "expect": "White (#FFFFFF), antialiased 'Wi é A' in 24-pixel DejaVu Sans Mono at (8,40) on a navy (#0A141E) 200x70 background."
+          "expect": "A 200x70 picture on navy (#0A141E) background; the text 'Wi é A', white (#FFFFFF), starting near x=8, y=40, font size 24; antialiased DejaVu Sans Mono."
         },
         {
           "id": "fontwatch-idle",
           "title": "A window that receives no events, with fonts.conf changed at UI time *t*, draws the new font in its first commit at or after the watcher's first 250 ms check after *t*",
-          "expect": "White (#FFFFFF), antialiased 'Wi é A' in 16-pixel DejaVu Sans at (8,40) on a navy (#0A141E) 200x70 background."
+          "expect": "A 200x70 picture on navy (#0A141E) background; the text 'Wi é A', white (#FFFFFF), starting near x=8, y=40, font size 16; antialiased DejaVu Sans."
         },
         {
           "id": "fontwatch-file-replaced",
           "title": "Replacing the configured font file at the same path by rename, with fonts.conf unchanged, makes later text use newly rasterized glyphs of the new file by the next check",
-          "expect": "White (#FFFFFF), antialiased 'Wi é A' in 16-pixel DejaVu Sans at (8,40) on a navy (#0A141E) 200x70 background."
+          "expect": "A 200x70 picture on navy (#0A141E) background; the text 'Wi é A', white (#FFFFFF), starting near x=8, y=40, font size 16; antialiased DejaVu Sans."
         }
       ]
     },
@@ -777,7 +777,7 @@
         {
           "id": "decodes",
           "title": "An encoded frame decodes to the same pixels",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Two 2x1 strips pair near-black (#010203) with purple (#800080) or brown (#0A141E); alpha is half-grey or white (#FFFFFF)."
+          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Two 2x1 strips pair near-black (#010203) with purple (#800080) or dark navy (#0A141E); alpha is half-grey or white (#FFFFFF)."
         },
         {
           "id": "stable",
@@ -814,7 +814,7 @@
         {
           "id": "button-draw",
           "title": "A button draws its label and frame in the theme's literal colours and positions",
-          "expect": "A dark grey (#3C3C3C) 120x40 button at (20,16), grey (#787878) border and centred white (#FFFFFF) 'OK', on a navy (#0A141E) 200x80 background."
+          "expect": "A dark grey (#3C3C3C) 120x40 button with geometric anchor x=20, y=16, grey (#787878) border and centred white (#FFFFFF) 'OK', on a navy (#0A141E) 200x80 background."
         },
         {
           "id": "button-click",
@@ -827,12 +827,12 @@
         {
           "id": "button-disabled",
           "title": "A disabled button draws dimmed and reports no click",
-          "expect": "A dark grey (#3C3C3C) 120x40 button at (20,16), grey (#787878) border and centred light grey (#B4B4B4) 'OK', on a navy (#0A141E) 200x80 background."
+          "expect": "A dark grey (#3C3C3C) 120x40 button with geometric anchor x=20, y=16, grey (#787878) border and centred light grey (#B4B4B4) 'OK', on a navy (#0A141E) 200x80 background."
         },
         {
           "id": "checkbox-toggle",
           "title": "Clicking a checkbox toggles it and redraws the mark",
-          "expect": "A blue (#4682DC) 28x28 checkbox at (20,26), with white (#FFFFFF) check mark and 'Opt' at (56,24), grey (#787878) border, on a navy (#0A141E) 280x80 background."
+          "expect": "A blue (#4682DC) 28x28 checkbox with geometric anchor x=20, y=26, with white (#FFFFFF) check mark and 'Opt' with geometric anchor x=56, y=24, grey (#787878) border, on a navy (#0A141E) 280x80 background."
         },
         {
           "id": "checkbox-space",
@@ -853,7 +853,7 @@
         {
           "id": "label-clip",
           "title": "A label wider than its bounds is clipped at the bounds with an ellipsis",
-          "expect": "An entirely navy (#0D1B29) 160x80 rectangle; the final three-pixel-high label clip hides the ellipsis, leaving no text."
+          "expect": "A 160x80 picture on navy (#0A141E) background; a clipped white (#FFFFFF) label starts near x=20, y=16 in a 70 by 32 box, showing the fitting prefix of ABCDEFGHIJKLM followed by an ellipsis; physical font size 32."
         },
         {
           "id": "tabbar-select",
@@ -880,7 +880,7 @@
         {
           "id": "menubar-open",
           "title": "Clicking a menu title opens its menu below it",
-          "expect": "A dark grey (#3C3C3C) File menu drops below the bar at physical (20,54), with grey (#787878) borders, white (#FFFFFF) 'New', 'Save As', 'Quit' and shortcuts, and disabled light grey (#B4B4B4) 'Save', on navy (#0A141E)."
+          "expect": "A dark grey (#3C3C3C) File menu drops below the bar with geometric anchor x=20, y=54, with grey (#787878) borders, white (#FFFFFF) 'New', 'Save As', 'Quit' and shortcuts, and disabled light grey (#B4B4B4) 'Save', on navy (#0A141E)."
         },
         {
           "id": "menubar-shortcut",
@@ -893,7 +893,7 @@
         {
           "id": "menu-disabled",
           "title": "A disabled item draws dimmed and cannot be chosen",
-          "expect": "An open dark grey (#3C3C3C) File menu below physical (20,54), grey (#787878) border, white (#FFFFFF) enabled labels and light grey (#B4B4B4) disabled 'Save' at (56,104), on navy (#0A141E)."
+          "expect": "An open dark grey (#3C3C3C) File menu below geometric anchor x=20, y=54, grey (#787878) border, white (#FFFFFF) enabled labels and light grey (#B4B4B4) disabled 'Save' with geometric anchor x=56, y=104, on navy (#0A141E)."
         },
         {
           "id": "menu-dismiss",
@@ -906,7 +906,7 @@
         {
           "id": "focus-ring",
           "title": "Each focusable widget draws the theme's focus ring when focused and none otherwise",
-          "expect": "A dark grey (#3C3C3C) 200x48 button at (40,40), grey (#787878) border and centred white (#FFFFFF) 'OK', surrounded by a gold (#FFC83C) focus outline at (36,36), on navy (#0A141E)."
+          "expect": "A dark grey (#3C3C3C) 200x48 button with geometric anchor x=40, y=40, grey (#787878) border and centred white (#FFFFFF) 'OK', surrounded by a gold (#FFC83C) focus outline with geometric anchor x=36, y=36, on navy (#0A141E)."
         },
         {
           "id": "no-change-ack",
@@ -915,7 +915,7 @@
         {
           "id": "scale-2",
           "title": "Scale-2 widgets double logical geometry and rasterize TrueType labels at twice the size",
-          "expect": "A dark grey (#3C3C3C) 240x80 button at (40,32), two-pixel grey (#787878) border and centred white (#FFFFFF) 32-pixel 'OK', on a navy (#0A141E) 400x160 background."
+          "expect": "A dark grey (#3C3C3C) 240x80 button with geometric anchor x=40, y=32, two-pixel grey (#787878) border and centred white (#FFFFFF) 32-pixel 'OK', on a navy (#0A141E) 400x160 background."
         }
       ]
     },
@@ -999,7 +999,7 @@
         {
           "id": "filepicker-errors",
           "title": "A directory that cannot be read shows its error in the picker",
-          "expect": "A charcoal (#2D2D2D) file picker at the top left of a navy (#0A141E) 640x500 picture, with '/data' in its path bar and white (#FFFFFF) 'Permission denied' at physical (10,58); no file rows."
+          "expect": "A charcoal (#2D2D2D) file picker at the top left of a 640x500 navy (#0A141E) picture, with '/data' in its path bar; white (#FFFFFF) text 'Permission denied' starts near x=10, y=58, physical font size 32; no file rows."
         }
       ]
     },
@@ -1054,7 +1054,7 @@
         {
           "id": "particles-bounded",
           "title": "Particle counts stay at or below the cap, and positions stay inside the box",
-          "expect": "White (#FFFFFF) particles and their fading trails remain inside the 24x20 box at (28,30) on a navy (#0A141E) 80x80 picture; no text."
+          "expect": "An 80x80 picture on navy (#0A141E) background with pale fading particle trails confined to the box x=28..51, y=30..49; the white source particles blend by their remaining life, so an exact white pixel is not required; no text."
         },
         {
           "id": "assets",
@@ -1180,7 +1180,7 @@
         {
           "id": "release-order",
           "title": "A retired buffer returns to free only after its composite and any capture copy in progress are done",
-          "expect": "A 256x128 mosaic with repeating blue column ramps and green row ramps, overlaid with red diagonal flecks; the palette spans black (#000000) to bright mixed colours as the captured commit changes, with no text."
+          "expect": "A 256x128 mosaic picture with blue column ramps, green row ramps and red diagonal flecks; seed k is the captured nonzero commit id, with B=(7*x+13*k)%256, G=(5*y+29*k)%256, R=(x XOR y XOR k)%256; no text."
         },
         {
           "id": "acquire-timeout",
@@ -1242,7 +1242,7 @@
         {
           "id": "commit-waits-render",
           "title": "Pending render fences are not composed and failed renders cannot replace the front",
-          "expect": "A solid dark blue-grey (#112233) 16x16 rectangle from the completed render; no text or shapes."
+          "expect": "A solid dark blue-grey (#112233) 16x16 rectangle; no text or shapes."
         }
       ]
     },
@@ -1279,7 +1279,7 @@
         {
           "id": "other-map",
           "title": "Foreign GPU target handles are refused before submission or readback",
-          "expect": "A 24x12 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is green (#07CB5B), with no text."
+          "expect": "A 16x16 mosaic picture from seed 27, with blue column ramps, green row ramps and red diagonal flecks; its upper-left pixel is red-brown (#1B0F5F), with no text."
         },
         {
           "id": "other-resize",
@@ -1428,7 +1428,7 @@
         {
           "id": "compose-overlap",
           "title": "Two overlapping windows compose in z order, exactly",
-          "expect": "Two 200x120 mosaics overlap on black (#000000), at (100,100) and (180,150); the first covers the second in the overlap, with blue and green ramps and red flecks, beginning dark green (#023A1A) and dark green (#035727)."
+          "expect": "A black (#000000) full-screen picture with two 200x120 mosaics at geometric origins x=100, y=100 and x=180, y=150; the first (seed 2) covers the second (seed 3) in the overlap; blue/green ramps and red flecks, no text."
         },
         {
           "id": "compose-offscreen",
@@ -1489,7 +1489,7 @@
         {
           "id": "inflight-bound",
           "title": "At most one composite per window is in flight",
-          "expect": "A 640x400 mosaic rectangle at (0,0) on black (#000000), with blue horizontal ramps, green vertical ramps and red diagonal flecks; its upper-left pixel is blue (#1327F7), with no text."
+          "expect": "A black (#000000) screen with a 640x400 seed-19 mosaic at geometric origin x=0, y=0; blue column ramps, green row ramps and red diagonal flecks; no text."
         },
         {
           "id": "no-change-commit",
@@ -1524,12 +1524,12 @@
         {
           "id": "present-rate",
           "title": "One 256x256 window composes at least 60 commits a second",
-          "expect": "A 256x256 animated mosaic at (100,100) on black (#000000), with blue column ramps, green row ramps and red diagonal flecks; the final seed is 299, giving green (#2BDF2F) at its upper-left corner, with no text."
+          "expect": "A black (#000000) screen with a 256x256 mosaic at geometric origin x=100, y=100; blue column ramps, green row ramps and red diagonal flecks from the last composed commit among seeds 0..299; no text."
         },
         {
           "id": "takeover-giveback",
           "title": "Display takeover and giveback restore the previous owner's frame exactly",
-          "expect": "The previous owner's navy (#0C131F) stage returns exactly, with its matrix of case tiles on the left and selected-case panel on the right; the child's solid orange (#E08020) screen is gone."
+          "expect": "The previous owner's navy (#0C131F) stage, with its matrix of case tiles on the left and selected-case panel on the right, restored exactly."
         },
         {
           "id": "ownership-stack",
@@ -1715,7 +1715,8 @@
         {
           "id": "changing-scene",
           "title": "Three successive known scenes each read back equal to their formulas",
-          "expect": "A full-screen mosaic of blue horizontal ramps, green vertical ramps and red diagonal flecks, beginning blue-green (#22DABA), with a second 300x250 mosaic above it at (900,500), beginning turquoise (#23F7C7); no text."
+          "expect": "A full-screen mosaic of blue horizontal ramps, green vertical ramps and red diagonal flecks, beginning blue-green (#22DABA), with a second 300x250 mosaic above it at (900,500), beginning turquoise (#23F7C7); no text.",
+          "expectEnd": "An entirely black (#000000) full screen; no text or shapes."
         },
         {
           "id": "full-destination",
@@ -1801,7 +1802,7 @@
         {
           "id": "tile-stamps",
           "title": "Tile order, milestone grouping, stamp states and key numbers match the fixture",
-          "expect": "On navy (#0C131F), 430 small pending tiles with slate-blue (#304360) outlines fill the left matrix under 'one'; white (#FFFFFF) 'BREENIX / fixture' heads the screen, and the right panel selects case '0'."
+          "expect": "A 2560x1600 navy (#0C131F) picture with 430 pending tiles, slate-blue (#304360) outlines, under 'one'; white (#FFFFFF) 'BREENIX / fixture' header; the right panel reads 'CASE 1 / one', '0' and 'key 0'."
         },
         {
           "id": "tile-thumbnail",
@@ -1826,12 +1827,12 @@
         {
           "id": "finale",
           "title": "The summary shows counts and the slowest case and holds for five seconds of UI time",
-          "expect": "A blue-grey (#18273B) summary box at physical (96,480), size 1440x480, overlays the left matrix on navy (#0C131F); white (#FFFFFF) text reads 'RUN COMPLETE', '1 passed  1 failed  1 not reached' and 'slowest alpha/fail 9 ms'."
+          "expect": "A 2560x1600 navy (#0C131F) picture with a blue-grey (#18273B) summary panel over the left matrix; white (#FFFFFF) text reads 'RUN COMPLETE', '1 passed  1 failed  1 not reached' and 'slowest alpha/fail 9 ms'; the panel includes these glyphs."
         },
         {
           "id": "deterministic",
           "title": "The same results at the same UI time draw byte-identical stage pixels without real clock reads",
-          "expect": "A navy (#0C131F) 1280x800 stage headed 'BREENIX / clock' in white (#FFFFFF), with one cyan (#40FFE0) running tile for 'clock/running' at left and an empty dark blue (#121D2C) panel at right; the header shows 500 ms."
+          "expect": "A navy (#0C131F) 1280x800 picture headed 'BREENIX / clock' in white (#FFFFFF), elapsed 500 ms; one cyan (#40FFE0) running tile at left; the dark blue (#121D2C) right panel shows 'CASE 1 / clock', 'running', 'key 0', 'Awaiting case result' and 'RUNNING'."
         },
         {
           "id": "judged-frame-shown",

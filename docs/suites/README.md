@@ -35,19 +35,27 @@ parses the suite's source, `userspace/programs/src/suite_<id>.rs` with `-` in th
 as `_`, and reads the `static` that `main` calls `.run()` on, so comments, disabled code and
 calls outside that table do not count.
 
-A case may also have an optional `expect` string: non-empty visual guidance of at most
-300 characters. It is documentation for screen review; the suite runner and scorers do
-not read it. Other unknown case keys remain invalid. In `gpu.json`, descriptions cover
-121 judged-picture cases and two additional cases with particular `end` screens
-(`isolation/no-addresses` and `isolation/irq-masked-bound`).
+A case may also have optional `expect` and `expectEnd` strings: non-empty visual
+guidance of at most 300 characters each. `expect` describes only the judged picture;
+`expectEnd` overrides it for an `end` checkpoint whose displayed content differs.
+These are documentation for screen review; the suite runner and scorers do not read
+them. Other unknown case keys remain invalid. The exporter resolves the checkpoint
+to one `expect` sentence and records the documentation commit, without changing the
+candidate's evidence identity or PNGs.
 
-GPU descriptions describe the last handed-off picture and, where different, the end
-screen. Coordinates start at the picture's top left; rectangle end coordinates are
-exclusive. Small viewing patches sit at the screen origin on charcoal (#181512);
-offscreen pictures have no surrounding screen. Colour names and RGB hex values describe
-the displayed RGB channels, with the capture's alpha forced to 255. The prose comes from
-`suite_gpu` expectation formulas, constants and references, including deliberate fault
-images; captures are not the source of an expectation.
+Coordinates start at the picture's top left; rectangle end coordinates are exclusive.
+An intent picture excludes its checkerboard and white border. Small GPU viewing
+patches sit at the screen origin on charcoal (#181512) only in the end screen;
+that surround is omitted from their intent descriptions. Overlays cover earlier
+shapes, so their geometric bounds do not promise a uniformly filled rectangle.
+Text origins do not promise an ink pixel. The mechanically supported form is
+`the text 'Wi é A', white (#FFFFFF), starting near x=8, y=40, font size 16`, with
+the picture background named separately as `on navy (#0A141E) background`.
+Antialiased coverage need not reach its source colour; gradient endpoints and
+mosaic origin colours are named as exact pixels only when the expectation formula
+and visibility make them exact. Colour values describe displayed RGB, with capture
+alpha forced to 255. Prose comes from the cases' expectation code, constants and
+references; captures are not the source of an expectation.
 
 ### Planned categories
 

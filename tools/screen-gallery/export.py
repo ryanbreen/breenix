@@ -153,8 +153,9 @@ def export(args):
                          checkpoint=checkpoint, mode=mode, binding=binding, sha256=digest,
                          boot_id=args.boot_id, commit=args.commit, intent=title,
                          png=f'{len(rows):05d}.png'))
-        if 'expect' in item:
-            expect = item['expect']
+        expect_key = 'expectEnd' if checkpoint == 'end' and 'expectEnd' in item else 'expect'
+        if expect_key in item:
+            expect = item[expect_key]
             if not isinstance(expect, str) or not expect.strip() or len(expect) > 300:
                 raise ValueError(f'invalid expect documentation: {suite} {case}')
             rows[-1].update(expect=expect, expectCommit=expect_commit)

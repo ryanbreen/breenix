@@ -185,3 +185,11 @@ this run, and its CRC pair, output and raster must match the capture evidence.
 A missing or inconsistent parent refuses the import. Native rows record the
 run and commit; they cannot add a picture expectation. This sidecar contract is
 an input for U14/U18; U12 does not claim hardware acceptance or produce captures.
+
+Text claims use `the text 'Wi é A', white (#FFFFFF), starting near x=8, y=40,
+font size 16`. The verifier checks for the exact ink colour in a clipped box:
+a quarter-em margin, up to 1.5 em per codepoint horizontally and 1.5 em vertically
+from the anchor. It checks a named `on navy (#0A141E) background` against more than
+half the judged picture's pixels. The string, font and glyph shape remain unresolved for independent vision review.
+Decimation leaves missing ink and source colour shares unresolved. A source colour
+omitted by antialiasing must not be asserted as an exact visible pixel.

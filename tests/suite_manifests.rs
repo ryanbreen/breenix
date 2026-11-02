@@ -240,13 +240,14 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
                         for (k, case_value) in case_list.iter().enumerate() {
                             let case_at = format!("{cat_at} cases[{k}]");
                             // Validate optional gallery prose without adding it to the scored Entry.
-                            let extra: &[&str] = if case_value.get("expect").is_some() { &["expect"] } else { &[] };
-                            if let Some(expect) = case_value.get("expect") {
-                                if !expect.as_str().is_some_and(|text| !text.trim().is_empty() && text.chars().count() <= 300) {
-                                    errors.push(format!("{case_at}: expect must be non-empty text of at most 300 characters"));
+                            let extra: Vec<&str> = ["expect", "expectEnd"].into_iter()
+                                .filter(|key| case_value.get(*key).is_some()).collect();
+                            for key in &extra {
+                                if !case_value[*key].as_str().is_some_and(|text| !text.trim().is_empty() && text.chars().count() <= 300) {
+                                    errors.push(format!("{case_at}: {key} must be non-empty text of at most 300 characters"));
                                 }
                             }
-                            if let Some(case) = entry(case_value, &case_at, extra, errors) {
+                            if let Some(case) = entry(case_value, &case_at, &extra, errors) {
                                 if !case_ids.insert(case.id.clone()) {
                                     errors.push(format!("{case_at}: case id {:?} appears twice in {:?}", case.id, category.id));
                                 }

@@ -10,6 +10,7 @@ from collections import Counter
 import hashlib
 import importlib.util
 import json
+import math
 from pathlib import Path
 import re
 import sys
@@ -175,6 +176,40 @@ def verify_picture(image, expect, checkpoint='intent'):
             continue
         check('colour', f'{colour} present', dict(minimum_pixels=1),
               dict(pixels=count, total=total, share=count/total), count > 0)
+
+    # A text origin is a layout anchor, not a promised glyph pixel. This checks
+    # local ink only; the string, font and glyph shapes still need vision review.
+    text_claims = list(re.finditer(
+        r"the text '([^']+)', [a-z -]+ \(?(#[0-9a-fA-F]{6})\)?, "
+        r'starting near x=(-?\d+), y=(-?\d+), font size (\d+(?:\.\d+)?)', expect, re.I))
+    for claim in text_claims:
+        text, colour, x, y, size = claim.groups()
+        x, y, size = int(x), int(y), float(size)
+        if size <= 0 or size > 16384:
+            check('text-colour', claim[0], 'positive bounded font size', size, False)
+            continue
+        if decimated:
+            unresolved(claim[0], 'decimated source omits glyph pixels near the text anchor')
+            continue
+        # Allow bearings around the anchor and up to 1.5 em advance per codepoint.
+        # Bounds are computed from the stated text/size before measuring the ink.
+        pad = math.ceil(size / 4)
+        box = [max(0, x-pad), max(0, y-pad),
+               min(picture.width, x+math.ceil(len(text)*size*1.5)+pad),
+               min(picture.height, y+math.ceil(size*1.5)+pad)]
+        valid = box[0] < box[2] and box[1] < box[3]
+        ink = picture.crop(box).getcolors(picture.width*picture.height) if valid else ()
+        count = sum(n for n, pixel in ink if pixel == rgb(colour))
+        check('text-colour', claim[0], dict(colour=colour.upper(), minimum_pixels=1),
+              dict(box=box, pixels=count), count > 0)
+    for background in re.finditer(r'on [a-z -]+ \(?(#[0-9a-fA-F]{6})\)? background', expect, re.I):
+        colour = background[1].upper()
+        if decimated:
+            unresolved(background[0], 'decimated colour shares cannot prove source majority')
+            continue
+        count = counts[rgb(colour)]
+        check('background', background[0], dict(colour=colour, share_greater_than=0.5),
+              dict(pixels=count, total=total, share=count/total), count*2 > total)
 
     # Filled single-colour surfaces make the absence of text/marks mechanically provable.
     filled = re.search(r'\b(entirely|solid|plain|uniform)\b', expect, re.I)
