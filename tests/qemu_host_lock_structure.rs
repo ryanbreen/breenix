@@ -229,12 +229,33 @@ fn persistent_launcher_uses_the_shared_mac_boot_slot() {
 }
 
 fn native_arm64_launches_use_wrapper(script: &str) -> bool {
-    let lines: Vec<&str> = script.lines().collect();
+    // Resolve shell variables assigned the ARM binary by A2's launcher and
+    // the older QEMU/QEMU_BIN launchers before judging their command lines.
+    let assignments: Vec<_> = script.lines().filter_map(|line| {
+        let (name, value) = line.trim().split_once('=')?;
+        (value == "qemu-system-aarch64" && !name.is_empty()
+            && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_'))
+            .then_some(name)
+    }).filter(|name| !script.lines().any(|line| line.trim() == format!("{name}=qemu-system-x86_64")))
+        .collect();
+    let lines: Vec<String> = script.lines().map(|line| {
+        let mut expanded = line.to_string();
+        for name in &assignments {
+            expanded = expanded.replace(&format!("\"${name}\""), "qemu-system-aarch64")
+                .replace(&format!("\"${{{name}}}\""), "qemu-system-aarch64");
+        }
+        expanded
+    }).collect();
     for (index, line) in lines.iter().enumerate() {
-        if !is_qemu_aarch64_launch_line(line) { continue; }
         let launch = line.trim();
-        if launch.starts_with("QEMU_BIN=") || launch.starts_with("QEMU=")
+        if launch.starts_with("QEMU_BIN=") || launch.starts_with("QEMU=") { continue; }
+        if assignments.iter().any(|name| launch.starts_with(&format!("{name}=")))
             || launch.starts_with("qemu_host_lock_") { continue; }
+        if !is_qemu_aarch64_launch_line(line)
+            && !(script.lines().nth(index).is_some_and(|raw| raw != line)
+                && launch.split_whitespace().collect::<Vec<_>>().windows(2)
+                    .any(|words| words[0] == "qemu-system-aarch64" && words[1].starts_with('-'))) { continue; }
+        if launch.starts_with('#') { continue; }
         let mut start = index;
         while start > 0 && lines[start - 1].trim_end().ends_with('\\') { start -= 1; }
         let command = lines[start..=index].join(" ");
