@@ -1466,6 +1466,17 @@ class DriverTest(StateTest):
         with patch.object(m, 'now', return_value=1420):
             self.assertTrue(self.finish(d.check_deadlines, m.EXIT_HUNG).hung)
 
+    def test_breengel_uses_its_900_second_suite_gate(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'breengel'
+        d.request_at = d.complete_at = d.kernel_started = 110
+        d.on_line('SUITE breengel START cases=401', observed_at=130)
+        d.last_serial = 1030
+        with patch.object(m, 'now', return_value=1030):
+            d.check_deadlines()
+        with patch.object(m, 'now', return_value=1031):
+            self.finish(d.check_deadlines, m.EXIT_SHORT)
+
     def test_each_suite_of_a_multi_suite_boot_gets_its_own_deadline(self):
         d = self.driver
         d.args.mode, d.args.suite = 'suite', 'directories,processes,time'

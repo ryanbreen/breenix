@@ -193,9 +193,15 @@ impl Device {
         super::caps::Profile::from_board(&self.board, self.channel.identity()).admission(masked)
     }
     pub fn send(&mut self, request: Request) -> Result<(), Request> {
+        self.send_traced(request, #[cfg(target_os = "none")] None)
+    }
+    pub fn send_traced(&mut self, request: Request,
+        #[cfg(target_os = "none")] trace: Option<&super::timing::Submit>) -> Result<(), Request> {
+        #[cfg(target_os = "none")]
+        let _submit = trace.map(|t| t.scope(super::timing::submit_cost::Phase::Native));
         #[cfg(target_os = "none")]
         let _cost = super::cost::phase(super::cost::Slot::NativeSubmit);
-        if !self.has_room(1) || self.pending.try_reserve(1).is_err() { return Err(request); }
+        if !self.has_room(1) || self.needs_reset() || self.pending.try_reserve(1).is_err() { return Err(request); }
         #[cfg(target_os = "none")]
         if self.recent.len() < 16 && self.recent.try_reserve(1).is_err() { return Err(request); }
         if request.storage {
@@ -216,18 +222,21 @@ impl Device {
         // BAR flush leaves backing in pending until confirmed recovery.
         let result = if let Some(draw) = request.encoded.as_ref() {
             if let Some(plan) = draw.transfer {
-                self.channel.publish(sequence, &Operation::Transfer(plan))
+                self.channel.publish(sequence, &Operation::Transfer(plan), #[cfg(target_os = "none")] trace)
             } else {
-                self.channel.publish_draw(sequence, draw)
+                #[cfg(target_os = "none")]
+                { self.channel.publish_draw_traced(sequence, draw, trace) }
+                #[cfg(not(target_os = "none"))]
+                { self.channel.publish_draw(sequence, draw) }
             }
         } else {
             let operation = request.operation.as_ref().unwrap();
             #[cfg(not(any(feature = "testing", feature = "gt710_core_probe")))]
-            { self.channel.publish(sequence, operation) }
+            { self.channel.publish(sequence, operation, #[cfg(target_os = "none")] trace) }
             #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
             { if request.control == super::core_record::Control::Clean {
-                self.channel.publish(sequence, operation)
-            } else { self.channel.publish_probe(sequence, operation, request.control) } }
+                self.channel.publish(sequence, operation, #[cfg(target_os = "none")] trace)
+            } else { self.channel.publish_probe(sequence, operation, request.control, #[cfg(target_os = "none")] trace) } }
         };
         if result.is_err() && !self.channel.published(sequence) {
             return Err(request);
@@ -268,17 +277,21 @@ impl Device {
         }
         if self.attributed.is_some() || self.pri_pending { return Reap::Empty; }
         if self.fault { return Reap::Fault; }
-        // Handle an attributed event before checking health or sampling
-        // earlier work on the channel. IRQ top halves do not call this reaper.
-        if let Err(reason) = self.retire_error_trap() {
-            if reason == "GR PRI pending" { self.pri_pending = true; return Reap::Empty; }
-            self.first_error.get_or_insert(reason);
-            self.fault = true;
-            return Reap::Fault;
-        }
-        if self.attributed.is_some() { return Reap::Empty; }
-        if let Err(reason) = self.channel.healthy() {
-            return self.retry_error_trap(reason);
+        // Engine receipt sampling checks health itself. Idle, storage and EVO
+        // latch paths have no engine sample, so keep their explicit checks.
+        // For engine work, decode an MMU event through retry_error_trap when
+        // sampling refuses; a separate scan repeats five PCIe reads per poll.
+        if self.flipping.is_some() || self.pending.front().is_none_or(|sent| sent.identity.is_none()) {
+            if let Err(reason) = self.retire_error_trap() {
+                if reason == "GR PRI pending" { self.pri_pending = true; return Reap::Empty; }
+                self.first_error.get_or_insert(reason);
+                self.fault = true;
+                return Reap::Fault;
+            }
+            if self.attributed.is_some() { return Reap::Empty; }
+            if let Err(reason) = self.channel.healthy() {
+                return self.retry_error_trap(reason);
+            }
         }
         if let Some((sent, sample)) = self.flipping.as_ref() {
             match self.channel.present_complete(sent.request.scanout.unwrap()) {
@@ -386,9 +399,16 @@ impl Device {
         Ok(true)
     }
     pub fn has_room(&self, segments: usize) -> bool {
-        !self.pri_pending && !self.needs_reset() && self.attributed.is_none() && self.retired.is_empty()
+        !self.pri_pending && !self.fault && self.attributed.is_none() && self.retired.is_empty()
             && self.resetting.is_none() && segments <= 4
             && self.pending.len() + usize::from(self.flipping.is_some()) + segments <= 4 && self.queue.next().is_ok()
+    }
+    #[cfg(target_os = "none")]
+    pub(crate) fn waiting_slot(&self, serial: u64) -> Option<(u32, usize)> {
+        self.pending.iter().find_map(|sent| match sent.request.tag {
+            Tag::Submit { serial: s, .. } if s == serial => sent.identity.map(|i| (i.sequence, Queue::slot(i.sequence) as usize)),
+            _ => None,
+        })
     }
     pub fn outstanding(&self) -> usize { self.pending.len() + self.retired.len() + usize::from(self.flipping.is_some()) }
     pub fn queue_size(&self) -> usize { 4 }

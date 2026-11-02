@@ -274,7 +274,11 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
     aliases.try_reserve_exact(frame.sources.len()).map_err(|_| ENOMEM)?;
     for s in &frame.sources {
         if let Some(pin) = &s.pin {
-            aliases.push(Alias { handle: s.window.sample, id: pin.mem().id() });
+            aliases.push(Alias {
+                handle: s.window.sample, id: pin.mem().id(),
+                #[cfg(target_arch = "x86_64")]
+                pin: pin.clone(),
+            });
         }
     }
     let mut shown = Vec::new();
@@ -317,10 +321,19 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
     let forced = crate::test_control::reserve(breengel_abi::tc_point::BACKEND_ERROR, 0);
     let mut submit = abi::Submit { context, stream: a.stream, length: a.length, ..abi::Submit::ZERO };
     let extra = Extra { aliases: &aliases, check: &mut check, device_error: forced.is_some(), destination: target_id };
-    let submitted = submit_stream(tgid, &mut submit, Some(extra), &|_| Ok(()));
+    let submitted = submit_stream(tgid, &mut submit, Some(extra), &|_| Ok(()), #[cfg(target_arch = "x86_64")] None);
     a.error_index = submit.error_index;
     a.error = submit.error;
     submitted?;
+    #[cfg(target_arch = "x86_64")]
+    if dev::backend() == abi::backend::GK208 {
+        // Queue acceptance transferred the sampled pins to Sub. Unsampled pins
+        // can end now; immutable frame metadata needs no pool exclusion.
+        drop(aliases);
+        for source in &mut frame.sources {
+            source.pin.take();
+        }
+    }
     if let Some(point) = forced {
         point.fire();
     }
@@ -343,7 +356,11 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
     let (status, answer) = match wait_for(None, true, finished) {
         Ok(outcome) => outcome,
         Err(_) => {
-            let _ = wait_for(None, false, finished);
+            // Native Sub owns the sampled pool pins through its actual completion
+            // (or confirmed reset); an interrupted caller need not wait for DMA.
+            if dev::backend() != abi::backend::GK208 {
+                let _ = wait_for(None, false, finished);
+            }
             return Err(EINTR);
         }
     };

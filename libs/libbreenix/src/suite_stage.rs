@@ -1521,7 +1521,7 @@ pub(super) fn draw(states: &[Vec<State>]) -> Result<(), String> {
 pub(super) fn record(
     line: &str,
     outcome: &Outcome,
-    frame: Option<JudgedFrame>,
+    frame: Option<Arc<JudgedFrame>>,
     timing: Option<FrameTiming>,
     fps: Option<u32>,
     values: &[super::suite::Value],
@@ -1566,7 +1566,7 @@ pub(super) fn record(
             thumb_hash: libpixcheck::sha256(&pixels),
             pixels,
         });
-        s.last = Some(Arc::new(f));
+        s.last = Some(f);
     } else if s.selected != s.current {
         s.last = None;
     }

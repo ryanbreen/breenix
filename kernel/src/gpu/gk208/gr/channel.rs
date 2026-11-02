@@ -25,6 +25,29 @@
 
 
 /*
+ * Copyright 2012 Red Hat Inc.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE COPYRIGHT HOLDER(S) OR AUTHOR(S) BE LIABLE FOR ANY CLAIM, DAMAGES OR
+ * OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ * ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+ * OTHER DEALINGS IN THE SOFTWARE.
+ *
+ * Authors: Ben Skeggs
+ */
+/*
  * Copyright 2017 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -207,6 +230,8 @@
 //! Privileged graphics sessions on one owned runlist; waits poll.
 //! Adapted hardware fields: MIT nouveau v6.8 FIFO gk208/gk110/gk104/gf100,
 //! GR gf100 (channel copy/header), TOP gk104; MIT open-gpu-doc cla197/cla06f.
+//! Command placement: MIT libdrm nouveau/pushbuf.c (Copyright 2012 Red Hat Inc.),
+//! revision 6eed04824b488f546fde7df5d267ef109c82ddf8, mapped GART pushbuffers.
 use alloc::{format, string::String, vec::Vec};
 pub const SUBCHANNEL: u32 = 0;
 const RELEASE: u32 = 0x1000f010;
@@ -377,10 +402,16 @@ mod native {
     use alloc::boxed::Box;
     const COMMAND: u64 = 0x01000000;
     const TARGET: u64 = 0x02000000;
+    fn device_time_now() -> u64 {
+        crate::gk208::gpu_time::ordered_now(crate::signal::monotonic_nanos,
+            || unsafe { core::arch::asm!("lfence", options(nostack, preserves_flags)); })
+    }
     const IMAGE: u64 = 0x03000000;
     const TRANSFER: u64 = TARGET + 4096;
     const COPY_BYTES: usize = 4096;
     const READBACK_BYTES: usize = 65536;
+    const REPORT_PAGES: usize = 1 + READBACK_BYTES / 4096;
+    const COMMAND_PAGES: usize = 65536 / 4096;
     struct DrawCopy {
         base: usize,
         engine: u32,
@@ -585,6 +616,9 @@ mod native {
                 let mmio = h.layout.allocator.allocate(4096, 4096, Kind::Engine)?;
                 owned.push(mmio);
                 for (va, a) in [(COMMAND, commands), (IMAGE, image), (golden.buffers[3].va, mmio)] {
+                    // The primary FIFO fetches its ring and pushbuffer from WB
+                    // system pages. The independent terminal channel stays VRAM.
+                    if va == COMMAND && id == 0 { continue; }
                     context.map(
                         &mut h.layout.allocator,
                         &mut VmIo {
@@ -597,14 +631,14 @@ mod native {
                     )?;
                 }
                 pages = Some(ManuallyDrop::new(system_dma::Pages::new(
-                    1 + READBACK_BYTES / 4096,
+                    REPORT_PAGES + if id == 0 { COMMAND_PAGES } else { 0 },
                     &system_dma::translation_status()?,
                 )?));
                 let dma = pages.as_ref().unwrap();
                 dma.identify("GR-channel", id);
                 let mut dma_pages = Vec::new();
-                dma_pages.try_reserve_exact(1 + READBACK_BYTES / 4096).map_err(|_| "GR page vector allocation")?;
-                dma_pages.extend((0..1 + READBACK_BYTES / 4096).map(|i| dma.address(i)));
+                dma_pages.try_reserve_exact(REPORT_PAGES + COMMAND_PAGES).map_err(|_| "GR page vector allocation")?;
+                dma_pages.extend((0..REPORT_PAGES).map(|i| dma.address(i)));
                 context.map_system(
                     &mut h.layout.allocator,
                     &mut VmIo {
@@ -614,6 +648,16 @@ mod native {
                     TARGET,
                     &dma_pages,
                 )?;
+                if id == 0 {
+                    dma_pages.clear();
+                    dma_pages.extend((REPORT_PAGES..REPORT_PAGES + COMMAND_PAGES).map(|i| dma.address(i)));
+                    context.map_system(
+                        &mut h.layout.allocator,
+                        &mut VmIo { regs: h.regs, total: h.total },
+                        COMMAND,
+                        &dma_pages,
+                    )?;
+                }
                 for offset in (0..65536).step_by(4096) {
                     words(h.regs, h.total, commands.range.start + offset, &[0; 1024])?;
                 }
@@ -833,7 +877,7 @@ mod native {
                 ((self.pages.va(0) + 8) as *mut u32).write_volatile(0);
             }
             self.pages.publish();
-            self.publish_words(h.regs, h.total, sequence, command, 16384, 16384)?;
+            self.publish_words(h.regs, h.total, sequence, command, 16384, 16384, None)?;
             let mut monitor = Monitor {
                 session: self,
                 regs: h.regs,
@@ -864,36 +908,53 @@ mod native {
         fn publish_words(
             &self, regs: &mut Registers, total: u64, sequence: u32,
             command: &[u32], offset: u64, capacity: usize,
+            trace: Option<&crate::gk208::timing::Submit>,
         ) -> Result<(), &'static str> {
             if !self.bound || self.quiesced || sequence == 0
-                || command.is_empty() || command.len() * 4 > capacity {
+                || command.is_empty() || command.len() * 4 > capacity
+                || offset.checked_add(command.len() as u64 * 4).is_none_or(|end| end > 65536) {
                 return Err("GR command slot unavailable");
             }
             // One immutable slot, reused only after the preceding stream was
             // consumed and its engine receipt observed by the caller. A draw
             // exceeds the old 256-byte stride; keep it beyond USERD/runlist.
-            words(
-                regs,
-                total,
-                self.commands.range.start + offset,
-                &command,
-            )?;
-            words(
-                regs,
-                total,
-                self.commands.range.start + u64::from(crate::gk208::queue::Queue::entry(sequence)) * 8,
-                &[
-                    (COMMAND + offset) as u32,
-                    ((command.len() as u32) << 10) | 0x100,
-                ],
-            )?;
-            modeset::bar_flush(regs)?;
+            use crate::gk208::timing::submit_cost::{Phase, Bytes};
+            {
+                let _phase = trace.map(|t| t.scope(Phase::CommandUpload));
+                if self.report.identity.id == 0 {
+                    self.pages.write(REPORT_PAGES * 4096 + offset as usize, command)?;
+                } else {
+                    words(regs, total, self.commands.range.start + offset, command)?;
+                }
+                if let Some(t) = trace { t.bytes(Bytes::Command, command.len() as u64 * 4); }
+            }
+            let descriptor = trace.map(|t| t.scope(Phase::DescriptorUpload));
+            let at = u64::from(crate::gk208::queue::Queue::entry(sequence)) * 8;
+            let entry = [(COMMAND + offset) as u32, ((command.len() as u32) << 10) | 0x100];
+            if self.report.identity.id == 0 {
+                self.pages.write(REPORT_PAGES * 4096 + at as usize, &entry)?;
+                // Like MIT libdrm nouveau/pushbuf.c's mapped GART command BOs,
+                // this channel uses CPU-mapped system memory for commands.
+                // VM PTE target SYS_MEM_COHERENT supplies device visibility;
+                // publish CPU stores before USERD GP_PUT. No BAR writes to flush.
+                self.pages.publish();
+            } else {
+                words(regs, total, self.commands.range.start + at, &entry)?;
+            }
+            if let Some(t) = trace { t.bytes(Bytes::Descriptor, 8); }
+            drop(descriptor);
+            if self.report.identity.id != 0 {
+                let _phase = trace.map(|t| t.scope(Phase::BarFlush));
+                modeset::bar_flush(regs)?;
+            }
+            let _phase = trace.map(|t| t.scope(Phase::GpPut));
             // SAFETY: the owned USERD page's WC BAR1 alias is installed above.
             unsafe {
                 ((self.bar + SLOT as usize + self.report.identity.id as usize * 512 + 0x8c) as *mut u32).write_volatile(sequence % 512);
             }
             crate::gpu_cache::drain_wc();
             let _ = regs.read(0x2254);
+            if let Some(t) = trace { t.bytes(Bytes::GpPut, 4); }
             Ok(())
         }
         pub(in crate::gk208::gr) fn bind_shaders(
@@ -1401,7 +1462,8 @@ mod native {
             let session = self.session.take().unwrap();
             let channel = NativeChannel { session, registers: h.regs.0, total: h.total,
                 mmu: [0; 2], _scratch: None, topology: [[0; 2]; 3], initial: Vec::new(),
-                quarantine: 0, terminal_quarantine: 0, parking: Vec::new(), put: last, confirmed: false, _bootstrap: None };
+                quarantine: 0, terminal_quarantine: 0, parking: Vec::new(), put: last, health_after: 0,
+                draw_groups: core::array::from_fn(|_| None), confirmed: false, _bootstrap: None };
             let mut device = crate::gpu::dev::Device::Gk208(adapter::Device::probe(channel, board, last));
             let result = self.producer.run(&mut device, operation, name);
             let crate::gpu::dev::Device::Gk208(device) = device else { unreachable!() };
@@ -1449,6 +1511,8 @@ mod native {
         terminal_quarantine: u64,
         parking: Vec<u32>,
         put: u32,
+        health_after: u64,
+        draw_groups: [Option<(u32, Vec<crate::gk208::timing::gpu_groups::State>)>; 4],
         confirmed: bool,
         _bootstrap: Option<ManuallyDrop<crate::gk208::lifetime::Context>>,
     }
@@ -1474,13 +1538,16 @@ mod native {
             let put = session.next_sequence - 1;
             Ok(NativeChannel { session: owner.take().unwrap(), registers, total,
                 mmu: mmu.map(|a| a.range.start), _scratch: Some(scratch), topology,
-                initial, quarantine, terminal_quarantine, parking, put, confirmed: false, _bootstrap: None })
+                initial, quarantine, terminal_quarantine, parking, put, health_after: 0,
+                draw_groups: core::array::from_fn(|_| None), confirmed: false, _bootstrap: None })
         }
     }
 
     impl NativeChannel {
         pub(crate) fn heap_footprint(&self) -> [usize; 2] {
-            [self.initial.capacity(), self.parking.capacity() * core::mem::size_of::<u32>()]
+            let groups = self.draw_groups.iter().flatten().map(|(_, v)|
+                v.capacity() * core::mem::size_of::<crate::gk208::timing::gpu_groups::State>()).sum::<usize>();
+            [self.initial.capacity(), self.parking.capacity() * core::mem::size_of::<u32>() + groups]
         }
 
         pub(in crate::gk208::gr) fn retain_bootstrap(&mut self, context: crate::gk208::lifetime::Context) {
@@ -1526,7 +1593,7 @@ mod native {
                 regs: &mut Registers(self.registers), total: self.total,
                 sequence: self.put.max(1), stop_on_trap: true, retry_traps, release_slot: 0,
                 queued_put: Some(self.put) };
-            monitor.snapshot().map(|_| ())
+            monitor.check_health()
         }
         pub(crate) fn error_trap(&self) -> Result<Option<super::super::error::Trap>, &'static str> {
             super::super::error::capture_now(&mut Registers(self.registers))
@@ -1571,6 +1638,7 @@ mod native {
         pub(crate) fn published(&self, sequence: u32) -> bool { self.put == sequence }
         pub(crate) fn publish(
             &mut self, sequence: u32, operation: &crate::gk208::adapter::Operation,
+            trace: Option<&crate::gk208::timing::Submit>,
         ) -> Result<(), &'static str> {
             use crate::gk208::{adapter::Operation, queue::Queue};
             let s = &self.session;
@@ -1606,26 +1674,54 @@ mod native {
                     super::super::draw::commands(draw)?
                 }
             };
-            self.publish_encoded(sequence, &mut command)
+            self.publish_encoded_traced(sequence, &mut command, trace)
         }
-        pub(crate) fn publish_draw(&mut self, sequence: u32, draw: &crate::gk208::adapter::EncodedDraw)
-            -> Result<(), &'static str> {
+        pub(crate) fn publish_draw_traced(&mut self, sequence: u32, draw: &crate::gk208::adapter::EncodedDraw,
+            trace: Option<&crate::gk208::timing::Submit>) -> Result<(), &'static str> {
             if self.parking.is_empty() { return Err("native frame parking absent"); }
             let s = &self.session;
+            let binding = trace.map(|t| t.scope(crate::gk208::timing::submit_cost::Phase::NativeBind));
             crate::gk208::ce::with_resources(|r,_,io| r.bind(io,
                 s.context.space().directory.range.start,s.report.identity.instance,s.report.identity.epoch))?;
+            drop(binding);
             // Storage retains frame inputs and target holds; parking owns the code.
+            let rewriting = trace.map(|t| t.scope(crate::gk208::timing::submit_cost::Phase::NativePayload));
             let mut payload = crate::gk208::encode::channel_words(&draw.words, self.quarantine)?;
             crate::gk208::encode::channel_programs(&mut payload, &self.parking)?;
+            crate::gk208::encode::compact_state(&mut payload)?;
+            drop(rewriting);
+            let building = trace.map(|t| t.scope(crate::gk208::timing::submit_cost::Phase::NativeBuild));
+            let device_time = crate::gk208::timing::enabled()
+                && crate::boot::intent::command_line().is_some_and(|line|
+                    line.split_ascii_whitespace().any(|word| word == "gt710-gpu-time"));
+            let time_offset = crate::gk208::gpu_time::offset(sequence, 0)?;
+            let mut group_states = Vec::new();
+            if device_time {
+                (payload, group_states) = crate::gk208::timing::gpu_groups::instrument(payload, sequence)?;
+                if !group_states.is_empty() && self.draw_groups[crate::gk208::queue::Queue::slot(sequence) as usize].is_some() {
+                    return Err("native draw-group metadata still live");
+                }
+                // This diagnostic span is separate from receipt slots, the
+                // parked CB selector and channel 1's terminal receipt.
+                unsafe { core::ptr::write_bytes((s.pages.va(0) + time_offset) as *mut u8, 0, 64); }
+                unsafe { core::ptr::write_bytes((s.pages.va(0) + crate::gk208::gpu_time::end_offset(sequence)?) as *mut u8, 0, 16); }
+                if !group_states.is_empty() {
+                    let (at, bytes) = crate::gk208::timing::gpu_groups::span(sequence)?;
+                    unsafe { core::ptr::write_bytes((s.pages.va(0) + at) as *mut u8, 0, bytes as usize); }
+                }
+                s.pages.publish();
+            }
             // Restart reconstructs RAMFC without its old subchannel classes.
             // SET_OBJECT must precede graphics state and release methods even
             // when clipping leaves no draw (MIT cla197.h:34-36).
             let mut command = Vec::new();
-            command.try_reserve_exact(super::bind().len() + payload.len() + self.parking.len() + 64)
+            command.try_reserve_exact(super::bind().len() + payload.len() + self.parking.len() + 84)
                 .map_err(|_| "native channel packet allocation")?;
             command.extend_from_slice(&super::bind());
+            if device_time { command.extend(crate::gk208::gpu_time::query(TARGET, sequence, 0)?); }
             if payload.is_empty() { command.extend([0x20010044, 0]); }
             command.extend(payload);
+            if device_time { command.extend(crate::gk208::gpu_time::query(TARGET, sequence, 1)?); }
             // A completed draw does not revoke its persistent engine bindings.
             // Rebind code, stages, constants/handles, vertex start/limit, VAB,
             // TIC/TSC and RT to bootstrap-owned storage before releasing any
@@ -1641,22 +1737,54 @@ mod native {
             let target = TARGET + u64::from(crate::gk208::queue::Queue::slot(sequence))*16;
             for (offset,value) in [(4,s.report.identity.epoch as u32),
                 (8,(s.report.identity.epoch>>32) as u32),(0,sequence)] {
+                // The last query includes parking and both epoch releases;
+                // the unchanged final sequence release orders its visibility.
+                if device_time && offset == 0 { command.extend(crate::gk208::gpu_time::query(TARGET, sequence, 2)?); }
                 command.extend(super::report(target+offset,value)?);
             }
-            self.publish_encoded(sequence,&mut command)
+            if device_time { command.extend(crate::gk208::gpu_time::end_query(TARGET, sequence)?); }
+            // Payload and parking both name the retained immutable catalogue.
+            // Keep data/constant coherency without evicting its instructions
+            // between primitive launches or while publishing parked state.
+            drop(building);
+            let cache = trace.map(|t| t.scope(crate::gk208::timing::submit_cost::Phase::NativeCache));
+            crate::gk208::encode::retain_resident_instruction_cache(&mut command)?;
+            drop(cache);
+            let submitted = if device_time { device_time_now() } else { 0 };
+            let result = self.publish_encoded_traced(sequence,&mut command,trace);
+            if result.is_ok() && device_time {
+                if !group_states.is_empty() {
+                    self.draw_groups[crate::gk208::queue::Queue::slot(sequence) as usize] = Some((sequence, group_states));
+                }
+                // CORE excludes a reaper until publication returns. This CPU
+                // marker requests observation; only device words supply time.
+                unsafe {
+                    let header = (self.session.pages.va(0) + time_offset + 48) as *mut u32;
+                    header.write_volatile(sequence);
+                    header.add(1).write_volatile(command.len() as u32);
+                    (header.add(2) as *mut u64).write_volatile(submitted);
+                }
+            }
+            result
         }
-        fn publish_encoded(&mut self, sequence: u32, command: &mut Vec<u32>) -> Result<(), &'static str> {
+        fn publish_encoded_traced(&mut self, sequence: u32, command: &mut Vec<u32>,
+            trace: Option<&crate::gk208::timing::Submit>) -> Result<(), &'static str> {
+            let _doorbell = trace.map(|t| t.scope(crate::gk208::timing::submit_cost::Phase::Doorbell));
             let s = &self.session;
             let slot = crate::gk208::queue::Queue::slot(sequence);
             command.try_reserve(2).map_err(|_| "native release packet allocation")?;
             command.extend([0x20010014, sequence]);
             if command.len() * 4 > 8192 { return Err("native command slot extent"); }
             // Only this slot is poisoned; the other three may still be live.
-            unsafe { core::ptr::write_bytes((s.pages.va(0) + u64::from(slot) * 16) as *mut u8, 0, 16); }
-            s.pages.publish();
+            {
+                let _phase = trace.map(|t| t.scope(crate::gk208::timing::submit_cost::Phase::Publication));
+                unsafe { core::ptr::write_bytes((s.pages.va(0) + u64::from(slot) * 16) as *mut u8, 0, 16); }
+                s.pages.publish();
+                if let Some(t) = trace { t.bytes(crate::gk208::timing::submit_cost::Bytes::Receipt, 16); }
+            }
             let next = sequence.checked_add(1).ok_or("probe sequence exhausted")?;
             s.publish_words(&mut Registers(self.registers), self.total, sequence, command,
-                16384 + u64::from(slot) * 8192, 8192)?;
+                16384 + u64::from(slot) * 8192, 8192, trace)?;
             // publish_words has crossed USERD GP_PUT and drained the WC write.
             self.put = sequence;
             self.session.next_sequence = next;
@@ -1665,6 +1793,7 @@ mod native {
         #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
         pub(crate) fn publish_probe(&mut self, sequence: u32, operation: &crate::gk208::adapter::Operation,
             control: crate::gk208::core_record::Control,
+            trace: Option<&crate::gk208::timing::Submit>,
         ) -> Result<(), &'static str> {
             let crate::gk208::adapter::Operation::Copy(rect) = *operation else {
                 return Err("core completion controls require CE copy");
@@ -1672,7 +1801,7 @@ mod native {
             let report = TARGET + u64::from(crate::gk208::queue::Queue::slot(sequence)) * 16;
             let mut command = crate::gk208::copy::probe_encode(rect, report,
                 self.session.report.identity.epoch, sequence, control)?;
-            self.publish_encoded(sequence, &mut command)
+            self.publish_encoded_traced(sequence, &mut command, trace)
         }
         #[cfg(any(feature = "testing", feature = "gt710_core_probe"))]
         pub(crate) fn probe_drained(&mut self, sequence: u32) -> Result<bool, &'static str> {
@@ -1700,13 +1829,87 @@ mod native {
         pub(crate) fn sample_wait(&mut self, sequence: u32) -> Result<crate::gpu_completion::CeSample, &'static str> {
             self.sample_with(sequence, true)
         }
+        /// An absent coherent receipt cannot retire work. Between bounded health
+        /// scans, observe it without issuing PCIe reads for consumption/identity.
+        /// A matching receipt falls through to the complete monitor scan.
+        fn pending_receipt(&mut self, sequence: u32) -> Option<crate::gpu_completion::CeSample> {
+            self.session.pages.observe();
+            let slot = crate::gk208::queue::Queue::slot(sequence);
+            // SAFETY: this request retains its channel-owned coherent slot.
+            let (value, epoch) = unsafe {
+                let p = (self.session.pages.va(0) + u64::from(slot) * 16) as *const u32;
+                (p.read_volatile(), u64::from(p.add(1).read_volatile())
+                    | u64::from(p.add(2).read_volatile()) << 32)
+            };
+            if value == sequence && epoch == self.session.report.identity.epoch { return None; }
+            let now = elapsed(0);
+            if now >= self.health_after {
+                self.health_after = now.saturating_add(50);
+                return None;
+            }
+            Some(crate::gpu_completion::CeSample {
+                context: self.session.report.identity.instance, epoch, sequence: value,
+                consumed: 0, healthy: true,
+            })
+        }
         fn sample_with(&mut self, sequence: u32, retry_traps: bool) -> Result<crate::gpu_completion::CeSample, &'static str> {
+            if let Some(pending) = self.pending_receipt(sequence) { return Ok(pending); }
             let mut regs = Registers(self.registers);
             let mut monitor = Monitor { session: &self.session, regs: &mut regs, total: self.total,
                 sequence, stop_on_trap: true, retry_traps, release_slot: crate::gk208::queue::Queue::slot(sequence) as usize,
                 queued_put: Some(self.put) };
             let (value, epoch, consumed) = monitor.snapshot()?;
             let bound = regs.read(0x800000 + self.session.report.identity.id as usize * 8);
+            if value == sequence && epoch == self.session.report.identity.epoch && consumed
+                && bound == 0x80000000 | (self.session.report.identity.instance >> 12) as u32 {
+                let offset = crate::gk208::gpu_time::offset(sequence, 0)?;
+                // SAFETY: the retained report page owns this 64-byte span.
+                let header = (self.session.pages.va(0) + offset + 48) as *mut u32;
+                if unsafe { header.read_volatile() } == sequence {
+                    let receipt_observed = device_time_now();
+                    let words = unsafe { header.add(1).read_volatile() };
+                    let submitted = unsafe { (header.add(2) as *const u64).read_volatile() };
+                    let raw = core::array::from_fn(|stage| core::array::from_fn(|word| unsafe {
+                        ((self.session.pages.va(0) + offset + stage as u64 * 16) as *const u32)
+                            .add(word).read_volatile()
+                    }));
+                    let end_pointer = (self.session.pages.va(0) + crate::gk208::gpu_time::end_offset(sequence)?) as *const u32;
+                    // The diagnostic end query follows the original receipt.
+                    // Its storage is channel-owned; wait only for telemetry,
+                    // with a 100 us cap and no change to completion validity.
+                    while unsafe { end_pointer.read_volatile() } != sequence
+                        && crate::signal::monotonic_nanos().saturating_sub(receipt_observed) < 100_000 {
+                        core::hint::spin_loop();
+                    }
+                    let observed = device_time_now();
+                    let end = if unsafe { end_pointer.read_volatile() } == sequence {
+                        unsafe { u64::from(end_pointer.add(2).read_volatile())
+                            | u64::from(end_pointer.add(3).read_volatile()) << 32 }
+                    } else { 0 };
+                    // The monotonic clock's RDTSC is not serializing. Fence
+                    // both sides so the PTIMER reads stay inside its bracket.
+                    let [before,gpu_now,after] = crate::gk208::gpu_time::clock_sample(
+                        crate::signal::monotonic_nanos, |address| regs.read(address),
+                        || unsafe { core::arch::asm!("lfence", options(nostack, preserves_flags)); })
+                        .unwrap_or([0;3]);
+                    unsafe { header.write_volatile(0); }
+                    crate::gk208::timing::gpu_time(
+                        crate::gk208::gpu_time::decode(sequence, words, raw), end,
+                        [submitted, observed, before, gpu_now, after], receipt_observed);
+                    if let Some((owner, states)) = self.draw_groups[crate::gk208::queue::Queue::slot(sequence) as usize].take() {
+                        if owner != sequence { return Err("native draw-group receipt identity"); }
+                        for (draw, state) in states.iter().enumerate() {
+                            let raw = core::array::from_fn(|stage| {
+                                let at = crate::gk208::timing::gpu_groups::offset(sequence, draw, stage).unwrap();
+                                core::array::from_fn(|word| unsafe {
+                                    ((self.session.pages.va(0) + at) as *const u32).add(word).read_volatile()
+                                })
+                            });
+                            crate::gk208::timing::gpu_group(crate::gk208::timing::gpu_groups::decode(sequence, draw, state, raw));
+                        }
+                    }
+                }
+            }
             Ok(crate::gpu_completion::CeSample { context: u64::from(bound & 0x0fffffff) << 12,
                 epoch, sequence: value, consumed: if consumed { sequence } else { 0 },
                 healthy: bound & 0x80000000 != 0 })
@@ -1980,8 +2183,8 @@ mod native {
         release_slot: usize,
         queued_put: Option<u32>,
     }
-    impl Poll for Monitor<'_> {
-        fn snapshot(&mut self) -> Result<(u32, u64, bool), &'static str> {
+    impl Monitor<'_> {
+        fn check_health(&mut self) -> Result<(), &'static str> {
             if self.stop_on_trap {
                 let words = if self.retry_traps {
                     super::super::error::read_traps(self.regs, None)?
@@ -1996,6 +2199,12 @@ mod native {
                     return Err("draw FIFO/CE fault; backing retained");
                 }
             }
+            Ok(())
+        }
+    }
+    impl Poll for Monitor<'_> {
+        fn snapshot(&mut self) -> Result<(u32, u64, bool), &'static str> {
+            self.check_health()?;
             let s = self.session;
             s.pages.observe();
             // SAFETY: coherent observation of the owned page's three words.

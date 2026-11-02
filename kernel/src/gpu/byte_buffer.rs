@@ -1,6 +1,6 @@
 //! CPU staging bytes in fallible, owned system frames rather than the kernel heap.
 use core::ops::{Deref, DerefMut};
-use super::dma::CpuBox;
+use super::dma::{CpuBox, PAGE};
 
 pub struct Bytes {
     storage: CpuBox,
@@ -9,13 +9,15 @@ pub struct Bytes {
 }
 impl Bytes {
     pub(crate) fn new(len: usize) -> Result<Self, ()> {
-        Ok(Self { storage: CpuBox::try_new(len).ok_or(())?, start: 0, len })
+        let capacity = len.max(PAGE).checked_next_multiple_of(PAGE).ok_or(())?;
+        Ok(Self { storage: CpuBox::try_new(capacity).ok_or(())?, start: 0, len })
     }
 
     /// A failed growth keeps the old bytes and ownership intact.
     pub(crate) fn resize(&mut self, len: usize) -> Result<(), ()> {
         if len > self.storage.len() - self.start {
-            let capacity = len.max(self.len.checked_mul(2).ok_or(())?);
+            let capacity = len.max(self.len.checked_mul(2).ok_or(())?)
+                .checked_next_multiple_of(PAGE).ok_or(())?;
             let mut replacement = CpuBox::try_new(capacity).ok_or(())?;
             replacement.as_mut()[..self.len].copy_from_slice(self);
             self.storage = replacement;
