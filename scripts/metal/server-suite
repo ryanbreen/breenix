@@ -2234,7 +2234,7 @@ def main():
     if not re.fullmatch(boot_pattern, args.boot or '') or not re.fullmatch(r'[a-f0-9]{40}', args.sha or ''):
         parser.error('--boot ID and --sha full commit required')
     category = MILESTONES[args.milestone]
-    if args.target == 'qemu' and category not in ('ssh-keys', 'services', 'logs', 'time', 'console-input', 'reboot', 'watchdog'):
+    if args.target == 'qemu' and category not in ('ssh-keys', 'services', 'logs', 'time', 'console-input', 'reboot', 'watchdog', 'remote-upgrade'):
         parser.error('milestone is not yet implemented for qemu (resting-state is out of scope)')
     if args.milestone == 'server/resting-state':
         if not args.branch: parser.error('--branch required for resting-state')
@@ -2248,6 +2248,8 @@ def main():
     if category == 'remote-upgrade':
         args.branch = args.branch or 'main'
         globals()['upgrade_cases'] = runpy.run_path(str(Path(__file__).with_name('upgrade_cases.py')))
+        if args.target == 'qemu':
+            return runpy.run_path(str(Path(__file__).with_name('server_upgrade_vm.py')))['run'](globals(), args)
         return runpy.run_path(str(Path(__file__).with_name('upgrade_suite.py')))['run'](args, globals())
     suite = SUITES[category]
     cases = CATEGORIES[category]
