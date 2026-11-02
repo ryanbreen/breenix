@@ -84,6 +84,28 @@ class ScreenAcceptance(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'tools'):
                 self.api['capture_identity'](p, HEAD, 'gpu', 'metal')
 
+    def test_reset_witness_may_precede_fault_only_in_its_pending_case(self):
+        names = ['submit/watchdog-quarantine', *self.api['RESET_SOURCES']]
+        previous = f'SUITE gpu CASE {names[0]} PASS ms=2107'
+        value = f'SUITE gpu VALUE {names[1]} reset-ms=4001ms expect=4000..4850ms'
+        fault = ('GT710_NATIVE_FAULT reason=shared core requested reset '
+                 'instance=0x1000 epoch=1 put=2 registers=[]')
+        lines = [previous]
+        for name in names[1:]:
+            lines += [f'SUITE gpu WAIT {name} until=5000 for=4000 result=reset-ms',
+                      value if name == names[1] else f'SUITE gpu VALUE {name} reset-ms=4627ms',
+                      fault, f'SUITE gpu CASE {name} PASS ms=5107']
+        serial = '\n'.join(lines) + '\n'
+        rows = self.api['reset_faults'](serial, names)
+        self.assertEqual([row['case'] for row in rows], names[1:])
+        self.assertIn(value, rows[0]['witnesses'])
+        for bad in [serial.replace(value + '\n', '', 1),
+                    serial.replace(value + '\n', '', 1).replace(previous, value + '\n' + previous, 1),
+                    serial.replace(fault, fault + '\n' + value, 1)]:
+            with self.subTest(serial=bad):
+                with self.assertRaisesRegex(ValueError, 'reset-ms witness'):
+                    self.api['reset_faults'](bad, names)
+
     def test_events_are_required_only_for_metal(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
