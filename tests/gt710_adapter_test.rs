@@ -61,7 +61,10 @@ pub mod gk208 {
                     self.0.borrow_mut().published.push(sequence);Ok(())
                 }
                 pub fn sample(&mut self,sequence:u32)->Result<CeSample,&'static str> {
+                    // The real Monitor::snapshot checks health before reading its receipt.
+                    self.healthy()?;
                     let mut s=self.0.borrow_mut();
+                    s.sample_calls+=1;
                     if s.trap_after_samples>0 {s.trap_after_samples-=1;}
                     if s.trap_at_sample || s.trap_after_samples==0 && s.delayed_trap_sequence!=0 {
                         s.trap_at_sample=false;let sequence=s.delayed_trap_sequence.max(1);
@@ -85,6 +88,7 @@ pub mod gk208 {
                 pub fn published(&self,sequence:u32)->bool {self.0.borrow().published.contains(&sequence)}
                 pub fn healthy(&self)->Result<(), &'static str> {
                     let mut s=self.0.borrow_mut();
+                    s.health_calls+=1;
                     if s.trap_at_health {s.trap_at_health=false;s.plant_mmu(1);}
                     if s.fault {Err("injected engine fault")}
                     else if s.registers.get(&0x259c).copied().unwrap_or(0)!=0 {Err("MMU fault during health")}
@@ -123,13 +127,14 @@ pub mod gk208 {
 use gpu::dev::{Reap,Tag};
 use gk208::{adapter::{Device,Request},copy::Rect,gr::channel::NativeChannel};
 pub struct State {
+    health_calls:usize,sample_calls:usize,
     display_latched:bool,fail_display:bool,core_locked:bool,pri_ready_at:u64,now:u64,epoch:u64,channel:u64,release_epoch:u64,release:u32,drain:u32,fault:bool,
     transient_trap:bool,refusals:Vec<[u32;4]>,registers:std::collections::BTreeMap<usize,u32>,writes:Vec<(usize,u32)>,
     trap_at_health:bool,trap_at_sample:bool,fail_ack:bool,trap_after_samples:u32,delayed_trap_sequence:u32,
     fail_reset:bool,fail_unbind:bool,fail_publish:bool,refuse_publish:bool,stopped:bool,operations:Vec<&'static str>,published:Vec<u32>,events:Vec<&'static str>,expected_draw:Vec<u32>,
 }
 fn device()->(Device,Rc<RefCell<State>>) {
-    let s=Rc::new(RefCell::new(State{display_latched:false,fail_display:false,core_locked:false,pri_ready_at:0,now:0,epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
+    let s=Rc::new(RefCell::new(State{health_calls:0,sample_calls:0,display_latched:false,fail_display:false,core_locked:false,pri_ready_at:0,now:0,epoch:17,channel:0x123000,release_epoch:17,release:0,drain:0,fault:false,
         transient_trap:false,refusals:vec![],registers:Default::default(),writes:vec![],trap_at_health:false,trap_at_sample:false,fail_ack:false,trap_after_samples:0,delayed_trap_sequence:0,fail_reset:false,fail_unbind:false,fail_publish:false,refuse_publish:false,stopped:false,operations:vec![],published:vec![],events:vec![],expected_draw:vec![0x20010367,0]}));
     (Device::new(NativeChannel(s.clone()),gk208::caps::BoardState::empty()),s)
 }
@@ -167,6 +172,33 @@ fn request(caller:u64)->Request {
         Rect{src:0x100000,dst:0x200000,width:4,height:1,src_pitch:4,dst_pitch:4})
 }
 fn send(d:&mut Device,caller:u64) {assert!(d.send(request(caller)).is_ok());}
+#[test] fn capacity_queries_do_not_read_hardware_but_publication_checks_health() {
+    let (mut d,s)=device();
+    for _ in 0..100 {assert!(d.has_room(1));}
+    assert_eq!(s.borrow().health_calls,0,"capacity polling must not issue PCIe status reads");
+    assert!(d.has_room(1));send(&mut d,9001);
+    assert_eq!(s.borrow().health_calls,1,"validate hardware once at publication");
+    s.borrow_mut().fault=true;
+    assert!(d.send(request(9002)).is_err(),"a fault must still refuse publication");
+    assert_eq!(s.borrow().published,vec![1]);
+    assert!(matches!(d.reap(),Reap::Fault));
+    assert!(!d.has_room(1));
+}
+#[test] fn engine_receipt_checks_health_once_and_keeps_faults_pending() {
+    for fault in [false,true] {
+        let (mut d,s)=device();send(&mut d,9001);
+        {let mut s=s.borrow_mut();s.release=1;s.fault=fault;s.health_calls=0;s.sample_calls=0;}
+        let result=d.reap();
+        assert_eq!(s.borrow().health_calls,1,"receipt sampling already checks channel health");
+        if fault {
+            assert!(matches!(result,Reap::Fault));assert_eq!(d.outstanding(),1);
+            assert_eq!(d.fault_reason(),Some("injected engine fault"));
+        } else {
+            assert!(matches!(result,Reap::Done(_)));assert_eq!(d.outstanding(),0);
+            assert_eq!(s.borrow().sample_calls,1);
+        }
+    }
+}
 #[test] fn withheld_release_never_returns_done() {
     let (mut d,_)=device();send(&mut d,9001);assert!(matches!(d.reap(),Reap::Empty));assert_eq!(d.outstanding(),1);
 }

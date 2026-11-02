@@ -20,7 +20,7 @@ class PresentAcceptance(unittest.TestCase):
             (display, 'pub(super) fn presented('),
             (core, '    fn publish('),
             (core, '    fn submit_returned('),
-            (core, '    fn retire_if_done('),
+            (core.replace('#[cfg(target_arch = "x86_64")]', ''), '    fn retire_if_done('),
         ]).replace('pub(super)', 'pub(crate)')
         # These are the actual return and zero-timeout WAIT predicates, with the
         # scheduler represented by a single poll of the fixture core.

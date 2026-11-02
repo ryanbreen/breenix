@@ -409,6 +409,8 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
                 written: Vec::new(),
                 whole: Vec::new(),
                 held: alloc::vec![id],
+                #[cfg(target_arch = "x86_64")]
+                sampled: Vec::new(),
                 present: Some(Presenting {
                     id,
                     seq,

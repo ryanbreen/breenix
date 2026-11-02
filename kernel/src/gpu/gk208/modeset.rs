@@ -650,6 +650,12 @@ pub fn wait(a: &mut impl Io, r: usize, mask: u32, value: u32) -> Result<(), &'st
 /// Drain the GK208B-selected BAR write path before engine consumption.
 pub fn bar_flush(a: &mut impl Io) -> Result<(), &'static str> {
     a.write(0x70000, 1);
+    // Check for a short drain before the coarse poll's first 100-us pause.
+    // Observe the same status for a bounded fast path; retain the full fallback.
+    for _ in 0..16 {
+        if a.read(0x70000) & 2 == 0 { return Ok(()); }
+        core::hint::spin_loop();
+    }
     wait(a, 0x70000, 2, 0)
 }
 /// Complete the GF100 BAR1 switch before accessing its CPU aperture.

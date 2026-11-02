@@ -140,6 +140,8 @@ pub struct Resources<B> {
     space: Option<Space>,
     vram_bytes: u64,
     alias: Option<u64>,
+    alias_current: bool,
+    alias_pdes_valid: bool,
     channel: u64,
     incarnation: Option<(u64,u64)>,
     alias_indices: Vec<u64>,
@@ -149,7 +151,7 @@ pub struct Resources<B> {
 impl<B> Default for Resources<B> { fn default() -> Self { Self::new() } }
 impl<B> Resources<B> {
     pub const fn new() -> Self {
-        Self { entries: BTreeMap::new(), contexts: BTreeSet::new(), space: None, vram_bytes: 0, alias: None, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX - 1, retired: VecDeque::new() }
+        Self { entries: BTreeMap::new(), contexts: BTreeSet::new(), space: None, vram_bytes: 0, alias: None, alias_current: false, alias_pdes_valid: false, channel: 0, incarnation: None, alias_indices: Vec::new(), temporary: u32::MAX - 1, retired: VecDeque::new() }
     }
     #[cfg(target_os="none")]
     pub(in crate::gk208) fn heap_footprint(&self) -> [usize; 7] {
@@ -199,6 +201,8 @@ impl<B> Resources<B> {
         else { self.vram_bytes -= before - after; }
     }
     fn space(&mut self, a: &mut Allocator, io: &mut impl Io) -> Result<&mut Space, &'static str> {
+        // A mutable VM publication invalidates the channel's prior binding.
+        self.alias_current = false;
         if self.space.is_none() { self.space = Some(Space::new(a, io)?); }
         Ok(self.space.as_mut().unwrap())
     }
@@ -434,21 +438,37 @@ impl<B> Resources<B> {
         if self.alias.is_some_and(|old| old != directory) { return Err("native resource channel changed"); }
         let Some(space) = self.space.as_ref() else { return Err("native resource VM absent"); };
         if !space.usable() { return Err("native resource VM uncertain"); }
+        if self.alias_current && self.incarnation == Some((instance, epoch)) { return Ok(()); }
+        // Cache only a confirmed publication; a failed bind must retry.
+        self.alias_current = false;
         self.alias = Some(directory);
         if self.incarnation != Some((instance,epoch)) {
             self.channel = self.channel.checked_add(1).filter(|id| *id < 1<<32)
                 .ok_or("native public context namespace exhausted")?;
             self.incarnation = Some((instance,epoch));
+            self.alias_indices.clear();
+            self.alias_pdes_valid = false;
         }
+        let pdes_valid = self.alias_pdes_valid;
+        self.alias_pdes_valid = false;
+        let mut written = false;
         for (index,_) in space.table_ranges() {
+            // A retained SPT keeps its PDE pointer. PTE publications still
+            // invalidate below; reclamation removes the owned index before reuse.
+            if pdes_valid && self.alias_indices.contains(&index) { continue; }
             let value = io.read(space.directory.range.start + index*8)?;
             let old = io.read(directory+index*8)?;
             if old != 0 && old != value { return Err("native resource PDE alias occupied"); }
             if !self.alias_indices.contains(&index) { self.alias_indices.push(index); }
             io.write(directory+index*8,value)?;
+            written = true;
         }
-        io.flush()?;
+        // Space::publish already drained PTE writes. Only new PDE writes
+        // need this additional publication before the channel invalidation.
+        if written { io.flush()?; }
         io.invalidate(directory)?;
+        self.alias_current = true;
+        self.alias_pdes_valid = true;
         Ok(())
     }
     /// Preparation only. Share this owner's high-VA tables with the empty
@@ -538,6 +558,7 @@ impl<B> Resources<B> {
                 .map(|(id,_)| *id));
             let additional = ready.len().min(128usize.saturating_sub(self.retired.len()));
             self.retired.try_reserve(additional).map_err(|_| "native retirement history allocation")?;
+            if !ready.is_empty() { self.alias_current = false; }
             for id in ready {
                 let e = &self.entries[&id];
                 if e.mapped {
@@ -642,8 +663,8 @@ mod native {
     pub(crate) fn ownership_census() -> alloc::string::String {
         ce::with_resources(|r, _, _| {
             use core::fmt::Write;
-            let mut text = alloc::format!("native-registry entries={} contexts={} channel={}\n",
-                r.entries.len(), r.contexts.len(), r.channel);
+            let mut text = alloc::format!("native-registry entries={} contexts={} channel={} vram_bytes={}\n",
+                r.entries.len(), r.contexts.len(), r.channel, r.vram_bytes());
             for (&id, e) in r.entries.iter().take(4096) {
                 let _ = writeln!(text, "native-registry resource={} role={} pages={} backing_refs={} device_refs={} dropped={} mapped={} backing_mapped={}",
                     id, e.role, e.backing.as_ref().map_or(0, |b| b.count()),

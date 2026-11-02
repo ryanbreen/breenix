@@ -305,6 +305,7 @@ fn final_upload() {
 fn main() {
     #[cfg(target_arch="x86_64")]
     {
+        gt710_heap::prepare(SUITE.categories.iter().map(|c| c.cases.len()).sum()).expect("native heap store allocation");
         // G12 keeps startup in its original slot, before suite entry.
         let _ = libbreenix::gpu::caps();
         gt710_artifacts::upload().expect("native display artifact upload");

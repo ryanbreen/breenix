@@ -28,18 +28,31 @@ pub fn invalidate(a: &mut impl Io, directory: u64) -> Result<u32, &'static str> 
     }
     modeset::bar_flush(a)?;
     let mut free = false;
-    for _ in 0..20000 {
+    // Like BAR flush, observe a short device acknowledgement before entering
+    // the coarse display wait. Keep its complete slow fallback on refusal.
+    for _ in 0..16 {
         if a.read(0x100c80) & 0x00ff0000 != 0 {
             free = true;
             break;
         }
-        a.delay_us(100);
+        core::hint::spin_loop();
+    }
+    if !free {
+        for _ in 0..20000 {
+            if a.read(0x100c80) & 0x00ff0000 != 0 { free = true; break; }
+            a.delay_us(100);
+        }
     }
     if !free {
         return Err("GPU invalidation queue has no free slot");
     }
     a.write(0x100cb8, (directory >> 8) as u32);
     a.write(0x100cbc, 0x80000001);
+    for _ in 0..16 {
+        let observed = a.read(0x100c80);
+        if observed & 0x8000 != 0 { return Ok(observed); }
+        core::hint::spin_loop();
+    }
     modeset::wait(a, 0x100c80, 0x8000, 0x8000)?;
     Ok(a.read(0x100c80))
 }

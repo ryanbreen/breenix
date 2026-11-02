@@ -22,6 +22,8 @@
 *******************************************************************************/
 
 extern crate alloc;
+mod boot { pub mod intent { pub fn command_line()->Option<&'static str>{None} } }
+
 #[path = "ROOT/kernel/src/gpu/gk208/gr/shaders.rs"] pub mod shaders;
 #[path = "ROOT/kernel/src/gpu/gk208/encode.rs"] pub mod encode;
 #[path = "ROOT/kernel/src/gpu/gk208/caps.rs"] pub mod caps;
@@ -33,6 +35,20 @@ extern crate alloc;
 // publication are substituted. This checks storage references, not GPU execution.
 mod gk208 {
     pub use crate::encode;
+    #[allow(dead_code)] // This guard exercises retirement with telemetry disabled.
+    #[path="ROOT/kernel/src/gpu/gk208/gpu_time.rs"] pub mod gpu_time;
+    pub mod timing {
+        pub use super::gpu_time as gpu_clock;
+        #[allow(dead_code)] // The guard keeps draw-group telemetry disabled.
+        #[path="ROOT/kernel/src/gpu/gk208/gpu_groups.rs"] pub mod gpu_groups;
+        #[allow(dead_code)] // The guard exercises packet lifetime, with no timer source.
+        #[path="ROOT/kernel/src/gpu/gk208/submit_cost.rs"] pub mod submit_cost;
+        pub struct Scope;
+        impl Drop for Scope { fn drop(&mut self) {} }
+        pub struct Submit;
+        impl Submit { pub fn scope(&self, _:submit_cost::Phase)->Scope { panic!("submit telemetry is disabled") } }
+        pub fn enabled()->bool{false}
+    }
     pub mod adapter { pub struct EncodedDraw { pub words: Vec<u32> } }
     pub mod queue { pub struct Queue; impl Queue { pub fn slot(n: u32) -> u32 { (n - 1) % 4 } } }
     pub mod ce {
@@ -53,6 +69,12 @@ mod gk208 {
         // REPORT
         pub mod channel {
             const TARGET: u64 = 0x02000000;
+            fn device_time_now()->u64 { panic!("telemetry is disabled in this retirement guard") }
+            pub struct Pages;
+            impl Pages {
+                pub fn va(&self,_:usize)->u64 { panic!("telemetry storage must not be used") }
+                pub fn publish(&self) { panic!("telemetry storage must not be used") }
+            }
             pub struct Range { pub start: u64 }
             pub struct Directory { pub range: Range }
             pub struct Space { pub directory: Directory }
@@ -60,16 +82,16 @@ mod gk208 {
             impl Context { pub fn space(&self) -> &Space { &self.space } }
             pub struct Identity { pub instance: u64, pub epoch: u64 }
             pub struct Report { pub identity: Identity }
-            pub struct Session { pub context: Context, pub report: Report }
-            pub struct NativeChannel { pub session: Session, pub quarantine: u64, pub sent: Vec<u32>, pub parking: Vec<u32> }
+            pub struct Session { pub context: Context, pub report: Report, pub pages: Pages }
+            pub struct NativeChannel { pub session: Session, pub quarantine: u64, pub sent: Vec<u32>, pub parking: Vec<u32>, pub draw_groups: [Option<(u32, Vec<crate::gk208::timing::gpu_groups::State>)>; 4] }
             impl NativeChannel {
                 pub fn new() -> Self {
                     Self { session: Session { context: Context { space: Space { directory: Directory { range: Range { start: 0x100000 } } } },
-                        report: Report { identity: Identity { instance: 0x851c000, epoch: 17 } } },
+                        report: Report { identity: Identity { instance: 0x851c000, epoch: 17 } }, pages: Pages },
                         quarantine: 0x18000000, sent: Vec::new(), parking: crate::retained_bindings() }
                 }
                 // PUBLISH_DRAW
-                fn publish_encoded(&mut self, sequence: u32, command: &mut Vec<u32>) -> Result<(), &'static str> {
+                fn publish_encoded_traced(&mut self, sequence: u32, command: &mut Vec<u32>, _: Option<&crate::gk208::timing::Submit>) -> Result<(), &'static str> {
                     command.extend([0x20010014, sequence]);
                     self.sent = command.clone(); Ok(())
                 }
@@ -139,7 +161,7 @@ fn frame_release_retires_every_bound_region_across_sampled_solid_and_clipped_fra
             frame.relocate(base).unwrap();
             frame.chunks.remove(0).words
         } else { Vec::new() };
-        channel.publish_draw(6480+n as u32, &gk208::adapter::EncodedDraw { words }).unwrap();
+        channel.publish_draw_traced(6480+n as u32, &gk208::adapter::EncodedDraw { words }, None).unwrap();
         // RAMFC reconstruction loses the old subchannel class. Each stream
         // must bind A197 before any graphics method, including a clipped frame.
         let mut class = None;

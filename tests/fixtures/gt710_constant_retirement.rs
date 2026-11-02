@@ -22,6 +22,8 @@
 *******************************************************************************/
 
 extern crate alloc;
+mod boot { pub mod intent { pub fn command_line()->Option<&'static str>{None} } }
+
 #[path = "ROOT/kernel/src/gpu/gk208/gr/shaders.rs"] pub mod shaders;
 #[path = "ROOT/kernel/src/gpu/gk208/encode.rs"] pub mod encode;
 #[path = "ROOT/kernel/src/gpu/gk208/caps.rs"] pub mod caps;
@@ -33,6 +35,20 @@ extern crate alloc;
 // publication are substituted. This checks storage references, not GPU execution.
 mod gk208 {
     pub use crate::encode;
+    #[allow(dead_code)] // This guard exercises retirement with telemetry disabled.
+    #[path="ROOT/kernel/src/gpu/gk208/gpu_time.rs"] pub mod gpu_time;
+    pub mod timing {
+        pub use super::gpu_time as gpu_clock;
+        #[allow(dead_code)] // The guard keeps draw-group telemetry disabled.
+        #[path="ROOT/kernel/src/gpu/gk208/gpu_groups.rs"] pub mod gpu_groups;
+        #[allow(dead_code)] // The guard exercises packet lifetime, with no timer source.
+        #[path="ROOT/kernel/src/gpu/gk208/submit_cost.rs"] pub mod submit_cost;
+        pub struct Scope;
+        impl Drop for Scope { fn drop(&mut self) {} }
+        pub struct Submit;
+        impl Submit { pub fn scope(&self, _:submit_cost::Phase)->Scope { panic!("submit telemetry is disabled") } }
+        pub fn enabled()->bool{false}
+    }
     pub mod adapter { pub struct EncodedDraw { pub words: Vec<u32> } }
     pub mod queue { pub struct Queue; impl Queue { pub fn slot(n: u32) -> u32 { (n - 1) % 4 } } }
     pub mod ce {
@@ -49,9 +65,16 @@ mod gk208 {
     pub mod gr {
         const SUBCHANNEL: u32 = 0;
         const RELEASE: u32 = 0x1000f010;
+        // BIND
         // REPORT
         pub mod channel {
             const TARGET: u64 = 0x02000000;
+            fn device_time_now()->u64 { panic!("telemetry is disabled in this retirement guard") }
+            pub struct Pages;
+            impl Pages {
+                pub fn va(&self,_:usize)->u64 { panic!("telemetry storage must not be used") }
+                pub fn publish(&self) { panic!("telemetry storage must not be used") }
+            }
             pub struct Range { pub start: u64 }
             pub struct Directory { pub range: Range }
             pub struct Space { pub directory: Directory }
@@ -59,8 +82,8 @@ mod gk208 {
             impl Context { pub fn space(&self) -> &Space { &self.space } }
             pub struct Identity { pub instance: u64, pub epoch: u64 }
             pub struct Report { pub identity: Identity }
-            pub struct Session { pub context: Context, pub report: Report }
-            pub struct NativeChannel { pub session: Session, pub quarantine: u64, pub sent: Vec<u32>, pub parking: Vec<u32> }
+            pub struct Session { pub context: Context, pub report: Report, pub pages: Pages }
+            pub struct NativeChannel { pub session: Session, pub quarantine: u64, pub sent: Vec<u32>, pub parking: Vec<u32>, pub draw_groups: [Option<(u32, Vec<crate::gk208::timing::gpu_groups::State>)>; 4] }
             impl NativeChannel {
                 pub fn new() -> Self {
                     let t = crate::encode::Target { id: 1, address: 0x19200000, width: 1, height: 1,
@@ -68,11 +91,11 @@ mod gk208 {
                     let (_, parking) = crate::encode::parking_frame(t,
                         crate::encode::Target { id: 2, address: 0x19201000, ..t }, 0x19100000, 0x18000000).unwrap();
                     Self { session: Session { context: Context { space: Space { directory: Directory { range: Range { start: 0x100000 } } } },
-                        report: Report { identity: Identity { instance: 0x851c000, epoch: 17 } } },
-                        quarantine: 0x18000000, sent: Vec::new(), parking }
+                        report: Report { identity: Identity { instance: 0x851c000, epoch: 17 } }, pages: Pages },
+                        quarantine: 0x18000000, sent: Vec::new(), parking, draw_groups: core::array::from_fn(|_| None) }
                 }
                 // PUBLISH_DRAW
-                fn publish_encoded(&mut self, sequence: u32, command: &mut Vec<u32>) -> Result<(), &'static str> {
+                fn publish_encoded_traced(&mut self, sequence: u32, command: &mut Vec<u32>, _: Option<&crate::gk208::timing::Submit>) -> Result<(), &'static str> {
                     command.extend([0x20010014, sequence]);
                     self.sent = command.clone(); Ok(())
                 }
@@ -124,12 +147,12 @@ fn retired_solid_and_sampled_frames_leave_no_constant_binding_for_the_next_conte
         frame.relocate(base).unwrap();
         for chunk in frame.chunks {
             let draw = gk208::adapter::EncodedDraw { words: chunk.words };
-            channel.publish_draw(6480 + n as u32, &draw).unwrap();
+            channel.publish_draw_traced(6480 + n as u32, &draw, None).unwrap();
             retirement_state(&channel.sent, base..base+frame.data.len() as u64);
         }
     }
     // A clipped frame still needs the real report, including after a sampled
     // frame has bound both fragment slots 0 and 15.
-    channel.publish_draw(6483, &gk208::adapter::EncodedDraw { words: Vec::new() }).unwrap();
+    channel.publish_draw_traced(6483, &gk208::adapter::EncodedDraw { words: Vec::new() }, None).unwrap();
     retirement_state(&channel.sent, 0x105a20000..0x105b38000);
 }

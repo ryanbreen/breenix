@@ -2084,3 +2084,60 @@ open-gpu-doc `classes/display/cl927d.h` at
 1993-2022 NVIDIA CORPORATION & AFFILIATES). Their full notices remain in
 the consumers. G26's single pending flip, binding publication and write
 exclusion are Breenix policy; this change adds no external hardware source.
+
+## Native readback fence polling reference
+
+`kernel/src/gpu/mod.rs` adapts the completion-polling mechanism of
+`nouveau_fence_wait_busy` from `drivers/gpu/drm/nouveau/nouveau_fence.c` at
+Linux v6.8, commit `e8f897f4afef0031fe618a8e94127a0934896aba`:
+[source](https://raw.githubusercontent.com/torvalds/linux/e8f897f4afef0031fe618a8e94127a0934896aba/drivers/gpu/drm/nouveau/nouveau_fence.c).
+The file's complete MIT permission grant was checked before use; Copyright
+(C) 2007 Ben Skeggs. All Rights Reserved. The original notice and full license
+are retained in the consuming file's header. Breenix retains its own queue,
+engine-receipt validation, lock release, watchdog, deadline and signal handling;
+no Linux scheduling or DMA-fence implementation is imported.
+
+Native primary command transport: kernel/src/gpu/gk208/gr/channel.rs follows
+libdrm nouveau/pushbuf.c's mapped GART pushbuffer placement (lines 579-591),
+MIT, Copyright 2012 Red Hat Inc., author Ben Skeggs. Inspected at
+https://github.com/Distrotech/libdrm/blob/6eed04824b488f546fde7df5d267ef109c82ddf8/nouveau/pushbuf.c
+The original full MIT notice is preserved in channel.rs. Breenix supplies its
+own coherent pages, retained GPU VM mapping and publication ordering; no DRM
+runtime code is imported.
+
+## Native GPU timestamp diagnosis
+
+`kernel/src/gpu/gk208/gpu_time.rs` adapts timestamp query packet construction
+and the four-word result layout from Mesa `nvc0_query_hw.c`, revision
+`769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de`, MIT, copyright 2011 Christoph
+Bumiller and 2015 Samuel Pitoiset. The file's MIT header was checked before use
+and is retained in the adapted file. Source:
+https://github.com/chaotic-cx/mesa-mirror/blob/769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de/src/gallium/drivers/nouveau/nvc0/nvc0_query_hw.c
+
+The full-pipeline location and report structure fields come from NVIDIA
+open-gpu-doc `classes/3d/cla197.h`, revision
+`9fdf5c4062007929d9f4e6cbad9c9771fe61b880`, MIT, copyright 2020 NVIDIA
+CORPORATION. Its checked MIT notice is also retained in `gpu_time.rs`.
+## Native line-loop compiler optimization (E20.1)
+
+`tools/kepler/compile.cpp` uses Mesa's nv50_ir BFIND and SLCT interfaces for
+the zero-prefix optimization in `tools/kepler/line_division.h`. The unchanged
+shared TGSI input is pinned by SHA-256 before enabling that optimization.
+API and instruction semantics were checked in these MIT files at Mesa
+`769e51468b49b2a42f0a0eaf71cf9eed5ff4e5de`:
+
+- `src/nouveau/codegen/nv50_ir.h`: Copyright 2011 Christoph Bumiller.
+- `src/nouveau/codegen/nv50_ir_peephole.cpp`: Copyright 2011 Christoph Bumiller.
+- `src/nouveau/codegen/nv50_ir_emit_gk110.cpp`: Copyright 2012 Christoph Bumiller.
+- `src/nouveau/codegen/nv50_ir_from_nir.cpp`: Copyright 2017 Red Hat Inc.
+
+The original MIT notices remain in the vendored files and `vendor/kepler/NOTICES`.
+The compiler's existing adapted frontend retains its MIT notice in its header.
+
+`kernel/src/gpu/gk208/gpu_groups.rs` uses the checked MIT query packet and
+pipeline-statistics layout in Mesa `nvc0_query_hw.c` at that same revision,
+and MIT NVIDIA `cla197.h` at
+`9fdf5c4062007929d9f4e6cbad9c9771fe61b880`. The report-19 counter is called
+PS invocations by NVIDIA and ROP pixels in Mesa's query comments. The
+original Christoph Bumiller, Samuel Pitoiset and NVIDIA notices are retained
+in the new module's header.

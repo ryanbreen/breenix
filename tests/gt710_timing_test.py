@@ -11,11 +11,12 @@ ROOT = Path(__file__).resolve().parents[1]
 class Timing(unittest.TestCase):
     def test_elapsed_rows_keep_owner_draw_phase_and_report_overflow(self):
         source = f'''extern crate alloc;
-#[path="{ROOT / 'kernel/src/gpu/gk208/timing.rs'}"] mod timing;
+#[path="{ROOT / 'kernel/src/gpu/gk208/timing.rs'}"] pub mod timing;
 fn main() {{
  assert!(!timing::collecting(false,false));
  assert!(timing::collecting(false,true));assert!(timing::collecting(true,false));assert!(timing::collecting(true,true));
- let mut r=timing::Recorder::new();
+ let mut split=timing::ReadbackSplit::default();split.wait(1,2);split.copy(2,3);
+ let mut r=timing::Recorder::new();r.readback([42,0,1,2,split.wait_ns,split.copy_ns,0,0]);r.blocked([1,1,1,1,1,0,1]);r.drain(0);
  r.finish(42,0,7,10,20);
  assert!(r.drain(1).is_none());
  assert_eq!(r.begin_draw(42),1);
@@ -31,8 +32,8 @@ fn main() {{
  assert!(samples.contains("[123456789,65535],[2123456789,118]"));
  assert!(samples.contains("vblank_samples"));
  assert!(r.drain(6).is_none());
- for n in 0..20000 {{r.finish(42,2,7,n,n+1);}}
- let row=r.drain(4).unwrap();assert!(row.contains("\\\"dropped\\\":3616"));
+ for n in 0..40000 {{r.finish(42,2,7,n,n+1);}}
+ let row=r.drain(4).unwrap();assert!(row.contains("\\\"dropped\\\":7232"));
 }}
 '''
         priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
@@ -44,16 +45,17 @@ fn main() {{
     def test_large_timing_export_refuses_allocation_failure_and_retains_rows(self):
         sys.path.insert(0,str(ROOT/'tests'))
         from gt710_allocation_failure_test import ALLOC,run
-        fixture=f'#[path="{ROOT / "kernel/src/gpu/gk208/timing.rs"}"] mod timing;\n'+ALLOC+r'''
+        fixture=f'#[path="{ROOT / "kernel/src/gpu/gk208/timing.rs"}"] pub mod timing;\n'+ALLOC+r'''
 #[test]fn timing_export_allocation_is_a_refusal(){
- assert!(!timing::collecting(false,false));let mut r=timing::Recorder::new();r.begin_draw(42);
- for n in 0..20000{r.finish(42,1,7,n,n+1);}
+ let mut split=timing::ReadbackSplit::default();split.wait(1,2);split.copy(2,3);
+ assert!(!timing::collecting(false,false));let mut r=timing::Recorder::new();r.begin_draw(42);r.readback([42,0,1,2,split.wait_ns,split.copy_ns,0,0]);r.blocked([1,1,1,1,1,0,1]);
+ for n in 0..40000{r.finish(42,1,7,n,n+1);}
  r.sample_vblank(123456789,65535);
  arm();let refused=r.drain(7);ARMED.store(false,Ordering::Relaxed);
  assert!(HIT.load(Ordering::Relaxed));assert!(refused.is_none());
- let row=r.drain(8).unwrap();assert!(row.contains("\"dropped\":3616"));
+ let row=r.drain(8).unwrap();assert!(row.contains("\"dropped\":7232"));
  assert!(row.contains("[123456789,65535]"));
- assert!(row.contains("[42,1,7,0,1]"));assert!(row.contains("[42,1,7,16383,1]"));
+ assert!(row.contains("[42,1,7,0,1]"));assert!(row.contains("[42,1,7,32767,1]"));
 }
 '''
         run(fixture,'timing_export_allocation_is_a_refusal',[0])

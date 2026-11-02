@@ -869,21 +869,18 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::BootRibbon => {
             #[cfg(target_arch="aarch64")]
             {text(crate::graphics::boot_ribbon::records())}
-            #[cfg(not(target_arch="aarch64"))]
-            {Err(-38)}
+            #[cfg(target_arch="x86_64")]
+            {text(crate::boot_ribbon::records())}
         }
         ProcEntryType::BootSerial => {
             #[cfg(target_arch="aarch64")]
             { crate::graphics::boot_ribbon::serial().map(|s| s.into_bytes()) }
-            #[cfg(not(target_arch="aarch64"))]
-            {Err(-38)}
+            #[cfg(target_arch="x86_64")]
+            { crate::boot_ribbon::serial().map(|s| s.into_bytes()) }
         }
         // The display owners' completed GPU presents (the run stage's screen changes).
         ProcEntryType::StageComposites => {
-            #[cfg(target_arch="aarch64")]
-            {text(crate::gpu::present_records())}
-            #[cfg(not(target_arch="aarch64"))]
-            {Err(-38)}
+            text(crate::gpu::present_records())
         }
         ProcEntryType::Uptime => text(generate_uptime()),
         ProcEntryType::Version => text(generate_version()),

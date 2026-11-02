@@ -95,6 +95,10 @@ fn main() {
         let ribbon=stage_markers::arm64_ribbon(repo_root).expect("ARM64 ribbon stages");
         assert!(!ribbon.is_empty() && ribbon.len() <= 416, "ARM64 boot ribbon exceeds its 1248-pixel segment capacity");
         fs::write(PathBuf::from(&out_dir).join("boot_ribbon.rs"),format!("&{ribbon:?}")).expect("write ribbon stages");
+    } else if target.starts_with("x86_64") {
+        let ribbon = stage_markers::metal_ribbon(repo_root).expect("metal ribbon stages");
+        assert!(!ribbon.is_empty() && ribbon.len() <= 416, "metal boot ribbon exceeds segment capacity");
+        fs::write(PathBuf::from(&out_dir).join("boot_ribbon.rs"), format!("&{ribbon:?}")).expect("write metal ribbon stages");
     }
 
     // Only build x86_64 assembly for x86_64 targets

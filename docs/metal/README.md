@@ -514,6 +514,13 @@ management files hidden, no network, a clean environment, a 20-second runtime li
 180-second handoff deadline; suite mode uses the 420-second suite deadline and a further 900-second absolute budget
 for firmware and delivery (a 1320-second attempt ceiling).
 
+For a diagnostic case watch, `metal-run boot --suite ID --case CATEGORY[/CASE]` passes the existing suite
+selector through the per-boot intent. It keeps the production build and host-key route. The capture records
+`watch=true`, `onlyCase`, and `evidenceEligible=false`; it is not full-suite acceptance evidence. The selector
+accepts one case or category, and its final panel idles. Stop the owned boot with `metal-run stop ID` after the
+required case and diagnostic records have arrived. Filtered watches do not start the suite-sequence resume
+collector or write milestone verdicts. The suite and its runner are unchanged by this host option.
+
 Any main-path suite runs this way (`metal-run boot --mode suite --suite ID`). Its fixtures are the ones the other
 launchers attach: the ext2 root on the physical disk, and the machine's own network port with its DHCP lease where
 QEMU attaches a user network. The Developer SDK suite also needs its host side: `metal-run` passes the suite to the

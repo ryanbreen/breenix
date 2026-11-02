@@ -44,6 +44,8 @@ pub fn is_ready() -> bool {
 /// Called from the serial write path. Must be safe with interrupts disabled.
 #[inline]
 pub fn capture_byte(byte: u8) {
+    #[cfg(target_arch = "x86_64")]
+    crate::boot_ribbon::byte(byte);
     if !is_ready() {
         return;
     }

@@ -28,6 +28,7 @@ FRAMES=r'''
 mod gpu{
  pub mod dma{
   use std::alloc::{GlobalAlloc,Layout,System};
+  pub const PAGE:usize=4096;
   pub struct CpuBox(Vec<u8>);
   impl CpuBox{
    pub fn try_new(len:usize)->Option<Self>{

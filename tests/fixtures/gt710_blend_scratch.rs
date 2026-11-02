@@ -38,8 +38,8 @@ struct Ranges;
 impl Ranges {fn release(&mut self,_:u64){}}
 struct Arena {ranges:Ranges}
 struct Context {vertex_arena:Option<Arena>}
-struct Sub {requests:u32,published:bool,held:Vec<u32>,ctx:u32,writer:Option<Writer>,_scratch:NativeScratch}
-struct Core {subs:BTreeMap<u64,Sub>,contexts:BTreeMap<u32,Context>}
+struct Sub {sampled:Vec<()>,requests:u32,published:bool,held:Vec<u32>,ctx:u32,writer:Option<Writer>,_scratch:NativeScratch}
+struct Core {retired_pins:Vec<Vec<()>>,subs:BTreeMap<u64,Sub>,contexts:BTreeMap<u32,Context>}
 impl Core {
     fn unhold(&mut self,_:u32){panic!("scratch is native-owned")}
     // RETIRE
@@ -69,7 +69,7 @@ fn submit()->(Core,Device,Rc<RefCell<State>>,Vec<u32>,u64) {
     assert!(d.send(receipt).is_ok());assert!(matches!(d.reap(),Reap::Done(_)));
     let draw=gk208::encoded(&ids);
     assert!(d.send(Request::draw(Tag::Sync(9001),9001,19,1,draw)).is_ok());
-    let c=Core {subs:BTreeMap::from([(9,Sub{requests:1,published:false,held:vec![],ctx:1,writer:None,_scratch:scratch})]),contexts:BTreeMap::new()};
+    let c=Core {retired_pins:vec![],subs:BTreeMap::from([(9,Sub{sampled:vec![],requests:1,published:false,held:vec![],ctx:1,writer:None,_scratch:scratch})]),contexts:BTreeMap::new()};
     (c,d,s,ids,baseline)
 }
 #[test]
@@ -146,7 +146,7 @@ fn spans_storage_and_charge_follow_the_actual_draw_release_and_publication() {
         assert_eq!(io.words[&physical],0x8877665544332211);Ok(())}).unwrap();
     let draw=gk208::encoded(&[t.id]);
     assert!(d.send(Request::draw(Tag::Sync(9001),9001,19,1,draw)).is_ok());
-    let mut c=Core {subs:BTreeMap::from([(9,Sub{requests:1,published:false,held:vec![],ctx:1,writer:None,_scratch:scratch})]),contexts:BTreeMap::new()};
+    let mut c=Core {retired_pins:vec![],subs:BTreeMap::from([(9,Sub{sampled:vec![],requests:1,published:false,held:vec![],ctx:1,writer:None,_scratch:scratch})]),contexts:BTreeMap::new()};
     assert!(matches!(d.reap(),Reap::Empty));c.retire_if_done(9);collect();assert_eq!(RELEASES.load(Ordering::SeqCst),0);
     s.borrow_mut().release=1;assert!(matches!(d.reap(),Reap::Done(_)));c.subs.get_mut(&9).unwrap().requests=0;
     c.retire_if_done(9);collect();assert_eq!(RELEASES.load(Ordering::SeqCst),0);

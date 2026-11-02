@@ -323,19 +323,19 @@
       "sha256": "7d645cc2bf9ca77dc6120056b5825b64a2afc63f18f1283d52bcad277befa372"
     },
     "pipeline-line.asm": {
-      "bytes": 17938,
+      "bytes": 18647,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "61f2e459ed94c371c22fceb8397e67cd57c973334571fbfe561eacbf81c0ed29"
+      "sha256": "4eb6eb467ce19ec328732d38433cd8d02d4dbf2c54ddafd8f9e7a0b1fd8c7491"
     },
     "pipeline-line.bin": {
-      "bytes": 2496,
+      "bytes": 2592,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "d7100559192f316b6661fa9515273d8d11fa52a83c8061929c952dcd2446df53"
+      "sha256": "2bee7c9b087eccb24882316bafb641b46a81740f36b3a526dba66921a3f084ba"
     },
     "pipeline-line.json": {
       "bytes": 357,
       "license": "PolyForm-Noncommercial-1.0.0",
-      "sha256": "fe4ac123a41ba9c381fe5f1e1383e712c8fa581e21fdf5de177f1a0b64f87204"
+      "sha256": "2719710fdc4c1733696a3290106e8ad9377bd40f3a2d73f37c4540859fa95ac0"
     },
     "pipeline-line.sph": {
       "bytes": 80,
@@ -1051,8 +1051,9 @@
   "recipe_sha256": {
     "libs/gpu-abi/src/lib.rs": "949a2e9ca41e3f7661eca30f8b8cd7f17c366dbfdf147d01df8ce0ede1bef51e",
     "tools/kepler/CMakeLists.txt": "bb493a774b8cf0dde02a2e0bcd1829fa2bfbba2ef89b560b70e53a29734e941c",
-    "tools/kepler/assets.py": "99b960086b4dde8012f09c64662a53ca57b619d9ff6a44f95ca360888b9c2874",
-    "tools/kepler/compile.cpp": "7860bb4d115e459501562d16c38eb7e67a09a5fd900b07b6c6a49c667df810d2"
+    "tools/kepler/assets.py": "48c8149807d5ac3dad2d7d515486855c050dbe7a2d001824c6ed5b00b553e569",
+    "tools/kepler/compile.cpp": "2eb24de52ce2891c67285b023915a42b4eb93577fe16b3dfb4470ec9019312e7",
+    "tools/kepler/line_division.h": "33dca8937b5cff45bd58832f695c90f0a49bdd6072aee0ab95d5b86731267c35"
   },
   "schema": 1,
   "shaders": [
@@ -1080,6 +1081,7 @@
         "tls_bytes": 0
       },
       "name": "solid",
+      "native_options": [],
       "pipeline": 0,
       "source": "kernel/src/gpu/virgl/pipelines/solid.frag.tgsi",
       "source_sha256": "d5fe42eed664d34d9c1ce2ef71f7ce877da6b7b02d59091e52151961073554db"
@@ -1114,6 +1116,7 @@
         "tls_bytes": 0
       },
       "name": "copy",
+      "native_options": [],
       "pipeline": 1,
       "source": "kernel/src/gpu/virgl/pipelines/copy.frag.tgsi",
       "source_sha256": "88b156f9fca51c94a3d1f36e28a19fad35997d587b69fd73d133a702c34a7a7c"
@@ -1148,6 +1151,7 @@
         "tls_bytes": 0
       },
       "name": "copy_scaled",
+      "native_options": [],
       "pipeline": 2,
       "source": "kernel/src/gpu/virgl/pipelines/2.tgsi",
       "source_sha256": "96c23be0bb9c1b29b3377d8320bb2ebb806b9cf26a0f93781d043206008d9660"
@@ -1182,6 +1186,7 @@
         "tls_bytes": 0
       },
       "name": "nearest_scaled",
+      "native_options": [],
       "pipeline": 3,
       "source": "kernel/src/gpu/virgl/pipelines/3.tgsi",
       "source_sha256": "a1a9ce58ca6bb992e91dd96b4bc1401c38fc1e87e889e7bba5ad08059cf45b38"
@@ -1216,6 +1221,7 @@
         "tls_bytes": 0
       },
       "name": "box_filter",
+      "native_options": [],
       "pipeline": 4,
       "source": "kernel/src/gpu/virgl/pipelines/4.tgsi",
       "source_sha256": "169f1f8722b2f36abd4b0ea365f2f7b0e8b35f868ddf9495a8c90e2132ed0b50"
@@ -1250,6 +1256,7 @@
         "tls_bytes": 0
       },
       "name": "over",
+      "native_options": [],
       "pipeline": 5,
       "source": "kernel/src/gpu/virgl/pipelines/5.tgsi",
       "source_sha256": "6f4fddeedab1980eeb75405e7ed46da1d07172b13990a17ac6d506e0d9d21ea5"
@@ -1284,6 +1291,7 @@
         "tls_bytes": 0
       },
       "name": "over_straight",
+      "native_options": [],
       "pipeline": 6,
       "source": "kernel/src/gpu/virgl/pipelines/6.tgsi",
       "source_sha256": "c519f6dbc9057b612d64467edf8329f5691368e7d1602707b2fa8d37e6094e54"
@@ -1318,6 +1326,7 @@
         "tls_bytes": 0
       },
       "name": "coverage",
+      "native_options": [],
       "pipeline": 7,
       "source": "kernel/src/gpu/virgl/pipelines/7.tgsi",
       "source_sha256": "c0be3fe75b0c5107f883cb308a292915adc8cc6b54ae7f87f518384c80328a9f"
@@ -1352,6 +1361,7 @@
         "tls_bytes": 0
       },
       "name": "coverage_spans",
+      "native_options": [],
       "pipeline": 8,
       "source": "kernel/src/gpu/virgl/pipelines/8.tgsi",
       "source_sha256": "706e23ff2f7e70eeda8f2a59175cd440e1f6558ddfad0a144ef725b0ac68bac3"
@@ -1386,6 +1396,7 @@
         "tls_bytes": 0
       },
       "name": "bitmap_text",
+      "native_options": [],
       "pipeline": 9,
       "source": "kernel/src/gpu/virgl/pipelines/9.tgsi",
       "source_sha256": "04817beeaa0d8dfa62c2b89e8b58f82adaaaa1972a02250d6d01865e929df8e5"
@@ -1395,7 +1406,7 @@
       "metadata": {
         "builtin_calls": 0,
         "chipset": 262,
-        "code_bytes": 2496,
+        "code_bytes": 2592,
         "constant_buffer_bytes": 96,
         "constant_buffer_slot": 0,
         "fixups_applied": true,
@@ -1420,6 +1431,9 @@
         "tls_bytes": 0
       },
       "name": "line",
+      "native_options": [
+        "--line-leading-zero"
+      ],
       "pipeline": 10,
       "source": "kernel/src/gpu/virgl/pipelines/10.tgsi",
       "source_sha256": "1dc1da38b52d6171c2eed895e5d1120f3bb61c9af9c408e655ac7b4b84c73cec"
@@ -1454,6 +1468,7 @@
         "tls_bytes": 0
       },
       "name": "circle_fill",
+      "native_options": [],
       "pipeline": 11,
       "source": "kernel/src/gpu/virgl/pipelines/11.tgsi",
       "source_sha256": "8a7fe08db5e761c9540b00a7d58a3e56606cf088291b96cbab30c16b03951d68"
@@ -1488,6 +1503,7 @@
         "tls_bytes": 0
       },
       "name": "circle_outline",
+      "native_options": [],
       "pipeline": 12,
       "source": "kernel/src/gpu/virgl/pipelines/12.tgsi",
       "source_sha256": "763a7c3c579912f07318f54bf96fb5ffb42dfd7c1e45f3c848ec66e4076deca5"
@@ -1522,6 +1538,7 @@
         "tls_bytes": 0
       },
       "name": "rounded_rect",
+      "native_options": [],
       "pipeline": 13,
       "source": "kernel/src/gpu/virgl/pipelines/13.tgsi",
       "source_sha256": "f870ccd9b1fbe3fd63dda67c3a7272e5481fb5ae43f72d4652dbde49c16d6e5d"
@@ -1556,6 +1573,7 @@
         "tls_bytes": 0
       },
       "name": "gradient_v",
+      "native_options": [],
       "pipeline": 14,
       "source": "kernel/src/gpu/virgl/pipelines/14.tgsi",
       "source_sha256": "09d34cb6b6a405c98dcba0c4ad895cd36d7362e47b3f8eb415b76b1df7b43c75"
@@ -1590,6 +1608,7 @@
         "tls_bytes": 0
       },
       "name": "triangle",
+      "native_options": [],
       "pipeline": 15,
       "source": "kernel/src/gpu/virgl/pipelines/15.tgsi",
       "source_sha256": "b9ff3a32cdc2f42e1458ccf1d5c67039193476ff3a22b6e2edf1254cb3abc114"
@@ -1624,6 +1643,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 0,
       "source": "kernel/src/gpu/virgl/profile/r00.tgsi",
@@ -1659,6 +1679,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 1,
       "source": "kernel/src/gpu/virgl/profile/r01.tgsi",
@@ -1694,6 +1715,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 2,
       "source": "kernel/src/gpu/virgl/profile/r02.tgsi",
@@ -1729,6 +1751,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 3,
       "source": "kernel/src/gpu/virgl/profile/r03.tgsi",
@@ -1764,6 +1787,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 4,
       "source": "kernel/src/gpu/virgl/profile/r04.tgsi",
@@ -1799,6 +1823,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 5,
       "source": "kernel/src/gpu/virgl/profile/r05.tgsi",
@@ -1834,6 +1859,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 6,
       "source": "kernel/src/gpu/virgl/profile/r06.tgsi",
@@ -1869,6 +1895,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 7,
       "source": "kernel/src/gpu/virgl/profile/r07.tgsi",
@@ -1904,6 +1931,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 8,
       "source": "kernel/src/gpu/virgl/profile/r08.tgsi",
@@ -1939,6 +1967,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 9,
       "source": "kernel/src/gpu/virgl/profile/r09.tgsi",
@@ -1974,6 +2003,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 10,
       "source": "kernel/src/gpu/virgl/profile/r10.tgsi",
@@ -2009,6 +2039,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 11,
       "source": "kernel/src/gpu/virgl/profile/r11.tgsi",
@@ -2044,6 +2075,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 12,
       "source": "kernel/src/gpu/virgl/profile/r12.tgsi",
@@ -2079,6 +2111,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 13,
       "source": "kernel/src/gpu/virgl/profile/r13.tgsi",
@@ -2114,6 +2147,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 14,
       "source": "kernel/src/gpu/virgl/profile/r14.tgsi",
@@ -2149,6 +2183,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 15,
       "source": "kernel/src/gpu/virgl/profile/r15.tgsi",
@@ -2184,6 +2219,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 16,
       "source": "kernel/src/gpu/virgl/profile/r16.tgsi",
@@ -2219,6 +2255,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 17,
       "source": "kernel/src/gpu/virgl/profile/r17.tgsi",
@@ -2254,6 +2291,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 18,
       "source": "kernel/src/gpu/virgl/profile/r18.tgsi",
@@ -2289,6 +2327,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 19,
       "source": "kernel/src/gpu/virgl/profile/r19.tgsi",
@@ -2324,6 +2363,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 20,
       "source": "kernel/src/gpu/virgl/profile/r20.tgsi",
@@ -2359,6 +2399,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 21,
       "source": "kernel/src/gpu/virgl/profile/r21.tgsi",
@@ -2394,6 +2435,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 22,
       "source": "kernel/src/gpu/virgl/profile/r22.tgsi",
@@ -2429,6 +2471,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 23,
       "source": "kernel/src/gpu/virgl/profile/r23.tgsi",
@@ -2464,6 +2507,7 @@
         "tls_bytes": 0
       },
       "name": "probe_int",
+      "native_options": [],
       "pipeline": 16,
       "routine": 24,
       "source": "kernel/src/gpu/virgl/profile/r24.tgsi",
@@ -2499,6 +2543,7 @@
         "tls_bytes": 0
       },
       "name": "catalogue-vertex",
+      "native_options": [],
       "source": "tools/kepler/shaders/catalogue.vert.tgsi",
       "source_sha256": "399ecf2f53d6b05029b6e3495dbeddc85eb26e670e09068f52a7121c73a598c4"
     },
@@ -2542,6 +2587,7 @@
         "tls_bytes": 0
       },
       "name": "diagnostic-triangle-vertex",
+      "native_options": [],
       "source": "tools/kepler/shaders/triangle.vert.tgsi",
       "source_sha256": "396294ea197243b64d61cc6207e76f5043f791d318d5dc90d8ec3da1fc496ce4"
     },
@@ -2575,6 +2621,7 @@
         "tls_bytes": 0
       },
       "name": "diagnostic-triangle-fragment",
+      "native_options": [],
       "source": "tools/kepler/shaders/triangle.frag.tgsi",
       "source_sha256": "7800cf22acecf728b548fa70cca036303e3334d15605a18c83c9be169de51f07"
     },
@@ -2608,6 +2655,7 @@
         "tls_bytes": 0
       },
       "name": "gradient-fragment",
+      "native_options": [],
       "source": "tools/kepler/shaders/gradient.frag.tgsi",
       "source_sha256": "973cbade9a5fc2fed5f589ce65a67909a3880660ce0afaed23fdd8f91f8e44b8"
     },
@@ -2635,6 +2683,7 @@
         "tls_bytes": 0
       },
       "name": "probe-integer-ops",
+      "native_options": [],
       "source": "tools/kepler/shaders/integer-ops.frag.tgsi",
       "source_sha256": "abac2f52a96fe4d39e8553eee3c0a471206f6da201ad5ad807f4d742ab4c7d69"
     },
@@ -2668,6 +2717,7 @@
         "tls_bytes": 0
       },
       "name": "probe-texel-fetch",
+      "native_options": [],
       "source": "tools/kepler/shaders/texel-fetch.frag.tgsi",
       "source_sha256": "c948e2bb5d3e660d6c103ec308f07172f63563419395d2f86d0448c2f39861c5"
     },
@@ -2695,6 +2745,7 @@
         "tls_bytes": 0
       },
       "name": "constant-colour-fragment",
+      "native_options": [],
       "source": "tests/fixtures/gt710_shader_controls/constant-colour-fragment.tgsi",
       "source_sha256": "bc094eb11605950227ec1178f6a5615e5200bff622abf9eab83ae20b1fe5d6f3"
     },
@@ -2728,6 +2779,7 @@
         "tls_bytes": 0
       },
       "name": "drop-colour-vertex",
+      "native_options": [],
       "source": "tests/fixtures/gt710_shader_controls/drop-colour-vertex.tgsi",
       "source_sha256": "a8e11f2f2c29db45af384ff56fcfdcacca1577f9aba85df4833fb4cb57d583d8"
     }

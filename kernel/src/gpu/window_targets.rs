@@ -53,7 +53,7 @@ impl Seal {
 }
 
 pub fn backing_len(width:u32,height:u32)->u64 {
-    let pitch=if dev::is_svga() {width*4} else {(width*4).next_multiple_of(256)};
+    let pitch=console::pitch_of(kind::TARGET,format::B8G8R8A8,width);
     (pitch as u64*height as u64).div_ceil(PAGE as u64)*PAGE as u64
 }
 
@@ -182,7 +182,8 @@ impl Target {
             let r = c.resources.get_mut(&self.id).ok_or(EIO)?;
             if sealed { r.window_sealed = true; return Ok(()); }
             if r.lost { return Err(EIO); }
-            if r.reading || r.accepted.iter().any(|w| !w.ended()) { return Err(breengel_abi::errno::EBUSY as i64); }
+            if r.reading || r.accepted.iter().any(|w| !w.ended())
+                || c.syncs.values().any(|s| s.reading.contains(&self.id)) { return Err(breengel_abi::errno::EBUSY as i64); }
             r.window_sealed = false;
             Ok(())
         }).unwrap_or(Err(ENODEV)).map_err(|e| e as i32)
@@ -199,7 +200,8 @@ impl Target {
     /// Reuse requires real completion, including after watchdog failure publication.
     pub fn idle(&self) -> bool {
         with_core(|c| c.resources.get(&self.id).is_some_and(|r|
-            !r.reading && r.accepted.iter().all(|w| w.ended()))).unwrap_or(false)
+            !r.reading && r.accepted.iter().all(|w| w.ended()))
+            && !c.syncs.values().any(|s| s.reading.contains(&self.id))).unwrap_or(false)
     }
 
     pub fn identity(&self) -> Result<(u64, u64, u64), i32> {
@@ -215,7 +217,8 @@ impl Target {
         wait_for(None, true, |c| {
             let Some(r) = c.resources.get(&self.id) else { return Some(Err(EIO)); };
             if r.lost { return Some(Err(EIO)); }
-            if r.writers != 0 || r.accepted.iter().any(|w| !w.ended()) { return None; }
+            if r.writers != 0 || r.accepted.iter().any(|w| !w.ended())
+                || c.syncs.values().any(|s| s.reading.contains(&self.id)) { return None; }
             Some(if r.invalid { Err(EIO) } else { Ok(()) })
         }).map_err(|_| EINTR).and_then(|r| r).map_err(|e| e as i32)
     }
@@ -250,6 +253,14 @@ impl Target {
             if context.state != CtxState::Live || context.dropped { return Some(Err(EIO)); }
             let r = c.resources.get(&self.id)?;
             if context.busy || !context.inflight.is_empty() || r.writers != 0 || r.reading { return None; }
+            if c.syncs.values().any(|s| s.reading.contains(&self.id)) { return None; }
+            if let Some(src) = source {
+                let r = c.resources.get(&src.id)?;
+                if r.lost || r.invalid { return Some(Err(EIO)); }
+                // The copy only reads its source. A concurrent CAPTURE may keep
+                // it pinned for CPU copyout while RESIZE reads the same front.
+                if r.writers != 0 || r.accepted.iter().any(|w| !w.ended()) { return None; }
+            }
             c.contexts.get_mut(&ctx)?.busy = true;
             c.resources.get_mut(&self.id)?.writers += 1;
             Some(Ok(()))
@@ -262,6 +273,9 @@ impl Target {
                 if result.is_err() { r.invalid = true; }
             }
         });
+        // An interrupted wait leaves the request's read exclusions alive until the
+        // device returns it or a confirmed reset ends its access.
+        release_other(Some(self.id));
         notify();
         result
     }
@@ -271,7 +285,25 @@ impl Target {
         let bindings = Bindings { destination: self, source };
         let (mut objects, mut dx, vb, scratch, scratch_texture) = with_core(|c| c.contexts.get(&ctx)
             .map(|x| (x.objects.clone(),x.dx.clone(),x.vb,x.scratch,x.scratch_texture))).flatten().ok_or(EIO)?;
-        let chunks = if dev::is_svga() {
+        let chunks = if dev::backend() == abi::backend::GK208 {
+            #[cfg(target_arch = "x86_64")]
+            {
+                use crate::gk208::encode as native;
+                let plan = stream::validate(words, &bindings).map_err(|_| EINVAL)?;
+                let bytes = native::reservation_bytes(words, &plan, false).ok_or(ENOMEM)?;
+                let charge = Charge::new(self.context.owner, bytes, true)?;
+                let mut frame = native::translate_resident(words, &bindings)
+                    .map_err(|e| if e == native::NO_MEMORY { ENOMEM } else { EINVAL })?;
+                frame.compact().map_err(|_| ENOMEM)?;
+                let mut backing = Pages::new(frame.data.len().div_ceil(PAGE)).ok_or(ENOMEM)?;
+                backing.charge_copy(charge);
+                backing.write(0, &frame.data);
+                backing.maintain(0, frame.data.len(), false);
+                Chunks::Gk208(native::prepare(frame, Arc::new(backing)).map_err(|_| ENOMEM)?)
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            { return Err(ENODEV); }
+        } else if dev::is_svga() {
             let extras = || svga::encode::Extras { scratch: [[self.width,self.height],[0,0]], data_width: 1,
                 corrupt: None, suppress: None, swap: None };
             let (sized,_) = svga::encode::translate(&mut dx.clone(), &[], words, &bindings, extras(), None, None).ok_or(ENOMEM)?;
@@ -288,9 +320,11 @@ impl Target {
         with_core(|c| if let Some(x) = c.contexts.get_mut(&ctx) { x.objects = objects; x.dx = dx; });
         let mut ids = alloc::vec![self.id,vb,scratch,scratch_texture];
         if let Some(src) = source { ids.push(src.id); }
+        let readers = [self.id, source.map_or(self.id, |src| src.id)];
+        let readers = if source.is_some() { &readers[..] } else { &readers[..1] };
         let mut last = None;
         let mut send = |request: Request, serial: u64, fence: u64| -> Result<(), i64> {
-            let answer = exec_req(serial,request,ctx,&ids,&[self.id])?;
+            let answer = exec_req(serial,request,ctx,&ids,readers)?;
             if !dev::ok(answer.answer) || !answer.matches_fence(fence) { return Err(EIO); }
             last = Some(LastWrite { ctx,device_ctx:dev::context_id(ctx),fence:answer.echoed,serial,answer:answer.answer,kind:dev::draw_kind() });
             Ok(())
@@ -329,7 +363,8 @@ impl Target {
         let (last,backing,pitch) = wait_for(None,true,|c| {
             let Some(r) = c.resources.get_mut(&self.id) else { return Some(Err(EIO)); };
             if r.lost { return Some(Err(EIO)); }
-            if r.writers != 0 || r.reading || r.accepted.iter().any(|w| !w.ended()) { return None; }
+            if r.writers != 0 || r.reading || r.accepted.iter().any(|w| !w.ended())
+                || c.syncs.values().any(|s| s.reading.contains(&self.id)) { return None; }
             if r.invalid { return Some(Err(EIO)); }
             r.reading = true;
             Some(Ok((r.last,r.backing.clone(),r.pitch)))
@@ -345,7 +380,7 @@ impl Target {
                 let count = rows.min(self.height as usize - first);
                 let args = abi::Readback { target:self.handle,y:first as u32,
                     width:self.width,height:count as u32,..abi::Readback::ZERO };
-                let seen = observe(owner,self.id,last,&backing,pitch,format::B8G8R8A8,args,&stage.pages,Some(context.id))
+                let seen = observe(owner,self.id,last,&backing,pitch,format::B8G8R8A8,args,&stage.pages,Some(context.id), #[cfg(target_arch = "x86_64")] None)
                     .map_err(|(errno,_)| errno)?;
                 if seen.unwritten != 0 { return Err(EIO); }
                 for local in 0..count {
@@ -393,6 +428,31 @@ impl encode::Bindings for Bindings<'_> {
     }
     fn buffer_rect(&self, _handle:u64, _offset:u64) -> [i32;4] { [0;4] }
     fn buffer_word(&self, _handle:u64, _offset:u64) -> u32 { 0 }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl Resolver for Bindings<'_> {
+    fn target(&self, handle: u64) -> Option<TargetInfo> {
+        let t = (handle == self.destination.id as u64).then_some(self.destination)?;
+        Some(TargetInfo { width: t.width, height: t.height, invalid: false, format: format::B8G8R8A8 })
+    }
+    fn source(&self, handle: u64) -> Option<stream::SourceInfo> {
+        let t = self.find(handle)?;
+        Some(stream::SourceInfo { width: t.width, height: t.height, invalid: false, format: format::B8G8R8A8 })
+    }
+    fn buffer_size(&self, _handle: u64) -> Option<u64> { None }
+    fn buffer_rect(&self, _handle: u64, _offset: u64) -> [i32; 4] { [0; 4] }
+}
+
+#[cfg(target_arch = "x86_64")]
+impl crate::gk208::encode::Bindings for Bindings<'_> {
+    fn render_target(&self, handle: u64) -> Option<crate::gk208::encode::Target> {
+        (handle == self.destination.id as u64).then_some(())?;
+        crate::gk208::encode::target(self.destination.id, format::B8G8R8A8)
+    }
+    fn sampled_source(&self, handle: u64) -> Option<crate::gk208::encode::Target> {
+        crate::gk208::encode::target(self.find(handle)?.id, format::B8G8R8A8)
+    }
 }
 
 /// Charged private composition metadata, independent of client resource backing.

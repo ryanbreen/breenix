@@ -7,10 +7,12 @@ import secrets
 from urllib.parse import urlsplit, urlunsplit
 import metal_lib as m
 MAX_BYTES=2<<20
+# R6 amended: includes startup, picture chunks and the final evidence slot.
+MAX_TOTAL=64<<20
 PREFIX='/gt710-upload/'
-def prepare(directory,boot_id,site):
+def prepare(directory,boot_id,site,suite=None):
     route=PREFIX+secrets.token_hex(32)
-    intent=dict(id=boot_id,route=route)
+    intent=dict(id=boot_id,route=route,suite=suite)
     m.write_json(m.STATE/'gt710-upload.json',intent)
     m.write_json(Path(directory)/'native-upload-intent.json',intent)
     url=urlsplit(site['BOOT_URL'])
@@ -21,13 +23,18 @@ def receive(handler):
         lease=m.read_lease() or {}
         route=urlsplit(handler.path).path
         final=bool(intent) and route==intent.get('route','')+'/final'
-        if (not intent or (route!=intent.get('route') and not final)
-                or (intent.get('finalComplete') if final else intent.get('complete'))
+        picture = re.fullmatch(re.escape(intent.get('route', '')) + r'/pictures/(0|[1-9]\d*)', route) if intent else None
+        picture_index = int(picture[1]) if picture else None
+        is_picture = picture_index is not None
+        if (not intent or (route!=intent.get('route') and not final and not is_picture)
+                or (is_picture and (intent.get('suite') != 'breengel' or not intent.get('complete')
+                    or intent.get('finalComplete') or picture_index != intent.get('pictureUploads', 0)))
+                or (intent.get('finalComplete') if final else (False if is_picture else intent.get('complete')))
                 or (final and not intent.get('complete'))
                 or lease.get('id')!=intent.get('id') or lease.get('state')!='powered'):
             handler.send_error(404);return
         directory=m.boot_dir(intent['id'])
-        filename='gt710-final.rle' if final else 'gt710-pixels.rle'
+        filename = f'gt710-breengel-{picture_index:04}.rle' if is_picture else ('gt710-final.rle' if final else 'gt710-pixels.rle')
         # Publishing the verified payload consumes the slot even if the
         # bookkeeping below has not finished (or its writer was interrupted).
         if (directory/filename).exists():
@@ -39,6 +46,9 @@ def receive(handler):
             if (handler.headers.get('Transfer-Encoding') or not 0<length<=MAX_BYTES
                     or not re.fullmatch('[a-f0-9]{64}',expected) or (directory/'ended').exists()):
                 raise ValueError('invalid display artifact framing')
+            total = intent.get('bytes', 0) + intent.get('pictureBytes', 0)
+            if total + length > MAX_TOTAL:
+                raise ValueError('native per-boot evidence exceeds 64 MiB')
             handler.connection.settimeout(30)
             digest=hashlib.sha256();remaining=length
             with temporary.open('wb') as out:
@@ -51,14 +61,19 @@ def receive(handler):
             temporary.replace(directory/filename)
             receipt=dict(id=intent['id'],route=route,complete=True,bytes=length,
                          sha256=expected,receivedAt=m.now())
-            if final:
+            if is_picture:
+                intent['pictureUploads'] = picture_index + 1
+                intent['pictureBytes'] = intent.get('pictureBytes', 0) + length
+            elif final:
                 intent['finalComplete']=True
+                intent['finalBytes']=length
             else:
                 intent.update(receipt)
             handler.send_response(200);handler.send_header('Content-Length','0')
             handler.send_header('Connection','close');handler.end_headers();handler.close_connection=True
-        except (OSError,ValueError):
+        except (OSError,ValueError) as error:
             temporary.unlink(missing_ok=True);handler.close_connection=True
+            m.write_json(directory/'native-upload-refused.json', dict(route=route, reason=str(error), at=m.now()))
             handler.send_error(400,'display artifact upload failed')
             return
         # The payload is synced and digest-checked before HTTP acceptance.
@@ -66,5 +81,6 @@ def receive(handler):
         # window. Keep the slot lock until they finish; a persistence error
         # propagates to the service instead of attempting a second HTTP status
         # after the 200 already sent.
-        m.write_json(directory/('native-final-upload.json' if final else 'native-upload.json'),receipt)
+        receipt_name = f'native-picture-upload-{picture_index:04}.json' if is_picture else ('native-final-upload.json' if final else 'native-upload.json')
+        m.write_json(directory/receipt_name,receipt)
         m.write_json(m.STATE/'gt710-upload.json',intent)
