@@ -71,6 +71,8 @@ def screen_inventory(suite, serial):
         if not line.startswith(prefix):
             continue
         fields = line[len(prefix):].split()
+        if len(fields) < 3:
+            raise ValueError('malformed SCREEN record: ' + line)
         key = (fields[0], fields[1])
         if fields[2].startswith('sha256='):
             pictures[key] = fields[2][len('sha256='):]

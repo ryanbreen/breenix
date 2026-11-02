@@ -13,6 +13,12 @@ class ScreenAcceptance(unittest.TestCase):
     def setUp(self):
         self.api = runpy.run_path(str(ROOT / 'scripts/screen-proof-acceptance.py'))
 
+    def test_truncated_screen_records_are_reported_as_invalid(self):
+        for suffix in ('', 'draw/one', 'draw/one end'):
+            with self.subTest(suffix=suffix):
+                with self.assertRaisesRegex(ValueError, 'malformed SCREEN'):
+                    self.api['screen_inventory']('gpu', 'SUITE gpu SCREEN ' + suffix)
+
     def test_cross_target_pictures_and_unobservable_are_distinct(self):
         digest = 'a' * 64
         native = (f'SUITE gpu SCREEN profile/example end sha256={digest} mode=2x1 binding=2x1\n'
