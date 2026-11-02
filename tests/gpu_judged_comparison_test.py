@@ -12,12 +12,12 @@ ROOT = Path(__file__).resolve().parents[1]
 class Comparison(unittest.TestCase):
     def test_transport_error_is_not_a_pixel_mismatch(self):
         common = (ROOT / 'userspace/programs/src/suite_gpu/common.rs').read_text()
-        compare = function(common, '    pub fn matches(')
+        compare = function(common, '    pub fn compare(') + '\n' + function(common, '    pub fn matches(') + '\n' + function(common, '    pub fn matches_owned(')
         fixture = r'''
 type CaseError = String;
 fn fail_msg(s: String) -> CaseError { s }
 mod breenix_suite { pub mod suite {
-    pub fn judged_readback(_: &[u8], _: u32, _: u32) -> Result<(), String> {
+    pub fn judged_readback_owned(_: Vec<u8>, _: u32, _: u32) -> Result<(), String> {
         Err("evidence transport unavailable".into())
     }
 } }

@@ -98,9 +98,9 @@ fn all(px: &[u8], c: u32, what: &str) -> R<()> {
 }
 
 /// Retain a judged final readback after the performance sample has ended.
-fn all_judged(px: &[u8], c: u32, what: &str, w: u32, h: u32) -> R<()> {
-    let comparison = all(px, c, what);
-    comparison.and(breenix_suite::suite::judged_readback(px, w, h))
+fn all_judged(px: Vec<u8>, c: u32, what: &str, w: u32, h: u32) -> R<()> {
+    let comparison = all(&px, c, what);
+    comparison.and(breenix_suite::suite::judged_readback_owned(px, w, h))
 }
 
 /// Whether `us` microseconds for `frames` frames is at least `per_s` frames a second.
@@ -129,7 +129,7 @@ pub fn clear_rate_2560() -> CaseResult {
     ensure(rate_met(FRAMES, us, CLEARS_PER_S), || {
         format!("{FRAMES} presented 2560x1600 clears took {us} us, under {CLEARS_PER_S} a second")
     })?;
-    all_judged(&read_rect(0, [0, 0, W, H])?, last, "the whole scanout after the last presented clear", W, H)
+    all_judged(read_rect(0, [0, 0, W, H])?, last, "the whole scanout after the last presented clear", W, H)
 }
 
 pub fn rect_throughput() -> CaseResult {
@@ -305,7 +305,7 @@ pub fn first_draw_latency() -> CaseResult {
         wait_ok(ctx, f, 2_000)?;
         let px = read_rect(t, [0, 0, S as u32, S as u32])?;
         let us = us_since(start);
-        first_draw_image(p).matches(&px, &format!("pipeline {p}'s first draw"))?;
+        first_draw_image(p).matches_owned(px, &format!("pipeline {p}'s first draw"))?;
         ensure(us <= FIRST_DRAW_US, || format!("pipeline {p}'s first draw in a warmed context took {us} us"))?;
         slowest = slowest.max(us);
     }
@@ -323,7 +323,7 @@ pub fn readback_time_2560() -> CaseResult {
     let us = us_since(start);
     value("readback-us", us as i64, "us", Some((0, READBACK_US as i64)));
     ensure(us <= READBACK_US, || format!("a full 2560x1600 readback took {us} us"))?;
-    all_judged(&px, FG, "the full readback", W, H)
+    all_judged(px, FG, "the full readback", W, H)
 }
 
 pub fn upload_bandwidth() -> CaseResult {
@@ -354,7 +354,7 @@ pub fn upload_bandwidth() -> CaseResult {
         let from = (((S - 16 + y as u32) * S + S - 16) * 4) as usize;
         row.copy_from_slice(&want.px[from..from + 64]);
     }
-    c.matches(&px, "the last uploaded rows, sampled by the next submission")?;
+    c.matches_owned(px, "the last uploaded rows, sampled by the next submission")?;
     value("upload-us", us as i64, "us", Some((0, UPLOAD_US as i64)));
     ensure(us <= UPLOAD_US, || format!("a 16 MiB upload took {us} us to be visible to the next submission"))?;
     expect(t, &want, "the whole sampled upload")?;
@@ -396,7 +396,7 @@ pub fn coverage_throughput() -> CaseResult {
         let from = (((H - 16 + y as u32) * W + W - 16) * 4) as usize;
         row.copy_from_slice(&want.px[from..from + 64]);
     }
-    c.matches(&px, "the blended corner")?;
+    c.matches_owned(px, "the blended corner")?;
     value("coverage-us", us as i64, "us", Some((0, COVERAGE_US as i64)));
     ensure(us <= COVERAGE_US, || format!("a full-screen 2560x1600 coverage blend took {us} us"))?;
     expect(t, &want, "the whole coverage blend")?;
@@ -454,7 +454,7 @@ pub fn wait_no_spin() -> CaseResult {
         // The last solid draw's pixel.
         let last = (draws - 1) / cycle.len() * cycle.len();
         let p = read_rect(t, [(last % W as usize) as u32, (last / W as usize) as u32, 1, 1])?;
-        all_judged(&p, c, "the last solid pixel after the wait", 1, 1)?;
+        all_judged(p, c, "the last solid pixel after the wait", 1, 1)?;
         if wall < 20_000_000 {
             continue;
         }
@@ -487,5 +487,5 @@ pub fn present_rate_2560() -> CaseResult {
     ensure(rate_met(FRAMES, us, PRESENTS_PER_S), || {
         format!("{FRAMES} presents alternating two 2560x1600 targets took {us} us, under {PRESENTS_PER_S} a second")
     })?;
-    all_judged(&read_rect(0, [0, 0, W, H])?, colours[(FRAMES as usize - 1) % 2], "the whole final scanout", W, H)
+    all_judged(read_rect(0, [0, 0, W, H])?, colours[(FRAMES as usize - 1) % 2], "the whole final scanout", W, H)
 }

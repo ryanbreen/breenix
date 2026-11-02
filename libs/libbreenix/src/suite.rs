@@ -223,6 +223,11 @@ pub fn judged_with_bound(frame:&FrameBuf,expected:Option<&FrameBuf>,bound:usize)
 /// Publication and hashing wait until the case timer has stopped, as for `judged`.
 /// X is canonicalized to 255; the caller compares the original bytes before this handoff.
 pub fn judged_readback(bytes: &[u8], width: u32, height: u32) -> CaseResult {
+    judged_readback_owned(bytes.to_vec(), width, height)
+}
+
+/// Retain an owned judged readback without copying its pixel allocation.
+pub fn judged_readback_owned(bytes: Vec<u8>, width: u32, height: u32) -> CaseResult {
     let result = snapshot_readback(bytes, width, height);
     // Comparators also serve negative checks. Retain transport failures for publication
     // so a caller can preserve its pixel result without silently losing evidence.
@@ -232,18 +237,14 @@ pub fn judged_readback(bytes: &[u8], width: u32, height: u32) -> CaseResult {
     result
 }
 
-fn snapshot_readback(bytes: &[u8], width: u32, height: u32) -> CaseResult {
+fn snapshot_readback(pixels: Vec<u8>, width: u32, height: u32) -> CaseResult {
     check(JUDGED_ENABLED.load(Ordering::Relaxed) || READBACK_ENABLED.load(Ordering::Relaxed), "judged transport is not enabled for this suite")?;
     check(running_case().is_some(), "judged_readback() called outside a suite case")?;
     check(width > 0 && height > 0 && width <= 16384 && height <= 16384,
         "judged readback dimensions outside surface contract")?;
     let size = (width as usize).checked_mul(height as usize).and_then(|n| n.checked_mul(4))
         .filter(|&n| n <= i32::MAX as usize).ok_or("judged readback dimensions overflow")?;
-    check(bytes.len() == size, "judged readback length differs from dimensions")?;
-    let mut pixels = Vec::new();
-    pixels.try_reserve_exact(size).map_err(|_| "judged readback allocation failed")?;
-    pixels.extend_from_slice(bytes);
-    for pixel in pixels.chunks_exact_mut(4) { pixel[3] = 255; }
+    check(pixels.len() == size, "judged readback length differs from dimensions")?;
     *PENDING_FRAME.lock().unwrap() = Some(PendingFrame {
         width: width as usize, height: height as usize, pixels, reference: None, bound: 0,
     });
@@ -258,7 +259,8 @@ fn publish_judged() -> CaseResult {
     use std::io::Write;
     let pending = PENDING_FRAME.lock().unwrap().take();
     if let Some(error) = READBACK_ERROR.lock().unwrap().take() { return fail(error); }
-    let Some(PendingFrame { width, height, pixels, reference, bound }) = pending else { return Ok(()); };
+    let Some(PendingFrame { width, height, mut pixels, reference, bound }) = pending else { return Ok(()); };
+    for pixel in pixels.chunks_exact_mut(4) { pixel[3] = 255; }
     let digest = libpixcheck::sha256(&pixels);
     let path = judged_path();
     let write = || -> std::io::Result<()> {
@@ -2092,7 +2094,7 @@ mod judged_transport_tests {
         let _ = std::fs::remove_file(judged_path());
         let _ = CASE_NAME.set(String::from("transport/readback"));
         let first = [1, 2, 3, 0, 4, 5, 6, 17];
-        judged_readback(&first, 2, 1).unwrap();
+        judged_readback_owned(first.to_vec(), 2, 1).unwrap();
         let mut last = [7, 8, 9, 0, 10, 11, 12, 99];
         judged_readback(&last, 2, 1).unwrap();
         last[0] = 33; // the snapshot must not borrow the source
