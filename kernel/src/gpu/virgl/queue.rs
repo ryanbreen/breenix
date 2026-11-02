@@ -37,6 +37,8 @@ pub struct Queue {
     chain: Vec<u16>,
     next_avail: u16,
     last_used: u16,
+    #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+    trace_observed: Option<(u16, u16, u16)>,
 }
 
 impl Queue {
@@ -55,6 +57,8 @@ impl Queue {
             chain: alloc::vec![0; size as usize],
             next_avail: 0,
             last_used: 0,
+            #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+            trace_observed: None,
         };
         q.reset();
         Some(q)
@@ -74,6 +78,8 @@ impl Queue {
         self.chain.iter_mut().for_each(|c| *c = 0);
         self.next_avail = 0;
         self.last_used = 0;
+        #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+        { self.trace_observed = None; }
     }
 
     pub fn size(&self) -> u16 {
@@ -165,6 +171,15 @@ impl Queue {
         self.used.maintain(0, 4 + 8 * self.size as usize, true);
         // SAFETY: the used ring page is owned.
         let idx = unsafe { core::ptr::read_volatile((used + 2) as *const u16) };
+        #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+        {
+            let observed = (self.next_avail, idx, self.last_used);
+            if self.trace_observed != Some(observed) {
+                super::trace::event(super::trace::OBSERVE, super::trace::epoch(), 0,
+                    u64::from(self.next_avail), idx, self.last_used);
+                self.trace_observed = Some(observed);
+            }
+        }
         if idx == self.last_used {
             return Ok(None);
         }
@@ -196,6 +211,12 @@ impl Queue {
         // SAFETY: the used ring page is owned.
         let idx = unsafe { core::ptr::read_volatile((used + 2) as *const u16) };
         (idx, self.last_used)
+    }
+
+    /// Previously sampled indices; tracing must not add another DMA observation.
+    #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+    pub(super) fn trace_indices(&self) -> (u16, u16, u16) {
+        (self.next_avail, self.trace_observed.map_or(0, |(_, used, _)| used), self.last_used)
     }
 
     /// Return a returned chain's descriptors to the free list by walking its links.

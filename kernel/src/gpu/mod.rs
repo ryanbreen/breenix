@@ -206,7 +206,13 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
         (r, kick)
     };
     if let Some(made) = kick {
+        #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+        let trace_epoch = virgl::trace::epoch();
+        #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+        virgl::trace::event(virgl::trace::KICK_ENTER, trace_epoch, made, DOORBELL.load(Ordering::Acquire), 0, 0);
         ring_doorbell();
+        #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+        virgl::trace::event(virgl::trace::KICK_RETURN, trace_epoch, made, DOORBELL.load(Ordering::Acquire), 0, 0);
         RUNG.fetch_max(made, Ordering::AcqRel);
     }
     crate::per_cpu::preempt_enable();
@@ -1842,6 +1848,16 @@ impl Core {
     /// device context `ctx`, sent at `sent`, for `kgpu` to post.
     fn note_hung(&mut self, serial: u64, submit: bool, ctx: u32, sent: u64, now: u64) {
         let Some(dev) = self.dev.as_ref() else { return };
+        #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+        if !self.stalled {
+            if let Device::Virgl(d) = dev {
+                d.trace_timeout(|t| match *t {
+                    Tag::Sync(s) => !submit && s == serial,
+                    Tag::Submit { serial: s, .. } => submit && s == serial,
+                    Tag::Background => false,
+                });
+            }
+        }
         let q = match dev {
             Device::Virgl(d) => Some(d.view(|t| match *t {
                 Tag::Sync(s) => !submit && s == serial,
@@ -2102,6 +2118,8 @@ impl core::fmt::Write for NoticeText {
 /// GPU path with its interrupts masked (section 1.16). `accounts` found no room in the core; a line
 /// that finds no free node is dropped too, and both are counted.
 fn post_hung(hung: &[Option<Hung>; HUNG_KEPT], accounts: u32, pending: &mut (u64, u64)) {
+    #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+    virgl::trace::post_frozen();
     use core::fmt::Write;
     let mut lines = 0u32;
     let mut post = |f: &dyn Fn(&mut NoticeText) -> core::fmt::Result| {
@@ -2586,6 +2604,8 @@ pub fn handle_config_interrupt() {
 
 /// Wake for a used buffer or configuration change, using the ISR byte's bit meanings.
 fn signal(status: u8) {
+    #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+    virgl::trace::event(virgl::trace::IRQ, virgl::trace::epoch(), 0, u64::from(status), 0, 0);
     if status & 2 != 0 {
         CONFIG_CHANGED.store(true, Ordering::Release);
     }

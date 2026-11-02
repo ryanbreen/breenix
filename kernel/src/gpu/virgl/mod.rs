@@ -19,6 +19,10 @@ pub mod encode;
 pub mod queue;
 pub mod wire;
 pub(crate) mod emergency;
+#[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+mod correlation;
+#[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+pub(super) mod trace;
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -304,6 +308,8 @@ impl Device {
     /// Set up the control queue and, with MSI-X, its vectors (section 4.1.4.3: a vector
     /// the device cannot use reads back as NO_VECTOR), then set DRIVER_OK.
     fn enable_queue(&mut self) -> Result<(), &'static str> {
+        #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+        trace::reset(self.made, self.queue.desc_addr());
         let msix = matches!(self.irq, Irq::Msix { .. });
         if msix && self.pci.set_config_msix_vector(CONFIG_VECTOR) != CONFIG_VECTOR {
             return Err("virtio-gpu refused its configuration MSI-X vector");
@@ -375,7 +381,11 @@ impl Device {
     #[cfg(target_arch = "aarch64")]
     fn exec_polled(&mut self, req: Request) -> Result<Done, &'static str> {
         self.send(req).map_err(|_| "control queue full")?;
+        #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+        trace::event(trace::KICK_ENTER, trace::epoch(), self.made, self.doorbell(), 0, 0);
         self.pci.notify_queue_fast(0);
+        #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+        trace::event(trace::KICK_RETURN, trace::epoch(), self.made, self.doorbell(), 0, 0);
         for _ in 0..50_000_000u64 {
             match self.reap() {
                 Reap::Done(d) => return Ok(d),
@@ -401,6 +411,11 @@ impl Device {
         }
         req.publish();
         let Some(head) = self.queue.add(&segs) else { return Err(req) };
+        #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+        {
+            let (avail, used, taken) = self.queue.trace_indices();
+            trace::request(trace::PUBLISH, self.made + 1, head, &req, u64::from(avail), used, taken);
+        }
         self.inflight[head as usize] = Some(req);
         self.made += 1;
         self.made_at[head as usize] = self.made;
@@ -471,6 +486,11 @@ impl Device {
             return Reap::Fault;
         }
         req.resp.observe();
+        #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+        {
+            let (_, used, taken) = self.queue.trace_indices();
+            trace::request(trace::USED, self.made_at[head as usize], head, &req, u64::from(len), used, taken);
+        }
         self.answered = self.answered.max(self.made_at[head as usize]);
         let answer = req.resp.u32_at(wire::HDR_TYPE);
         let echoed = req.resp.u64_at(wire::HDR_FENCE);
@@ -482,6 +502,21 @@ impl Device {
     /// Whether the device has set DEVICE_NEEDS_RESET (section 2.1): a device fault.
     pub fn needs_reset(&self) -> bool {
         self.pci.read_status() & wire::STATUS_NEEDS_RESET != 0
+    }
+
+    #[cfg(all(target_arch = "aarch64", feature = "gpu_queue_trace"))]
+    pub(super) fn trace_timeout(&self, wanted: impl Fn(&Tag) -> bool) {
+        let (used, taken) = self.queue.used_indices();
+        let mut outstanding = false;
+        for (head, req) in self.inflight.iter().enumerate() {
+            if let Some(req) = req.as_ref().filter(|r| wanted(&r.tag)) {
+                trace::request(trace::TIMEOUT, self.made_at[head], head as u16, req, 0, used, taken);
+                outstanding = true;
+            }
+        }
+        // WITHHOLD_FENCE can withhold core publication after the device's
+        // answer was reaped. That is not a stalled device request.
+        if outstanding { trace::freeze(); }
     }
 
     /// Requests the device holds.
