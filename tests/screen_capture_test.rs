@@ -66,3 +66,39 @@ fn capture_log_writes_only_first_digest_and_never_commits_failed_io() {
     let mut small = CaptureLog::new();
     assert!(small.append(&bytes,512,|_,_| panic!("out of bounds write")).is_err());
 }
+
+thread_local! {
+    static ALLOCATION_LIMIT: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
+}
+struct LimitedAllocator;
+unsafe impl std::alloc::GlobalAlloc for LimitedAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        if layout.size() > ALLOCATION_LIMIT.try_with(|n| n.get()).unwrap_or(usize::MAX) {
+            return std::ptr::null_mut();
+        }
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(ptr,layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, size: usize) -> *mut u8 {
+        if size > ALLOCATION_LIMIT.try_with(|n| n.get()).unwrap_or(usize::MAX) {
+            return std::ptr::null_mut();
+        }
+        unsafe { std::alloc::System.realloc(ptr,layout,size) }
+    }
+}
+#[global_allocator]
+static ALLOCATOR: LimitedAllocator = LimitedAllocator;
+
+#[test]
+fn capture_writer_needs_no_second_frame_sized_allocation() {
+    let pixels: Vec<u8> = (0..2560*1600u32).flat_map(|i| [i as u8,(i>>8) as u8,(i>>16) as u8,255]).collect();
+    let bytes = encode(&Record { width:2560,height:1600,..record(&pixels) }).unwrap();
+    assert_eq!(bytes[8],0,"the full-screen non-repeating frame uses raw encoding");
+    let mut log = CaptureLog::new();
+    ALLOCATION_LIMIT.with(|n| n.set(4096));
+    let result = log.append(&bytes,32*1024*1024,|_,_| Ok(()));
+    ALLOCATION_LIMIT.with(|n| n.set(usize::MAX));
+    assert_eq!(result,Ok(true),"valid raw capture must not allocate a decoded frame in the writer");
+}
