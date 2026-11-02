@@ -23,6 +23,7 @@ import socket
 import subprocess
 import tempfile
 import time
+import uuid
 import struct
 import threading
 
@@ -280,12 +281,141 @@ def command(args, **kwargs):
     return subprocess.run(args, capture_output=True, **kwargs)
 
 
+class MetalTarget:
+    """The runner's boot store, lease and console on the metal host.
+
+    Case classes receive the console and capture operations, never host commands.
+    SSH remains the boot host's OpenSSH, as before. Destructive metal categories
+    retain their separate boot orchestration.
+    """
+    def __init__(self, boot):
+        self.boot = boot
+        self.directory = '/var/lib/breenix-metal/boots/' + boot
+        self._runner = runpy.run_path(str(Path(__file__).with_name('metal-run')))
+        self._env = self._runner['host_env']()
+
+    def _remote(self, *cmd, **kwargs):
+        return self._runner['in_metal'](self._env, *cmd, capture_output=True, text=True, **kwargs)
+
+    def read(self, name, boot=None, required=True):
+        directory = self.directory if boot is None else '/var/lib/breenix-metal/boots/' + boot
+        result = self._remote('cat', directory + '/' + name)
+        if result.returncode:
+            if required: raise ValueError('boot artifact unavailable: ' + name)
+            return None
+        return result.stdout
+
+    def write(self, name, value):
+        return self._runner['in_metal'](self._env, 'tee', self.directory + '/' + name,
+            stdin=None, input=json.dumps(value) + '\n', capture_output=True, text=True)
+
+    def identity(self):
+        return json.loads(self.read('run.json'))
+
+    def holds_lease(self):
+        lease = self._remote('cat', '/var/lib/breenix-metal/lease.json')
+        return lease.returncode == 0 and json.loads(lease.stdout).get('id') == self.boot
+
+    def ended(self, boot):
+        return self._remote('test', '-e', '/var/lib/breenix-metal/boots/' + boot + '/ended').returncode == 0
+
+    def console(self, user, password):
+        return Console(lambda *cmd, **kw: self._runner['in_metal'](self._env, *cmd, **kw),
+                       self.boot, self.directory, user, password)
+
+    def capture(self):
+        stamps = [(float(a), int(b)) for a, b in (row.split('\t') for row in self.read('serial.ts').splitlines() if row)]
+        return self.read('serial.txt'), stamps
+
+    def site(self, fields):
+        site = self._remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
+                            'import metal_lib,metal_root;s=metal_lib.load_site();'
+                            'v={k:s.get(k) for k in ' + repr(tuple(fields)) + '};'
+                            'v["operatorKeys"]=metal_root.operator_keys(s) if "OPERATOR_USER" in v else [];print(json.dumps(v))')
+        if site.returncode: raise ValueError('cannot read suite site fields')
+        return json.loads(site.stdout)
+
+
+class QemuTarget:
+    """A persistent QEMU run's local boot records and serial console."""
+    def __init__(self, run_dir, boot=None):
+        self.run = Path(run_dir)
+        boot = boot or (self.run / 'current').read_text().strip()
+        self.boot = boot
+        self.directory = self.run / 'boots' / boot
+
+    def read(self, name, boot=None, required=True):
+        path = (self.directory if boot is None else self.run / 'boots' / boot) / name
+        try:
+            return path.read_text()
+        except OSError as error:
+            if required: raise ValueError('boot artifact unavailable: ' + name) from error
+            return None
+
+    def write(self, name, value):
+        (self.directory / name).write_text(json.dumps(value) + '\n')
+        return subprocess.CompletedProcess([], 0)
+
+    def identity(self):
+        return json.loads(self.read('run.json'))
+
+    def _qemu_alive(self):
+        try:
+            with socket.socket(socket.AF_UNIX) as stream:
+                stream.settimeout(2)
+                stream.connect(str(self.run / 'qmp.sock'))
+                with stream.makefile('rb') as source:
+                    return 'QMP' in json.loads(source.readline())
+        except (OSError, ValueError):
+            return False
+
+    def holds_lease(self):
+        try:
+            return ((self.run / 'boot.lock').is_dir() and
+                    (self.run / 'current').read_text().strip() == self.boot and
+                    not self.ended(self.boot) and self._qemu_alive())
+        except OSError:
+            return False
+
+    def ended(self, boot):
+        return (self.run / 'boots' / boot / 'ended').exists()
+
+    def console(self, user, password):
+        def local(*cmd, **kwargs):
+            try:
+                if cmd[0] == 'stat':
+                    output = str(Path(cmd[-1]).stat().st_size)
+                else:
+                    output = Path(cmd[-1]).read_bytes()[int(cmd[2][1:]) - 1:]
+                return subprocess.CompletedProcess(cmd, 0, output)
+            except OSError:
+                return subprocess.CompletedProcess(cmd, 1)
+        def send(data):
+            if not self.holds_lease():
+                raise ValueError('this boot does not hold the machine lease')
+            with socket.socket(socket.AF_UNIX) as stream:
+                stream.settimeout(10)
+                stream.connect(str(self.run / 'console.sock'))
+                stream.sendall(data)
+        return Console(local, self.boot, str(self.directory), user, password, transport=send)
+
+    def capture(self):
+        stamps = [(float(a), int(b)) for a, b in (row.split('\t') for row in self.read('serial.ts').splitlines() if row)]
+        return self.read('serial.txt'), stamps
+
+    def site(self, fields):
+        return runpy.run_path(str(Path(__file__).resolve().parent.parent / 'vm_site.py'))['site'](self.run)
+
+
 class Probe:
-    def __init__(self, host, user, identity, directory):
+    port = 22
+
+    def __init__(self, host, user, identity, directory, port=22):
         self.host, self.user, self.identity = host, user, identity
+        self.port = port
         self.directory = directory
         self.known = directory / 'known_hosts'
-        self.common = ['ssh', '-F', '/dev/null', '-p', '22', '-o', 'ConnectTimeout=10',
+        self.common = ['ssh', '-F', '/dev/null', '-p', str(port), '-o', 'ConnectTimeout=10',
                        '-o', 'ConnectionAttempts=1', '-o', 'StrictHostKeyChecking=yes',
                        '-o', 'UserKnownHostsFile=' + str(self.known), '-o', 'GlobalKnownHostsFile=/dev/null',
                        '-o', 'HostKeyAlgorithms=ssh-ed25519', '-o', 'IdentitiesOnly=yes',
@@ -327,7 +457,7 @@ class Probe:
 
     def run_case(self, name, serial):
         if name == 'port-22':
-            with socket.create_connection((self.host, 22), timeout=10) as stream:
+            with socket.create_connection((self.host, self.port), timeout=10) as stream:
                 stream.settimeout(10)
                 data = b''
                 while b'\n' not in data and len(data) < 256:
@@ -337,7 +467,7 @@ class Probe:
                 if not data.startswith(b'SSH-2.0-') or b'\r\n' not in data:
                     raise ValueError('server sent no SSH identification before client data')
         elif name == 'host-key':
-            result = command(['ssh-keyscan', '-T', '10', '-p', '22', '-t', 'ed25519', self.host])
+            result = command(['ssh-keyscan', '-T', '10', '-p', str(self.port), '-t', 'ed25519', self.host])
             lines = [line for line in result.stdout.splitlines() if not line.startswith('#')]
             if result.returncode or len(lines) != 1:
                 raise ValueError('OpenSSH keyscan did not return exactly one Ed25519 key')
@@ -351,7 +481,8 @@ class Probe:
             self.require(result, '1000\n1000\n' + self.user + '\n/home/' + self.user + '\n/home/' + self.user)
             # A deliberately different known host must be refused, too.
             wrong = (self.wrong.with_suffix('.pub')).read_text().split()
-            self.known.write_text(self.host + ' ' + ' '.join(wrong[:2]) + '\n')
+            host = self.host if self.port == 22 else '[' + self.host + ']:' + str(self.port)
+            self.known.write_text(host + ' ' + ' '.join(wrong[:2]) + '\n')
             try:
                 rejected = self.ssh('true')
                 if rejected.returncode != 255 or 'Host key verification failed' not in rejected.stderr:
@@ -611,10 +742,11 @@ class Console:
     PROMPT = r'bsh [^>\n]*>'
     LOGIN = 'Breenix login: '
 
-    def __init__(self, in_metal, boot, directory, user, password):
+    def __init__(self, in_metal, boot, directory, user, password, transport=None):
         self.in_metal, self.tmux = in_metal, 'tmux -L metal-' + boot
         self.serial = directory + '/serial.txt'
         self.user, self.password = user, password
+        self.transport = transport
         self.step, self.logged_in = 0, False
         self.boot_id = None
 
@@ -632,6 +764,10 @@ class Console:
         data = (text + ('\r' if enter else '')).encode()
         for at in range(0, len(data), 4):
             # stdin keeps the password out of process arguments.
+            if self.transport is not None:
+                self.transport(data[at:at + 4])
+                time.sleep(0.04)
+                continue
             result = self.in_metal('sh', '-c', self.tmux + ' load-buffer - && ' + self.tmux + ' paste-buffer -d -t sol',
                                    stdin=None, input=data[at:at + 4], capture_output=True)
             if result.returncode: raise ValueError('cannot type on the SOL console')
@@ -1408,9 +1544,9 @@ class SntpFixture:
 
 
 class TimeCases:
-    def __init__(self, probe, console, previous, capture, site):
+    def __init__(self, probe, console, previous, capture, site, arch):
         self.probe, self.console, self.previous, self.capture = probe, console, previous, capture
-        self.site = site
+        self.site, self.arch = site, arch
         self.fixture_host = urlsplit(site['BOOT_URL']).hostname
         self.stopped = False
 
@@ -1578,7 +1714,9 @@ class TimeCases:
         elif name == 'rtc-reboot':
             self.require_preparation()
             serial, stamps = self.capture()
-            match = re.search(r'^\[clock\] UTC epoch=([0-9]+) source=CMOS\r?$', serial, re.M)
+            source = {'x86_64': 'CMOS', 'aarch64': 'PL031'}.get(self.arch)
+            if source is None: raise ValueError('unknown boot architecture for hardware RTC')
+            match = re.search(r'^\[clock\] UTC epoch=([0-9]+) source=' + source + r'\r?$', serial, re.M)
             if not match: raise ValueError('no hardware RTC sample in reboot capture')
             byte = len(serial[:match.start()].encode())
             arrived = max((stamp for stamp, start in stamps if start <= byte), default=None)
@@ -1944,26 +2082,36 @@ def main():
     parser.add_argument('--previous-boot', help='Completed logs preparation boot at this same commit')
     parser.add_argument('--prepare-time', action='store_true', help='Record a synchronized boot before the RTC reboot case')
     parser.add_argument('--prepare-logs', action='store_true', help='Write the log whose bytes the next boot must retain')
+    parser.add_argument('--target', choices=('metal', 'qemu'), default='metal')
+    parser.add_argument('--run-dir', type=Path)
     parser.add_argument('--boot')
     parser.add_argument('--sha')
     parser.add_argument('--branch', help='Pushed candidate branch (required for watchdog fault images)')
     parser.add_argument('--milestone', default='server/ssh-keys', choices=list(MILESTONES))
     args = parser.parse_args()
     if args.probe_upgrade:
+        if args.target != 'metal': parser.error('--probe-upgrade requires metal')
         if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or ''): parser.error('invalid verification boot')
         return probe_upgrade(args)
     if args.check_manifest:
         validate_manifest(json.loads(args.check_manifest.read_text()))
         return 0
+    boot_pattern = r'\d{8}T\d{6}Z-' + args.target
+    if args.boot and not re.fullmatch(boot_pattern, args.boot):
+        parser.error('invalid boot ID for --target ' + args.target)
     # S27 suspends every host-driven category: all require a persistent session.
-    if S27_SUSPENDS_PERSISTENT:
+    if S27_SUSPENDS_PERSISTENT and args.target == 'metal':
         category = MILESTONES[args.milestone]
         for name, _ in CATEGORIES[category]:
             print(f'SKIP {SUITES[category]} {category}/{name}: S27 suspends persistent sessions')
         print('Not counted: S27 suspends persistent sessions')
         return 0
-    if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot or '') or not re.fullmatch(r'[a-f0-9]{40}', args.sha or ''):
+    if args.target == 'qemu' and args.run_dir is None: parser.error('--run-dir required for qemu')
+    if not re.fullmatch(boot_pattern, args.boot or '') or not re.fullmatch(r'[a-f0-9]{40}', args.sha or ''):
         parser.error('--boot ID and --sha full commit required')
+    category = MILESTONES[args.milestone]
+    if args.target == 'qemu' and category not in ('ssh-keys', 'services', 'logs', 'time', 'console-input'):
+        parser.error('milestone is not yet implemented for qemu (resting-state is out of scope)')
     if args.milestone == 'server/resting-state':
         if not args.branch: parser.error('--branch required for resting-state')
         return runpy.run_path(str(Path(__file__).with_name('server_resting.py')))['run'](globals(), args)
@@ -1977,31 +2125,24 @@ def main():
         return runpy.run_path(str(Path(__file__).with_name('upgrade_suite.py')))['run'](args, globals())
     suite = SUITES[category]
     cases = CATEGORIES[category]
-    runner = runpy.run_path(str(Path(__file__).with_name('metal-run')))
-    env = runner['host_env']()
-    remote = lambda *cmd, **kw: runner['in_metal'](env, *cmd, capture_output=True, text=True, **kw)
-    directory = '/var/lib/breenix-metal/boots/' + args.boot
-    def read(name):
-        result = remote('cat', directory + '/' + name)
-        if result.returncode: raise ValueError('boot artifact unavailable: ' + name)
-        return result.stdout
+    machine = MetalTarget(args.boot) if args.target == 'metal' else QemuTarget(args.run_dir, args.boot)
+    read = machine.read
     previous = None
     if args.previous_boot:
-        if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.previous_boot): parser.error('invalid previous boot')
-        previous_dir = '/var/lib/breenix-metal/boots/' + args.previous_boot
-        result = remote('cat', previous_dir + ('/time-prepared.json' if category == 'time' else '/logs-prepared.json'))
-        if result.returncode: raise ValueError('previous boot has no log preparation record')
-        previous = json.loads(result.stdout)
-        ended = remote('test', '-e', previous_dir + '/ended')
-        prior = remote('cat', previous_dir + '/run.json')
-        prior = json.loads(prior.stdout) if prior.returncode == 0 else {}
-        if ended.returncode or previous.get('boot') != args.previous_boot or previous.get('commit') != args.sha or prior.get('bootedCommit') != args.sha or prior.get('toolsCommit') != args.sha or prior.get('mode') != 'persistent' or not prior.get('evidenceEligible'):
+        if not re.fullmatch(boot_pattern, args.previous_boot): parser.error('invalid previous boot')
+        prepared = read('time-prepared.json' if category == 'time' else 'logs-prepared.json',
+                        boot=args.previous_boot, required=False)
+        if prepared is None: raise ValueError('previous boot has no log preparation record')
+        previous = json.loads(prepared)
+        ended = machine.ended(args.previous_boot)
+        prior = read('run.json', boot=args.previous_boot, required=False)
+        prior = json.loads(prior) if prior is not None else {}
+        if not ended or previous.get('boot') != args.previous_boot or previous.get('commit') != args.sha or prior.get('bootedCommit') != args.sha or prior.get('toolsCommit') != args.sha or prior.get('mode') != 'persistent' or not prior.get('evidenceEligible'):
             raise ValueError('previous log preparation must be a completed persistent boot at this commit')
-    boot = json.loads(read('run.json'))
+    boot = machine.identity()
     if boot.get('mode') != 'persistent' or boot.get('bootedCommit') != args.sha or boot.get('toolsCommit') != args.sha or not boot.get('evidenceEligible'):
         raise ValueError('runner needs this exact commit booted in a persistent session')
-    lease = remote('cat', '/var/lib/breenix-metal/lease.json')
-    if lease.returncode or json.loads(lease.stdout).get('id') != args.boot:
+    if not machine.holds_lease():
         raise ValueError('this boot does not hold the machine lease')
     serial = read('serial.txt')
     manifest = json.loads(read('definition/docs/suites/' + suite + '.json'))
@@ -2011,12 +2152,7 @@ def main():
     fields += ["CONSOLE_USER", "CONSOLE_PASSWORD", "BOOT_URL", "SNTP_SERVERS"]
     if category == 'operator':
         fields += ["OPERATOR_UID", "OPERATOR_PASSWORD"]
-    site = remote('python3', '-c', 'import sys,json;sys.path.insert(0,"/opt/breenix-metal");'
-                  'import metal_lib,metal_root;s=metal_lib.load_site();'
-                  'v={k:s.get(k) for k in ' + repr(tuple(fields)) + '};'
-                  'v["operatorKeys"]=metal_root.operator_keys(s) if "OPERATOR_USER" in v else [];print(json.dumps(v))')
-    if site.returncode: raise ValueError('cannot read suite site fields')
-    site = json.loads(site.stdout)
+    site = machine.site(fields)
     if category != 'console-input' and not site['SERVER_SSH_HOST']: raise ValueError('site needs SERVER_SSH_HOST for the persistent server')
     if category == 'operator' and (not (re.fullmatch(r'[1-9][0-9]{3,4}', site['OPERATOR_UID'] or '')
                                        and 1000 <= int(site['OPERATOR_UID']) <= 60000)
@@ -2034,15 +2170,13 @@ def main():
                 step()
             except Exception as error:
                 records.setdefault('cleanupErrors', []).append(type(error).__name__ + ': ' + str(error))
-        probe = None if category == 'console-input' else Probe(site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity, Path(scratch))
+        probe = None if category == 'console-input' else Probe(site['SERVER_SSH_HOST'], site['OPERATOR_USER'], identity,
+                                                             Path(scratch), port=site.get('SERVER_SSH_PORT', 22))
         target = probe
         if not site['CONSOLE_USER'] or not site['CONSOLE_PASSWORD']:
             raise ValueError('site needs CONSOLE_USER and CONSOLE_PASSWORD for the root steps')
-        def capture():
-            stamps = [(float(a), int(b)) for a, b in (row.split('\t') for row in read('serial.ts').splitlines() if row)]
-            return read('serial.txt'), stamps
-        console = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
-                          site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
+        capture = machine.capture
+        console = machine.console(site['CONSOLE_USER'], site['CONSOLE_PASSWORD'])
         cleanup.callback(cleanup_step, console.logout)
         if probe is not None:
             cleanup.callback(cleanup_step, probe.cleanup)
@@ -2054,23 +2188,22 @@ def main():
         if category in ('services', 'logs', 'time', 'operator', 'watchdog'):
             probe.run_case('host-key', serial)
             if category == 'watchdog':
-                target = Watchdog(probe, console, remote, runner, env, args.boot, args.sha, args.branch)
+                target = Watchdog(probe, console, machine._remote, machine._runner, machine._env, args.boot, args.sha, args.branch)
             elif category == 'operator':
-                own = Console(lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw), args.boot, directory,
-                              site['OPERATOR_USER'], site['OPERATOR_PASSWORD'])
+                own = machine.console(site['OPERATOR_USER'], site['OPERATOR_PASSWORD'])
                 target = Operator(probe, console, own, int(site['OPERATOR_UID']), site['OPERATOR_PASSWORD'],
                                   '\n'.join(site['operatorKeys']))
             else:
                 target = Services(probe, console, capture) if category == 'services' \
-                    else TimeCases(probe, console, previous, capture, site) if category == 'time' \
+                    else TimeCases(probe, console, previous, capture, site,
+                                   'aarch64' if args.target == 'qemu' else boot.get('arch')) if category == 'time' \
                     else Logs(probe, console, previous, prepare=args.prepare_logs)
             cleanup.callback(cleanup_step, target.cleanup)
         if args.prepare_time:
             if category != 'time': raise ValueError('--prepare-time needs server/time')
             prepared = target.prepare()
             prepared.update(boot=args.boot, commit=args.sha)
-            result = runner['in_metal'](env, 'tee', directory + '/time-prepared.json',
-                stdin=None, input=json.dumps(prepared) + '\n', capture_output=True, text=True)
+            result = machine.write('time-prepared.json', prepared)
             if result.returncode: raise ValueError('cannot save synchronization preparation')
             print('Prepared synchronized RTC for the next boot', flush=True)
             return 0
@@ -2079,15 +2212,18 @@ def main():
             try:
                 prepared = target.prepare()
                 prepared.update(boot=args.boot, commit=args.sha)
-                result = runner['in_metal'](env, 'tee', directory + '/logs-prepared.json',
-                    stdin=None, input=json.dumps(prepared) + '\n', capture_output=True, text=True)
+                result = machine.write('logs-prepared.json', prepared)
                 if result.returncode: raise ValueError('cannot save log preparation')
                 print('Prepared persistent log for the next boot', flush=True)
             finally:
                 target.cleanup()
             return 0
+        suite_lines = []
+        def emit_suite(line):
+            suite_lines.append(line)
+            print(line, flush=True)
         try:
-            print('SUITE ' + suite + ' START cases=' + str(len(cases)), flush=True)
+            emit_suite('SUITE ' + suite + ' START cases=' + str(len(cases)))
             for name, _ in cases:
                 start = time.monotonic()
                 try:
@@ -2100,7 +2236,7 @@ def main():
                     result, reason = 'FAIL', type(error).__name__ + ': ' + str(error)
                 elapsed = int((time.monotonic() - start) * 1000)
                 records['cases'].append(dict(id=category + '/' + name, result=result, ms=elapsed, reason=reason))
-                print(f'SUITE {suite} CASE {category}/{name} {result} ms={elapsed}' + (' msg=' + reason if reason else ''), flush=True)
+                emit_suite(f'SUITE {suite} CASE {category}/{name} {result} ms={elapsed}' + (' msg=' + reason if reason else ''))
         finally:
             if category == 'ssh-keys':
                 cleanup_step(lambda: console.service_log('bsshd'))
@@ -2111,14 +2247,17 @@ def main():
             records['initLog'] = target.init_log
         transcript = [] if probe is None else probe.transcript
     passed = sum(r['result'] == 'PASS' for r in records['cases'])
-    print(f'SUITE {suite} DONE passed={passed} failed={len(cases)-passed} skipped=0 total={len(cases)}', flush=True)
+    emit_suite(f'SUITE {suite} DONE passed={passed} failed={len(cases)-passed} skipped=0 total={len(cases)}')
     # Re-read the live capture after the last operation; authentication errors never mask a kernel failure.
     serial = read('serial.txt')
     records['consoleGaps'] = [json.loads(line) for line in read('events.jsonl').splitlines()
                               if json.loads(line).get('event') == 'console-gap']
     try:
-        lease = remote('cat', '/var/lib/breenix-metal/lease.json')
-        if category != 'watchdog' and (lease.returncode or json.loads(lease.stdout).get('id') != args.boot):
+        # The watchdog hands off its baseline lease. Preserve its read without
+        # interpreting the lease belonging to the later fault boot.
+        if category == 'watchdog':
+            machine._remote('cat', '/var/lib/breenix-metal/lease.json')
+        elif not machine.holds_lease():
             raise ValueError('boot lost the machine lease during the suite')
         if category in ('logs', 'time'): records['previous'] = previous
         if category == 'watchdog':
@@ -2129,17 +2268,27 @@ def main():
         verdict, status = 'FAIL: ' + str(error), 1
     if category in ('logs', 'time'): records['previous'] = previous
     records['verdict'] = verdict
-    result = runner['in_metal'](env, 'tee', directory + '/' + records_name(category),
-                                stdin=None, input=json.dumps(records) + '\n', capture_output=True, text=True)
+    result = machine.write(records_name(category), records)
     if result.returncode: raise ValueError('cannot save host suite evidence in the boot store')
-    result = runner['in_metal'](env, 'tee', directory + '/' + records_name(category)[:-len('.json')] + '-transcript.json',
-                                stdin=None, input=json.dumps(transcript) + '\n', capture_output=True, text=True)
+    result = machine.write(records_name(category)[:-len('.json')] + '-transcript.json', transcript)
     if result.returncode: raise ValueError('cannot save host transcript')
     if category == 'watchdog':
         # Its baseline capture closed before the fault boots. Fold the retained
         # category records into that archive without executing cases again.
-        result = remote('python3', '-c', WATCHDOG_ARCHIVE, directory)
+        result = machine._remote('python3', '-c', WATCHDOG_ARCHIVE, machine.directory)
         if result.returncode: raise ValueError('cannot score the archived watchdog category')
+    if args.target == 'qemu':
+        suite_file = machine.directory / (category + '-suite.txt')
+        suite_file.write_text('\n'.join(suite_lines) + '\n')
+        started = (machine.directory / 'started').read_text().strip()
+        ended = str(time.time())
+        profile = (args.run_dir / 'qemu-profile').read_text().strip()
+        record_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-qemu-' + uuid.uuid4().hex
+        subprocess.run([str(Path(__file__).resolve().parent.parent / 'vigil-record.sh'),
+                        'record', 'qemu', 'persistent', 'server', str(suite_file),
+                        str(machine.directory / 'serial.txt'), profile, record_id, args.sha,
+                        started, ended, str(status)], check=True,
+                       env=dict(os.environ, BREENIX_VIGIL_ARCH='aarch64'))
     print(verdict)
     return status
 

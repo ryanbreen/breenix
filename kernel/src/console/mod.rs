@@ -996,6 +996,8 @@ fn render_thread(display: &'static Display, attached: Attached) {
         crate::gpu::console::pump();
         deliver_replies();
         crate::tty::driver::drain_keyboard_input();
+        #[cfg(target_arch = "aarch64")]
+        crate::ipc::stdin::drain_serial_input();
         // The `/proc/console/check` this pass may answer: one asked for before
         // it copies the terminal, so the answer shows what was written before
         // the request. One asked for later waits for the next pass.

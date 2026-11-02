@@ -8,6 +8,9 @@ use buffer::StdinBuffer;
 fn eof_boundaries_preserve_data_on_both_sides() {
     let mut ring = StdinBuffer::new();
     assert!(ring.push_byte(b'a'));
+    assert_eq!(ring.room(), STDIN_BUF_SIZE - 2);
+    #[cfg(target_arch = "aarch64")]
+    assert_eq!(ring.front_byte(), Some(b'a'));
     assert!(ring.push_eof());
     assert!(ring.push_byte(b'b'));
     assert!(ring.push_eof());
