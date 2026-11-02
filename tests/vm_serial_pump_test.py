@@ -245,12 +245,15 @@ runpy.run_path(sys.argv[0], run_name='__main__')
                 self.assertEqual(process.wait(timeout=5), 0)
                 boots = list((run / 'boots').iterdir())
                 self.assertEqual(len(boots), 2)
+                qemu_process = json.loads((run / 'boots' / first / 'run.json').read_text())['qemuProcess']
+                self.assertRegex(qemu_process, r'^[a-f0-9]{12}4[a-f0-9]{3}[89ab][a-f0-9]{15}$')
                 for directory in boots:
                     self.assertTrue((directory / 'ended').read_text().strip())
                     record = json.loads((directory / 'run.json').read_text())
                     self.assertEqual(record, {'id': directory.name, 'mode': 'persistent', 'bootMode': 'console',
                                               'target': 'qemu', 'bootedCommit': commit,
-                                              'toolsCommit': tools, 'evidenceEligible': False})
+                                              'toolsCommit': tools, 'evidenceEligible': False,
+                                              'runId': None, 'qemuProcess': qemu_process})
                     self.assertTrue((directory / 'events.jsonl').exists())
                     for name in ('docs/suites/server.json', 'docs/suites/users.json',
                                  'docs/efforts/path.json', 'docs/boot-path.json'):
