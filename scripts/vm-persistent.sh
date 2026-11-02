@@ -3,19 +3,19 @@
 # installer-format operator-account file; boot stays in the foreground so it
 # holds the mac-boot lease. Stop from another terminal to remove the run.
 #
-# vm-persistent.sh qemu build --run-dir DIR [--system-image IMAGE] --operator-account FILE [--fault panic-reboot]
+# vm-persistent.sh qemu build --run-dir DIR [--system-image IMAGE] --operator-account FILE [--fault panic-reboot|watchdog]
 # vm-persistent.sh qemu boot --run-dir DIR --mode console|desktop [--kernel FILE]
-# vm-persistent.sh qemu fault-boot --run-dir DIR
+# vm-persistent.sh qemu fault-boot --run-dir DIR [--inject feeder-hang|health-hang]
 # vm-persistent.sh qemu reboot --run-dir DIR
 # vm-persistent.sh qemu stop --run-dir DIR
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 umask 077
-usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot] | --mode console|desktop [--kernel FILE]]' >&2; exit 2; }
+usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--kernel FILE] | --inject feeder-hang|health-hang]' >&2; exit 2; }
 [ "$#" -ge 2 ] && [ "$1" = qemu ] || usage
 op=$2; shift 2
 case "$op" in build|boot|fault-boot|reboot|stop) ;; *) usage ;; esac
-run= system= account= kernel= mode= fault=
+run= system= account= kernel= mode= fault= inject=
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] && [ -n "$2" ] || usage
     case "$1" in
@@ -25,19 +25,21 @@ while [ "$#" -gt 0 ]; do
         --kernel) [ -z "$kernel" ] || usage; kernel=$2 ;;
         --fault) [ -z "$fault" ] || usage; fault=$2 ;;
         --mode) [ -z "$mode" ] || usage; mode=$2 ;;
+        --inject) [ -z "$inject" ] || usage; inject=$2 ;;
         *) usage ;;
     esac
     shift 2
 done
 [ -n "$run" ] || usage
 case "$op" in
-    build) [ -n "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage
-           case "$fault" in ""|panic-reboot) ;; *) usage ;; esac
+    build) [ -z "$inject" ] && [ -n "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage
+           case "$fault" in ""|panic-reboot|watchdog) ;; *) usage ;; esac
            [ -z "$fault" ] || [ -z "$system" ] || usage ;;
-    boot) [ -z "$fault" ] && [ -z "$system" ] && [ -z "$account" ] || usage
+    boot) [ -z "$inject" ] && [ -z "$fault" ] && [ -z "$system" ] && [ -z "$account" ] || usage
           case "$mode" in console|desktop) ;; *) usage ;; esac ;;
-    fault-boot) [ -z "$system$account$kernel$mode$fault" ] || usage; mode=console ;;
-    reboot|stop) [ -z "$fault" ] && [ -z "$system" ] && [ -z "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage ;;
+    fault-boot) [ -z "$system$account$kernel$mode$fault" ] || usage
+                case "$inject" in ""|feeder-hang|health-hang) ;; *) usage ;; esac; mode=console ;;
+    reboot|stop) [ -z "$inject" ] && [ -z "$fault" ] && [ -z "$system" ] && [ -z "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage ;;
 esac
 # debugfs command files and QEMU comma-separated options cannot safely encode
 # these characters; reject them instead of interpreting caller-supplied syntax.
@@ -58,9 +60,12 @@ if [ "$op" = build ]; then
         unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR
         (cd "$ROOT" && taskpolicy -b cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64)
         cp "$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64" "$run/kernel"
-        if [ "$fault" = panic-reboot ]; then
-            (cd "$ROOT" && taskpolicy -b cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 --features server_reboot_fault)
+        if [ -n "$fault" ]; then
+            feature=server_reboot_fault
+            [ "$fault" != watchdog ] || feature=watchdog_fault_inject
+            (cd "$ROOT" && taskpolicy -b cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64 --features "$feature")
             cp "$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64" "$run/fault-kernel"
+            printf '%s\n' "$fault" > "$run/fault-kind"
             cp "$run/kernel" "$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
         fi
         taskpolicy -b "$ROOT/userspace/programs/build.sh" --arch aarch64
@@ -149,7 +154,9 @@ if [ -z "${BREENIX_VM_PERSISTENT_SUPERVISED:-}" ]; then
     export BREENIX_VM_PERSISTENT_SUPERVISED=1
     source "$ROOT/scripts/host-slots.sh"
     if [ "$op" = fault-boot ]; then
-        host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu fault-boot --run-dir "$run"
+        args=()
+        [ -z "$inject" ] || args=(--inject "$inject")
+        host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu fault-boot --run-dir "$run" "${args[@]}"
     else
         host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu boot --run-dir "$run" --kernel "$kernel" --mode "$mode"
     fi
@@ -167,6 +174,24 @@ trap cleanup EXIT
 verify=verify
 if [ "$op" = fault-boot ]; then verify=verify-fault; fi
 python3 "$ROOT/scripts/vm-artifacts.py" "$verify" "$ROOT" "$run" "$kernel"
+fault_kind=
+if [ "$op" = fault-boot ]; then
+    fault_kind=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("faultKind", ""))' "$run/verified-build.json")
+    case "$fault_kind:$inject" in
+        panic-reboot:|watchdog:feeder-hang|watchdog:health-hang) ;;
+        *) echo 'fault injection does not match the built kernel' >&2; exit 1 ;;
+    esac
+    if [ "$fault_kind" = watchdog ]; then
+        PATH="$PATH:/opt/homebrew/opt/e2fsprogs/sbin:/usr/local/opt/e2fsprogs/sbin"
+        printf '%s\n' "$inject" > "$run/watchdog-intent"
+        debugfs -w -R 'rm /etc/breenix/watchdog-fault' "$run/system.img" >/dev/null 2>&1 || true
+        debugfs -w -R "write $run/watchdog-intent /etc/breenix/watchdog-fault" "$run/system.img" >/dev/null 2>&1
+        debugfs -R 'cat /etc/breenix/watchdog-fault' "$run/system.img" 2>/dev/null > "$run/watchdog-readback"
+        cmp -s "$run/watchdog-intent" "$run/watchdog-readback" || { echo 'watchdog intent staging failed' >&2; exit 1; }
+        python3 "$ROOT/scripts/vm-artifacts.py" stage-intent "$ROOT" "$run" ''
+        rm "$run/watchdog-intent" "$run/watchdog-readback"
+    fi
+fi
 if [ "$op" = fault-boot ]; then printf "fault-test\n" > "$run/boot-kind"; else rm -f "$run/boot-kind"; fi
 kernel="$run/boot-kernel"
 host_slot_acquire mac-boot
@@ -194,6 +219,8 @@ gpu=()
 if [ "$(uname -s)" = Darwin ]; then
     qemu="${BREENIX_QEMU_GL_BINARY:-$("$ROOT/scripts/build-qemu-gl.sh" --print-path)}"
     defaults write org.breenix.qemu-gl NSAppSleepDisabled -bool YES
+    # The QoS library selects a sleep-excluding clock for this QEMU process.
+    export BREENIX_QEMU_SUSPEND_CLOCK=1
     export ANGLE_DEFAULT_PLATFORM="${ANGLE_DEFAULT_PLATFORM-metal}"
     display=(-display cocoa,gl=es)
     gpu=(-device virtio-gpu-gl-pci)
@@ -217,8 +244,8 @@ stop_child() {
 trap stop_child TERM HUP INT
 disks=(-device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/home.img"
        -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/system.img")
-action=()
-if [ "$op" = fault-boot ]; then disks=(); action=(-action reboot=shutdown); fi
+action=(-device i6300esb -action watchdog=reset)
+if [ "$op" = fault-boot ] && [ "$fault_kind" = panic-reboot ]; then disks=(); action+=(-action reboot=shutdown); fi
 set +e
 python3 "$ROOT/scripts/qemu-arm64.py" "$qemu" -rtc base=utc -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
     -kernel "$kernel" -fw_cfg "name=opt/breenix/mode,string=$mode" "${display[@]}" -qmp "unix:$run/qmp.sock,server=on,wait=off" -qmp "unix:$run/events.sock,server=on,wait=off" \
