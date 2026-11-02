@@ -34,6 +34,8 @@ pub enum Writer {
     Tty = 2,
     /// The kernel serial console's prompt and echo.
     Console = 3,
+    /// Suite evidence, excluded from terminal and producer capture.
+    Evidence = 4,
 }
 
 /// The writer whose unterminated line the port is in, or 0 at the start of a line.
@@ -62,6 +64,8 @@ pub fn line_open() -> bool {
 
 /// Note that `writer` wrote `byte` to the port last. Called while the port is held.
 pub fn wrote(writer: Writer, byte: u8) {
+    // Evidence has its own complete lines and must preserve producer framing.
+    if writer == Writer::Evidence { return; }
     OPEN.store(
         if byte == b'\n' { 0 } else { writer as u8 },
         Ordering::Relaxed,

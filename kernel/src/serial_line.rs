@@ -111,7 +111,7 @@ impl Port for Uart {
     }
 
     fn wrote(writer: Writer, byte: u8) {
-        crate::graphics::boot_ribbon::byte(byte);
+        if writer != Writer::Evidence { crate::graphics::boot_ribbon::byte(byte); }
         crate::serial_writer::wrote(writer, byte);
     }
 

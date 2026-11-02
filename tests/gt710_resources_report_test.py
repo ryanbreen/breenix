@@ -302,6 +302,20 @@ class ResourcesReport(unittest.TestCase):
             with self.subTest(text=changed[-100:]), self.assertRaises(ValueError):
                 API['resources_suite'](changed, boot())
 
+    def test_screen_records_are_additive_but_still_validated(self):
+        text = transcript(all_pass=True)
+        case = json.loads((ROOT / 'docs/suites/gpu.json').read_text())['categories'][0]
+        name = case['id'] + '/' + case['cases'][0]['id']
+        line = f"SUITE gpu SCREEN {name} end sha256={'1'*64} mode=2x1 binding=2x1\n"
+        marker = next(v for v in text.splitlines(True) if v.startswith(f'SUITE gpu CASE {name} '))
+        valid = text.replace(marker, marker + line)
+        API['resources_suite'](valid, boot())
+        for bad in [valid.replace('mode=2x1', 'mode=0x1'),
+                    valid.replace(line, line + line),
+                    valid.replace(line, line.replace(f"sha256={'1'*64} mode=2x1 binding=2x1", 'error=readback-failed'))]:
+            with self.subTest(serial=bad[-100:]), self.assertRaises(ValueError):
+                API['resources_suite'](bad, boot())
+
     def test_production_identity_requires_no_features_injection_or_other_commit(self):
         for key, value in [('kind', 'persistent'), ('mode', 'probe'), ('suite', 'console'),
                            ('suites', ['gpu', 'console']), ('toolsCommit', 'b'*40),
@@ -375,6 +389,7 @@ class ResourcesReport(unittest.TestCase):
             files = ['docs/metal/boot-path.json', 'docs/boot-path.json', 'docs/efforts/metal.json',
                      'docs/suites/gt710.json', 'docs/suites/gpu.json', 'docs/suites/console.json',
                      'docs/gui/gt710-step-8-2.json', 'scripts/metal/gt710-suite', 'scripts/suite-verdict.py',
+                     'scripts/screen-verdict.py', 'docs/suites/frames/screens.json',
                      'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json']
             files += ['kernel/src/gpu/gk208/caps/' + n for n in set(PROBE_FILES)]
             for name in files:
