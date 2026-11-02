@@ -1178,6 +1178,24 @@ mod tests {
     }
 
     #[test]
+    fn seed_missing_omits_runtime_socket() {
+        let fixture = Fixture::new();
+        let source = fixture.0.join("run");
+        let target = fixture.0.join("shared-run");
+        fs::create_dir(&source).unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(source.join("svc.sock")).unwrap();
+        fs::write(source.join("ordinary"), b"kept").unwrap();
+        let mut checkpoint = || Ok(());
+        let mut copier = Copier {
+            totals: Totals::default(), skip: Vec::new(), linked: HashMap::new(),
+            buffer: vec![0; 4096], checkpoint: &mut checkpoint,
+        };
+        seed_missing(&mut copier, &source, &target).unwrap();
+        assert!(!target.join("svc.sock").exists());
+        assert_eq!(fs::read(target.join("ordinary")).unwrap(), b"kept");
+    }
+
+    #[test]
     fn retry_repairs_store_mode_after_interrupted_mkdir() {
         let fixture = Fixture::new();
         let path = fixture.0.join(STORE);
