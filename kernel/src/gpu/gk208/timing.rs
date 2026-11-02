@@ -233,7 +233,12 @@ impl Recorder {
 mod runtime {
     use super::*;
     static REQUESTED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
-    pub fn enable() { REQUESTED.store(true, core::sync::atomic::Ordering::Release); }
+    pub fn enable() {
+        let requested = crate::boot::intent::command_line().is_some_and(|line|
+            line.split_ascii_whitespace().any(|word|
+                matches!(word, "gt710-cpu-time" | "gt710-gpu-time")));
+        if requested { REQUESTED.store(true, core::sync::atomic::Ordering::Release); }
+    }
     pub fn enabled() -> bool { collecting(cfg!(feature = "gt710_core_probe"), REQUESTED.load(core::sync::atomic::Ordering::Acquire)) }
     static DATA: spin::Mutex<Recorder> = spin::Mutex::new(Recorder::new());
     static BATCH: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1);

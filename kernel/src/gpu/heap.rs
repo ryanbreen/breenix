@@ -36,7 +36,7 @@ pub(crate) fn record() -> Result<Vec<u8>, i32> {
     let console = crate::console::heap_footprint();
     words[27..29].copy_from_slice(&console.map(|n| n as u64));
     words[29] = crate::memory::heap::HEAP_SIZE as u64;
-    // A privileged case-boundary reader opts into bounded latency collection.
+    // Detailed latency collection additionally requires an explicit boot option.
     crate::gk208::timing::enable();
     words[32..].copy_from_slice(&crate::gk208::cost::snapshot());
     encode(words)
