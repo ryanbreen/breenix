@@ -21,6 +21,11 @@ POLICY
  }
  assert!(!Observer::Screen.records_composition());
 }
+#[test] fn deadline(){
+ assert_eq!(Observer::Screen.deadline(100),Some(5_000_000_100));
+ assert_eq!(Observer::Owner.deadline(100),None);
+ assert_eq!(Observer::Window.deadline(100),None);
+}
 #[test] fn empty_binding(){
  for observer in [Observer::Owner,Observer::Window] {
   for known in [false,true] { for bound in [false,true] {

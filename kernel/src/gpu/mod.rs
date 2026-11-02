@@ -5412,6 +5412,9 @@ enum Observer {
 
 impl Observer {
     fn records_composition(self) -> bool { self != Self::Screen }
+    fn deadline(self, now: u64) -> Option<u64> {
+        (self == Self::Screen).then(|| now.saturating_add(5_000_000_000))
+    }
     fn excludes_binding(self, known: bool, bound: bool) -> bool {
         self == Self::Screen && known && !bound
     }
@@ -5437,6 +5440,7 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     #[cfg(target_arch = "x86_64")]
     let cost_prepare = crate::gk208::cost::phase(crate::gk208::cost::Slot::ReadPrepare);
     let window = observer != Observer::Owner;
+    let deadline = observer.deadline(now_ns());
     // Count owner observation with presentation so a VT release cannot expose the
     // next foreground terminal while readback holds the current binding.
     let _presentation = if a.target == 0 && !window {
@@ -5455,12 +5459,12 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         if window && with_core(|c| c.display.stack.is_empty()).unwrap_or(false) {
             screen::await_binding()?;
         }
-        wait_for(None, true, |c| {
+        wait_for(deadline, true, |c| {
             (!console::restoring(c.display.owner_sequence)).then_some(c.display.known)
         })
-        .map_err(|_| EINTR)?;
+        .map_err(|stop| match stop { Stop::Timeout => ETIMEDOUT, Stop::Interrupted => EINTR })?;
         Some(if window {
-            display::Transition::for_window_observer()?
+            display::Transition::for_window_observer(deadline)?
         } else {
             display::Transition::for_observation(tgid)?
         })
@@ -5566,7 +5570,7 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     drop(cost_prepare);
     // Wait for the target's accepted writes to complete, then take it for reading.
     // The handle is looked up each time: one destroyed meanwhile is target-dropped.
-    let taken = wait_for(None, true, |c| {
+    let taken = wait_for(deadline, true, |c| {
         if a.target == 0 {
             if (!window && !display::owner(tgid))
                 || !c.display.known
@@ -5594,7 +5598,8 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     let (invalid, invalidated_by, generation, last, composition) = match taken {
         Ok(Ok(t)) => t,
         Ok(Err(reason)) => return refuse(reason, 0),
-        Err(_) => return Err(Refused::Errno(EINTR)),
+        Err(Stop::Timeout) => return Err(Refused::Errno(ETIMEDOUT)),
+        Err(Stop::Interrupted) => return Err(Refused::Errno(EINTR)),
     };
     // The target is ours to poison and read until its transfers have ended; a transfer
     // whose waiter left keeps the mark until the device returns it, and with it the
