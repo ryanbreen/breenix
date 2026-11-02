@@ -65,8 +65,8 @@ mod readback_reason { pub const BINDING_UNKNOWN: u32 = 4; }
 pub enum Refused { Errno(i64), Eio(u32, u64) }
 impl From<i64> for Refused { fn from(e: i64) -> Self { Self::Errno(e) } }
 struct Composition { serial: u64, windows: Vec<[u64; 4]> }
-fn row(last: LastWrite, answer: u32, unwritten: u32) -> Result<[u8; record::SIZE], Refused> {
-    let (tgid, id, window) = (42, 8, false);
+fn row(last: LastWrite, answer: u32, unwritten: u32, window: bool) -> Result<[u8; record::SIZE], Refused> {
+    let (tgid, id) = (42, 8);
     let (fmt, tw, th, generation) = (format::R8G8B8A8, 64, 32, 9);
     let last = Some(last);
     let (transfer_fence, transfer_answer, readback_surface) = (123, answer, (71, 72));
@@ -96,7 +96,7 @@ fn production_caps_and_readback_publish_native_fields() {
     assert_eq!(c.capset_ids[..4], [0x927d, 0xa06f, 0xa0b5, 0xa197]);
     for kind in [abi::gk208::DRAW_RELEASE, abi::gk208::TRANSFER_RELEASE] {
         let r = row(LastWrite { device_ctx: Some(0x123), serial: 9001, fence: 42,
-            answer: abi::gk208::SUCCESS, kind }, abi::gk208::SUCCESS, 0).unwrap();
+            answer: abi::gk208::SUCCESS, kind }, abi::gk208::SUCCESS, 0, true).unwrap();
         assert_eq!((word(&r, record::BACKEND), word(&r, record::BOUNDARY)), (6, record::BOUNDARY_NATIVE));
         assert_eq!((wide(&r, record::CONTEXT), wide(&r, record::RESOURCE), wide(&r, record::GENERATION)), (0x123, 0x456, 9));
         assert_eq!((wide(&r, record::RENDER_SERIAL), wide(&r, record::RENDER_FENCE), wide(&r, record::READBACK_FENCE)), (9001,42,123));
@@ -113,7 +113,7 @@ fn production_caps_and_readback_publish_native_fields() {
     // Serialization preserves an observed fault/unwritten count; it cannot
     // turn an unsuccessful transfer into the native success evidence tag.
     let r = row(LastWrite { device_ctx: Some(3), serial: 2, fence: 1,
-        answer: 0x60010002, kind: abi::gk208::DRAW_RELEASE }, 0x60010002, 7).unwrap();
+        answer: 0x60010002, kind: abi::gk208::DRAW_RELEASE }, 0x60010002, 7, true).unwrap();
     for at in [record::RENDER_STATUS, record::READBACK_STATUS] { assert_eq!(word(&r, at), 0x60010002); }
     assert_eq!(word(&r, record::UNWRITTEN), 7);
 }
@@ -130,7 +130,7 @@ fn production_virtual_rows_keep_their_own_evidence() {
     with_core(|c| c.dev = Some(Device::Virtual));
     for (backend, answer, draw, read, copy, surface) in [(4, 0x1100, 0x207, 0x206, 0, (0,0)), (5, 1, 1152, 1104, 1042, (71,72))] {
         dev::BACKEND.with(|b| b.set(backend));
-        let r = row(LastWrite { device_ctx: Some(3), serial: 2, fence: 1, answer, kind: draw }, answer, 0).unwrap();
+        let r = row(LastWrite { device_ctx: Some(3), serial: 2, fence: 1, answer, kind: draw }, answer, 0, true).unwrap();
         assert_eq!((word(&r, record::BACKEND),word(&r, record::BOUNDARY)),(backend,record::BOUNDARY_HOST));
         assert_eq!((word(&r,record::RENDER_KIND),word(&r,record::READBACK_KIND),word(&r,record::COPY_KIND)),(draw,read,copy));
         assert_eq!((wide(&r,record::READBACK_SURFACE),wide(&r,record::READBACK_MOB)),surface);
@@ -141,7 +141,7 @@ fn production_virtual_rows_keep_their_own_evidence() {
 fn composed_native_scanout_record_has_v2_provenance() {
     dev::BACKEND.with(|b| b.set(6));
     let r = row(LastWrite { device_ctx: Some(0x123), serial: 9001, fence: 42,
-        answer: abi::gk208::SUCCESS, kind: abi::gk208::DRAW_RELEASE }, abi::gk208::SUCCESS, 0).unwrap();
+        answer: abi::gk208::SUCCESS, kind: abi::gk208::DRAW_RELEASE }, abi::gk208::SUCCESS, 0, true).unwrap();
     assert_eq!((word(&r, 0), word(&r, 16), word(&r, 20), word(&r, 24)), (2, 6, 5, 3));
     for at in [112, 128, 192] { assert_eq!(word(&r, at), abi::gk208::SUCCESS); }
     assert_eq!(word(&r, 116), abi::gk208::DRAW_RELEASE);
@@ -155,4 +155,13 @@ fn composed_native_scanout_record_has_v2_provenance() {
     assert_eq!(word(&r, 196), 1);
     assert_eq!([wide(&r, 200), wide(&r, 208), wide(&r, 216), wide(&r, 224)], [21, 22, 23, 24]);
     assert!(r[776..1024].iter().all(|b| *b == 0));
+}
+
+#[test]
+fn native_gpu_readback_retains_copy_completion() {
+    dev::BACKEND.with(|b| b.set(6));
+    let r = row(LastWrite { device_ctx: Some(0x123), serial: 9001, fence: 42,
+        answer: abi::gk208::SUCCESS, kind: abi::gk208::DRAW_RELEASE }, abi::gk208::SUCCESS, 0, false).unwrap();
+    assert_eq!(word(&r, record::COPY_KIND), abi::gk208::TRANSFER_RELEASE);
+    assert_eq!(word(&r, record::COPY_STATUS), abi::gk208::SUCCESS);
 }
