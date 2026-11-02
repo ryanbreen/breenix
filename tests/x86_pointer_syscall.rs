@@ -29,7 +29,7 @@ mod test_control {
 mod window { pub mod mem {
     pub fn probe_writable(ptr: u64, _: u64) -> Result<(), ()> { if ptr == 0 { Err(()) } else { Ok(()) } }
 } }
-#[path = "x86_pointer_syscall_support.rs"]
+#[path = "x86_pointer_syscall_support/mod.rs"]
 mod syscall;
 
 #[test]

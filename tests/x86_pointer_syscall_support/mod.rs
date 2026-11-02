@@ -8,6 +8,6 @@
             Ok(())
         }
     }
-    #[path = "../kernel/src/syscall/pointer.rs"]
+    #[path = "../../kernel/src/syscall/pointer.rs"]
     pub mod pointer;
 
