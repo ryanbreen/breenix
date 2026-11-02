@@ -25,7 +25,6 @@ pub(crate) const PANEL: &[Case] = &[
 
 // gpu-display: §2.2 replaces fb_info with GPU MODES, including R4 physical scale; capacity checks remain.
 fn composition_fbinfo_geometry() -> CaseResult {
-#[cfg(target_arch = "aarch64")]
     crate::display_regressions::many_windows()?;
     let modes=bgl::modes().map_err(|r|format!("gpu-display: MODES {}",outcome(r))).cite("18")?;
     ensure(modes.current<modes.count && modes.count==2,"18","gpu-display: mode catalogue is incomplete")?;

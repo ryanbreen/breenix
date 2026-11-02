@@ -1,4 +1,4 @@
-//! DISPLAY regressions exercised on the real ARM64 syscall/backend path.
+//! DISPLAY regressions exercised on the real syscall/backend path.
 use crate::*;
 use libbreenix::window as win;
 use win::abi::{self, op, Plain};
