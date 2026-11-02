@@ -882,8 +882,15 @@ impl TtyDevice {
         }
     }
 
-    // IRQ echo uses fixed storage and bypasses line assembly.
+    // Queue before draining so new echo stays behind deferred echo.
     fn to_echo_sinks(&self, unit: &[u8]) {
+        let Some(mut pending) = self.pending_echo.try_lock() else { return; };
+        pending.write(unit);
+        drop(pending);
+        self.drain_echo();
+    }
+
+    fn emit_echo_sinks(&self, unit: &[u8]) {
         if self.is_console() {
             crate::console::write_tty(unit, |bytes| crate::serial::write_bytes_atomic(crate::serial::Writer::Tty, bytes));
         } else {
@@ -894,12 +901,20 @@ impl TtyDevice {
     fn drain_echo(&self) {
         if self.transmission_stopped() { return; }
         let Some(mut pending) = self.pending_echo.try_lock() else { return; };
-        let mut scratch = [0; 256];
-        // At most the fixed echo ring is drained; no allocation or input lock.
-        loop {
-            let n = pending.read(&mut scratch);
-            if n == 0 { break; }
-            self.to_echo_sinks(&scratch[..n]);
+        let mut drain = || {
+            let mut scratch = [0; 256];
+            loop {
+                let n = pending.read(&mut scratch);
+                if n == 0 { break; }
+                self.emit_echo_sinks(&scratch[..n]);
+            }
+        };
+        // Acquire assembly before consuming echo, so contention retains its
+        // original FIFO position in the fixed pending ring.
+        if self.is_console() {
+            crate::serial_writer::terminal_echo(drain);
+        } else {
+            drain();
         }
     }
 

@@ -393,10 +393,16 @@ pub fn try_print(args: fmt::Arguments) -> Result<(), ()> {
         .map_err(|_| ())
 }
 
+/// Fatal-path fragments bypass the terminal queue and deferred notices.
+pub(crate) fn write_terminal_emergency(bytes: &[u8]) {
+    crate::serial_line::Line::for_writer(Writer::Tty).bytes(bytes);
+}
+
 /// Print from a panic or fatal path: `try_print`'s record, counted as unattributed
 /// output (`output_accounting`).
 pub fn emergency_print(args: fmt::Arguments) -> Result<(), ()> {
     use core::fmt::Write;
+    crate::serial_writer::drain_terminal_emergency();
     crate::serial_line::TeeLine::unattributed()
         .write_fmt(args)
         .map_err(|_| ())

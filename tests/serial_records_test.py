@@ -51,6 +51,7 @@ static WIRE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 mod serial {
     pub use super::serial_writer::Writer;
     pub fn sync_log_to_console() {}
+    pub fn write_terminal_emergency(bytes: &[u8]) { write_bytes_atomic(Writer::Tty, bytes); }
     pub fn write_bytes_atomic(writer: Writer, bytes: &[u8]) {
         assert!(bytes.len() <= 4096, "unbounded UART handoff: {}", bytes.len());
         let mut wire = super::WIRE.lock();
@@ -67,8 +68,22 @@ struct Tty;
 impl Tty {
     fn is_console(&self) -> bool { true }
     fn vt(&self) -> usize { 0 }
+    fn transmission_stopped(&self) -> bool { false }
     COOKED
+    ECHO
+    EMIT_ECHO
+    DRAIN_ECHO
 }
+struct Echo(std::collections::VecDeque<u8>);
+impl Echo {
+    fn write(&mut self, bytes: &[u8]) { self.0.extend(bytes); }
+    fn read(&mut self, bytes: &mut [u8]) -> usize {
+        let n = bytes.len().min(self.0.len());
+        for slot in &mut bytes[..n] { *slot = self.0.pop_front().unwrap(); }
+        n
+    }
+}
+static PENDING_ECHO: Mutex<Echo> = Mutex::new(Echo(std::collections::VecDeque::new()));
 const SERIAL_ATOMIC_OUTPUT_BYTES: usize = 256;
 SEGMENTS
 PRODUCER
@@ -113,6 +128,24 @@ fn exercise(write_unprocessed: fn(&[u8])) {
     write_unprocessed(&huge);
     serial_writer::drain_terminal_all();
     assert_eq!(*WIRE.lock(), huge, "large newline-free output lost bytes");
+    WIRE.lock().clear();
+    write_unprocessed(b"hung case: native draw");
+    serial_writer::drain_terminal_emergency();
+    assert_eq!(*WIRE.lock(), b"hung case: native draw", "panic lost the case fragment");
+    WIRE.lock().clear();
+    write_unprocessed(b"prompt> ");
+    assert!(serial_writer::terminal_echo(|| serial::write_bytes_atomic(serial::Writer::Tty, b"x")));
+    assert_eq!(*WIRE.lock(), b"prompt> x", "echo overtook its prompt");
+    serial::write_bytes_atomic(serial::Writer::Tty, b"\n");
+    WIRE.lock().clear();
+    serial_writer::terminal(b"echo contention\n", |record| {
+        serial::write_bytes_atomic(serial::Writer::Tty, record);
+        Tty.to_echo_sinks(b"old"); // Producer lock held: echo must defer.
+    });
+    Tty.to_echo_sinks(b"new");
+    Tty.drain_echo();
+    assert_eq!(*WIRE.lock(), b"echo contention\noldnew", "new echo overtook deferred echo");
+    serial::write_bytes_atomic(serial::Writer::Tty, b"\n");
     // Crossing both former chunk boundaries must still be one port handoff.
     WIRE.lock().clear();
     let long = [b'x'; 2048];
@@ -129,6 +162,9 @@ fn main() {
 '''
         harness = (harness.replace('WRITER', str(ROOT / 'kernel/src/serial_writer.rs'))
                    .replace('COOKED', function(tty, 'fn to_sinks('))
+                   .replace('    ECHO\n', function(tty, 'fn to_echo_sinks(').replace('self.pending_echo', 'PENDING_ECHO') + '\n')
+                   .replace('EMIT_ECHO', function(tty, 'fn emit_echo_sinks('))
+                   .replace('DRAIN_ECHO', function(tty, 'fn drain_echo(').replace('self.pending_echo', 'PENDING_ECHO'))
                    .replace('SEGMENTS', function(tty, 'fn for_each_line_segment('))
                    .replace('PRODUCER', function(tty, 'pub fn write_unprocessed(')))
         with tempfile.TemporaryDirectory(prefix='serial-records-') as temporary:

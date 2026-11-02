@@ -2964,6 +2964,7 @@ use core::panic::PanicInfo;
 #[panic_handler]
 fn panic(info: &PanicInfo) -> ! {
     kernel::output_accounting::panicking();
+    kernel::serial_writer::drain_terminal_emergency();
     let mut recent = [0u8; 4096];
     let recent_len = kernel::log_buffer::copy_tail(&mut recent);
     // Try to output panic info if possible

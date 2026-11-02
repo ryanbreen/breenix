@@ -146,7 +146,7 @@ impl TerminalLines {
         self.open_thread = (bytes.last() != Some(&b'\n')).then_some(line.thread);
         self.retained -= line.len;
         self.len -= 1;
-        // Rotate metadata and fixed buffers without a large stack temporary.
+        // Keep first-fragment order while recycling the fixed buffers.
         for at in 0..self.len { self.partial.swap(at, at + 1); }
         self.partial[self.len].len = 0;
         self.partial[self.len].complete = false;
@@ -236,4 +236,26 @@ pub fn discard_terminal() {
         lines.retained = 0;
         lines.open_thread = None;
     });
+}
+
+/// Drain fragments before panic output without waiting for a stopped producer.
+/// The emergency sink bypasses the ordinary queue and its locks.
+pub fn drain_terminal_emergency() {
+    crate::arch_without_interrupts(|| {
+        if let Some(mut lines) = TERMINAL_LINES.try_lock() {
+            lines.drain(0, true, &mut crate::serial::write_terminal_emergency);
+        }
+    });
+}
+
+/// Order echo after older output. A busy producer leaves echo in the TTY's
+/// fixed pending ring; interrupt context does not spin on the producer lock.
+pub fn terminal_echo(write: impl FnOnce()) -> bool {
+    crate::arch_without_interrupts(|| {
+        let Some(mut lines) = TERMINAL_LINES.try_lock() else { return false };
+        lines.drain(0, true, &mut |line| crate::serial::write_bytes_atomic(Writer::Tty, line));
+        write();
+        lines.open_thread = None;
+        true
+    })
 }
