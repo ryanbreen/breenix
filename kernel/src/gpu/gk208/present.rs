@@ -164,6 +164,34 @@ fn surface_state(io: &mut impl Io, head: u32, surface: Surface)
     Ok((active,armed))
 }
 
+/// Resolve a latched binding from the head, without a requested resource.
+/// MIT nouveau gf119.c:gf119_head_state selects active/assembly banks at
+/// 0x640000/0x660000; gf119_disp_core_mthd_head maps the five NV927D surface
+/// methods. MIT cl927d.h defines OFFSET/SIZE/STORAGE/PARAMS/CONTEXT_DMA_ISO.
+/// The caller excludes UPDATE and has retired the pending latch notifier.
+pub fn observed_surface(io: &mut impl Io, head: u32,
+    surfaces: impl Iterator<Item = Surface>,
+) -> Result<Surface, &'static str> {
+    if head >= 4 { return Err("invalid native observation head"); }
+    let mut active = [0; 5];
+    let mut armed = [0; 5];
+    for (i, method) in [0x460, 0x468, 0x46c, 0x470, 0x474].into_iter().enumerate() {
+        let offset = method + head as usize * 0x300;
+        active[i] = io.read(0x640000 + offset);
+        armed[i] = io.read(0x660000 + offset);
+    }
+    if active != armed { return Err("native observation surface not latched"); }
+    let mut found = None;
+    for surface in surfaces.filter(|s| s.address >> 8 == u64::from(armed[0])) {
+        let methods = surface.methods(head)?;
+        if methods[..5].iter().zip(armed).all(|((_, expected), actual)| *expected == actual) {
+            if found.is_some() { return Err("native observation surface ambiguous"); }
+            found = Some(surface);
+        }
+    }
+    found.ok_or("native observation surface unknown")
+}
+
 /// Bounded synchronous EVO completion, including display-event servicing.
 pub trait NotifierWait {
     fn poll(&mut self) -> Result<u32, &'static str>;

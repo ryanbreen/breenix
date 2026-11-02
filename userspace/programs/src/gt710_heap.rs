@@ -4,8 +4,8 @@ use std::{fmt::Write, io::Read, sync::Mutex, time::{Duration, Instant}};
 const MAX_NAME: usize = 80;
 const MAX_BYTES: usize = 1024 * 1024;
 #[derive(Clone, Copy)]
-struct Row { name: [u8; MAX_NAME], len: usize, values: [u64; wire::WORDS] }
-impl Row { const EMPTY: Self = Self { name: [0; MAX_NAME], len: 0, values: [0; wire::WORDS] }; }
+struct Row { name: [u8; MAX_NAME], len: usize, values: [u64; wire::WORDS], scanout: [u64; wire::scanout::WORDS] }
+impl Row { const EMPTY: Self = Self { name: [0; MAX_NAME], len: 0, values: [0; wire::WORDS], scanout: [0; wire::scanout::WORDS] }; }
 struct Store { rows: Vec<Row>, used: usize, expected: usize, bad: bool }
 impl Store {
     const fn new() -> Self { Self { rows: Vec::new(), used: 0, expected: 0, bad: false } }
@@ -50,7 +50,15 @@ impl Store {
             for (field, value) in row.values.iter().enumerate() {
                 write!(text, "{}{value}", if field == 0 { "" } else { "," }).map_err(|_| "case heap formatting")?;
             }
-            text.push_str("]}\n");
+            text.push(']');
+            if row.scanout[0] == 1 {
+                text.push_str(",\"scanout\":{");
+                for (field, (key, value)) in wire::scanout::NAMES.iter().zip(row.scanout).enumerate() {
+                    write!(text, "{}\"{key}\":{value}", if field == 0 { "" } else { "," }).map_err(|_| "case scanout formatting")?;
+                }
+                text.push('}');
+            }
+            text.push_str("}\n");
             if text.len() > MAX_BYTES { return Err("case heap evidence exceeds bound".into()); }
         }
         Ok(text.into_bytes())
@@ -82,9 +90,16 @@ pub(super) fn boundary(index: usize, total: usize, name: &str) {
         if let Ok(mut store) = STORE.lock() { store.bad = true; }
         return;
     }
+    let mut scanout = [0; wire::scanout::WORDS];
     let values = (|| {
         let mut file = std::fs::File::open("/proc/gt710-case-heap").map_err(|_| -5)?;
         let mut bytes = [0; wire::SIZE];file.read_exact(&mut bytes).map_err(|_| -5)?;
+        let mut trailer = [0; wire::scanout::SIZE];
+        file.read_exact(&mut trailer).map_err(|_| -5)?;
+        for (value, chunk) in scanout.iter_mut().zip(trailer.chunks_exact(8)) {
+            *value = u64::from_le_bytes(chunk.try_into().map_err(|_| -5)?);
+        }
+        if scanout[0] != 1 { return Err(-5); }
         let mut extra = [0];if file.read(&mut extra).map_err(|_| -5)? != 0 { return Err(-5); }
         wire::decode(&bytes).ok_or(-5)
     })();
@@ -101,7 +116,10 @@ pub(super) fn boundary(index: usize, total: usize, name: &str) {
             *last = Some((now, *after));
         }
     }
-    if let Ok(mut store) = STORE.lock() { store.record(index, total, name, values); }
+    if let Ok(mut store) = STORE.lock() {
+        store.record(index, total, name, values);
+        if store.used == index + 1 { store.rows[index].scanout = scanout; }
+    }
 }
 pub(super) fn encode() -> Result<Vec<u8>, String> {
     STORE.lock().map_err(|_| "case heap evidence lock")?.encode()

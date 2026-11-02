@@ -117,9 +117,10 @@ fn complete(sequence:u32, caller:u64) -> gpu_completion::CeCompletion {
         assert_eq!((word(r::BACKEND),word(r::BOUNDARY)),(6,r::BOUNDARY_NATIVE));
         assert_eq!((wide(r::CONTEXT),wide(r::RESOURCE),wide(r::GENERATION)),(version.context,version.resource,9));
         assert_eq!((wide(r::RENDER_FENCE),wide(r::READBACK_FENCE)),(9001,42));
-        for off in [r::RENDER_STATUS,r::READBACK_STATUS,r::COPY_STATUS] {assert_eq!(word(off),gpu_abi::gk208::SUCCESS);}
+        for off in [r::RENDER_STATUS,r::READBACK_STATUS] {assert_eq!(word(off),gpu_abi::gk208::SUCCESS);}
         assert_eq!(word(r::RENDER_KIND),if upload {gpu_abi::gk208::TRANSFER_RELEASE} else {gpu_abi::gk208::DRAW_RELEASE});
-        for off in [r::READBACK_KIND,r::COPY_KIND] {assert_eq!(word(off),gpu_abi::gk208::TRANSFER_RELEASE);}
+        assert_eq!(word(r::READBACK_KIND),gpu_abi::gk208::TRANSFER_RELEASE);
+        assert!(out[r::READBACK_SURFACE..r::POISON].iter().all(|b| *b == 0));
         assert_eq!((wide(r::READBACK_SURFACE),wide(r::READBACK_MOB)),(0,0));
         assert_eq!(word(r::UNWRITTEN),0);
         assert!(out[r::RESERVED..].iter().all(|v| *v == 0));

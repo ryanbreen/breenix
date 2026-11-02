@@ -264,6 +264,10 @@ impl<B> Resources<B> {
         if e.dropped || !e.mapped {return None;}
         e.scanout
     }
+    /// Include dropped entries while display/request pins still retain them.
+    pub fn scanouts(&self) -> impl Iterator<Item = present::Surface> + '_ {
+        self.entries.values().filter(|e| e.mapped).filter_map(|e| e.scanout)
+    }
     pub fn create_scanout(&mut self, a: &mut Allocator, io: &mut impl Io,
         id:u32, format:u32, width:u32, height:u32,
     ) -> Result<(), &'static str> {

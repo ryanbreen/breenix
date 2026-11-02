@@ -132,10 +132,10 @@ mod show;
 mod stage_fixtures;
 mod stage_painter;
 mod stage_serial;
-#[cfg(target_arch = "aarch64")]
 mod display_regressions;
 use libgfx_ref::stage;
 mod widgets;
+mod backend_row;
 mod window_cases;
 
 use breenix_suite::suite::Case;

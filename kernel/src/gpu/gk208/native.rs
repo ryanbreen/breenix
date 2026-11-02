@@ -655,6 +655,13 @@ impl super::present::Io for PresentRead<'_> {
     fn read(&mut self, r: usize) -> u32 { self.0.read(r) }
 }
 
+pub(super) fn observed_scanout(regs: &mut Registers, head: u32,
+    surfaces: impl Iterator<Item = super::present::Surface>,
+) -> Result<u32, &'static str> {
+    super::present::observed_surface(&mut PresentRead(regs), head, surfaces)
+        .map(|surface| surface.resource)
+}
+
 fn present_inner(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface, wait: bool,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
