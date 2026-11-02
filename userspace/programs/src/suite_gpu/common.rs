@@ -229,12 +229,12 @@ impl Canvas {
         }
     }
 
-    /// `Ok` when `got` equals the canvas byte for byte, or the first pixel that differs.
-    pub fn matches(&self, got: &[u8], what: &str) -> Result<(), CaseError> {
+    /// Compare byte for byte, then hand off the exact readback (including a mismatch).
+    pub fn compare(&self, got: &[u8], what: &str) -> Result<(), CaseError> {
         if got.len() != self.px.len() {
             return Err(fail_msg(format!("{what}: read {} bytes, expected {}", got.len(), self.px.len())));
         }
-        match got.chunks_exact(4).zip(self.px.chunks_exact(4)).position(|(a, b)| a != b) {
+        let comparison = match got.chunks_exact(4).zip(self.px.chunks_exact(4)).position(|(a, b)| a != b) {
             None => Ok(()),
             Some(i) => {
                 let (x, y) = (i as u32 % self.w, i as u32 / self.w);
@@ -242,14 +242,30 @@ impl Canvas {
                 let e = &self.px[i * 4..i * 4 + 4];
                 Err(fail_msg(format!("{what}: pixel ({x},{y}) read {g:02x?}, expected {e:02x?}")))
             }
-        }
+        };
+        comparison
+    }
+
+    pub fn matches(&self, got: &[u8], what: &str) -> Result<(), CaseError> {
+        self.matches_owned(got.to_vec(), what)
+    }
+
+    pub fn matches_owned(&self, got: Vec<u8>, what: &str) -> Result<(), CaseError> {
+        let comparison = self.compare(&got, what);
+        // Publication reports transport errors separately; they must not satisfy an
+        // intentional negative comparison made with matches(...).is_err().
+        let _ = breenix_suite::suite::judged_readback_owned(got, self.w, self.h);
+        comparison
     }
 }
 
-/// Read target `t` back and compare it with `want`.
+/// Read target `t` back, compare with `want`, and hand off the bytes through `matches`.
 pub fn expect(t: u64, want: &Canvas, what: &str) -> Result<[u8; record::SIZE], CaseError> {
     let (px, rec) = read(t, want.w, want.h)?;
-    want.matches(&px, what)?;
+    let comparison = want.compare(&px, what);
+    if comparison.is_ok() { breenix_suite::suite::screen_judged_readback(&px, &rec); }
+    let _ = breenix_suite::suite::judged_readback_owned(px, want.w, want.h);
+    comparison?;
     Ok(rec)
 }
 
@@ -288,7 +304,10 @@ pub fn present_view(ctx: u64, source: u64) -> Result<Option<abi::Present>, CaseE
             || format!("PRESENT view: {} fence={} answer={:#x}", errno(ret), present.fence, present.answer))?;
         wait_ok(ctx, present.fence, 0)?;
         let (pixels, actual) = read(0, w, h)?;
-        want.matches(&pixels, "scanout source rectangle")?;
+        let comparison = want.compare(&pixels, "scanout source rectangle");
+        if comparison.is_ok() { breenix_suite::suite::screen_judged_readback(&pixels, &actual); }
+        let _ = breenix_suite::suite::judged_readback_owned(pixels, w, h);
+        comparison?;
         ensure(u32_at(&actual, record::TARGET_WIDTH) == mode.width
             && u32_at(&actual, record::TARGET_HEIGHT) == mode.height
             && u32_at(&actual, record::FLAGS) & 1 == 1

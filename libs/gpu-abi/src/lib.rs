@@ -51,6 +51,7 @@ extern crate alloc;
 pub mod float;
 pub mod stream;
 pub mod probe;
+pub mod screen;
 
 /// `test_control(op, arg, len)` (`docs/gui/gpu.md` section 1.8, BreenGL contract section 21).
 pub const SYS_TEST_CONTROL: u64 = 415;
