@@ -1019,8 +1019,7 @@ impl Suite {
         }
         let suite_start = monotonic_ns();
 
-        let reported_pace = if proof { intent_pace_ms } else { pace_ms };
-        let pace_suffix = if reported_pace > 0 { std::format!(" pace_ms={reported_pace}") } else { String::new() };
+        let pace_suffix = if pace_ms > 0 { std::format!(" pace_ms={pace_ms}") } else { String::new() };
         emit(&std::format!("SUITE {} START cases={}{}{}", self.id, total, suffix, pace_suffix));
         if let Some(message) = &error {
             emit(&std::format!("SUITE {} ERROR {}", self.id, message));
