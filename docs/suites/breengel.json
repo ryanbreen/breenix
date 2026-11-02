@@ -313,7 +313,7 @@
         {
           "id": "compound-transform",
           "title": "Scaled and 2x2-transformed components match their reviewed reference",
-          "expect": "A 200x64 picture on black (#000000) background; the text 'BA', white (#FFFFFF), starting near x=4, y=8, font size 48; fixture glyphs built from transformed F contours and dots, not ordinary letterforms; pinned reference."
+          "expect": "A 200x64 picture on black (#000000) background; the text 'BA', white (#FFFFFF), starting near x=4, y=8, font size 48; fixture B is an F contour with a rounded bowl; fixture A has half-size, stretched and 30-degree rotated copies; pinned reference."
         },
         {
           "id": "line-metrics",
@@ -1167,7 +1167,8 @@
         {
           "id": "commit-immutable",
           "title": "Committed GPU targets refuse later writes while accepted renders complete and tree pages stay protected",
-          "expect": "A solid dark blue-grey (#112233) 16x16 rectangle; no text or shapes."
+          "expect": "A solid dark blue-grey (#112233) 16x16 rectangle; no text or shapes.",
+          "expectEnd": "A black (#000000) screen with a 16x16 seed-7 mosaic at geometric origin x=20, y=20; its upper-left pixel is green (#07CB5B); blue column ramps, green row ramps and red flecks; no text."
         },
         {
           "id": "commit-busy",
@@ -1242,7 +1243,8 @@
         {
           "id": "commit-waits-render",
           "title": "Pending render fences are not composed and failed renders cannot replace the front",
-          "expect": "A solid dark blue-grey (#112233) 16x16 rectangle; no text or shapes."
+          "expect": "A solid dark blue-grey (#112233) 16x16 rectangle; no text or shapes.",
+          "expectEnd": "A black (#000000) screen with a 16x16 seed-7 mosaic at geometric origin x=20, y=20; its upper-left pixel is green (#07CB5B); blue column ramps, green row ramps and red flecks; no text."
         }
       ]
     },
@@ -1428,7 +1430,7 @@
         {
           "id": "compose-overlap",
           "title": "Two overlapping windows compose in z order, exactly",
-          "expect": "A black (#000000) full-screen picture with two 200x120 mosaics at geometric origins x=100, y=100 and x=180, y=150; the first (seed 2) covers the second (seed 3) in the overlap; blue/green ramps and red flecks, no text."
+          "expect": "A black (#000000) full-screen picture with two 200x120 mosaics at geometric origins x=100, y=100 and x=180, y=150; seed 2 covers seed 3 in the overlap; the visible first origin pixel is dark green (#023A1A); blue/green ramps and red flecks, no text."
         },
         {
           "id": "compose-offscreen",
@@ -1489,7 +1491,7 @@
         {
           "id": "inflight-bound",
           "title": "At most one composite per window is in flight",
-          "expect": "A black (#000000) screen with a 640x400 seed-19 mosaic at geometric origin x=0, y=0; blue column ramps, green row ramps and red diagonal flecks; no text."
+          "expect": "A black (#000000) screen with a 640x400 seed-19 mosaic at geometric origin x=0, y=0; its origin pixel is blue (#1327F7); blue column ramps, green row ramps and red diagonal flecks; no text."
         },
         {
           "id": "no-change-commit",
