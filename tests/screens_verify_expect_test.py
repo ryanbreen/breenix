@@ -173,6 +173,27 @@ class VerifyExpectTest(unittest.TestCase):
         result = self.verify(image, sentence, 'end')
         self.assertFalse(result['failed_claims'], result)
 
+    def test_interior_strips_and_grid_counts_are_not_picture_dimensions(self):
+        image = Image.new('RGB', (160,128), '#0C131F')
+        ImageDraw.Draw(image).rectangle((40,40,100,80), fill='white')
+        for sentence in (
+            'On navy (#0C131F), white (#FFFFFF) labels head sample rows. A 3x1 strip is white.',
+            'Sixteen 8x5 mosaic rectangles form a 4x4 grid on navy (#0C131F); white (#FFFFFF) labels.',
+        ):
+            result = self.verify(image, sentence)
+            self.assertFalse(result['failed_claims'], result)
+            self.assertEqual(result['picture']['box'], [0,0,160,128])
+            self.assertEqual(result['verdict'], 'unparseable')
+
+    def test_unknown_source_size_still_crops_only_a_verified_border(self):
+        image = intent(Image.new('RGB',(8,6),'#123456'))
+        result = self.verify(image, 'A blue (#123456) picture with a white (#FFFFFF) mark.')
+        self.assertNotEqual(result['picture']['box'], [0,0,160,128])
+        image.putpixel((0,0),(0,0,0))
+        result = self.verify(image, 'A blue (#123456) picture with a white (#FFFFFF) mark.')
+        self.assertEqual(result['picture']['box'], [0,0,160,128])
+        self.assertEqual(result['verdict'], 'unparseable')
+
     def test_cli_reports_every_row_and_refuses_tampering(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
