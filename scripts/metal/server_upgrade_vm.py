@@ -210,7 +210,7 @@ class QemuUpgrade(UpgradeSuite):
         if self.known:
             pin = self.known.split()
             if len(pin) != 3 or pin[1] != 'ssh-ed25519': raise ValueError('upgrade needs a unique Ed25519 pin')
-            endpoint = '[' + self.site['SERVER_SSH_HOST'] + ']:' + self.site['SERVER_SSH_PORT']
+            endpoint = '[' + self.site['SERVER_SSH_HOST'] + ']:' + str(self.site['SERVER_SSH_PORT'])
             probe.known.write_text(endpoint + ' ' + ' '.join(pin[1:]) + '\n')
         return probe
 
