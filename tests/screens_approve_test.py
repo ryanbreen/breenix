@@ -124,6 +124,41 @@ class ApproveTest(unittest.TestCase):
                                   '"by": "agent", "by": "operator"'))
         self.run_import(good=False)
 
+    def test_reject_revokes_approved_picture_and_preserves_decision_bytes(self):
+        self.run_import()
+        directory, _ = self.native_fixture()
+        self.run_import(native=directory)
+        original = {p.name: p.read_bytes() for p in (self.root / 'approvals').glob('*.json')}
+        decision = self.decisions['entries'][0]
+        decision.update(verdict='reject', reason='Wrong picture after review')
+        self.decisions['entries'] = [decision]
+        self.save_decisions()
+        self.assertEqual(self.run_import(), [])
+        saved = {p.name: p.read_bytes() for p in (self.root / 'approvals').glob('*.json')}
+        self.assertEqual(len(saved), 2)
+        self.assertTrue(original.items() <= saved.items())
+        self.assertIn(self.approval.read_bytes(), saved.values())
+
+    def test_rejection_only_import_keeps_evidence_without_an_approved_row(self):
+        self.decisions['entries'] = [self.decisions['entries'][1]]
+        self.save_decisions()
+        self.assertEqual(self.run_import(), [])
+        saved = list((self.root / 'approvals').glob('*.json'))
+        self.assertEqual(len(saved), 1)
+        self.assertEqual(saved[0].read_bytes(), self.approval.read_bytes())
+
+    def test_rejecting_another_picture_does_not_revoke_the_approved_digest(self):
+        approved = self.run_import()[0]
+        self.rows[0]['sha256'] = self.rows[1]['sha256']
+        self.rows[0]['png'] = self.rows[1]['png']
+        self.save_candidates()
+        self.decisions['candidates'] = canonical_id(self.rows)
+        decision = self.decisions['entries'][0]
+        decision.update(sha256=self.rows[0]['sha256'], verdict='reject', reason='Different picture')
+        self.decisions['entries'] = [decision]
+        self.save_decisions()
+        self.assertEqual(self.run_import(), [approved])
+
     def test_refuse_tampered_candidates_or_pixels(self):
         Image.new('RGB', (2, 1), (9, 8, 7)).save(self.pictures / '00000.png')
         self.run_import(good=False)

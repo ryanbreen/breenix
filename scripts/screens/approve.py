@@ -193,9 +193,11 @@ def import_decisions(table, path, manifest, approval):
         require(key in rows and all(decision[k] == rows[key][k] for k in PICTURE),
                 'decision is not in candidates')
     filename = f'approvals/approval-{hashlib.sha256(raw).hexdigest()}.json'
-    changed = False
     for key, decision in decisions.items():
         if decision['verdict'] != 'approve':
+            previous = entries.get(key)
+            if previous and all(previous[k] == decision[k] for k in ('sha256', 'mode')):
+                del entries[key]
             continue
         row = rows[key]
         entry = {k: row[k] for k in PICTURE | {'intent'}}
@@ -205,10 +207,9 @@ def import_decisions(table, path, manifest, approval):
         if previous and previous['sha256'] == row['sha256'] and previous['mode'] == row['mode'] and 'native' in previous:
             entry['native'] = previous['native']
         entries[key] = entry
-        changed = True
     table['entries'] = [entries[key] for key in sorted(entries)]
     validate_table(table, path, {filename: doc})
-    return (filename, raw) if changed else None
+    return filename, raw
 
 
 def derive_native(table, path, directory):
