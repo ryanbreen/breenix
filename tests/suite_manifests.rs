@@ -905,6 +905,42 @@ fn planned_categories_have_empty_case_lists_only() {
 }
 
 #[test]
+fn case_expect_is_optional_bounded_text_and_other_unknown_keys_are_refused() {
+    let dir = std::env::temp_dir().join(format!("suite-expect-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let read = |extra: Value| {
+        let mut case = serde_json::json!({"id": "a", "title": "A"});
+        case.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let value = serde_json::json!({
+            "id": "s", "title": "S", "area": "A", "summary": "S.",
+            "binary": "/sbin/suite-s",
+            "categories": [{"id": "now", "title": "Now", "cases": [case]}]
+        });
+        let path = dir.join("s.json");
+        fs::write(&path, value.to_string()).unwrap();
+        let mut errors = Vec::new();
+        assert!(read_manifest(&path, &mut errors).is_some());
+        errors
+    };
+    assert!(read(serde_json::json!({})).is_empty());
+    let unknown = read(serde_json::json!({"foo": "ignored?"}));
+    assert!(unknown.iter().any(|e| e.contains("unexpected key \"foo\"")), "{unknown:?}");
+    for good in ["Green (#00FF00) square.".to_string(), "x".repeat(300), "é".repeat(300)] {
+        let errors = read(serde_json::json!({"expect": good}));
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+    let unknown = read(serde_json::json!({"expect": "Green (#00FF00) square.", "foo": 1}));
+    assert!(unknown.iter().any(|e| e.contains("unexpected key \"foo\"")), "{unknown:?}");
+    for bad in [Value::Null, Value::Bool(true), serde_json::json!(42), serde_json::json!([]),
+                serde_json::json!(""), serde_json::json!("   "), serde_json::json!("x".repeat(301)),
+                serde_json::json!("é".repeat(301))] {
+        let errors = read(serde_json::json!({"expect": bad}));
+        assert!(!errors.is_empty(), "accepted {bad}");
+    }
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn c_case_tables_are_read_exactly() {
     let table = "const struct libc_case libc_cases[] = {\n    { \"a-b\", a_b },\n    { \"c\", c },\n    { 0, 0 },\n};\n";
     assert_eq!(c_case_table(table).unwrap(), ["a-b", "c"]);
