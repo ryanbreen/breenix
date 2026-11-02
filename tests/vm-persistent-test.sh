@@ -44,6 +44,10 @@ mke2fs -q -t ext2 -F -d "$tmp/tree" "$tmp/source.img"
 "$launcher" qemu build --system-image "$tmp/source.img" --operator-account "$tmp/operator" --run-dir "$tmp/run" > /dev/null
 [ "$(stat -f '%Lp' "$tmp/run" 2>/dev/null || stat -c '%a' "$tmp/run")" = 700 ] || fail 'run directory is not private'
 [ -f "$tmp/run/system.img" ] && [ -f "$tmp/run/home.img" ] || fail 'missing disk image'
+[ "$(stat -f '%Lp' "$tmp/run/power-token" 2>/dev/null || stat -c '%a' "$tmp/run/power-token")" = 600 ] || fail 'host token mode'
+[[ $(cat "$tmp/run/power-token") =~ ^[a-f0-9]{64}$ ]] && [ "$(wc -c < "$tmp/run/power-token" | tr -d ' ')" = 64 ] || fail 'invalid token'
+[ "$(debugfs -R 'cat /etc/breenix/power-token' "$tmp/run/system.img" 2>/dev/null)" = "$(cat "$tmp/run/power-token")" ] || fail 'guest token differs'
+debugfs -R 'stat /etc/breenix/power-token' "$tmp/run/system.img" 2>/dev/null | grep -Eq 'Mode: +0400' || fail 'guest token mode'
 listing=$(debugfs -R 'ls -p /etc/breenix' "$tmp/run/system.img" 2>/dev/null)
 [[ "$listing" == *'/normal-image/'* ]] || fail 'normal image contents missing'
 [[ "$listing" == *'/operator-account/'* ]] || fail 'operator account missing'
@@ -101,6 +105,7 @@ cat > "$fixture/bin/qemu-system-aarch64" <<'SH'
 printf '%s\n' "$@" > "$CAPTURE/qemu-args"
 SH
 chmod +x "$fixture/scripts/"*.sh "$fixture/bin/qemu-system-aarch64"
+printf '%064d\n' 0 > "$fixture/run/power-token"
 touch "$fixture/kernel" "$fixture/run/system.img" "$fixture/run/home.img" "$fixture/run/.breenix-vm-persistent"
 python3 "$fixture/scripts/vm-artifacts.py" seal "$fixture" "$fixture/run" ""
 boot_fixture() {
