@@ -26,41 +26,144 @@ fn image_check(name: &str) -> CaseResult {
 // An opaque, lossless view of the compared bytes: BGR alongside alpha in grey,
 // with actual, reference and absolute difference rows for each fixture. No
 // source is redrawn or composited against a background that could hide alpha.
+const PANEL_PIXELS: usize = 16 * 1024 * 1024;
+const PANEL_PAD: usize = 8;
+const PANEL_GAP: usize = 8;
+const PANEL_LINE: usize = 12;
+
+struct PanelTile {
+    x: usize,
+    y: usize,
+    width: usize,
+    height: usize,
+    picture_w: usize,
+    picture_h: usize,
+    scale: usize,
+    divisor: usize,
+    title: Vec<Vec<u8>>,
+    title_height: usize,
+}
+struct PanelLayout {
+    tiles: Vec<PanelTile>,
+    width: usize,
+    height: usize,
+}
+struct PanelPlan {
+    target: usize,
+    pages: Vec<PanelLayout>,
+}
+
+fn panel_layout(images: &[checks::JudgedImage], target: usize, header: usize) -> PanelLayout {
+    let mut tiles = Vec::new();
+    for image in images {
+        let w = image.actual.width.max(image.expected.width) as usize;
+        let h = image.actual.height.max(image.expected.height) as usize;
+        let longer = w.max(h).max(1);
+        let scale = (target / longer).max(1);
+        let divisor = longer.div_ceil(target);
+        let (pw, ph) = (w.div_ceil(divisor) * scale, h.div_ceil(divisor) * scale);
+        let pictures_width = 2 * (pw + 2) + PANEL_GAP;
+        let row_width = if divisor > 1 { format!("difference shown at 1/{divisor}").len() * 6 } else { 60 };
+        // Bound long fixture titles with byte-preserving line wrapping.
+        let content_width = pictures_width.max((image.label.len() * 6).min(512)).max(row_width);
+        let title: Vec<_> = image.label.as_bytes().chunks(content_width / 6).map(|s| s.to_vec()).collect();
+        tiles.push(PanelTile {
+            x: 0, y: 0, width: content_width + 2 * PANEL_PAD,
+            height: 2 * PANEL_PAD + title.len() * PANEL_LINE + 3 * (16 + ph + 2 + PANEL_GAP),
+            picture_w: pw, picture_h: ph, scale, divisor, title, title_height: 0,
+        });
+    }
+    // A near-square grid keeps a large fixture collection viewable as a panel.
+    // Column widths and row heights are computed from the tile content.
+    let total_w: usize = tiles.iter().map(|t| t.width).sum();
+    let total_h: usize = tiles.iter().map(|t| t.height).sum();
+    let mut columns = 1;
+    while columns * columns * total_w < tiles.len() * total_h { columns += 1; }
+    columns = columns.min(tiles.len()).max(1);
+    let mut widths = vec![0; columns];
+    for (i, tile) in tiles.iter().enumerate() { widths[i % columns] = widths[i % columns].max(tile.width); }
+    let width = widths.iter().sum();
+    let mut y = header;
+    for row in tiles.chunks_mut(columns) {
+        let title_height = row.iter().map(|t| t.title.len() * PANEL_LINE).max().unwrap_or(0);
+        let height = row.iter().map(|t| t.height + title_height - t.title.len() * PANEL_LINE).max().unwrap_or(0);
+        let mut x = 0;
+        for (column, tile) in row.iter_mut().enumerate() {
+            tile.x = x; tile.y = y; tile.title_height = title_height;
+            x += widths[column];
+        }
+        y += height;
+    }
+    PanelLayout { tiles, width, height: y }
+}
+
+fn plan_panel(images: &[checks::JudgedImage]) -> PanelPlan {
+    for target in [256, 192, 128, 96, 64] {
+        let layout = panel_layout(images, target, 0);
+        if layout.width * layout.height <= PANEL_PIXELS {
+            return PanelPlan { target, pages: vec![layout] };
+        }
+    }
+    let mut pages = Vec::new();
+    let mut start = 0;
+    while start < images.len() {
+        let mut end = start + 1;
+        let mut page = panel_layout(&images[start..end], 64, 24);
+        while end < images.len() {
+            let next = panel_layout(&images[start..end + 1], 64, 24);
+            if next.width * next.height > PANEL_PIXELS { break; }
+            page = next;
+            end += 1;
+        }
+        pages.push(page);
+        start = end;
+    }
+    PanelPlan { target: 64, pages }
+}
+
 fn handoff_images(images: Vec<checks::JudgedImage>) -> CaseResult {
     use libgfx_ref::framebuf::Format;
     if images.is_empty() { return Ok(()); }
-    let mut placements = Vec::new();
-    let width = images.iter().map(|i| i.actual.width.max(i.expected.width) as usize * 2)
-        .max().unwrap_or(1).max(1280);
-    let (mut x, mut y, mut row_height) = (0, 0, 0);
-    for image in &images {
-        let w = image.actual.width.max(image.expected.width) as usize;
-        let h = image.actual.height.max(image.expected.height) as usize;
-        let tile_width = (w * 2).max(240);
-        let tile_height = h * 3 + 48;
-        if x + tile_width > width { x = 0; y += row_height; row_height = 0; }
-        placements.push((x, y, w, h));
-        x += tile_width;
-        row_height = row_height.max(tile_height);
-    }
-    let mut frame = FrameBuf::new_filled(width, y + row_height, Format::BGRX, Color::rgb(12, 19, 31))
+    let plan = plan_panel(&images);
+    let page = &plan.pages[0];
+    let mut frame = FrameBuf::new_filled(page.width, page.height, Format::BGRX, Color::rgb(12, 19, 31))
         .map_err(|e| format!("image showcase surface: {e:?}"))?;
-    for (ordinal, (image, &(x0, y0, w, h))) in images.iter().zip(&placements).enumerate() {
-        for (row, title) in ["ACTUAL BGR / ALPHA", "REFERENCE BGR / ALPHA", "DIFFERENCE BGR / ALPHA"].iter().enumerate() {
-            let y0 = y0 + row * (h + 16);
-            font5x7::draw_text(&mut frame, format!("{} {} {}", ordinal + 1, image.label, title).as_bytes(), x0, y0, Color::rgb(255, 255, 255), 1);
-            for y in 0..h { for x in 0..w {
-                let read = |i: &libimg::png::Image| -> [u8; 4] {
-                    if x >= i.width as usize || y >= i.height as usize { return [0; 4]; }
-                    let at = (y * i.width as usize + x) * 4;
-                    i.pixels.get(at..at+4).and_then(|p| p.try_into().ok()).unwrap_or([0; 4])
-                };
-                let a = read(&image.actual);
-                let r = read(&image.expected);
-                let p = match row { 0 => a, 1 => r, _ => std::array::from_fn(|c| a[c].abs_diff(r[c])) };
-                frame.put_pixel(x0 + x, y0 + 16 + y, Color::rgb(p[2], p[1], p[0]));
-                frame.put_pixel(x0 + w + x, y0 + 16 + y, Color::rgb(p[3], p[3], p[3]));
-            } }
+    if plan.pages.len() > 1 {
+        font5x7::draw_text(&mut frame,
+            format!("image comparison at {} px: page 1 of {}", plan.target, plan.pages.len()).as_bytes(),
+            PANEL_PAD, PANEL_PAD, Color::rgb(255,255,255), 1);
+    }
+    for (image, tile) in images.iter().zip(&page.tiles) {
+        let x0 = tile.x + PANEL_PAD;
+        for (line, title) in tile.title.iter().enumerate() {
+            font5x7::draw_text(&mut frame, title, x0, tile.y + PANEL_PAD + line * PANEL_LINE, Color::rgb(255,255,255), 1);
+        }
+        for (row, title) in ["actual", "reference", "difference"].iter().enumerate() {
+            let y0 = tile.y + PANEL_PAD + tile.title_height + row * (16 + tile.picture_h + 2 + PANEL_GAP);
+            let label = if tile.divisor > 1 { format!("{title} shown at 1/{}", tile.divisor) } else { (*title).into() };
+            font5x7::draw_text(&mut frame, label.as_bytes(), x0, y0, Color::rgb(255,255,255), 1);
+            for column in 0..2 {
+                let px = x0 + column * (tile.picture_w + 2 + PANEL_GAP);
+                let py = y0 + 16;
+                for dy in 0..tile.picture_h + 2 { for dx in 0..tile.picture_w + 2 {
+                    let color = if dx == 0 || dy == 0 || dx == tile.picture_w + 1 || dy == tile.picture_h + 1 {
+                        Color::rgb(255,255,255)
+                    } else {
+                        let x = (dx - 1) / tile.scale * tile.divisor;
+                        let y = (dy - 1) / tile.scale * tile.divisor;
+                        let read = |i: &libimg::png::Image| -> [u8;4] {
+                            if x >= i.width as usize || y >= i.height as usize { return [0;4]; }
+                            let at = (y * i.width as usize + x) * 4;
+                            i.pixels.get(at..at+4).and_then(|p| p.try_into().ok()).unwrap_or([0;4])
+                        };
+                        let a = read(&image.actual);
+                        let r = read(&image.expected);
+                        let p = match row { 0 => a, 1 => r, _ => std::array::from_fn(|c| a[c].abs_diff(r[c])) };
+                        if column == 0 { Color::rgb(p[2],p[1],p[0]) } else { Color::rgb(p[3],p[3],p[3]) }
+                    };
+                    frame.put_pixel(px+dx, py+dy, color);
+                } }
+            }
         }
     }
     breenix_suite::suite::judged(&frame)

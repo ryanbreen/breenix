@@ -582,17 +582,17 @@
         {
           "id": "decode-fixtures",
           "title": "Independent BMP fixtures decode to their literal pixels",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Two tiny tiles show 3x2 RGB primaries then 2x2 near-black (#010203) samples; alpha is white (#FFFFFF)."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. Two tiles show 3x2 RGB primaries then 2x2 near-black (#010203) samples; alpha is white (#FFFFFF)."
         },
         {
           "id": "orientation",
           "title": "Bottom-up and top-down (negative height) BMPs decode to the same pixels",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Two identical 5x4 colour mosaics sit side by side, beginning mustard (#C5B521), with white alpha patches."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. Two identical 5x4 colour mosaics form two tiles, beginning mustard (#C5B521), with white alpha patches."
         },
         {
           "id": "padding",
           "title": "Widths 1 to 4 decode correctly across row padding",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Four colour mosaics, 1x3 through 4x3, run left to right, the first beginning muted red (#A63235), with white alpha."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. Four colour mosaics, 1x3 through 4x3, form a grid, the first beginning muted red (#A63235), with white alpha."
         },
         {
           "id": "encode-bytes",
@@ -601,12 +601,12 @@
         {
           "id": "roundtrip",
           "title": "Encoding then decoding returns the original pixels",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Four colour mosaics, 1x1, 5x3, 7x7 and 64x2, run left to right, the first pale green (#A5DF7B), with white alpha."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. Four colour mosaics, 1x1, 5x3, 7x7 and 64x2, form a grid, the first pale green (#A5DF7B), with white alpha."
         },
         {
           "id": "truncated",
           "title": "A BMP shorter than its header claims is rejected",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). One 3x3 colour mosaic sits at the top left, beginning pale yellow-green (#D6E490), with white alpha."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. One 3x3 colour mosaic fills one tile, beginning pale yellow-green (#D6E490), with white alpha."
         },
         {
           "id": "size-overflow",
@@ -629,42 +629,42 @@
         {
           "id": "gray-depths",
           "title": "Grayscale at depths 1, 2, 4, 8 and 16 decodes exactly",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Five 3x1 strips run from black through grey to white (#FFFFFF), with white alpha."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. Five 3x1 strips run from black through grey to white (#FFFFFF), with white alpha."
         },
         {
           "id": "gray-alpha",
           "title": "Grayscale with alpha at depths 8 and 16 decodes exactly",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Two 2x1 strips show mid-grey (#7F7F7F) samples; alpha pairs half grey with white (#FFFFFF)."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. Two 2x1 strips show mid-grey (#7F7F7F) samples; alpha pairs half grey with white (#FFFFFF)."
         },
         {
           "id": "rgb",
           "title": "RGB at depths 8 and 16 decodes exactly",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Two 2x1 strips pair azure (#007FFF) with pink (#FF007F); alpha is white (#FFFFFF)."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. Two 2x1 strips pair azure (#007FFF) with pink (#FF007F); alpha is white (#FFFFFF)."
         },
         {
           "id": "rgba",
           "title": "RGBA at depths 8 and 16 decodes to premultiplied pixels exactly",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Two 2x1 strips pair brown (#7F3F00) with cyan (#00FFFF); alpha is grey then white (#FFFFFF)."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. Two 2x1 strips pair brown (#7F3F00) with cyan (#00FFFF); alpha is grey then white (#FFFFFF)."
         },
         {
           "id": "palette-depths",
           "title": "Palette images at depths 1, 2, 4 and 8 decode exactly",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Four 4x1 strips show near-black (#010203), slate (#28323C), slate, near-black; alpha is white (#FFFFFF)."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. Four 4x1 strips show near-black (#010203), slate (#28323C), slate, near-black; alpha is white (#FFFFFF)."
         },
         {
           "id": "trns-gray",
           "title": "A grayscale tRNS key colour becomes transparent",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Tiny 2x1 strips pair black with grey or white (#FFFFFF); the alpha strips alternate black and white."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. 2x1 strips pair black with grey or white (#FFFFFF); the alpha strips alternate black and white."
         },
         {
           "id": "trns-rgb",
           "title": "An RGB tRNS key colour becomes transparent",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Tiny 2x1 strips show transparent black then near-black (#030201), fading to black at 16 bits; alpha is black then white (#FFFFFF)."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. 2x1 strips show transparent black then near-black (#030201), fading to black at 16 bits; alpha is black then white (#FFFFFF)."
         },
         {
           "id": "trns-palette",
           "title": "Palette tRNS alphas apply per entry",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). A 3x1 strip is black, green (#008000), blue (#0000FF); alpha is black, grey (#808080), white (#FFFFFF)."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. A 3x1 strip is black, green (#008000), blue (#0000FF); alpha is black, grey (#808080), white (#FFFFFF)."
         },
         {
           "id": "invalid-combos",
@@ -673,12 +673,12 @@
         {
           "id": "rounding-16bit",
           "title": "16-bit samples convert to 8 bits by the contract's formula",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). A 12x1 strip steps from black through near-black and mid-grey (#808080) to white (#FFFFFF); alpha is white."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. A 12x1 strip steps from black through near-black and mid-grey (#808080) to white (#FFFFFF); alpha is white."
         },
         {
           "id": "filters",
           "title": "Rows using each of the five filter types decode exactly, at every bytes-per-pixel width",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Eight 7x5 striped sample tiles repeat samples down rows, in greys and colours, with white (#FFFFFF) or varying grey alpha."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. Eight 7x5 striped sample tiles repeat samples down rows, in greys and colours, with white (#FFFFFF) or varying grey alpha."
         },
         {
           "id": "filter-invalid",
@@ -687,17 +687,17 @@
         {
           "id": "interlace",
           "title": "An Adam7 image decodes to the same pixels as its non-interlaced twin",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). One 17x19 mosaic begins black, gaining blue across columns, green down rows and red diagonally; alpha is white (#FFFFFF)."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. One 17x19 mosaic begins black, gaining blue across columns, green down rows and red diagonally; alpha is white (#FFFFFF)."
         },
         {
           "id": "interlace-small",
           "title": "Images from 1x1 to 9x9, where some passes are empty, decode correctly",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Eighty-one tiny mosaics from 1x1 to 9x9 pack across the page with blue, green and red ramps; alpha is white (#FFFFFF)."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. Eighty-one mosaics from 1x1 to 9x9 pack across the page with blue, green and red ramps; alpha is white (#FFFFFF)."
         },
         {
           "id": "multi-idat",
           "title": "Image data split across many IDAT chunks, including empty ones, decodes identically",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). A single dark grey (#2A2A2A) pixel sits at the top left with white (#FFFFFF) alpha."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. A single dark grey (#2A2A2A) pixel fills one tile with white (#FFFFFF) alpha."
         },
         {
           "id": "crc",
@@ -706,7 +706,7 @@
         {
           "id": "chunk-order",
           "title": "IDAT before IHDR, PLTE after IDAT and a missing IEND are each rejected",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). A single dark grey (#2A2A2A) pixel sits at the top left with white (#FFFFFF) alpha."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. A single dark grey (#2A2A2A) pixel fills one tile with white (#FFFFFF) alpha."
         },
         {
           "id": "plte-required",
@@ -727,7 +727,7 @@
         {
           "id": "ancillary-ignored",
           "title": "gAMA, iCCP, sRGB and tEXt are ignored, as the contract states (no colour management)",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Six 1x1 patches show dark grey (#2A2A2A) or near-black (#010203), each with white (#FFFFFF) alpha."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. Six 1x1 patches show dark grey (#2A2A2A) or near-black (#010203), each with white (#FFFFFF) alpha."
         },
         {
           "id": "ihdr-invalid",
@@ -756,17 +756,17 @@
         {
           "id": "independent-fixtures",
           "title": "The public PngSuite fixtures decode to the pixels an independent decoder recorded at authoring time",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Seventy-two labelled 32x32 PngSuite tiles pack left to right: greyscale, coloured and transparent patterns."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. 72 fixtures of 1x1 through 32x32 form a grid of greyscale, coloured and transparent patterns."
         },
         {
           "id": "blit",
           "title": "A decoded RGBA image blitted into a surface gives the literal blended values",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). A 3x1 strip is light grey (#C8C8C8), muted red (#A46464), light grey; alpha is white (#FFFFFF)."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. A 3x1 strip is light grey (#C8C8C8), muted red (#A46464), light grey; alpha is white (#FFFFFF)."
         },
         {
           "id": "from-disk",
           "title": "A pinned PNG read from the ext2 disk decodes to its recorded pixels",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). One 32x32 colour ramp sits top left: red (#FF0008) at top right, blue (#0020FF) at bottom right; alpha brightens left to right."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. One 32x32 colour ramp fills one tile: red (#FF0008) at top right, blue (#0020FF) at bottom right; alpha brightens left to right."
         }
       ]
     },
@@ -777,12 +777,12 @@
         {
           "id": "decodes",
           "title": "An encoded frame decodes to the same pixels",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Two 2x1 strips pair near-black (#010203) with purple (#800080) or dark navy (#0A141E); alpha is half-grey or white (#FFFFFF)."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. Two 2x1 strips pair near-black (#010203) with purple (#800080) or dark navy (#0A141E); alpha is half-grey or white (#FFFFFF)."
         },
         {
           "id": "stable",
           "title": "Encoding the same frame twice gives identical bytes",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). One 13x7 mosaic starts black, with blue column ramps, green row ramps and a red diagonal ramp; alpha is white (#FFFFFF)."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. One 13x7 mosaic starts black, with blue column ramps, green row ramps and a red diagonal ramp; alpha is white (#FFFFFF)."
         },
         {
           "id": "format",
@@ -799,7 +799,7 @@
         {
           "id": "sizes",
           "title": "Frames of 1x1, odd widths and 1280x800 encode and decode",
-          "expect": "On navy (#0C131F), white (#FFFFFF) ACTUAL / REFERENCE / DIFFERENCE BGR / ALPHA labels head three rows of colour/greyscale-alpha patches; differences are black (#000000). Four mosaics, 1x1, 3x7, 17x9 and 1280x800, have blue, green and red ramps; alpha is white (#FFFFFF)."
+          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. Four RGB-ramp mosaics; 1280x800 is shown at 1/5, sampling every fifth pixel; alpha white."
         },
         {
           "id": "limits",
