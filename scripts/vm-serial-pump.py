@@ -67,7 +67,7 @@ def main(run, whole_path):
 
     def on_line(line):
         nonlocal expected_receipt, shutdown_action, watchdog_triggered
-        if line == '[watchdog-fault] trigger' and not watchdog_triggered:
+        if re.fullmatch(r'\[watchdog-fault\] trigger(?: (?:health-hang|feeder-hang))?', line) and not watchdog_triggered:
             events.write(json.dumps(dict(event='watchdog-trigger', t=time.time())) + '\n')
             watchdog_triggered = True
         challenge = re.fullmatch(r'\[init\] shutdown nonce=([a-f0-9]{64})', line)

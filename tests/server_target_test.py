@@ -45,6 +45,102 @@ class FakeTarget:
 
 
 class ServerTarget(unittest.TestCase):
+    def test_qemu_watchdog_runner_retains_each_verdict_before_poweroff_and_files_vigil(self):
+        helper = runpy.run_path(str(ROOT / 'scripts/metal/server_watchdog.py'))
+        sha = 'a' * 40
+        keyline = '[stdout] bsshd: host key ED25519 SHA256:fixture (loaded)\n'
+        calls = []
+        with tempfile.TemporaryDirectory() as scratch:
+            run = Path(scratch)
+            (run / '.ssh').mkdir()
+            (run / '.ssh/key.pub').write_text('ssh-ed25519 fixture')
+            (run / '.ssh/key').touch()
+            (run / 'build.json').write_text(json.dumps(dict(commit=sha)))
+            for name in ('system.img', 'home.img'): (run / name).write_bytes(b'disk')
+            (run / 'qemu-profile').write_text('fixture-profile')
+            (run / 'current').write_text('baseline')
+            state = dict(current='baseline', port=2222)
+            site = dict(SERVER_SSH_HOST='127.0.0.1', OPERATOR_USER='fixture',
+                        OPERATOR_SSH_PUBLIC_KEY='ssh-ed25519 fixture', CONSOLE_USER='fixture', CONSOLE_PASSWORD='fixture')
+            class Machine:
+                def __init__(self, path, boot=None):
+                    self.run, self.boot = run, boot or state['current']
+                    self.directory = run / 'boots' / self.boot
+                    self.directory.mkdir(parents=True, exist_ok=True)
+                def identity(self):
+                    return dict(id=self.boot, target='qemu', mode='persistent', bootedCommit=sha, toolsCommit=sha,
+                                evidenceEligible=True, runId='private-run', qemuProcess=self.boot.removesuffix('-after'),
+                                **(dict(kind='fault-test') if self.boot != 'baseline' else {}))
+                def read(self, name):
+                    if name.startswith('definition/'): return (ROOT / name.removeprefix('definition/')).read_text()
+                    if name == 'started': return '1'
+                    if name == 'serial.txt':
+                        if self.boot == 'baseline': return keyline
+                        if self.boot.endswith('-after'):
+                            return '[watchdog] previous-expired=1\n[init] log boot-id=4-5-6\nbsshd: listening on 0.0.0.0:22\n'
+                        return ('[watchdog] armed seconds=120 action=hard-reset\n[watchdog] healthy feeds=6\n'
+                                '[init] log boot-id=1-2-3\n[watchdog-fault] trigger ' + self.boot + '\n')
+                    return (self.directory / name).read_text() if (self.directory / name).exists() else ''
+                def write(self, name, value):
+                    (self.directory / name).write_text(json.dumps(value))
+                    if name == 'watchdog-verdict.json': calls.append(('verdict', self.boot, value['passed']))
+                    return reply()
+                def select(self, boot): return Machine(run, boot)
+                def holds_lease(self): return self.boot == state['current'] and not self.ended(self.boot)
+                def ended(self, boot): return (run / 'boots' / boot / 'ended').exists()
+                def reboot_site(self): return dict(site, SERVER_SSH_PORT=state['port'])
+                def fault_build(self): return dict(commit=sha, faultKind='watchdog', evidenceEligible=True)
+                def console(self, *args):
+                    return SimpleNamespace(service_log=lambda _: keyline, logout=lambda: None)
+                def stop_for_fault(self, *args):
+                    calls.append(('poweroff', self.boot))
+                    (self.directory / 'ended').touch()
+                    events = [dict(event='requested-shutdown', action='poweroff'),
+                              dict(event='SHUTDOWN', data=dict(reason='guest-shutdown'))]
+                    (self.directory / 'events.jsonl').write_text('\n'.join(map(json.dumps, events)))
+                def start_watchdog_fault(self, commit, name):
+                    calls.append(('launch', name, commit))
+                    state.update(current=name + '-after', port=state['port'] + 1)
+                    (run / 'current').write_text(state['current'])
+                    fault, after = self.select(name), self.select(state['current'])
+                    (fault.directory / 'ended').touch()
+                    events = [dict(event='watchdog-trigger', t=100), dict(event='WATCHDOG', data=dict(action='reset')),
+                              dict(event='RESET', data=dict(guest=True, reason='guest-reset')),
+                              dict(event='watchdog-reset-observed', successor=after.boot, t=220)]
+                    (fault.directory / 'events.jsonl').write_text('\n'.join(map(json.dumps, events)))
+                    (after.directory / 'events.jsonl').write_text('')
+                    return name
+            base = Machine(run)
+            (base.directory / 'started').write_text('1')
+            (base.directory / 'serial.txt').write_text(keyline)
+            def command(args, **kwargs):
+                if args[0] == 'ssh-keyscan': return reply('[127.0.0.1]:2222 ssh-ed25519 fixture\n')
+                if args[:2] == ['ssh-keygen', '-E']: return reply('256 SHA256:fixture fixture (ED25519)\n')
+                if args[0] == 'ssh':
+                    known = args[args.index('-o') + 1:]  # Inspect the actual strict Probe invocation.
+                    self.assertIn('StrictHostKeyChecking=yes', known)
+                    path = next(x.split('=', 1)[1] for x in args if x.startswith('UserKnownHostsFile='))
+                    self.assertEqual(Path(path).read_text(), '[127.0.0.1]:' + str(state['port']) + ' ssh-ed25519 fixture\n')
+                    calls.append(('ssh', state['current']))
+                    return reply('4-5-6\n')
+                return reply()
+            api = dict(HOST, QemuTarget=Machine)
+            args = SimpleNamespace(run_dir=run, boot='baseline', sha=sha, branch='server/arm-watchdog')
+            with patch.dict(HOST['Probe'].__init__.__globals__, command=command), \
+                 patch.object(Path, 'home', return_value=run), \
+                 patch.object(helper['time'], 'time', return_value=250), \
+                 patch.object(helper['subprocess'], 'run', return_value=reply()) as filing:
+                self.assertEqual(helper['run'](api, args), 0)
+            self.assertEqual(calls, [('poweroff', 'baseline'),
+                ('launch', 'feeder-hang', sha), ('ssh', 'feeder-hang-after'),
+                ('verdict', 'feeder-hang', True), ('poweroff', 'feeder-hang-after'),
+                ('launch', 'health-hang', sha), ('ssh', 'health-hang-after'),
+                ('verdict', 'health-hang', True), ('poweroff', 'health-hang-after')])
+            saved = json.loads((base.directory / 'server-watchdog.json').read_text())
+            self.assertTrue(saved['verdict'].startswith('PASS: server/watchdog'))
+            self.assertEqual(len(saved['faultBoots']), 2)
+            self.assertEqual(filing.call_args.args[0][1:5], ['record', 'qemu', 'persistent', 'server'])
+
     def test_qemu_watchdog_cli_dispatches_without_metal(self):
         argv = ['server-suite', '--target', 'qemu', '--run-dir', '/unused',
                 '--boot', '20261101T120000Z-qemu', '--sha', 'a' * 40,
