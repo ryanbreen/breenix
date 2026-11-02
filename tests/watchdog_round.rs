@@ -10,6 +10,10 @@ impl Bmc {
     }
 }
 impl Transport for Bmc {
+    type State = [u8; 8];
+    fn configured(timer: &Self::State) -> bool {
+        timer[0] & 0x47 == 0x44 && timer[1] == 1 && timer[2] == 0 && timer[4..6] == TIMER[4..6]
+    }
     fn get(&mut self) -> Result<[u8; 8], &'static str> { self.error("get")?; Ok(self.timer) }
     fn set(&mut self) -> Result<(), &'static str> {
         self.error("set")?;
@@ -47,4 +51,46 @@ fn transient_transport_errors_and_bmc_restart_recover_after_health() {
         assert_eq!(policy::feed(&mut bmc, || Ok(())), Ok(true));
         assert_eq!(bmc.feeds, 2);
     }
+}
+
+#[derive(Clone, Copy, Default)]
+struct Registers { enabled: bool, timeout: u32 }
+
+#[derive(Default)]
+struct RegisterWatchdog { registers: Registers, sets: usize, feeds: usize, mismatch: bool }
+impl Transport for RegisterWatchdog {
+    type State = Registers;
+    fn configured(state: &Self::State) -> bool { state.enabled && state.timeout == 120 }
+    fn get(&mut self) -> Result<Self::State, &'static str> {
+        let mut state = self.registers;
+        if self.mismatch && self.feeds > 0 { state.timeout = 0; }
+        Ok(state)
+    }
+    fn set(&mut self) -> Result<(), &'static str> {
+        self.sets += 1;
+        self.registers = Registers { enabled: true, timeout: 120 };
+        Ok(())
+    }
+    fn reset(&mut self) -> Result<(), &'static str> { self.feeds += 1; Ok(()) }
+}
+
+#[test]
+fn register_transport_obeys_health_and_rearms_lost_configuration() {
+    let mut watchdog = RegisterWatchdog::default();
+    assert_eq!(policy::feed(&mut watchdog, || Ok(())), Ok(true));
+    assert!(policy::feed(&mut watchdog, || Err("EIO")).is_err());
+    assert_eq!(watchdog.feeds, 1);
+    assert_eq!(policy::feed(&mut watchdog, || Ok(())), Ok(false));
+    assert_eq!(watchdog.sets, 1);
+    watchdog.registers = Registers::default();
+    assert_eq!(policy::feed(&mut watchdog, || Ok(())), Ok(true));
+    assert_eq!(watchdog.sets, 2);
+    assert_eq!(watchdog.feeds, 3);
+}
+
+#[test]
+fn register_transport_rejects_readback_mismatch() {
+    let mut watchdog = RegisterWatchdog { mismatch: true, ..Default::default() };
+    assert_eq!(policy::feed(&mut watchdog, || Ok(())), Err("watchdog settings readback"));
+    assert_eq!(watchdog.feeds, 1);
 }
