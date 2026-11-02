@@ -2610,6 +2610,16 @@ fn panic(info: &PanicInfo) -> ! {
     // locks.
     kernel::graphics::boot_screen::show_panic(info);
 
+    // Leave the panic visible for ten seconds before production recovery.
+    // The architectural counter works before timer initialization and with IRQs off.
+    #[cfg(not(any(feature = "testing", feature = "boot_tests")))]
+    {
+        let start = kernel::arch_impl::aarch64::timer::rdtsc();
+        let pause = kernel::arch_impl::aarch64::timer::frequency_hz().saturating_mul(10);
+        while kernel::arch_impl::aarch64::timer::rdtsc().wrapping_sub(start) < pause {
+            core::hint::spin_loop();
+        }
+    }
     // Test profiles retain the panic for inspection; production requests reset.
     // If firmware returns, keep the terminal WFI fallback below.
     #[cfg(not(any(feature = "testing", feature = "boot_tests")))]
