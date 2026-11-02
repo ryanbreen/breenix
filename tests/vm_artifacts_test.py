@@ -11,6 +11,24 @@ ARTIFACTS = runpy.run_path(str(ROOT / 'scripts/vm-artifacts.py'))
 
 
 class VmArtifacts(unittest.TestCase):
+    def test_imported_disks_can_change_between_diagnostic_launches(self):
+        with tempfile.TemporaryDirectory() as name:
+            run = Path(name)
+            for path in ('kernel', 'system.img', 'home.img', 'power-token'):
+                (run / path).write_bytes(path.encode())
+            ARTIFACTS['seal'](ROOT, run, '')
+            for _ in range(2):
+                for disk in ('system.img', 'home.img'):
+                    with (run / disk).open('ab') as output:
+                        output.write(b'guest writes before interrupted exit')
+                receipt = ARTIFACTS['verify'](ROOT, run, run / 'kernel')
+                self.assertFalse(receipt['evidenceEligible'])
+                for disk in ('system.img', 'home.img'):
+                    self.assertEqual(receipt['artifacts'][disk], ARTIFACTS['digest'](run / disk))
+            (run / 'power-token').unlink()
+            with self.assertRaisesRegex(ValueError, 'build a new run'):
+                ARTIFACTS['verify'](ROOT, run, run / 'kernel')
+
     def test_imported_old_outputs_cannot_attest_the_new_head(self):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)

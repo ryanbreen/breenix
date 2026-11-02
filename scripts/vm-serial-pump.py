@@ -29,7 +29,9 @@ def main(run, whole_path):
     record = {'mode': 'persistent', 'bootMode': mode_path.read_text().strip() if mode_path.exists() else '',
               'target': 'qemu', 'bootedCommit': build.get('commit'),
               'toolsCommit': tools_path.read_text().strip() if tools_path.exists() else '',
-              'evidenceEligible': bool(verified.get('evidenceEligible') is True and verified.get('commit') == build.get('commit') and verified.get('artifacts') == build.get('artifacts'))}
+              'evidenceEligible': bool(verified.get('evidenceEligible') is True and verified.get('commit') == build.get('commit') and
+                                       {k: v for k, v in verified.get('artifacts', {}).items() if k not in ('system.img', 'home.img')} ==
+                                       {k: v for k, v in build.get('artifacts', {}).items() if k not in ('system.img', 'home.img')})}
     fault = (run / 'boot-kind').exists() and (run / 'boot-kind').read_text().strip() == 'fault-test'
     if fault:
         record['kind'] = 'fault-test'

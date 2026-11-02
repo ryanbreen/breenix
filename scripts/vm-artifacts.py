@@ -37,6 +37,8 @@ def verify(root, run, kernel, fault=False):
     build = json.loads((run / 'build.json').read_text())
     # QEMU uses this private copy, rather than a mutable shared target output.
     shutil.copyfile(kernel, run / 'boot-kernel')
+    if not (run / 'power-token').is_file() or 'power-token' not in build['artifacts']:
+        raise ValueError('VM run predates power-token sealing; build a new run')
     if digest(run / 'power-token') != build['artifacts']['power-token']:
         raise ValueError('VM power token differs from the sealed token')
     if fault and build.get('sourceBuilt') is not True:
@@ -49,9 +51,10 @@ def verify(root, run, kernel, fault=False):
         if seal['buildCommit'] != build.get('commit'):
             raise ValueError('continuation belongs to a different build')
         expected.update(seal['disks'])
-    for name in ('system.img', 'home.img'):
-        if digest(run / name) != expected[name]:
-            raise ValueError('VM artifacts differ from the latest seal (disk)')
+    if build.get('sourceBuilt') is True:
+        for name in ('system.img', 'home.img'):
+            if digest(run / name) != expected[name]:
+                raise ValueError('VM artifacts differ from the latest seal (disk)')
     if build.get('sourceBuilt') is True:
         kernel_name = 'fault-kernel' if fault else 'kernel'
         if digest(run / 'boot-kernel') != expected.get(kernel_name):
@@ -59,7 +62,9 @@ def verify(root, run, kernel, fault=False):
         if build['commit'] != git(root, 'rev-parse', 'HEAD') or git(root, 'status', '--porcelain'):
             raise ValueError('source build does not match the clean tools commit')
         eligible = build.get('dirty') is False
-    receipt = dict(build, evidenceEligible=eligible)
+    actual = dict(expected)
+    actual.update({name: digest(run / name) for name in ('system.img', 'home.img')})
+    receipt = dict(build, artifacts=actual, evidenceEligible=eligible)
     (run / 'verified-build.json').write_text(json.dumps(receipt) + '\n')
     return receipt
 
