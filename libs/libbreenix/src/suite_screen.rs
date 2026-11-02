@@ -391,12 +391,14 @@ fn append(name: &str, end: bool) -> Result<(), &'static str> {
     let case = super::running_case().ok_or("outside-case")?;
     let (prefix, _) = super::RECORD_NAMES.get().ok_or("outside-case")?;
     let suite = prefix.strip_prefix("SUITE ").and_then(|s| s.strip_suffix(' ')).ok_or("outside-case")?;
-    let mut result = if end {
+    let mut result = if CLOCK.load(Ordering::Relaxed).is_null() {
+        Err("clock-allocation".into())
+    } else if end {
         match snapshot() {
             Err(e) if e == "no-case-scanout" => END.lock().unwrap().result.take().unwrap_or(Err(e)),
             result => result,
         }
-    } else if CLOCK.load(Ordering::Relaxed).is_null() { Err("clock-allocation".into()) } else { timed(snapshot) };
+    } else { timed(snapshot) };
     if end && matches!(&result, Err(e) if e == "no-case-scanout") { return Ok(()); }
     if let Ok((hash, mode, _)) = &result {
         if capture_enabled() {
@@ -423,13 +425,14 @@ pub(super) fn checkpoint(name: &str) -> super::CaseResult {
 pub(super) fn finish() {
     if !ENABLED.load(Ordering::Relaxed) { return; }
     if !in_case() { return; }
-    timed(|| {
+    let publish = || {
         let _ = append("end", true);
         let lines = LINES.lock().unwrap();
         // A missing or corrupt handoff is an additive SCREEN error, without changing CASE.
         let path = std::format!("{}.screen", super::judged_path());
         let _ = std::fs::write(path, pack(&lines));
-    });
+    };
+    if CLOCK.load(Ordering::Relaxed).is_null() { publish(); } else { timed(publish); }
 }
 
 pub(super) fn collect(suite: &str, case: &str) -> Vec<String> {

@@ -64,6 +64,29 @@ def check_inventory(by_boot):
     return inventory
 
 
+def screen_inventory(suite, serial):
+    pictures, declarations = {}, []
+    prefix = f'SUITE {suite} SCREEN '
+    for line in serial.splitlines():
+        if not line.startswith(prefix):
+            continue
+        fields = line[len(prefix):].split()
+        key = (fields[0], fields[1])
+        if fields[2].startswith('sha256='):
+            pictures[key] = fields[2][len('sha256='):]
+        elif fields[2] == 'unobservable':
+            declarations.append(key)
+    return pictures, declarations
+
+
+def compare_pictures(native, arm):
+    common = native.keys() & arm.keys()
+    for key in sorted(common):
+        if native[key] != arm[key]:
+            raise ValueError(f'cross-target digest differs: {key[0]} {key[1]}')
+    return len(common)
+
+
 def reset_faults(serial, names):
     """Attribute by ordered case interval, not by the generic driver's reason.
 
@@ -125,7 +148,7 @@ def accept(commit, captures):
     report = dict(measuredCommit=commit, scorerCommit=subprocess.check_output(
         ['git', 'rev-parse', 'HEAD'], cwd=ROOT, text=True).strip(),
         proven=False, captures={}, failures=missing_captures(captures))
-    native_rows, seen_boots = {}, set()
+    native_rows, seen_boots, pictures_by_capture = {}, set(), {}
     for name in REQUIRED:
         path = captures.get(name)
         if not path:
@@ -180,9 +203,13 @@ def accept(commit, captures):
                     raise ValueError('SCREEN inventory differs: missing=' + str(
                         [v for v in expected if v not in actual]) + ' extra=' + str(
                         [v for v in actual if v not in expected]))
+                pictures, declarations = screen_inventory(suite, serial)
+                pictures_by_capture[name] = pictures
                 row['screenRecords'] = len(actual)
+                row['screenPictures'] = len(pictures)
                 row['screenDeclarations'] = [l for l in serial.splitlines()
                                              if l.startswith(f'SUITE {suite} SCREEN ') and ' unobservable ' in l]
+                row['unobservableRecords'] = len(declarations)
             if platform == 'metal':
                 checked = []
                 for category in native['capture_categories'](boot):
@@ -203,6 +230,12 @@ def accept(commit, captures):
         except (OSError, ValueError, KeyError, TypeError) as error:
             row['failure'] = str(error)
             report['failures'].append(name + ': ' + str(error))
+    if 'gpu' in pictures_by_capture and 'arm-gpu' in pictures_by_capture:
+        try:
+            report['crossTargetPictures'] = compare_pictures(
+                pictures_by_capture['gpu'], pictures_by_capture['arm-gpu'])
+        except ValueError as error:
+            report['failures'].append(str(error))
     report['gt710Checks'] = check_inventory(native_rows)
     report['distinctGT710Checks'] = len(report['gt710Checks'])
     report['gt710CheckObservations'] = sum(map(len, native_rows.values()))
