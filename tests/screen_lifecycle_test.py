@@ -34,8 +34,15 @@ mod screen {
  CLOCK_STRUCT
  CLOCK_IMPL
  static CLOCK:CheckpointClock=CheckpointClock::new();
- pub fn enter_case(){CLOCK.excluded.store(0,Ordering::Relaxed);CLOCK.active.store(0,Ordering::Relaxed);}
+ pub fn enter_case(){CLOCK.window_excluded.store(0,Ordering::Relaxed);CLOCK.sequence.store(0,Ordering::Relaxed);CLOCK.excluded.store(0,Ordering::Relaxed);CLOCK.active.store(0,Ordering::Relaxed);}
  pub fn elapsed_ns(start:u64,now:u64)->u64{CLOCK.elapsed(start,now)}
+ #[test] fn abandoned_writer_does_not_trap_supervision(){
+   let clock=CheckpointClock::new();
+   clock.start(1);
+   assert!(clock.overdue(120_000_000_001));
+   clock.sequence.store(1,Ordering::SeqCst);
+   assert_eq!(clock.elapsed(1,2),1);
+ }
  pub fn before_helper_drop(){
    if !ON.load(Ordering::Relaxed){return;}
    assert!(LIVE.load(Ordering::Relaxed),"owner was torn down before the hook");

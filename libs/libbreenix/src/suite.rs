@@ -656,6 +656,7 @@ pub fn start_case_window() -> CaseResult {
     let fd = CASE_WINDOW_FD.swap(-1, Ordering::Relaxed);
     if fd < 0 { return fail("this case has no pending timed window"); }
     let now = monotonic_ns().ok_or_else(|| CaseError::Fail(String::from("no monotonic clock")))? as u64;
+    screen::start_window(now);
     CASE_DEADLINE_NS.store(now + DEFAULT_CASE_LIMIT_MS * 1_000_000, Ordering::Relaxed);
     let sent = io::write(Fd::from_raw(fd as u64), &now.to_le_bytes());
     let _ = io::close(Fd::from_raw(fd as u64));
@@ -1316,6 +1317,7 @@ const FRAME_MS: i128 = 66;
 /// that clock, so a stopped clock wakes the runner only through the pipes.)
 fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut(), window: Option<Fd>, published: Option<Fd>, mut report: Option<Fd>, mut stage: Option<(Fd, Fd)>) -> Waited {
     let mut awaiting_window = window.is_some();
+    let mut excluded_before = screen::excluded_ns(monotonic_ns().unwrap_or(0) as u64);
     let mut last = monotonic_ns();
     let mut still = 0;
     let mut drawn = last;
@@ -1326,6 +1328,7 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
             if let Some(fd) = window {
                 if io::read(fd, &mut bytes).ok() == Some(8) {
                     start = Some(u64::from_le_bytes(bytes) as i128);
+                    excluded_before = screen::window_excluded();
                     awaiting_window = false;
                 }
             }
@@ -1343,11 +1346,19 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
             _ => {}
         }
         let now = monotonic_ns();
-        let ms = screen_ms_since(start);
+        let ms = match (start, now) {
+            (Some(start), Some(now)) => (now.saturating_sub(start) as u64)
+                .saturating_sub(screen::excluded_ns(now as u64).saturating_sub(excluded_before)) / 1_000_000,
+            _ => 0,
+        };
+        // Observation has its own wall-clock supervision even while case time pauses.
+        if now.is_some_and(|now| screen::overdue(now as u64)) {
+            return Waited::TimedOut(ms);
+        }
         // Setup cannot outlive the existing 120-second progress watchdog. The
         // named case gets exactly limit_ms after its one-shot warm-up signal.
         let active_limit = if awaiting_window { 120_000 } else { limit_ms };
-        if ms >= active_limit {
+        if ms >= active_limit || (awaiting_window && ms_since(start) >= 120_000) {
             return Waited::TimedOut(ms);
         }
         if now.is_none() || (timed_out && now == last) {

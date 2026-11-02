@@ -103,10 +103,11 @@ pub(super) struct CheckpointClock {
     sequence: AtomicU64,
     excluded: AtomicU64,
     active: AtomicU64,
+    window_excluded: AtomicU64,
 }
 impl CheckpointClock {
     pub(super) const fn new() -> Self {
-        Self { sequence: AtomicU64::new(0), excluded: AtomicU64::new(0), active: AtomicU64::new(0) }
+        Self { sequence: AtomicU64::new(0), excluded: AtomicU64::new(0), active: AtomicU64::new(0), window_excluded: AtomicU64::new(0) }
     }
     pub(super) fn start(&self, now: u64) {
         self.sequence.fetch_add(1, Ordering::SeqCst);
@@ -120,18 +121,27 @@ impl CheckpointClock {
         self.sequence.fetch_add(1, Ordering::SeqCst);
     }
     fn excluded_at(&self, now: u64) -> u64 {
-        loop {
+        for _ in 0..8 {
             let sequence = self.sequence.load(Ordering::SeqCst);
-            if sequence & 1 != 0 { core::hint::spin_loop(); continue; }
+            if sequence & 1 != 0 { continue; }
             let excluded = self.excluded.load(Ordering::SeqCst);
             let active = self.active.load(Ordering::SeqCst);
             if self.sequence.load(Ordering::SeqCst) == sequence {
                 return excluded.saturating_add(if active == 0 { 0 } else { now.saturating_sub(active) });
             }
         }
+        // The writer may have died between sequence updates. Read the completed exclusion conservatively.
+        self.excluded.load(Ordering::SeqCst)
     }
     pub(super) fn elapsed(&self, start: u64, now: u64) -> u64 {
-        now.saturating_sub(start).saturating_sub(self.excluded_at(now))
+        self.elapsed_from(start, now, 0)
+    }
+    pub(super) fn elapsed_from(&self, start: u64, now: u64, excluded_before: u64) -> u64 {
+        now.saturating_sub(start).saturating_sub(self.excluded_at(now).saturating_sub(excluded_before))
+    }
+    pub(super) fn overdue(&self, now: u64) -> bool {
+        let active = self.active.load(Ordering::SeqCst);
+        active != 0 && now.saturating_sub(active) >= 120_000_000_000
     }
 }
 
@@ -213,6 +223,26 @@ fn timed<R>(f: impl FnOnce() -> R) -> R {
 pub(super) fn elapsed_ns(start: u64, now: u64) -> u64 {
     let clock = CLOCK.load(Ordering::Relaxed);
     if clock.is_null() { now.saturating_sub(start) } else { unsafe { &*clock }.elapsed(start, now) }
+}
+
+pub(super) fn excluded_ns(now: u64) -> u64 {
+    let clock = CLOCK.load(Ordering::Relaxed);
+    if clock.is_null() { 0 } else { unsafe { &*clock }.excluded_at(now) }
+}
+pub(super) fn start_window(now: u64) {
+    let clock = CLOCK.load(Ordering::Relaxed);
+    if !clock.is_null() {
+        let clock = unsafe { &*clock };
+        clock.window_excluded.store(clock.excluded_at(now), Ordering::SeqCst);
+    }
+}
+pub(super) fn window_excluded() -> u64 {
+    let clock = CLOCK.load(Ordering::Relaxed);
+    if clock.is_null() { 0 } else { unsafe { &*clock }.window_excluded.load(Ordering::SeqCst) }
+}
+pub(super) fn overdue(now: u64) -> bool {
+    let clock = CLOCK.load(Ordering::Relaxed);
+    !clock.is_null() && unsafe { &*clock }.overdue(now)
 }
 
 /// Called by a helper's destructor before killing its display owner. Its return type carries no verdict.
@@ -345,11 +375,13 @@ pub(super) fn checkpoint(name: &str) -> super::CaseResult {
 pub(super) fn finish() {
     if !ENABLED.load(Ordering::Relaxed) { return; }
     if !in_case() { return; }
-    let _ = append("end", true);
-    let lines = LINES.lock().unwrap();
-    // A missing or corrupt handoff is an additive SCREEN error, without changing CASE.
-    let path = std::format!("{}.screen", super::judged_path());
-    let _ = std::fs::write(path, pack(&lines));
+    timed(|| {
+        let _ = append("end", true);
+        let lines = LINES.lock().unwrap();
+        // A missing or corrupt handoff is an additive SCREEN error, without changing CASE.
+        let path = std::format!("{}.screen", super::judged_path());
+        let _ = std::fs::write(path, pack(&lines));
+    });
 }
 
 pub(super) fn collect(suite: &str, case: &str) -> Vec<String> {

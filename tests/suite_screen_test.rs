@@ -152,3 +152,18 @@ fn transient_unknown_binding_must_reach_the_pinned_observer() {
     assert!(screen::non_case_binding(true, 10, 10, 20));
     assert!(screen::non_case_binding(true, 20, 10, 20));
 }
+
+#[test]
+fn checkpoint_watchdog_and_window_baseline_are_independent_of_paused_time() {
+    let clock = screen::CheckpointClock::new();
+    clock.start(100);
+    clock.stop(140);
+    let baseline = 40;
+    assert_eq!(clock.elapsed_from(200, 230, baseline), 30);
+    clock.start(230);
+    assert_eq!(clock.elapsed_from(200, 260, baseline), 30);
+    assert!(!clock.overdue(230 + 119_999_999_999));
+    assert!(clock.overdue(230 + 120_000_000_000));
+    clock.stop(270);
+    assert_eq!(clock.elapsed_from(200, 300, baseline), 60);
+}
