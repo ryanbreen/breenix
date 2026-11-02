@@ -3,6 +3,7 @@
 import hashlib
 import importlib.util
 import json
+import secrets
 from pathlib import Path
 import shutil
 import subprocess
@@ -34,6 +35,22 @@ def seal(root, run, source_commit):
         raise ValueError('invalid fault kernel kind')
     build = dict(commit=commit if source_commit else None, dirty=dirty, sourceBuilt=bool(source_commit), artifacts=artifacts, faultKind=fault_kind)
     (run / 'build.json').write_text(json.dumps(build) + '\n')
+
+
+def seal_candidate(root, run, staging, commit, fault):
+    run, staging = Path(run), Path(staging)
+    if commit != git(root, 'rev-parse', 'HEAD') or git(root, 'status', '--porcelain'):
+        raise ValueError('sources changed during candidate staging')
+    generation = 'vm-' + secrets.token_hex(16)
+    seal = dict(commit=commit, generation=generation, injectedFault=fault or None,
+                imageSha256=digest(staging / 'image'), kernelSha256=digest(staging / 'kernel'))
+    # Invalidate the old seal before publishing either new artifact.
+    (run / 'candidate.json').unlink(missing_ok=True)
+    (staging / 'image').replace(run / 'candidate.img')
+    (staging / 'kernel').replace(run / 'candidate-kernel')
+    temporary = staging / 'candidate.json'
+    temporary.write_text(json.dumps(seal) + '\n')
+    temporary.replace(run / 'candidate.json')
 
 
 def verify(root, run, kernel, fault=False, slot_digest=None):
@@ -132,7 +149,14 @@ def continuation(run):
 
 
 if __name__ == '__main__':
-    operation, root, run, value = sys.argv[1:]
+    operation, root, run, value, *extra = sys.argv[1:]
+    if operation == 'seal-candidate':
+        if len(extra) != 2:
+            raise SystemExit('invalid candidate seal arguments')
+        seal_candidate(root, run, value, *extra)
+        sys.exit(0)
+    if extra:
+        raise SystemExit('unexpected arguments')
     if operation == 'seal':
         seal(root, run, value)
     elif operation == 'seal-slot':

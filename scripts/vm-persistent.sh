@@ -6,16 +6,17 @@
 # vm-persistent.sh qemu build --run-dir DIR [--system-image IMAGE] --operator-account FILE [--fault panic-reboot|watchdog]
 # vm-persistent.sh qemu boot --run-dir DIR --mode console|desktop [--kernel FILE] [--slot current|next]
 # vm-persistent.sh qemu promote|rollback --run-dir DIR
+# vm-persistent.sh qemu stage-candidate --run-dir DIR [--inject upgrade-no-ssh|upgrade-service-down]
 # vm-persistent.sh qemu fault-boot --run-dir DIR [--inject feeder-hang|health-hang]
 # vm-persistent.sh qemu reboot --run-dir DIR
 # vm-persistent.sh qemu stop --run-dir DIR
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 umask 077
-usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop|promote|rollback --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--kernel FILE] [--slot current|next] | --inject feeder-hang|health-hang]' >&2; exit 2; }
+usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--kernel FILE] [--slot current|next] | --inject feeder-hang|health-hang|upgrade-no-ssh|upgrade-service-down]' >&2; exit 2; }
 [ "$#" -ge 2 ] && [ "$1" = qemu ] || usage
 op=$2; shift 2
-case "$op" in build|boot|fault-boot|reboot|stop|promote|rollback) ;; *) usage ;; esac
+case "$op" in build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate) ;; *) usage ;; esac
 run= system= account= kernel= mode= fault= inject= slot=
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] && [ -n "$2" ] || usage
@@ -42,6 +43,8 @@ case "$op" in
           case "$slot" in ''|current|next) ;; *) usage ;; esac; slot=${slot:-current} ;;
     fault-boot) [ -z "$system$account$kernel$mode$fault$slot" ] || usage
                 case "$inject" in ""|feeder-hang|health-hang) ;; *) usage ;; esac; mode=console ;;
+    stage-candidate) [ -z "$fault$system$account$kernel$mode$slot" ] || usage
+                     case "$inject" in ""|upgrade-no-ssh|upgrade-service-down) ;; *) usage ;; esac ;;
     reboot|stop|promote|rollback) [ -z "$inject$fault$system$account$kernel$mode$slot" ] || usage ;;
 esac
 # debugfs command files and QEMU comma-separated options cannot safely encode
@@ -117,6 +120,45 @@ fi
 # Existing disk, socket and kernel arguments continue to use physical paths.
 intent_run=$run
 run=$(cd "$run" && pwd -P)
+if [ "$op" = stage-candidate ]; then
+    mkdir "$run/boot.lock" || { echo 'run is already booting or staging' >&2; exit 1; }
+    candidate_tmp=
+    trap 'if [ -n "$candidate_tmp" ]; then rm -rf -- "$candidate_tmp"; fi; rmdir "$run/boot.lock"' EXIT
+    candidate_tmp=$(mktemp -d "$run/candidate-stage.XXXXXX")
+    [ -z "$(git -C "$ROOT" status --porcelain)" ] || { echo 'source build requires a clean checkout' >&2; exit 1; }
+    source_commit=$(git -C "$ROOT" rev-parse HEAD)
+    export CARGO_BUILD_JOBS=4
+    unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR
+    (cd "$ROOT" && taskpolicy -b cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64)
+    cp "$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64" "$candidate_tmp/kernel"
+    taskpolicy -b "$ROOT/userspace/programs/build.sh" --arch aarch64
+    (cd "$ROOT" && BREENIX_REPRODUCIBLE_EXT2=1 taskpolicy -b "$ROOT/scripts/create_ext2_disk.sh" --arch aarch64)
+    [ "$source_commit" = "$(git -C "$ROOT" rev-parse HEAD)" ] && [ -z "$(git -C "$ROOT" status --porcelain)" ] || { echo 'sources changed during build' >&2; exit 1; }
+    cp "$ROOT/target/ext2-aarch64.img" "$candidate_tmp/image"
+    python3 -B "$ROOT/scripts/vm_site.py" operator-account --out "$candidate_tmp/account"
+    PATH="$PATH:/opt/homebrew/opt/e2fsprogs/sbin:/usr/local/opt/e2fsprogs/sbin"
+    export PATH
+    command -v debugfs >/dev/null || { echo 'debugfs is required' >&2; exit 1; }
+    debugfs -w -R 'rm /etc/breenix/operator-account' "$candidate_tmp/image" >/dev/null 2>&1 || true
+    debugfs -w -R "write $candidate_tmp/account /etc/breenix/operator-account" "$candidate_tmp/image" >/dev/null 2>&1
+    debugfs -w -R 'set_inode_field /etc/breenix/operator-account mode 0100600' "$candidate_tmp/image" >/dev/null 2>&1
+    debugfs -w -R 'set_inode_field /etc/breenix/operator-account uid 0' "$candidate_tmp/image" >/dev/null 2>&1
+    debugfs -w -R 'set_inode_field /etc/breenix/operator-account gid 0' "$candidate_tmp/image" >/dev/null 2>&1
+    debugfs -R 'cat /etc/breenix/operator-account' "$candidate_tmp/image" 2>/dev/null > "$candidate_tmp/readback"
+    cmp -s "$candidate_tmp/account" "$candidate_tmp/readback" || { echo 'operator account staging failed' >&2; exit 1; }
+    account_stat=$(debugfs -R 'stat /etc/breenix/operator-account' "$candidate_tmp/image" 2>/dev/null)
+    [[ $account_stat =~ Mode:[[:space:]]+0600 ]] && [[ $account_stat =~ User:[[:space:]]+0[[:space:]]+Group:[[:space:]]+0 ]] || { echo 'operator account metadata staging failed' >&2; exit 1; }
+    if [ "$inject" = upgrade-service-down ]; then
+        debugfs -w -R 'rm /usr/sbin/bsshd' "$candidate_tmp/image" >/dev/null 2>&1
+        debugfs -R 'stat /usr/sbin/bsshd' "$candidate_tmp/image" > "$candidate_tmp/stat" 2> "$candidate_tmp/error"
+        ! grep -q 'Inode:' "$candidate_tmp/stat" && grep -q 'File not found' "$candidate_tmp/error" || { echo 'SSH fault did not remove the candidate daemon' >&2; exit 1; }
+    fi
+    if [ "$inject" = upgrade-no-ssh ]; then
+        printf 'deliberately invalid verification kernel\n' > "$candidate_tmp/kernel"
+    fi
+    python3 -B "$ROOT/scripts/vm-artifacts.py" seal-candidate "$ROOT" "$run" "$candidate_tmp" "$source_commit" "$inject"
+    exit 0
+fi
 if [ "$op" = promote ] || [ "$op" = rollback ]; then
     mkdir "$run/boot.lock" || { echo 'run is already booting' >&2; exit 1; }
     trap 'rmdir "$run/boot.lock"' EXIT
