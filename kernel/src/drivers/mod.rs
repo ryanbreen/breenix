@@ -5,6 +5,11 @@
 
 #[cfg(target_arch = "x86_64")]
 pub mod watchdog;
+#[cfg(target_arch = "aarch64")]
+pub mod i6300esb;
+pub mod watchdog_round;
+#[cfg(all(target_arch = "aarch64", feature = "watchdog_fault_inject", not(any(feature = "testing", feature = "boot_tests"))))]
+mod watchdog_fault_intent;
 pub mod ahci;
 #[cfg(target_arch = "x86_64")]
 pub mod bcm5720;

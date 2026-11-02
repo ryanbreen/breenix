@@ -24,15 +24,16 @@ class LatchedObservation(unittest.TestCase):
         display = (ROOT / 'kernel/src/gpu/display.rs').read_text()
         methods = '\n'.join(item(display, marker) for marker in [
             '    fn acquire() -> Result<Self, i64>',
-            '    fn observe() -> Result<Self, i64>',
-            'pub(super) fn for_window_observer()',
+            '    fn observe(deadline: Option<u64>) -> Result<Self, i64>',
+            'pub(super) fn for_window_observer(',
             'pub(super) fn for_observation(',
         ]).replace('pub(super)', 'pub(crate)')
         self.run_rust(r'''
 #![allow(dead_code)] // Production predicates include virtual-backend alternatives.
 mod abi {pub mod backend {pub const GK208:u32=6;}}
 mod dev {pub fn backend()->u32{6}}
-const EINTR:i64=4; const EPERM:i64=1;
+const EINTR:i64=4; const EPERM:i64=1; const ETIMEDOUT:i64=110;
+enum Stop {Timeout,Interrupted}
 mod signal {pub fn monotonic_nanos()->u64{100}}
 mod gk208{pub mod timing {pub fn scanout_wait(_:bool,_:u64){}}}
 fn with_core<T>(f:impl FnOnce(&mut Core)->T)->Option<T>{CORE.with(|c|Some(f(&mut c.borrow_mut())))}
@@ -41,18 +42,23 @@ struct Core {display:Display}
 thread_local! {static CORE:std::cell::RefCell<Core>=const{std::cell::RefCell::new(Core{
  display:Display{changing:false,outstanding:1,known:true,accepted:2,sent:2}})};}
 fn owner(group:u64)->bool{group==7}
-fn wait_for<T>(_:Option<u64>,_:bool,f:impl FnOnce(&mut Core)->Option<T>)->Result<T,()>{
- CORE.with(|c|f(&mut c.borrow_mut()).ok_or(()))
+fn wait_for<T>(deadline:Option<u64>,_:bool,f:impl FnOnce(&mut Core)->Option<T>)->Result<T,Stop>{
+ CORE.with(|c|f(&mut c.borrow_mut()).ok_or(if deadline.is_some(){Stop::Timeout}else{Stop::Interrupted}))
 }
 struct Transition;
 impl Transition {METHODS}
 #[test] fn accepted_is_enough_for_owner_but_not_for_window(){
- assert!(Transition::for_window_observer().is_err(),"window accepted an unlatched binding");
+ assert!(Transition::for_window_observer(None).is_err(),"window accepted an unlatched binding");
  CORE.with(|c|assert!(!c.borrow().display.changing));
  assert!(Transition::for_observation(7).is_ok(),"G26(d) owner waited for latch");
  CORE.with(|c|{let mut c=c.borrow_mut();c.display.changing=false;c.display.outstanding=0;});
- assert!(Transition::for_window_observer().is_ok());
+ assert!(Transition::for_window_observer(None).is_ok());
  CORE.with(|c|assert!(c.borrow().display.changing));
+}
+#[test] fn screen_keeps_bounded_accepted_binding_observation(){
+ assert!(Transition::for_window_observer(Some(200)).is_ok());
+ CORE.with(|c|{let mut c=c.borrow_mut();c.display.changing=false;c.display.known=false;});
+ assert_eq!(Transition::for_window_observer(Some(200)).err(),Some(ETIMEDOUT));
 }
 '''.replace('METHODS', methods))
 

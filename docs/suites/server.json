@@ -210,7 +210,7 @@
       "cases": [
         {
           "id": "feeder-hang",
-          "title": "A halted feeder CPU expires the 120-second KCS watchdog and returns to persistent SSH unaided within 600 seconds"
+          "title": "A halted feeder CPU expires the 120-second watchdog (KCS on metal, 6300ESB on QEMU) and returns to persistent SSH unaided within 600 seconds"
         },
         {
           "id": "health-hang",

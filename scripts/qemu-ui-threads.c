@@ -12,6 +12,7 @@
 #include <pthread/qos.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 struct start {
     void *(*routine)(void *);
@@ -43,14 +44,28 @@ static int create_user_interactive(pthread_t *thread, const pthread_attr_t *attr
     return err;
 }
 
+// Persistent watchdogs must stop counting during host sleep, like the vCPUs.
+// Darwin CLOCK_MONOTONIC includes sleep; CLOCK_UPTIME_RAW excludes it
+// (clock_gettime(3)). Other clock IDs keep their system semantics.
+static int suspend_clock;
+static int clock_without_host_sleep(clockid_t clock, struct timespec *value) {
+    return clock_gettime(suspend_clock && clock == CLOCK_MONOTONIC ? CLOCK_UPTIME_RAW : clock, value);
+}
+
 // dyld replaces pthread_create with create_user_interactive everywhere but in this image.
 __attribute__((used, section("__DATA,__interpose"))) static const struct {
     const void *replacement;
     const void *replacee;
-} interpose[] = {{(const void *)create_user_interactive, (const void *)pthread_create}};
+} interpose[] = {
+    {(const void *)create_user_interactive, (const void *)pthread_create},
+    {(const void *)clock_without_host_sleep, (const void *)clock_gettime},
+};
 
 // Programs QEMU starts are not launched through this; take this library back out of the environment.
 __attribute__((constructor)) static void forget_insertion(void) {
+    const char *clock = getenv("BREENIX_QEMU_SUSPEND_CLOCK");
+    suspend_clock = clock != NULL && strcmp(clock, "1") == 0;
+    unsetenv("BREENIX_QEMU_SUSPEND_CLOCK");
     Dl_info self;
     const char *inserted = getenv("DYLD_INSERT_LIBRARIES");
     if (inserted == NULL || dladdr((const void *)forget_insertion, &self) == 0 || self.dli_fname == NULL)

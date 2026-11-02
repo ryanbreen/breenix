@@ -404,6 +404,7 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
         c.subs.insert(
             serial,
             Sub {
+                deliberate_error: false,
                 writer: None,
                 ctx: ctx_id,
                 n,
@@ -601,7 +602,7 @@ impl Transition {
         Ok(guard)
     }
     pub(super) fn for_observation(group: u64) -> Result<Self, i64> {
-        let guard = Self::observe()?;
+        let guard = Self::observe(None)?;
         if !owner(group) {
             return Err(EPERM);
         }
@@ -609,7 +610,10 @@ impl Transition {
     }
     /// A transition for SCANOUT_READBACK: the window layer authorized the observer, which
     /// need not own the display; the binding cannot change while it is held.
-    pub(super) fn for_window_observer() -> Result<Self, i64> {
+    pub(super) fn for_window_observer(deadline: Option<u64>) -> Result<Self, i64> {
+        if deadline.is_some() {
+            return Self::observe(deadline);
+        }
         #[cfg(target_arch = "x86_64")]
         let native = dev::backend() == abi::backend::GK208;
         #[cfg(target_arch = "x86_64")]
@@ -655,8 +659,8 @@ impl Transition {
         .map_err(|_| EINTR)?;
         Ok(Self)
     }
-    fn observe() -> Result<Self, i64> {
-        wait_for(None, true, |c| {
+    fn observe(deadline: Option<u64>) -> Result<Self, i64> {
+        wait_for(deadline, true, |c| {
             // G26 observations name the accepted binding even before its latch.
             // The transition excludes a later PRESENT throughout the readback.
             if c.display.changing || (c.display.outstanding > 0
@@ -667,7 +671,7 @@ impl Transition {
             c.display.changing = true;
             Some(())
         })
-        .map_err(|_| EINTR)?;
+        .map_err(|stop| match stop { Stop::Timeout => ETIMEDOUT, Stop::Interrupted => EINTR })?;
         Ok(Self)
     }
 }

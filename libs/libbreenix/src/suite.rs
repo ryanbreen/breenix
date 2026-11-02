@@ -172,6 +172,8 @@ struct PendingFrame { width: usize, height: usize, pixels: Vec<u8>, reference: O
 static PENDING_FRAME: std::sync::Mutex<Option<PendingFrame>> = std::sync::Mutex::new(None);
 
 static JUDGED_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static READBACK_ENABLED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static READBACK_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 
 static JUDGED_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 static JUDGED_RUNNER: AtomicU64 = AtomicU64::new(0);
@@ -216,9 +218,49 @@ pub fn judged_with_bound(frame:&FrameBuf,expected:Option<&FrameBuf>,bound:usize)
     *pending = Some(PendingFrame { width: frame.width, height: frame.height, pixels, reference, bound });
     Ok(())
 }
+/// Snapshot tightly packed read-back BGRX rows, without creating a CPU canvas or GUI stage.
+/// Repeated GPU comparisons replace the snapshot with the last picture actually judged.
+/// Publication and hashing wait until the case timer has stopped, as for `judged`.
+/// X is canonicalized to 255; the caller compares the original bytes before this handoff.
+pub fn judged_readback(bytes: &[u8], width: u32, height: u32) -> CaseResult {
+    judged_readback_owned(bytes.to_vec(), width, height)
+}
+
+/// Retain an owned judged readback without copying its pixel allocation.
+pub fn judged_readback_owned(bytes: Vec<u8>, width: u32, height: u32) -> CaseResult {
+    let result = snapshot_readback(bytes, width, height);
+    // Comparators also serve negative checks. Retain transport failures for publication
+    // so a caller can preserve its pixel result without silently losing evidence.
+    if let Err(CaseError::Fail(message)) = &result {
+        *READBACK_ERROR.lock().unwrap() = Some(message.clone());
+    }
+    result
+}
+
+fn snapshot_readback(pixels: Vec<u8>, width: u32, height: u32) -> CaseResult {
+    check(JUDGED_ENABLED.load(Ordering::Relaxed) || READBACK_ENABLED.load(Ordering::Relaxed), "judged transport is not enabled for this suite")?;
+    check(running_case().is_some(), "judged_readback() called outside a suite case")?;
+    check(width > 0 && height > 0 && width <= 16384 && height <= 16384,
+        "judged readback dimensions outside surface contract")?;
+    let size = (width as usize).checked_mul(height as usize).and_then(|n| n.checked_mul(4))
+        .filter(|&n| n <= i32::MAX as usize).ok_or("judged readback dimensions overflow")?;
+    check(pixels.len() == size, "judged readback length differs from dimensions")?;
+    *PENDING_FRAME.lock().unwrap() = Some(PendingFrame {
+        width: width as usize, height: height as usize, pixels, reference: None, bound: 0,
+    });
+    Ok(())
+}
+
+fn judged_transport_enabled(gui: bool, suite: &str) -> bool {
+    gui || suite == "gpu"
+}
+
 fn publish_judged() -> CaseResult {
     use std::io::Write;
-    let Some(PendingFrame { width, height, pixels, reference, bound }) = PENDING_FRAME.lock().unwrap().take() else { return Ok(()); };
+    let pending = PENDING_FRAME.lock().unwrap().take();
+    if let Some(error) = READBACK_ERROR.lock().unwrap().take() { return fail(error); }
+    let Some(PendingFrame { width, height, mut pixels, reference, bound }) = pending else { return Ok(()); };
+    for pixel in pixels.chunks_exact_mut(4) { pixel[3] = 255; }
     let digest = libpixcheck::sha256(&pixels);
     let path = judged_path();
     let write = || -> std::io::Result<()> {
@@ -239,7 +281,7 @@ fn publish_judged() -> CaseResult {
 
 fn collect_judged() -> Result<Option<JudgedFrame>, String> {
     use std::io::Read;
-    if !JUDGED_ENABLED.load(Ordering::Relaxed) { return Ok(None); }
+    if !JUDGED_ENABLED.load(Ordering::Relaxed) && !READBACK_ENABLED.load(Ordering::Relaxed) { return Ok(None); }
     let path = judged_path();
     let result = (|| {
         let mut file = match std::fs::File::open(&path) {
@@ -616,6 +658,7 @@ pub fn start_case_window() -> CaseResult {
     let fd = CASE_WINDOW_FD.swap(-1, Ordering::Relaxed);
     if fd < 0 { return fail("this case has no pending timed window"); }
     let now = monotonic_ns().ok_or_else(|| CaseError::Fail(String::from("no monotonic clock")))? as u64;
+    screen::start_window(now);
     CASE_DEADLINE_NS.store(now + DEFAULT_CASE_LIMIT_MS * 1_000_000, Ordering::Relaxed);
     let sent = io::write(Fd::from_raw(fd as u64), &now.to_le_bytes());
     let _ = io::close(Fd::from_raw(fd as u64));
@@ -633,7 +676,10 @@ pub fn case_ms_left() -> u64 {
         return u64::MAX;
     }
     match monotonic_ns() {
-        Some(now) => ((deadline as i128 - now).max(0) / 1_000_000) as u64,
+        Some(now) => {
+            let excluded = (now as u64).saturating_sub(screen::elapsed_ns(0, now as u64));
+            deadline.saturating_add(excluded).saturating_sub(now as u64) / 1_000_000
+        },
         None => 0,
     }
 }
@@ -1027,9 +1073,11 @@ impl Suite {
                 let mut outcome = run_case(case, limit_ms, self.id, &name, &mut screen, &mut feed);
                 if let Some(error) = screen.stage_error.take() { outcome = with_note(outcome, &error); }
                 let picture_hash = frame_hash(screen.judged.as_deref());
-                // Share ownership with the stage until its final outcome is known.
+                // Share ownership with the native observer until the final outcome is known.
                 #[cfg(target_arch = "x86_64")]
                 let observed_frame = self.judged_observer.and(screen.judged.clone());
+                // Non-GUI suites retain no runner-owned pixels between cases.
+                if !self.gui { screen.judged = None; }
                 let make_line = |outcome: &Outcome| match outcome {
                     Outcome::Pass { ms } => std::format!("SUITE {} CASE {} PASS ms={}{}", self.id, name, ms, picture_hash),
                     Outcome::Fail { ms, msg } => std::format!("SUITE {} CASE {} FAIL ms={}{} msg={}", self.id, name, ms, picture_hash, msg),
@@ -1069,6 +1117,7 @@ impl Suite {
                 }
                 states[c][k] = State::Done(outcome);
                 done += 1;
+                for checkpoint in screen::collect(self.id, &name) { screen::emit(&checkpoint); }
                 if let Some(observe) = self.case_observer { observe(done, total, &name); }
                 if place.is_some() { sequence::progress_after(done); }
             }
@@ -1201,11 +1250,19 @@ fn ms_since(start: Option<i128>) -> u64 {
     }
 }
 
+fn screen_ms_since(start: Option<i128>) -> u64 {
+    match (start, monotonic_ns()) {
+        (Some(start), Some(now)) if now >= start => screen::elapsed_ns(start as u64, now as u64) / 1_000_000,
+        _ => 0,
+    }
+}
+
 /// Run a case in this process (the case's forked child).
 fn run_inline(case: &Case) -> Outcome {
+    screen::enter_case();
     let start = monotonic_ns();
     let result = (case.run)();
-    let ms = ms_since(start);
+    let ms = screen_ms_since(start);
     let result = result.and(publish_judged()).and(publish_input()).and(publish_values());
     match result {
         Ok(()) => Outcome::Pass { ms },
@@ -1280,7 +1337,9 @@ const FRAME_MS: i128 = 66;
 /// `CLOCK_STALL_WAKES`, which ends the wait as a stopped clock. (A poll's timeout runs on
 /// that clock, so a stopped clock wakes the runner only through the pipes.)
 fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut(), window: Option<Fd>, published: Option<Fd>, mut report: Option<Fd>, mut stage: Option<(Fd, Fd)>) -> Waited {
+    let case_clock = report.is_some();
     let mut awaiting_window = window.is_some();
+    let mut excluded_before = 0;
     let mut last = monotonic_ns();
     let mut still = 0;
     let mut drawn = last;
@@ -1291,6 +1350,7 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
             if let Some(fd) = window {
                 if io::read(fd, &mut bytes).ok() == Some(8) {
                     start = Some(u64::from_le_bytes(bytes) as i128);
+                    excluded_before = screen::window_excluded();
                     awaiting_window = false;
                 }
             }
@@ -1308,11 +1368,19 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
             _ => {}
         }
         let now = monotonic_ns();
-        let ms = ms_since(start);
+        let ms = if !case_clock { ms_since(start) } else { match (start, now) {
+            (Some(start), Some(now)) => (now.saturating_sub(start) as u64)
+                .saturating_sub(screen::excluded_ns(now as u64).saturating_sub(excluded_before)) / 1_000_000,
+            _ => 0,
+        }};
+        // Observation has its own wall-clock supervision even while case time pauses.
+        if case_clock && now.is_some_and(|now| screen::overdue(now as u64)) {
+            return Waited::TimedOut(ms);
+        }
         // Setup cannot outlive the existing 120-second progress watchdog. The
         // named case gets exactly limit_ms after its one-shot warm-up signal.
         let active_limit = if awaiting_window { 120_000 } else { limit_ms };
-        if ms >= active_limit {
+        if ms >= active_limit || (awaiting_window && ms_since(start) >= 120_000) {
             return Waited::TimedOut(ms);
         }
         if now.is_none() || (timed_out && now == last) {
@@ -1474,9 +1542,6 @@ fn keep_record_output(suite: &str, name: &str) {
 /// date while it runs.
 fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Screen, feed: &mut Feed) -> Outcome {
     screen.judged = None;screen.timing=None;
-    // G1-G6 retain the runner owner they were checked against. G7's console
-    // cases explicitly start above the kernel console, with no runner owner.
-    if screen.gpu.is_some() && name.starts_with("present/") { let _ = graphics::give_back_display(); }
     // The live strip's copy of the case's records, when the strip is on.
     let live = if screen.live_on() || screen.gui {
         io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK).ok()
@@ -1496,7 +1561,12 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     JUDGED_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     // A prior interrupted boot may have left this PID/sequence on a reused disk.
     JUDGED_ENABLED.store(screen.gui, Ordering::Relaxed);
-    for path in [judged_path(), std::format!("{}.new", judged_path()), std::format!("{}.time",judged_path()), std::format!("{}.input",judged_path()), std::format!("{}.values",judged_path())].into_iter().filter(|_| screen.gui) {
+    READBACK_ENABLED.store(suite == "gpu", Ordering::Relaxed);
+    let _screen_clock = screen::begin(suite);
+    // G1-G6 retain the runner owner they were checked against. G7's console
+    // cases explicitly start above the kernel console, with no runner owner.
+    if screen.gpu.is_some() && name.starts_with("present/") { let _ = graphics::give_back_display(); }
+    for path in [judged_path(), std::format!("{}.new", judged_path()), std::format!("{}.time",judged_path()), std::format!("{}.input",judged_path()), std::format!("{}.values",judged_path())].into_iter().filter(|_| judged_transport_enabled(screen.gui, suite)) {
         if let Err(e) = std::fs::remove_file(path) {
             if e.kind() != std::io::ErrorKind::NotFound {
                 let _ = (io::close(reader),io::close(writer));
@@ -1571,6 +1641,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
             };
             let line = report(&outcome);
             let _ = io::write(writer, line.as_bytes());
+            screen::finish();
             hand_over_picture();
             process::exit(0)
         }
@@ -2032,6 +2103,46 @@ mod judged_transport_tests {
     static TRANSPORT: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     #[test]
+    fn gpu_readback_round_trips_without_gui_and_refuses_changed_bytes() {
+        let _serial = TRANSPORT.lock().unwrap();
+        assert!(judged_transport_enabled(false, "gpu"));
+        assert!(!judged_transport_enabled(false, "smoke"));
+        JUDGED_ENABLED.store(false, Ordering::Relaxed);
+        READBACK_ENABLED.store(true, Ordering::Relaxed);
+        JUDGED_RUNNER.store(std::process::id() as u64, Ordering::Relaxed);
+        JUDGED_SEQUENCE.store(u64::MAX - 7, Ordering::Relaxed);
+        let _ = std::fs::remove_file(judged_path());
+        let _ = CASE_NAME.set(String::from("transport/readback"));
+        let first = [1, 2, 3, 0, 4, 5, 6, 17];
+        judged_readback_owned(first.to_vec(), 2, 1).unwrap();
+        let mut last = [7, 8, 9, 0, 10, 11, 12, 99];
+        judged_readback(&last, 2, 1).unwrap();
+        last[0] = 33; // the snapshot must not borrow the source
+        assert!(!std::path::Path::new(&judged_path()).exists());
+        publish_judged().unwrap();
+        let encoded = std::fs::read(judged_path()).unwrap();
+        let frame = collect_judged().unwrap().unwrap();
+        let canonical = [7, 8, 9, 255, 10, 11, 12, 255];
+        assert_eq!((frame.width, frame.height), (2, 1));
+        assert_eq!(frame.pixels, canonical);
+        assert_eq!(frame.sha256, libpixcheck::sha256(&canonical));
+        assert_eq!(frame_hash(Some(&frame)), std::format!(" sha256={}", frame.sha256.iter().map(|b| std::format!("{b:02x}")).collect::<String>()));
+        assert!(frame.expected.is_none());
+        assert_eq!(frame.bound, 0);
+        assert!(!std::path::Path::new(&judged_path()).exists());
+        let mut changed = encoded;
+        let colour = changed.len() - 4;
+        changed[colour] ^= 1;
+        std::fs::write(judged_path(), changed).unwrap();
+        assert!(collect_judged().err().unwrap().contains("SHA-256"));
+        assert!(!std::path::Path::new(&judged_path()).exists());
+        assert!(judged_readback(&canonical[..7], 2, 1).is_err());
+        assert!(judged_readback(&[], 0, 1).is_err());
+        assert!(publish_judged().is_err(), "a consumed transport error must still fail publication");
+        READBACK_ENABLED.store(false, Ordering::Relaxed);
+    }
+
+    #[test]
     fn a_case_publishes_once_and_keeps_its_independent_reference() {
         let _serial = TRANSPORT.lock().unwrap();
         JUDGED_ENABLED.store(true,Ordering::Relaxed);
@@ -2158,4 +2269,24 @@ pub fn showcase_check(name:&str)->CaseResult {crate::suite_stage::showcase_check
 /// Same UI-clock boundary used for a stage fixture and the live stage.
 pub fn render_stage_at_ui_time(fb: &mut FrameBuf, run: &mut libgfx_ref::stage::Run<'_>) -> Result<(), libgfx_ref::stage::StageError> {
     crate::suite_stage::render_at_ui_time(fb, run, 0)
+}
+
+#[cfg(test)]
+#[path = "../../../tests/suite_screen_test.rs"]
+mod screen_tests;
+
+#[path = "suite_screen.rs"]
+mod screen;
+
+/// Record a whole-scanout checkpoint after a completed present. Names are lowercase
+/// hyphenated words; `end` and `intent` are reserved. Performance cases cannot call it.
+/// The runner prints the digest after CASE, independently of the case verdict.
+pub fn screen_checkpoint(name: &str) -> CaseResult { screen::checkpoint(name) }
+
+/// Preserve a scanout just before its helper is reaped; failures stay on the SCREEN path.
+pub fn screen_before_helper_drop() { screen::before_helper_drop(); }
+
+/// Offer a whole bound scanout's exact judged bytes for an end checkpoint.
+pub fn screen_judged_readback(pixels: &[u8], record: &[u8; crate::gpu::abi::record::SIZE]) {
+    screen::judged_readback(pixels, record);
 }

@@ -394,6 +394,7 @@ struct Depth {
 }
 
 struct Sub {
+    deliberate_error: bool,
     ctx: u32,
     n: u32,
     fence: u64,
@@ -484,6 +485,7 @@ struct Res {
     writers: u32,
     invalid: bool,
     invalidated_by: u64,
+    deliberate_invalidation: u64,
     dropped: bool,
     holds: u32,
     lost: bool,
@@ -1592,6 +1594,7 @@ impl Core {
         sub.published = true;
         if let Some(writer) = &sub.writer { writer.publish(status); }
         let (ctx_id, n, fence, presenting) = (sub.ctx, sub.n, sub.native_fence, sub.present);
+        let deliberate_error = sub.deliberate_error;
         let written = core::mem::take(&mut sub.written);
         let whole = core::mem::take(&mut sub.whole);
         let ok = status == fence_status::OK;
@@ -1638,6 +1641,7 @@ impl Core {
             if let Some(r) = self.resources.get_mut(id) {
                 r.writers = r.writers.saturating_sub(1);
                 completion::finish_write(&mut r.invalid, &mut r.invalidated_by, serial, ok, whole.contains(id));
+                if deliberate_error && r.invalidated_by == serial { r.deliberate_invalidation = serial; }
                 if ok {
                     r.generation += 1;
                     r.last = Some(LastWrite { ctx: ctx_id, device_ctx: dev::context_id(ctx_id), fence, serial, answer, kind: dev::draw_kind() });
@@ -3185,6 +3189,7 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
         writers: 0,
         invalid: false,
         invalidated_by: 0,
+        deliberate_invalidation: 0,
         dropped: false,
         holds: 0,
         lost: false,
@@ -5082,6 +5087,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             if let Some(r) = c.resources.get_mut(rid) { r.holds += 1; }
         }
         c.subs.insert(serial, Sub {
+            deliberate_error: forced,
             writer: Some(writer.clone()),
             ctx: id,
             n,
@@ -5613,6 +5619,40 @@ pub fn observe_scanout(dst: u64, dst_len: u64, record: u64) -> Result<u64, (i64,
     }
 }
 
+/// Pixel-only screen evidence, authorized by the suite-only root device. Ordinary
+/// READBACK and SCANOUT_READBACK still require complete composition provenance.
+pub fn observe_screen(request: abi::screen::Request) -> Result<(), i64> {
+    // A refusal has its own small output, even when read_back stops before its
+    // full record probe. An invalid status destination is still EFAULT.
+    probe_writable(request.record, 32)?;
+    crate::console::await_repaint();
+    let _path = GpuPath::enter();
+    let result = if !matches!(with_core(|c| c.admission()), Some(Ok(()))) {
+        Err(Refused::Errno(ENODEV))
+    } else {
+        let mut a = abi::Readback::ZERO;
+        a.pixels = request.pixels;
+        a.pixels_len = request.len;
+        a.record = request.record;
+        caller().map_err(Refused::Errno).and_then(|tgid| read_back(tgid, &mut a, Observer::Screen, None))
+    };
+    let mut failure = match result {
+        Ok(_) => return Ok(()),
+        Err(Refused::Errno(errno)) => abi::screen::Failure { errno, reason: 0, failed_submission: 0, declared: 0 },
+        Err(Refused::Eio(reason, failed_submission)) => abi::screen::Failure { errno: EIO, reason, failed_submission, declared: 0 },
+    };
+    if failure.errno == EIO && failure.reason == readback_reason::TARGET_INVALID {
+        failure.declared = with_core(|c| c.display.binding.and_then(|b| c.resources.get(&b.id))
+            .is_some_and(|r| r.invalid && r.invalidated_by == failure.failed_submission
+                && r.deliberate_invalidation == failure.failed_submission
+                && failure.failed_submission != 0)).unwrap_or(false) as u32;
+    }
+    let bytes = failure.encode();
+    crate::syscall::userptr::write_user_bytes(request.record, bytes.as_ptr(), bytes.len())
+        .map_err(|_| EFAULT)?;
+    Err(failure.errno)
+}
+
 /// Who observes target 0, the scanout.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Observer {
@@ -5622,6 +5662,18 @@ enum Observer {
     /// target. It neither owns the display nor names the target, and an EIO leaves its
     /// record untouched.
     Window,
+    /// Visible mode pixels, without the bounded window-provenance record.
+    Screen,
+}
+
+impl Observer {
+    fn records_composition(self) -> bool { self != Self::Screen }
+    fn deadline(self, now: u64) -> Option<u64> {
+        (self == Self::Screen).then(|| now.saturating_add(5_000_000_000))
+    }
+    fn excludes_binding(self, known: bool, bound: bool) -> bool {
+        self == Self::Screen && known && !bound
+    }
 }
 
 /// Why an observation was refused: an errno, or EIO with its reason and, for reason 4,
@@ -5646,7 +5698,8 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         .then(|| crate::gk208::timing::Readback::begin(tgid)).flatten();
     #[cfg(target_arch = "x86_64")]
     let cost_prepare = crate::gk208::cost::phase(crate::gk208::cost::Slot::ReadPrepare);
-    let window = observer == Observer::Window;
+    let window = observer != Observer::Owner;
+    let deadline = observer.deadline(now_ns());
     // Count owner observation with presentation so a VT release cannot expose the
     // next foreground terminal while readback holds the current binding.
     let _presentation = if a.target == 0 && !window {
@@ -5665,19 +5718,25 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         if window && with_core(|c| c.display.stack.is_empty()).unwrap_or(false) {
             screen::await_binding()?;
         }
-        wait_for_traced(None, true, |c| {
+        wait_for_traced(deadline, true, |c| {
             (!console::restoring(c.display.owner_sequence)).then_some(c.display.known)
         }, #[cfg(target_arch = "x86_64")] trace.as_ref().map(|t| (t, 3)),
             #[cfg(target_arch = "x86_64")] false, #[cfg(target_arch = "x86_64")] None)
-        .map_err(|_| EINTR)?;
+        .map_err(|stop| match stop { Stop::Timeout => ETIMEDOUT, Stop::Interrupted => EINTR })?;
         Some(if window {
-            display::Transition::for_window_observer()?
+            display::Transition::for_window_observer(deadline)?
         } else {
             display::Transition::for_observation(tgid)?
         })
     } else {
         None
     };
+    // display_reset explicitly confirms an empty scanout. An unknown binding
+    // instead continues to the existing refusal below, after presentation settles.
+    if a.target == 0 && with_core(|c| observer.excludes_binding(c.display.known, c.display.binding.is_some()))
+        .unwrap_or(false) {
+        return Err(Refused::Errno(abi::screen::NO_CASE));
+    }
     if a.target == 0
         && !with_core(|c| c.display.known && c.display.binding.is_some()).unwrap_or(false)
     {
@@ -5720,7 +5779,20 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     // Privileged window observation can read the foreground console. Protect its
     // backing throughout the poison/transfer observation.
     let canvas = core::cell::Cell::new(screen::is_target(id).then(crate::console::hold_canvas));
-    if window {
+    if observer == Observer::Screen {
+        // Scan origin is (0,0): VirGL SET_SCANOUT (virgl/mod.rs set_scanout),
+        // SVGA screen binding (svga/mod.rs set_scanout), GK208 viewport-in
+        // (gk208/modeset.rs Viewport::methods).
+        // Keep this inside the binding transition that excludes mode changes.
+        let mode = with_core(|c| display::MODES[c.display.mode as usize]).ok_or(ENODEV)?;
+        let [x, y, w, h] = abi::screen::rectangle([mode.width, mode.height], [tw, th], Some([0, 0]))
+            .ok_or(EIO)?;
+        a.x = x;
+        a.y = y;
+        a.width = w;
+        a.height = h;
+        a.stride = w * format::bytes(fmt);
+    } else if window {
         // The whole bound target, in canonical rows.
         a.x = 0;
         a.y = 0;
@@ -5776,7 +5848,7 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     drop(cost_prepare);
     // Wait for the target's accepted writes to complete, then take it for reading.
     // The handle is looked up each time: one destroyed meanwhile is target-dropped.
-    let taken = wait_for_traced(None, true, |c| {
+    let taken = wait_for_traced(deadline, true, |c| {
         if a.target == 0 {
             if (!window && !display::owner(tgid))
                 || !c.display.known
@@ -5798,14 +5870,15 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
             return None;
         }
         r.reading = true;
-        let composition = r.composition.clone().filter(|p| p.generation == r.generation);
+        let composition = r.composition.clone().filter(|p| observer.records_composition() && p.generation == r.generation);
         Some(Ok((r.invalid, r.invalidated_by, r.generation, r.last, composition)))
     }, #[cfg(target_arch = "x86_64")] trace.as_ref().map(|t| (t, 1)),
         #[cfg(target_arch = "x86_64")] true, #[cfg(target_arch = "x86_64")] None);
     let (invalid, invalidated_by, generation, last, composition) = match taken {
         Ok(Ok(t)) => t,
         Ok(Err(reason)) => return refuse(reason, 0),
-        Err(_) => return Err(Refused::Errno(EINTR)),
+        Err(Stop::Timeout) => return Err(Refused::Errno(ETIMEDOUT)),
+        Err(Stop::Interrupted) => return Err(Refused::Errno(EINTR)),
     };
     // The target is ours to poison and read until its transfers have ended; a transfer
     // whose waiter left keeps the mark until the device returns it, and with it the

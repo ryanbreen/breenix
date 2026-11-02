@@ -5,13 +5,13 @@
 //! The transport accepts only S19's four application commands.
 use core::sync::atomic::{AtomicU32, Ordering};
 use x86_64::instructions::port::Port;
-#[path = "watchdog_round.rs"]
-mod policy;
+use super::watchdog_round as policy;
+use policy::{health, wait};
 
 static PORT: AtomicU32 = AtomicU32::new(0);
 const TIMEOUT_MS: u64 = 5_000;
 const PERIOD_MS: u64 = 20_000;
-use policy::TIMER;
+const TIMER: [u8; 6] = [4, 1, 0, 0x10, 0xb0, 4];
 
 pub fn discover(rsdp: Option<u64>, offset: u64) {
     if let Some((data, status)) = crate::arch_impl::x86_64::acpi::read_kcs_ports(rsdp, offset) {
@@ -100,33 +100,11 @@ fn now() -> u64 {
     let (seconds, ns) = crate::time::get_monotonic_time_ns();
     seconds.saturating_mul(1000).saturating_add(ns / 1_000_000)
 }
-fn wait(ms: u64) -> Result<(), &'static str> {
-    use crate::task::{scheduler, thread::ThreadState};
-    let tid = scheduler::current_thread_id().ok_or("watchdog has no thread context")?;
-    let (seconds, nanos) = crate::time::get_monotonic_time_ns();
-    let until = seconds.saturating_mul(1_000_000_000).saturating_add(nanos)
-        .saturating_add(ms.saturating_mul(1_000_000));
-    scheduler::with_current(|scheduler| scheduler.block_current_for_timer(until));
-    scheduler::yield_current();
-    loop {
-        crate::arch_halt_with_interrupts();
-        match scheduler::thread_state(tid) {
-            Some(ThreadState::BlockedOnTimer) => {},
-            Some(_) => return Ok(()),
-            None => return Err("watchdog thread disappeared"),
-        }
-    }
-}
-fn health() -> Result<(), &'static str> {
-    let guard = crate::fs::ext2::root_fs_read()?;
-    let fs = guard.as_ref().ok_or("root absent")?;
-    let (superblock, groups) = fs.persisted_metadata()?;
-    if groups.is_empty() || superblock.block_size() == 0 || !fs.read_inode(crate::fs::ext2::root_inode())?.is_dir() {
-        return Err("root metadata invalid");
-    }
-    Ok(())
-}
 impl policy::Transport for Kcs {
+    type State = [u8; 8];
+    fn configured(timer: &Self::State) -> bool {
+        timer[0] & 0x47 == 0x44 && timer[1] == 1 && timer[2] == 0 && timer[4..6] == TIMER[4..6]
+    }
     fn get(&mut self) -> Result<[u8; 8], &'static str> { Kcs::get(self) }
     fn set(&mut self) -> Result<(), &'static str> { self.request(0x24, &TIMER).map(|_| ()) }
     fn reset(&mut self) -> Result<(), &'static str> { self.request(0x22, &[]).map(|_| ()) }

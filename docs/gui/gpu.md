@@ -1124,6 +1124,8 @@ interface facts; implementation code is not copied or adapted.
 
 ### 1.10 Suite `gpu`: outline
 
+[Screen proof](screen-proof.md) specifies additive whole-scanout checkpoints, the shared operator-approved digest table and native display-output evidence. Its separate verdict leaves this suite’s cases, expected values and thresholds unchanged (G29).
+
 `/sbin/suite-gpu`, source `userspace/programs/src/suite_gpu.rs` (the case table; case modules go under
 `userspace/programs/src/suite_gpu/` as they are written), manifest `docs/suites/gpu.json`, contract this
 document, zero skips, gate timeout 900 s on every target until measured (plan §19's rule). Every case runs on

@@ -2444,6 +2444,9 @@ def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
         'VALUE': r'SUITE gpu VALUE ([a-z0-9/-]+) [a-z0-9-]+=(-?\d+(?:\.\d+)?)([a-z]*)(?: expect=(-?\d+(?:\.\d+)?)\.\.(-?\d+(?:\.\d+)?)([a-z]*))?',
         'WAIT': r'SUITE gpu WAIT ([a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*) until=(\d+) for=(\d+) result=[a-z0-9]+(?:-[a-z0-9]+)*',
     }
+    screen = runpy.run_path(str(root / 'scripts/screen-verdict.py'))
+    screen['score'](manifest, serial, json.loads((root / 'docs/suites/frames/screens.json').read_text()))
+    shapes['SCREEN'] = screen['RECORD'].pattern
     parsed = []
     for line in serial.splitlines():
         if 'SUITE gpu ' not in line:

@@ -1,0 +1,65 @@
+// Suite-only /dev/screen-evidence binary readback request (not a syscall 416 op).
+pub const MAGIC: [u8; 8] = *b"SCREENRB";
+// Suite endpoint only: a confirmed empty scanout, not a failed observation.
+pub const NO_CASE: i64 = 61;
+
+pub struct Request {
+    pub pixels: u64,
+    pub len: u64,
+    pub record: u64,
+}
+impl Request {
+    pub fn encode(&self) -> [u8; 32] {
+        let mut bytes = [0; 32];
+        bytes[..8].copy_from_slice(&MAGIC);
+        for (i, value) in [self.pixels, self.len, self.record].iter().enumerate() {
+            bytes[8 + i * 8..16 + i * 8].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() != 32 || bytes[..8] != MAGIC { return None; }
+        let word = |at| u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap());
+        Some(Self { pixels: word(8), len: word(16), record: word(24) })
+    }
+}
+
+// A known binding is insufficient if its scan origin is unknown or the mode does
+// not fit. Callers supply the origin established by their scanout programming.
+pub fn rectangle(mode: [u32; 2], binding: [u32; 2], origin: Option<[u32; 2]>) -> Option<[u32; 4]> {
+    let [x, y] = origin?;
+    let [w, h] = mode;
+    (w != 0 && h != 0 && x.checked_add(w)? <= binding[0] && y.checked_add(h)? <= binding[1])
+        .then_some([x, y, w, h])
+}
+
+// On a refused request the suite endpoint publishes this status in the record
+// buffer. Ordinary READBACK and SCANOUT_READBACK records are unchanged.
+#[derive(Clone, Copy)]
+pub struct Failure {
+    pub errno: i64,
+    pub reason: u32,
+    pub failed_submission: u64,
+    /// One for an end state the producer deliberately invalidated.
+    pub declared: u32,
+}
+impl Failure {
+    pub fn encode(self) -> [u8; 32] {
+        let mut bytes = [0; 32];
+        bytes[..8].copy_from_slice(b"SCREENER");
+        bytes[8..16].copy_from_slice(&self.errno.to_le_bytes());
+        bytes[16..20].copy_from_slice(&self.reason.to_le_bytes());
+        bytes[20..24].copy_from_slice(&self.declared.to_le_bytes());
+        bytes[24..32].copy_from_slice(&self.failed_submission.to_le_bytes());
+        bytes
+    }
+    pub fn decode(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 32 || &bytes[..8] != b"SCREENER" { return None; }
+        Some(Self {
+            errno: i64::from_le_bytes(bytes[8..16].try_into().unwrap()),
+            reason: u32::from_le_bytes(bytes[16..20].try_into().unwrap()),
+            failed_submission: u64::from_le_bytes(bytes[24..32].try_into().unwrap()),
+            declared: u32::from_le_bytes(bytes[20..24].try_into().unwrap()),
+        })
+    }
+}
