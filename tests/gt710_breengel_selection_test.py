@@ -112,6 +112,30 @@ class BreengelSelection(unittest.TestCase):
         self.assertEqual(result['result'], 'FAIL')
         self.assertIn('selected BreenGL case failed',result['reason'])
 
+    def test_screen_records_validate_without_changing_case_accounting(self):
+        from gt710_breengel_evidence_test import composition_capture
+        name = 'windows/distinct-content'
+        line = f"SUITE breengel SCREEN {name} end sha256={'1'*64} mode=2x1 binding=2x1\n"
+        original = composition_capture()
+        marker = next(row for row in original.splitlines(True)
+                      if row.startswith(f'SUITE breengel CASE {name} '))
+        valid = original.replace(marker, marker + line)
+        for step in (1, 2):
+            with self.subTest(step=step):
+                baseline = API['breengel_fronts_suite'](original, boot(), step)
+                accepted = API['breengel_fronts_suite'](valid, boot(), step)
+                self.assertEqual([(k, m.groups()) for k, m, _ in accepted],
+                                 [(k, m.groups()) for k, m, _ in baseline])
+                self.assertEqual(len(accepted), 401)
+                for bad in (valid.replace('mode=2x1', 'mode=0x1'),
+                            valid.replace(line, line + line),
+                            original.replace(marker, line + marker),
+                            valid.replace('binding=2x1', 'binding=1x1'),
+                            valid.replace("sha256=" + '1'*64 + ' mode=2x1 binding=2x1',
+                                          'error=readback-failed')):
+                    with self.subTest(serial=bad[-100:]), self.assertRaises(ValueError):
+                        API['breengel_fronts_suite'](bad, boot(), step)
+
     def test_selection(self):
         step = json.loads((ROOT / 'docs/gui/gt710-step-9-1.json').read_text())
         self.assertEqual(set(step), {'id', 'suite', 'cases', 'boardMilestone',

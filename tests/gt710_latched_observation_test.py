@@ -33,6 +33,8 @@ class LatchedObservation(unittest.TestCase):
 mod abi {pub mod backend {pub const GK208:u32=6;}}
 mod dev {pub fn backend()->u32{6}}
 const EINTR:i64=4; const EPERM:i64=1; const ETIMEDOUT:i64=110;
+const OBSERVATION_TIMEOUT_NS:u64=5_000_000_000;
+fn now_ns()->u64{100}
 enum Stop {Timeout,Interrupted}
 mod signal {pub fn monotonic_nanos()->u64{100}}
 mod gk208{pub mod timing {pub fn scanout_wait(_:bool,_:u64){}}}
@@ -43,6 +45,7 @@ thread_local! {static CORE:std::cell::RefCell<Core>=const{std::cell::RefCell::ne
  display:Display{changing:false,outstanding:1,known:true,accepted:2,sent:2}})};}
 fn owner(group:u64)->bool{group==7}
 fn wait_for<T>(deadline:Option<u64>,_:bool,f:impl FnOnce(&mut Core)->Option<T>)->Result<T,Stop>{
+ if deadline.is_some(){assert!(deadline==Some(200)||deadline==Some(5_000_000_100));}
  CORE.with(|c|f(&mut c.borrow_mut()).ok_or(if deadline.is_some(){Stop::Timeout}else{Stop::Interrupted}))
 }
 struct Transition;
@@ -54,6 +57,11 @@ impl Transition {METHODS}
  CORE.with(|c|{let mut c=c.borrow_mut();c.display.changing=false;c.display.outstanding=0;});
  assert!(Transition::for_window_observer(None).is_ok());
  CORE.with(|c|assert!(c.borrow().display.changing));
+}
+#[test] fn busy_window_transition_expires_without_pinning_the_display(){
+ assert_eq!(Transition::for_window_observer(None).err(),Some(ETIMEDOUT));
+ CORE.with(|c|{let mut c=c.borrow_mut();assert!(!c.display.changing);c.display.outstanding=0;c.display.changing=true;});
+ assert_eq!(Transition::for_window_observer(None).err(),Some(ETIMEDOUT));
 }
 #[test] fn screen_keeps_bounded_accepted_binding_observation(){
  assert!(Transition::for_window_observer(Some(200)).is_ok());
