@@ -69,6 +69,10 @@ fn read_init_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> 
     Ok(elf_data)
 }
 
+#[cfg(target_arch = "aarch64")]
+#[path = "boot/arm_install.rs"]
+mod arm_install;
+
 /// Which PID 1 a production boot launches. QEMU selects it with
 /// `-fw_cfg name=opt/breenix/mode,string=<mode>`; absent or unknown is `Default`.
 /// `program` also needs `-fw_cfg name=opt/breenix/program,string=<absolute path>`,
@@ -80,6 +84,7 @@ fn read_init_from_ext2(path: &str) -> Result<alloc::vec::Vec<u8>, &'static str> 
 enum BootMode {
     Default,
     Probe,
+    PersistentInstall,
     Shell,
     Console,
     Desktop,
@@ -93,6 +98,7 @@ impl BootMode {
         match self {
             BootMode::Default => "default",
             BootMode::Probe => "probe",
+            BootMode::PersistentInstall => "persistent-install",
             BootMode::Shell => "shell",
             BootMode::Console => "console",
             BootMode::Desktop => "desktop",
@@ -113,8 +119,18 @@ impl BootMode {
 /// prints the mode once it is known to run.
 /// claim-lint:ok: the cfg!(feature = "testing") branch of read_boot_mode in kernel/src/main_aarch64.rs.
 #[cfg(target_arch = "aarch64")]
-fn read_boot_mode() -> (BootMode, Option<alloc::string::String>, Option<alloc::string::String>) {
+fn read_boot_mode(fw_intent_captured: bool) -> (BootMode, Option<alloc::string::String>, Option<alloc::string::String>) {
     use kernel::boot::target;
+    if fw_intent_captured && kernel::boot::intent::get() == Some(b"persistent-install\n") {
+        if cfg!(feature = "testing") {
+            serial_println!("[boot] Ignoring boot mode \"persistent-install\": the testing kernel runs its test loader");
+        } else if let Err(why) = arm_install::argv(kernel::boot::intent::userland(), kernel::boot::intent::previous_userland()) {
+            serial_println!("[boot] Ignoring boot mode \"persistent-install\": {}", why);
+        } else {
+            return (BootMode::PersistentInstall, None, None);
+        }
+        return (BootMode::Default, None, None);
+    }
     // fw_cfg exists only on QEMU (its MMIO window is absent on Parallels).
     let requested = if kernel::platform_config::is_qemu() {
         kernel::drivers::fw_cfg::read_string("opt/breenix/mode")
@@ -287,6 +303,11 @@ impl InitLaunch {
         match mode {
             BootMode::Default => InitLaunch::default_init(),
             BootMode::Probe => InitLaunch::new("/sbin/probe", &[b"/sbin/probe"]),
+            BootMode::PersistentInstall => {
+                let argv = arm_install::argv(kernel::boot::intent::userland(), kernel::boot::intent::previous_userland())
+                    .expect("install intent was validated before selecting boot mode");
+                InitLaunch::new("/sbin/persistent-install", &argv)
+            },
             BootMode::Shell => InitLaunch::new("/sbin/init", &[b"init", b"shell"]),
             BootMode::Console => InitLaunch::new("/sbin/init", &[b"init", b"console"]),
             BootMode::Desktop => InitLaunch::new("/sbin/init", &[b"init", b"desktop"]),
@@ -989,13 +1010,13 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // Initialize filesystem layer (requires VirtIO block device)
     serial_println!("[boot] Initializing filesystem...");
 
-    if kernel::platform_config::is_qemu() {
+    let fw_intent_captured = if kernel::platform_config::is_qemu() {
         let mut intent = [0u8; 1040];
         let size = kernel::drivers::fw_cfg::read_file("opt/breenix/intent", &mut intent);
-        if size != 0 {
-            kernel::boot::intent::capture(&intent[..size.min(intent.len())]);
-        }
-    }
+        size != 0 && kernel::boot::intent::capture(&intent[..size.min(intent.len())])
+    } else {
+        false
+    };
 
     // Initialize ext2 root filesystem (if block device present)
     match kernel::fs::ext2::init_root_fs() {
@@ -1312,11 +1333,11 @@ pub extern "C" fn kernel_main(hw_config_ptr: u64) -> ! {
     // (ext2 root filesystem was mounted above at init_root_fs().)
     // Probe, program and suite modes pre-load their own binary (/sbin/probe, or
     // /sbin/suite-<id>) the same way and fall back to /sbin/init.
-    let (mut boot_mode, mut mode_arg, only) = read_boot_mode();
+    let (mut boot_mode, mut mode_arg, only) = read_boot_mode(fw_intent_captured);
     let mut init_launch = InitLaunch::for_mode(boot_mode, mode_arg.as_deref(), only.as_deref());
     let runs_own_binary = matches!(
         boot_mode,
-        BootMode::Probe | BootMode::Program | BootMode::Suite
+        BootMode::Probe | BootMode::PersistentInstall | BootMode::Program | BootMode::Suite
     );
     let mode_elf: Option<alloc::vec::Vec<u8>> = if runs_own_binary && device_count > 0 {
         serial_println!(
