@@ -109,6 +109,11 @@ def reset_faults(serial, names):
     return result
 
 
+def check_runtime_display(serial, native):
+    preferred = native['native_raster'](native['board_inventory'](serial))
+    return native['runtime_display'](serial, (preferred['width'], preferred['height']))
+
+
 def accept(commit, captures):
     native = runpy.run_path(str(ROOT / 'scripts/metal/gt710-suite'))
     suites = runpy.run_path(str(ROOT / 'scripts/suite-verdict.py'))
@@ -152,7 +157,7 @@ def accept(commit, captures):
                     measured = native['resources_suite'](serial, boot, native['STEP_SELECTIONS']['performance'])
                 if any(c['result'] != 'PASS' for c in measured['cases']):
                     raise ValueError('phase one requires all 170 GPU cases, not a step subset')
-                native['runtime_display'](serial, native['native_raster'](native['board_inventory'](serial)))
+                check_runtime_display(serial, native)
                 row['resetFaults'] = reset_faults(serial, names)
             else:
                 okay, reason = suites['verdict'](manifest, path / 'serial.txt', [path / 'serial.txt'])
