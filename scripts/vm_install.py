@@ -21,6 +21,15 @@ def digest(path):
         return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
+def console_answer(console, data):
+    # Match metal-boot.console_send(..., paced=True): Enter terminates the
+    # console line, and four-byte bursts leave time for UART input and echo.
+    wire = data.removesuffix(b'\n') + b'\r'
+    for at in range(0, len(wire), 4):
+        console.sendall(wire[at:at + 4])
+        time.sleep(.04)
+
+
 class InstallProtocol:
     def __init__(self, current, previous, next_slot):
         self.answer = f'BREENIX-SLOTS-1 {current} {previous} {next_slot}\n'.encode('ascii')
@@ -91,7 +100,8 @@ def monitor(run):
             pending += data
             while b'\n' in pending:
                 line, pending = pending.split(b'\n', 1)
-                protocol.feed(line.decode('utf-8', 'replace').rstrip('\r'), console.sendall)
+                protocol.feed(line.decode('utf-8', 'replace').rstrip('\r'),
+                              lambda data: console_answer(console, data))
     # QMP quit stops only the QEMU instance owned by this run's locked launch.
     with socket.socket(socket.AF_UNIX) as qmp:
         qmp.settimeout(10)
