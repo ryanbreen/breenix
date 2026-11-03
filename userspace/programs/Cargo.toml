@@ -657,6 +657,9 @@ panic = "abort"
 lto = "thin"
 opt-level = "z"
 
+[profile.release.package.libimg]
+opt-level = 3
+
 [workspace]
 
 # Note: The libc patch is applied in rust-fork/library/Cargo.toml, not here.
