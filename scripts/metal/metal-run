@@ -31,7 +31,6 @@ import os
 from pathlib import Path
 import re
 import runpy
-import shlex
 import subprocess
 import sys
 import time
@@ -286,6 +285,8 @@ def boot(args):
     boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
     command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
     command += ['--mode', args.mode, '--wait', str(wait)]
+    if getattr(args, 'build_choice', None) is not None:
+        command += ['--build-choice', json.dumps(args.build_choice)]
     if catchup:
         command.append('--catchup')
     if is_session:
@@ -357,8 +358,7 @@ def boot(args):
             tools_only = {'disk-readback': ['--tools-profile', 'disk-readback'],
                           'manager': ['--tools-profile', 'boot-manager']}.get(payload, [])
             build_command = (['_prebuilt', boot_id, sha, prebuilt, '--mode', args.mode] if prebuilt else
-                             ['_build', boot_id, sha] if getattr(args, 'build_on_host', False) or tools_only else
-                             ['_build_mac', boot_id, sha, '--mode', args.mode])
+                             ['_build', boot_id, sha])
             subprocess.Popen([sys.executable, str(Path(__file__).resolve()), *build_command] + features + suite +
                              tools_only + (['--catchup'] if catchup else []),
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
@@ -384,39 +384,6 @@ def boot(args):
 def prebuilt_path(artifact_id):
     validate_id(artifact_id)
     return Path.home() / '.local/state/breenix-metal/prebuilt' / artifact_id
-
-
-def build_mac(boot_id, sha, mode, features=None, suite=None, catchup=False):
-    """Existing callers use the configured Mac without learning artifact IDs."""
-    validate_id(boot_id)
-    env = host_env()
-    try:
-        host, repo, upload = (env[key] for key in ('MAC_BUILD_HOST', 'MAC_BUILD_REPO', 'MAC_UPLOAD_HOST'))
-        if not re.fullmatch(r'[A-Za-z0-9_.@-]+', host) or host.startswith('-'):
-            raise ValueError('invalid MAC_BUILD_HOST')
-        tools = (HERE / 'COMMIT').read_text().strip()
-        if not re.fullmatch('[0-9a-f]{40}', tools):
-            raise ValueError('Mac dispatch requires committed deployed tools')
-        git_command = shlex.join(['git', '-C', repo])
-        options = shlex.join(['--source-repo', repo, '--tools-commit', tools, '--sha', sha,
-                             '--host', upload, '--mode', mode, '--rust-fork', repo + '/rust-fork',
-                             *(['--features', features] if features else []),
-                             *(['--suite', suite] if suite else []), *(['--catchup'] if catchup else [])])
-        command = ('set -eu; export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"; '
-                   f'{git_command} fetch --no-tags --no-write-fetch-head origin {tools} {sha}; '
-                   'work=$(mktemp -d); trap \'rm -rf "$work"\' EXIT; '
-                   f'{git_command} archive {tools} scripts > "$work/tools.tar"; '
-                   'tar -C "$work" -xf "$work/tools.tar"; '
-                   f'python3 "$work/scripts/metal/metal-build-local" {options}')
-        result = subprocess.run(['ssh', '-o', 'BatchMode=yes', host, command],
-                                stdout=subprocess.PIPE, text=True, check=True)
-        print(result.stdout, end='', flush=True)
-        receipt = json.loads(result.stdout.strip().splitlines()[-1])
-        return deliver_prebuilt(boot_id, sha, receipt['id'], mode, features, suite, catchup)
-    except (ValueError, OSError, KeyError, subprocess.CalledProcessError) as error:
-        in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-failed', boot_id,
-                 'Mac build failed (configure MAC_BUILD_HOST/REPO and MAC_UPLOAD_HOST): ' + str(error))
-        return 1
 
 
 def admit_prebuilt(env, sha, catchup=False):
@@ -583,13 +550,23 @@ def follow(env, boot_id):
 
 
 # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
-def main():
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+def argument_parser(automatic=False):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter,
+                                     allow_abbrev=False)
     sub = parser.add_subparsers(dest='command', required=True)
     p = sub.add_parser('boot')
     inputs = p.add_mutually_exclusive_group()
-    inputs.add_argument('--prebuilt', help='uploaded Mac payload id (default workflow)')
-    inputs.add_argument('--build-on-host', action='store_true', help='explicit fallback: build on the boot host')
+    inputs.add_argument('--prebuilt', help='uploaded Mac payload id')
+    inputs.add_argument('--build-on-host', action='store_true', help='build on the boot host (the default)')
+    p.add_argument('--build-choice', type=json.loads, help=argparse.SUPPRESS)
+    if automatic:
+        p.add_argument('--host', default='beast', help='boot host SSH alias (default beast)')
+        p.add_argument('--tools-commit', default='HEAD', help='Mac build tools commit (default HEAD)')
+        p.add_argument('--rust-fork', help='Mac Rust fork checkout')
+        p.add_argument('--jobs', type=int, choices=range(1, 5), default=2)
+        force = p.add_mutually_exclusive_group()
+        force.add_argument('--build-here', action='store_true')
+        force.add_argument('--build-on-beast', action='store_true')
     p.add_argument('--payload', choices=('image', 'hang', 'hang-img', 'hang-iso', 'none', 'linux', 'disk-readback', 'manager'),
                    default='image', help='manager serves the boot manager over the network in probe mode')
     p.add_argument('--linux-directory', help='prebuilt Linux instrument directory on the boot host')
@@ -645,19 +622,16 @@ def main():
     p.add_argument('--features')
     p.add_argument('--suite')
     p.add_argument('--catchup', action='store_true')
-    p = sub.add_parser('_build_mac')
-    p.add_argument('id')
-    p.add_argument('sha')
-    p.add_argument('--mode', required=True)
-    p.add_argument('--features')
-    p.add_argument('--suite')
-    p.add_argument('--catchup', action='store_true')
     p = sub.add_parser('_upgrade')
     p.add_argument('id')
     p = sub.add_parser('_resume')
     p.add_argument('options')
     p.add_argument('id')
-    args = parser.parse_args()
+    return parser
+
+
+def main():
+    args = argument_parser().parse_args()
     if args.command == '_upgrade':
         return runpy.run_path(str(HERE / 'upgrade_probe.py'))['watch'](globals(), validate_id(args.id))
     if args.command == '_resume':
@@ -670,8 +644,6 @@ def main():
         return build(args.id, args.sha, args.features, args.suite, args.tools_profile, args.catchup)
     if args.command == '_prebuilt':
         return deliver_prebuilt(args.id, args.sha, args.prebuilt, args.mode, args.features, args.suite, args.catchup)
-    if args.command == '_build_mac':
-        return build_mac(args.id, args.sha, args.mode, args.features, args.suite, args.catchup)
     env = host_env()
     if args.command == 'follow':
         return follow(env, args.id)

@@ -56,6 +56,17 @@ class ManifestTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'stub.efi'):
             self.verify()
 
+    def test_verification_renews_uploaded_payload_retention(self):
+        import shutil
+        import time
+        with tempfile.TemporaryDirectory() as temporary:
+            uploaded = Path(temporary) / 'prebuilt/20261103T000000Z-metal'
+            shutil.copytree(self.root, uploaded)
+            os.utime(uploaded, (0, 0))
+            p.verify(uploaded, commit=self.commit, tools_commit=self.tools, mode='suite', features=[], suite='console')
+            self.assertLess(time.time() - uploaded.stat().st_mtime, 5)
+            self.assertTrue((uploaded.parent / '.upload.lock').is_file())
+
     def test_retry_accepts_only_ordered_built_suites(self):
         self.build['suite'] = 'console,gpu,time'
         (self.root / 'build.json').write_text(json.dumps(self.build))
@@ -183,9 +194,32 @@ class ManifestTest(unittest.TestCase):
                             self.assertEqual((driver.dir / 'run.json').read_bytes(),
                                              (driver.dir / 'metal-run.json').read_bytes())
 
+    def test_service_stages_pending_suite_from_multi_suite_payload(self):
+        self.build['suite'] = 'console,time'
+        self.build['definition'].append('docs/suites/time.json')
+        (self.root / 'definition/docs/suites/time.json').write_text('{"id":"time"}')
+        (self.root / 'build.json').write_text(json.dumps(self.build))
+        p.create(self.root, self.tools, 'suite', dict(rustc='pinned'), dict(commit='c' * 40), 'd' * 40)
+        with tempfile.TemporaryDirectory() as temporary:
+            args = SimpleNamespace(id='20261103T000000Z-metal', mode='suite', payload='image', target='main',
+                                   task='', commit=self.commit, inject=None, suite='time', ramdisk=True, disk=None)
+            with patch.object(m, 'STATE', Path(temporary)), patch.object(m, 'load_site', return_value={}), \
+                 patch.object(boot, 'tools_commit', return_value=self.tools):
+                driver = boot.Driver(args)
+                driver.create_record()
+                import shutil
+                shutil.copytree(self.root, driver.stage / 'inputs')
+                (driver.stage / 'inputs/ready').touch()
+                with patch.object(boot.metal_root, 'stage_root', return_value={}) as stage, \
+                     patch.object(boot.metal_persist, 'layout', return_value=None), \
+                     patch.object(boot.metal_image, 'extract_esp', return_value={}), patch.object(driver, 'assemble'):
+                    driver.prepare_payload()
+                self.assertEqual(stage.call_args.args[2], 'time')
+                self.assertEqual(driver.delivery['build']['suite'], 'console,time')
+
 
 class HostRecordTest(StateTest):
-    def test_existing_boot_cli_dispatches_mac_build(self):
+    def test_existing_boot_cli_builds_on_host(self):
         run = load_script('metal-run')
         with patch.object(sys, 'argv', ['metal-run', 'boot', '--mode', 'tests']), \
              patch.object(run, 'host_env', return_value={}), \
@@ -195,26 +229,9 @@ class HostRecordTest(StateTest):
              patch.object(run.subprocess, 'Popen') as detached:
             self.assertEqual(run.main(), 0)
         command = detached.call_args.args[0]
-        self.assertIn('_build_mac', command)
+        self.assertIn('_build', command)
         self.assertIn('testing', command)
-        self.assertNotIn('_build', command)
-
-    def test_mac_dispatch_uses_pinned_tools_and_delivers_uploaded_id(self):
-        run = load_script('metal-run')
-        tools = m.STATE / 'tools'
-        tools.mkdir()
-        (tools / 'COMMIT').write_text('b' * 40)
-        env = dict(MAC_BUILD_HOST='mac', MAC_BUILD_REPO='/source path', MAC_UPLOAD_HOST='beast')
-        with patch.object(run, 'HERE', tools), patch.object(run, 'host_env', return_value=env), \
-             patch.object(run.subprocess, 'run', return_value=SimpleNamespace(stdout='{"id":"20261103T000002Z-metal"}\n')) as ssh, \
-             patch.object(run, 'deliver_prebuilt', return_value=0) as deliver:
-            self.assertEqual(run.build_mac('20261103T000001Z-metal', 'a' * 40, 'suite', suite='console'), 0)
-            command = ssh.call_args.args[0]
-            self.assertEqual(command[:4], ['ssh', '-o', 'BatchMode=yes', 'mac'])
-            self.assertIn('archive ' + 'b' * 40 + ' scripts', command[4])
-            self.assertIn('--source-repo \'/source path\'', command[4])
-            deliver.assert_called_once_with('20261103T000001Z-metal', 'a' * 40,
-                                            '20261103T000002Z-metal', 'suite', None, 'console', False)
+        self.assertNotIn('_build_mac', command)
 
     def test_prebuilt_rechecks_deleted_origin_lane(self):
         run = load_script('metal-run')
@@ -272,6 +289,23 @@ class HostRecordTest(StateTest):
 
 
 class PortableRootTest(unittest.TestCase):
+    def test_local_resolver_uses_payload_definitions_for_all_and_named_lists(self):
+        local = load_script('metal-build-local')
+        repo = Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            payload = Path(temporary)
+            (payload / 'docs/efforts').mkdir(parents=True)
+            (payload / 'docs/suites').mkdir()
+            names = ['console', 'memory', 'files-io']
+            (payload / 'docs/efforts/path.json').write_text(json.dumps(dict(efforts=[dict(suite=s) for s in names])))
+            for name in names:
+                (payload / f'docs/suites/{name}.json').write_text(json.dumps(dict(
+                    id=name, categories=[dict(cases=['fixture'])],
+                    sequence={'console': 'first', 'files-io': 'last'}.get(name))))
+            for selection, expected in (('all', ','.join(names)), ('memory', 'memory'),
+                                         ('console,memory,files-io', ','.join(names))):
+                self.assertEqual(local.resolve_suites(repo, payload, selection), expected)
+
     def test_root_recipe_comes_from_payload_even_with_tools_override(self):
         recipe = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/gate-artifacts.py'))
         with tempfile.TemporaryDirectory() as temporary:

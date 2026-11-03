@@ -1,0 +1,185 @@
+#!/usr/bin/env python3
+"""From this Mac, prefer the boot host below its build CPU load limit.
+
+metal-boot-auto [metal-run boot arguments] [--build-here | --build-on-beast]
+                [--host beast] [--tools-commit HEAD] [--rust-fork DIR] [--jobs 2]
+"""
+import importlib.machinery
+import importlib.util
+import json
+import math
+import os
+from pathlib import Path
+import re
+import shlex
+import subprocess
+import sys
+import time
+
+
+def load_run():
+    loader = importlib.machinery.SourceFileLoader('metal_run', str(Path(__file__).with_name('metal-run')))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+# Host load, container affinity: do not mistake the container's shared /proc/loadavg
+# or the host's total CPU count for the CPUs available to the builder.
+PROBE = '''
+import json, os, pathlib, runpy, subprocess
+host = runpy.run_path(str(pathlib.Path.home() / '.local/share/breenix-metal/metal-run'))
+env = host['host_env']()
+cpus = subprocess.check_output(['sudo', '-n', 'incus', 'exec', env['BUILD_INSTANCE'], '--',
+    'python3', '-c', 'import json, os; print(json.dumps(sorted(os.sched_getaffinity(0))))'], text=True)
+print(json.dumps(dict(load5=os.getloadavg()[1], cpus=json.loads(cpus))))
+'''
+
+
+def probe(host):
+    try:
+        result = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', host,
+                                 'python3 -c ' + shlex.quote(PROBE)],
+                                capture_output=True, text=True, timeout=15)
+        if result.returncode:
+            return None, f'SSH load probe exited {result.returncode}'
+        reading = json.loads(result.stdout)
+        load, cpus = reading['load5'], reading['cpus']
+        if (isinstance(load, bool) or not isinstance(load, (int, float)) or not math.isfinite(load) or load < 0
+                or not isinstance(cpus, list) or not cpus or len(set(cpus)) != len(cpus)
+                or any(type(cpu) is not int or cpu < 0 for cpu in cpus)):
+            raise ValueError('invalid load or cpuset')
+        return dict(load5=load, cpuCount=len(cpus)), None
+    except subprocess.TimeoutExpired:
+        return None, 'SSH load probe timed out'
+    except OSError:
+        return None, 'SSH load probe could not start'
+    except (ValueError, KeyError, TypeError):
+        return None, 'SSH load probe returned an invalid load or cpuset'
+
+
+def choose(reading, error, override=None, force=None):
+    limit = None
+    if override is not None:
+        try:
+            limit = float(override)
+        except ValueError:
+            raise ValueError('BREENIX_METAL_BUILD_LOAD_LIMIT must be a positive finite number') from None
+        if not math.isfinite(limit) or limit <= 0:
+            raise ValueError('BREENIX_METAL_BUILD_LOAD_LIMIT must be a positive finite number')
+    elif reading:
+        limit = reading['cpuCount']
+    builder = force or ('beast' if reading and reading['load5'] < limit else 'mac')
+    reason = ('forced' if force else 'unreadable' if error else
+              'below-limit' if builder == 'beast' else 'at-or-over-limit')
+    record = dict(builder=builder, load5=reading['load5'] if reading else None,
+                  cpuCount=reading['cpuCount'] if reading else None, limit=limit,
+                  limitSource='environment' if override is not None else 'cpuset',
+                  reason=reason, probeError=error, observedAt=time.time())
+    side = 'this Mac' if builder == 'mac' else 'beast'
+    if error:
+        message = f"beast's load could not be read ({error}), so this build runs on {side}."
+    elif force:
+        message = (f"beast's 5-minute load average is {reading['load5']:g}; "
+                   f"--build-{'here' if force == 'mac' else 'on-beast'} forces this build on {side}.")
+    else:
+        relation = 'below' if builder == 'beast' else 'over' if reading['load5'] > limit else 'at'
+        source = "the build container's CPUs" if override is None else 'BREENIX_METAL_BUILD_LOAD_LIMIT'
+        message = (f"beast's 5-minute load average is {reading['load5']:g}, {relation} the build limit "
+                   f"of {limit:g} ({source}), so this build runs on {side}.")
+    return record, message
+
+
+def boot_options(args, parser):
+    """Forward the boot parser's options, leaving caller-only controls on the Mac."""
+    options = []
+    for action in parser._actions:
+        if not action.option_strings or action.dest in ('help', 'prebuilt', 'build_on_host', 'build_choice'):
+            continue
+        value = getattr(args, action.dest)
+        if value is None or value is False:
+            continue
+        flag = action.option_strings[0]
+        if action.nargs == 0:
+            options.append(flag)
+        else:
+            for item in value if isinstance(value, list) else [value]:
+                options += [flag, str(item)]
+    return options
+
+
+def main():
+    metal = load_run()
+    parser = metal.argument_parser(automatic=True)
+    args = parser.parse_args(['boot', *sys.argv[1:]])
+    if not re.fullmatch(r'[A-Za-z0-9_.@-]+', args.host) or args.host.startswith('-'):
+        parser.error('--host must be an SSH alias')
+    if args.payload != 'image' or args.prebuilt or args.persistent or args.session or args.build_choice:
+        parser.error('automatic builds need a test image boot without --prebuilt or --session')
+    if args.build_here and args.build_on_host:
+        parser.error('--build-here conflicts with --build-on-host')
+    if args.suite and args.mode == 'default':
+        args.mode = 'suite'
+    if args.gt710_category and args.mode == 'default':
+        args.mode = 'probe'
+    if (args.mode == 'suite') != bool(args.suite):
+        parser.error('suite mode needs --suite ID[,ID...]')
+    reading, error = probe(args.host)
+    decision, message = choose(reading, error, os.environ.get('BREENIX_METAL_BUILD_LOAD_LIMIT'),
+                               'mac' if args.build_here else 'beast' if args.build_on_beast or args.build_on_host else None)
+    print(message, flush=True)
+    # Use the ordinary parser to serialize only options understood by metal-run.
+    ordinary = metal.argument_parser()._subparsers._group_actions[0].choices['boot']
+    options = boot_options(args, ordinary)
+    if args.catchup or metal.catchup_from_env():
+        args.catchup = True
+        if '--catchup' not in options:
+            options.append('--catchup')
+    if decision['builder'] == 'mac':
+        repo = Path(__file__).resolve().parents[2]
+        local = Path(__file__).with_name('metal-build-local')
+        # Resolve the payload branch here and pin it for the remote boot too.
+        ref = 'refs/heads/' + (args.branch or 'main')
+        refs = subprocess.check_output(['git', '-C', str(repo), 'ls-remote', 'origin', ref], text=True).split()
+        if not refs or not re.fullmatch('[0-9a-f]{40}', refs[0]):
+            raise ValueError('cannot resolve payload branch')
+        tip = refs[0]
+        subprocess.run(['git', '-C', str(repo), 'fetch', '--no-tags', '--no-write-fetch-head', 'origin', tip,
+                        *([args.sha] if args.sha else [])], check=True)
+        sha = args.sha or tip
+        command = [sys.executable, str(local), '--host', args.host, '--sha', sha,
+                   '--tools-commit', args.tools_commit, '--mode', args.mode,
+                   '--jobs', str(args.jobs)]
+        if args.rust_fork:
+            command += ['--rust-fork', args.rust_fork]
+        features = metal.kernel_features(args.mode, args.suite, args.inject,
+                                         args.gt710_category, args.case)
+        command += features
+        if args.suite:
+            command += ['--suite', args.suite]
+        if args.catchup:
+            command.append('--catchup')
+        # Stream build progress while retaining the final JSON receipt.
+        with subprocess.Popen(command, stdout=subprocess.PIPE, text=True) as process:
+            last = ''
+            for line in process.stdout:
+                print(line, end='', flush=True)
+                if line.strip():
+                    last = line
+            if process.wait():
+                return process.returncode
+        receipt = json.loads(last)
+        if not args.sha:
+            options += ['--sha', sha]
+        options += ['--prebuilt', receipt['id']]
+    options += ['--build-choice', json.dumps(decision, separators=(',', ':'))]
+    remote = 'python3 "$HOME/.local/share/breenix-metal/metal-run" boot ' + shlex.join(options)
+    return subprocess.run(['ssh', '-o', 'BatchMode=yes', args.host, remote]).returncode
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        sys.exit('metal-boot-auto: ' + str(error))

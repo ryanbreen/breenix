@@ -25,9 +25,10 @@ operation are retained for when the operator restores it.
 
 ## Layout
 
-Payload builds default to the Apple Silicon Mac. The always-on boot host keeps
-the machine service, lease, private staging, serving and evidence. Its build
-container remains an explicit fallback (`--build-on-host`).
+The Mac caller can select the builder from the boot host's load with
+`metal-boot-auto`: prefer the host below its build CPU limit, otherwise build
+on this Mac. The always-on boot host keeps the machine service, lease, private
+staging, serving and evidence. Direct `metal-run boot` callers build on the host.
 
 | Where | What |
 |---|---|
@@ -361,14 +362,16 @@ soon as the unit holds, or waits for, the machine lease, so the caller's ssh ses
    boot record and runs normally, without a refusal record. A timed-out wait or quarantined lease returns 75.
    The powered lease carries the boot id, the driver's unit, a heartbeat refreshed each 5 s and, from power-on,
    the attempt's absolute ceiling. claim-lint:ok: tests/metal_boot_queue_test.py exercises FIFO handoff, cancellation, bounds and launch output.
-2. **Gets its payload.** Normally `metal-build-local` has already built and uploaded
-   the payload on the Mac, and `metal-run boot --prebuilt ID` verifies its complete
+2. **Gets its payload.** A host build is the default. For a Mac build,
+   `metal-build-local` builds and uploads the payload, and
+   `metal-run boot --prebuilt ID` verifies its complete
    inventory, kernel commit, tools commit, mode, features and suite before launch
    and again before staging. The driver verifies it once more before configuring
    the root. A mismatch refuses the payload, retaining a reason in the private
    refusal log or boot events. Mac records add `builder: mac` to `run.json` and
-   `metal-run.json` and retain `manifest.json`. Host-build records keep their existing
-   schema. With the explicit `--build-on-host` fallback, `metal-build` runs in the build container: a private clone of the commit,
+   `metal-run.json` and retain `manifest.json`. Automatic choices add `buildChoice`
+   to both records, including host builds. Direct host-build records keep their
+   existing schema. On the host path, `metal-build` runs in the build container: a private clone of the commit,
    the effort-target guard from a freshly fetched origin/main (the deployed guard for `--catchup`;
    `--target x86-metal` once origin/main's guard knows that target; until then
    `--target x86`, recorded as the stand-in), the pinned Rust library snapshotted into the tree as the x86 gate does,
@@ -1486,12 +1489,45 @@ the authenticated SSH receipt; see [watchdog cases](../suites/README.md#watchdog
 
 ## Deploying and running
 
-### Build on the Mac (default workflow)
+### Choose the builder from this Mac
+
+Run the caller command on this Mac, with `metal-run boot`'s arguments (omit `boot`):
+
+```sh
+scripts/metal/metal-boot-auto --mode suite --suite console
+scripts/metal/metal-boot-auto --branch NAME --sha COMMIT --mode tests
+scripts/metal/metal-boot-auto --build-here --mode suite --suite console
+scripts/metal/metal-boot-auto --build-on-beast --mode tests
+```
+
+It reads the boot host's five-minute load average and the build container's
+current CPU affinity over SSH. The default build limit is the number of CPUs
+in that cpuset. A load strictly below the limit selects the existing host build;
+at or above it selects the Mac's verified prebuilt path. Override the limit with
+`BREENIX_METAL_BUILD_LOAD_LIMIT=NUMBER` (positive and finite). The forcing flags
+select a side regardless of load. `--host HOST` overrides the default SSH alias;
+`--tools-commit`, `--rust-fork` and `--jobs` configure the Mac build.
+
+The command prints one plain decision line, including the observed load on the
+host path. If the probe fails, it selects this Mac and states a sanitized reason;
+`--build-on-beast` still forces the host. The probe has a 15-second bound.
+`buildChoice` in `run.json` and `metal-run.json` records the builder, load, CPU
+count, limit, limit source, reason, probe error and observation time. Suite
+retries retain that decision and reuse the uploaded payload. The Mac finishes
+its build and upload before requesting the leased boot, so it may roam afterwards.
+
+Direct `metal-run boot` on the host, with neither `--prebuilt` nor
+`--build-on-host`, builds there as before. Vigil, its keeper and host suite callers
+need no changes. The host does not dispatch work to, or require access to, this Mac.
+
+### Build and upload on the Mac
 
 Install Homebrew `e2fsprogs`, `llvm`, `nasm` and `make`, and rustup with the
 checkout's pinned toolchain, `rust-src`, `llvm-tools-preview` and the
 `x86_64-unknown-none` target. Python 3.11 or newer is required. The command checks
-these prerequisites before compilation. The Rust library comes from the commit's
+these prerequisites before compilation (see `prerequisites` in
+`scripts/metal/metal-build-local`). <!-- claim-lint:ok: x86_64-unknown-none is a Rust target name. -->
+The Rust library comes from the commit's
 `rust-fork.toml`, snapshotted from `--rust-fork DIR` (default: this checkout's
 `rust-fork`); a modified or mismatched snapshot is refused.
 
@@ -1516,10 +1552,10 @@ The output retains `build.json`, UEFI and ext2 images, stub, manager, staging ha
 helper, definitions and (for tests) the BXTEST disk. `manifest.json` names the
 kernel commit, tools commit, mode, profile, features, suite, compiler identities,
 Rust library pin, builder platform, build catch-up selection, admission-policy commit, and SHA-256 and byte size
-of every payload file, including build metadata and definitions. The command
+of each payload file, including build metadata and definitions. The command
 prints an ID and build/upload wall times. SSH uploads to a private temporary
 directory, publishing `~/.local/state/breenix-metal/prebuilt/ID` only after transfer
-completes. It never touches the deployed tools or machine lease.
+completes. Deployment and machine admission are separate commands.
 
 For a later, separately authorized boot, take the documented branch-tools turn,
 deploy that exact tools commit at an idle point, and use the same selection:
@@ -1527,22 +1563,16 @@ deploy that exact tools commit at an idle point, and use the same selection:
 ```sh
 # On the boot host, after tools deployment:
 python3 ~/.local/share/breenix-metal/metal-run boot --prebuilt ID --sha COMMIT --mode suite --suite console
-# Explicit fallback, if building on the Mac is unavailable:
+# Direct host build (also the no-flag default):
 python3 ~/.local/share/breenix-metal/metal-run boot --build-on-host --mode suite --suite console
 ```
 
-An image request without `--prebuilt` or `--build-on-host` dispatches a build to
-the Mac, then delivers its uploaded payload through the same verified path.
-Configure `MAC_BUILD_HOST` (SSH destination), `MAC_BUILD_REPO` (absolute checkout
-path on that Mac), and `MAC_UPLOAD_HOST` (the Mac's SSH alias for the boot host)
-in the boot host's private `host.env`. Both SSH directions require batch access.
-The dispatcher materializes the deployed tools commit before invoking the Mac
-builder. Existing Vigil and suite-runner callers need no extra flags.
-It never silently queues payload compilation on the boot host. The tools identities on
-the host and service must both match the manifest. Refusals before launch are
+The tools identities on the host and service must both match the manifest.
+Refusals before launch are
 recorded in `~/.local/state/breenix-metal/prebuilt-refusals.jsonl`. A fresh origin
 effort-target guard runs before a prebuilt launch and again before handoff, with
-the boot's catch-up selection. The Mac resolves suite aliases against payload
+the boot's catch-up selection. claim-lint:ok: #2699; verify_prebuilt and deliver_prebuilt in scripts/metal/metal-run run admit_prebuilt; resolve_suites in scripts/metal/metal-build-local resolves the selector.
+The Mac resolves `--suite all` and named suite lists against payload
 definitions; retries may select pending suites in their original order.
 Root filesystem recipes and their helpers come from the payload commit.
 Staging, final
@@ -1552,8 +1582,15 @@ write their lane, PR and time to its owner file, deploy with `--restart` only
 while idle, and release the lock at each power-off, leaving their tools deployed.
 S27 still forbids sessions and persistent installs for this workflow.
 
-The mode examples below describe boot-host operations; for an image, supply its
-Mac `--prebuilt ID`. `--build-on-host` selects the retained build-container recipe.
+Uploads expire after seven days without successful verification; abandoned partial
+uploads expire after one day, and a failed transfer removes its partial directory.
+Publication and pruning share an upload lock. Under its own build lock, the Mac
+keeps three output folders for up to seven days and removes abandoned clone and
+temporary folders. Pruning runs on the next upload or Mac build; these are not
+background services. Builder identity uses a platform label, not a private hostname.
+
+The mode examples below describe boot-host operations. They build on the host
+unless given a Mac `--prebuilt ID`; `--build-on-host` explicitly selects that default.
 
 ```
 scripts/metal/metal-deploy HOST --create         # once: the service container, its limits, proxy and packages

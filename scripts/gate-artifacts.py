@@ -390,7 +390,7 @@ def main():
     repo, logs = map(Path, arguments[1:] if metal else arguments)
     if metal and sys.platform == 'darwin':
         # No Linux mount namespaces on macOS. One private, clean build, with
-        # the same warning refusal and disk builders; never publish it as a
+        # the same warning refusal and disk builders, without publishing a
         # clean-comparing gate cache entry.
         build(repo, logs, 'metal-mac')
         return

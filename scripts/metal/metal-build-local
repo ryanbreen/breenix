@@ -15,6 +15,7 @@ from pathlib import Path
 import platform
 import re
 import runpy
+import shlex
 import shutil
 import subprocess
 import sys
@@ -60,19 +61,78 @@ def prerequisites():
 def upload(out, host, artifact_id):
     # Publish atomically only after the entire stream arrived. No Incus, service,
     # deployed tools or machine lease is touched by this build-only command.
-    base = '"$HOME/.local/state/breenix-metal/prebuilt"'
-    partial = f'{base}/{artifact_id}.upload'
-    destination = f'{base}/{artifact_id}'
-    command = (f'set -eu; mkdir -p {base}; test ! -e {destination}; mkdir {partial}; '
-               f'tar -C {partial} -xf -; mv {partial} {destination}')
+    command = 'python3 -c ' + shlex.quote(UPLOAD) + ' ' + shlex.quote(artifact_id)
     sender = subprocess.Popen(['tar', '-C', str(out), '-cf', '-', '.'], stdout=subprocess.PIPE,
                               env=dict(os.environ, COPYFILE_DISABLE='1'))
     try:
         receiver = subprocess.run(['ssh', '-o', 'BatchMode=yes', host, command], stdin=sender.stdout)
     finally:
         sender.stdout.close()
-    if sender.wait() or receiver.returncode:
+        sender_status = sender.wait()
+    if sender_status or receiver.returncode:
         raise ValueError('prebuilt upload failed; incomplete uploads are never accepted')
+
+
+# Serialize publication/pruning so a slow live upload is not mistaken for debris.
+UPLOAD = r'''
+import fcntl, pathlib, re, shutil, subprocess, sys, time
+base = pathlib.Path.home() / '.local/state/breenix-metal/prebuilt'
+base.mkdir(parents=True, exist_ok=True, mode=0o700)
+artifact_id = sys.argv[1]
+if not re.fullmatch(r'\d{8}T\d{6}Z-metal', artifact_id):
+    raise ValueError('invalid artifact id')
+with (base / '.upload.lock').open('a') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    for path in base.iterdir():
+        if path.is_symlink() or not path.is_dir():
+            continue
+        partial = re.fullmatch(r'\d{8}T\d{6}Z-metal\.upload', path.name)
+        complete = re.fullmatch(r'\d{8}T\d{6}Z-metal', path.name)
+        if (partial or complete) and time.time() - path.stat().st_mtime > (86400 if partial else 7 * 86400):
+            shutil.rmtree(path)
+    destination = base / artifact_id
+    partial = base / (artifact_id + '.upload')
+    if destination.exists():
+        raise ValueError('artifact id already published')
+    partial.mkdir(mode=0o700)
+    try:
+        subprocess.run(['tar', '-C', str(partial), '-xf', '-'], check=True)
+        partial.rename(destination)
+    finally:
+        shutil.rmtree(partial, ignore_errors=True)
+'''
+
+
+def prune_outputs(cache):
+    """Called under the Mac build lock; keep three recent outputs, at most a week."""
+    outputs = sorted((path for path in cache.glob('breenix-metal-*-out')
+                      if re.fullmatch(r'breenix-metal-\d{8}t\d{6}z-metal-out', path.name)
+                      and not path.is_symlink() and path.is_dir()),
+                     key=lambda path: path.stat().st_mtime, reverse=True)
+    for index, path in enumerate(outputs):
+        if (re.fullmatch(r'breenix-metal-\d{8}t\d{6}z-metal-out', path.name) and not path.is_symlink()
+                and (index >= 3 or time.time() - path.stat().st_mtime > 7 * 86400)):
+            shutil.rmtree(path)
+    for path in cache.iterdir():
+        if path.is_symlink():
+            continue
+        if re.fullmatch(r'breenix-metal-\d{8}t\d{6}z-metal(?:-tmp)?', path.name):
+            shutil.rmtree(path)
+        elif re.fullmatch(r'\d{8}T\d{6}Z-metal-receipt.json', path.name):
+            artifact_id = path.name.removesuffix('-receipt.json')
+            if not (cache / ('breenix-metal-' + artifact_id.lower() + '-out')).exists():
+                path.unlink()
+
+
+def resolve_suites(tools, clone, spec):
+    sequence = runpy.run_path(str(tools / 'scripts/suite-sequence.py'))
+    def read(relative):
+        path = clone / relative
+        return path.read_text() if path.is_file() else None
+    ids, skipped = sequence['resolve'](spec, 'x86-metal', True, read)
+    for suite, why in skipped:
+        print(f'[metal-build-local] leaving out {suite}: {why}', file=sys.stderr)
+    return ','.join(ids)
 
 
 def build(args, repo, cache):
@@ -104,14 +164,7 @@ def build(args, repo, cache):
         if args.features not in helper.PROFILES:
             raise ValueError('--features is not supported by the selected tools commit')
         if args.suite:
-            sequence = runpy.run_path(str(tools / 'scripts/suite-sequence.py'))
-            def read(relative):
-                path = clone / relative
-                return path.read_text() if path.is_file() else None
-            ids, skipped = sequence['resolve'](args.suite, 'x86-metal', True, read)
-            for suite, why in skipped:
-                print(f'[metal-build-local] leaving out {suite}: {why}', file=sys.stderr)
-            args.suite = ','.join(ids)
+            args.suite = resolve_suites(tools, clone, args.suite)
         guard = tmp / 'effort-target-guard.py'
         guard.write_text(git(repo, 'show', policy_commit + ':scripts/effort-target-guard.py') + '\n')
         check = subprocess.run([sys.executable, str(guard), '--repo', str(clone), '--commit', commit,
@@ -220,7 +273,11 @@ def main():
         lock.write(json.dumps(dict(pid=os.getpid(), started=time.time(), jobs=args.jobs)) + '\n')
         lock.flush()
         repo = Path(args.source_repo)
-        build(args, repo, cache)
+        prune_outputs(cache)
+        try:
+            build(args, repo, cache)
+        finally:
+            prune_outputs(cache)
     return 0
 
 

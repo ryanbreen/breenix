@@ -9,7 +9,7 @@ import sys
 
 def set_owners(image, ownership, root):
     # ext2 on-disk inode layout (kernel/src/fs/ext2). mke2fs copied the builder's
-    # uid/gid; all shipped files belong to root except the test account's home.
+    # uid/gid; initialize root ownership, then apply the guest account/group map.
     with Path(image).open('r+b') as disk:
         disk.seek(1024)
         sb = disk.read(1024)

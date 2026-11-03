@@ -1,6 +1,9 @@
 """Portable payload inventory. Verification completes before service staging begins."""
 import hashlib
+import fcntl
+import contextlib
 import json
+import os
 from pathlib import Path
 import re
 
@@ -34,6 +37,18 @@ def create(root, tools_commit, mode, toolchain, rust_pin, policy_commit):
 
 
 def verify(root, *, commit, tools_commit, mode, features, suite, staged=False):
+    root = Path(root)
+    # The upload receiver holds LOCK_EX while pruning. Refresh
+    # last-use time before releasing it, protecting queued deliveries/retries.
+    with contextlib.ExitStack() as stack:
+        if root.parent.name == 'prebuilt':
+            lock = stack.enter_context((root.parent / '.upload.lock').open('a'))
+            fcntl.flock(lock, fcntl.LOCK_SH)
+        return _verify(root, commit=commit, tools_commit=tools_commit, mode=mode,
+                       features=features, suite=suite, staged=staged)
+
+
+def _verify(root, *, commit, tools_commit, mode, features, suite, staged=False):
     root = Path(root)
     manifest = json.loads((root / 'manifest.json').read_text())
     if manifest.get('version') != 1 or manifest.get('builder') != 'mac':
@@ -74,6 +89,8 @@ def verify(root, *, commit, tools_commit, mode, features, suite, staged=False):
     for field in ('commit', 'profile', 'features', 'suite'):
         if build.get(field) != manifest.get(field):
             raise ValueError('prebuilt build record mismatch: ' + field)
+    # Retention follows recent use, including detached suite retries.
+    os.utime(root, None)
     return manifest
 
 
