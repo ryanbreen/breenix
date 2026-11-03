@@ -92,6 +92,10 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
         Ok(cmd) => cmd,
         Err(_) => return SyscallResult::Err(super::ErrorCode::Fault as u64),
     };
+    #[cfg(not(feature = "testing"))]
+    if (27..=30).contains(&cmd.op) {
+        return SyscallResult::Err(super::ErrorCode::NoSys as u64);
+    }
     if cmd.op != 6 && cmd.op != 32 {
         return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
     }
