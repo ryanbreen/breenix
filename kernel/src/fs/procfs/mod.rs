@@ -888,7 +888,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         }
         // The display owners' completed GPU presents (the run stage's screen changes).
         ProcEntryType::StageComposites => {
-            text(crate::gpu::present_records())
+            text(crate::gpu::present_records().map_err(|e| -(e as i32))?)
         }
         ProcEntryType::Uptime => text(generate_uptime()),
         ProcEntryType::Version => text(generate_version()),

@@ -120,6 +120,24 @@ pub(super) fn write_blocked(c: &Core, written: &[u32]) -> bool {
         && written.iter().any(|id| c.display.holds.contains(id))
 }
 
+/// Synchronize the native stage's count sample with its accepted flip. A
+/// PRESENT fence is ready at GET acceptance (G26), but its completed count
+/// advances at latch. Both sides of a live draw's bracket must see that latch.
+/// Virtual flushes already complete before PRESENT returns.
+pub(super) fn present_counts() -> Result<Vec<(u64, u64)>, i64> {
+    let counts = |c: &mut Core| {
+        c.procs.iter().filter(|(_, p)| p.presents > 0)
+            .map(|(&tgid, p)| (tgid, p.presents)).collect()
+    };
+    if dev::backend() != abi::backend::GK208 {
+        return Ok(with_core(counts).unwrap_or_default());
+    }
+    wait_for(Some(now_ns().saturating_add(1_000_000_000)), true, |c| {
+        if c.stalled { return Some(Err(EIO)); }
+        (c.display.outstanding == 0).then(|| Ok(counts(c)))
+    }).map_err(|stop| match stop { Stop::Timeout => ETIMEDOUT, Stop::Interrupted => EINTR })?
+}
+
 impl Core {
     /// GET accepted the native UPDATE. Publish the named binding and syscall
     /// answer and context fence. Previous scanout holds still await the latch.

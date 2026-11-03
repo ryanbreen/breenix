@@ -24,6 +24,7 @@ class StageCounts(unittest.TestCase):
 extern crate alloc;
 use std::{cell::{Cell, RefCell}, collections::BTreeMap};
 const EIO:i64=5; const EINTR:i64=4; const ETIMEDOUT:i64=110;
+mod arch {pub fn with_interrupts<T>(f:impl FnOnce()->T)->T{f()}}
 mod abi {pub mod backend {pub const GK208:u32=6;}}
 mod dev {pub fn backend()->u32{crate::BACKEND.with(Cell::get)} use std::cell::Cell;}
 struct Proc {presents:u64}
