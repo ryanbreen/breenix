@@ -35,8 +35,8 @@
 //! spellings the original denylist misses by construction (`serial_print!`,
 //! `log_serial_print!`, `log::log!` -- each reaches the same blocking serial lock as the
 //! `serial_println!`/`log::*!` families the narrow list already denies).
-//! That wider census is the narrow one plus exactly one escaped site,
-//! `kernel/src/arch_impl/aarch64/exception.rs :: fn sys_write`, a
+//! That wider census was the narrow one plus exactly one escaped site (removed by main's
+//! 992e1d65, ruling S28), `kernel/src/arch_impl/aarch64/exception.rs :: fn sys_write`, a
 //! `crate::serial_print!` call inside a per-BYTE loop. This same PR widens
 //! `PROHIBITED_PATTERNS` in the shell script to carry the three new
 //! spellings too, so `scripts/check-critical-path-violations.sh`'s own
@@ -684,22 +684,11 @@ const CRITICAL_PATH_LOG_ANCHORS: &[(&str, &str, usize)] = &[
     ("kernel/src/task/scheduler.rs", "impl Scheduler::fn dump_thread_placement", 3),
 ];
 
-/// The one call the narrow denylist misses: `crate::serial_print!` (no
-/// `ln`) inside a per-byte write loop. `serial_print!` does not match any
-/// of the twelve `SHARED_PATTERNS` -- it is a strict prefix removal of
-/// `serial_println!`, not a substring of it -- so it is invisible to both
-/// the shell script before this PR and to `CRITICAL_PATH_LOG_ANCHORS`
-/// above. `critical_path_log_wider_census_is_pinned` below appends this
-/// row to `CRITICAL_PATH_LOG_ANCHORS` and validates against
-/// `SHARED_PATTERNS ++ WIDER_EXTRA_PATTERNS`, rather than duplicating 48
-/// rows into a second const, so the "wider = narrow + this one escaped
-/// site" relationship is visible in code instead of in two tables someone
-/// has to notice are 47 rows identical.
-const ESCAPED_SITE: (&str, &str, usize) = (
-    "kernel/src/arch_impl/aarch64/exception.rs",
-    "fn sys_write",
-    1,
-);
+/// The wider census once carried one escaped site, a `crate::serial_print!` inside the
+/// per-byte loop of `kernel/src/arch_impl/aarch64/exception.rs :: fn sys_write`. Main's
+/// 992e1d65 replaced that producer with `tty::driver::write_unprocessed`, so the wider
+/// census now equals the narrow one (ruling S28). A `serial_print!`, `log_serial_print!`
+/// or `log::log!` on a checked path is again an unexpected census entry.
 
 /// The number of distinct call sites `CRITICAL_PATH_LOG_ANCHORS` accounts
 /// for. This is the ledger column the drain plan's PR table tracks, and it is
@@ -720,9 +709,7 @@ const ESCAPED_SITE: (&str, &str, usize) = (
 const CRITICAL_PATH_LOG_TOTAL: usize = 87;
 
 fn wider_anchors() -> Vec<(&'static str, &'static str, usize)> {
-    let mut anchors = CRITICAL_PATH_LOG_ANCHORS.to_vec();
-    anchors.push(ESCAPED_SITE);
-    anchors
+    CRITICAL_PATH_LOG_ANCHORS.to_vec()
 }
 
 fn wider_patterns() -> Vec<&'static str> {
@@ -862,9 +849,8 @@ fn the_anchor_table_sums_to_the_ledger_total() {
         .copied()
         .sum();
     assert_eq!(
-        wider,
-        CRITICAL_PATH_LOG_TOTAL + 1,
-        "the wider census is the narrow one plus the single escaped site"
+        wider, CRITICAL_PATH_LOG_TOTAL,
+        "the wider census equals the narrow one since 992e1d65 removed its one escaped site"
     );
 }
 
