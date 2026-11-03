@@ -63,6 +63,28 @@ BREENGL_END_ONLY = {
 
 
 class GpuExpect(unittest.TestCase):
+    def test_reviewed_colour_samples(self):
+        def descriptions(suite):
+            manifest = json.loads((ROOT / f"docs/suites/{suite}.json").read_text())
+            return {f"{cat['id']}/{case['id']}": case.get("expect", "")
+                    for cat in manifest["categories"] for case in cat["cases"]}
+
+        breengel = descriptions("breengel")
+        for text in ("1-bit", "#555555", "#777777", "#7F7F7F"):
+            self.assertIn(text, breengel["png-decode/gray-depths"])
+        self.assertIn("black, black", breengel["png-decode/trns-gray"])
+        self.assertIn("dark indigo (#1B0F5F)", breengel["isolation/other-map"])
+        self.assertIn("crimson (#7B2D43) probe pixel at (13,1)", breengel["raster/bgr-order"])
+
+        gpu = descriptions("gpu")
+        for case, sample in (("textures/copy-overlap", "#6FF08F"),
+                             ("textures/destroy-deferred", "#86FFE8"),
+                             ("pipelines/coverage-lcd", "#312719"),
+                             ("performance/wait-no-spin", "#AC7625")):
+            with self.subTest(case=case):
+                self.assertIn(sample, gpu[case])
+        self.assertIn("#011D0D", breengel["windows/release-order"])
+
     def test_pictured_gpu_cases_have_visual_expectations(self):
         pictured = {f"{cat}/{case}" for cat, cases in PICTURED.items() for case in cases}
         self.assertEqual(len(pictured), 121)
