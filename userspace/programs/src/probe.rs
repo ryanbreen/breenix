@@ -206,6 +206,11 @@ fn pattern(col: u32, row: u32, mask: u32) -> u32 {
 /// pixels must be the ones the display shows.
 fn scanout_check() -> Result<(), &'static str> {
     use libbreenix::gpu::{self, abi};
+    #[cfg(target_arch = "x86_64")]
+    {
+        let (status, caps) = gpu::caps();
+        if status != 0 || caps.status != abi::status::ADMITTED { return Err("GPU admission failed"); }
+    }
     let modes = bgl::modes().map_err(|_| "GPU MODES failed")?;
     let mode = modes.modes.get(modes.current as usize).copied().ok_or("GPU MODES has no current mode")?;
     if mode.width == 0 || mode.height == 0 { return Err("empty display mode"); }
@@ -411,6 +416,11 @@ struct Screen {
 /// admitted a device.
 fn open_screen() -> Option<Screen> {
     use libbreenix::gpu::{self, abi};
+    #[cfg(target_arch = "x86_64")]
+    {
+        let (status, caps) = gpu::caps();
+        if status != 0 || caps.status != abi::status::ADMITTED { return None; }
+    }
     let modes = bgl::modes().ok()?;
     let mode = modes.modes.get(modes.current as usize).copied()?;
     if mode.width < 480 || mode.height < 400 { return None; }

@@ -12,6 +12,14 @@
 /// Display: the GPU core's current display mode (MODES), whose scanout targets are BGRX, four
 /// bytes a pixel, rows of the mode's width.
 fn main() {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let (status, caps) = libbreenix::gpu::caps();
+        if status != 0 || caps.status != libbreenix::gpu::abi::status::ADMITTED {
+            eprintln!("resolution: GPU admission failed: result {status}, status {}", caps.status);
+            std::process::exit(1);
+        }
+    }
     let (r, modes) = libbreenix::gpu::modes();
     let mode = (r == 0).then(|| modes.modes.get(modes.current as usize).copied()).flatten();
     match mode {

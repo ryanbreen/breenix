@@ -279,6 +279,13 @@ impl Layout {
 
 /// The GPU core's current display mode.
 fn screen_size() -> Result<(u32, u32), String> {
+    #[cfg(target_arch = "x86_64")]
+    {
+        let (status, caps) = libbreenix::gpu::caps();
+        if status != 0 || caps.status != libbreenix::gpu::abi::status::ADMITTED {
+            return Err(format!("GPU admission result {status}, status {}", caps.status));
+        }
+    }
     let (r, modes) = libbreenix::gpu::modes();
     if r != 0 {
         return Err(format!("MODES errno {}", -r));
