@@ -40,9 +40,17 @@ def verify(root, *, commit, tools_commit, mode, features, suite, staged=False):
     if manifest.get('version') != 1 or manifest.get('builder') != 'mac':
         raise ValueError('unsupported prebuilt manifest')
     for field, expected in dict(commit=commit, toolsCommit=tools_commit, mode=mode,
-                                features=features, suite=suite or None).items():
+                                features=features).items():
         if manifest.get(field) != expected:
             raise ValueError(f'prebuilt {field} mismatch: expected {expected!r}, got {manifest.get(field)!r}')
+    # Retries reuse the same payload, but run only suites without completed
+    # evidence. They must remain an ordered selection of the built suites.
+    built = (manifest.get('suite') or '').split(',') if manifest.get('suite') else []
+    requested = suite.split(',') if suite else []
+    remaining = iter(built)
+    if bool(built) != bool(requested) or len(set(requested)) != len(requested) or any(
+            name not in remaining for name in requested):
+        raise ValueError(f'prebuilt suite mismatch: requested {suite!r}, built {manifest.get("suite")!r}')
     for field in ('commit', 'toolsCommit', 'policyCommit'):
         if not re.fullmatch('[0-9a-f]{40}', manifest.get(field, '')):
             raise ValueError('invalid prebuilt ' + field)

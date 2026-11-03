@@ -14,6 +14,7 @@ import os
 from pathlib import Path
 import platform
 import re
+import runpy
 import shutil
 import subprocess
 import sys
@@ -104,6 +105,15 @@ def build(args, repo, cache):
         if archive.wait() or extracted.returncode:
             raise ValueError('could not materialize the tools commit')
         helper = load_build(tools / 'scripts/metal/metal-build')
+        if args.suite:
+            sequence = runpy.run_path(str(tools / 'scripts/suite-sequence.py'))
+            def read(relative):
+                path = clone / relative
+                return path.read_text() if path.is_file() else None
+            ids, skipped = sequence['resolve'](args.suite, 'x86-metal', True, read)
+            for suite, why in skipped:
+                print(f'[metal-build-local] leaving out {suite}: {why}', file=sys.stderr)
+            args.suite = ','.join(ids)
         guard = tmp / 'effort-target-guard.py'
         guard.write_text(git(repo, 'show', policy_commit + ':scripts/effort-target-guard.py') + '\n')
         check = subprocess.run([sys.executable, str(guard), '--repo', str(clone), '--commit', commit,

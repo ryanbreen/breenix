@@ -56,6 +56,17 @@ class ManifestTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'stub.efi'):
             self.verify()
 
+    def test_retry_accepts_only_ordered_built_suites(self):
+        self.build['suite'] = 'console,gpu,time'
+        (self.root / 'build.json').write_text(json.dumps(self.build))
+        p.create(self.root, self.tools, 'suite', dict(rustc='pinned'), dict(commit='c' * 40), 'd' * 40)
+        for suite in ('console,gpu,time', 'gpu,time', 'console,time', 'time'):
+            with self.subTest(suite=suite):
+                self.verify(suite=suite)
+        for suite in ('gpu,console', 'gpu,gpu', 'users', None):
+            with self.subTest(suite=suite), self.assertRaisesRegex(ValueError, 'suite mismatch'):
+                self.verify(suite=suite)
+
     def test_wrong_commit_and_tools_commit_are_refused(self):
         for field in ('commit', 'tools_commit'):
             with self.subTest(field=field), self.assertRaisesRegex(ValueError, 'commit|toolsCommit'):
