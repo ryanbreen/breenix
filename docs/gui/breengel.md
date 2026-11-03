@@ -1163,6 +1163,9 @@ The compositor's keyboard state, once version 1's ops 26 (modifiers) and 31
   composite event. The repeated count lets readers reject a row spliced across
   procfs reads: it must equal the leading count. The initial pair is `(0, 0)`. Rate measurements use these event timestamps
   at both endpoints, preserving the exact 60 Hz comparison despite poll latency.
+  G33a defines that time as the latching vblank on native scanout, derived from
+  its hardware frame counter and exact programmed mode period. Virtual backends
+  use present completion. Copy-out and scene bookkeeping do not move the event.
 
 ### 18.1 Snapshot authority and source aliases (B13)
 

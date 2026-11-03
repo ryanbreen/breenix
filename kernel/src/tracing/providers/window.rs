@@ -51,13 +51,13 @@ pub fn init() {
 }
 
 #[inline]
-pub fn count_composite(pixels: u64) {
+pub fn count_composite(pixels: u64, presented_ns: u64) {
     // scene::finish serializes publishers under the window registry. Keep a
     // publisher runnable while readers wait for its even version.
     crate::per_cpu::preempt_disable();
     COMPOSITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     fence(Ordering::Release);
-    COMPOSITE_LAST_NS.store(crate::signal::monotonic_nanos(), Ordering::Relaxed);
+    COMPOSITE_LAST_NS.store(presented_ns, Ordering::Relaxed);
     WINDOW_COMPOSITES.increment();
     WINDOW_COMPOSITE_PIXELS.add(pixels);
     COMPOSITE_SEQUENCE.fetch_add(1, Ordering::Release);

@@ -396,8 +396,9 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
         a.reason = reason(status);
         return Err(EIO);
     }
+    let presented_ns = display::composite_present_time(fence)?;
     a.answer = answer;
     let (pixels, per_window) = scene_work;
     a.pixels = pixels;
-    Ok(Composed { pixels, per_window })
+    Ok(Composed { pixels, per_window, presented_ns })
 }

@@ -591,6 +591,7 @@ mod production_policy;
 pub mod resource;
 #[cfg(feature = "gt710_core_probe")]
 mod spans_diagnostic;
+mod vblank_clock;
 pub mod adapter;
 pub mod caps;
 
@@ -646,4 +647,12 @@ pub(crate) fn heap_footprint() -> [usize; 8] {
     values[..7].copy_from_slice(&ce::with_resources(|r,_,_| Ok(r.heap_footprint())).unwrap_or([0;7]));
     values[7] = bulk::capacity();
     values
+}
+
+/// G33a: the completed native binding, in the scanout clock domain.
+pub(crate) fn completed_present_time(resource: u32) -> Option<u64> {
+    ce::with_clock_owner(|_, evo, _| {
+        evo.last_presentation.filter(|(id, _)| *id == resource)
+            .map(|(_, at)| at).ok_or("native presentation clock identity mismatch")
+    }).ok()
 }

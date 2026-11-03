@@ -465,6 +465,10 @@ pub struct ConsoleSurface {
 
 /// Retain the owned EVO channel and its post-takeover command cursor.
 pub struct Evo {
+    frame_pixels: u64,
+    pixel_hz: u64,
+    clock: Option<super::vblank_clock::VblankClock>,
+    pub(super) last_presentation: Option<(u32, u64)>,
     pub head: u32,
     sor: u32,
     total: u64,
@@ -501,6 +505,29 @@ pub(in crate::gk208) fn vblank_counter(regs: &Registers, head: u32)
 }
 
 impl Evo {
+    /// Anchor once on a real VBLANK_COUNT edge, before any client UPDATE.
+    /// MIT rnndb NV_HEAD_STAT.VERT (notice above): no display register writes.
+    fn start_clock(&mut self, regs: &Registers) -> Result<(), &'static str> {
+        if self.clock.is_some() { return Ok(()); }
+        let (start, before) = vblank_counter(regs, self.head)?;
+        while crate::signal::monotonic_nanos().saturating_sub(start) < 40_000_000 {
+            let (at, count) = vblank_counter(regs, self.head)?;
+            if count != before {
+                self.clock = Some(super::vblank_clock::VblankClock::new(
+                    count, at, self.frame_pixels, self.pixel_hz));
+                return Ok(());
+            }
+            core::hint::spin_loop();
+        }
+        Err("native vblank clock did not advance")
+    }
+    pub(in crate::gk208) fn record_presentation(&mut self, regs: &Registers, resource: u32)
+        -> Result<(), &'static str> {
+        let (_, count) = vblank_counter(regs, self.head)?;
+        let at = self.clock.as_mut().ok_or("native vblank clock absent")?.at(count);
+        self.last_presentation = Some((resource, at));
+        Ok(())
+    }
     pub(in crate::gk208) fn terminal_display(&self, registers: usize, surface: super::present::Surface)
         -> Result<super::emergency::Display, &'static str> {
         let regs = Registers(registers);
@@ -634,6 +661,7 @@ pub(in crate::gk208) fn present_latched(evo: &mut Evo, regs: &mut Registers,
     let value = completion(regs, evo.total, evo.notifier, &evo.limits, &evo.coefficients,
         (evo.head, evo.sor, true, true), &evo.scripts, false)?;
     if value & 1 == 0 { return Ok(None); }
+    evo.record_presentation(regs, surface.resource)?;
     let receipt = super::present::receipt(&mut PresentRead(regs), evo.head, surface, value)?;
     let h = evo.head as usize * 0x300;
     let blank = regs.read(0x64041c + h);
@@ -665,6 +693,7 @@ pub(super) fn observed_scanout(regs: &mut Registers, head: u32,
 fn present_inner(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface, wait: bool,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
+    evo.start_clock(regs)?;
     let _cost = super::cost::phase(super::cost::Slot::Evo);
     let phase=MEMX_PRESENT_PHASE.load(core::sync::atomic::Ordering::Acquire);
     if phase!=0 {
@@ -744,6 +773,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
             None => super::present::flush(&mut update, head, surface)?,
         }
     };
+    evo.record_presentation(regs, surface.resource)?;
     view.verify(regs,head)?;
     let health=super::memx_display::Health::read(regs,evo.head,evo.sor);
     if phase!=0 {
@@ -1029,6 +1059,9 @@ pub fn takeover(
     if !measuring() {
         crate::serial_println!("GT710_MODE_STAGE console-ready diagnostics=off");
         return Ok((console, Evo {
+            frame_pixels: u64::from(t.htotal) * u64::from(t.vtotal),
+            pixel_hz: u64::from(t.clock_khz) * 1000,
+            clock: None, last_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
             limits, coefficients, scripts,
@@ -1338,6 +1371,9 @@ pub fn takeover(
         })?;
     }
     Ok((console, Evo {
+            frame_pixels: u64::from(t.htotal) * u64::from(t.vtotal),
+            pixel_hz: u64::from(t.clock_khz) * 1000,
+            clock: None, last_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
             limits, coefficients, scripts,

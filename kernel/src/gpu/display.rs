@@ -513,6 +513,25 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
     Ok((bgl_fence, outcome.0, outcome.1))
 }
 
+/// Composite accounting needs actual native latch completion, while ordinary
+/// PRESENT keeps G26's GET-acceptance semantics. No core lock spans the wait.
+pub(super) fn composite_present_time(fence: u64) -> Result<u64, i64> {
+    #[cfg(target_arch = "x86_64")]
+    if dev::backend() == abi::backend::GK208 {
+        let id = wait_for(None, true, |c| {
+            if c.display.outstanding != 0 { return None; }
+            Some(c.display.binding.filter(|b| b.fence == fence && c.display.known)
+                .map(|b| b.id).ok_or(EIO))
+        }).map_err(|_| EINTR)??;
+        let resource = dev::resource_id(id).ok_or(EIO)?;
+        return crate::gk208::completed_present_time(resource).ok_or(EIO);
+    }
+    // Virtual backends have no physical vblank: their completed flush is the
+    // presentation event. Capture it here, before scene bookkeeping/copy-out.
+    let _ = fence;
+    Ok(now_ns())
+}
+
 /// The current mode's geometry, without reading the firmware framebuffer. Surface
 /// construction needs the UI scale, not MODES' full device diagnostics.
 pub(super) fn current_mode(arg: u64, len: u64) -> Result<u64, i64> {

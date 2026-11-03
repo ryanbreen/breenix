@@ -50,6 +50,8 @@ impl Drop for Pin {
 
 /// A composite the backend completed.
 pub struct Composed {
+    /// G33a: native latching vblank, or virtual present completion.
+    pub presented_ns: u64,
     /// Pixels composed.
     pub pixels: u64,
     /// Pixels of each window composed, in `Frame::windows` order.
