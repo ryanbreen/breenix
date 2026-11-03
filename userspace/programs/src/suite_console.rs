@@ -490,25 +490,6 @@ impl Drop for DisplayOwner {
     fn drop(&mut self) { let _ = libbreenix::graphics::give_back_display(); }
 }
 
-/// What the display owner painted: the whole screen in 0x3c3c3c.
-#[cfg(target_arch = "x86_64")]
-struct LegacyPainted {
-    width: u32,
-    height: u32,
-}
-
-#[cfg(target_arch = "x86_64")]
-fn paint_legacy_owner() -> Verdict<LegacyPainted> {
-    let info = libbreenix::graphics::fbinfo().map_err(|e| format!("fbinfo: {e}"))?;
-    let (pixels, width) = libbreenix::graphics::fb_mmap_pane().map_err(|e| format!("fb_mmap: {e}"))?;
-    require(width == info.width, "display owner did not map the whole screen")?;
-    let bytes = (width * info.height * info.bytes_per_pixel) as usize;
-    // The mapping holds the whole screen, using the reported pane stride.
-    unsafe { core::ptr::write_bytes(pixels, 0x3c, bytes); }
-    libbreenix::graphics::fb_flush().map_err(|e| format!("fb_flush: {e}"))?;
-    Ok(LegacyPainted { width: info.width as u32, height: info.height as u32 })
-}
-
 /// What the display owner painted on the GPU core: a scanout target of the display's mode,
 /// cleared to 0x3c3c3c and presented, kept while the owner holds the display.
 struct Painted {
@@ -520,8 +501,6 @@ struct Painted {
 
 impl Drop for Painted {
     fn drop(&mut self) {
-        #[cfg(target_arch = "x86_64")]
-        if self.context == 0 { return; }
         let _ = libbreenix::gpu::resource_destroy(self.target);
         let _ = libbreenix::gpu::context_destroy(self.context);
     }
@@ -529,11 +508,6 @@ impl Drop for Painted {
 
 fn paint_owner() -> Verdict<Painted> {
     use libbreenix::gpu::{self, abi::{self, stream::encode}};
-    #[cfg(target_arch = "x86_64")]
-    if gpu_display()?.is_none() {
-        let legacy = paint_legacy_owner()?;
-        return Ok(Painted { width: legacy.width, height: legacy.height, context: 0, target: 0 });
-    }
     let (width, height) = display_size()?;
     let context = gpu::context_create().map_err(|e| format!("GPU context: errno {}", -e))?;
     let target = match gpu::scanout_target_create(abi::format::B8G8R8A8, width, height) {
@@ -576,17 +550,8 @@ fn read_screen() -> Verdict<(Vec<u32>, usize)> {
     Ok((words, width as usize))
 }
 
-/// The displayed pixels at each `(x, y)`, as 0xRRGGBB, read from the display's memory or
-/// backing rather than the owner's staging mapping.
-#[cfg(target_arch = "x86_64")]
-fn displayed_legacy(points: &[(i32, i32)]) -> Verdict<Vec<u32>> {
-    points.iter().map(|&(x, y)| libbreenix::graphics::fb_read_pixel(x, y).map_err(|e| format!("read pixel: {e}"))).collect()
-}
-
 /// The displayed pixels at each `(x, y)`, as 0xRRGGBB, read back from the device's scanout.
 fn displayed(points: &[(i32, i32)]) -> Verdict<Vec<u32>> {
-    #[cfg(target_arch = "x86_64")]
-    if gpu_display()?.is_none() { return displayed_legacy(points); }
     let (screen, width) = read_screen()?;
     Ok(points.iter().map(|&(x, y)| screen[y as usize * width + x as usize]).collect())
 }
@@ -701,18 +666,9 @@ impl Terminal {
         require(actual == rgb, &format!("cell {row},{col} pixel {x},{y}: {actual:06x}, expected {rgb:06x}"))
     }
 
-    /// The displayed pixel at `(x, y)` (the cases read pixels after taking the display,
-    /// which keeps the console's completed frame on the screen).
-    #[cfg(target_arch = "x86_64")]
-    fn displayed_legacy(&self, x: i32, y: i32) -> Verdict<u32> {
-        libbreenix::graphics::fb_read_pixel(x, y).map_err(|e| format!("pixel read: {e}"))
-    }
-
     /// The displayed pixel at `(x, y)`: the device's scanout, read back once by the display
     /// owner the cases became and kept until the terminal is written again.
     fn displayed(&self, x: i32, y: i32) -> Verdict<u32> {
-        #[cfg(target_arch = "x86_64")]
-        if gpu_display()?.is_none() { return self.displayed_legacy(x, y); }
         if self.screen.borrow().is_none() {
             self.screen.replace(Some(read_screen()?));
         }
