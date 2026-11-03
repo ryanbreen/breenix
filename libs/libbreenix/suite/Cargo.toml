@@ -19,5 +19,9 @@ libbreenix = { path = "..", features = ["std", "suite"] }
 libgfx-ref = { path = "../../libgfx-ref" }
 libpixcheck = { path = "../../libpixcheck" }
 
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+libgfx = { path = "../../libgfx" }
+bgl = { path = "../../bgl" }
+
 [dev-dependencies]
 gpu-abi = { path = "../../gpu-abi", features = ["alloc"] }
