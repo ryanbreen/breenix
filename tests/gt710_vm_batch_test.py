@@ -79,6 +79,17 @@ mod gk208 {
             assert!(regs.spans<=400,"{} aperture spans for two tables and 256 PTEs",regs.spans);
             assert!(regs.max_span<=16384,"aperture hold exceeds existing 16 KiB bound");
             assert!(regs.flushes>=3 && regs.invalidates>=2,"mapping must be published");
+            let before=(regs.spans,regs.flushes,regs.invalidates);
+            let mut io=VmIo{regs,total:1<<30};
+            space.unmap(&mut io,va,256*4096).unwrap();
+            for i in 0..256 {
+                assert_eq!(vm::Io::read(&mut io,space.pte_address(va+i*4096).unwrap()).unwrap(),0);
+            }
+            assert_eq!(io.regs.flushes-before.1,1,"clear must drain before invalidation");
+            assert_eq!(io.regs.invalidates-before.2,1,"clear must invalidate its directory");
+            assert_eq!(io.regs.spans-before.0,2,
+                "256 cleared PTEs crossing two tables need two bounded aperture spans");
+            assert!(io.regs.max_span<=16384,"clear must preserve the aperture hold bound");
         }
     }
 }
