@@ -108,9 +108,13 @@ impl Target {
                 phases[5] = cadence_stamp();
                 renderer.phases.push((original_seed, phases));
                 if renderer.phases.len() == 300 {
+                    let mut rows = String::new();
                     for (seed, stamps) in renderer.phases.drain(..) {
-                        println!("FIXTURE_CADENCE seed={seed} stamps={stamps:?}");
+                        use std::fmt::Write;
+                        writeln!(rows, "FIXTURE_CADENCE seed={seed} stamps={stamps:?}").unwrap();
                     }
+                    std::fs::write("/dev/shm/gt710-fixture-cadence", rows)
+                        .map_err(|e| format!("fixture cadence transport: {e}"))?;
                 }
             }
             result
