@@ -813,12 +813,18 @@ fn composition_present_rate() -> CaseResult {
     let mut composites0 = 0;
     let mut end = 0;
     let mut composites1 = 0;
+    #[cfg(target_arch = "x86_64")]
+    let mut vblanks = [String::new(), String::new()];
     for i in 0..300u32 {
         if i == 30 {
             (composites0, start) = composite_event()?;
+            #[cfg(target_arch = "x86_64")]
+            { vblanks[0] = std::fs::read_to_string("/proc/gt710-vblank").map_err(|e| e.to_string())?; }
         }
         if i == 299 {
             (composites1, end) = composite_event()?;
+            #[cfg(target_arch = "x86_64")]
+            { vblanks[1] = std::fs::read_to_string("/proc/gt710-vblank").map_err(|e| e.to_string())?; }
         }
         let began=time::now_monotonic()?.as_nanos();
         w.frame(i).cite("17.3")?;
@@ -827,6 +833,16 @@ fn composition_present_rate() -> CaseResult {
     let elapsed_ns = end - start;
     let composed = (composites1 - composites0) as i128;
     let rate = composed * 1_000_000_000_000 / elapsed_ns;
+    value("cadence-start-count", composites0 as i64, "count", None);
+    value("cadence-end-count", composites1 as i64, "count", None);
+    value("cadence-start-ns", start as i64, "ns", None);
+    value("cadence-end-ns", end as i64, "ns", None);
+    #[cfg(target_arch = "x86_64")]
+    for (index, sample) in vblanks.iter().enumerate() {
+        for (field, word) in sample.split_whitespace().enumerate() {
+            value(&format!("cadence-vblank-{index}-{field}"), word.parse().map_err(|_| "vblank diagnostic integer")?, "raw", None);
+        }
+    }
     breenix_suite::suite::timing(&frame_times,16_667)?;
     value("composites-per-second", rate as i64, "mHz", Some((60_000, i64::MAX)));
     ensure(composed * 1_000_000_000 >= 60 * elapsed_ns, "18", format!("one 256x256 window committing as fast as its buffers are released was composed {composed} times in {elapsed_ns} ns, {rate} mHz; the contract requires at least 60 Hz"))

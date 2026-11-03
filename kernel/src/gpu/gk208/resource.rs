@@ -554,8 +554,12 @@ impl<B> Resources<B> {
         Ok(())
     }
     pub fn collect(&mut self, a: &mut Allocator, io: &mut impl Io) -> Result<(), &'static str> {
+        #[cfg(target_os = "none")]
+        let _collect = super::timing::cpu_span(411);
         let before = a.stats().charged;
         let result = (|| {
+            #[cfg(target_os = "none")]
+            let scan = super::timing::cpu_span(412);
             let mut ready = Vec::new();
             ready.try_reserve_exact(self.entries.len()).map_err(|_| "native retirement scratch allocation")?;
             ready.extend(self.entries.iter().filter(|(_,e)| e.dropped && Arc::strong_count(&e.reference) == 1)
@@ -563,9 +567,13 @@ impl<B> Resources<B> {
             let additional = ready.len().min(128usize.saturating_sub(self.retired.len()));
             self.retired.try_reserve(additional).map_err(|_| "native retirement history allocation")?;
             if !ready.is_empty() { self.alias_current = false; }
+            #[cfg(target_os = "none")]
+            drop(scan);
             for id in ready {
                 let e = &self.entries[&id];
                 if e.mapped {
+                    #[cfg(target_os = "none")]
+                    let _unmap = super::timing::cpu_span(413);
                     self.space.as_mut().ok_or("native resource mapping absent")?
                         .unmap(io, e.va, e.bytes.next_multiple_of(4096))?;
                 } else if e.allocation.is_some() || e.backing.is_some() {
@@ -574,6 +582,8 @@ impl<B> Resources<B> {
                     return Err("native resource mapping uncertain; storage retained");
                 }
                 if let Some(va) = e.backing_va {
+                    #[cfg(target_os = "none")]
+                    let _backing = super::timing::cpu_span(414);
                     // Arc<B> is retained until both PDB invalidations complete.
                     if !e.backing_mapped { return Err("native backing mapping uncertain; storage retained"); }
                     let mut at = 0;
@@ -584,10 +594,20 @@ impl<B> Resources<B> {
                         self.space.as_mut().unwrap().unmap(io,va+start as u64*4096,(at-start) as u64*4096)?;
                     }
                 }
-                if let Some(directory) = self.alias { io.invalidate(directory)?; }
+                {
+                    #[cfg(target_os = "none")]
+                    let _alias = super::timing::cpu_span(415);
+                    if let Some(directory) = self.alias { io.invalidate(directory)?; }
+                }
+                #[cfg(target_os = "none")]
+                let _release = super::timing::cpu_span(416);
                 let mut e = self.entries.remove(&id).unwrap();
                 e.pin.take();
-                if let Some(allocation) = e.allocation { a.release(allocation)?; }
+                if let Some(allocation) = e.allocation {
+                    #[cfg(target_os = "none")]
+                    let _allocation = super::timing::cpu_span(418);
+                    a.release(allocation)?;
+                }
                 // Keep a bounded address history after successful invalidation
                 // and release, including subregions of transient draw storage.
                 if self.retired.len() == 128 { self.retired.pop_front(); }
@@ -703,6 +723,7 @@ mod native {
         Some(Request::storage(tag, Some(backing)))
     }
     pub fn resource_unref(tag: Tag, id: u32, backing: Option<Arc<Pages>>) -> Option<Request> {
+        let _unref = super::super::timing::cpu_span(410);
         ce::with_resources(|r, a, io| {
             // Creation can have failed before a native entry was allocated.
             if r.address(id).is_some() { r.unref(id)?; }

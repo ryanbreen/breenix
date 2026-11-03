@@ -2,6 +2,16 @@
 //! The client owns no CPU image or replay shadow; verification reads the device.
 use libbreenix::gpu;
 
+#[cfg(target_arch = "x86_64")]
+fn cadence_stamp() -> [u64; 4] {
+    let now = libbreenix::time::now_monotonic().map_or(0, |t| t.as_nanos() as u64);
+    let mut raw = [0i64; 18];
+    // SAFETY: getrusage SELF writes its 18-long ABI structure into this buffer.
+    let status = unsafe { libbreenix::syscall::raw::syscall2(98, 0, raw.as_mut_ptr() as u64) };
+    [now, (raw[0] * 1_000_000 + raw[1]) as u64,
+        (raw[2] * 1_000_000 + raw[3]) as u64, status as u64]
+}
+
 #[derive(Clone, Copy)]
 pub struct Target {
     pub handle: u64,
@@ -30,6 +40,8 @@ impl Target {
         struct Renderer {
             context: bgl::Context,
             input: Option<(u8, bgl::Texture)>,
+            #[cfg(target_arch = "x86_64")]
+            phases: Vec<(u32, [[u64; 4]; 6])>,
         }
         thread_local! {
             static RENDER: RefCell<(u64, Option<Renderer>)> = const { RefCell::new((0, None)) };
@@ -42,17 +54,31 @@ impl Target {
                 slot.1 = Some(Renderer {
                     context: bgl::Context::new().map_err(|r| format!("fixture context: {r}"))?,
                     input: None,
+                    #[cfg(target_arch = "x86_64")]
+                    phases: Vec::with_capacity(300),
                 });
             }
             let renderer = slot.1.as_mut().expect("fixture renderer created");
+            #[cfg(target_arch = "x86_64")]
+            let original_seed = seed;
+            #[cfg(target_arch = "x86_64")]
+            let mut phases = [cadence_stamp(); 6];
             let seed = seed as u8;
             if renderer.input.as_ref().is_none_or(|(old, _)| *old != seed) {
                 renderer.input = None;
+                #[cfg(target_arch = "x86_64")]
+                { phases[1] = cadence_stamp(); }
                 let bytes = std::fs::read(format!("/usr/libexec/breenix/share/breengel/window-patterns/{seed:02x}.png"))
                     .map_err(|e| format!("read declared window input {seed}: {e}"))?;
+                #[cfg(target_arch = "x86_64")]
+                { phases[2] = cadence_stamp(); }
                 let image = libimg::Decoded::png(&bytes).map_err(|e| format!("decode declared window input: {e:?}"))?;
+                #[cfg(target_arch = "x86_64")]
+                { phases[3] = cadence_stamp(); }
                 let texture = bgl::Texture::from_decoded(&renderer.context, image)
                     .map_err(|r| format!("upload declared window input: {r}"))?;
+                #[cfg(target_arch = "x86_64")]
+                { phases[4] = cadence_stamp(); }
                 renderer.input = Some((seed, texture));
             }
             let texture = renderer.input.as_ref().expect("declared input loaded").1.handle();
@@ -75,8 +101,23 @@ impl Target {
             }
             if copies.is_empty() { context.discard(); return Ok(()); }
             context.copy(texture, &copies);
-            context.submit().and_then(|f| f.wait(2_000_000_000))
-                .map_err(|r| format!("gpu-window: fixture copy returned {r}"))
+            let result = context.submit().and_then(|f| f.wait(2_000_000_000))
+                .map_err(|r| format!("gpu-window: fixture copy returned {r}"));
+            #[cfg(target_arch = "x86_64")]
+            {
+                phases[5] = cadence_stamp();
+                renderer.phases.push((original_seed, phases));
+                if renderer.phases.len() == 300 {
+                    let mut rows = String::new();
+                    for (seed, stamps) in renderer.phases.drain(..) {
+                        use std::fmt::Write;
+                        writeln!(rows, "FIXTURE_CADENCE seed={seed} stamps={stamps:?}").unwrap();
+                    }
+                    std::fs::write("/dev/shm/gt710-fixture-cadence", rows)
+                        .map_err(|e| format!("fixture cadence transport: {e}"))?;
+                }
+            }
+            result
         })
     }
 }
