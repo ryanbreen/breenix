@@ -26,7 +26,9 @@ fn image_check(name: &str) -> CaseResult {
 // An opaque, lossless view of the compared bytes: BGR alongside alpha in grey,
 // with actual, reference and absolute difference rows for each fixture. No
 // source is redrawn or composited against a background that could hide alpha.
-const PANEL_PIXELS: usize = 16 * 1024 * 1024;
+// Leave room for the stage, the intent texture and target, whole-rectangle
+// upload/readback staging, and the capture snapshot under the 192 MiB quota.
+const PANEL_PIXELS: usize = 5 * 1024 * 1024;
 const PANEL_PAD: usize = 8;
 const PANEL_GAP: usize = 8;
 const PANEL_LINE: usize = 12;

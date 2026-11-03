@@ -160,7 +160,7 @@ fn capped_panel_reduces_large_images_and_paginates_dense_cases() {
     assert!(plan.pages.iter().all(|p| p.width*p.height<=16*1024*1024));
     for target in [256,192,128,96,64].into_iter().filter(|&t| t>plan.target) {
         let larger = panel_layout(&dense,target,0);
-        assert!(larger.width*larger.height>16*1024*1024,"largest eligible target");
+        assert!(larger.width*larger.height>PANEL_PIXELS,"largest eligible target");
     }
     let crowded: Vec<_> = (0..1000).map(|_| fixture(32,32)).collect();
     let pages = plan_panel(&crowded);
