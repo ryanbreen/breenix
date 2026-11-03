@@ -798,13 +798,11 @@ fn composition_present_rate() -> CaseResult {
     let mut frame_times=Vec::new();
     let mut start = 0;
     let mut composites0 = 0;
-    #[cfg(target_arch = "x86_64")]
-    let mut vblank_start = String::new();
     for i in 0..300u32 {
         if i == 30 {
             #[cfg(target_arch = "x86_64")]
-            { vblank_start = std::fs::read_to_string("/proc/gt710-vblank")
-                .map_err(|e| format!("present-rate vblank start: {e}"))?.trim().to_owned(); }
+            { std::fs::read_to_string("/proc/gt710-vblank")
+                .map_err(|e| format!("present-rate vblank start: {e}"))?; }
             start = now_ms();
             composites0 = counter("composites").cite("18")?;
         }
@@ -815,13 +813,14 @@ fn composition_present_rate() -> CaseResult {
     let elapsed = since(start).max(1);
     let composed = counter("composites").cite("18")? - composites0;
     let rate = composed * 1_000 / elapsed;
-    // Read-only hardware samples bracket the original judged interval. Output
-    // follows both case measurements, so serial pacing is outside that interval.
+    // The proc reads retain hardware samples in the timing payload. Case VALUE
+    // records bypass silenced stdout and follow the original judged interval.
     #[cfg(target_arch = "x86_64")]
     {
-        let vblank_end = std::fs::read_to_string("/proc/gt710-vblank")
+        std::fs::read_to_string("/proc/gt710-vblank")
             .map_err(|e| format!("present-rate vblank end: {e}"))?;
-        println!("GT710_PRESENT_RATE start=[{vblank_start}] end=[{}] composites={composed} elapsed_ms={elapsed}", vblank_end.trim());
+        value("present-rate-composites", composed as i64, "", None);
+        value("present-rate-elapsed", elapsed as i64, "ms", None);
     }
     breenix_suite::suite::timing(&frame_times,16_667)?;
     value("composites-per-second", rate as i64, "fps", Some((60, i64::MAX)));
