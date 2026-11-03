@@ -1467,6 +1467,8 @@ impl Screen {
                 }
                 let row = y / font.line_height();
                 let shown = self.shown.get(row).and_then(Option::as_ref);
+                // Only the ribbon's own rows need its per-pixel segment oracle.
+                let ribbon = self.ribbon.as_ref().filter(|ribbon| ribbon.rows().contains(&y));
                 for (x, pixel) in line.chunks_exact(bpp).enumerate() {
                     let expected = match shown {
                         Some(shown) => {
@@ -1475,7 +1477,7 @@ impl Screen {
                         None => raster::PALETTE[0],
                     };
                     // A drawn row shows the boot stage ribbon over its text in the ribbon's band.
-                    let expected = match (&self.ribbon, shown) {
+                    let expected = match (ribbon, shown) {
                         (Some(ribbon), Some(_)) => ribbon.colour(x, y).unwrap_or(expected),
                         _ => expected,
                     };
