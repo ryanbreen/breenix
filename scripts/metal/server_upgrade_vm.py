@@ -107,8 +107,13 @@ class VmOps:
             while time.monotonic() < deadline:
                 current = (self.run / 'current').read_text().strip()
                 if current != previous:
-                    self.machine = self.machine.select(current)
-                    return self.machine
+                    if self.machine.boot != current:
+                        self.machine = self.machine.select(current)
+                    # The serial pump publishes the boot record before the
+                    # launcher chooses its forwarded port. QMP becomes live
+                    # only after that port is written and QEMU has started.
+                    if self.machine.holds_lease() or self.machine.ended(current) or child.poll() is not None:
+                        return self.machine
                 if child.poll() is not None: raise ValueError('upgrade launch failed; see upgrade-launcher.log')
                 time.sleep(.2)
             raise ValueError('upgrade launch produced no boot record')

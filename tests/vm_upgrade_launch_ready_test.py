@@ -15,7 +15,9 @@ class LaunchReadyTest(unittest.TestCase):
             (run / 'mode').write_text('console')
             machine = Mock(run=run)
             successor = Mock()
+            successor.boot = 'new'
             successor.holds_lease.side_effect = [False, True]
+            successor.ended.return_value = False
             machine.select.return_value = successor
             child = Mock()
             child.poll.return_value = None
