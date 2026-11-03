@@ -14,14 +14,14 @@ struct Attached {
     descriptor: Vec<u8>,
     /// The interface's last reports from the device, oldest first, kept by
     /// measurement kernels for the replay control (`replay`).
-    #[cfg(feature = "usb_pointer_replay")]
+    #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
     recorded: alloc::collections::VecDeque<Vec<u8>>,
-    #[cfg(feature = "usb_pointer_replay")]
+    #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
     received: u64,
 }
 
 /// Reports kept per interface for replay.
-#[cfg(feature = "usb_pointer_replay")]
+#[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
 const RECORDED: usize = 16;
 
 /// Written by the xHCI worker at attach and detach; read by procfs.
@@ -43,7 +43,7 @@ pub fn describe() -> String {
         for byte in &p.descriptor {
             let _ = write!(text, "{byte:02x}");
         }
-        #[cfg(feature = "usb_pointer_replay")]
+        #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
         {
             let _ = write!(text, " received={} recorded=", p.received);
             for (i, report) in p.recorded.iter().enumerate() {
@@ -218,9 +218,9 @@ impl Controller {
             endpoint: hid.endpoint,
             axes,
             descriptor,
-            #[cfg(feature = "usb_pointer_replay")]
+            #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
             recorded: alloc::collections::VecDeque::new(),
-            #[cfg(feature = "usb_pointer_replay")]
+            #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
             received: 0,
         });
         Ok(())
@@ -266,9 +266,9 @@ impl Controller {
                 buffer_slot * pipe.stride,
                 (pipe.request - (event.status & 0xff_ffff)) as usize,
             );
-            #[cfg(feature = "usb_pointer_replay")]
+            #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
             let replayed = self.replay_at.take_if(|(_, at)| *at == event.parameter & !15);
-            #[cfg(feature = "usb_pointer_replay")]
+            #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
             if replayed.is_none() {
                 record(self.devices[index].port, self.devices[index].pointers[pipe_index].endpoint, &data);
             }
@@ -277,7 +277,7 @@ impl Controller {
                 log::warn!("[hid] pointer report refused: {error}");
             }
             self.queue_pointer(index, pipe_index);
-            #[cfg(feature = "usb_pointer_replay")]
+            #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
             if let Some((seq, _)) = replayed {
                 let armed = self.devices[index].pointers[pipe_index].posted.full();
                 replay::answer(seq, delivered.map(|delivered| delivered as u64 | (armed as u64) << 1));
@@ -350,7 +350,7 @@ impl Controller {
     /// did not complete takes the report, and the endpoint's dequeue moves past
     /// it (4.6.10). The event is dispatched with the controller's own; `dispatch`
     /// answers request `seq`.
-    #[cfg(feature = "usb_pointer_replay")]
+    #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
     pub(super) fn replay_pointer(
         &mut self,
         seq: u64,
@@ -424,7 +424,7 @@ impl Controller {
 }
 
 /// Keep a report the device sent, for replay (measurement kernels only).
-#[cfg(feature = "usb_pointer_replay")]
+#[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
 fn record(port: u8, endpoint: u8, data: &[u8]) {
     if let Some(p) = ATTACHED.lock().iter_mut().find(|p| p.port == port && p.endpoint == endpoint) {
         if p.recorded.len() == RECORDED {
@@ -449,7 +449,7 @@ impl Pipe {
 /// Built only with the `usb_pointer_replay` feature (kernel/Cargo.toml), which
 /// release builds leave off.
 /// One caller at a time: a second request replaces an unanswered first.
-#[cfg(feature = "usb_pointer_replay")]
+#[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
 pub mod replay {
     use super::super::{request, REPLAY};
     use crate::syscall::{errno, userptr, SyscallResult};

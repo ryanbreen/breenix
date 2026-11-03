@@ -22,6 +22,11 @@ PANEL = {'stage-layout', 'tile-stamps', 'tile-thumbnail', 'spotlight-picture', '
 SELECTED = [n for n in NAMES if n.split('/')[0] in WHOLE or
             (n.split('/')[0] in {'windows', 'isolation'} and n not in EXCLUDED) or
             (n.startswith('panel/') and n.split('/')[1] in PANEL)]
+STAGE_ADDED = {'isolation/efault-mouse', 'composition/takeover-giveback',
+               'composition/ownership-stack', 'panel/judged-frame-shown',
+               'panel/serial-agreement', 'panel/quiet-window', 'panel/boot-ribbon',
+               'panel/boundary-notice', 'panel/handoff', 'panel/between-cases',
+               'panel/cursor-restore', 'panel/cursor-trail-detected', 'panel/kernel-screens'}
 
 
 def pictured_cases():
@@ -172,6 +177,36 @@ class BreengelSelection(unittest.TestCase):
                                 'scanout': 17, 'events': 33}.items():
             self.assertEqual(sum(n.startswith(category + '/') for n in added), count)
         self.assertIn('docs/gui/gt710-step-9-2.json', (ROOT / 'scripts/metal/metal-build').read_text())
+
+    def test_stage_selection(self):
+        prior = json.loads((ROOT / 'docs/gui/gt710-step-9-2.json').read_text())['cases']
+        step = json.loads((ROOT / 'docs/gui/gt710-step-9-3.json').read_text())
+        self.assertEqual(set(step), {'id', 'suite', 'cases'})
+        self.assertEqual((step['id'], step['suite']), ('gt710-step-9-3', 'breengel'))
+        self.assertEqual(len(STAGE_ADDED), 13)
+        self.assertFalse(set(prior) & STAGE_ADDED)
+        expected = [name for name in NAMES if name in set(prior) | STAGE_ADDED]
+        self.assertEqual(len(expected), 398)
+        self.assertEqual(step['cases'], expected)
+        self.assertIn('docs/gui/gt710-step-9-3.json', (ROOT / 'scripts/metal/metal-build').read_text())
+
+    def test_stage_scorer_rejects_missing_and_failed_added_cases(self):
+        from gt710_breengel_evidence_test import composition_capture
+        original = composition_capture()
+        producer = {'breengel': {'serial': original, 'boot': boot()}}
+        def score():
+            return API['cases']('breengel-stage', '', producer)[0]['result']
+        self.assertEqual(score(), 'PASS')
+        for name in STAGE_ADDED:
+            line = f'SUITE breengel CASE {name} PASS ms=1' + (' sha256=' + 'a' * 64 if name in pictured_cases() else '')
+            self.assertIn(line + '\n', original)
+            for replacement in ('', line.replace(' PASS ', ' FAIL ') + ' msg=broken'):
+                producer['breengel']['serial'] = original.replace(line + '\n', replacement + ('\n' if replacement else ''))
+                if replacement:
+                    producer['breengel']['serial'] = producer['breengel']['serial'].replace(
+                        'DONE passed=401 failed=0', 'DONE passed=400 failed=1')
+                with self.subTest(case=name, failed=bool(replacement)):
+                    self.assertEqual(score(), 'FAIL')
 
     def test_composition_scorer_rejects_missing_and_failed_selected_cases(self):
         from gt710_breengel_evidence_test import composition_capture

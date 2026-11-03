@@ -494,7 +494,7 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::FbInfo) => super::graphics::sys_fbinfo(args.0),
         Some(SyscallNumber::FbDraw) => super::graphics::sys_fbdraw(args.0),
         Some(SyscallNumber::FbMmap) => super::graphics::sys_fbmmap(args.0),
-        Some(SyscallNumber::GetMousePos) => super::graphics::sys_get_mouse_pos(args.0),
+        Some(SyscallNumber::GetMousePos) => super::pointer::sys_get_mouse_pos(args.0, args.1),
         // Audio syscalls
         Some(SyscallNumber::AudioInit) => super::audio::sys_audio_init(),
         Some(SyscallNumber::AudioWrite) => super::audio::sys_audio_write(args.0, args.1),

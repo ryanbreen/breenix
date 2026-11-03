@@ -100,6 +100,7 @@ pub enum ProcEntryType {
     StageComposites,
     ShowcasePace,
     ScreenCheckpoints,
+    ScreenProof,
     /// /proc/breenix/ext2 - mounted ext2 allocation counters
     Ext2,
     /// /proc/breenix/frames - allocated physical frames by allocation site
@@ -202,6 +203,7 @@ impl ProcEntryType {
             ProcEntryType::StageControl => "stage-control",
             ProcEntryType::ShowcasePace => "pace",
             ProcEntryType::ScreenCheckpoints => "screen-checkpoints",
+            ProcEntryType::ScreenProof => "screen-proof",
             ProcEntryType::BootRibbon => "boot-ribbon",
             ProcEntryType::BootSerial => "boot-serial",
             ProcEntryType::StageComposites => "stage-composites",
@@ -279,6 +281,7 @@ impl ProcEntryType {
             ProcEntryType::StageControl => "/proc/breenix/stage-control",
             ProcEntryType::ShowcasePace => "/proc/breenix/pace",
             ProcEntryType::ScreenCheckpoints => "/proc/breenix/screen-checkpoints",
+            ProcEntryType::ScreenProof => "/proc/breenix/screen-proof",
             ProcEntryType::BootRibbon => "/proc/breenix/boot-ribbon",
             ProcEntryType::BootSerial => "/proc/breenix/boot-serial",
             ProcEntryType::StageComposites => "/proc/breenix/stage-composites",
@@ -356,6 +359,7 @@ impl ProcEntryType {
             ProcEntryType::BreenixTesting => 201,
             ProcEntryType::StageControl => 208,
             ProcEntryType::ScreenCheckpoints => 213,
+            ProcEntryType::ScreenProof => 214,
             ProcEntryType::ShowcasePace => 207,
             ProcEntryType::BootRibbon => 204,
             ProcEntryType::BootSerial => 205,
@@ -510,6 +514,7 @@ pub fn init() {
         .push(ProcEntry::new(ProcEntryType::BreenixTesting));
 
     procfs.entries.push(ProcEntry::new(ProcEntryType::ScreenCheckpoints));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::ScreenProof));
     procfs.entries.push(ProcEntry::new(ProcEntryType::StageControl));
     procfs.entries.push(ProcEntry::new(ProcEntryType::ShowcasePace));
     procfs.entries.push(ProcEntry::new(ProcEntryType::BootRibbon));
@@ -824,7 +829,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -843,6 +848,12 @@ pub fn is_initialized() -> bool {
 /// The content as a String, or an error code
 pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
     match entry_type {
+        ProcEntryType::ScreenProof => {
+            #[cfg(target_arch="aarch64")]
+            if !crate::platform_config::is_qemu() { return text(String::from("off\n")); }
+            let setting = crate::drivers::fw_cfg::read_string("opt/breenix/screen-proof").unwrap_or_default();
+            text(String::from(if setting.trim() == "on" { "on\n" } else { "off\n" }))
+        }
         ProcEntryType::ScreenCheckpoints => {
             #[cfg(target_arch="aarch64")]
             if !crate::platform_config::is_qemu() { return text(String::from("on\n")); }
@@ -855,7 +866,6 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             let pace=crate::drivers::fw_cfg::read_string("opt/breenix/pace").unwrap_or_default();
             text(alloc::format!("{}\n",pace))
         }
-        #[cfg(target_arch="aarch64")]
         ProcEntryType::StageControl => {
             if !crate::test_control::enabled() {return Err(-38);}
             let caller=crate::window::Caller::current().map_err(|e|-e)?;
@@ -864,8 +874,6 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             for point in [breengel_abi::tc_point::PANEL_CURSOR_NO_RESTORE,12,13,14] {if crate::test_control::take(point,caller.tgid).is_some(){bits|=1<<point;}}
             text(alloc::format!("{bits}\n"))
         }
-        #[cfg(not(target_arch="aarch64"))]
-        ProcEntryType::StageControl => Err(-38),
         ProcEntryType::BootRibbon => {
             #[cfg(target_arch="aarch64")]
             {text(crate::graphics::boot_ribbon::records())}
@@ -880,7 +888,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         }
         // The display owners' completed GPU presents (the run stage's screen changes).
         ProcEntryType::StageComposites => {
-            text(crate::gpu::present_records())
+            text(crate::gpu::present_records().map_err(|e| -(e as i32))?)
         }
         ProcEntryType::Uptime => text(generate_uptime()),
         ProcEntryType::Version => text(generate_version()),
@@ -923,10 +931,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         }
         ProcEntryType::XhciTrace => text(xhci::generate_xhci_trace()),
         ProcEntryType::XhciCounters => text(xhci::generate_xhci_counters()),
-        #[cfg(target_arch = "aarch64")]
         ProcEntryType::XhciPointers => text(crate::drivers::xhci::describe_pointers()),
-        #[cfg(not(target_arch = "aarch64"))]
-        ProcEntryType::XhciPointers => text(String::from("")),
         ProcEntryType::Ext2 => generate_ext2().map(String::into_bytes),
         ProcEntryType::Filesystems => crate::fs::ext2::filesystem_states().map(String::into_bytes).map_err(|_| -5),
         ProcEntryType::Frames => generate_frames().map(String::into_bytes),

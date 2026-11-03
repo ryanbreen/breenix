@@ -34,6 +34,11 @@ pub trait IpcFile: Send + Sync + core::fmt::Debug {
     fn write(&self, _bytes: &[u8], _append: bool) -> Result<u64, u64> {
         Err(EINVAL as u64)
     }
+    /// Bytes to snapshot for one write. Stream-like objects may accept a prefix;
+    /// record-oriented objects retain the complete request by default.
+    fn write_buffer_size(&self, requested: usize) -> usize {
+        requested
+    }
     fn seek(&self, _offset: i64, _whence: i32) -> Result<u64, u64> {
         Err(29)
     }

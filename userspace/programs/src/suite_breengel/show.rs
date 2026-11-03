@@ -114,13 +114,29 @@ fn panel_boot_ribbon() -> CaseResult {
     use crate::window_cases::composition::{give_back, take_over, screen};
     for faulty in [true,false] {
         let before=std::fs::read_to_string("/proc/breenix/boot-ribbon").map_err(|e|format!("producer stage records: {e}"))?;
+        #[cfg(target_arch="aarch64")]
         const EXPECTED:&[&str]=include!("stage_boot_markers.in");
+        #[cfg(target_arch="x86_64")]
+        const EXPECTED:&[&str]=include!("stage_boot_markers_x86_64.in");
+        #[cfg(target_arch="aarch64")]
+        {
         // A marker found only inside a longer marker that contains it is not its producer.
         let argv=EXPECTED.iter().position(|m|*m=="ARGV_TEST_PASSED").ok_or("the ARM64 manifest has no ARGV_TEST_PASSED stage")?;
         ensure(!crate::stage_serial::reached("EXEC_STACK_ARGV_TEST_PASSED\nEXEC_ARGV_TEST_PASSED\n",EXPECTED)[argv],"23.7","EXEC_STACK_ARGV_TEST_PASSED and EXEC_ARGV_TEST_PASSED lit the ARGV_TEST_PASSED stage")?;
         ensure(crate::stage_serial::reached("ARGV_TEST_PASSED\n",EXPECTED)[argv],"23.7","ARGV_TEST_PASSED did not light its own stage")?;
+        }
+        #[cfg(target_arch="x86_64")]
+        {
+            ensure(!EXPECTED.iter().any(|a| EXPECTED.iter().any(|b| a != b && b.contains(a))),"23.7","x86 marker table now contains a pair; use it in the containment self-test")?;
+            let marker=*EXPECTED.first().ok_or("the x86 manifest has no stages")?;
+            let longer=format!("{marker}_SELFTEST");
+            let pair=[marker,longer.as_str()];
+            let long_only=crate::stage_serial::reached(&format!("{longer}\n"),&pair);
+            let short_only=crate::stage_serial::reached(&format!("{marker}\n"),&pair);
+            ensure(!long_only[0] && long_only[1] && short_only[0] && !short_only[1],"23.7","synthetic x86 containment pair did not match exactly")?;
+        }
         let observed:Vec<_>=before.lines().filter_map(|line|line.split_once('|')).collect();
-        ensure(observed.len()==EXPECTED.len() && observed.iter().zip(EXPECTED).all(|((lit,marker),expected)|(*lit=="0" || *lit=="1") && marker==expected),"23.7","kernel ribbon stages do not match the binding ARM64 manifest in order")?;
+        ensure(observed.len()==EXPECTED.len() && observed.iter().zip(EXPECTED).all(|((lit,marker),expected)|(*lit=="0" || *lit=="1") && marker==expected),"23.7","kernel ribbon stages do not match the binding architecture manifest in order")?;
         let serial=std::fs::read_to_string("/proc/breenix/boot-serial").map_err(|e|format!("captured producer serial: {e}"))?;
         let reached=crate::stage_serial::reached(&serial,EXPECTED);
         ensure(observed.iter().zip(&reached).all(|((lit,_),want)|(*lit=="1")==*want),"23.7","kernel reached bits disagree with independently parsed serial producer lines")?;

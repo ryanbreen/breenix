@@ -14,6 +14,10 @@ license = "PolyForm-Noncommercial-1.0.0"
 path = "../src/suite_lib.rs"
 
 [dependencies]
+screen-capture = { path = "../../screen-capture" }
 libbreenix = { path = "..", features = ["std", "suite"] }
 libgfx-ref = { path = "../../libgfx-ref" }
 libpixcheck = { path = "../../libpixcheck" }
+
+[dev-dependencies]
+gpu-abi = { path = "../../gpu-abi", features = ["alloc"] }

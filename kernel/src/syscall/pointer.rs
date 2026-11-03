@@ -15,7 +15,6 @@ use super::SyscallResult;
 /// * 0 on success
 /// * -EINVAL for any other length
 /// * -EFAULT if the buffer cannot be written; the state stays unread then
-#[cfg(target_arch = "aarch64")]
 pub fn sys_get_mouse_pos(out_ptr: u64, len: u64) -> SyscallResult {
     if len != 16 && len != 8 {
         return SyscallResult::Err(super::ErrorCode::InvalidArgument as u64);
@@ -36,22 +35,30 @@ pub fn sys_get_mouse_pos(out_ptr: u64, len: u64) -> SyscallResult {
         };
     }
 
+    #[cfg(target_arch = "aarch64")]
     let tablet = crate::drivers::virtio::input_mmio::is_tablet_initialized();
     // Test point 17, `move-pointer`: this read finds the device at the armed position, as if
     // it had moved there (docs/gui/breengel.md section 21).
     if let Some(at) = crate::test_control::take(breengel_abi::tc_point::MOVE_POINTER, 0) {
         let (x, y) = (at as u32, (at >> 32) as u32);
+        #[cfg(target_arch = "aarch64")]
         if tablet {
             crate::drivers::virtio::input_mmio::move_to(x, y);
         } else {
             crate::input::pointer::move_to(x, y);
         }
+        #[cfg(target_arch = "x86_64")]
+        crate::input::pointer::move_to(x, y);
     }
+    #[cfg(target_arch = "aarch64")]
     let (mx, my, buttons) = if tablet {
         crate::drivers::virtio::input_mmio::mouse_state()
     } else {
         crate::input::pointer::mouse_state_consume()
     };
+
+    #[cfg(target_arch = "x86_64")]
+    let (mx, my, buttons) = crate::input::pointer::mouse_state_consume();
 
     let scroll = crate::input::pointer::mouse_wheel_consume() as u32;
 
