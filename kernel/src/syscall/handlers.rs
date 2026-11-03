@@ -428,22 +428,10 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
         return SyscallResult::Ok(0);
     }
 
-    // Copy data from userspace
-    let buffer = match copy_from_user(buf_ptr, count as usize) {
-        Ok(buf) => buf,
-        Err(e) => {
-            return SyscallResult::Err(if e == "out of memory" { 12 } else { 14 });
-        }
-    };
-
-    // Get current process to look up fd
-    let thread_id = match crate::task::scheduler::current_thread_id() {
-        Some(id) => id,
-        None => {
-            // Fall back to stdio behavior for kernel threads
-            return write_to_stdio(fd, &buffer);
-        }
-    };
+    // Check the original range even when the descriptor accepts a short write.
+    if !crate::memory::layout::is_valid_user_range(buf_ptr, count as usize) {
+        return SyscallResult::Err(super::errno::EFAULT as u64);
+    }
 
     // Determine the fd kind while holding the manager lock, then release it
     // before doing slow I/O operations. This prevents blocking signal delivery
@@ -568,48 +556,67 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             }
         )
     };
-    // x86_64: the descriptor from the thread's own reference to its table,
-    // without PROCESS_MANAGER (#1650), unless the write needs the row.
-    #[cfg(target_arch = "x86_64")]
-    let quick = current_fd_table().and_then(|table| {
-        table.try_read_lockless(|inner| match inner.get(fd as i32) {
-            Some(fd_entry) => classify(fd_entry, None, &mut fifo_to_touch),
-            None => Some(WriteOperation::Ebadf),
-        })
-    });
-    #[cfg(not(target_arch = "x86_64"))]
-    let quick: Option<Option<WriteOperation>> = None;
-    let write_op = match quick.flatten() {
-        Some(write_op) => write_op,
-        None => {
-            let manager_guard = crate::process::manager();
-            let process = match &*manager_guard {
-                Some(manager) => match manager.find_process_by_thread(thread_id) {
-                    Some((_pid, p)) => p,
+    let write_op = 'classify: {
+        let thread_id = match crate::task::scheduler::current_thread_id() {
+            Some(id) => id,
+            None => break 'classify WriteOperation::StdIo,
+        };
+        // x86_64: the descriptor from the thread's own reference to its table,
+        // without PROCESS_MANAGER (#1650), unless the write needs the row.
+        #[cfg(target_arch = "x86_64")]
+        let quick = current_fd_table().and_then(|table| {
+            table.try_read_lockless(|inner| match inner.get(fd as i32) {
+                Some(fd_entry) => classify(fd_entry, None, &mut fifo_to_touch),
+                None => Some(WriteOperation::Ebadf),
+            })
+        });
+        #[cfg(not(target_arch = "x86_64"))]
+        let quick: Option<Option<WriteOperation>> = None;
+        match quick.flatten() {
+            Some(write_op) => write_op,
+            None => {
+                let manager_guard = crate::process::manager();
+                let process = match &*manager_guard {
+                    Some(manager) => match manager.find_process_by_thread(thread_id) {
+                        Some((_pid, p)) => p,
+                        None => {
+                            // Fall back to stdio behavior for kernel threads
+                            break 'classify WriteOperation::StdIo;
+                        }
+                    },
                     None => {
                         // Fall back to stdio behavior for kernel threads
-                        return write_to_stdio(fd, &buffer);
+                        break 'classify WriteOperation::StdIo;
                     }
-                },
-                None => {
-                    // Fall back to stdio behavior for kernel threads
-                    return write_to_stdio(fd, &buffer);
-                }
-            };
+                };
 
-            // Look up the file descriptor
-            let fd_entry = match process.fd_table.get(fd as i32) {
-                Some(entry) => entry,
-                None => {
-                    return SyscallResult::Err(9); // EBADF
-                }
-            };
+                // Look up the file descriptor
+                let fd_entry = match process.fd_table.get(fd as i32) {
+                    Some(entry) => entry,
+                    None => {
+                        return SyscallResult::Err(9); // EBADF
+                    }
+                };
 
-            match classify(fd_entry, Some(process), &mut fifo_to_touch) {
-                Some(write_op) => write_op,
-                None => WriteOperation::Ebadf,
+                match classify(fd_entry, Some(process), &mut fifo_to_touch) {
+                    Some(write_op) => write_op,
+                    None => WriteOperation::Ebadf,
+                }
+                // manager_guard dropped here, releasing the lock before I/O
             }
-            // manager_guard dropped here, releasing the lock before I/O
+        }
+    };
+
+    // Only byte-stream descriptors opt into a bounded snapshot. In particular,
+    // do not split a pipe's atomic write, a socket message or a device record.
+    let copy_length = match &write_op {
+        WriteOperation::Ipc { file, .. } => file.write_buffer_size(count as usize),
+        _ => count as usize,
+    };
+    let buffer = match copy_from_user(buf_ptr, copy_length) {
+        Ok(buf) => buf,
+        Err(e) => {
+            return SyscallResult::Err(if e == "out of memory" { 12 } else { 14 });
         }
     };
 

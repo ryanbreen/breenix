@@ -301,6 +301,7 @@ pub trait CpuOps {
     ///     socket.lock().register_waiter(thread_id);
     /// });
     /// ```
+    #[track_caller]
     fn without_interrupts<F, R>(f: F) -> R
     where
         F: FnOnce() -> R;

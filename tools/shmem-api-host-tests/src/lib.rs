@@ -3,6 +3,9 @@
 #![feature(allocator_api)]
 extern crate alloc;
 
+#[path = "../../../kernel/src/fs/attrs.rs"]
+pub mod attrs;
+
 pub mod irq_safe_mutex {
     #[derive(Debug)]
     pub struct IrqSafeMutex<T>(std::sync::Mutex<T>);
@@ -16,6 +19,7 @@ pub mod irq_safe_mutex {
     }
 }
 pub mod fs {
+    pub use crate::attrs;
     pub mod vfs {
         pub mod mount {
             pub fn find_mount(_p: &str) -> Option<u32> {
@@ -33,8 +37,14 @@ pub mod fs {
         }
         thread_local! { pub static CRED: std::cell::RefCell<Credentials> = std::cell::RefCell::new(Credentials{euid:0,egid:0,groups:vec![],umask:0}); }
         impl Credentials {
-            pub fn current(_real: bool) -> Self {
-                CRED.with(|c| c.borrow().clone())
+            pub fn current(_real: bool) -> Result<Self, u64> {
+                Ok(CRED.with(|c| c.borrow().clone()))
+            }
+            pub fn may(&self, attrs: crate::attrs::InodeAttrs, wanted: u32) -> bool {
+                if self.euid == 0 && attrs.is_dir() {
+                    return true;
+                }
+                self.permits_mode(attrs.uid, attrs.gid, attrs.mode, wanted)
             }
             pub fn permits_mode(&self, uid: u32, gid: u32, mode: u32, wanted: u32) -> bool {
                 if self.euid == 0 {
@@ -89,6 +99,9 @@ thread_local! {
     static ACTIVITY_THREAD:std::cell::RefCell<task::thread::Thread>=const{std::cell::RefCell::new(task::thread::Thread{cpu_account:Some(task::thread::CpuAccount{process_id:77})})};
 }
 pub mod task {
+    pub mod waitqueue {
+        pub struct WaitQueueHead;
+    }
     pub mod thread {
         pub struct CpuAccount {
             pub process_id: u64,
@@ -426,7 +439,7 @@ pub mod memory {
         arch_stub::VirtAddr::new(0)
     }
     pub mod frame_allocator {
-        use super::Frame;
+        use crate::object::Frame;
         use std::collections::BTreeMap;
         use std::sync::{LazyLock, Mutex};
         #[repr(align(4096))]
@@ -878,7 +891,7 @@ fn production_namespace_reports_permissions_modes_links_and_directory_cookies() 
         .windows(b"namespace-regression".len())
         .any(|s| s == b"namespace-regression"));
     assert_eq!(dir.getdents(bytes.as_mut_ptr() as u64, bytes.len()), Ok(0));
-    let cred = fs::permissions::Credentials::current(false);
+    let cred = fs::permissions::Credentials::current(false).unwrap();
     assert_eq!(object::access_path(path, 4, &cred), Some(Success(0)));
     file.chmod(0o600, &cred).unwrap();
     file.chown(7, 8, &cred).unwrap();
@@ -1273,6 +1286,44 @@ fn shrinking_above_lowered_fsize_limit_and_offset_overflow() {
         Some(syscall::SyscallResult::Err(75))
     );
     object::unlink_path("/dev/shm/limit-shrink");
+}
+
+#[test]
+fn bounded_write_snapshots_roundtrip_and_append_at_the_shared_end() {
+    let _lock = kernel_fixture();
+    let path = "/dev/shm/bounded-write";
+    let file = ipc_file(fd_number(object::open_path(path, 0xc2, 0o600)));
+    let other = ipc_file(fd_number(object::open_path(path, 2, 0)));
+    let request = 50_401_280;
+    assert_eq!(file.write_buffer_size(request), 64 * 1024);
+    assert_eq!(file.write_buffer_size(37), 37);
+    let directory = ipc_file(fd_number(object::open_path(
+        "/dev/shm", syscall::fs::O_DIRECTORY, 0,
+    )));
+    assert_eq!(directory.write_buffer_size(request), request);
+
+    let bytes: Vec<u8> = (0..(3 * 64 * 1024 + 37)).map(|n| (n % 251) as u8).collect();
+    let mut done = 0;
+    while done < bytes.len() {
+        let size = file.write_buffer_size(bytes.len() - done);
+        let written = file.write(&bytes[done..done + size], false).unwrap() as usize;
+        assert_eq!(written, size);
+        done += written;
+    }
+    // A distinct description with a stale offset must append after the prefix.
+    assert_eq!(other.write(b"tail", true), Ok(4));
+    assert_eq!(other.seek(0, 1), Ok(bytes.len() as u64 + 4));
+    file.seek(0, 0).unwrap();
+    let mut actual = vec![0; bytes.len() + 4];
+    let mut done = 0;
+    while done < actual.len() {
+        let n = file.read(actual[done..].as_mut_ptr() as u64, actual.len() - done).unwrap() as usize;
+        assert!(n > 0);
+        done += n;
+    }
+    assert_eq!(&actual[..bytes.len()], &bytes);
+    assert_eq!(&actual[bytes.len()..], b"tail");
+    object::unlink_path(path);
 }
 
 #[test]

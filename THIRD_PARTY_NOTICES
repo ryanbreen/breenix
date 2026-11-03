@@ -2154,3 +2154,18 @@ register map come from nouveau `nvkm/engine/disp/gf119.c`, functions
 `e8f897f4afef0031fe618a8e94127a0934896aba` (full MIT header; Copyright
 2012 Red Hat Inc.). Both source headers were checked for this adaptation;
 the consumers retain the original copyright and full MIT grants.
+
+## Screen approval CRC validation facts
+
+`scripts/screens/approve.py` uses numeric CRC facts referenced from the following
+files at Linux v6.8, commit `e8f897f4afef0031fe618a8e94127a0934896aba`:
+
+- [`drivers/gpu/drm/nouveau/dispnv50/crc907d.c`](https://github.com/torvalds/linux/blob/e8f897f4afef0031fe618a8e94127a0934896aba/drivers/gpu/drm/nouveau/dispnv50/crc907d.c):
+  context completion bit 0 and overflow mask 0x3e.
+- [`drivers/gpu/drm/nouveau/dispnv50/crc.c`](https://github.com/torvalds/linux/blob/e8f897f4afef0031fe618a8e94127a0934896aba/drivers/gpu/drm/nouveau/dispnv50/crc.c):
+  primary CRC zero denotes an unwritten sample.
+
+Both files declare `SPDX-License-Identifier: MIT` and have no copyright header.
+These are references for validation facts; no driver source is copied into the
+importer. The input format and its normalized sample status are documented in
+`scripts/screens/README.md`.

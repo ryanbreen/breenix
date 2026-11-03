@@ -20,6 +20,8 @@
 #                        with --gpu-gl); --gate-timeout bounds each suite's wait for DONE
 #                        claim-lint:ok: scripts/suite-sequence.py (resolve) expands the word.
 #   --screen-checkpoints on|off  enable end/named scanout checkpoints (default on)
+#   --screen-capture DISK  create a new sparse 8 GiB SCR1 disk (needs --screen-proof)
+#   --screen-proof       show text-free intent frames after pictured cases (default pace 1000 ms)
 #   --pace MS            hold each completed case on screen, outside its measured window (default 0)
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
@@ -66,13 +68,15 @@ SUITE=
 ONLY=
 PACE=
 SCREEN_CHECKPOINTS=on
+SCREEN_PROOF=0
+SCREEN_CAPTURE=
 QMP_SOCKET=
 QMP_REQUESTED=0
 GPU_GL=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
-        --mode|--program|--suite|--case|--screen-checkpoints|--pace|--serial-log|--idle-exit|--gate-timeout|--qmp|--accel|--cpus|--cpu)
+        --mode|--program|--suite|--case|--screen-capture|--screen-checkpoints|--pace|--serial-log|--idle-exit|--gate-timeout|--qmp|--accel|--cpus|--cpu)
             [ "$#" -ge 2 ] || { echo "$1 needs a value" >&2; exit 2; } ;;
     esac
     case "$1" in
@@ -83,6 +87,8 @@ while [ "$#" -gt 0 ]; do
         --suite) SUITE="$2"; shift 2 ;;
         --case) [ -n "$2" ] || { echo "--case needs a category or category/case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
         --screen-checkpoints) SCREEN_CHECKPOINTS="$2"; shift 2 ;;
+        --screen-capture) SCREEN_CAPTURE="$2"; shift 2 ;;
+        --screen-proof) SCREEN_PROOF=1; shift ;;
         --pace) [ -n "$2" ] || { echo "--pace needs milliseconds" >&2; exit 2; }; PACE="$2"; shift 2 ;;
         --qmp) QMP_SOCKET="$2"; QMP_REQUESTED=1; shift 2 ;;
         --serial-log) SERIAL_LOG="$2"; shift 2 ;;
@@ -131,12 +137,46 @@ if [ -n "$ONLY" ]; then
         echo "--case needs --mode suite and a category or category/case id" >&2; exit 2;
     }
 fi
+if [ "$SCREEN_PROOF" -eq 1 ]; then
+    [ "$MODE" = suite ] && [[ "$SUITE" =~ ^(gpu|breengel)(,(gpu|breengel))*$ ]] || {
+        echo "--screen-proof needs gpu or breengel suites" >&2; exit 2;
+    }
+    [ "$SCREEN_CHECKPOINTS" = on ] || { echo "--screen-proof needs screen checkpoints on" >&2; exit 2; }
+    PACE=${PACE:-1000}
+fi
+if [ -n "$SCREEN_CAPTURE" ]; then
+    [ "$SCREEN_PROOF" -eq 1 ] || { echo "--screen-capture needs --screen-proof" >&2; exit 2; }
+    case "$SCREEN_CAPTURE" in /*) ;; *) SCREEN_CAPTURE="$PWD/$SCREEN_CAPTURE" ;; esac
+    [ ! -e "$SCREEN_CAPTURE" ] && [ ! -L "$SCREEN_CAPTURE" ] || { echo "capture disk already exists" >&2; exit 2; }
+    MODE_ARGS_CAPTURE=(-fw_cfg "name=opt/breenix/screen-capture,string=on")
+else
+    MODE_ARGS_CAPTURE=()
+fi
 if [ -n "$PACE" ]; then
     [ "$MODE" = suite ] && [[ "$PACE" =~ ^[0-9]+$ ]] && [ "${#PACE}" -le 10 ] && [ "$PACE" -le 4294967295 ] || {
         echo "--pace needs --mode suite and milliseconds from 0 to 4294967295" >&2; exit 2;
     }
-    python3 "$ROOT/scripts/showcase-pace.py" --suite "$SUITE" --pace "$PACE" \
-        --cases "${ONLY:+1}" --gate-timeout "$GATE_TIMEOUT" --idle-exit "$IDLE_EXIT"
+    if [ "$SCREEN_PROOF" -eq 1 ]; then
+        # Count the intent hold as well as BreenGL's existing stage spotlight.
+        python3 - "$ROOT" "$SUITE" "$PACE" "$GATE_TIMEOUT" "$IDLE_EXIT" "${ONLY:+1}" <<'PY'
+import json
+import sys
+from pathlib import Path
+root, suite, pace, deadline, idle, selected = sys.argv[1:]
+pace, deadline, idle = int(pace), float(deadline), float(idle)
+holds = 0
+for suite_id in suite.split(','):
+    manifest = json.loads((Path(root) / 'docs/suites' / (suite_id + '.json')).read_text())
+    count = int(selected) if selected else sum(len(c['cases']) for c in manifest['categories'])
+    holds += count * (2 if suite_id == 'breengel' else 1)
+if deadline <= 0 or idle < 0 or (pace and (pace + 1000 >= 120000
+        or (idle and pace + 1000 >= idle * 1000) or pace * holds + 60000 >= deadline * 1000)):
+    sys.exit('screen intent pace exceeds the progress, idle or completion budget')
+PY
+    else
+        python3 "$ROOT/scripts/showcase-pace.py" --suite "$SUITE" --pace "$PACE" \
+            --cases "${ONLY:+1}" --gate-timeout "$GATE_TIMEOUT" --idle-exit "$IDLE_EXIT"
+    fi
 fi
 if [ -z "$DISPLAY_MODE" ]; then
     # On the operator's Mac every boot opens QEMU's window, as Parallels and VMware boots do, so a boot can be watched.
@@ -203,6 +243,9 @@ if [ "$MODE" = suite ]; then
     [ -z "$ONLY" ] || MODE_ARGS+=(-fw_cfg "name=opt/breenix/case,string=$ONLY")
 fi
 MODE_ARGS+=(-fw_cfg "name=opt/breenix/screen-checkpoints,string=$SCREEN_CHECKPOINTS")
+if [ "$SCREEN_PROOF" -eq 1 ]; then
+    MODE_ARGS+=(-fw_cfg "name=opt/breenix/screen-proof,string=on")
+fi
 if [ -n "$PACE" ]; then
     MODE_ARGS+=(-fw_cfg "name=opt/breenix/pace,string=$PACE")
 fi
@@ -288,6 +331,13 @@ mkdir -p "$(dirname "$SERIAL_LOG")"
 : > "$SERIAL_LOG"
 WRITABLE="$(dirname "$SERIAL_LOG")/ext2-writable.img"
 cp "$DISK" "$WRITABLE"
+CAPTURE_ARGS=()
+if [ -n "$SCREEN_CAPTURE" ]; then
+    python3 "$ROOT/scripts/screens/capture-disk.py" "$SCREEN_CAPTURE" "$WRITABLE"
+    # Add capture before root in QEMU's descending MMIO allocation order.
+    CAPTURE_ARGS=(-device virtio-blk-device,drive=screen-capture
+        -drive "if=none,id=screen-capture,format=raw,file=$SCREEN_CAPTURE,cache=writeback")
+fi
 if [[ "$SUITE" == *,* ]]; then
     # The first suite runs from fw_cfg; the list on the disk tells each suite which runs next.
     "$ROOT/scripts/write-boot-target.sh" "$WRITABLE" "${SUITE%%,*}" \
@@ -346,9 +396,29 @@ VIGIL_CPUS=
 export BREENIX_VIGIL_DISPLAY=false
 [ "$DISPLAY_MODE" != none ] && export BREENIX_VIGIL_DISPLAY=true
 [ -n "$ONLY" ] || VIGIL_ID=$(BREENIX_VIGIL_CPUS="$VIGIL_CPUS" "$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
+if [ -n "$VIGIL_ID" ] && [ "$SCREEN_PROOF" -eq 1 ]; then
+    VIGIL_HOME=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
+    python3 - "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/run.json" "$QEMU_PROFILE" "$PACE" <<'PY'
+import json
+import sys
+import tempfile
+from pathlib import Path
+record = Path(sys.argv[1])
+data = json.loads(record.read_text())
+data.update(profile=sys.argv[2], screenProof=True, intentPaceMS=int(sys.argv[3]))
+with tempfile.NamedTemporaryFile(mode='w', dir=record.parent, delete=False) as output:
+    json.dump(data, output, indent=2)
+    output.write('\n')
+    temporary = Path(output.name)
+try:
+    temporary.replace(record)
+finally:
+    temporary.unlink(missing_ok=True)
+PY
+fi
 # Vigil currently discards --profile for non-beast platforms. Preserve the actual
 # watch configuration on the same record, without registering a second boot.
-if [ -n "$VIGIL_ID" ] && [ "${PACE:-0}" -gt 0 ]; then
+if [ -n "$VIGIL_ID" ] && [ "${PACE:-0}" -gt 0 ] && [ "$SCREEN_PROOF" -eq 0 ]; then
     VIGIL_HOME=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
     python3 "$ROOT/scripts/showcase-pace.py" --suite "$SUITE" --pace "$PACE" \
         --cases "${ONLY:+1}" --gate-timeout "$GATE_TIMEOUT" --idle-exit "$IDLE_EXIT" \
@@ -412,12 +482,14 @@ python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$WATCH_MODE
     -kernel "$KERNEL" \
     "${DISPLAY_ARGS[@]}" -no-reboot \
     ${MODE_ARGS[@]+"${MODE_ARGS[@]}"} \
+    ${MODE_ARGS_CAPTURE[@]+"${MODE_ARGS_CAPTURE[@]}"} \
     ${QMP_ARGS[@]+"${QMP_ARGS[@]}"} \
     ${GPU_ARGS[@]+"${GPU_ARGS[@]}"} \
     -device virtio-gpu-device \
     -device virtio-keyboard-device \
     -device virtio-tablet-device \
     ${FIXTURE_ARGS[@]+"${FIXTURE_ARGS[@]}"} \
+    ${CAPTURE_ARGS[@]+"${CAPTURE_ARGS[@]}"} \
     -device virtio-blk-device,drive=ext2 \
     -drive "$ROOT_DRIVE" \
     -device virtio-rng-device \
@@ -462,6 +534,25 @@ if [ "$TERMINAL_PROFILE" = fault ]; then
     if ! python3 "$ROOT/scripts/check-gpu-fault-routing.py" "$SERIAL_LOG"; then
         [ "$code" -ne 0 ] || code=1
     fi
+fi
+if [ -n "$SCREEN_CAPTURE" ] && [ -n "$VIGIL_ID" ]; then
+    python3 - "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/run.json" "$SCREEN_CAPTURE" <<'PYCAP'
+import json
+import sys
+from pathlib import Path
+record = Path(sys.argv[1])
+data = json.loads(record.read_text())
+data['screenCapture'] = sys.argv[2]
+import tempfile
+with tempfile.NamedTemporaryFile(mode='w', dir=record.parent, delete=False) as output:
+    json.dump(data, output, indent=2)
+    output.write('\n')
+    temporary = Path(output.name)
+try:
+    temporary.replace(record)
+finally:
+    temporary.unlink(missing_ok=True)
+PYCAP
 fi
 host_slot_header "$SERIAL_LOG"
 "$ROOT/scripts/vigil-record.sh" finish "$VIGIL_ID" "$code"

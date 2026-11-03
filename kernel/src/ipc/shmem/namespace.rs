@@ -188,6 +188,11 @@ impl IpcFile for ShmFile {
         *self.position.lock() = old + result.as_ref().copied().unwrap_or(0);
         result
     }
+    fn write_buffer_size(&self, requested: usize) -> usize {
+        // Return a short write rather than allocate a request-sized kernel copy.
+        // The accepted prefix still uses one position reservation and io_guard.
+        requested.min(64 * 1024)
+    }
     fn write(&self, bytes: &[u8], append: bool) -> Result<u64, u64> {
         let old = reserve_position(&self.position);
         let _io = self.object.io_guard();

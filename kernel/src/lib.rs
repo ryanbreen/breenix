@@ -396,6 +396,7 @@ use arch_impl::traits::{CpuOps, TimerOps};
 
 /// Disable interrupts, execute `f`, then restore previous interrupt state.
 #[inline(always)]
+#[track_caller]
 pub fn arch_without_interrupts<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,
