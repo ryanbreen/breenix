@@ -77,6 +77,13 @@ fn retired_syscalls_return_enosys_before_accessing_arguments() {
         }
     }
 }
+#[cfg(feature = "testing")]
+#[test]
+fn testing_dispatch_keeps_framebuffer_handlers() {
+    assert_eq!(syscall::handler::dispatch(410, 0), SyscallResult::Ok(410));
+    assert_eq!(syscall::handler::dispatch(411, 0), SyscallResult::Err(14));
+    assert_eq!(syscall::handler::dispatch(412, 0), SyscallResult::Ok(412));
+}
 #[test]
 fn wait_stress_ops_are_absent_in_production() {
     for op in 27..=30 {
