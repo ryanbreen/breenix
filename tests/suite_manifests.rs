@@ -239,7 +239,15 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
                         let mut case_ids = HashSet::new();
                         for (k, case_value) in case_list.iter().enumerate() {
                             let case_at = format!("{cat_at} cases[{k}]");
-                            if let Some(case) = entry(case_value, &case_at, &[], errors) {
+                            // Validate optional gallery prose without adding it to the scored Entry.
+                            let extra: Vec<&str> = ["expect", "expectEnd"].into_iter()
+                                .filter(|key| case_value.get(*key).is_some()).collect();
+                            for key in &extra {
+                                if !case_value[*key].as_str().is_some_and(|text| !text.trim().is_empty() && text.chars().count() <= 300) {
+                                    errors.push(format!("{case_at}: {key} must be non-empty text of at most 300 characters"));
+                                }
+                            }
+                            if let Some(case) = entry(case_value, &case_at, &extra, errors) {
                                 if !case_ids.insert(case.id.clone()) {
                                     errors.push(format!("{case_at}: case id {:?} appears twice in {:?}", case.id, category.id));
                                 }
@@ -902,6 +910,47 @@ fn planned_categories_have_empty_case_lists_only() {
         assert!(!read(bad).1.is_empty(), "{bad}");
     }
     fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn case_expect_is_optional_bounded_text_and_other_unknown_keys_are_refused() {
+    let dir = std::env::temp_dir().join(format!("suite-expect-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let read = |extra: Value| {
+        let mut case = serde_json::json!({"id": "a", "title": "A"});
+        case.as_object_mut().unwrap().extend(extra.as_object().unwrap().clone());
+        let value = serde_json::json!({
+            "id": "s", "title": "S", "area": "A", "summary": "S.",
+            "binary": "/sbin/suite-s",
+            "categories": [{"id": "now", "title": "Now", "cases": [case]}]
+        });
+        let path = dir.join("s.json");
+        fs::write(&path, value.to_string()).unwrap();
+        let mut errors = Vec::new();
+        assert!(read_manifest(&path, &mut errors).is_some());
+        errors
+    };
+    assert!(read(serde_json::json!({})).is_empty());
+    let unknown = read(serde_json::json!({"foo": "ignored?"}));
+    assert!(unknown.iter().any(|e| e.contains("unexpected key \"foo\"")), "{unknown:?}");
+    for good in ["Green (#00FF00) square.".to_string(), "x".repeat(300), "é".repeat(300)] {
+        let errors = read(serde_json::json!({"expect": good}));
+        assert!(errors.is_empty(), "{errors:?}");
+    }
+    let unknown = read(serde_json::json!({"expect": "Green (#00FF00) square.", "foo": 1}));
+    assert!(unknown.iter().any(|e| e.contains("unexpected key \"foo\"")), "{unknown:?}");
+    for bad in [Value::Null, Value::Bool(true), serde_json::json!(42), serde_json::json!([]),
+                serde_json::json!(""), serde_json::json!("   "), serde_json::json!("x".repeat(301)),
+                serde_json::json!("é".repeat(301))] {
+        let errors = read(serde_json::json!({"expect": bad}));
+        assert!(!errors.is_empty(), "accepted {bad}");
+    }
+    assert!(read(serde_json::json!({"expectEnd": "A black end screen."})).is_empty());
+    for bad in [Value::Null, serde_json::json!(""), serde_json::json!("x".repeat(301))] {
+        let errors = read(serde_json::json!({"expectEnd": bad}));
+        assert!(!errors.is_empty(), "accepted end description {bad}");
+    }
+    fs::remove_dir_all(dir).unwrap();
 }
 
 #[test]

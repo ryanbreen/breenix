@@ -30,6 +30,7 @@
 //! ```
 
 pub mod entries;
+mod screen_capture;
 pub use entries::{SHM_DIRECTORY_INO, SHM_DIRECTORY_MODE};
 
 use alloc::string::String;
@@ -430,6 +431,9 @@ pub fn screen_evidence_write(buf: &[u8]) -> Result<usize, i32> {
     if !crate::test_control::enabled() { return Err(38); }
     let caller = crate::window::Caller::current()?;
     if !caller.is_root() { return Err(1); }
+    if buf.starts_with(screen_capture::REQUEST_MAGIC) {
+        return screen_capture::write(buf);
+    }
     if buf.starts_with(&gpu_abi::screen::MAGIC) {
         let request = gpu_abi::screen::Request::decode(buf).ok_or(22)?;
         crate::gpu::observe_screen(request).map_err(|e| e as i32)?;

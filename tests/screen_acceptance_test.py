@@ -1,5 +1,6 @@
 """Regression checks for the incomplete PR #2642 acceptance report."""
 import json
+import hashlib
 from pathlib import Path
 import runpy
 import tempfile
@@ -13,9 +14,185 @@ class ScreenAcceptance(unittest.TestCase):
     def setUp(self):
         self.api = runpy.run_path(str(ROOT / 'scripts/screen-proof-acceptance.py'))
 
+    def test_gallery_inventory_requires_intents_for_judged_pictures(self):
+        sha = 'a' * 64
+        serial = (f'SUITE gpu CASE draw/one PASS ms=1 sha256={sha}\n'
+                  'SUITE gpu CASE draw/two PASS ms=1\n')
+        ends = [['draw/one', 'end'], ['draw/two', 'end']]
+        expected = self.api['checkpoint_inventory']('gpu', serial, ends, 'gallery')
+        self.assertEqual(expected, [ends[0], ['draw/one', 'intent'], ends[1]])
+        self.assertEqual(self.api['checkpoint_inventory']('gpu', serial, ends, 'checkpoints'), ends)
+        self.assertEqual(self.api['checkpoint_inventory']('gpu', serial.replace(' sha256=' + sha, ''), ends, 'gallery'), ends)
+        # Phase two draws intent frames only in ARM proof captures; the native run is a production companion.
+        self.assertEqual(self.api['checkpoint_inventory']('gpu', serial, ends, 'gallery', 'metal'), ends)
+
+    def test_gallery_gate_keeps_failed_boot_records_and_requires_both_sets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p / 'run.json').write_text(json.dumps(dict(id='failed', platform='qemu',
+                arch='aarch64', mode='suite', suites=['gpu', 'breengel'], screenProof=True)))
+            for name, value in [('commit', HEAD), ('dirty', '0'), ('ended', '1'), ('exit-status', '1')]:
+                (p / name).write_text(value)
+            failure = 'SUITE gpu CASE isolation/irq-masked-bound FAIL ms=1 msg=1370 us; bound 500'
+            done = 'SUITE gpu DONE passed=169 failed=1 skipped=0 total=170'
+            (p / 'serial.txt').write_text(failure + '\n' + done + '\n')
+            report = self.api['accept'](HEAD, {'arm-gpu': p}, phase='gallery')
+            self.assertFalse(report['proven'])
+            self.assertEqual(report['phase'], 'gallery')
+            row = report['captures']['arm-gpu']
+            self.assertEqual(row['exitStatus'], '1')
+            self.assertEqual(row['failedCases'], [failure])
+            self.assertEqual(row['done'], [done])
+            self.assertIn('unsuccessful', row['failure'])
+            for suite in ('gpu', 'breengel'):
+                self.assertIn(f'missing {suite} candidates', report['failures'])
+
+    def test_gallery_set_requires_exact_serial_pixels_and_capture_provenance(self):
+        exporter = runpy.run_path(str(ROOT / 'tools/screen-gallery/export.py'))
+        importer = runpy.run_path(str(ROOT / 'scripts/screens/approve.py'))
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / 'manifest.json'
+            pixels = bytes([3, 2, 1, 255])
+            sha = hashlib.sha256(pixels).hexdigest()
+            row = dict(suite='gpu', case='draw/one', checkpoint='intent', mode='1x1',
+                       binding='1x1', sha256=sha, boot_id='boot-gpu', commit=HEAD,
+                       title='One', contract_section='test', intent='One', png='one.png')
+            def write(rows):
+                p.write_text(json.dumps(dict(version=1,
+                    candidates_id=importer['candidates_id'](rows), rows=rows)))
+            (p.parent / 'one.png').write_bytes(exporter['png'](1, 1, pixels))
+            serial = f'SUITE gpu SCREEN draw/one intent sha256={sha} mode=1x1 binding=1x1\n'
+            write([row])
+            checked = self.api['check_gallery_set'](p, 'gpu', 'boot-gpu', HEAD, serial)
+            self.assertEqual(checked['rows'], 1)
+            for field, value in [('suite', 'breengel'), ('boot_id', 'other'),
+                                 ('commit', 'b' * 40), ('binding', '2x2')]:
+                with self.subTest(field=field):
+                    write([dict(row, **{field: value})])
+                    with self.assertRaises(ValueError):
+                        self.api['check_gallery_set'](p, 'gpu', 'boot-gpu', HEAD, serial)
+            write([])
+            with self.assertRaisesRegex(ValueError, 'inventory'):
+                self.api['check_gallery_set'](p, 'gpu', 'boot-gpu', HEAD, serial)
+            write([row])
+            (p.parent / 'one.png').write_bytes(exporter['png'](1, 1, bytes([4, 2, 1, 255])))
+            with self.assertRaisesRegex(ValueError, 'digest'):
+                self.api['check_gallery_set'](p, 'gpu', 'boot-gpu', HEAD, serial)
+
+    def test_qemu_recorder_suite_list_and_combined_capture_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            boot = dict(id='combined', platform='qemu', arch='aarch64', mode='suite',
+                        suites=['gpu', 'breengel'], screenProof=True)
+            for name, value in [('commit', HEAD), ('dirty', '0'), ('ended', '1'), ('exit-status', '0')]:
+                (p / name).write_text(value)
+            def write():
+                (p / 'run.json').write_text(json.dumps(boot))
+            write()
+            seen = {}
+            for name, suite in [('arm-gpu', 'gpu'), ('arm-breengel', 'breengel')]:
+                identity = self.api['capture_identity'](p, HEAD, suite, 'qemu')
+                self.api['register_capture'](seen, identity, name, p)
+            with self.assertRaisesRegex(ValueError, 'distinct'):
+                self.api['register_capture'](seen, identity, 'arm-breengel', p / 'copy')
+            for selection in ([], ['gpu'], ['gpu', 'gpu', 'breengel'], 'gpu,breengel'):
+                boot['suites'] = selection
+                write()
+                with self.subTest(selection=selection):
+                    with self.assertRaisesRegex(ValueError, 'suite'):
+                        self.api['capture_identity'](p, HEAD, 'breengel', 'qemu')
+            boot.update(suites=['gpu', 'breengel'], suite='other')
+            write()
+            with self.assertRaisesRegex(ValueError, 'suite'):
+                self.api['capture_identity'](p, HEAD, 'gpu', 'qemu')
+            boot.pop('suite')
+            write()
+            (p / 'exit-status').write_text('1')
+            with self.assertRaisesRegex(ValueError, 'unsuccessful'):
+                self.api['capture_identity'](p, HEAD, 'gpu', 'qemu')
+
+    def test_combined_gallery_requires_both_suite_inventories_and_one_provenance(self):
+        exporter = runpy.run_path(str(ROOT / 'tools/screen-gallery/export.py'))
+        importer = runpy.run_path(str(ROOT / 'scripts/screens/approve.py'))
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp) / 'manifest.json'
+            pixels = bytes([3, 2, 1, 255])
+            sha = hashlib.sha256(pixels).hexdigest()
+            rows = [dict(suite=suite, case='draw/one', checkpoint='intent', mode='1x1',
+                         binding='1x1', sha256=sha, boot_id='combined', commit=HEAD,
+                         title='One', contract_section='test', intent='One', png='one.png')
+                    for suite in ('gpu', 'breengel')]
+            (p.parent / 'one.png').write_bytes(exporter['png'](1, 1, pixels))
+            serial = ''.join(f'SUITE {suite} SCREEN draw/one intent sha256={sha} mode=1x1 binding=1x1\n'
+                             for suite in ('gpu', 'breengel'))
+            def write(values):
+                p.write_text(json.dumps(dict(version=1,
+                    candidates_id=importer['candidates_id'](values), rows=values)))
+            write(rows)
+            for suite in ('gpu', 'breengel'):
+                self.assertEqual(self.api['check_gallery_set'](
+                    p, suite, 'combined', HEAD, serial)['rows'], 1)
+            write(rows[:1])
+            with self.assertRaisesRegex(ValueError, 'inventory'):
+                self.api['check_gallery_set'](p, 'breengel', 'combined', HEAD, serial)
+            for field, value in [('boot_id', 'other'), ('commit', 'b' * 40), ('suite', 'unknown')]:
+                write([rows[0], dict(rows[1], **{field: value})])
+                with self.subTest(field=field):
+                    with self.assertRaises(ValueError):
+                        self.api['check_gallery_set'](p, 'gpu', 'combined', HEAD, serial)
+            write(rows)
+            (p.parent / 'one.png').write_bytes(exporter['png'](1, 1, bytes([4, 2, 1, 255])))
+            with self.assertRaisesRegex(ValueError, 'digest'):
+                self.api['check_gallery_set'](p, 'gpu', 'combined', HEAD, serial)
+
+    def test_failed_combined_capture_retains_suite_scoped_verdicts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p / 'exit-status').write_text('1')
+            (p / 'serial.txt').write_text(
+                'SUITE gpu CASE isolation/irq-masked-bound FAIL ms=1 msg=1370 us; bound 500\n'
+                'SUITE gpu DONE passed=169 failed=1 skipped=0 total=170\n'
+                'SUITE breengel DONE passed=401 failed=0 skipped=0 total=401\n')
+            gpu = self.api['capture_facts'](p, 'gpu')
+            breengel = self.api['capture_facts'](p, 'breengel')
+            self.assertEqual(len(gpu['failedCases']), 1)
+            self.assertEqual(breengel['failedCases'], [])
+            self.assertEqual(gpu['done'], ['SUITE gpu DONE passed=169 failed=1 skipped=0 total=170'])
+            self.assertEqual(breengel['done'], ['SUITE breengel DONE passed=401 failed=0 skipped=0 total=401'])
+            self.assertEqual(breengel['exitStatus'], '1')
+
+    def test_truncated_screen_records_are_reported_as_invalid(self):
+        for suffix in ('', 'draw/one', 'draw/one end'):
+            with self.subTest(suffix=suffix):
+                with self.assertRaisesRegex(ValueError, 'malformed SCREEN'):
+                    self.api['screen_inventory']('gpu', 'SUITE gpu SCREEN ' + suffix)
+
+    def test_cross_target_pictures_and_unobservable_are_distinct(self):
+        digest = 'a' * 64
+        native = (f'SUITE gpu SCREEN profile/example end sha256={digest} mode=2x1 binding=2x1\n'
+                  'SUITE gpu SCREEN readback/lost end unobservable reason=target-invalidated errno=5 eio_reason=1 failed_submission=1\n')
+        arm = native.replace(' unobservable reason=target-invalidated errno=5 eio_reason=1 failed_submission=1',
+                             f' sha256={digest} mode=2x1 binding=2x1')
+        pictures, declarations = self.api['screen_inventory']('gpu', native)
+        self.assertEqual(len(pictures), 1)
+        self.assertEqual(len(declarations), 1)
+        self.assertNotIn(('readback/lost', 'end'), pictures)
+        self.assertEqual(self.api['compare_pictures'](pictures, self.api['screen_inventory']('gpu', arm)[0]), 1)
+        with self.assertRaisesRegex(ValueError, 'digest'):
+            self.api['compare_pictures'](pictures, self.api['screen_inventory']('gpu', arm.replace(digest, 'b' * 64, 1))[0])
+
     def test_native_pair_cannot_prove_tandem_acceptance(self):
         failures = self.api['missing_captures']({'console': Path('c'), 'gpu': Path('g')})
         self.assertEqual(failures, ['missing arm-gpu capture', 'missing arm-breengel capture'])
+
+    def test_cross_target_requires_a_compared_picture(self):
+        digest = 'a' * 64
+        native = {('draw/one', 'end'): digest}
+        arm = {('draw/two', 'end'): digest}
+        for left, right in (({}, {}), ({}, arm), (native, {}), (native, arm)):
+            with self.subTest(native=left, arm=right):
+                with self.assertRaisesRegex(ValueError, 'no cross-target pictures compared'):
+                    self.api['compare_pictures'](left, right)
 
     def test_stale_arm_and_mismatched_native_tools_are_rejected(self):
         with tempfile.TemporaryDirectory() as tmp:

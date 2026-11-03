@@ -1,0 +1,15 @@
+[package]
+name = "screen-capture"
+version = "0.1.0"
+edition = "2021"
+license = "PolyForm-Noncommercial-1.0.0"
+description = "SCR1 checkpoint disk records"
+
+[workspace]
+
+[dependencies]
+libpixcheck = { path = "../libpixcheck" }
+
+[[test]]
+name = "capture"
+path = "../../tests/screen_capture_test.rs"

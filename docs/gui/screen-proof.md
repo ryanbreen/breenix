@@ -42,6 +42,25 @@ Controlled ARM64 QEMU off/on captures at `a89655ad` measured GPU 226800/231850 m
 
 This phase-one gate reports unapproved checkpoints. Picture approval, the gallery, intent frames and native output CRC acceptance remain subsequent work under the contract below.
 
+## Gallery capture acceptance
+
+Pass `--phase gallery` to the retained-capture gate for phase two, together with
+`--gpu-candidates <manifest.json>` and `--breengel-candidates <manifest.json>`.
+This mode retains the phase-one boot, commit, console time, suite, memory and
+native startup checks. In the ARM proof captures its checkpoint inventory adds an
+`intent` for each CASE carrying a judged-picture digest; the native GPU capture is
+a production companion with end checkpoints only until native proof mode (U19). The two candidates manifests must contain the
+corresponding ARM boot's SCREEN pictures, with matching mode, binding, digest,
+boot and runtime commit; the approval importer's existing validator checks the
+manifest identity and PNG pixels. Separate ARM boot IDs are still required.
+The report identifies its phase and retains exit status, failed CASE lines,
+DONE lines and memory records even when boot eligibility fails.
+
+This checks capture evidence for review; it does not approve candidates,
+supersede operator decisions or establish the later approved-table/native-CRC
+milestone. A failed boot or missing companion leaves `proven:false`, covered by
+the failed-boot regression in `tests/screen_acceptance_test.py`.
+
 ## Shared table and approval
 
 `docs/suites/frames/screens.json` is a version 1 table shared by targets. Its unique key is `(suite, case, checkpoint)`; mode and SHA-256 are expected values. A different mode fails and does not create another entry. An entry records the intent, operator approval file, candidates digest, capture run and commit. Native rows record output, raster, output-configuration digest, CRC values, deriving run and commit. Approval files under `docs/suites/frames/approvals/` are append-only.
@@ -95,4 +114,21 @@ from a completed or different case does not qualify.
 ## Intent frame
 
 <!-- claim-lint:ok: Normative intent-frame requirements in docs/gui/screen-proof.md, not a measured result. -->
-Proof mode uses `opt/breenix/screen-proof`; it is opt-in. After a pictured case's verdict, timer and `end` checkpoint, the runner uses BGL `solid` and `nearest-scale` pipelines to present a text-free frame: background RGB (12,19,31), the judged picture centered at the largest integer scale that fits with 64 pixels of margin in each dimension, and a two-pixel white border immediately outside it. Center coordinates use floor division. The runner takes an `intent` checkpoint and holds the frame for `pace_ms` (default 1,000 ms), outside measured windows. The next stage frame then follows. This adds a screen verdict without changing the case verdict, timing or VALUE records.
+Proof mode uses `opt/breenix/screen-proof`; it is opt-in. After a pictured case's verdict, timer and `end` checkpoint, the runner uses BGL `solid` and `nearest-scale` pipelines to present a text-free frame: a neutral checkerboard background of 16×16-pixel squares alternating #5A5A5A and #7A7A7A from the frame origin (operator, 2026-11-02 noon), the judged picture centered at the largest integer scale that fits with 64 pixels of margin in each dimension, and a two-pixel white border immediately outside it. Center coordinates use floor division. The runner takes an `intent` checkpoint and holds the frame for `pace_ms` (default 1,000 ms), outside measured windows. The next stage frame then follows. This adds a screen verdict without changing the case verdict, timing or VALUE records.
+
+The coordinator's 2026-11-02 5:30 AM EST large-picture ruling gives three layouts.
+When an integer scale of at least one fits within mode width minus 64 and mode
+height minus 64, use the largest such scale and the border described above.
+A picture equal to the mode in both dimensions fills the screen at 1:1, without
+a border. Otherwise choose the smallest integer divisor k whose k-spaced samples
+fit those inner bounds. Take source coordinates 0, k, 2k and so on on both axes,
+including a final partial row or column; center the resulting picture and add the
+border. The `intent` digest hashes the actual displayed screen. These layouts
+serve the viewer and do not change the picture judged by the case.
+
+<!-- claim-lint:ok: Normative launch interface in scripts/boot-interactive.sh and renderer in libs/libbreenix/src/suite_intent.rs. -->
+On ARM64 QEMU, `scripts/boot-interactive.sh --mode suite --suite gpu|breengel
+--gpu-gl --screen-proof [--pace MS]` selects this view through fw_cfg. Intent
+rendering transports the verified snapshot unchanged to a separate GPU texture;
+GPU solid and nearest-scale draws compose it. Its context is released after the
+checkpoint and hold, before the next case starts.
