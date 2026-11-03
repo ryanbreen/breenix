@@ -851,15 +851,12 @@ fn deliberately_broken_copies_redden_the_rules() {
 
     // Leg F -- the reader takes it while it still holds the lock, which is the
     // ordering the repair exists to avoid.
+    // The anchor is the code itself (ruling S28): 9a44a096's guarded stdin wait removed the
+    // comments the earlier anchor quoted, but kept the drop-then-adopt ordering.
     let early = replace_once(
         &handlers,
-        "            // Drop the process manager lock before potentially blocking\n            drop(manager_guard);",
+        "            drop(manager_guard);\n            crate::tty::driver::adopt_foreground_pgrp_from_reader(reader_pid);",
         "            crate::tty::driver::adopt_foreground_pgrp_from_reader(reader_pid);\n            drop(manager_guard);",
-    );
-    let early = replace_once(
-        &early,
-        "            // #821: take any foreground-pgrp adoption the input IRQ entry\n            // deferred. Deliberately after the guard is dropped, so this holds\n            // no PROCESS_MANAGER while it touches the TTY's own locks.\n            crate::tty::driver::adopt_foreground_pgrp_from_reader(reader_pid);\n",
-        "",
     );
     assert_ne!(early, handlers, "leg F's mutation must apply");
     let error = validate_reader_takes_the_adoption(&early)
