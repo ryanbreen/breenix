@@ -84,6 +84,13 @@ def score(directory):
     # category's records are server-<category>.json, or users-operator.json for the
     # users suite's host-run category, beside its transcript.
     found = sorted(directory.glob('server-*.json')) + sorted(directory.glob('users-operator.json')) + sorted(directory.glob('gt710-*.json'))
+    # A native BreenGL suite measures its selected step even if its host receipt
+    # was lost. Missing evidence must be a failed milestone, not an omission.
+    if (run.get('suite') == 'breengel' and run.get('platform') == 'metal'
+            and (directory / 'definition/docs/gui/gt710-step-9-4.json').exists()
+            and not (directory / 'gt710-breengel-full.json').exists()):
+        results['metal-gt710/breengel-full'] = dict(reached=0, total=1, passed=False,
+                                                  reason='missing gt710-breengel-full.json')
     for host_records in found:
         suite, category = host_records.name[:-len('.json')].split('-', 1)
         if category.endswith('-transcript'):
@@ -92,7 +99,6 @@ def score(directory):
         root = directory / 'definition'
         try:
             host = runpy.run_path(str(root / ('scripts/metal/gt710-suite' if suite == 'gt710' else 'scripts/metal/server-suite')))
-            manifest = read('definition/docs/suites/' + suite + '.json')
             records = read(host_records.name)
             if records.get('milestone') != milestone:
                 raise ValueError(host_records.name + ' records another milestone')
@@ -103,6 +109,17 @@ def score(directory):
                     or (directory / 'exit-status').read_text().strip() != '0'
                     or (directory / 'dirty').read_text().strip() != '0' or 'console-gap' in events):
                 raise ValueError('GT 710 cases need a completed clean successful capture')
+            if suite == 'gt710' and category.startswith('breengel-'):
+                host['resources_identity'](run, 'breengel', sha)
+                if records.get('boot') != run.get('id') or records.get('commit') != sha:
+                    raise ValueError('GT 710 records belong to another boot or commit')
+                actual = host['cases'](category, '', {'breengel': dict(
+                    boot=dict(run, bootedCommit=sha), serial=host['capture_serial'](directory))})
+                if records.get('cases') != actual or any(row['result'] != 'PASS' for row in actual):
+                    raise ValueError('BreenGL results differ from retained evidence or failed')
+                results[milestone] = dict(reached=1, total=1, passed=True, reason=category + ': suite passed')
+                continue
+            manifest = read('definition/docs/suites/' + suite + '.json')
             reason = host['score'](manifest, read('definition/docs/efforts/' + effort), records,
                                    host['capture_serial'](directory) if suite=='gt710' else (directory / 'serial.txt').read_text(), run, sha, fatal,
                                    **({'producer': host['core_capture'](directory, sha)}
