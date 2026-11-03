@@ -3809,14 +3809,32 @@ def completed_suite_capture(directory, sha, suite=None):
     resources_identity(boot, suite or boot.get('suite'), sha)
     events = [json.loads(line) for line in read('events.jsonl').splitlines()]
     status = int(read('exit-status'))
+    driver_closed = bool(events) and (events[-1].get('event') == 'closed'
+        and events[-1].get('status') == status and events[-1].get('endedBy') == 'driver')
+    # metal-boot finalizes a disk-checking aggregate after its cold readback:
+    # source closure(1), suite-verdict(0), then a bound cold-disk-verdict.
+    if (not driver_closed and status == 0 and len(boot.get('suites') or []) > 1
+            and events and events[-1].get('event') == 'cold-disk-verdict'):
+        boundaries = [i for i, e in enumerate(events) if e.get('event') == 'closed']
+        if len(boundaries) == 1:
+            boundary = events[boundaries[0]]
+            tail = events[boundaries[0] + 1:]
+            receipt = json.loads(read('suite-readback.json'))
+            child = receipt.get('id', '')
+            driver_closed = (boundary.get('status') == 1 and boundary.get('endedBy') == 'driver'
+                and [e.get('event') for e in tail] == ['suite-verdict', 'cold-disk-verdict']
+                and tail[0].get('status') == 0 and tail[1].get('passed') is True
+                and tail[1].get('readback') == child and child != boot.get('id')
+                and re.fullmatch(r'\d{8}T\d{6}Z-metal', child) is not None
+                and receipt.get('passed') is True and type(receipt.get('bytes')) is int
+                and receipt['bytes'] > 0 and re.fullmatch('[a-f0-9]{64}', receipt.get('sha256', '')) is not None)
     if (boot.get('onlyCase') is not None or boot.get('session') or not read('ended')
             or read('dirty') != '0' or read('commit') != sha or read('ended-by') != 'driver'
             or status not in (0, 1) or not events
             or any(e.get('event') in ('console-gap', 'fatal') for e in events)
             or sum(e.get('event') == 'final-marker' for e in events) != 1
             or not any(e.get('event') == 'power-off' and e.get('off') is True for e in events)
-            or events[-1].get('event') != 'closed' or events[-1].get('status') != status
-            or events[-1].get('endedBy') != 'driver'):
+            or not driver_closed):
         raise ValueError('native suite requires a complete clean driver-closed capture')
     return dict(boot=dict(boot, bootedCommit=sha), serial=capture_serial(directory, suite), events=events, exit_status=status)
 
