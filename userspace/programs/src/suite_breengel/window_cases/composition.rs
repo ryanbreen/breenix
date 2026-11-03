@@ -811,15 +811,19 @@ fn composition_present_rate() -> CaseResult {
     };
     let mut start = 0;
     let mut composites0 = 0;
+    let mut end = 0;
+    let mut composites1 = 0;
     for i in 0..300u32 {
         if i == 30 {
             (composites0, start) = composite_event()?;
+        }
+        if i == 299 {
+            (composites1, end) = composite_event()?;
         }
         let began=time::now_monotonic()?.as_nanos();
         w.frame(i).cite("17.3")?;
         if i>=236 {frame_times.push(((time::now_monotonic()?.as_nanos()-began)/1000).min(u32::MAX as i128) as u32);}
     }
-    let (composites1, end) = composite_event()?;
     let elapsed_ns = end - start;
     let composed = (composites1 - composites0) as i128;
     let rate = composed * 1_000_000_000_000 / elapsed_ns;
