@@ -79,6 +79,20 @@ unsupported prose remain `unparseable` with the original claim and a reason.
 Only a complete supported sentence can receive `pass`; the report alone is
 insufficient for the G29 independent-review requirement.
 
+BreenGL `bmp`, `png-decode` and `png-encode` comparison panels are checked first,
+before generic prose dimensions. The verifier reconstructs the tile inventory
+and layout from the captured commit's fixtures and the `images.rs` panel rules.
+It checks each actual/reference pair in both the colour and grey alpha planes,
+uniform integer enlargement blocks, white outlines, and entirely black displayed
+difference pictures. Reference pixels are compared with the case's literal BGRA
+values, independent sample arithmetic, or committed `.bgra` fixture files;
+the verifier never uses the codec under test to generate a reference. The report
+retains source-file hashes, fixture hashes, tile locations, scales, divisors and
+comparison counts. Missing source commits and unsupported cases fail closed.
+Intent and tile decimation leave omitted pixels unresolved. Labels, glyphs and
+remaining visual prose also stay unresolved for independent review, so these
+mechanical checks alone never authorize a G29 approval.
+
 The manifest identifier is recomputed from canonical JSON of
 `{"version":1,"rows":...}`, projecting each row without the optional documentation
 fields `expect` and `expectCommit`, using sorted keys, compact separators and
