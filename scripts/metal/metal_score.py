@@ -84,9 +84,10 @@ def score(directory):
     # category's records are server-<category>.json, or users-operator.json for the
     # users suite's host-run category, beside its transcript.
     found = sorted(directory.glob('server-*.json')) + sorted(directory.glob('users-operator.json')) + sorted(directory.glob('gt710-*.json'))
-    # A native BreenGL suite measures its selected step even if its host receipt
-    # was lost. Missing evidence must be a failed milestone, not an omission.
+    # A closed native BreenGL suite measures its selected step even if its host
+    # receipt was lost. The driver scores startup before writing closure.
     if (run.get('suite') == 'breengel' and run.get('platform') == 'metal'
+            and (directory / 'ended').exists()
             and (directory / 'definition/docs/gui/gt710-step-9-4.json').exists()
             and not (directory / 'gt710-breengel-full.json').exists()):
         results['metal-gt710/breengel-full'] = dict(reached=0, total=1, passed=False,
