@@ -796,23 +796,36 @@ fn composition_present_rate() -> CaseResult {
     want_ok(w.register(b"present-rate"), "17.1", "REGISTER")?;
     place(&mut k, w.id(), &p, abi::geometry_flags::VISIBLE)?;
     let mut frame_times=Vec::new();
+    // G32: counter advances bracket whole composite periods, independent of start phase.
+    let composite_event = || -> Result<(u64, i128), breenix_suite::suite::CaseError> {
+        let previous = counter("composites").cite("18")?;
+        let waiting = time::now_monotonic()?.as_nanos();
+        loop {
+            let current = counter("composites").cite("18")?;
+            let now = time::now_monotonic()?.as_nanos();
+            if current > previous { return Ok((current, now)); }
+            ensure(now - waiting < 2_000_000_000, "18",
+                "the compositor did not advance within 2 s")?;
+            core::hint::spin_loop();
+        }
+    };
     let mut start = 0;
     let mut composites0 = 0;
     for i in 0..300u32 {
         if i == 30 {
-            start = now_ms();
-            composites0 = counter("composites").cite("18")?;
+            (composites0, start) = composite_event()?;
         }
         let began=time::now_monotonic()?.as_nanos();
         w.frame(i).cite("17.3")?;
         if i>=236 {frame_times.push(((time::now_monotonic()?.as_nanos()-began)/1000).min(u32::MAX as i128) as u32);}
     }
-    let elapsed = since(start).max(1);
-    let composed = counter("composites").cite("18")? - composites0;
-    let rate = composed * 1_000 / elapsed;
+    let (composites1, end) = composite_event()?;
+    let elapsed_ns = end - start;
+    let composed = (composites1 - composites0) as i128;
+    let rate = composed * 1_000_000_000_000 / elapsed_ns;
     breenix_suite::suite::timing(&frame_times,16_667)?;
-    value("composites-per-second", rate as i64, "fps", Some((60, i64::MAX)));
-    ensure(rate >= 60, "18", format!("one 256x256 window committing as fast as its buffers are released was composed {composed} times in {elapsed} ms, {rate} a second; the contract requires at least 60"))
+    value("composites-per-second", rate as i64, "mHz", Some((60_000, i64::MAX)));
+    ensure(composed * 1_000_000_000 >= 60 * elapsed_ns, "18", format!("one 256x256 window committing as fast as its buffers are released was composed {composed} times in {elapsed_ns} ns, {rate} mHz; the contract requires at least 60 Hz"))
 }
 
 /// In a helper: say why it stops (on its standard output, which the case reads) and give the
