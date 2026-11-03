@@ -5,6 +5,7 @@ hardware are involved. Frame production keeps its own cadence, independent of
 scanout, so the start phase covers arbitrary counter/clock boundaries.
 """
 from pathlib import Path
+import re
 import subprocess
 import sys
 import tempfile
@@ -16,6 +17,49 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class BreenGLPresentRate(unittest.TestCase):
+    def test_rate_survives_production_value_emitter(self):
+        suite = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
+        case = item((ROOT / 'userspace/programs/src/suite_breengel/window_cases/composition.rs').read_text(),
+                    'fn composition_present_rate(')
+        unit = re.search(r'value\("composites-per-second", rate as i64, "([^"]+)"', case).group(1)
+        fps = next(line.strip() for line in suite.splitlines() if 'let fps=readings.' in line)
+        fixture = r'''
+use std::fmt::Write;
+use std::sync::Mutex;
+static RECORDS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+fn record(kind: &str, rest: &str) {
+    assert_eq!(kind, "VALUE");
+    RECORDS.lock().unwrap().push(rest.into());
+}
+WORD
+VALUE
+struct Reading { name: String, number: i64, unit: String }
+fn main() {
+    value("composites-per-second", 60_020, "UNIT", Some((60_000, i64::MAX)));
+    assert_eq!(*RECORDS.lock().unwrap(), vec![
+        format!("composites-per-second=60020millihertz expect=60000..{}millihertz", i64::MAX)
+    ], "the native acceptance rate must reach the serial VALUE path");
+    for (number, unit, expected) in [(60_020, "millihertz", 60), (61, "hz", 61)] {
+        let readings = [Reading { name: "composites-per-second".into(), number, unit: unit.into() }];
+        FPS
+        assert_eq!(fps, Some(expected), "stage FPS must be frames per second");
+        std::hint::black_box(&readings[0].unit);
+    }
+}
+'''.replace('WORD', item(suite, 'fn is_word(')).replace('VALUE\n', item(suite, 'pub fn value(') + '\n')
+        fixture = fixture.replace('"UNIT"', '"' + unit + '"').replace('FPS\n', fps + '\n')
+        with tempfile.TemporaryDirectory(prefix='breengel-rate-record-') as tmp:
+            source = Path(tmp) / 'check.rs'
+            source.write_text(fixture)
+            binary = Path(tmp) / 'check'
+            args = ['rustc', '--edition=2021', '-Dwarnings', str(source), '-o', str(binary)]
+            if sys.platform == 'darwin':
+                args = ['taskpolicy', '-b', *args]
+            build = subprocess.run(args, capture_output=True, text=True)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            run = subprocess.run([str(binary)], capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
     def test_periodic_compositor_across_start_phases(self):
         case = item((ROOT / 'userspace/programs/src/suite_breengel/window_cases/composition.rs').read_text(),
                     'fn composition_present_rate(')
@@ -128,7 +172,7 @@ fn whole_periods_classify_every_phase() {
                 let m = m.borrow();
                 let (rate, unit) = m.reported.as_ref().unwrap();
                 // 10 us poll jitter over 3.5 s changes the report by at most 1 mHz.
-                reports_exact &= unit == "mHz" && (*rate - centihz as i64 * 10).abs() <= 1;
+                reports_exact &= unit == "millihertz" && (*rate - centihz as i64 * 10).abs() <= 1;
             });
         }
         println!("production {centihz}/100 Hz: {passed}/512 phases pass");
