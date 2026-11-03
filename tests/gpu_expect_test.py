@@ -85,6 +85,18 @@ class GpuExpect(unittest.TestCase):
                 self.assertIn(sample, gpu[case])
         self.assertIn("#011D0D", breengel["windows/release-order"])
 
+    def test_end_screen_descriptions_fit_the_exporter(self):
+        # tools/screen-gallery/export.py refuses an expectEnd over 300 characters.
+        for suite in ("gpu", "breengel"):
+            manifest = json.loads((ROOT / f"docs/suites/{suite}.json").read_text())
+            for cat in manifest["categories"]:
+                for case in cat["cases"]:
+                    if "expectEnd" not in case:
+                        continue
+                    with self.subTest(case=f"{suite}/{cat['id']}/{case['id']}"):
+                        self.assertTrue(case["expectEnd"].strip())
+                        self.assertLessEqual(len(case["expectEnd"]), 300)
+
     def test_pictured_gpu_cases_have_visual_expectations(self):
         pictured = {f"{cat}/{case}" for cat, cases in PICTURED.items() for case in cases}
         self.assertEqual(len(pictured), 121)
