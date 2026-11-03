@@ -3370,21 +3370,37 @@ def breengel_picture_evidence(directory, serial, records, startup_bytes, final_b
 def capture_serial(directory, suite=None):
     directory = Path(directory)
     serial = (directory / 'serial.txt').read_text()
-    if (directory / 'native-suites').is_dir():
-        if suite not in ('console', 'gpu', 'breengel'):
+    if not (directory / 'native-suites').is_dir():
+        return capture_serial_body(directory, serial)
+    validated = {}
+
+    def native_window(name):
+        if name not in ('console', 'gpu', 'breengel'):
             raise ValueError('aggregate native capture requires a named suite')
-        starts = list(re.finditer(r'^SUITE ' + suite + r' START .*$', serial, re.M))
-        ready = list(re.finditer(r'^SUITE_SEQUENCE READY ' + suite + r'$', serial, re.M))
+        if name in validated:
+            return validated[name]
+        starts = list(re.finditer(r'^SUITE ' + name + r' START .*$', serial, re.M))
+        ready = list(re.finditer(r'^SUITE_SEQUENCE READY ' + name + r'$', serial, re.M))
         if len(starts) != 1 or len(ready) != 1 or starts[0].start() >= ready[0].start():
             raise ValueError('aggregate suite boundaries missing or duplicated')
         preceding = list(re.finditer(r'^SUITE_SEQUENCE READY \S+$', serial[:starts[0].start()], re.M))
         begin = preceding[-1].end() if preceding else 0
-        serial = serial[begin:ready[0].end()] + '\n'
-        directory = directory / 'native-suites' / suite
-    return capture_serial_body(directory, serial)
+        sources = {}
+        for prior in re.finditer(r'^SUITE (console|gpu|breengel) START .*$', serial[:starts[0].start()], re.M):
+            _, originals = native_window(prior[1])
+            if sources.keys() & originals.keys():
+                raise ValueError('original CAPS probes repeated across suite slots')
+            sources.update(originals)
+        originals = {}
+        text = capture_serial_body(directory / 'native-suites' / name,
+                                   serial[begin:ready[0].end()] + '\n', sources, originals)
+        validated[name] = text, originals
+        return validated[name]
+
+    return native_window(suite)[0]
 
 
-def capture_serial_body(directory, serial):
+def capture_serial_body(directory, serial, inherited_probes=None, original_probes=None):
     # claim-lint:ok: normative bulk framing; tests/gt710_bulk_test.py and tests/gt710_contexts_report_test.py mutate anchors and bodies.
     spans = bool(re.search(r'^GT710_SPANS_BULK ', serial, re.M))
     stalls = bool(re.search(r'^GT710_STALL_BULK ', serial, re.M))
@@ -3739,6 +3755,10 @@ def capture_serial_body(directory, serial):
             if (len(groups[key]) != 1 or digest is None
                     or hashlib.sha256(groups[key][0].removesuffix('\n').encode('ascii')).hexdigest() != digest[1]):
                 raise ValueError('executable CAPS probe differs from serial digest')
+            if key[0] == 'caps-probe' and original_probes is not None:
+                # Export only the row authenticated against this slot's payload
+                # and serial anchor, never an arbitrary JSON line in serial.
+                original_probes[key[1]] = groups[key][0]
         if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',), ('core-startup',), ('resources',), ('case-heap',), ('breengel-pictures',), ('allocations',)):
             record=''.join(groups[key]).encode('ascii')
             fields=line.split()
@@ -3749,6 +3769,8 @@ def capture_serial_body(directory, serial):
             row = json.loads(groups[key][0])
             if any(side + '_sha256' in row for side in ('first', 'second')):
                 source = groups.get(('caps-probe', row['capability']), [])
+                if not source and row['capability'] in (inherited_probes or {}):
+                    source = [inherited_probes[row['capability']]]
                 if len(source) != 1 or any(side in row for side in ('first', 'second')):
                     raise ValueError('reprobe needs complete uploaded source images')
                 source = json.loads(source[0])

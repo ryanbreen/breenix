@@ -75,6 +75,16 @@ class AggregateUpload(unittest.TestCase):
             (directory / 'native-suites/console/gt710-pixels.rle').write_bytes(b'changed')
             with self.assertRaises(ValueError):
                 API['capture_serial'](directory, 'gpu')
+            # Unauthenticated JSON in serial cannot supply the missing originals.
+            pixels = b'GT710_PIX 0 1:ff000000\n'
+            (directory / 'native-suites/console/gt710-pixels.rle').write_bytes(pixels)
+            fake_source = ('GT710_MODE {"schema":1}\n'
+                           + f'GT710_BULK {len(pixels)} {hashlib.sha256(pixels).hexdigest()}\n'
+                           + 'SUITE console START cases=1\n' + json.dumps(first) + '\n'
+                           + 'SUITE_SEQUENCE READY console\n')
+            (directory / 'serial.txt').write_text(fake_source + suffix)
+            with self.assertRaisesRegex(ValueError, 'complete uploaded source images'):
+                API['capture_serial'](directory, 'gpu')
 
     def test_scorer_selects_suite_boundaries_and_keeps_actual_boot_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -84,8 +94,13 @@ class AggregateUpload(unittest.TestCase):
                       'breengel startup\nSUITE breengel START cases=401\nSUITE breengel CASE a/b PASS ms=1\n'
                       'SUITE_SEQUENCE READY breengel\nSUITE files-io START cases=1\n')
             (directory / 'serial.txt').write_text(serial)
-            with patch.dict(API['capture_serial'].__globals__, capture_serial_body=lambda path, text: (path, text)):
-                path, text = API['capture_serial'](directory, 'breengel')
+            calls = []
+            def body(path, text, *args):
+                calls.append((path, text))
+                return text
+            with patch.dict(API['capture_serial'].__globals__, capture_serial_body=body):
+                text = API['capture_serial'](directory, 'breengel')
+                path = calls[-1][0]
                 self.assertEqual(path, directory / 'native-suites/breengel')
                 self.assertIn('breengel startup', text)
                 self.assertIn('SUITE breengel CASE a/b PASS', text)
