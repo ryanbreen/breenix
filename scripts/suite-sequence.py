@@ -10,8 +10,8 @@
 leaving out suites with no manifest or no cases yet and, on a target without a 3D GPU, suites that need one. TARGET is arm64-qemu,
 parallels, vmware or x86-metal; ARM64 QEMU has a 3D GPU only with `--gpu-3d` (boot-interactive.sh --gpu-gl). In a list
 of two or more, a manifest's `"sequence": "first"` suite must run first and its `"sequence": "last"` suite last.
-On x86-metal, aggregate selection excludes `gpu` until native backend admission (milestone 8.7)
-and `breengel` until native BreenGL admission (E25 step 25.4).
+On x86-metal, aggregate selection excludes `gpu` until native backend admission (milestone 8.7).
+BreenGL joins aggregate selection at E25 step 25.4.
 Named `gpu` and `breengel` remain runnable for admission diagnostics and category development.
 
 `score` scores each suite of SUITES (comma-separated) from the serial as scripts/suite-verdict.py scores it alone,
@@ -89,10 +89,6 @@ def resolve(spec, target, has_3d=False, read=read_repo):
                 # M8.1 registers the producer, not full admission. Lift this aggregate
                 # exclusion only when native CAPS reports ADMITTED at milestone 8.7.
                 skipped.append((suite, "native GPU backend is not ADMITTED (milestone 8.7); run --suite gpu explicitly"))
-            elif target == "x86-metal" and suite == "breengel":
-                # E25 enables explicit development boots before native admission.
-                # Lift this aggregate exclusion at step 25.4.
-                skipped.append((suite, "native BreenGL is not ADMITTED (E25 step 25.4); run --suite breengel explicitly"))
             elif suite not in ids:
                 ids.append(suite)
         place = {suite: manifest(suite).get("sequence") for suite in ids}
