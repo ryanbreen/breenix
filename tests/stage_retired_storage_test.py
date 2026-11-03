@@ -11,8 +11,10 @@ class RetiredStorage(unittest.TestCase):
     def test_retired_totals_do_not_allocate_on_first_reset(self):
         source = (ROOT / 'libs/libbreenix/src/suite_stage.rs').read_text()
         declaration = source[source.index('#[derive(Clone, Copy)]\nstruct Retired {'):source.index('/// Horizontal runs')]
-        record = source[source.index('            let mut t = RETIRED.lock().unwrap();'):source.index('            if let Some(reset) = reset {')]
-        snapshot = source[source.index('        let t = *RETIRED.lock().unwrap();'):source.index('        if t.unread != 0 {')]
+        update = '            let mut t = RETIRED.lock().unwrap();' if 'let mut t = RETIRED.lock()' in source else '            use core::sync::atomic::Ordering::Relaxed;'
+        record = source[source.index(update):source.index('            if let Some(reset) = reset {')]
+        read = '        let t = *RETIRED.lock().unwrap();' if 'let t = *RETIRED.lock()' in source else '        let t = RETIRED.snapshot();'
+        snapshot = source[source.index(read):source.index('        if t.unread != 0 {')]
         fixture = r'''
 use std::sync::{Mutex, atomic::{AtomicBool, AtomicUsize, Ordering}};
 use std::alloc::{GlobalAlloc, Layout, System};
@@ -48,6 +50,8 @@ fn first_reset_has_no_retained_allocator_storage() {
     assert_eq!(ALLOCS.load(Ordering::Relaxed), 0, "retirement statistics retain allocator storage on first reset");
 }
 '''
+        if 'Mutex<' not in declaration:
+            fixture = fixture.replace('Mutex, atomic', 'atomic')
         # Baseline uses Mutex; its replacement uses allocation-free atomic totals.
         # Both imports serve the source slices, not platform-specific mocked storage.
         fixture = fixture.replace('DECLARATION', declaration).replace('RECORD', record).replace('SNAPSHOT', snapshot)

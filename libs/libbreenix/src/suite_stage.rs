@@ -335,7 +335,39 @@ struct Retired {
     resets: u64,
     unread: u32,
 }
-static RETIRED: Mutex<Retired> = Mutex::new(Retired { image: 0, fixture: 0, artifacts: 0, recovery: 0, resets: 0, unread: 0 });
+// These monotonic totals outlive renderer replacement. Atomic storage avoids the
+// pthread mutex backend's first-use allocation during device-reset recovery.
+struct RetiredCounters {
+    image: core::sync::atomic::AtomicU64,
+    fixture: core::sync::atomic::AtomicU64,
+    artifacts: core::sync::atomic::AtomicU64,
+    recovery: core::sync::atomic::AtomicU64,
+    resets: core::sync::atomic::AtomicU64,
+    unread: core::sync::atomic::AtomicU32,
+}
+impl RetiredCounters {
+    const fn new() -> Self {
+        Self {
+            image: core::sync::atomic::AtomicU64::new(0),
+            fixture: core::sync::atomic::AtomicU64::new(0),
+            artifacts: core::sync::atomic::AtomicU64::new(0),
+            recovery: core::sync::atomic::AtomicU64::new(0),
+            resets: core::sync::atomic::AtomicU64::new(0),
+            unread: core::sync::atomic::AtomicU32::new(0),
+        }
+    }
+    // Both writers and the finale reader hold GPU, so this snapshot also keeps
+    // the same consistency across fields as the former nested mutex.
+    fn snapshot(&self) -> Retired {
+        use core::sync::atomic::Ordering::Relaxed;
+        Retired {
+            image: self.image.load(Relaxed), fixture: self.fixture.load(Relaxed),
+            artifacts: self.artifacts.load(Relaxed), recovery: self.recovery.load(Relaxed),
+            resets: self.resets.load(Relaxed), unread: self.unread.load(Relaxed),
+        }
+    }
+}
+static RETIRED: RetiredCounters = RetiredCounters::new();
 
 /// Horizontal runs of `pick(x, y)`, an ARGB colour, over the `w` x `h` pixels at `at` in
 /// `target`, as `(target, colour, rect)`.
@@ -1099,17 +1131,18 @@ fn gpu_here(guard: &mut Option<Gpu>, runner: u64) -> Result<&mut Gpu, String> {
             let replacement = if reset.is_none() {
                 Some(gpu::context_create().map_err(|e| std::format!("stage replacement context: errno {}", -e))?)
             } else { None };
-            let mut t = RETIRED.lock().unwrap();
-            t.artifacts += g.artifact_bytes;
-            t.recovery += g.recovery_bytes;
+            use core::sync::atomic::Ordering::Relaxed;
+            RETIRED.artifacts.fetch_add(g.artifact_bytes, Relaxed);
+            RETIRED.recovery.fetch_add(g.recovery_bytes, Relaxed);
             if r == 0 {
-                (t.image, t.fixture) = (t.image + c.uploads_image, t.fixture + c.uploads_fixture);
+                RETIRED.image.fetch_add(c.uploads_image, Relaxed);
+                RETIRED.fixture.fetch_add(c.uploads_fixture, Relaxed);
             } else {
-                t.unread += 1;
+                RETIRED.unread.fetch_add(1, Relaxed);
             }
             if let Some(reset) = reset {
                 *KEPT.lock().unwrap() = Some((g.keep_pictures(), reset));
-                t.resets += 1;
+                RETIRED.resets.fetch_add(1, Relaxed);
                 g.destroy();
                 *guard = None;
             } else {
@@ -1777,7 +1810,7 @@ pub(super) fn finale() -> Result<(), String> {
         let guard = GPU.lock().unwrap();
         let g = guard.as_ref().filter(|g| g.pid == s.runner).ok_or("the stage holds no GPU objects at the finale")?;
         let (painted, declared) = painter(|p| Ok((p.context()?, p.declared_bytes())))?;
-        let t = *RETIRED.lock().unwrap();
+        let t = RETIRED.snapshot();
         if t.unread != 0 {
             return Err(std::format!("the counters of {} stage contexts let go could not be read", t.unread));
         }
