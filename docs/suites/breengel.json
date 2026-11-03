@@ -629,7 +629,7 @@
         {
           "id": "gray-depths",
           "title": "Grayscale at depths 1, 2, 4, 8 and 16 decodes exactly",
-          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. Five 3x1 strips run from black through grey to white (#FFFFFF), with white alpha."
+          "expect": "On navy (#0C131F), white-titled tiles show actual, reference and black difference rows, with colour and alpha pairs. Five strips run black to white (#FFFFFF); the 1-bit middle is black, then grey (#555555), grey (#777777), grey (#7F7F7F), grey (#7F7F7F) for 2, 4, 8, 16 bits. Alpha is white."
         },
         {
           "id": "gray-alpha",
@@ -654,7 +654,7 @@
         {
           "id": "trns-gray",
           "title": "A grayscale tRNS key colour becomes transparent",
-          "expect": "On navy (#0C131F), white-titled tiles have actual, reference, difference rows: scaled colour and grey alpha pairs with white outlines; differences black. 2x1 strips pair black with grey or white (#FFFFFF); the alpha strips alternate black and white."
+          "expect": "On navy (#0C131F), white-titled tiles show actual, reference and black difference rows, with colour and alpha pairs. The tRNS key sample is transparent: some 2x1 strips read black, black; others black then grey or white (#FFFFFF). Alpha alternates black and white."
         },
         {
           "id": "trns-rgb",
@@ -1181,7 +1181,7 @@
         {
           "id": "release-order",
           "title": "A retired buffer returns to free only after its composite and any capture copy in progress are done",
-          "expect": "A 256x128 mosaic picture with blue column ramps, green row ramps and red diagonal flecks; seed k is the captured nonzero commit id, with B=(7*x+13*k)%256, G=(5*y+29*k)%256, R=(x XOR y XOR k)%256; no text."
+          "expect": "A 256x128 mosaic picture with blue column ramps, green row ramps and red diagonal flecks; seed k is the captured nonzero commit id (for k=1 the upper-left pixel is dark green (#011D0D)), with B=(7*x+13*k)%256, G=(5*y+29*k)%256, R=(x XOR y XOR k)%256; no text."
         },
         {
           "id": "acquire-timeout",
@@ -1281,7 +1281,7 @@
         {
           "id": "other-map",
           "title": "Foreign GPU target handles are refused before submission or readback",
-          "expect": "A 16x16 mosaic picture from seed 27, with blue column ramps, green row ramps and red diagonal flecks; its upper-left pixel is red-brown (#1B0F5F), with no text."
+          "expect": "A 16x16 mosaic picture from seed 27, with blue column ramps, green row ramps and red diagonal flecks; its upper-left pixel is dark indigo (#1B0F5F), with no text."
         },
         {
           "id": "other-resize",
