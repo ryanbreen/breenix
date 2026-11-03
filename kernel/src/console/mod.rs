@@ -61,8 +61,11 @@ pub use records::{console_session, write_tty};
 pub mod keymap;
 pub mod keys;
 pub mod raster;
-#[cfg(target_arch = "aarch64")]
 mod ribbon;
+#[cfg(target_arch = "aarch64")]
+use crate::graphics::boot_ribbon;
+#[cfg(target_arch = "x86_64")]
+use crate::boot_ribbon;
 pub mod splash;
 pub mod vcs;
 pub mod vt;
@@ -879,11 +882,8 @@ struct Screen {
     /// The boot stage ribbon the rows under its band show (section 23.7 of the BreenGL
     /// contract), once worked out, and whether the full repaint that started it took test
     /// point 15 (`ribbon-drop-stage`).
-    #[cfg(target_arch = "aarch64")]
     ribbon: Option<ribbon::Ribbon>,
-    #[cfg(target_arch = "aarch64")]
     ribbon_known: bool,
-    #[cfg(target_arch = "aarch64")]
     ribbon_drop: bool,
 }
 
@@ -980,11 +980,8 @@ fn render_thread(display: &'static Display, attached: Attached) {
         frames: 0,
         complete: false,
         last_failure: None,
-        #[cfg(target_arch = "aarch64")]
         ribbon: None,
-        #[cfg(target_arch = "aarch64")]
         ribbon_known: false,
-        #[cfg(target_arch = "aarch64")]
         ribbon_drop: false,
     };
 
@@ -1061,13 +1058,11 @@ fn render_thread(display: &'static Display, attached: Attached) {
             screen.shown.fill(None);
             // A full repaint, such as the one after a display give-back, draws the ribbon
             // afresh: test point 15 drops a stage from it until the next one.
-            #[cfg(target_arch = "aarch64")]
             {
                 screen.ribbon_drop = crate::test_control::take(breengel_abi::tc_point::RIBBON_DROP_STAGE, 0).is_some();
                 screen.ribbon_known = false;
             }
         }
-        #[cfg(target_arch = "aarch64")]
         screen.refresh_ribbon();
         if changed || !screen.complete {
             let started = crate::time::get_monotonic_time_ns();
@@ -1332,10 +1327,9 @@ fn sleep_ms(ms: u64) {
 impl Screen {
     /// Work out the ribbon again when a stage was reached or a full repaint began, and mark
     /// the text rows under its band for drawing when it changed.
-    #[cfg(target_arch = "aarch64")]
     fn refresh_ribbon(&mut self) {
-        crate::graphics::boot_ribbon::drain();
-        let reached = crate::graphics::boot_ribbon::take_dirty();
+        boot_ribbon::drain();
+        let reached = boot_ribbon::take_dirty();
         if self.ribbon_known && !reached {
             return;
         }
@@ -1398,7 +1392,6 @@ impl Screen {
             }
             raster::draw_row(&mut self.shadow, &self.layout, row, &wanted.text, wanted.cursor);
             let band = self.layout.band(row);
-            #[cfg(target_arch = "aarch64")]
             if let Some(ribbon) = &self.ribbon {
                 ribbon.paint(&mut self.shadow, &self.layout, band.clone());
             }
@@ -1474,6 +1467,8 @@ impl Screen {
                 }
                 let row = y / font.line_height();
                 let shown = self.shown.get(row).and_then(Option::as_ref);
+                // Only the ribbon's own rows need its per-pixel segment oracle.
+                let ribbon = self.ribbon.as_ref().filter(|ribbon| ribbon.rows().contains(&y));
                 for (x, pixel) in line.chunks_exact(bpp).enumerate() {
                     let expected = match shown {
                         Some(shown) => {
@@ -1482,8 +1477,7 @@ impl Screen {
                         None => raster::PALETTE[0],
                     };
                     // A drawn row shows the boot stage ribbon over its text in the ribbon's band.
-                    #[cfg(target_arch = "aarch64")]
-                    let expected = match (&self.ribbon, shown) {
+                    let expected = match (ribbon, shown) {
                         (Some(ribbon), Some(_)) => ribbon.colour(x, y).unwrap_or(expected),
                         _ => expected,
                     };

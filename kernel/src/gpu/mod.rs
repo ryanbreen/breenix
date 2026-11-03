@@ -6556,17 +6556,17 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
 /// Each process's completed presents, one `<tgid> <count>` line per process that has
 /// presented (`/proc/breenix/stage-composites`): the kernel's record of when the suite's run
 /// stage changed the screen, independent of the runner's own timestamps.
-pub fn present_records() -> alloc::string::String {
+pub fn present_records() -> Result<alloc::string::String, i64> {
     use core::fmt::Write;
-    let owners: Vec<(u64, u64)> = with_core(|c| {
-        c.procs.iter().filter(|(_, p)| p.presents > 0).map(|(&tgid, p)| (tgid, p.presents)).collect()
-    })
-    .unwrap_or_default();
+    #[cfg(target_arch = "x86_64")]
+    let owners = arch::with_interrupts(display::present_counts)?;
+    #[cfg(not(target_arch = "x86_64"))]
+    let owners = display::present_counts()?;
     let mut out = alloc::string::String::new();
     for (tgid, presents) in owners {
         let _ = writeln!(out, "{tgid} {presents}");
     }
-    out
+    Ok(out)
 }
 
 /// Whether the admitted GPU core owns the display path.

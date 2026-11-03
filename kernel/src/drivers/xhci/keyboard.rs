@@ -60,7 +60,6 @@ impl Controller {
                 let used = self.devices[index].census_resets;
                 let first = self.attach_keyboard(index, used);
                 recovery::reset_while_refused(&mut Reattach { controller: self, port }, first, used);
-                #[cfg(target_arch = "aarch64")]
                 if let Some(index) = self.devices.iter().position(|d| d.port == port) {
                     if let Err(error) = self.attach_pointers(index) {
                         log::error!("[usb] port {port}: pointer attach FAILED: {error}");
@@ -229,7 +228,6 @@ impl Controller {
             if event.kind() != 32 {
                 continue;
             }
-            #[cfg(target_arch = "aarch64")]
             if self.dispatch_pointer(event) {
                 continue;
             }
@@ -619,7 +617,6 @@ impl Controller {
     pub(super) fn attach(&mut self, port: u8) {
         let first = self.attach_once(port, 0);
         recovery::reset_while_refused(&mut Reattach { controller: self, port }, first, 0);
-        #[cfg(target_arch = "aarch64")]
         if let Some(index) = self.devices.iter().position(|d| d.port == port) {
             if let Err(error) = self.attach_pointers(index) {
                 log::error!("[usb] port {port}: pointer attach FAILED: {error}");
@@ -643,7 +640,6 @@ impl Controller {
 
     pub(super) fn teardown(&mut self, index: usize, why: &str) {
         let mut device = self.devices.remove(index);
-        #[cfg(target_arch = "aarch64")]
         if !device.pointers.is_empty() {
             crate::input::pointer::release(device.port);
             super::pointer::detached(device.port);
@@ -676,7 +672,6 @@ impl Controller {
         let slot = device.slot;
         let mut dcis = alloc::vec![1u8];
         dcis.extend(device.keyboard.as_ref().map(|p| p.dci));
-        #[cfg(target_arch = "aarch64")]
         dcis.extend(device.pointers.iter().map(|p| p.dci));
         for dci in dcis {
             match self.command_code(spec::stop_endpoint(slot, dci)) {
@@ -711,7 +706,6 @@ impl Controller {
         if let Some(pipe) = device.keyboard {
             pages += pipe.ring.memory.release() + pipe.buffer.release();
         }
-        #[cfg(target_arch = "aarch64")]
         for pipe in device.pointers {
             pages += pipe.release();
         }

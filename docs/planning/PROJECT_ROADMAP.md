@@ -16,6 +16,10 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Native GT 710 BreenGL stage controls, pointer input and boot ribbon for E20.3
+land through [PR #2688](https://github.com/ryanbreen/breenix/pull/2688).
+The PR records acceptance, review findings and scoped verification.
+
 Native GT 710 BreenGL composition and latched scanout observations for E25
 plan step 9.2 land through [PR #2655](https://github.com/ryanbreen/breenix/pull/2655).
 The PR records native acceptance and the scoped main-merge verification;

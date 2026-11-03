@@ -19,11 +19,9 @@ mod firmware;
 #[cfg(target_arch = "aarch64")]
 pub use firmware::set_rsdp as set_firmware_rsdp;
 mod platform;
-#[cfg(target_arch = "aarch64")]
 mod pointer;
 #[cfg(target_arch = "aarch64")]
 pub use platform::get_irq;
-#[cfg(target_arch = "aarch64")]
 pub use pointer::describe as describe_pointers;
 #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
 pub use pointer::replay;
@@ -426,7 +424,6 @@ struct Device {
     /// The first configuration's full descriptor, for class drivers.
     config: Vec<u8>,
     keyboard: Option<keyboard::Pipe>,
-    #[cfg(target_arch = "aarch64")]
     pointers: Vec<pointer::Pipe>,
     /// EP0 requests sent again since Address Device.
     ep0_retries: u32,
@@ -1240,7 +1237,6 @@ impl Controller {
                 speed,
                 config: Vec::new(),
                 keyboard: None,
-                #[cfg(target_arch = "aarch64")]
                 pointers: Vec::new(),
                 ep0_retries: 0,
                 census_resets: 0,

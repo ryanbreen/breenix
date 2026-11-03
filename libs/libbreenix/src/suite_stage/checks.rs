@@ -229,6 +229,7 @@ pub fn showcase_check(name: &str) -> CaseResult {
                 // backends and boundary codes are retired (section 20.2).
                 match (rec.backend, rec.flags, rec.boundary) {
                     (4 | 5, 1 | 3, 4) => {},
+                    (6, 1 | 3, 5) => {},
                     _ => return Err("invalid observation boundary combination".into()),
                 }
                 // The operator removed the caption and both footer bands.

@@ -164,11 +164,6 @@ pub fn sys_fbdraw(cmd_ptr: u64) -> SyscallResult {
     }
 }
 
-/// sys_get_mouse_pos - Stub for non-aarch64
-#[cfg(not(target_arch = "aarch64"))]
-pub fn sys_get_mouse_pos(_out_ptr: u64) -> SyscallResult {
-    SyscallResult::Err(super::ErrorCode::InvalidArgument as u64)
-}
 
 /// Map the x86-64 framebuffer pane, returning its width through width_out.
 #[cfg(target_arch = "x86_64")]

@@ -28,7 +28,7 @@ impl Ribbon {
         if scale == 0 || layout.width != 1280 * scale || layout.height != 800 * scale {
             return None;
         }
-        let mut lit = crate::graphics::boot_ribbon::reached();
+        let mut lit = super::boot_ribbon::reached();
         if lit.is_empty() {
             return None;
         }

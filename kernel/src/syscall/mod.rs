@@ -46,7 +46,6 @@ pub mod futex_oracle;
 pub mod futex_timeout_record;
 #[cfg(target_arch = "x86_64")]
 pub mod graphics;
-#[cfg(target_arch = "aarch64")]
 pub mod pointer;
 pub mod window;
 pub mod handlers;

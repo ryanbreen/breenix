@@ -274,9 +274,5 @@ pub(super) fn with_framebuffer_lock(f: impl FnOnce()) {
 }
 
 pub(super) fn set_screen(width: u32, height: u32) {
-    #[cfg(target_arch = "aarch64")]
     crate::input::pointer::set_screen(width, height);
-    // The x86 pointer/window path joins in its own integration unit.
-    #[cfg(target_arch = "x86_64")]
-    let _ = (width, height);
 }
