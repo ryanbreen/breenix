@@ -1,5 +1,14 @@
 # Breenix OS
 
+## Hardware and source safety (operator rulings; these override everything below)
+
+- Never attach gdb, a gdbstub or any other debugger to an HVF-accelerated QEMU (the macOS `--gpu-gl` and HVF boots). Removing a breakpoint aborts QEMU in `hvf_arch_update_guest_debug` and leaves a crash dialog on the operator's screen (2026-10-22 and 10-24). Diagnose those boots with serial output, trace counters and proc files. The GDB guidance below applies only to TCG QEMU.
+- The R240 is reached only through beast's boot loop (`metal-run`). Never contact its iDRAC or management controller (no Redfish, no IPMI) and never change its fans. Never write the BCM5720 NIC's APE.
+- The R240 is build-and-test only (ruling S27). Never run `install-persistent`, and never leave a persistent or resting session running. If one appears, stop it and find out what started it.
+- No GPL or other copyleft code, and nothing from NVIDIA's proprietary driver. Permissive sources (nouveau's MIT files, envytools, Mesa) may be cited. Never commit VBIOS contents or other card firmware dumps.
+- The C library is clean-room, written from ISO C, POSIX and the Linux man pages. Never port, vendor or read musl, glibc, newlib or bionic.
+- Never change a shared suite, case, runner or threshold to make one backend pass. Fix the defect at its source.
+
 ## Project Overview
 
 Breenix is a production-quality x86_64 operating system kernel written in Rust. This is not a toy or learning project - we follow Linux/FreeBSD standard practices and prioritize quality over speed.
