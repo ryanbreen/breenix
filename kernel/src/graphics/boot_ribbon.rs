@@ -51,10 +51,16 @@ fn scan_to(scan: &mut (usize, [u8; 1024], usize), end: usize) -> bool {
 }
 /// Bring a snapshot up to the serial prefix observed on entry, even when it spans batches.
 fn drain_snapshot() {
-    if !crate::arch_interrupts_enabled() { return; }
     let end = TAIL.load(Ordering::Acquire);
-    let mut scan = SCAN.lock();
-    scan_to(&mut scan, end);
+    if let Some(mut scan) = SCAN.try_lock() {
+        scan_to(&mut scan, end);
+    } else {
+        // A syscall can preempt the render thread while it owns SCAN, then run
+        // with preemption disabled. Parse the immutable prefix independently
+        // instead of waiting for that thread to run. Reached bits are atomic.
+        let mut scan = (0, [0; 1024], 0);
+        scan_to(&mut scan, end);
+    }
 }
 pub fn take_dirty() -> bool { DIRTY.swap(false, Ordering::AcqRel) }
 /// Complete serial prefix, not the matcher's interpretation of it. Never silently truncate.

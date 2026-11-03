@@ -46,9 +46,11 @@ std::fs::write("OUT/boot_ribbon.rs",format!("&{markers:?}")).unwrap();}
 extern crate self as spin;
 pub struct Mutex<T>(std::sync::Mutex<T>);
 impl<T> Mutex<T>{pub const fn new(v:T)->Self{Self(std::sync::Mutex::new(v))}
-pub fn lock(&self)->std::sync::MutexGuard<'_,T>{self.0.lock().unwrap()}
-pub fn try_lock(&self)->Option<std::sync::MutexGuard<'_,T>>{self.0.try_lock().ok()}}
-pub fn arch_interrupts_enabled()->bool{true}
+pub fn try_lock(&self)->Option<std::sync::MutexGuard<'_,T>>{
+if BUSY.load(std::sync::atomic::Ordering::SeqCst){None}else{self.0.try_lock().ok()}}}
+static BUSY:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+static IRQ:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(true);
+pub fn arch_interrupts_enabled()->bool{IRQ.load(std::sync::atomic::Ordering::SeqCst)}
 #[path="ROOT/kernel/src/graphics/boot_producer.rs"] pub mod boot_producer;
 #[path="ROOT/kernel/src/graphics/boot_ribbon.rs"] pub mod boot_ribbon;
 fn main(){
@@ -57,8 +59,16 @@ assert!(!boot_ribbon::records().contains("1|[metal] kernel idle"));
 for b in b"[metal] kernel idle\\n"{boot_ribbon::byte(*b);}
 assert!(boot_ribbon::records().contains("1|[metal] kernel idle"));
 assert_eq!(boot_ribbon::serial().unwrap(),"will emit [metal] kernel idle\\n[metal] kernel idle\\n");
+// Model the x86 masked syscall and a preempted render-thread scanner.
+IRQ.store(false,std::sync::atomic::Ordering::SeqCst);
+BUSY.store(true,std::sync::atomic::Ordering::SeqCst);
+assert!(!boot_ribbon::drain());
 for _ in 0..9000 { boot_ribbon::byte(b'x'); }
 for b in b"\\n[xhci] running: \\n" { boot_ribbon::byte(*b); }
+assert!(boot_ribbon::records().contains("1|[xhci] running: "));
+IRQ.store(true,std::sync::atomic::Ordering::SeqCst);
+assert!(boot_ribbon::reached().into_iter().any(|v|v));
+BUSY.store(false,std::sync::atomic::Ordering::SeqCst);
 assert!(boot_ribbon::records().contains("1|[xhci] running: "));
 }
 '''.replace('ROOT', str(ROOT))
