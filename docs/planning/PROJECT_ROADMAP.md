@@ -16,6 +16,12 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Mac cross-compilation and verified prebuilt payload delivery for x86-metal are
+in progress in [#2697](https://github.com/ryanbreen/breenix/issues/2697).
+The [Mac caller command](../metal/README.md#choose-the-builder-from-this-mac)
+prefers host compilation below the build CPU load limit and selects Mac
+cross-compilation when busy. Direct boot-host callers keep their host build path.
+
 Native GT 710 BreenGL stage controls, pointer input and boot ribbon for E20.3
 land through [PR #2688](https://github.com/ryanbreen/breenix/pull/2688).
 The PR records acceptance, review findings and scoped verification.
