@@ -23,6 +23,9 @@ pub fn drain() -> bool {
     if !crate::arch_interrupts_enabled() { return false; }
     let Some(mut scan) = SCAN.try_lock() else { return false; };
     let end = TAIL.load(Ordering::Acquire).min(scan.0 + 8192);
+    scan_to(&mut scan, end)
+}
+fn scan_to(scan: &mut (usize, [u8; 1024], usize), end: usize) -> bool {
     let mut changed = false;
     while scan.0 < end {
         let b = SERIAL[scan.0].load(Ordering::Relaxed);
@@ -46,6 +49,13 @@ pub fn drain() -> bool {
     if changed { DIRTY.store(true, Ordering::Release); }
     changed
 }
+/// Bring a snapshot up to the serial prefix observed on entry, even when it spans batches.
+fn drain_snapshot() {
+    if !crate::arch_interrupts_enabled() { return; }
+    let end = TAIL.load(Ordering::Acquire);
+    let mut scan = SCAN.lock();
+    scan_to(&mut scan, end);
+}
 pub fn take_dirty() -> bool { DIRTY.swap(false, Ordering::AcqRel) }
 /// Complete serial prefix, not the matcher's interpretation of it. Never silently truncate.
 pub fn serial() -> Result<alloc::string::String, i32> {
@@ -55,14 +65,14 @@ pub fn serial() -> Result<alloc::string::String, i32> {
     Ok(alloc::string::String::from_utf8_lossy(&bytes).into_owned())
 }
 pub fn reached() -> alloc::vec::Vec<bool> {
-    drain();
+    drain_snapshot();
     REACHED[..MARKERS.len()]
         .iter()
         .map(|v| v.load(Ordering::Acquire))
         .collect()
 }
 pub fn records() -> alloc::string::String {
-    drain();
+    drain_snapshot();
     use core::fmt::Write;
     let mut out = alloc::string::String::new();
     for (i, m) in MARKERS.iter().enumerate() {
