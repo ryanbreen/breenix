@@ -1,6 +1,7 @@
 """Retired stage accounting preserves totals without retaining a lazy mutex allocation."""
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -58,7 +59,8 @@ fn first_reset_has_no_retained_allocator_storage() {
         with tempfile.TemporaryDirectory(prefix='stage-retired-') as tmp:
             path = Path(tmp)
             (path / 'case.rs').write_text(fixture)
-            subprocess.run(['rustc', '--edition=2021', '--test', '-Dwarnings', str(path / 'case.rs'), '-o', str(path / 'case')], check=True)
+            priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
+            subprocess.run(priority + ['rustc', '--edition=2021', '--test', '-Dwarnings', str(path / 'case.rs'), '-o', str(path / 'case')], check=True)
             subprocess.run([str(path / 'case'), '--nocapture'], check=True)
 
 
