@@ -97,6 +97,7 @@ impl Recorder {
         self.draw
     }
     pub fn cpu_cost(&mut self, owner: u64, kind: u64, start: u64, end: u64) {
+        if !(400..=441).contains(&kind) { return; }
         if self.cpu_costs.len() == MAX_ROWS || self.cpu_costs.try_reserve(1).is_err() { self.dropped += 1; return; }
         self.cpu_costs.push([owner, kind, start, end.saturating_sub(start)]);
     }
