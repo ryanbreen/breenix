@@ -339,8 +339,12 @@ impl Space {
         let result = (|| {
             #[cfg(target_os = "none")]
             let ptes = super::timing::cpu_span(422);
-            for v in (va..va + size).step_by(PAGE as usize) {
-                io.write(self.pte_address(v).ok_or("missing VM page table")?, 0)?;
+            // Clearing follows the same bounded PTE publisher as mapping.
+            // A scalar write opens, drains and restores PRAMIN for each page.
+            let zeros = [0; 256];
+            for offset in (0..size).step_by(zeros.len() * PAGE as usize) {
+                let count = ((size - offset) / PAGE).min(zeros.len() as u64) as usize;
+                self.write_ptes(io, va + offset, &zeros[..count])?;
             }
             #[cfg(target_os = "none")]
             drop(ptes);
