@@ -1,4 +1,6 @@
 """Native suite evidence stays separate while a sequence shares one boot lease."""
+import hashlib
+import json
 import runpy
 import tempfile
 from pathlib import Path
@@ -37,6 +39,42 @@ class AggregateUpload(unittest.TestCase):
                 self.assertEqual(send('gpu'), 404)
                 self.assertEqual((boot / 'native-suites/console/gt710-final.rle').read_bytes(), b'console final\n')
                 self.assertEqual((boot / 'native-suites/breengel/gt710-final.rle').read_bytes(), b'breengel final\n')
+
+    def test_reprobe_uses_authenticated_images_from_the_earlier_suite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            first = dict(phase='caps-probe', capability=3, first='1122', second='3344')
+            late = dict(phase='caps-reprobe', capability=3, epoch=2,
+                        first_sha256=hashlib.sha256(bytes.fromhex(first['first'])).hexdigest(),
+                        second_sha256=hashlib.sha256(bytes.fromhex(first['second'])).hexdigest())
+            def stage(suite, row):
+                path = directory / 'native-suites' / suite
+                path.mkdir(parents=True, exist_ok=True)
+                body = (json.dumps(row, separators=(',', ':')) + '\n').encode()
+                (path / 'gt710-pixels.rle').write_bytes(body)
+                probe = ('GT710_CAPS_PROBE id=3' if suite == 'console'
+                         else 'GT710_CAPS_REPROBE id=3 epoch=2')
+                return (probe + ' sha256=' + hashlib.sha256(body.rstrip(b'\n')).hexdigest() + '\n'
+                        + f'GT710_BULK {len(body)} {hashlib.sha256(body).hexdigest()}\n'
+                        + f'SUITE {suite} START cases=1\nSUITE {suite} CASE test/draw PASS ms=1\n'
+                        + f'SUITE {suite} DONE passed=1 failed=0 skipped=0 total=1\n'
+                        + f'SUITE_SEQUENCE READY {suite}\n')
+            original = stage('console', first)
+            suffix = stage('gpu', late)
+            (directory / 'serial.txt').write_text(original + suffix)
+            decoded = API['capture_serial'](directory, 'gpu')
+            row = next(json.loads(line) for line in decoded.splitlines() if line.startswith('{'))
+            self.assertEqual((row['first'], row['second']), ('1122', '3344'))
+            self.assertNotIn('"phase":"caps-probe"', decoded)
+            # A payload with intact framing but different original pixels is rejected.
+            changed = stage('console', dict(first, first='1123'))
+            (directory / 'serial.txt').write_text(changed + suffix)
+            with self.assertRaisesRegex(ValueError, 'reprobe digest differs'):
+                API['capture_serial'](directory, 'gpu')
+            (directory / 'serial.txt').write_text(original + suffix)
+            (directory / 'native-suites/console/gt710-pixels.rle').write_bytes(b'changed')
+            with self.assertRaises(ValueError):
+                API['capture_serial'](directory, 'gpu')
 
     def test_scorer_selects_suite_boundaries_and_keeps_actual_boot_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
