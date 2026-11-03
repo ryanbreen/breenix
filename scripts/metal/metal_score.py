@@ -86,7 +86,7 @@ def score(directory):
     found = sorted(directory.glob('server-*.json')) + sorted(directory.glob('users-operator.json')) + sorted(directory.glob('gt710-*.json'))
     # A closed native BreenGL suite measures its selected step even if its host
     # receipt was lost. The driver scores startup before writing closure.
-    if ('breengel' in (run.get('suite') or '').split(',') and run.get('platform') == 'metal'
+    if ('breengel' in (run.get('suites') or (run.get('suite') or '').split(',')) and run.get('platform') == 'metal'
             and run.get('evidenceEligible') is True and run.get('onlyCase') is None
             and not run.get('watch') and run.get('build', {}).get('profile') == 'production'
             and (directory / 'ended').exists()

@@ -63,6 +63,8 @@ class AggregateUpload(unittest.TestCase):
             API['resources_identity'](identity, 'breengel')
             with self.assertRaises(ValueError):
                 API['resources_identity'](identity, 'gpu')
+            with self.assertRaises(ValueError):
+                API['resources_identity'](dict(identity, suite='breengel'), 'breengel')
 
 
 if __name__ == '__main__':

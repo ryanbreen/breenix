@@ -2159,11 +2159,12 @@ def resources_row(serial):
 
 def resources_identity(boot, suite, sha=None):
     sha = boot.get('bootedCommit') if sha is None else sha
-    suites = (boot.get('suite') or '').split(',')
+    suites = boot.get('suites') or (boot.get('suite') or '').split(',')
     if (not re.fullmatch('[0-9a-f]{40}', sha or '')
             or boot.get('bootedCommit', sha) != sha or boot.get('toolsCommit') != sha
             or boot.get('kind') != 'boot' or boot.get('mode') != 'suite'
             or suite not in suites or len(suites) != len(set(suites))
+            or boot.get('suite') != (suites[0] if len(suites) == 1 else None)
             or boot.get('suites') not in (None, suites)
             or boot.get('platform') != 'metal' or boot.get('arch') != 'x86_64'
             or boot.get('evidenceEligible') is not True or boot.get('inject')
