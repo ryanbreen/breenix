@@ -406,6 +406,33 @@ pub(crate) fn counter(name: &str) -> Result<u64, String> {
     Err(format!("/proc/trace/counters has no counter {name}"))
 }
 
+/// G33's event pair. Procfs can regenerate between reads of one open file.
+fn parse_composite_clock(text: &str) -> Option<(u64, u64)> {
+    let row = text.lines().find_map(|line| line.strip_prefix("composites: "))?;
+    let mut words = row.split_whitespace();
+    let count = words.next()?.parse::<u64>().ok()?;
+    let (mut at, mut repeated) = (None, None);
+    for word in words {
+        if let Some(value) = word.strip_prefix("last_ns=") {
+            if at.is_some() { return None; }
+            at = Some(value.parse::<u64>().ok()?);
+        }
+        if let Some(value) = word.strip_prefix("snapshot_count=") {
+            if repeated.is_some() { return None; }
+            repeated = Some(value.parse::<u64>().ok()?);
+        }
+    }
+    let at = at?;
+    if repeated? != count || (count != 0 && at == 0) { return None; }
+    Some((count, at))
+}
+
+pub(crate) fn composite_clock() -> Result<Option<(u64, u64)>, String> {
+    let text = std::fs::read_to_string("/proc/trace/counters")
+        .map_err(|e| format!("read composite clock: {e}"))?;
+    Ok(parse_composite_clock(&text))
+}
+
 /// Run `f` in a child created through `suite::spawn`, as `uid` when given, within `limit_ms`.
 /// The child's `Err` message comes back as the result.
 pub(crate) fn child(what: &str, limit_ms: u64, uid: Option<u32>, f: impl FnOnce() -> Result<(), String>) -> Result<(), String> {

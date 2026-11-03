@@ -796,14 +796,21 @@ fn composition_present_rate() -> CaseResult {
     want_ok(w.register(b"present-rate"), "17.1", "REGISTER")?;
     place(&mut k, w.id(), &p, abi::geometry_flags::VISIBLE)?;
     let mut frame_times=Vec::new();
-    // G32: counter advances bracket whole composite periods, independent of start phase.
+    // G33: use the event's time, independent of when a procfs poll observes it.
     let composite_event = || -> Result<(u64, i128), breenix_suite::suite::CaseError> {
-        let previous = counter("composites").cite("18")?;
         let waiting = time::now_monotonic()?.as_nanos();
+        let (previous, _) = loop {
+            if let Some(pair) = composite_clock().cite("18")? { break pair; }
+            ensure(time::now_monotonic()?.as_nanos() - waiting < 2_000_000_000,
+                "18", "a consistent composite clock was unavailable for 2 s")?;
+            core::hint::spin_loop();
+        };
         loop {
-            let current = counter("composites").cite("18")?;
+            let sample = composite_clock().cite("18")?;
             let now = time::now_monotonic()?.as_nanos();
-            if current > previous { return Ok((current, now)); }
+            if let Some((current, at)) = sample {
+                if current > previous { return Ok((current, i128::from(at))); }
+            }
             ensure(now - waiting < 2_000_000_000, "18",
                 "the compositor did not advance within 2 s")?;
             core::hint::spin_loop();
