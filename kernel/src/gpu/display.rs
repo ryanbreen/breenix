@@ -134,8 +134,6 @@ impl Core {
         });
         self.display.accepted = p.seq;
         self.display.known = p.seq == self.display.sent;
-        crate::gk208::timing::present_event([now_ns(), 1, 0, p.owner, p.seq,
-            self.procs.get(&p.owner).map_or(0, |o| o.presents), self.display.outstanding as u64, p.id as u64]);
         self.publish(serial, fence_status::OK, answer);
     }
     /// A `PRESENT`'s flush came back: the latest one, completed OK, makes its binding
@@ -153,9 +151,6 @@ impl Core {
             // The process's record already exists: it holds the presented target.
             if let Some(owner) = self.procs.get_mut(&p.owner) {
                 owner.presents += 1;
-                #[cfg(target_arch = "x86_64")]
-                crate::gk208::timing::present_event([now_ns(), 2, 0, p.owner, p.seq,
-                    owner.presents, d.outstanding as u64, p.id as u64]);
             }
         }
         let d = &mut self.display;

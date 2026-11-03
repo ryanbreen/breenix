@@ -6559,12 +6559,6 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
 pub fn present_records() -> alloc::string::String {
     use core::fmt::Write;
     let owners: Vec<(u64, u64)> = with_core(|c| {
-        #[cfg(target_arch = "x86_64")]
-        for (&tgid, p) in c.procs.iter().filter(|(_, p)| p.presents > 0) {
-            crate::gk208::timing::present_event([now_ns(), 3, caller().unwrap_or(0), tgid,
-                c.display.sent, p.presents, c.display.outstanding as u64,
-                c.display.binding.map_or(0, |b| b.id as u64)]);
-        }
         c.procs.iter().filter(|(_, p)| p.presents > 0).map(|(&tgid, p)| (tgid, p.presents)).collect()
     })
     .unwrap_or_default();
