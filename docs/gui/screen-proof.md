@@ -47,8 +47,9 @@ This phase-one gate reports unapproved checkpoints. Picture approval, the galler
 Pass `--phase gallery` to the retained-capture gate for phase two, together with
 `--gpu-candidates <manifest.json>` and `--breengel-candidates <manifest.json>`.
 This mode retains the phase-one boot, commit, console time, suite, memory and
-native startup checks. Its checkpoint inventory adds an `intent` for each CASE
-carrying a judged-picture digest. The two candidates manifests must contain the
+native startup checks. In the ARM proof captures its checkpoint inventory adds an
+`intent` for each CASE carrying a judged-picture digest; the native GPU capture is
+a production companion with end checkpoints only until native proof mode (U19). The two candidates manifests must contain the
 corresponding ARM boot's SCREEN pictures, with matching mode, binding, digest,
 boot and runtime commit; the approval importer's existing validator checks the
 manifest identity and PNG pixels. Separate ARM boot IDs are still required.

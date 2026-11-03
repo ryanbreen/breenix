@@ -168,9 +168,10 @@ def check_runtime_display(serial, native):
     return native['runtime_display'](serial, (preferred['width'], preferred['height']))
 
 
-def checkpoint_inventory(suite, serial, ends, phase):
+def checkpoint_inventory(suite, serial, ends, phase, platform='qemu'):
     expected = list(ends)
-    if phase == 'gallery':
+    # Phase two's intent frames come from ARM proof captures; native proof mode is phase three (U19).
+    if phase == 'gallery' and platform != 'metal':
         expected += [[m[1], 'intent'] for m in re.finditer(
             rf'^SUITE {re.escape(suite)} CASE (\S+) (?:PASS|FAIL) [^\n]*\bsha256=[0-9a-f]{{64}}(?: |$)',
             serial, re.M)]
@@ -289,7 +290,7 @@ def accept(commit, captures, phase='checkpoints', candidates=None):
                     screens['score'](manifest, serial, table)
                 actual = [list(m.groups()) for m in re.finditer(
                     rf'^SUITE {suite} SCREEN (\S+) (\S+) ', serial, re.M)]
-                expected = checkpoint_inventory(suite, serial, inventories[suite], phase)
+                expected = checkpoint_inventory(suite, serial, inventories[suite], phase, platform)
                 if sorted(actual) != expected:
                     raise ValueError('SCREEN inventory differs: missing=' + str(
                         [v for v in expected if v not in actual]) + ' extra=' + str(
