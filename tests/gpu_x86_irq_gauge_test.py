@@ -35,7 +35,10 @@ fn arch_ticks_to_nanos(ticks:u64)->u64{ticks*1_000}
 fn advance(us:u64){CLOCK.with(|c|c.set(c.get()+us));}
 fn arch_without_interrupts<R>(f:impl FnOnce()->R)->R{Cpu::without_interrupts(f)}
 mod signal {pub struct ThreadSignals{pub gpu_path:crate::AtomicU32}}
-pub mod task {pub mod scheduler {pub const MAX_CPUS:usize=1;}}
+pub mod task {pub mod scheduler {
+ pub const MAX_CPUS:usize=1;
+ pub fn current_cpu()->usize{crate::per_cpu::cpu_id()}
+}}
 pub struct Thread{signals:Arc<signal::ThreadSignals>}
 static THREAD:OnceLock<Thread>=OnceLock::new();
 pub mod per_cpu {
