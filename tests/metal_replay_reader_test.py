@@ -1,5 +1,4 @@
 """Console input must not wait for the archive/scoring loop to drain."""
-import json
 from pathlib import Path
 import sys
 import tempfile
@@ -23,6 +22,7 @@ class ReplayReader(unittest.TestCase):
         d.hostkey_watcher = None
         d.hostkey_reader = None
         d.lost = False
+        d.redact = lambda value: value
         delivered = threading.Event()
         d.replay_send = Mock(side_effect=lambda _: delivered.set())
         # Archiving an event may block; the reader must queue it instead.
@@ -37,8 +37,11 @@ class ReplayReader(unittest.TestCase):
                         f.write(b'\r\nSUITE console HOSTKEY keys/caps-per-vt seq=1 keys=a\r\n')
                     self.assertTrue(delivered.wait(1), 'raw HOSTKEY waited for the archive loop')
                     self.assertEqual(d.replay_send.call_count, 1)
+                    with raw.open('ab') as f:
+                        f.write(b'SUITE console HOSTKEY keys/caps-per-vt seq=1 keys=a\n')
                     # The main loop has deliberately made no pump_serial call.
                     time.sleep(0.05)
+                    self.assertEqual(d.replay_send.call_count, 1, 'request replayed twice')
                     self.assertFalse(archived.called, 'replay performed synchronous archive I/O')
                     d.checkpoint()
                     self.assertTrue(archived.called)
@@ -58,6 +61,7 @@ class ReplayReader(unittest.TestCase):
         d.fatal_at = None
         d.hostkey_reader = None
         d.lost = False
+        d.redact = lambda value: value
         with tempfile.TemporaryDirectory() as tmp:
             d.dir = Path(tmp)
             d.on_hostkey_line = Mock(side_effect=OSError('fixture reader failure'))

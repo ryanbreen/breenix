@@ -25,6 +25,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import shutil
 import subprocess
@@ -284,6 +285,7 @@ class Driver:
         self.shell_sent = False
         # A suite boot answers its cases' HOSTKEY records over the serial console (on_hostkey_line).
         self.hostkey_watcher = None
+        self.hostkey_reader = None
         self.console_step = 0
         self.console_done = False
         self.console_sudo_answered = False
@@ -304,6 +306,9 @@ class Driver:
     # claim-lint:ok: #1680 Reviewed tool contract against this function and the host tests in tests/metal_tools_test.py.
     # Record helpers: event text is always a fixed template or redacted.
     def event(self, kind, *, observed_at=None, **fields):
+        if threading.current_thread() is getattr(self, 'hostkey_reader', None):
+            self.hostkey_events.put((kind, m.now() if observed_at is None else observed_at, fields))
+            return
         m.event(self.dir, kind, observed_at=observed_at, **{k: (self.redact(v) if isinstance(v, str) else v) for k, v in fields.items()})
 
     def phase(self, text):
@@ -402,6 +407,15 @@ class Driver:
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def checkpoint(self):
+        if threading.current_thread() is not getattr(self, 'hostkey_reader', None):
+            self.drain_hostkey_events()
+            error = getattr(self, 'hostkey_error', None)
+            if error is not None:
+                if isinstance(error, Finish):
+                    raise error
+                raise Finish(m.EXIT_SHORT, 'host key reader failed: ' + type(error).__name__)
+        elif self.hostkey_stop.is_set():
+            raise Finish(m.EXIT_STOPPED, 'host key reader stopped')
         if self.lost:
             raise Finish(m.EXIT_INCOMPLETE, 'the lease was taken from this boot')
         if (self.dir / 'stop-request').exists():
@@ -867,9 +881,6 @@ class Driver:
             data = handle.read(size - self.raw_offset)
         self.raw_offset = size
         arrived = m.now()
-        if self.args.mode == 'suite' and self.args.suite == 'console':
-            self.event('serial-read-timing', observed_at=arrived, bytes=len(data),
-                       rawModified=raw.stat().st_mtime, offset=self.raw_offset)
         text = self.cleaner.feed(data)
         if not text:
             return
@@ -1208,7 +1219,8 @@ class Driver:
                 raise Finish(m.EXIT_DONE, f'console input idle for {idle} minutes')
         self.on_disk_line(line, observed_at)
         self.on_intent_line(line, observed_at)
-        self.on_hostkey_line(line)
+        if getattr(self, 'hostkey_reader', None) is None:
+            self.on_hostkey_line(line)
         self.challenge_shell(line)
         self.challenge_console(line, complete=True)
         # A prompt is often completed by the next kernel log line before the driver reads it unterminated.
@@ -1484,6 +1496,62 @@ class Driver:
             self.hostkey_watcher = hostkeys.Watcher(hostkeys.ReplayKeys(self.replay_send), metal_root.HOSTKEYS,
                                                     log=lambda message: self.event('hostkeys', message=message))
         self.hostkey_watcher.line(line)
+
+    def drain_hostkey_events(self):
+        events = getattr(self, 'hostkey_events', None)
+        if events is not None:
+            while True:
+                try:
+                    kind, at, fields = events.get_nowait()
+                except queue.Empty:
+                    break
+                self.event(kind, observed_at=at, **fields)
+
+    def start_hostkey_reader(self):
+        """Serve console requests from the authoritative raw capture independently of archiving.
+
+        The archive loop can spend seconds processing a capture batch. Neither its
+        record writes nor scoring work may delay a case's next HOSTKEY request.
+        """
+        if self.args.mode != 'suite' or 'console' not in suites(self.args):
+            return
+        self.hostkey_events = queue.SimpleQueue()
+        self.hostkey_stop = threading.Event()
+        self.hostkey_error = None
+
+        def read():
+            offset, pending = 0, ''
+            cleaner = m.SerialCleaner()
+            try:
+                while not self.hostkey_stop.is_set():
+                    with (self.dir / 'serial.raw').open('rb') as stream:
+                        stream.seek(offset)
+                        data = stream.read(65536)
+                    if not data:
+                        self.hostkey_stop.wait(0.01)
+                        continue
+                    offset += len(data)
+                    lines = (pending + cleaner.feed(data)).split('\n')
+                    pending = lines.pop()
+                    for line in lines:
+                        if self.hostkey_stop.is_set():
+                            return
+                        self.on_hostkey_line(line)
+            except Exception as error:
+                if not self.hostkey_stop.is_set():
+                    self.hostkey_error = error
+
+        self.hostkey_reader = threading.Thread(target=read, name='metal-hostkeys', daemon=True)
+        self.hostkey_reader.start()
+
+    def stop_hostkey_reader(self):
+        reader = getattr(self, 'hostkey_reader', None)
+        if reader is None:
+            return True
+        self.hostkey_stop.set()
+        reader.join(5)
+        self.drain_hostkey_events()
+        return not reader.is_alive()
 
     def on_intent_line(self, line, observed_at):
         """A disk-root console boot's replug choice must come from its staged intent, not the installed target."""
@@ -1871,24 +1939,17 @@ class Driver:
         self.phase_name = 'post'
 
     def watch(self):
+        self.start_hostkey_reader()
         threading.Thread(target=self.poller, daemon=True).start()
         last_console_check = 0.0
         while True:
             self.checkpoint()
-            for operation in (self.pump_serial, self.pump_http, self.pump_bmc):
-                started = time.monotonic()
-                operation()
-                elapsed = time.monotonic() - started
-                if elapsed > 0.5:
-                    self.event('driver-latency', operation=operation.__name__, seconds=elapsed)
+            self.pump_serial()
+            self.pump_http()
+            self.pump_bmc()
             if m.now() - last_console_check >= 1:
                 last_console_check = m.now()
-                started = time.monotonic()
-                dead = self.console_dead()
-                elapsed = time.monotonic() - started
-                if elapsed > 0.5:
-                    self.event('driver-latency', operation='console_dead', seconds=elapsed)
-                if dead:
+                if self.console_dead():
                     self.heal_console()
             if self.kernel_started:
                 self.phase_name = 'kernel'
@@ -1985,6 +2046,10 @@ class Driver:
             self.watch()
         except Finish as finish:
             status = finish.status
+            if not self.stop_hostkey_reader():
+                status = m.EXIT_INCOMPLETE
+            if status == m.EXIT_DONE and getattr(self, 'hostkey_error', None) is not None:
+                status = m.EXIT_INCOMPLETE
             self.event('decided', status=status, reason=finish.reason)
             self.phase(('Stopped: ' if status else 'Done: ') + finish.reason)
             if self.t0 is not None:
@@ -2033,6 +2098,7 @@ class Driver:
                 status = m.EXIT_INCOMPLETE
                 self.event('capture-incomplete', why='console gap')
         except Exception as error:
+            self.stop_hostkey_reader()
             self.event('driver-error', error=f'{error.__class__.__name__}: {error}'[:300])
             if self.t0 is not None:
                 self.power_off(False)
