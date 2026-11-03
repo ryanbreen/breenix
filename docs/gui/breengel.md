@@ -1158,6 +1158,12 @@ The compositor's keyboard state, once version 1's ops 26 (modifiers) and 31
   `composite_pixels`, `damage_rects`, `window_buffer_allocs`, and the gauge `gpu_irq_masked_max_us`, in
   `/proc/trace/counters`.
 
+  G33 adds `last_ns=<monotonic nanoseconds> snapshot_count=<count>` to the
+  `composites:` row. The leading count and timestamp come from one completed
+  composite event. The repeated count lets readers reject a row spliced across
+  procfs reads: it must equal the leading count. The initial pair is `(0, 0)`. Rate measurements use these event timestamps
+  at both endpoints, preserving the exact 60 Hz comparison despite poll latency.
+
 ### 18.1 Snapshot authority and source aliases (B13)
 
 There are three independent identities: window client, compositor claimant, and display owner. They are kernel process-incarnation identities, never a numeric PID comparison. A frame also names the claim epoch, display ownership sequence and device reset epoch. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->

@@ -2,6 +2,10 @@
 //! `/proc/trace/counters`.
 
 use crate::tracing::counter::{register_counter, TraceCounter};
+use core::sync::atomic::{fence, AtomicU64, Ordering};
+
+static COMPOSITE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static COMPOSITE_LAST_NS: AtomicU64 = AtomicU64::new(0);
 
 /// Composites completed.
 #[no_mangle]
@@ -48,8 +52,30 @@ pub fn init() {
 
 #[inline]
 pub fn count_composite(pixels: u64) {
+    // scene::finish serializes publishers under the window registry. Keep a
+    // publisher runnable while readers wait for its even version.
+    crate::per_cpu::preempt_disable();
+    COMPOSITE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    fence(Ordering::Release);
+    COMPOSITE_LAST_NS.store(crate::signal::monotonic_nanos(), Ordering::Relaxed);
     WINDOW_COMPOSITES.increment();
     WINDOW_COMPOSITE_PIXELS.add(pixels);
+    COMPOSITE_SEQUENCE.fetch_add(1, Ordering::Release);
+    crate::per_cpu::preempt_enable();
+}
+
+/// G33: one completed event, independent of the procfs reader's latency.
+pub fn composite_clock() -> (u64, u64) {
+    loop {
+        let sequence = COMPOSITE_SEQUENCE.load(Ordering::Acquire);
+        if sequence & 1 != 0 { core::hint::spin_loop(); continue; }
+        let count = WINDOW_COMPOSITES.aggregate();
+        let at = COMPOSITE_LAST_NS.load(Ordering::Relaxed);
+        fence(Ordering::Acquire);
+        if COMPOSITE_SEQUENCE.load(Ordering::Relaxed) == sequence {
+            return (count, at);
+        }
+    }
 }
 
 #[inline]

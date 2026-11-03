@@ -261,7 +261,10 @@ pub fn generate_counters() -> String {
     output.push_str(&format!("# {} registered counters\n\n", count));
 
     for counter in list_counters() {
-        let total = counter.aggregate();
+        let composite = core::ptr::eq(counter,
+            &crate::tracing::providers::window::WINDOW_COMPOSITES)
+            .then(crate::tracing::providers::window::composite_clock);
+        let total = composite.map_or_else(|| counter.aggregate(), |(count, _)| count);
         #[cfg(target_arch = "aarch64")]
         if core::ptr::eq(counter, &crate::tracing::providers::gpu::GPU_IRQ_MASKED_MAX_US) {
             // The gauge's primitives only save atomics; serial runs on this cold read.
@@ -287,6 +290,12 @@ pub fn generate_counters() -> String {
 
         if has_percpu {
             output.push_str(&format!(" ({})", percpu_str));
+        }
+
+        if let Some((count, at)) = composite {
+            // Repeating the count lets a reader reject a row split across
+            // separately generated procfs reads while a composite completes.
+            output.push_str(&format!(" last_ns={} snapshot_count={}", at, count));
         }
 
         output.push('\n');
