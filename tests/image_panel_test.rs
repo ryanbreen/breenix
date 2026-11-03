@@ -38,6 +38,60 @@ mod breenix_suite { pub mod suite {
 // GUEST_PANEL
 
 #[test]
+fn dense_panels_leave_room_for_intent_upload_and_capture() {
+    let fixture = |label: String, width, height| checks::JudgedImage {
+        label,
+        actual: libimg::png::Image { width, height, pixels: Vec::new() },
+        expected: libimg::png::Image { width, height, pixels: Vec::new() },
+    };
+    let interlace: Vec<_> = (1..=9).flat_map(|w| (1..=9).map(move |h| (w,h)))
+        .map(|(w,h)| fixture(format!("{w}x{h}"),w,h)).collect();
+    let independent: Vec<_> = include_str!(concat!(env!("BREENIX_PANEL_ROOT"),
+        "/testdata/breengel/png/index.txt")).lines().map(|line| {
+        let fields: Vec<_> = line.split_whitespace().collect();
+        fixture(fields[0].into(), fields[1].parse().unwrap(), fields[2].parse().unwrap())
+    }).collect();
+    assert_eq!((interlace.len(), independent.len()), (81,72));
+    let page = |n: usize| n.div_ceil(4096)*4096;
+    let mode = page(2560*1600*4);
+    // The retained 219,918,336-byte attempt includes a 50,401,280-byte upload,
+    // its padded texture and a mode-sized intent target. Reserve 112 MiB for
+    // the other stage/painter resources and submission copies, above that base.
+    let retained = panel_layout(&interlace,128,0);
+    assert_eq!(retained.width*retained.height*4,50_401_280);
+    let retained_texture = page((retained.width*4).next_multiple_of(256)*retained.height);
+    let retained_other = 219_918_336usize - page(50_401_280) - retained_texture - mode;
+    let stage = 112*1024*1024;
+    assert!(stage > retained_other);
+    let quota = 192*1024*1024;
+    let headroom = 16*1024*1024;
+    for (name, fixtures) in [("interlace-small",interlace),("independent-fixtures",independent)] {
+        let plan = plan_panel(&fixtures);
+        assert_eq!(plan.pages.len(),1,"{name}: report real pagination");
+        let p = &plan.pages[0];
+        let raw = p.width*p.height*4;
+        // GPU op_resource_create pads VirGL rows to 256 bytes and backing to
+        // pages. op_upload and op_readback each stage the whole packed rectangle.
+        let texture = page((p.width*4).next_multiple_of(256)*p.height);
+        let upload = stage + texture + mode + page(raw);
+        let readback = stage + texture + mode + mode;
+        // snapshot() retains mode pixels, then capture() encodes at most raw+4096;
+        // the kernel capture writer streams sectors, with no second framebuffer.
+        let capture_cpu = raw + mode + mode + 4096;
+        println!("{name}: {}x{}, T={}, panel={raw}, texture={texture}, upload={upload}, readback={readback}, capture_cpu={capture_cpu}",
+            p.width,p.height,plan.target);
+        assert!(upload.max(readback) <= quota-headroom,
+            "{name}: peak {} plus {headroom} headroom exceeds {quota}",upload.max(readback));
+    }
+    // Also cover the configured maximum, including worst row padding for the
+    // surface dimension limit, rather than only today's two dense inventories.
+    let packed = PANEL_PIXELS*4;
+    let padded = page(packed + 255*16384);
+    assert!(stage + padded + mode + page(packed).max(mode) <= quota-headroom,
+        "configured panel maximum leaves too little intent/capture headroom");
+}
+
+#[test]
 fn readable_tiles_keep_labels_and_exact_enlarged_pixels_separate() {
     let fixtures: Vec<_> = [(5,4),(64,2)].into_iter().enumerate().map(|(n,(width,height))| {
         let pixels: Vec<u8> = (0..width*height).flat_map(|i| [i as u8, (i*3+1) as u8, (i*7+2) as u8, (i*11+3) as u8]).collect();

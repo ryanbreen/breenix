@@ -22,6 +22,7 @@ class ImagePanel(unittest.TestCase):
             (root / 'Cargo.toml').write_text('[package]\nname="image-panel-check"\nversion="0.1.0"\nedition="2021"\n[workspace]\n[dependencies]\n' +
                 '\n'.join(f'{name}={{path={json.dumps(str(ROOT / "libs" / name))}}}' for name in ['libgfx-ref', 'libimg']))
             env = dict(os.environ, CARGO_BUILD_JOBS='4', RUSTFLAGS='-Dwarnings',
+                       BREENIX_PANEL_ROOT=str(ROOT),
                        CARGO_TARGET_DIR=str(ROOT / 'target/image-panel-host'))
             priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
             subprocess.run(priority + ['cargo', 'test', '--manifest-path', str(root / 'Cargo.toml'), '--lib'],
