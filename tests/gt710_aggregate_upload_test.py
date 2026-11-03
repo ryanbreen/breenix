@@ -59,7 +59,7 @@ class AggregateUpload(unittest.TestCase):
                     API['capture_serial'](directory, 'gpu')
             from gt710_breengel_selection_test import boot
             identity = boot()
-            identity.update(suite='console,time,breengel,files-io', suites=['console','time','breengel','files-io'])
+            identity.update(suite=None, suites=['console','time','breengel','files-io'])
             API['resources_identity'](identity, 'breengel')
             with self.assertRaises(ValueError):
                 API['resources_identity'](identity, 'gpu')
