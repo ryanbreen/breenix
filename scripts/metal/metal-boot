@@ -867,6 +867,9 @@ class Driver:
             data = handle.read(size - self.raw_offset)
         self.raw_offset = size
         arrived = m.now()
+        if self.args.mode == 'suite' and self.args.suite == 'console':
+            self.event('serial-read-timing', observed_at=arrived, bytes=len(data),
+                       rawModified=raw.stat().st_mtime, offset=self.raw_offset)
         text = self.cleaner.feed(data)
         if not text:
             return
@@ -1872,12 +1875,20 @@ class Driver:
         last_console_check = 0.0
         while True:
             self.checkpoint()
-            self.pump_serial()
-            self.pump_http()
-            self.pump_bmc()
+            for operation in (self.pump_serial, self.pump_http, self.pump_bmc):
+                started = time.monotonic()
+                operation()
+                elapsed = time.monotonic() - started
+                if elapsed > 0.5:
+                    self.event('driver-latency', operation=operation.__name__, seconds=elapsed)
             if m.now() - last_console_check >= 1:
                 last_console_check = m.now()
-                if self.console_dead():
+                started = time.monotonic()
+                dead = self.console_dead()
+                elapsed = time.monotonic() - started
+                if elapsed > 0.5:
+                    self.event('driver-latency', operation='console_dead', seconds=elapsed)
+                if dead:
                     self.heal_console()
             if self.kernel_started:
                 self.phase_name = 'kernel'
