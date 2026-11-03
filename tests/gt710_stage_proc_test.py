@@ -46,6 +46,7 @@ std::fs::write("OUT/boot_ribbon.rs",format!("&{markers:?}")).unwrap();}
 extern crate self as spin;
 pub struct Mutex<T>(std::sync::Mutex<T>);
 impl<T> Mutex<T>{pub const fn new(v:T)->Self{Self(std::sync::Mutex::new(v))}
+pub fn lock(&self)->std::sync::MutexGuard<'_,T>{self.0.lock().unwrap()}
 pub fn try_lock(&self)->Option<std::sync::MutexGuard<'_,T>>{self.0.try_lock().ok()}}
 pub fn arch_interrupts_enabled()->bool{true}
 #[path="ROOT/kernel/src/graphics/boot_producer.rs"] pub mod boot_producer;
@@ -56,6 +57,9 @@ assert!(!boot_ribbon::records().contains("1|[metal] kernel idle"));
 for b in b"[metal] kernel idle\\n"{boot_ribbon::byte(*b);}
 assert!(boot_ribbon::records().contains("1|[metal] kernel idle"));
 assert_eq!(boot_ribbon::serial().unwrap(),"will emit [metal] kernel idle\\n[metal] kernel idle\\n");
+for _ in 0..9000 { boot_ribbon::byte(b'x'); }
+for b in b"\\n[xhci] running: \\n" { boot_ribbon::byte(*b); }
+assert!(boot_ribbon::records().contains("1|[xhci] running: "));
 }
 '''.replace('ROOT', str(ROOT))
             (p / 'producer.rs').write_text(producer)
