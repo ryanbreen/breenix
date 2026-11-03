@@ -214,6 +214,8 @@ impl Target {
 
     /// Wait for accepted renders before sampling, replay or capture; invalid contents return EIO.
     pub fn ready(&self) -> Result<(), i32> {
+        #[cfg(target_arch = "x86_64")]
+        let _span = crate::gk208::timing::cpu_span(300);
         wait_for(None, true, |c| {
             let Some(r) = c.resources.get(&self.id) else { return Some(Err(EIO)); };
             if r.lost { return Some(Err(EIO)); }
@@ -244,6 +246,8 @@ impl Target {
     }
 
     fn execute(&self, words: &[u32], source: Option<&Target>) -> Result<(), i64> {
+        #[cfg(target_arch = "x86_64")]
+        let _span = crate::gk208::timing::cpu_span(301);
         let ctx = self.context.id;
         if let Some(src) = source {
             exec_ok(|tag| dev::ctx_attach(tag, ctx, src.id), ctx, &[src.id])?;

@@ -290,6 +290,14 @@ mod runtime {
         crate::per_cpu::preempt_enable();
         result
     }
+    pub struct CpuSpan { tid: u64, kind: u64, start: u64 }
+    impl Drop for CpuSpan {
+        fn drop(&mut self) { cpu_cost(self.tid, self.kind, self.start, crate::signal::monotonic_nanos()); }
+    }
+    pub fn cpu_span(kind: u64) -> Option<CpuSpan> {
+        enabled().then(|| CpuSpan { tid: crate::per_cpu::current_thread_id_lock_free().unwrap_or(0),
+            kind, start: crate::signal::monotonic_nanos() })
+    }
     pub fn cpu_cost(owner: u64, kind: u64, start: u64, end: u64) {
         if enabled() { with(|r| r.cpu_cost(owner, kind, start, end)); }
     }
@@ -395,4 +403,4 @@ mod runtime {
     }
 }
 #[cfg(target_os = "none")]
-pub use runtime::{cpu_cost, scanout_binding, scanout_latched, scanout_published, scanout_snapshot, scanout_wait, scanout_result, enable, enabled, begin_draw, phase, export, vblank_sample, gpu_time, gpu_group, Guard, Readback, Submit};
+pub use runtime::{cpu_span, cpu_cost, scanout_binding, scanout_latched, scanout_published, scanout_snapshot, scanout_wait, scanout_result, enable, enabled, begin_draw, phase, export, vblank_sample, gpu_time, gpu_group, Guard, Readback, Submit};

@@ -2262,7 +2262,11 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
         let blocked = trace.map(|_| (now_ns(), crate::time::get_ticks()));
         #[cfg(target_arch = "x86_64")]
         let sleeping = submit_trace.map(|t| t.scope(SubmitPhase::AdmissionSleep));
+        #[cfg(target_arch = "x86_64")]
+        let handoff = crate::gk208::timing::cpu_span(if polled { 201 } else { 200 });
         let woke = wait_event(seen, wake);
+        #[cfg(target_arch = "x86_64")]
+        drop(handoff);
         #[cfg(target_arch = "x86_64")]
         drop(sleeping);
         #[cfg(target_arch = "x86_64")]
@@ -2319,6 +2323,8 @@ fn exec_req(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32])
 /// the wait, `DEVICE_RESET` when a reset was decided with the request outstanding or the
 /// device is out after one, else 0.
 fn exec_req_why(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32]) -> Result<Done, (i64, u32)> {
+    #[cfg(target_arch = "x86_64")]
+    let _span = crate::gk208::timing::cpu_span(302);
     send_sync(serial, req, ctx, holds, reading)?;
     await_sync(serial)
 }
