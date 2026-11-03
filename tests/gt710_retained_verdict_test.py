@@ -60,10 +60,13 @@ class RetainedVerdict(unittest.TestCase):
     def test_canonical_verdict_requires_the_full_breengel_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
-            self.capture(directory)
-            result = metal_score.score(directory)['milestones'].get('metal-gt710/breengel-full')
-            self.assertIsNotNone(result, 'missing GT 710 evidence must fail explicitly')
-            self.assertFalse(result['passed'])
+            run = self.capture(directory)
+            for suite, suites in [('breengel', ['breengel']), (None, ['console', 'breengel'])]:
+                with self.subTest(suites=suites):
+                    (directory / 'run.json').write_text(json.dumps(dict(run, suite=suite, suites=suites)))
+                    result = metal_score.score(directory)['milestones'].get('metal-gt710/breengel-full')
+                    self.assertIsNotNone(result, 'missing GT 710 evidence must fail explicitly')
+                    self.assertFalse(result['passed'])
 
     def test_driver_finalization_does_not_require_a_post_close_receipt(self):
         with tempfile.TemporaryDirectory() as tmp:
