@@ -1042,6 +1042,11 @@ impl Suite {
         // full-suite evidence, and a suite run from a shell does not reap others.
         let recording = only.is_none() && process::getpid().is_ok_and(|pid| pid.raw() == 1);
         screen.prepare();
+        // Count the text renderer's persistent font tables and presentation state
+        // in both memory samples, just as the GPU and GUI views warm before sampling.
+        if screen.fb.is_some() {
+            screen.draw(self, &title, &subtitle, &states, Verdict::Running("starting"), &feed, only);
+        }
         // Match the retired ownership boundary at the end. The warm-up leaves
         // only the bound scanout; no stage owner freed later can subsidize a leak.
         let baseline_ready = if recording && self.gui {
