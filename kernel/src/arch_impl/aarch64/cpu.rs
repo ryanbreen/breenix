@@ -109,6 +109,7 @@ impl CpuOps for Aarch64Cpu {
     /// Saves the current DAIF state, disables IRQs, runs the closure,
     /// and restores the previous DAIF state.
     #[inline]
+    #[track_caller]
     fn without_interrupts<F, R>(f: F) -> R
     where
         F: FnOnce() -> R,
@@ -261,6 +262,7 @@ pub unsafe fn enable_interrupts() {
 /// // Interrupts restored to previous state
 /// ```
 #[inline]
+#[track_caller]
 pub fn without_interrupts<F, R>(f: F) -> R
 where
     F: FnOnce() -> R,

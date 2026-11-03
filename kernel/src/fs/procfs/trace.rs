@@ -262,6 +262,12 @@ pub fn generate_counters() -> String {
 
     for counter in list_counters() {
         let total = counter.aggregate();
+        #[cfg(target_arch = "aarch64")]
+        if core::ptr::eq(counter, &crate::tracing::providers::gpu::GPU_IRQ_MASKED_MAX_US) {
+            // The gauge's primitives only save atomics; serial runs on this cold read.
+            let sites = crate::tracing::providers::gpu::irq_masked_sites(total);
+            if !sites.is_empty() { crate::serial_print!("{}", sites); }
+        }
         output.push_str(&format!("{}: {}", counter.name, total));
 
         // Add per-CPU breakdown for non-zero values

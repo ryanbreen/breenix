@@ -55,6 +55,75 @@ pub static GPU_PRESENTS_SUSPENDED: TraceCounter =
 /// Threads holding a [`GpuPath`]: the masking primitives look no further while it is 0.
 static GPU_PATH_THREADS: AtomicU32 = AtomicU32::new(0);
 
+#[cfg(target_arch = "aarch64")]
+mod gpu_mask {
+    use alloc::{format, string::String};
+    use core::panic::Location;
+    use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+
+    struct Slot {
+        open: AtomicPtr<Location<'static>>,
+        sequence: AtomicU64,
+        site: AtomicPtr<Location<'static>>,
+        start: AtomicU64,
+        us: AtomicU64,
+        printed: AtomicU64,
+    }
+
+    static SLOTS: [Slot; crate::task::scheduler::MAX_CPUS] = [const { Slot {
+        open: AtomicPtr::new(core::ptr::null_mut()),
+        sequence: AtomicU64::new(0),
+        site: AtomicPtr::new(core::ptr::null_mut()),
+        start: AtomicU64::new(0),
+        us: AtomicU64::new(0),
+        printed: AtomicU64::new(0),
+    } }; crate::task::scheduler::MAX_CPUS];
+
+    /// Called on the owning CPU after masking; nested, untimed scopes do not call it.
+    pub fn begin(site: &'static Location<'static>) {
+        SLOTS[crate::task::scheduler::current_cpu()].open.store(core::ptr::from_ref(site).cast_mut(), Ordering::Relaxed);
+    }
+
+    /// Keep the source when the existing gauge raises its maximum. The writer has IRQs masked.
+    pub fn raised(start: u64, us: u64) {
+        let slot = &SLOTS[crate::task::scheduler::current_cpu()];
+        slot.sequence.fetch_add(1, Ordering::AcqRel);
+        slot.site.store(slot.open.load(Ordering::Relaxed), Ordering::Relaxed);
+        slot.start.store(start, Ordering::Relaxed);
+        slot.us.store(us, Ordering::Relaxed);
+        slot.sequence.fetch_add(1, Ordering::Release);
+    }
+
+    /// Cold procfs diagnostic. Report only a coherent sample equal to the gauge read,
+    /// once per start timestamp. A reset reading of 0 suppresses retained samples.
+    pub fn report(maximum: u64) -> String {
+        let mut output = String::new();
+        if maximum <= 500 { return output; }
+        for (cpu, slot) in SLOTS.iter().enumerate() {
+            let sequence = slot.sequence.load(Ordering::Acquire);
+            if sequence & 1 != 0 { continue; }
+            let site = slot.site.load(Ordering::Relaxed);
+            let start = slot.start.load(Ordering::Relaxed);
+            let us = slot.us.load(Ordering::Relaxed);
+            core::sync::atomic::fence(Ordering::Acquire);
+            if slot.sequence.load(Ordering::Relaxed) != sequence || us != maximum || site.is_null() {
+                continue;
+            }
+            if slot.printed.swap(start, Ordering::Relaxed) == start { continue; }
+            // SAFETY: begin accepts only a static Location; the pointed-to object has static lifetime.
+            let site = unsafe { &*site };
+            output.push_str(&format!("GPU_MASKED cpu={cpu} start={start} us={us} at={}:{}\n", site.file(), site.line()));
+        }
+        output
+    }
+}
+
+/// Read source attribution on the cold procfs path, after the gauge is sampled.
+#[cfg(target_arch = "aarch64")]
+pub fn irq_masked_sites(maximum: u64) -> alloc::string::String {
+    gpu_mask::report(maximum)
+}
+
 pub fn init() {
     for counter in [&GPU_CONTEXTS, &GPU_RESOURCES, &GPU_RESOURCE_BYTES, &GPU_VRAM_BYTES, &GPU_IRQ_MASKED_MAX_US, &GPU_PRESENTS_SUSPENDED] {
         assert!(register_counter(counter).is_some(), "trace counter registry overflow while registering the GPU gauges");
@@ -82,7 +151,11 @@ fn counter_now() -> u64 {
 fn record_since(start: u64) {
     let ticks = counter_now().wrapping_sub(start);
     let us = crate::arch_ticks_to_nanos(ticks) / 1_000;
-    GPU_IRQ_MASKED_MAX_US.per_cpu[0].value.fetch_max(us, Ordering::Relaxed);
+    let previous = GPU_IRQ_MASKED_MAX_US.per_cpu[0].value.fetch_max(us, Ordering::Relaxed);
+    #[cfg(target_arch = "aarch64")]
+    if us > previous { gpu_mask::raised(start, us); }
+    #[cfg(target_arch = "x86_64")]
+    let _ = previous;
 }
 
 // Only the owning CPU accesses an open interval: syscall entry has IF clear and
@@ -140,6 +213,7 @@ pub fn syscall_mask_first_enable() {
 /// clears IF before GpuPath is entered, so excluding those scopes hides IRQ_HOLD and
 /// native critical sections. Overlapping samples contribute to the maximum via fetch_max.
 #[inline(always)]
+#[track_caller]
 pub fn masked_begin(saved_daif: u64) -> u64 {
     const DAIF_I: u64 = 1 << 7;
     if (saved_daif & DAIF_I != 0 && !cfg!(target_arch = "x86_64"))
@@ -151,12 +225,17 @@ pub fn masked_begin(saved_daif: u64) -> u64 {
 }
 
 #[inline(never)]
+#[track_caller]
 fn masked_begin_thread() -> u64 {
     if !crate::per_cpu::is_initialized() || crate::per_cpu::in_interrupt() {
         return 0;
     }
     match crate::per_cpu::current_thread() {
-        Some(thread) if thread.signals.gpu_path.load(Ordering::Relaxed) > 0 => counter_now().max(1),
+        Some(thread) if thread.signals.gpu_path.load(Ordering::Relaxed) > 0 => {
+            #[cfg(target_arch = "aarch64")]
+            gpu_mask::begin(core::panic::Location::caller());
+            counter_now().max(1)
+        }
         _ => 0,
     }
 }
@@ -171,7 +250,10 @@ pub fn masked_end(start: u64) {
 
 /// Time the GPU interrupt handler: its entry's counter value, for [`interrupt_end`].
 #[inline(always)]
+#[track_caller]
 pub fn interrupt_begin() -> u64 {
+    #[cfg(target_arch = "aarch64")]
+    gpu_mask::begin(core::panic::Location::caller());
     counter_now()
 }
 

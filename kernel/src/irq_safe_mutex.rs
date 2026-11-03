@@ -22,6 +22,7 @@ struct IrqState {
 
 impl IrqState {
     #[inline(always)]
+    #[track_caller]
     fn save_and_mask() -> Self {
         #[cfg(target_arch = "aarch64")]
         {
@@ -73,6 +74,7 @@ impl<T> IrqSafeMutex<T> {
     }
 
     #[inline(always)]
+    #[track_caller]
     pub fn lock(&self) -> IrqSafeMutexGuard<'_, T> {
         let irq_state = IrqState::save_and_mask();
         IrqSafeMutexGuard {
@@ -82,6 +84,7 @@ impl<T> IrqSafeMutex<T> {
     }
 
     #[inline(always)]
+    #[track_caller]
     pub fn try_lock(&self) -> Option<IrqSafeMutexGuard<'_, T>> {
         let irq_state = IrqState::save_and_mask();
         match self.inner.try_lock() {
