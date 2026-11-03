@@ -5,6 +5,17 @@
 
 use super::*;
 
+/// Replay and its source attachment share the native receipt wait. Passing an
+/// outstanding draw to the timer-driven worker can delay the next window front
+/// beyond its display period. Virtual backends retain their blocking policy.
+fn replay_request(serial: u64, request: Request, ctx: u32, holds: &[u32], reading: &[u32]) -> Result<Done, i64> {
+    send_sync(serial, request, ctx, holds, reading).map_err(|(e, _)| e)?;
+    await_sync_traced(serial,
+        #[cfg(target_arch = "x86_64")] None,
+        #[cfg(target_arch = "x86_64")] true,
+    ).map_err(|(e, _)| e)
+}
+
 /// Identity assigned at admission, before translation or the first device send.
 /// Status publication and the end of DMA access are separate transitions.
 pub(super) struct Writer {
@@ -246,7 +257,10 @@ impl Target {
     fn execute(&self, words: &[u32], source: Option<&Target>) -> Result<(), i64> {
         let ctx = self.context.id;
         if let Some(src) = source {
-            exec_ok(|tag| dev::ctx_attach(tag, ctx, src.id), ctx, &[src.id])?;
+            let serial = with_core(|c| c.serial()).ok_or(ENODEV)?;
+            let request = dev::ctx_attach(Tag::Sync(serial), ctx, src.id).ok_or(ENOMEM)?;
+            let answer = replay_request(serial, request, ctx, &[src.id], &[])?;
+            if !dev::ok(answer.answer) { return Err(EIO); }
         }
         wait_for(None, true, |c| {
             let context = c.contexts.get(&ctx)?;
@@ -324,7 +338,7 @@ impl Target {
         let readers = if source.is_some() { &readers[..] } else { &readers[..1] };
         let mut last = None;
         let mut send = |request: Request, serial: u64, fence: u64| -> Result<(), i64> {
-            let answer = exec_req(serial,request,ctx,&ids,readers)?;
+            let answer = replay_request(serial,request,ctx,&ids,readers)?;
             if !dev::ok(answer.answer) || !answer.matches_fence(fence) { return Err(EIO); }
             last = Some(LastWrite { ctx,device_ctx:dev::context_id(ctx),fence:answer.echoed,serial,answer:answer.answer,kind:dev::draw_kind() });
             Ok(())
