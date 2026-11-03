@@ -13,6 +13,10 @@ pub(super) struct GpuPanel {
 
 impl GpuPanel {
     pub fn open() -> Result<Self, String> {
+        let (r, caps) = gpu::caps();
+        if r != 0 || caps.status != abi::status::ADMITTED {
+            return Err(std::format!("CAPS status {} errno {}", caps.status, -r));
+        }
         let (r, modes) = gpu::modes();
         if r != 0 { return Err(std::format!("MODES errno {}", -r)); }
         let mode = modes.modes.get(modes.current as usize).ok_or("MODES has no current mode")?;

@@ -1184,12 +1184,25 @@ impl Suite {
         if !self.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }
         // A one-case boot stops here, before a sequence's next suite.
         if only.is_some() { idle(&mut screen, &feed); }
+        if let Err(error) = hand_off_text_panel(&screen, place.as_ref()) {
+            emit(&std::format!("SUITE {} ERROR display handoff: {}", self.id, error));
+            idle(&mut screen, &feed);
+        }
         emit(&std::format!("SUITE_SEQUENCE READY {}", self.id));
         // In a sequence the next suite replaces this one as PID 1 (`sequence::finish`);
         // the last keeps its final panel, as a suite booted alone does.
         if place.is_some() { sequence::finish(); }
         idle(&mut screen, &feed)
     }
+}
+
+/// Resolve the text view's ownership while its handles are still alive, before
+/// exec reclaims them. The final suite keeps its panel on the display.
+fn hand_off_text_panel(screen: &Screen, place: Option<&(Vec<String>, usize)>) -> Result<(), String> {
+    if screen.fb.is_some() && place.is_some_and(|(ids, index)| *index + 1 < ids.len()) {
+        gpu_screen::await_console()?;
+    }
+    Ok(())
 }
 
 #[derive(Default)]

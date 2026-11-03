@@ -13,7 +13,7 @@ class PanelHandoff(unittest.TestCase):
     def test_text_panel_releases_before_next_exec_and_last_panel_stays(self):
         source = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
         tail = source.split('        // A one-case boot stops here, before a sequence\'s next suite.\n', 1)[1]
-        tail = tail.split('\n    }\n}\n\n#[derive(Default)]', 1)[0]
+        tail = tail.split('\n    }\n}\n', 1)[0]
         helper = item(source, 'fn hand_off_text_panel(') if 'fn hand_off_text_panel(' in source else ''
         fixture = r'''
 use std::sync::{Mutex, atomic::{AtomicBool, Ordering::SeqCst}};
