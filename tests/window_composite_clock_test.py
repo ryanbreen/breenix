@@ -61,7 +61,7 @@ fn main() {
     let barrier = std::sync::Arc::new(std::sync::Barrier::new(3));
     std::thread::scope(|s| {
         let start = barrier.clone();
-        s.spawn(move || { start.wait(); for _ in 0..20_000 { window::count_composite(7); } });
+        s.spawn(move || { start.wait(); for _ in 0..20_000 { window::count_composite(7, signal::monotonic_nanos()); } });
         for _ in 0..2 {
             let start = barrier.clone();
             s.spawn(move || {
