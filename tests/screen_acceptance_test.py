@@ -23,6 +23,8 @@ class ScreenAcceptance(unittest.TestCase):
         self.assertEqual(expected, [ends[0], ['draw/one', 'intent'], ends[1]])
         self.assertEqual(self.api['checkpoint_inventory']('gpu', serial, ends, 'checkpoints'), ends)
         self.assertEqual(self.api['checkpoint_inventory']('gpu', serial.replace(' sha256=' + sha, ''), ends, 'gallery'), ends)
+        # Phase two draws intent frames only in ARM proof captures; the native run is a production companion.
+        self.assertEqual(self.api['checkpoint_inventory']('gpu', serial, ends, 'gallery', 'metal'), ends)
 
     def test_gallery_gate_keeps_failed_boot_records_and_requires_both_sets(self):
         with tempfile.TemporaryDirectory() as tmp:
