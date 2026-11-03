@@ -78,8 +78,10 @@ class LoadChoiceTest(unittest.TestCase):
                                           returncode=0, wait=lambda: 0)
                 with patch.object(sys, 'argv', args), patch.dict(os.environ, {}, clear=True), \
                      patch.object(auto, 'probe', return_value=(dict(load5=load, cpuCount=32), None)), \
-                     patch.object(auto.subprocess, 'check_output', return_value='a' * 40 + '\tref\n'), \
-                     patch.object(auto.subprocess, 'run', return_value=SimpleNamespace(returncode=0)) as run, \
+                     patch.object(auto.subprocess, 'check_output', side_effect=lambda command, **kw:
+                                  'b' * 40 if 'rev-parse' in command else 'a' * 40 + '\tref\n'), \
+                     patch.object(auto.subprocess, 'run', return_value=SimpleNamespace(
+                                  returncode=0, stdout='b' * 40 + '\n')) as run, \
                      patch.object(auto.subprocess, 'Popen') as build, contextlib.redirect_stdout(io.StringIO()):
                     build.return_value.__enter__.return_value = process
                     self.assertEqual(auto.main(), 0)
@@ -94,9 +96,42 @@ class LoadChoiceTest(unittest.TestCase):
                 if local:
                     self.assertIn('--prebuilt', forwarded)
                     self.assertIn('testing', build.call_args.args[0])
+                    command = build.call_args.args[0]
+                    self.assertEqual(command[command.index('--tools-commit') + 1], 'b' * 40)
                     self.assertEqual(forwarded[forwarded.index('--sha') + 1], 'a' * 40)
                 else:
                     self.assertNotIn('--prebuilt', forwarded)
+
+    def test_mac_refuses_tools_mismatch_before_build_or_upload(self):
+        process = SimpleNamespace(stdout=io.StringIO('{"id":"20261103T000000Z-metal"}\n'),
+                                  returncode=0, wait=lambda: 0)
+        with patch.object(sys, 'argv', ['metal-boot-auto', '--mode', 'tests']), \
+             patch.dict(os.environ, {}, clear=True), \
+             patch.object(auto, 'probe', return_value=(dict(load5=78.2, cpuCount=32), None)), \
+             patch.object(auto.subprocess, 'check_output', return_value='a' * 40), \
+             patch.object(auto.subprocess, 'run', return_value=SimpleNamespace(
+                          returncode=0, stdout='b' * 40 + '\n')), \
+             patch.object(auto.subprocess, 'Popen') as build, contextlib.redirect_stdout(io.StringIO()):
+            build.return_value.__enter__.return_value = process
+            with self.assertRaisesRegex(ValueError, '--tools-commit ' + 'b' * 40):
+                auto.main()
+            build.assert_not_called()
+
+    def test_tools_preflight_is_bounded_and_refuses_unreadable_identity(self):
+        for result in (SimpleNamespace(stdout='dirty-or-missing'),
+                       subprocess.TimeoutExpired('ssh', 15),
+                       subprocess.CalledProcessError(255, 'ssh'), OSError('unavailable')):
+            with self.subTest(result=result), \
+                 patch.object(auto.subprocess, 'check_output', return_value='a' * 40), \
+                 patch.object(auto.subprocess, 'run') as ssh:
+                if isinstance(result, Exception):
+                    ssh.side_effect = result
+                else:
+                    ssh.return_value = result
+                with self.assertRaisesRegex(ValueError, 'refusing before Mac build'):
+                    auto.preflight_tools(Path('/fixture'), 'fixture', 'HEAD')
+                self.assertEqual(ssh.call_args.kwargs['timeout'], 15)
+                self.assertTrue(ssh.call_args.kwargs['check'])
 
 
 class ChoiceRecordTest(StateTest):

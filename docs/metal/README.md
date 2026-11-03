@@ -1507,6 +1507,11 @@ at or above it selects the Mac's verified prebuilt path. Override the limit with
 `BREENIX_METAL_BUILD_LOAD_LIMIT=NUMBER` (positive and finite). The forcing flags
 select a side regardless of load. `--host HOST` overrides the default SSH alias;
 `--tools-commit`, `--rust-fork` and `--jobs` configure the Mac build.
+Before building on the Mac, the command resolves `--tools-commit` (default
+`HEAD`) and compares it with the boot host's deployed tools commit over SSH.
+A mismatch refuses before compilation or upload and prints the deployed commit
+for an explicit retry. An unreadable or invalid tools identity also refuses
+before building. The ordinary host/service manifest checks still run at handoff.
 
 The command prints one plain decision line, including the observed load on the
 host path. If the probe fails, it selects this Mac and states a sanitized reason;

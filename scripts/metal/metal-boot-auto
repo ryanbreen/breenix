@@ -109,6 +109,25 @@ def boot_options(args, parser):
     return options
 
 
+def preflight_tools(repo, host, ref):
+    """Reject a known-incompatible Mac build before compilation or upload."""
+    requested = subprocess.check_output(
+        ['git', '-C', str(repo), 'rev-parse', '--verify', ref + '^{commit}'], text=True).strip()
+    try:
+        result = subprocess.run(['ssh', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', host,
+                                 'cat "$HOME/.local/share/breenix-metal/COMMIT"'],
+                                capture_output=True, text=True, check=True, timeout=15)
+    except (OSError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+        raise ValueError('cannot read deployed tools commit; refusing before Mac build') from None
+    deployed = result.stdout.strip()
+    if not re.fullmatch('[0-9a-f]{40}', deployed):
+        raise ValueError('invalid deployed tools commit; refusing before Mac build')
+    if requested != deployed:
+        raise ValueError(f'Mac tools commit {requested} differs from deployed {deployed}; '
+                         f'retry with --tools-commit {deployed} or wait for your tools deployment')
+    return requested
+
+
 def main():
     metal = load_run()
     parser = metal.argument_parser(automatic=True)
@@ -138,6 +157,7 @@ def main():
             options.append('--catchup')
     if decision['builder'] == 'mac':
         repo = Path(__file__).resolve().parents[2]
+        args.tools_commit = preflight_tools(repo, args.host, args.tools_commit)
         local = Path(__file__).with_name('metal-build-local')
         # Resolve the payload branch here and pin it for the remote boot too.
         ref = 'refs/heads/' + (args.branch or 'main')
