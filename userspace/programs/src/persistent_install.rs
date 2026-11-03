@@ -504,6 +504,8 @@ fn seed_missing(copier: &mut Copier, source: &Path, target: &Path) -> Result<(),
             let entry = entry.map_err(|e| fail("read seed", source, e))?;
             seed_missing(copier, &entry.path(), &target.join(entry.file_name()))?;
         }
+    } else if !meta.is_file() && !meta.file_type().is_symlink() {
+        println!("[persistent] left out {}: not a file, directory or link", source.display());
     } else if !present(target)? {
         let scratch = target.with_file_name(format!(".{}.seed-new", target.file_name().unwrap().to_string_lossy()));
         if present(&scratch)? { copier.change("remove seed scratch", &scratch, || fs::remove_file(&scratch))?; }
@@ -1175,6 +1177,24 @@ mod tests {
         fs::write(source.join(OPERATOR), format!("{}key invalid\n", staged("operator"))).unwrap();
         assert!(install_tree(&source, &system, "invalid-key", &mut || Ok(())).is_err());
         assert_eq!(snapshot(&system), before);
+    }
+
+    #[test]
+    fn seed_missing_omits_runtime_socket() {
+        let fixture = Fixture::new();
+        let source = fixture.0.join("run");
+        let target = fixture.0.join("shared-run");
+        fs::create_dir(&source).unwrap();
+        let _socket = std::os::unix::net::UnixListener::bind(source.join("svc.sock")).unwrap();
+        fs::write(source.join("ordinary"), b"kept").unwrap();
+        let mut checkpoint = || Ok(());
+        let mut copier = Copier {
+            totals: Totals::default(), skip: Vec::new(), linked: HashMap::new(),
+            buffer: vec![0; 4096], checkpoint: &mut checkpoint,
+        };
+        seed_missing(&mut copier, &source, &target).unwrap();
+        assert!(!target.join("svc.sock").exists());
+        assert_eq!(fs::read(target.join("ordinary")).unwrap(), b"kept");
     }
 
     #[test]

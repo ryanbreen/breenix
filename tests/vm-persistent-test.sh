@@ -77,6 +77,7 @@ cp "$root/scripts/metal/metal_lib.py" "$fixture/scripts/metal/metal_lib.py"
 cp "$launcher" "$fixture/scripts/vm-persistent.sh"
 cp "$root/scripts/vm-serial-pump.py" "$fixture/scripts/vm-serial-pump.py"
 cp "$root/scripts/vm-artifacts.py" "$fixture/scripts/vm-artifacts.py"
+[ ! -f "$root/scripts/vm_slots.py" ] || cp "$root/scripts/vm_slots.py" "$fixture/scripts/vm_slots.py"
 cp "$root/scripts/qemu-arm64.py" "$fixture/scripts/qemu-arm64.py"
 cat > "$fixture/scripts/host-slots.sh" <<'SH'
 host_slots_start() { exec "$@"; }
@@ -147,6 +148,40 @@ for invalid in missing unknown; do
         [ ! -e "$fixture/run/mode" ] && [ ! -d "$fixture/run/boot.lock" ] || fail "$invalid mode reached launch setup"
 done
 echo 'vm-persistent boot mode checks passed'
+
+boot_fixture --mode console || fail 'RAW boot failed'
+cp "$fixture/qemu-args" "$fixture/raw-args"
+cp "$fixture/kernel" "$fixture/run/kernel"
+python3 "$fixture/scripts/vm-artifacts.py" seal-slot "$fixture" "$fixture/run" "$fixture/run/kernel"
+python3 - "$fixture/run" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+run = Path(sys.argv[1])
+entry = dict(kernel='kernel', kernelSha256=hashlib.sha256((run / 'kernel').read_bytes()).hexdigest(), userland='gen-1')
+(run / 'slots.json').write_text(json.dumps(dict(current=entry, previous=None, next=None)))
+PY
+boot_fixture --mode console --slot current || fail 'slot boot failed'
+python3 - "$fixture" <<'PY'
+from pathlib import Path
+import sys
+root = Path(sys.argv[1]); run = root / 'run'
+raw = (root / 'raw-args').read_text().splitlines()
+args = (root / 'qemu-args').read_text().splitlines()
+i = args.index('-fw_cfg', args.index('-fw_cfg') + 1)
+assert args[i:i+2] == ['-fw_cfg', f'name=opt/breenix/intent,file={run}/boot-intent']
+assert (run / 'boot-intent').read_bytes() == b'BREENIX-BOOT 2\ntarget persistent\nuserland gen-1\n'
+del args[i:i+2]
+raw = [x for x in raw if not x.startswith('user,id=net0,hostfwd=')]
+args = [x for x in args if not x.startswith('user,id=net0,hostfwd=')]
+assert args == raw, (args, raw)
+PY
+rm -f "$fixture/qemu-args"
+if boot_fixture --mode console --slot next > /dev/null 2>&1; then fail 'missing next slot accepted'; fi
+[ ! -e "$fixture/qemu-args" ] || fail 'missing slot reached QEMU'
+printf tampered > "$fixture/run/kernel"
+if boot_fixture --mode console --slot current > /dev/null 2>&1; then fail 'tampered slot accepted'; fi
+[ ! -e "$fixture/qemu-args" ] || fail 'tampered slot reached QEMU'
+rm "$fixture/run/slots.json"
 
 # Exercise the actual launcher and pump with a socket-speaking QEMU stand-in.
 # The stub writes guest disk bytes and supplies either an authenticated poweroff
