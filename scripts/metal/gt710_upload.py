@@ -22,6 +22,17 @@ def receive(handler):
         intent=m.read_json(m.STATE/'gt710-upload.json',{})
         lease=m.read_lease() or {}
         route=urlsplit(handler.path).path
+        root_intent = intent
+        sequence = (intent.get('suite') or '').split(',')
+        suite_directory = None
+        if len(sequence) > 1:
+            scoped = re.fullmatch(re.escape(intent.get('route', '')) + r'/suites/(console|gpu|breengel)(/.*)?', route)
+            if not scoped or scoped[1] not in sequence:
+                handler.send_error(404);return
+            suite = scoped[1]
+            intent = root_intent.setdefault('suiteSlots', {}).setdefault(suite, dict(
+                id=root_intent['id'], route=root_intent['route'] + '/suites/' + suite, suite=suite))
+            suite_directory = suite
         final=bool(intent) and route==intent.get('route','')+'/final'
         picture = re.fullmatch(re.escape(intent.get('route', '')) + r'/pictures/(0|[1-9]\d*)', route) if intent else None
         picture_index = int(picture[1]) if picture else None
@@ -33,7 +44,9 @@ def receive(handler):
                 or (final and not intent.get('complete'))
                 or lease.get('id')!=intent.get('id') or lease.get('state')!='powered'):
             handler.send_error(404);return
-        directory=m.boot_dir(intent['id'])
+        boot_directory=m.boot_dir(intent['id'])
+        directory = boot_directory / 'native-suites' / suite_directory if suite_directory else boot_directory
+        directory.mkdir(parents=True, exist_ok=True)
         filename = f'gt710-breengel-{picture_index:04}.rle' if is_picture else ('gt710-final.rle' if final else 'gt710-pixels.rle')
         # Publishing the verified payload consumes the slot even if the
         # bookkeeping below has not finished (or its writer was interrupted).
@@ -44,9 +57,9 @@ def receive(handler):
             length=int(handler.headers.get('Content-Length','-1'))
             expected=handler.headers.get('X-Content-SHA256','')
             if (handler.headers.get('Transfer-Encoding') or not 0<length<=MAX_BYTES
-                    or not re.fullmatch('[a-f0-9]{64}',expected) or (directory/'ended').exists()):
+                    or not re.fullmatch('[a-f0-9]{64}',expected) or (boot_directory/'ended').exists()):
                 raise ValueError('invalid display artifact framing')
-            total = intent.get('bytes', 0) + intent.get('pictureBytes', 0)
+            total = root_intent.get('aggregateBytes', 0) if suite_directory else intent.get('bytes', 0) + intent.get('pictureBytes', 0)
             if total + length > MAX_TOTAL:
                 raise ValueError('native per-boot evidence exceeds 64 MiB')
             handler.connection.settimeout(30)
@@ -83,4 +96,6 @@ def receive(handler):
         # after the 200 already sent.
         receipt_name = f'native-picture-upload-{picture_index:04}.json' if is_picture else ('native-final-upload.json' if final else 'native-upload.json')
         m.write_json(directory/receipt_name,receipt)
-        m.write_json(m.STATE/'gt710-upload.json',intent)
+        if suite_directory:
+            root_intent['aggregateBytes'] = total + length
+        m.write_json(m.STATE/'gt710-upload.json',root_intent)

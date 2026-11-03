@@ -48,7 +48,7 @@ class RetainedVerdict(unittest.TestCase):
             failed = failed.replace('DONE passed=401 failed=0', 'DONE passed=400 failed=1')
             for serial, expected in [(original, 0), (failed, 1)]:
                 with self.subTest(expected=expected), patch.dict(
-                        API['cases'].__globals__, capture_serial=lambda p: serial):
+                        API['cases'].__globals__, capture_serial=lambda p, *args: serial):
                     code = API['record_breengel_capture'](directory, 'a' * 40, 'breengel-full')
                 record = json.loads((directory / 'gt710-breengel-full.json').read_text())
                 self.assertEqual(code, expected)
@@ -73,6 +73,20 @@ class RetainedVerdict(unittest.TestCase):
             result = metal_score.score(directory)['milestones'].get('metal-gt710/breengel-full')
             self.assertIsNone(result, 'the driver writes closure after its startup milestone verdict')
 
+    def test_diagnostic_breengel_does_not_require_full_gate_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            run = self.capture(directory)
+            run.update(onlyCase='composition', evidenceEligible=False, watch=True)
+            (directory / 'run.json').write_text(json.dumps(run))
+            with self.assertRaisesRegex(ValueError, 'filtered suite'):
+                metal_score.score(directory)
+            run.pop('onlyCase')
+            run.update(watch=False, build=dict(run['build'], profile='development'))
+            (directory / 'run.json').write_text(json.dumps(run))
+            result = metal_score.score(directory)['milestones'].get('metal-gt710/breengel-full')
+            self.assertIsNone(result)
+
     def test_local_replay_preserves_runtime_identity_and_refuses_runtime_changes(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -80,7 +94,7 @@ class RetainedVerdict(unittest.TestCase):
             del run['bootedCommit']  # Authoritative metal records use commit, not the importer alias.
             (directory / 'run.json').write_text(json.dumps(run))
             with patch('subprocess.run'), patch('subprocess.check_output', return_value=b'tests/check.py\0'), \
-                    patch.dict(API['cases'].__globals__, capture_serial=lambda p: composition_capture()):
+                    patch.dict(API['cases'].__globals__, capture_serial=lambda p, *args: composition_capture()):
                 self.assertEqual(API['rescore_suite_capture'](directory, 'a' * 40, 'b' * 40), 0)
             report = json.loads((directory / 'suite-acceptance.json').read_text())
             self.assertEqual(report['commit'], 'a' * 40)
@@ -100,7 +114,7 @@ class RetainedVerdict(unittest.TestCase):
                            cases=API['cases']('breengel-full', '', {'breengel': dict(boot=run, serial=serial)}))
             path = directory / 'gt710-breengel-full.json'
             path.write_text(json.dumps(records))
-            host = dict(API, capture_serial=lambda p: serial)
+            host = dict(API, capture_serial=lambda p, *args: serial)
             run_path = metal_score.runpy.run_path
             def load(path):
                 return host if str(path).endswith('/scripts/metal/gt710-suite') else run_path(path)

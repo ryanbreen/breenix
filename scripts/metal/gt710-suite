@@ -2159,17 +2159,19 @@ def resources_row(serial):
 
 def resources_identity(boot, suite, sha=None):
     sha = boot.get('bootedCommit') if sha is None else sha
+    suites = (boot.get('suite') or '').split(',')
     if (not re.fullmatch('[0-9a-f]{40}', sha or '')
             or boot.get('bootedCommit', sha) != sha or boot.get('toolsCommit') != sha
             or boot.get('kind') != 'boot' or boot.get('mode') != 'suite'
-            or boot.get('suite') != suite or boot.get('suites') not in (None, [suite])
+            or suite not in suites or len(suites) != len(set(suites))
+            or boot.get('suites') not in (None, suites)
             or boot.get('platform') != 'metal' or boot.get('arch') != 'x86_64'
             or boot.get('evidenceEligible') is not True or boot.get('inject')
             or boot.get('build', {}).get('commit') != sha
             or boot.get('build', {}).get('profile') != 'production'
             or boot.get('build', {}).get('features') != []
             or not re.fullmatch(r'\d{8}T\d{6}Z-metal', boot.get('id', ''))):
-        raise ValueError('resources requires a named production ' + suite + ' boot of the same kernel/build/tools')
+        raise ValueError('resources requires production ' + suite + ' in a boot of the same kernel/build/tools')
 
 
 STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json', 'isolation': 'gt710-step-8-5.json', 'presentation': 'gt710-step-8-6.json', 'performance': 'gt710-step-8-7.json'}
@@ -3364,9 +3366,25 @@ def breengel_picture_evidence(directory, serial, records, startup_bytes, final_b
         raise ValueError('BreenGL evidence totals differ')
 
 
-def capture_serial(directory):
+def capture_serial(directory, suite=None):
+    directory = Path(directory)
+    serial = (directory / 'serial.txt').read_text()
+    if (directory / 'native-suites').is_dir():
+        if suite not in ('console', 'gpu', 'breengel'):
+            raise ValueError('aggregate native capture requires a named suite')
+        starts = list(re.finditer(r'^SUITE ' + suite + r' START .*$', serial, re.M))
+        ready = list(re.finditer(r'^SUITE_SEQUENCE READY ' + suite + r'$', serial, re.M))
+        if len(starts) != 1 or len(ready) != 1 or starts[0].start() >= ready[0].start():
+            raise ValueError('aggregate suite boundaries missing or duplicated')
+        preceding = list(re.finditer(r'^SUITE_SEQUENCE READY \S+$', serial[:starts[0].start()], re.M))
+        begin = preceding[-1].end() if preceding else 0
+        serial = serial[begin:ready[0].end()] + '\n'
+        directory = directory / 'native-suites' / suite
+    return capture_serial_body(directory, serial)
+
+
+def capture_serial_body(directory, serial):
     # claim-lint:ok: normative bulk framing; tests/gt710_bulk_test.py and tests/gt710_contexts_report_test.py mutate anchors and bodies.
-    serial=(Path(directory)/'serial.txt').read_text()
     spans = bool(re.search(r'^GT710_SPANS_BULK ', serial, re.M))
     stalls = bool(re.search(r'^GT710_STALL_BULK ', serial, re.M))
     timings = bool(re.search(r'^GT710_TIMING_BULK ', serial, re.M))
@@ -3782,12 +3800,12 @@ def capture_categories(boot):
             and (c != 'console' or (boot.get('mode') == 'suite' and boot.get('suite') == 'console'))]
 
 
-def completed_suite_capture(directory, sha):
+def completed_suite_capture(directory, sha, suite=None):
     """Read an authoritative, driver-closed native suite capture, including bulk pixels."""
     directory = Path(directory)
     read = lambda name: (directory / name).read_text().strip()
     boot = json.loads(read('run.json'))
-    resources_identity(boot, boot.get('suite'), sha)
+    resources_identity(boot, suite or boot.get('suite'), sha)
     events = [json.loads(line) for line in read('events.jsonl').splitlines()]
     status = int(read('exit-status'))
     if (boot.get('onlyCase') is not None or boot.get('session') or not read('ended')
@@ -3799,7 +3817,7 @@ def completed_suite_capture(directory, sha):
             or events[-1].get('event') != 'closed' or events[-1].get('status') != status
             or events[-1].get('endedBy') != 'driver'):
         raise ValueError('native suite requires a complete clean driver-closed capture')
-    return dict(boot=dict(boot, bootedCommit=sha), serial=capture_serial(directory), events=events, exit_status=status)
+    return dict(boot=dict(boot, bootedCommit=sha), serial=capture_serial(directory, suite), events=events, exit_status=status)
 
 
 def record_breengel_capture(directory, sha, category):
@@ -3807,7 +3825,7 @@ def record_breengel_capture(directory, sha, category):
     if category not in ('breengel-fronts', 'breengel-composition', 'breengel-stage', 'breengel-full'):
         raise ValueError('unknown BreenGL selection')
     directory = Path(directory)
-    capture = completed_suite_capture(directory, sha)
+    capture = completed_suite_capture(directory, sha, 'breengel')
     resources_identity(capture['boot'], 'breengel', sha)
     rows = cases(category, '', {'breengel': capture})
     report = dict(boot=capture['boot']['id'], commit=sha,
