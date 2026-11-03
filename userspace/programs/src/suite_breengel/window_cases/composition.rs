@@ -828,7 +828,7 @@ fn composition_present_rate() -> CaseResult {
     let composed = (composites1 - composites0) as i128;
     let rate = composed * 1_000_000_000_000 / elapsed_ns;
     breenix_suite::suite::timing(&frame_times,16_667)?;
-    value("composites-per-second", rate as i64, "mHz", Some((60_000, i64::MAX)));
+    value("composites-per-second", rate as i64, "millihertz", Some((60_000, i64::MAX)));
     ensure(composed * 1_000_000_000 >= 60 * elapsed_ns, "18", format!("one 256x256 window committing as fast as its buffers are released was composed {composed} times in {elapsed_ns} ns, {rate} mHz; the contract requires at least 60 Hz"))
 }
 

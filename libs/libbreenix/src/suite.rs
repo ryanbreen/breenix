@@ -1109,7 +1109,7 @@ impl Suite {
                         Err(error) => { outcome = with_note(outcome, &error); line = make_line(&outcome); Vec::new() }
                     };
                     let readings = readings.as_slice();
-                    let fps=readings.iter().rev().find(|v|v.name=="composites-per-second").and_then(|v|u32::try_from(v.number).ok());
+                    let fps=readings.iter().rev().find(|v|v.name=="composites-per-second").and_then(|v|u32::try_from(if v.unit=="millihertz" {v.number/1000} else {v.number}).ok());
                     let input = collect_input();
                     let recorded = input.and_then(|input| crate::suite_stage::record(&line,&outcome,screen.judged.take(),screen.timing.take(),fps,readings,limit_ms,input));
                     let result = recorded.and_then(|()| crate::suite_stage::completed()).and_then(|()| if done + 1 == total {crate::suite_stage::finale()} else {Ok(())});
