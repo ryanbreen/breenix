@@ -2,7 +2,6 @@
 import hashlib
 import json
 from pathlib import Path
-import platform
 import re
 
 
@@ -26,10 +25,10 @@ def inventory(root, staged=False):
 
 def create(root, tools_commit, mode, toolchain, rust_pin, policy_commit):
     build = json.loads((root / 'build.json').read_text())
-    manifest = dict(version=1, builder='mac', builderHost=platform.node(), commit=build['commit'],
+    manifest = dict(version=1, builder='mac', builderHost='apple-silicon-macos', commit=build['commit'],
                     toolsCommit=tools_commit, mode=mode, profile=build['profile'], features=build['features'],
                     suite=build.get('suite'), toolchain=toolchain, rustPin=rust_pin,
-                    policyCommit=policy_commit, artifacts=inventory(root))
+                    policyCommit=policy_commit, catchup=bool(build.get('catchup', False)), artifacts=inventory(root))
     (root / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\n')
     return manifest
 
@@ -59,7 +58,7 @@ def verify(root, *, commit, tools_commit, mode, features, suite, staged=False):
     build = json.loads((root / 'build.json').read_text())
     required = {'build.json', 'uefi.img', 'ext2.img', 'stub.efi', 'manager.efi', 'sha512-crypt'}
     required.update('definition/' + name for name in build['definition'])
-    if features == ['testing']:
+    if mode == 'tests' or 'testing' in ','.join(features).split(','):
         required.add('test-binaries.img')
     listed = manifest.get('artifacts', {})
     for name in required:

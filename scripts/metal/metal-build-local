@@ -152,7 +152,7 @@ def build(args, repo, cache):
         elapsed = round(time.monotonic() - started, 3)
         build_record = json.loads((out / 'build.json').read_text())
         build_record.update(builder='mac', toolsCommit=tools_commit, mode=args.mode, wallSeconds=elapsed,
-                            nice=os.getpriority(os.PRIO_PROCESS, 0))
+                            catchup=bool(args.catchup), nice=os.getpriority(os.PRIO_PROCESS, 0))
         (out / 'build.json').write_text(json.dumps(build_record, indent=2) + '\n')
         metal_prebuilt.create(out, tools_commit, args.mode, identity, rust_pin, policy_commit)
         metal_prebuilt.verify(out, commit=commit, tools_commit=tools_commit, mode=args.mode,
