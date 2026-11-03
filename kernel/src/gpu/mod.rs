@@ -2262,11 +2262,7 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
         let blocked = trace.map(|_| (now_ns(), crate::time::get_ticks()));
         #[cfg(target_arch = "x86_64")]
         let sleeping = submit_trace.map(|t| t.scope(SubmitPhase::AdmissionSleep));
-        #[cfg(target_arch = "x86_64")]
-        let handoff = crate::gk208::timing::cpu_span(if polled { 201 } else { 200 });
         let woke = wait_event(seen, wake);
-        #[cfg(target_arch = "x86_64")]
-        drop(handoff);
         #[cfg(target_arch = "x86_64")]
         drop(sleeping);
         #[cfg(target_arch = "x86_64")]
@@ -2323,8 +2319,6 @@ fn exec_req(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32])
 /// the wait, `DEVICE_RESET` when a reset was decided with the request outstanding or the
 /// device is out after one, else 0.
 fn exec_req_why(serial: u64, req: Request, ctx: u32, holds: &[u32], reading: &[u32]) -> Result<Done, (i64, u32)> {
-    #[cfg(target_arch = "x86_64")]
-    let _span = crate::gk208::timing::cpu_span(302);
     send_sync(serial, req, ctx, holds, reading)?;
     await_sync(serial)
 }
@@ -3623,8 +3617,6 @@ fn initialize_native_image(id: u32, backing: Arc<Pages>, width: u32, height: u32
 }
 
 fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
-    #[cfg(target_arch = "x86_64")]
-    let _cadence = crate::gk208::timing::cpu_span(600);
     let mut a: abi::ResourceCreate = read_arg(arg, len)?;
     if a.handle != 0 || a.reserved != [0; 3] || a.flags & !abi::resource_flag::SCANOUT != 0
         || (a.flags != 0 && a.kind != kind::TARGET)
@@ -3753,8 +3745,6 @@ fn op_resource_create(arg: u64, len: u64) -> Result<u64, i64> {
 }
 
 fn op_resource_destroy(arg: u64, len: u64) -> Result<u64, i64> {
-    #[cfg(target_arch = "x86_64")]
-    let _cadence = crate::gk208::timing::cpu_span(601);
     let a: abi::Handle = read_arg(arg, len)?;
     if a.reserved != 0 {
         return Err(EINVAL);
