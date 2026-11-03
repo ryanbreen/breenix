@@ -26,7 +26,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="${BREENIX_EXT2_REPO:-$(cd "$SCRIPT_DIR/.." && pwd)}"
+PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TARGET_DIR="$PROJECT_ROOT/target"
 SIZE_MB=256
 

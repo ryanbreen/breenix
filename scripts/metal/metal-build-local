@@ -131,11 +131,10 @@ def build(args, repo, cache):
         os.environ.update(CARGO_BUILD_JOBS=str(args.jobs), CARGO_HOME=str(cache / 'cargo-home'),
                           TMPDIR=str(tmp), BREENIX_GATE_TMP=str(tmp),
                           BREENIX_TARGET_POLICY_CHECKED=f'x86-metal:{commit}',
-                          BREENIX_REPRODUCIBLE_EXT2='1', BREENIX_EXT2_REPO=str(clone),
-                          BREENIX_EXT2_SCRIPT=str(tools / 'scripts/create_ext2_disk.sh'))
+                          BREENIX_REPRODUCIBLE_EXT2='1')
         for name in ('CARGO_TARGET_DIR', 'CARGO_BUILD_TARGET_DIR', 'HOST_SLOTS_HELPER', 'BREENIX_SLOT_SESSION',
                      'BREENIX_GATE_CACHE_DIR', 'RUSTUP_TOOLCHAIN', 'BREENIX_RUST_FORK_LIBRARY',
-                     'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS'):
+                     'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS', 'BREENIX_EXT2_REPO', 'BREENIX_EXT2_SCRIPT'):
             os.environ.pop(name, None)
         out.mkdir()
         options = argparse.Namespace(id=artifact_id, sha=commit, root=str(cache), stub=str(tools / 'scripts/metal/efi-stub'),

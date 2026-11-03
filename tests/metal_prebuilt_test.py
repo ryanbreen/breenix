@@ -159,6 +159,20 @@ class HostRecordTest(StateTest):
 
 
 class PortableRootTest(unittest.TestCase):
+    def test_root_recipe_comes_from_payload_even_with_tools_override(self):
+        recipe = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/gate-artifacts.py'))
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            (repo / 'testdata').mkdir()
+            (repo / 'target').mkdir()
+            (repo / 'testdata/ext2.img').write_bytes(b'payload root')
+            calls = []
+            with patch.dict(os.environ, CARGO_HOME=str(repo), BREENIX_EXT2_SCRIPT='/tools/scripts/create_ext2_disk.sh'), \
+                 patch.dict(recipe['build'].__globals__, checked=lambda command, *a, **kw: calls.append(command)):
+                recipe['build'](repo, repo, 'payload')
+            self.assertEqual(calls[-1], [str(repo / 'scripts/create_ext2_disk.sh')])
+            self.assertEqual((repo / 'target/ext2.img').read_bytes(), b'payload root')
+
     def test_unprivileged_root_preserves_bytes_modes_links_and_guest_ownership(self):
         import metal_root
         mkfs, debugfs = metal_root.require_e2fsprogs('mke2fs', 'debugfs')

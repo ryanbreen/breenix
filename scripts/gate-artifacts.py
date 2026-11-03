@@ -194,8 +194,9 @@ fi
         # included, and create_ext2_disk.sh links BusyBox; pack them unchanged.
         checked(['cargo', 'run', '-p', 'xtask', '--', 'create-test-disk'], repo,
                 logs / f'{label}-test-disk.log', userspace_prebuilt=True)
-        checked([os.environ.get('BREENIX_EXT2_SCRIPT', str(repo / 'scripts/create_ext2_disk.sh'))],
-                repo, logs / f'{label}-ext2.log')
+        # Root contents, including inline boot scripts and layout helpers, belong
+        # to the payload commit, just like the userspace binaries they install.
+        checked([str(repo / 'scripts/create_ext2_disk.sh')], repo, logs / f'{label}-ext2.log')
         if 'BREENIX_GATE_CACHE_DIR' in os.environ:
             canonical_ext2(repo / 'testdata/ext2.img')
         shutil.copyfile(repo / 'testdata/ext2.img', repo / 'target/ext2.img')
