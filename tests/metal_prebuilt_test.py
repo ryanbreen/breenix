@@ -185,6 +185,37 @@ class ManifestTest(unittest.TestCase):
 
 
 class HostRecordTest(StateTest):
+    def test_existing_boot_cli_dispatches_mac_build(self):
+        run = load_script('metal-run')
+        with patch.object(sys, 'argv', ['metal-run', 'boot', '--mode', 'tests']), \
+             patch.object(run, 'host_env', return_value={}), \
+             patch.object(run, 'resolve', return_value='a' * 40), \
+             patch.object(run, 'in_metal', return_value=SimpleNamespace(returncode=0, stdout='claimed', stderr='')), \
+             patch.object(run.Path, 'home', return_value=m.STATE), \
+             patch.object(run.subprocess, 'Popen') as detached:
+            self.assertEqual(run.main(), 0)
+        command = detached.call_args.args[0]
+        self.assertIn('_build_mac', command)
+        self.assertIn('testing', command)
+        self.assertNotIn('_build', command)
+
+    def test_mac_dispatch_uses_pinned_tools_and_delivers_uploaded_id(self):
+        run = load_script('metal-run')
+        tools = m.STATE / 'tools'
+        tools.mkdir()
+        (tools / 'COMMIT').write_text('b' * 40)
+        env = dict(MAC_BUILD_HOST='mac', MAC_BUILD_REPO='/source path', MAC_UPLOAD_HOST='beast')
+        with patch.object(run, 'HERE', tools), patch.object(run, 'host_env', return_value=env), \
+             patch.object(run.subprocess, 'run', return_value=SimpleNamespace(stdout='{"id":"20261103T000002Z-metal"}\n')) as ssh, \
+             patch.object(run, 'deliver_prebuilt', return_value=0) as deliver:
+            self.assertEqual(run.build_mac('20261103T000001Z-metal', 'a' * 40, 'suite', suite='console'), 0)
+            command = ssh.call_args.args[0]
+            self.assertEqual(command[:4], ['ssh', '-o', 'BatchMode=yes', 'mac'])
+            self.assertIn('archive ' + 'b' * 40 + ' scripts', command[4])
+            self.assertIn('--source-repo \'/source path\'', command[4])
+            deliver.assert_called_once_with('20261103T000001Z-metal', 'a' * 40,
+                                            '20261103T000002Z-metal', 'suite', None, 'console', False)
+
     def test_prebuilt_rechecks_deleted_origin_lane(self):
         run = load_script('metal-run')
         with tempfile.TemporaryDirectory() as temporary:

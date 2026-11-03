@@ -1515,7 +1515,7 @@ same Breenix hash implementation, using raw Linux system calls and no host C lib
 The output retains `build.json`, UEFI and ext2 images, stub, manager, staging hash
 helper, definitions and (for tests) the BXTEST disk. `manifest.json` names the
 kernel commit, tools commit, mode, profile, features, suite, compiler identities,
-Rust library pin, builder host, admission-policy commit, and SHA-256 and byte size
+Rust library pin, builder platform, build catch-up selection, admission-policy commit, and SHA-256 and byte size
 of every payload file, including build metadata and definitions. The command
 prints an ID and build/upload wall times. SSH uploads to a private temporary
 directory, publishing `~/.local/state/breenix-metal/prebuilt/ID` only after transfer
@@ -1531,10 +1531,21 @@ python3 ~/.local/share/breenix-metal/metal-run boot --prebuilt ID --sha COMMIT -
 python3 ~/.local/share/breenix-metal/metal-run boot --build-on-host --mode suite --suite console
 ```
 
-An image request without `--prebuilt` or `--build-on-host` fails with instructions;
-it never silently queues compilation on the boot host. The tools identities on
+An image request without `--prebuilt` or `--build-on-host` dispatches a build to
+the Mac, then delivers its uploaded payload through the same verified path.
+Configure `MAC_BUILD_HOST` (SSH destination), `MAC_BUILD_REPO` (absolute checkout
+path on that Mac), and `MAC_UPLOAD_HOST` (the Mac's SSH alias for the boot host)
+in the boot host's private `host.env`. Both SSH directions require batch access.
+The dispatcher materializes the deployed tools commit before invoking the Mac
+builder. Existing Vigil and suite-runner callers need no extra flags.
+It never silently queues payload compilation on the boot host. The tools identities on
 the host and service must both match the manifest. Refusals before launch are
-recorded in `~/.local/state/breenix-metal/prebuilt-refusals.jsonl`. Staging, final
+recorded in `~/.local/state/breenix-metal/prebuilt-refusals.jsonl`. A fresh origin
+effort-target guard runs before a prebuilt launch and again before handoff, with
+the boot's catch-up selection. The Mac resolves suite aliases against payload
+definitions; retries may select pending suites in their original order.
+Root filesystem recipes and their helpers come from the payload commit.
+Staging, final
 boot-disk assembly, power, scoring and evidence after payload delivery use the
 existing driver path. Branch owners take `branch-tools.lock` only when free,
 write their lane, PR and time to its owner file, deploy with `--restart` only
