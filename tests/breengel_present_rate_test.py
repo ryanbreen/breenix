@@ -67,10 +67,10 @@ fn main() {
         fixture = r'''
 use std::cell::RefCell;
 type CaseResult = Result<(), breenix_suite::suite::CaseError>;
-struct Model { ns: i128, centihz: i128, reported: Option<(i64, String)>, frames: u32, idle_tail: bool, idle_ns: i128 }
+struct Model { ns: i128, centihz: i128, reported: Option<(i64, String)>, frames: u32, idle_tail: bool, idle_ns: i128, poll_lag: [i128; 2] }
 thread_local! {
     static MODEL: RefCell<Model> = const { RefCell::new(Model {
-        ns: 0, centihz: 6002, reported: None, frames: 0, idle_tail: false, idle_ns: 0,
+        ns: 0, centihz: 6002, reported: None, frames: 0, idle_tail: false, idle_ns: 0, poll_lag: [0; 2],
     }) };
 }
 fn count(ns: i128, centihz: i128) -> u64 {
@@ -81,8 +81,17 @@ fn counter(name: &str) -> Result<u64, String> {
     MODEL.with(|m| {
         let mut m = m.borrow_mut();
         if m.idle_tail && m.frames == 300 { m.ns += 230_000_000; m.idle_ns += 230_000_000; m.idle_tail = false; }
-        m.ns += 10_000; // Polling and procfs reads take time, even between frames.
+        let lag = if m.frames == 30 { m.poll_lag[0] } else if m.frames == 299 { m.poll_lag[1] } else { 0 };
+        m.ns += 10_000 + lag; // Counter reads may finish after the event they observe.
         Ok(count(m.ns - m.idle_ns, m.centihz))
+    })
+}
+pub fn composite_clock() -> Result<Option<(u64, u64)>, String> {
+    let n = counter("composites")?;
+    MODEL.with(|m| {
+        let hz = m.borrow().centihz;
+        let at = (n as i128 * 100_000_000_000 + hz - 1) / hz;
+        Ok(Some((n, at as u64)))
     })
 }
 mod time {
@@ -127,7 +136,7 @@ MEASUREMENT
 }
 // The original arbitrary-endpoint, millisecond, integer-floor calculation.
 fn legacy(centihz: i128, phase: i128) -> bool {
-    MODEL.with(|m| *m.borrow_mut() = Model { ns: phase, centihz, reported: None, frames: 0, idle_tail: false, idle_ns: 0 });
+    MODEL.with(|m| *m.borrow_mut() = Model { ns: phase, centihz, reported: None, frames: 0, idle_tail: false, idle_ns: 0, poll_lag: [0; 2] });
     let start = now_ms();
     let composites0 = counter("composites").unwrap();
     MODEL.with(|m| m.borrow_mut().ns += 270 * 13_000_000);
@@ -150,10 +159,25 @@ fn legacy_flips_on_both_rates() {
 #[test]
 fn stopped_client_does_not_extend_window() {
     MODEL.with(|m| *m.borrow_mut() = Model {
-        ns: 0, centihz: 6002, reported: None, frames: 0, idle_tail: true, idle_ns: 0,
+        ns: 0, centihz: 6002, reported: None, frames: 0, idle_tail: true, idle_ns: 0, poll_lag: [0; 2],
     });
     assert!(measure().is_ok(), "idle after the final commit must not enter the measurement");
     MODEL.with(|m| assert!((m.borrow().reported.as_ref().unwrap().0 - 60_020).abs() <= 1));
+}
+#[test]
+fn poll_latency_does_not_change_verdict() {
+    for centihz in [6002, 5994] {
+        for poll_lag in [[0,0], [2_500_000,0], [0,2_500_000], [1_000_000,2_500_000]] {
+            for phase in 0..128 {
+                MODEL.with(|m| *m.borrow_mut() = Model {
+                    ns: phase * 100_000_000_000 / centihz / 128,
+                    centihz, reported: None, frames: 0, idle_tail: false, idle_ns: 0, poll_lag,
+                });
+                assert_eq!(measure().is_ok(), centihz >= 6000,
+                    "G33 rate {centihz}/100 phase {phase}, poll lags {poll_lag:?}");
+            }
+        }
+    }
 }
 #[test]
 fn whole_periods_classify_every_phase() {
@@ -164,7 +188,7 @@ fn whole_periods_classify_every_phase() {
         for phase in 0..512 {
             MODEL.with(|m| *m.borrow_mut() = Model {
                 ns: phase * 100_000_000_000 / centihz / 512,
-                centihz, reported: None, frames: 0, idle_tail: false, idle_ns: 0,
+                centihz, reported: None, frames: 0, idle_tail: false, idle_ns: 0, poll_lag: [0; 2],
             });
             let result = measure();
             passed += usize::from(result.is_ok());
