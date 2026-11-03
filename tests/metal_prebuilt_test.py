@@ -177,6 +177,7 @@ class PortableRootTest(unittest.TestCase):
             binaries = Path(temporary) / 'binaries'
             binaries.mkdir()
             (binaries / 'sudo.elf').write_bytes(b'fixture executable')
+            (binaries / 'rust-std-child_test.elf').write_bytes(b'fixture child')
             subprocess.run(['sh', str(repo / 'scripts/install-layout.sh'), str(root), str(binaries),
                             str(repo / 'libs/libbreenix/src/layout.tsv')], check=True,
                            env=dict(os.environ, BREENIX_EXT2_OWNERS=str(record)))
@@ -194,6 +195,10 @@ class PortableRootTest(unittest.TestCase):
             self.assertRegex(stat('/var/log/auth.log'), r'User:\s+0\s+Group:\s+4')
             self.assertRegex(stat('/etc/breenix/test-users/ua'), r'User:\s+2001\s+Group:\s+2001')
             self.assertRegex(stat('/usr/bin/sudo'), r'Mode:\s+04755')
+            self.assertIn('Links: 2', stat('/usr/libexec/breenix/rust-std-child_test'))
+            self.assertEqual(subprocess.check_output([debugfs, '-R',
+                b'cat /usr/libexec/breenix/rust-std-child_test\xff', str(image)],
+                stderr=subprocess.DEVNULL), b'fixture child')
             self.assertRegex(stat('/etc/breenix/test-ssh/home/.ssh/authorized_keys'),
                              r'Mode:\s+0600')
             self.assertEqual(subprocess.check_output([debugfs, '-R', 'cat /plain', str(image)],

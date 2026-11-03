@@ -28,18 +28,32 @@ def set_owners(image, ownership, root):
                 for offset in (2, 24, 120, 122):  # uid, gid, uid_high, gid_high
                     disk.seek(position + offset)
                     disk.write(bytes(2))
-    entries = []
-    for line in Path(ownership).read_text().splitlines():
-        owner, path = line.split('\t')
+    entries, links = [], []
+    for line in Path(ownership).read_text(errors='surrogateescape').splitlines():
+        fields = line.split('\t')
+        if fields[0] == 'link':
+            links.append(tuple('/' + str(Path(path).relative_to(root)) for path in fields[1:]))
+            continue
+        owner, path = fields
         uid, gid = map(int, owner.split(':'))
         relative = Path(path).relative_to(root)
         entries.append(('/' + str(relative), uid, gid))
     commands = '\n'.join(f'set_inode_field {path} {field} {value}' for path, uid, gid in entries
                          for field, value in (('uid', uid), ('gid', gid)))
-    result = subprocess.run(['debugfs', '-w', '-f', '-', str(image)], input=commands + '\n',
-                            capture_output=True, text=True, check=True)
-    if re.search(r'not found|error|Usage:', result.stdout + result.stderr, re.I):
-        raise ValueError('ext2 test-account ownership failed: ' + result.stderr)
+    for source, target in links:
+        stat = subprocess.check_output(['debugfs', '-R', 'stat ' + source, str(image)], text=True)
+        count = int(re.search(r'Links:\s+(\d+)', stat)[1])
+        commands += f'\nln {source} {target}\nset_inode_field {source} links_count {count + 1}'
+    result = subprocess.run(['debugfs', '-w', '-f', '-', str(image)],
+                            input=(commands + '\n').encode(errors='surrogateescape'),
+                            capture_output=True, check=True)
+    if re.search(rb'not found|error|Usage:', result.stdout + result.stderr, re.I):
+        raise ValueError('ext2 metadata failed: ' + result.stderr.decode(errors='replace'))
+    for source, target in links:
+        before, after = [subprocess.check_output(['debugfs', '-R', 'stat ' + path, str(image)], text=True)
+                         for path in (source, target)]
+        if re.search(r'Inode:\s+(\d+)', before)[1] != re.search(r'Inode:\s+(\d+)', after)[1]:
+            raise ValueError('ext2 fixture hard-link readback differs')
     for path, uid, gid in entries:
         if uid == gid == 0:
             continue  # The shared layout verifier checks the root-owned table rows.

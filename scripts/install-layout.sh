@@ -60,7 +60,14 @@ if [ -d "$root/usr/local/test" ]; then
     rmdir "$root/usr/local/test"
 fi
 if [ -f "$root/usr/libexec/breenix/rust-std-child_test" ]; then
-    ln "$root/usr/libexec/breenix/rust-std-child_test" "$root/usr/libexec/breenix/rust-std-child_test$(printf '\377')"
+    if [ -n "${BREENIX_EXT2_OWNERS:-}" ]; then
+        # APFS refuses this byte in a host filename. Create the same fixture
+        # directly in ext2 after packing, retaining its shared inode.
+        printf 'link\t%s\t%s\377\n' "$root/usr/libexec/breenix/rust-std-child_test" \
+            "$root/usr/libexec/breenix/rust-std-child_test" >> "$BREENIX_EXT2_OWNERS"
+    else
+        ln "$root/usr/libexec/breenix/rust-std-child_test" "$root/usr/libexec/breenix/rust-std-child_test$(printf '\377')"
+    fi
 fi
 printf 'root:!:::::::\nnobody:*:::::::\nsshtest:!:::::::\n' > "$root/etc/shadow"
 # The users suite's fixture accounts (docs/users/design.md, section 6): test images
