@@ -855,7 +855,6 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             let pace=crate::drivers::fw_cfg::read_string("opt/breenix/pace").unwrap_or_default();
             text(alloc::format!("{}\n",pace))
         }
-        #[cfg(target_arch="aarch64")]
         ProcEntryType::StageControl => {
             if !crate::test_control::enabled() {return Err(-38);}
             let caller=crate::window::Caller::current().map_err(|e|-e)?;
@@ -864,8 +863,6 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             for point in [breengel_abi::tc_point::PANEL_CURSOR_NO_RESTORE,12,13,14] {if crate::test_control::take(point,caller.tgid).is_some(){bits|=1<<point;}}
             text(alloc::format!("{bits}\n"))
         }
-        #[cfg(not(target_arch="aarch64"))]
-        ProcEntryType::StageControl => Err(-38),
         ProcEntryType::BootRibbon => {
             #[cfg(target_arch="aarch64")]
             {text(crate::graphics::boot_ribbon::records())}
