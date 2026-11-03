@@ -65,6 +65,24 @@ class RetainedVerdict(unittest.TestCase):
             self.assertIsNotNone(result, 'missing GT 710 evidence must fail explicitly')
             self.assertFalse(result['passed'])
 
+    def test_local_replay_preserves_runtime_identity_and_refuses_runtime_changes(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            run = self.capture(directory)
+            del run['bootedCommit']  # Authoritative metal records use commit, not the importer alias.
+            (directory / 'run.json').write_text(json.dumps(run))
+            with patch('subprocess.run'), patch('subprocess.check_output', return_value=b'tests/check.py\0'), \
+                    patch.dict(API['cases'].__globals__, capture_serial=lambda p: composition_capture()):
+                self.assertEqual(API['rescore_suite_capture'](directory, 'a' * 40, 'b' * 40), 0)
+            report = json.loads((directory / 'suite-acceptance.json').read_text())
+            self.assertEqual(report['commit'], 'a' * 40)
+            self.assertEqual(report['scorerCommit'], 'b' * 40)
+            self.assertTrue(report['passed'])
+            self.assertEqual(json.loads((directory / 'run.json').read_text()), run)
+            with patch('subprocess.run'), patch('subprocess.check_output', return_value=b'kernel/src/gpu/compose.rs\0'):
+                with self.assertRaisesRegex(ValueError, 'runtime files'):
+                    API['rescore_suite_capture'](directory, 'a' * 40, 'b' * 40)
+
     def test_canonical_verdict_recomputes_saved_breengel_result(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
