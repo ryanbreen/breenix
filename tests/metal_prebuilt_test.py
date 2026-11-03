@@ -24,12 +24,15 @@ class ManifestTest(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.commit, self.tools = 'a' * 40, 'b' * 40
         self.build = dict(commit=self.commit, profile='production', features=[], suite='console',
-                          definition=['docs/boot-path.json'])
+                          definition=['docs/boot-path.json', 'docs/suites/console.json'])
         for name in ('uefi.img', 'ext2.img', 'stub.efi', 'manager.efi', 'sha512-crypt',
                      'definition/docs/boot-path.json'):
             path = self.root / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(name.encode())
+        suite = self.root / 'definition/docs/suites/console.json'
+        suite.parent.mkdir(parents=True)
+        suite.write_text(json.dumps(dict(id='console')))
         (self.root / 'build.json').write_text(json.dumps(self.build))
         p.create(self.root, self.tools, 'suite', dict(rustc='pinned', cargo='pinned'),
                  dict(commit='c' * 40), 'd' * 40)
@@ -98,6 +101,42 @@ class ManifestTest(unittest.TestCase):
         refusal = json.loads((self.root / '.local/state/breenix-metal/prebuilt-refusals.jsonl').read_text())
         self.assertIn('stub.efi', refusal['reason'])
 
+    def test_service_verifies_before_root_staging_and_records_mac_builder(self):
+        for changed in (False, True):
+            with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary:
+                state = Path(temporary)
+                args = SimpleNamespace(id='20261103T000000Z-metal', mode='suite', payload='image', target='main',
+                                       task='', commit=self.commit, inject=None, suite='console', nmi=False,
+                                       ramdisk=True, disk=None)
+                with patch.object(m, 'STATE', state), patch.object(m, 'load_site', return_value={}), \
+                     patch.object(boot, 'tools_commit', return_value=self.tools):
+                    driver = boot.Driver(args)
+                    driver.create_record()
+                    inputs = driver.stage / 'inputs'
+                    import shutil
+                    shutil.copytree(self.root, inputs)
+                    (inputs / 'ready').touch()
+                    if changed:
+                        (inputs / 'stub.efi').write_bytes(b'changed')
+                    with patch.object(boot.metal_root, 'stage_root', return_value={}) as stage, \
+                         patch.object(boot.metal_persist, 'layout', return_value=None), \
+                         patch.object(boot.metal_image, 'extract_esp', return_value={}), \
+                         patch.object(driver, 'assemble') as assemble:
+                        if changed:
+                            with self.assertRaisesRegex(boot.Finish, 'stub.efi'):
+                                driver.prepare_payload()
+                            stage.assert_not_called()
+                            assemble.assert_not_called()
+                        else:
+                            driver.prepare_payload()
+                            stage.assert_called_once()
+                            assemble.assert_called_once()
+                            run = m.read_json(driver.dir / 'run.json')
+                            self.assertEqual(run['builder'], 'mac')
+                            self.assertEqual(run['build'], dict(commit=self.commit, profile='production', features=[]))
+                            self.assertEqual((driver.dir / 'run.json').read_bytes(),
+                                             (driver.dir / 'metal-run.json').read_bytes())
+
 
 class HostRecordTest(StateTest):
     def test_explicit_host_build_keeps_existing_record_schema(self):
@@ -124,6 +163,7 @@ class PortableRootTest(unittest.TestCase):
         import metal_root
         mkfs, debugfs = metal_root.require_e2fsprogs('mke2fs', 'debugfs')
         owners = runpy.run_path(str(Path(__file__).resolve().parents[1] / 'scripts/ext2-owners.py'))
+        repo = Path(__file__).resolve().parents[1]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary) / 'root'
             home = root / 'etc/breenix/test-ssh/home/.ssh'
@@ -132,17 +172,28 @@ class PortableRootTest(unittest.TestCase):
             (home / 'authorized_keys').chmod(0o600)
             (root / 'plain').write_bytes(b'payload\x00bytes')
             os.link(root / 'plain', root / 'linked')
+            record = Path(temporary) / 'owners'
+            record.write_text(''.join(f'2000:2000\t{path}\n' for path in (home.parent, home, home / 'authorized_keys')))
+            binaries = Path(temporary) / 'binaries'
+            binaries.mkdir()
+            (binaries / 'sudo.elf').write_bytes(b'fixture executable')
+            subprocess.run(['sh', str(repo / 'scripts/install-layout.sh'), str(root), str(binaries),
+                            str(repo / 'libs/libbreenix/src/layout.tsv')], check=True,
+                           env=dict(os.environ, BREENIX_EXT2_OWNERS=str(record)))
             image = Path(temporary) / 'ext2.img'
             with image.open('wb') as output:
                 output.truncate(4 << 20)
             subprocess.run([mkfs, '-q', '-t', 'ext2', '-F', '-d', str(root), str(image)], check=True)
             with patch.dict(os.environ, PATH=str(Path(debugfs).parent) + os.pathsep + os.environ['PATH']):
-                owners['set_owners'](image)
+                owners['set_owners'](image, record, root)
             def stat(path):
                 return subprocess.check_output([debugfs, '-R', 'stat ' + path, str(image)], text=True,
                                                 stderr=subprocess.DEVNULL)
             self.assertRegex(stat('/plain'), r'User:\s+0\s+Group:\s+0')
             self.assertIn('Links: 2', stat('/linked'))
+            self.assertRegex(stat('/var/log/auth.log'), r'User:\s+0\s+Group:\s+4')
+            self.assertRegex(stat('/etc/breenix/test-users/ua'), r'User:\s+2001\s+Group:\s+2001')
+            self.assertRegex(stat('/usr/bin/sudo'), r'Mode:\s+04755')
             self.assertRegex(stat('/etc/breenix/test-ssh/home/.ssh/authorized_keys'),
                              r'Mode:\s+0600')
             self.assertEqual(subprocess.check_output([debugfs, '-R', 'cat /plain', str(image)],

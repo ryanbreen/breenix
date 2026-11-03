@@ -7,7 +7,7 @@ import subprocess
 import sys
 
 
-def set_owners(image):
+def set_owners(image, ownership, root):
     # ext2 on-disk inode layout (kernel/src/fs/ext2). mke2fs copied the builder's
     # uid/gid; all shipped files belong to root except the test account's home.
     with Path(image).open('r+b') as disk:
@@ -28,18 +28,25 @@ def set_owners(image):
                 for offset in (2, 24, 120, 122):  # uid, gid, uid_high, gid_high
                     disk.seek(position + offset)
                     disk.write(bytes(2))
-    paths = ['/etc/breenix/test-ssh/home', '/etc/breenix/test-ssh/home/.ssh',
-             '/etc/breenix/test-ssh/home/.ssh/authorized_keys']
-    commands = '\n'.join(f'set_inode_field {path} {field} 2000' for path in paths for field in ('uid', 'gid'))
+    entries = []
+    for line in Path(ownership).read_text().splitlines():
+        owner, path = line.split('\t')
+        uid, gid = map(int, owner.split(':'))
+        relative = Path(path).relative_to(root)
+        entries.append(('/' + str(relative), uid, gid))
+    commands = '\n'.join(f'set_inode_field {path} {field} {value}' for path, uid, gid in entries
+                         for field, value in (('uid', uid), ('gid', gid)))
     result = subprocess.run(['debugfs', '-w', '-f', '-', str(image)], input=commands + '\n',
                             capture_output=True, text=True, check=True)
     if re.search(r'not found|error|Usage:', result.stdout + result.stderr, re.I):
         raise ValueError('ext2 test-account ownership failed: ' + result.stderr)
-    for path in paths:
+    for path, uid, gid in entries:
+        if uid == gid == 0:
+            continue  # The shared layout verifier checks the root-owned table rows.
         stat = subprocess.check_output(['debugfs', '-R', 'stat ' + path, str(image)], text=True)
-        if not re.search(r'User:\s+2000\s+Group:\s+2000', stat):
+        if not re.search(rf'User:\s+{uid}\s+Group:\s+{gid}\b', stat):
             raise ValueError('ext2 ownership readback differs: ' + path)
 
 
 if __name__ == '__main__':
-    set_owners(sys.argv[1])
+    set_owners(*sys.argv[1:])
