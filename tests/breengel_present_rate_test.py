@@ -23,10 +23,10 @@ class BreenGLPresentRate(unittest.TestCase):
         fixture = r'''
 use std::cell::RefCell;
 type CaseResult = Result<(), breenix_suite::suite::CaseError>;
-struct Model { ns: i128, centihz: i128, reported: Option<(i64, String)> }
+struct Model { ns: i128, centihz: i128, reported: Option<(i64, String)>, frames: u32, idle_tail: bool, idle_ns: i128 }
 thread_local! {
     static MODEL: RefCell<Model> = const { RefCell::new(Model {
-        ns: 0, centihz: 6002, reported: None,
+        ns: 0, centihz: 6002, reported: None, frames: 0, idle_tail: false, idle_ns: 0,
     }) };
 }
 fn count(ns: i128, centihz: i128) -> u64 {
@@ -36,8 +36,9 @@ fn counter(name: &str) -> Result<u64, String> {
     assert_eq!(name, "composites");
     MODEL.with(|m| {
         let mut m = m.borrow_mut();
+        if m.idle_tail && m.frames == 300 { m.ns += 230_000_000; m.idle_ns += 230_000_000; m.idle_tail = false; }
         m.ns += 10_000; // Polling and procfs reads take time, even between frames.
-        Ok(count(m.ns, m.centihz))
+        Ok(count(m.ns - m.idle_ns, m.centihz))
     })
 }
 mod time {
@@ -56,7 +57,7 @@ impl<T> Cite<T> for Result<T, String> {
 struct Window;
 impl Window {
     fn frame(&self, _: u32) -> Result<(), String> {
-        MODEL.with(|m| m.borrow_mut().ns += 13_000_000);
+        MODEL.with(|m| { let mut m = m.borrow_mut(); m.ns += 13_000_000; m.frames += 1; });
         Ok(())
     }
 }
@@ -82,7 +83,7 @@ MEASUREMENT
 }
 // The original arbitrary-endpoint, millisecond, integer-floor calculation.
 fn legacy(centihz: i128, phase: i128) -> bool {
-    MODEL.with(|m| *m.borrow_mut() = Model { ns: phase, centihz, reported: None });
+    MODEL.with(|m| *m.borrow_mut() = Model { ns: phase, centihz, reported: None, frames: 0, idle_tail: false, idle_ns: 0 });
     let start = now_ms();
     let composites0 = counter("composites").unwrap();
     MODEL.with(|m| m.borrow_mut().ns += 270 * 13_000_000);
@@ -103,6 +104,14 @@ fn legacy_flips_on_both_rates() {
     }
 }
 #[test]
+fn stopped_client_does_not_extend_window() {
+    MODEL.with(|m| *m.borrow_mut() = Model {
+        ns: 0, centihz: 6002, reported: None, frames: 0, idle_tail: true, idle_ns: 0,
+    });
+    assert!(measure().is_ok(), "idle after the final commit must not enter the measurement");
+    MODEL.with(|m| assert!((m.borrow().reported.as_ref().unwrap().0 - 60_020).abs() <= 1));
+}
+#[test]
 fn whole_periods_classify_every_phase() {
     let mut results = Vec::new();
     for centihz in [6002, 5994] {
@@ -111,7 +120,7 @@ fn whole_periods_classify_every_phase() {
         for phase in 0..512 {
             MODEL.with(|m| *m.borrow_mut() = Model {
                 ns: phase * 100_000_000_000 / centihz / 512,
-                centihz, reported: None,
+                centihz, reported: None, frames: 0, idle_tail: false, idle_ns: 0,
             });
             let result = measure();
             passed += usize::from(result.is_ok());
