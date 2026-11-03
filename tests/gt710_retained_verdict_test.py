@@ -90,6 +90,33 @@ class RetainedVerdict(unittest.TestCase):
             result = metal_score.score(directory)['milestones'].get('metal-gt710/breengel-full')
             self.assertIsNone(result)
 
+    def test_aggregate_closure_requires_successful_cold_readback(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            run = self.capture(directory)
+            run.update(suite=None, suites=['console', 'breengel', 'files-io'])
+            (directory / 'run.json').write_text(json.dumps(run))
+            events = [json.loads(line) for line in (directory / 'events.jsonl').read_text().splitlines()]
+            events[-1]['status'] = 1  # The driver awaits its cold disk verdict.
+            child = '20261103T120000Z-metal'
+            events.extend([dict(event='suite-verdict', status=0),
+                           dict(event='cold-disk-verdict', readback=child, passed=True)])
+            (directory / 'events.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in events))
+            receipt = dict(id=child, bytes=4096, sha256='c' * 64, passed=True)
+            with patch.dict(API['completed_suite_capture'].__globals__, capture_serial=lambda p, *args: composition_capture()):
+                (directory / 'suite-readback.json').write_text(json.dumps(receipt))
+                capture = API['completed_suite_capture'](directory, 'a' * 40, 'breengel')
+                self.assertEqual(capture['boot']['suites'], run['suites'])
+                self.assertEqual(capture['events'], events)
+                for changed in [dict(receipt, passed=False), dict(receipt, id='20261103T120001Z-metal'),
+                                dict(receipt, sha256='invalid'), dict(receipt, bytes=0)]:
+                    (directory / 'suite-readback.json').write_text(json.dumps(changed))
+                    with self.assertRaises(ValueError):
+                        API['completed_suite_capture'](directory, 'a' * 40, 'breengel')
+                (directory / 'suite-readback.json').unlink()
+                with self.assertRaises((ValueError, OSError)):
+                    API['completed_suite_capture'](directory, 'a' * 40, 'breengel')
+
     def test_local_replay_preserves_runtime_identity_and_refuses_runtime_changes(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
