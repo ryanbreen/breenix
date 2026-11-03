@@ -1154,18 +1154,9 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
             }
         }
         FdKind::StdIo(0) => {
-            // stdin - read from stdin ring buffer
-            //
-            // Keyboard input goes to the stdin buffer via keyboard interrupt handler.
-            // The TTY layer is used for terminal control (signals, echo) but not for
-            // data transport. This allows character-at-a-time reads to work properly.
-            //
-            // Drop the process manager lock before potentially blocking
+            let is_nonblocking =
+                fd_entry.status_flags() & crate::ipc::fd::status_flags::O_NONBLOCK != 0;
             drop(manager_guard);
-
-            // #821: take any foreground-pgrp adoption the input IRQ entry
-            // deferred. Deliberately after the guard is dropped, so this holds
-            // no PROCESS_MANAGER while it touches the TTY's own locks.
             crate::tty::driver::adopt_foreground_pgrp_from_reader(reader_pid);
 
             let mut user_buf = alloc::vec::Vec::new();
@@ -1173,120 +1164,16 @@ pub fn sys_read(fd: u64, buf_ptr: u64, count: u64) -> SyscallResult {
                 return SyscallResult::Err(12);
             }
             user_buf.resize(count as usize, 0);
-
-            // Blocking read loop: keep trying until we get data or an error
-            // Similar to pause() implementation - block, HLT loop, check for data
-            loop {
-                // Register as blocked reader FIRST to avoid race condition
-                // where data arrives between checking and blocking
-                if let Err(e) = crate::ipc::stdin::register_blocked_reader(thread_id) {
-                    return SyscallResult::Err(e as u64);
+            // Inherited stdin needs the same guarded check-and-park as an
+            // opened console: input arriving before park must keep it awake.
+            match super::blocking_io::read_console(&mut user_buf, is_nonblocking, &|| true) {
+                Ok(n) => {
+                    if n > 0 && copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
+                        return SyscallResult::Err(14);
+                    }
+                    SyscallResult::Ok(n as u64)
                 }
-
-                // Read from stdin buffer
-                let read_result = crate::ipc::stdin::read_bytes(&mut user_buf);
-
-                match read_result {
-                    Ok(n) => {
-                        // Data was available - unregister from blocked readers
-                        crate::ipc::stdin::unregister_blocked_reader(thread_id);
-
-                        if n > 0 {
-                            // Copy to userspace
-                            if copy_to_user(buf_ptr, user_buf.as_ptr() as u64, n).is_err() {
-                                return SyscallResult::Err(14); // EFAULT
-                            }
-                            log::trace!("sys_read: Read {} bytes from stdin", n);
-                        }
-                        return SyscallResult::Ok(n as u64);
-                    }
-                    Err(11) => {
-                        // EAGAIN - no data available, need to block and wait
-                        // We're already registered as blocked reader
-
-                        // Block the current thread AND set blocked_in_syscall flag.
-                        // CRITICAL: Setting blocked_in_syscall is essential because:
-                        // 1. The thread will enter a kernel-mode HLT loop below
-                        // 2. If a context switch happens while in HLT, the scheduler sees
-                        //    from_userspace=false (kernel mode) but blocked_in_syscall tells
-                        //    it to save/restore kernel context, not userspace context
-                        // 3. Without this flag, no context is saved when switching away,
-                        //    and stale userspace context is restored when switching back,
-                        //    causing RIP corruption (kernel address in userspace CS)
-                        crate::task::scheduler::with_current(|sched| {
-                            sched.block_current_in_syscall();
-                        });
-
-                        log::trace!("sys_read: Thread {} blocking on stdin", thread_id);
-
-                        // Preemption stays disabled until the signal check below has run (#1230):
-                        // see `blocking_io::wait_prepared`.
-
-                        // HLT loop - wait for timer interrupt which will switch to another thread
-                        // When keyboard data arrives, the interrupt handler will unblock us
-                        loop {
-                            // Check for pending signals that should interrupt this syscall
-                            if let Some(e) = crate::syscall::check_signals_for_restartable_wait() {
-                                // Signal pending - unblock and return EINTR
-                                crate::ipc::stdin::unregister_blocked_reader(thread_id);
-                                crate::task::scheduler::with_current(|sched| {
-                                    if let Some(thread) = sched.current_thread_mut() {
-                                        thread.blocked_in_syscall = false;
-                                        thread.set_ready();
-                                    }
-                                });
-                                log::debug!(
-                                    "sys_read: Thread {} interrupted by signal (EINTR)",
-                                    thread_id
-                                );
-                                return SyscallResult::Err(e as u64);
-                            }
-
-                            crate::per_cpu::preempt_enable();
-                            crate::task::scheduler::yield_current();
-                            crate::arch_halt_while_blocked();
-                            crate::per_cpu::preempt_disable();
-
-                            // Check if we were unblocked (thread state changed from Blocked)
-                            let still_blocked = crate::task::scheduler::with_current(|sched| {
-                                if let Some(thread) = sched.current_thread_mut() {
-                                    thread.state == crate::task::thread::ThreadState::Blocked
-                                } else {
-                                    false
-                                }
-                            })
-                            .unwrap_or(false);
-
-                            if !still_blocked {
-                                log::trace!(
-                                    "sys_read: Thread {} unblocked from stdin wait",
-                                    thread_id
-                                );
-                                break;
-                            }
-                        }
-
-                        // Clear blocked_in_syscall now that we're resuming normal syscall execution
-                        crate::task::scheduler::with_current(|sched| {
-                            if let Some(thread) = sched.current_thread_mut() {
-                                thread.blocked_in_syscall = false;
-                                log::trace!(
-                                    "sys_read: Thread {} cleared blocked_in_syscall",
-                                    thread.id
-                                );
-                            }
-                        });
-
-                        // Loop back to try reading again - we should have data now
-                        continue;
-                    }
-                    Err(e) => {
-                        // Error - unregister from blocked readers
-                        crate::ipc::stdin::unregister_blocked_reader(thread_id);
-                        log::trace!("sys_read: Stdin read error: {}", e);
-                        return SyscallResult::Err(e as u64);
-                    }
-                }
+                Err(error) => SyscallResult::Err(error as u64),
             }
         }
         FdKind::StdIo(_) => {

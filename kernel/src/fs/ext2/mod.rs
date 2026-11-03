@@ -2674,6 +2674,16 @@ pub fn init_root_fs() -> Result<(), &'static str> {
         })
         .ok_or("No mountable 512-byte-sector ext2 block device")?;
 
+    #[cfg(target_arch = "aarch64")]
+    let fs = {
+        let mut fs = fs;
+        if let Some(id) = crate::boot::intent::root_generation()? {
+            fs.namespace = generation::select(&fs, id)?;
+        }
+        ROOT_NAMESPACE.call_once(|| fs.namespace);
+        fs
+    };
+
     #[cfg(target_arch = "x86_64")]
     let fs = {
         let mut fs = fs;

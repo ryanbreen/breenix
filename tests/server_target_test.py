@@ -141,6 +141,58 @@ class ServerTarget(unittest.TestCase):
             self.assertEqual(len(saved['faultBoots']), 2)
             self.assertEqual(filing.call_args.args[0][1:5], ['record', 'qemu', 'persistent', 'server'])
 
+    def test_upgrade_dispatch_and_metal_skip_parity(self):
+        import contextlib
+        import io
+        sha = 'a' * 40
+        argv = ['server-suite', '--target', 'qemu', '--run-dir', '/unused',
+                '--boot', '20261101T120000Z-qemu', '--sha', sha,
+                '--milestone', 'server/remote-upgrade']
+        calls = []
+        def load(path):
+            calls.append(Path(path).name)
+            if calls[-1] == 'upgrade_cases.py': return {}
+            return {'run': lambda api, args: 73}
+        with patch.object(sys, 'argv', argv), patch.object(HOST['runpy'], 'run_path', side_effect=load):
+            self.assertEqual(HOST['main'](), 73)
+        self.assertEqual(calls, ['upgrade_cases.py', 'server_upgrade_vm.py'])
+        argv = ['server-suite', '--target', 'metal', '--milestone', 'server/remote-upgrade']
+        output = io.StringIO()
+        with patch.object(sys, 'argv', argv), contextlib.redirect_stdout(output), \
+             patch.object(HOST['runpy'], 'run_path', side_effect=AssertionError('metal skip dispatched')):
+            self.assertEqual(HOST['main'](), 0)
+        expected = ''.join(f'SKIP server remote-upgrade/{name}: S27 suspends persistent sessions\n'
+                           for name, _ in HOST['REMOTE_UPGRADE'])
+        self.assertEqual(output.getvalue(), expected + 'Not counted: S27 suspends persistent sessions\n')
+
+    def test_vm_generation_proofs_keep_exact_head_receipt_shape(self):
+        helper = runpy.run_path(str(ROOT / 'scripts/metal/server_upgrade_vm.py'))
+        driver = helper['QemuUpgrade'].__new__(helper['QemuUpgrade'])
+        driver.args = SimpleNamespace(sha='a' * 40)
+        driver.results = {}
+        seen = []
+        def source(command):
+            seen.append(command[-1])
+            return b'exact head source'
+        def container(command, **kwargs):
+            self.assertEqual(command[1:4], ['run', '--rm', '--network'])
+            self.assertIn('--cap-add=SYS_ADMIN', command)
+            self.assertIn('unshare --mount --propagation private --', command[-1])
+            base = Path(command[command.index('-v') + 1].removesuffix(':/src'))
+            for i in range(4):
+                (base / f'test-{i}.log').write_text('test result: ok. 1 passed\n')
+                (base / f'test-{i}.status').write_text('0\n')
+            return reply()
+        with patch.object(helper['subprocess'], 'check_output', side_effect=source), \
+             patch.object(helper['subprocess'], 'run', side_effect=container):
+            driver.generation_proofs()
+        self.assertEqual(len(seen), 5)
+        self.assertTrue(all(value.startswith(driver.args.sha + ':') for value in seen))
+        proofs = driver.results['generationProof']
+        self.assertEqual(set(proofs), {'enospc', 'io', 'interruption', 'paired-rollback', 'reclamation', 'directory-aliases'})
+        for receipt in proofs.values():
+            self.assertEqual(receipt, dict(exit=0, executed=True, stdout='test result: ok. 1 passed\n', stderr='', commit=driver.args.sha))
+
     def test_qemu_watchdog_cli_dispatches_without_metal(self):
         argv = ['server-suite', '--target', 'qemu', '--run-dir', '/unused',
                 '--boot', '20261101T120000Z-qemu', '--sha', 'a' * 40,
@@ -585,8 +637,7 @@ class ServerTarget(unittest.TestCase):
     def test_qemu_does_not_dispatch_later_milestones_to_metal(self):
         import contextlib
         import io
-        for milestone in ('server/remote-upgrade',
-                          'server/resting-state', 'users/operator-login'):
+        for milestone in ('server/resting-state', 'users/operator-login'):
             argv = ['server-suite', '--target', 'qemu', '--run-dir', '/unused',
                     '--boot', '20261101T120000Z-qemu', '--sha', 'a' * 40,
                     '--milestone', milestone, '--branch', 'server/vm-runner']

@@ -4,18 +4,21 @@
 # holds the mac-boot lease. Stop from another terminal to remove the run.
 #
 # vm-persistent.sh qemu build --run-dir DIR [--system-image IMAGE] --operator-account FILE [--fault panic-reboot|watchdog]
-# vm-persistent.sh qemu boot --run-dir DIR --mode console|desktop [--kernel FILE]
+# vm-persistent.sh qemu boot --run-dir DIR --mode console|desktop [--kernel FILE] [--slot current|next]
+# vm-persistent.sh qemu promote|rollback --run-dir DIR
+# vm-persistent.sh qemu stage-candidate --run-dir DIR [--inject upgrade-no-ssh|upgrade-service-down]
+# vm-persistent.sh qemu install --run-dir DIR
 # vm-persistent.sh qemu fault-boot --run-dir DIR [--inject feeder-hang|health-hang]
 # vm-persistent.sh qemu reboot --run-dir DIR
 # vm-persistent.sh qemu stop --run-dir DIR
 set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 umask 077
-usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--kernel FILE] | --inject feeder-hang|health-hang]' >&2; exit 2; }
+usage() { echo 'usage: vm-persistent.sh qemu build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install --run-dir DIR [--operator-account FILE [--system-image IMAGE | --fault panic-reboot|watchdog] | --mode console|desktop [--kernel FILE] [--slot current|next] | --inject feeder-hang|health-hang|upgrade-no-ssh|upgrade-service-down]' >&2; exit 2; }
 [ "$#" -ge 2 ] && [ "$1" = qemu ] || usage
 op=$2; shift 2
-case "$op" in build|boot|fault-boot|reboot|stop) ;; *) usage ;; esac
-run= system= account= kernel= mode= fault= inject=
+case "$op" in build|boot|fault-boot|reboot|stop|promote|rollback|stage-candidate|install) ;; *) usage ;; esac
+run= system= account= kernel= mode= fault= inject= slot=
 while [ "$#" -gt 0 ]; do
     [ "$#" -ge 2 ] && [ -n "$2" ] || usage
     case "$1" in
@@ -26,20 +29,24 @@ while [ "$#" -gt 0 ]; do
         --fault) [ -z "$fault" ] || usage; fault=$2 ;;
         --mode) [ -z "$mode" ] || usage; mode=$2 ;;
         --inject) [ -z "$inject" ] || usage; inject=$2 ;;
+        --slot) [ -z "$slot" ] || usage; slot=$2 ;;
         *) usage ;;
     esac
     shift 2
 done
 [ -n "$run" ] || usage
 case "$op" in
-    build) [ -z "$inject" ] && [ -n "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage
+    build) [ -z "$inject$slot" ] && [ -n "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage
            case "$fault" in ""|panic-reboot|watchdog) ;; *) usage ;; esac
            [ -z "$fault" ] || [ -z "$system" ] || usage ;;
     boot) [ -z "$inject" ] && [ -z "$fault" ] && [ -z "$system" ] && [ -z "$account" ] || usage
-          case "$mode" in console|desktop) ;; *) usage ;; esac ;;
-    fault-boot) [ -z "$system$account$kernel$mode$fault" ] || usage
+          case "$mode" in console|desktop) ;; *) usage ;; esac
+          case "$slot" in ''|current|next) ;; *) usage ;; esac; slot=${slot:-current} ;;
+    fault-boot) [ -z "$system$account$kernel$mode$fault$slot" ] || usage
                 case "$inject" in ""|feeder-hang|health-hang) ;; *) usage ;; esac; mode=console ;;
-    reboot|stop) [ -z "$inject" ] && [ -z "$fault" ] && [ -z "$system" ] && [ -z "$account" ] && [ -z "$kernel" ] && [ -z "$mode" ] || usage ;;
+    stage-candidate) [ -z "$fault$system$account$kernel$mode$slot" ] || usage
+                     case "$inject" in ""|upgrade-no-ssh|upgrade-service-down) ;; *) usage ;; esac ;;
+    reboot|stop|promote|rollback|install) [ -z "$inject$fault$system$account$kernel$mode$slot" ] || usage ;;
 esac
 # debugfs command files and QEMU comma-separated options cannot safely encode
 # these characters; reject them instead of interpreting caller-supplied syntax.
@@ -110,7 +117,55 @@ if [ "$op" = build ]; then
     exit 0
 fi
 [ -d "$run" ] && [ ! -L "$run" ] && [ -f "$run/.breenix-vm-persistent" ] || { echo 'not a persistent VM run directory' >&2; exit 1; }
+# Retain the caller's path for the new intent argument across supervision.
+# Existing disk, socket and kernel arguments continue to use physical paths.
+intent_run=$run
 run=$(cd "$run" && pwd -P)
+if [ "$op" = stage-candidate ]; then
+    mkdir "$run/boot.lock" || { echo 'run is already booting or staging' >&2; exit 1; }
+    candidate_tmp=
+    trap 'if [ -n "$candidate_tmp" ]; then rm -rf -- "$candidate_tmp"; fi; rmdir "$run/boot.lock"' EXIT
+    candidate_tmp=$(mktemp -d "$run/candidate-stage.XXXXXX")
+    [ -z "$(git -C "$ROOT" status --porcelain)" ] || { echo 'source build requires a clean checkout' >&2; exit 1; }
+    source_commit=$(git -C "$ROOT" rev-parse HEAD)
+    export CARGO_BUILD_JOBS=4
+    unset CARGO_TARGET_DIR CARGO_BUILD_TARGET_DIR
+    (cd "$ROOT" && taskpolicy -b cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64)
+    cp "$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64" "$candidate_tmp/kernel"
+    taskpolicy -b "$ROOT/userspace/programs/build.sh" --arch aarch64
+    (cd "$ROOT" && BREENIX_REPRODUCIBLE_EXT2=1 taskpolicy -b "$ROOT/scripts/create_ext2_disk.sh" --arch aarch64)
+    [ "$source_commit" = "$(git -C "$ROOT" rev-parse HEAD)" ] && [ -z "$(git -C "$ROOT" status --porcelain)" ] || { echo 'sources changed during build' >&2; exit 1; }
+    cp "$ROOT/target/ext2-aarch64.img" "$candidate_tmp/image"
+    python3 -B "$ROOT/scripts/vm_site.py" operator-account --out "$candidate_tmp/account"
+    PATH="$PATH:/opt/homebrew/opt/e2fsprogs/sbin:/usr/local/opt/e2fsprogs/sbin"
+    export PATH
+    command -v debugfs >/dev/null || { echo 'debugfs is required' >&2; exit 1; }
+    debugfs -w -R 'rm /etc/breenix/operator-account' "$candidate_tmp/image" >/dev/null 2>&1 || true
+    debugfs -w -R "write $candidate_tmp/account /etc/breenix/operator-account" "$candidate_tmp/image" >/dev/null 2>&1
+    debugfs -w -R 'set_inode_field /etc/breenix/operator-account mode 0100600' "$candidate_tmp/image" >/dev/null 2>&1
+    debugfs -w -R 'set_inode_field /etc/breenix/operator-account uid 0' "$candidate_tmp/image" >/dev/null 2>&1
+    debugfs -w -R 'set_inode_field /etc/breenix/operator-account gid 0' "$candidate_tmp/image" >/dev/null 2>&1
+    debugfs -R 'cat /etc/breenix/operator-account' "$candidate_tmp/image" 2>/dev/null > "$candidate_tmp/readback"
+    cmp -s "$candidate_tmp/account" "$candidate_tmp/readback" || { echo 'operator account staging failed' >&2; exit 1; }
+    account_stat=$(debugfs -R 'stat /etc/breenix/operator-account' "$candidate_tmp/image" 2>/dev/null)
+    [[ $account_stat =~ Mode:[[:space:]]+0600 ]] && [[ $account_stat =~ User:[[:space:]]+0[[:space:]]+Group:[[:space:]]+0 ]] || { echo 'operator account metadata staging failed' >&2; exit 1; }
+    if [ "$inject" = upgrade-service-down ]; then
+        debugfs -w -R 'rm /usr/sbin/bsshd' "$candidate_tmp/image" >/dev/null 2>&1
+        debugfs -R 'stat /usr/sbin/bsshd' "$candidate_tmp/image" > "$candidate_tmp/stat" 2> "$candidate_tmp/error"
+        ! grep -q 'Inode:' "$candidate_tmp/stat" && grep -q 'File not found' "$candidate_tmp/error" || { echo 'SSH fault did not remove the candidate daemon' >&2; exit 1; }
+    fi
+    if [ "$inject" = upgrade-no-ssh ]; then
+        printf 'deliberately invalid verification kernel\n' > "$candidate_tmp/kernel"
+    fi
+    python3 -B "$ROOT/scripts/vm-artifacts.py" seal-candidate "$ROOT" "$run" "$candidate_tmp" "$source_commit" "$inject"
+    exit 0
+fi
+if [ "$op" = promote ] || [ "$op" = rollback ]; then
+    mkdir "$run/boot.lock" || { echo 'run is already booting' >&2; exit 1; }
+    trap 'rmdir "$run/boot.lock"' EXIT
+    python3 "$ROOT/scripts/vm_slots.py" "$op" "$run"
+    exit 0
+fi
 if [ "$op" = reboot ]; then
     exec python3 "$ROOT/scripts/vm-reboot.py" "$run"
 fi
@@ -142,12 +197,13 @@ PY
     rm -rf -- "$run"
     exit 0
 fi
+if [ "$op" = install ]; then mode=console; fi
 if [ "$op" = fault-boot ]; then kernel="$run/fault-kernel"; fi
 if [ -z "$kernel" ]; then
     kernel="$run/kernel"
     [ -f "$kernel" ] || kernel="$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 fi
-[ -f "$kernel" ] && [ -f "$run/system.img" ] && [ -f "$run/home.img" ] || { echo 'missing kernel or image' >&2; exit 1; }
+[ -f "$run/system.img" ] && [ -f "$run/home.img" ] || { echo 'missing image' >&2; exit 1; }
 [ ${#run} -lt 90 ] || { echo 'run path is too long for unix sockets' >&2; exit 1; }
 # Re-exec under the slot supervisor before taking the run lock.
 if [ -z "${BREENIX_VM_PERSISTENT_SUPERVISED:-}" ]; then
@@ -157,14 +213,21 @@ if [ -z "${BREENIX_VM_PERSISTENT_SUPERVISED:-}" ]; then
         args=()
         [ -z "$inject" ] || args=(--inject "$inject")
         host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu fault-boot --run-dir "$run" "${args[@]}"
+    elif [ "$op" = install ]; then
+        host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu install --run-dir "$intent_run"
     else
-        host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu boot --run-dir "$run" --kernel "$kernel" --mode "$mode"
+        host_slots_start "$ROOT/scripts/vm-persistent.sh" qemu boot --run-dir "$intent_run" --kernel "$kernel" --mode "$mode" --slot "$slot"
     fi
 fi
 source "$ROOT/scripts/host-slots.sh"
 mkdir "$run/boot.lock" || { echo 'run is already booting' >&2; exit 1; }
 pump=
+monitor=
 cleanup() {
+    if [ -n "$monitor" ]; then
+        kill -TERM "$monitor" 2>/dev/null || true
+        wait "$monitor" 2>/dev/null || true
+    fi
     if [ -n "$pump" ]; then
         kill -TERM "$pump" 2>/dev/null || true
         wait "$pump" 2>/dev/null || true
@@ -173,7 +236,18 @@ cleanup() {
 trap cleanup EXIT
 verify=verify
 if [ "$op" = fault-boot ]; then verify=verify-fault; fi
-python3 "$ROOT/scripts/vm-artifacts.py" "$verify" "$ROOT" "$run" "$kernel"
+slot_args=()
+if [ "$op" = boot ] && { [ -e "$run/slots.json" ] || [ -L "$run/slots.json" ]; }; then
+    python3 "$ROOT/scripts/vm-artifacts.py" verify-slot "$ROOT" "$run" "$slot"
+    slot_args=(-fw_cfg "name=opt/breenix/intent,file=$intent_run/boot-intent")
+else
+    [ -f "$kernel" ] || { echo 'missing kernel' >&2; exit 1; }
+    python3 "$ROOT/scripts/vm-artifacts.py" "$verify" "$ROOT" "$run" "$kernel"
+fi
+if [ "$op" = install ]; then
+    python3 "$ROOT/scripts/vm_install.py" prepare "$run"
+    slot_args=(-fw_cfg "name=opt/breenix/intent,file=$intent_run/boot-intent")
+fi
 fault_kind=
 if [ "$op" = fault-boot ]; then
     fault_kind=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("faultKind", ""))' "$run/verified-build.json")
@@ -244,17 +318,39 @@ stop_child() {
 trap stop_child TERM HUP INT
 disks=(-device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/home.img"
        -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/system.img")
+if [ "$op" = install ]; then
+    disks=(-device virtio-blk-device,drive=home -drive "if=none,id=home,format=raw,file=$run/system.img"
+           -device virtio-blk-device,drive=ext2 -drive "if=none,id=ext2,format=raw,file=$run/install-root.img")
+fi
 action=(-device i6300esb -action watchdog=reset)
 if [ "$op" = fault-boot ] && [ "$fault_kind" = panic-reboot ]; then disks=(); action+=(-action reboot=shutdown); fi
+if [ "$op" = install ]; then
+    rm -f "$run/install-monitor-ready" "$run/install-qemu-pid"
+    python3 "$ROOT/scripts/vm_install.py" monitor "$run" &
+    monitor=$!
+    for _ in {1..100}; do
+        [ -f "$run/install-monitor-ready" ] && break
+        kill -0 "$monitor" 2>/dev/null || { echo 'install monitor exited' >&2; "$ROOT/scripts/vigil-record.sh" finish "$vigil" 1; exit 1; }
+        sleep .05
+    done
+    [ -f "$run/install-monitor-ready" ] || { echo 'install monitor did not start' >&2; "$ROOT/scripts/vigil-record.sh" finish "$vigil" 1; exit 1; }
+fi
 set +e
 python3 "$ROOT/scripts/qemu-arm64.py" "$qemu" -rtc base=utc -M virt,gic-version=3 -cpu max -m 512 -smp 4 \
-    -kernel "$kernel" -fw_cfg "name=opt/breenix/mode,string=$mode" "${display[@]}" -qmp "unix:$run/qmp.sock,server=on,wait=off" -qmp "unix:$run/events.sock,server=on,wait=off" \
+    -kernel "$kernel" -fw_cfg "name=opt/breenix/mode,string=$mode" "${slot_args[@]}" "${display[@]}" -qmp "unix:$run/qmp.sock,server=on,wait=off" -qmp "unix:$run/events.sock,server=on,wait=off" \
     "${gpu[@]}" -device virtio-gpu-device -device virtio-keyboard-device -device virtio-tablet-device \
     "${disks[@]}" "${action[@]}" \
     -device virtio-rng-device -device virtio-net-device,netdev=net0 \
     -netdev "user,id=net0,hostfwd=tcp:127.0.0.1:$port-:22" \
     -chardev "socket,id=con,path=$run/serial.sock,server=off" -serial chardev:con &
 child=$!
+if [ "$op" = install ]; then printf '%s\n' "$child" > "$run/install-qemu-pid"; fi
+install_code=0
+if [ "$op" = install ]; then
+    wait "$monitor" || install_code=$?
+    monitor=
+    if [ "$install_code" -ne 0 ]; then kill -TERM "$child" 2>/dev/null || true; fi
+fi
 wait "$child"
 code=$?
 child=
@@ -269,6 +365,22 @@ fi
 wait "$pump" 2>/dev/null || true
 pump=
 set -e
+if [ "$op" = install ]; then
+    # The installer may have written the system disk even on failure.
+    python3 "$ROOT/scripts/vm-artifacts.py" stage-intent "$ROOT" "$run" '' || code=1
+    if [ "$code" -eq 0 ] && [ "$install_code" -eq 0 ]; then
+        candidate_kernel=$(python3 "$ROOT/scripts/vm_install.py" publish "$run") || code=1
+        if [ "$code" -eq 0 ]; then
+            python3 "$ROOT/scripts/vm-artifacts.py" seal-slot "$ROOT" "$run" "$run/$candidate_kernel" || code=1
+        fi
+        if [ "$code" -eq 0 ]; then
+            python3 "$ROOT/scripts/vm_install.py" commit "$run" || code=1
+        fi
+    else
+        code=1
+    fi
+    rm -f "$run/install-root.img" "$run/install-references" "$run/install-monitor-ready" "$run/install-qemu-pid"
+fi
 if [ "$code" -eq 0 ] && [ "$op" = boot ]; then
     python3 "$ROOT/scripts/vm-artifacts.py" continuation "$ROOT" "$run" ""
 fi
