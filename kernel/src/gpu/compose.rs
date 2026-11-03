@@ -353,7 +353,10 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
         }
         Some(ctx.outcomes.get(&n).copied().unwrap_or((fence_status::OK, 0)))
     };
-    let (status, answer) = match wait_for(None, true, finished) {
+    let (status, answer) = match wait_for_traced(None, true, finished,
+        #[cfg(target_arch = "x86_64")] None,
+        #[cfg(target_arch = "x86_64")] true,
+        #[cfg(target_arch = "x86_64")] None) {
         Ok(outcome) => outcome,
         Err(_) => {
             // Native Sub owns the sampled pool pins through its actual completion

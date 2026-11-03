@@ -474,7 +474,7 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
         forget();
         return Err(e);
     }
-    let outcome = wait_for(None, true, |c| {
+    let outcome = wait_for_traced(None, true, |c| {
         let Some(ctx) = c.contexts.get_mut(&ctx_id) else {
             return Some((fence_status::DEVICE_RESET, 0));
         };
@@ -499,7 +499,10 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
                     None => (fence_status::DEVICE_ERROR, 0),
                 }),
         )
-    });
+    }, #[cfg(target_arch = "x86_64")] None,
+        #[cfg(target_arch = "x86_64")] true,
+        #[cfg(target_arch = "x86_64")] None);
+
     let outcome = match outcome {
         Ok(o) => o,
         Err(_) => {
