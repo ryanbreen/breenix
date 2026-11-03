@@ -249,7 +249,14 @@ fn final_upload() {
     let Some(allocations) = evidence(gt710_allocs::encode()) else { return; };
     let (status, caps) = libbreenix::gpu::caps();
     let resources = (status == 0 && caps.backend == libbreenix::gpu::abi::backend::GK208).then_some(&caps);
-    let Some(heap) = evidence(gt710_heap::encode()) else { return; };
+    let Some(mut heap) = evidence(gt710_heap::encode()) else { return; };
+    match std::fs::read("/dev/shm/gt710-fixture-cadence") {
+        Ok(rows) => {
+            heap.extend_from_slice(&rows);
+            evidence(std::fs::remove_file("/dev/shm/gt710-fixture-cadence").map_err(|e| e.to_string()));
+        }
+        Err(error) => { evidence::<()>(Err(format!("fixture cadence unavailable: {error}"))); }
+    }
     let pictures = NATIVE_PICTURES.lock().expect("native picture store lock");
     let manifest = evidence(pictures.manifest()).unwrap_or_default();
     evidence(gt710_artifacts::upload_slot_records(resources, true, &heap, &manifest, &allocations));

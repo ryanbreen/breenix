@@ -431,6 +431,8 @@ fn replay(window: u64, src: &Target, dst: &Target, rects: &[Rect]) -> Result<(),
 /// is taken as replaying, which no other ACQUIRE or COMMIT can use; it is made writable (its
 /// pixels and its tree page) once the replay is copied, and only then handed out.
 pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
+    #[cfg(target_arch = "x86_64")]
+    let _span = crate::gk208::timing::cpu_span(500);
     if a.reserved != 0 {
         return Err(EINVAL);
     }
@@ -473,6 +475,8 @@ pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
             w.waits.clone()
         };
         let id = a.id;
+        #[cfg(target_arch = "x86_64")]
+        let waiting = crate::gk208::timing::cpu_span(503);
         wait(&waits.acquire, &until, || {
             REGISTRY
                 .lock()
@@ -480,6 +484,8 @@ pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
                 .get(&id)
                 .is_some_and(|w| w.pending.is_some() || pick_free(w).is_none())
         })?;
+        #[cfg(target_arch = "x86_64")]
+        drop(waiting);
     };
     let rects = set.rects(width, height);
     let replayed = match source.as_ref() {
@@ -487,8 +493,12 @@ pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
         None => Ok(()),
     };
     drop(source);
+    #[cfg(target_arch = "x86_64")]
+    let writable_span = crate::gk208::timing::cpu_span(504);
     let writable = replayed.and_then(|()| dst.seal(false))
         .and_then(|()| mem::protect_range(&tree, tree_addr, index as u64 * tree_len, tree_len, true));
+    #[cfg(target_arch = "x86_64")]
+    drop(writable_span);
     if writable.is_err() { let _ = dst.seal(true); }
     // Hand the buffer out with its new base, unless the window or the buffer went away during
     // the copy.
@@ -620,6 +630,8 @@ fn rect_in(r: &Rect, width: u32, height: u32) -> bool {
 /// commit gate the commit's id, damage and pixel generation are settled first and copied out
 /// to `out`; only then is the buffer sealed and published.
 pub fn commit(caller: &Caller, c: &mut Commit, meta: Meta, out: u64) -> Result<u64, i32> {
+    #[cfg(target_arch = "x86_64")]
+    let _span = crate::gk208::timing::cpu_span(501);
     if c.reserved != 0 || c.damage_count as usize > limits::MAX_DAMAGE {
         return Err(EINVAL);
     }
@@ -1043,6 +1055,8 @@ fn tell(id: u64, fill: impl FnOnce(&mut WindowEvent)) {
 /// that began under a compositor ends, with no events, when that compositor dies or releases
 /// its claim (section 17.5).
 pub fn read_events(caller: &Caller, r: &mut ReadEvents, out_arg: u64) -> Result<u64, i32> {
+    #[cfg(target_arch = "x86_64")]
+    let _span = crate::gk208::timing::cpu_span(502);
     if r.flags & !READ_EVENTS_BLOCK != 0 {
         return Err(EINVAL);
     }
