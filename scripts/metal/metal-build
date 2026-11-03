@@ -153,15 +153,20 @@ def inner(args):
     clone, out, tmp = paths(args)
     logs = tmp / 'logs'
     logs.mkdir(parents=True, exist_ok=True)
-    home = subprocess.run([sys.executable, str(HELPER), 'cargo-home', str(Path.home() / '.cargo'),
-                           str(clone / 'target')], check=True, capture_output=True, text=True).stdout.strip()
+    local = bool(getattr(args, 'local', False))
+    if local:
+        home = os.environ['CARGO_HOME']
+    else:
+        home = subprocess.run([sys.executable, str(HELPER), 'cargo-home', str(Path.home() / '.cargo'),
+                               str(clone / 'target')], check=True, capture_output=True, text=True).stdout.strip()
     os.environ['CARGO_HOME'] = home
     timings = {}
     # The SDK suite's root is a staged copy; every other boot's is the built root as it is.
     root = tmp / 'ext2-sdk.img' if 'sdk' in args.suite.split(',') else clone / 'testdata/ext2.img'
     try:
         started = time.time()
-        subprocess.run([sys.executable, str(HELPER), 'acquire', 'metal-build'], check=True)
+        if not local:
+            subprocess.run([sys.executable, str(HELPER), 'acquire', 'metal-build'], check=True)
         timings['slot_wait'] = round(time.time() - started)
         try:
             started = time.time()
@@ -172,9 +177,18 @@ def inner(args):
             helper = clone / 'scripts/metal/sha512-crypt.rs'
             if helper.is_file():
                 log = logs / 'console-hash-build.log'
+                command = ['rustc', '--edition=2021', '-O', str(helper), '-o', str(out / 'sha512-crypt')]
+                if local:
+                    source = (Path(__file__).resolve().parent / 'sha512-crypt-linux.rs').read_text()
+                    source = source.replace('@SHA512@', str(clone / 'libs/libbreenix/src/crypto/sha512.rs'))
+                    source = source.replace('@CRYPT@', str(clone / 'libs/libbreenix/src/crypto/sha512_crypt.rs'))
+                    portable = tmp / 'sha512-crypt-linux.rs'
+                    portable.write_text(source)
+                    command = ['rustc', '--edition=2021', '-O', '--target', 'x86_64-unknown-none',
+                               '-C', 'relocation-model=static', '-C', 'link-arg=-no-pie',
+                               str(portable), '-o', str(out / 'sha512-crypt')]
                 with log.open('w') as output:
-                    status = subprocess.call(['rustc', '--edition=2021', '-O', str(helper),
-                                              '-o', str(out / 'sha512-crypt')], cwd=clone,
+                    status = subprocess.call(command, cwd=clone,
                                              stdout=output, stderr=subprocess.STDOUT)
                 if not clean_build(status, log, 'console hash helper', logs, out):
                     return 1
@@ -221,7 +235,8 @@ def inner(args):
                     print(f'[metal-build] the SDK suite could not stage the root: exit {status}', flush=True)
                     return 1
         finally:
-            subprocess.run([sys.executable, str(HELPER), 'release', 'metal-build'], check=True)
+            if not local:
+                subprocess.run([sys.executable, str(HELPER), 'release', 'metal-build'], check=True)
         shutil.copyfile(tmp / 'stub-target' / STUB_RELEASE / 'metal-efi-stub.efi', out / 'stub.efi')
         shutil.copyfile(tmp / 'stub-target' / STUB_RELEASE / 'metal-boot-manager.efi', out / 'manager.efi')
         images = sorted(glob.glob(str(clone / 'target/release/build/breenix-*/out/breenix-uefi.img')),
@@ -266,7 +281,8 @@ def inner(args):
         print('[metal-build] inputs ready ' + json.dumps(timings), flush=True)
         return 0
     finally:
-        shutil.rmtree(home, ignore_errors=True)
+        if not local:
+            shutil.rmtree(home, ignore_errors=True)
 
 
 def stub_only(args):

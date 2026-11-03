@@ -43,6 +43,7 @@ import metal_root  # noqa: E402
 import metal_score  # noqa: E402
 import metal_disk  # noqa: E402
 import metal_persist  # noqa: E402
+import metal_prebuilt  # noqa: E402
 from metal_score import boot_shape  # noqa: E402
 # Deployed, the host-key helper sits beside this file; in a checkout it is in scripts/.
 if not (Path(__file__).resolve().parent / 'hostkeys.py').is_file():
@@ -353,6 +354,9 @@ class Driver:
                'evidenceEligible': not fault and (persistent(self.args) or not session(self.args)) and getattr(self.args, 'case', None) is None}
         if getattr(self.args, 'case', None) is not None:
             run['onlyCase'] = self.args.case
+        if getattr(self.args, 'build_choice', None) is not None:
+            run['buildChoice'] = self.args.build_choice
+            m.write_json(self.dir / 'metal-run.json', run)
         m.write_json(self.dir / 'run.json', run)
         m.write_text(self.dir / 'commit', (self.args.commit or 'none') + '\n')
         m.write_text(self.dir / 'dirty', '0\n')
@@ -517,18 +521,32 @@ class Driver:
             return
         build = m.read_json(inputs / 'build.json', {})
         features, profile = kernel_profile(self.args)
+        prebuilt = (inputs / 'manifest.json').exists() or build.get('builder') == 'mac'
+        if prebuilt:
+            try:
+                manifest = metal_prebuilt.verify(inputs, commit=self.args.commit, tools_commit=tools_commit(),
+                    mode=self.args.mode, features=features, suite=getattr(self.args, 'suite', None), staged=True)
+            except (ValueError, OSError, KeyError) as error:
+                self.event('prebuilt-refused', reason=str(error))
+                raise Finish(m.EXIT_CANCELLED, 'prebuilt refused: ' + str(error)) from None
+            shutil.copyfile(inputs / 'manifest.json', self.dir / 'manifest.json')
+            run = metal_prebuilt.record_builder(m.read_json(self.dir / 'run.json'), manifest)
+            m.write_json(self.dir / 'run.json', run)
+            m.write_json(self.dir / 'metal-run.json', run)
         if build.get('commit') != self.args.commit or build.get('profile') != profile or build.get('features') != features:
             raise Finish(m.EXIT_CANCELLED, f'build provenance differs from the requested {profile} commit')
         tests = inputs / 'test-binaries.img'
         if self.args.mode == 'tests' and (not tests.is_file() or build.get('testBinaries', {}).get('sha256') != metal_image.sha256(tests)):
             raise Finish(m.EXIT_CANCELLED, 'the test-binary disk differs from its build record')
-        if build.get('suite') != (getattr(self.args, 'suite', None) if self.args.mode == 'suite' else None):
+        if not prebuilt and build.get('suite') != (getattr(self.args, 'suite', None) if self.args.mode == 'suite' else None):
             raise Finish(m.EXIT_CANCELLED, 'the build staged fixtures for a different suite')
         self.delivery['build'] = build
         run = m.read_json(self.dir / 'run.json', {})
         run['build'] = {key: build[key] for key in ('commit', 'profile', 'features')}
         m.write_json(self.dir / 'run.json', run)
         self.event('build-delivered', commit=build.get('commit'), guard=build.get('guardTarget'))
+        if run.get('builder') == 'mac' or 'buildChoice' in run:
+            m.write_json(self.dir / 'metal-run.json', run)
         if (inputs / 'definition').is_dir():
             shutil.copytree(inputs / 'definition', self.dir / 'definition')
         for suite in suites(self.args):
@@ -2333,6 +2351,7 @@ def main():
         p.add_argument('--commit', default='')
         p.add_argument('--target', default='main')
         p.add_argument('--catchup', action='store_true')
+        p.add_argument('--build-choice', type=json.loads, help=argparse.SUPPRESS)
         p.add_argument('--task', default='')
         p.add_argument('--no-wait', action='store_true')
         p.add_argument('--inject', choices=('forceoff-fail', 'xhci-reset-device', 'xhci-short-read', 'disk-before-mount',

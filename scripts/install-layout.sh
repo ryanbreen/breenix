@@ -4,9 +4,18 @@ set -eu
 root=$1
 binaries=$2
 table=$3
+# An unprivileged image build records intended owners for debugfs to apply to
+# the completed filesystem. Ordinary mounted/root builds still chown directly.
+set_owner() {
+    if [ -n "${BREENIX_EXT2_OWNERS:-}" ]; then
+        printf '%s\t%s\n' "$1" "$2" >> "$BREENIX_EXT2_OWNERS"
+    else
+        chown "$1" "$2"
+    fi
+}
 while read -r kind path mode uid gid; do
     case "$kind" in
-        dir) mkdir -p "$root/$path"; chown "$uid:$gid" "$root/$path"; chmod "$mode" "$root/$path" ;;
+        dir) mkdir -p "$root/$path"; set_owner "$uid:$gid" "$root/$path"; chmod "$mode" "$root/$path" ;;
     esac
 done < "$table"
 for elf in "$binaries"/*.elf; do
@@ -20,7 +29,7 @@ for elf in "$binaries"/*.elf; do
                 # The old population step is retired below; copy straight from the ELF.
                 rm -f "$root/bin/$name" "$root/sbin/$name" "$root/usr/local/test/bin/$name"
                 cp "$elf" "$root/$destination/$name"
-                chown "0:$gid" "$root/$destination/$name"
+                set_owner "0:$gid" "$root/$destination/$name"
                 chmod "$mode" "$root/$destination/$name"
                 break ;;
         esac
@@ -51,7 +60,14 @@ if [ -d "$root/usr/local/test" ]; then
     rmdir "$root/usr/local/test"
 fi
 if [ -f "$root/usr/libexec/breenix/rust-std-child_test" ]; then
-    ln "$root/usr/libexec/breenix/rust-std-child_test" "$root/usr/libexec/breenix/rust-std-child_test$(printf '\377')"
+    if [ -n "${BREENIX_EXT2_OWNERS:-}" ]; then
+        # APFS refuses this byte in a host filename. Create the same fixture
+        # directly in ext2 after packing, retaining its shared inode.
+        printf 'link\t%s\t%s\377\n' "$root/usr/libexec/breenix/rust-std-child_test" \
+            "$root/usr/libexec/breenix/rust-std-child_test" >> "$BREENIX_EXT2_OWNERS"
+    else
+        ln "$root/usr/libexec/breenix/rust-std-child_test" "$root/usr/libexec/breenix/rust-std-child_test$(printf '\377')"
+    fi
 fi
 printf 'root:!:::::::\nnobody:*:::::::\nsshtest:!:::::::\n' > "$root/etc/shadow"
 # The users suite's fixture accounts (docs/users/design.md, section 6): test images
@@ -63,7 +79,7 @@ for fixture in ua:2001 ub:2002 uw:2003; do
     printf '%s:x:%s:\n' "$name" "$id" >> "$root/etc/group"
     printf '%s:!:::::::\n' "$name" >> "$root/etc/shadow"
     mkdir -p "$root/etc/breenix/test-users/$name"
-    chown "$id:$id" "$root/etc/breenix/test-users/$name"
+    set_owner "$id:$id" "$root/etc/breenix/test-users/$name"
     chmod 0700 "$root/etc/breenix/test-users/$name"
 done
 printf 'permit %%wheel as root\n' > "$root/etc/sudo.policy"
@@ -89,7 +105,7 @@ chmod 0644 "$root/etc/breenix/test-fixtures"
 while read -r kind path mode uid gid; do
     case "$kind" in
         file) [ -e "$root/$path" ] || : > "$root/$path"
-              chown "$uid:$gid" "$root/$path"; chmod "$mode" "$root/$path" ;;
+              set_owner "$uid:$gid" "$root/$path"; chmod "$mode" "$root/$path" ;;
     esac
 done < "$table"
 # Defaults contain no generated test credentials or per-boot intent.

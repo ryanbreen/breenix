@@ -66,7 +66,7 @@ fi
 
 # Both native and gate disks use the exact output of the local libc build.
 # Required-applet validation rejects an incomplete BusyBox build.
-python3 "$SCRIPT_DIR/userspace-manifest.py" check --arch "$ARCH"
+python3 "$PROJECT_ROOT/scripts/userspace-manifest.py" check --arch "$ARCH"
 "$SCRIPT_DIR/install-libc-busybox.sh" --check "$USERSPACE_DIR" "$PROJECT_ROOT/vendor/busybox/required-applets"
 
 echo "Creating ext2 disk image..."
@@ -169,7 +169,7 @@ if [[ ! -f "$TEST_SSH_DIR/id_ed25519" ]]; then
 fi
 
 # Check if we're on macOS or Linux
-if [[ "$(uname)" == "Darwin" ]]; then
+if [[ "$(uname)" == "Darwin" && "${BREENIX_REPRODUCIBLE_EXT2:-0}" != 1 ]]; then
     # macOS - use Docker
     if ! command -v docker &> /dev/null; then
         echo "Error: Docker is required on macOS to create ext2 images"
@@ -482,13 +482,17 @@ else
     fi
 
     # Mount and populate (requires root)
-    if [[ $EUID -ne 0 ]]; then
+    if [[ $EUID -ne 0 && "${BREENIX_REPRODUCIBLE_EXT2:-0}" != 1 ]]; then
         echo "Warning: Need root to mount and populate image"
         echo "Run with sudo or populate manually"
         exit 1
     fi
 
     MOUNT_DIR=$(mktemp -d)
+    if [[ $EUID -ne 0 && "${BREENIX_REPRODUCIBLE_EXT2:-0}" == 1 ]]; then
+        export BREENIX_EXT2_OWNERS="$MOUNT_DIR.owners"
+        : > "$BREENIX_EXT2_OWNERS"
+    fi
     MOUNTED=0
     cleanup_mount() {
         remove_test_ssh_temp
@@ -496,6 +500,7 @@ else
             umount "$MOUNT_DIR" || return
         fi
         rm -rf "$MOUNT_DIR"
+        rm -f "${BREENIX_EXT2_OWNERS:-}"
     }
     trap cleanup_mount EXIT
     if [[ "${BREENIX_REPRODUCIBLE_EXT2:-0}" == 1 ]]; then
@@ -537,8 +542,14 @@ GROUP
     cp "$TEST_SSH_DIR/id_ed25519" "$TEST_SSH_ROOT/id_ed25519"
     cp "$TEST_SSH_DIR/id_ed25519.pub" "$TEST_SSH_ROOT/home/.ssh/authorized_keys"
     cp "$TEST_SSH_DIR/id_ed25519.pub" "$MOUNT_DIR/root/.ssh/authorized_keys"
-    chown -R 0:0 "$MOUNT_DIR/etc/ssh" "$TEST_SSH_ROOT" "$MOUNT_DIR/root"
-    chown -R 2000:2000 "$TEST_SSH_ROOT/home"
+    if [[ $EUID -eq 0 ]]; then
+        chown -R 0:0 "$MOUNT_DIR/etc/ssh" "$TEST_SSH_ROOT" "$MOUNT_DIR/root"
+        chown -R 2000:2000 "$TEST_SSH_ROOT/home"
+    else
+        for path in "$TEST_SSH_ROOT/home" "$TEST_SSH_ROOT/home/.ssh" "$TEST_SSH_ROOT/home/.ssh/authorized_keys"; do
+            printf '2000:2000\t%s\n' "$path" >> "$BREENIX_EXT2_OWNERS"
+        done
+    fi
     chmod 755 "$MOUNT_DIR/etc/ssh" "$TEST_SSH_ROOT"
     chmod 700 "$TEST_SSH_ROOT/home" "$TEST_SSH_ROOT/home/.ssh" "$MOUNT_DIR/root" "$MOUNT_DIR/root/.ssh"
     chmod 600 "$TEST_SSH_ROOT/id_ed25519" "$TEST_SSH_ROOT/home/.ssh/authorized_keys" "$MOUNT_DIR/root/.ssh/authorized_keys"
@@ -740,6 +751,11 @@ INITJS
     # Unmount and cleanup
     if [[ "${BREENIX_REPRODUCIBLE_EXT2:-0}" == 1 ]]; then
         E2FSPROGS_FAKE_TIME=946684800 mke2fs -t ext2 -b "${BREENIX_EXT2_BLOCK_SIZE:-4096}" -U 7fabead6-ba12-4c3b-835b-e076230994d9 -E hash_seed=00000000-0000-0000-0000-000000000000 -F -d "$MOUNT_DIR" "$OUTPUT_FILE" >/dev/null 2>&1
+        if [[ $EUID -ne 0 ]]; then
+            python3 "$SCRIPT_DIR/ext2-owners.py" "$OUTPUT_FILE" "$BREENIX_EXT2_OWNERS" "$MOUNT_DIR"
+            rm -f "$BREENIX_EXT2_OWNERS"
+            unset BREENIX_EXT2_OWNERS
+        fi
         rm -rf "$MOUNT_DIR"
         trap remove_test_ssh_temp EXIT
     else
@@ -753,7 +769,7 @@ fi
 
 # Copy to testdata/ for version control
 if [[ -f "$OUTPUT_FILE" ]]; then
-    python3 "$SCRIPT_DIR/check-layout.py" "$OUTPUT_FILE"
+    python3 "$SCRIPT_DIR/check-layout.py" "$OUTPUT_FILE" --table "$PROJECT_ROOT/libs/libbreenix/src/layout.tsv"
     cp "$OUTPUT_FILE" "$TESTDATA_FILE"
     SIZE=$(ls -lh "$OUTPUT_FILE" | awk '{print $5}')
     echo ""
