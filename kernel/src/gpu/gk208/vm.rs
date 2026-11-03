@@ -194,13 +194,7 @@ impl Space {
         Ok(())
     }
     fn publish(&mut self, io: &mut impl Io) -> Result<(), &'static str> {
-        #[cfg(target_os = "none")]
-        let flush = super::timing::cpu_span(423);
         io.flush()?;
-        #[cfg(target_os = "none")]
-        drop(flush);
-        #[cfg(target_os = "none")]
-        let _invalidate = super::timing::cpu_span(424);
         io.invalidate(self.directory.range.start)?;
         Ok(())
     }
@@ -328,17 +322,9 @@ impl Space {
         result
     }
     pub fn unmap(&mut self, io: &mut impl Io, va: u64, size: u64) -> Result<(), &'static str> {
-        #[cfg(target_os = "none")]
-        let _unmap = super::timing::cpu_span(420);
-        #[cfg(target_os = "none")]
-        let check = super::timing::cpu_span(421);
         self.validate(va, Range { start: 0, size })?;
         self.present(va, size, true)?;
-        #[cfg(target_os = "none")]
-        drop(check);
         let result = (|| {
-            #[cfg(target_os = "none")]
-            let ptes = super::timing::cpu_span(422);
             // Clearing follows the same bounded PTE publisher as mapping.
             // A scalar write opens, drains and restores PRAMIN for each page.
             let zeros = [0; 256];
@@ -346,11 +332,7 @@ impl Space {
                 let count = ((size - offset) / PAGE).min(zeros.len() as u64) as usize;
                 self.write_ptes(io, va + offset, &zeros[..count])?;
             }
-            #[cfg(target_os = "none")]
-            drop(ptes);
             self.publish(io)?;
-            #[cfg(target_os = "none")]
-            let _account = super::timing::cpu_span(425);
             self.account_pages(va, size, false);
             Ok(())
         })();
@@ -380,16 +362,10 @@ impl Space {
         alias: Option<u64>,
     ) -> Result<Vec<u64>, &'static str> {
         if !self.usable() { return Err("VM retained after uncertain device operation"); }
-        #[cfg(target_os = "none")]
-        let _reclaim = super::timing::cpu_span(430);
-        #[cfg(target_os = "none")]
-        let scan = super::timing::cpu_span(431);
         let mut empty = Vec::new();
         empty.try_reserve_exact(self.tables.len()).map_err(|_| "VM reclamation scratch allocation")?;
         empty.extend(self.tables.iter().filter(|(_, _, pages, _)| *pages == 0)
             .map(|(index, _, _, _)| *index));
-        #[cfg(target_os = "none")]
-        drop(scan);
         if empty.is_empty() { return Ok(empty); }
         let result = (|| {
             for &index in &empty {

@@ -544,13 +544,9 @@ fn fill_pattern(span: &mut [u8], at: usize, pattern: u32) {
 
 impl Drop for Pages {
     fn drop(&mut self) {
-        #[cfg(target_arch = "x86_64")]
-        let _pages = crate::gk208::timing::cpu_span(440);
         if let Some(limits) = self.charge.take() {
             limits.release_gpu_bytes(self.bytes() as u64);
         }
-        #[cfg(target_arch = "x86_64")]
-        let _frames = crate::gk208::timing::cpu_span(441);
         for frame in self.frames.drain(..) {
             frame_allocator::deallocate_frame(frame);
         }

@@ -9,8 +9,6 @@ use super::*;
 /// outstanding draw to the timer-driven worker can delay the next window front
 /// beyond its display period. Virtual backends retain their blocking policy.
 fn replay_request(serial: u64, request: Request, ctx: u32, holds: &[u32], reading: &[u32]) -> Result<Done, i64> {
-    #[cfg(target_arch = "x86_64")]
-    let _span = crate::gk208::timing::cpu_span(303);
     send_sync(serial, request, ctx, holds, reading).map_err(|(e, _)| e)?;
     await_sync_traced(serial,
         #[cfg(target_arch = "x86_64")] None,
@@ -227,8 +225,6 @@ impl Target {
 
     /// Wait for accepted renders before sampling, replay or capture; invalid contents return EIO.
     pub fn ready(&self) -> Result<(), i32> {
-        #[cfg(target_arch = "x86_64")]
-        let _span = crate::gk208::timing::cpu_span(300);
         wait_for(None, true, |c| {
             let Some(r) = c.resources.get(&self.id) else { return Some(Err(EIO)); };
             if r.lost { return Some(Err(EIO)); }
@@ -259,8 +255,6 @@ impl Target {
     }
 
     fn execute(&self, words: &[u32], source: Option<&Target>) -> Result<(), i64> {
-        #[cfg(target_arch = "x86_64")]
-        let _span = crate::gk208::timing::cpu_span(301);
         let ctx = self.context.id;
         if let Some(src) = source {
             let serial = with_core(|c| c.serial()).ok_or(ENODEV)?;
