@@ -65,6 +65,14 @@ class RetainedVerdict(unittest.TestCase):
             self.assertIsNotNone(result, 'missing GT 710 evidence must fail explicitly')
             self.assertFalse(result['passed'])
 
+    def test_driver_finalization_does_not_require_a_post_close_receipt(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self.capture(directory)
+            (directory / 'ended').unlink()
+            result = metal_score.score(directory)['milestones'].get('metal-gt710/breengel-full')
+            self.assertIsNone(result, 'the driver writes closure after its startup milestone verdict')
+
     def test_local_replay_preserves_runtime_identity_and_refuses_runtime_changes(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
