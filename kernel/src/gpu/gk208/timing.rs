@@ -31,6 +31,7 @@ pub struct Recorder {
     owner: u64,
     draw: u64,
     rows: Vec<[u64; 5]>,
+    cpu_costs: Vec<[u64; 4]>,
     dropped: u64,
     readbacks: Vec<[u64; 8]>,
     blocked: Vec<[u64; 7]>,
@@ -47,7 +48,7 @@ pub struct Recorder {
     provenance: scanout_trace::Scanout,
 }
 impl Recorder {
-    pub const fn new() -> Self { Self { owner: 0, draw: 0, rows: Vec::new(), dropped: 0, readbacks: Vec::new(), blocked: Vec::new(), vblank: [[0; 2]; 2], vblank_used: 0, submits: submit_cost::Totals::new(), submit_bytes: Vec::new(), admission_waits: Vec::new(), gpu_times: Vec::new(), gpu_clocks: Vec::new(), gpu_stats: [[0; 18]; 4], gpu_groups: Vec::new(), scanout: [0; 5], provenance: scanout_trace::Scanout::new() } }
+    pub const fn new() -> Self { Self { owner: 0, draw: 0, rows: Vec::new(), cpu_costs: Vec::new(), dropped: 0, readbacks: Vec::new(), blocked: Vec::new(), vblank: [[0; 2]; 2], vblank_used: 0, submits: submit_cost::Totals::new(), submit_bytes: Vec::new(), admission_waits: Vec::new(), gpu_times: Vec::new(), gpu_clocks: Vec::new(), gpu_stats: [[0; 18]; 4], gpu_groups: Vec::new(), scanout: [0; 5], provenance: scanout_trace::Scanout::new() } }
     /// Window observations only; retained even without detailed GPU timing.
     pub fn scanout_result(&mut self, confirmed: bool) {
         self.scanout[usize::from(!confirmed)] += 1;
@@ -95,6 +96,10 @@ impl Recorder {
         self.draw += 1;
         self.draw
     }
+    pub fn cpu_cost(&mut self, owner: u64, kind: u64, start: u64, end: u64) {
+        if self.cpu_costs.len() == MAX_ROWS || self.cpu_costs.try_reserve(1).is_err() { self.dropped += 1; return; }
+        self.cpu_costs.push([owner, kind, start, end.saturating_sub(start)]);
+    }
     pub fn finish(&mut self, owner: u64, draw: u64, kind: u64, start: u64, end: u64) {
         if owner == 0 || owner != self.owner { return; }
         if self.rows.len() == MAX_ROWS || self.rows.try_reserve(1).is_err() { self.dropped += 1; return; }
@@ -137,8 +142,8 @@ impl Recorder {
         }
     }
     pub fn drain(&mut self, batch: u64) -> Option<String> {
-        if self.rows.is_empty() && self.readbacks.is_empty() && self.blocked.is_empty() && self.dropped == 0 && self.vblank_used == 0 && self.submits.is_empty() && self.gpu_times.is_empty() && self.gpu_groups.is_empty() && self.gpu_stats.iter().all(|s|s[0]==0) && self.scanout == [0; 5] { return None; }
-        let capacity = self.rows.len().checked_mul(128)?
+        if self.rows.is_empty() && self.cpu_costs.is_empty() && self.readbacks.is_empty() && self.blocked.is_empty() && self.dropped == 0 && self.vblank_used == 0 && self.submits.is_empty() && self.gpu_times.is_empty() && self.gpu_groups.is_empty() && self.gpu_stats.iter().all(|s|s[0]==0) && self.scanout == [0; 5] { return None; }
+        let capacity = self.rows.len().checked_mul(128)?.checked_add(self.cpu_costs.len().checked_mul(128)?)?
             .checked_add(self.readbacks.len().checked_mul(192)?)?
             .checked_add(self.blocked.len().checked_mul(168)?)?.checked_add(self.submits.len().checked_mul(1024)?)?.checked_add(self.submit_bytes.len().checked_mul(192)?)?
             .checked_add(self.admission_waits.len().checked_mul(256)?)?.checked_add(self.gpu_times.len().checked_mul(160)?)?.checked_add(self.gpu_clocks.len().checked_mul(192)?)?.checked_add(self.gpu_groups.len().checked_mul(800)?)?.checked_add(4096)?;
@@ -151,6 +156,14 @@ impl Recorder {
         }
         self.dropped = 0;
         text.push(']');
+        if !self.cpu_costs.is_empty() {
+            text.push_str(",\"cpu_cost_fields\":[\"tid\",\"slot\",\"start_ns\",\"elapsed_ns\"],\"cpu_costs\":[");
+            for (i, row) in self.cpu_costs.drain(..).enumerate() {
+                if i != 0 { text.push(','); }
+                let _ = write!(text, "[{},{},{},{}]", row[0], row[1], row[2], row[3]);
+            }
+            text.push(']');
+        }
         if self.vblank_used != 0 {
             text.push_str(",\"vblank_samples\":[");
             for (n, row) in self.vblank[..self.vblank_used].iter().enumerate() {
@@ -277,6 +290,17 @@ mod runtime {
         crate::per_cpu::preempt_enable();
         result
     }
+    pub struct CpuSpan { tid: u64, kind: u64, start: u64 }
+    impl Drop for CpuSpan {
+        fn drop(&mut self) { cpu_cost(self.tid, self.kind, self.start, crate::signal::monotonic_nanos()); }
+    }
+    pub fn cpu_span(kind: u64) -> Option<CpuSpan> {
+        enabled().then(|| CpuSpan { tid: crate::per_cpu::current_thread_id_lock_free().unwrap_or(0),
+            kind, start: crate::signal::monotonic_nanos() })
+    }
+    pub fn cpu_cost(owner: u64, kind: u64, start: u64, end: u64) {
+        if enabled() { with(|r| r.cpu_cost(owner, kind, start, end)); }
+    }
     pub fn begin_draw(owner: u64) { if enabled() { with(|r| { r.begin_draw(owner); }); } }
     pub fn scanout_result(confirmed: bool) { with(|r| r.scanout_result(confirmed)); }
     pub fn scanout_wait(pending: bool, elapsed: u64) { with(|r| r.scanout_wait(pending, elapsed)); }
@@ -379,4 +403,4 @@ mod runtime {
     }
 }
 #[cfg(target_os = "none")]
-pub use runtime::{scanout_binding, scanout_latched, scanout_published, scanout_snapshot, scanout_wait, scanout_result, enable, enabled, begin_draw, phase, export, vblank_sample, gpu_time, gpu_group, Guard, Readback, Submit};
+pub use runtime::{cpu_span, cpu_cost, scanout_binding, scanout_latched, scanout_published, scanout_snapshot, scanout_wait, scanout_result, enable, enabled, begin_draw, phase, export, vblank_sample, gpu_time, gpu_group, Guard, Readback, Submit};

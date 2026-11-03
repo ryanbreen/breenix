@@ -69,21 +69,29 @@ impl Recorder {
 mod runtime {
     use super::*;
     static DATA: Recorder = Recorder::new();
-    pub struct Guard { slot: Slot, start: u64 }
+    pub struct Guard { slot: Slot, start: u64, owner: u64 }
     impl Drop for Guard {
-        fn drop(&mut self) { DATA.record(self.slot, self.start, crate::signal::monotonic_nanos()); }
+        fn drop(&mut self) {
+            let end = crate::signal::monotonic_nanos();
+            DATA.record(self.slot, self.start, end);
+            super::super::timing::cpu_cost(self.owner, self.slot as u64, self.start, end);
+        }
     }
     pub fn phase(slot: Slot) -> Option<Guard> {
-        DATA.enabled().then(|| Guard { slot, start: crate::signal::monotonic_nanos() })
+        DATA.enabled().then(|| Guard { slot, start: crate::signal::monotonic_nanos(), owner: if super::super::timing::enabled() { crate::per_cpu::current_thread_id_lock_free().unwrap_or(0) } else { 0 } })
     }
     /// Publication-to-observed-success latency, including GPU queueing and
     /// reaper scheduling. Failed or reset requests do not record execution.
-    pub struct Execution { slot: Slot, start: u64 }
+    pub struct Execution { slot: Slot, start: u64, owner: u64 }
     impl Execution {
-        pub fn finish(self) { DATA.record(self.slot, self.start, crate::signal::monotonic_nanos()); }
+        pub fn finish(self) {
+            let end = crate::signal::monotonic_nanos();
+            DATA.record(self.slot, self.start, end);
+            super::super::timing::cpu_cost(self.owner, 100 + self.slot as u64, self.start, end);
+        }
     }
     pub fn execution(slot: Slot) -> Option<Execution> {
-        DATA.enabled().then(|| Execution { slot, start: crate::signal::monotonic_nanos() })
+        DATA.enabled().then(|| Execution { slot, start: crate::signal::monotonic_nanos(), owner: if super::super::timing::enabled() { crate::per_cpu::current_thread_id_lock_free().unwrap_or(0) } else { 0 } })
     }
     pub fn for_op(op: u64) -> Option<Guard> { phase(slot_for_op(op)?) }
     pub fn snapshot() -> [u64; WORDS] { DATA.snapshot() }
