@@ -75,7 +75,10 @@ class RetainedVerdict(unittest.TestCase):
             path = directory / 'gt710-breengel-full.json'
             path.write_text(json.dumps(records))
             host = dict(API, capture_serial=lambda p: serial)
-            with patch.object(metal_score.runpy, 'run_path', return_value=host):
+            run_path = metal_score.runpy.run_path
+            def load(path):
+                return host if str(path).endswith('/scripts/metal/gt710-suite') else run_path(path)
+            with patch.object(metal_score.runpy, 'run_path', side_effect=load):
                 result = metal_score.score(directory)['milestones']['metal-gt710/breengel-full']
                 self.assertTrue(result['passed'], result)
                 records['cases'][0]['reason'] = 'altered result'
