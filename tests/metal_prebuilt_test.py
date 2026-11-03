@@ -112,6 +112,41 @@ class ManifestTest(unittest.TestCase):
         refusal = json.loads((self.root / '.local/state/breenix-metal/prebuilt-refusals.jsonl').read_text())
         self.assertIn('stub.efi', refusal['reason'])
 
+    def test_live_admission_refusal_precedes_launch_and_delivery(self):
+        run = load_script('metal-run')
+        args = SimpleNamespace(mode='suite', suite='console', inject=None, catchup=True)
+        with tempfile.TemporaryDirectory() as temporary:
+            tools = Path(temporary)
+            (tools / 'COMMIT').write_text(self.tools)
+            with patch.object(run, 'HERE', tools), \
+                 patch.object(run, 'prebuilt_path', return_value=self.root), \
+                 patch.object(run, 'host_env', return_value={'BUILD_REPO': '/repo'}), \
+                 patch.object(run.Path, 'home', return_value=tools), \
+                 patch.object(run, 'in_metal', return_value=SimpleNamespace(stdout=self.tools)) as remote, \
+                 patch.object(run, 'admit_prebuilt', side_effect=ValueError('deleted metal lane')) as admit:
+                with self.assertRaisesRegex(SystemExit, 'deleted metal lane'):
+                    run.verify_prebuilt({'BUILD_REPO': '/repo'}, '20261103T000000Z-metal', self.commit, args)
+                admit.assert_called_once_with({'BUILD_REPO': '/repo'}, self.commit, True)
+                self.assertEqual(remote.call_count, 1)
+                self.assertEqual(run.deliver_prebuilt('20261103T000001Z-metal', self.commit,
+                                 '20261103T000000Z-metal', 'suite', suite='console', catchup=True), 1)
+                self.assertEqual(remote.call_args.args[3], 'inputs-failed')
+
+    def test_mac_bootstrap_executes_the_committed_entry_point(self):
+        local = load_script('metal-build-local')
+        with tempfile.TemporaryDirectory() as temporary:
+            repo = Path(temporary)
+            entry = repo / 'scripts/metal/metal-build-local'
+            entry.parent.mkdir(parents=True)
+            entry.write_text('print("committed tools entry point")\n')
+            subprocess.run(['git', 'init', '-q', str(repo)], check=True)
+            subprocess.run(['git', '-C', str(repo), 'add', '.'], check=True)
+            subprocess.run(['git', '-C', str(repo), '-c', 'user.name=Test', '-c', 'user.email=test@example.com',
+                            'commit', '-qm', 'tools fixture'], check=True)
+            entry.write_text('raise RuntimeError("dirty tools executed")\n')
+            with patch.object(local, '__file__', str(entry)), patch.object(sys, 'argv', [str(entry)]):
+                self.assertEqual(local.bootstrap(), 0)
+
     def test_service_verifies_before_root_staging_and_records_mac_builder(self):
         for changed in (False, True):
             with self.subTest(changed=changed), tempfile.TemporaryDirectory() as temporary:
@@ -150,6 +185,42 @@ class ManifestTest(unittest.TestCase):
 
 
 class HostRecordTest(StateTest):
+    def test_prebuilt_rechecks_deleted_origin_lane(self):
+        run = load_script('metal-run')
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            repo, origin = root / 'repo', root / 'origin'
+            subprocess.run(['git', 'init', '-q', '-b', 'main', str(repo)], check=True)
+            subprocess.run(['git', 'init', '-q', '--bare', str(origin)], check=True)
+            def git(*args):
+                return subprocess.check_output(['git', '-C', str(repo), *args], text=True).strip()
+            git('config', 'user.name', 'Test')
+            git('config', 'user.email', 'test@example.com')
+            (repo / 'scripts').mkdir()
+            (repo / 'scripts/effort-target-guard.py').write_bytes(
+                (Path(__file__).resolve().parents[1] / 'scripts/effort-target-guard.py').read_bytes())
+            (repo / 'docs/efforts').mkdir(parents=True)
+            for name in ('path.json', 'metal.json'):
+                (repo / 'docs/efforts' / name).write_text('{"efforts": []}')
+            git('add', '.')
+            git('commit', '-qm', 'policy')
+            git('remote', 'add', 'origin', str(origin))
+            git('push', '-q', 'origin', 'main')
+            git('checkout', '-qb', 'metal-fixture/test')
+            (repo / 'payload').touch()
+            git('add', '.')
+            git('commit', '-qm', 'payload')
+            sha = git('rev-parse', 'HEAD')
+            git('push', '-q', 'origin', 'metal-fixture/test')
+            def local(env, *command, **kwargs):
+                return subprocess.run(command, **kwargs)
+            with patch.object(run, 'in_build', side_effect=local), \
+                 patch.dict(os.environ, BREENIX_TARGET_POLICY_CHECKED='x86-metal:' + sha):
+                run.admit_prebuilt({'BUILD_REPO': str(repo)}, sha)
+                git('push', '-q', 'origin', '--delete', 'metal-fixture/test')
+                with self.assertRaisesRegex(ValueError, 'not first-parent reachable'):
+                    run.admit_prebuilt({'BUILD_REPO': str(repo)}, sha)
+
     def test_explicit_host_build_keeps_existing_record_schema(self):
         args = SimpleNamespace(id='20261103T000000Z-metal', mode='default', payload='image', target='main',
                                task='', commit='a' * 40, inject=None, suite=None, nmi=False)

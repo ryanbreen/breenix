@@ -18,13 +18,9 @@ import runpy
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import tomllib
-
-sys.path.insert(0, str(Path(__file__).resolve().parent))
-import metal_prebuilt
-import metal_root
-
 
 def run(command, **options):
     return subprocess.run(command, check=True, **options)
@@ -105,6 +101,8 @@ def build(args, repo, cache):
         if archive.wait() or extracted.returncode:
             raise ValueError('could not materialize the tools commit')
         helper = load_build(tools / 'scripts/metal/metal-build')
+        if args.features not in helper.PROFILES:
+            raise ValueError('--features is not supported by the selected tools commit')
         if args.suite:
             sequence = runpy.run_path(str(tools / 'scripts/suite-sequence.py'))
             def read(relative):
@@ -171,17 +169,29 @@ def build(args, repo, cache):
 
 
 def main():
+    # This entry point runs only inside the committed scripts snapshot. Imports,
+    # feature policy and build orchestration therefore share toolsCommit.
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--source-repo', required=True, help=argparse.SUPPRESS)
     parser.add_argument('--host', required=True, help='boot host SSH alias')
     parser.add_argument('--sha', default='origin/main')
     parser.add_argument('--tools-commit', default='HEAD')
     parser.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console', 'tests'), default='default')
     parser.add_argument('--suite')
-    parser.add_argument('--features', default='', choices=tuple(load_build(Path(__file__).with_name('metal-build')).PROFILES))
+    parser.add_argument('--features', default='')
     parser.add_argument('--jobs', type=int, choices=range(1, 5), default=2)
     parser.add_argument('--rust-fork', default=str(Path(__file__).resolve().parents[2] / 'rust-fork'))
     parser.add_argument('--catchup', action='store_true')
     args = parser.parse_args()
+    for name in ('metal-build-local', 'metal_prebuilt.py', 'metal_root.py'):
+        committed = run(['git', '-C', args.source_repo, 'show',
+                         args.tools_commit + ':scripts/metal/' + name], capture_output=True).stdout
+        if Path(__file__).with_name(name).read_bytes() != committed:
+            raise ValueError('Mac tools must run from the selected committed snapshot: ' + name)
+    global metal_prebuilt, metal_root
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    import metal_prebuilt
+    import metal_root
     # Let each materialized workspace select its own checked-in compiler pin.
     os.environ.pop('RUSTUP_TOOLCHAIN', None)
     if not re.fullmatch(r'[A-Za-z0-9_.@-]+', args.host) or args.host.startswith('-'):
@@ -209,13 +219,36 @@ def main():
         lock.truncate()
         lock.write(json.dumps(dict(pid=os.getpid(), started=time.time(), jobs=args.jobs)) + '\n')
         lock.flush()
-        repo = Path(git(Path(__file__).resolve().parent, 'rev-parse', '--show-toplevel'))
+        repo = Path(args.source_repo)
         build(args, repo, cache)
     return 0
 
 
+def bootstrap():
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument('--tools-commit', default='HEAD')
+    parser.add_argument('--source-repo')
+    parser.add_argument('--rust-fork')
+    options, _ = parser.parse_known_args()
+    if options.source_repo:
+        return main()
+    repo = Path(git(Path(__file__).resolve().parent, 'rev-parse', '--show-toplevel'))
+    commit = git(repo, 'rev-parse', options.tools_commit + '^{commit}')
+    with tempfile.TemporaryDirectory(prefix='breenix-metal-tools-') as temporary:
+        archive = subprocess.Popen(['git', '-C', str(repo), 'archive', commit, 'scripts'], stdout=subprocess.PIPE)
+        extracted = subprocess.run(['tar', '-C', temporary, '-xf', '-'], stdin=archive.stdout)
+        archive.stdout.close()
+        if archive.wait() or extracted.returncode:
+            raise ValueError('could not materialize the tools entry point')
+        command = [sys.executable, str(Path(temporary) / 'scripts/metal/metal-build-local'),
+                   *sys.argv[1:], '--source-repo', str(repo), '--tools-commit', commit]
+        if not options.rust_fork:
+            command += ['--rust-fork', str(repo / 'rust-fork')]
+        return subprocess.run(command).returncode
+
+
 if __name__ == '__main__':
     try:
-        sys.exit(main())
+        sys.exit(bootstrap())
     except (ValueError, OSError, subprocess.CalledProcessError) as error:
         sys.exit('metal-build-local: ' + str(error))

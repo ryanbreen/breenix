@@ -384,6 +384,36 @@ def prebuilt_path(artifact_id):
     return Path.home() / '.local/state/breenix-metal/prebuilt' / artifact_id
 
 
+def admit_prebuilt(env, sha, catchup=False):
+    """Read live origin policy and refs, just as a new host build does."""
+    script = '''
+import os, pathlib, subprocess, sys, tempfile
+repo, sha, catchup = sys.argv[1:]
+def git(*args):
+    return subprocess.check_output(['git', '-C', repo, *args], text=True).strip()
+policy = git('ls-remote', 'origin', 'refs/heads/main').split()[0]
+git('fetch', '--no-tags', '--no-write-fetch-head', 'origin', policy, sha)
+with tempfile.TemporaryDirectory(prefix='metal-admission-') as temporary:
+    root = pathlib.Path(temporary)
+    clone = root / 'source'
+    subprocess.run(['git', 'clone', '--shared', '--quiet', '--no-checkout', repo, str(clone)], check=True)
+    subprocess.run(['git', '-C', str(clone), 'remote', 'set-url', 'origin', git('remote', 'get-url', 'origin')], check=True)
+    subprocess.run(['git', '-C', str(clone), 'checkout', sha, '--', 'docs/efforts'], check=True)
+    guard = root / 'guard.py'
+    guard.write_text(git('show', policy + ':scripts/effort-target-guard.py') + '\\n')
+    environment = dict(os.environ)
+    environment.pop('BREENIX_TARGET_POLICY_CHECKED', None)
+    environment.pop('BREENIX_CATCHUP', None)
+    result = subprocess.run([sys.executable, str(guard), '--repo', str(clone), '--commit', sha,
+                             '--target', 'x86-metal', *(['--catchup'] if catchup == '1' else [])], env=environment)
+    sys.exit(result.returncode)
+'''
+    result = in_build(env, 'python3', '-c', script, env['BUILD_REPO'], sha, '1' if catchup else '0',
+                      capture_output=True, text=True)
+    if result.returncode:
+        raise ValueError('fresh effort-target guard refused: ' + result.stdout + result.stderr)
+
+
 def verify_prebuilt(env, artifact_id, sha, args):
     """Refuse before launch/staging; retain a clear private record on every mismatch."""
     try:
@@ -393,8 +423,10 @@ def verify_prebuilt(env, artifact_id, sha, args):
         if (HERE / 'COMMIT').read_text().strip() != deployed:
             raise ValueError('host and service toolsCommit differ')
         features = kernel_features(args.mode, args.suite, args.inject, getattr(args, 'gt710_category', None))
-        return metal_prebuilt.verify(source, commit=sha, tools_commit=deployed, mode=args.mode,
-                                      features=features[1:] if features else [], suite=args.suite)
+        manifest = metal_prebuilt.verify(source, commit=sha, tools_commit=deployed, mode=args.mode,
+                                         features=features[1:] if features else [], suite=args.suite)
+        admit_prebuilt(env, sha, bool(getattr(args, 'catchup', False)) or catchup_from_env())
+        return manifest
     except (ValueError, OSError, KeyError, subprocess.CalledProcessError) as error:
         record = Path.home() / '.local/state/breenix-metal/prebuilt-refusals.jsonl'
         record.parent.mkdir(parents=True, exist_ok=True)
@@ -404,7 +436,7 @@ def verify_prebuilt(env, artifact_id, sha, args):
         raise SystemExit('prebuilt refused before staging: ' + str(error)) from None
 
 
-def deliver_prebuilt(boot_id, sha, artifact_id, mode, features=None, suite=None):
+def deliver_prebuilt(boot_id, sha, artifact_id, mode, features=None, suite=None, catchup=False):
     """Detached verified handoff; the existing driver owns everything after inputs-ready."""
     validate_id(boot_id)
     env = host_env()
@@ -417,6 +449,7 @@ def deliver_prebuilt(boot_id, sha, artifact_id, mode, features=None, suite=None)
             raise ValueError('host and service toolsCommit differ')
         metal_prebuilt.verify(source, commit=sha, tools_commit=deployed, mode=mode,
                               features=[features] if features else [], suite=suite)
+        admit_prebuilt(env, sha, catchup)
         runpy.run_path(str(HERE / 'resting_host.py'))['preempt'](boot_id)
         in_metal(env, 'rm', '-rf', stage, check=True)
         in_metal(env, 'mkdir', '-p', stage, check=True)
@@ -596,7 +629,7 @@ def main():
     if args.command == '_build':
         return build(args.id, args.sha, args.features, args.suite, args.tools_profile, args.catchup)
     if args.command == '_prebuilt':
-        return deliver_prebuilt(args.id, args.sha, args.prebuilt, args.mode, args.features, args.suite)
+        return deliver_prebuilt(args.id, args.sha, args.prebuilt, args.mode, args.features, args.suite, args.catchup)
     env = host_env()
     if args.command == 'follow':
         return follow(env, args.id)
