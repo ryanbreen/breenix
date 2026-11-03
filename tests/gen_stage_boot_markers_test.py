@@ -26,6 +26,9 @@ class GeneratorCheckTest(unittest.TestCase):
             self.assertNotEqual(check().returncode, 0, 'missing x86 table accepted')
             (root / X86).write_text('stale\n')
             self.assertNotEqual(check().returncode, 0, 'stale x86 table accepted')
+            shutil.copy2(ROOT / X86, root / X86)
+            valid = check()
+            self.assertEqual(valid.returncode, 0, valid.stdout + valid.stderr)
 
 
 if __name__ == '__main__':
