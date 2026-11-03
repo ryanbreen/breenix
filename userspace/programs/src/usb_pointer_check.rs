@@ -277,14 +277,7 @@ impl Layout {
     }
 }
 
-/// The screen the pointer moves over: the firmware framebuffer on x86-64, the GPU core's
-/// current display mode on ARM64.
-#[cfg(target_arch = "x86_64")]
-fn screen_size() -> Result<(u32, u32), String> {
-    graphics::fbinfo().map(|info| (info.width as u32, info.height as u32)).map_err(|e| format!("{e:?}"))
-}
-
-#[cfg(target_arch = "aarch64")]
+/// The GPU core's current display mode.
 fn screen_size() -> Result<(u32, u32), String> {
     let (r, modes) = libbreenix::gpu::modes();
     if r != 0 {
