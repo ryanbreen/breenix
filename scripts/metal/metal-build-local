@@ -1,0 +1,212 @@
+#!/usr/bin/env python3
+"""Build and upload a metal payload on Apple Silicon. This command never boots.
+
+metal-build-local --host HOST [--sha origin/main] [--tools-commit HEAD]
+                  [--mode suite --suite console] [--features testing] [--jobs 2]
+                  [--rust-fork DIR] [--catchup]
+"""
+import argparse
+import fcntl
+import importlib.machinery
+import importlib.util
+import json
+import os
+from pathlib import Path
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import time
+import tomllib
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import metal_prebuilt
+import metal_root
+
+
+def run(command, **options):
+    return subprocess.run(command, check=True, **options)
+
+
+def git(repo, *arguments):
+    return run(['git', '-C', str(repo), *arguments], capture_output=True, text=True).stdout.strip()
+
+
+def load_build(path):
+    loader = importlib.machinery.SourceFileLoader('metal_build', str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    module = importlib.util.module_from_spec(spec)
+    loader.exec_module(module)
+    return module
+
+
+def prerequisites():
+    if sys.platform != 'darwin' or platform.machine() != 'arm64':
+        raise ValueError('metal-build-local requires Apple Silicon macOS')
+    e2fs = metal_root.require_e2fsprogs('mke2fs', 'debugfs')
+    brew = shutil.which('brew')
+    if not brew:
+        raise ValueError('Homebrew required: brew install e2fsprogs llvm nasm make')
+    # BusyBox needs GNU make. Its subprocesses invoke make by name too.
+    make_prefix = run([brew, '--prefix', 'make'], capture_output=True, text=True).stdout.strip()
+    os.environ['PATH'] = os.pathsep.join([str(Path(make_prefix) / 'libexec/gnubin'),
+                                        str(Path(e2fs[0]).parent), os.environ['PATH']])
+    for name in ('git', 'ssh', 'tar', 'rustup', 'cargo', 'rustc', 'nasm', 'make', 'ssh-keygen'):
+        if not shutil.which(name):
+            raise ValueError(f'missing prerequisite: {name}; brew install e2fsprogs llvm nasm make; install rustup')
+    version = run(['make', '--version'], capture_output=True, text=True).stdout
+    if not version.startswith('GNU Make'):
+        raise ValueError('GNU make required: brew install make')
+
+
+def upload(out, host, artifact_id):
+    # Publish atomically only after the entire stream arrived. No Incus, service,
+    # deployed tools or machine lease is touched by this build-only command.
+    base = '"$HOME/.local/state/breenix-metal/prebuilt"'
+    partial = f'{base}/{artifact_id}.upload'
+    destination = f'{base}/{artifact_id}'
+    command = (f'set -eu; mkdir -p {base}; test ! -e {destination}; mkdir {partial}; '
+               f'tar -C {partial} -xf -; mv {partial} {destination}')
+    sender = subprocess.Popen(['tar', '-C', str(out), '-cf', '-', '.'], stdout=subprocess.PIPE,
+                              env=dict(os.environ, COPYFILE_DISABLE='1'))
+    try:
+        receiver = subprocess.run(['ssh', '-o', 'BatchMode=yes', host, command], stdin=sender.stdout)
+    finally:
+        sender.stdout.close()
+    if sender.wait() or receiver.returncode:
+        raise ValueError('prebuilt upload failed; incomplete uploads are never accepted')
+
+
+def build(args, repo, cache):
+    started = time.monotonic()
+    git(repo, 'fetch', '--no-tags', 'origin', 'main')
+    commit = git(repo, 'rev-parse', args.sha + '^{commit}')
+    tools_commit = git(repo, 'rev-parse', args.tools_commit + '^{commit}')
+    policy_commit = git(repo, 'rev-parse', 'origin/main')
+    artifact_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
+    clone = cache / f'breenix-metal-{artifact_id.lower()}'
+    out = cache / f'breenix-metal-{artifact_id.lower()}-out'
+    tmp = cache / f'breenix-metal-{artifact_id.lower()}-tmp'
+    tools = tmp / 'tools'
+    if any(path.exists() for path in (clone, out, tmp)):
+        raise ValueError('build id already exists; retry with a fresh second')
+    tmp.mkdir(parents=True)
+    tools.mkdir()
+    try:
+        git(repo, 'clone', '--shared', '--quiet', str(repo), str(clone))
+        git(clone, 'checkout', '--quiet', '--detach', commit)
+        git(clone, 'remote', 'set-url', 'origin', git(repo, 'remote', 'get-url', 'origin'))
+        # Build recipes and EFI sources come from the explicit tools commit.
+        archive = subprocess.Popen(['git', '-C', str(repo), 'archive', tools_commit, 'scripts'], stdout=subprocess.PIPE)
+        extracted = subprocess.run(['tar', '-C', str(tools), '-xf', '-'], stdin=archive.stdout)
+        archive.stdout.close()
+        if archive.wait() or extracted.returncode:
+            raise ValueError('could not materialize the tools commit')
+        helper = load_build(tools / 'scripts/metal/metal-build')
+        guard = tmp / 'effort-target-guard.py'
+        guard.write_text(git(repo, 'show', policy_commit + ':scripts/effort-target-guard.py') + '\n')
+        check = subprocess.run([sys.executable, str(guard), '--repo', str(clone), '--commit', commit,
+                                '--target', 'x86-metal', *(['--catchup'] if args.catchup else [])])
+        if check.returncode:
+            raise ValueError('the freshly fetched origin/main effort-target guard refused the commit')
+        fork = Path(args.rust_fork).resolve()
+        run([str(clone / 'scripts/rust-fork.sh'), 'snapshot', str(fork), str(clone / 'gate-rust-fork')])
+        link = clone / 'rust-fork'
+        if link.is_symlink():
+            link.unlink()
+        link.symlink_to('gate-rust-fork')
+        run([str(clone / 'scripts/rust-fork.sh'), 'verify'])
+        # Preflight the selected commit's toolchains and all native cross tools.
+        for workspace in (clone, clone / 'userspace/programs', clone / 'libs/libbreenix-libc',
+                          tools / 'scripts/metal/efi-stub'):
+            run(['rustc', '-Vv'], cwd=workspace, capture_output=True)
+        run([str(clone / 'scripts/breenix-cc'), '--arch', 'x86_64', '--tool-dir'],
+            cwd=clone, capture_output=True)
+        identity = {name: run(command, cwd=clone, capture_output=True, text=True).stdout.strip()
+                    for name, command in dict(rustc=['rustc', '-Vv'], cargo=['cargo', '-V']).items()}
+        identity['stubRustc'] = run(['rustc', '-Vv'], cwd=tools / 'scripts/metal/efi-stub',
+                                   capture_output=True, text=True).stdout.strip()
+        rust_pin = tomllib.loads((clone / 'rust-fork.toml').read_text())
+        os.environ.update(CARGO_BUILD_JOBS=str(args.jobs), CARGO_HOME=str(cache / 'cargo-home'),
+                          TMPDIR=str(tmp), BREENIX_GATE_TMP=str(tmp),
+                          BREENIX_TARGET_POLICY_CHECKED=f'x86-metal:{commit}',
+                          BREENIX_REPRODUCIBLE_EXT2='1', BREENIX_EXT2_REPO=str(clone),
+                          BREENIX_EXT2_SCRIPT=str(tools / 'scripts/create_ext2_disk.sh'))
+        for name in ('CARGO_TARGET_DIR', 'CARGO_BUILD_TARGET_DIR', 'HOST_SLOTS_HELPER', 'BREENIX_SLOT_SESSION',
+                     'BREENIX_GATE_CACHE_DIR', 'RUSTUP_TOOLCHAIN', 'BREENIX_RUST_FORK_LIBRARY',
+                     'RUSTFLAGS', 'CARGO_ENCODED_RUSTFLAGS'):
+            os.environ.pop(name, None)
+        out.mkdir()
+        options = argparse.Namespace(id=artifact_id, sha=commit, root=str(cache), stub=str(tools / 'scripts/metal/efi-stub'),
+                                     features=args.features, suite=args.suite or '', guard_target='x86-metal', local=True)
+        if helper.inner(options):
+            raise ValueError('Mac payload build failed; see retained output logs')
+        elapsed = round(time.monotonic() - started, 3)
+        build_record = json.loads((out / 'build.json').read_text())
+        build_record.update(builder='mac', toolsCommit=tools_commit, mode=args.mode, wallSeconds=elapsed,
+                            nice=os.getpriority(os.PRIO_PROCESS, 0))
+        (out / 'build.json').write_text(json.dumps(build_record, indent=2) + '\n')
+        metal_prebuilt.create(out, tools_commit, args.mode, identity, rust_pin, policy_commit)
+        metal_prebuilt.verify(out, commit=commit, tools_commit=tools_commit, mode=args.mode,
+                              features=[args.features] if args.features else [], suite=args.suite)
+        upload_started = time.monotonic()
+        upload(out, args.host, artifact_id)
+        receipt = dict(id=artifact_id, commit=commit, toolsCommit=tools_commit, builder='mac',
+                       wallSeconds=elapsed, uploadSeconds=round(time.monotonic() - upload_started, 3), output=str(out))
+        (out.parent / (artifact_id + '-receipt.json')).write_text(json.dumps(receipt, indent=2) + '\n')
+        print(json.dumps(receipt), flush=True)
+    finally:
+        shutil.rmtree(clone, ignore_errors=True)
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument('--host', required=True, help='boot host SSH alias')
+    parser.add_argument('--sha', default='origin/main')
+    parser.add_argument('--tools-commit', default='HEAD')
+    parser.add_argument('--mode', choices=('default', 'shell', 'probe', 'suite', 'console', 'tests'), default='default')
+    parser.add_argument('--suite')
+    parser.add_argument('--features', default='', choices=tuple(load_build(Path(__file__).with_name('metal-build')).PROFILES))
+    parser.add_argument('--jobs', type=int, choices=range(1, 5), default=2)
+    parser.add_argument('--rust-fork', default=str(Path(__file__).resolve().parents[2] / 'rust-fork'))
+    parser.add_argument('--catchup', action='store_true')
+    args = parser.parse_args()
+    # Let each materialized workspace select its own checked-in compiler pin.
+    os.environ.pop('RUSTUP_TOOLCHAIN', None)
+    if not re.fullmatch(r'[A-Za-z0-9_.@-]+', args.host) or args.host.startswith('-'):
+        parser.error('--host must be an SSH alias')
+    if (args.mode == 'suite') != bool(args.suite):
+        parser.error('suite mode needs --suite ID[,ID...]')
+    if args.suite and not re.fullmatch(r'[a-z0-9-]+(?:,[a-z0-9-]+)*', args.suite):
+        parser.error('invalid suite list')
+    if args.mode == 'tests':
+        if args.features not in ('', 'testing'):
+            parser.error('tests mode needs the testing feature')
+        args.features = 'testing'
+    elif args.features == 'testing':
+        parser.error('the testing feature needs tests mode')
+    prerequisites()
+    cache = Path.home() / 'Library/Caches/breenix-metal'
+    cache.mkdir(parents=True, exist_ok=True)
+    with (cache / 'build.lock').open('a+') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise ValueError('another Mac metal build holds ~/Library/Caches/breenix-metal/build.lock') from None
+        os.setpriority(os.PRIO_PROCESS, 0, 15)
+        lock.seek(0)
+        lock.truncate()
+        lock.write(json.dumps(dict(pid=os.getpid(), started=time.time(), jobs=args.jobs)) + '\n')
+        lock.flush()
+        repo = Path(git(Path(__file__).resolve().parent, 'rev-parse', '--show-toplevel'))
+        build(args, repo, cache)
+    return 0
+
+
+if __name__ == '__main__':
+    try:
+        sys.exit(main())
+    except (ValueError, OSError, subprocess.CalledProcessError) as error:
+        sys.exit('metal-build-local: ' + str(error))

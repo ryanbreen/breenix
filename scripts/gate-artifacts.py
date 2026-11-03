@@ -194,7 +194,8 @@ fi
         # included, and create_ext2_disk.sh links BusyBox; pack them unchanged.
         checked(['cargo', 'run', '-p', 'xtask', '--', 'create-test-disk'], repo,
                 logs / f'{label}-test-disk.log', userspace_prebuilt=True)
-        checked([str(repo / 'scripts/create_ext2_disk.sh')], repo, logs / f'{label}-ext2.log')
+        checked([os.environ.get('BREENIX_EXT2_SCRIPT', str(repo / 'scripts/create_ext2_disk.sh'))],
+                repo, logs / f'{label}-ext2.log')
         if 'BREENIX_GATE_CACHE_DIR' in os.environ:
             canonical_ext2(repo / 'testdata/ext2.img')
         shutil.copyfile(repo / 'testdata/ext2.img', repo / 'target/ext2.img')
@@ -386,6 +387,12 @@ def main():
     arguments = sys.argv[1:]
     metal = arguments[:1] == ['--metal']
     repo, logs = map(Path, arguments[1:] if metal else arguments)
+    if metal and sys.platform == 'darwin':
+        # No Linux mount namespaces on macOS. One private, clean build, with
+        # the same warning refusal and disk builders; never publish it as a
+        # clean-comparing gate cache entry.
+        build(repo, logs, 'metal-mac')
+        return
     if 'BREENIX_GATE_CACHE_DIR' in os.environ and sys.platform != 'linux':
         raise RuntimeError('artifact reuse requires Linux private mount namespaces')
     if metal and 'BREENIX_GATE_CACHE_DIR' not in os.environ:

@@ -43,6 +43,7 @@ import metal_root  # noqa: E402
 import metal_score  # noqa: E402
 import metal_disk  # noqa: E402
 import metal_persist  # noqa: E402
+import metal_prebuilt  # noqa: E402
 from metal_score import boot_shape  # noqa: E402
 # Deployed, the host-key helper sits beside this file; in a checkout it is in scripts/.
 if not (Path(__file__).resolve().parent / 'hostkeys.py').is_file():
@@ -517,6 +518,17 @@ class Driver:
             return
         build = m.read_json(inputs / 'build.json', {})
         features, profile = kernel_profile(self.args)
+        if (inputs / 'manifest.json').exists() or build.get('builder') == 'mac':
+            try:
+                manifest = metal_prebuilt.verify(inputs, commit=self.args.commit, tools_commit=tools_commit(),
+                    mode=self.args.mode, features=features, suite=getattr(self.args, 'suite', None), staged=True)
+            except (ValueError, OSError, KeyError) as error:
+                self.event('prebuilt-refused', reason=str(error))
+                raise Finish(m.EXIT_CANCELLED, 'prebuilt refused: ' + str(error)) from None
+            shutil.copyfile(inputs / 'manifest.json', self.dir / 'manifest.json')
+            run = metal_prebuilt.record_builder(m.read_json(self.dir / 'run.json'), manifest)
+            m.write_json(self.dir / 'run.json', run)
+            m.write_json(self.dir / 'metal-run.json', run)
         if build.get('commit') != self.args.commit or build.get('profile') != profile or build.get('features') != features:
             raise Finish(m.EXIT_CANCELLED, f'build provenance differs from the requested {profile} commit')
         tests = inputs / 'test-binaries.img'
@@ -529,6 +541,8 @@ class Driver:
         run['build'] = {key: build[key] for key in ('commit', 'profile', 'features')}
         m.write_json(self.dir / 'run.json', run)
         self.event('build-delivered', commit=build.get('commit'), guard=build.get('guardTarget'))
+        if run.get('builder') == 'mac':
+            m.write_json(self.dir / 'metal-run.json', run)
         if (inputs / 'definition').is_dir():
             shutil.copytree(inputs / 'definition', self.dir / 'definition')
         for suite in suites(self.args):

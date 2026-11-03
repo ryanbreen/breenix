@@ -26,7 +26,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PROJECT_ROOT="${BREENIX_EXT2_REPO:-$(cd "$SCRIPT_DIR/.." && pwd)}"
 TARGET_DIR="$PROJECT_ROOT/target"
 SIZE_MB=256
 
@@ -169,7 +169,7 @@ if [[ ! -f "$TEST_SSH_DIR/id_ed25519" ]]; then
 fi
 
 # Check if we're on macOS or Linux
-if [[ "$(uname)" == "Darwin" ]]; then
+if [[ "$(uname)" == "Darwin" && "${BREENIX_REPRODUCIBLE_EXT2:-0}" != 1 ]]; then
     # macOS - use Docker
     if ! command -v docker &> /dev/null; then
         echo "Error: Docker is required on macOS to create ext2 images"
@@ -482,7 +482,7 @@ else
     fi
 
     # Mount and populate (requires root)
-    if [[ $EUID -ne 0 ]]; then
+    if [[ $EUID -ne 0 && "${BREENIX_REPRODUCIBLE_EXT2:-0}" != 1 ]]; then
         echo "Warning: Need root to mount and populate image"
         echo "Run with sudo or populate manually"
         exit 1
@@ -537,8 +537,10 @@ GROUP
     cp "$TEST_SSH_DIR/id_ed25519" "$TEST_SSH_ROOT/id_ed25519"
     cp "$TEST_SSH_DIR/id_ed25519.pub" "$TEST_SSH_ROOT/home/.ssh/authorized_keys"
     cp "$TEST_SSH_DIR/id_ed25519.pub" "$MOUNT_DIR/root/.ssh/authorized_keys"
-    chown -R 0:0 "$MOUNT_DIR/etc/ssh" "$TEST_SSH_ROOT" "$MOUNT_DIR/root"
-    chown -R 2000:2000 "$TEST_SSH_ROOT/home"
+    if [[ $EUID -eq 0 ]]; then
+        chown -R 0:0 "$MOUNT_DIR/etc/ssh" "$TEST_SSH_ROOT" "$MOUNT_DIR/root"
+        chown -R 2000:2000 "$TEST_SSH_ROOT/home"
+    fi
     chmod 755 "$MOUNT_DIR/etc/ssh" "$TEST_SSH_ROOT"
     chmod 700 "$TEST_SSH_ROOT/home" "$TEST_SSH_ROOT/home/.ssh" "$MOUNT_DIR/root" "$MOUNT_DIR/root/.ssh"
     chmod 600 "$TEST_SSH_ROOT/id_ed25519" "$TEST_SSH_ROOT/home/.ssh/authorized_keys" "$MOUNT_DIR/root/.ssh/authorized_keys"
@@ -740,6 +742,9 @@ INITJS
     # Unmount and cleanup
     if [[ "${BREENIX_REPRODUCIBLE_EXT2:-0}" == 1 ]]; then
         E2FSPROGS_FAKE_TIME=946684800 mke2fs -t ext2 -b "${BREENIX_EXT2_BLOCK_SIZE:-4096}" -U 7fabead6-ba12-4c3b-835b-e076230994d9 -E hash_seed=00000000-0000-0000-0000-000000000000 -F -d "$MOUNT_DIR" "$OUTPUT_FILE" >/dev/null 2>&1
+        if [[ $EUID -ne 0 ]]; then
+            python3 "$SCRIPT_DIR/ext2-owners.py" "$OUTPUT_FILE"
+        fi
         rm -rf "$MOUNT_DIR"
         trap remove_test_ssh_temp EXIT
     else
