@@ -163,7 +163,8 @@ fn main() {
 
     // Explicit shell, console and desktop modes bypass the full startup below.
     // No argument or `default` keeps the services and boot checks.
-    match std::env::args().nth(1).as_deref() {
+    let mode = std::env::args().nth(1);
+    match mode.as_deref() {
         Some("suite") => {
             use std::os::unix::process::CommandExt;
             let mut args = std::env::args().skip(2);
@@ -174,6 +175,7 @@ fn main() {
         Some("shell") => run_shell_mode(),
         Some("console") => run_console_mode(),
         Some("desktop") => run_desktop_mode(),
+        Some("full-console") => {},
         _ => {}
     }
 
@@ -212,9 +214,7 @@ fn main() {
     run_boot_script();
     // The services start on the supervisor's first pass; the rest of the ARM64 start-up
     // follows it and does not wait on a service.
-    // The ARM64 boot script starts the desktop; its login terminals belong to
-    // explicit console mode. x86 starts the whole service table as before.
-    let scope = if cfg!(target_arch = "aarch64") {
+    let scope = if cfg!(target_arch = "aarch64") && mode.as_deref() != Some("full-console") {
         init_services::Scope::Daemons
     } else {
         init_services::Scope::All
@@ -317,32 +317,20 @@ fn detach_console() {
     }
 }
 
-/// `init desktop`: ARM64 starts the desktop; x86 falls back to console gettys.
-/// Neither explicit mode runs boot checks.
-#[cfg(target_arch = "x86_64")]
-fn run_desktop_mode() -> ! {
-    print!("Desktop mode requires a GPU; using the framebuffer console.\n");
-    run_console_mode()
-}
-
-#[cfg(target_arch = "aarch64")]
+/// Start the shared desktop without login terminals.
 fn run_desktop_mode() -> ! {
     print!("[init] mode desktop\n");
-    const DESKTOP: &[&[u8]] = &[b"/usr/bin/bwm\0", b"/usr/bin/bterm\0"];
-    let mut started = 0;
-    for path in DESKTOP {
-        match spawn(path) {
-            Ok(_) => started += 1,
-            Err(e) => print!("[init] Warning: failed to spawn desktop service: {}\n", e),
-        }
-    }
-    // The boot-path marker claims the desktop came up, so it prints only when it did.
-    if started == DESKTOP.len() {
+    reconcile_machine_state();
+    run_boot_script();
+    let mut supervisor = init_services::Supervisor::load(init_services::Scope::Desktop, std::process::id() == 1);
+    supervisor.tick();
+    let terminal = spawn(b"/usr/bin/bterm\0");
+    if supervisor.running("bwm") && terminal.is_ok() {
         print!("[init] desktop services started\n");
     } else {
-        print!("[init] desktop services incomplete: {} of {} started\n", started, DESKTOP.len());
+        print!("[init] desktop services incomplete\n");
     }
-    reap_forever();
+    supervisor.run()
 }
 
 /// Run the #575 block-EINTR oracle first: its marker is a hard gate condition on every
@@ -615,10 +603,6 @@ fn run_boot_script() {
         console_text_mode();
         // On ARM64 this stage marks services and KD_TEXT, before bwm is spawned.
         print!("[init] Boot script completed\n");
-        // A graphical child may take the display after init's text-mode request.
-        if let Err(e) = spawn(b"/usr/bin/bwm\0") {
-            print!("[init] Warning: failed to spawn service: {}\n", e);
-        }
         return;
     }
 

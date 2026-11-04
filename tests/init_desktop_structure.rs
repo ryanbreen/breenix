@@ -11,7 +11,7 @@ fn desktop_is_shared_and_does_not_start_gettys() {
     assert!(!desktop.contains("getty"));
     assert!(!desktop.contains("run_console_mode"));
     assert!(desktop.contains("run_boot_script()"));
-    assert!(desktop.contains("Scope::Daemons"));
+    assert!(desktop.contains("Scope::Desktop"));
     assert!(desktop.contains("bwm"));
     assert!(desktop.contains("bterm"));
 }
