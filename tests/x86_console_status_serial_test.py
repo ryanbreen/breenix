@@ -33,6 +33,10 @@ pub mod log_buffer { LOG_BUFFER }
 fn main() {
  use serial_writer::Writer;
  log_buffer::init();
+ // Put a newline at the scanner's byte-batch boundary. Its timestamp must be
+ // consumed as metadata even though it extends beyond that batch's byte limit.
+ log_buffer::capture_serial_output(Writer::Tty,vec![b'x';8191].iter());
+ log_buffer::capture_serial_output(Writer::Tty,b"\n".iter());
  log_buffer::capture_fmt(format_args!("[metal] kernel idle\n"));
  let tty=b"SUITE console START cases=2\r\nSUITE console CASE text/a PASS ms=1\r\n";
  // TTY record assembly can still hand over a partial line.
@@ -42,7 +46,7 @@ fn main() {
  time::NOW.store(62234,core::sync::atomic::Ordering::Relaxed);
  log_buffer::capture_serial_output(Writer::Tty,b"SUITE console CASE text/b FAIL ms=1 msg=bad\r\nSUITE console DONE passed=1 failed=1 skipped=0 total=2\r\n".iter());
  time::NOW.store(999999,core::sync::atomic::Ordering::Relaxed);
- boot_ribbon::drain();
+ for _ in 0..4 {boot_ribbon::drain();}
  let suite=boot_ribbon::suite_status().unwrap();
  assert_eq!((suite.passed(),suite.failed(),suite.pending()),(1,1,0));
  assert!(suite.heading(9000).unwrap().contains("1:01"),"DONE did not freeze elapsed");
@@ -53,6 +57,7 @@ fn main() {
  let serial=boot_ribbon::serial().unwrap();
  assert!(serial.contains("SUITE console DONE"));
  assert!(!serial.contains("forged"));
+ assert_eq!(serial,format!("{}\n[metal] kernel idle\n{}prompt\nSUITE console CASE text/b FAIL ms=1 msg=bad\r\nSUITE console DONE passed=1 failed=1 skipped=0 total=2\r\n", "x".repeat(8191),core::str::from_utf8(tty).unwrap()));
  assert_eq!(log_buffer::read_all(),"[metal] kernel idle\n");
 }
 '''.replace('ROOT', str(ROOT))
