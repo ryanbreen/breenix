@@ -412,8 +412,8 @@ pub fn inflate(input: &[u8], limit: usize) -> Result<Vec<u8>, InflateError> {
 }
 pub fn adler32(input: &[u8]) -> u32 {
     let (mut a, mut b) = (1u32, 0u32);
+    work::add(input.len());
     for &v in input {
-        work::step();
         a = (a + v as u32) % 65521;
         b = (b + a) % 65521;
     }

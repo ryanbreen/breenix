@@ -44,6 +44,7 @@ fn fresh()->Core{
  subs:BTreeMap::from([(17,Sub{sampled:vec![],sent_ns:Some(1),ctx:1,n:2,fence:123,native_fence:0,present:Some(Presenting{id:72,seq:2,owner:1}),published:false,requests:1,result:None,error:None,mismatch:None,writer:None,written:vec![],whole:vec![],held:vec![72],native_probe_mask:0})]),stalled:false,released:vec![]}
 }
 fn wait_for<T>(_:Option<u64>,_:bool,f:impl FnOnce(&mut Core)->Option<T>)->Result<T,()>{CORE.with(|c|f(&mut c.borrow_mut()).ok_or(()))}
+fn wait_for_traced<T>(deadline:Option<u64>,interruptible:bool,f:impl FnOnce(&mut Core)->Option<T>,_:Option<()>,_:bool,_:Option<()>)->Result<T,()>{wait_for(deadline,interruptible,f)}
 thread_local!{static CORE:std::cell::RefCell<Core>=std::cell::RefCell::new(fresh());}
 fn present_answer(n:u32)->Result<(u32,u32),()>{let ctx_id=1;
  // PRESENT_ANSWER

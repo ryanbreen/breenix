@@ -2169,3 +2169,10 @@ Both files declare `SPDX-License-Identifier: MIT` and have no copyright header.
 These are references for validation facts; no driver source is copied into the
 importer. The input format and its normalized sample status are documented in
 `scripts/screens/README.md`.
+
+G33a native composite clock: kernel/src/gpu/gk208/native.rs additionally uses
+NV_HEAD_STAT.VERT.VBLANK_COUNT from the already-listed MIT envytools
+rnndb/display/g80_pdisplay.xml at f102b82381f3f11cee113d16374c87091db039d9.
+The imported rnndb/copyright.xml grant and author list remain in native.rs.
+vblank_clock.rs contains Breenix-owned rational frame-period arithmetic;
+no external implementation was imported.

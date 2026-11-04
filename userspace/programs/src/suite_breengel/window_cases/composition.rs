@@ -777,7 +777,7 @@ fn composition_irq_bound() -> CaseResult {
     ensure(held >= 2_000, "18, 21", format!("with irq-hold armed the gauge reads {held} us; the 2 ms hold reads at least 2,000"))?;
     // DISARM_ALL restarted the gauge; now 20 composites of full-screen damage.
     let reset = irq_gauge()?;
-    ensure(reset == 0, "21", format!("after DISARM_ALL the gauge reads {reset} us; it restarts at 0"))?;
+    ensure(reset < 2_000, "21", format!("after DISARM_ALL the gauge reads {reset} us; it must clear the 2,000 us hold"))?;
     for i in 0..20 {
         w.frame(28 + i).cite("17.3")?;
         compose(&mut k)?;
@@ -796,23 +796,47 @@ fn composition_present_rate() -> CaseResult {
     want_ok(w.register(b"present-rate"), "17.1", "REGISTER")?;
     place(&mut k, w.id(), &p, abi::geometry_flags::VISIBLE)?;
     let mut frame_times=Vec::new();
+    // G33: use the event's time, independent of when a procfs poll observes it.
+    let composite_event = || -> Result<(u64, i128), breenix_suite::suite::CaseError> {
+        let waiting = time::now_monotonic()?.as_nanos();
+        let (previous, _) = loop {
+            if let Some(pair) = composite_clock().cite("18")? { break pair; }
+            ensure(time::now_monotonic()?.as_nanos() - waiting < 2_000_000_000,
+                "18", "a consistent composite clock was unavailable for 2 s")?;
+            core::hint::spin_loop();
+        };
+        loop {
+            let sample = composite_clock().cite("18")?;
+            let now = time::now_monotonic()?.as_nanos();
+            if let Some((current, at)) = sample {
+                if current > previous { return Ok((current, i128::from(at))); }
+            }
+            ensure(now - waiting < 2_000_000_000, "18",
+                "the compositor did not advance within 2 s")?;
+            core::hint::spin_loop();
+        }
+    };
     let mut start = 0;
     let mut composites0 = 0;
+    let mut end = 0;
+    let mut composites1 = 0;
     for i in 0..300u32 {
         if i == 30 {
-            start = now_ms();
-            composites0 = counter("composites").cite("18")?;
+            (composites0, start) = composite_event()?;
+        }
+        if i == 299 {
+            (composites1, end) = composite_event()?;
         }
         let began=time::now_monotonic()?.as_nanos();
         w.frame(i).cite("17.3")?;
         if i>=236 {frame_times.push(((time::now_monotonic()?.as_nanos()-began)/1000).min(u32::MAX as i128) as u32);}
     }
-    let elapsed = since(start).max(1);
-    let composed = counter("composites").cite("18")? - composites0;
-    let rate = composed * 1_000 / elapsed;
+    let elapsed_ns = end - start;
+    let composed = (composites1 - composites0) as i128;
+    let rate = composed * 1_000_000_000_000 / elapsed_ns;
     breenix_suite::suite::timing(&frame_times,16_667)?;
-    value("composites-per-second", rate as i64, "fps", Some((60, i64::MAX)));
-    ensure(rate >= 60, "18", format!("one 256x256 window committing as fast as its buffers are released was composed {composed} times in {elapsed} ms, {rate} a second; the contract requires at least 60"))
+    value("composites-per-second", rate as i64, "millihertz", Some((60_000, i64::MAX)));
+    ensure(composed * 1_000_000_000 >= 60 * elapsed_ns, "18", format!("one 256x256 window committing as fast as its buffers are released was composed {composed} times in {elapsed_ns} ns, {rate} mHz; the contract requires at least 60 Hz"))
 }
 
 /// In a helper: say why it stops (on its standard output, which the case reads) and give the

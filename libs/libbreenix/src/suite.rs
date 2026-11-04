@@ -107,8 +107,18 @@ use std::fmt::Write as _;
 use std::string::String;
 use std::vec::Vec;
 
+#[cfg(not(target_arch = "x86_64"))]
 use libgfx_ref::diagnostics::{self, Check, CheckState, Group, Live, LiveArea, Panel, Pulses, Reading, Verdict};
 use libgfx_ref::framebuf::FrameBuf;
+#[cfg(target_arch = "x86_64")]
+use libgfx::diagnostics::{self, Check, CheckState, Group, Live, LiveArea, Panel, Pulses, Reading, Verdict};
+#[cfg(target_arch = "x86_64")]
+#[path = "suite_gpu_panel.rs"]
+mod gpu_panel;
+#[cfg(target_arch = "x86_64")]
+use gpu_panel::GpuPanel as PanelSurface;
+#[cfg(not(target_arch = "x86_64"))]
+type PanelSurface = FrameBuf;
 
 use crate::error::Error;
 pub use crate::suite_spawn::{spawn, Keep, Run};
@@ -1032,6 +1042,11 @@ impl Suite {
         // full-suite evidence, and a suite run from a shell does not reap others.
         let recording = only.is_none() && process::getpid().is_ok_and(|pid| pid.raw() == 1);
         screen.prepare();
+        // Count the text renderer's persistent font tables and presentation state
+        // in both memory samples, just as the GPU and GUI views warm before sampling.
+        if screen.fb.is_some() {
+            screen.draw(self, &title, &subtitle, &states, Verdict::Running("starting"), &feed, only);
+        }
         // Match the retired ownership boundary at the end. The warm-up leaves
         // only the bound scanout; no stage owner freed later can subsidize a leak.
         let baseline_ready = if recording && self.gui {
@@ -1094,7 +1109,7 @@ impl Suite {
                         Err(error) => { outcome = with_note(outcome, &error); line = make_line(&outcome); Vec::new() }
                     };
                     let readings = readings.as_slice();
-                    let fps=readings.iter().rev().find(|v|v.name=="composites-per-second").and_then(|v|u32::try_from(v.number).ok());
+                    let fps=readings.iter().rev().find(|v|v.name=="composites-per-second").and_then(|v|u32::try_from(if v.unit=="millihertz" {v.number/1000} else {v.number}).ok());
                     let input = collect_input();
                     let recorded = input.and_then(|input| crate::suite_stage::record(&line,&outcome,screen.judged.take(),screen.timing.take(),fps,readings,limit_ms,input));
                     let result = recorded.and_then(|()| crate::suite_stage::completed()).and_then(|()| if done + 1 == total {crate::suite_stage::finale()} else {Ok(())});
@@ -1169,12 +1184,25 @@ impl Suite {
         if !self.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }
         // A one-case boot stops here, before a sequence's next suite.
         if only.is_some() { idle(&mut screen, &feed); }
+        if let Err(error) = hand_off_text_panel(&screen, place.as_ref()) {
+            emit(&std::format!("SUITE {} ERROR display handoff: {}", self.id, error));
+            idle(&mut screen, &feed);
+        }
         emit(&std::format!("SUITE_SEQUENCE READY {}", self.id));
         // In a sequence the next suite replaces this one as PID 1 (`sequence::finish`);
         // the last keeps its final panel, as a suite booted alone does.
         if place.is_some() { sequence::finish(); }
         idle(&mut screen, &feed)
     }
+}
+
+/// Resolve the text view's ownership while its handles are still alive, before
+/// exec reclaims them. The final suite keeps its panel on the display.
+fn hand_off_text_panel(screen: &Screen, place: Option<&(Vec<String>, usize)>) -> Result<(), String> {
+    if screen.fb.is_some() && place.is_some_and(|(ids, index)| *index + 1 < ids.len()) {
+        gpu_screen::await_console()?;
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -1913,7 +1941,7 @@ struct Screen {
     stage_error: Option<String>,
     judged: Option<std::sync::Arc<JudgedFrame>>,
     timing:Option<FrameTiming>,
-    fb: Option<FrameBuf>,
+    fb: Option<PanelSurface>,
     gpu: Option<gpu_screen::GpuScreen>,
     /// Why the GPU view was last not drawn, so each failure is reported once.
     gpu_failure: Option<String>,
@@ -1924,8 +1952,7 @@ struct Screen {
 }
 
 impl Screen {
-    /// Take the display and map the whole of it. Without a framebuffer the suite still
-    /// runs and prints its serial lines; on a small one the panel draws what fits. On ARM64
+    /// Open the GPU text panel. Without a display the suite still prints its serial lines. On ARM64
     /// the GPU core is the display, and a suite without the run stage shows the GPU view
     /// (`docs/gui/gpu.md` section 2.5 retires the CPU panel there).
     fn open(gui: bool, gpu: bool) -> Screen {
@@ -2008,7 +2035,7 @@ impl Screen {
         if self.gui {self.stage_result(crate::suite_stage::tick());return;}
         let (Some(fb), Some(area), true) = (self.fb.as_mut(), self.area, self.live) else { return };
         Self::with_live(feed, |live| diagnostics::draw_live(fb, area, live));
-        flush_panel(Some(area));
+        flush_panel(fb);
     }
 
     fn draw(&mut self, suite: &Suite, title: &str, subtitle: &str, states: &[Vec<State>], verdict: Verdict<'_>,
@@ -2063,46 +2090,29 @@ impl Screen {
         self.area = Self::with_live(feed, |live| diagnostics::draw(fb, &Panel {
             title, subtitle, groups: &groups, output: &[], verdict, scored: true, live: live_on.then_some(live),
         }));
-        flush_panel(None);
+        flush_panel(fb);
     }
 }
 
-/// The x86-64 panel's framebuffer: the display taken and the whole of it mapped.
+/// The text panel uses the GPU core's current display mode.
 #[cfg(target_arch = "x86_64")]
-fn map_panel() -> Option<FrameBuf> {
-    let info = graphics::fbinfo().ok()?;
-    if !(3..=4).contains(&info.bytes_per_pixel) {
-        return None;
+fn map_panel() -> Option<PanelSurface> {
+    match gpu_panel::GpuPanel::open() {
+        Ok(panel) => Some(panel),
+        Err(error) => { emit(&std::format!("suite panel not drawn: {error}")); None }
     }
-    graphics::take_over_display().ok()?;
-    let (ptr, width) = graphics::fb_mmap_pane().ok()?;
-    if width == 0 { return None; }
-    Some(unsafe {
-        FrameBuf::from_raw(ptr, width as usize, info.height as usize,
-            (width * info.bytes_per_pixel) as usize, info.bytes_per_pixel as usize, info.is_bgr()).ok()?
-    })
 }
 
-/// There is no framebuffer panel without x86-64's framebuffer.
 #[cfg(not(target_arch = "x86_64"))]
-fn map_panel() -> Option<FrameBuf> {
-    None
-}
+fn map_panel() -> Option<PanelSurface> { None }
 
-/// Flush the panel's `area`, or the whole panel. A case may have taken the display (its
-/// own take_over_display); take it back, or the flush is refused and the panel stops
-/// updating.
 #[cfg(target_arch = "x86_64")]
-fn flush_panel(area: Option<LiveArea>) {
-    let _ = graphics::take_over_display();
-    let _ = match area {
-        Some(area) => graphics::fb_flush_rect(area.x, area.y, area.w, area.h),
-        None => graphics::fb_flush(),
-    };
+fn flush_panel(panel: &mut PanelSurface) {
+    if let Err(error) = panel.present() { emit(&std::format!("suite panel not drawn: {error}")); }
 }
 
 #[cfg(not(target_arch = "x86_64"))]
-fn flush_panel(_: Option<LiveArea>) {}
+fn flush_panel(_: &mut PanelSurface) {}
 
 #[cfg(test)]
 mod judged_transport_tests {

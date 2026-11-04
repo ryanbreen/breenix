@@ -137,22 +137,27 @@ fn paeth(a: u8, b: u8, c: u8) -> u8 {
     }
 }
 fn unfilter(row: &mut [u8], prior: &[u8], bpp: usize, filter: u8) -> Result<(), PngError> {
-    if filter > 4 {
-        return Err(BadFilter);
-    }
-    for i in 0..row.len() {
-        work::step();
-        let a = if i >= bpp { row[i - bpp] } else { 0 };
-        let b = prior[i];
-        let c = if i >= bpp { prior[i - bpp] } else { 0 };
-        let p = match filter {
-            0 => 0,
-            1 => a,
-            2 => b,
-            3 => ((a as u16 + b as u16) / 2) as u8,
-            _ => paeth(a, b, c),
-        };
-        row[i] = row[i].wrapping_add(p);
+    if filter > 4 { return Err(BadFilter); }
+    work::add(row.len());
+    match filter {
+        0 => {},
+        1 => for i in 0..row.len() {
+            let a = if i >= bpp { row[i - bpp] } else { 0 };
+            row[i] = row[i].wrapping_add(a);
+        },
+        2 => for (value, &b) in row.iter_mut().zip(prior) {
+            *value = value.wrapping_add(b);
+        },
+        3 => for i in 0..row.len() {
+            let a = if i >= bpp { row[i - bpp] } else { 0 };
+            row[i] = row[i].wrapping_add(((a as u16 + prior[i] as u16) / 2) as u8);
+        },
+        4 => for i in 0..row.len() {
+            let a = if i >= bpp { row[i - bpp] } else { 0 };
+            let c = if i >= bpp { prior[i - bpp] } else { 0 };
+            row[i] = row[i].wrapping_add(paeth(a, prior[i], c));
+        },
+        _ => return Err(BadFilter),
     }
     Ok(())
 }
@@ -171,7 +176,9 @@ fn key(s: &[u8], depth: u8) -> u16 {
     u16be(s) & (u16::MAX >> (16 - depth))
 }
 fn scaled(v: u16, d: u8) -> u8 {
-    if d == 16 {
+    if d == 8 {
+        v as u8
+    } else if d == 16 {
         ((v as u32 * 255 + 32767) / 65535) as u8
     } else {
         (v as u32 * 255 / ((1u32 << d) - 1)) as u8

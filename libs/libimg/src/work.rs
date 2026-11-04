@@ -10,3 +10,8 @@ pub fn steps() -> u64 {
 pub fn step() {
     STEPS.fetch_add(1, Ordering::Relaxed);
 }
+
+/// Charge a fixed-length pass whose byte loop has no early return.
+pub(crate) fn add(steps: usize) {
+    STEPS.fetch_add(steps as u64, Ordering::Relaxed);
+}

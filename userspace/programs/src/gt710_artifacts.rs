@@ -80,6 +80,14 @@ pub(super) fn transfer(data: &[u8], suffix: &str) -> Result<(), String> {
         return Err(format!("native upload refused: slot bytes={} total={} bound={MAX_TOTAL}", data.len(), total));
     }
     let mut target=std::fs::read_to_string("/etc/breenix/gt710-upload").map_err(|_|"native upload route absent")?.trim().to_string();
+    if std::fs::read_to_string("/etc/breenix/suite-sequence").is_ok_and(|s| s.trim().contains(',')) {
+        let executable = std::env::args().next().ok_or("native suite executable absent")?;
+        let name = executable.rsplit('/').next().unwrap_or("");
+        let suite = name.strip_prefix("suite-").ok_or("native suite name absent")?;
+        if !matches!(suite, "console" | "gpu" | "breengel") { return Err("native suite name refused".into()); }
+        target.push_str("/suites/");
+        target.push_str(suite);
+    }
     target.push_str(suffix);
     let rest=target.trim().strip_prefix("http://").ok_or("native upload needs HTTP")?;
     let (authority,path)=rest.split_once('/').ok_or("native upload path absent")?;

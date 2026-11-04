@@ -28,6 +28,40 @@ class ReadbackFenceWait(unittest.TestCase):
         self.assertIsNotNone(policy, 'run the production admission policy')
         self.run_receipt_wait(policy[1])
 
+    def test_composition_render_completes_without_a_tick_handoff(self):
+        source = (ROOT / 'kernel/src/gpu/compose.rs').read_text()
+        call = re.search(r'match (wait_for(?:_traced)?)\(None, true, finished(.*?)\) \{', source, re.S)
+        self.assertIsNotNone(call, 'run the production composition render wait policy')
+        policy = re.findall(r'\b(true|false)\b', call[2])
+        self.run_receipt_wait(policy[0] if policy else 'false')
+
+    def test_present_acceptance_completes_without_a_tick_handoff(self):
+        source = (ROOT / 'kernel/src/gpu/display.rs').read_text()
+        outcome = source.split('let outcome = wait_for', 1)[1].split('match outcome', 1)[0]
+        outcome = outcome.replace('#[cfg(target_arch = "x86_64")]', '')
+        policy = re.search(r'},\s*None,\s*(true|false),\s*None\);', outcome)
+        self.run_receipt_wait(policy[1] if policy else 'false')
+
+    def test_window_replay_completes_without_a_tick_handoff(self):
+        source = (ROOT / 'kernel/src/gpu/window_targets.rs').read_text()
+        execute = item(source, '    fn execute_taken(')
+        send = execute.split('let mut send =', 1)[1].split('match chunks', 1)[0]
+        if 'replay_request(' in send:
+            wait = item(source, 'fn replay_request(')
+            policy = re.search(r'await_sync_traced\(serial,\s*#\[cfg\(target_arch = "x86_64"\)\] None,\s*#\[cfg\(target_arch = "x86_64"\)\] (true|false)', wait)
+            self.assertIsNotNone(policy, 'run the production replay request wait policy')
+            self.run_receipt_wait(policy[1])
+        else:
+            self.assertIn('exec_req(', send)
+            self.run_receipt_wait('false')
+
+    def test_window_source_attachment_uses_replay_receipt_wait(self):
+        source = (ROOT / 'kernel/src/gpu/window_targets.rs').read_text()
+        execute = item(source, '    fn execute(')
+        attachment = execute.split('if let Some(src) = source {', 1)[1].split('wait_for(', 1)[0]
+        self.assertIn('replay_request(', attachment,
+                      'source attachment must not hand a preceding native draw to the timer worker')
+
     def run_receipt_wait(self, selected_policy):
         core = (ROOT / 'kernel/src/gpu/mod.rs').read_text()
         wait = item(core, 'fn wait_for_traced<').replace('#[cfg(target_arch = "x86_64")]', '')

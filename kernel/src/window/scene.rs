@@ -607,7 +607,7 @@ fn finish(frame: &mut Admission, result: Result<Composed, i32>, reason: u32) -> 
             if reg.present.full_requests == frame.reservation.full_requests {
                 reg.present.force_full = false;
             }
-            crate::tracing::providers::window::count_composite(c.pixels);
+            crate::tracing::providers::window::count_composite(c.pixels, c.presented_ns);
             (c.pixels, 0)
         }
         _ => {

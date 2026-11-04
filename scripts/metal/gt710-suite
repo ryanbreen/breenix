@@ -2159,17 +2159,20 @@ def resources_row(serial):
 
 def resources_identity(boot, suite, sha=None):
     sha = boot.get('bootedCommit') if sha is None else sha
+    suites = boot.get('suites') or (boot.get('suite') or '').split(',')
     if (not re.fullmatch('[0-9a-f]{40}', sha or '')
             or boot.get('bootedCommit', sha) != sha or boot.get('toolsCommit') != sha
             or boot.get('kind') != 'boot' or boot.get('mode') != 'suite'
-            or boot.get('suite') != suite or boot.get('suites') not in (None, [suite])
+            or suite not in suites or len(suites) != len(set(suites))
+            or boot.get('suite') != (suites[0] if len(suites) == 1 else None)
+            or boot.get('suites') not in (None, suites)
             or boot.get('platform') != 'metal' or boot.get('arch') != 'x86_64'
             or boot.get('evidenceEligible') is not True or boot.get('inject')
             or boot.get('build', {}).get('commit') != sha
             or boot.get('build', {}).get('profile') != 'production'
             or boot.get('build', {}).get('features') != []
             or not re.fullmatch(r'\d{8}T\d{6}Z-metal', boot.get('id', ''))):
-        raise ValueError('resources requires a named production ' + suite + ' boot of the same kernel/build/tools')
+        raise ValueError('resources requires production ' + suite + ' in a boot of the same kernel/build/tools')
 
 
 STEP_SELECTIONS = {'resources': 'gt710-step-8-2.json', 'alpha': 'gt710-step-8-3.json', 'shapes': 'gt710-step-8-4.json', 'isolation': 'gt710-step-8-5.json', 'presentation': 'gt710-step-8-6.json', 'performance': 'gt710-step-8-7.json'}
@@ -2356,7 +2359,7 @@ def breengel_fronts_suite(serial, boot, step_number=1):
     names = [c['id'] + '/' + case['id'] for c in manifest['categories'] for case in c['cases']]
     step = json.loads((root / f'docs/gui/gt710-step-9-{step_number}.json').read_text())
     required = step['cases']
-    if (len(names) != 401 or step.get('suite') != 'breengel' or len(required) != {1: 304, 2: 385, 3: 398}[step_number]
+    if (len(names) != 401 or step.get('suite') != 'breengel' or len(required) != {1: 304, 2: 385, 3: 398, 4: 401}[step_number]
             or required != [name for name in names if name in required]):
         raise ValueError('invalid BreenGL selection or manifest order')
     fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal']
@@ -2408,9 +2411,11 @@ def breengel_fronts_suite(serial, boot, step_number=1):
     ready = [i for i, line in enumerate(lines) if line == 'SUITE_SEQUENCE READY breengel']
     if len(ready) != 1 or ready[0] <= lines.index(records[-1][2]):
         raise ValueError('BreenGL requires READY after ELAPSED')
-    if step_number in (2, 3):
+    if step_number in (2, 3, 4):
         breengel_scanout_evidence(serial, names)
     accounting = breengel_memory_accounting(serial)
+    if step_number == 4 and accounting['status'] != 'PASS':
+        raise ValueError('full BreenGL acceptance requires memory reclaimed PASS')
     if accounting['status'] != 'PASS':
         print('GT710_BREENGL_MEMORY_ACCOUNTING '+json.dumps(accounting, separators=(',', ':')))
     return cases
@@ -2845,11 +2850,11 @@ def display_snapshots(rows, preferred):
 
 
 def check_case(category, case, serial, producer=None):
-    if category in ('breengel-fronts', 'breengel-composition', 'breengel-stage'):
+    if category in ('breengel-fronts', 'breengel-composition', 'breengel-stage', 'breengel-full'):
         if producer is None or 'breengel' not in producer or case != 'suite':
             raise ValueError(f'{category} needs a production BreenGL capture')
         capture = producer['breengel']
-        breengel_fronts_suite(capture['serial'], capture['boot'], {'breengel-fronts': 1, 'breengel-composition': 2, 'breengel-stage': 3}[category])
+        breengel_fronts_suite(capture['serial'], capture['boot'], {'breengel-fronts': 1, 'breengel-composition': 2, 'breengel-stage': 3, 'breengel-full': 4}[category])
         return
     if category == 'presentation' and case == 'display':
         if producer is None: raise ValueError('presentation needs named GPU and console captures')
@@ -3030,7 +3035,7 @@ def check_case(category, case, serial, producer=None):
 
 def cases(category, serial, producer=None):
     results = []
-    entries = [('suite', 'A completed production BreenGL boot records the selected window front cases')] if category in ('breengel-fronts', 'breengel-composition', 'breengel-stage') else CATEGORIES[category]
+    entries = [('suite', 'A completed production BreenGL boot records the selected window front cases')] if category in ('breengel-fronts', 'breengel-composition', 'breengel-stage', 'breengel-full') else CATEGORIES[category]
     for name, title in entries:
         try:
             check_case(category, name, serial, producer)
@@ -3362,9 +3367,41 @@ def breengel_picture_evidence(directory, serial, records, startup_bytes, final_b
         raise ValueError('BreenGL evidence totals differ')
 
 
-def capture_serial(directory):
+def capture_serial(directory, suite=None):
+    directory = Path(directory)
+    serial = (directory / 'serial.txt').read_text()
+    if not (directory / 'native-suites').is_dir():
+        return capture_serial_body(directory, serial)
+    validated = {}
+
+    def native_window(name):
+        if name not in ('console', 'gpu', 'breengel'):
+            raise ValueError('aggregate native capture requires a named suite')
+        if name in validated:
+            return validated[name]
+        starts = list(re.finditer(r'^SUITE ' + name + r' START .*$', serial, re.M))
+        ready = list(re.finditer(r'^SUITE_SEQUENCE READY ' + name + r'$', serial, re.M))
+        if len(starts) != 1 or len(ready) != 1 or starts[0].start() >= ready[0].start():
+            raise ValueError('aggregate suite boundaries missing or duplicated')
+        preceding = list(re.finditer(r'^SUITE_SEQUENCE READY \S+$', serial[:starts[0].start()], re.M))
+        begin = preceding[-1].end() if preceding else 0
+        sources = {}
+        for prior in re.finditer(r'^SUITE (console|gpu|breengel) START .*$', serial[:starts[0].start()], re.M):
+            _, originals = native_window(prior[1])
+            if sources.keys() & originals.keys():
+                raise ValueError('original CAPS probes repeated across suite slots')
+            sources.update(originals)
+        originals = {}
+        text = capture_serial_body(directory / 'native-suites' / name,
+                                   serial[begin:ready[0].end()] + '\n', sources, originals)
+        validated[name] = text, originals
+        return validated[name]
+
+    return native_window(suite)[0]
+
+
+def capture_serial_body(directory, serial, inherited_probes=None, original_probes=None):
     # claim-lint:ok: normative bulk framing; tests/gt710_bulk_test.py and tests/gt710_contexts_report_test.py mutate anchors and bodies.
-    serial=(Path(directory)/'serial.txt').read_text()
     spans = bool(re.search(r'^GT710_SPANS_BULK ', serial, re.M))
     stalls = bool(re.search(r'^GT710_STALL_BULK ', serial, re.M))
     timings = bool(re.search(r'^GT710_TIMING_BULK ', serial, re.M))
@@ -3718,6 +3755,10 @@ def capture_serial(directory):
             if (len(groups[key]) != 1 or digest is None
                     or hashlib.sha256(groups[key][0].removesuffix('\n').encode('ascii')).hexdigest() != digest[1]):
                 raise ValueError('executable CAPS probe differs from serial digest')
+            if key[0] == 'caps-probe' and original_probes is not None:
+                # Export only the row authenticated against this slot's payload
+                # and serial anchor, never an arbitrary JSON line in serial.
+                original_probes[key[1]] = groups[key][0]
         if key in (('multi',), ('graphics',), ('shaders',), ('draw',), ('gr-contexts',), ('core',), ('core-startup',), ('resources',), ('case-heap',), ('breengel-pictures',), ('allocations',)):
             record=''.join(groups[key]).encode('ascii')
             fields=line.split()
@@ -3728,6 +3769,8 @@ def capture_serial(directory):
             row = json.loads(groups[key][0])
             if any(side + '_sha256' in row for side in ('first', 'second')):
                 source = groups.get(('caps-probe', row['capability']), [])
+                if not source and row['capability'] in (inherited_probes or {}):
+                    source = [inherited_probes[row['capability']]]
                 if len(source) != 1 or any(side in row for side in ('first', 'second')):
                     raise ValueError('reprobe needs complete uploaded source images')
                 source = json.loads(source[0])
@@ -3778,6 +3821,118 @@ def capture_categories(boot):
             # ownership. The GPU entry starts with CAPS and cannot run those probes.
             and not (boot.get('suite') == 'gpu' and c in ('recovery', 'contexts'))
             and (c != 'console' or (boot.get('mode') == 'suite' and boot.get('suite') == 'console'))]
+
+
+def completed_suite_capture(directory, sha, suite=None):
+    """Read an authoritative, driver-closed native suite capture, including bulk pixels."""
+    directory = Path(directory)
+    read = lambda name: (directory / name).read_text().strip()
+    boot = json.loads(read('run.json'))
+    resources_identity(boot, suite or boot.get('suite'), sha)
+    events = [json.loads(line) for line in read('events.jsonl').splitlines()]
+    status = int(read('exit-status'))
+    driver_closed = bool(events) and (events[-1].get('event') == 'closed'
+        and events[-1].get('status') == status and events[-1].get('endedBy') == 'driver')
+    # metal-boot finalizes a disk-checking aggregate after its cold readback:
+    # source closure(1), suite-verdict(0), then a bound cold-disk-verdict.
+    if (not driver_closed and status == 0 and len(boot.get('suites') or []) > 1
+            and events and events[-1].get('event') == 'cold-disk-verdict'):
+        boundaries = [i for i, e in enumerate(events) if e.get('event') == 'closed']
+        if len(boundaries) == 1:
+            boundary = events[boundaries[0]]
+            tail = events[boundaries[0] + 1:]
+            receipt = json.loads(read('suite-readback.json'))
+            child = receipt.get('id', '')
+            driver_closed = (boundary.get('status') == 1 and boundary.get('endedBy') == 'driver'
+                and [e.get('event') for e in tail] == ['suite-verdict', 'cold-disk-verdict']
+                and tail[0].get('status') == 0 and tail[1].get('passed') is True
+                and tail[1].get('readback') == child and child != boot.get('id')
+                and re.fullmatch(r'\d{8}T\d{6}Z-metal', child) is not None
+                and receipt.get('passed') is True and type(receipt.get('bytes')) is int
+                and receipt['bytes'] > 0 and re.fullmatch('[a-f0-9]{64}', receipt.get('sha256', '')) is not None)
+    if (boot.get('onlyCase') is not None or boot.get('session') or not read('ended')
+            or read('dirty') != '0' or read('commit') != sha or read('ended-by') != 'driver'
+            or status not in (0, 1) or not events
+            or any(e.get('event') in ('console-gap', 'fatal') for e in events)
+            or sum(e.get('event') == 'final-marker' for e in events) != 1
+            or not any(e.get('event') == 'power-off' and e.get('off') is True for e in events)
+            or not driver_closed):
+        raise ValueError('native suite requires a complete clean driver-closed capture')
+    return dict(boot=dict(boot, bootedCommit=sha), serial=capture_serial(directory, suite), events=events, exit_status=status)
+
+
+def record_breengel_capture(directory, sha, category):
+    """Retain the same BreenGL verdict the CLI reports, including a failed step."""
+    if category not in ('breengel-fronts', 'breengel-composition', 'breengel-stage', 'breengel-full'):
+        raise ValueError('unknown BreenGL selection')
+    directory = Path(directory)
+    capture = completed_suite_capture(directory, sha, 'breengel')
+    resources_identity(capture['boot'], 'breengel', sha)
+    rows = cases(category, '', {'breengel': capture})
+    report = dict(boot=capture['boot']['id'], commit=sha,
+                  milestone='metal-gt710/' + category, cases=rows)
+    (directory / ('gt710-' + category + '.json')).write_text(json.dumps(report, indent=2) + '\n')
+    for row in rows:
+        print('SUITE gt710 CASE ' + row['id'] + ' ' + row['result'] + ' ms=0'
+              + (' msg=' + row['reason'] if row['reason'] else ''), flush=True)
+    return 0 if all(row['result'] == 'PASS' for row in rows) else 1
+
+
+def rescore_suite_capture(directory, sha, scorer_head):
+    """Save evidence from retained suites without executing guest code or changing its identity."""
+    import subprocess
+    root = Path(__file__).resolve().parents[2]
+    subprocess.run(['git', 'merge-base', '--is-ancestor', sha, scorer_head], cwd=root, check=True)
+    changed = subprocess.check_output(['git', 'diff', '--no-renames', '--name-only', '-z', sha, scorer_head],
+                                      cwd=root).decode().split('\0')[:-1]
+    allowed = {'scripts/metal/gt710-suite', 'scripts/metal/metal_score.py'}
+    if any(name not in allowed and not name.startswith('tests/') for name in changed):
+        raise ValueError('retained suite differs in runtime files: ' + ', '.join(changed))
+    directory = Path(directory)
+    capture = completed_suite_capture(directory, sha)
+    boot, serial = capture['boot'], capture['serial']
+    suite = boot['suite']
+    report = dict(boot=boot['id'], commit=sha, toolsCommit=boot['toolsCommit'], build=boot['build'],
+                  scorerCommit=scorer_head, hostOnlyDiff=changed, exitStatus=capture['exit_status'])
+    if suite == 'breengel':
+        rows = cases('breengel-full', '', {'breengel': capture})
+        record = dict(boot=boot['id'], commit=sha, milestone='metal-gt710/breengel-full', cases=rows)
+        (directory / 'gt710-breengel-full.json').write_text(json.dumps(record, indent=2) + '\n')
+        report['checks'] = rows
+        report['passed'] = capture['exit_status'] == 0 and all(r['result'] == 'PASS' for r in rows)
+    elif suite == 'gpu':
+        measured = resources_suite(serial, boot, STEP_SELECTIONS['performance'])
+        report.update(gpuCases=measured['cases'], gpuElapsedMS=measured['elapsed_ms'],
+                      passed=capture['exit_status'] == 0 and all(r['result'] == 'PASS' for r in measured['cases']))
+    elif suite == 'console':
+        report['consoleHandoffToDoneMS'] = resources_console(serial, boot, capture['events'])
+    else:
+        raise ValueError('retained acceptance supports console, gpu or breengel')
+    if suite in ('console', 'gpu'):
+        manifest = json.loads((root / 'docs/suites/gt710.json').read_text())
+        effort = json.loads((root / 'docs/efforts/metal.json').read_text())
+        fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal'] + [r'KERNEL PANIC:']
+        rows = []
+        for category in capture_categories(boot):
+            # core/producer requires a separate diagnostic boot. This replay
+            # measures startup cases, not that historical diagnostic milestone.
+            if category == 'core':
+                continue
+            record = dict(boot=boot['id'], commit=sha, milestone='metal-gt710/' + category,
+                          cases=cases(category, serial))
+            score(manifest, effort, record, serial, boot, sha, fatal)
+            (directory / ('gt710-' + category + '.json')).write_text(json.dumps(record, indent=2) + '\n')
+            rows.extend(record['cases'])
+        report.update(checks=rows, notMeasured={'gpu-core': 'requires separate production and diagnostic companions'},
+                      passed=report.get('passed', capture['exit_status'] == 0)
+                             and all(r['result'] == 'PASS' for r in rows))
+    report['artifacts'] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(directory.iterdir())
+                           if p.is_file() and (p.name in ('run.json', 'commit', 'dirty', 'ended', 'ended-by',
+                               'exit-status', 'serial.txt', 'events.jsonl') or p.suffix == '.rle')}
+    report['scorerSources'] = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in allowed}
+    (directory / 'suite-acceptance.json').write_text(json.dumps(report, indent=2) + '\n')
+    print(json.dumps(report, indent=2), flush=True)
+    return 0 if report['passed'] else 1
 
 
 def record_capture(directory, sha, producer_sha=None):
@@ -4022,11 +4177,13 @@ def main():
     parser.add_argument('--check-manifest', type=Path)
     parser.add_argument('--boot')
     parser.add_argument('--sha')
+    parser.add_argument('--capture-directory', type=Path, help='re-score a retained native suite locally; --sha is its real runtime commit')
     parser.add_argument('--gpu-boot', help='completed companion GPU-only suite boot for core/producer')
     breengel = parser.add_mutually_exclusive_group()
     breengel.add_argument('--breengel-fronts', action='store_true', help='score a completed BreenGL boot against step 9.1')
     breengel.add_argument('--breengel-composition', action='store_true', help='score a completed BreenGL boot against step 9.2')
     breengel.add_argument('--breengel-stage', action='store_true', help='score a completed BreenGL boot against step 9.3')
+    breengel.add_argument('--breengel-full', action='store_true', help='score full 401-case acceptance against step 9.4')
     parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
     parser.add_argument('--isolation', action='store_true', help='score PR 8.5 isolation and preceding selections from the same captures')
     parser.add_argument('--shapes', action='store_true', help='score PR 8.4 shapes and preceding selections from the same captures')
@@ -4040,6 +4197,13 @@ def main():
     if args.check_manifest:
         validate_manifest(json.loads(args.check_manifest.read_text()))
         return 0
+    if args.capture_directory:
+        import subprocess
+        root = Path(__file__).resolve().parents[2]
+        head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
+        if subprocess.check_output(['git', 'status', '--porcelain'], cwd=root, text=True).strip():
+            raise ValueError('retained re-score requires a committed clean scorer')
+        return rescore_suite_capture(args.capture_directory, args.sha, head)
     if args.acceptance_directory:
         import subprocess
         root = Path(__file__).resolve().parents[2]
@@ -4089,7 +4253,7 @@ def main():
         return result.stdout
 
     boot = json.loads(read('run.json'))
-    if args.breengel_fronts or args.breengel_composition or args.breengel_stage:
+    if args.breengel_fronts or args.breengel_composition or args.breengel_stage or args.breengel_full:
         if (not read('ended').strip() or read('exit-status').strip() not in ('0', '1')
                 or read('dirty').strip() != '0' or read('commit').strip() != args.sha):
             raise ValueError('a completed clean BreenGL boot of the requested commit is required')
@@ -4097,16 +4261,12 @@ def main():
         if any(event.get('event') in ('console-gap', 'fatal') for event in events):
             raise ValueError('BreenGL capture has a gap or fatal event')
         resources_identity(boot, 'breengel', args.sha)
-        category = 'breengel-stage' if args.breengel_stage else 'breengel-composition' if args.breengel_composition else 'breengel-fronts'
+        category = 'breengel-full' if args.breengel_full else 'breengel-stage' if args.breengel_stage else 'breengel-composition' if args.breengel_composition else 'breengel-fronts'
         result = runner['in_metal'](env, 'python3', '-c',
             'import json,runpy,sys;from pathlib import Path;'
             'p=Path(sys.argv[1]);a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
-            'b=json.loads((p/"run.json").read_text());s=a["capture_serial"](p);'
-            'rows=a["cases"](sys.argv[2],"",{"breengel":{"boot":dict(b,bootedCommit=b["commit"]),"serial":s}});'
-            '[print("SUITE gt710 CASE "+r["id"]+" "+r["result"]+" ms=0"+'
-            '(" msg="+r["reason"] if r["reason"] else "")) for r in rows];'
-            'sys.exit(0 if all(r["result"]=="PASS" for r in rows) else 1)',
-            directory, category)
+            'sys.exit(a["record_breengel_capture"](p,sys.argv[2],sys.argv[3]))',
+            directory, args.sha, category)
         return result.returncode
     if (not read('ended').strip() or read('exit-status').strip() != '0' or read('dirty').strip() != '0'
             or read('commit').strip() != args.sha):

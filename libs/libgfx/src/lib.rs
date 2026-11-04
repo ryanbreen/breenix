@@ -15,6 +15,7 @@ pub mod bitmap_font;
 pub mod blit;
 mod device;
 pub mod font;
+pub mod diagnostics;
 pub mod shapes;
 pub mod stage;
 pub mod surface;

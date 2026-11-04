@@ -25,7 +25,7 @@ class PresentAcceptance(unittest.TestCase):
         # These are the actual return and zero-timeout WAIT predicates, with the
         # scheduler represented by a single poll of the fixture core.
         present = item(display, 'pub(super) fn present_as(')
-        answer = present[present.index('    let outcome = wait_for('):present.index('    let outcome = match outcome')]
+        answer = present[present.index('    let outcome = wait_for'):present.index('    let outcome = match outcome')]
         answer = answer.replace('#[cfg(target_arch = "x86_64")]', '')
         wait = item(core, 'fn op_wait(')
         poll = wait[wait.index('    let outcome = wait_for('):wait.index('    match outcome')]
