@@ -21,6 +21,11 @@ name = "bwm_clock"
 path = "../../tests/bwm_clock.rs"
 required-features = ["std"]
 
+[[test]]
+name = "bwm_validation"
+path = "../../tests/bwm_validation.rs"
+required-features = ["std"]
+
 [features]
 default = []
 std = []
