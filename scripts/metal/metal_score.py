@@ -84,13 +84,15 @@ def score(directory):
     # category's records are server-<category>.json, or users-operator.json for the
     # users suite's host-run category, beside its transcript.
     found = sorted(directory.glob('server-*.json')) + sorted(directory.glob('users-operator.json')) + sorted(directory.glob('gt710-*.json'))
-    if (run.get('suite') in ('console', 'gpu') and run.get('platform') == 'metal'
-            and run.get('evidenceEligible') is True and run.get('mode') == 'suite'
+    if (((run.get('suite') in ('console', 'gpu') and run.get('mode') == 'suite')
+             or (run.get('mode') == 'probe' and not run.get('gt710Category')))
+            and run.get('platform') == 'metal' and run.get('evidenceEligible') is True
             and not run.get('watch') and run.get('build', {}).get('profile') == 'production'
             and (directory / 'ended').exists()):
         try:
             native = runpy.run_path(str(directory / 'definition/scripts/metal/gt710-suite'))
-            for category in native['capture_categories'](run):
+            categories = native['capture_categories'](run) + (['memory'] if run.get('mode') == 'probe' else [])
+            for category in categories:
                 # gpu-core has separate diagnostic companions; a suite boot
                 # alone does not measure that historical milestone.
                 if category == 'core':

@@ -3823,12 +3823,41 @@ def capture_categories(boot):
             and (c != 'console' or (boot.get('mode') == 'suite' and boot.get('suite') == 'console'))]
 
 
+def capture_boot(directory):
+    """Read the driver identity, also retained beside Vigil's import wrapper."""
+    directory = Path(directory)
+    wrapper = json.loads((directory / 'run.json').read_text())
+    manifest = directory / 'metal-run.json'
+    if not manifest.exists():
+        return wrapper
+    boot = json.loads(manifest.read_text())
+    if not isinstance(wrapper, dict) or not isinstance(boot, dict):
+        raise ValueError('capture manifests must be objects')
+    # checkout and taskName describe the local UI, not the driver's boot.
+    # Do not fill missing driver fields from the presentation record.
+    for key, value in wrapper.items():
+        if key not in ('checkout', 'taskName') and boot.get(key) != value:
+            raise ValueError('capture manifests disagree on ' + key)
+    return boot
+
+
 def completed_suite_capture(directory, sha, suite=None):
-    """Read an authoritative, driver-closed native suite capture, including bulk pixels."""
+    """Read an authoritative, driver-closed native capture, including bulk pixels."""
     directory = Path(directory)
     read = lambda name: (directory / name).read_text().strip()
-    boot = json.loads(read('run.json'))
-    resources_identity(boot, suite or boot.get('suite'), sha)
+    boot = capture_boot(directory)
+    if boot.get('mode') == 'probe':
+        if (not re.fullmatch('[a-f0-9]{40}', sha or '')
+                or boot.get('commit') != sha or boot.get('toolsCommit') != sha
+                or boot.get('build') != dict(commit=sha, profile='production', features=[])
+                or boot.get('platform') != 'metal' or boot.get('arch') != 'x86_64'
+                or boot.get('kind') != 'boot' or boot.get('evidenceEligible') is not True
+                or boot.get('suite') or boot.get('suites') or boot.get('gt710Category')
+                or boot.get('inject') or boot.get('watch')
+                or not re.fullmatch(r'\d{8}T\d{6}Z-metal', boot.get('id', ''))):
+            raise ValueError('probe requires the recorded production kernel/build/tools')
+    else:
+        resources_identity(boot, suite or boot.get('suite'), sha)
     events = [json.loads(line) for line in read('events.jsonl').splitlines()]
     status = int(read('exit-status'))
     driver_closed = bool(events) and (events[-1].get('event') == 'closed'
@@ -3891,10 +3920,22 @@ def rescore_suite_capture(directory, sha, scorer_head):
     directory = Path(directory)
     capture = completed_suite_capture(directory, sha)
     boot, serial = capture['boot'], capture['serial']
-    suite = boot['suite']
+    suite = boot.get('suite')
+    probe = boot.get('mode') == 'probe'
     report = dict(boot=boot['id'], commit=sha, toolsCommit=boot['toolsCommit'], build=boot['build'],
                   scorerCommit=scorer_head, hostOnlyDiff=changed, exitStatus=capture['exit_status'])
-    if suite == 'breengel':
+    if probe:
+        import math
+        one(r'^PROBE framebuffer OK .+$', serial, 'probe framebuffer result')
+        one(r'^PROBE DONE passed=17 failed=0$', serial, 'probe DONE')
+        handoff = [e.get('seconds') for e in capture['events'] if e.get('event') == 'handoff']
+        done = [e.get('seconds') for e in capture['events'] if e.get('event') == 'final-marker']
+        if (capture['exit_status'] != 0 or len(handoff) != 1 or len(done) != 1
+                or any(type(v) not in (int, float) or not math.isfinite(v) for v in handoff + done)
+                or not 0 < done[0] - handoff[0] <= 300):
+            raise ValueError('probe requires successful completion within 300 s of handoff')
+        report.update(scope='probe-startup', probeHandoffToDoneMS=round((done[0] - handoff[0]) * 1000))
+    elif suite == 'breengel':
         rows = cases('breengel-full', '', {'breengel': capture})
         record = dict(boot=boot['id'], commit=sha, milestone='metal-gt710/breengel-full', cases=rows)
         (directory / 'gt710-breengel-full.json').write_text(json.dumps(record, indent=2) + '\n')
@@ -3908,27 +3949,32 @@ def rescore_suite_capture(directory, sha, scorer_head):
         report['consoleHandoffToDoneMS'] = resources_console(serial, boot, capture['events'])
     else:
         raise ValueError('retained acceptance supports console, gpu or breengel')
-    if suite in ('console', 'gpu'):
+    if probe or suite in ('console', 'gpu'):
         manifest = json.loads((root / 'docs/suites/gt710.json').read_text())
         effort = json.loads((root / 'docs/efforts/metal.json').read_text())
         fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal'] + [r'KERNEL PANIC:']
         rows = []
-        for category in capture_categories(boot):
+        errors = {}
+        categories = capture_categories(boot) + (['memory'] if probe else [])
+        for category in categories:
             # core/producer requires a separate diagnostic boot. This replay
             # measures startup cases, not that historical diagnostic milestone.
             if category == 'core':
                 continue
             record = dict(boot=boot['id'], commit=sha, milestone='metal-gt710/' + category,
                           cases=cases(category, serial))
-            score(manifest, effort, record, serial, boot, sha, fatal)
+            try:
+                score(manifest, effort, record, serial, boot, sha, fatal)
+            except ValueError as error:
+                errors[category] = str(error)
             (directory / ('gt710-' + category + '.json')).write_text(json.dumps(record, indent=2) + '\n')
             rows.extend(record['cases'])
-        report.update(checks=rows, notMeasured={'gpu-core': 'requires separate production and diagnostic companions'},
+        report.update(checks=rows, errors=errors, notMeasured={'gpu-core': 'requires separate production and diagnostic companions'},
                       passed=report.get('passed', capture['exit_status'] == 0)
-                             and all(r['result'] == 'PASS' for r in rows))
+                             and not errors and all(r['result'] == 'PASS' for r in rows))
     report['artifacts'] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(directory.iterdir())
-                           if p.is_file() and (p.name in ('run.json', 'commit', 'dirty', 'ended', 'ended-by',
-                               'exit-status', 'serial.txt', 'events.jsonl') or p.suffix == '.rle')}
+                           if p.is_file() and (p.name in ('run.json', 'metal-run.json', 'commit', 'dirty', 'ended', 'ended-by',
+                               'exit-status', 'serial.txt', 'serial.ts', 'events.jsonl') or p.suffix == '.rle')}
     report['scorerSources'] = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in allowed}
     (directory / 'suite-acceptance.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2), flush=True)
@@ -4177,7 +4223,7 @@ def main():
     parser.add_argument('--check-manifest', type=Path)
     parser.add_argument('--boot')
     parser.add_argument('--sha')
-    parser.add_argument('--capture-directory', type=Path, help='re-score a retained native suite locally; --sha is its real runtime commit')
+    parser.add_argument('--capture-directory', type=Path, help='re-score a retained production probe or native suite locally; --sha is its real runtime commit')
     parser.add_argument('--gpu-boot', help='completed companion GPU-only suite boot for core/producer')
     breengel = parser.add_mutually_exclusive_group()
     breengel.add_argument('--breengel-fronts', action='store_true', help='score a completed BreenGL boot against step 9.1')

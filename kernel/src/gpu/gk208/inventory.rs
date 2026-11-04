@@ -69,7 +69,7 @@ fn faults(regs:&mut Registers)->(u32,String) {
     }
     (mask,records)
 }
-pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,console:&super::ConsoleSurface)->Result<(),&'static str> {
+pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,console:&super::ConsoleSurface)->Result<String,&'static str> {
     let baseline=layout.allocator.stats();
     let total=baseline.reserved+baseline.charged+baseline.free;
     let seed=(timer::rdtsc() as u32)|1;
@@ -77,10 +77,6 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     let (faults_before,records)=faults(regs);
     crate::serial_println!("GT710_VRAM_FAULT before={} records=[{}]",faults_before,records);
     if faults_before!=0 {return Err("preexisting GPU memory fault");}
-    let mut protected=layout.allocator.reserved().to_vec();
-    protected.extend(layout.objects.iter().map(memory::Object::guarded));
-    crate::serial_println!("GT710_VRAM_STAGE snapshot-reserved-before bytes={}",protected.iter().map(|r|r.size).sum::<u64>());
-    let (protected_bytes,protected_before)=digest(regs,total,&protected)?;
     let a=layout.allocator.allocate((1<<20)+4096,4096,Kind::Probe)?;
     let b=layout.allocator.allocate(12288,4096,Kind::Probe)?;
     let tables=layout.allocator.allocate(65536,4096,Kind::Engine)?;
@@ -161,9 +157,6 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
     modeset::activate_bar1(regs,u64::from(bar_before&0x0fffffff)<<12,display_directory)?;
     if regs.read(0x1704)!=bar_before {return Err("display BAR binding not restored");}
     result?;
-    crate::serial_println!("GT710_VRAM_STAGE snapshot-reserved-after");
-    let (_,protected_after)=digest(regs,total,&protected)?;
-    if protected_after!=protected_before {return Err("reserved VRAM or retained display allocation changed");}
     let (faults_after,records)=faults(regs);
     if faults_after!=0 {crate::serial_println!("GT710_VRAM_FAULT after={} records=[{}]",faults_after,records);return Err("GPU memory fault during aperture probe");}
     let (_,scratch_guard_after)=digest(regs,total,&guards)?;
@@ -177,9 +170,8 @@ pub fn probe(regs:&mut Registers,device:&pci::Device,layout:&mut memory::Layout,
         let _=write!(views,"{{\"index\":{},\"instance\":{},\"directory\":{},\"table\":{},\"pde\":[0,{}],\"ptes_sha256\":\"{}\",\"sha256\":[\"{}\",\"{}\"]}}",
             index,instance,directory,table,(table>>8) as u32|1,table_hashes[step],view_hashes[step][0],view_hashes[step][1]);
     }
-    crate::serial_println!("GT710_VRAM {{\"schema\":1,\"phase\":\"inventory\",\"bdf\":\"{:02x}:{:02x}.{}\",\"total\":{},\"aperture\":{},\"seed\":{},\"baseline\":{},\"peak\":{},\"after\":{},\"scratch\":[[{},{}],[{},{}]],\"tables\":[{},{}],\"views\":[{}],\"protected_bytes\":{},\"protected_before\":\"{}\",\"protected_after\":\"{}\",\"bar_before\":{},\"bar_after\":{},\"pramin_before\":{},\"pramin_after\":{},\"faults_before\":{},\"faults_after\":{},\"fault_records\":[{}],\"translation\":\"pending-m6\",\"scratch_guard_bytes\":{},\"scratch_guard_before\":\"{}\",\"scratch_guard_after\":\"{}\"}}",
+    Ok(format!("{{\"schema\":1,\"phase\":\"inventory\",\"bdf\":\"{:02x}:{:02x}.{}\",\"total\":{},\"aperture\":{},\"seed\":{},\"baseline\":{},\"peak\":{},\"after\":{},\"scratch\":[[{},{}],[{},{}]],\"tables\":[{},{}],\"views\":[{}],\"bar_before\":{},\"bar_after\":{},\"pramin_before\":{},\"pramin_after\":{},\"faults_before\":{},\"faults_after\":{},\"fault_records\":[{}],\"translation\":\"pending-m6\",\"scratch_guard_bytes\":{},\"scratch_guard_before\":\"{}\",\"scratch_guard_after\":\"{}\"",
         device.bus,device.device,device.function,total,device.bars[1].size,seed,stats(baseline),stats(peak),stats(after),
-        a.range.start,a.range.size,b.range.start,b.range.size,instance,tables.range.size,views,protected_bytes,protected_before,protected_after,
-        bar_before,regs.read(0x1704),pramin_before,regs.read(0x1700),faults_before,faults_after,records,scratch_guard_bytes,scratch_guard_before,scratch_guard_after);
-    Ok(())
+        a.range.start,a.range.size,b.range.start,b.range.size,instance,tables.range.size,views,
+        bar_before,regs.read(0x1704),pramin_before,regs.read(0x1700),faults_before,faults_after,records,scratch_guard_bytes,scratch_guard_before,scratch_guard_after))
 }

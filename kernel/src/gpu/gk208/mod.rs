@@ -375,15 +375,43 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
         }
         let (console,mut evo)=result?;
         if native::memory_requested() {
+            // G34: one full protected envelope brackets the three diagnostics.
+            // Their scratch guards, faults and stage-specific checks stay local.
+            let baseline=layout.allocator.stats();
+            let total=baseline.reserved+baseline.charged+baseline.free;
+            let mut protected=layout.allocator.reserved().to_vec();
+            protected.extend(layout.objects.iter().map(memory::Object::guarded));
             let start=timer::rdtsc();
-            inventory::probe(&mut regs,&device,&mut layout,&console)?;
+            crate::serial_println!("GT710_VRAM_STAGE snapshot-reserved-before bytes={}",protected.iter().map(|r|r.size).sum::<u64>());
+            let (protected_bytes,protected_before)=inventory::digest(&mut regs,total,&protected)?;
+            crate::serial_println!("GT710_PROBE_TIME protected-before us={}",channel::elapsed(start));
+            let start=timer::rdtsc();
+            let inventory=inventory::probe(&mut regs,&device,&mut layout,&console)?;
+            crate::serial_println!("GT710_VRAM_STAGE probe-complete shared-window=pending");
             crate::serial_println!("GT710_PROBE_TIME inventory us={}",channel::elapsed(start));
             let start=timer::rdtsc();
-            vm_probe::probe(&mut regs,&device,&mut layout,&console)?;
+            crate::serial_println!("GT710_VM_STAGE reserved-before shared-window=inventory,vm-lifetime,aperture");
+            let (vm,lifetime)=vm_probe::probe(&mut regs,&device,&mut layout,&console)?;
+            crate::serial_println!("GT710_VM_STAGE probe-complete shared-window=pending");
             crate::serial_println!("GT710_PROBE_TIME vm-lifetime us={}",channel::elapsed(start));
             let start=timer::rdtsc();
-            aperture_probe::probe(&mut regs,&device,&mut layout,&console)?;
+            crate::serial_println!("GT710_APERTURE_STAGE reserved-before shared-window=inventory,vm-lifetime,aperture");
+            let aperture=aperture_probe::probe(&mut regs,&device,&mut layout,&console)?;
+            crate::serial_println!("GT710_APERTURE_STAGE probe-complete shared-window=pending");
             crate::serial_println!("GT710_PROBE_TIME aperture us={}",channel::elapsed(start));
+            let start=timer::rdtsc();
+            let (after_bytes,protected_after)=inventory::digest(&mut regs,total,&protected)?;
+            crate::serial_println!("GT710_PROBE_TIME protected-after us={}",channel::elapsed(start));
+            if after_bytes!=protected_bytes || protected_after!=protected_before {
+                crate::serial_println!("GT710_PROTECTED mismatch diagnostics=inventory,vm-lifetime,aperture before={} after={} attribution=per-stage-snapshots-required",protected_before,protected_after);
+                return Err("memory diagnostics changed protected VRAM");
+            }
+            crate::serial_println!("GT710_LIFETIME {}",lifetime);
+            // Publish the original per-stage evidence with the measured window's
+            // hashes only after its closing comparison succeeds.
+            for (name,fields) in [("GT710_VRAM",inventory),("GT710_VM",vm),("GT710_APERTURE",aperture)] {
+                crate::serial_println!("{} {},\"protected_bytes\":{},\"protected_before\":\"{}\",\"protected_after\":\"{}\",\"protected_window\":\"inventory,vm-lifetime,aperture\"}}",name,fields,protected_bytes,protected_before,protected_after);
+            }
         }
         if native::suite_requested() {
             let start=timer::rdtsc();
