@@ -114,6 +114,12 @@ pub struct Service {
     pub give_up: Option<GiveUp>,
 }
 
+/// PID 1 owns machine daemons; a nested desktop starts only its compositor.
+/// Neither desktop scope starts login terminals.
+pub fn desktop_service(service: &Service, system: bool) -> bool {
+    !service.command[0].ends_with("/getty") && (system || service.name == "bwm")
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GiveUp {
     pub failures: usize,

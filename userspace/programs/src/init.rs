@@ -320,9 +320,12 @@ fn detach_console() {
 /// Start the shared desktop without login terminals.
 fn run_desktop_mode() -> ! {
     print!("[init] mode desktop\n");
-    reconcile_machine_state();
-    run_boot_script();
-    let mut supervisor = init_services::Supervisor::load(init_services::Scope::Desktop, std::process::id() == 1);
+    let system = std::process::id() == 1;
+    if system {
+        reconcile_machine_state();
+        run_boot_script();
+    }
+    let mut supervisor = init_services::Supervisor::load(init_services::Scope::Desktop, system);
     supervisor.tick();
     let terminal = spawn(b"/usr/bin/bterm\0");
     if supervisor.running("bwm") && terminal.is_ok() {

@@ -286,7 +286,7 @@ fn in_scope(scope: Scope, service: &Service) -> bool {
     match scope {
         Scope::All => service.name != "bwm",
         Scope::Daemons => login_terminal(service).is_none() && service.name != "bwm",
-        Scope::Desktop => login_terminal(service).is_none(),
+        Scope::Desktop => services::desktop_service(service, std::process::id() == 1),
         Scope::Logins => login_terminal(service).is_some(),
     }
 }
