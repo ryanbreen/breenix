@@ -1662,7 +1662,13 @@ rectangle on native rasters. The text grid, progress track, stage row and remain
 panel pixels stay exact. The heading's elapsed field may advance across giveback;
 restoring a stale clock to satisfy equality is incorrect. Both headings must contain
 non-uniform heading text on the panel background, with known counts matching the
-suite's captured serial state. The case checks that prefix against the font's samples.
+suite's captured serial state. The case checks the complete heading against the font's
+samples, including the case name, skipped suffix and background after clipped text.
+Elapsed time is derived independently from the captured producer's monotonic START
+timestamp in `/proc/breenix/boot-serial-timed`; each line is `milliseconds|serial line`.
+The sample interval permits the 250 ms panel refresh interval plus 50 ms for clock
+resolution and sampling. The check must reject a stale elapsed field outside that
+interval, including after a display owner has held the screen.
 
 ### 23.8 Agreement
 

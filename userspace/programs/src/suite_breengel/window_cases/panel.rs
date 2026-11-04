@@ -129,7 +129,7 @@ fn panel_cursor_trail_detected() -> CaseResult {
         left.iter().find(|p| !near(p))))
 }
 
-// B36a keeps static pixels exact while independently checking the live heading counts.
+// Keep static pixels exact and check the full live heading against captured serial.
 fn panel_kernel_screens() -> CaseResult {
     let (ret,modes)=libbreenix::gpu::modes();
     ensure(ret==0 && modes.console_resource!=0,"23","gpu-display: kernel screens have no GPU console resource")?;
@@ -137,10 +137,12 @@ fn panel_kernel_screens() -> CaseResult {
     // This runner owns the display; giving it back shows the kernel's console screen.
     let gave = give_back();
     ensure(gave >= 0, "18", format!("give_back_display by the runner {}", outcome(gave)))?;
-    let serial = std::fs::read_to_string("/proc/breenix/boot-serial")
+    let serial = std::fs::read_to_string("/proc/breenix/boot-serial-timed")
         .map_err(|e| format!("captured producer serial: {e}")).cite("23.7")?;
-    let prefix = kernel_restore::counts(&serial).ok_or("suite counts are absent from captured serial").cite("23.7")?;
+    let heading = kernel_restore::Heading::read(&serial).ok_or("suite heading is absent from captured serial").cite("23.7")?;
+    let shown_start = now_ms();
     let shown = screen();
+    let shown_end = now_ms();
     let f = || {
         if take_over() < 0 {
             return 2;
@@ -154,7 +156,9 @@ fn panel_kernel_screens() -> CaseResult {
         0
     };
     let ended = child_end(5_000, || f());
+    let again_start = now_ms();
     let again = screen();
+    let again_end = now_ms();
     let retook = take_over();
     let (console, _) = shown?;
     let (redrawn, _) = again?;
@@ -162,5 +166,5 @@ fn panel_kernel_screens() -> CaseResult {
     ensure(matches!(ended.cite("23")?, Ended::Exit(0)), "23", "the display-taking child did not take, paint and give back the display")?;
     let (width,height) = screen_size()?;
     crate::remember_frame(&redrawn,width,height,Some(console.clone()));
-    kernel_restore::compare(&console,&redrawn,width,height,&prefix).cite("23.7")
+    kernel_restore::compare(&console,&redrawn,width,height,&heading,[(shown_start,shown_end),(again_start,again_end)]).cite("23.7")
 }
