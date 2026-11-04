@@ -2,6 +2,7 @@
 from pathlib import Path
 import os
 import subprocess
+import sys
 import tempfile
 
 from gt710_gr_live_unwind_test import item
@@ -66,5 +67,6 @@ fn first_restored_frame_includes_the_captured_done_and_elapsed_time() {
 }
 '''.replace('REFRESH', refresh)
     (path / 'src/lib.rs').write_text(modules + fixture)
-    subprocess.run(['taskpolicy', '-b', 'cargo', 'test', '--manifest-path', str(path / 'Cargo.toml'), '--lib'],
+    priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []
+    subprocess.run(priority + ['cargo', 'test', '--manifest-path', str(path / 'Cargo.toml'), '--lib'],
                    check=True, env=dict(os.environ, CARGO_BUILD_JOBS='4', RUSTFLAGS='-Dwarnings', OUT_DIR=tmp))
