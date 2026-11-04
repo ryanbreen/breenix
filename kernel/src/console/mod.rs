@@ -613,6 +613,11 @@ fn may_draw() -> bool {
     true
 }
 
+/// The serial suite panel belongs to tty1, even while another text VT is visible.
+fn may_draw_panel() -> bool {
+    vt::foreground() == 1 && may_draw()
+}
+
 // ---------------------------------------------------------------------------
 // x86-64: the firmware framebuffer.
 // ---------------------------------------------------------------------------
@@ -1065,7 +1070,7 @@ fn render_thread(display: &'static Display, attached: Attached) {
                 screen.panel_dirty = true;
             }
         }
-        screen.refresh_panel();
+        screen.refresh_panel(snapshot.fg);
         if changed || !screen.complete || screen.panel_dirty {
             let started = crate::time::get_monotonic_time_ns();
             let drawn = screen.update(&snapshot);
@@ -1329,7 +1334,15 @@ fn sleep_ms(ms: u64) {
 impl Screen {
     /// Coalesce producer changes and elapsed time to at most four panel refreshes per second.
     /// A full repaint bypasses the deadline to restore the display, including point 15.
-    fn refresh_panel(&mut self) {
+    fn refresh_panel(&mut self, fg: usize) {
+        if fg != 0 {
+            // The switch's full clear leaves this VT's reserved band blank. Keep
+            // its shadow and scanout stable while tty1's serial producer advances.
+            self.panel = None;
+            self.panel_dirty = false;
+            self.panel_updated_ms = None;
+            return;
+        }
         boot_ribbon::drain();
         let now = crate::time::get_monotonic_time();
         if self.panel_updated_ms.is_some_and(|last| now.saturating_sub(last) < 250) { return; }
@@ -1414,11 +1427,15 @@ impl Screen {
         }
         if self.panel_dirty {
             if let Some(panel) = &self.panel {
+                if !may_draw_panel() {
+                    self.complete = false;
+                    return drawn;
+                }
                 panel.paint(&mut self.shadow, &self.layout);
                 let rows = panel.rows();
-                let result = if !self.display.write(&self.shadow, rows.clone(), may_draw) {
+                let result = if !self.display.write(&self.shadow, rows.clone(), may_draw_panel) {
                     Err("the console panel could not write its backing")
-                } else if !may_draw() {
+                } else if !may_draw_panel() {
                     Err("the display changed owners before panel flush")
                 } else { self.display.flush(rows) };
                 if let Err(error) = result {
