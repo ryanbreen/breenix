@@ -55,6 +55,32 @@ class ConsoleStatusAcceptance(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'timestamp'):
                 self.api.console_duration(path, events)
 
+    def test_failed_companion_is_reported_even_when_capture_validation_fails(self):
+        sha = 'a' * 40
+        serial = ('SUITE console DONE passed=88 failed=0 skipped=0 total=88\n'
+                  'SUITE console MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=48\n'
+                  'SUITE breengel CASE panel/kernel-screens FAIL ms=3354 sha256=' + 'c' * 64 +
+                  " msg=kernel screen differs at (1046, 1430)\n"
+                  'SUITE breengel DONE passed=400 failed=1 skipped=0 total=401\n'
+                  'SUITE breengel MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=48\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / 'commit').write_text(sha)
+            (path / 'run.json').write_text(json.dumps(dict(id='20261104T023723Z-metal')))
+            (path / 'serial.txt').write_text(serial)
+            with patch.object(self.api, 'retained_diff', side_effect=ValueError('runtime files changed')), \
+                    patch.dict(self.api.NATIVE, completed_suite_capture=lambda *args: (_ for _ in ()).throw(
+                        ValueError('incomplete capture'))):
+                report = self.api.inspect_capture(path, 'console', 'b' * 40)
+            self.assertFalse(report['passed'])
+            self.assertEqual(report['observedSuites'], {
+                'console': dict(done=serial.splitlines()[0:1], memory=serial.splitlines()[1:2], failures=[]),
+                'breengel': dict(done=serial.splitlines()[3:4], memory=serial.splitlines()[4:5],
+                                 failures=serial.splitlines()[2:3])})
+            self.assertNotIn('checks', report)
+            self.assertEqual(report['errors'], ['runtime files changed', 'incomplete capture'])
+            self.assertEqual((path / 'serial.txt').read_text(), serial)
+
     def test_passing_suite_cannot_override_stale_identity_or_shared_exit_one(self):
         sha = 'a' * 40
         boot = dict(id='20261104T023723Z-metal', toolsCommit=sha,
