@@ -1,10 +1,11 @@
 //! Exercise the retained panel against exact pixels and its read-back oracle.
 extern crate alloc;
-#[path = "../kernel/src/console/boxdraw.rs"] mod boxdraw;
-#[path = "../kernel/src/console/grid.rs"] mod grid;
-#[path = "../kernel/src/console/raster.rs"] mod raster;
-#[path = "../kernel/src/console/status.rs"] mod status;
-#[path = "../kernel/src/console/panel.rs"] mod panel;
+#[path = "../kernel/src/console/boxdraw.rs"] pub mod boxdraw;
+#[path = "../kernel/src/console/grid.rs"] pub mod grid;
+#[path = "../kernel/src/console/raster.rs"] pub mod raster;
+#[path = "../kernel/src/console/status.rs"] pub mod status;
+#[path = "../kernel/src/console/panel.rs"] pub mod panel;
+#[path = "../kernel/src/console/ribbon.rs"] pub mod ribbon;
 use raster::{Font, Layout};
 use status::SuiteStatus;
 

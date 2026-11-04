@@ -62,6 +62,7 @@ pub mod keymap;
 pub mod keys;
 pub mod raster;
 mod ribbon;
+mod panel;
 pub mod status;
 #[cfg(target_arch = "aarch64")]
 use crate::graphics::boot_ribbon;
@@ -880,11 +881,9 @@ struct Screen {
     /// The last pass wrote and flushed each row it drew, and left no row undrawn.
     complete: bool,
     last_failure: Option<&'static str>,
-    /// The boot stage ribbon the rows under its band show (section 23.7 of the BreenGL
-    /// contract), once worked out, and whether the full repaint that started it took test
-    /// point 15 (`ribbon-drop-stage`).
-    ribbon: Option<ribbon::Ribbon>,
-    ribbon_known: bool,
+    panel: Option<panel::Panel>,
+    panel_dirty: bool,
+    panel_updated_ms: Option<u64>,
     ribbon_drop: bool,
 }
 
@@ -981,8 +980,9 @@ fn render_thread(display: &'static Display, attached: Attached) {
         frames: 0,
         complete: false,
         last_failure: None,
-        ribbon: None,
-        ribbon_known: false,
+        panel: None,
+        panel_dirty: true,
+        panel_updated_ms: None,
         ribbon_drop: false,
     };
 
@@ -1061,11 +1061,12 @@ fn render_thread(display: &'static Display, attached: Attached) {
             // afresh: test point 15 drops a stage from it until the next one.
             {
                 screen.ribbon_drop = crate::test_control::take(breengel_abi::tc_point::RIBBON_DROP_STAGE, 0).is_some();
-                screen.ribbon_known = false;
+                screen.panel_updated_ms = None;
+                screen.panel_dirty = true;
             }
         }
-        screen.refresh_ribbon();
-        if changed || !screen.complete {
+        screen.refresh_panel();
+        if changed || !screen.complete || screen.panel_dirty {
             let started = crate::time::get_monotonic_time_ns();
             let drawn = screen.update(&snapshot);
             if screen.complete {
@@ -1326,27 +1327,19 @@ fn sleep_ms(ms: u64) {
 }
 
 impl Screen {
-    /// Work out the ribbon again when a stage was reached or a full repaint began, and mark
-    /// the text rows under its band for drawing when it changed.
-    fn refresh_ribbon(&mut self) {
+    /// Coalesce producer changes and elapsed time to at most four panel refreshes per second.
+    /// A full repaint bypasses the deadline to restore the display, including point 15.
+    fn refresh_panel(&mut self) {
         boot_ribbon::drain();
-        let reached = boot_ribbon::take_dirty();
-        if self.ribbon_known && !reached {
-            return;
+        let now = crate::time::get_monotonic_time();
+        if self.panel_updated_ms.is_some_and(|last| now.saturating_sub(last) < 250) { return; }
+        let Some(suite) = boot_ribbon::suite_status() else { return; };
+        self.panel_updated_ms = Some(now);
+        let wanted = panel::Panel::new(&self.layout, suite, boot_ribbon::reached(), self.ribbon_drop, now);
+        if wanted != self.panel {
+            self.panel = wanted;
+            self.panel_dirty = true;
         }
-        self.ribbon_known = true;
-        let wanted = ribbon::Ribbon::now(&self.layout, self.ribbon_drop);
-        if wanted == self.ribbon {
-            return;
-        }
-        let line_height = self.layout.font.line_height();
-        for band in [&self.ribbon, &wanted].into_iter().flatten().map(ribbon::Ribbon::rows) {
-            let rows = band.start / line_height..band.end.div_ceil(line_height).min(self.shown.len());
-            for shown in &mut self.shown[rows] {
-                *shown = None;
-            }
-        }
-        self.ribbon = wanted;
     }
 
     /// Draw the rows that differ from what the screen shows, then flush them.
@@ -1393,9 +1386,6 @@ impl Screen {
             }
             raster::draw_row(&mut self.shadow, &self.layout, row, &wanted.text, wanted.cursor);
             let band = self.layout.band(row);
-            if let Some(ribbon) = &self.ribbon {
-                ribbon.paint(&mut self.shadow, &self.layout, band.clone());
-            }
             if self.display.write(&self.shadow, band.clone(), may_draw) {
                 self.shown[row] = Some(wanted);
                 drawn += 1;
@@ -1421,6 +1411,21 @@ impl Screen {
                 }
                 failed = true;
             }
+        }
+        if self.panel_dirty {
+            if let Some(panel) = &self.panel {
+                panel.paint(&mut self.shadow, &self.layout);
+                let rows = panel.rows();
+                let result = if !self.display.write(&self.shadow, rows.clone(), may_draw) {
+                    Err("the console panel could not write its backing")
+                } else if !may_draw() {
+                    Err("the display changed owners before panel flush")
+                } else { self.display.flush(rows) };
+                if let Err(error) = result {
+                    self.last_failure = Some(error);
+                    failed = true;
+                } else { self.panel_dirty = false; }
+            } else { self.panel_dirty = false; }
         }
         self.complete = !failed && self.shown.iter().all(Option::is_some);
         if self.complete {
@@ -1468,8 +1473,6 @@ impl Screen {
                 }
                 let row = y / font.line_height();
                 let shown = self.shown.get(row).and_then(Option::as_ref);
-                // Only the ribbon's own rows need its per-pixel segment oracle.
-                let ribbon = self.ribbon.as_ref().filter(|ribbon| ribbon.rows().contains(&y));
                 for (x, pixel) in line.chunks_exact(bpp).enumerate() {
                     let expected = match shown {
                         Some(shown) => {
@@ -1477,11 +1480,8 @@ impl Screen {
                         }
                         None => raster::PALETTE[0],
                     };
-                    // A drawn row shows the boot stage ribbon over its text in the ribbon's band.
-                    let expected = match (ribbon, shown) {
-                        (Some(ribbon), Some(_)) => ribbon.colour(x, y).unwrap_or(expected),
-                        _ => expected,
-                    };
+                    let expected = self.panel.as_ref()
+                        .and_then(|panel| panel.colour(&layout, x, y)).unwrap_or(expected);
                     if !layout.pixel_is(pixel, expected) {
                         font_mismatches += 1;
                     }

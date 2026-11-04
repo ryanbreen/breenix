@@ -6,13 +6,14 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parents[1]
 source = r'''extern crate alloc;
-mod boot_ribbon { pub fn reached()->Vec<bool>{vec![true,false]} }
-mod console {
- use crate::boot_ribbon;
+
+pub mod console {
+ #[path="STATUS"] pub mod status;
  pub mod raster {
   use std::ops::Range;
   pub struct Layout {pub width:usize,pub height:usize,pub bytes_per_pixel:usize}
   impl Layout {
+   pub fn panel(&self)->Option<super::status::PanelGeometry>{super::status::PanelGeometry::for_display(self.width,self.height,9,22)}
    pub fn line(&self,y:usize)->Range<usize>{y*self.width*4..(y+1)*self.width*4}
    pub fn fill(&self,bytes:&mut [u8],c:[u8;3]){for px in bytes.chunks_exact_mut(4){px[..3].copy_from_slice(&c);}}
   }
@@ -22,8 +23,8 @@ mod console {
 fn main(){
  use console::{raster::Layout,ribbon::Ribbon};
  let layout=Layout{width:1280,height:800,bytes_per_pixel:4};
- let normal=Ribbon::now(&layout,false).unwrap();
- let dropped=Ribbon::now(&layout,true).unwrap();
+ let normal=Ribbon::new(&layout,vec![true,false],false).unwrap();
+ let dropped=Ribbon::new(&layout,vec![true,false],true).unwrap();
  let mut frame=vec![0;1280*800*4];
  normal.paint(&mut frame,&layout,772..778);
  assert_eq!(&frame[(772*1280+112)*4..(772*1280+112)*4+3], &[26,112,77]);
@@ -31,7 +32,7 @@ fn main(){
  assert_eq!(dropped.colour(112,772),Some([48,67,96]));
  assert_eq!(normal.colour(688,772),Some([48,67,96]));
 }
-'''.replace('RIBBON', str(ROOT / 'kernel/src/console/ribbon.rs'))
+'''.replace('STATUS', str(ROOT / 'kernel/src/console/status.rs')).replace('RIBBON', str(ROOT / 'kernel/src/console/ribbon.rs'))
 with tempfile.TemporaryDirectory() as tmp:
     path = Path(tmp)
     (path / 'test.rs').write_text(source)

@@ -9,6 +9,8 @@ mod boxdraw;
 pub mod grid;
 #[path = "../../../kernel/src/arch_impl/x86_64/pagewalk.rs"]
 mod pagewalk;
+#[path = "../../../kernel/src/console/status.rs"]
+pub mod status;
 #[path = "../../../kernel/src/console/raster.rs"]
 mod raster;
 

@@ -36,6 +36,16 @@ pub struct SuiteStatus {
 }
 
 impl SuiteStatus {
+    pub const fn new() -> Self {
+        Self { suite: String::new(), total: 0, passed: 0, failed: 0, skipped: 0,
+            cases: Vec::new(), started_ms: 0, done_ms: None }
+    }
+
+    pub fn judged(&self) -> impl Iterator<Item = bool> + '_ {
+        self.cases.iter().filter(|(_, o)| *o != Outcome::Skip)
+            .map(|(_, o)| *o == Outcome::Fail)
+    }
+
     /// Observe one complete captured serial line, timestamped by a monotonic clock.
     /// Invalid records leave the model unchanged, including its elapsed-time origin.
     pub fn observe(&mut self, line: &[u8], now_ms: u64) -> bool {

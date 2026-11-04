@@ -10,7 +10,8 @@ static SERIAL: [AtomicU8; CAPACITY] = [const { AtomicU8::new(0) }; CAPACITY];
 static TAIL: AtomicUsize = AtomicUsize::new(0);
 static DIRTY: AtomicBool = AtomicBool::new(false);
 static OVERFLOW: AtomicBool = AtomicBool::new(false);
-static SCAN: spin::Mutex<(usize, [u8; 1024], usize)> = spin::Mutex::new((0, [0; 1024], 0));
+type Scan = (usize, [u8; 1024], usize, crate::console::status::SuiteStatus);
+static SCAN: spin::Mutex<Scan> = spin::Mutex::new((0, [0; 1024], 0, crate::console::status::SuiteStatus::new()));
 /// Constant work per byte under UART ownership, including before the framebuffer exists.
 pub fn byte(b: u8) {
     let tail = TAIL.load(Ordering::Relaxed);
@@ -25,7 +26,7 @@ pub fn drain() -> bool {
     let end = TAIL.load(Ordering::Acquire).min(scan.0 + 8192);
     scan_to(&mut scan, end)
 }
-fn scan_to(scan: &mut (usize, [u8; 1024], usize), end: usize) -> bool {
+fn scan_to(scan: &mut Scan, end: usize) -> bool {
     let mut changed = false;
     while scan.0 < end {
         let b = SERIAL[scan.0].load(Ordering::Relaxed);
@@ -34,6 +35,7 @@ fn scan_to(scan: &mut (usize, [u8; 1024], usize), end: usize) -> bool {
         if b == b'\n' {
             if n <= 1024 {
                 let bytes = &scan.1[..n];
+                changed |= scan.3.observe(bytes, crate::time::get_monotonic_time());
                 for (i, marker) in MARKERS.iter().enumerate() {
                     if super::boot_producer::matches(bytes, marker, MARKERS) {
                         changed |= !REACHED[i].swap(true, Ordering::AcqRel);
@@ -58,7 +60,7 @@ fn drain_snapshot() {
         // A syscall can preempt the render thread while it owns SCAN, then run
         // with preemption disabled. Parse the immutable prefix independently
         // instead of waiting for that thread to run. Reached bits are atomic.
-        let mut scan = (0, [0; 1024], 0);
+        let mut scan = (0, [0; 1024], 0, crate::console::status::SuiteStatus::new());
         scan_to(&mut scan, end);
     }
 }
@@ -90,4 +92,10 @@ pub fn records() -> alloc::string::String {
         );
     }
     out
+}
+
+/// Suite state observed by the same complete-line scanner as the stage producers.
+/// Rendering calls this in thread context, outside UART ownership.
+pub fn suite_status() -> Option<crate::console::status::SuiteStatus> {
+    SCAN.try_lock().map(|scan| scan.3.clone())
 }

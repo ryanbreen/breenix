@@ -51,6 +51,8 @@ if BUSY.load(std::sync::atomic::Ordering::SeqCst){None}else{self.0.try_lock().ok
 static BUSY:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
 static IRQ:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(true);
 pub fn arch_interrupts_enabled()->bool{IRQ.load(std::sync::atomic::Ordering::SeqCst)}
+pub mod time {pub fn get_monotonic_time()->u64{1234}}
+pub mod console {#[path="ROOT/kernel/src/console/status.rs"] pub mod status;}
 #[path="ROOT/kernel/src/graphics/boot_producer.rs"] pub mod boot_producer;
 #[path="ROOT/kernel/src/graphics/boot_ribbon.rs"] pub mod boot_ribbon;
 fn main(){
@@ -69,6 +71,11 @@ assert!(boot_ribbon::records().contains("1|[xhci] running: "));
 IRQ.store(true,std::sync::atomic::Ordering::SeqCst);
 assert!(boot_ribbon::reached().into_iter().any(|v|v));
 BUSY.store(false,std::sync::atomic::Ordering::SeqCst);
+for &b in b"SUITE console START cases=2\\nSUITE console CASE text/a PASS ms=1\\nSUITE console CASE text/b FAIL ms=1 msg=bad\\n" {boot_ribbon::byte(b);}
+boot_ribbon::records();
+let suite=boot_ribbon::suite_status().unwrap();
+assert_eq!((suite.passed(),suite.failed(),suite.pending()),(1,1,0));
+assert_eq!(suite.elapsed(6234),(0,5));
 assert!(boot_ribbon::records().contains("1|[xhci] running: "));
 }
 '''.replace('ROOT', str(ROOT))

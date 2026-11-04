@@ -150,8 +150,14 @@ impl Layout {
         (self.width / self.font.glyph_width()).min(MAX_CELLS)
     }
 
+    pub fn panel(&self) -> Option<super::status::PanelGeometry> {
+        super::status::PanelGeometry::for_display(self.width, self.height,
+            self.font.glyph_width(), self.font.line_height())
+    }
+
     pub fn rows(&self) -> usize {
-        (self.height / self.font.line_height()).min(MAX_CELLS)
+        let height = self.panel().map_or(self.height, |g| g.panel.y);
+        (height / self.font.line_height()).min(MAX_CELLS)
     }
 
     /// The framebuffer's size in bytes.
@@ -286,4 +292,37 @@ pub fn expected_colour(
             / 255) as u8;
     }
     colour
+}
+
+/// Draw clipped, scaled status text with the panel's exact RGB colours.
+pub fn panel_text(frame: &mut [u8], layout: &Layout, rect: super::status::Rect,
+    font: Font, scale: usize, text: &[char]) {
+    for (col, &ch) in text.iter().enumerate() {
+        let glyph = font.glyph(Cell { glyph: ch as u16, ..super::grid::BLANK });
+        for (dy, row) in glyph.raster().iter().enumerate() {
+            for (dx, &coverage) in row.iter().enumerate() {
+                let rgb = blend(super::status::TEXT, super::status::BACKGROUND, coverage);
+                for sy in 0..scale {
+                    let y = rect.y + dy * scale + sy;
+                    for sx in 0..scale {
+                        let x = rect.x + (col * font.glyph_width() + dx) * scale + sx;
+                        if rect.contains(x, y) && x < layout.width && y < layout.height {
+                            let at = layout.line(y).start + x * layout.bytes_per_pixel;
+                            layout.put_pixel(&mut frame[at..at + layout.bytes_per_pixel], rgb);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Independently locate the glyph sample for a status-text pixel.
+pub fn panel_text_colour(font: Font, scale: usize, text: &[char], x: usize, y: usize) -> [u8; 3] {
+    let (x, y) = (x / scale, y / scale);
+    let Some(&ch) = text.get(x / font.glyph_width()) else { return super::status::BACKGROUND; };
+    let coverage = if y < font.glyph_height() {
+        font.glyph(Cell { glyph: ch as u16, ..super::grid::BLANK }).raster()[y][x % font.glyph_width()]
+    } else { 0 };
+    blend(super::status::TEXT, super::status::BACKGROUND, coverage)
 }
