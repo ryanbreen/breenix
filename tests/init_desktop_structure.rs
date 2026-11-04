@@ -31,3 +31,15 @@ fn supervised_bwm_forwards_its_startup_banner() {
         .split("if output.stream").next().unwrap();
     assert!(forwarding.contains("line.starts_with(b\"[bwm] Breenix Window Manager starting\")"));
 }
+
+#[test]
+fn supervised_desktop_errors_are_not_hidden_by_stdout_filtering() {
+    let source = fs::read_to_string("userspace/programs/src/init_services.rs").unwrap();
+    let forwarding = source.split("let desktop = entry.def.name == \"bwm\"").nth(1).unwrap()
+        .split("if output.stream").next().unwrap();
+    for prefix in ["[bwm] ERROR:", "[bwm] GPU frame failed:", "[bwm] Discovered window",
+        "[bwm] compositor acknowledgment failed:", "[bwm] display held by another process:"] {
+        assert!(forwarding.contains(prefix), "missing {prefix}");
+    }
+    assert!(source.contains("if (output.stream == \"stdout\" && (readiness || oracle)) || desktop"));
+}
