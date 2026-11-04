@@ -62,7 +62,9 @@ pub mod syscall {
         }
     }
 }
-use syscall::{graphics::{FbDrawCmd, sys_fbdraw}, SyscallResult};
+use syscall::{graphics::FbDrawCmd, SyscallResult};
+#[cfg(feature = "testing")]
+use syscall::graphics::sys_fbdraw;
 fn command(op: u32) -> FbDrawCmd {
     FbDrawCmd { op, p1: 0, p2: 0, p3: 0, p4: 0, color: 0 }
 }
@@ -70,10 +72,12 @@ fn command(op: u32) -> FbDrawCmd {
 #[test]
 fn retired_syscalls_return_enosys_before_accessing_arguments() {
     for number in 410..=412 {
-        let cmd = command(0);
-        for arg in [0, &cmd as *const _ as u64] {
-            assert_eq!(syscall::handler::dispatch(number, arg), SyscallResult::Err(38),
-                       "retired syscall {number}");
+        for op in [0, 27, 28, 29, 30] {
+            let cmd = command(op);
+            for arg in [0, &cmd as *const _ as u64] {
+                assert_eq!(syscall::handler::dispatch(number, arg), SyscallResult::Err(38),
+                           "retired syscall {number}, op {op}");
+            }
         }
     }
 }
@@ -84,12 +88,12 @@ fn testing_dispatch_keeps_framebuffer_handlers() {
     assert_eq!(syscall::handler::dispatch(411, 0), SyscallResult::Err(14));
     assert_eq!(syscall::handler::dispatch(412, 0), SyscallResult::Ok(412));
 }
+#[cfg(feature = "testing")]
 #[test]
-fn wait_stress_ops_are_absent_in_production() {
+fn testing_fbdraw_rejects_unsupported_ops() {
     for op in 27..=30 {
         let cmd = command(op);
-        let expected = if cfg!(feature = "testing") { 22 } else { 38 };
-        assert_eq!(sys_fbdraw(&cmd as *const _ as u64), SyscallResult::Err(expected),
+        assert_eq!(sys_fbdraw(&cmd as *const _ as u64), SyscallResult::Err(22),
                    "wait-stress op {op}");
     }
     assert_eq!(sys_fbdraw(0), SyscallResult::Err(14));
