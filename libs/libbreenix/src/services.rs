@@ -744,6 +744,25 @@ mod tests {
     }
 
     #[test]
+    fn desktop_session_does_not_restart_system_daemons() {
+        let (table, problems) = parse(include_str!("service-tables/x86_64"));
+        assert!(problems.is_empty());
+        let session: Vec<_> = table.iter().filter(|s| desktop_service(s, false))
+            .map(|s| s.name.as_str()).collect();
+        assert_eq!(session, ["bwm"]);
+        let system: Vec<_> = table.iter().filter(|s| desktop_service(s, true))
+            .map(|s| s.name.as_str()).collect();
+        assert!(system.contains(&"bwm"));
+        assert!(system.contains(&"ntp"));
+        assert!(system.contains(&"bsshd"));
+        assert!(!system.iter().any(|name| name.starts_with("getty")));
+        let (arm, problems) = parse(include_str!("service-tables/aarch64"));
+        assert!(problems.is_empty());
+        assert_eq!(arm.iter().filter(|s| desktop_service(s, false))
+            .map(|s| s.name.as_str()).collect::<Vec<_>>(), ["bwm"]);
+    }
+
+    #[test]
     fn optional_give_up_stops_on_five_failures_in_ten_seconds() {
         let (services, problems) = parse("[bwm]\ncommand = /usr/bin/bwm\ngive-up = 5 10\n[daemon]\ncommand = /bin/daemon\n");
         assert!(problems.is_empty());
