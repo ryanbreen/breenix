@@ -58,6 +58,17 @@ def inspect_capture(path, suite, head):
         sha = (path / 'commit').read_text().strip()
         boot = json.loads((path / 'run.json').read_text())
         report.update(id=boot['id'], commit=sha, toolsCommit=boot.get('toolsCommit'), build=boot.get('build'))
+        # Preserve raw observations before any acceptance validation can reject
+        # this capture. They explain aggregate failure; they grant no acceptance.
+        raw = (path / 'serial.txt').read_text()
+        observed = report['observedSuites'] = {}
+        for line in raw.splitlines():
+            match = re.fullmatch(r'SUITE (\S+) (DONE .*|MEMORY reclaimed=.*|CASE \S+ FAIL .*)', line)
+            if match:
+                state = observed.setdefault(match[1], dict(done=[], memory=[], failures=[]))
+                key = 'done' if match[2].startswith('DONE ') else (
+                    'memory' if match[2].startswith('MEMORY ') else 'failures')
+                state[key].append(line)
         try:
             report['hostOnlyDiff'] = retained_diff(sha, head)
         except (ValueError, subprocess.CalledProcessError) as error:
@@ -87,7 +98,6 @@ def inspect_capture(path, suite, head):
         if len(report['memory']) != 1 or not report['memory'][0].startswith(
                 'SUITE ' + suite + ' MEMORY reclaimed=PASS '):
             errors.append('suite memory reclamation is not PASS')
-        raw = (path / 'serial.txt').read_text()
         report['infoByteArrayPaths'] = len(re.findall(
             r'^\[ INFO\].*(?:syscall::fs|sys_link|linkat).*\[[0-9]+, [0-9]+', raw, re.M))
         if report['infoByteArrayPaths']:
@@ -122,6 +132,10 @@ def main():
               f"exit={report.get('exitStatus', '?')} acceptance={'PASS' if report['passed'] else 'FAIL'}")
         for error in report['errors']:
             print('  ' + error)
+        if not report['passed']:
+            for observed in report.get('observedSuites', {}).values():
+                for line in observed['failures'] + observed['done'] + observed['memory']:
+                    print('  observed: ' + line)
     print('acceptance=' + ('PASS' if proof['passed'] else 'FAIL') + '; proof=' + str(args.output))
     return 0 if proof['passed'] else 1
 
