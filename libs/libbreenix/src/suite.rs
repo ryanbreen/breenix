@@ -1228,6 +1228,9 @@ fn evidence_route(suite: &str, sequence: bool) -> Result<Option<evidence::Route>
 
 fn evidence_scanout() -> Result<evidence::Observation, String> {
     use crate::window::abi::Plain;
+    // CAPS initializes a lazily started GPU before CURRENT_MODE is available.
+    let (result, _) = crate::gpu::caps();
+    if result != 0 { return Err("gpu-caps".into()); }
     let mode = crate::gpu::current_mode().map_err(|_| "current-mode")?;
     let size = evidence::pixel_size(mode.width, mode.height)?;
     let mut pixels = Vec::new();

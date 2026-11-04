@@ -1046,6 +1046,12 @@ class ModeApplicabilityTest(StateTest):
         self.definition = json.loads((root / 'docs/metal/boot-path.json').read_text())
         self.fbcon = next(item for item in self.definition['milestones'] if item['id'] == 'fb-console')
 
+    def test_window_manager_done_satisfies_suite_finished_stage(self):
+        stage = next(item for item in self.definition['milestones'] if item['id'] == 'suite-finished')
+        marker = stage['stages']['suite'][0]['marker']
+        self.assertTrue(boot.marker_matches((marker, 'contains'),
+            'SUITE window-manager DONE passed=9 failed=73 skipped=0 total=82'))
+
     def test_definition_and_driver_measure_fbcon_only_when_console_keeps_screen(self):
         import metal_score
         fb_markers = [(stage['marker'], 'contains') for stage in self.fbcon['stages']['x86_64']]
