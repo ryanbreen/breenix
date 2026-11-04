@@ -5,6 +5,7 @@ from pathlib import Path
 import runpy
 import shutil
 import subprocess
+import struct
 import sys
 import tempfile
 import unittest
@@ -18,7 +19,21 @@ NAMES = [c['id'] + '/' + t['id'] for c in MANIFEST['categories'] for t in c['cas
 SELECTED = json.loads((ROOT / 'docs/gui/gt710-step-21-1.json').read_text())['cases']
 SHA = 'a' * 40
 BOOT = '20261104T000000Z-metal'
-BODIES = (b'startup scanout', b'final DONE panel')
+def panel(width=2, height=1, pixels=None):
+    record = bytearray(1024)
+    for offset, value in [(0, 2), (4, 1024), (16, 6), (20, 5), (24, 1),
+                          (40, width), (44, height), (56, width * 4),
+                          (128, 0x60000000), (132, 0xa0b50300), (192, 0x60000000)]:
+        struct.pack_into('<I', record, offset, value)
+    for offset, value in [(80, 41), (120, 73), (184, 97)]:
+        struct.pack_into('<Q', record, offset, value)
+    if pixels is None:
+        pixels = bytes([0, 1, 2, 255, 3, 4, 5, 255])
+    return (f'SUITE_SCANOUT v=1 width={width} height={height} encoding=raw record=1024\n'.encode()
+            + record + pixels)
+
+
+BODIES = (panel(), panel(pixels=bytes([5, 4, 3, 255, 2, 1, 0, 255])))
 
 
 def anchor(label, body):
@@ -106,7 +121,8 @@ class WmStep(unittest.TestCase):
         global BODIES
         original = BODIES
         try:
-            BODIES = (b'x' * 2_400_000, b'y' * 2_400_000)
+            pixels = b''.join(struct.pack('<I', 0xff000000 | n) for n in range(600_000))
+            BODIES = (panel(1000, 600, pixels), panel(1000, 600, pixels))
             self.uploads(self.path)
             (self.path / 'serial.txt').write_text(serial())
             self.assertEqual(self.record(), 0)
@@ -161,6 +177,34 @@ class WmStep(unittest.TestCase):
                 (self.path / name).write_bytes(saved)
         (self.path / 'gt710-final.rle').write_bytes(b'corrupted pixels')
         self.assertEqual(self.record(), 1)
+
+    def test_consistent_memory_shortfall_is_refused(self):
+        text = serial().replace('MEMORY after free=1000', 'MEMORY after free=900')
+        text = text.replace('reclaimed=PASS free_before=1000 free_after=1000',
+                            'reclaimed=FAIL free_before=1000 free_after=900')
+        (self.path / 'serial.txt').write_text(text)
+        self.assertEqual(self.record(), 1)
+        report = json.loads((self.path / 'gt710-wm-step.json').read_text())
+        self.assertIn('memory not reclaimed: 100 pages short', report['cases'][0]['reason'])
+        self.assertFalse(metal_score.score(self.path)['milestones']['metal-gt710/wm-step']['passed'])
+
+    def test_uploaded_panels_require_plain_scanout_provenance(self):
+        global BODIES
+        original = BODIES
+        try:
+            for slot in (0, 1):
+                for offset, value in [(24, 3), (24, 0), (132, 0), (128, 0),
+                                      (184, 0), (192, 0), (20, 4)]:
+                    body = bytearray(original[slot])
+                    start = body.index(b'\n') + 1
+                    struct.pack_into('<I', body, start + offset, value)
+                    BODIES = tuple(bytes(body) if n == slot else original[n] for n in (0, 1))
+                    self.uploads(self.path)
+                    (self.path / 'serial.txt').write_text(serial())
+                    with self.subTest(slot=slot, offset=offset):
+                        self.assertEqual(self.record(), 1)
+        finally:
+            BODIES = original
 
     def test_missing_or_stale_report_never_scores_green(self):
         missing = metal_score.score(self.path)['milestones'].get('metal-gt710/wm-step')
