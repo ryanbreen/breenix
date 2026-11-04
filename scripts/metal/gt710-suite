@@ -3906,6 +3906,9 @@ def rescore_suite_capture(directory, sha, scorer_head):
                       passed=capture['exit_status'] == 0 and all(r['result'] == 'PASS' for r in measured['cases']))
     elif suite == 'console':
         report['consoleHandoffToDoneMS'] = resources_console(serial, boot, capture['events'])
+    else:
+        raise ValueError('retained acceptance supports console, gpu or breengel')
+    if suite in ('console', 'gpu'):
         manifest = json.loads((root / 'docs/suites/gt710.json').read_text())
         effort = json.loads((root / 'docs/efforts/metal.json').read_text())
         fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal'] + [r'KERNEL PANIC:']
@@ -3921,9 +3924,8 @@ def rescore_suite_capture(directory, sha, scorer_head):
             (directory / ('gt710-' + category + '.json')).write_text(json.dumps(record, indent=2) + '\n')
             rows.extend(record['cases'])
         report.update(checks=rows, notMeasured={'gpu-core': 'requires separate production and diagnostic companions'},
-                      passed=capture['exit_status'] == 0 and all(r['result'] == 'PASS' for r in rows))
-    else:
-        raise ValueError('retained acceptance supports console, gpu or breengel')
+                      passed=report.get('passed', capture['exit_status'] == 0)
+                             and all(r['result'] == 'PASS' for r in rows))
     report['artifacts'] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(directory.iterdir())
                            if p.is_file() and (p.name in ('run.json', 'commit', 'dirty', 'ended', 'ended-by',
                                'exit-status', 'serial.txt', 'events.jsonl') or p.suffix == '.rle')}

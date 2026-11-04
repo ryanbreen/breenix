@@ -84,6 +84,23 @@ def score(directory):
     # category's records are server-<category>.json, or users-operator.json for the
     # users suite's host-run category, beside its transcript.
     found = sorted(directory.glob('server-*.json')) + sorted(directory.glob('users-operator.json')) + sorted(directory.glob('gt710-*.json'))
+    if (run.get('suite') in ('console', 'gpu') and run.get('platform') == 'metal'
+            and run.get('evidenceEligible') is True and run.get('mode') == 'suite'
+            and not run.get('watch') and run.get('build', {}).get('profile') == 'production'
+            and (directory / 'ended').exists()):
+        try:
+            native = runpy.run_path(str(directory / 'definition/scripts/metal/gt710-suite'))
+            for category in native['capture_categories'](run):
+                # gpu-core has separate diagnostic companions; a suite boot
+                # alone does not measure that historical milestone.
+                if category == 'core':
+                    continue
+                name = 'gt710-' + category + '.json'
+                if not (directory / name).is_file():
+                    results[host_milestone(name)] = dict(reached=0, total=len(native['CATEGORIES'][category]),
+                                                        passed=False, reason='missing ' + name)
+        except (OSError, ValueError, KeyError) as error:
+            results['metal-gt710/startup'] = dict(reached=0, total=1, passed=False, reason=str(error))
     # A closed native BreenGL suite measures its selected step even if its host
     # receipt was lost. The driver scores startup before writing closure.
     if ('breengel' in (run.get('suites') or (run.get('suite') or '').split(',')) and run.get('platform') == 'metal'
