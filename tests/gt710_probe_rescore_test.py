@@ -92,6 +92,42 @@ class ProbeRescore(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '330 s'):
                 API['resources_console'](capture['serial'], capture['boot'], events)
 
+    def test_single_capture_replay_refuses_ignored_step_and_companion_options(self):
+        options = [('breengel-fronts',), ('breengel-composition',), ('breengel-stage',),
+                   ('breengel-full',), ('resources',), ('alpha',), ('shapes',),
+                   ('isolation',), ('presentation',), ('performance',),
+                   ('gpu-boot', '20261104T061608Z-metal'),
+                   ('core-boot', '20261104T061608Z-metal'),
+                   ('acceptance-directory', '/unused'), ('boot', '20261104T061608Z-metal'),
+                   ('check-manifest', '/unused'), ('pr', '1')]
+        for option in options:
+            argv = ['gt710-suite', '--capture-directory', '/unused', '--sha', SHA,
+                    '--' + option[0], *option[1:]]
+            with self.subTest(option=option), patch.object(sys, 'argv', argv), \
+                    patch('subprocess.check_output', return_value=''), \
+                    patch.dict(API['main'].__globals__, rescore_suite_capture=lambda *a: 0), \
+                    redirect_stdout(StringIO()), patch('sys.stderr', new_callable=StringIO):
+                with self.assertRaises(SystemExit) as error:
+                    API['main']()
+                self.assertEqual(error.exception.code, 2)
+
+    def test_console_replay_names_its_scope_and_missing_gpu_suite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            boot, _ = self.capture(directory)
+            boot.update(mode='suite', suite='console', suites=['console'])
+            (directory / 'run.json').write_text(json.dumps(boot))
+            capture = dict(boot=boot, serial='fixture', events=[], exit_status=0)
+            with patch('subprocess.run'), patch('subprocess.check_output', return_value=b''), \
+                    patch.dict(API['rescore_suite_capture'].__globals__,
+                               completed_suite_capture=lambda *a: capture,
+                               resources_console=lambda *a: 300000,
+                               capture_categories=lambda *a: []), redirect_stdout(StringIO()):
+                self.assertEqual(API['rescore_suite_capture'](directory, SHA, HEAD), 0)
+            report = json.loads((directory / 'suite-acceptance.json').read_text())
+            self.assertEqual(report['scope'], 'console-suite-and-startup')
+            self.assertIn('gpu-suite', report['notMeasured'])
+
     def test_imported_identity_rejects_conflicts_and_incomplete_driver_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
