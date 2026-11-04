@@ -1392,6 +1392,7 @@ fn x86_boot_target() -> Option<X86BootTarget> {
 #[derive(Clone, Copy)]
 enum X86ConsoleMode {
     Shell,
+    Desktop,
     /// `full_boot` retains default services and checks before gettys. `from`
     /// records the selection source, including default and fallback selection.
     Console { full_boot: bool, idle_minutes: Option<u16>, replug: bool, from: &'static str },
@@ -1402,7 +1403,8 @@ impl X86ConsoleMode {
     fn arg(self) -> &'static str {
         match self {
             Self::Shell => "shell",
-            Self::Console { full_boot: true, .. } => "default",
+            Self::Desktop => "desktop",
+            Self::Console { full_boot: true, .. } => "full-console",
             Self::Console { .. } => "console",
         }
     }
@@ -1411,42 +1413,31 @@ impl X86ConsoleMode {
 /// Select init's interactive argument through the same fw_cfg-before-file rule.
 #[cfg(all(target_arch = "x86_64", not(any(feature = "testing", feature = "interactive", feature = "disable_x86_prod_init"))))]
 fn x86_console_mode() -> Option<X86ConsoleMode> {
-    match drivers::fw_cfg::read_string("opt/breenix/mode").as_deref() {
-        Some("desktop") => {
-            serial_println!("Desktop mode requires a GPU; using the framebuffer console.");
-            Some(X86ConsoleMode::Console { full_boot: false, idle_minutes: None, replug: false, from: "fw_cfg" })
+    use kernel::boot::target::{self, InitMode, Target};
+    let fw = drivers::fw_cfg::read_string("opt/breenix/mode");
+    let (target, from, fw_console) = match fw.as_deref() {
+        Some("default") => (Some(Target::Default), "fw_cfg", false),
+        Some("desktop") => (Some(Target::Desktop), "fw_cfg", false),
+        Some("shell") => (Some(Target::Shell), "fw_cfg", false),
+        Some("console") => (Some(Target::Console { idle_minutes: 30, replug: false }), "fw_cfg", true),
+        None | Some("") => {
+            let target = target::read().ok()?;
+            let from = if target.is_none() || matches!(target, Some(Target::Default)) {
+                "default"
+            } else if kernel::boot::intent::get().is_some() { "intent" } else { "target" };
+            (target, from, false)
         }
-        Some("default") => Some(X86ConsoleMode::Console { full_boot: true, idle_minutes: None, replug: false, from: "fw_cfg" }),
-        Some("shell") => Some(X86ConsoleMode::Shell),
-        Some("console") => Some(X86ConsoleMode::Console { full_boot: false, idle_minutes: None, replug: false, from: "fw_cfg" }),
-        None | Some("") => match kernel::boot::target::read() {
-            Ok(Some(kernel::boot::target::Target::Desktop)) => {
-                serial_println!("Desktop mode requires a GPU; using the framebuffer console.");
-                Some(X86ConsoleMode::Console { full_boot: false, idle_minutes: None, replug: false, from: "target" })
-            }
-            Ok(None | Some(kernel::boot::target::Target::Default)) => {
-                Some(X86ConsoleMode::Console { full_boot: true, idle_minutes: None, replug: false, from: "default" })
-            }
-            // The persistent install's boot: the default services with the keyboard replug exercise, so the
-            // USB keyboard milestone is measured when the operator types.
-            Ok(Some(kernel::boot::target::Target::Persistent)) => Some(X86ConsoleMode::Console {
-                full_boot: true,
-                idle_minutes: None,
-                replug: true,
-                from: if kernel::boot::intent::get().is_some() { "intent" } else { "target" },
-            }),
-            Ok(Some(kernel::boot::target::Target::Shell)) => Some(X86ConsoleMode::Shell),
-            Ok(Some(kernel::boot::target::Target::Console { idle_minutes, replug })) => {
-                Some(X86ConsoleMode::Console {
-                    full_boot: false,
-                    idle_minutes: Some(idle_minutes),
-                    replug,
-                    from: if kernel::boot::intent::get().is_some() { "intent" } else { "target" },
-                })
-            },
-            _ => None,
-        },
-        _ => None,
+        _ => return None,
+    };
+    match target::init_mode(target.as_ref())? {
+        InitMode::Desktop => Some(X86ConsoleMode::Desktop),
+        InitMode::Shell => Some(X86ConsoleMode::Shell),
+        InitMode::FullConsole => Some(X86ConsoleMode::Console {
+            full_boot: true, idle_minutes: None, replug: true, from,
+        }),
+        InitMode::Console { idle_minutes, replug } => Some(X86ConsoleMode::Console {
+            full_boot: false, idle_minutes: if fw_console { None } else { Some(idle_minutes) }, replug, from,
+        }),
     }
 }
 
@@ -1538,9 +1529,7 @@ fn read_x86_production_init(
 fn read_default_x86_init(
 ) -> Result<(alloc::string::String, alloc::vec::Vec<u8>, alloc::vec::Vec<u8>, Option<alloc::string::String>, Option<X86ConsoleMode>), &'static str> {
     // Prepare terminal input and the keyboard when falling back to init.
-    let mode = Some(x86_console_mode().unwrap_or(X86ConsoleMode::Console {
-        full_boot: true, idle_minutes: None, replug: false, from: "fallback",
-    }));
+    let mode = Some(x86_console_mode().unwrap_or(X86ConsoleMode::Desktop));
     let mode_name = mode.map_or("default", X86ConsoleMode::arg);
     log::info!("[boot] Boot mode: {}", mode_name);
     kernel::console::splash::set_mode(format_args!("{}", mode_name));

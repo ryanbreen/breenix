@@ -77,6 +77,28 @@ pub enum Target {
     Program { path: String, arg: Option<String> },
 }
 
+/// The init argument selected by an interactive boot target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InitMode {
+    Desktop,
+    FullConsole,
+    Shell,
+    Console { idle_minutes: u16, replug: bool },
+}
+
+/// Map a boot target to init mode; other targets launch their own program.
+pub fn init_mode(target: Option<&Target>) -> Option<InitMode> {
+    match target {
+        None | Some(Target::Default | Target::Desktop) => Some(InitMode::Desktop),
+        Some(Target::Persistent) => Some(InitMode::FullConsole),
+        Some(Target::Shell) => Some(InitMode::Shell),
+        Some(Target::Console { idle_minutes, replug }) => Some(InitMode::Console {
+            idle_minutes: *idle_minutes, replug: *replug,
+        }),
+        Some(Target::PersistentInstall | Target::Probe | Target::Suite(_) | Target::Program { .. }) => None,
+    }
+}
+
 /// A program path the boot target may name: absolute, of `A-Za-z0-9_./-`.
 fn is_program_path(path: &str) -> bool {
     path.starts_with('/')
