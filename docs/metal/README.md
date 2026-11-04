@@ -534,6 +534,11 @@ selector through the per-boot intent. It keeps the production build and host-key
 accepts one case or category, and its final panel idles. Stop the owned boot with `metal-run stop ID` after the
 required case and diagnostic records have arrived. Filtered watches do not start the suite-sequence resume
 collector or write milestone verdicts. The suite and its runner are unchanged by this host option.
+Native suite boots, including category and case watches, start the machine service
+that supervises `metal-http`. Before power-on the driver checks the staged native
+upload route with a non-consuming HEAD request. A stale HTTP handler refuses the
+boot with a request to deploy tools with `--restart`. The sequence resume collector
+does not serve native uploads; it remains disabled for filtered watches.
 
 Any main-path suite runs this way (`metal-run boot --mode suite --suite ID`). Its fixtures are the ones the other
 launchers attach: the ext2 root on the physical disk, and the machine's own network port with its DHCP lease where

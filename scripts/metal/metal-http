@@ -145,6 +145,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
 
     # claim-lint:ok: #1680 Python None or CLI none is a source token, not an empirical quantifier.
     def do_HEAD(self):
+        if urlsplit(self.path).path.startswith(gt710_upload.PREFIX):
+            return gt710_upload.ready(self)
         staged, answered = self.resolve()
         if answered:
             return

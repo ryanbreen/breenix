@@ -1,9 +1,11 @@
 """Private, bounded actual-display-row upload for the powered boot's lease."""
 import hashlib
+import http.client
 import os
 from pathlib import Path
 import re
 import secrets
+import time
 from urllib.parse import urlsplit, urlunsplit
 import metal_lib as m
 MAX_BYTES=2<<20
@@ -17,6 +19,48 @@ def prepare(directory,boot_id,site,suite=None):
     m.write_json(Path(directory)/'native-upload-intent.json',intent)
     url=urlsplit(site['BOOT_URL'])
     return urlunsplit((url.scheme,url.netloc,route,'',''))
+
+def ready(handler):
+    """Check the staged route without consuming an artifact slot."""
+    with m.locked('gt710-upload'):
+        intent = m.read_json(m.STATE / 'gt710-upload.json', {})
+        lease = m.read_lease() or {}
+        if (not intent or urlsplit(handler.path).path != intent.get('route')
+                or lease.get('id') != intent.get('id')
+                or lease.get('state') not in ('claimed', 'powered')
+                or (m.boot_dir(intent['id']) / 'ended').exists()):
+            handler.send_error(404)
+            return
+        handler.send_response(204)
+        handler.send_header('X-Breenix-Boot', intent['id'])
+        handler.send_header('Content-Length', '0')
+        handler.end_headers()
+
+def check_ready(directory, boot_id, site):
+    """Require the live HTTP handler before a native payload is powered on."""
+    intent = m.read_json(Path(directory) / 'native-upload-intent.json')
+    if not intent:
+        return
+    if intent.get('id') != boot_id or not intent.get('route', '').startswith(PREFIX):
+        raise ValueError('native upload intent differs from this boot')
+    url = urlsplit(site['BOOT_URL'])
+    port = int(site.get('HTTP_LISTEN_PORT') or url.port or 80)
+    deadline = time.monotonic() + 5
+    while True:
+        connection = http.client.HTTPConnection('127.0.0.1', port, timeout=2)
+        try:
+            connection.request('HEAD', intent['route'])
+            response = connection.getresponse()
+            if response.status != 204 or response.getheader('X-Breenix-Boot') != boot_id:
+                raise ValueError('native upload route unavailable; deploy tools with --restart')
+            return
+        except (OSError, http.client.HTTPException) as error:
+            if time.monotonic() >= deadline:
+                raise ValueError('native upload HTTP service unavailable; deploy tools with --restart') from error
+            time.sleep(0.1)
+        finally:
+            connection.close()
+
 def receive(handler):
     with m.locked('gt710-upload'):
         intent=m.read_json(m.STATE/'gt710-upload.json',{})
