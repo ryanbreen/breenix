@@ -697,6 +697,25 @@ mod tests {
     }
 
     #[test]
+    fn optional_give_up_stops_on_five_failures_in_ten_seconds() {
+        let (services, problems) = parse("[bwm]\ncommand = /usr/bin/bwm\ngive-up = 5 10\n[daemon]\ncommand = /bin/daemon\n");
+        assert!(problems.is_empty());
+        let limit = services[0].give_up.expect("configured limit");
+        assert_eq!(services[1].give_up, None);
+        let mut history = FailureHistory::default();
+        for now in [100, 1_100, 2_100, 3_100] {
+            assert!(!history.record(limit, now, true));
+        }
+        assert!(!history.record(limit, 3_500, false));
+        assert!(history.record(limit, 4_100, true));
+        history.clear();
+        for now in [100, 1_100, 2_100, 3_100, 10_100] {
+            assert!(!history.record(limit, now, true));
+        }
+        assert!(history.record(limit, 10_101, true));
+    }
+
+    #[test]
     fn shipped_tables_parse_cleanly() {
         for (arch, text) in [("x86_64", include_str!("service-tables/x86_64")), ("aarch64", include_str!("service-tables/aarch64"))] {
             let (services, problems) = parse(text);
