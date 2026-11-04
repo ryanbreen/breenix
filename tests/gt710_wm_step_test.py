@@ -26,7 +26,8 @@ def anchor(label, body):
 
 
 def serial():
-    lines = ['[gpu] gt710.clocks=full', anchor('startup', BODIES[0]).strip(),
+    lines = ['[gpu] gt710.clocks=full', 'GT710_CLOCK_STARTUP full=true status=ok',
+             anchor('startup', BODIES[0]).strip(),
              'SUITE window-manager START cases=82',
              'SUITE window-manager MEMORY before free=1000 heap_free_kb=500 user_pages=10']
     lines += [f'SUITE window-manager CASE {n} ' + ('PASS ms=1' if n in SELECTED else 'FAIL ms=1 msg=pending')
@@ -55,7 +56,7 @@ class WmStep(unittest.TestCase):
                             'dirty': '0', 'commit': SHA}.items():
             (self.path / name).write_text(value)
         self.definition = self.path / 'definition'
-        for name in ('scripts/metal/gt710-suite', 'docs/suites/window-manager.json',
+        for name in ('scripts/metal/gt710-suite', 'scripts/suite-verdict.py', 'docs/suites/window-manager.json',
                      'docs/boot-path.json', 'docs/metal/boot-path.json',
                      'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json'):
             target = self.definition / name
@@ -103,6 +104,8 @@ class WmStep(unittest.TestCase):
             original.replace('skipped=0', 'skipped=1'),
             original.replace('SUITE window-manager DONE passed=9 failed=73 skipped=0 total=82\n', ''),
             original.replace('clocks=full', 'clocks=post'),
+            original.replace('full=true', 'full=false'),
+            'GT710_CLOCK_FALLBACK reason=bad\n' + original,
             original.replace(final, ''),
             original.replace(final, '').replace('SUITE window-manager MEMORY reclaimed=', final + 'SUITE window-manager MEMORY reclaimed='),
             original.replace('reclaimed=PASS', 'reclaimed=FAIL'),
@@ -141,6 +144,17 @@ class WmStep(unittest.TestCase):
         self.assertEqual(self.record(), 0)
         # Step 2 needs cases outside step 1: its cumulative selection must fail.
         self.assertEqual(API['record_wm_capture'](self.path, SHA, 2), 1)
+
+    def test_startup_uses_the_published_clock_record_and_pre_sample_boundary(self):
+        # gt710.clocks names the requested policy; the startup record reports its outcome.
+        startup = anchor('startup', BODIES[0])
+        text = serial().replace('[gpu] gt710.clocks=full\n', '').replace(startup, '')
+        text = text.replace('SUITE window-manager MEMORY before', startup + 'SUITE window-manager MEMORY before')
+        (self.path / 'serial.txt').write_text(text)
+        self.assertEqual(self.record(), 0)
+        text = text.replace(startup, '').replace('SUITE window-manager CASE ', startup + 'SUITE window-manager CASE ', 1)
+        (self.path / 'serial.txt').write_text(text)
+        self.assertEqual(self.record(), 1)
 
 
 if __name__ == '__main__':

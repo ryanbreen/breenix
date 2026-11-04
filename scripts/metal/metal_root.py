@@ -277,11 +277,18 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         # driver's own staging code, so tools deployed while a boot builds cannot change how it is staged.
         if mode == 'suite' and ',' in suite:
             files['suite-sequence'] = suite + '\n'
-        commands = []
+        # Clear a prior route when reusing a root for a suite without this facility.
+        commands = ['rm /etc/breenix/evidence-route']
+        if gt710_upload and mode == 'suite' and 'window-manager' in suite.split(','):
+            files['evidence-route'] = gt710_upload + '\n'
         for name, text in files.items():
             source = scratch / name
             source.write_text(text)
             commands.extend([f'rm /etc/breenix/{name}', f'write {source} /etc/breenix/{name}'])
+        if 'evidence-route' in files:
+            commands.extend(['set_inode_field /etc/breenix/evidence-route mode 0100400',
+                             'set_inode_field /etc/breenix/evidence-route uid 0',
+                             'set_inode_field /etc/breenix/evidence-route gid 0'])
         if gt710_upload:
             commands.append('set_inode_field /etc/breenix/gt710-upload mode 0100400')
         commands.extend(['rm /etc/resolv.conf', 'symlink /etc/resolv.conf /proc/net/pnp'])

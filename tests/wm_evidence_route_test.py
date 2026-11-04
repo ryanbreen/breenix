@@ -29,7 +29,9 @@ class WmEvidenceRoute(StateTest):
         self.image = self.inputs / 'ext2.img'
         subprocess.run([self.mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F',
                         str(self.image), '4096'], check=True, capture_output=True)
-        self.site = {'BOOT_URL': 'http://fixture.invalid/boot'}
+        self.site = {'BOOT_URL': 'http://fixture.invalid/boot',
+                     'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture_password_only_12345',
+                     'CONSOLE_IDENTITY_KEY': 'ab' * 32}
         self.build = {'ext2': {'sha256': hashlib.sha256(self.image.read_bytes()).hexdigest()}}
         upload.m.write_json(upload.m.STATE / 'disk.json',
                             dict(installedBy='prior', bytes=4096, sha256AfterRecord='a' * 64))
@@ -39,6 +41,9 @@ class WmEvidenceRoute(StateTest):
                                str(self.image)], check=True, capture_output=True).stdout.decode()
 
     def stage(self, suite):
+        # Delivery starts from an ext2 image whose record sector is unused.
+        with self.image.open('r+b') as image:
+            image.write(bytes(512))
         metal_disk.stage(self.boot, self.inputs, 'sample', 'a' * 40, self.site,
                          self.build, mode='suite', suite=suite)
 

@@ -70,7 +70,7 @@ def receive(handler):
         sequence = (intent.get('suite') or '').split(',')
         suite_directory = None
         if len(sequence) > 1:
-            scoped = re.fullmatch(re.escape(intent.get('route', '')) + r'/suites/(console|gpu|breengel)(/.*)?', route)
+            scoped = re.fullmatch(re.escape(intent.get('route', '')) + r'/suites/(console|gpu|breengel|window-manager)(/.*)?', route)
             if not scoped or scoped[1] not in sequence:
                 handler.send_error(404);return
             suite = scoped[1]
