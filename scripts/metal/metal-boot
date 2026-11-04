@@ -70,6 +70,24 @@ WATCHDOG_FAULTS = ('watchdog-feeder-hang', 'watchdog-health-hang')
 SESSION_CEILING_SECONDS = 4 * 3600
 
 
+def clock_failure(serial):
+    """Describe a GT 710 clock failure before downstream suite failures."""
+    lines = serial.splitlines()
+    for line in lines:
+        if re.match(r'^GT710_CLOCK_STARTUP\s+full=false(?:\s|$)', line):
+            reason = line.partition(' status=')[2] or 'unknown reason'
+            if reason == 'post-option':
+                return 'GT 710 clock startup kept POST (gt710.clocks=post)'
+            return 'GT 710 clock startup failed: ' + reason
+    for line in lines:
+        if line.startswith('GT710_CLOCK_FALLBACK '):
+            reason = line.partition(' reason=')[2].split(' gpc_restore=', 1)[0]
+            return 'GT 710 clock startup failed: ' + (reason or line)
+        if line.startswith(('GT710_CLOCK_GUARD ', 'GT710_CLOCK_CRITICAL ')):
+            return 'GT 710 clock startup failed: ' + line
+    return None
+
+
 def session(args):
     """A boot held for the operator with no deadline: a console session, or a persistent boot without commands."""
     return bool(getattr(args, 'session', False)) or (persistent(args) and not check(args))
@@ -998,9 +1016,12 @@ class Driver:
                 self.event('suite-verdict-timeout')
                 m.write_text(self.dir / 'suite-verdict.txt', 'FAIL: suite verdict timed out\n')
                 return False
-            m.write_text(self.dir / 'suite-verdict.txt', self.redact(verdict.stdout + verdict.stderr))
-            self.event('suite-verdict', status=verdict.returncode)
-            return verdict.returncode == 0
+            failure = clock_failure((self.dir / 'serial.txt').read_text(errors='replace'))
+            output = ('FAIL: ' + failure + '\n' if failure else '') + verdict.stdout + verdict.stderr
+            m.write_text(self.dir / 'suite-verdict.txt', self.redact(output))
+            status = verdict.returncode or (1 if failure else 0)
+            self.event('suite-verdict', status=status)
+            return status == 0
 
     def finalize_disk_suite(self):
         readback = m.read_json(self.dir / 'readback.json')

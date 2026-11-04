@@ -1325,6 +1325,35 @@ class DriverTest(StateTest):
             self.assertFalse(d.score_suite())
         self.assertIn('timed out', (d.dir / 'suite-verdict.txt').read_text())
 
+    def test_clock_startup_failure_precedes_suite_case_failures(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'console'
+        definition = d.dir / 'definition'
+        for name in ('scripts/suite-verdict.py', 'docs/boot-path.json', 'docs/suites/console.json'):
+            path = definition / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('fixture')
+        fixture = TOOLS.parents[1] / 'tests/fixtures/metal-clock-verdict/failed.txt'
+        failed = fixture.read_text()
+        good = 'GT710_CLOCK_STARTUP full=true gpc_khz=1306451 status=ok\nSUITE console DONE passed=88 failed=0 skipped=0 total=88\n'
+        post = 'GT710_CLOCK_STARTUP full=false status=post-option\n' + good.split('\n', 1)[1]
+        variants = [
+            (failed, 1, 'FAIL: GT 710 clock startup failed: counter/PTIMER bracket exceeds 1 percent'),
+            (post, 0, 'FAIL: GT 710 clock startup kept POST (gt710.clocks=post)'),
+            (good, 0, 'PASS: console 88/88'),
+            ('GT710_CLOCK_FALLBACK stage=Verify reason=bad clock\n' + good, 0, 'FAIL: GT 710 clock startup failed: bad clock'),
+            ('GT710_CLOCK_GUARD trip_c=85\n' + good, 0, 'FAIL: GT 710 clock startup failed: GT710_CLOCK_GUARD trip_c=85'),
+            ('GT710_CLOCK_CRITICAL temperature_c=95\n' + good, 0, 'FAIL: GT 710 clock startup failed: GT710_CLOCK_CRITICAL temperature_c=95'),
+        ]
+        for serial, status, expected in variants:
+            with self.subTest(expected=expected):
+                (d.dir / 'serial.txt').write_text(serial)
+                output = 'FAIL: console case ENODEV\n' if status else 'PASS: console 88/88\n'
+                result = SimpleNamespace(returncode=status, stdout=output, stderr='')
+                with patch.object(boot.subprocess, 'run', return_value=result):
+                    self.assertEqual(d.score_suite(), expected.startswith('PASS:'))
+                self.assertTrue((d.dir / 'suite-verdict.txt').read_text().startswith(expected))
+
     def test_milestone_scoring_receives_the_boot_commits_path(self):
         d = self.driver
         d.args.mode, d.args.suite, d.args.milestone = 'suite', 'fixture', 'fixture/first'

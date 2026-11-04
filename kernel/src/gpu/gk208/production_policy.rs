@@ -1,4 +1,11 @@
 //! Production clock policy (K8). Hardware mechanisms live in the shared C3-C5 helpers.
+extern crate alloc;
+use alloc::{format, string::String};
+
+pub fn core_decision(full: bool, status: &str) -> Result<(), String> {
+    if full || status == "post-option" { Ok(()) }
+    else { Err(format!("GT710 clock startup failed: {status}")) }
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Stage { Sensor, Pmu, Ram, MemoryIntermediate, MemoryTarget, Gpc, Verify }
 impl Stage {

@@ -74,6 +74,12 @@ impl Access for Io {
     }
 }
 impl observe::CounterAccess for Io {
+    fn endpoint_scope<R>(&mut self, f:impl FnOnce(&mut Self)->R)->R {
+        crate::per_cpu::preempt_disable();
+        let result=crate::arch_without_interrupts(|| f(self));
+        crate::per_cpu::preempt_enable();
+        result
+    }
     fn record(&mut self,stage:&str,raw:&[(u32,u32)]) {
         let raw:Vec<_>=raw.iter().map(|(a,v)|format!("[{a},{v}]")).collect();
         let prefix=if stage.starts_with("pm-") {"GT710_PMC"}else{"GT710_COUNTER"};

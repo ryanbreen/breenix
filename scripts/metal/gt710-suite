@@ -2623,6 +2623,58 @@ def clock_record(row):
     return row
 
 
+class CounterEvidence:
+    def __init__(self):
+        self.attempts = []
+        self.invalid = False
+
+    def observe(self, line):
+        if line.startswith('GT710_CLOCK_COUNTER '):
+            try:
+                fields = dict(re.findall(r'(\w+)=([^ ]+)', line))
+                attempt, khz, cycles, b0, b1, interval, bracket = (int(fields[k]) for k in
+                    ('attempt', 'khz', 'cycles', 'b0_ns', 'b1_ns', 'interval_ns', 'bracket_ns'))
+                accepted = fields['accepted']
+                if (attempt != len(self.attempts) + 1 or attempt > 3 or interval < 20_000_000
+                    or min(khz, cycles, b0, b1, bracket) < 0 or cycles == 0
+                    or bracket != b0 + b1 or khz != cycles * 1_000_000 // interval
+                    or accepted not in ('true', 'false')
+                    or (accepted == 'true') != (bracket <= interval // 100)
+                    or (self.attempts and self.attempts[-1][0])):
+                    raise ValueError('invalid counter attempt')
+                self.attempts.append((accepted == 'true', khz))
+            except (KeyError, ValueError, ZeroDivisionError):
+                self.invalid = True
+        if line.startswith('GT710_CLOCK_STARTUP '):
+            fields = dict(re.findall(r'(\w+)=([^ ]+)', line))
+            if self.invalid:
+                return 'invalid-counter-evidence'
+            if fields.get('full') == 'true':
+                if (not self.attempts or not self.attempts[-1][0]
+                    or abs(self.attempts[-1][1] - 81688) > 81688 // 100
+                    or fields.get('gpc_counter_khz') != str(self.attempts[-1][1])):
+                    return 'invalid-counter-evidence'
+            else:
+                return 'startup-not-full-clocks'
+        return None
+
+
+def counter_evidence(serial):
+    evidence = CounterEvidence()
+    startups = 0
+    full = False
+    for line in serial.splitlines():
+        if line.startswith('GT710_CLOCK_STARTUP '):
+            startups += 1
+            full = dict(re.findall(r'(\w+)=([^ ]+)', line)).get('full') == 'true'
+        reason = evidence.observe(line)
+        if reason and reason != 'startup-not-full-clocks':
+            raise ValueError('invalid GT710 counter attempt evidence')
+    if startups != 1 or evidence.invalid:
+        raise ValueError('missing or invalid GT710 startup evidence')
+    return full
+
+
 def clock_evidence(serial):
     rows = [clock_record(json.loads(m)) for m in re.findall(r'^GT710_CLOCK_V1 (.+)$', serial, re.M)]
     if [r['phase'] for r in rows] != ['startup', 'final']:
@@ -2650,6 +2702,8 @@ def performance_evidence(serial, parsed, names, required, manifest):
     if (dict(re.findall(r'(\w+)=([^ ]+)',startup[1])).get('full')!='true'
             or re.search(r'^GT710_CLOCK_(?:FALLBACK|GUARD|CRITICAL) ',serial,re.M)):
         raise ValueError('performance requires full clocks without fallback, guard trip or critical stop')
+    if not counter_evidence(serial):
+        raise ValueError('performance requires verified counter attempts')
     clock_evidence(serial)
     from decimal import Decimal
     expected = {

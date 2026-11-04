@@ -39,6 +39,16 @@ static TRIPPED: AtomicBool = AtomicBool::new(false);
 static HALTED: AtomicBool = AtomicBool::new(false);
 pub(super) fn halted()->bool {HALTED.load(Ordering::Acquire)}
 static ARMED: AtomicBool = AtomicBool::new(false);
+static CORE_DECISION: super::lock::Mutex<Result<(), &'static str>> =
+    super::lock::Mutex::new(Err("GT710 clock startup failed: not initialized"));
+
+fn publish_outcome(full: bool, status: &'static str) {
+    let decision = policy::core_decision(full, status)
+        .map_err(|reason| &*alloc::boxed::Box::leak(reason.into_boxed_str()));
+    *CORE_DECISION.lock() = decision;
+}
+
+pub(super) fn core_decision() -> Result<(), &'static str> { *CORE_DECISION.lock() }
 
 fn now_ns() -> u64 {
     let (s,n) = crate::time::get_monotonic_time_ns();
@@ -61,6 +71,12 @@ impl c2::Access for Io {
     }
 }
 impl c2::observe::CounterAccess for Io {
+    fn endpoint_scope<R>(&mut self, f:impl FnOnce(&mut Self)->R)->R {
+        crate::per_cpu::preempt_disable();
+        let result=crate::arch_without_interrupts(|| f(self));
+        crate::per_cpu::preempt_enable();
+        result
+    }
     fn monotonic_ns(&mut self)->u64 {now_ns()}
     fn record(&mut self,_stage:&str,_raw:&[(u32,u32)]) {}
 }
@@ -266,10 +282,11 @@ impl Controller {
                     return Err("clock readback more than 1 percent off");
                 }
                 self.context("gpc-counter",format!("target_khz={}",self.target.gpc_khz.div_ceil(16)));
-                let m=super::ce::with_clock_wait(|_,_,_|c2::observe::measure(&mut Io(Registers(self.base))))?;
+                let m=super::ce::with_clock_wait(|_,_,_|c2::observe::measure_with_attempts(&mut Io(Registers(self.base)),|attempt,m| {
+                    crate::serial_println!("GT710_CLOCK_COUNTER attempt={} khz={} cycles={} b0_ns={} b1_ns={} interval_ns={} bracket_ns={} accepted={}",attempt,m.khz,m.cycles,m.b0_ns,m.b1_ns,m.interval_ns,m.b0_ns+m.b1_ns,m.accepted);
+                }))?;
                 self.counter=Some(m.khz);
-                crate::serial_println!("GT710_CLOCK_COUNTER khz={} cycles={} interval_ns={} bracket_ns={} restored=true",m.khz,m.cycles,m.ptimer_ns,m.bracket_ns);
-                self.context("gpc-counter-readback",format!("actual={},expected={}",m.khz,self.target.gpc_khz.div_ceil(16)));
+                self.context("gpc-counter-readback",format!("actual={},expected={},cycles={},interval_ns={},bracket_ns={}",m.khz,self.target.gpc_khz.div_ceil(16),m.cycles,m.ptimer_ns,m.bracket_ns));
                 if !policy::within_one_percent(Ok(m.khz),self.target.gpc_khz.div_ceil(16)) {return Err("GPC counter more than 1 percent off");}
                 self.cool()?;
                 self.context("final-display",String::from("raw=GT710_C5F_HEALTH"));
@@ -318,7 +335,8 @@ pub(super) fn initialize() {
     });
     let mut controller=match result {Ok(c)=>c,Err(e)=>{
         crate::serial_println!("GT710_CLOCK_FALLBACK stage=Prepare check={} values={} reason={}",prepare_check,prepare_values,e);
-        crate::serial_println!("GT710_CLOCK_STARTUP full=false gpc_khz=0 gpc_counter_khz=0 memory_khz=0 temperature_c=0 status={}",e);return;
+        crate::serial_println!("GT710_CLOCK_STARTUP full=false gpc_khz=0 gpc_counter_khz=0 memory_khz=0 temperature_c=0 status={}",e);
+        publish_outcome(false,e);return;
     }};
     let post=keep_post();
     let outcome=policy::start(&mut controller,post);
@@ -327,7 +345,9 @@ pub(super) fn initialize() {
         crate::serial_println!("GT710_CLOCK_FALLBACK stage={} check={} values={} reason={} gpc_restore={} memory_restore={}",stage,controller.check,controller.values,e,
             outcome.gpc_restore.unwrap_or("ok"),outcome.memory_restore.unwrap_or("ok"));
     }
-    controller.record(outcome.full,outcome.failure.unwrap_or(if post {"post-option"}else{"ok"}));
+    let status=outcome.failure.unwrap_or(if post {"post-option"}else{"ok"});
+    controller.record(outcome.full,status);
+    publish_outcome(outcome.full,status);
     let armed=controller.gpc_changed || controller.memory_changed;
     if !outcome.full && armed {TRIPPED.store(true,Ordering::Release);}
     *CONTROLLER.lock()=Some(controller);

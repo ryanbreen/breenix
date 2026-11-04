@@ -21,6 +21,42 @@ def log(message):
     print(message, flush=True)
 
 
+class CounterEvidence:
+    def __init__(self):
+        self.attempts = []
+        self.invalid = False
+
+    def observe(self, line):
+        if line.startswith('GT710_CLOCK_COUNTER '):
+            try:
+                fields = dict(re.findall(r'(\w+)=([^ ]+)', line))
+                attempt, khz, cycles, b0, b1, interval, bracket = (int(fields[k]) for k in
+                    ('attempt', 'khz', 'cycles', 'b0_ns', 'b1_ns', 'interval_ns', 'bracket_ns'))
+                accepted = fields['accepted']
+                if (attempt != len(self.attempts) + 1 or attempt > 3 or interval < 20_000_000
+                    or min(khz, cycles, b0, b1, bracket) < 0 or cycles == 0
+                    or bracket != b0 + b1 or khz != cycles * 1_000_000 // interval
+                    or accepted not in ('true', 'false')
+                    or (accepted == 'true') != (bracket <= interval // 100)
+                    or (self.attempts and self.attempts[-1][0])):
+                    raise ValueError('invalid counter attempt')
+                self.attempts.append((accepted == 'true', khz))
+            except (KeyError, ValueError, ZeroDivisionError):
+                self.invalid = True
+        if line.startswith('GT710_CLOCK_STARTUP '):
+            fields = dict(re.findall(r'(\w+)=([^ ]+)', line))
+            if self.invalid:
+                return 'invalid-counter-evidence'
+            if fields.get('full') == 'true':
+                if (not self.attempts or not self.attempts[-1][0]
+                    or abs(self.attempts[-1][1] - 81688) > 81688 // 100
+                    or fields.get('gpc_counter_khz') != str(self.attempts[-1][1])):
+                    return 'invalid-counter-evidence'
+            else:
+                return 'startup-not-full-clocks'
+        return None
+
+
 def stop_reason(line, startup_only=False):
     if line.startswith(('GT710_CLOCK_FALLBACK ', 'GT710_CLOCK_GUARD ', 'GT710_C5F_ERROR ',
                         'GT710_NATIVE_RESET_REFUSAL ', 'GT710_GR_REFUSAL_CAPTURE_FAILED ',
@@ -55,6 +91,7 @@ def stop_reason(line, startup_only=False):
 def capture(boot, head, startup_only=False):
     directory = Path('/var/lib/breenix-metal/boots') / boot
     offset, pending = 0, ''
+    counter = CounterEvidence()
     record=json.loads((directory / 'run.json').read_text())
     if record.get('id')!=boot or record.get('commit')!=head or record.get('toolsCommit')!=head:
         raise RuntimeError('boot/build/tools identity mismatch; refusing to observe or stop')
@@ -71,7 +108,7 @@ def capture(boot, head, startup_only=False):
                     line, pending = pending.split('\n', 1)
                     log(line)
                     try:
-                        reason = stop_reason(line,startup_only=startup_only)
+                        reason = counter.observe(line) or stop_reason(line,startup_only=startup_only)
                     except (ValueError, KeyError) as error:
                         log(f'WATCH_PARSE_ERROR {error}; continuing')
                         reason = None

@@ -138,9 +138,140 @@ impl Access for Counter {
     fn wait(&mut self,_:u32,_:u32,_:u32)->Result<(),&'static str> {unreachable!()}
 }
 impl c2::observe::CounterAccess for Counter {
+    fn endpoint_scope<R>(&mut self, f:impl FnOnce(&mut Self)->R)->R {f(self)}
     fn monotonic_ns(&mut self)->u64 {self.ns}
     fn record(&mut self,stage:&str,raw:&[(u32,u32)]) {self.records.push((stage.into(),raw.to_vec()));}
 }
+struct ScopedCounter {
+    inner: Counter,
+    sampling: bool,
+    scoped: bool,
+    endpoints: Vec<Vec<u32>>,
+}
+impl Access for ScopedCounter {
+    fn read(&mut self, a:u32)->u32 {
+        if self.sampling {
+            assert!(self.scoped, "sampling read outside endpoint scope");
+            self.endpoints.last_mut().unwrap().push(a);
+        }
+        self.inner.read(a)
+    }
+    fn write(&mut self,a:u32,v:u32) {
+        assert!(!self.scoped, "write inside endpoint scope");
+        self.sampling=false;
+        self.inner.write(a,v);
+    }
+    fn wait(&mut self,a:u32,m:u32,v:u32)->Result<(),&'static str> {
+        assert!(!self.scoped, "wait inside endpoint scope");
+        self.inner.wait(a,m,v)
+    }
+}
+impl c2::observe::CounterAccess for ScopedCounter {
+    fn monotonic_ns(&mut self)->u64 {
+        assert!(!self.scoped, "time polling inside endpoint scope");
+        self.inner.monotonic_ns()
+    }
+    fn record(&mut self,stage:&str,raw:&[(u32,u32)]) {
+        assert!(!self.scoped, "record inside endpoint scope");
+        self.inner.record(stage,raw);
+        if stage=="configured" {self.sampling=true;}
+    }
+    fn endpoint_scope<R>(&mut self, f:impl FnOnce(&mut Self)->R)->R {
+        assert!(!self.scoped);
+        self.scoped=true;
+        self.endpoints.push(Vec::new());
+        let result=f(self);
+        self.scoped=false;
+        result
+    }
+}
+#[test]
+fn each_counter_point_has_its_own_read_only_endpoint_scope() {
+    let mut d=ScopedCounter {inner:bracket_replay().inner,sampling:false,scoped:false,endpoints:Vec::new()};
+    d.inner.ns=0;
+    c2::observe::measure(&mut d).unwrap();
+    assert!(d.endpoints.len()>=2);
+    for endpoint in &d.endpoints {
+        assert_eq!(endpoint, &[0x9410,0x9400,0x9410,0x1800a8,0x9410,0x9400,0x9410]);
+    }
+}
+// Model the observed target clock and a delayed final PTIMER read. The record
+// reports the rejection, while the endpoint stall is the replay hypothesis.
+struct BracketReplay { inner: Counter, sampling: bool, first: Option<u64>, stalls: u32, max_stalls: u32, delay: u64 }
+impl Access for BracketReplay {
+    fn read(&mut self, a:u32)->u32 {
+        self.inner.ns=self.inner.ns.saturating_sub(8_000); // 2 us per register read
+        let v=self.inner.read(a);
+        if self.sampling && a==0x1800a8 {
+            let first=*self.first.get_or_insert(self.inner.ns);
+            if self.inner.ns-first>=20_000_000 && self.stalls<self.max_stalls {
+                self.inner.ns+=self.delay;
+                self.stalls+=1;
+                self.first=None;
+            }
+        }
+        v
+    }
+    fn write(&mut self,a:u32,v:u32) {self.inner.write(a,v)}
+    fn wait(&mut self,a:u32,m:u32,v:u32)->Result<(),&'static str> {self.inner.wait(a,m,v)}
+}
+impl c2::observe::CounterAccess for BracketReplay {
+    fn endpoint_scope<R>(&mut self, f:impl FnOnce(&mut Self)->R)->R {f(self)}
+    fn monotonic_ns(&mut self)->u64 {self.inner.ns}
+    fn record(&mut self,stage:&str,raw:&[(u32,u32)]) {
+        self.inner.record(stage,raw);
+        if stage=="configured" {self.sampling=true;}
+        if stage=="restore-halted" {self.sampling=false;}
+    }
+}
+fn bracket_replay()->BracketReplay {
+    BracketReplay {inner:Counter {regs:BTreeMap::from([(0x200,0x40501100),(0x18009c,0),
+        (0x180044,0x1234),(0x1800a8,99)]),writes:Vec::new(),ns:4_290_000_000,
+        khz:81_653,stalled:false,inaccessible:false,records:Vec::new()},
+        sampling:false,first:None,stalls:0,max_stalls:1,delay:2_900_000}
+}
+#[test]
+fn delayed_endpoint_retries_with_a_fresh_verified_window() {
+    let mut d=bracket_replay();
+    let original=d.inner.regs.clone();
+    let m=c2::observe::measure(&mut d).unwrap();
+    assert_eq!(d.stalls,1);
+    assert!(m.khz.abs_diff(81_653)<100);
+    assert!(m.ptimer_ns>=20_000_000 && m.bracket_ns<=m.ptimer_ns/100);
+    assert_eq!(d.inner.regs,original);
+}
+#[test]
+fn counter_attempts_report_failed_and_accepted_windows_after_restore() {
+    let mut d=bracket_replay();
+    let mut attempts=Vec::new();
+    let m=c2::observe::measure_with_attempts(&mut d, |number, attempt| attempts.push((number,attempt))).unwrap();
+    assert_eq!(attempts.len(),2);
+    assert_eq!((attempts[0].0,attempts[0].1.accepted),(1,false));
+    assert!(attempts[0].1.b0_ns + attempts[0].1.b1_ns > attempts[0].1.interval_ns / 100);
+    assert_eq!((attempts[1].0,attempts[1].1.accepted),(2,true));
+    assert_eq!(attempts[1].1.khz,m.khz);
+    assert_eq!(u64::from(attempts[1].1.khz), u64::from(attempts[1].1.cycles) * 1_000_000 / attempts[1].1.interval_ns);
+    assert!(attempts[1].1.b0_ns + attempts[1].1.b1_ns <= attempts[1].1.interval_ns / 100);
+    let mut d=bracket_replay();
+    d.max_stalls=3;
+    attempts.clear();
+    assert!(c2::observe::measure_with_attempts(&mut d, |number, attempt| attempts.push((number,attempt))).is_err());
+    assert_eq!(attempts.len(),3);
+    assert!(attempts.iter().all(|(_, attempt)| !attempt.accepted));
+}
+#[test]
+fn repeated_wide_endpoints_remain_failures() {
+    for delay in [2_900_000,185_000] {
+        let mut d=bracket_replay();
+        d.max_stalls=3;
+        d.delay=delay;
+        let original=d.inner.regs.clone();
+        assert_eq!(c2::observe::measure(&mut d).err(),Some("counter/PTIMER bracket exceeds 1 percent"));
+        assert_eq!(d.stalls,3);
+        assert_eq!(d.inner.regs,original);
+    }
+}
+
 #[test]
 fn independent_counter_tracks_cycles_across_ptimer_and_restores_on_timeout() {
     use c2::observe::measure;
