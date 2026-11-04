@@ -3946,6 +3946,46 @@ def completed_suite_capture(directory, sha, suite=None):
     return dict(boot=dict(boot, bootedCommit=sha), serial=serial, events=events, exit_status=status)
 
 
+def wm_panel_observation(body):
+    """W4a: uploaded panels attest plain scanout, never composition."""
+    header, separator, payload = body.partition(b'\n')
+    match = re.fullmatch(rb'SUITE_SCANOUT v=1 width=([1-9]\d*) height=([1-9]\d*) encoding=(raw|rle) record=1024', header)
+    if not separator or not match or len(payload) < 1024:
+        raise ValueError('WM panel header or observation missing')
+    width, height = map(int, match.groups()[:2])
+    if width * height * 4 > 64 << 20:
+        raise ValueError('WM panel geometry exceeds evidence bound')
+    record, pixels = payload[:1024], payload[1024:]
+    word = lambda offset: int.from_bytes(record[offset:offset+4], 'little')
+    quad = lambda offset: int.from_bytes(record[offset:offset+8], 'little')
+    # Scanout-only subset of window::validate_scanout_observation's contract table.
+    rows = {4: (4, 0x1100, 0x206), 5: (4, 1, 1104),
+            6: (5, 0x60000000, 0xa0b50300)}
+    row = rows.get(word(16))
+    if (row is None or word(0) != 2 or word(4) != 1024 or word(24) != 1
+            or word(20) != row[0] or (word(40), word(44), word(56)) != (width, height, width * 4)
+            or word(164) != 0 or not all(quad(n) for n in (80, 120, 184))
+            or (word(128), word(132), word(192)) != (row[1], row[2], row[1])):
+        raise ValueError('WM panel is not a valid plain scanout observation')
+    count = width * height
+    if match[3] == b'raw':
+        if len(pixels) != count * 4 or any(pixels[n] != 255 for n in range(3, len(pixels), 4)):
+            raise ValueError('WM raw panel pixels differ from geometry or canonical format')
+    else:
+        if not pixels.endswith(b'\n'):
+            raise ValueError('WM panel RLE missing terminator')
+        remaining = count
+        for token in pixels[:-1].split(b','):
+            run = re.fullmatch(rb'([1-9a-f][0-9a-f]*):ff[0-9a-f]{6}', token)
+            if not run:
+                raise ValueError('WM panel RLE is not canonical')
+            remaining -= int(run[1], 16)
+            if remaining < 0:
+                raise ValueError('WM panel RLE exceeds geometry')
+        if remaining != 0:
+            raise ValueError('WM panel RLE differs from geometry')
+
+
 def wm_step_capture(directory, sha, step_number):
     """Judge one cumulative WM selection without changing the shared suite verdict."""
     directory = Path(directory)
@@ -4078,6 +4118,7 @@ def wm_step_capture(directory, sha, step_number):
             part_index += count
         if len(body) != int(anchor[1]) or hashlib.sha256(body).hexdigest() != anchor[2]:
             raise ValueError('WM upload differs from its whole-picture serial digest')
+        wm_panel_observation(body)
         receipts.append(receipt)
     if len(list(slots.glob('gt710-breengel-*.rle'))) != part_index:
         raise ValueError('WM unanchored picture parts')

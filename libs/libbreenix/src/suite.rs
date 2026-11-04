@@ -1248,6 +1248,11 @@ fn evidence_scanout() -> Result<evidence::Observation, String> {
     readback.record = observation.record.as_mut_ptr() as u64;
     readback.record_len = 1024;
     crate::window::call(crate::window::abi::op::SCANOUT_READBACK, &mut readback).map_err(|_| "scanout-readback")?;
+    if !crate::window::validate_scanout_observation(
+        &observation.record, mode.width, mode.height, crate::window::ObservationKind::Plain,
+    ) {
+        return Err("scanout-observation".into());
+    }
     Ok(observation)
 }
 

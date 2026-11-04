@@ -339,7 +339,9 @@ impl Screen {
         r.record_len = 1024;
         window::call(op::SCANOUT_READBACK, &mut r)
             .map_err(|e| format!("SCANOUT_READBACK: {e}, reason {}", r.reason))?;
-        if !window::validate_scanout_observation(&s.record, s.width, s.height) {
+        if !window::validate_scanout_observation(
+            &s.record, s.width, s.height, window::ObservationKind::Composed,
+        ) {
             return Err("scanout lacks its complete v2 dimensions, binding, native readback and present completion".into());
         }
         Ok(s)
