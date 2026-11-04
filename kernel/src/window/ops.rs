@@ -1058,6 +1058,14 @@ pub fn read_events(caller: &Caller, r: &mut ReadEvents, out_arg: u64) -> Result<
             let mut reg = REGISTRY.lock();
             let claim = reg.claim.map(|c| c.epoch);
             let w = reg.window(r.id, caller, who::owner)?;
+            // A read already waiting under the departed claim returns empty
+            // (17.5); leave its notification queued for the next read.
+            if compositor.is_some_and(|began| began.is_some() && claim != began) {
+                r.lost = 0;
+                drop(reg);
+                crate::syscall::window::copy_out(out_arg, &*r)?;
+                return Ok(0);
+            }
             (w.ring.take(&mut out, capacity), w.waits.clone(), claim)
         };
         let began = *compositor.get_or_insert(claim);
@@ -1077,7 +1085,7 @@ pub fn read_events(caller: &Caller, r: &mut ReadEvents, out_arg: u64) -> Result<
             }
             return Ok(out.len() as u64);
         }
-        if r.flags & READ_EVENTS_BLOCK == 0 || (began.is_some() && claim != began) {
+        if r.flags & READ_EVENTS_BLOCK == 0 {
             r.lost = 0;
             crate::syscall::window::copy_out(out_arg, &*r)?;
             return Ok(0);
