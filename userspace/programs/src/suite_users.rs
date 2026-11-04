@@ -322,8 +322,6 @@ const CRED_ORPHAN: u32 = 32;
 const EPERM: i64 = 1;
 const ESRCH: i64 = 3;
 const EACCES: i64 = 13;
-#[cfg(target_arch = "x86_64")]
-const EINVAL: i64 = 22;
 
 const AT_FDCWD: u64 = (-100i64) as u64;
 const AT_REMOVEDIR: u64 = 0x200;
@@ -339,9 +337,6 @@ const MAP_SHARED: u64 = 1;
 const S_IFCHR: u32 = 0o020000;
 /// /dev/null's device number, major 1 minor 3.
 const NULL_RDEV: u64 = 0x103;
-/// The framebuffer and window system call, the same number on both architectures.
-#[cfg(target_arch = "x86_64")]
-const FBDRAW: u64 = 411;
 const CLONE_FS: u64 = 0x200;
 const SIGKILL: i32 = 9;
 const SIGTERM: i32 = 15;
@@ -1497,24 +1492,13 @@ fn home_nodev_device() -> CaseResult {
     })
 }
 
-/// An FBDRAW command: the raw return.
-#[cfg(target_arch = "x86_64")]
-fn fbdraw(op: u32, p: [u64; 4], color: u32) -> i64 {
-    let cmd = libbreenix::graphics::FbDrawCmd { op, p1: p[0] as i32, p2: p[1] as i32, p3: p[2] as i32, p4: p[3] as i32, color };
-    sc(FBDRAW, &[&cmd as *const _ as u64])
-}
-#[cfg(target_arch = "x86_64")]
-fn lo_hi(ptr: u64) -> [u64; 2] { [ptr & 0xffff_ffff, ptr >> 32] }
-
-/// B46: the ARM64 users case uses window v2; x86 keeps the v1 checks below.
-#[cfg(target_arch = "aarch64")]
+/// Both architectures serve windows through syscall 414; production FBDRAW is retired.
 fn make_window(title: &str) -> Result<u64, String> {
     let window = libbreenix::window::create(4, 4, 2, 0).map_err(|e| format!("CREATE: {e}"))?;
     libbreenix::window::register(window.id, title.as_bytes()).map_err(|e| format!("REGISTER: {e}"))?;
     Ok(window.id)
 }
 
-#[cfg(target_arch = "aarch64")]
 fn listed_windows() -> Result<Vec<libbreenix::window::abi::WinInfo>, String> {
     use libbreenix::window::{self, abi::{Plain, WinInfo}};
     let mut out = [WinInfo::ZERO; 256];
@@ -1523,36 +1507,11 @@ fn listed_windows() -> Result<Vec<libbreenix::window::abi::WinInfo>, String> {
     Ok(out[..n].to_vec())
 }
 
-#[cfg(target_arch = "aarch64")]
 fn window_call<T: libbreenix::window::abi::Plain>(op: u32, arg: &mut T) -> i64 {
     // SAFETY: arg is a live plain ABI structure with its exact length.
     unsafe { libbreenix::window::raw_call(op, arg as *mut T as *mut u8, core::mem::size_of::<T>()) }
 }
 
-/// Each window operation a process may perform only on its own windows, on `id`: what
-/// it is and the raw return.
-#[cfg(target_arch = "x86_64")]
-fn window_ops(id: u32) -> Vec<(&'static str, i64)> {
-    let id = id as u64;
-    let mut pixels = [0u8; 64];
-    let mut events = [libbreenix::graphics::WindowInputEvent::default(); 4];
-    let event = libbreenix::graphics::WindowInputEvent::default();
-    let mut mapped = 0u64;
-    let [plo, phi] = lo_hi(pixels.as_mut_ptr() as u64);
-    let [elo, ehi] = lo_hi(events.as_mut_ptr() as u64);
-    let [ilo, ihi] = lo_hi(&event as *const _ as u64);
-    let [mlo, mhi] = lo_hi(&mut mapped as *mut u64 as u64);
-    vec![
-        ("reading its pixels", fbdraw(14, [id, plo, phi, pixels.len() as u64], 0)),
-        ("reading its input", fbdraw(19, [id, elo, ehi, events.len() as u64], 1)),
-        ("writing its input", fbdraw(18, [id, ilo, ihi, 0], 0)),
-        ("mapping its pixels", fbdraw(21, [id, mlo, mhi, 0], 0)),
-        ("checking it for a new frame", fbdraw(22, [id, 0, 0, 0], 0)),
-        ("moving it", fbdraw(17, [id, 0, 0, 0], 0)),
-    ]
-}
-
-#[cfg(target_arch = "aarch64")]
 fn window_other() -> CaseResult {
     use libbreenix::window::{self, abi::{self, op, Plain}};
     let (_owner, id) = Holder::start_with(B, || make_window("ub's").map(|id| id.to_string()))?;
@@ -1630,20 +1589,6 @@ fn window_other() -> CaseResult {
     window::write_events(own_id, &[request])?;
     window::set_geometry(own_id, 12, 18, 1, abi::geometry_flags::VISIBLE)?;
     mine.finish()
-}
-
-/// x86-64 has no window registry: its framebuffer call refuses the window operations (EINVAL).
-#[cfg(target_arch = "x86_64")]
-fn window_other() -> CaseResult {
-    as_user(A, || {
-        refused("taking over the display as a non-root user", sc(libbreenix::syscall::nr::TAKE_OVER_DISPLAY, &[]), EPERM)?;
-        refused("creating a window", fbdraw(11, [4, 4, 0, 0], 0), EINVAL)?;
-        refused("listing windows", fbdraw(13, [0, 0, 0, 0], 0), EINVAL)?;
-        for (what, ret) in window_ops(1) {
-            refused(&format!("{what} of window 1"), ret, EINVAL)?;
-        }
-        Ok(())
-    })
 }
 
 // ---------------------------------------------------------------------------
