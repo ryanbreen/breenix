@@ -160,6 +160,8 @@ pixels; the two extra pixel rows at the bottom of each cell are the cursor band.
 
 The native panel needs `W>14G` and `H>=2L+48`, with positive glyph width and line
 height at least 6. Below these dimensions it is omitted and text uses the full height.
+The suite's `screen/size-class` and `screen/scanout-grid` checks derive the reserved
+text rows from this geometry after selecting the font from the full display.
 The screen read-back check (section 8) must check the panel's pixels independently of
 the text raster, including background and segment gaps. It does not exempt the panel
 from read-back. No-suite appearance and serial-derived counts follow section 23.7.
