@@ -88,6 +88,17 @@ class ClockReport(unittest.TestCase):
             API['clock_evidence'](row('startup') + row('final', unavailable))
         self.assertIn('unavailable:fuse-access-disabled', out.getvalue())
 
+    def test_counter_attempt_evidence(self):
+        bad = 'GT710_CLOCK_COUNTER attempt=1 khz=81650 cycles=1633000 b0_ns=210000 b1_ns=1000 interval_ns=20000000 bracket_ns=211000 accepted=false\n'
+        good = 'GT710_CLOCK_COUNTER attempt=2 khz=81650 cycles=1633000 b0_ns=1000 b1_ns=1000 interval_ns=20000000 bracket_ns=2000 accepted=true\n'
+        startup = 'GT710_CLOCK_STARTUP full=true gpc_khz=1306451 gpc_counter_khz=81650 memory_khz=900001 temperature_c=34 status=ok\n'
+        self.assertTrue(API['counter_evidence'](bad + good + startup))
+        for line in (good.replace('b0_ns=1000', 'b0_ns=210000').replace('bracket_ns=2000', 'bracket_ns=211000'),
+                     good.replace('khz=81650', 'khz=50000'), good.replace('attempt=2 ', '')):
+            with self.assertRaises(ValueError): API['counter_evidence'](bad + line + startup)
+        self.assertFalse(API['counter_evidence'](bad + startup.replace('full=true', 'full=false')))
+        with self.assertRaises(ValueError): API['counter_evidence'](bad + startup)
+
     def test_slots_anchors_and_raw_decoding_are_checked(self):
         first, last = row('startup'), row('final')
         middle = ('SUITE gpu START cases=170\nSUITE gpu CASE performance/present-rate-2560 PASS ms=1\n'
