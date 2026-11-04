@@ -16,7 +16,7 @@ fn compositor_line_contains_w16_snapshot() {
 #[test]
 fn history_retains_newest_entries_in_order_across_wrap() {
     assert!(HISTORY_CAPACITY >= 4096);
-    let mut history = CompositeHistory::new();
+    let history = CompositeHistory::new();
     for i in 0..HISTORY_CAPACITY + 17 {
         history.push(HistoryEntry { composite_serial: i as u64, presented_ns: 10000 + i as u64,
             window_id: 2, commit_id: 3, pixel_generation: 4 });

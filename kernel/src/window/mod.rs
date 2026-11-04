@@ -15,6 +15,8 @@ pub mod mem;
 pub mod ops;
 pub mod present;
 pub mod scene;
+pub mod status;
+pub mod status_pages;
 
 use alloc::{collections::BTreeMap, collections::VecDeque, sync::Arc, vec::Vec};
 
@@ -259,6 +261,9 @@ impl Window {
 pub struct Claim {
     pub holder: u64,
     pub epoch: u64,
+    pub ack: breengel_abi::CompositorAck,
+    pub first_serial: u64,
+    pub composites_base: u64,
 }
 
 /// A dead owner's last front and tree, kept for its evidence holder (section 17.3).

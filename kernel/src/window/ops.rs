@@ -1222,6 +1222,9 @@ pub fn claim(caller: &Caller, c: &mut Claim, out: u64) -> Result<u64, i32> {
         reg.claim = Some(Held {
             holder: caller.tgid,
             epoch: reg.epoch,
+            ack: breengel_abi::CompositorAck::ZERO,
+            first_serial: reg.present.serial,
+            composites_base: super::status::completed(),
         });
         reg.epoch
     };
