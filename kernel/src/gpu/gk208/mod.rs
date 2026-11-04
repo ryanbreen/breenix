@@ -650,6 +650,8 @@ pub fn initialize_clocks() {
 /// Serialize first-use native startup with the existing allocator/CE owner.
 pub(crate) fn initialize_core() -> Result<(), &'static str> {
     if thermal_halted() {return Err("GPU thermal critical stop");}
+    #[cfg(not(feature = "gt710_clock_probe"))]
+    production::core_decision()?;
     let result = ce::initialize_core();
     #[cfg(feature = "gt710_clock_probe")]
     if let Err(e)=result {crate::serial_println!("GT710_C1_ERROR {}",e);}

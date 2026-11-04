@@ -39,6 +39,16 @@ static TRIPPED: AtomicBool = AtomicBool::new(false);
 static HALTED: AtomicBool = AtomicBool::new(false);
 pub(super) fn halted()->bool {HALTED.load(Ordering::Acquire)}
 static ARMED: AtomicBool = AtomicBool::new(false);
+static CORE_DECISION: super::lock::Mutex<Result<(), &'static str>> =
+    super::lock::Mutex::new(Err("GT710 clock startup failed: not initialized"));
+
+fn publish_outcome(full: bool, status: &'static str) {
+    let decision = policy::core_decision(full, status)
+        .map_err(|reason| &*alloc::boxed::Box::leak(reason.into_boxed_str()));
+    *CORE_DECISION.lock() = decision;
+}
+
+pub(super) fn core_decision() -> Result<(), &'static str> { *CORE_DECISION.lock() }
 
 fn now_ns() -> u64 {
     let (s,n) = crate::time::get_monotonic_time_ns();
@@ -325,7 +335,8 @@ pub(super) fn initialize() {
     });
     let mut controller=match result {Ok(c)=>c,Err(e)=>{
         crate::serial_println!("GT710_CLOCK_FALLBACK stage=Prepare check={} values={} reason={}",prepare_check,prepare_values,e);
-        crate::serial_println!("GT710_CLOCK_STARTUP full=false gpc_khz=0 gpc_counter_khz=0 memory_khz=0 temperature_c=0 status={}",e);return;
+        crate::serial_println!("GT710_CLOCK_STARTUP full=false gpc_khz=0 gpc_counter_khz=0 memory_khz=0 temperature_c=0 status={}",e);
+        publish_outcome(false,e);return;
     }};
     let post=keep_post();
     let outcome=policy::start(&mut controller,post);
@@ -334,7 +345,9 @@ pub(super) fn initialize() {
         crate::serial_println!("GT710_CLOCK_FALLBACK stage={} check={} values={} reason={} gpc_restore={} memory_restore={}",stage,controller.check,controller.values,e,
             outcome.gpc_restore.unwrap_or("ok"),outcome.memory_restore.unwrap_or("ok"));
     }
-    controller.record(outcome.full,outcome.failure.unwrap_or(if post {"post-option"}else{"ok"}));
+    let status=outcome.failure.unwrap_or(if post {"post-option"}else{"ok"});
+    controller.record(outcome.full,status);
+    publish_outcome(outcome.full,status);
     let armed=controller.gpc_changed || controller.memory_changed;
     if !outcome.full && armed {TRIPPED.store(true,Ordering::Release);}
     *CONTROLLER.lock()=Some(controller);
