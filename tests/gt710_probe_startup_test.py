@@ -77,11 +77,11 @@ fn snapshot_keeps_complete_bytes_edges_banks_and_restoration_at_bounded_io_cost(
     assert_eq!(a.words, 0, "a refused bank must not yield snapshot evidence");
 }
 #[test]
-fn hardware_pair_uses_one_aligned_wide_storage_load() {
+fn hardware_pair_uses_two_32_bit_storage_loads() {
     let words = [0xaabbccdd12345678u64];
     let mut registers = Registers(words.as_ptr() as usize, Cell::new(0));
     assert_eq!(Access::read_pair(&mut registers, 0), 0xaabbccdd12345678);
-    assert_eq!(registers.1.get(), 0, "hardware pair fell back to two PCIe scalar reads");
+    assert_eq!(registers.1.get(), 2, "BAR0 storage accesses must remain 32-bit");
 }
 '''.replace('MEMORY', str(ROOT / 'kernel/src/gpu/gk208/memory.rs')).replace('PAIR', pair)
         # The caller supplies its retained evidence directory; no capture goes to /tmp.
