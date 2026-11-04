@@ -79,6 +79,7 @@ interface()?;let (mut k,w,_p,serial)=one_window(2)?;
     match row.copy_fields {
         crate::backend_row::CopyFields::Zero => ensure(s.quad(136)==0 && s.quad(144)==0 && s.word(152)==0 && s.word(156)==0,"20.2","gpu-display: record invented VMware copy fields")?,
         crate::backend_row::CopyFields::Vmware => ensure(s.quad(136)!=0 && s.quad(136)!=s.quad(80) && s.quad(144)!=0 && s.word(152)==1042 && s.word(156)==1,"20.2","gpu-display: VMware record lacks its dedicated readback surface/MOB and completed copy")?,
+        crate::backend_row::CopyFields::Native => ensure(s.quad(136)==0 && s.quad(144)==0 && s.word(152)==0xa0b50300 && s.word(156)==0x60000000,"20.2","gpu-display: native record lacks its completed CE copy or invents VMware identities")?,
     }
     ensure(s.word(164)==0 && s.word(20)==row.boundary,"20.2","gpu-display: readback has unwritten bytes or the wrong boundary")
 }
