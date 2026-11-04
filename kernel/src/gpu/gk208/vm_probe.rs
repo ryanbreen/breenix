@@ -200,7 +200,7 @@ pub fn probe(
     device: &pci::Device,
     layout: &mut memory::Layout,
     console: &super::ConsoleSurface,
-) -> Result<String, &'static str> {
+) -> Result<(String, String), &'static str> {
     let baseline = layout.allocator.stats();
     let total = baseline.reserved + baseline.charged + baseline.free;
     let seed = (timer::rdtsc() as u32) | 1;
@@ -563,13 +563,14 @@ pub fn probe(
     if after != baseline {
         return Err("VM probe charge reclamation mismatch");
     }
-    crate::serial_println!("GT710_LIFETIME {{\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"baseline\":{},\"peak\":{},\"after\":{},{},\"exercise\":\"cpu-only\",\"translation\":\"pending-m6\",\"reset_execution\":\"pending-m6\"}}",
+    let lifetime = format!("{{\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"baseline\":{},\"peak\":{},\"after\":{},{},\"exercise\":\"cpu-only\",\"translation\":\"pending-m6\",\"reset_execution\":\"pending-m6\"}}",
         device.bus,device.device,device.function,stats(baseline),stats(peak),stats(after),lifetime);
     let ranges: Vec<[u64; 2]> = backing
         .iter()
         .map(|a| [a.range.start, a.range.size])
         .collect();
-    Ok(format!("{{\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"seed\":{},\"va\":{},\"limit\":{},\"baseline\":{},\"peak\":{},\"after\":{},\"backing\":{:?},\"backing_sha256\":[{}],\"view\":[{},{}],\"snapshots\":[{}],\"invalidations\":{},\"guard_bytes\":{},\"guard_before\":\"{}\",\"guard_after\":\"{}\",\"bar_before\":{},\"bar_after\":{},\"pramin_before\":{},\"pramin_after\":{},\"faults_before\":{},\"faults_after\":{},\"fault_records_before\":[{}],\"fault_records_after\":[{}],\"translation\":\"pending-m6\"",
+    let vm = format!("{{\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"seed\":{},\"va\":{},\"limit\":{},\"baseline\":{},\"peak\":{},\"after\":{},\"backing\":{:?},\"backing_sha256\":[{}],\"view\":[{},{}],\"snapshots\":[{}],\"invalidations\":{},\"guard_bytes\":{},\"guard_before\":\"{}\",\"guard_after\":\"{}\",\"bar_before\":{},\"bar_after\":{},\"pramin_before\":{},\"pramin_after\":{},\"faults_before\":{},\"faults_after\":{},\"fault_records_before\":[{}],\"fault_records_after\":[{}],\"translation\":\"pending-m6\"",
         device.bus,device.device,device.function,seed,VA,vm::LIMIT,stats(baseline),stats(peak),stats(after),ranges,backing_hashes.join(","),window.range.start,window.range.size,snapshots.join(","),invalidations,
-        guard_bytes,guard_before,guard_after,bar_before,regs.read(0x1704),pramin_before,regs.read(0x1700),faults_before,faults_after,fault_json(&before_records),fault_json(&after_records)))
+        guard_bytes,guard_before,guard_after,bar_before,regs.read(0x1704),pramin_before,regs.read(0x1700),faults_before,faults_after,fault_json(&before_records),fault_json(&after_records));
+    Ok((vm, lifetime))
 }

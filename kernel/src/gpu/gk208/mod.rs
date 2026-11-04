@@ -387,17 +387,17 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
             crate::serial_println!("GT710_PROBE_TIME protected-before us={}",channel::elapsed(start));
             let start=timer::rdtsc();
             let inventory=inventory::probe(&mut regs,&device,&mut layout,&console)?;
-            crate::serial_println!("GT710_VRAM_STAGE snapshot-reserved-after shared-window=pending");
+            crate::serial_println!("GT710_VRAM_STAGE probe-complete shared-window=pending");
             crate::serial_println!("GT710_PROBE_TIME inventory us={}",channel::elapsed(start));
             let start=timer::rdtsc();
             crate::serial_println!("GT710_VM_STAGE reserved-before shared-window=inventory,vm-lifetime,aperture");
-            let vm=vm_probe::probe(&mut regs,&device,&mut layout,&console)?;
-            crate::serial_println!("GT710_VM_STAGE reserved-after shared-window=pending");
+            let (vm,lifetime)=vm_probe::probe(&mut regs,&device,&mut layout,&console)?;
+            crate::serial_println!("GT710_VM_STAGE probe-complete shared-window=pending");
             crate::serial_println!("GT710_PROBE_TIME vm-lifetime us={}",channel::elapsed(start));
             let start=timer::rdtsc();
             crate::serial_println!("GT710_APERTURE_STAGE reserved-before shared-window=inventory,vm-lifetime,aperture");
             let aperture=aperture_probe::probe(&mut regs,&device,&mut layout,&console)?;
-            crate::serial_println!("GT710_APERTURE_STAGE reserved-after");
+            crate::serial_println!("GT710_APERTURE_STAGE probe-complete shared-window=pending");
             crate::serial_println!("GT710_PROBE_TIME aperture us={}",channel::elapsed(start));
             let start=timer::rdtsc();
             let (after_bytes,protected_after)=inventory::digest(&mut regs,total,&protected)?;
@@ -406,6 +406,7 @@ fn inventory(device: pci::Device) -> Result<ConsoleSurface, &'static str> {
                 crate::serial_println!("GT710_PROTECTED mismatch diagnostics=inventory,vm-lifetime,aperture before={} after={} attribution=per-stage-snapshots-required",protected_before,protected_after);
                 return Err("memory diagnostics changed protected VRAM");
             }
+            crate::serial_println!("GT710_LIFETIME {}",lifetime);
             // Publish the original per-stage evidence with the measured window's
             // hashes only after its closing comparison succeeds.
             for (name,fields) in [("GT710_VRAM",inventory),("GT710_VM",vm),("GT710_APERTURE",aperture)] {

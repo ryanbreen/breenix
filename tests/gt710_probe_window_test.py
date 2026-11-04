@@ -48,8 +48,8 @@ pub mod inventory {
 }
 pub mod vm_probe {
     use super::*;
-    pub fn probe(r: &mut Registers, _: &pci::Device, _: &mut memory::Layout, _: &ConsoleSurface) -> Result<String, &'static str> {
-        event("vm".into()); if r.fail { Err("VM failed") } else { Ok("{\"stage\":\"vm\"".into()) }
+    pub fn probe(r: &mut Registers, _: &pci::Device, _: &mut memory::Layout, _: &ConsoleSurface) -> Result<(String, String), &'static str> {
+        event("vm".into()); if r.fail { Err("VM failed") } else { Ok(("{\"stage\":\"vm\"".into(), "{\"stage\":\"lifetime\"}".into())) }
     }
 }
 pub mod aperture_probe {
@@ -84,6 +84,8 @@ fn run(corrupt: bool, fail: bool) -> Result<(), &'static str> {
                 assert!(events.iter().any(|v| v.contains("diagnostics=inventory,vm-lifetime,aperture") && v.contains("mismatch")), "missing attribution: {events:?}");
             } else {
                 assert!(result.is_ok());
+                let lifetime = events.iter().position(|v| v.starts_with("GT710_LIFETIME {")).expect("missing lifetime evidence");
+                assert!(lifetime > index("hash2"));
                 for prefix in ["GT710_VRAM {", "GT710_VM {", "GT710_APERTURE {"] {
                     let record = events.iter().find(|v| v.starts_with(prefix)).expect("missing stage evidence");
                     assert!(events.iter().position(|v| v == record).unwrap() > index("hash2"));
@@ -94,7 +96,7 @@ fn run(corrupt: bool, fail: bool) -> Result<(), &'static str> {
                 }
             }
         }
-        if corrupt || fail { assert!(!events.iter().any(|v| ["GT710_VRAM {", "GT710_VM {", "GT710_APERTURE {"].iter().any(|p| v.starts_with(p)))); }
+        if corrupt || fail { assert!(!events.iter().any(|v| ["GT710_LIFETIME {", "GT710_VRAM {", "GT710_VM {", "GT710_APERTURE {"].iter().any(|p| v.starts_with(p)))); }
     }
 }
 '''.replace('BLOCK', block)
