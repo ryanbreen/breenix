@@ -1021,6 +1021,10 @@ impl Suite {
         } else {
             Screen::open(self.gui, self.id == "gpu")
         };
+        // Final text-panel storage belongs in both memory samples. Each reason
+        // already has the serial MSG_MAX bound; keep its slot for the panel's life.
+        let textual = !self.gui && (screen.fb.is_some() || self.defer_display);
+        let mut panel_reasons = panel_reason_storage(&states, textual);
         let pace_ms = if self.gui {crate::suite_stage::init(self)} else {0};
         let proof = intent::configured(self.id);
         let intent_pace_ms = if proof { intent::pace_ms() } else { 0 };
@@ -1149,6 +1153,7 @@ impl Suite {
                 }
                 states[c][k] = State::Done(outcome);
                 done += 1;
+                if let Some(slot) = panel_reasons.get_mut(c).and_then(|v| v.get_mut(k)) { retain_panel_reason(&mut states[c][k], slot); }
                 for checkpoint in screen::collect(self.id, &name) { screen::emit(&checkpoint); }
                 if let Some(picture) = intent_picture.as_deref() {
                     intent::show(self.id, &name, picture, intent_pace_ms);
@@ -1367,6 +1372,21 @@ fn plain(msg: &str) -> String {
     }
     if out.is_empty() { out.push_str("no reason given"); }
     out
+}
+
+// The final panel's bounded reason slots are initialized before the baseline,
+// like its state table and display. Unused slots stay owned until the panel ends.
+fn panel_reason_storage(states: &[Vec<State>], textual: bool) -> Vec<Vec<String>> {
+    if !textual { return Vec::new(); }
+    states.iter().map(|cases| cases.iter().map(|_| String::with_capacity(MSG_MAX)).collect()).collect()
+}
+
+fn retain_panel_reason(state: &mut State, slot: &mut String) {
+    if let State::Done(Outcome::Fail { msg, .. } | Outcome::Skip { msg }) = state {
+        let mut reason = std::mem::take(slot);
+        reason.push_str(msg);
+        *msg = reason;
+    }
 }
 
 fn monotonic_ns() -> Option<i128> { time::now_monotonic().ok().map(|ts| ts.as_nanos()) }
