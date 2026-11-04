@@ -70,7 +70,7 @@ def receive(handler):
         sequence = (intent.get('suite') or '').split(',')
         suite_directory = None
         if len(sequence) > 1:
-            scoped = re.fullmatch(re.escape(intent.get('route', '')) + r'/suites/(console|gpu|breengel)(/.*)?', route)
+            scoped = re.fullmatch(re.escape(intent.get('route', '')) + r'/suites/(console|gpu|breengel|window-manager)(/.*)?', route)
             if not scoped or scoped[1] not in sequence:
                 handler.send_error(404);return
             suite = scoped[1]
@@ -82,7 +82,7 @@ def receive(handler):
         picture_index = int(picture[1]) if picture else None
         is_picture = picture_index is not None
         if (not intent or (route!=intent.get('route') and not final and not is_picture)
-                or (is_picture and (intent.get('suite') != 'breengel' or not intent.get('complete')
+                or (is_picture and (intent.get('suite') not in ('breengel', 'window-manager') or not intent.get('complete')
                     or intent.get('finalComplete') or picture_index != intent.get('pictureUploads', 0)))
                 or (intent.get('finalComplete') if final else (False if is_picture else intent.get('complete')))
                 or (final and not intent.get('complete'))

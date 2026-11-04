@@ -23,6 +23,14 @@ def skeleton(suite):
 
 
 class ResolveTests(unittest.TestCase):
+    def test_window_manager_resolution_on_all_targets(self):
+        for target in ("x86-metal", "arm64-qemu", "parallels", "vmware"):
+            with self.subTest(target=target):
+                ids, skipped = SEQUENCE["resolve"]("all", target, True)
+                self.assertNotIn("window-manager", ids)
+                self.assertEqual(dict(skipped)["window-manager"], "planned categories have no cases")
+                self.assertEqual(SEQUENCE["resolve"]("window-manager", target, True)[0], ["window-manager"])
+
     def test_metal_all_includes_breengel_at_step_9_4_admission(self):
         result = subprocess.run([sys.executable, str(ROOT / "scripts/suite-sequence.py"),
                                  "resolve", "all", "--target", "x86-metal"],

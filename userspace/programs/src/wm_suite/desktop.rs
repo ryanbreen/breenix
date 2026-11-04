@@ -339,20 +339,9 @@ impl Screen {
         r.record_len = 1024;
         window::call(op::SCANOUT_READBACK, &mut r)
             .map_err(|e| format!("SCANOUT_READBACK: {e}, reason {}", r.reason))?;
-        let success = if word(&s.record, 16) == 4 { 0x1100 } else { 1 };
-        if word(&s.record, 0) != 2
-            || word(&s.record, 4) != 1024
-            || word(&s.record, 20) != 4
-            || word(&s.record, 40) != s.width
-            || word(&s.record, 44) != s.height
-            || word(&s.record, 56) != s.width * 4
-            || word(&s.record, 164) != 0
-            || quad(&s.record, 80) == 0
-            || quad(&s.record, 120) == 0
-            || quad(&s.record, 184) == 0
-            || word(&s.record, 128) != success
-            || word(&s.record, 192) != success
-        {
+        if !window::validate_scanout_observation(
+            &s.record, s.width, s.height, window::ObservationKind::Composed,
+        ) {
             return Err("scanout lacks its complete v2 dimensions, binding, native readback and present completion".into());
         }
         Ok(s)

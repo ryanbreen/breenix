@@ -124,5 +124,5 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
 ]).defer_display();
 
 fn main() {
-    SUITE.run()
+    SUITE.with_evidence_upload().run()
 }

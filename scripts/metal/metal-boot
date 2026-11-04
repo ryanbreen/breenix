@@ -164,8 +164,10 @@ def suites(args):
 
 def ceiling_seconds(args):
     if args.mode == 'suite':
-        # Each further suite of a multi-suite boot brings its own DONE deadline.
-        return CEILING_SECONDS['suite'] + sum(mode_deadline_seconds(args, name) for name in suites(args)[1:])
+        # The base includes startup and a 900-second first suite; longer suites need more time.
+        names = suites(args)
+        first_extension = max(0, mode_deadline_seconds(args, names[0]) - 900) if names else 0
+        return CEILING_SECONDS['suite'] + first_extension + sum(mode_deadline_seconds(args, name) for name in names[1:])
     if persistent(args) and session(args):
         # A persistent session keeps the machine with no deadline until it is stopped or powered off.
         return None
@@ -177,9 +179,11 @@ MODE_DEADLINE_SECONDS = {'default': 300, 'shell': 180, 'probe': 300, 'suite': 42
 
 
 def mode_deadline_seconds(args, suite=None):
-    """E25 BreenGL uses its 900-second suite gate; other mode bounds stay fixed."""
+    """Give long-running suites their own DONE deadlines."""
     name = suite or (suites(args)[0] if args.mode == 'suite' else None)
-    return 900 if args.mode == 'suite' and name == 'breengel' else MODE_DEADLINE_SECONDS[args.mode]
+    if args.mode == 'suite':
+        return {'breengel': 900, 'window-manager': 1800}.get(name, MODE_DEADLINE_SECONDS['suite'])
+    return MODE_DEADLINE_SECONDS[args.mode]
 
 # The testing kernel's last report line (kernel/src/syscall/handlers.rs), where a testing boot ends. x86-64 prints it
 # through the logger, after a level and module prefix.
@@ -1247,7 +1251,7 @@ class Driver:
             self.event('fatal', observed_at=observed_at, seconds=seconds)
         if self.args.mode == 'suite' and re.fullmatch(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+', line):
             self.suite_name = line.split()[1 if line.startswith('SUITE ') else 2]
-            if len(suites(self.args)) > 1 or self.suite_name == 'breengel':
+            if len(suites(self.args)) > 1 or self.suite_name in ('breengel', 'window-manager'):
                 self.suite_started = observed_at
         if self.args.mode == 'probe' and re.fullmatch(r'PROBE DONE passed=\d+ failed=[1-9]\d*', line):
             self.probe_failed = True
@@ -1556,7 +1560,7 @@ class Driver:
         The archive loop can spend seconds processing a capture batch. Neither its
         record writes nor scoring work may delay a case's next HOSTKEY request.
         """
-        if self.args.mode != 'suite' or 'console' not in suites(self.args):
+        if self.args.mode != 'suite' or not {'console', 'window-manager'}.intersection(suites(self.args)):
             return
         self.hostkey_events = queue.SimpleQueue()
         self.hostkey_stop = threading.Event()

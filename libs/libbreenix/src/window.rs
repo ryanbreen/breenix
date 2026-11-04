@@ -11,6 +11,68 @@ use abi::{op, Plain};
 use crate::error::Error;
 use crate::syscall::raw;
 
+/// The evidence a caller requires from a scanout observation.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum ObservationKind {
+    Plain,
+    Composed,
+}
+
+/// Validate a SCANOUT_READBACK v2 record against CURRENT_MODE dimensions.
+/// Rows follow `docs/gui/breengel.md` section 20.2 and `gpu.md` section 1.8.
+/// Plain panels attest scanout only; WM observations must attest composition.
+pub fn validate_scanout_observation(
+    record: &[u8; 1024], width: u32, height: u32, kind: ObservationKind,
+) -> bool {
+    struct Row {
+        backend: u32,
+        boundary: u32,
+        status: u32,
+        render: u32,
+        readback: u32,
+        copy: u32,
+        copy_status: u32,
+        dedicated_surface: bool,
+    }
+    const ROWS: [Row; 3] = [
+        Row { backend: 4, boundary: 4, status: 0x1100, render: 0x207,
+            readback: 0x206, copy: 0, copy_status: 0, dedicated_surface: false },
+        Row { backend: 5, boundary: 4, status: 1, render: 1152,
+            readback: 1104, copy: 1042, copy_status: 1, dedicated_surface: true },
+        Row { backend: 6, boundary: 5, status: 0x60000000, render: 0xa1971b0c,
+            readback: 0xa0b50300, copy: 0xa0b50300, copy_status: 0x60000000,
+            dedicated_surface: false },
+    ];
+    let word = |offset| u32::from_le_bytes(record[offset..offset + 4].try_into().unwrap());
+    let quad = |offset| u64::from_le_bytes(record[offset..offset + 8].try_into().unwrap());
+    let Some(row) = ROWS.iter().find(|row| row.backend == word(16)) else { return false; };
+    let composed = kind == ObservationKind::Composed;
+    word(0) == 2
+        && word(4) == 1024
+        && word(20) == row.boundary
+        && word(24) == if composed { 3 } else { 1 }
+        && word(40) == width
+        && word(44) == height
+        && width.checked_mul(4) == Some(word(56))
+        && word(164) == 0
+        && quad(80) != 0
+        && quad(120) != 0
+        && quad(184) != 0
+        && word(128) == row.status
+        && word(132) == row.readback
+        && word(192) == row.status
+        && (!composed || (quad(104) != 0
+            && word(112) == row.status
+            && word(116) == row.render
+            && word(152) == row.copy
+            && word(156) == row.copy_status
+            && if row.dedicated_surface {
+                quad(136) != 0 && quad(136) != quad(80) && quad(144) != 0
+            } else {
+                quad(136) == 0 && quad(144) == 0
+            }))
+}
+
 /// `window(op, arg, len)` with a raw pointer: the kernel's return, a value or a negated
 /// errno.
 ///

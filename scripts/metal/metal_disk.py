@@ -66,7 +66,7 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     image = inputs / 'ext2.img'
     # A reused mutable root can preserve the exact bytes diskChecks must check
     # this boot wrote, as well as consume fixtures needed by other suites.
-    native_suite = mode == 'suite' and bool({'console', 'gpu', 'breengel'} & set((suite or '').split(',')))
+    native_suite = mode == 'suite' and bool({'console', 'gpu', 'breengel', 'window-manager'} & set((suite or '').split(',')))
     upload = gt710_upload.prepare(directory, boot_id, site, suite=suite) if mode == 'probe' or native_suite else None
     staged = metal_root.stage_root(image, mode, suite, site, hasher=inputs / 'sha512-crypt', writer=writer,
                                    idle_minutes=idle_minutes, replug=replug, operator=operator, power_token=m.power_token(),gt710_upload=upload)

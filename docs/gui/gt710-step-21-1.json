@@ -1,0 +1,38 @@
+{
+  "id": "gt710-step-21-1",
+  "suite": "window-manager",
+  "boardStep": "21.1",
+  "title": "R240 route, shared observation validator (contract rows 4, 5 and 6) and shared suite evidence upload",
+  "basis": "origin/main 87775882 (fetched 2026-11-04), docs/suites/window-manager.json manifest order; cumulative",
+  "added": 9,
+  "total": 9,
+  "reasons": {
+    "startup": {
+      "added": 2,
+      "why": "desktop-control and claims-display need only bwm composing on the GT 710 through the shared GPU core and a shared observation validator that knows breengel.md 20.2's backend-6 row; both passed in the ARM baseline 20261024T012512Z-qemu-13504."
+    },
+    "composition": {
+      "added": 4,
+      "why": "chrome-geometry, overlap, cascade and oracle-corruption measure existing bwm composition through SCANOUT_READBACK; their probes stay clear of the cursor bwm starts at (0,0), so they need no pointer injection yet."
+    },
+    "geometry": {
+      "added": 1,
+      "why": "client-resize is bwm reconciling an owner-initiated RESIZE from LIST, which main bwm already does (bwm.rs:1246-1260)."
+    },
+    "lifecycle": {
+      "added": 2,
+      "why": "compositor-steal and inject-denied are kernel authority checks (claim EBUSY, WRITE_EVENTS compositor-only) with a live bwm."
+    }
+  },
+  "cases": [
+    "startup/desktop-control",
+    "startup/claims-display",
+    "composition/chrome-geometry",
+    "composition/overlap",
+    "composition/cascade",
+    "composition/oracle-corruption",
+    "geometry/client-resize",
+    "lifecycle/compositor-steal",
+    "lifecycle/inject-denied"
+  ]
+}
