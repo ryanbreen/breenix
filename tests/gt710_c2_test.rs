@@ -138,6 +138,7 @@ impl Access for Counter {
     fn wait(&mut self,_:u32,_:u32,_:u32)->Result<(),&'static str> {unreachable!()}
 }
 impl c2::observe::CounterAccess for Counter {
+    fn endpoint_scope<R>(&mut self, f:impl FnOnce(&mut Self)->R)->R {f(self)}
     fn monotonic_ns(&mut self)->u64 {self.ns}
     fn record(&mut self,stage:&str,raw:&[(u32,u32)]) {self.records.push((stage.into(),raw.to_vec()));}
 }
@@ -187,6 +188,7 @@ impl c2::observe::CounterAccess for ScopedCounter {
 #[test]
 fn each_counter_point_has_its_own_read_only_endpoint_scope() {
     let mut d=ScopedCounter {inner:bracket_replay().inner,sampling:false,scoped:false,endpoints:Vec::new()};
+    d.inner.ns=0;
     c2::observe::measure(&mut d).unwrap();
     assert!(d.endpoints.len()>=2);
     for endpoint in &d.endpoints {
@@ -214,6 +216,7 @@ impl Access for BracketReplay {
     fn wait(&mut self,a:u32,m:u32,v:u32)->Result<(),&'static str> {self.inner.wait(a,m,v)}
 }
 impl c2::observe::CounterAccess for BracketReplay {
+    fn endpoint_scope<R>(&mut self, f:impl FnOnce(&mut Self)->R)->R {f(self)}
     fn monotonic_ns(&mut self)->u64 {self.inner.ns}
     fn record(&mut self,stage:&str,raw:&[(u32,u32)]) {
         self.inner.record(stage,raw);

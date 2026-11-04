@@ -156,6 +156,7 @@ pub fn restore(io: &mut impl Access, post: &[(u32, u32)]) -> Result<(), &'static
 }
 
 pub trait CounterAccess: Access {
+    fn endpoint_scope<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R;
     fn monotonic_ns(&mut self) -> u64;
     fn record(&mut self, stage: &str, raw: &[(u32, u32)]);
 }
@@ -178,12 +179,14 @@ fn ptimer(io: &mut impl Access) -> Result<u64, &'static str> {
     }
     Err("PTIMER unstable")
 }
-fn point(io: &mut impl Access) -> Result<(u64, u32, u64), &'static str> {
-    let a = ptimer(io)?;
-    let cycles = io.read(0x1800a8);
-    let b = ptimer(io)?;
-    let span = b.checked_sub(a).ok_or("PTIMER went backwards")?;
-    Ok((a + span / 2, cycles, span))
+fn point(io: &mut impl CounterAccess) -> Result<(u64, u32, u64), &'static str> {
+    io.endpoint_scope(|io| {
+        let a = ptimer(io)?;
+        let cycles = io.read(0x1800a8);
+        let b = ptimer(io)?;
+        let span = b.checked_sub(a).ok_or("PTIMER went backwards")?;
+        Ok((a + span / 2, cycles, span))
+    })
 }
 pub fn measure(io: &mut impl CounterAccess) -> Result<Measurement, &'static str> {
     // MIT nouveau pm/gf100.c:175-180 identifies the PM master bit.

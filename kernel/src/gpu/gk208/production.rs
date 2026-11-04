@@ -61,6 +61,12 @@ impl c2::Access for Io {
     }
 }
 impl c2::observe::CounterAccess for Io {
+    fn endpoint_scope<R>(&mut self, f:impl FnOnce(&mut Self)->R)->R {
+        crate::per_cpu::preempt_disable();
+        let result=crate::arch_without_interrupts(|| f(self));
+        crate::per_cpu::preempt_enable();
+        result
+    }
     fn monotonic_ns(&mut self)->u64 {now_ns()}
     fn record(&mut self,_stage:&str,_raw:&[(u32,u32)]) {}
 }
