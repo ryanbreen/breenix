@@ -1347,9 +1347,10 @@ impl Screen {
         let (seconds, nanos) = crate::time::get_monotonic_time_ns();
         let now = seconds.saturating_mul(1000).saturating_add(nanos / 1_000_000);
         if self.panel_updated_ms.is_some_and(|last| now.saturating_sub(last) < 250) { return; }
+        let reached = boot_ribbon::reached();
         let Some(suite) = boot_ribbon::suite_status() else { return; };
         self.panel_updated_ms = Some(now);
-        let wanted = panel::Panel::new(&self.layout, suite, boot_ribbon::reached(), self.ribbon_drop, now);
+        let wanted = panel::Panel::new(&self.layout, suite, reached, self.ribbon_drop, now);
         if wanted != self.panel {
             self.panel = wanted;
             self.panel_dirty = true;
