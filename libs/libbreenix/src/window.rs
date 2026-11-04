@@ -11,6 +11,31 @@ use abi::{op, Plain};
 use crate::error::Error;
 use crate::syscall::raw;
 
+/// Validate a SCANOUT_READBACK v2 record against CURRENT_MODE dimensions.
+/// Backend rows follow `docs/gui/breengel.md` section 20.2 and `gpu.md` section 1.8.
+pub fn validate_scanout_observation(record: &[u8; 1024], width: u32, height: u32) -> bool {
+    let word = |offset| u32::from_le_bytes(record[offset..offset + 4].try_into().unwrap());
+    let quad = |offset| u64::from_le_bytes(record[offset..offset + 8].try_into().unwrap());
+    let (boundary, success) = match word(16) {
+        4 => (4, 0x1100),
+        5 => (4, 1),
+        6 => (5, 0x60000000),
+        _ => return false,
+    };
+    word(0) == 2
+        && word(4) == 1024
+        && word(20) == boundary
+        && word(40) == width
+        && word(44) == height
+        && word(56) == width * 4
+        && word(164) == 0
+        && quad(80) != 0
+        && quad(120) != 0
+        && quad(184) != 0
+        && word(128) == success
+        && word(192) == success
+}
+
 /// `window(op, arg, len)` with a raw pointer: the kernel's return, a value or a negated
 /// errno.
 ///
