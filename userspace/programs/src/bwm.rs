@@ -139,7 +139,6 @@ fn main() {
     let mut dragging: Option<(usize, i32, i32)> = None;
     // Active resize: (win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)
     let mut resizing: Option<(usize, ResizeEdge, i32, i32, i32, i32, usize, usize)> = None;
-    let mut full_redraw = true;
     let mut content_dirty = false;
     let mut windows_dirty = false;
     let mut win_defaults: [WindowDefaults; MAX_DEFAULTS] = core::array::from_fn(|_| WindowDefaults {
@@ -161,16 +160,18 @@ fn main() {
     // client window is discovered. It is read back from the scanout and compared with the
     // desktop target and the pointer's bitmap (`compositor`).
     compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
+    let fills = check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index);
     let first_pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
     let first = gpu
-        .compose(&[], Some(first_pointer), &[])
+        .present_startup_desktop(Some(first_pointer))
         .map_err(|e| CheckError::Failed(e.to_string()))
         .and_then(|()| gpu.check(0, &[], Some(first_pointer)));
+    let first_presented = first.is_ok();
     match first {
         Ok(pixels) => print!("[bwm] first frame read back: {} pixels exact\n", pixels),
         Err(CheckError::Moved(e)) | Err(CheckError::Failed(e)) => print!("[bwm] first frame check FAILED: {}\n", e),
     }
-    match check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index) {
+    match fills {
         Ok(line) => print!("[bwm] desktop fills the scanout: {}\n", line),
         Err(e) => print!("[bwm] desktop fill check FAILED: {}\n", e),
     }
@@ -178,7 +179,8 @@ fn main() {
     // Another process holds the display: bwm composes again when it has it back.
     let mut display_lost = false;
     // The pointer the last composed frame drew, so a move repaints where it was.
-    let mut drawn_pointer: Option<Pointer> = None;
+    let mut drawn_pointer = first_presented.then_some(first_pointer);
+    let mut full_redraw = !first_presented;
 
     let mut read_buf = [0u8; 512];
     let mut poll_fds = [

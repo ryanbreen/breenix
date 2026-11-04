@@ -390,7 +390,7 @@ pub(super) fn frame_layers(windows: &[Window]) -> Vec<Layer> {
 /// size, the one MODES reports bound, and the GPU core's current mode must have that size.
 pub(super) fn check_desktop_fills(gpu: &mut Compositor, screen_w: usize, screen_h: usize, mode_index: u32) -> Result<String, String> {
     // The whole frame, so no pointer the last frame drew remains in it.
-    gpu.compose(&[], None, &[[0, 0, screen_w as i32, screen_h as i32]]).map_err(|e| e.to_string())?;
+    gpu.present_startup_desktop(None).map_err(|e| e.to_string())?;
     let (w, h) = (screen_w as u32, screen_h as u32);
     let (tb, ab) = (px(TASKBAR_HEIGHT) as u32, px(APPBAR_HEIGHT) as u32);
     let word = |c: Color| 0xFF00_0000 | (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32;
