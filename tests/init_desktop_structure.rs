@@ -23,3 +23,11 @@ fn supervised_bwm_forwards_measured_check_costs() {
         .split("if output.stream").next().unwrap();
     assert!(forwarding.contains("line.starts_with(b\"VALUE bwm-check-us \")"));
 }
+
+#[test]
+fn supervised_bwm_forwards_its_startup_banner() {
+    let source = fs::read_to_string("userspace/programs/src/init_services.rs").unwrap();
+    let forwarding = source.split("let desktop = entry.def.name == \"bwm\"").nth(1).unwrap()
+        .split("if output.stream").next().unwrap();
+    assert!(forwarding.contains("line.starts_with(b\"[bwm] Breenix Window Manager starting\")"));
+}
