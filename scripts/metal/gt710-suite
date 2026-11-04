@@ -3823,11 +3823,29 @@ def capture_categories(boot):
             and (c != 'console' or (boot.get('mode') == 'suite' and boot.get('suite') == 'console'))]
 
 
+def capture_boot(directory):
+    """Read the driver identity, also retained beside Vigil's import wrapper."""
+    directory = Path(directory)
+    wrapper = json.loads((directory / 'run.json').read_text())
+    manifest = directory / 'metal-run.json'
+    if not manifest.exists():
+        return wrapper
+    boot = json.loads(manifest.read_text())
+    if not isinstance(wrapper, dict) or not isinstance(boot, dict):
+        raise ValueError('capture manifests must be objects')
+    # checkout and taskName describe the local UI, not the driver's boot.
+    # Do not fill missing driver fields from the presentation record.
+    for key, value in wrapper.items():
+        if key not in ('checkout', 'taskName') and boot.get(key) != value:
+            raise ValueError('capture manifests disagree on ' + key)
+    return boot
+
+
 def completed_suite_capture(directory, sha, suite=None):
     """Read an authoritative, driver-closed native capture, including bulk pixels."""
     directory = Path(directory)
     read = lambda name: (directory / name).read_text().strip()
-    boot = json.loads(read('run.json'))
+    boot = capture_boot(directory)
     if boot.get('mode') == 'probe':
         if (not re.fullmatch('[a-f0-9]{40}', sha or '')
                 or boot.get('commit') != sha or boot.get('toolsCommit') != sha
@@ -3955,7 +3973,7 @@ def rescore_suite_capture(directory, sha, scorer_head):
                       passed=report.get('passed', capture['exit_status'] == 0)
                              and not errors and all(r['result'] == 'PASS' for r in rows))
     report['artifacts'] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(directory.iterdir())
-                           if p.is_file() and (p.name in ('run.json', 'commit', 'dirty', 'ended', 'ended-by',
+                           if p.is_file() and (p.name in ('run.json', 'metal-run.json', 'commit', 'dirty', 'ended', 'ended-by',
                                'exit-status', 'serial.txt', 'serial.ts', 'events.jsonl') or p.suffix == '.rle')}
     report['scorerSources'] = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in allowed}
     (directory / 'suite-acceptance.json').write_text(json.dumps(report, indent=2) + '\n')
