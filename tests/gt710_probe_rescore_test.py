@@ -13,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 API = runpy.run_path(str(ROOT / 'scripts/metal/gt710-suite'))
 APERTURE = runpy.run_path(str(ROOT / 'tests/gt710_aperture_report_test.py'))
 LIFETIME = runpy.run_path(str(ROOT / 'tests/gt710_lifetime_report_test.py'))
+CORE = runpy.run_path(str(ROOT / 'tests/gt710_core_report_test.py'))
 sys.path.insert(0, str(ROOT / 'scripts/metal'))
 import metal_score
 
@@ -31,7 +32,7 @@ class ProbeRescore(unittest.TestCase):
                    + 'PROBE DONE passed=17 failed=0\n')
         boot = dict(id='20261104T060703Z-metal', commit=SHA, toolsCommit=SHA,
                     arch='x86_64', platform='metal', kind='boot', mode='probe',
-                    suite=None, suites=None, disk='root', evidenceEligible=True,
+                    suite=None, suites=None, disk='root', evidenceEligible=True, watch=False,
                     build=dict(commit=SHA, profile='production', features=[]))
         files = {'run.json': json.dumps(boot), 'commit': SHA, 'dirty': '0',
                  'ended': '1', 'ended-by': 'driver', 'exit-status': '0', 'serial.txt': serial}
@@ -50,6 +51,65 @@ class ProbeRescore(unittest.TestCase):
                 patch.dict(API['rescore_suite_capture'].__globals__, capture_serial=lambda *a: serial), \
                 redirect_stdout(StringIO()):
             return API['rescore_suite_capture'](directory, SHA, HEAD)
+
+    def import_capture(self, directory, boot):
+        # Vigil preserves the driver's manifest beside its presentation record.
+        (directory / 'metal-run.json').write_text(json.dumps(boot))
+        wrapper = {k: boot[k] for k in ('id', 'arch', 'platform', 'mode', 'suite', 'disk')}
+        wrapper.update(checkout='', taskName='metal-' + boot['id'], watch=False)
+        (directory / 'run.json').write_text(json.dumps(wrapper))
+        return wrapper
+
+    def test_imported_probe_replay_keeps_and_hashes_both_manifests(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            boot, _ = self.capture(directory)
+            self.import_capture(directory, boot)
+            originals = {name: (directory / name).read_bytes()
+                         for name in ('run.json', 'metal-run.json')}
+            self.assertEqual(self.replay(directory), 0)
+            report = json.loads((directory / 'suite-acceptance.json').read_text())
+            self.assertTrue(report['passed'])
+            self.assertEqual(report['toolsCommit'], SHA)
+            self.assertEqual(report['build'], boot['build'])
+            import hashlib
+            for name, data in originals.items():
+                self.assertEqual((directory / name).read_bytes(), data)
+                self.assertEqual(report['artifacts'][name], hashlib.sha256(data).hexdigest())
+
+    def test_imported_console_uses_driver_identity_and_existing_deadline(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            boot, _ = self.capture(directory)
+            boot.update(mode='suite', suite='console', suites=['console'])
+            self.import_capture(directory, boot)
+            (directory / 'serial.txt').write_text(CORE['console_serial']())
+            capture = API['completed_suite_capture'](directory, SHA)
+            self.assertEqual(capture['boot'], dict(boot, bootedCommit=SHA))
+            self.assertEqual(API['resources_console'](capture['serial'], capture['boot'], capture['events']), 300000)
+            events = [dict(e, seconds=340.001) if e['event'] == 'final-marker' else e
+                      for e in capture['events']]
+            with self.assertRaisesRegex(ValueError, '330 s'):
+                API['resources_console'](capture['serial'], capture['boot'], events)
+
+    def test_imported_identity_rejects_conflicts_and_incomplete_driver_manifest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            boot, _ = self.capture(directory)
+            wrapper = self.import_capture(directory, boot)
+            for key, value in [('id', '20261104T061608Z-metal'), ('mode', 'suite'),
+                               ('suite', 'gpu'), ('commit', HEAD), ('toolsCommit', HEAD),
+                               ('kind', 'fault-test'), ('evidenceEligible', False),
+                               ('onlyCase', 'device/caps')]:
+                (directory / 'run.json').write_text(json.dumps(dict(wrapper, **{key: value})))
+                with self.subTest(field=key), self.assertRaises(ValueError):
+                    self.replay(directory)
+            (directory / 'run.json').write_text(json.dumps(dict(wrapper, toolsCommit=SHA)))
+            incomplete = dict(boot)
+            del incomplete['toolsCommit']
+            (directory / 'metal-run.json').write_text(json.dumps(incomplete))
+            with self.assertRaises(ValueError):
+                self.replay(directory)
 
     def test_probe_replay_scores_existing_diagnostics_and_preserves_identity(self):
         with tempfile.TemporaryDirectory() as tmp:
