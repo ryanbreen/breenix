@@ -1344,7 +1344,8 @@ impl Screen {
             return;
         }
         boot_ribbon::drain();
-        let now = crate::time::get_monotonic_time();
+        let (seconds, nanos) = crate::time::get_monotonic_time_ns();
+        let now = seconds.saturating_mul(1000).saturating_add(nanos / 1_000_000);
         if self.panel_updated_ms.is_some_and(|last| now.saturating_sub(last) < 250) { return; }
         let Some(suite) = boot_ribbon::suite_status() else { return; };
         self.panel_updated_ms = Some(now);

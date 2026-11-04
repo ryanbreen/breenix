@@ -21,7 +21,10 @@ impl<T> Mutex<T> {
  pub fn try_lock(&self)->Option<std::sync::MutexGuard<'_,T>> {self.0.try_lock().ok()}
 }
 pub fn arch_interrupts_enabled()->bool {true}
-pub mod time {pub fn get_monotonic_time()->u64 {1234}}
+pub mod time {
+ pub static NOW: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(1234);
+ pub fn get_monotonic_time_ns()->(u64,u64) {let ms=NOW.load(core::sync::atomic::Ordering::Relaxed); (ms/1000,(ms%1000)*1_000_000)}
+}
 pub mod console {#[path="ROOT/kernel/src/console/status.rs"] pub mod status;}
 pub mod serial_writer { WRITER }
 pub mod log_buffer { LOG_BUFFER }
@@ -36,12 +39,17 @@ fn main() {
  for chunk in tty.chunks(7) {log_buffer::capture_serial_output(Writer::Tty,chunk.iter());}
  log_buffer::capture_serial_output(Writer::Evidence,b"SUITE console CASE text/forged FAIL ms=1 msg=evidence\n".iter());
  log_buffer::capture_serial_output(Writer::Console,b"prompt\n".iter());
+ time::NOW.store(62234,core::sync::atomic::Ordering::Relaxed);
  log_buffer::capture_serial_output(Writer::Tty,b"SUITE console CASE text/b FAIL ms=1 msg=bad\r\nSUITE console DONE passed=1 failed=1 skipped=0 total=2\r\n".iter());
+ time::NOW.store(999999,core::sync::atomic::Ordering::Relaxed);
  boot_ribbon::drain();
  let suite=boot_ribbon::suite_status().unwrap();
  assert_eq!((suite.passed(),suite.failed(),suite.pending()),(1,1,0));
- assert!(suite.heading(9000).unwrap().contains("0:00"),"DONE did not freeze elapsed");
+ assert!(suite.heading(9000).unwrap().contains("1:01"),"DONE did not freeze elapsed");
  assert!(boot_ribbon::reached()[0]);
+ let timed=boot_ribbon::serial_timed().unwrap();
+ assert!(timed.contains("1234|SUITE console START cases=2"));
+ assert!(timed.contains("62234|SUITE console DONE"));
  let serial=boot_ribbon::serial().unwrap();
  assert!(serial.contains("SUITE console DONE"));
  assert!(!serial.contains("forged"));

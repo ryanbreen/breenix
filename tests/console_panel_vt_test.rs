@@ -12,7 +12,10 @@ mod vt {
 mod time {
     use super::*;
     pub static NOW: AtomicUsize = AtomicUsize::new(1000);
-    pub fn get_monotonic_time() -> u64 { NOW.load(Ordering::Acquire) as u64 }
+    pub fn get_monotonic_time_ns() -> (u64,u64) {
+        let ms = NOW.load(Ordering::Acquire) as u64;
+        (ms / 1000, (ms % 1000) * 1_000_000)
+    }
 }
 mod boot_ribbon {
     use super::*;
