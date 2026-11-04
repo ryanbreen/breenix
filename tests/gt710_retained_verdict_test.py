@@ -68,6 +68,49 @@ class RetainedVerdict(unittest.TestCase):
                     self.assertIsNotNone(result, 'missing GT 710 evidence must fail explicitly')
                     self.assertFalse(result['passed'])
 
+    def test_closed_native_suites_require_startup_records(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            run = self.capture(directory)
+            for suite in ('console', 'gpu'):
+                run.update(suite=suite, suites=[suite])
+                (directory / 'run.json').write_text(json.dumps(run))
+                with self.subTest(suite=suite), patch.object(
+                        metal_score.runpy, 'run_path', return_value=API):
+                    verdict = metal_score.score(directory)
+                    expected = [c for c in API['capture_categories'](run) if c != 'core']
+                    self.assertTrue(expected)
+                    for category in expected:
+                        result = verdict['milestones'].get('metal-gt710/' + category)
+                        self.assertIsNotNone(result, 'lost startup records must fail explicitly')
+                        self.assertFalse(result['passed'])
+                        self.assertIn('missing gt710-' + category + '.json', result['reason'])
+                    self.assertTrue(metal_score.falls_short(verdict))
+
+    def test_gpu_replay_persists_the_startup_cases_it_judges(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            run = self.capture(directory)
+            run.update(suite='gpu', suites=['gpu'])
+            (directory / 'run.json').write_text(json.dumps(run))
+            capture = dict(boot=run, serial='authenticated fixture', events=[], exit_status=0)
+            rows = [dict(id='board/inventory', result='PASS', reason='')]
+            with patch('subprocess.run'), patch('subprocess.check_output', return_value=b'tests/check.py\0'), \
+                    patch.dict(API['rescore_suite_capture'].__globals__,
+                        completed_suite_capture=lambda *a: capture,
+                        resources_suite=lambda *a: dict(cases=[dict(id='gpu/fixture', result='PASS')], elapsed_ms=1),
+                        capture_categories=lambda *a: ['board', 'core'],
+                        cases=lambda *a: rows, score=lambda *a: 'board: passed'):
+                self.assertEqual(API['rescore_suite_capture'](directory, 'a' * 40, 'b' * 40), 0)
+            record = json.loads((directory / 'gt710-board.json').read_text())
+            self.assertEqual(record, dict(boot=run['id'], commit='a' * 40,
+                                         milestone='metal-gt710/board', cases=rows))
+            self.assertFalse((directory / 'gt710-core.json').exists())
+            report = json.loads((directory / 'suite-acceptance.json').read_text())
+            self.assertEqual(report['checks'], rows)
+            self.assertEqual(report['scorerCommit'], 'b' * 40)
+            self.assertEqual(json.loads((directory / 'run.json').read_text()), run)
+
     def test_driver_finalization_does_not_require_a_post_close_receipt(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
