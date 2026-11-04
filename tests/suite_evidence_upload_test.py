@@ -78,9 +78,15 @@ fn picture(pixels: Vec<u8>, width: u32, height: u32) -> Observation {
 }
 #[test] fn refuses_complete_over_bound_data_without_truncation_or_send() {
     let mut upload = Upload::new("window-manager", Ok(Some(route(false))));
+    // G28 and G2: a complete image above the old slot size is valid.
     let pixels: Vec<u8> = (0..600_000u32).flat_map(|n| [n as u8,(n>>8)as u8,(n>>16)as u8,255]).collect();
-    let line = upload.capture("startup", || Ok(picture(pixels, 1000, 600)),
-        |_,_,_,_| panic!("over-slot data must not send even a prefix"));
+    let line = upload.capture("startup", || Ok(picture(pixels.clone(), 1000, 600)),
+        |_,_,body,_| { assert!(body.ends_with(&pixels)); Ok(()) });
+    assert!(line.contains(" sha256="));
+    // A picture's header and record also count against the fixed boot bound.
+    let pixels: Vec<u8> = (0..(MAX_TOTAL / 4) as u32).flat_map(|n| [n as u8,(n>>8)as u8,(n>>16)as u8,255]).collect();
+    let line = upload.capture("startup", || Ok(picture(pixels, 4096, 4096)),
+        |_,_,_,_| panic!("over-bound data must not send even a prefix"));
     assert_eq!(line, "SUITE_EVIDENCE window-manager startup refused=upload-bound");
     let line = upload.capture("startup", || Ok(picture(vec![0;4], u32::MAX, u32::MAX)),
         |_,_,_,_| panic!("dimensions must refuse"));
@@ -92,6 +98,7 @@ fn picture(pixels: Vec<u8>, width: u32, height: u32) -> Observation {
         |_,_,_,_| panic!("noncanonical pixels must refuse"));
     assert!(line.contains("refused=pixels"));
     // Drive the cumulative bound with real bodies rather than overriding accounting.
+    let mut upload = Upload::new("window-manager", Ok(Some(route(false))));
     let raw: Vec<u8> = (0..250_000u32).flat_map(|n| [n as u8,(n>>8)as u8,(n>>16)as u8,255]).collect();
     let mut sent = 0; let mut refused = false;
     for _ in 0..100 {

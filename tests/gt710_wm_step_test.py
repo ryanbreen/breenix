@@ -90,6 +90,17 @@ class WmStep(unittest.TestCase):
         result = metal_score.score(self.path)['milestones']['metal-gt710/wm-step']
         self.assertTrue(result['passed'], result)
 
+    def test_complete_large_panel(self):
+        global BODIES
+        original = BODIES
+        try:
+            BODIES = (b'x' * (3 << 20), b'final panel')
+            self.uploads(self.path)
+            (self.path / 'serial.txt').write_text(serial())
+            self.assertEqual(self.record(), 0)
+        finally:
+            BODIES = original
+
     def test_cli_scores_a_retained_capture_without_a_boot(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/metal/gt710-suite'),
                                  '--wm-step', '1', '--capture-directory', str(self.path), '--sha', SHA],

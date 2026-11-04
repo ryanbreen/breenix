@@ -4044,13 +4044,15 @@ def wm_step_capture(directory, sha, step_number):
         body = (slots / filename).read_bytes()
         receipt = json.loads((slots / receipt_name).read_text())
         scoped = '/suites/window-manager' if slots != directory else ''
-        if (not 0 < len(body) <= 2 << 20 or len(body) != int(anchor[1])
+        if (not 0 < len(body) <= 64 << 20 or len(body) != int(anchor[1])
                 or hashlib.sha256(body).hexdigest() != anchor[2]
                 or receipt.get('id') != boot['id'] or receipt.get('complete') is not True
                 or receipt.get('bytes') != len(body) or receipt.get('sha256') != anchor[2]
                 or not re.fullmatch(r'/gt710-upload/[a-f0-9]{64}' + scoped + suffix, receipt.get('route', ''))):
             raise ValueError('WM upload digest, receipt or route differs')
         receipts.append(receipt)
+    if sum(receipt['bytes'] for receipt in receipts) > 64 << 20:
+        raise ValueError('WM uploads exceed the per-boot evidence bound')
     if receipts[1]['route'] != receipts[0]['route'] + '/final':
         raise ValueError('WM uploads belong to different routes')
     return dict(boot=boot['id'], commit=sha, milestone='metal-gt710/wm-step',

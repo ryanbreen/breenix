@@ -68,7 +68,7 @@ class WmEvidenceRoute(StateTest):
                     upload.receive(bad)
                     self.assertEqual(bad.code, 404)
                     for suffix, body, filename, receipt in (
-                            ('', b'startup pixels', 'gt710-pixels.rle', 'native-upload.json'),
+                            ('', b'x' * (3 << 20), 'gt710-pixels.rle', 'native-upload.json'),
                             ('/final', b'final panel pixels', 'gt710-final.rle', 'native-final-upload.json')):
                         rejected = Handler(path + suffix, body, '0' * 64)
                         upload.receive(rejected)

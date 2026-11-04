@@ -100,7 +100,8 @@ def receive(handler):
         try:
             length=int(handler.headers.get('Content-Length','-1'))
             expected=handler.headers.get('X-Content-SHA256','')
-            if (handler.headers.get('Transfer-Encoding') or not 0<length<=MAX_BYTES
+            slot_bound = MAX_TOTAL if intent.get('suite') == 'window-manager' else MAX_BYTES
+            if (handler.headers.get('Transfer-Encoding') or not 0<length<=slot_bound
                     or not re.fullmatch('[a-f0-9]{64}',expected) or (boot_directory/'ended').exists()):
                 raise ValueError('invalid display artifact framing')
             total = root_intent.get('aggregateBytes', 0) if suite_directory else intent.get('bytes', 0) + intent.get('pictureBytes', 0)

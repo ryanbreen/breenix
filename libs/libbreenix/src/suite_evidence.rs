@@ -3,7 +3,8 @@ use libbreenix::crypto::sha256::sha256;
 use std::io::Write;
 
 pub(super) const MAX_ROUTE: usize = 2048;
-pub(super) const MAX_UPLOAD: usize = 2 << 20;
+// G28: complete canonical pictures share the fixed per-boot transport budget.
+pub(super) const MAX_UPLOAD: usize = MAX_TOTAL;
 pub(super) const MAX_TOTAL: usize = 64 << 20;
 
 pub(super) struct Route {
