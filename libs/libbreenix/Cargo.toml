@@ -16,6 +16,11 @@ crate-type = ["rlib"]
 name = "observation_rows"
 path = "../../tests/observation_rows.rs"
 
+[[test]]
+name = "bwm_clock"
+path = "../../tests/bwm_clock.rs"
+required-features = ["std"]
+
 [features]
 default = []
 std = []

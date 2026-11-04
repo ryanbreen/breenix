@@ -15,6 +15,10 @@ use libfont::crossings::CrossingTable;
 use libfont::outline::LineSegment;
 use crate::{color::Color, device, surface::{Surface, Format, Box64, word}, work};
 
+#[cfg(test)]
+#[path = "ttf_font_cache_tests.rs"]
+mod cache_tests;
+
 pub type Error = FontError;
 
 /// A parsed font whose raster entry points render GPU targets and return readback.
