@@ -100,6 +100,8 @@ pub mod memory_record;
 pub mod prerequisites;
 #[path = "suite_sequence.rs"]
 pub mod sequence;
+#[path = "suite_evidence.rs"]
+mod evidence;
 
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -915,6 +917,7 @@ pub struct Suite {
     pub case_limit_ms: u64,
     pub gui: bool,
     defer_display: bool,
+    evidence_upload: bool,
     finalizer: Option<fn()>,
     case_observer: Option<fn(usize, usize, &str)>,
     #[cfg(target_arch = "x86_64")]
@@ -922,7 +925,7 @@ pub struct Suite {
 }
 
 pub const fn suite(id: &'static str, title: &'static str, categories: &'static [Category]) -> Suite {
-    Suite { id, title, categories, case_limit_ms: DEFAULT_CASE_LIMIT_MS, gui: false, defer_display: false, finalizer: None, case_observer: None,
+    Suite { id, title, categories, case_limit_ms: DEFAULT_CASE_LIMIT_MS, gui: false, defer_display: false, evidence_upload: false, finalizer: None, case_observer: None,
         #[cfg(target_arch = "x86_64")]
         judged_observer: None,
     }
@@ -948,6 +951,12 @@ impl Suite {
 
     /// Hand the display to each isolated case; draw only between measured windows.
     pub const fn gui(self)->Suite {Suite{gui:true,..self}}
+
+    /// Upload optional startup and final-panel observations through the shared route.
+    /// Case assertions and judged-frame transport are independent of these panels.
+    pub const fn with_evidence_upload(&self) -> Suite {
+        Suite { evidence_upload: true, ..*self }
+    }
 
     /// The same suite with a different per-case time limit.
     pub const fn case_limit_ms(self, ms: u64) -> Suite {
@@ -1046,6 +1055,11 @@ impl Suite {
         // in both memory samples, just as the GPU and GUI views warm before sampling.
         if screen.fb.is_some() {
             screen.draw(self, &title, &subtitle, &states, Verdict::Running("starting"), &feed, only);
+        }
+        let mut evidence = self.evidence_upload.then(|| evidence::Upload::new(self.id,
+            evidence_route(self.id, place.as_ref().is_some_and(|(ids, _)| ids.len() > 1))));
+        if let Some(upload) = &mut evidence {
+            emit(&upload.capture("startup", evidence_scanout, evidence_transfer));
         }
         // Match the retired ownership boundary at the end. The warm-up leaves
         // only the bound scanout; no stage owner freed later can subsidize a leak.
@@ -1182,6 +1196,9 @@ impl Suite {
         feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
         if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }
         if !self.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }
+        if let Some(upload) = &mut evidence {
+            emit(&upload.capture("suite-final-panel", evidence_scanout, evidence_transfer));
+        }
         // A one-case boot stops here, before a sequence's next suite.
         if only.is_some() { idle(&mut screen, &feed); }
         if let Err(error) = hand_off_text_panel(&screen, place.as_ref()) {
@@ -1194,6 +1211,79 @@ impl Suite {
         if place.is_some() { sequence::finish(); }
         idle(&mut screen, &feed)
     }
+}
+
+// Launcher-supplied HTTP route.
+fn evidence_route(suite: &str, sequence: bool) -> Result<Option<evidence::Route>, String> {
+    use std::io::Read;
+    let file = match std::fs::File::open("/etc/breenix/evidence-route") {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("route-read".into()),
+    };
+    let mut text = String::new();
+    file.take((evidence::MAX_ROUTE + 1) as u64).read_to_string(&mut text).map_err(|_| "route-read")?;
+    evidence::Route::parse(&text, suite, sequence).map(Some)
+}
+
+fn evidence_scanout() -> Result<evidence::Observation, String> {
+    use crate::window::abi::Plain;
+    let mode = crate::gpu::current_mode().map_err(|_| "current-mode")?;
+    let size = evidence::pixel_size(mode.width, mode.height)?;
+    let mut pixels = Vec::new();
+    pixels.try_reserve_exact(size).map_err(|_| "allocation")?;
+    pixels.resize(size, 0);
+    let mut observation = evidence::Observation { width: mode.width, height: mode.height, pixels, record: [0; 1024] };
+    let mut readback = crate::window::abi::Readback::ZERO;
+    readback.dst = observation.pixels.as_mut_ptr() as u64;
+    readback.dst_len = size as u64;
+    readback.record = observation.record.as_mut_ptr() as u64;
+    readback.record_len = 1024;
+    crate::window::call(crate::window::abi::op::SCANOUT_READBACK, &mut readback).map_err(|_| "scanout-readback")?;
+    Ok(observation)
+}
+
+fn evidence_transfer(route: &evidence::Route, path: &str, data: &[u8], digest: [u8; 32]) -> Result<(), String> {
+    use libbreenix::{dns, socket};
+    // A staged route may be used before the network lease has completed.
+    for _ in 0..200 {
+        if std::fs::read_to_string("/proc/net/pnp").is_ok_and(|s| s.lines().any(|l| l.starts_with("bootserver "))) { break; }
+        time::sleep_ms(100).map_err(|_| "lease-wait")?;
+    }
+    let ip = match route.host.parse::<std::net::Ipv4Addr>() {
+        Ok(address) => address.octets(),
+        Err(_) => dns::resolve_auto(&route.host).map_err(|_| "route-resolution")?.addr,
+    };
+    let fd = socket::socket(socket::AF_INET, socket::SOCK_STREAM, 0).map_err(|_| "socket")?;
+    let result = (|| {
+        socket::connect_inet(fd, &socket::SockAddrIn::new(ip, route.port)).map_err(|_| "connect")?;
+        let digest: String = digest.iter().map(|b| std::format!("{b:02x}")).collect();
+        let header = std::format!("PUT {path} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nX-Content-SHA256: {digest}\r\nConnection: close\r\n\r\n", route.authority, data.len());
+        for bytes in [header.as_bytes(), data] {
+            let mut offset = 0;
+            while offset < bytes.len() {
+                let n = socket::send(fd, &bytes[offset..(offset+65536).min(bytes.len())]).map_err(|_| "send")?;
+                if n == 0 { return Err("send-stopped"); }
+                offset += n;
+            }
+        }
+        let mut response = [0u8; 4096];
+        let mut used = 0;
+        while used < response.len() && !response[..used].windows(4).any(|w| w == b"\r\n\r\n") {
+            let mut fds = [io::PollFd::new(fd, io::poll_events::POLLIN)];
+            if io::poll(&mut fds, 10_000).map_err(|_| "response-poll")? == 0 { return Err("response-timeout"); }
+            let n = socket::recv(fd, &mut response[used..]).map_err(|_| "response-read")?;
+            if n == 0 { break; }
+            used += n;
+        }
+        let response = &response[..used];
+        if !response.starts_with(b"HTTP/1.1 200 ") || !response.windows(4).any(|w| w == b"\r\n\r\n") {
+            return Err("http-status");
+        }
+        Ok(())
+    })();
+    let _ = io::close(fd);
+    result.map_err(str::to_string)
 }
 
 /// Resolve the text view's ownership while its handles are still alive, before
