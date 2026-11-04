@@ -1541,6 +1541,35 @@ class DriverTest(StateTest):
         with patch.object(m, 'now', return_value=1420):
             self.assertTrue(self.finish(d.check_deadlines, m.EXIT_HUNG).hung)
 
+    def test_window_manager_deadlines_and_attempt_ceilings(self):
+        d = self.driver
+        d.args.mode = 'suite'
+        for name, deadline in [('console', 420), ('gpu', 420), ('breengel', 900), ('processes', 420)]:
+            d.args.suite = name
+            self.assertEqual(boot.mode_deadline_seconds(d.args), deadline)
+            self.assertEqual(boot.ceiling_seconds(d.args), 1320)
+        for sequence, ceiling in [('window-manager', 2220), ('window-manager,console', 2640),
+                                  ('console,window-manager', 3120), ('breengel,gpu', 1740),
+                                  ('console,breengel', 2220), ('gpu,console', 1740)]:
+            d.args.suite = sequence
+            self.assertEqual(boot.ceiling_seconds(d.args), ceiling)
+        d.args.suite = 'window-manager'
+        self.assertEqual(boot.mode_deadline_seconds(d.args), 1800)
+        self.assertGreater(boot.ceiling_seconds(d.args), 1800)
+        d.on_line('SUITE window-manager START cases=82', observed_at=130)
+        self.assertEqual(d.suite_started, 130)
+        d.args.mode = 'default'
+        self.assertEqual(boot.mode_deadline_seconds(d.args), 300)
+        self.assertEqual(boot.ceiling_seconds(d.args), 900)
+
+    def test_window_manager_starts_the_hostkey_reader(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'window-manager'
+        with patch.object(boot.threading, 'Thread') as thread:
+            d.start_hostkey_reader()
+            thread.assert_called_once()
+            thread.return_value.start.assert_called_once()
+
     def test_breengel_uses_its_900_second_suite_gate(self):
         d = self.driver
         d.args.mode, d.args.suite = 'suite', 'breengel'
