@@ -234,6 +234,39 @@ class HttpServerTest(StateTest):
         self.assertEqual(self.request()[0], 404)
         self.assertEqual(self.request('HEAD')[0], 404)
 
+    def test_native_upload_readiness_preserves_the_validated_startup_slot(self):
+        import gt710_upload
+        boot_id = '20261104T000000Z-metal'
+        directory = m.boot_dir(boot_id)
+        directory.mkdir(parents=True)
+        site = dict(BOOT_URL=self.url, HTTP_LISTEN_PORT=str(self.port))
+        target = gt710_upload.prepare(directory, boot_id, site, suite='console')
+        m.write_json(m.STATE / m.LEASE, dict(id=boot_id, state='claimed'))
+        args = SimpleNamespace(id=boot_id, mode='suite', payload='image', suite='console',
+                               case='screen', inject=None, serve_as=None)
+        with patch.object(m, 'load_site', return_value=site):
+            driver = boot.Driver(args)
+        driver.do_stage()
+        self.assertEqual(self.request('HEAD', target)[0], 204)
+        self.assertNotIn('complete', m.read_json(m.STATE / 'gt710-upload.json'))
+        self.assertFalse((directory / 'native-upload.json').exists())
+        m.write_json(m.STATE / m.LEASE, dict(id=boot_id, state='powered'))
+        body = b'native startup evidence\n'
+        for digest, status in [('0' * 64, 400), (hashlib.sha256(body).hexdigest(), 200)]:
+            request = urllib.request.Request(target, data=body, method='PUT', headers={
+                'Content-Length': str(len(body)), 'X-Content-SHA256': digest})
+            try:
+                with urllib.request.urlopen(request, timeout=10) as reply:
+                    self.assertEqual(reply.status, status)
+            except urllib.error.HTTPError as error:
+                with error:
+                    self.assertEqual(error.code, status)
+        deadline = time.time() + 10
+        while not (directory / 'native-upload.json').exists() and time.time() < deadline:
+            time.sleep(0.02)
+        self.assertEqual((directory / 'gt710-pixels.rle').read_bytes(), body)
+        self.assertTrue(m.read_json(directory / 'native-upload.json')['complete'])
+
     def test_one_complete_transfer_then_404(self):
         m.stage('20261017T000000Z-metal', self.image, self.digest, self.image.stat().st_size, 'application/vnd.efi-img')
         status, headers, _ = self.request('HEAD')
@@ -1076,6 +1109,19 @@ class DriverTest(StateTest):
             call()
         self.assertEqual(raised.exception.status, status)
         return raised.exception
+
+    def test_unavailable_native_upload_route_refuses_before_console_or_power_on(self):
+        import gt710_upload
+        self.driver.create_record = self.driver.claim = self.driver.prepare_payload = Mock()
+        self.driver.preflight = self.driver.cleanup = Mock()
+        self.driver.power_off = Mock(return_value=True)
+        self.driver.start_console = Mock()
+        self.driver.power_on = Mock()
+        self.driver.watch = Mock(side_effect=RuntimeError('boot passed missing upload readiness'))
+        with patch.object(gt710_upload, 'check_ready', side_effect=ValueError('stale HTTP service'), create=True):
+            self.assertEqual(self.driver.run(), m.EXIT_DELIVERY)
+        self.driver.start_console.assert_not_called()
+        self.driver.power_on.assert_not_called()
 
     def test_shell_sends_challenge_once_at_partial_prompt_and_requires_whole_answer(self):
         d = self.driver

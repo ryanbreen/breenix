@@ -48,4 +48,18 @@ class CaseBoot(existing.StateTest):
   command=send.call_args.args
   self.assertIn('--case',command);self.assertEqual(command[command.index('--case')+1],'text/size-range')
   self.assertFalse(any('_resume' in call.args[0] for call in processes.call_args_list),'a stopped diagnostic must not spawn another boot')
+ def test_native_category_and_case_watches_start_the_upload_service_before_launch(self):
+  for suite in ('console','gpu'):
+   for selector in ('screen','screen/clear'):
+    with self.subTest(suite=suite,selector=selector):
+     runner=existing.load_script('metal-run');args=self.args(suite=suite,case=selector)
+     with patch.object(runner,'host_env',return_value={'METAL_INSTANCE':'fixture'}), \
+      patch.object(runner,'resolve',return_value='a'*40),patch.object(runner,'resolve_suites',return_value=suite), \
+      patch.object(runner,'in_metal',return_value=SimpleNamespace(returncode=0,stdout='claimed',stderr='')) as send, \
+      patch.object(runner.subprocess,'Popen') as processes,patch.object(runner.Path,'home',return_value=m.STATE):
+      self.assertEqual(runner.boot(args),0)
+     commands=[call.args[1:] for call in send.call_args_list]
+     self.assertEqual(commands[0],('systemctl','start','breenix-metal-machine.service'))
+     self.assertEqual(commands[1][:2],('python3','/opt/breenix-metal/metal-boot'))
+     self.assertFalse(any('_resume' in call.args[0] for call in processes.call_args_list))
 if __name__=='__main__':unittest.main()
