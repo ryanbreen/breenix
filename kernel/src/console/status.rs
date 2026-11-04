@@ -348,7 +348,7 @@ impl PanelGeometry {
             });
         }
         let reserved = line.checked_mul(2)?.checked_add(48)?;
-        if width <= glyph.checked_mul(14)? || height < reserved {
+        if width <= glyph.checked_mul(16)? || height < reserved {
             return None;
         }
         let top = height - reserved;
@@ -356,11 +356,11 @@ impl PanelGeometry {
             panel: Rect::new(0, top, width, reserved),
             heading: Rect::new(2 * glyph, top + 8, width - 4 * glyph, line),
             track: Rect::new(2 * glyph, top + line + 16, width - 4 * glyph, 8),
-            label: Rect::new(2 * glyph, top + line + 32, 10 * glyph, line),
+            label: Rect::new(2 * glyph, top + line + 32, 11 * glyph, line),
             ribbon: Rect::new(
-                12 * glyph,
+                14 * glyph,
                 top + line + 32 + (line - 6) / 2,
-                width - 14 * glyph,
+                width - 16 * glyph,
                 6,
             ),
             stage_scale: 0,

@@ -40,6 +40,23 @@ fn panel_reserves_text_and_paints_only_its_band_with_independent_readback() {
             assert!(frame[y*layout.stride_bytes+width*4..(y+1)*layout.stride_bytes].iter().all(|&b| b==0xa5));
         }
         assert!(ink>100,"heading missing");
+        // Read the final label glyph independently, so matching clipping in the
+        // painter and its read-back cannot hide a missing final letter.
+        let label_font=if g.stage_scale>0 {Font::new(noto_sans_mono_bitmap::RasterHeight::Size16)} else {layout.font};
+        let scale=g.stage_scale.max(1);
+        let size=noto_sans_mono_bitmap::RasterHeight::Size16;
+        let size=Font::SIZES.into_iter().find(|s| s.val()==label_font.size()).unwrap_or(size);
+        let glyph=noto_sans_mono_bitmap::get_raster('s',noto_sans_mono_bitmap::FontWeight::Regular,size).unwrap();
+        for (dy,row) in glyph.raster().iter().enumerate() {
+            for (dx,&coverage) in row.iter().enumerate() {
+                if coverage==0 {continue;}
+                let x=g.label.x+(10*label_font.glyph_width()+dx)*scale;
+                let y=g.label.y+dy*scale;
+                assert!(g.label.contains(x,y), "final label glyph clipped");
+                let i=y*layout.stride_bytes+x*4;
+                assert!(!layout.pixel_is(&frame[i..i+4],status::BACKGROUND), "final label glyph absent");
+            }
+        }
         let empty=panel::Panel::new(&layout,SuiteStatus::default(),vec![true,true],false,0).unwrap();
         assert_eq!(empty.colour(&layout,g.ribbon.x,g.ribbon.y),Some(status::BACKGROUND));
         assert_eq!(empty.colour(&layout,g.track.x,g.track.y),Some(status::BACKGROUND));

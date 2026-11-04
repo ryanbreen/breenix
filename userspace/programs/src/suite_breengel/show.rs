@@ -117,8 +117,8 @@ fn panel_boot_ribbon() -> CaseResult {
     } else {
         let (glyph,line)=[(14,34),(11,26),(9,22),(7,18)].into_iter()
             .find(|&(g,l)|width/g>=128 && height/l>=36).unwrap_or((7,18));
-        ensure(width>14*glyph && height>=2*line+48,"23.7","mode cannot hold the native status panel")?;
-        (12*glyph,height-(2*line+48)+line+32+(line-6)/2,width-14*glyph,6,1)
+        ensure(width>16*glyph && height>=2*line+48,"23.7","mode cannot hold the native status panel")?;
+        (14*glyph,height-(2*line+48)+line+32+(line-6)/2,width-16*glyph,6,1)
     };
     use crate::window_cases::composition::{give_back, take_over, screen};
     for faulty in [true,false] {

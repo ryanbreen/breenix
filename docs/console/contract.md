@@ -145,8 +145,8 @@ pixels; the two extra pixel rows at the bottom of each cell are the cursor band.
   glyph width and `L=S+2` its line height. The panel is `P=2L+48` pixels tall and starts
   at `T=H-P`. The heading uses size S and the `Boot stages` label uses size S.
   In the table below, coordinates and sizes are physical pixels, without stage scaling.
-  Segment i of m covers x from `12G+floor((W-14G)i/m)` to
-  `12G+floor((W-14G)(i+1)/m)`, with its last two pixels background. Native progress
+  Segment i of m covers x from `14G+floor((W-16G)i/m)` to
+  `14G+floor((W-16G)(i+1)/m)`, with its last two pixels background. Native progress
   intervals use physical track pixels. The segment fill is clipped at its start when
   a segment is narrower than the gap; it cannot underflow.
 
@@ -155,10 +155,10 @@ pixels; the two extra pixel rows at the bottom of each cell are the cursor band.
 | Reserved panel | `(0,T,W,2L+48)` |
 | Heading | `(2G,T+8,W-4G,L)` |
 | Progress track | `(2G,T+L+16,W-4G,8)` |
-| `Boot stages` label | `(2G,T+L+32,10G,L)` |
-| Stage ribbon | `(12G,T+L+32+floor((L-6)/2),W-14G,6)` |
+| `Boot stages` label | `(2G,T+L+32,11G,L)` |
+| Stage ribbon | `(14G,T+L+32+floor((L-6)/2),W-16G,6)` |
 
-The native panel needs `W>14G` and `H>=2L+48`, with positive glyph width and line
+The native panel needs `W>16G` and `H>=2L+48`, with positive glyph width and line
 height at least 6. Below these dimensions it is omitted and text uses the full height.
 The suite's `screen/size-class` and `screen/scanout-grid` checks derive the reserved
 text rows from this geometry after selecting the font from the full display.

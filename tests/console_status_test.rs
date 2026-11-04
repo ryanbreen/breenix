@@ -143,8 +143,8 @@ fn native_raster_reserves_panel_above_scroll_region() {
     assert_eq!(g.panel, Rect::new(0, 684, 1024, 84));
     assert_eq!(g.heading, Rect::new(14, 692, 996, 18));
     assert_eq!(g.track, Rect::new(14, 718, 996, 8));
-    assert_eq!(g.label, Rect::new(14, 734, 70, 18));
-    assert_eq!(g.ribbon, Rect::new(84, 740, 926, 6));
+    assert_eq!(g.label, Rect::new(14, 734, 77, 18));
+    assert_eq!(g.ribbon, Rect::new(98, 740, 912, 6));
     assert_eq!(g.text_rows(18), 38);
     let g = PanelGeometry::for_display(1280, 960, 9, 22).unwrap();
     assert_eq!(g.panel, Rect::new(0, 868, 1280, 92));
