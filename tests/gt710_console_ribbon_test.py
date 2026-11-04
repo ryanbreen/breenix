@@ -25,11 +25,11 @@ fn main(){
  let normal=Ribbon::now(&layout,false).unwrap();
  let dropped=Ribbon::now(&layout,true).unwrap();
  let mut frame=vec![0;1280*800*4];
- normal.paint(&mut frame,&layout,752..768);
- assert_eq!(&frame[(752*1280+16)*4..(752*1280+16)*4+3], &[26,112,77]);
- assert_eq!(normal.colour(16,752),Some([26,112,77]));
- assert_eq!(dropped.colour(16,752),Some([48,67,96]));
- assert_eq!(normal.colour(640,752),Some([48,67,96]));
+ normal.paint(&mut frame,&layout,772..778);
+ assert_eq!(&frame[(772*1280+112)*4..(772*1280+112)*4+3], &[26,112,77]);
+ assert_eq!(normal.colour(112,772),Some([26,112,77]));
+ assert_eq!(dropped.colour(112,772),Some([48,67,96]));
+ assert_eq!(normal.colour(688,772),Some([48,67,96]));
 }
 '''.replace('RIBBON', str(ROOT / 'kernel/src/console/ribbon.rs'))
 with tempfile.TemporaryDirectory() as tmp:

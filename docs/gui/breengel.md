@@ -1585,20 +1585,75 @@ It remains up for at least 5,000 ms of UI time before the runner emits DONE. The
 the finale start time; a stepped session must advance its UI clock through that hold. A stalled clock
 is a stage failure at the runner deadline, never a successful hold or a lost DONE. The hold is complete iff `ui_time_ms.saturating_sub(start_ms) >= 5000`.
 
-### 23.7 Boot stage ribbon
+### 23.7 Kernel console suite status panel (B36)
 
-<!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B35 specifies these requirements. -->
-The kernel draws one segment per architecture-applicable stage in `docs/boot-path.json`, in that file's
-order, across (16,752,1248,16). For stage i of m, its segment starts at
-x=16+floor(1248i/m) and ends at x=16+floor(1248(i+1)/m)-2, leaving a two-pixel gap.
-Reached is pass green, unreached is pending outline colour. A stage lights only when its actual producer
-prints the stage marker; loader announcements never light a segment. The serial stage lines remain the record.
-This boot ribbon belongs only to the kernel console, not the run stage.
-It is restored with the kernel screen after display giveback.
-On the GPU core the console draws it over its text, in this band at the display's scale, and its
-read-back check expects it there (docs/console/contract.md section 2, ruling B35). Each segment's last
-two pixels are the background colour. A full repaint of the kernel screen (after a give-back) takes
-point 15, which then shows the first reached stage unreached until the next full repaint.
+<!-- claim-lint:ok: Normative contract amendment B36 in docs/gui/breengel-gpu-rulings.md; not implementation or boot acceptance. -->
+The kernel console reserves its bottom panel on ARM64 and x86-64. The text grid and its
+scroll region end above the panel; log text cannot run underneath it. This supersedes
+B35's overlay placement. The panel belongs to the kernel console, not the userspace run
+stage, and returns with the kernel screen after display giveback. Serial stays the record.
+
+Coordinates are half-open rectangles `(x,y,width,height)` in the 1280x800 stage layout.
+For a display `1280s` by `800s`, with positive whole `s`, multiply the coordinates and
+sizes below by `s`. Quantize segment boundaries in stage units before scaling.
+
+| Element | Stage rectangle |
+|---|---|
+| Reserved panel | `(0,704,1280,96)` |
+| Heading | `(16,712,1248,24)` |
+| Suite progress track | `(16,744,1248,12)` |
+| `Boot stages` label | `(16,768,80,16)` |
+| Boot-stage segments | `(112,772,1152,6)` |
+
+Heading text uses the console font at size 20 in stage units, the label size 16, both
+scaled by `s`. The heading reads `<suite>: <p> passed · <f> failed · <n> pending of <total>
+· <m:ss> · case: <case>`. Append `· <s> skipped` when skips exist. Clip text to its
+rectangle, with the current-case tail truncated if necessary. Pending is total minus
+passed, failed and skipped. Before the first CASE, the case is `waiting`.
+
+The kernel obtains this state only by parsing its own captured serial producer lines:
+`SUITE <id> START cases=<n>`, `SUITE <id> CASE <category>/<case> PASS ms=<n>`,
+`FAIL ms=<n> msg=<reason>`, `SKIP msg=<reason>`, and
+`SUITE <id> DONE passed=<p> failed=<f> skipped=<s> total=<n>`.
+START/DONE may carry `only=<selection>`, START may carry `pace_ms=<n>`, and PASS/FAIL
+may carry `sha256=<64 lowercase hex digits>` after `ms`. These fields do not affect counts.
+Lines must start with `SUITE `; CRLF is accepted. Malformed, foreign-suite, duplicate-case,
+over-total and post-DONE CASE lines do not mutate the state. A valid START resets the
+state, including failure positions and elapsed time, even for a second run of the same id.
+An inconsistent DONE is ignored: its counts and total must match observed CASE results,
+and passed+failed+skipped must equal total. No missing result is fabricated from DONE.
+
+Elapsed is monotonic time since the kernel observed START, shown as unbounded minutes
+and two-digit seconds, including idle and pacing time; DONE freezes it. CASE records
+report results, not case entry: `case` means the latest CASE observed, not a guessed name
+of an executing case. There is no new runner-to-panel channel. The parser runs in thread
+context from the existing serial capture, outside the UART writer and interrupt paths.
+
+The progress fill width is `floor(track_width * (passed+failed) / total)`; total 0 gives
+an empty track. The judged results in serial order occupy intervals
+`[floor(track_width*i/total), floor(track_width*(i+1)/total))`. Passed intervals are green,
+failed intervals red; skips consume no judged interval and leave the unfilled tail.
+Stage boundaries are computed before scaling, including progress fill boundaries.
+RGB colours: panel/gaps `(12,19,31)`, heading/label `(214,225,244)`, passed/reached
+`(26,112,77)`, failed `(145,50,58)`, pending/track `(48,67,96)`. Pixel checks retain exact
+colours, including opaque X bytes, rather than accepting a tolerance or a different band.
+
+The thin ribbon has one segment per architecture-applicable boot-path stage in catalog
+order. In the stage layout, segment i of m starts at `112+floor(1152i/m)` and ends at
+`112+floor(1152(i+1)/m)`; its final two units are panel background. Reached segments are
+pass green and unreached segments pending. A stage lights only on its actual producer's
+serial marker; loader announcements do not light segments. The independent producer
+check, marker order and point 15 (`ribbon-drop-stage`) stay binding: a full repaint takes
+point 15 and shows the first reached stage unreached until the next full repaint.
+`panel/boot-ribbon` and the native console pixel checks move to these exact coordinates.
+
+On other native raster sizes, use docs/console/contract.md section 2's font-based panel
+geometry and segment rounding. Reserve the panel for the display lifetime, so START and
+DONE do not resize terminals. Before any START, show only the labelled stage row while
+boot is incomplete; once boot completes, leave the reserved panel blank. No suite counts,
+heading or progress track are shown without a START. DONE retains the final suite summary
+until another START. These are contract requirements; drawing and boot acceptance follow
+in later console status units.
 
 ### 23.8 Agreement
 
