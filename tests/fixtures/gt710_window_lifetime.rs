@@ -207,7 +207,7 @@ mod window {
     // CHARGED_BYTES
     pub static REGISTRY:Lock<Registry>=Lock::new(Registry{windows:BTreeMap::new(),remnants:BTreeMap::new(),claim:None,present:State});
     pub mod scene{pub fn invalidate(_:u64){} pub fn changed(){}}
-    fn all_waits(_: &Registry)->Vec<Arc<Waits>>{vec![]}
+    fn end_claim(reg: &mut Registry)->Vec<Arc<Waits>>{reg.claim=None;vec![]}
     fn claim_ended(_:Vec<Arc<Waits>>){}
     pub mod ops{
         use super::*;

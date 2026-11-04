@@ -1107,6 +1107,18 @@ fn all_waits(reg: &super::Registry) -> Vec<Arc<Waits>> {
     v
 }
 
+/// Publish claim loss before waking readers; clients need not wait for a replacement.
+fn end_claim(reg: &mut super::Registry) -> Vec<Arc<Waits>> {
+    reg.claim = None;
+    reg.epoch += 1;
+    for window in reg.windows.values_mut() {
+        let mut event = kernel_event(event_kind::COMPOSITOR_CHANGED);
+        event.epoch = reg.epoch;
+        window.ring.push(event);
+    }
+    all_waits(reg)
+}
+
 /// `EVENT_FD` (the owner): a new descriptor that polls readable while the window has an event.
 /// Window 0, for the compositor claimant: the scene descriptor, readable while the scene has
 /// changed since it was last read.
@@ -1269,8 +1281,7 @@ pub fn release(caller: &Caller) -> Result<u64, i32> {
         if !reg.is_compositor(caller) {
             return Err(EPERM);
         }
-        reg.claim = None;
-        all_waits(&reg)
+        end_claim(&mut reg)
     };
     super::scene::invalidate(caller.tgid);
     claim_ended(woken);
@@ -1395,8 +1406,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
             }
         }
         if reg.claim.is_some_and(|c| c.holder == tgid) {
-            reg.claim = None;
-            readers = all_waits(&reg);
+            readers = end_claim(&mut reg);
         }
         if at_exit {
             let held: Vec<u64> = reg.remnants.iter().filter(|(_, r)| r.holder == tgid).map(|(id, _)| *id).collect();
