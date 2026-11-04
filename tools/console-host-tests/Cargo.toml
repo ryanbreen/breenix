@@ -32,3 +32,7 @@ boot_tests = []
 [[test]]
 name = "native_boot_grid_resize"
 path = "../../tests/native_boot_grid_resize.rs"
+
+[[test]]
+name = "console_panel"
+path = "../../tests/console_panel_test.rs"
