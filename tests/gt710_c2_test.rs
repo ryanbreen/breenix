@@ -141,6 +141,46 @@ impl c2::observe::CounterAccess for Counter {
     fn monotonic_ns(&mut self)->u64 {self.ns}
     fn record(&mut self,stage:&str,raw:&[(u32,u32)]) {self.records.push((stage.into(),raw.to_vec()));}
 }
+// Model the observed target clock and a delayed final PTIMER read. The record
+// reports the rejection, while the endpoint stall is the replay hypothesis.
+struct BracketReplay { inner: Counter, sampling: bool, first: Option<u64>, stalls: u32 }
+impl Access for BracketReplay {
+    fn read(&mut self, a:u32)->u32 {
+        self.inner.ns=self.inner.ns.saturating_sub(8_000); // 2 us per register read
+        let v=self.inner.read(a);
+        if self.sampling && a==0x1800a8 {
+            let first=*self.first.get_or_insert(self.inner.ns);
+            if self.inner.ns-first>=20_000_000 && self.stalls==0 {
+                self.inner.ns+=2_900_000;
+                self.stalls+=1;
+            }
+        }
+        v
+    }
+    fn write(&mut self,a:u32,v:u32) {self.inner.write(a,v)}
+    fn wait(&mut self,a:u32,m:u32,v:u32)->Result<(),&'static str> {self.inner.wait(a,m,v)}
+}
+impl c2::observe::CounterAccess for BracketReplay {
+    fn monotonic_ns(&mut self)->u64 {self.inner.ns}
+    fn record(&mut self,stage:&str,raw:&[(u32,u32)]) {
+        self.inner.record(stage,raw);
+        if stage=="configured" {self.sampling=true;}
+        if stage=="restore-halted" {self.sampling=false;}
+    }
+}
+fn bracket_replay()->BracketReplay {
+    BracketReplay {inner:Counter {regs:BTreeMap::from([(0x200,0x40501100),(0x18009c,0),
+        (0x180044,0x1234),(0x1800a8,99)]),writes:Vec::new(),ns:4_290_000_000,
+        khz:81_653,stalled:false,inaccessible:false,records:Vec::new()},
+        sampling:false,first:None,stalls:0}
+}
+#[test]
+fn delayed_endpoint_replays_clock_startup_bracket_failure() {
+    let mut d=bracket_replay();
+    assert_eq!(c2::observe::measure(&mut d).err(),Some("counter/PTIMER bracket exceeds 1 percent"));
+    assert_eq!(d.stalls,1);
+}
+
 #[test]
 fn independent_counter_tracks_cycles_across_ptimer_and_restores_on_timeout() {
     use c2::observe::measure;
