@@ -105,6 +105,8 @@ pub struct Compositor {
     height: u32,
     scene: u64,
     scanout: [u64; 2],
+    /// The most recently completed window composite.
+    pub last_serial: u64,
     /// The scanout target the next frame writes: the one not shown.
     next: usize,
     /// The desktop: background, taskbar, window frames and app bar.
@@ -148,6 +150,7 @@ impl Compositor {
             height,
             scene: 0,
             scanout: [0; 2],
+            last_serial: 0,
             next: 0,
             desktop,
             background,
@@ -296,6 +299,7 @@ impl Compositor {
             match r {
                 0 => {
                     self.next ^= 1;
+                    self.last_serial = c.serial;
                     self.full = false;
                     self.sampled = windows.iter().map(|w| Sampled {
                         id: w.id, sample: w.sample, commit_id: w.commit_id, width: w.width, height: w.height,

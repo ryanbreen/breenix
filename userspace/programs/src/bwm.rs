@@ -55,6 +55,9 @@ use chrome::*;
 mod launch;
 use launch::*;
 
+#[path = "bwm/clock.rs"]
+mod clock;
+
 fn main() {
     print!("[bwm] Breenix Window Manager starting... (v2-chromeless-skip)\n");
 
@@ -80,13 +83,16 @@ fn main() {
     );
 
     // bwm composes the windows as the compositor (window op 17's claim) and display owner.
-    match session::claim() {
-        Ok(epoch) => print!("[bwm] compositor claim: epoch {}\n", epoch),
+    let claim_epoch = match session::claim() {
+        Ok(epoch) => {
+            print!("[bwm] compositor claim: epoch {}\n", epoch);
+            epoch
+        }
         Err(e) => {
             print!("[bwm] ERROR: GPU compositing required: the compositor claim failed: {}\n", e);
             process::exit(1);
         }
-    }
+    };
     let scene_fd = match session::scene_fd() {
         Ok(fd) => fd,
         Err(e) => {
@@ -146,11 +152,9 @@ fn main() {
     });
 
     // Clock state
-    let mut last_clock_sec: i64 = -1;
+    let mut clock = clock::Clock::new(std::env::var_os("BREENIX_UI_CLOCK").is_some());
     let mut clock_text = [0u8; 11];
-    format_clock(0, &mut clock_text);
-    let mut fps_frames_since_last: u32 = 0;
-    let mut fps_last_ms = monotonic_ms().unwrap_or(0);
+    format_clock(clock.wall_sec(), &mut clock_text);
     let mut next_creation_order: u32 = 0;
     // Hotkey system: load config from /etc/hotkeys.conf
     let mut hotkey_mgr = HotkeyManager::new();
@@ -215,6 +219,7 @@ fn main() {
             fd.revents = 0;
         }
         let _ = io::poll(&mut poll_fds, timeout);
+        clock.begin_epoch();
         let stdin_ready = poll_fds[0].revents & io::poll_events::POLLIN as i16 != 0;
         let scene_changed = poll_fds[1].revents & io::poll_events::POLLIN as i16 != 0;
         if scene_changed {
@@ -604,31 +609,15 @@ fn main() {
             }
         }
 
-        // ── 4. Update clock (once per second) and the frame-rate line ──
-        if let Some(now_ms) = monotonic_ms() {
-            let elapsed_ms = now_ms.saturating_sub(fps_last_ms);
-            if elapsed_ms >= 1000 {
-                let instantaneous_fps =
-                    fps_frames_since_last as u64 * 1000 / elapsed_ms.max(1);
-                print!(
-                    "[bwm-fps] frames_since_last={} elapsed_ms={} instantaneous_fps={}\n",
-                    fps_frames_since_last, elapsed_ms, instantaneous_fps
-                );
-                fps_frames_since_last = 0;
-                fps_last_ms = now_ms;
-            }
-        }
-        if let Ok(ts) = libbreenix::time::now_realtime() {
-            if ts.tv_sec != last_clock_sec {
-                last_clock_sec = ts.tv_sec;
-                format_clock(ts.tv_sec, &mut clock_text);
-                draw_taskbar(&mut gpu.desktop, &clock_text, &mut ui_font);
-                dirty_x0 = 0;
-                dirty_y0 = 0;
-                dirty_x1 = dirty_x1.max(screen_w as i32);
-                dirty_y1 = dirty_y1.max(px(TASKBAR_HEIGHT) as i32);
-                content_dirty = true;
-            }
+        // ── 4. Update chrome on real UI-clock seconds ──
+        if let Some(sec) = clock.update_clock() {
+            format_clock(sec, &mut clock_text);
+            draw_taskbar(&mut gpu.desktop, &clock_text, &mut ui_font);
+            dirty_x0 = 0;
+            dirty_y0 = 0;
+            dirty_x1 = dirty_x1.max(screen_w as i32);
+            dirty_y1 = dirty_y1.max(px(TASKBAR_HEIGHT) as i32);
+            content_dirty = true;
         }
 
         // Keep complete pixel validation off the interactive drag path. A settled
@@ -663,7 +652,7 @@ fn main() {
                         print!("[bwm] display back: composing again\n");
                     }
                     drawn_pointer = Some(pointer);
-                    fps_frames_since_last = fps_frames_since_last.wrapping_add(1);
+                    clock.presented(gpu.last_serial);
                     // Each client window's first shown frame is read back and compared.
                     // Check the whole scanout for each newly shown or resized client,
                     // including other clients that keep animating beside it.
@@ -726,6 +715,15 @@ fn main() {
                     drawn_pointer = None;
                     full_redraw = true;
                 }
+            }
+        }
+        if !full_redraw && !content_dirty && !windows_dirty && !display_lost && !frame_failed {
+            let mut ack = clock.acknowledgment(claim_epoch);
+            if let Err(error) = libbreenix::window::call(
+                libbreenix::window::abi::op::COMPOSITOR_ACK, &mut ack,
+            ) {
+                eprintln!("[bwm] compositor acknowledgment failed: {}", error);
+                process::exit(1);
             }
         }
     }
