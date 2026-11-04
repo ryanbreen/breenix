@@ -496,7 +496,8 @@ impl Supervisor {
                                     && (line.starts_with(b"[bwm] compositor claim:")
                                         || line.starts_with(b"[bwm] first frame read back:")
                                         || line.starts_with(b"[bwm] desktop fills the scanout:")
-                                        || line.starts_with(b"[bwm] composited client frame"));
+                                        || line.starts_with(b"[bwm] composited client frame")
+                                        || line.starts_with(b"VALUE bwm-check-us "));
                                 if output.stream == "stdout" && (readiness || oracle || desktop) {
                                     if let Ok(text) = core::str::from_utf8(line) {
                                         print!("{}\n", text);
