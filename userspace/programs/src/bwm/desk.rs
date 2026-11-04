@@ -75,7 +75,7 @@ pub(super) struct Window {
     /// Composed frames whose check found this client had committed again since the frame
     /// sampled it.
     pub(super) check_moved: u32,
-    /// Stable ordering for appbar (assigned at discovery time, never changes)
+    /// Stable ordering for appbar (assigned at discovery time)
     pub(super) creation_order: u32,
     /// Chromeless windows have no title bar, border, or chrome buttons.
     /// Detected by title prefix \x01.

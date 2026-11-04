@@ -245,7 +245,6 @@ impl HotkeyManager {
     ///   Super+Super = exec blauncher
     ///   Alt+F4 = close
     ///   Super+Return = exec bterm
-    #[cfg(not(target_arch = "aarch64"))]
     pub(super) fn load_config(&mut self, path: &str) {
         let fd = match fs::open(path, fs::O_RDONLY) {
             Ok(fd) => fd,
@@ -308,7 +307,6 @@ impl HotkeyManager {
         });
     }
 
-    #[cfg(not(target_arch = "aarch64"))]
     pub(super) fn parse_line(line: &[u8]) -> Option<Hotkey> {
         // Split on '='
         let eq_pos = line.iter().position(|&b| b == b'=')?;
@@ -407,11 +405,10 @@ impl HotkeyManager {
     ///
     /// `super_taps` is the count of Super press-edges latched in the kernel HID
     /// path since the previous frame (op=31, read-and-clear). Because the latch
-    /// captures every 0→1 SUPER transition the instant the HID report arrives,
+    /// captures 0→1 SUPER transitions as the HID report arrives,
     /// it recovers taps whose entire ~30ms high window fell between two bursty
     /// compositor-wait polls — which the level-based edge detection would miss.
-    /// SUPER tap counting is driven exclusively by this latch so each physical
-    /// press is counted exactly once (no double-count vs. release detection).
+    /// SUPER tap counting uses this latch to avoid double-counting against release detection.
     pub(super) fn update(&mut self, current_mods: u8, super_taps: u32) -> Option<HotkeyAction> {
         let prev = self.prev_modifiers;
         self.prev_modifiers = current_mods;
@@ -465,7 +462,7 @@ impl HotkeyManager {
             }
         }
 
-        // Reset combo tracking when Super is fully released so the next clean
+        // Reset combo tracking when Super is released so the next clean
         // tap sequence isn't suppressed by a stale combo flag.
         let super_now = (current_mods & modifier::SUPER) != 0;
         if !super_now {
@@ -523,7 +520,6 @@ impl HotkeyManager {
     }
 }
 
-#[cfg(not(target_arch = "aarch64"))]
 pub(super) fn trim(s: &[u8]) -> &[u8] {
     let start = s.iter().position(|&b| b != b' ' && b != b'\t' && b != b'\r').unwrap_or(s.len());
     let end = s.iter().rposition(|&b| b != b' ' && b != b'\t' && b != b'\r').map(|i| i + 1).unwrap_or(start);

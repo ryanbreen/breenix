@@ -23,16 +23,13 @@ use std::io::Write;
 use compositor::{CheckError, Compositor, FrameError, Layer, Pointer};
 use session::{cursor_shape, Input};
 
-#[cfg(not(target_arch = "aarch64"))]
 use libbreenix::fs;
 use libbreenix::io;
 use libbreenix::signal;
 use libbreenix::types::Fd;
 
-#[cfg(not(target_arch = "aarch64"))]
 use breengel::FontConfig;
 use libgfx::ttf_font::CachedFont;
-#[cfg(not(target_arch = "aarch64"))]
 use libgfx::ttf_font::Font;
 use libgfx::bitmap_font;
 use libgfx::ttf_font;
@@ -108,15 +105,6 @@ fn main() {
     };
     print!("[bwm] GPU compositing mode (GPU core), display: {}x{}\n", screen_w, screen_h);
 
-    // Avoid filesystem reads before the first ARM64 compositor submit. On
-    // single-CPU Parallels, opening /etc/fonts.conf here can stall bwm before
-    // it replaces the kernel proof draw. Bitmap chrome is enough for boot.
-    #[cfg(target_arch = "aarch64")]
-    let mut ui_font: Option<CachedFont> = {
-        print!("[bwm] using bitmap font fallback for early boot\n");
-        None
-    };
-    #[cfg(not(target_arch = "aarch64"))]
     let mut ui_font: Option<CachedFont> = {
         let config = FontConfig::load();
         let font = std::fs::read(&config.display_path).ok()
@@ -167,12 +155,6 @@ fn main() {
     let mut next_creation_order: u32 = 0;
     // Hotkey system: load config from /etc/hotkeys.conf
     let mut hotkey_mgr = HotkeyManager::new();
-    #[cfg(target_arch = "aarch64")]
-    {
-        hotkey_mgr.load_defaults();
-        print!("[bwm] hotkeys: using built-in defaults for early boot\n");
-    }
-    #[cfg(not(target_arch = "aarch64"))]
     hotkey_mgr.load_config("/etc/hotkeys.conf");
 
     // Initial composite: the desktop alone (background, taskbar and app bar), before any
