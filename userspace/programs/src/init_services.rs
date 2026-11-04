@@ -493,7 +493,8 @@ impl Supervisor {
                                         || line.starts_with(b"[BSSH_ACCOUNT_ORACLE:"))
                                     && line.ends_with(b"]");
                                 let desktop = entry.def.name == "bwm"
-                                    && (line.starts_with(b"[bwm] compositor claim:")
+                                    && (line.starts_with(b"[bwm] Breenix Window Manager starting")
+                                        || line.starts_with(b"[bwm] compositor claim:")
                                         || line.starts_with(b"[bwm] first frame read back:")
                                         || line.starts_with(b"[bwm] desktop fills the scanout:")
                                         || line.starts_with(b"[bwm] composited client frame")
