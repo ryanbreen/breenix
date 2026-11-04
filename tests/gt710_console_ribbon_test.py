@@ -31,6 +31,20 @@ fn main(){
  assert_eq!(normal.colour(112,772),Some([26,112,77]));
  assert_eq!(dropped.colour(112,772),Some([48,67,96]));
  assert_eq!(normal.colour(688,772),Some([48,67,96]));
+ // Native GT 710 raster: B36's font-based band, outside the logical stage layout.
+ let native=Layout{width:1280,height:1024,bytes_per_pixel:4};
+ let normal=Ribbon::new(&native,vec![true,false],false).unwrap();
+ let dropped=Ribbon::new(&native,vec![true,false],true).unwrap();
+ assert_eq!(normal.rows(),994..1000);
+ let mut frame=vec![0xa5;1280*1024*4];
+ normal.paint(&mut frame,&native,0..1024);
+ assert!(frame[..994*1280*4].iter().all(|&b|b==0xa5));
+ assert!(frame[1000*1280*4..].iter().all(|&b|b==0xa5));
+ for (x,rgb) in [(108,[26,112,77]),(683,[12,19,31]),(685,[48,67,96]),(1261,[12,19,31])] {
+  assert_eq!(&frame[(994*1280+x)*4..(994*1280+x)*4+3],&rgb);
+  assert_eq!(normal.colour(x,994),Some(rgb));
+ }
+ assert_eq!(dropped.colour(108,994),Some([48,67,96]));
 }
 '''.replace('STATUS', str(ROOT / 'kernel/src/console/status.rs')).replace('RIBBON', str(ROOT / 'kernel/src/console/ribbon.rs'))
 with tempfile.TemporaryDirectory() as tmp:
