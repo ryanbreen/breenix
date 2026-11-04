@@ -272,10 +272,11 @@ impl Controller {
                     return Err("clock readback more than 1 percent off");
                 }
                 self.context("gpc-counter",format!("target_khz={}",self.target.gpc_khz.div_ceil(16)));
-                let m=super::ce::with_clock_wait(|_,_,_|c2::observe::measure(&mut Io(Registers(self.base))))?;
+                let m=super::ce::with_clock_wait(|_,_,_|c2::observe::measure_with_attempts(&mut Io(Registers(self.base)),|attempt,m| {
+                    crate::serial_println!("GT710_CLOCK_COUNTER attempt={} khz={} cycles={} b0_ns={} b1_ns={} interval_ns={} bracket_ns={} accepted={}",attempt,m.khz,m.cycles,m.b0_ns,m.b1_ns,m.interval_ns,m.b0_ns+m.b1_ns,m.accepted);
+                }))?;
                 self.counter=Some(m.khz);
-                crate::serial_println!("GT710_CLOCK_COUNTER khz={} cycles={} interval_ns={} bracket_ns={} restored=true",m.khz,m.cycles,m.ptimer_ns,m.bracket_ns);
-                self.context("gpc-counter-readback",format!("actual={},expected={}",m.khz,self.target.gpc_khz.div_ceil(16)));
+                self.context("gpc-counter-readback",format!("actual={},expected={},cycles={},interval_ns={},bracket_ns={}",m.khz,self.target.gpc_khz.div_ceil(16),m.cycles,m.ptimer_ns,m.bracket_ns));
                 if !policy::within_one_percent(Ok(m.khz),self.target.gpc_khz.div_ceil(16)) {return Err("GPC counter more than 1 percent off");}
                 self.cool()?;
                 self.context("final-display",String::from("raw=GT710_C5F_HEALTH"));

@@ -241,6 +241,25 @@ fn delayed_endpoint_retries_with_a_fresh_verified_window() {
     assert_eq!(d.inner.regs,original);
 }
 #[test]
+fn counter_attempts_report_failed_and_accepted_windows_after_restore() {
+    let mut d=bracket_replay();
+    let mut attempts=Vec::new();
+    let m=c2::observe::measure_with_attempts(&mut d, |number, attempt| attempts.push((number,attempt))).unwrap();
+    assert_eq!(attempts.len(),2);
+    assert_eq!((attempts[0].0,attempts[0].1.accepted),(1,false));
+    assert!(attempts[0].1.b0_ns + attempts[0].1.b1_ns > attempts[0].1.interval_ns / 100);
+    assert_eq!((attempts[1].0,attempts[1].1.accepted),(2,true));
+    assert_eq!(attempts[1].1.khz,m.khz);
+    assert_eq!(u64::from(attempts[1].1.khz), u64::from(attempts[1].1.cycles) * 1_000_000 / attempts[1].1.interval_ns);
+    assert!(attempts[1].1.b0_ns + attempts[1].1.b1_ns <= attempts[1].1.interval_ns / 100);
+    let mut d=bracket_replay();
+    d.max_stalls=3;
+    attempts.clear();
+    assert!(c2::observe::measure_with_attempts(&mut d, |number, attempt| attempts.push((number,attempt))).is_err());
+    assert_eq!(attempts.len(),3);
+    assert!(attempts.iter().all(|(_, attempt)| !attempt.accepted));
+}
+#[test]
 fn repeated_wide_endpoints_remain_failures() {
     for delay in [2_900_000,185_000] {
         let mut d=bracket_replay();

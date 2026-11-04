@@ -94,7 +94,7 @@ class ClockReport(unittest.TestCase):
         startup = 'GT710_CLOCK_STARTUP full=true gpc_khz=1306451 gpc_counter_khz=81650 memory_khz=900001 temperature_c=34 status=ok\n'
         self.assertTrue(API['counter_evidence'](bad + good + startup))
         for line in (good.replace('b0_ns=1000', 'b0_ns=210000').replace('bracket_ns=2000', 'bracket_ns=211000'),
-                     good.replace('khz=81650', 'khz=50000'), good.replace('attempt=2 ', '')):
+                     good.replace('khz=81650', 'khz=50000').replace('cycles=1633000', 'cycles=1000000'), good.replace('attempt=2 ', '')):
             with self.assertRaises(ValueError): API['counter_evidence'](bad + line + startup)
         self.assertFalse(API['counter_evidence'](bad + startup.replace('full=true', 'full=false')))
         with self.assertRaises(ValueError): API['counter_evidence'](bad + startup)

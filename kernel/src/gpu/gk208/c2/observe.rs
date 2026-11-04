@@ -164,6 +164,15 @@ pub trait CounterAccess: Access {
 pub fn counter_snapshot(io: &mut impl Access) -> [(u32, u32); 5] {
     [0x18009c, 0x180044, 0x1800a8, 0x9400, 0x9410].map(|a| (a, io.read(a)))
 }
+#[derive(Clone, Copy)]
+pub struct Attempt {
+    pub khz: u32,
+    pub cycles: u32,
+    pub b0_ns: u64,
+    pub b1_ns: u64,
+    pub interval_ns: u64,
+    pub accepted: bool,
+}
 pub struct Measurement {
     pub khz: u32,
     pub cycles: u32,
@@ -189,6 +198,10 @@ fn point(io: &mut impl CounterAccess) -> Result<(u64, u32, u64), &'static str> {
     })
 }
 pub fn measure(io: &mut impl CounterAccess) -> Result<Measurement, &'static str> {
+    measure_with_attempts(io, |_, _| {})
+}
+pub fn measure_with_attempts(io: &mut impl CounterAccess, mut report: impl FnMut(usize, Attempt)) -> Result<Measurement, &'static str> {
+    let mut attempts = [None; 3];
     // MIT nouveau pm/gf100.c:175-180 identifies the PM master bit.
     // mc/nv04.c:40-45 enables a masked unit, followed by a posted read.
     // GK208 mc/gk20a.c uses that device callback; no separate PM clock-gating
@@ -209,7 +222,7 @@ pub fn measure(io: &mut impl CounterAccess) -> Result<Measurement, &'static str>
         // Do not attempt to restore them by writing them into the counter.
         Err("GPC counter has no PRI response after PM enable")
     } else {
-        measure_enabled(io)
+        measure_enabled(io, &mut attempts)
     };
     // Counter cleanup completes inside measure_enabled before PM is restored.
     io.write(0x200, pmc);
@@ -217,11 +230,14 @@ pub fn measure(io: &mut impl CounterAccess) -> Result<Measurement, &'static str>
     io.record("pm-restored", &[(0x200, restored)]);
     let counters = counter_snapshot(io);
     io.record("after-pm-restore", &counters);
+    for (index, attempt) in attempts.into_iter().enumerate() {
+        if let Some(attempt) = attempt { report(index + 1, attempt); }
+    }
     if restored != pmc { return Err("PM restore readback mismatch"); }
     result
 }
 
-fn measure_enabled(io: &mut impl CounterAccess) -> Result<Measurement, &'static str> {
+fn measure_enabled(io: &mut impl CounterAccess, attempts: &mut [Option<Attempt>; 3]) -> Result<Measurement, &'static str> {
     // envytools nvatiming.c:171-242, GPC[0] PRE with constant-true logic.
     // rnndb gf100_pcounter.xml: PRE_OP, CTRL and CTR_PRE_NEXT at 0x180000.
     // No signal routing, clocks or PTIMER configuration is written.
@@ -252,12 +268,13 @@ fn measure_enabled(io: &mut impl CounterAccess) -> Result<Measurement, &'static 
                 let cycles = c1.wrapping_sub(c0);
                 if cycles == 0 { return Err("GPC counter did not advance"); }
                 let bracket_ns = b0 + b1;
+                let khz = u32::try_from(u64::from(cycles) * 1_000_000 / elapsed)
+                    .map_err(|_| "measured clock overflow")?;
+                attempts[attempt] = Some(Attempt { khz, cycles, b0_ns: b0, b1_ns: b1, interval_ns: elapsed, accepted: bracket_ns <= elapsed / 100 });
                 if bracket_ns > elapsed / 100 {
                     if attempt == 2 { return Err("counter/PTIMER bracket exceeds 1 percent"); }
                     break;
                 }
-                let khz = u32::try_from(u64::from(cycles) * 1_000_000 / elapsed)
-                    .map_err(|_| "measured clock overflow")?;
                 return Ok(Measurement { khz, cycles, ptimer_ns: elapsed, bracket_ns });
             }
         }

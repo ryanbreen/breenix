@@ -30,7 +30,7 @@ class Watch(unittest.TestCase):
             return [state.observe(line) for line in lines][-1]
         self.assertIsNone(score([bad, good, startup]))
         for line in (good.replace('b0_ns=1000', 'b0_ns=210000').replace('bracket_ns=2000', 'bracket_ns=211000'),
-                     good.replace('khz=81650', 'khz=50000'), good.replace('attempt=2 ', '')):
+                     good.replace('khz=81650', 'khz=50000').replace('cycles=1633000', 'cycles=1000000'), good.replace('attempt=2 ', '')):
             self.assertIsNotNone(score([bad, line, startup]))
         self.assertIsNotNone(score([bad, startup]))
         self.assertIsNotNone(score([bad, startup.replace('full=true', 'full=false')]))
