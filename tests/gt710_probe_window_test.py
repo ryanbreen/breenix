@@ -3,7 +3,6 @@ from pathlib import Path
 import subprocess
 import sys
 import unittest
-from gt710_gr_live_unwind_test import item
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -11,7 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 class ProbeWindow(unittest.TestCase):
     def test_complete_window_gates_stage_records_on_real_after_snapshot(self):
         source = (ROOT / 'kernel/src/gpu/gk208/mod.rs').read_text()
-        block = item(source, '        if native::memory_requested()')
+        start = source.index('        if native::memory_requested()')
+        block = source[start:source.index('        if native::suite_requested()', start)]
         fixture = r'''
 use std::cell::RefCell;
 thread_local! { static EVENTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) }; }
@@ -21,13 +21,14 @@ pub struct Registers { pub hashes: usize, pub corrupt: bool, pub fail: bool }
 pub mod pci { pub struct Device; }
 pub struct ConsoleSurface;
 pub mod memory {
-    pub struct Object;
-    impl Object { pub fn guarded(&self) -> u64 { 8 } }
+    #[derive(Clone)] pub struct Range { pub size: u64 }
+    #[derive(Clone)] pub struct Object;
+    impl Object { pub fn guarded(&self) -> Range { Range { size: 8 } } }
     pub struct Stats { pub reserved: u64, pub charged: u64, pub free: u64 }
     pub struct Allocator;
     impl Allocator {
         pub fn stats(&self) -> Stats { Stats { reserved: 8, charged: 8, free: 16 } }
-        pub fn reserved(&self) -> &[u64] { &[8] }
+        pub fn reserved(&self) -> &[Range] { &[Range { size: 8 }] }
     }
     pub struct Layout { pub allocator: Allocator, pub objects: Vec<Object> }
 }
@@ -36,8 +37,8 @@ pub mod channel { pub fn elapsed(_: u64) -> u64 { 0 } }
 pub mod native { pub fn memory_requested() -> bool { true } }
 pub mod inventory {
     use super::*;
-    pub fn digest(r: &mut Registers, total: u64, ranges: &[u64]) -> Result<(u64,String), &'static str> {
-        assert_eq!(total, 32); assert_eq!(ranges, &[8,8]);
+    pub fn digest(r: &mut Registers, total: u64, ranges: &[memory::Range]) -> Result<(u64,String), &'static str> {
+        assert_eq!(total, 32); assert_eq!(ranges.iter().map(|r| r.size).collect::<Vec<_>>(), [8,8]);
         r.hashes += 1; event(format!("hash{}", r.hashes));
         Ok((16, if r.corrupt && r.hashes == 2 { "b" } else { "a" }.repeat(64)))
     }

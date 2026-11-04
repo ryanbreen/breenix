@@ -200,7 +200,7 @@ pub fn probe(
     device: &pci::Device,
     layout: &mut memory::Layout,
     console: &super::ConsoleSurface,
-) -> Result<(), &'static str> {
+) -> Result<String, &'static str> {
     let baseline = layout.allocator.stats();
     let total = baseline.reserved + baseline.charged + baseline.free;
     let seed = (timer::rdtsc() as u32) | 1;
@@ -223,10 +223,6 @@ pub fn probe(
     if faults_before != 0 {
         return Err("preexisting GPU fault before private VM probe");
     }
-    let mut protected = layout.allocator.reserved().to_vec();
-    protected.extend(layout.objects.iter().map(memory::Object::guarded));
-    crate::serial_println!("GT710_VM_STAGE reserved-before");
-    let (protected_bytes, protected_before) = digest(io.p.access(), total, &protected)?;
     let result = (|| {
         let mut backing = Vec::new();
         for _ in 0..3 {
@@ -548,11 +544,6 @@ pub fn probe(
         guard_after,
         lifetime,
     ) = result?;
-    crate::serial_println!("GT710_VM_STAGE reserved-after");
-    let (_, protected_after) = digest(io.p.access(), total, &protected)?;
-    if protected_before != protected_after {
-        return Err("VM probe changed reserved storage");
-    }
     let (faults_after, after_records) = vm::faults(&mut io);
     crate::serial_println!(
         "GT710_VM_FAULT phase=after mask={} records=[{}]",
@@ -578,8 +569,7 @@ pub fn probe(
         .iter()
         .map(|a| [a.range.start, a.range.size])
         .collect();
-    crate::serial_println!("GT710_VM {{\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"seed\":{},\"va\":{},\"limit\":{},\"baseline\":{},\"peak\":{},\"after\":{},\"backing\":{:?},\"backing_sha256\":[{}],\"view\":[{},{}],\"snapshots\":[{}],\"invalidations\":{},\"protected_bytes\":{},\"protected_before\":\"{}\",\"protected_after\":\"{}\",\"guard_bytes\":{},\"guard_before\":\"{}\",\"guard_after\":\"{}\",\"bar_before\":{},\"bar_after\":{},\"pramin_before\":{},\"pramin_after\":{},\"faults_before\":{},\"faults_after\":{},\"fault_records_before\":[{}],\"fault_records_after\":[{}],\"translation\":\"pending-m6\"}}",
+    Ok(format!("{{\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"seed\":{},\"va\":{},\"limit\":{},\"baseline\":{},\"peak\":{},\"after\":{},\"backing\":{:?},\"backing_sha256\":[{}],\"view\":[{},{}],\"snapshots\":[{}],\"invalidations\":{},\"guard_bytes\":{},\"guard_before\":\"{}\",\"guard_after\":\"{}\",\"bar_before\":{},\"bar_after\":{},\"pramin_before\":{},\"pramin_after\":{},\"faults_before\":{},\"faults_after\":{},\"fault_records_before\":[{}],\"fault_records_after\":[{}],\"translation\":\"pending-m6\"",
         device.bus,device.device,device.function,seed,VA,vm::LIMIT,stats(baseline),stats(peak),stats(after),ranges,backing_hashes.join(","),window.range.start,window.range.size,snapshots.join(","),invalidations,
-        protected_bytes,protected_before,protected_after,guard_bytes,guard_before,guard_after,bar_before,regs.read(0x1704),pramin_before,regs.read(0x1700),faults_before,faults_after,fault_json(&before_records),fault_json(&after_records));
-    Ok(())
+        guard_bytes,guard_before,guard_after,bar_before,regs.read(0x1704),pramin_before,regs.read(0x1700),faults_before,faults_after,fault_json(&before_records),fault_json(&after_records)))
 }

@@ -151,7 +151,7 @@ pub fn probe(
     device: &pci::Device,
     layout: &mut memory::Layout,
     console: &super::ConsoleSurface,
-) -> Result<(), &'static str> {
+) -> Result<String, &'static str> {
     let statuses = system_dma::translation_status()?;
     let pages = system_dma::Pages::new(3, &statuses)?;
     let seed = (timer::rdtsc() as u32) | 1;
@@ -213,10 +213,6 @@ pub fn probe(
     if faults_before != 0 {
         return Err("pending fault before CPU aperture test");
     }
-    let mut protected = layout.allocator.reserved().to_vec();
-    protected.extend(layout.objects.iter().map(memory::Object::guarded));
-    crate::serial_println!("GT710_APERTURE_STAGE reserved-before");
-    let (protected_bytes, protected_before) = digest(regs, total, &protected)?;
     let a = layout
         .allocator
         .allocate((1 << 20) + 4096, 4096, Kind::Probe)?;
@@ -363,10 +359,8 @@ pub fn probe(
         layout.objects[4].range.start + 0x3000,
     )?;
     result?;
-    crate::serial_println!("GT710_APERTURE_STAGE reserved-after");
-    let (_, protected_after) = digest(regs, total, &protected)?;
     let (_, guard_after) = digest(regs, total, &guards)?;
-    if protected_before != protected_after || guard_before != guard_after {
+    if guard_before != guard_after {
         return Err("CPU aperture changed protected VRAM");
     }
     let (faults_after, records_after) = fault(regs);
@@ -380,7 +374,6 @@ pub fn probe(
     if after != baseline {
         return Err("CPU aperture charge reclamation differs");
     }
-    crate::serial_println!("GT710_APERTURE {{\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"seed\":{},\"baseline\":{},\"peak\":{},\"after\":{},\"scratch\":[[{},{}],[{},{}]],\"tables\":[[{},{}],[{},{}]],\"views\":[{}],\"dma\":[{}],\"dma_bits\":40,\"dma_access\":\"pending-m6\",\"translation\":\"pending-m6\",\"dmar_status\":{:?},\"memory_types\":{:?},\"bar_before\":{:?},\"bar_after\":{:?},\"pramin_before\":{},\"pramin_after\":{},\"protected_bytes\":{},\"protected_before\":\"{}\",\"protected_after\":\"{}\",\"guard_bytes\":{},\"guard_before\":\"{}\",\"guard_after\":\"{}\",\"faults_before\":{},\"faults_after\":{},\"fault_records_before\":{},\"fault_records_after\":{}}}",
-        device.bus,device.device,device.function,seed,stats(baseline),stats(peak),stats(after),a.range.start,a.range.size,b.range.start,b.range.size,tables[0].range.start,tables[0].range.size,tables[1].range.start,tables[1].range.size,views.join(","),dma.join(","),statuses,types,before,[regs.read(0x1704),regs.read(0x1714)],pramin,regs.read(0x1700),protected_bytes,protected_before,protected_after,guard_bytes,guard_before,guard_after,faults_before,faults_after,records_before,records_after);
-    Ok(())
+    Ok(format!("{{\"schema\":1,\"bdf\":\"{:02x}:{:02x}.{}\",\"seed\":{},\"baseline\":{},\"peak\":{},\"after\":{},\"scratch\":[[{},{}],[{},{}]],\"tables\":[[{},{}],[{},{}]],\"views\":[{}],\"dma\":[{}],\"dma_bits\":40,\"dma_access\":\"pending-m6\",\"translation\":\"pending-m6\",\"dmar_status\":{:?},\"memory_types\":{:?},\"bar_before\":{:?},\"bar_after\":{:?},\"pramin_before\":{},\"pramin_after\":{},\"guard_bytes\":{},\"guard_before\":\"{}\",\"guard_after\":\"{}\",\"faults_before\":{},\"faults_after\":{},\"fault_records_before\":{},\"fault_records_after\":{}",
+        device.bus,device.device,device.function,seed,stats(baseline),stats(peak),stats(after),a.range.start,a.range.size,b.range.start,b.range.size,tables[0].range.start,tables[0].range.size,tables[1].range.start,tables[1].range.size,views.join(","),dma.join(","),statuses,types,before,[regs.read(0x1704),regs.read(0x1714)],pramin,regs.read(0x1700),guard_bytes,guard_before,guard_after,faults_before,faults_after,records_before,records_after))
 }
