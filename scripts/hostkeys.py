@@ -54,15 +54,17 @@ the server stops with the owned VM. The watcher sends RFB key events to its USB 
 Relative pointer motion remains a host limitation (docs/console/contract.md section 10).
 
 Usage:
-    hostkeys.py watch --serial FILE --backend SPEC [--log FILE] [--suite ID] [--parent PID]
+    hostkeys.py watch --serial FILE --backend SPEC [--log FILE] [--suite ID] [--parent PID] [--qmp-persistent]
     hostkeys.py send --backend SPEC CHORD
     hostkeys.py declare --backend SPEC      (the contract's hostkeys declaration string)
     hostkeys.py selftest-parse
 """
 import argparse
+from contextlib import ExitStack
 import json
 import os
 import re
+import select
 import socket
 import struct
 import subprocess
@@ -110,6 +112,49 @@ class QMPKeys:
 
     def __init__(self, path, hold_ms=100):
         self.path, self.hold_ms = path, hold_ms
+        self.persistent = False
+        self.session = self.stream = None
+
+    def connect(self):
+        if self.stream is not None:
+            return
+        with ExitStack() as opened:
+            sock = opened.enter_context(socket.socket(socket.AF_UNIX, socket.SOCK_STREAM))
+            sock.settimeout(0.8)
+            sock.connect(self.path)
+            stream = opened.enter_context(sock.makefile('rw'))
+            json.loads(stream.readline())
+            self.request(stream, 'qmp_capabilities', {})
+            self.session, self.stream = opened.pop_all(), stream
+
+    @staticmethod
+    def request(stream, command, arguments):
+        stream.write(json.dumps({'execute': command, 'arguments': arguments}) + '\n')
+        stream.flush()
+        while True:
+            reply = json.loads(stream.readline())
+            if 'error' in reply:
+                raise RuntimeError('QMP ' + command + ': ' + str(reply['error']))
+            if 'return' in reply:
+                return
+
+    def close(self):
+        session = self.session
+        self.session = self.stream = None
+        if session is not None:
+            session.close()
+
+    def execute(self, command, arguments):
+        try:
+            self.connect()
+            self.request(self.stream, command, arguments)
+        except Exception:
+            # A lost reply must not replay an input event that may have arrived.
+            self.close()
+            raise
+        finally:
+            if not self.persistent:
+                self.close()
 
     @classmethod
     def keys(cls, mods, key):
@@ -117,27 +162,8 @@ class QMPKeys:
 
     def send(self, mods, key):
         qcodes = [k['data'] for k in self.keys(mods, key)]
-        # One connection per chord: QEMU serves one QMP client at a time, and Vigil or a screen
-        # grab may want the socket between chords.
-        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        sock.settimeout(0.8)
-        try:
-            sock.connect(self.path)
-            stream = sock.makefile('rw')
-            json.loads(stream.readline())
-            for command, arguments in (('qmp_capabilities', {}),
-                                       ('send-key', {'keys': [{'type': 'qcode', 'data': q} for q in qcodes],
-                                                     'hold-time': self.hold_ms})):
-                stream.write(json.dumps({'execute': command, 'arguments': arguments}) + '\n')
-                stream.flush()
-                while True:
-                    reply = json.loads(stream.readline())
-                    if 'error' in reply:
-                        raise RuntimeError('QMP ' + command + ': ' + str(reply['error']))
-                    if 'return' in reply:
-                        break
-        finally:
-            sock.close()
+        self.execute('send-key', {'keys': [{'type': 'qcode', 'data': q} for q in qcodes],
+                                  'hold-time': self.hold_ms})
 
     def pointer(self, x, y, buttons, wheel, axes, width=32768, height=32768):
         if axes != 'absolute' or width < 2 or height < 2 or not (0 <= x < width and 0 <= y < height):
@@ -150,20 +176,7 @@ class QMPKeys:
         if wheel:
             events += [{'type': 'btn', 'data': {'button': 'wheel-up' if wheel > 0 else 'wheel-down', 'down': down}}
                        for down in (True, False)]
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(0.8)
-            sock.connect(self.path)
-            stream = sock.makefile('rw')
-            json.loads(stream.readline())
-            for command, args in (('qmp_capabilities', {}), ('input-send-event', {'events': events})):
-                stream.write(json.dumps({'execute': command, 'arguments': args}) + '\n')
-                stream.flush()
-                while True:
-                    reply = json.loads(stream.readline())
-                    if 'error' in reply:
-                        raise RuntimeError('QMP ' + command + ': ' + str(reply['error']))
-                    if 'return' in reply:
-                        break
+        self.execute('input-send-event', {'events': events})
 
 
 class ParallelsKeys:
@@ -523,6 +536,10 @@ def declaration(spec):
 
 def watch(args):
     keys = backend(args.backend)
+    if args.qmp_persistent:
+        if not isinstance(keys, QMPKeys):
+            raise ValueError('--qmp-persistent requires a private QMP backend')
+        keys.persistent = True
     out = open(args.log, 'a', buffering=1) if args.log else None
 
     def log(message):
@@ -532,24 +549,48 @@ def watch(args):
 
     watcher = Watcher(keys, args.backend.partition(':')[0], log, args.suite)
     offset = 0
-    while True:
-        if args.parent:
+    events = select.kqueue() if hasattr(select, 'kqueue') else None
+    try:
+        while True:
+            if args.parent:
+                try:
+                    os.kill(args.parent, 0)
+                except ProcessLookupError:
+                    return
+                except PermissionError:
+                    pass
+            if args.qmp_persistent:
+                try:
+                    # The launcher starts the watcher before QEMU creates its socket.
+                    # Negotiate while idle, rather than on a timed input request.
+                    keys.connect()
+                except OSError:
+                    pass
             try:
-                os.kill(args.parent, 0)
-            except ProcessLookupError:
-                return
-            except PermissionError:
-                pass
-        try:
-            with open(args.serial, 'rb') as f:
-                f.seek(offset)
-                data = f.read()
-            offset += len(data)
-            if data:
-                watcher.feed(data.decode(errors='replace'))
-        except FileNotFoundError:
-            pass
-        time.sleep(0.1)
+                with open(args.serial, 'rb') as f:
+                    if events:
+                        # Register before reading: an append between EOF and wait must wake us.
+                        events.control([select.kevent(f.fileno(), filter=select.KQ_FILTER_VNODE,
+                            flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                            fflags=select.KQ_NOTE_WRITE)], 0, 0)
+                    f.seek(offset)
+                    data = f.read()
+                    offset += len(data)
+                    if data:
+                        watcher.feed(data.decode(errors='replace'))
+                    if events:
+                        events.control(None, 1, 0.1)
+                    else:
+                        time.sleep(0.1)
+            except FileNotFoundError:
+                time.sleep(0.1)
+    finally:
+        if events:
+            events.close()
+        if isinstance(keys, QMPKeys):
+            keys.close()
+        if out:
+            out.close()
 
 
 def selftest_parse():
@@ -674,6 +715,8 @@ def main():
     w.add_argument('--log')
     w.add_argument('--suite')
     w.add_argument('--parent', type=int, help='exit when this process is gone')
+    w.add_argument('--qmp-persistent', action='store_true',
+                   help='keep a private QMP connection ready between input requests')
     s = sub.add_parser('send')
     s.add_argument('--backend', required=True)
     s.add_argument('chord')
