@@ -1655,6 +1655,15 @@ heading or progress track are shown without a START. DONE retains the final suit
 until another START. These are contract requirements; drawing and boot acceptance follow
 in later console status units.
 
+<!-- claim-lint:ok: Normative amendment B36a, coordinator redirect dated 2026-11-03 22:10 EST; not boot evidence. -->
+B36a: `panel/kernel-screens` compares restored captures exactly outside the heading
+rectangle above (y=1424..1472 at 2560x1600), using the console contract's heading
+rectangle on native rasters. The text grid, progress track, stage row and remaining
+panel pixels stay exact. The heading's elapsed field may advance across giveback;
+restoring a stale clock to satisfy equality is incorrect. Both headings must contain
+non-uniform heading text on the panel background, with known counts matching the
+suite's captured serial state. The case checks that prefix against the font's samples.
+
 ### 23.8 Agreement
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->

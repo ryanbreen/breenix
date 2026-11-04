@@ -98,3 +98,14 @@ B36 (2026-11-03; coordinator, console suite status panel amendment). Supersede B
    coordinator amendment, not a new operator instruction or implementation acceptance.
    The fetched rulings file ends at B13; B35's original text is absent, so this amendment
    does not reconstruct other B35 provisions referenced elsewhere.
+
+B36a (2026-11-03 10:10 PM EST; coordinator, console-status ledger redirect).
+   The live elapsed heading introduced by B36 is incompatible with comparing the
+   whole screen across display givebacks. Amend `panel/kernel-screens` to keep exact
+   comparison everywhere except B36's heading band, including its native-raster
+   equivalent. The text grid, ribbon and progress track stay exact. Both headings
+   must be drawn as non-uniform heading text on the panel background, and known
+   counts must match the current suite state. Do not restore a stale elapsed clock.
+   Check first with changed elapsed fields accepted and changed text-grid, ribbon
+   and progress-track pixels rejected. Run one ARM64 and one native BreenGL suite;
+   the prior console passes stand for a case-and-contract-only fix.
