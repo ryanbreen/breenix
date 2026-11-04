@@ -812,6 +812,10 @@ class Driver:
                        redirectedTo=self.args.serve_as or None)
         else:
             m.unstage()
+        try:
+            metal_disk.gt710_upload.check_ready(self.dir, self.id, self.site)
+        except ValueError as error:
+            raise Finish(m.EXIT_DELIVERY, str(error)) from error
         log = m.STATE / 'http.jsonl'
         self.http_offset = log.stat().st_size if log.exists() else 0
 

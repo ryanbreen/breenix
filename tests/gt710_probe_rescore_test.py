@@ -92,6 +92,107 @@ class ProbeRescore(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, '330 s'):
                 API['resources_console'](capture['serial'], capture['boot'], events)
 
+    def test_single_capture_replay_refuses_ignored_step_and_companion_options(self):
+        options = [('breengel-fronts',), ('breengel-composition',), ('breengel-stage',),
+                   ('breengel-full',), ('resources',), ('alpha',), ('shapes',),
+                   ('isolation',), ('presentation',), ('performance',),
+                   ('gpu-boot', '20261104T061608Z-metal'),
+                   ('core-boot', '20261104T061608Z-metal'),
+                   ('acceptance-directory', '/unused'), ('boot', '20261104T061608Z-metal'),
+                   ('check-manifest', '/unused'), ('pr', '1')]
+        for option in options:
+            argv = ['gt710-suite', '--capture-directory', '/unused', '--sha', SHA,
+                    '--' + option[0], *option[1:]]
+            with self.subTest(option=option), patch.object(sys, 'argv', argv), \
+                    patch('subprocess.check_output', return_value=''), \
+                    patch.dict(API['main'].__globals__, rescore_suite_capture=lambda *a: 0), \
+                    redirect_stdout(StringIO()), patch('sys.stderr', new_callable=StringIO):
+                with self.assertRaises(SystemExit) as error:
+                    API['main']()
+                self.assertEqual(error.exception.code, 2)
+
+    def test_console_replay_names_its_scope_and_missing_gpu_suite(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            boot, _ = self.capture(directory)
+            boot.update(mode='suite', suite='console', suites=['console'])
+            (directory / 'run.json').write_text(json.dumps(boot))
+            capture = dict(boot=boot, serial='fixture', events=[], exit_status=0)
+            with patch('subprocess.run'), patch('subprocess.check_output', return_value=b''), \
+                    patch.dict(API['rescore_suite_capture'].__globals__,
+                               completed_suite_capture=lambda *a: capture,
+                               resources_console=lambda *a: 300000,
+                               capture_categories=lambda *a: []), redirect_stdout(StringIO()):
+                self.assertEqual(API['rescore_suite_capture'](directory, SHA, HEAD), 0)
+            report = json.loads((directory / 'suite-acceptance.json').read_text())
+            self.assertEqual(report['scope'], 'console-suite-and-startup')
+            self.assertIn('gpu-suite', report['notMeasured'])
+
+    def watch_replay(self, directory, gpu=None, failed_suite=None):
+        def score(path, sha, head):
+            suite = 'console' if path == directory else 'gpu'
+            report = dict(boot='20261104T060703Z-metal' if suite == 'console' else '20261104T061608Z-metal',
+                          commit=sha, toolsCommit=sha, scorerCommit=head,
+                          build=dict(commit=sha, profile='production', features=[]),
+                          scope=suite + '-suite-and-startup', passed=suite != failed_suite,
+                          checks=[dict(id='graphics/channel', result='PASS', reason='')])
+            report['consoleHandoffToDoneMS' if suite == 'console' else 'gpuElapsedMS'] = 300000
+            (path / 'suite-acceptance.json').write_text(json.dumps(report))
+            return int(not report['passed'])
+        with patch.dict(API['rescore_watch_acceptance'].__globals__, rescore_suite_capture=score), \
+                redirect_stdout(StringIO()):
+            return API['rescore_watch_acceptance'](directory, gpu, SHA, HEAD)
+
+    def test_watch_acceptance_cannot_pass_with_only_console_startup_checks(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self.assertEqual(self.watch_replay(directory), 1)
+            proof = json.loads((directory / 'watch-acceptance.json').read_text())
+            self.assertFalse(proof['passed'])
+            self.assertTrue(proof['captures']['console']['passed'])
+            self.assertIn('GPU-suite capture', proof['errors']['gpu'])
+
+    def test_watch_acceptance_requires_both_suite_verdicts_and_preserves_identities(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            gpu = directory / 'gpu'
+            gpu.mkdir()
+            for failed in (None, 'console', 'gpu'):
+                with self.subTest(failed=failed):
+                    self.assertEqual(self.watch_replay(directory, gpu, failed), int(failed is not None))
+                    proof = json.loads((directory / 'watch-acceptance.json').read_text())
+                    self.assertEqual(proof['passed'], failed is None)
+                    self.assertEqual(set(proof['captures']), {'console', 'gpu'})
+                    for capture in proof['captures'].values():
+                        self.assertEqual(capture['commit'], SHA)
+                        self.assertEqual(capture['toolsCommit'], SHA)
+                        self.assertEqual(capture['build']['commit'], SHA)
+                        self.assertEqual(capture['scorerCommit'], HEAD)
+
+    def test_watch_acceptance_rejects_a_companion_from_another_runtime(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            gpu = directory / 'gpu'
+            gpu.mkdir()
+            boot, _ = self.capture(gpu)
+            boot.update(mode='suite', suite='gpu', suites=['gpu'], commit=HEAD, toolsCommit=HEAD,
+                        build=dict(commit=HEAD, profile='production', features=[]))
+            (gpu / 'run.json').write_text(json.dumps(boot))
+            # Use the real capture identity check; only the unrelated console
+            # leg and git transport are substituted.
+            rescore = API['rescore_suite_capture']
+            def score(path, sha, head):
+                if path == directory:
+                    self.watch_replay(directory)
+                    return 0
+                return rescore(path, sha, head)
+            with patch('subprocess.run'), patch('subprocess.check_output', return_value=b''), \
+                    patch.dict(rescore.__globals__, rescore_suite_capture=score), redirect_stdout(StringIO()):
+                self.assertEqual(API['rescore_watch_acceptance'](directory, gpu, SHA, HEAD), 1)
+            proof = json.loads((directory / 'watch-acceptance.json').read_text())
+            self.assertFalse(proof['passed'])
+            self.assertIn('gpu', proof['errors'])
+
     def test_imported_identity_rejects_conflicts_and_incomplete_driver_manifest(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
