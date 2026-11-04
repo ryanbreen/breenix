@@ -498,8 +498,16 @@ impl Supervisor {
                                         || line.starts_with(b"[bwm] first frame read back:")
                                         || line.starts_with(b"[bwm] desktop fills the scanout:")
                                         || line.starts_with(b"[bwm] composited client frame")
+                                        || line.starts_with(b"[bwm] Discovered window")
+                                        || line.starts_with(b"[bwm] ERROR:")
+                                        || line.starts_with(b"[bwm] first frame check FAILED:")
+                                        || line.starts_with(b"[bwm] desktop fill check FAILED:")
+                                        || line.starts_with(b"[bwm] GPU frame failed:")
+                                        || line.starts_with(b"[bwm] compositor acknowledgment failed:")
+                                        || line.starts_with(b"[bwm] display held by another process:")
+                                        || line.starts_with(b"[bwm] display back:")
                                         || line.starts_with(b"VALUE bwm-check-us "));
-                                if output.stream == "stdout" && (readiness || oracle || desktop) {
+                                if (output.stream == "stdout" && (readiness || oracle)) || desktop {
                                     if let Ok(text) = core::str::from_utf8(line) {
                                         print!("{}\n", text);
                                     }
