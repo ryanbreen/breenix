@@ -162,6 +162,19 @@ impl Target {
         if !d.matches_fence(fence) {
             return Err(EIO);
         }
+        if b.fence == 0 {
+            // The private screen has no userspace PRESENT. After its flush
+            // completes, publish a fence in its context's sequence, rather than
+            // exposing the raw device fence or claiming an unfenced binding.
+            b.fence = with_core(|c| -> Result<u64, i64> {
+                let ctx = c.contexts.get_mut(&self.context).ok_or(EIO)?;
+                ctx.issued += 1;
+                let n = ctx.issued;
+                ctx.early.insert(n);
+                while ctx.early.remove(&(ctx.done_upto + 1)) { ctx.done_upto += 1; }
+                Ok((u64::from(ctx.ns) << 32) | u64::from(n))
+            }).ok_or(ENODEV)??;
+        }
         b.answer = d.answer;
         display::restored(b);
         Ok(())

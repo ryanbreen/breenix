@@ -6010,12 +6010,10 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
             writer:last.map(|l| (l.fence,l.kind,l.answer)),
             transfer_fence,answer:transfer_answer,
         });
-        // GPU READBACK exposes the native copy completion; window scanout
-        // records reserve these bytes under the BreenGL backend-6 row.
-        if !window {
-            put32(&mut rec, record::COPY_KIND, abi::gk208::TRANSFER_RELEASE);
-            put32(&mut rec, record::COPY_STATUS, transfer_answer);
-        }
+        // Both GPU and window observations carry the completed CE copy into
+        // staging (gpu.md section 1.8 and BreenGL section 20.2, W4a).
+        put32(&mut rec, record::COPY_KIND, abi::gk208::TRANSFER_RELEASE);
+        put32(&mut rec, record::COPY_STATUS, transfer_answer);
     } else if dev::is_svga() {
         // The host copy into the readback surface answered as the readback did: both run
         // in the same command buffer, whose status is the answer.
