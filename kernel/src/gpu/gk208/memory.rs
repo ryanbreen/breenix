@@ -267,15 +267,21 @@ impl<'a, A: Access> Pramin<'a, A> {
         self.access.with_pramin(|access| {
           let mut address=range.start;
           while address<end {
+            // The selector is owned for this entire transaction. Re-select at
+            // each bank boundary; the selection is local to this lock hold.
+            let reg=Self::window(access,total,address)?;
+            let span_end=end.min((address & !0xfffff)+0x100000);
+            let start=address;
+            while address<span_end {
+            let reg=reg+(address-start) as usize;
             if address%8==0 && end-address>=8 {
                 // Eight-byte alignment also keeps the pair in one 1 MiB bank.
-                let reg=Self::window(access,total,address)?;
                 bytes.extend_from_slice(&access.read_pair(reg).to_le_bytes());
                 address+=8;
             } else {
-                let reg=Self::window(access,total,address)?;
                 bytes.extend_from_slice(&access.read(reg).to_le_bytes());
                 address+=4;
+            }
             }
           }
           Ok(bytes)
