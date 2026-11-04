@@ -91,6 +91,22 @@ pub fn capture_bytes<'a>(bytes: impl IntoIterator<Item = &'a u8>) {
     }
 }
 
+/// Capture the native UART producer stream, keeping terminal text out of kmsg.
+/// The same exclusion as kernel log capture serializes the ribbon's byte producer
+/// across COM1 and the separate log UART. Call with interrupts masked.
+#[cfg(target_arch = "x86_64")]
+pub fn capture_serial_output<'a>(writer: crate::serial_writer::Writer,
+    bytes: impl IntoIterator<Item = &'a u8>) {
+    use crate::serial_writer::Writer;
+    match writer {
+        Writer::Kernel => capture_bytes(bytes),
+        Writer::Tty | Writer::Console => capturing(|| {
+            bytes.into_iter().copied().for_each(crate::boot_ribbon::byte);
+        }),
+        Writer::Evidence => {},
+    }
+}
+
 /// Capture the line `args` formats to, uninterrupted by another record: the
 /// x86 log's records, as they enter the ring the log UART is written from,
 /// so `/proc/kmsg` has a record as soon as its call returns, as on ARM64.
