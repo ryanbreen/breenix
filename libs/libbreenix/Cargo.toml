@@ -12,6 +12,10 @@ license = "PolyForm-Noncommercial-1.0.0"
 [lib]
 crate-type = ["rlib"]
 
+[[test]]
+name = "observation_rows"
+path = "../../tests/observation_rows.rs"
+
 [features]
 default = []
 std = []
