@@ -1,0 +1,94 @@
+GT710_CLOCK_FALLBACK stage=Verify check=gpc-counter values=target_khz=81688 reason=counter/PTIMER bracket exceeds 1 percent gpc_restore=ok memory_restore=ok
+GT710_CLOCK_STARTUP full=false gpc_khz=810000 gpc_counter_khz=50625 memory_khz=405000 temperature_c=30 status=counter/PTIMER bracket exceeds 1 percent
+SUITE console MEMORY before free=2030276 heap_free_kb=57764 user_stacks=16 user_pages=529 page_tables=53 page_cache=0 kernel_stacks=816 buffers=4277 other=16498 receipts=0 settle_ms=202
+SUITE console CASE screen/tty1-on-screen PASS ms=1675
+SUITE console CASE screen/readback-identical PASS ms=922
+SUITE console CASE screen/scanout-bound PASS ms=893
+SUITE console CASE screen/font-oracle PASS ms=897
+SUITE console CASE screen/size-class PASS ms=886
+SUITE console CASE screen/scanout-grid PASS ms=886
+SUITE console CASE screen/cursor-drawn PASS ms=1631
+SUITE console CASE screen/log-on-tty1 PASS ms=932
+SUITE console CASE screen/log-quiet-in-session PASS ms=1293
+SUITE console CASE screen/display-taken-stops-drawing FAIL ms=0 msg=take display: ENODEV q=0 r=0 d=0 changed=0 maxns=0
+SUITE console CASE screen/display-released-redraws FAIL ms=871 msg=take display: ENODEV q=0 r=0 d=0 changed=0 maxns=0
+SUITE console CASE emulation/sgr-colours FAIL ms=1712 msg=take display: ENODEV q=0 r=0 d=0 changed=0 maxns=0
+SUITE console CASE emulation/sgr-256-mapped FAIL ms=1462 msg=take display: ENODEV q=0 r=0 d=0 changed=0 maxns=0
+SUITE console CASE emulation/bold-reverse-underline FAIL ms=2858 msg=take display: ENODEV q=0 r=0 d=0 changed=0 maxns=0
+SUITE console CASE emulation/utf8-latin1 PASS ms=1426
+SUITE console CASE emulation/utf8-replacement PASS ms=1383
+SUITE console CASE emulation/box-drawing FAIL ms=2074 msg=take display: ENODEV q=0 r=0 d=0 changed=0 maxns=0
+SUITE console CASE emulation/scroll-region PASS ms=2173
+SUITE console CASE emulation/insert-delete-line PASS ms=2085
+SUITE console CASE emulation/insert-delete-char PASS ms=1382
+SUITE console CASE emulation/save-restore-cursor FAIL ms=1410 msg=take display: ENODEV q=0 r=0 d=0 changed=0 maxns=0
+SUITE console CASE emulation/cursor-hidden FAIL ms=1451 msg=take display: ENODEV q=0 r=0 d=0 changed=0 maxns=0
+SUITE console CASE emulation/autowrap-off PASS ms=1474
+SUITE console CASE emulation/tab-stops PASS ms=1382
+SUITE console CASE emulation/alt-screen FAIL ms=2833 msg=take display: ENODEV q=0 r=0 d=0 changed=0 maxns=0
+SUITE console CASE emulation/full-reset FAIL ms=1431 msg=take display: ENODEV q=0 r=0 d=0 changed=0 maxns=0
+SUITE console CASE emulation/cursor-report PASS ms=735
+SUITE console CASE vt-devices/six-terminals PASS ms=16
+SUITE console CASE vt-devices/tty1-is-console PASS ms=0
+SUITE console CASE vt-devices/tty0-is-foreground PASS ms=2728
+SUITE console CASE vt-devices/dev-tty-is-ctty PASS ms=11
+SUITE console CASE vt-devices/dev-tty-enxio PASS ms=10
+SUITE console CASE vt-devices/termios-per-vt PASS ms=0
+SUITE console CASE vt-devices/ctty-per-vt PASS ms=20
+SUITE console CASE vt-devices/winsize-per-vt PASS ms=1355
+SUITE console CASE vt-devices/vcs-text PASS ms=0
+SUITE console CASE vt-devices/vcsa-attributes PASS ms=0
+SUITE console CASE vt-devices/background-output-retained PASS ms=2154
+SUITE console CASE vt-devices/background-process-runs PASS ms=311
+SUITE console CASE vt-devices/background-read-waits PASS ms=2987
+SUITE console CASE vt-devices/switch-sends-no-signal PASS ms=4406
+SUITE console CASE vt-switch/activate PASS ms=2750
+SUITE console CASE vt-switch/activate-enxio PASS ms=0
+SUITE console CASE vt-switch/waitactive PASS ms=2192
+SUITE console CASE vt-switch/waitactive-after-draw PASS ms=2781
+SUITE console CASE vt-switch/waitactive-eintr PASS ms=213
+SUITE console CASE vt-switch/getstate PASS ms=0
+SUITE console CASE vt-switch/openqry PASS ms=0
+SUITE console CASE vt-switch/kdsetmode-graphics PASS ms=3261
+SUITE console CASE vt-switch/kd-owner-exit PASS ms=3674
+SUITE console CASE vt-switch/graphics-vt-refuses-switch FAIL ms=11 msg=child: take display: ENODEV q=4 r=4 d=4 changed=0 maxns=1042568
+SUITE console CASE vt-switch/vt-process-release FAIL ms=4681 msg=timed out waiting for the owner's release signal q=4 r=4 d=4 changed=0 maxns=1042568
+SUITE console CASE vt-switch/vt-process-acquire PASS ms=3292
+SUITE console CASE vt-switch/vt-process-refuse PASS ms=2207
+SUITE console CASE vt-switch/vt-process-release-timeout PASS ms=4709
+SUITE console CASE vt-switch/vt-process-owner-exit PASS ms=3262
+SUITE console CASE vt-switch/vt-process-competing PASS ms=3291
+SUITE console CASE vt-switch/vt-process-cancel PASS ms=2231
+SUITE console CASE vt-switch/setmode-busy PASS ms=22
+SUITE console CASE vt-switch/reldisp-errors PASS ms=10
+SUITE console CASE vt-switch/eperm-unprivileged PASS ms=11
+SUITE console CASE vt-switch/switch-readback PASS ms=2762
+SUITE console CASE vt-switch/switch-log-digest PASS ms=3399
+SUITE console CASE scrollback/history-kept PASS ms=4592
+SUITE console CASE scrollback/history-per-vt PASS ms=5087
+SUITE console CASE scrollback/survives-switch PASS ms=5810
+SUITE console CASE scrollback/view-holds-on-output PASS ms=4765
+SUITE console CASE scrollback/key-returns-live PASS ms=4205
+SUITE console CASE chvt/chvt-switches PASS ms=2827
+SUITE console CASE chvt/chvt-waits PASS ms=3878
+SUITE console CASE chvt/chvt-bad-number PASS ms=83
+SUITE console CASE getty/prompt-each-vt FAIL ms=10002 msg=timed out after 10000 ms
+SUITE console CASE getty/wrong-password-refused PASS ms=6197
+SUITE console CASE getty/login-on-vt PASS ms=6212
+SUITE console CASE getty/root-login-on-vt PASS ms=5974
+SUITE console CASE getty/logout-reacquires PASS ms=12041
+SUITE console CASE getty/independent-sessions PASS ms=11066
+SUITE console CASE keys/alt-fn FAIL ms=10001 msg=timed out after 10000 ms
+SUITE console CASE keys/ctrl-alt-fn FAIL ms=4112 msg=no line [console] foreground tty6 (key ctrl-alt-f6) q=314 r=314 d=314 changed=0 maxns=33794642
+SUITE console CASE keys/ctrl-alt-fn-graphics FAIL ms=3005 msg=timed out waiting for the display owner q=314 r=314 d=314 changed=0 maxns=33794642
+SUITE console CASE keys/alt-fn-graphics PASS ms=2383
+SUITE console CASE keys/alt-left-right-wrap PASS ms=8420
+SUITE console CASE keys/alt-f7-ignored PASS ms=864
+SUITE console CASE keys/foreground-owns-input PASS ms=2658
+SUITE console CASE keys/ctrl-c-foreground-only PASS ms=2243
+SUITE console CASE keys/caps-per-vt PASS ms=2963
+SUITE console CASE keys/shift-pageup PASS ms=5441
+SUITE console CASE keys/report-joins-typed-line PASS ms=2276
+SUITE console DONE passed=72 failed=16 skipped=0 total=88
+SUITE console MEMORY after free=2030250 heap_free_kb=57802 user_stacks=14 user_pages=557 page_tables=53 page_cache=0 kernel_stacks=816 buffers=4277 other=16498 receipts=0 settle_ms=204
+SUITE console MEMORY reclaimed=PASS free_before=2030276 free_after=2030250 allowance=48
