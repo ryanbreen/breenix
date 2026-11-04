@@ -54,6 +54,7 @@ impl Screen {
 }
 #[test]
 fn panel_stays_on_tty1_and_background_scanout_and_shadow_stay_identical() {
+    assert_eq!(vt::foreground(),1);
     let layout=Layout { width:1280,height:800,bytes_per_pixel:4,stride_bytes:1280*4,
         reserved:255,bgr:true,font:Font::for_display(1280,800) };
     let mut screen=Screen { display:Display { pixels:RefCell::new(vec![0;layout.bytes()]),layout },layout,
@@ -64,13 +65,13 @@ fn panel_stays_on_tty1_and_background_scanout_and_shadow_stay_identical() {
         cursor_visible:false,cells:vec![grid::BLANK;layout.rows()*layout.cols()] };
     screen.pass(&snapshot);
     let top=layout.panel().unwrap().panel.y*layout.stride_bytes;
-    assert!(screen.shadow[top..].chunks_exact(4).any(|p| p[..3]!=status::BACKGROUND));
+    assert!(screen.shadow[top..].chunks_exact(4).any(|p| !layout.pixel_is(p,raster::PALETTE[0])));
     assert_eq!(screen.shadow,*screen.display.pixels.borrow());
     for fg in [1,5] {
         vt::FG.store(fg+1,Ordering::Release); snapshot.fg=fg; screen.invalidate();
         time::NOW.fetch_add(1000,Ordering::Release); screen.pass(&snapshot);
         let baseline=screen.display.pixels.borrow().clone();
-        assert!(baseline[top..].chunks_exact(4).all(|p| p[..3]==status::BACKGROUND),"tty1 panel painted on tty{}",fg+1);
+        assert!(baseline[top..].chunks_exact(4).all(|p| layout.pixel_is(p,raster::PALETTE[0])),"tty1 panel painted on tty{}",fg+1);
         time::NOW.fetch_add(1000,Ordering::Release); screen.pass(&snapshot);
         assert_eq!(baseline,*screen.display.pixels.borrow(),"background panel changed the scanout");
         assert_eq!(baseline,screen.shadow,"switch digest shadow changed after publication");
@@ -79,8 +80,8 @@ fn panel_stays_on_tty1_and_background_scanout_and_shadow_stay_identical() {
     let baseline=screen.display.pixels.borrow().clone();
     ALLOWED.store(false,Ordering::Release); time::NOW.fetch_add(1000,Ordering::Release); screen.pass(&snapshot);
     assert_eq!(baseline,*screen.display.pixels.borrow(),"panel painted while display was owned");
+    assert_eq!(baseline,screen.shadow,"unpublished panel changed the shadow while display was owned");
     ALLOWED.store(true,Ordering::Release); screen.invalidate(); screen.pass(&snapshot);
-    assert!(screen.shadow[top..].chunks_exact(4).any(|p| p[..3]!=status::BACKGROUND));
+    assert!(screen.shadow[top..].chunks_exact(4).any(|p| !layout.pixel_is(p,raster::PALETTE[0])));
     assert_eq!(screen.shadow,*screen.display.pixels.borrow());
-    let _ = vt::foreground();
 }
