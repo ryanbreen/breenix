@@ -234,6 +234,13 @@ class EffortTargetGuardTest(unittest.TestCase):
         self.git('push', '-q', 'origin', 'lead/contaminated')
         self.assertIn('main-path effort work cannot run on metal', self.policy(mixed, 'x86-metal').stderr)
 
+    def test_window_manager_metal_lane_is_admitted(self):
+        definition = json.loads((self.repo / 'docs/efforts/path.json').read_text())
+        effort = next(e for e in definition['efforts'] if e['id'] == 'window-manager')
+        self.assertIn('x86-metal', effort['targets'])
+        lane = self.metal_lane('metal-wm/21-1')
+        self.assertEqual(self.policy(lane, 'x86-metal').returncode, 0)
+
     def test_main_path_lane_cannot_hide_on_metal_first_parent(self):
         name = 'metal-bring-up/contaminated'
         self.metal_lane(name, 'breengel/window')
