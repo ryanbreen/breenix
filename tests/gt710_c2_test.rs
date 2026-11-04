@@ -141,6 +141,58 @@ impl c2::observe::CounterAccess for Counter {
     fn monotonic_ns(&mut self)->u64 {self.ns}
     fn record(&mut self,stage:&str,raw:&[(u32,u32)]) {self.records.push((stage.into(),raw.to_vec()));}
 }
+struct ScopedCounter {
+    inner: Counter,
+    sampling: bool,
+    scoped: bool,
+    endpoints: Vec<Vec<u32>>,
+}
+impl Access for ScopedCounter {
+    fn read(&mut self, a:u32)->u32 {
+        if self.sampling {
+            assert!(self.scoped, "sampling read outside endpoint scope");
+            self.endpoints.last_mut().unwrap().push(a);
+        }
+        self.inner.read(a)
+    }
+    fn write(&mut self,a:u32,v:u32) {
+        assert!(!self.scoped, "write inside endpoint scope");
+        self.sampling=false;
+        self.inner.write(a,v);
+    }
+    fn wait(&mut self,a:u32,m:u32,v:u32)->Result<(),&'static str> {
+        assert!(!self.scoped, "wait inside endpoint scope");
+        self.inner.wait(a,m,v)
+    }
+}
+impl c2::observe::CounterAccess for ScopedCounter {
+    fn monotonic_ns(&mut self)->u64 {
+        assert!(!self.scoped, "time polling inside endpoint scope");
+        self.inner.monotonic_ns()
+    }
+    fn record(&mut self,stage:&str,raw:&[(u32,u32)]) {
+        assert!(!self.scoped, "record inside endpoint scope");
+        self.inner.record(stage,raw);
+        if stage=="configured" {self.sampling=true;}
+    }
+    fn endpoint_scope<R>(&mut self, f:impl FnOnce(&mut Self)->R)->R {
+        assert!(!self.scoped);
+        self.scoped=true;
+        self.endpoints.push(Vec::new());
+        let result=f(self);
+        self.scoped=false;
+        result
+    }
+}
+#[test]
+fn each_counter_point_has_its_own_read_only_endpoint_scope() {
+    let mut d=ScopedCounter {inner:bracket_replay().inner,sampling:false,scoped:false,endpoints:Vec::new()};
+    c2::observe::measure(&mut d).unwrap();
+    assert!(d.endpoints.len()>=2);
+    for endpoint in &d.endpoints {
+        assert_eq!(endpoint, &[0x9410,0x9400,0x9410,0x1800a8,0x9410,0x9400,0x9410]);
+    }
+}
 // Model the observed target clock and a delayed final PTIMER read. The record
 // reports the rejection, while the endpoint stall is the replay hypothesis.
 struct BracketReplay { inner: Counter, sampling: bool, first: Option<u64>, stalls: u32, max_stalls: u32, delay: u64 }
