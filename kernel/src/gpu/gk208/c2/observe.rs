@@ -237,22 +237,28 @@ fn measure_enabled(io: &mut impl CounterAccess) -> Result<Measurement, &'static 
             return Err("GPC counter lost PRI response during setup");
         }
         let start = io.monotonic_ns();
-        let (t0, c0, b0) = point(io)?;
-        loop {
-            if io.monotonic_ns().saturating_sub(start) >= 100_000_000 {
-                return Err("GPC counter/PTIMER timeout");
+        for attempt in 0..3 {
+            let (t0, c0, b0) = point(io)?;
+            loop {
+                if io.monotonic_ns().saturating_sub(start) >= 100_000_000 {
+                    return Err("GPC counter/PTIMER timeout");
+                }
+                let (t1, c1, b1) = point(io)?;
+                let elapsed = t1.checked_sub(t0).ok_or("PTIMER went backwards")?;
+                if elapsed < 20_000_000 { continue; }
+                let cycles = c1.wrapping_sub(c0);
+                if cycles == 0 { return Err("GPC counter did not advance"); }
+                let bracket_ns = b0 + b1;
+                if bracket_ns > elapsed / 100 {
+                    if attempt == 2 { return Err("counter/PTIMER bracket exceeds 1 percent"); }
+                    break;
+                }
+                let khz = u32::try_from(u64::from(cycles) * 1_000_000 / elapsed)
+                    .map_err(|_| "measured clock overflow")?;
+                return Ok(Measurement { khz, cycles, ptimer_ns: elapsed, bracket_ns });
             }
-            let (t1, c1, b1) = point(io)?;
-            let elapsed = t1.checked_sub(t0).ok_or("PTIMER went backwards")?;
-            if elapsed < 20_000_000 { continue; }
-            let cycles = c1.wrapping_sub(c0);
-            if cycles == 0 { return Err("GPC counter did not advance"); }
-            let bracket_ns = b0 + b1;
-            if bracket_ns > elapsed / 100 { return Err("counter/PTIMER bracket exceeds 1 percent"); }
-            let khz = u32::try_from(u64::from(cycles) * 1_000_000 / elapsed)
-                .map_err(|_| "measured clock overflow")?;
-            return Ok(Measurement { khz, cycles, ptimer_ns: elapsed, bracket_ns });
         }
+        Err("counter/PTIMER bracket exceeds 1 percent")
     })();
     // Cleanup follows sampling success or failure, including a stopped PTIMER/counter.
     io.write(0x18009c, 0);

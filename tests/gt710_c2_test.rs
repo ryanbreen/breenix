@@ -143,16 +143,17 @@ impl c2::observe::CounterAccess for Counter {
 }
 // Model the observed target clock and a delayed final PTIMER read. The record
 // reports the rejection, while the endpoint stall is the replay hypothesis.
-struct BracketReplay { inner: Counter, sampling: bool, first: Option<u64>, stalls: u32 }
+struct BracketReplay { inner: Counter, sampling: bool, first: Option<u64>, stalls: u32, max_stalls: u32, delay: u64 }
 impl Access for BracketReplay {
     fn read(&mut self, a:u32)->u32 {
         self.inner.ns=self.inner.ns.saturating_sub(8_000); // 2 us per register read
         let v=self.inner.read(a);
         if self.sampling && a==0x1800a8 {
             let first=*self.first.get_or_insert(self.inner.ns);
-            if self.inner.ns-first>=20_000_000 && self.stalls==0 {
-                self.inner.ns+=2_900_000;
+            if self.inner.ns-first>=20_000_000 && self.stalls<self.max_stalls {
+                self.inner.ns+=self.delay;
                 self.stalls+=1;
+                self.first=None;
             }
         }
         v
@@ -172,13 +173,29 @@ fn bracket_replay()->BracketReplay {
     BracketReplay {inner:Counter {regs:BTreeMap::from([(0x200,0x40501100),(0x18009c,0),
         (0x180044,0x1234),(0x1800a8,99)]),writes:Vec::new(),ns:4_290_000_000,
         khz:81_653,stalled:false,inaccessible:false,records:Vec::new()},
-        sampling:false,first:None,stalls:0}
+        sampling:false,first:None,stalls:0,max_stalls:1,delay:2_900_000}
 }
 #[test]
-fn delayed_endpoint_replays_clock_startup_bracket_failure() {
+fn delayed_endpoint_retries_with_a_fresh_verified_window() {
     let mut d=bracket_replay();
-    assert_eq!(c2::observe::measure(&mut d).err(),Some("counter/PTIMER bracket exceeds 1 percent"));
+    let original=d.inner.regs.clone();
+    let m=c2::observe::measure(&mut d).unwrap();
     assert_eq!(d.stalls,1);
+    assert!(m.khz.abs_diff(81_653)<100);
+    assert!(m.ptimer_ns>=20_000_000 && m.bracket_ns<=m.ptimer_ns/100);
+    assert_eq!(d.inner.regs,original);
+}
+#[test]
+fn repeated_wide_endpoints_remain_failures() {
+    for delay in [2_900_000,185_000] {
+        let mut d=bracket_replay();
+        d.max_stalls=3;
+        d.delay=delay;
+        let original=d.inner.regs.clone();
+        assert_eq!(c2::observe::measure(&mut d).err(),Some("counter/PTIMER bracket exceeds 1 percent"));
+        assert_eq!(d.stalls,3);
+        assert_eq!(d.inner.regs,original);
+    }
 }
 
 #[test]
