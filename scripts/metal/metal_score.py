@@ -91,7 +91,8 @@ def score(directory):
             and (directory / 'ended').exists()):
         try:
             native = runpy.run_path(str(directory / 'definition/scripts/metal/gt710-suite'))
-            for category in native['capture_categories'](run):
+            categories = native['capture_categories'](run) + (['memory'] if run.get('mode') == 'probe' else [])
+            for category in categories:
                 # gpu-core has separate diagnostic companions; a suite boot
                 # alone does not measure that historical milestone.
                 if category == 'core':

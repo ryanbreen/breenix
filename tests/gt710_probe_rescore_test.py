@@ -168,7 +168,7 @@ class ProbeRescore(unittest.TestCase):
                 path.write_text(json.dumps(value))
             with patch.object(metal_score.runpy, 'run_path', return_value=API):
                 verdict = metal_score.score(directory)
-            for category in CATEGORIES - {'memory'}:
+            for category in CATEGORIES:
                 row = verdict['milestones'].get('metal-gt710/' + category)
                 self.assertIsNotNone(row, 'a missing diagnostic must fail explicitly')
                 self.assertFalse(row['passed'])
