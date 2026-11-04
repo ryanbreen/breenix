@@ -111,3 +111,13 @@ fn slow_failed_restores_back_off_from_completion_and_stop_after_three() {
  }
  assert!(!g.retry_due(100_000_000_000,true));
 }
+
+#[test]
+fn core_admission_requires_full_clocks_except_explicit_post_option() {
+    assert_eq!(policy::core_decision(true, "ok"), Ok(()));
+    assert_eq!(policy::core_decision(false, "post-option"), Ok(()));
+    for status in ["counter/PTIMER bracket exceeds 1 percent", "ROM read failed", "ok"] {
+        assert_eq!(policy::core_decision(false, status),
+            Err(format!("GT710 clock startup failed: {status}")));
+    }
+}
