@@ -1,5 +1,79 @@
 use super::*;
 
+#[path = "chrome/validation.rs"]
+mod validation;
+pub(super) use validation::ValidationQueue;
+
+pub(super) struct PresentedScene {
+    pub layers: Vec<Layer>,
+    pub pointer: Pointer,
+}
+
+pub(super) fn measure_check<T>(check: impl FnOnce() -> T) -> T {
+    let begin = std::time::Instant::now();
+    let result = check();
+    print!("VALUE bwm-check-us {}\n", begin.elapsed().as_micros());
+    result
+}
+
+fn validation_idle(poll_fds: &mut [io::PollFd]) -> bool {
+    for fd in poll_fds.iter_mut() {
+        fd.revents = 0;
+    }
+    matches!(io::poll(poll_fds, 0), Ok(0)) && poll_fds.iter().all(|fd| fd.revents == 0)
+}
+
+pub(super) fn run_deferred_check(
+    queue: &mut ValidationQueue<PresentedScene>,
+    gpu: &mut Compositor,
+    windows: &mut [Window],
+    poll_fds: &mut [io::PollFd],
+    resizing: bool,
+) {
+    if resizing { return; }
+
+    let now = monotonic_ms().unwrap_or(0);
+    let shown = queue.scene().map(|scene| gpu.shown_clients(&scene.layers, Some(scene.pointer)))
+        .unwrap_or_default();
+    let Some((scene, unchecked)) = queue.next_if_idle(
+        |id| shown.iter().any(|(shown, _)| *shown == id)
+            && windows.iter().any(|w| w.window_id == id && now >= w.check_after_ms),
+        || validation_idle(poll_fds),
+    ) else { return };
+    let next = unchecked.iter().copied()
+        .min_by_key(|id| windows.iter().find(|w| w.window_id == *id).map_or(0, |w| w.check_moved));
+    let id = next.unwrap_or(0);
+    let result = measure_check(|| gpu.check(id, &scene.layers, Some(scene.pointer)));
+    if result.is_ok() {
+        // Harvested from 097962f6: the full-scene comparison includes the
+        // shown sources, so its successful result also serves these clients.
+        for checked in unchecked {
+            if let Some(win) = windows.iter_mut().find(|w| w.window_id == checked) {
+                win.frame_checked = true;
+            }
+            queue.complete(checked);
+            report_check(checked, &result);
+        }
+    } else if next.is_some() {
+        let retry = match (&result, windows.iter_mut().find(|w| w.window_id == id)) {
+            (Err(CheckError::Moved(_)), Some(win)) => {
+                win.check_moved += 1;
+                win.check_moved < CHECK_MOVED_LIMIT
+            }
+            _ => false,
+        };
+        if !retry {
+            if let Some(win) = windows.iter_mut().find(|w| w.window_id == id) {
+                win.frame_checked = true;
+            }
+            queue.complete(id);
+            report_check(id, &result);
+        }
+    } else if matches!(result, Err(CheckError::Failed(_))) {
+        report_check(0, &result);
+    }
+}
+
 // ─── Drawing Helpers ─────────────────────────────────────────────────────────
 
 pub(super) fn fill_rect(fb: &mut Surface, x: i32, y: i32, w: usize, h: usize, color: Color) {
@@ -389,33 +463,35 @@ pub(super) fn frame_layers(windows: &[Window]) -> Vec<Layer> {
 /// `background_pixel`'s formula). The read-back's record must name a scanout of the composed
 /// size, the one MODES reports bound, and the GPU core's current mode must have that size.
 pub(super) fn check_desktop_fills(gpu: &mut Compositor, screen_w: usize, screen_h: usize, mode_index: u32) -> Result<String, String> {
-    // The whole frame, so no pointer the last frame drew remains in it.
-    gpu.present_startup_desktop(None).map_err(|e| e.to_string())?;
-    let (w, h) = (screen_w as u32, screen_h as u32);
-    let (tb, ab) = (px(TASKBAR_HEIGHT) as u32, px(APPBAR_HEIGHT) as u32);
-    let word = |c: Color| 0xFF00_0000 | (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32;
-    let background = |x: u32, y: u32| word(background_pixel(x as usize, y as usize, screen_h));
-    // (x, y, the desktop's colour there)
-    let samples = [
-        (0, 0, word(TASKBAR_BG)),
-        (w - 1, tb - 1, word(TASKBAR_BG)),
-        (w - 1, tb, background(w - 1, tb)),
-        (w - 1, h - ab - 1, background(w - 1, h - ab - 1)),
-        (0, h - ab, word(APPBAR_BORDER)),
-        (w - 1, h - 1, word(APPBAR_BG)),
-    ];
-    let shown = gpu.check_fills(&samples)?;
-    let bound = compositor::scanout_resource()?;
-    if bound != shown.resource {
-        return Err(format!("MODES reports resource {} bound, the read-back showed {}", bound, shown.resource));
-    }
-    let (_, mode) = compositor::display()?;
-    if (mode.width, mode.height) != (shown.width, shown.height) {
-        return Err(format!("the GPU core's mode is {}x{}, the scanout {}x{}", mode.width, mode.height, shown.width, shown.height));
-    }
-    Ok(format!(
-        "resource {} {}x{} bound (GPU core mode {}, {}x{}), composed {}x{}, UI scale {}; taskbar rows 0..{} at (0,0) and ({},{}), background at ({},{}); app bar rows {}..{} at (0,{}) and ({},{}), background at ({},{}); {} pixels exact",
-        shown.resource, shown.width, shown.height, mode_index, mode.width, mode.height, w, h, ui().scale,
-        tb, w - 1, tb - 1, w - 1, tb, h - ab, h, h - ab, w - 1, h - 1, w - 1, h - ab - 1, samples.len()
-    ))
+    measure_check(|| {
+        // The whole frame, so no pointer the last frame drew remains in it.
+        gpu.present_startup_desktop(None).map_err(|e| e.to_string())?;
+        let (w, h) = (screen_w as u32, screen_h as u32);
+        let (tb, ab) = (px(TASKBAR_HEIGHT) as u32, px(APPBAR_HEIGHT) as u32);
+        let word = |c: Color| 0xFF00_0000 | (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32;
+        let background = |x: u32, y: u32| word(background_pixel(x as usize, y as usize, screen_h));
+        // (x, y, the desktop's colour there)
+        let samples = [
+            (0, 0, word(TASKBAR_BG)),
+            (w - 1, tb - 1, word(TASKBAR_BG)),
+            (w - 1, tb, background(w - 1, tb)),
+            (w - 1, h - ab - 1, background(w - 1, h - ab - 1)),
+            (0, h - ab, word(APPBAR_BORDER)),
+            (w - 1, h - 1, word(APPBAR_BG)),
+        ];
+        let shown = gpu.check_fills(&samples)?;
+        let bound = compositor::scanout_resource()?;
+        if bound != shown.resource {
+            return Err(format!("MODES reports resource {} bound, the read-back showed {}", bound, shown.resource));
+        }
+        let (_, mode) = compositor::display()?;
+        if (mode.width, mode.height) != (shown.width, shown.height) {
+            return Err(format!("the GPU core's mode is {}x{}, the scanout {}x{}", mode.width, mode.height, shown.width, shown.height));
+        }
+        Ok(format!(
+            "resource {} {}x{} bound (GPU core mode {}, {}x{}), composed {}x{}, UI scale {}; taskbar rows 0..{} at (0,0) and ({},{}), background at ({},{}); app bar rows {}..{} at (0,{}) and ({},{}), background at ({},{}); {} pixels exact",
+            shown.resource, shown.width, shown.height, mode_index, mode.width, mode.height, w, h, ui().scale,
+            tb, w - 1, tb - 1, w - 1, tb, h - ab, h, h - ab, w - 1, h - 1, w - 1, h - ab - 1, samples.len()
+        ))
+    })
 }

@@ -169,7 +169,7 @@ fn main() {
     let first = gpu
         .present_startup_desktop(Some(first_pointer))
         .map_err(|e| CheckError::Failed(e.to_string()))
-        .and_then(|()| gpu.check(0, &[], Some(first_pointer)));
+        .and_then(|()| measure_check(|| gpu.check(0, &[], Some(first_pointer))));
     let first_presented = first.is_ok();
     match first {
         Ok(pixels) => print!("[bwm] first frame read back: {} pixels exact\n", pixels),
@@ -185,6 +185,7 @@ fn main() {
     // The pointer the last composed frame drew, so a move repaints where it was.
     let mut drawn_pointer = first_presented.then_some(first_pointer);
     let mut full_redraw = !first_presented;
+    let mut validation = ValidationQueue::new();
 
     let mut read_buf = [0u8; 512];
     let mut poll_fds = [
@@ -620,11 +621,11 @@ fn main() {
             content_dirty = true;
         }
 
-        // Keep complete pixel validation off the interactive drag path. A settled
-        // resize still gets the same whole-scanout comparison on the next redraw
-        // (the clock also redraws each second if no client commits after release).
-        let check_ready = resizing.is_none() && windows.iter().any(|w|
-            !w.frame_checked && monotonic_ms().unwrap_or(0) >= w.check_after_ms);
+        validation.retain_clients(|id| windows.iter().any(|w| w.window_id == id && !w.frame_checked));
+        for win in windows.iter().filter(|w| !w.frame_checked) {
+            validation.first_frame(win.window_id);
+        }
+
         // ── 5. Composite on the GPU (only when something changed) ──
         if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
             let pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
@@ -653,43 +654,10 @@ fn main() {
                     }
                     drawn_pointer = Some(pointer);
                     clock.presented(gpu.last_serial);
-                    // Each client window's first shown frame is read back and compared.
-                    // Check the whole scanout for each newly shown or resized client,
-                    // including other clients that keep animating beside it.
-                    // A client that committed
-                    // again after the frame sampled it is checked on a later frame. Any
-                    // failure prints the line docs/boot-path.json lists as fatal.
-                    let unchecked: Vec<(u64, [u32; 4])> = if check_ready {
-                        gpu.shown_clients(&layers, Some(pointer))
-                            .into_iter()
-                            .filter(|(id, _)| windows.iter().any(|win| win.window_id == *id && !win.frame_checked
-                                && monotonic_ms().unwrap_or(0) >= win.check_after_ms))
-                            .collect()
-                    } else {
-                        Vec::new()
-                    };
-                    // One check a frame: the unchecked window tried the fewest times.
-                    let next = unchecked.iter()
-                        .min_by_key(|(id, _)| windows.iter().find(|w| w.window_id == *id).map_or(0, |w| w.check_moved))
-                        .copied();
-                    if let Some((id, _)) = next {
-                        let result = gpu.check(id, &layers, Some(pointer));
-                        let retry = match (&result, windows.iter_mut().find(|win| win.window_id == id)) {
-                            (Err(CheckError::Moved(_)), Some(win)) => {
-                                win.check_moved += 1;
-                                win.check_moved < CHECK_MOVED_LIMIT
-                            }
-                            _ => false,
-                        };
-                        if !retry {
-                            if let Some(win) = windows.iter_mut().find(|win| win.window_id == id) {
-                                win.frame_checked = true;
-                            }
-                            report_check(id, &result);
-                        }
-                    }
+                    validation.presented(PresentedScene { layers, pointer });
                 }
                 Err(FrameError::NotOwner) => {
+                    validation.invalidate_scene();
                     // Another process took the display (probe, say): wait for it to give the
                     // display back, or exit, and then repaint everything.
                     if !display_lost {
@@ -700,6 +668,7 @@ fn main() {
                     full_redraw = true;
                 }
                 Err(FrameError::Failed(e)) => {
+                    validation.invalidate_scene();
                     // Start again with a fresh context and targets; the next frame
                     // repaints everything.
                     if !frame_failed {
@@ -725,6 +694,7 @@ fn main() {
                 eprintln!("[bwm] compositor acknowledgment failed: {}", error);
                 process::exit(1);
             }
+            run_deferred_check(&mut validation, &mut gpu, &mut windows, &mut poll_fds, resizing.is_some());
         }
     }
 }
