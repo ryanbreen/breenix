@@ -4030,6 +4030,8 @@ def wm_step_capture(directory, sha, step_number):
     before_line = next(line for k, m, line in parsed if k == 'MEMORY' and m[1] == 'before')
     slots = directory / 'native-suites/window-manager' if len(boot.get('suites') or []) > 1 else directory
     receipts = []
+    part_index = 0
+    transport_bytes = 0
     for label, filename, receipt_name, suffix in (
             ('startup', 'gt710-pixels.rle', 'native-upload.json', ''),
             ('suite-final-panel', 'gt710-final.rle', 'native-final-upload.json', '/final')):
@@ -4044,14 +4046,42 @@ def wm_step_capture(directory, sha, step_number):
         body = (slots / filename).read_bytes()
         receipt = json.loads((slots / receipt_name).read_text())
         scoped = '/suites/window-manager' if slots != directory else ''
-        if (not 0 < len(body) <= 64 << 20 or len(body) != int(anchor[1])
-                or hashlib.sha256(body).hexdigest() != anchor[2]
+        if (not 0 < len(body) <= 2 << 20
                 or receipt.get('id') != boot['id'] or receipt.get('complete') is not True
-                or receipt.get('bytes') != len(body) or receipt.get('sha256') != anchor[2]
+                or receipt.get('bytes') != len(body) or receipt.get('sha256') != hashlib.sha256(body).hexdigest()
                 or not re.fullmatch(r'/gt710-upload/[a-f0-9]{64}' + scoped + suffix, receipt.get('route', ''))):
             raise ValueError('WM upload digest, receipt or route differs')
+        transport_bytes += len(body)
+        manifest = re.fullmatch(rb'SUITE_PARTS v=1 first=(0|[1-9]\d*) parts=([1-9]\d*) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n', body)
+        if manifest:
+            first, count, size = map(int, manifest.groups()[:3])
+            if (first != part_index or not (2 << 20) < size <= (64 << 20)
+                    or transport_bytes + size > 64 << 20
+                    or count != (size + (2 << 20) - 1) // (2 << 20)):
+                raise ValueError('WM multipart range or size differs')
+            chunks = []
+            for index in range(first, first + count):
+                chunk = (slots / f'gt710-breengel-{index:04}.rle').read_bytes()
+                facts = json.loads((slots / f'native-picture-upload-{index:04}.json').read_text())
+                expected_size = min(2 << 20, size - (index - first) * (2 << 20))
+                base_route = receipts[0]['route'] if receipts else receipt['route']
+                if (len(chunk) != expected_size or facts.get('id') != boot['id']
+                        or facts.get('complete') is not True or facts.get('bytes') != len(chunk)
+                        or facts.get('sha256') != hashlib.sha256(chunk).hexdigest()
+                        or facts.get('route') != base_route + f'/pictures/{index}'):
+                    raise ValueError('WM multipart payload, receipt or order differs')
+                transport_bytes += len(chunk)
+                chunks.append(chunk)
+            body = b''.join(chunks)
+            if hashlib.sha256(body).hexdigest() != manifest[4].decode():
+                raise ValueError('WM whole-picture digest differs')
+            part_index += count
+        if len(body) != int(anchor[1]) or hashlib.sha256(body).hexdigest() != anchor[2]:
+            raise ValueError('WM upload differs from its whole-picture serial digest')
         receipts.append(receipt)
-    if sum(receipt['bytes'] for receipt in receipts) > 64 << 20:
+    if len(list(slots.glob('gt710-breengel-*.rle'))) != part_index:
+        raise ValueError('WM unanchored picture parts')
+    if transport_bytes > 64 << 20:
         raise ValueError('WM uploads exceed the per-boot evidence bound')
     if receipts[1]['route'] != receipts[0]['route'] + '/final':
         raise ValueError('WM uploads belong to different routes')

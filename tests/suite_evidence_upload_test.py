@@ -45,6 +45,7 @@ fn picture(pixels: Vec<u8>, width: u32, height: u32) -> Observation {
         for label in ["startup", "suite-final-panel"] {
             let line = upload.capture(label, || panic!("route must be checked before readback"),
                 |_, _, _, _| panic!("route must be checked before sending"));
+            let reason = if label == "suite-final-panel" && reason == "refused=route-read" { "refused=startup-route-read" } else { reason };
             assert_eq!(line, format!("SUITE_EVIDENCE window-manager {label} {reason}"));
         }
     }
@@ -78,13 +79,30 @@ fn picture(pixels: Vec<u8>, width: u32, height: u32) -> Observation {
 }
 #[test] fn refuses_complete_over_bound_data_without_truncation_or_send() {
     let mut upload = Upload::new("window-manager", Ok(Some(route(false))));
-    // G28 and G2: a complete image above the old slot size is valid.
+    // W3: the same 2.4 MB picture travels in bounded ordered requests.
     let pixels: Vec<u8> = (0..600_000u32).flat_map(|n| [n as u8,(n>>8)as u8,(n>>16)as u8,255]).collect();
+    let mut requests = Vec::new();
     let line = upload.capture("startup", || Ok(picture(pixels.clone(), 1000, 600)),
-        |_,_,body,_| { assert!(body.ends_with(&pixels)); Ok(()) });
+        |_,path,body,digest| { assert!(body.len() <= MAX_UPLOAD); assert_eq!(digest,crypto::sha256::sha256(body)); requests.push((path.to_string(), body.to_vec())); Ok(()) });
+    assert_eq!(requests.len(),3);
+    assert_eq!(requests[0].0,"/upload/lease");
+    assert_eq!(requests[1].0,"/upload/lease/pictures/0");
+    assert_eq!(requests[2].0,"/upload/lease/pictures/1");
+    let whole: Vec<u8> = requests[1..].iter().flat_map(|r|r.1.iter().copied()).collect();
+    assert!(whole.ends_with(&pixels));
+    let hash: String = crypto::sha256::sha256(&whole).iter().map(|b|format!("{b:02x}")).collect();
+    assert_eq!(line,format!("SUITE_EVIDENCE window-manager startup bytes={} sha256={hash}",whole.len()));
+    assert_eq!(requests[0].1,format!("SUITE_PARTS v=1 first=0 parts=2 bytes={} sha256={hash}\n",whole.len()).as_bytes());
+    requests.clear();
+    let line = upload.capture("suite-final-panel", || Ok(picture(pixels.clone(),1000,600)),
+        |_,path,body,digest| {assert!(body.len()<=MAX_UPLOAD);assert_eq!(digest,crypto::sha256::sha256(body));requests.push((path.to_string(),body.to_vec()));Ok(())});
     assert!(line.contains(" sha256="));
+    assert_eq!(requests[0].0,"/upload/lease/pictures/2");
+    assert_eq!(requests[1].0,"/upload/lease/pictures/3");
+    assert_eq!(requests[2].0,"/upload/lease/final");
     // A picture's header and record also count against the fixed boot bound.
     let pixels: Vec<u8> = (0..(MAX_TOTAL / 4) as u32).flat_map(|n| [n as u8,(n>>8)as u8,(n>>16)as u8,255]).collect();
+    let mut upload = Upload::new("window-manager", Ok(Some(route(false))));
     let line = upload.capture("startup", || Ok(picture(pixels, 4096, 4096)),
         |_,_,_,_| panic!("over-bound data must not send even a prefix"));
     assert_eq!(line, "SUITE_EVIDENCE window-manager startup refused=upload-bound");
@@ -112,6 +130,9 @@ fn picture(pixels: Vec<u8>, width: u32, height: u32) -> Observation {
     let mut upload = Upload::new("window-manager", Ok(Some(route(false))));
     assert_eq!(upload.capture("startup", || Err("readback".into()), |_,_,_,_|panic!()),
         "SUITE_EVIDENCE window-manager startup refused=readback");
+    assert_eq!(upload.capture("suite-final-panel", || panic!("startup refusal disarms final"), |_,_,_,_|panic!()),
+        "SUITE_EVIDENCE window-manager suite-final-panel refused=startup-readback");
+    let mut upload = Upload::new("window-manager", Ok(Some(route(false))));
     assert_eq!(upload.capture("suite-final-panel", || Ok(picture(vec![1,2,3,255],1,1)),
         |_,_,_,_|Err("http-status".into())), "SUITE_EVIDENCE window-manager suite-final-panel refused=http-status");
 }

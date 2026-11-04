@@ -68,7 +68,7 @@ class WmEvidenceRoute(StateTest):
                     upload.receive(bad)
                     self.assertEqual(bad.code, 404)
                     for suffix, body, filename, receipt in (
-                            ('', b'x' * (3 << 20), 'gt710-pixels.rle', 'native-upload.json'),
+                            ('', b'startup pixels', 'gt710-pixels.rle', 'native-upload.json'),
                             ('/final', b'final panel pixels', 'gt710-final.rle', 'native-final-upload.json')):
                         rejected = Handler(path + suffix, body, '0' * 64)
                         upload.receive(rejected)
@@ -81,6 +81,36 @@ class WmEvidenceRoute(StateTest):
                         facts = json.loads((slot / receipt).read_text())
                         self.assertTrue(facts['complete'])
                         self.assertEqual(facts['sha256'], hashlib.sha256(body).hexdigest())
+
+    def test_large_single_request_refused_and_ordered_parts_accepted(self):
+        self.stage('window-manager')
+        path = urlsplit(self.read('evidence-route').strip()).path
+        body = b'x' * 2_400_000
+        digest = hashlib.sha256(body).hexdigest()
+        manifest = f'SUITE_PARTS v=1 first=0 parts=2 bytes={len(body)} sha256={digest}\n'.encode()
+        with patch.object(upload.m, 'read_lease', return_value=dict(id='sample', state='powered')):
+            oversized = Handler(path, body)
+            upload.receive(oversized)
+            self.assertEqual(oversized.code, 400)
+            self.assertFalse((self.boot / 'gt710-pixels.rle').exists())
+            start = Handler(path, manifest)
+            upload.receive(start)
+            self.assertEqual(start.code, 200)
+            wrong = Handler(path + '/pictures/1', body[2 << 20:])
+            upload.receive(wrong)
+            self.assertEqual(wrong.code, 404)
+            for index, part in enumerate((body[:2 << 20], body[2 << 20:])):
+                handler = Handler(path + f'/pictures/{index}', part)
+                upload.receive(handler)
+                self.assertEqual(handler.code, 200)
+            whole = b''.join((self.boot / f'gt710-breengel-{i:04}.rle').read_bytes() for i in range(2))
+            self.assertEqual(hashlib.sha256(whole).hexdigest(), digest)
+            final = Handler(path + '/final', b'final')
+            upload.receive(final)
+            self.assertEqual(final.code, 200)
+            late = Handler(path + '/pictures/2', b'late')
+            upload.receive(late)
+            self.assertEqual(late.code, 404)
 
     def test_no_route_and_reused_root_disarm_the_shared_facility(self):
         self.stage('window-manager')

@@ -70,13 +70,25 @@ class WmStep(unittest.TestCase):
 
     def uploads(self, directory, scope=''):
         directory.mkdir(parents=True, exist_ok=True)
+        part_index = 0
+        route = '/gt710-upload/' + 'b' * 64 + scope
+        def save(filename, receipt, body, path):
+            (directory / filename).write_bytes(body)
+            (directory / receipt).write_text(json.dumps(dict(
+                id=BOOT, route=path, complete=True,
+                bytes=len(body), sha256=hashlib.sha256(body).hexdigest())))
         for body, filename, receipt, suffix in (
                 (BODIES[0], 'gt710-pixels.rle', 'native-upload.json', ''),
                 (BODIES[1], 'gt710-final.rle', 'native-final-upload.json', '/final')):
-            (directory / filename).write_bytes(body)
-            (directory / receipt).write_text(json.dumps(dict(
-                id=BOOT, route='/gt710-upload/' + 'b' * 64 + scope + suffix, complete=True,
-                bytes=len(body), sha256=hashlib.sha256(body).hexdigest())))
+            if len(body) > 2 << 20:
+                chunks = [body[i:i+(2 << 20)] for i in range(0, len(body), 2 << 20)]
+                manifest = f'SUITE_PARTS v=1 first={part_index} parts={len(chunks)} bytes={len(body)} sha256={hashlib.sha256(body).hexdigest()}\n'.encode()
+                for chunk in chunks:
+                    save(f'gt710-breengel-{part_index:04}.rle', f'native-picture-upload-{part_index:04}.json', chunk, route + f'/pictures/{part_index}')
+                    part_index += 1
+                save(filename, receipt, manifest, route + suffix)
+            else:
+                save(filename, receipt, body, route + suffix)
 
     def record(self):
         return API['record_wm_capture'](self.path, SHA, 1)
@@ -94,10 +106,21 @@ class WmStep(unittest.TestCase):
         global BODIES
         original = BODIES
         try:
-            BODIES = (b'x' * (3 << 20), b'final panel')
+            BODIES = (b'x' * 2_400_000, b'y' * 2_400_000)
             self.uploads(self.path)
             (self.path / 'serial.txt').write_text(serial())
             self.assertEqual(self.record(), 0)
+            part = self.path / 'gt710-breengel-0001.rle'
+            saved = part.read_bytes()
+            part.write_bytes(b'corrupt')
+            self.assertEqual(self.record(), 1)
+            part.write_bytes(saved)
+            # Direct requests remain bounded even with a matching whole digest.
+            (self.path / 'gt710-pixels.rle').write_bytes(BODIES[0])
+            (self.path / 'native-upload.json').write_text(json.dumps(dict(
+                id=BOOT, route='/gt710-upload/'+'b'*64, complete=True,
+                bytes=len(BODIES[0]), sha256=hashlib.sha256(BODIES[0]).hexdigest())))
+            self.assertEqual(self.record(), 1)
         finally:
             BODIES = original
 

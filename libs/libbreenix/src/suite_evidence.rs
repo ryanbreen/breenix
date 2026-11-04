@@ -3,8 +3,7 @@ use libbreenix::crypto::sha256::sha256;
 use std::io::Write;
 
 pub(super) const MAX_ROUTE: usize = 2048;
-// G28: complete canonical pictures share the fixed per-boot transport budget.
-pub(super) const MAX_UPLOAD: usize = MAX_TOTAL;
+pub(super) const MAX_UPLOAD: usize = 2 << 20;
 pub(super) const MAX_TOTAL: usize = 64 << 20;
 
 pub(super) struct Route {
@@ -79,7 +78,7 @@ fn encode(o: &Observation, remaining: usize) -> Result<Vec<u8>, String> {
         o.width, o.height, if rle { "rle" } else { "raw" });
     let size = header.len().checked_add(o.record.len())
         .and_then(|n| n.checked_add(if rle { rle_len } else { o.pixels.len() })).ok_or("upload-bound")?;
-    if size > MAX_UPLOAD { return Err("upload-bound".into()); }
+    if size > MAX_TOTAL { return Err("upload-bound".into()); }
     if size > remaining { return Err("total-bound".into()); }
     let mut data = Vec::new();
     data.try_reserve_exact(size).map_err(|_| "allocation")?;
@@ -103,33 +102,57 @@ pub(super) struct Upload {
     suite: &'static str,
     route: Result<Option<Route>, String>,
     bytes: usize,
+    parts: usize,
+    startup_failure: Option<String>,
 }
 impl Upload {
     pub fn new(suite: &'static str, route: Result<Option<Route>, String>) -> Self {
-        Self { suite, route, bytes: 0 }
+        Self { suite, route, bytes: 0, parts: 0, startup_failure: None }
     }
     /// Picture buffers are local to this call and drop before it returns.
     pub fn capture(&mut self, label: &str,
         capture: impl FnOnce() -> Result<Observation, String>,
-        send: impl FnOnce(&Route, &str, &[u8], [u8; 32]) -> Result<(), String>) -> String {
+        mut send: impl FnMut(&Route, &str, &[u8], [u8; 32]) -> Result<(), String>) -> String {
         let prefix = format!("SUITE_EVIDENCE {} {label}", self.suite);
+        if label == "suite-final-panel" {
+            if let Some(error) = &self.startup_failure { return format!("{prefix} refused=startup-{error}"); }
+        }
         let route = match &self.route {
             Ok(Some(route)) => route,
             Ok(None) => return format!("{prefix} skipped=no-route"),
-            Err(error) => return format!("{prefix} refused={error}"),
+            Err(error) => {
+                if label == "startup" { self.startup_failure = Some(error.clone()); }
+                return format!("{prefix} refused={error}");
+            },
         };
         let result = (|| {
             let observation = capture()?;
             let data = encode(&observation, MAX_TOTAL - self.bytes)?;
             let digest = sha256(&data);
             let path = if label == "suite-final-panel" { format!("{}/final", route.path) } else { route.path.clone() };
-            // Count attempted bytes, including ambiguous HTTP failures,
-            // against the boot transport bound.
-            self.bytes += data.len();
-            send(route, &path, &data, digest)?;
             let hex: String = digest.iter().map(|b| format!("{b:02x}")).collect();
+            if data.len() > MAX_UPLOAD {
+                let count = data.len().div_ceil(MAX_UPLOAD);
+                let manifest = format!("SUITE_PARTS v=1 first={} parts={count} bytes={} sha256={hex}\n", self.parts, data.len());
+                if self.bytes + data.len() + manifest.len() > MAX_TOTAL { return Err("total-bound".into()); }
+                // Reuse the native ordered picture-chunk route. Startup opens
+                // the route first; final seals it only after its parts arrive.
+                self.bytes += data.len() + manifest.len();
+                if label == "startup" { send(route, &path, manifest.as_bytes(), sha256(manifest.as_bytes()))?; }
+                for part in data.chunks(MAX_UPLOAD) {
+                    let part_path = format!("{}/pictures/{}", route.path, self.parts);
+                    send(route, &part_path, part, sha256(part))?;
+                    self.parts += 1;
+                }
+                if label == "suite-final-panel" { send(route, &path, manifest.as_bytes(), sha256(manifest.as_bytes()))?; }
+            } else {
+                // Ambiguous HTTP failures still consume the attempted budget.
+                self.bytes += data.len();
+                send(route, &path, &data, digest)?;
+            }
             Ok::<_, String>(format!("{prefix} bytes={} sha256={hex}", data.len()))
         })();
+        if label == "startup" { if let Err(error) = &result { self.startup_failure = Some(error.clone()); } }
         result.unwrap_or_else(|error| format!("{prefix} refused={error}"))
     }
 }

@@ -82,7 +82,7 @@ def receive(handler):
         picture_index = int(picture[1]) if picture else None
         is_picture = picture_index is not None
         if (not intent or (route!=intent.get('route') and not final and not is_picture)
-                or (is_picture and (intent.get('suite') != 'breengel' or not intent.get('complete')
+                or (is_picture and (intent.get('suite') not in ('breengel', 'window-manager') or not intent.get('complete')
                     or intent.get('finalComplete') or picture_index != intent.get('pictureUploads', 0)))
                 or (intent.get('finalComplete') if final else (False if is_picture else intent.get('complete')))
                 or (final and not intent.get('complete'))
@@ -100,8 +100,7 @@ def receive(handler):
         try:
             length=int(handler.headers.get('Content-Length','-1'))
             expected=handler.headers.get('X-Content-SHA256','')
-            slot_bound = MAX_TOTAL if intent.get('suite') == 'window-manager' else MAX_BYTES
-            if (handler.headers.get('Transfer-Encoding') or not 0<length<=slot_bound
+            if (handler.headers.get('Transfer-Encoding') or not 0<length<=MAX_BYTES
                     or not re.fullmatch('[a-f0-9]{64}',expected) or (boot_directory/'ended').exists()):
                 raise ValueError('invalid display artifact framing')
             total = root_intent.get('aggregateBytes', 0) if suite_directory else intent.get('bytes', 0) + intent.get('pictureBytes', 0)
