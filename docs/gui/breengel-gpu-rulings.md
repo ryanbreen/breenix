@@ -81,3 +81,31 @@ B13 (2026-10-20, 9:50 PM ET; coordinator requests closure of #2187). Adopt metad
      counters land first as a contract PR into breengel/suite, with changed checks before implementation.
    A slow client cannot stall the desktop under this model beyond its own window's publication; the existing
    present-rate case measures the rest.
+
+
+B36 (2026-11-03; coordinator, console suite status panel amendment). Supersede B35's
+   overlay placement as restated in breengel.md section 23.7. The operator said at
+   7:30 AM EST: "i would rather we have a proper progress bar and maybe a text heading
+   indicating how many tests have completed, how many are pending, how long we've spent, etc."
+   At 7:35 AM EST the operator approved the coordinator design: "sounds good".
+   Source: the console-status/request.md design of record supplied to cs-u1-contract.
+   Reserve the bottom panel, end the text grid above it, show serial-derived suite
+   counts, elapsed time and latest observed CASE, a true completion track with failed
+   positions red, and a thin labelled boot-stage row. The exact stage and native raster
+   geometry and colours are breengel.md section 23.7 and docs/console/contract.md section 2.
+   Read-back expectations move by this amendment; producer agreement and the dropped-stage
+   fault remain strict. Serial stays the record. This ruling records the requested
+   coordinator amendment, not a new operator instruction or implementation acceptance.
+   The fetched rulings file ends at B13; B35's original text is absent, so this amendment
+   does not reconstruct other B35 provisions referenced elsewhere.
+
+B36a (2026-11-03 10:10 PM EST; coordinator, console-status ledger redirect).
+   The live elapsed heading introduced by B36 is incompatible with comparing the
+   whole screen across display givebacks. Amend `panel/kernel-screens` to keep exact
+   comparison everywhere except B36's heading band, including its native-raster
+   equivalent. The text grid, ribbon and progress track stay exact. Both headings
+   must be drawn as non-uniform heading text on the panel background, and known
+   counts must match the current suite state. Do not restore a stale elapsed clock.
+   Check first with changed elapsed fields accepted and changed text-grid, ribbon
+   and progress-track pixels rejected. Run one ARM64 and one native BreenGL suite;
+   the prior console passes stand for a case-and-contract-only fix.

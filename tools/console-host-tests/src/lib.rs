@@ -9,6 +9,8 @@ mod boxdraw;
 pub mod grid;
 #[path = "../../../kernel/src/arch_impl/x86_64/pagewalk.rs"]
 mod pagewalk;
+#[path = "../../../kernel/src/console/status.rs"]
+pub mod status;
 #[path = "../../../kernel/src/console/raster.rs"]
 mod raster;
 
@@ -672,12 +674,12 @@ mod raster_tests {
     #[test]
     fn the_size_rule_picks_the_contracts_font_and_grid() {
         let cases = [
-            ((1024, 768), 16, (7, 18), (146, 42)),
-            ((1280, 800), 20, (9, 22), (142, 36)),
-            ((1280, 960), 20, (9, 22), (142, 43)),
-            ((1920, 1080), 24, (11, 26), (174, 41)),
-            ((1920, 1200), 24, (11, 26), (174, 46)),
-            ((2560, 1600), 32, (14, 34), (182, 47)),
+            ((1024, 768), 16, (7, 18), (146, 38)),
+            ((1280, 800), 20, (9, 22), (142, 32)),
+            ((1280, 960), 20, (9, 22), (142, 39)),
+            ((1920, 1080), 24, (11, 26), (174, 37)),
+            ((1920, 1200), 24, (11, 26), (174, 42)),
+            ((2560, 1600), 32, (14, 34), (182, 41)),
         ];
         for ((width, height), size, cell, grid) in cases {
             let font = Font::for_display(width, height);
@@ -716,7 +718,7 @@ mod raster_tests {
             bgr: false,
             font,
         };
-        assert_eq!((font.size(), layout.cols(), layout.rows()), (32, 255, 127));
+        assert_eq!((font.size(), layout.cols(), layout.rows()), (32, 255, 123));
     }
 }
 

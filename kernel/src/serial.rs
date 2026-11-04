@@ -846,8 +846,8 @@ pub fn write_bytes_atomic(writer: Writer, bytes: &[u8]) {
     // Terminal text belongs to its reader, not the persistent kernel log.
     if writer == Writer::Kernel {
         crate::output_accounting::count(bytes.len(), true);
-        crate::log_buffer::capture_bytes(lead.iter().chain(bytes));
     }
+    crate::log_buffer::capture_serial_output(writer, lead.iter().chain(bytes));
     if let Some(&last) = bytes.last() {
         crate::serial_writer::wrote(writer, last);
     }

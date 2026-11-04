@@ -132,19 +132,48 @@ pixels; the two extra pixel rows at the bottom of each cell are the cursor band.
   background colour.
 - The logo scale `k` (pixels per design unit, section 6) follows `S`: 2 for sizes 16 and 20, 3 for 24, 4 for
   32.
-- On ARM64, a display of `1280s` by `800s` pixels for a whole scale `s` also shows the boot stage ribbon
-  (docs/gui/breengel.md section 23.7) over the grid, in the band from `x = 16s` to `1264s` and `y = 752s` to
-  `768s`. The read-back check (section 8) expects the ribbon's pixels there, in the rows it has drawn; the
-  grid, `vcs` and `TIOCGWINSZ` keep the size rule's dimensions.
+- The kernel console reserves a bottom status panel on both architectures (B36,
+  docs/gui/breengel.md section 23.7). Apply the font selection above to the full display,
+  then set `rows = min(floor(panel_top / cell_height),255)`. Columns are unchanged.
+  The text scroll region, main and alternate grids, `vcs`, `vcsa`, `TIOCGWINSZ` and cursor
+  addressability end at those rows. Partial cell rows above the panel are background margin.
+  Keeping the panel reserved outside suite runs avoids resizing on START or DONE.
+- On `1280s` by `800s` whole-scale stage displays, the panel top is `704s`. Its exact
+  rectangles, scaled text and colours are section 23.7's table; the thin ribbon is
+  `(112s,772s,1152s,6s)`, with two-stage-unit gaps, replacing the old overlay band.
+- On other native raster sizes, let `W,H` be physical pixels, `G` the selected font's
+  glyph width and `L=S+2` its line height. The panel is `P=2L+48` pixels tall and starts
+  at `T=H-P`. The heading uses size S and the `Boot stages` label uses size S.
+  In the table below, coordinates and sizes are physical pixels, without stage scaling.
+  Segment i of m covers x from `14G+floor((W-16G)i/m)` to
+  `14G+floor((W-16G)(i+1)/m)`, with its last two pixels background. Native progress
+  intervals use physical track pixels. The segment fill is clipped at its start when
+  a segment is narrower than the gap; it cannot underflow.
 
-| Display | Where | `S` | Cell | Grid | `k` |
-|---|---|---|---|---|---|
-| 1024x768 | x86-metal GOP | 16 | 7x18 | 146x42 | 2 |
-| 1280x800 | ARM64 QEMU default | 20 | 9x22 | 142x36 | 2 |
-| 1280x960 | Parallels and VMware defaults | 20 | 9x22 | 142x43 | 2 |
-| 1920x1080 | x86-64 QEMU (`virtio-vga`) | 24 | 11x26 | 174x41 | 3 |
-| 1920x1200 | VMware `--retina` | 24 | 11x26 | 174x46 | 3 |
-| 2560x1600 | Parallels `--retina`; any boot whose display the GPU core owns (its kernel mode) | 32 | 14x34 | 182x47 | 4 |
+| Native panel element | Rectangle `(x,y,width,height)` |
+|---|---|
+| Reserved panel | `(0,T,W,2L+48)` |
+| Heading | `(2G,T+8,W-4G,L)` |
+| Progress track | `(2G,T+L+16,W-4G,8)` |
+| `Boot stages` label | `(2G,T+L+32,11G,L)` |
+| Stage ribbon | `(14G,T+L+32+floor((L-6)/2),W-16G,6)` |
+
+The native panel needs `W>16G` and `H>=2L+48`, with positive glyph width and line
+height at least 6. Below these dimensions it is omitted and text uses the full height.
+The suite's `screen/size-class` and `screen/scanout-grid` checks derive the reserved
+text rows from this geometry after selecting the font from the full display.
+The screen read-back check (section 8) must check the panel's pixels independently of
+the text raster, including background and segment gaps. It does not exempt the panel
+from read-back. No-suite appearance and serial-derived counts follow section 23.7.
+
+| Display | Where | `S` | Cell | Text grid | Panel top | `k` |
+|---|---|---|---|---|---|---|
+| 1024x768 | Native GOP | 16 | 7x18 | 146x38 | 684 | 2 |
+| 1280x800 | Stage scale 1 | 20 | 9x22 | 142x32 | 704 | 2 |
+| 1280x960 | Native raster | 20 | 9x22 | 142x39 | 868 | 2 |
+| 1920x1080 | Native raster | 24 | 11x26 | 174x37 | 980 | 3 |
+| 1920x1200 | Native raster | 24 | 11x26 | 174x42 | 1100 | 3 |
+| 2560x1600 | Stage scale 2 | 32 | 14x34 | 182x41 | 1408 | 4 |
 
 The console enables the font crate's `size_20`, `size_24`, `size_32`, `bold`, `unicode-latin-1-supplement`
 and `unicode-latin-extended-a` features (V1).

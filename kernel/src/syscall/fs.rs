@@ -2,6 +2,7 @@
 //!
 //! Implements: open, lseek, fstat, getdents64
 
+use alloc::string::String;
 use super::SyscallResult;
 use crate::ipc::fd::FdKind;
 
@@ -391,7 +392,7 @@ fn sys_open_write_path(
                 Ok(Some(_)) if want_excl => return Err(SyscallResult::Err(EEXIST as u64)),
                 Ok(Some(ino)) => (ino, false),
                 Ok(None) => {
-                    log::debug!("sys_open: creating new file {:?}", resolved.path);
+                    log::debug!("sys_open: creating new file {}", String::from_utf8_lossy(&resolved.path));
                     // The requested mode is used as given, less the umask: mode 0
                     // creates a file nobody but root may open.
                     let gid = super::fifo_policy::check_parent_access(&parent_inode, &cred, None)
@@ -402,8 +403,8 @@ fn sys_open_write_path(
                     match fs.create_file(parent, filename, file_mode, cred.euid, gid) {
                         Ok(new_inode) => {
                             log::debug!(
-                                "sys_open: created file {:?} with inode {}",
-                                resolved.path,
+                                "sys_open: created file {} with inode {}",
+                                String::from_utf8_lossy(&resolved.path),
                                 new_inode
                             );
                             (new_inode, true)
@@ -625,7 +626,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
     let mount_flags = crate::fs::vfs::mount::flags_at(&resolved.path);
 
     log::debug!(
-        "sys_open: path={:?}, flags={:#x}, mode={:#o}",
+        "sys_open: path={}, flags={:#x}, mode={:#o}",
         path,
         flags,
         mode
@@ -1836,7 +1837,7 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
     };
     let path = resolved.virtual_path().unwrap_or("");
 
-    log::debug!("sys_unlink: path={:?}", path);
+    log::debug!("sys_unlink: path={}", path);
 
     if let Some(result) = crate::ipc::mqueue::dev::unlink_path(path) {
         return result;
@@ -1971,7 +1972,7 @@ fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> 
     if let Some(result) = crate::ipc::shmem::rename_path(old.virtual_path().unwrap_or(""), new.virtual_path().unwrap_or("")) {
         return result;
     }
-    log::debug!("sys_rename: old={:?}, new={:?}", old.path, new.path);
+    log::debug!("sys_rename: old={}, new={}", String::from_utf8_lossy(&old.path), String::from_utf8_lossy(&new.path));
 
     for operand in [&old, &new] {
         match operand.last {
@@ -2109,7 +2110,7 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
         Err(e) => return e,
     };
 
-    log::debug!("sys_rmdir: path={:?}", resolved.path);
+    log::debug!("sys_rmdir: path={}", String::from_utf8_lossy(&resolved.path));
 
     match resolved.last {
         Last::Dot => return SyscallResult::Err(EINVAL as u64),
@@ -2169,8 +2170,8 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
     match rmdir_result {
         Ok(()) => {
             log::debug!(
-                "sys_rmdir: successfully removed directory {:?}",
-                resolved.path
+                "sys_rmdir: successfully removed directory {}",
+                String::from_utf8_lossy(&resolved.path)
             );
             SyscallResult::Ok(0)
         }
@@ -2243,7 +2244,7 @@ fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> Sy
     if let Some(result) = crate::ipc::shmem::link_path(old.virtual_path().unwrap_or(""), new.virtual_path().unwrap_or("")) {
         return result;
     }
-    log::debug!("sys_link: oldpath={:?}, newpath={:?}", old.path, new.path);
+    log::debug!("sys_link: oldpath={}, newpath={}", String::from_utf8_lossy(&old.path), String::from_utf8_lossy(&new.path));
 
     let mount = match old.target {
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
@@ -2303,10 +2304,10 @@ fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> Sy
 
     match link_result {
         Ok(()) => {
-            log::info!(
-                "sys_link: successfully created hard link {:?} -> {:?}",
-                new.path,
-                old.path
+            log::debug!(
+                "sys_link: successfully created hard link {} -> {}",
+                String::from_utf8_lossy(&new.path),
+                String::from_utf8_lossy(&old.path)
             );
             SyscallResult::Ok(0)
         }
@@ -2395,7 +2396,7 @@ fn sys_mkdir_from(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
     };
     let path = resolved.virtual_path().unwrap_or("");
 
-    log::debug!("sys_mkdir: path={:?}, mode={:#o}", path, mode);
+    log::debug!("sys_mkdir: path={}, mode={:#o}", path, mode);
 
     if resolved.last != Last::Name {
         return SyscallResult::Err(EEXIST as u64);
@@ -2440,7 +2441,7 @@ fn sys_mkdir_from(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
 
     match mkdir_result {
         Ok(inode_num) => {
-            log::info!(
+            log::debug!(
                 "sys_mkdir: successfully created directory {} (inode {})",
                 path,
                 inode_num
@@ -2511,9 +2512,9 @@ fn sys_symlink_from(target: u64, dirfd: i32, linkpath: u64) -> SyscallResult {
     };
 
     log::debug!(
-        "sys_symlink: target={:?}, linkpath={:?}",
-        target_str,
-        link.path
+        "sys_symlink: target={}, linkpath={}",
+        String::from_utf8_lossy(&target_str),
+        String::from_utf8_lossy(&link.path)
     );
 
     // Validate target is not empty
@@ -2562,10 +2563,10 @@ fn sys_symlink_from(target: u64, dirfd: i32, linkpath: u64) -> SyscallResult {
 
     match symlink_result {
         Ok(()) => {
-            log::info!(
-                "sys_symlink: successfully created symlink {:?} -> {:?}",
-                link.path,
-                target_str
+            log::debug!(
+                "sys_symlink: successfully created symlink {} -> {}",
+                String::from_utf8_lossy(&link.path),
+                String::from_utf8_lossy(&target_str)
             );
             SyscallResult::Ok(0)
         }
@@ -2638,8 +2639,8 @@ fn sys_readlink_from(dirfd: i32, pathname: u64, buf: u64, bufsize: u64) -> Sysca
     };
 
     log::debug!(
-        "sys_readlink: pathname={:?}, bufsize={}",
-        resolved.path,
+        "sys_readlink: pathname={}, bufsize={}",
+        String::from_utf8_lossy(&resolved.path),
         bufsize
     );
 
@@ -2700,9 +2701,9 @@ fn sys_readlink_from(dirfd: i32, pathname: u64, buf: u64, bufsize: u64) -> Sysca
     }
 
     log::debug!(
-        "sys_readlink: returning {} bytes: {:?}",
+        "sys_readlink: returning {} bytes: {}",
         bytes_to_copy,
-        &target[..bytes_to_copy]
+        String::from_utf8_lossy(&target[..bytes_to_copy])
     );
     SyscallResult::Ok(bytes_to_copy as u64)
 }
@@ -2908,7 +2909,7 @@ fn handle_devfs_open(
     use crate::fs::devfs;
     use crate::ipc::fd::FileDescriptor;
 
-    log::debug!("handle_devfs_open: device_name={:?}", device_name);
+    log::debug!("handle_devfs_open: device_name={}", device_name);
 
     // Check for /dev/pts/* paths - route to devptsfs
     if device_name.starts_with("pts/") {
@@ -3327,7 +3328,7 @@ fn handle_devpts_directory_open(flags: u32) -> SyscallResult {
     };
     match process.fd_table.alloc_with_entry(fd_entry) {
         Ok(fd) => {
-            log::info!("handle_devpts_directory_open: opened /dev/pts as fd {}", fd);
+            log::debug!("handle_devpts_directory_open: opened /dev/pts as fd {}", fd);
             SyscallResult::Ok(fd as u64)
         }
         Err(_) => {
@@ -3383,7 +3384,7 @@ fn handle_devfs_directory_open(flags: u32) -> SyscallResult {
     };
     match process.fd_table.alloc_with_entry(fd_entry) {
         Ok(fd) => {
-            log::info!("handle_devfs_directory_open: opened /dev as fd {}", fd);
+            log::debug!("handle_devfs_directory_open: opened /dev as fd {}", fd);
             SyscallResult::Ok(fd as u64)
         }
         Err(_) => {
@@ -4250,7 +4251,7 @@ fn install_fifo_descriptor(
 
     let result = match outcome {
         Install::Installed(fd) => {
-            log::info!(
+            log::debug!(
                 "handle_fifo_open: opened FIFO {} as fd {} ({})",
                 path,
                 fd,

@@ -97,6 +97,7 @@ pub enum ProcEntryType {
     /// Actual producer markers reached in boot-path order.
     BootRibbon,
     BootSerial,
+    BootSerialTimed,
     StageComposites,
     ShowcasePace,
     ScreenCheckpoints,
@@ -206,6 +207,7 @@ impl ProcEntryType {
             ProcEntryType::ScreenProof => "screen-proof",
             ProcEntryType::BootRibbon => "boot-ribbon",
             ProcEntryType::BootSerial => "boot-serial",
+            ProcEntryType::BootSerialTimed => "boot-serial-timed",
             ProcEntryType::StageComposites => "stage-composites",
             ProcEntryType::Ext2 => "ext2",
             ProcEntryType::Filesystems => "filesystems",
@@ -284,6 +286,7 @@ impl ProcEntryType {
             ProcEntryType::ScreenProof => "/proc/breenix/screen-proof",
             ProcEntryType::BootRibbon => "/proc/breenix/boot-ribbon",
             ProcEntryType::BootSerial => "/proc/breenix/boot-serial",
+            ProcEntryType::BootSerialTimed => "/proc/breenix/boot-serial-timed",
             ProcEntryType::StageComposites => "/proc/breenix/stage-composites",
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
             ProcEntryType::Filesystems => "/proc/breenix/filesystems",
@@ -363,6 +366,7 @@ impl ProcEntryType {
             ProcEntryType::ShowcasePace => 207,
             ProcEntryType::BootRibbon => 204,
             ProcEntryType::BootSerial => 205,
+            ProcEntryType::BootSerialTimed => 215,
             ProcEntryType::StageComposites => 206,
             ProcEntryType::Ext2 => 202,
             ProcEntryType::Filesystems => 209,
@@ -519,6 +523,7 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::ShowcasePace));
     procfs.entries.push(ProcEntry::new(ProcEntryType::BootRibbon));
     procfs.entries.push(ProcEntry::new(ProcEntryType::BootSerial));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::BootSerialTimed));
     procfs.entries.push(ProcEntry::new(ProcEntryType::StageComposites));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
@@ -829,7 +834,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::StageComposites))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::BootSerialTimed|ProcEntryType::StageComposites))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -885,6 +890,12 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             { crate::graphics::boot_ribbon::serial().map(|s| s.into_bytes()) }
             #[cfg(target_arch="x86_64")]
             { crate::boot_ribbon::serial().map(|s| s.into_bytes()) }
+        }
+        ProcEntryType::BootSerialTimed => {
+            #[cfg(target_arch="aarch64")]
+            { crate::graphics::boot_ribbon::serial_timed().map(|s| s.into_bytes()) }
+            #[cfg(target_arch="x86_64")]
+            { crate::boot_ribbon::serial_timed().map(|s| s.into_bytes()) }
         }
         // The display owners' completed GPU presents (the run stage's screen changes).
         ProcEntryType::StageComposites => {

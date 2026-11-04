@@ -316,7 +316,14 @@ fn size_rule((width, height): (usize, usize)) -> (usize, (usize, usize), (usize,
     let fonts = [(16, 7, 18), (20, 9, 22), (24, 11, 26), (32, 14, 34)];
     let &(size, cw, ch) = fonts.iter().rev().find(|&&(_, cw, ch)| width / cw >= 128 && height / ch >= 36)
         .unwrap_or(&fonts[0]);
-    (size, (cw, ch), ((width / cw).min(255), (height / ch).min(255)))
+    // B36 reserves the panel after selecting the font from the full display.
+    let scale = width / 1280;
+    let top = if scale > 0 && width == 1280 * scale && height == 800 * scale {
+        704 * scale
+    } else if width > 14 * cw && height >= 2 * ch + 48 {
+        height - (2 * ch + 48)
+    } else { height };
+    (size, (cw, ch), ((width / cw).min(255), (top / ch).min(255)))
 }
 
 fn screen_size_class() -> CaseResult {
