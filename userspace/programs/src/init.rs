@@ -327,13 +327,30 @@ fn run_desktop_mode() -> ! {
     }
     let mut supervisor = init_services::Supervisor::load(init_services::Scope::Desktop, system);
     supervisor.tick();
-    let terminal = spawn(b"/usr/bin/bterm\0");
-    if supervisor.running("bwm") && terminal.is_ok() {
+    let terminal = desktop_gpu_ready() && spawn(b"/usr/bin/bterm\0").is_ok();
+    if supervisor.running("bwm") && terminal {
         print!("[init] desktop services started\n");
     } else {
         print!("[init] desktop services incomplete\n");
     }
     supervisor.run()
+}
+
+/// A newly started compositor may still be admitting the shared GPU device.
+/// Give the terminal the same bounded admission wait as bwm before it creates a window.
+fn desktop_gpu_ready() -> bool {
+    let mut waited = 0;
+    loop {
+        let (result, caps) = libbreenix::gpu::caps();
+        if result == 0 && caps.status == libbreenix::gpu::abi::status::ADMITTED {
+            return true;
+        }
+        if waited >= 5000 {
+            return false;
+        }
+        let _ = libbreenix::time::sleep_ms(100);
+        waited += 100;
+    }
 }
 
 /// Run the #575 block-EINTR oracle first: its marker is a hard gate condition on every
