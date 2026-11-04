@@ -3972,6 +3972,12 @@ def rescore_suite_capture(directory, sha, scorer_head):
         report.update(checks=rows, errors=errors, notMeasured={'gpu-core': 'requires separate production and diagnostic companions'},
                       passed=report.get('passed', capture['exit_status'] == 0)
                              and not errors and all(r['result'] == 'PASS' for r in rows))
+        if not probe:
+            report['scope'] = suite + '-suite-and-startup'
+        if probe or suite == 'console':
+            report['notMeasured']['gpu-suite'] = 'requires a complete separate GPU-suite capture; startup checks do not prove selected GPU cases'
+        if probe or suite == 'gpu':
+            report['notMeasured']['console-suite'] = 'requires a complete separate console-suite capture within 330 s of handoff'
     report['artifacts'] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(directory.iterdir())
                            if p.is_file() and (p.name in ('run.json', 'metal-run.json', 'commit', 'dirty', 'ended', 'ended-by',
                                'exit-status', 'serial.txt', 'serial.ts', 'events.jsonl') or p.suffix == '.rle')}
@@ -4240,6 +4246,11 @@ def main():
     parser.add_argument('--pr', type=int, help='open PR whose live head must match --sha for local alpha acceptance')
     parser.add_argument('--core-boot', help='completed --gt710-category core diagnostic boot for row/dispatch')
     args = parser.parse_args()
+    if args.capture_directory and any((args.check_manifest, args.boot, args.gpu_boot, args.core_boot,
+            args.acceptance_directory, args.pr, args.breengel_fronts, args.breengel_composition,
+            args.breengel_stage, args.breengel_full, args.resources, args.alpha, args.shapes,
+            args.isolation, args.presentation, args.performance)):
+        parser.error('--capture-directory scores one capture only; step, companion and other scoring modes cannot be combined with it')
     if args.check_manifest:
         validate_manifest(json.loads(args.check_manifest.read_text()))
         return 0
