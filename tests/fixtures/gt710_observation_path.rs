@@ -102,7 +102,9 @@ fn production_caps_and_readback_publish_native_fields() {
         assert_eq!((wide(&r, record::RENDER_SERIAL), wide(&r, record::RENDER_FENCE), wide(&r, record::READBACK_FENCE)), (9001,42,123));
         assert_eq!(word(&r, record::RENDER_KIND), kind);
         assert_eq!(word(&r, record::READBACK_KIND), abi::gk208::TRANSFER_RELEASE);
-        assert!(r[136..160].iter().all(|b| *b == 0));
+        assert!(r[136..152].iter().all(|b| *b == 0));
+        assert_eq!(word(&r, record::COPY_KIND), abi::gk208::TRANSFER_RELEASE);
+        assert_eq!(word(&r, record::COPY_STATUS), abi::gk208::SUCCESS);
         for at in [record::RENDER_STATUS, record::READBACK_STATUS] { assert_eq!(word(&r, at), abi::gk208::SUCCESS); }
         for at in [record::READBACK_SURFACE, record::READBACK_MOB] { assert_eq!(wide(&r, at), 0); }
         assert_eq!((word(&r, record::X),word(&r, record::Y),word(&r, record::WIDTH),word(&r, record::HEIGHT)), (2,3,4,5));
@@ -116,6 +118,7 @@ fn production_caps_and_readback_publish_native_fields() {
         answer: 0x60010002, kind: abi::gk208::DRAW_RELEASE }, 0x60010002, 7, true).unwrap();
     for at in [record::RENDER_STATUS, record::READBACK_STATUS] { assert_eq!(word(&r, at), 0x60010002); }
     assert_eq!(word(&r, record::UNWRITTEN), 7);
+    assert_eq!(word(&r, record::COPY_STATUS), 0x60010002);
 }
 #[test]
 fn installation_names_the_missing_live_capability() {
@@ -150,7 +153,9 @@ fn composed_native_scanout_record_has_v2_provenance() {
     assert!(fences.iter().all(|f| *f != 0));
     assert!(fences[0] != fences[1] && fences[0] != fences[2] && fences[1] != fences[2]);
     assert_eq!(wide(&r, 176), 99);
-    assert!(r[136..160].iter().all(|b| *b == 0));
+    assert!(r[136..152].iter().all(|b| *b == 0));
+    assert_eq!(word(&r, record::COPY_KIND), abi::gk208::TRANSFER_RELEASE);
+    assert_eq!(word(&r, record::COPY_STATUS), abi::gk208::SUCCESS);
     assert_eq!(word(&r, 164), 0);
     assert_eq!(word(&r, 196), 1);
     assert_eq!([wide(&r, 200), wide(&r, 208), wide(&r, 216), wide(&r, 224)], [21, 22, 23, 24]);
