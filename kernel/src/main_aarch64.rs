@@ -182,6 +182,7 @@ fn read_boot_mode(fw_intent_captured: bool) -> (BootMode, Option<alloc::string::
                 only = suite.case;
                 BootMode::Suite
             }
+            Ok(None) if cfg!(feature = "testing") => BootMode::Default,
             Ok(None) => interactive_boot_mode(None).unwrap(),
             Err(why) => {
                 serial_println!("[boot] Ignoring boot target {}: {}", target::PATH, why);

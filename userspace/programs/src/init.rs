@@ -161,8 +161,8 @@ fn main() {
     }
     check_test_controls(pid);
 
-    // Explicit shell, console and desktop modes bypass the full startup below.
-    // No argument or `default` keeps the services and boot checks.
+    // Explicit shell and console modes bypass boot checks. PID-1 desktop
+    // runs the same checks as the no-argument and `default` paths.
     let mode = std::env::args().nth(1);
     match mode.as_deref() {
         Some("suite") => {
@@ -179,8 +179,26 @@ fn main() {
         _ => {}
     }
 
+    run_boot_checks();
+    reconcile_machine_state();
+    run_boot_script();
+    // The services start on the supervisor's first pass; the rest of the ARM64 start-up
+    // follows it and does not wait on a service.
+    let scope = if cfg!(target_arch = "aarch64") && mode.as_deref() != Some("full-console") {
+        init_services::Scope::Daemons
+    } else {
+        init_services::Scope::All
+    };
+    let mut supervisor = init_services::Supervisor::load(scope, pid == 1);
+    supervisor.tick();
+    finish_boot_checks();
+    supervisor.run()
+}
+
+/// Boot checks shared by the default and PID-1 desktop paths.
+fn run_boot_checks() {
     // The boot gates accept on the liveness service's marker: spawn it before the
-    // exec smoke so gate acceptance never sits behind a spawn+exec+wait round trip.
+    // exec smoke so gate acceptance does not wait for its spawn+exec+wait round trip.
     #[cfg(target_arch = "aarch64")]
     start_liveness_service();
     #[cfg(target_arch = "aarch64")]
@@ -210,24 +228,16 @@ fn main() {
     // Detach before starting daemons so the getty handoff cannot hang them up.
     #[cfg(target_arch = "x86_64")]
     detach_console();
-    reconcile_machine_state();
-    run_boot_script();
-    // The services start on the supervisor's first pass; the rest of the ARM64 start-up
-    // follows it and does not wait on a service.
-    let scope = if cfg!(target_arch = "aarch64") && mode.as_deref() != Some("full-console") {
-        init_services::Scope::Daemons
-    } else {
-        init_services::Scope::All
-    };
-    let mut supervisor = init_services::Supervisor::load(scope, pid == 1);
-    supervisor.tick();
+}
+
+/// ARM startup that follows the supervisor's first pass.
+fn finish_boot_checks() {
     #[cfg(target_arch = "aarch64")]
     start_bounce();
     #[cfg(target_arch = "aarch64")]
     run_bssh_autorun_if_enabled();
     #[cfg(target_arch = "aarch64")]
     run_init_group_refusal_probe("quiesce");
-    supervisor.run()
 }
 
 /// Boot modes (`init shell`, `init desktop`): reap one child, blocking. Returns its PID,
@@ -322,11 +332,15 @@ fn run_desktop_mode() -> ! {
     print!("[init] mode desktop\n");
     let system = std::process::id() == 1;
     if system {
+        run_boot_checks();
         reconcile_machine_state();
         run_boot_script();
     }
     let mut supervisor = init_services::Supervisor::load(init_services::Scope::Desktop, system);
     supervisor.tick();
+    if system {
+        finish_boot_checks();
+    }
     let terminal = desktop_gpu_ready() && spawn(b"/usr/bin/bterm\0").is_ok();
     if supervisor.running("bwm") && terminal {
         print!("[init] desktop services started\n");
