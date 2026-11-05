@@ -211,10 +211,6 @@
           {
             "name": "Boot script completed",
             "marker": "[init] Boot script completed"
-          },
-          {
-            "name": "Console login prompt",
-            "marker": "Breenix login:"
           }
         ],
         "persistent": [
@@ -238,6 +234,41 @@
         "disk-root",
         "persistent"
       ]
+    },
+    {
+      "id": "desktop",
+      "title": "Desktop",
+      "summary": "Init starts the desktop services and the window manager presents its first frames.",
+      "bootShapes": [
+        "ramdisk",
+        "install",
+        "disk-root",
+        "persistent"
+      ],
+      "stages": {
+        "default": [
+          {
+            "name": "Desktop services started",
+            "marker": "[init] desktop services started"
+          },
+          {
+            "name": "Window manager started",
+            "marker": "[bwm] Breenix Window Manager starting"
+          },
+          {
+            "name": "Window manager first frame read back",
+            "marker": "[bwm] first frame read back:"
+          },
+          {
+            "name": "Window manager desktop fills the scanout",
+            "marker": "[bwm] desktop fills the scanout:"
+          },
+          {
+            "name": "Window manager composited a client frame",
+            "marker": "[bwm] composited client frame:"
+          }
+        ]
+      }
     },
     {
       "id": "shell",
@@ -476,7 +507,6 @@
         "persistent"
       ],
       "bootModes": [
-        "default",
         "shell",
         "console",
         "persistent"

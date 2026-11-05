@@ -49,7 +49,9 @@ pub mod op {
     pub const READ_META: u32 = 28;
     /// The highest op number; every op above it is EINVAL.
     pub const COMPOSITE_SNAPSHOT: u32 = 29;
-    pub const LAST: u32 = COMPOSITE_SNAPSHOT;
+    pub const COMPOSITOR_ACK: u32 = 30;
+    pub const COMPOSITOR_STATUS: u32 = 31;
+    pub const LAST: u32 = COMPOSITOR_STATUS;
 }
 
 /// Linux's errno values, which the interface returns negated (section 25).
@@ -577,6 +579,21 @@ pub struct CompositeEntry {
     pub pixels: u64,
 }
 
+/// W16 compositor progress acknowledgment.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompositorAck {
+    pub claim_epoch: u64, pub epoch: u64, pub handled_serial: u64, pub presented: u64,
+    pub next_deadline_ns: u64, pub flags: u32, pub reserved: u32,
+}
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CompositorStatus {
+    pub claim_epoch: u64, pub epoch: u64, pub handled_serial: u64, pub presented: u64,
+    pub scene_version: u64, pub composites: u64, pub next_deadline_ns: u64,
+    pub owner: u32, pub flags: u32, pub reserved: [u64; 2],
+}
+
 /// A window and the commit an observation shows (`ObservationRecord.windows`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -852,6 +869,8 @@ layout!(Cursor, 16, shape @ 0, visible @ 4, x @ 8, y @ 12);
 layout!(Give, 8, pid @ 0, reserved @ 4);
 layout!(MetaQuery, 24, id @ 0, meta @ 8, commit_id @ 16);
 layout!(CompositeRecordHeader, 24, serial @ 0, pixels @ 8, count @ 16, flags @ 20);
+layout!(CompositorAck, 48, claim_epoch @ 0, epoch @ 8, handled_serial @ 16, presented @ 24, next_deadline_ns @ 32, flags @ 40, reserved @ 44);
+layout!(CompositorStatus, 80, claim_epoch @ 0, epoch @ 8, handled_serial @ 16, presented @ 24, scene_version @ 32, composites @ 40, next_deadline_ns @ 48, owner @ 56, flags @ 60, reserved @ 64);
 layout!(CompositeEntry, 32, id @ 0, commit_id @ 8, pixel_gen @ 16, pixels @ 24);
 layout!(ObservedWindow, 16, id @ 0, commit_id @ 8);
 layout!(Completion, 16, fence @ 0, kind @ 8, status @ 12);
@@ -891,6 +910,8 @@ pub const fn arg_size(op: u32) -> Option<usize> {
         op::GIVE_DISPLAY => size_of::<Give>(),
         op::READ_META => size_of::<MetaQuery>(),
         op::COMPOSITE_SNAPSHOT => size_of::<SceneSnapshot>(),
+        op::COMPOSITOR_ACK => size_of::<CompositorAck>(),
+        op::COMPOSITOR_STATUS => size_of::<CompositorStatus>(),
         _ => return None,
     })
 }

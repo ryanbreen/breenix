@@ -105,6 +105,8 @@ pub struct Compositor {
     height: u32,
     scene: u64,
     scanout: [u64; 2],
+    /// The most recently completed window composite.
+    pub last_serial: u64,
     /// The scanout target the next frame writes: the one not shown.
     next: usize,
     /// The desktop: background, taskbar, window frames and app bar.
@@ -148,6 +150,7 @@ impl Compositor {
             height,
             scene: 0,
             scanout: [0; 2],
+            last_serial: 0,
             next: 0,
             desktop,
             background,
@@ -201,6 +204,30 @@ impl Compositor {
     pub fn reopen(&mut self) -> Result<(), String> {
         let appbar = self.height - self.appbar_top as u32;
         *self = Self::open(self.width, self.height, appbar, self.scale as u32)?;
+        Ok(())
+    }
+
+    /// Present startup chrome without a window snapshot or client presentation receipt.
+    /// Real window composition starts only after the surviving clients are discovered.
+    pub fn present_startup_desktop(&mut self, pointer: Option<Pointer>) -> Result<(), FrameError> {
+        self.desktop.wait().map_err(|e| FrameError::Failed(format!("desktop drawing: errno {}", -e)))?;
+        let mut words = Vec::new();
+        self.encode(&mut words, &[[0, 0, self.width as i32, self.height as i32]], &[], &[], pointer);
+        let (r, submitted) = gpu::submit(self.context, &words);
+        if r != 0 {
+            return Err(FrameError::Failed(format!("startup drawing: errno {}", -r)));
+        }
+        let (r, completed) = gpu::wait(self.context, submitted.fence, RETRY_MS * 1_000_000);
+        if r != 0 || completed.status != abi::fence_status::OK {
+            return Err(FrameError::Failed(format!("startup drawing: errno {}, status {}", -r, completed.status)));
+        }
+        let (r, _) = gpu::present(self.context, self.scanout[self.next]);
+        if r != 0 {
+            return Err(FrameError::Failed(format!("startup present: errno {}", -r)));
+        }
+        self.next ^= 1;
+        self.sampled.clear();
+        self.full = true;
         Ok(())
     }
 
@@ -272,6 +299,7 @@ impl Compositor {
             match r {
                 0 => {
                     self.next ^= 1;
+                    self.last_serial = c.serial;
                     self.full = false;
                     self.sampled = windows.iter().map(|w| Sampled {
                         id: w.id, sample: w.sample, commit_id: w.commit_id, width: w.width, height: w.height,

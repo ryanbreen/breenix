@@ -1059,11 +1059,46 @@ class ModeApplicabilityTest(StateTest):
         for shape in ('ramdisk', 'install', 'disk-root', 'persistent'):
             for mode in self.definition['modes']:
                 with self.subTest(shape=shape, mode=mode):
-                    applies = mode in ('default', 'shell', 'console', 'persistent')
+                    applies = mode in ('shell', 'console', 'persistent')
                     self.assertEqual(metal_score.measures(self.fbcon, shape, mode), applies)
                     groups = boot.measured_stages({'milestones': [self.fbcon], 'gateArch': 'x86_64'},
                                                   mode, {}, shape)
                     self.assertEqual(groups, [fb_markers] if applies else [])
+
+    def test_default_desktop_catalog_and_other_modes(self):
+        import copy
+        catalog = json.loads((TOOLS.parents[1] / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json').read_text())
+        milestones = self.definition['milestones']
+        first = next(item for item in milestones if item['id'] == 'first-userspace')
+        desktop = next(item for item in milestones if item['id'] == 'desktop')
+        self.assertEqual(milestones.index(desktop), milestones.index(first) + 1)
+        first_group = [(s, 'contains') for s in (
+            '[init] Breenix init starting (PID 1)', '[init] Boot script completed')]
+        desktop_group = [(s, 'contains') for s in (
+            '[init] desktop services started', '[bwm] Breenix Window Manager starting',
+            '[bwm] first frame read back:', '[bwm] desktop fills the scanout:',
+            '[bwm] composited client frame:')]
+        groups = boot.measured_stages(self.definition, 'default', catalog)
+        self.assertIn(first_group, groups)
+        self.assertIn(desktop_group, groups)
+        self.assertLess(groups.index(first_group), groups.index(desktop_group))
+        self.assertEqual(boot.final_marker(self.definition, 'default', catalog), desktop_group[-1])
+        self.assertNotIn([(s['marker'], 'contains') for s in self.fbcon['stages']['x86_64']], groups)
+
+        # Reconstruct main's two changed entries and compare the actual resolved modes.
+        baseline = copy.deepcopy(self.definition)
+        baseline['milestones'] = [m for m in baseline['milestones'] if m['id'] != 'desktop']
+        old_first = next(m for m in baseline['milestones'] if m['id'] == 'first-userspace')
+        old_first['stages']['default'] = copy.deepcopy(old_first['stages']['persistent'])
+        old_fb = next(m for m in baseline['milestones'] if m['id'] == 'fb-console')
+        old_fb['bootModes'].insert(0, 'default')
+        for shape in ('ramdisk', 'install', 'disk-root', 'persistent'):
+            for mode in ('persistent', 'console', 'shell'):
+                with self.subTest(shape=shape, mode=mode):
+                    self.assertEqual(boot.measured_stages(self.definition, mode, catalog, shape),
+                                     boot.measured_stages(baseline, mode, catalog, shape))
+                    self.assertEqual(boot.final_marker(self.definition, mode, catalog, shape),
+                                     boot.final_marker(baseline, mode, catalog, shape))
 
     def test_final_marker_skips_mode_excluded_kernel_milestone(self):
         definition = {'gateArch': 'x86_64', 'milestones': [
@@ -1092,7 +1127,7 @@ class ModeApplicabilityTest(StateTest):
                         m.write_json(directory / 'run.json', {'disk': disk, 'mode': mode})
                         (directory / 'serial.txt').write_text('\n'.join(stage['marker'] for stage in stages[:count]))
                         verdict = metal_score.score(directory)
-                        applies = mode in ('default', 'shell', 'console', 'persistent')
+                        applies = mode in ('shell', 'console', 'persistent')
                         self.assertEqual(verdict['milestones'], {'fb-console': {
                             'reached': count, 'total': 4, 'passed': count == 4}} if applies else {})
                         self.assertEqual(metal_score.falls_short(verdict), applies and count < 4)
@@ -1683,6 +1718,22 @@ class DriverTest(StateTest):
             d.pump_bmc()
         d.bmc_events = [{'t': 120, 'progress': {'LastState': 'MemoryInit'}}]
         self.finish(d.pump_bmc, m.EXIT_SHORT)
+
+    def test_default_boot_script_alone_does_not_complete_desktop(self):
+        root = TOOLS.parents[1]
+        definition = json.loads((root / 'docs/metal/boot-path.json').read_text())
+        catalog = json.loads((root / 'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json').read_text())
+        d = self.driver
+        d.final_marker = boot.final_marker(definition, 'default', catalog)
+        d.required_stages = boot.measured_stages(definition, 'default', catalog)
+        # Feed the other required stages while withholding desktop readiness.
+        for group in list(d.required_stages):
+            for marker, _ in list(group):
+                if marker.startswith('[init] desktop services') or marker.startswith('[bwm]'):
+                    continue
+                d.on_line(marker.split('|')[0])
+        self.assertFalse(d.final_seen)
+        self.assertFalse(d.completion_reported)
 
     def test_default_waits_for_the_unterminated_getty_prompt(self):
         d = self.driver

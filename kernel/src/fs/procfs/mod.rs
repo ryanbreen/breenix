@@ -99,6 +99,8 @@ pub enum ProcEntryType {
     BootSerial,
     BootSerialTimed,
     StageComposites,
+    CompositorStatus,
+    Composites,
     ShowcasePace,
     ScreenCheckpoints,
     ScreenProof,
@@ -209,6 +211,8 @@ impl ProcEntryType {
             ProcEntryType::BootSerial => "boot-serial",
             ProcEntryType::BootSerialTimed => "boot-serial-timed",
             ProcEntryType::StageComposites => "stage-composites",
+            ProcEntryType::CompositorStatus => "compositor",
+            ProcEntryType::Composites => "composites",
             ProcEntryType::Ext2 => "ext2",
             ProcEntryType::Filesystems => "filesystems",
             ProcEntryType::Frames => "frames",
@@ -288,6 +292,8 @@ impl ProcEntryType {
             ProcEntryType::BootSerial => "/proc/breenix/boot-serial",
             ProcEntryType::BootSerialTimed => "/proc/breenix/boot-serial-timed",
             ProcEntryType::StageComposites => "/proc/breenix/stage-composites",
+            ProcEntryType::CompositorStatus => "/proc/breenix/compositor",
+            ProcEntryType::Composites => "/proc/breenix/composites",
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
             ProcEntryType::Filesystems => "/proc/breenix/filesystems",
             ProcEntryType::Frames => "/proc/breenix/frames",
@@ -368,6 +374,8 @@ impl ProcEntryType {
             ProcEntryType::BootSerial => 205,
             ProcEntryType::BootSerialTimed => 215,
             ProcEntryType::StageComposites => 206,
+            ProcEntryType::CompositorStatus => 216,
+            ProcEntryType::Composites => 217,
             ProcEntryType::Ext2 => 202,
             ProcEntryType::Filesystems => 209,
             ProcEntryType::Frames => 203,
@@ -525,6 +533,8 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::BootSerial));
     procfs.entries.push(ProcEntry::new(ProcEntryType::BootSerialTimed));
     procfs.entries.push(ProcEntry::new(ProcEntryType::StageComposites));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::CompositorStatus));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::Composites));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Filesystems));
@@ -680,6 +690,8 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::TraceProviders
                     | ProcEntryType::TraceTeardownDir
                     | ProcEntryType::BreenixTesting
+                    | ProcEntryType::CompositorStatus
+                    | ProcEntryType::Composites
                     | ProcEntryType::Filesystems
                     | ProcEntryType::Frames
                     | ProcEntryType::XhciTrace
@@ -834,7 +846,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::BootSerialTimed|ProcEntryType::StageComposites))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::BootSerialTimed|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::Composites))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -853,6 +865,15 @@ pub fn is_initialized() -> bool {
 /// The content as a String, or an error code
 pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
     match entry_type {
+        ProcEntryType::CompositorStatus => {
+            let caller = crate::window::Caller::current().map_err(|e| -e)?;
+            crate::window::status::text(&caller).map(|s| s.into_bytes()).map_err(|e| -e)
+        }
+        ProcEntryType::Composites => {
+            let caller = crate::window::Caller::current().map_err(|e| -e)?;
+            if !caller.is_root() { return Err(-1); }
+            text(crate::window::scene::history_text())
+        }
         ProcEntryType::ScreenProof => {
             #[cfg(target_arch="aarch64")]
             if !crate::platform_config::is_qemu() { return text(String::from("off\n")); }

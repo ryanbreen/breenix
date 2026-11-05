@@ -43,6 +43,10 @@ pub struct Reservation {
     _charge: MetadataCharge,
 }
 
+static HISTORY: super::status_pages::CompositeHistory = super::status_pages::CompositeHistory::new();
+
+pub fn history_text() -> alloc::string::String { HISTORY.format() }
+
 /// The queue the compositor's scene descriptor sleeps on.
 static CHANGES: spin::Once<Arc<WaitQueueHead>> = spin::Once::new();
 
@@ -606,6 +610,12 @@ fn finish(frame: &mut Admission, result: Result<Composed, i32>, reason: u32) -> 
             // overflowed it: that asked for a whole screen this frame did not compose.
             if reg.present.full_requests == frame.reservation.full_requests {
                 reg.present.force_full = false;
+            }
+            for e in &frame.entries {
+                HISTORY.push(super::status_pages::HistoryEntry {
+                    composite_serial: frame.serial, presented_ns: c.presented_ns,
+                    window_id: e.id, commit_id: e.commit_id, pixel_generation: e.pixel_gen,
+                });
             }
             crate::tracing::providers::window::count_composite(c.pixels, c.presented_ns);
             (c.pixels, 0)

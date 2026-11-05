@@ -108,6 +108,17 @@ impl BootMode {
     }
 }
 
+#[cfg(target_arch = "aarch64")]
+fn interactive_boot_mode(target: Option<&kernel::boot::target::Target>) -> Option<BootMode> {
+    use kernel::boot::target::{init_mode, InitMode};
+    match init_mode(target)? {
+        InitMode::Desktop => Some(BootMode::Desktop),
+        InitMode::Shell => Some(BootMode::Shell),
+        InitMode::Console { .. } => Some(BootMode::Console),
+        InitMode::FullConsole => None,
+    }
+}
+
 /// Read the boot mode: fw_cfg first, then the boot-target file, else `default`. An
 /// unknown request, a program request without an absolute program path, a suite
 /// request without a valid suite id, an unusable boot-target file, or any request to
@@ -139,9 +150,10 @@ fn read_boot_mode(fw_intent_captured: bool) -> (BootMode, Option<alloc::string::
     };
     let mode = match requested.as_deref() {
         Some("probe") => BootMode::Probe,
-        Some("shell") => BootMode::Shell,
-        Some("console") => BootMode::Console,
-        Some("desktop") => BootMode::Desktop,
+        Some("default" | "shell" | "console" | "desktop") => {
+            let target = target::parse(requested.as_deref().unwrap()).unwrap();
+            interactive_boot_mode(Some(&target)).unwrap()
+        },
         Some("program") => BootMode::Program,
         Some("suite") => BootMode::Suite,
         _ => BootMode::Default,
@@ -152,10 +164,8 @@ fn read_boot_mode(fw_intent_captured: bool) -> (BootMode, Option<alloc::string::
     let mut only = None;
     let mode = match requested.as_deref() {
         None | Some("") => match target::read() {
-            Ok(Some(target::Target::Default)) => BootMode::Default,
-            Ok(Some(target::Target::Shell)) => BootMode::Shell,
-            Ok(Some(target::Target::Desktop)) => BootMode::Desktop,
-            Ok(Some(target::Target::Console { .. })) => BootMode::Console,
+            Ok(Some(target @ (target::Target::Default | target::Target::Shell | target::Target::Desktop | target::Target::Console { .. }))) =>
+                interactive_boot_mode(Some(&target)).unwrap(),
             Ok(Some(target::Target::Probe)) => BootMode::Probe,
             Ok(Some(target::Target::Persistent | target::Target::PersistentInstall)) => {
                 serial_println!("[boot] Ignoring boot target {}: the persistent install is x86-metal only", target::PATH);
@@ -172,7 +182,8 @@ fn read_boot_mode(fw_intent_captured: bool) -> (BootMode, Option<alloc::string::
                 only = suite.case;
                 BootMode::Suite
             }
-            Ok(None) => BootMode::Default,
+            Ok(None) if cfg!(feature = "testing") => BootMode::Default,
+            Ok(None) => interactive_boot_mode(None).unwrap(),
             Err(why) => {
                 serial_println!("[boot] Ignoring boot target {}: {}", target::PATH, why);
                 BootMode::Default
@@ -296,7 +307,7 @@ impl InitLaunch {
     }
 
     fn default_init() -> InitLaunch {
-        InitLaunch::new("/sbin/init", &[b"/sbin/init"])
+        InitLaunch::new("/sbin/init", &[b"/sbin/init", b"desktop"])
     }
 
     fn for_mode(mode: BootMode, arg: Option<&str>, only: Option<&str>) -> InitLaunch {

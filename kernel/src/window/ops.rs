@@ -1058,6 +1058,14 @@ pub fn read_events(caller: &Caller, r: &mut ReadEvents, out_arg: u64) -> Result<
             let mut reg = REGISTRY.lock();
             let claim = reg.claim.map(|c| c.epoch);
             let w = reg.window(r.id, caller, who::owner)?;
+            // A read already waiting under the departed claim returns empty
+            // (17.5); leave its notification queued for the next read.
+            if compositor.is_some_and(|began| began.is_some() && claim != began) {
+                r.lost = 0;
+                drop(reg);
+                crate::syscall::window::copy_out(out_arg, &*r)?;
+                return Ok(0);
+            }
             (w.ring.take(&mut out, capacity), w.waits.clone(), claim)
         };
         let began = *compositor.get_or_insert(claim);
@@ -1077,7 +1085,7 @@ pub fn read_events(caller: &Caller, r: &mut ReadEvents, out_arg: u64) -> Result<
             }
             return Ok(out.len() as u64);
         }
-        if r.flags & READ_EVENTS_BLOCK == 0 || (began.is_some() && claim != began) {
+        if r.flags & READ_EVENTS_BLOCK == 0 {
             r.lost = 0;
             crate::syscall::window::copy_out(out_arg, &*r)?;
             return Ok(0);
@@ -1105,6 +1113,18 @@ fn all_waits(reg: &super::Registry) -> Vec<Arc<Waits>> {
         v.extend(reg.windows.values().map(|w| w.waits.clone()));
     }
     v
+}
+
+/// Publish claim loss before waking readers; clients need not wait for a replacement.
+fn end_claim(reg: &mut super::Registry) -> Vec<Arc<Waits>> {
+    reg.claim = None;
+    reg.epoch += 1;
+    for window in reg.windows.values_mut() {
+        let mut event = kernel_event(event_kind::COMPOSITOR_CHANGED);
+        event.epoch = reg.epoch;
+        window.ring.push(event);
+    }
+    all_waits(reg)
 }
 
 /// `EVENT_FD` (the owner): a new descriptor that polls readable while the window has an event.
@@ -1222,6 +1242,9 @@ pub fn claim(caller: &Caller, c: &mut Claim, out: u64) -> Result<u64, i32> {
         reg.claim = Some(Held {
             holder: caller.tgid,
             epoch: reg.epoch,
+            ack: breengel_abi::CompositorAck::ZERO,
+            first_serial: reg.present.serial,
+            composites_base: super::status::completed(),
         });
         reg.epoch
     };
@@ -1266,8 +1289,7 @@ pub fn release(caller: &Caller) -> Result<u64, i32> {
         if !reg.is_compositor(caller) {
             return Err(EPERM);
         }
-        reg.claim = None;
-        all_waits(&reg)
+        end_claim(&mut reg)
     };
     super::scene::invalidate(caller.tgid);
     claim_ended(woken);
@@ -1392,8 +1414,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
             }
         }
         if reg.claim.is_some_and(|c| c.holder == tgid) {
-            reg.claim = None;
-            readers = all_waits(&reg);
+            readers = end_claim(&mut reg);
         }
         if at_exit {
             let held: Vec<u64> = reg.remnants.iter().filter(|(_, r)| r.holder == tgid).map(|(id, _)| *id).collect();

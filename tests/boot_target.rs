@@ -212,3 +212,26 @@ fn only_an_explicit_measured_console_target_requests_replug() {
 fn desktop_request_is_preserved_for_the_architecture_to_accept_or_refuse() {
     assert!(matches!(parse("desktop\n"), Ok(Target::Desktop)));
 }
+
+#[test]
+fn shared_init_mode_maps_boot_targets_and_fw_cfg_values() {
+    use target::{init_mode, InitMode};
+
+    assert_eq!(init_mode(None), Some(InitMode::Desktop));
+    for name in ["default", "desktop"] {
+        let target = parse(name).unwrap();
+        assert_eq!(init_mode(Some(&target)), Some(InitMode::Desktop), "{name}");
+    }
+    let persistent = parse("persistent").unwrap();
+    assert_eq!(init_mode(Some(&persistent)), Some(InitMode::FullConsole));
+    let shell = parse("shell").unwrap();
+    assert_eq!(init_mode(Some(&shell)), Some(InitMode::Shell));
+    for (name, idle_minutes, replug) in [("console", 30, false), ("console idle=2", 2, false), ("console replug", 30, true)] {
+        let target = parse(name).unwrap();
+        assert_eq!(init_mode(Some(&target)), Some(InitMode::Console { idle_minutes, replug }), "{name}");
+    }
+    for name in ["persistent-install", "probe", "program /bin/test arg", "suite smoke case process/getpid"] {
+        let target = parse(name).unwrap();
+        assert_eq!(init_mode(Some(&target)), None, "{name}");
+    }
+}

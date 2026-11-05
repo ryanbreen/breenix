@@ -3,6 +3,10 @@
 # Stanzas start in this order on each pass; a service whose needs do not hold
 # yet waits without holding up the ones after it.
 
+[bwm]
+command = /usr/bin/bwm
+give-up = 5 10
+
 # SSH key exchange reads the random pool, so bsshd starts once it is ready.
 [bsshd]
 command = /usr/sbin/bsshd

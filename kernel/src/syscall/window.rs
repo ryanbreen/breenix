@@ -12,7 +12,7 @@
 use breengel_abi::errno::{EFAULT, EINVAL, ENOSYS, EPERM};
 use breengel_abi::{
     arg_size, op, Acquire, Capture, Claim, Commit, Composite, CompositeEntry, CompositeRecordHeader,
-    Create, Cursor, Geometry, Give, List, MapTree, Meta, MetaQuery, NoChange, Plain, ReadEvents,
+    CompositorAck, CompositorStatus, Create, Cursor, Geometry, Give, List, MapTree, Meta, MetaQuery, NoChange, Plain, ReadEvents,
     Readback, RecordQuery, Resize, SceneSnapshot, Title, WinId, WriteEvents, INTERFACE_VERSION,
 };
 
@@ -105,7 +105,7 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
         op,
         op::LIST | op::ACQUIRE | op::READ_EVENTS | op::WRITE_EVENTS | op::EVENT_FD | op::CAPTURE | op::MAP_TREE
             | op::COMPOSITE_SNAPSHOT | op::COMPOSITE_RECORD | op::SCANOUT_READBACK | op::READ_META | op::READ_REMNANT
-            | op::MAP_COMMITTED | op::MAP_COMPOSITOR_TEXTURE
+            | op::MAP_COMMITTED | op::MAP_COMPOSITOR_TEXTURE | op::COMPOSITOR_ACK | op::COMPOSITOR_STATUS
     ) {
         crate::window::scene::changed();
     }
@@ -203,6 +203,12 @@ fn dispatch(caller: &Caller, op: u32, arg: u64) -> Result<u64, i32> {
             let (commit_id, meta) = ops::read_meta(&caller, q.id)?;
             output(q.meta, &meta)?;
             q.commit_id = commit_id;
+            Ok(0)
+        }),
+        op::COMPOSITOR_ACK => crate::window::status::ack(&caller, &input::<CompositorAck>(arg)?),
+        op::COMPOSITOR_STATUS => inout::<CompositorStatus>(arg, |s| {
+            if *s != CompositorStatus::ZERO { return Err(EINVAL); }
+            *s = crate::window::status::read(&caller)?;
             Ok(0)
         }),
         _ => Err(EINVAL),
