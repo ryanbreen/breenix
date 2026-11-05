@@ -238,6 +238,7 @@ fn main() {
         if shutdown::boundary(&mut wait).is_none() { return; }
         clock.begin_epoch();
         launch::reap(&mut children);
+        launch::poll_errors(&mut children);
         let input_ready = poll_fds[0].revents & io::poll_events::POLLIN as i16 != 0;
         let scene_changed = poll_fds[1].revents & io::poll_events::POLLIN as i16 != 0;
         if scene_changed {

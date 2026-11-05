@@ -1,4 +1,44 @@
 use super::*;
+use std::cell::RefCell;
+use libbreenix::window::{self, abi, abi::Plain};
+thread_local! { static ERROR: RefCell<Option<breengel::Window>> = const { RefCell::new(None) }; }
+
+fn show_error(path: &[u8], kind: children::LaunchError) {
+    let (title, reason) = match kind {
+        children::LaunchError::Missing => ("Launch error: missing program", "Executable does not exist"),
+        children::LaunchError::Fork => ("Launch error: fork failed", "Cannot create the program's process"),
+        children::LaunchError::Other => ("Launch error", "Cannot start the executable"),
+        children::LaunchError::NoWindow => ("Launch error: no window", "Program did not present a window within 5000 ms"),
+    };
+    ERROR.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        let result = (|| -> Result<(), libbreenix::error::Error> {
+            if let Some(error) = slot.as_mut() { window::set_title(error.id(), title.as_bytes())?; }
+            else { *slot = Some(breengel::Window::new_without_fonts(title.as_bytes(), 640, 140)?); }
+            let error = slot.as_mut().unwrap();
+            error.acquire(0)?;
+            let surface = error.surface()?;
+            fill_rect(surface, 0, 0, 640, 140, Color::rgb(45, 24, 30));
+            draw_text_at(surface, reason.as_bytes(), 16, 16, Color::rgb(255, 225, 225), None);
+            draw_text_at(surface, path, 16, 64, Color::rgb(255, 255, 255), None);
+            error.present()
+        })();
+        if let Err(error) = result { eprintln!("[bwm] cannot show launch error: {error}"); }
+    });
+}
+
+pub(super) fn poll_errors(children: &mut children::Children) {
+    ERROR.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if let Some(error) = slot.as_ref() {
+            let mut events = [abi::WindowEvent::ZERO; abi::limits::EVENT_RING];
+            if let Ok(count) = window::read_events(error.id(), &mut events, false, 0) {
+                if events[..count].iter().any(|e| e.kind == abi::event_kind::CLOSE_REQUESTED) { *slot = None; }
+            }
+        }
+    });
+    for (path, error) in children.expire(libbreenix::ui_clock::now_ns()) { show_error(&path, error); }
+}
 
 // ─── Hotkey Action Execution ─────────────────────────────────────────────────
 
@@ -15,13 +55,15 @@ pub(super) fn execute_hotkey_action(action: &HotkeyAction, windows: &[Window], s
                     return;
                 }
             }
-            // Spawn the program — build null-terminated path on stack
-            let mut spawn_buf = [0u8; 256];
-            let len = path.len().min(254);
-            spawn_buf[..len].copy_from_slice(&path[..len]);
-            spawn_buf[len] = 0;
-            if let Ok(pid) = libbreenix::process::spawn(&spawn_buf[..len + 1]) {
-                children.track(pid.raw() as u32, libbreenix::ui_clock::now_ns());
+            if path.is_empty() || path.contains(&0) {
+                show_error(path, children::LaunchError::Other);
+                return;
+            }
+            let mut executable = path.to_vec();
+            executable.push(0);
+            match libbreenix::process::spawn(&executable) {
+                Ok(pid) => children.track_path(pid.raw() as u32, libbreenix::ui_clock::now_ns(), path),
+                Err(libbreenix::error::Error::Os(errno)) => show_error(path, children::Children::spawn_error(errno as i32)),
             }
         }
         HotkeyAction::Close => {
@@ -47,7 +89,6 @@ pub(super) fn reap(children: &mut children::Children) {
 /// Match the completed frame to the current LIST, independent of newer commits.
 pub(super) fn acknowledge(children: &mut children::Children, serial: u64) {
     if children.is_empty() || serial == 0 { return; }
-    use libbreenix::window::{self, abi, abi::Plain};
     #[repr(C)]
     struct Record { header: abi::CompositeRecordHeader, entries: [abi::CompositeEntry; abi::limits::RECORD_WINDOWS] }
     let mut record = Record { header: abi::CompositeRecordHeader::default(), entries: [abi::CompositeEntry::default(); abi::limits::RECORD_WINDOWS] };

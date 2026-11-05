@@ -24,3 +24,7 @@ spawn bodies for both architectures with the production signal state. It
 checks delivery to the child while the parent's pending TERM stays blocked.
 The suite's SIGKILL cleanup path is unchanged. ARM still needs a booted check
 of this shutdown and launch behavior when ARM execution is released.
+
+### Launch errors
+
+A failed launch opens one bwm-owned BreenGL window. It identifies a missing executable, a fork failure, or another spawn error. A launch that has not presented a window within five seconds of UI time reports a timeout. Later errors replace its contents; closing the window dismisses it. Suite-mode point 34 can refuse one fork for a target caller.

@@ -1435,7 +1435,7 @@ negative control: the device reports no resource identity and it is observed as 
   device's position, for the panel cursor (system call 413, which the run stage reads), the position is (x, y), as if the device had moved there), 18
   `capture-stall` (target: a window; the next `CAPTURE` of it pauses after copying half its rows, with its pins
   held, until released or 1 s). Points 12 to 15 are the run stage's (section 23). Faults are branches in the
-  real code paths, disarmed at case end by the suite. GPU points 19–31 have the exact
+  real code paths, disarmed at case end by the suite. Point 34 `launch-fork-fail` refuses the next fork admission for its target process (or any caller when target is zero), once. GPU points 19–31 have the exact
   definitions in `gpu-abi.md`, including point 31's pending-fence depth mode used by the
   render-handoff check. All watchdog and kill bounds remain unchanged.
 - `init`, running as PID 1, checks that every op returns ENOSYS and prints `[init] test controls absent`; run
