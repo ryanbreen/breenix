@@ -269,8 +269,7 @@ impl State {
             let d = self.devices.get_mut(&device).unwrap();
             let console_reserved = e.kind == kind::KEY
                 && super::event::reserved(&mut d.reserved, e.code, e.value, mods);
-            let repeat = e.kind == kind::KEY && e.value == 2;
-            reserved.push(console_reserved || repeat);
+            reserved.push(console_reserved);
             if e.kind == kind::KEY && (holder.is_none() || console_reserved) && selected {
                 console.push(ConsoleKey {
                     code: e.code,
@@ -293,7 +292,7 @@ impl State {
                     reason: reason::NOT_SELECTED,
                     ..Disposition::default()
                 })
-            } else if holder.is_none() || console_reserved || (e.kind == kind::KEY && e.value == 2)
+            } else if holder.is_none() || console_reserved
             {
                 Some(Disposition {
                     serial: e.serial,

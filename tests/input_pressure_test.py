@@ -1,4 +1,4 @@
-"""Exercise production ledger admission off hardware."""
+"""Exercise production ledger admission and repeat routing off hardware."""
 import os
 from pathlib import Path
 import subprocess
@@ -54,9 +54,21 @@ pub fn check() {
     let console = s.publish(1, records);
     assert!(console.iter().any(|e| e.code == 59 && e.reserved));
 }
-
+pub fn repeat() {
+    let mut s = State::new();
+    s.devices.insert(1, Device { capabilities: Vec::new(), injector_time: false,
+        last_time: 0, modifiers: 0, reserved: 0, held: BTreeMap::new() });
+    s.readers.insert(7, Reader { batches: VecDeque::new(), events: 0, dropped: None,
+        wake: Arc::new(WaitQueueHead) });
+    s.grab = Some(Grab { reader: 7, devices: Vec::new(), holder: 1, epoch: 1 });
+    s.publish(1, vec![Record { event: Event { kind: kind::KEY, code: 14, value: 2,
+        ..Event::default() }, payload: Vec::new() }]);
+    assert_eq!(s.readers[&7].batches.front().expect("repeat reached grab holder").records[0].event.value, 2);
+    assert!(s.ledger[0].outcome.is_none(), "compositor must account for the repeat");
 }
-fn main() { transport::check(); }
+}
+fn main() { match std::env::args().nth(1).as_deref() {
+    Some("repeat") => transport::repeat(), _ => transport::check() } }
 """
         with tempfile.TemporaryDirectory(prefix="input-pressure-") as temp:
             temp = Path(temp)
@@ -70,7 +82,7 @@ fn main() { transport::check(); }
                 "--extern", f"input_abi={temp / 'libinput_abi.rlib'}", "-o", str(temp / "check")],
                 text=True, capture_output=True, env=env)
             self.assertEqual(result.returncode, 0, result.stderr)
-            for case in ["pressure"]:
+            for case in ["pressure", "repeat"]:
                 with self.subTest(case=case):
                     result = subprocess.run([str(temp / "check"), case], text=True, capture_output=True)
                     self.assertEqual(result.returncode, 0, result.stderr)
