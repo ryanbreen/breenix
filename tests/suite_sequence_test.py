@@ -139,6 +139,9 @@ class ScoreTests(unittest.TestCase):
             repo = Path(temporary)
             (repo / "scripts").mkdir()
             shutil.copy(ROOT / "scripts/suite-verdict.py", repo / "scripts")
+            source = repo / "libs/libbreenix/src/suite_memory.rs"
+            source.parent.mkdir(parents=True)
+            shutil.copy(ROOT / source.relative_to(repo), source)
             (repo / "docs/suites").mkdir(parents=True)
             shutil.copy(ROOT / "docs/boot-path.json", repo / "docs")
             for suite in suites:
@@ -155,7 +158,7 @@ class ScoreTests(unittest.TestCase):
                 f"SUITE {suite} CASE case/one PASS ms=1\nSUITE {suite} CASE case/two PASS ms=1\n"
                 f"SUITE {suite} DONE passed=2 failed=0 skipped=0 total=2\n"
                 f"SUITE {suite} MEMORY after free=990 heap_free_kb=496 {owners}\n"
-                f"SUITE {suite} MEMORY reclaimed=PASS free_before=1000 free_after=990 allowance=64\n"
+                f"SUITE {suite} MEMORY reclaimed=PASS free_before=1000 free_after=990 allowance=48\n"
                 f"SUITE_SEQUENCE READY {suite}\n")
 
     def test_passing_populated_categories_cannot_complete_a_planned_suite(self):

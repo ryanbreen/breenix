@@ -21,9 +21,15 @@
 //!   queued or parked and the free count has held still for [`SETTLE_STEP_MS`];
 //!   `receipts` is what was still queued when it stopped waiting, and `settle_ms`
 //!   how long it waited, both waits together.
+//! - Live unmap also frees empty page tables. In #2729 the PID-1 runner's malloc
+//!   mapped each block; empty tables for visited 2 MiB windows stayed until exit,
+//!   retaining 29-35 frames per BreenGL run. The shared unmap path now reclaims
+//!   tables no mapping uses on both architectures. `BREENGEL TABLES before|after
+//!   runner_pte_kb=<kB>` reports the runner's own VmPTE separately from global owners.
 //! - The suite's memory is reclaimed when `free_after` is at most
 //!   [`MEMORY_RECLAIM_ALLOWANCE_PAGES`] below `free_before`. `reclaimed=FAIL`
-//!   fails the suite like a failing case (`scripts/suite-verdict.py`).
+//!   fails the suite like a failing case (`scripts/suite-verdict.py`), which also
+//!   refuses a record whose allowance differs from this constant (G35(3)).
 //! - A record that cannot be read is a `SUITE <id> ERROR memory ...` line, and
 //!   `reclaimed=FAIL` with 0 for the side that could not be read.
 
@@ -35,10 +41,11 @@ use crate::time;
 /// How many pages of free memory a suite may leave behind once its processes are
 /// reaped. A leak-free suite leaves the runner's own growth: 5 to 7 pages in a
 /// sequence, 38 for the memory suite booted alone, whose runner draws its live
-/// panel. The first suite to use a kernel worker that starts on first use (the PTY
-/// hangup and TCP timer threads) also leaves its 32 stack pages, 37 pages with the
-/// runner's on the R240. The largest measured, 38 pages, with headroom
-/// (docs/suites/README.md, "Memory record"). Only the operator loosens it.
+/// panel (the 2026-10-19 measurements in docs/suites/README.md, "Memory record").
+/// The PTY hangup and TCP timer workers now start at boot (#2233); the allocation
+/// cache is released before sampling, and live unmap reclaims unused tables
+/// (#2729). These fixes return owners' pages rather than enlarge this allowance.
+/// Only the operator loosens it; host scorers read this definition (G35(3)).
 pub const MEMORY_RECLAIM_ALLOWANCE_PAGES: u64 = 48;
 
 /// The longest a sample waits for reclamation to finish.

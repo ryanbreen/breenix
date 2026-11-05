@@ -262,7 +262,11 @@ SUITE <id> MEMORY reclaimed=PASS|FAIL free_before=<pages> free_after=<pages> all
   set from the measurement below; only the operator loosens it.
 - `scripts/suite-verdict.py`, and through it `suite-sequence.py score`, the launchers and the
   metal driver's scoring, fails a full run whose memory record is missing, out of place, or
-  contradicts its own figures, or says `reclaimed=FAIL`. The launchers wait for the record
+  contradicts its own figures, or says `reclaimed=FAIL`. Under G35(3), both it and
+  `scripts/metal/gt710-suite` also refuse a record whose allowance differs from
+  `MEMORY_RECLAIM_ALLOWANCE_PAGES`, read from `libs/libbreenix/src/suite_memory.rs`;
+  the retained build definition includes that source. The constant remains 48.
+  The launchers wait for the record
   before they stop the VM. A record that cannot be read is a `SUITE <id> ERROR memory ...`
   line and `reclaimed=FAIL`. A one-case run (`--case`) is not full-suite evidence and has no
   memory record.
@@ -294,6 +298,29 @@ the runner drew its panel and formatted its records. Each sample now first unmap
 (`__breenix_malloc_release_cached` in the C library), so both samples count what the runner
 uses and not free blocks it holds for reuse. The users suite at 105 cases had been 53 pages
 short with the cache counted and was 9 pages short with it released (ARM64 QEMU, 2026-10-21).
+
+Issue #2729 identified another owner: the PID-1 runner's page tables. Its `malloc` maps
+each block separately. Before live unmap reclaimed empty tables, one page-table frame
+per visited 2 MiB window stayed until the runner exited. The runner outlives the suite's
+memory record, so these frames remained even after the allocation cache was unmapped
+and deferred reclaim receipts drained. Retained BreenGL records showed 29-35 table pages
+per run. The same empty-table lifetime applied on both architectures; the shared unmap
+path now frees a table no surviving mapping uses, after unlink and walk-cache invalidation.
+The mmap hint also moves back over a freed range so later allocations can reuse it.
+Neither the 48-page allowance nor the sampling boundary changes.
+
+BreenGL emits an additional diagnostic at its ownership boundaries:
+
+```text
+BREENGEL TABLES before runner_pte_kb=<kB>
+BREENGEL TABLES after runner_pte_kb=<kB>
+```
+
+`runner_pte_kb` is the PID-1 runner's `VmPTE` from `/proc/self/status`, in KiB, or
+`unavailable` if that field cannot be read. Subtract before from after and divide by 4
+to express the runner's table growth in 4 KiB frames. This identifies the runner's share
+of the global `page_tables` owner; it is diagnostic evidence, not an allowance or a
+replacement for the `SUITE breengel MEMORY` samples and verdict.
 
 ## Writing a suite
 

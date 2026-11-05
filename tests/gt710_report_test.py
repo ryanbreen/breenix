@@ -35,11 +35,11 @@ class CaptureCases(unittest.TestCase):
         serial += ''.join('SUITE console CASE ' + name + ' PASS ms=1\n' for name in names)
         serial += f'SUITE console DONE passed={len(names)} failed=0 skipped=0 total={len(names)}\n'
         serial += 'SUITE console MEMORY after free=100 heap_free_kb=10 user_pages=1\n'
-        serial += 'SUITE console MEMORY reclaimed=PASS free_before=100 free_after=100 allowance=0\n'
+        serial += 'SUITE console MEMORY reclaimed=PASS free_before=100 free_after=100 allowance=48\n'
         API['check_case']('console', 'acceptance', serial)
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp) / 'definition'
-            for name in ('scripts/metal/gt710-suite', 'scripts/suite-verdict.py',
+            for name in ('scripts/metal/gt710-suite', 'scripts/suite-verdict.py', 'libs/libbreenix/src/suite_memory.rs',
                          'docs/suites/console.json', 'docs/boot-path.json'):
                 dest = root / name
                 dest.parent.mkdir(parents=True, exist_ok=True)

@@ -49,7 +49,7 @@ def serial():
               for n in NAMES]
     lines += ['SUITE window-manager DONE passed=9 failed=73 skipped=0 total=82',
               'SUITE window-manager MEMORY after free=1000 heap_free_kb=500 user_pages=10',
-              'SUITE window-manager MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=64',
+              'SUITE window-manager MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=48',
               anchor('suite-final-panel', BODIES[1]).strip(),
               'SUITE window-manager ELAPSED ms=1000', 'SUITE_SEQUENCE READY window-manager']
     return '\n'.join(lines) + '\n'
@@ -71,7 +71,7 @@ class WmStep(unittest.TestCase):
                             'dirty': '0', 'commit': SHA}.items():
             (self.path / name).write_text(value)
         self.definition = self.path / 'definition'
-        for name in ('scripts/metal/gt710-suite', 'scripts/suite-verdict.py', 'docs/suites/window-manager.json',
+        for name in ('scripts/metal/gt710-suite', 'scripts/suite-verdict.py', 'libs/libbreenix/src/suite_memory.rs', 'docs/suites/window-manager.json',
                      'docs/boot-path.json', 'docs/metal/boot-path.json',
                      'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json'):
             target = self.definition / name

@@ -36,7 +36,7 @@ EXPECTATIONS = {
     "out-of-order": (False, "CASE line 1 is first/two; the manifest's case 1 is first/one"),
     "wrong-total": (False, "disagrees with its CASE lines (3 passed, 0 failed, 0 skipped of 3)"),
     "failed-case": (False, "CASE first/two FAIL ms=1 msg=case failed"),
-    "memory-leaked": (False, "memory not reclaimed: 100 pages short after the reap, allowance 64"),
+    "memory-leaked": (False, "memory not reclaimed: 100 pages short after the reap, allowance 48"),
 }
 
 
@@ -163,9 +163,9 @@ class SuiteVerdictTests(unittest.TestCase):
             for broken, reason in (
                 ("".join(line for line in original.splitlines(keepends=True) if " MEMORY " not in line),
                  "found 0, 0 and 0"),
-                (original.replace("free_after=990 allowance=64", "free_after=900 allowance=64"),
+                (original.replace("free_after=990 allowance=48", "free_after=900 allowance=48"),
                  "does not repeat the free counts"),
-                (original.replace("free_after=990 allowance=64", "free_after=990 allowance=5"),
+                (original.replace("reclaimed=PASS", "reclaimed=FAIL"),
                  "contradicts its own figures"),
             ):
                 with self.subTest(reason=reason):
