@@ -7,9 +7,9 @@
 //! the MSI handler accesses only published MMIO addresses and atomic work.
 //! `keyboard` adds HID boot keyboards, hot-plug and slot reclamation.
 //! `fault` is the recovery exercise, built only into fault-test kernels.
-//! `host_keys` is the serial line format of x86-metal suite boots' host keys.
+//! Serial suite input lives in input::host; procfs retains its counter export.
 #[cfg(target_arch = "x86_64")]
-pub mod host_keys;
+pub use crate::input::host as host_keys;
 mod keyboard;
 mod recovery;
 #[cfg(feature = "xhci_fault_inject")]
@@ -107,83 +107,6 @@ fn replay_requested() -> bool {
 #[cfg(not(all(target_arch = "aarch64", feature = "usb_pointer_replay")))]
 fn replay_requested() -> bool {
     false
-}
-
-/// A thread-context request: the serial host-key channel queued boot
-/// keyboard reports for the worker to replay (`host_keys`).
-#[cfg(target_arch = "x86_64")]
-static HOST_KEYS: AtomicBool = AtomicBool::new(false);
-/// The serial host-key channel is armed: this boot's suite declared it.
-#[cfg(target_arch = "x86_64")]
-static HOST_KEYS_ARMED: AtomicBool = AtomicBool::new(false);
-/// Reports waiting for the worker, oldest first.
-#[cfg(target_arch = "x86_64")]
-static HOST_KEY_REPORTS: spin::Mutex<VecDeque<[u8; host_keys::REPORT_LEN]>> = spin::Mutex::new(VecDeque::new());
-/// Last numbered packet queued by the single serial command task.
-#[cfg(target_arch = "x86_64")]
-static HOST_KEY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
-/// Reports that may wait at once: a typed line of many chords, with room to spare.
-#[cfg(target_arch = "x86_64")]
-const HOST_KEY_BACKLOG: usize = 256;
-
-#[cfg(target_arch = "x86_64")]
-fn host_keys_requested() -> bool {
-    HOST_KEYS.load(Ordering::SeqCst)
-}
-#[cfg(not(target_arch = "x86_64"))]
-fn host_keys_requested() -> bool {
-    false
-}
-
-/// A suite boot that declared `hostkeys xhci-replay` takes its host keys as
-/// serial lines from now on (`host_keys`); the serial command shell no
-/// longer sees serial input.
-#[cfg(target_arch = "x86_64")]
-pub fn arm_host_keys() {
-    HOST_KEYS_ARMED.store(true, Ordering::Release);
-    log::info!("[usb] host keys: serial BXKEY lines are replayed through the boot keyboard's interrupt-IN completions");
-}
-
-#[cfg(target_arch = "x86_64")]
-pub fn host_keys_armed() -> bool {
-    HOST_KEYS_ARMED.load(Ordering::Acquire)
-}
-
-/// One serial line of the host-key channel: queue its reports for the
-/// worker, or say why the line was refused.
-#[cfg(target_arch = "x86_64")]
-pub fn host_key_line(line: Result<host_keys::Reports, &'static str>) {
-    let reports = match line {
-        Ok(reports) => reports,
-        Err(error) => {
-            log::warn!("[usb] host key line refused: {error}");
-            return;
-        }
-    };
-    let enqueue = match reports.enqueue_after(HOST_KEY_SEQUENCE.load(Ordering::Acquire)) {
-        Ok(enqueue) => enqueue,
-        Err(error) => {
-            log::warn!("[usb] host key line refused: {error}");
-            return;
-        }
-    };
-    if enqueue {
-        let mut queue = HOST_KEY_REPORTS.lock();
-        if queue.len() + reports.as_slice().len() > HOST_KEY_BACKLOG {
-            drop(queue);
-            log::warn!("[usb] host key line refused: {HOST_KEY_BACKLOG} reports already wait");
-            return;
-        }
-        queue.extend(reports.as_slice().iter().copied());
-        host_keys::QUEUED.fetch_add(reports.as_slice().len() as u64, Ordering::Relaxed);
-        if let Some(seq) = reports.sequence {
-            HOST_KEY_SEQUENCE.store(seq, Ordering::Release);
-        }
-    }
-    request(&HOST_KEYS);
-    if let Some(seq) = reports.sequence {
-        crate::serial_println!("\nBXKEY_ACK {:016x}", seq);
-    }
 }
 
 /// Prepare input before init starts getty. Only measured boot targets request
@@ -457,14 +380,6 @@ struct Controller {
     /// (`pointer::replay_pointer`).
     #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
     replay_at: Option<(u64, u64)>,
-    /// Host-key reports the worker took from the serial channel, oldest
-    /// first, and when the next may be replayed (`keyboard::replay_keys`).
-    #[cfg(target_arch = "x86_64")]
-    host_keys: VecDeque<[u8; host_keys::REPORT_LEN]>,
-    #[cfg(target_arch = "x86_64")]
-    next_host_key: u64,
-    #[cfg(target_arch = "x86_64")]
-    host_key_event: Option<(u64, [u8; host_keys::REPORT_LEN])>,
     #[cfg(feature = "xhci_fault_inject")]
     fault: fault::Injection,
     #[cfg(all(feature = "testing", target_arch = "x86_64"))]
@@ -708,12 +623,6 @@ fn start(device: pci::Device) -> Result<(), &'static str> {
         keyboard_leds: 0,
         #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
         replay_at: None,
-        #[cfg(target_arch = "x86_64")]
-        host_keys: VecDeque::new(),
-        #[cfg(target_arch = "x86_64")]
-        next_host_key: 0,
-        #[cfg(target_arch = "x86_64")]
-        host_key_event: None,
         #[cfg(feature = "xhci_fault_inject")]
         fault: fault::Injection::new(),
         #[cfg(all(feature = "testing", target_arch = "x86_64"))]
@@ -1032,8 +941,7 @@ impl Controller {
             requests
                 && (CONSOLE_START.load(Ordering::SeqCst)
                     || LEDS.load(Ordering::SeqCst)
-                    || replay_requested()
-                    || host_keys_requested())
+                    || replay_requested())
         };
         loop {
             WORK.publish(tid);

@@ -340,6 +340,7 @@ impl InitLaunch {
                         _ => None,
                     }
                 });
+                if hostkeys.is_some() { kernel::input::host::init().expect("host input devices"); }
                 let through_init = arg == Some("users");
                 let mut argv: alloc::vec::Vec<&[u8]> = if through_init {
                     alloc::vec![b"/sbin/init", b"suite", path.as_bytes()]

@@ -994,6 +994,7 @@ fn release_service() {
         crate::per_cpu::preempt_disable();
         let generation = SERVICE_GENERATION.load(Ordering::Acquire);
         while super::hardware::drain_one() {}
+        while super::host::drain_one() {}
         loop {
             let console = {
                 let mut s = STATE.lock();
@@ -1086,7 +1087,11 @@ fn release_service() {
                 queue.wake_up();
             }
         }
-        let outcome = RELEASE_WORK.prepare_to_wait_checked(ThreadState::BlockedOnIO, None, || {
+        // The serial IRQ only increments a generation. A bounded timed wait
+        // services it even if its arrival races wait publication; no IRQ path
+        // needs a waitqueue or scheduler lock. Ordinary boots remain event-driven.
+        let host_deadline = super::host::armed().then(|| crate::window::events::now_ns().saturating_add(1_000_000));
+        let outcome = RELEASE_WORK.prepare_to_wait_checked(ThreadState::BlockedOnIO, host_deadline, || {
             // IRQ wakes may interrupt a task holding STATE. Keep this predicate
             // lock-free; the generation detects work published since draining.
             SERVICE_GENERATION.load(Ordering::Acquire) == generation
@@ -1104,6 +1109,11 @@ fn release_service() {
         }
         crate::per_cpu::preempt_enable();
     }
+}
+
+/// The serial receive interrupt must not enter a waitqueue or scheduler lock.
+pub(super) fn notify_host() {
+    SERVICE_GENERATION.fetch_add(1, Ordering::Release);
 }
 
 pub fn wake_service() {

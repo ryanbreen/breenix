@@ -323,6 +323,20 @@ pub fn clear_rx_interrupt() {
 ///
 /// Returns None if no data available.
 pub fn get_received_byte() -> Option<u8> {
+    if !crate::input::host::armed() { return raw_received_byte(); }
+    // The PL011 receive interrupt uses try-locks for line assembly and input admission.
+    // Bound FIFO draining here; a remaining byte retains the receive interrupt.
+    for _ in 0..64 {
+        let byte = raw_received_byte()?;
+        if let Some(mut lines) = HOST_LINES.try_lock() {
+            lines.feed(byte, |line| crate::input::host::serial_line(line));
+        }
+    }
+    None
+}
+static HOST_LINES: spin::Mutex<crate::input::host::SerialLines> = spin::Mutex::new(crate::input::host::SerialLines::new());
+
+fn raw_received_byte() -> Option<u8> {
     if is_16550() {
         if read_reg8(reg16550::LSR) & reg16550::LSR_DR == 0 {
             None

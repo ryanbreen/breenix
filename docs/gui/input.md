@@ -29,7 +29,7 @@ belong to that interface; the old pointer snapshot merges interfaces on a port.
 Q1 is open: the x86-metal attached pointer is relative. The shared
 `input-devices/pointer-completion-path` case still requires an absolute pointer
 and is unchanged. ARM still lacks boot validation of this registration and of the
-later host-channel and replay work; no ARM boot is authorized for this step.
+host-channel transport and later replay work; no ARM boot is authorized for this step.
 
 ## Producer and registration map
 
@@ -48,3 +48,69 @@ this map and refuses architecture or virtio coupling in the shared handoff.
 `kernel/src/input/hardware.rs` drains the bounded handoff in task context.
 `kernel/src/drivers/hid_boot/mod.rs` records actual USB console admission after
 stream routing; it no longer reports a second copy of decoded keys.
+
+
+## Serial host-channel virtual devices (E21 W1)
+
+Before launching a suite whose target declares `hostkeys`, the shared input core
+creates a kernel-owned host keyboard and host absolute pointer. Their capabilities
+are the HID boot decoder's keyboard codes, ABS_X and ABS_Y in 0..32767, left,
+right and middle buttons, and signed REL_WHEEL. They use the ordinary input stream,
+serials, SYN_REPORT batches, ledger, compositor grab and console fallback. They
+are separate from the bound physical devices and do not satisfy Q1's physical
+absolute-pointer requirement.
+
+The one line entry is `host::serial_line(&[u8])`, called by
+`kernel/src/serial/command.rs` and its ARM counterpart,
+`kernel/src/serial_aarch64.rs` (PL011 receive). This entry only tries its bounded
+queue lock, never waits, allocates, decodes HID or writes serial output. It
+notifies the input task by an atomic generation only. While host input is armed,
+that task uses a 1 ms timed wait so no receive IRQ needs a waitqueue or scheduler
+lock; ordinary boots retain their event-driven wait. Keyboard reports retain the
+previous 10 ms spacing in task context. The input
+task decodes accepted reports with `hid_boot/report.rs` and publishes complete
+batches through the core, retaining an in-flight batch if ledger pressure refuses
+it. Its queue holds 256 reports or pointer samples; a key packet is admitted whole.
+The line buffers discard overflow through the next CR or LF.
+
+BXKEY's existing format, sequence and CRC are unchanged (console contract §10).
+BXPTR is:
+
+```text
+BXPTR @<sequence:16 lowercase hex>:<crc32:8 lowercase hex> <x> <y> <width> <height> <buttons> <wheel>
+```
+
+The six payload fields are decimal, separated by single spaces. Coordinates and
+mode dimensions are unsigned pixels; wheel is a signed 32-bit delta. Buttons are
+a full state mask: bit 0 left, bit 1 right, bit 2 middle; other bits are refused.
+Width and height must exactly equal the screen published by the shared GPU core,
+and each coordinate must be in bounds. Each dimension must be 1..32768: a larger
+mode cannot represent the full pixel range in the advertised absolute-axis domain.
+
+The CRC is reflected IEEE CRC-32 (polynomial 0x04c11db7, initial/final complement),
+over the sixteen sequence digits, one space and the exact decimal payload bytes.
+The keyboard and pointer have independent sequence streams, starting at one.
+Accepted numbered packets and valid retransmissions receive `BXKEY_ACK` or
+`BXPTR_ACK` followed by one space and the sixteen sequence digits. A retransmission
+is refused as new input but acknowledged again; a gap, old sequence, bad CRC,
+mode mismatch, busy lock or insufficient queue capacity gets no ACK and does not
+advance sequence. A sender retries a missing ACK with identical sequence and
+payload. ACK means the whole packet has entered the kernel's bounded queue.
+ACK output is deferred to task context on both transports.
+
+For pixel `x` and dimension `w > 1`, the core chooses
+`v = ceil(x * 32767 / (w - 1))`. Thus the consumer's contract formula
+`(v - min) * (w - 1) / (max - min)`, with min=0 and max=32767, returns exactly x,
+including both edges of 2560x1600. A dimension of one maps its sole pixel to `0`.
+The core emits both axes, changed button edges, a nonzero wheel delta, then
+SYN_REPORT. It does not alter syscall 413's legacy hardware snapshot.
+
+| Source | Registration / reporting path | Consumer |
+|---|---|---|
+| `kernel/src/input/host/runtime.rs` | Registers both host devices through `register_hardware`; task-only HID decoding and pointer events use shared stream publication. | Shared stream and console fallback on both architectures. |
+
+The six original BXKEY parser tests moved unchanged from the xHCI driver.
+`tests/input_host_channel.rs` and `tests/fixtures/bxptr-vectors.txt` cover pointer
+normalization, mode/CRC/sequence refusal and atomic queue admission. ARM still
+lacks boot proof of PL011 reception and launcher support for serial host input;
+no ARM launcher or host-side BXPTR sender is added by this kernel-only unit.

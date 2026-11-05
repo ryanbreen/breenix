@@ -15,6 +15,7 @@
 
 pub mod event;
 pub mod hardware;
+pub mod host;
 pub mod pointer;
 pub mod stream;
 
@@ -26,6 +27,8 @@ use event::Modifiers;
 pub enum Device {
     /// The i8042 keyboard (x86-64).
     Ps2,
+    /// The shared suite host-channel keyboard, independent of transport.
+    HostKeyboard,
     /// `virtio-keyboard-device` over MMIO (ARM64 QEMU).
     VirtioKeyboard,
     /// A USB HID boot keyboard on the clean-room xHCI (x86-metal).
@@ -33,12 +36,13 @@ pub enum Device {
 }
 
 // USB root ports are numbered 1..=255 by xHCI. Keep their identities stable on detach.
-const DEVICES: usize = 258;
+pub(crate) const DEVICES: usize = 259;
 
 impl Device {
     pub(crate) fn index(self) -> usize {
         match self {
             Device::Ps2 => 0,
+            Device::HostKeyboard => 258,
             Device::VirtioKeyboard => 1,
             Device::UsbBootKeyboard(port) => 2 + port as usize,
         }
@@ -48,6 +52,7 @@ impl Device {
     fn source(self) -> crate::tty::InputSource {
         match self {
             Device::Ps2 => crate::tty::InputSource::Ps2,
+            Device::HostKeyboard => crate::tty::InputSource::Other,
             Device::VirtioKeyboard => crate::tty::InputSource::Other,
             Device::UsbBootKeyboard(_) => crate::tty::InputSource::UsbKeyboard,
         }

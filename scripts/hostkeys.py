@@ -29,8 +29,9 @@ Backends for the standalone `send` and `watch` commands:
 The x86-metal boot loop reaches the machine only through power control and the serial
 console, so it has no virtual keyboard to press. It declares `xhci-replay` and answers each
 request by typing `BXKEY <report>[,<report>...]` lines, one per chord, on the serial console
-(ReplayKeys); the kernel replays each report through its USB boot keyboard's interrupt-IN
-completion path (kernel/src/drivers/xhci/host_keys.rs).
+(ReplayKeys); the kernel decodes each report into its shared host keyboard
+(kernel/src/input/host.rs, E21 W1). The legacy declaration name remains until the
+host-channel sender update; it no longer selects USB completion replay.
 This is a library transport: `metal-boot` supplies its serial writer to `ReplayKeys`
 and passes that instance to `Watcher`. `declare --backend xhci-replay` returns the
 suite declaration, but `xhci-replay` is not a standalone `send` or `watch` backend.
