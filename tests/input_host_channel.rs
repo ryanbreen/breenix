@@ -32,7 +32,7 @@ fn pointer_vectors_round_trip_and_refuse_invalid_input() {
             _ => { assert!(result.is_err(), "{wire}"); assert!(channel.pop().is_none()); }
         }
     }
-    // Every pixel is representable, not only the endpoints.
+    // Check each pixel at widths 2, 1280, 1600, 2560 and 32768.
     for width in [2, 1280, 1600, 2560, 32768] {
         for x in 0..width {
             let v = host::absolute_value(x, width).unwrap();
