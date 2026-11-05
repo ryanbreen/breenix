@@ -679,6 +679,8 @@ pub mod event_kind {
     pub const POINTER_ENTER: u16 = 16;
     pub const POINTER_LEAVE: u16 = 17;
     pub const POINTER_CANCEL: u16 = 18;
+    /// Highest assigned event kind; extend with the catalogue.
+    pub const LAST: u16 = POINTER_CANCEL;
 }
 
 /// `WindowEvent.flags` bit 0: a repeat.
