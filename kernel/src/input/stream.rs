@@ -215,7 +215,18 @@ impl State {
                 break;
             };
             if row.outcome.is_none() {
-                return Err(EAGAIN as u64);
+                let event = row.event;
+                let reader = row.reader;
+                // Custody cannot pin the bounded history indefinitely. Report
+                // the loss before retiring this row, just as reader overflow does.
+                self.finish(event.serial, disposition::LOST, reason::OVERFLOW);
+                if let Some(reader) = reader.and_then(|id| self.readers.get_mut(&id)) {
+                    reader.dropped = Some(Event {
+                        kind: kind::SYN,
+                        code: syn::DROPPED,
+                        ..event
+                    });
+                }
             }
             self.ledger.pop_front();
         }
