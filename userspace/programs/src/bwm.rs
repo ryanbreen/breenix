@@ -71,6 +71,13 @@ mod children;
 mod launch;
 use launch::*;
 
+#[path = "bwm/clipboard.rs"]
+mod clipboard;
+#[path = "bwm/clipboard_server.rs"]
+mod clipboard_server;
+#[path = "bwm/clipboard_socket.rs"]
+mod clipboard_socket;
+
 #[path = "bwm/clock.rs"]
 mod clock;
 #[path = "bwm/close.rs"]
@@ -206,7 +213,11 @@ fn main() {
     let mut full_redraw = !first_presented;
     let mut validation = ValidationQueue::new();
 
-    let mut poll_fds = [
+    let mut clipboard = clipboard_socket::Server::open().unwrap_or_else(|e| {
+        eprintln!("[bwm] clipboard socket: {e}");
+        process::exit(1);
+    });
+    let mut poll_fds = vec![
         io::PollFd { fd: stream.fd(), events: io::poll_events::POLLIN as i16, revents: 0 },
         io::PollFd { fd: scene_fd, events: io::poll_events::POLLIN as i16, revents: 0 },
     ];
@@ -231,11 +242,14 @@ fn main() {
             POINTER_POLL_MS
         };
         let timeout = closing.timeout_ms(libbreenix::ui_clock::now_ns(), timeout);
+        poll_fds.truncate(2);
+        clipboard.append_poll(&mut poll_fds);
         for fd in poll_fds.iter_mut() {
             fd.revents = 0;
         }
         let mut wait = ShutdownWait { fds: &mut poll_fds, timeout, failed: false };
         if shutdown::boundary(&mut wait).is_none() { return; }
+        clipboard.service(&poll_fds);
         clock.begin_epoch();
         launch::reap(&mut children);
         launch::poll_errors(&mut children);
