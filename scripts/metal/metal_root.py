@@ -38,8 +38,8 @@ def require_e2fsprogs(*commands):
 RECORD_MAGIC = b'BREENIX-STORAGE 1\n'
 SECTOR = 512
 # A suite boot's host-key path (docs/console/contract.md section 10): the boot loop types HID boot reports on the
-# serial console and the kernel replays them through its USB boot keyboard (scripts/hostkeys.py, ReplayKeys).
-HOSTKEYS = 'xhci-replay'
+# serial console and the shared host input devices (scripts/hostkeys.py, ReplayKeys).
+HOSTKEYS = 'host-channel'
 
 
 def install_record(boot_id, partition=None):

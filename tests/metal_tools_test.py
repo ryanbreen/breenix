@@ -865,7 +865,7 @@ class RootStagingTest(unittest.TestCase):
                                         prep_message)
             # A tests boot's root is a default boot's: the testing kernel does not read the target.
             for mode, suite, expected in [('default', None, 'default'), ('shell', None, 'shell'),
-                                          ('suite', 'smoke', 'suite smoke hostkeys xhci-replay'), ('tests', None, 'default')]:
+                                          ('suite', 'smoke', 'suite smoke hostkeys host-channel'), ('tests', None, 'default')]:
                 facts = metal_root.stage_root(image, mode, suite, site, hasher=hasher)
                 self.assertEqual(facts['siteFields'], 1)
                 def read(name):
@@ -904,12 +904,12 @@ class RootStagingTest(unittest.TestCase):
                 metal_root.stage_root(image, 'default', None, {'GUEST_PASSWORD': 'fixture'})
             # Several suites: the first is the boot target, the list is beside it, each binary is on the root.
             metal_root.stage_root(image, 'suite', 'smoke,time', site)
-            self.assertEqual(read('boot-target'), 'suite smoke hostkeys xhci-replay\n')
+            self.assertEqual(read('boot-target'), 'suite smoke hostkeys host-channel\n')
             self.assertEqual(read('suite-sequence'), 'smoke,time\n')
             with self.assertRaises(ValueError):
                 metal_root.stage_root(image, 'suite', 'smoke,absent', site)
             metal_root.stage_root(image, 'suite', 'time', site)
-            self.assertEqual(read('boot-target'), 'suite time hostkeys xhci-replay\n')
+            self.assertEqual(read('boot-target'), 'suite time hostkeys host-channel\n')
             self.assertEqual(read('suite-sequence'), '')
             # install-persistent's userland carries the operator's account; ordinary staging removes it.
             import base64
@@ -1317,7 +1317,7 @@ class DriverTest(StateTest):
             'BXKEY 0400000000000000,04003b0000000000,0400000000000000,0000000000000000'])
         logged = [c.kwargs['message'] for c in d.event.call_args_list if c.args[0] == 'hostkeys']
         self.assertEqual(len(logged), 2)
-        self.assertIn('seq=4 keys=alt-f2,a sent via xhci-replay', logged[0])
+        self.assertIn('seq=4 keys=alt-f2,a sent via host-channel', logged[0])
         # A console boot types no host keys.
         d.args.mode, d.hostkey_watcher = 'console', None
         d.console_send.reset_mock()

@@ -1506,8 +1506,8 @@ class Driver:
             needed.add('console-intent')
         return needed <= self.seen
 
-    def wait_replay_ack(self, sequence):
-        marker = ('BXKEY_ACK %016x' % sequence).encode()
+    def wait_replay_ack(self, sequence, kind="BXKEY"):
+        marker = ('%s_ACK %016x' % (kind, sequence)).encode()
         deadline = time.monotonic() + 0.35
         raw = self.dir / 'serial.raw'
         while time.monotonic() < deadline:
@@ -1522,6 +1522,14 @@ class Driver:
     def replay_send(self, line):
         # A UART/SOL loss must not silently remove a chord. Retry the numbered
         # packet; the kernel acknowledges duplicates without queueing them again.
+        if line.startswith('BXPTR @'):
+            sequence = int(line[7:23], 16)
+            for attempt in range(3):
+                self.console_send(line, paced=True)
+                if self.wait_replay_ack(sequence, 'BXPTR'):
+                    return
+                self.event('hostpointer-retry', sequence=sequence, attempt=attempt + 1)
+            raise RuntimeError('host pointer packet %d was not acknowledged' % sequence)
         sequence = getattr(self, 'hostkey_sequence', 0) + 1
         self.hostkey_sequence = sequence
         body = '%016x %s' % (sequence, line.removeprefix('BXKEY '))
@@ -1535,7 +1543,7 @@ class Driver:
 
     def on_hostkey_line(self, line):
         """A suite case's HOSTKEY record: type its chords on the serial console as HID boot reports, which the
-        kernel replays through its USB boot keyboard (scripts/hostkeys.py, ReplayKeys). Each record is answered
+        kernel delivers through its shared host input devices (scripts/hostkeys.py, ReplayKeys). Each record is answered
         once; what was sent goes to the boot's events, never to the guest's serial."""
         if self.args.mode != 'suite' or not self.kernel_started or self.fatal_at is not None:
             return

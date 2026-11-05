@@ -26,15 +26,9 @@ Backends for the standalone `send` and `watch` commands:
     vnc:<host>:<port>     RFB key events (VMware Fusion's built-in VNC server)
     none                  nothing: every request is answered "no host key path"
 
-The x86-metal boot loop reaches the machine only through power control and the serial
-console, so it has no virtual keyboard to press. It declares `xhci-replay` and answers each
-request by typing `BXKEY <report>[,<report>...]` lines, one per chord, on the serial console
-(ReplayKeys); the kernel decodes each report into its shared host keyboard
-(kernel/src/input/host.rs, E21 W1). The legacy declaration name remains until the
-host-channel sender update; it no longer selects USB completion replay.
-This is a library transport: `metal-boot` supplies its serial writer to `ReplayKeys`
-and passes that instance to `Watcher`. `declare --backend xhci-replay` returns the
-suite declaration, but `xhci-replay` is not a standalone `send` or `watch` backend.
+The serial host channel declares `host-channel` and sends BXKEY and BXPTR
+records to the shared input core (E21 W1). metal-boot supplies the serial
+writer to ReplayKeys; this is a library transport rather than a standalone backend.
 
 Parallels (27.0.3): the Parallels Virtualization SDK ships inside Parallels Desktop and
 this script calls its published C API through ctypes. Keys are Parallels virtual key
@@ -64,11 +58,13 @@ import argparse
 import json
 import os
 import re
+import select
 import socket
 import struct
 import subprocess
 import sys
 import time
+import zlib
 
 REQUEST = re.compile(r'^SUITE ([a-z0-9]+(?:-[a-z0-9]+)*) HOSTKEY ([a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*)'
                      r' seq=(\d+) keys=([a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*)\r?$')
@@ -271,7 +267,7 @@ class ParallelsKeys:
         for code in reversed(codes):
             self.check(self.sdk.PrlDevKeyboard_SendKeyEventEx(self.vm, code, self.RELEASE), 'key release')
 
-    def pointer(self, x, y, buttons, wheel, axes):
+    def pointer(self, x, y, buttons, wheel, axes, width=32768, height=32768):
         self.connect()
         if axes == 'relative':
             dx, dy = (0, 0) if self.previous is None else (x - self.previous[0], y - self.previous[1])
@@ -351,7 +347,7 @@ class VNCKeys:
         finally:
             sock.close()
 
-    def pointer(self, x, y, buttons, wheel, axes):
+    def pointer(self, x, y, buttons, wheel, axes, width=32768, height=32768):
         # Fusion's configuration, not the RFB event, decides which interface reports it
         # (run.sh's BREENIX_VMWARE_POINTER); the requested kind changes no RFB field.
         if not (0 <= x <= 65535 and 0 <= y <= 65535):
@@ -385,7 +381,7 @@ class NoKeys:
 
 
 class ReplayKeys:
-    """HID boot keyboard reports (HID 1.11 B.1) for the kernel's xHCI replay, one line per chord.
+    """HID boot keyboard reports and absolute pointer packets for the shared host input devices.
 
     A chord is pressed as a keyboard reports it: each modifier in order, then the key, released
     in reverse, one report per change. `write` takes one line; the kernel replays its reports
@@ -402,6 +398,7 @@ class ReplayKeys:
 
     def __init__(self, write, pace=time.sleep):
         self.write, self.pace = write, pace
+        self.pointer_sequence = 0
 
     @classmethod
     def reports(cls, mods, key):
@@ -419,6 +416,17 @@ class ReplayKeys:
     def send(self, mods, key):
         self.write(self.line(mods, key))
         self.pace(len(self.reports(mods, key)) * self.HOST_KEY_GAP_MS / 1000)
+
+    def pointer(self, x, y, buttons, wheel, axes, width, height):
+        if axes != 'absolute' or not (2 <= width <= 32768 and 2 <= height <= 32768
+                                       and 0 <= x < width and 0 <= y < height and 0 <= buttons <= 7
+                                       and -(2**31) <= wheel < 2**31):
+            raise NoPath('host pointer requires representable absolute coordinates')
+        self.pointer_sequence += 1
+        sequence = self.pointer_sequence
+        payload = f'{x} {y} {width} {height} {buttons} {wheel}'
+        body = f'{sequence:016x} {payload}'
+        self.write(f'BXPTR @{sequence:016x}:{zlib.crc32(body.encode()):08x} {payload}')
 
 
 def backend(spec):
@@ -462,13 +470,10 @@ class Watcher:
             try:
                 if not (width >= 2 and height >= 2 and 0 <= x < width and 0 <= y < height):
                     raise ValueError('pointer outside declared mode')
-                if isinstance(self.keys, QMPKeys):
-                    self.keys.pointer(x, y, buttons, wheel, 'absolute', width, height)
-                else:
-                    send = getattr(self.keys, 'pointer', None)
-                    if send is None:
-                        raise NoPath('this backend has no pointer transport')
-                    send(x, y, buttons, wheel, 'absolute')
+                send = getattr(self.keys, 'pointer', None)
+                if send is None:
+                    raise NoPath('this backend has no pointer transport')
+                send(x, y, buttons, wheel, 'absolute', width, height)
                 self.log('[hostpointer] case=%s seq=%s sent via %s' % (case, seq, self.name))
             except (NoPath, OSError, RuntimeError, ValueError) as error:
                 self.log('[hostpointer] case=%s seq=%s failed: %s' % (case, seq, error))
@@ -485,7 +490,7 @@ class Watcher:
                 send = getattr(self.keys, 'pointer', None)
                 if send is None:
                     raise NoPath('this backend has no pointer transport')
-                send(x, y, buttons, wheel, axes)
+                send(x, y, buttons, wheel, axes, 32768, 32768)
                 self.log('[hostpointer] seq=%d sent via %s' % (seq, self.name))
             except (NoPath, OSError, RuntimeError, ValueError) as error:
                 self.log('[hostpointer] seq=%d no host pointer input on %s: %s' % (seq, self.name, error))
@@ -519,7 +524,7 @@ class Watcher:
 def declaration(spec):
     """The contract's `<method>[;missing=<key>,...]` string for a backend; empty when there is no path."""
     kind = spec.partition(':')[0]
-    return kind if kind in ('qmp', 'prlsdk', 'vnc', 'xhci-replay') else ''
+    return kind if kind in ('qmp', 'prlsdk', 'vnc', 'host-channel') else ''
 
 
 def watch(args):
@@ -533,24 +538,39 @@ def watch(args):
 
     watcher = Watcher(keys, args.backend.partition(':')[0], log, args.suite)
     offset = 0
-    while True:
-        if args.parent:
+    events = select.kqueue() if hasattr(select, 'kqueue') else None
+    try:
+        while True:
+            if args.parent:
+                try:
+                    os.kill(args.parent, 0)
+                except ProcessLookupError:
+                    return
+                except PermissionError:
+                    pass
             try:
-                os.kill(args.parent, 0)
-            except ProcessLookupError:
-                return
-            except PermissionError:
-                pass
-        try:
-            with open(args.serial, 'rb') as f:
-                f.seek(offset)
-                data = f.read()
-            offset += len(data)
-            if data:
-                watcher.feed(data.decode(errors='replace'))
-        except FileNotFoundError:
-            pass
-        time.sleep(0.1)
+                with open(args.serial, 'rb') as f:
+                    if events:
+                        # Register before reading, so an append after EOF wakes the wait.
+                        events.control([select.kevent(f.fileno(), filter=select.KQ_FILTER_VNODE,
+                            flags=select.KQ_EV_ADD | select.KQ_EV_CLEAR,
+                            fflags=select.KQ_NOTE_WRITE)], 0, 0)
+                    f.seek(offset)
+                    data = f.read()
+                    offset += len(data)
+                    if data:
+                        watcher.feed(data.decode(errors='replace'))
+                    if events:
+                        events.control(None, 1, 0.1)
+                    else:
+                        time.sleep(0.1)
+            except FileNotFoundError:
+                time.sleep(0.1)
+    finally:
+        if events:
+            events.close()
+        if out:
+            out.close()
 
 
 def selftest_parse():
@@ -639,7 +659,7 @@ def selftest_parse():
     w.feed('USB POINTER HOST seq=0 axes=relative x=10 y=20 buttons=1 wheel=-1\r\n'
            'USB POINTER HOST seq=0 axes=relative x=10 y=20 buttons=1 wheel=-1\n'
            'USB POINTER HOST seq=1 axes=absolute x=30 y=40 buttons=0 wheel=0\n')
-    assert pointers.requests == [(10, 20, 1, -1, 'relative'), (30, 40, 0, 0, 'absolute')], pointers.requests
+    assert pointers.requests == [(10, 20, 1, -1, 'relative', 32768, 32768), (30, 40, 0, 0, 'absolute', 32768, 32768)], pointers.requests
     # Exercise the production RFB encoder, including HID middle/right order
     # and the wheel release packet, without opening a VM connection.
     class Wire:

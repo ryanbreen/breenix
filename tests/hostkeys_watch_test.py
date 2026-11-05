@@ -63,7 +63,7 @@ class HostInputWatch(unittest.TestCase):
         wire = []
         watcher = hostkeys.Watcher(hostkeys.ReplayKeys(wire.append), 'host-channel', lambda _: None)
         for seq, x, y in ((1, 0, 0), (2, 2559, 1599)):
-            watcher.line(f'SUITE window-manager HOSTPOINTER edge seq={seq} x={x} y={y} '
+            watcher.line(f'SUITE window-manager HOSTPOINTER edge/case seq={seq} x={x} y={y} '
                          'width=2560 height=1600 buttons=5 wheel=-1')
         self.assertEqual(wire, expected[:2])
         for line, point in zip(wire, ((0, 0), (2559, 1599))):
@@ -74,7 +74,7 @@ class HostInputWatch(unittest.TestCase):
                                    for value, size in zip(values, (width, height))), point)
         mismatch = []
         other = hostkeys.Watcher(hostkeys.ReplayKeys(mismatch.append), 'host-channel', lambda _: None)
-        other.line('SUITE window-manager HOSTPOINTER edge seq=1 x=0 y=0 '
+        other.line('SUITE window-manager HOSTPOINTER edge/case seq=1 x=0 y=0 '
                    'width=1280 height=800 buttons=5 wheel=-1')
         self.assertEqual(mismatch, [expected[4]])
         self.assertNotEqual(tuple(map(int, mismatch[0].split()[4:6])), (2560, 1600))
