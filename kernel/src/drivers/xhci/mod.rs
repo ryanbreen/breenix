@@ -1000,6 +1000,7 @@ impl Controller {
     }
     /// The completion for one of `pointers`, whatever its completion code.
     fn event_any(&mut self, pointers: &[u64], kind: u32) -> Result<Trb, &'static str> {
+        let began_irq = INTERRUPTS.load(Ordering::Acquire);
         let deadline = now().saturating_add(3 * SECOND);
         loop {
             if let Some(i) = self
@@ -1010,10 +1011,32 @@ impl Controller {
                 return self.completions.remove(i).ok_or("completion queue changed");
             }
             if !self.wait_work(Some(deadline), false)? {
+                self.completion_timeout(pointers, kind, began_irq, deadline);
                 return Err("MSI completion timed out");
             }
             self.service()?;
         }
+    }
+    /// Observe a failed task-context wait without consuming or accepting an event.
+    fn completion_timeout(&self, pointers: &[u64], kind: u32, began_irq: u64, deadline: u64) {
+        let wanted = pointers.first().copied().unwrap_or(0);
+        let command = wanted.checked_sub(self.command.memory.phys)
+            .filter(|at| kind == 33 && *at < self.command.memory.bytes as u64 && at % 16 == 0)
+            .map(|at| self.command.memory.get32(at as usize + 12)).unwrap_or(0);
+        let slot = (command >> 24) as u8;
+        let dci = ((command >> 16) & 31) as usize;
+        let endpoint = self.devices.iter().find(|d| d.slot == slot).filter(|_| dci != 0)
+            .map(|d| {
+                let at = self.contexts.output(dci);
+                (d.output.get32(at), d.output.get32(at + 8) as u64
+                    | (d.output.get32(at + 12) as u64) << 32)
+            }).unwrap_or((0, 0));
+        let at = self.consumer.index * 16;
+        log::warn!("[xhci] wait snapshot kind={kind} wanted={wanted:#x} command={command:#x} endpoint={:#x} dequeue={:#x} consumer={} cycle={} event={:#x}/{:#x}/{:#x} irq={began_irq}->{} pending={} usbsts={:#x} iman={:#x} erdp={:#x}/{:#x} now={} deadline={deadline}",
+            endpoint.0, endpoint.1, self.consumer.index, self.consumer.cycle,
+            self.events.get32(at), self.events.get32(at + 8), self.events.get32(at + 12),
+            INTERRUPTS.load(Ordering::Acquire), WORK.pending(), rd(self.op, USBSTS),
+            rd(self.ir, IMAN), rd(self.ir, ERDP), rd(self.ir, ERDP + 4), now());
     }
     fn event(&mut self, pointers: &[u64], kind: u32) -> Result<Trb, &'static str> {
         let event = self.event_any(pointers, kind)?;
