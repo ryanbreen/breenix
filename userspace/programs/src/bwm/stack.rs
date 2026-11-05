@@ -1,0 +1,58 @@
+//! Window policy independent of the compositor and event transport.
+
+pub(super) struct Stack {
+    order: Vec<u64>,
+    chromeless: Vec<u64>,
+    minimized: Vec<u64>,
+    focus: Option<u64>,
+}
+
+impl Stack {
+    pub(super) fn new() -> Self {
+        Self { order: Vec::new(), chromeless: Vec::new(), minimized: Vec::new(), focus: None }
+    }
+    pub(super) fn order(&self) -> &[u64] { &self.order }
+    pub(super) fn focus(&self) -> Option<u64> { self.focus }
+    pub(super) fn minimized(&self, id: u64) -> bool { self.minimized.contains(&id) }
+    fn transition(&mut self, next: Option<u64>) -> (Option<u64>, Option<u64>) {
+        let old = self.focus;
+        self.focus = next;
+        (old, next)
+    }
+    fn top(&self) -> Option<u64> {
+        self.order.iter().rev().copied().find(|id| !self.minimized(*id))
+    }
+    pub(super) fn add(&mut self, id: u64, chromeless: bool) -> (Option<u64>, Option<u64>) {
+        if self.order.contains(&id) { return (self.focus, self.focus); }
+        if chromeless { self.chromeless.push(id); }
+        self.order.push(id);
+        self.raise(id)
+    }
+    pub(super) fn raise(&mut self, id: u64) -> (Option<u64>, Option<u64>) {
+        let Some(index) = self.order.iter().position(|&item| item == id) else { return (self.focus, self.focus); };
+        if self.minimized(id) { return (self.focus, self.focus); }
+        self.order.remove(index);
+        let index = if self.chromeless.contains(&id) { self.order.len() } else {
+            self.order.iter().position(|item| self.chromeless.contains(item)).unwrap_or(self.order.len())
+        };
+        self.order.insert(index, id);
+        self.transition(Some(id))
+    }
+    pub(super) fn minimize(&mut self, id: u64) -> (Option<u64>, Option<u64>) {
+        if !self.order.contains(&id) || self.minimized(id) { return (self.focus, self.focus); }
+        self.minimized.push(id);
+        let next = if self.focus == Some(id) { self.top() } else { self.focus };
+        self.transition(next)
+    }
+    pub(super) fn restore(&mut self, id: u64) -> (Option<u64>, Option<u64>) {
+        self.minimized.retain(|&item| item != id);
+        self.raise(id)
+    }
+    pub(super) fn remove(&mut self, id: u64) -> (Option<u64>, Option<u64>) {
+        self.order.retain(|&item| item != id);
+        self.chromeless.retain(|&item| item != id);
+        self.minimized.retain(|&item| item != id);
+        let next = if self.focus == Some(id) { self.top() } else { self.focus };
+        self.transition(next)
+    }
+}
