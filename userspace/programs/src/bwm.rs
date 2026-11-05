@@ -49,6 +49,8 @@ use config::*;
 #[path = "bwm/route.rs"]
 mod route;
 use route::*;
+#[path = "bwm/gesture.rs"]
+mod gesture;
 #[path = "bwm/geometry.rs"]
 mod geometry;
 use geometry::*;
@@ -145,9 +147,8 @@ fn main() {
     let mut active_cursor_shape = cursor_shape::ARROW;
     let mut pointer_routes = pointer_route::Router::new();
     let mut chrome_device = None;
-    let mut dragging: Option<(usize, i32, i32)> = None;
-    // Active resize: (win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)
-    let mut resizing: Option<(usize, ResizeEdge, i32, i32, i32, i32, usize, usize)> = None;
+    let mut dragging: Option<gesture::Drag> = None;
+    let mut resizing: Option<gesture::Resize> = None;
     let mut content_dirty = false;
     // Raw startup PRESENT has no window receipt. Schedule the initial window
     // composite even when there is no client, clock tick or later scene change.
@@ -232,8 +233,9 @@ fn main() {
         // ── 1. Discover new/removed client windows, and see client frames ──
         if scene_changed {
             if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
-                if reconcile_stack(&windows, &mut stack) {
-                    // Removal can shift the metadata indices held by existing gestures.
+                reconcile_stack(&windows, &mut stack);
+                if dragging.as_ref().and_then(|d| d.id()).is_some_and(|id| !windows.iter().any(|w| w.window_id == id))
+                    || resizing.as_ref().is_some_and(|r| !windows.iter().any(|w| w.window_id == r.id)) {
                     dragging = None;
                     resizing = None;
                     chrome_device = None;
@@ -344,10 +346,10 @@ fn main() {
                     mouse_x = new_mx;
                     mouse_y = new_my;
 
-                    if let Some((win_idx, off_x, off_y)) = dragging.filter(|_| chrome_active) {
-                        let new_x = mouse_x - off_x;
-                        // Clamp drag to stay below taskbar
-                        let new_y = (mouse_y - off_y).max(px(TASKBAR_HEIGHT) as i32);
+                    if let Some((win_idx, (x, y))) = dragging.as_mut().filter(|_| chrome_active)
+                        .and_then(|d| d.motion(&windows.iter().map(|w| w.window_id).collect::<Vec<_>>(), (mouse_x, mouse_y))) {
+                        let new_x = x.clamp(px(32) as i32 - windows[win_idx].width as i32, screen_w as i32 - px(32) as i32);
+                        let new_y = y.max(px(TASKBAR_HEIGHT) as i32);
                         if new_x != windows[win_idx].x || new_y != windows[win_idx].y {
                             // Capture old bounds before moving
                             let (ox0, oy0, ox1, oy1) = windows[win_idx].bounds();
@@ -370,32 +372,17 @@ fn main() {
                             dirty_y1 = dirty_y1.max(dr_y1 as i32);
                             content_dirty = true;
                         }
-                    } else if let Some((win_idx, edge, anchor_x, anchor_y, _, orig_y, orig_w, orig_h)) = resizing.filter(|_| chrome_active) {
-                        let dx = mouse_x - anchor_x;
-                        let dy = mouse_y - anchor_y;
-
-                        let mut new_w = orig_w as i32;
-                        let mut new_h = orig_h as i32;
-                        match edge {
-                            ResizeEdge::Right => { new_w += dx; }
-                            ResizeEdge::Bottom => { new_h += dy; }
-                            ResizeEdge::Left => { new_w -= dx; }
-                            ResizeEdge::Top => { new_h -= dy; }
-                            ResizeEdge::TopLeft => { new_w -= dx; new_h -= dy; }
-                            ResizeEdge::TopRight => { new_w += dx; new_h -= dy; }
-                            ResizeEdge::BottomLeft => { new_w -= dx; new_h += dy; }
-                            ResizeEdge::BottomRight => { new_w += dx; new_h += dy; }
+                    } else if let Some(resize) = resizing.as_ref().filter(|_| chrome_active) {
+                        if let Some(win_idx) = windows.iter().position(|w| w.window_id == resize.id) {
+                            let candidate = resize.size((mouse_x, mouse_y), ui().scale as u32, screen_w, screen_h);
+                            let current = (windows[win_idx].content_width() as u32, windows[win_idx].content_height() as u32);
+                            if let Some((width, height)) = windows[win_idx].resize_queue.motion(current, candidate) {
+                                send_to(&windows, win_idx, Input::Resize { width, height });
+                            }
+                        } else {
+                            resizing = None;
+                            chrome_device = None;
                         }
-                        new_w = new_w.max(px(MIN_WIN_WIDTH) as i32);
-                        new_h = new_h.max(px(MIN_WIN_HEIGHT) as i32);
-                        if windows[win_idx].resize_bottom.is_some() {
-                            new_h = new_h.min(orig_y + orig_h as i32 - px(TASKBAR_HEIGHT) as i32);
-                        }
-                        // B41: neither position nor dimensions change until LIST reports
-                        // the owner's answer. LIST preserves the opposite edge atomically.
-                        let width = new_w.saturating_sub((px(BORDER_WIDTH) * 2) as i32).clamp(1, 4096) as u32;
-                        let height = new_h.saturating_sub((px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2) as i32).clamp(1, 4096) as u32;
-                        send_to(&windows, win_idx, Input::Resize { width, height });
                     }
 
 
@@ -406,22 +393,16 @@ fn main() {
                 // endpoints from racing (one endpoint can't cancel the other's press).
                 if release_chrome {
                     chrome_device = None;
-                    if let Some((win_idx, _, _, _, _, _, orig_w, orig_h)) = resizing.take() {
-                        // Reset cursor shape back to arrow
+                    if let Some(resize) = resizing.take() {
                         cursor_dirty |= active_cursor_shape != cursor_shape::ARROW;
                         active_cursor_shape = cursor_shape::ARROW;
-                        let new_cw = windows[win_idx].content_width();
-                        let new_ch = windows[win_idx].content_height();
-                        let old_cw = orig_w.saturating_sub(px(BORDER_WIDTH) * 2);
-                        let old_ch = orig_h.saturating_sub(px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2);
-                        print!("[bwm] resize end: id={} old={}x{} new={}x{} frame={}x{}\n",
-                            windows[win_idx].window_id, old_cw, old_ch, new_cw, new_ch,
-                            windows[win_idx].width, windows[win_idx].height);
-                        save_window_defaults(&windows[win_idx], &mut win_defaults);
-                    } else if dragging.is_some() {
-                        let drag_idx = dragging.unwrap().0;
-                        dragging = None;
-                        save_window_defaults(&windows[drag_idx], &mut win_defaults);
+                        if let Some(win) = windows.iter().find(|w| w.window_id == resize.id) {
+                            save_window_defaults(win, &mut win_defaults);
+                        }
+                    } else if let Some(drag) = dragging.take() {
+                        if let Some(win) = windows.iter().find(|w| Some(w.window_id) == drag.id()) {
+                            save_window_defaults(win, &mut win_defaults);
+                        }
                     }
                 }
                 if matches!(action, Action::Cancel) && chrome_device == Some(event.device) {
@@ -498,12 +479,8 @@ fn main() {
                                     ResizeEdge::Top | ResizeEdge::TopLeft | ResizeEdge::TopRight)
                                     .then_some(windows[top].y + windows[top].height as i32);
                                 chrome_device = Some(event.device);
-                                resizing = Some((
-                                    top, edge,
-                                    mouse_x, mouse_y,
-                                    windows[top].x, windows[top].y,
-                                    windows[top].width, windows[top].height,
-                                ));
+                                resizing = Some(gesture::Resize::new(id, edge, (mouse_x, mouse_y),
+                                    (windows[top].x, windows[top].y, windows[top].width, windows[top].height)));
                             } else if clicked_title {
                                 // Check chrome buttons before starting drag
                                 if windows[top].hit_close_button(mouse_x, mouse_y) {
@@ -518,7 +495,7 @@ fn main() {
                                     full_redraw = true;
                                 } else {
                                     chrome_device = Some(event.device);
-                                    dragging = Some((top, mouse_x - windows[top].x, mouse_y - windows[top].y));
+                                    dragging = Some(gesture::Drag::new(id, (mouse_x, mouse_y), (windows[top].x, windows[top].y)));
                                 }
                             }
 

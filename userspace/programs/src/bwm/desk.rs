@@ -69,6 +69,7 @@ pub(super) struct Window {
     /// Delay resize validation until input and the owner have settled.
     pub(super) check_after_ms: u64,
     /// Fixed far edges for owner-mediated left/top resizes.
+    pub(super) resize_queue: gesture::ResizeQueue,
     pub(super) resize_right: Option<i32>,
     pub(super) resize_bottom: Option<i32>,
     /// Composed frames whose check found this client had committed again since the frame
@@ -211,6 +212,11 @@ pub(super) fn discover_windows(
             if (w.width, w.height) != (width, height) {
                 if let Some(right) = w.resize_right { w.x = right - width as i32; }
                 if let Some(bottom) = w.resize_bottom { w.y = bottom - height as i32; }
+                let old = (w.content_width() as u32, w.content_height() as u32);
+                let next = w.resize_queue.observed(old, (info.width, info.height));
+                if let Some((width, height)) = next {
+                    input::send_id(w.window_id, Input::Resize { width, height });
+                }
                 w.width = width;
                 w.height = height;
                 w.frame_checked = false;
@@ -278,6 +284,7 @@ pub(super) fn discover_windows(
             owner_pid: info.owner_pid,
             frame_checked: false,
             check_after_ms: 0,
+            resize_queue: gesture::ResizeQueue::default(),
             resize_right: None,
             resize_bottom: None,
             check_moved: 0,

@@ -46,3 +46,15 @@ fn crossing_opposite_edge_clamps_minimum_content_width() {
         assert_eq!(left.size((500, 100), scale, 1000, 1000).0, 116 * scale);
     }
 }
+
+#[test]
+fn other_edges_preserve_the_untouched_dimension() {
+    let base = (100, 50, 200, 150);
+    for edge in [Edge::Top, Edge::Bottom, Edge::TopLeft, Edge::TopRight, Edge::BottomLeft, Edge::BottomRight] {
+        let resize = Resize::new(42, edge, (100, 100), base);
+        assert_eq!(resize.id, 42);
+        let (w, h) = resize.size((100, 100), 1, 1000, 1000);
+        assert_eq!((w, h), (196, 114));
+    }
+    assert_eq!(Drag::new(42, (1, 1), (0, 0)).id(), Some(42));
+}
