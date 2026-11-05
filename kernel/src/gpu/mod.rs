@@ -219,6 +219,33 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
     r
 }
 
+/// Cold ownership metadata, without pumping requests or retiring sampling pins.
+pub(crate) fn ownership_census() -> alloc::string::String {
+    use core::fmt::Write;
+    let mut rows = Vec::with_capacity(4096);
+    crate::per_cpu::preempt_disable();
+    let counts = {
+        let core = panic::lock(&CORE);
+        core.as_ref().map(|c| {
+            for (&id, r) in c.resources.iter().take(rows.capacity()) {
+                let handle = c.procs.get(&r.owner).and_then(|p| p.resources.iter()
+                    .find_map(|(&handle, &resource)| (resource == id).then_some(handle))).unwrap_or(0);
+                rows.push((id, r.owner, handle, c.procs.contains_key(&r.owner), r.backing.count(),
+                    Arc::strong_count(&r.backing), r.holds, r.writers, r.dropped, r.reading,
+                    r.width, r.height, r.last.map_or(0, |last| last.ctx)));
+            }
+            (c.resources.len(), c.contexts.len(), c.procs.len(), c.subs.len(), c.syncs.len(), c.canvas.len())
+        })
+    };
+    crate::per_cpu::preempt_enable();
+    let mut text = alloc::format!("gpu-core counts={counts:?} omitted={}\n",
+        counts.map_or(0, |c| c.0.saturating_sub(rows.len())));
+    for (id, owner, handle, owner_present, pages, refs, holds, writers, dropped, reading, width, height, ctx) in rows {
+        let _ = writeln!(text, "gpu-core resource={id} owner={owner} handle={handle} owner_present={owner_present} pages={pages} backing_refs={refs} holds={holds} writers={writers} dropped={dropped} reading={reading} width={width} height={height} last_ctx={ctx}");
+    }
+    text
+}
+
 /// Notify the device of the requests [`Core::flush`] made available, after the core's lock
 /// is released. The notification is an MMIO write, and a hypervisor may hold the writing
 /// CPU until its device model accepts it; no thread waits for the lock meanwhile. The
