@@ -371,5 +371,22 @@ fn end(id:u32,w:&gpu::window_targets::Writer){w.end_access();with_core(|c|{c.res
             assert_eq!(c.resources[&1].holds,0);
         });
         assert_eq!(window::target(0).seal(false),Ok(()));
+        assert_eq!(window::target(0).copy_from(&window::target(1),&[Rect::new(0,0,8,8)]),Ok(()),
+            "the former capture source must be usable as a replay destination");
     }
+}
+
+#[test] fn abandoned_replay_completion_does_not_release_an_active_capture() {
+    setup();
+    CAPTURE_ACTION.with(|action|*action.borrow_mut()=Some(Box::new(|| {
+        with_core(|c| {
+            for id in [1,2] { c.resources.get_mut(&id).unwrap().holds += 1; }
+            c.syncs.insert(902,SyncReq{reading:vec![1,2],holds:vec![1,2],abandoned:true,..SyncReq::default()});
+            c.sync_ended(902,Some(Done{answer:abi::gk208::SUCCESS,echoed:0}));
+            assert!(c.resources[&1].reading,"abandoned replay completion cleared a live CPU capture");
+            assert!(!c.done.contains_key(&902));
+        });
+    })));
+    assert_eq!(window::capture().commit_id,1);
+    assert!(!with_core(|c|c.resources[&1].reading).unwrap());
 }

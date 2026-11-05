@@ -1188,6 +1188,9 @@ impl Suite {
             if self.gui { crate::suite_stage::memory_owners("after"); }
             let (line, reclaimed) = memory_record::verdict(self.id, before.as_ref(), after.as_ref());
             emit(&line);
+            if !reclaimed {
+                memory_failure_detail(self.id);
+            }
             reclaimed
         };
 
@@ -1333,24 +1336,24 @@ fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
     match memory_record::settled() {
         Ok(sample) => {
             emit(&sample.record(id, when));
-            // Retain allocation-site evidence beside the owner totals. A stable
-            // owner count alone cannot identify backing left after a suite.
-            // This is a separate diagnostic record; the settled sample and its
-            // reclamation verdict keep their existing meaning and allowance.
-            match std::fs::read_to_string("/proc/breenix/frames") {
-                Ok(frames) => {
-                    for line in frames.lines() {
-                        emit(&std::format!("SUITE_MEMORY_DETAIL {id} {when} {line}"));
-                    }
-                }
-                Err(error) => emit(&std::format!("SUITE_MEMORY_DETAIL {id} {when} unavailable={error}")),
-            }
             Some(sample)
         }
         Err(why) => {
             emit(&std::format!("SUITE {id} ERROR memory {when}: {}", plain(&why)));
             None
         }
+    }
+}
+
+/// Capture ownership only after the settled reclamation verdict fails.
+fn memory_failure_detail(id: &str) {
+    match std::fs::read_to_string("/proc/breenix/frames") {
+        Ok(frames) => {
+            for line in frames.lines() {
+                emit(&std::format!("SUITE_MEMORY_DETAIL {id} after {line}"));
+            }
+        }
+        Err(error) => emit(&std::format!("SUITE_MEMORY_DETAIL {id} after unavailable={error}")),
     }
 }
 
