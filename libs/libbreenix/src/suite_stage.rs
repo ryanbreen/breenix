@@ -1838,6 +1838,7 @@ pub(super) fn finale() -> Result<(), String> {
     Ok(())
 }
 
+mod census;
 mod checks;
 mod remote;
 pub use checks::showcase_check;
@@ -1898,33 +1899,10 @@ pub(super) fn memory_owners(when: &str) {
             (fields.next() == Some("kB") && fields.next().is_none()).then_some(value)
         }))
         .map_or_else(|| "unavailable".to_string(), |value| value.to_string());
-    let census = (|| -> Option<(usize, String)> {
-        let mut processes = Vec::new();
-        for entry in std::fs::read_dir("/proc").ok()? {
-            let entry = entry.ok()?;
-            let name = entry.file_name();
-            let Some(pid) = name.to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
-            let status = std::fs::read_to_string(std::format!("/proc/{pid}/status")).ok()?;
-            let name = status.lines().find_map(|line| line.strip_prefix("Name:"))?.trim();
-            if name.is_empty() || name.chars().any(|c| c.is_whitespace() || c == ':' || c == ',') { return None; }
-            let kb = status.lines().find_map(|line| {
-                let mut fields = line.strip_prefix("VmPTE:")?.split_whitespace();
-                let value = fields.next()?.parse::<usize>().ok()?;
-                (fields.next() == Some("kB") && fields.next().is_none()).then_some(value)
-            })?;
-            processes.push((pid, name.to_string(), kb));
-        }
-        let total = processes.iter().try_fold(0usize, |sum, entry| sum.checked_add(entry.2))?;
-        processes.sort_unstable_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
-        if processes.len() < 3 { return None; }
-        let top = processes.iter().take(3).map(|(pid, name, kb)| std::format!("{pid}:{name}:{kb}"))
-            .collect::<Vec<_>>().join(",");
-        Some((total, top))
-    })();
-    let (all_pte_kb, top_pte) = census.map_or_else(
-        || ("unavailable".to_string(), "unavailable".to_string()),
-        |(total, top)| (total.to_string(), top));
-    super::suite::emit(&std::format!("BREENGEL TABLES {when} runner_pte_kb={runner_pte_kb} all_pte_kb={all_pte_kb} top_pte={top_pte}"));
+    let (processes, all_pte_kb, top_pte) = census::read(std::path::Path::new("/proc")).map_or_else(
+        || ("unavailable".to_string(), "unavailable".to_string(), "unavailable".to_string()),
+        |(count, total, top)| (count.to_string(), total.to_string(), top));
+    super::suite::emit(&std::format!("BREENGEL TABLES {when} runner_pte_kb={runner_pte_kb} processes={processes} all_pte_kb={all_pte_kb} top_pte={top_pte}"));
 }
 
 #[cfg(test)]
