@@ -883,9 +883,11 @@ architecture only.
 | 27 | `GIVE_DISPLAY` | `Give` (8) | 0 | EPERM, EINVAL, ESRCH, EBUSY, ENODEV, ENOMEM, EINTR, EIO; core custody rules in section 18 |
 | 28 | `READ_META` | `MetaQuery` (24) | 0 | ENOENT |
 | 29 | `COMPOSITE_SNAPSHOT` | `SceneSnapshot` (96) | 0 | EPERM, EINVAL, EBUSY, EAGAIN pending render, ENOMEM, ENODEV, EIO |
+| 32 | `HIT_TEST` | `HitTest` (32) | 0 | EPERM, EINVAL flags or reserved |
 
 Argument structures (offsets in bytes):
 
+- `HitTest`: `x: i32 @0`, `y: i32 @4`, *out* `id: u64 @8`, *out* `scene_version: u64 @16`, `flags: u32 @24` and reserved `@28` (both must be 0). Root or the compositor may query. The result is the registered, visible, non-minimized window with greatest `(z, id)` containing the point; right and bottom edges are exclusive. An id of 0 means no hit. The version changes when a registered window appears, leaves, or changes x, y, z, VISIBLE or MINIMIZED, and is also returned by compositor status.
 - `WinId`: `id: u64 @0`.
 - `Create`: `width: u32 @0`, `height: u32 @4`, `buffers: u32 @8` (2 or 3), `tree_kib: u32 @12` (0 means 64;
   at most 1,024; the kernel rounds it up to whole 4 KiB pages, so no two buffers share a tree page, and writes

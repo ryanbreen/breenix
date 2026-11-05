@@ -51,7 +51,8 @@ pub mod op {
     pub const COMPOSITE_SNAPSHOT: u32 = 29;
     pub const COMPOSITOR_ACK: u32 = 30;
     pub const COMPOSITOR_STATUS: u32 = 31;
-    pub const LAST: u32 = COMPOSITOR_STATUS;
+    pub const HIT_TEST: u32 = 32;
+    pub const LAST: u32 = HIT_TEST;
 }
 
 /// Linux's errno values, which the interface returns negated (section 25).
@@ -594,6 +595,14 @@ pub struct CompositorStatus {
     pub owner: u32, pub flags: u32, pub reserved: [u64; 2],
 }
 
+/// Query the topmost window at a screen coordinate.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HitTest {
+    pub x: i32, pub y: i32, pub id: u64, pub scene_version: u64,
+    pub flags: u32, pub reserved: u32,
+}
+
 /// A window and the commit an observation shows (`ObservationRecord.windows`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -871,6 +880,7 @@ layout!(Give, 8, pid @ 0, reserved @ 4);
 layout!(MetaQuery, 24, id @ 0, meta @ 8, commit_id @ 16);
 layout!(CompositeRecordHeader, 24, serial @ 0, pixels @ 8, count @ 16, flags @ 20);
 layout!(CompositorAck, 48, claim_epoch @ 0, epoch @ 8, handled_serial @ 16, presented @ 24, next_deadline_ns @ 32, flags @ 40, reserved @ 44);
+layout!(HitTest, 32, x @ 0, y @ 4, id @ 8, scene_version @ 16, flags @ 24, reserved @ 28);
 layout!(CompositorStatus, 80, claim_epoch @ 0, epoch @ 8, handled_serial @ 16, presented @ 24, scene_version @ 32, composites @ 40, next_deadline_ns @ 48, owner @ 56, flags @ 60, reserved @ 64);
 layout!(CompositeEntry, 32, id @ 0, commit_id @ 8, pixel_gen @ 16, pixels @ 24);
 layout!(ObservedWindow, 16, id @ 0, commit_id @ 8);
@@ -913,6 +923,7 @@ pub const fn arg_size(op: u32) -> Option<usize> {
         op::COMPOSITE_SNAPSHOT => size_of::<SceneSnapshot>(),
         op::COMPOSITOR_ACK => size_of::<CompositorAck>(),
         op::COMPOSITOR_STATUS => size_of::<CompositorStatus>(),
+        op::HIT_TEST => size_of::<HitTest>(),
         _ => return None,
     })
 }

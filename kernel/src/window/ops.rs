@@ -265,6 +265,7 @@ pub fn destroy(caller: &Caller, id: u64) -> Result<u64, i32> {
         let mut reg = REGISTRY.lock();
         reg.window(id, caller, who::owner)?;
         let w = reg.windows.remove(&id).ok_or(ENOENT)?;
+        if w.registered { reg.geometry_changed(); }
         reg.present.uncover(w.present.shown);
         w
     };
@@ -293,11 +294,13 @@ pub fn set_title(caller: &Caller, t: &Title, register: bool) -> Result<u64, i32>
     let (title, len) = title_in(t)?;
     let mut reg = REGISTRY.lock();
     let w = reg.window(t.id, caller, who::owner)?;
+    let newly_registered = register && !w.registered;
     if register {
         w.registered = true;
     }
     w.title = title;
     w.title_len = len;
+    if newly_registered { reg.geometry_changed(); }
     Ok(0)
 }
 
@@ -1190,10 +1193,14 @@ pub fn set_geometry(caller: &Caller, g: &Geometry) -> Result<u64, i32> {
     }
     let mut reg = REGISTRY.lock();
     let w = reg.window(g.id, caller, who::compositor)?;
+    let topology = breengel_abi::geometry_flags::VISIBLE | breengel_abi::geometry_flags::MINIMIZED;
+    let changed = w.registered && (w.x, w.y, w.z, w.geometry & topology)
+        != (g.x, g.y, g.z, g.flags & topology);
     w.x = g.x;
     w.y = g.y;
     w.z = g.z;
     w.geometry = g.flags;
+    if changed { reg.geometry_changed(); }
     Ok(0)
 }
 
@@ -1382,6 +1389,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
         let ids: Vec<u64> = reg.windows.values().filter(|w| w.owner == tgid).map(|w| w.id).collect();
         for id in ids {
             if let Some(w) = reg.windows.remove(&id) {
+                if w.registered { reg.geometry_changed(); }
                 reg.present.uncover(w.present.shown);
                 if at_exit {
                     if let Some(holder) = w.holder.filter(|&h| h != tgid) {
