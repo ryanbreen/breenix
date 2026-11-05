@@ -121,7 +121,7 @@ fn overflow(lost: u64) -> WindowEvent {
 /// `FontChanged`, which Breengel makes, and the three the kernel makes: `Resized` and
 /// `ResizeFailed` (only a `RESIZE` of the window's buffers reports them, so a size in one is
 /// the buffers' actual size), `CompositorChanged` (each claim's epoch); the compositor reports its own `Overflow`; text of
-/// at most 240 bytes; the reserved field zero.
+/// at most 240 bytes; clicks is zero except on pointer-button events.
 pub fn writable(event: &WindowEvent) -> bool {
     use event_kind::{COMPOSITOR_CHANGED, FONT_CHANGED, RESIZED, RESIZE_FAILED, RESIZE_REQUESTED};
     (1..=RESIZE_REQUESTED).contains(&event.kind)
@@ -129,7 +129,7 @@ pub fn writable(event: &WindowEvent) -> bool {
         && (event.kind != RESIZE_REQUESTED
             || ((1..=limits::MAX_DIMENSION).contains(&event.width) && (1..=limits::MAX_DIMENSION).contains(&event.height)))
         && event.text_len as usize <= limits::EVENT_TEXT
-        && event.clicks == 0
+        && (event.kind == event_kind::POINTER_BUTTON || event.clicks == 0)
 }
 
 /// A window's event descriptor (`EVENT_FD`): readable for poll, select and epoll while the
