@@ -1,14 +1,10 @@
 //! bwm's side of the window interface, version 2 (`docs/gui/breengel.md` sections 17 and
 //! 19): the compositor claim, the registered windows, their geometry, the events bwm writes
 //! to them, the scene descriptor it sleeps on, and the input it reads itself (the pointer and
-//! the keyboard state of syscall 413, section 17.6).
+//! the pollable input stream).
 
-use core::sync::atomic::{AtomicU64, Ordering};
 
-pub use libbreenix::graphics::{key_state, mouse_pos, mouse_state_with_scroll, take_over_display};
-pub use libbreenix::window::abi::cursor_shape;
 use libbreenix::error::Error;
-use libbreenix::errno::Errno;
 use libbreenix::window::{self, abi};
 use abi::{op, Plain};
 
@@ -22,9 +18,6 @@ pub struct WindowInfo {
     pub title_len: u32,
     pub title: [u8; 64],
 }
-
-/// The serial of the last event bwm wrote (section 19.3: strictly increasing, not reused).
-static EVENT_SERIAL: AtomicU64 = AtomicU64::new(0);
 
 /// Claim the compositor role: returns the claim's epoch.
 pub fn claim() -> Result<u64, Error> {
@@ -75,10 +68,10 @@ pub fn set_geometry(id: u64, x: i32, y: i32, z: u32, visible: bool) -> Result<()
 /// What bwm tells a client window. Pointer positions are window-local.
 #[derive(Clone, Copy)]
 pub enum Input {
-    /// A key from bwm's stdin parser: `ascii` its character (0 when it has no character) and `keycode` the
-    /// parser's code (the USB HID usage for Enter, Backspace, Tab and the arrows, the
-    /// control code for Ctrl+letter, the character otherwise).
-    Key { ascii: u8, keycode: u16, modifiers: u16, repeat: bool },
+    /// Physical core key code; text is present only on printable presses.
+    Key { keycode: u32, modifiers: u32, repeat: bool, text: Option<u8> },
+    KeyRelease { keycode: u32, modifiers: u32 },
+    Text { bytes: [u8; 240], len: u32 },
     Move { x: i32, y: i32 },
     /// `button` 1 left, 2 right, 3 middle.
     Button { button: u32, pressed: bool, x: i32, y: i32 },
@@ -90,27 +83,30 @@ pub enum Input {
     Resize { width: u32, height: u32 },
 }
 
-/// Write one event to window `id`, with the next input serial.
-pub fn send(id: u64, input: Input) -> Result<usize, Error> {
+/// Encode a policy notice or a core input event before source stamping.
+pub fn event(input: Input) -> abi::WindowEvent {
     use abi::event_kind as kind;
     let mut event = abi::WindowEvent::ZERO;
     match input {
-        Input::Key { ascii, keycode, modifiers, repeat } => {
+        Input::Key { keycode, modifiers, repeat, text } => {
             event.kind = kind::KEY_PRESS;
-            event.modifiers = modifiers as u32;
-            // The event carries a Linux key code and, on a press, the text (section 19.1).
-            let (code, shift, text) = linux_key(ascii, keycode);
-            event.keycode = code;
-            if shift {
-                event.modifiers |= abi::modifier::SHIFT;
-            }
+            event.modifiers = modifiers;
+            event.keycode = keycode;
             if let Some(t) = text {
                 event.text[0] = t;
                 event.text_len = 1;
             }
-            if repeat {
-                event.flags |= abi::EVENT_REPEAT;
-            }
+            if repeat { event.flags |= abi::EVENT_REPEAT; }
+        }
+        Input::KeyRelease { keycode, modifiers } => {
+            event.kind = kind::KEY_RELEASE;
+            event.keycode = keycode;
+            event.modifiers = modifiers;
+        }
+        Input::Text { bytes, len } => {
+            event.kind = kind::TEXT;
+            event.text = bytes;
+            event.text_len = len;
         }
         Input::Move { x, y } => {
             event.kind = kind::POINTER_MOVE;
@@ -122,7 +118,7 @@ pub fn send(id: u64, input: Input) -> Result<usize, Error> {
                 1 => abi::button::LEFT,
                 2 => abi::button::RIGHT,
                 3 => abi::button::MIDDLE,
-                _ => return Err(Error::Os(Errno::EINVAL)),
+                _ => 0,
             };
             event.pressed = u32::from(pressed);
             (event.x, event.y) = (x, y);
@@ -142,69 +138,10 @@ pub fn send(id: u64, input: Input) -> Result<usize, Error> {
             event.height = height;
         }
     }
-    event.serial = EVENT_SERIAL.fetch_add(1, Ordering::Relaxed) + 1;
-    event.time_ns = libbreenix::time::now_monotonic().map_or(0, |t| t.as_nanos() as u64);
-    window::write_events(id, &[event])
+    event
 }
 
-/// The Linux key code, whether Shift produced it, and the text of a key from bwm's stdin
-/// parser (see `Input::Key`).
-fn linux_key(ascii: u8, code: u16) -> (u32, bool, Option<u8>) {
-    match (ascii, code) {
-        (13, 0x28) => return (28, false, Some(b'\n')),
-        (8, 0x2A) => return (14, false, Some(0x08)),
-        (9, 0x2B) => return (15, false, Some(b'\t')),
-        (0, 0x4F) => return (106, false, None),
-        (0, 0x50) => return (105, false, None),
-        (0, 0x51) => return (108, false, None),
-        (0, 0x52) => return (103, false, None),
-        (0x1b, _) => return (1, false, Some(0x1b)),
-        _ => {}
-    }
-    // Ctrl+letter arrives as its control code.
-    let c = if (1..=26).contains(&ascii) { b'a' + ascii - 1 } else { ascii };
-    const LETTERS: [u32; 26] = [
-        30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45, 21, 44,
-    ];
-    let (code, shift) = match c {
-        b'a'..=b'z' => (LETTERS[(c - b'a') as usize], false),
-        b'A'..=b'Z' => (LETTERS[(c - b'A') as usize], true),
-        b'1'..=b'9' => (2 + (c - b'1') as u32, false),
-        b'0' => (11, false),
-        b' ' => (57, false),
-        b'-' => (12, false),
-        b'=' => (13, false),
-        b'[' => (26, false),
-        b']' => (27, false),
-        b';' => (39, false),
-        b'\'' => (40, false),
-        b'`' => (41, false),
-        b'\\' => (43, false),
-        b',' => (51, false),
-        b'.' => (52, false),
-        b'/' => (53, false),
-        b'!' => (2, true),
-        b'@' => (3, true),
-        b'#' => (4, true),
-        b'$' => (5, true),
-        b'%' => (6, true),
-        b'^' => (7, true),
-        b'&' => (8, true),
-        b'*' => (9, true),
-        b'(' => (10, true),
-        b')' => (11, true),
-        b'_' => (12, true),
-        b'+' => (13, true),
-        b'{' => (26, true),
-        b'}' => (27, true),
-        b':' => (39, true),
-        b'"' => (40, true),
-        b'~' => (41, true),
-        b'|' => (43, true),
-        b'<' => (51, true),
-        b'>' => (52, true),
-        b'?' => (53, true),
-        _ => (0, false),
-    };
-    (code, shift, (ascii != 0).then_some(ascii))
+/// Submit an already stamped source or derived event without translation.
+pub fn send(id: u64, event: abi::WindowEvent) -> Result<usize, Error> {
+    window::write_events(id, &[event])
 }

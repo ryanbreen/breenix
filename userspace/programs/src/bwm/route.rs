@@ -1,169 +1,11 @@
 use super::*;
 
-// ─── Input Parser ────────────────────────────────────────────────────────────
-// Parses stdin bytes (keyboard input) into InputEvents that BWM can either
-// handle internally (F-key focus switching) or route to the focused client
-// window as window events.
-
-pub(super) const ESCAPE_TIMEOUT_MS: u64 = 30;
-
-pub(super) struct InputParser {
-    pub(super) escape_started_ms: u64,
-    pub(super) state: InputState,
-    pub(super) esc_buf: [u8; 16],
-    pub(super) esc_len: usize,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-pub(super) enum InputState { Normal, Escape, CsiOrSS3 }
-
-pub(super) enum InputEvent {
-    /// A key press: ascii byte + the modifiers its own bytes carry (`modifier` bits).
-    /// `repeat` is known only for keys sent with a modifier parameter (`ESC [ c ; m u`,
-    /// console contract section 5.5): Some(true) for a repeat, Some(false) for a press.
-    Key { ascii: u8, keycode: u16, modifiers: u16, repeat: Option<bool> },
-    /// F1..F5 for BWM-internal focus switching
-    FunctionKey(u8),
-}
-
-impl InputParser {
-    pub(super) fn new() -> Self { Self { escape_started_ms: 0, state: InputState::Normal, esc_buf: [0; 16], esc_len: 0 } }
-
-    /// Resolve a bare Escape before admitting a later key as an Alt chord.
-    pub(super) fn expire_escape(&mut self, now_ms: u64) -> Option<InputEvent> {
-        if self.state == InputState::Escape
-            && now_ms.saturating_sub(self.escape_started_ms) >= ESCAPE_TIMEOUT_MS {
-            self.state = InputState::Normal;
-            Some(Self::byte_to_key_event(0x1b))
-        } else {
-            None
-        }
-    }
-
-    pub(super) fn feed(&mut self, byte: u8, now_ms: u64) -> Option<InputEvent> {
-        match self.state {
-            InputState::Normal => {
-                if byte == 0x1b { self.state = InputState::Escape; self.escape_started_ms = now_ms; self.esc_len = 0; None }
-                else { Some(Self::byte_to_key_event(byte)) }
-            }
-            InputState::Escape => {
-                if byte == b'[' || byte == b'O' {
-                    self.state = InputState::CsiOrSS3; self.esc_buf[0] = byte; self.esc_len = 1; None
-                } else {
-                    // Alt sends ESC before the key's bytes.
-                    self.state = InputState::Normal;
-                    match Self::byte_to_key_event(byte) {
-                        InputEvent::Key { ascii, keycode, modifiers, repeat } => Some(InputEvent::Key {
-                            ascii, keycode, modifiers: modifiers | modifier::ALT as u16, repeat,
-                        }),
-                        other => Some(other),
-                    }
-                }
-            }
-            InputState::CsiOrSS3 => {
-                if self.esc_len < self.esc_buf.len() { self.esc_buf[self.esc_len] = byte; self.esc_len += 1; }
-                if byte >= 0x40 && byte <= 0x7e { self.state = InputState::Normal; self.decode_escape() }
-                else { None }
-            }
-        }
-    }
-
-    /// Convert a raw stdin byte into a Key event with appropriate keycode/modifiers.
-    pub(super) fn byte_to_key_event(byte: u8) -> InputEvent {
-        let (keycode, modifiers) = match byte {
-            // Enter (before Ctrl range since 0x0D falls in 0x01..=0x1A)
-            0x0D => (0x28, 0),
-            // Backspace (0x08 falls in Ctrl range; 0x7F does not)
-            0x08 | 0x7F => (0x2A, 0),
-            // Tab (0x09 falls in Ctrl range)
-            0x09 => (0x2B, 0),
-            // Ctrl+A through Ctrl+Z (0x01..0x1A), excluding Enter/Backspace/Tab matched above
-            0x01..=0x1A => (byte as u16, modifier::CTRL as u16),
-            // Printable ASCII + space
-            _ => (byte as u16, 0),
-        };
-        let ascii = match byte { 0x7F => 8, _ => byte };
-        InputEvent::Key { ascii, keycode, modifiers, repeat: None }
-    }
-
-    /// The parameters of a CSI sequence: the first, and the second's modifier value and
-    /// event type (`m` or `m:e`). Absent values are 0.
-    pub(super) fn params(&self) -> (u32, u32, u32) {
-        let mut values = [0u32; 3];
-        let mut index = 0;
-        for &b in &self.esc_buf[1..self.esc_len - 1] {
-            match b {
-                b'0'..=b'9' if index < 3 => values[index] = values[index] * 10 + (b - b'0') as u32,
-                b';' | b':' => index += 1,
-                _ => {}
-            }
-        }
-        (values[0], values[1], values[2])
-    }
-
-    pub(super) fn decode_escape(&self) -> Option<InputEvent> {
-        if self.esc_len < 2 { return None; }
-        let final_byte = self.esc_buf[self.esc_len - 1];
-        if self.esc_buf[0] == b'[' {
-            let (first, m, event) = self.params();
-            // The modifier parameter is 1 plus Shift 1, Alt 2, Ctrl 4, Super 8.
-            let m = m.saturating_sub(1);
-            let modifiers = ((m & 1 != 0) as u8 * modifier::SHIFT
-                | (m & 2 != 0) as u8 * modifier::ALT
-                | (m & 4 != 0) as u8 * modifier::CTRL
-                | (m & 8 != 0) as u8 * modifier::SUPER) as u16;
-            let repeat = (self.esc_len > 3).then_some(event == 2);
-            let arrow = |keycode| Some(InputEvent::Key { ascii: 0, keycode, modifiers, repeat });
-            match final_byte {
-                // A key with a modifier parameter: its byte, and its modifiers.
-                b'u' if first <= 0x7F => {
-                    return match Self::byte_to_key_event(first as u8) {
-                        InputEvent::Key { ascii, keycode, modifiers: own, .. } => Some(InputEvent::Key {
-                            ascii, keycode, modifiers: own | modifiers, repeat,
-                        }),
-                        other => Some(other),
-                    };
-                }
-                // Arrow keys -> Key events with USB HID keycodes
-                b'A' => return arrow(0x52), // Up
-                b'B' => return arrow(0x51), // Down
-                b'C' => return arrow(0x4F), // Right
-                b'D' => return arrow(0x50), // Left
-                // F1..F4 with a modifier parameter (`ESC [ 1 ; m P`).
-                b'P' => return Some(InputEvent::FunctionKey(1)),
-                b'Q' => return Some(InputEvent::FunctionKey(2)),
-                b'R' => return Some(InputEvent::FunctionKey(3)),
-                b'S' => return Some(InputEvent::FunctionKey(4)),
-                b'~' => match first {
-                    1 | 11 => return Some(InputEvent::FunctionKey(1)),
-                    12 => return Some(InputEvent::FunctionKey(2)),
-                    13 => return Some(InputEvent::FunctionKey(3)),
-                    14 => return Some(InputEvent::FunctionKey(4)),
-                    15 => return Some(InputEvent::FunctionKey(5)),
-                    _ => {}
-                },
-                _ => {}
-            }
-        } else if self.esc_buf[0] == b'O' {
-            match final_byte {
-                b'P' => return Some(InputEvent::FunctionKey(1)),
-                b'Q' => return Some(InputEvent::FunctionKey(2)),
-                b'R' => return Some(InputEvent::FunctionKey(3)),
-                b'S' => return Some(InputEvent::FunctionKey(4)),
-                _ => {}
-            }
-        }
-        None
-    }
-}
-
 // ─── Hotkey System ──────────────────────────────────────────────────────────
 // Configurable hotkey matching with multi-tap support. Hotkeys are loaded from
-// /etc/hotkeys.conf at startup. A key combo is matched on the modifiers the key's
-// own bytes carry; multi-tap sequences (e.g. Super+Super) use the kernel's Super
-// tap latch and the modifier state BWM polls each frame.
+// /etc/hotkeys.conf at startup. Key chords use core event flags. Modifier edges
+// feed the existing multi-tap matcher; UI-clock policy belongs to 21.4.
 
-/// Modifier bitmask constants (syscall 413's key state, breengel.md section 17.6)
+/// Modifier bits shared with the input core.
 pub(super) mod modifier {
     pub const SHIFT: u8 = 1;
     pub const CTRL: u8  = 2;
@@ -366,12 +208,7 @@ impl HotkeyManager {
         Some(Hotkey { modifiers, key, taps, action })
     }
 
-    /// Match a stdin key press against the chord bindings, using the modifiers its own
-    /// bytes carry. Bindings use ASCII (Return is CR), not the client event's USB HID
-    /// keycode (Return is 0x28). `held` is the polled modifier state, used only to mark a
-    /// modifier's hold as no clean tap. A matched chord is not delivered to a client:
-    /// each press fires, a repeat is consumed, and a chord whose bytes cannot tell a press
-    /// from a repeat (Alt's `ESC` prefix) fires once per cooldown.
+    /// Match a core key press using its modifier flags and physical press/repeat edge.
     pub(super) fn key_pressed(&mut self, modifiers: u8, held: u8, ascii: u8, repeat: Option<bool>) -> Chord {
         if modifiers | held != 0 {
             self.combo_used = true;
@@ -400,21 +237,13 @@ impl HotkeyManager {
         }
     }
 
-    /// Called after draining this frame's keys, so a Super chord marks its tap
-    /// dirty before modifier-only bindings are considered.
-    ///
-    /// `super_taps` is the count of Super press-edges latched in the kernel HID
-    /// path since the previous frame (op=31, read-and-clear). Because the latch
-    /// captures 0→1 SUPER transitions as the HID report arrives,
-    /// it recovers taps whose entire ~30ms high window fell between two bursty
-    /// compositor-wait polls — which the level-based edge detection would miss.
-    /// SUPER tap counting uses this latch to avoid double-counting against release detection.
+    /// Feed the existing modifier matcher a core edge; Super press edges are explicit.
     pub(super) fn update(&mut self, current_mods: u8, super_taps: u32) -> Option<HotkeyAction> {
         let prev = self.prev_modifiers;
         self.prev_modifiers = current_mods;
 
-        // ── Super multi-tap detection driven by the kernel press-edge latch ──
-        // Each latched press-edge is one physical tap. If the press arrived while
+        // ── Super multi-tap detection driven by the input press edges ──
+        // Each press-edge is one physical tap. If the press arrived while
         // a combo was in progress (a non-modifier key was held with Super), the
         // tap is treated as dirty and resets the sequence rather than counting.
         if super_taps > 0 {
@@ -470,7 +299,7 @@ impl HotkeyManager {
         }
 
         // ── Multi-tap detection for ALT / CTRL / SHIFT via level edges ──
-        // (Super is handled above by the latch.) These modifiers are not affected
+        // (Super is handled above by its press edges.) These modifiers are not affected
         // by the launcher drop bug; keep their existing release-edge behavior.
         for &mod_bit in &[modifier::ALT, modifier::CTRL, modifier::SHIFT] {
             let was = (prev & mod_bit) != 0;
@@ -527,39 +356,6 @@ pub(super) fn trim(s: &[u8]) -> &[u8] {
 }
 
 // ─── Input Routing ──────────────────────────────────────────────────────────
-
-pub(super) static INPUT_BACKLOG: std::sync::Mutex<input_backlog::Backlog<Input>> =
-    std::sync::Mutex::new(input_backlog::Backlog::new());
-
-pub(super) fn flush_input() {
-    use input_backlog::Delivery;
-    INPUT_BACKLOG.lock().unwrap().flush(|id, event| {
-        match session::send(id, *event) {
-            Ok(1) => Delivery::Accepted,
-            Ok(_) => Delivery::Full,
-            Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN)) => Delivery::Full,
-            Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENOENT)) => Delivery::Gone,
-            Err(error) => {
-                let _ = writeln!(std::io::stderr(), "bwm: window {id} input disabled: {error}");
-                Delivery::Failed
-            }
-        }
-    }, |lost| Input::Overflow { lost });
-}
-
-pub(super) fn send_to(windows: &[Window], win_idx: usize, input: Input) {
-    if win_idx >= windows.len() || windows[win_idx].window_id == 0 { return; }
-    let id = windows[win_idx].window_id;
-    let mut backlog = INPUT_BACKLOG.lock().unwrap();
-    let admission = backlog.push(id, input, |old, new| {
-        matches!((old, new), (Input::Move { .. }, Input::Move { .. }))
-    });
-    if admission == input_backlog::Admission::Disabled && matches!(input, Input::Close) {
-        backlog.request_close(id, input);
-    }
-    drop(backlog);
-    flush_input();
-}
 
 pub(super) fn send_focus_event(windows: &[Window], win_idx: usize, gained: bool) {
     send_to(windows, win_idx, if gained { Input::FocusGained } else { Input::FocusLost });

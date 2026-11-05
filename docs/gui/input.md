@@ -145,3 +145,22 @@ The BreenGL `isolation/test-hooks-absent` addition is coverage of this new autho
 its acceptance PR must name that coverage addition. ARM registration, replay and
 PL011 input remain built but unbooted until the operator releases ARM. ARM launcher
 serial host-channel transport remains later work.
+
+## Compositor reader
+
+bwm opens `/dev/input/events` nonblocking, holds its grab through that descriptor,
+and polls it beside the scene descriptor. It decodes whole batches, preserves
+source serials and timestamps on client events, and reports terminal dispositions
+through the reader, including backlog delivery and loss. KeyPress and KeyRelease
+carry the core's Linux key codes and modifier flags. Printable presses also emit
+Text; EV_TEXT payloads split at UTF-8 boundaries when the window text field fills.
+The terminal byte parser and `tests/bwm_input_parser.py` retire together.
+
+The shared reader's CAPABILITIES ioctl (`0x424904`) takes a 16-byte query:
+`device u32, count u32, entries u64`. Count is entry capacity on input and the
+required count on output. Entries are the existing 12-byte Capability records.
+A short buffer receives the required count without partial entries. An unknown
+or detached device returns ENODEV. bwm uses these advertised ranges to normalize
+absolute axes; relative motion keeps the existing focused-window/chrome policy.
+This query reads the same core device descriptions for xHCI HID and ARM's
+virtio-input counterpart. Policy, capture and repeat work belongs to 21.4.

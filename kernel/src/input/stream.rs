@@ -459,6 +459,27 @@ impl InputFile {
     }
     pub fn ioctl(&self, request: u64, arg: u64) -> Result<u64, u64> {
         let reader = self.reader.ok_or(ENOTTY as u64)?;
+        if request == ioctl::CAPABILITIES {
+            let mut query = userptr::copy_from_user::<input_abi::Capabilities>(arg as *const _)?;
+            if query.count as usize > MAX_CAPABILITIES {
+                return Err(EINVAL as u64);
+            }
+            // Copy user memory after releasing the stream lock. The snapshot
+            // remains valid if the device detaches during the copy.
+            let entries = STATE.lock().devices.get(&query.device)
+                .ok_or(ENODEV as u64)?.capabilities.clone();
+            let capacity = query.count as usize;
+            query.count = entries.len() as u32;
+            if capacity >= entries.len() {
+                for (index, entry) in entries.iter().enumerate() {
+                    let address = query.entries.checked_add((index * core::mem::size_of::<Capability>()) as u64)
+                        .ok_or(EFAULT as u64)?;
+                    userptr::copy_to_user(address as *mut Capability, entry)?;
+                }
+            }
+            userptr::copy_to_user(arg as *mut input_abi::Capabilities, &query)?;
+            return Ok(0);
+        }
         let caller = crate::window::Caller::current().map_err(|e| e as u64)?;
         let selection = if request == ioctl::GRAB {
             let selection: input_abi::Selection = userptr::copy_from_user(arg as *const _)?;

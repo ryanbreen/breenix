@@ -190,7 +190,7 @@ pub(super) fn discover_windows(
         return false;
     }
 
-    INPUT_BACKLOG.lock().unwrap().retain_windows(|id| win_infos.iter().any(|info| info.id == id));
+    input::retain_windows(|id| win_infos.iter().any(|info| info.id == id));
 
     // Save defaults for windows about to be removed
     for w in windows.iter() {

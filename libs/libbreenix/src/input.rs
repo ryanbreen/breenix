@@ -35,6 +35,17 @@ impl Reader {
     pub fn fd(&self) -> Fd {
         self.0.fd()
     }
+    /// Read the device's advertised axes and keys through the same descriptor.
+    /// Returns the required count; a short buffer is left unchanged.
+    pub fn capabilities(&self, device: u32, entries: &mut [Capability]) -> Result<usize, Error> {
+        let mut query = abi::Capabilities {
+            device,
+            count: entries.len().try_into().map_err(|_| invalid())?,
+            entries: entries.as_mut_ptr() as u64,
+        };
+        control(self.fd(), abi::ioctl::CAPABILITIES, &mut query as *mut _ as u64)?;
+        Ok(query.count as usize)
+    }
     pub fn grab(&self, devices: &[u32]) -> Result<(), Error> {
         let selection = abi::Selection {
             devices: devices.as_ptr() as u64,

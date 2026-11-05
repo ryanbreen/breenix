@@ -71,6 +71,7 @@ pub mod ioctl {
     pub const GRAB: u64 = 0x424901;
     pub const UNGRAB: u64 = 0x424902;
     pub const DISPOSITION: u64 = 0x424903;
+    pub const CAPABILITIES: u64 = 0x424904;
 }
 pub mod disposition {
     pub const WM_HANDLED: u32 = 1;
@@ -131,6 +132,16 @@ pub struct Selection {
     pub reserved: u32,
 }
 
+/// Descriptor capability query. `count` is buffer capacity on entry and the
+/// required count on return. A short buffer receives no capability entries.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Capabilities {
+    pub device: u32,
+    pub count: u32,
+    pub entries: u64,
+}
+
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SceneTag {
@@ -163,6 +174,7 @@ layout!(Event, 32, serial @ 0, time_ns @ 8, device @ 16, kind @ 20, code @ 22, v
 layout!(CreateHeader, 16, magic @ 0, flags @ 8, capabilities @ 12);
 layout!(Capability, 12, kind @ 0, code @ 2, minimum @ 4, maximum @ 8);
 layout!(Selection, 16, devices @ 0, count @ 8, reserved @ 12);
+layout!(Capabilities, 16, device @ 0, count @ 4, entries @ 8);
 layout!(SceneTag, 32, scene_version @ 0, window @ 8, layout_version @ 16, gesture @ 24);
 layout!(Disposition, 32, serial @ 0, window @ 8, disposition @ 16, reason @ 20, derived @ 24, reserved @ 28);
 
