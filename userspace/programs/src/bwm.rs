@@ -71,6 +71,8 @@ use launch::*;
 
 #[path = "bwm/clock.rs"]
 mod clock;
+#[path = "bwm/close.rs"]
+mod close;
 
 fn main() {
     print!("[bwm] Breenix Window Manager starting... (v2-chromeless-skip)\n");
@@ -145,6 +147,7 @@ fn main() {
     let mut stack = Stack::new();
     let mut stream = input::Stream::new();
     let mut timing = timing::Timing::new();
+    let mut closing = close::Close::default();
     let mut clicks = timing::Clicks::new();
     let mut consumed_keys = std::collections::BTreeSet::new();
     let (mut mouse_x, mut mouse_y) = (0, 0);
@@ -221,6 +224,7 @@ fn main() {
         } else {
             POINTER_POLL_MS
         };
+        let timeout = closing.timeout_ms(libbreenix::ui_clock::now_ns(), timeout);
         for fd in poll_fds.iter_mut() {
             fd.revents = 0;
         }
@@ -249,6 +253,18 @@ fn main() {
             }
             // A committed client frame is composed without repainting the desktop.
             windows_dirty |= gpu.pending();
+        }
+
+        closing.retain(|id, owner| windows.iter().any(|w| w.window_id == id && w.owner_pid == owner));
+        let close_now = libbreenix::ui_clock::now_ns();
+        if closing.has_due(close_now) {
+            let mut listed = Vec::new();
+            if session::list_windows(&mut listed).is_ok() {
+                closing.retain(|id, owner| listed.iter().any(|w| w.id == id && w.owner_pid == owner));
+                closing.due(close_now, |pid, _| {
+                    let _ = signal::kill(pid as i32, signal::SIGKILL);
+                });
+            }
         }
 
         send_pointer_notices(pointer_routes.reconcile(&stack, &pointer_contents(&windows)));
@@ -498,9 +514,10 @@ fn main() {
                             } else if clicked_title {
                                 // Check chrome buttons before starting drag
                                 if windows[top].hit_close_button(mouse_x, mouse_y) {
-                                    send_to(&windows, top, Input::Close);
-                                    if windows[top].owner_pid > 0 {
-                                        let _ = signal::kill(windows[top].owner_pid as i32, signal::SIGTERM);
+                                    match closing.request(id, windows[top].owner_pid, libbreenix::ui_clock::now_ns()) {
+                                        close::Action::Request => send_to(&windows, top, Input::Close),
+                                        close::Action::Term(pid) => { let _ = signal::kill(pid as i32, signal::SIGTERM); }
+                                        _ => {}
                                     }
                                 } else if windows[top].hit_minimize_button(mouse_x, mouse_y) {
                                     let transition = stack.minimize(windows[top].window_id);

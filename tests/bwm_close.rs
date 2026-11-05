@@ -12,10 +12,14 @@ fn close_escalates_on_ui_time_and_forgets_removed_windows() {
     close.due(now, |pid, signal| signals.push((pid, signal)));
     assert!(signals.is_empty());
     assert_eq!(close.request(7, 42, now), Action::Term(42));
+    assert_eq!(close.timeout_ms(now, 3_000), 2_000);
     now += 1_999_000_000;
+    assert_eq!(close.timeout_ms(now, 10), 1);
+    assert!(!close.has_due(now));
     close.due(now, |pid, signal| signals.push((pid, signal)));
     assert!(signals.is_empty());
     now += 1_000_000;
+    assert!(close.has_due(now));
     close.due(now, |pid, signal| signals.push((pid, signal)));
     assert_eq!(signals, vec![(42, Action::Kill(42))]);
 
