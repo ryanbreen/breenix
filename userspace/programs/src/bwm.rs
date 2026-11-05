@@ -792,5 +792,5 @@ impl shutdown::Runtime for ShutdownWait<'_> {
             self.failed = true;
         }
     }
-    fn exit(&mut self) { process::exit(if self.failed { 1 } else { 0 }); }
+    fn exit(&mut self, status: i32) { process::exit(if self.failed { 1 } else { status }); }
 }

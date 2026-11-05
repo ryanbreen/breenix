@@ -8,7 +8,7 @@ pub trait Runtime {
     fn terminated(&self) -> bool;
     fn release(&mut self);
     fn restore(&mut self);
-    fn exit(&mut self);
+    fn exit(&mut self, status: i32);
 }
 
 pub fn boundary<R: Runtime>(runtime: &mut R) -> Option<R::Ready> {
@@ -18,7 +18,7 @@ pub fn boundary<R: Runtime>(runtime: &mut R) -> Option<R::Ready> {
     if runtime.terminated() {
         runtime.release();
         runtime.restore();
-        runtime.exit();
+        runtime.exit(0);
         None
     } else {
         ready
