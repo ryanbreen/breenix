@@ -5,15 +5,8 @@ use libbreenix::window::abi;
 
 /// US key text uses the physical key code; modifiers remain independent bits.
 fn key_text(code: u16, mods: u32) -> Option<u8> {
-    if mods
-        & (libbreenix::input::modifier::CTRL
-            | libbreenix::input::modifier::ALT
-            | libbreenix::input::modifier::SUPER)
-        != 0
-    {
-        return None;
-    }
     let shift = mods & libbreenix::input::modifier::SHIFT != 0;
+    let ctrl = mods & libbreenix::input::modifier::CTRL != 0;
     let letter = match code {
         16..=25 => Some(b"qwertyuiop"[(code - 16) as usize]),
         30..=38 => Some(b"asdfghjkl"[(code - 30) as usize]),
@@ -21,9 +14,13 @@ fn key_text(code: u16, mods: u32) -> Option<u8> {
         _ => None,
     };
     if let Some(c) = letter {
-        return Some(if shift { c.to_ascii_uppercase() } else { c });
+        return Some(if ctrl { c - b'a' + 1 } else if shift { c.to_ascii_uppercase() } else { c });
     }
     match code {
+        input::key::ESC => Some(0x1b),
+        14 => Some(0x08),
+        input::key::TAB => Some(b'\t'),
+        input::key::ENTER => Some(b'\r'),
         2..=11 => Some(if shift {
             b"!@#$%^&*()"[(code - 2) as usize]
         } else {

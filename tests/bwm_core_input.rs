@@ -21,12 +21,13 @@ fn core_keys_keep_linux_codes_modifiers_and_releases() {
         for flags in [0, modifier::CTRL, modifier::SUPER, modifier::SHIFT | modifier::ALT] {
             for value in [0, 1] {
                 let events = input_keys::events(source(code, value, flags), &[]);
-                assert_eq!(events.len(), 1, "code={code} flags={flags} value={value}");
+                let text = value == 1 && [key::ESC, key::ENTER, key::TAB, 14].contains(&code);
+                assert_eq!(events.len(), if text { 2 } else { 1 }, "code={code} flags={flags} value={value}");
                 let e = events[0];
                 assert_eq!(e.kind, if value == 0 { abi::event_kind::KEY_RELEASE } else { abi::event_kind::KEY_PRESS });
                 assert_eq!((e.keycode, e.modifiers), (code as u32, flags));
                 assert_eq!((e.serial, e.time_ns), (42, 123456));
-                assert_eq!(e.text_len, 0);
+                assert_eq!(e.text_len, u32::from(text));
             }
         }
     }
@@ -34,7 +35,7 @@ fn core_keys_keep_linux_codes_modifiers_and_releases() {
 }
 
 #[test]
-fn printable_presses_emit_text_and_control_chords_do_not() {
+fn printable_and_terminal_control_presses_emit_text() {
     assert_eq!(input_keys::chord_key(key::ENTER), b'\r');
     assert_eq!(input_keys::chord_key(key::TAB), b'\t');
     assert_eq!(input_keys::chord_key(key::ESC), 27);
@@ -50,12 +51,21 @@ fn printable_presses_emit_text_and_control_chords_do_not() {
         assert_eq!(libbreenix::input::abi::derived_source(events[1].serial), Some((42, 1)));
         assert_eq!(events[1].time_ns, 123456);
     }
-    for flags in [modifier::CTRL, modifier::SUPER, modifier::ALT] {
+    for flags in [modifier::SUPER, modifier::ALT] {
         let events = input_keys::events(source(key::C, 1, flags), &[]);
-        assert_eq!(events.len(), 1);
-        assert_eq!((events[0].keycode, events[0].modifiers, events[0].text_len), (key::C as u32, flags, 0));
+        assert_eq!(events.len(), 2);
+        assert_eq!((events[0].keycode, events[0].modifiers, events[0].text_len), (key::C as u32, flags, 1));
+        assert_eq!(events[0].text[0], b'c');
     }
-    // Repeat policy is deferred to 21.4; check the A release separately.
+    for (code, flags, byte) in [(key::C, modifier::CTRL, 3), (32, modifier::CTRL, 4),
+        (key::ESC, 0, 27), (14, 0, 8), (key::TAB, 0, b'\t'), (key::ENTER, 0, b'\r')] {
+        for value in [1, 2] {
+            let events = input_keys::events(source(code, value, flags), &[]);
+            assert_eq!(events.len(), 2);
+            assert_eq!((events[0].text_len, events[0].text[0]), (1, byte));
+            assert_eq!((events[1].text_len, events[1].text[0]), (1, byte));
+        }
+    }
     assert_eq!(input_keys::events(source(key::A, 0, 0), &[]).len(), 1);
 }
 
