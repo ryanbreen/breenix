@@ -75,8 +75,11 @@ use launch::*;
 mod clock;
 #[path = "bwm/close.rs"]
 mod close;
+#[path = "bwm/shutdown.rs"]
+mod shutdown;
 
 fn main() {
+    initialize_shutdown();
     print!("[bwm] Breenix Window Manager starting... (v2-chromeless-skip)\n");
 
     if let Err(e) = libbreenix::graphics::take_over_display() {
@@ -231,7 +234,8 @@ fn main() {
         for fd in poll_fds.iter_mut() {
             fd.revents = 0;
         }
-        let _ = io::poll(&mut poll_fds, timeout);
+        let mut wait = ShutdownWait { fds: &mut poll_fds, timeout, failed: false };
+        if shutdown::boundary(&mut wait).is_none() { return; }
         clock.begin_epoch();
         launch::reap(&mut children);
         let input_ready = poll_fds[0].revents & io::poll_events::POLLIN as i16 != 0;
@@ -740,4 +744,53 @@ fn send_timed_pointer_notices(notices: Vec<pointer_route::Notice>, clicks: &mut 
             input::send_id(notice.id, Input::Button { button: (code - 0x110 + 1) as u32, pressed, x: notice.x, y: notice.y, clicks: count });
         } else { send_pointer_notices(vec![notice]); }
     }
+}
+
+static TERMINATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn terminate(_: i32) {
+    TERMINATE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn term_mask(how: i32) {
+    let mask = 1u64 << (signal::SIGTERM - 1);
+    if let Err(error) = signal::sigprocmask(how, Some(&mask), None) {
+        eprintln!("[bwm] cannot set shutdown signal mask: {error}");
+        process::exit(1);
+    }
+}
+
+fn initialize_shutdown() {
+    term_mask(signal::SIG_BLOCK);
+    if let Err(error) = signal::sigaction(signal::SIGTERM, Some(&signal::Sigaction::new(terminate)), None) {
+        eprintln!("[bwm] cannot install shutdown handler: {error}");
+        process::exit(1);
+    }
+}
+
+struct ShutdownWait<'a> {
+    fds: &'a mut [io::PollFd],
+    timeout: i32,
+    failed: bool,
+}
+
+impl shutdown::Runtime for ShutdownWait<'_> {
+    type Ready = ();
+    fn unblock(&mut self) { term_mask(signal::SIG_UNBLOCK); }
+    fn wait(&mut self) { let _ = io::poll(self.fds, self.timeout); }
+    fn block(&mut self) { term_mask(signal::SIG_BLOCK); }
+    fn terminated(&self) -> bool { TERMINATE.load(std::sync::atomic::Ordering::Relaxed) }
+    fn release(&mut self) {
+        if let Err(error) = libbreenix::window::release_compositor() {
+            eprintln!("[bwm] cannot release compositor: {error}");
+            self.failed = true;
+        }
+    }
+    fn restore(&mut self) {
+        if let Err(error) = libbreenix::graphics::give_back_display() {
+            eprintln!("[bwm] cannot restore display: {error}");
+            self.failed = true;
+        }
+    }
+    fn exit(&mut self) { process::exit(if self.failed { 1 } else { 0 }); }
 }
