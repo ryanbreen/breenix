@@ -347,8 +347,12 @@ pub static REGISTRY: IrqSafeMutex<Registry> = IrqSafeMutex::new(Registry::new())
 /// Cold metadata snapshot; copy identities/counts without cloning pixel owners.
 pub(crate) fn ownership_census() -> alloc::string::String {
     use core::fmt::Write;
-    let mut buffers = Vec::with_capacity(4096);
-    let mut remnants = Vec::with_capacity(4096);
+    let (buffer_capacity, remnant_capacity) = {
+        let reg = REGISTRY.lock();
+        (reg.windows.values().map(|w| w.buffers.len()).sum::<usize>().min(4096), reg.remnants.len().min(4096))
+    };
+    let mut buffers = Vec::with_capacity(buffer_capacity);
+    let mut remnants = Vec::with_capacity(remnant_capacity);
     let counts = {
         let reg = REGISTRY.lock();
         for (&id, w) in &reg.windows {

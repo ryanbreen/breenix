@@ -222,7 +222,10 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
 /// Cold ownership metadata, without pumping requests or retiring sampling pins.
 pub(crate) fn ownership_census() -> alloc::string::String {
     use core::fmt::Write;
-    let mut rows = Vec::with_capacity(4096);
+    crate::per_cpu::preempt_disable();
+    let capacity = panic::lock(&CORE).as_ref().map_or(0, |c| c.resources.len().min(4096));
+    crate::per_cpu::preempt_enable();
+    let mut rows = Vec::with_capacity(capacity);
     crate::per_cpu::preempt_disable();
     let counts = {
         let core = panic::lock(&CORE);
