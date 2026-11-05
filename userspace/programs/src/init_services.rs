@@ -498,7 +498,6 @@ impl Supervisor {
                                         || line.starts_with(b"[bwm] first frame read back:")
                                         || line.starts_with(b"[bwm] desktop fills the scanout:")
                                         || line.starts_with(b"[bwm] composited client frame")
-                                        || line.starts_with(b"[bwm] trace:")
                                         || line.starts_with(b"[bwm] Discovered window")
                                         || line.starts_with(b"[bwm] ERROR:")
                                         || line.starts_with(b"[bwm] first frame check FAILED:")

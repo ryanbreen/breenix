@@ -105,7 +105,7 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
         op,
         op::LIST | op::ACQUIRE | op::READ_EVENTS | op::WRITE_EVENTS | op::EVENT_FD | op::CAPTURE | op::MAP_TREE
             | op::COMPOSITE_SNAPSHOT | op::COMPOSITE_RECORD | op::SCANOUT_READBACK | op::READ_META | op::READ_REMNANT
-            | op::MAP_COMMITTED | op::MAP_COMPOSITOR_TEXTURE
+            | op::MAP_COMMITTED | op::MAP_COMPOSITOR_TEXTURE | op::COMPOSITOR_ACK | op::COMPOSITOR_STATUS
     ) {
         crate::window::scene::changed();
     }
