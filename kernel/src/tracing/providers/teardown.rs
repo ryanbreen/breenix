@@ -704,6 +704,10 @@ counter!(
 );
 counter!(PT_TABLE_FRAMES_RECORDED, "Process table frames recorded");
 counter!(
+    PT_RECLAIM_NONEMPTY,
+    "Nonempty process table reclaim windows refused"
+);
+counter!(
     PT_ROOT_ABANDONED_NO_PROOF,
     "Process roots abandoned without a retirement pipeline"
 );
@@ -807,7 +811,7 @@ counter!(
     "Fatal group signals dropped for init"
 );
 
-pub const COUNTER_COUNT: usize = 87;
+pub const COUNTER_COUNT: usize = 88;
 
 /// The registration and normal-context reader inventory. Keeping one inventory
 /// makes a write-only counter structurally impossible without changing the P0
@@ -861,6 +865,7 @@ pub static COUNTERS: [&TraceCounter; COUNTER_COUNT] = [
     &LEAF_DECREF_UNREGISTERED,
     &LEAF_CUSTODY_REFUSED,
     &PT_TABLE_FRAMES_RECORDED,
+    &PT_RECLAIM_NONEMPTY,
     &PT_ROOT_ABANDONED_NO_PROOF,
     &PT_ROOT_ABANDONED_NO_ARCH,
     &PT_ROOT_ABANDONED_TERMINATED,

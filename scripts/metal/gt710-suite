@@ -2216,6 +2216,32 @@ def breengel_allocations(serial):
     return row
 
 
+def parse_breengel_tables(serial):
+    records = {}
+    pattern = r'BREENGEL TABLES (before|finale|retired|after) runner_pte_kb=(\d+) processes=(\d+) all_pte_kb=(\d+) top_pte=([^ ]+)'
+    for line in serial.splitlines():
+        if not line.startswith('BREENGEL TABLES '):
+            continue
+        match = re.fullmatch(pattern, line)
+        if not match or match[1] in records:
+            raise ValueError('invalid BreenGL table census')
+        entries = []
+        for item in match[5].split(','):
+            entry = re.fullmatch(r'(\d+):([^,:\s]+):(\d+)', item)
+            if not entry:
+                raise ValueError('invalid BreenGL table owner')
+            entries.append((int(entry[1]), entry[2], int(entry[3])))
+        if (int(match[3]) < 1 or len(entries) != min(3, int(match[3]))
+                or len({entry[0] for entry in entries}) != len(entries)
+                or any(entries[i][2] < entries[i+1][2] for i in range(len(entries) - 1))
+                or int(match[4]) < sum(entry[2] for entry in entries)):
+            raise ValueError('invalid BreenGL table ranking')
+        records[match[1]] = dict(runner_pte_kb=int(match[2]), processes=int(match[3]), all_pte_kb=int(match[4]), top_pte=entries)
+    if not {'before', 'after'} <= records.keys():
+        raise ValueError('incomplete BreenGL table census')
+    return records
+
+
 def breengel_memory_accounting(serial):
     """Keep the raw verdict; account only the coordinator's measured intermediate exception."""
     shapes = {
@@ -2232,7 +2258,10 @@ def breengel_memory_accounting(serial):
             match = re.fullmatch(shape, line)
             if match:
                 parsed.append((kind, match, line));break
-    ok, why = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'scripts/suite-verdict.py'))['memory_problem'](parsed)
+    if re.search(r'^BREENGEL TABLES ', serial, re.M):
+        parse_breengel_tables(serial)
+    scorer = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'scripts/suite-verdict.py'))
+    ok, why = scorer['memory_problem'](parsed)
     if ok:
         return dict(status='PASS', reason_pages=0)
     # The common validator has already checked order, counts and the actual
@@ -2259,8 +2288,8 @@ def breengel_memory_accounting(serial):
     before, after = samples['before'], samples['after']
     fields = {'free', 'heap_free_kb', 'user_stacks', 'user_pages', 'page_tables',
               'page_cache', 'kernel_stacks', 'buffers', 'other', 'receipts', 'settle_ms'}
-    verdict = [m for kind, m, _ in parsed if kind == 'RECLAIMED'][0]
-    if (set(before) != fields or set(after) != fields or int(verdict[4]) != 48
+    allowance = scorer['memory_reclaim_allowance_pages']()
+    if (set(before) != fields or set(after) != fields
             or before['receipts'] or after['receipts']):
         raise ValueError('memory accounting requires complete settled native frame ownership')
     owner_fields = fields - {'free', 'heap_free_kb', 'receipts', 'settle_ms'}
@@ -2297,11 +2326,11 @@ def breengel_memory_accounting(serial):
         credited.append(dict(case=name, bytes=len(text), requested=size, mapped_pages=1))
     pages = len(credited)
     residual = loss - pages
-    if after['user_pages'] - before['user_pages'] < pages or not 0 <= residual <= 48:
+    if after['user_pages'] - before['user_pages'] < pages or not 0 <= residual <= allowance:
         raise ValueError('unreclaimed memory remains beyond measured reasons and the original allowance')
     return dict(status='ACCOUNTED_FAILURE_REASONS', raw_verdict='FAIL', lost_pages=loss,
                 reason_pages=pages, reason_bytes=reason_bytes, requested_bytes=requested,
-                mapped_bytes=pages*4096, residual_pages=residual, allowance=48, cases=credited)
+                mapped_bytes=pages*4096, residual_pages=residual, allowance=allowance, cases=credited)
 
 
 SCANOUT_FIELDS = (
@@ -3455,6 +3484,14 @@ def capture_serial(directory, suite=None):
 
 
 def capture_serial_body(directory, serial, inherited_probes=None, original_probes=None):
+    # Artifact boundaries accept MEMORY verdicts before the category scorer runs.
+    # G35(3) applies to those records too, including historical alpha captures.
+    verdicts = re.findall(r'^SUITE \S+ MEMORY reclaimed=(?:PASS|FAIL) free_before=\d+ free_after=\d+ allowance=(\d+)$', serial, re.M)
+    if verdicts:
+        scorer = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'scripts/suite-verdict.py'))
+        allowance = scorer['memory_reclaim_allowance_pages']()
+        if any(int(value) != allowance for value in verdicts):
+            raise ValueError(f'memory allowance differs from MEMORY_RECLAIM_ALLOWANCE_PAGES={allowance}')
     # claim-lint:ok: normative bulk framing; tests/gt710_bulk_test.py and tests/gt710_contexts_report_test.py mutate anchors and bodies.
     spans = bool(re.search(r'^GT710_SPANS_BULK ', serial, re.M))
     stalls = bool(re.search(r'^GT710_STALL_BULK ', serial, re.M))

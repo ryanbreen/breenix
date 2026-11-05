@@ -39,7 +39,7 @@ class FullAcceptance(unittest.TestCase):
 
     def test_full_gate_keeps_memory_and_latched_observation_checks(self):
         original = composition_capture()
-        for bad in (original.replace('free_after=1000 allowance=64', 'free_after=900 allowance=64')
+        for bad in (original.replace('free_after=1000 allowance=48', 'free_after=900 allowance=48')
                             .replace('after free=1000', 'after free=900')
                             .replace('reclaimed=PASS', 'reclaimed=FAIL'),
                     original.replace('"latched_confirmed": 1,', '"latched_confirmed": 0,')):

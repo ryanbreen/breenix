@@ -130,7 +130,7 @@ def gpu_serial():
     names = [cat['id']+'/'+case['id'] for cat in manifest['categories'] for case in cat['cases']]
     reason = 'missing the GPU core with a device admitted to the profile (G1): CAPS status 2 (missing b8g8r8a8-render)'
     return ('SUITE gpu START cases=170\nSUITE gpu MEMORY before free=1000 heap_free_kb=500 user_pages=100\n' + ''.join(f'SUITE gpu CASE {name} FAIL ms=1 msg={reason}\n' for name in names)
-            + 'SUITE gpu DONE passed=0 failed=170 skipped=0 total=170\nSUITE gpu MEMORY after free=1000 heap_free_kb=500 user_pages=100\nSUITE gpu MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=64\nSUITE gpu ELAPSED ms=210\nSUITE_SEQUENCE READY gpu\n')
+            + 'SUITE gpu DONE passed=0 failed=170 skipped=0 total=170\nSUITE gpu MEMORY after free=1000 heap_free_kb=500 user_pages=100\nSUITE gpu MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=48\nSUITE gpu ELAPSED ms=210\nSUITE_SEQUENCE READY gpu\n')
 
 def console_serial():
     manifest = json.loads((ROOT / 'docs/suites/console.json').read_text())

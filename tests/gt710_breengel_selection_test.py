@@ -40,7 +40,7 @@ def capture():
     rows += [f'SUITE breengel CASE {n} PASS ms=1' + (' sha256=' + 'a' * 64 if n in pictured_cases() else '') for n in NAMES]
     rows += ['SUITE breengel DONE passed=401 failed=0 skipped=0 total=401',
              'SUITE breengel MEMORY after free=1000 heap_free_kb=500 user_pages=100',
-             'SUITE breengel MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=64',
+             'SUITE breengel MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=48',
              'SUITE breengel ELAPSED ms=1000', 'SUITE_SEQUENCE READY breengel']
     return '\n'.join(rows) + '\n'
 
@@ -239,7 +239,7 @@ class BreengelSelection(unittest.TestCase):
                 with self.subTest(case=name, replacement=bool(replacement)):
                     self.assertEqual(score(), 'FAIL')
         for line in ('SUITE breengel DONE passed=401 failed=0 skipped=0 total=401\n',
-                     'SUITE breengel MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=64\n'):
+                     'SUITE breengel MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=48\n'):
             producer['breengel']['serial'] = original.replace(line, '')
             self.assertEqual(score(), 'FAIL')
         for name in ('panel/stage-layout', 'raster/fill-rect'):

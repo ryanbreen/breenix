@@ -17,7 +17,8 @@ name a manifest case; they do not count.
 The memory record (docs/suites/README.md, "Memory record") of a full run is one
 `MEMORY before` line after START and before the first CASE, then after DONE one
 `MEMORY after` line and one `MEMORY reclaimed=PASS|FAIL free_before= free_after=
-allowance=` line whose figures are those two lines' free counts. reclaimed=FAIL,
+allowance=` line whose figures are those two lines' free counts and whose allowance
+equals MEMORY_RECLAIM_ALLOWANCE_PAGES read from libs/libbreenix/src/suite_memory.rs. reclaimed=FAIL,
 or a reclaimed verdict its own figures contradict, fails the suite like a failing
 case. A one-case run (`only`) has no memory record.
 
@@ -211,6 +212,16 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
     return memory[0], f"{line}; {memory[1]}" if memory[0] else f"{line}: {memory[1]}"
 
 
+def memory_reclaim_allowance_pages():
+    """Read the runner's canonical allowance, including in a retained definition tree."""
+    source = REPO / 'libs/libbreenix/src/suite_memory.rs'
+    values = re.findall(r'^pub const MEMORY_RECLAIM_ALLOWANCE_PAGES: u64 = (\d+);$',
+                        source.read_text(), re.M)
+    if len(values) != 1:
+        raise ValueError('memory allowance source must define MEMORY_RECLAIM_ALLOWANCE_PAGES once')
+    return int(values[0])
+
+
 def memory_problem(records):
     """(reclaimed, detail) for a full run's memory record, in serial order among its other records."""
     kinds = [kind for kind, _, _ in records]
@@ -230,6 +241,12 @@ def memory_problem(records):
     if not done < a_at < r_at:
         return False, "MEMORY after and MEMORY reclaimed do not follow DONE in that order"
     passed, free_before, free_after, allowance = r.group(1) == "PASS", *(int(r.group(i)) for i in (2, 3, 4))
+    try:
+        expected_allowance = memory_reclaim_allowance_pages()
+    except (OSError, ValueError) as error:
+        return False, f"cannot read memory allowance: {error}"
+    if allowance != expected_allowance:
+        return False, f"memory allowance {allowance} differs from MEMORY_RECLAIM_ALLOWANCE_PAGES={expected_allowance}"
     if (free_before, free_after) != (int(b.group(2)), int(a.group(2))):
         return False, f"{reclaimed[len('SUITE '):]} does not repeat the free counts of its MEMORY before and after lines"
     if passed != (free_after + allowance >= free_before):
