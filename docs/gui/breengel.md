@@ -1256,13 +1256,13 @@ The claim is singleton, not an ownership-stack entry. The stage normally needs n
 | 64 | `pressed: u32` | 1 press, 0 release, `PointerButton` only |
 | 68 | `text_len: u32` | bytes of `text`, at most 240 |
 | 72 | `lost: u32` | events lost before this one, `Overflow` only |
-| 76 | reserved | zero |
+| 76 | `clicks: u32` | pointer-button click count |
 | 80 | `text: [u8; 240]` | UTF-8, `KeyPress` (the text the compositor attached) and `Text` |
 
 <!-- claim-lint:ok: Normative event kinds specified by coordinator B41 and #2312. -->
 Kinds: 1 `KeyPress`, 2 `KeyRelease`, 3 `Text`, 4 `PointerMove`, 5 `PointerButton`, 6 `Scroll`,
 7 `FocusGained`, 8 `FocusLost`, 9 `CloseRequested`, 10 `Resized`, 11 `ResizeFailed`, 12 `FontChanged`
-(made by Breengel, section 9.3), 13 `CompositorChanged`, 14 `Overflow`, 15 `ResizeRequested`. No field carries another field's
+(made by Breengel, section 9.3), 13 `CompositorChanged`, 14 `Overflow`, 15 `ResizeRequested`, 16 `PointerEnter`, 17 `PointerLeave`, 18 `PointerCancel`. No field carries another field's
 meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a key press.
 
 ### 19.2 Delivery

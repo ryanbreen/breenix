@@ -676,6 +676,9 @@ pub mod event_kind {
     pub const COMPOSITOR_CHANGED: u16 = 13;
     pub const OVERFLOW: u16 = 14;
     pub const RESIZE_REQUESTED: u16 = 15;
+    pub const POINTER_ENTER: u16 = 16;
+    pub const POINTER_LEAVE: u16 = 17;
+    pub const POINTER_CANCEL: u16 = 18;
 }
 
 /// `WindowEvent.flags` bit 0: a repeat.
@@ -723,7 +726,8 @@ pub struct WindowEvent {
     pub text_len: u32,
     /// `Overflow` only.
     pub lost: u32,
-    pub reserved: u32,
+    /// Pointer-button click count.
+    pub clicks: u32,
     pub text: [u8; 240],
 }
 
@@ -890,7 +894,7 @@ layout!(ObservationRecord, 512, serial @ 0, backend @ 8, flags @ 12, width @ 16,
     completions @ 304, boundary @ 496, reserved @ 500);
 layout!(WindowEvent, 320, serial @ 0, time_ns @ 8, epoch @ 16, kind @ 24, flags @ 26, modifiers @ 28,
     keycode @ 32, button @ 36, x @ 40, y @ 44, scroll_x @ 48, scroll_y @ 52, width @ 56, height @ 60,
-    pressed @ 64, text_len @ 68, lost @ 72, reserved @ 76, text @ 80);
+    pressed @ 64, text_len @ 68, lost @ 72, clicks @ 76, text @ 80);
 layout!(TcArm, 24, point @ 0, reserved @ 4, target @ 8, param @ 16);
 layout!(TcFired, 16, point @ 0, reserved @ 4, count @ 8);
 

@@ -129,7 +129,7 @@ pub fn writable(event: &WindowEvent) -> bool {
         && (event.kind != RESIZE_REQUESTED
             || ((1..=limits::MAX_DIMENSION).contains(&event.width) && (1..=limits::MAX_DIMENSION).contains(&event.height)))
         && event.text_len as usize <= limits::EVENT_TEXT
-        && event.reserved == 0
+        && event.clicks == 0
 }
 
 /// A window's event descriptor (`EVENT_FD`): readable for poll, select and epoll while the
