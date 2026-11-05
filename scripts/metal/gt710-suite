@@ -2216,6 +2216,29 @@ def breengel_allocations(serial):
     return row
 
 
+def parse_breengel_tables(serial):
+    records = {}
+    pattern = r'BREENGEL TABLES (before|finale|retired|after) runner_pte_kb=(\d+) all_pte_kb=(\d+) top_pte=([^ ]+)'
+    for line in serial.splitlines():
+        if not line.startswith('BREENGEL TABLES '):
+            continue
+        match = re.fullmatch(pattern, line)
+        if not match or match[1] in records:
+            raise ValueError('invalid BreenGL table census')
+        entries = []
+        for item in match[4].split(','):
+            entry = re.fullmatch(r'(\d+):([^,:\s]+):(\d+)', item)
+            if not entry:
+                raise ValueError('invalid BreenGL table owner')
+            entries.append((int(entry[1]), entry[2], int(entry[3])))
+        if len(entries) != 3 or len({entry[0] for entry in entries}) != 3 or any(entries[i][2] < entries[i+1][2] for i in range(2)):
+            raise ValueError('invalid BreenGL table ranking')
+        records[match[1]] = dict(runner_pte_kb=int(match[2]), all_pte_kb=int(match[3]), top_pte=entries)
+    if not {'before', 'after'} <= records.keys():
+        raise ValueError('incomplete BreenGL table census')
+    return records
+
+
 def breengel_memory_accounting(serial):
     """Keep the raw verdict; account only the coordinator's measured intermediate exception."""
     shapes = {
@@ -2232,6 +2255,8 @@ def breengel_memory_accounting(serial):
             match = re.fullmatch(shape, line)
             if match:
                 parsed.append((kind, match, line));break
+    if re.search(r'^BREENGEL TABLES ', serial, re.M):
+        parse_breengel_tables(serial)
     scorer = runpy.run_path(str(Path(__file__).resolve().parents[2] / 'scripts/suite-verdict.py'))
     ok, why = scorer['memory_problem'](parsed)
     if ok:

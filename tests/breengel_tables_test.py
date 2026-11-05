@@ -14,7 +14,7 @@ class TablesTest(unittest.TestCase):
     def test_complete_and_missing_fields(self):
         for tool in TOOLS:
             parse = tool['parse_breengel_tables']
-            result = parse(BEFORE + '\n' + AFTER + '\n')
+            result = parse(BEFORE + '\n' + BEFORE.replace('before', 'finale') + '\n' + BEFORE.replace('before', 'retired') + '\n' + AFTER + '\n')
             self.assertEqual(result['after']['all_pte_kb'] - result['before']['all_pte_kb'], 16)
             self.assertEqual(result['after']['top_pte'][0], (7, 'runner', 52))
             for bad in (AFTER.replace(' all_pte_kb=136', ''), AFTER.replace(' top_pte=7:runner:52,2:init:32,9:worker:20', '')):

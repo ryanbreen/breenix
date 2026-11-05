@@ -17,6 +17,29 @@ def fields(text):
     return {name: int(value) for name, value in FIELDS.findall(text)}
 
 
+def parse_breengel_tables(serial):
+    records = {}
+    pattern = r'BREENGEL TABLES (before|finale|retired|after) runner_pte_kb=(\d+) all_pte_kb=(\d+) top_pte=([^ ]+)'
+    for line in serial.splitlines():
+        if not line.startswith('BREENGEL TABLES '):
+            continue
+        match = re.fullmatch(pattern, line)
+        if not match or match[1] in records:
+            raise ValueError('invalid BreenGL table census')
+        entries = []
+        for item in match[4].split(','):
+            entry = re.fullmatch(r'(\d+):([^,:\s]+):(\d+)', item)
+            if not entry:
+                raise ValueError('invalid BreenGL table owner')
+            entries.append((int(entry[1]), entry[2], int(entry[3])))
+        if len(entries) != 3 or len({entry[0] for entry in entries}) != 3 or any(entries[i][2] < entries[i+1][2] for i in range(2)):
+            raise ValueError('invalid BreenGL table ranking')
+        records[match[1]] = dict(runner_pte_kb=int(match[2]), all_pte_kb=int(match[3]), top_pte=entries)
+    if not {'before', 'after'} <= records.keys():
+        raise ValueError('incomplete BreenGL table census')
+    return records
+
+
 def optional_evidence(boot, serial):
     births = ''
     census_info = ''
@@ -32,26 +55,13 @@ def optional_evidence(boot, serial):
             census_info = json.dumps({k: census[k] for k in ('phase', 'count', 'dropped')}, separators=(',', ':'))
             counts = Counter(str(entry[3]) for entry in census['entries'])
             births = json.dumps(dict(sorted(counts.items(), key=lambda item: int(item[0]))), separators=(',', ':'))
-    table_lines = re.findall(r'^BREENGEL TABLES (.+)$', serial, re.M)
     table = ''
-    if table_lines:
-        phases = {}
-        for line in table_lines:
-            phase, _, rest = line.partition(' ')
-            if phase in ('before', 'after'):
-                phases[phase] = fields(rest)
-            else:
-                values = fields(line)
-                before = {k[7:]: v for k, v in values.items() if k.startswith('before_')}
-                after = {k[6:]: v for k, v in values.items() if k.startswith('after_')}
-                if before or after:
-                    phases.update(before=before, after=after)
-                else:
-                    table = json.dumps(values, separators=(',', ':'))
-        if phases:
-            if set(phases) != {'before', 'after'} or phases['before'].keys() != phases['after'].keys():
-                raise ValueError(f'{boot}: incomplete runner table records')
-            table = json.dumps({k: phases['after'][k] - v for k, v in phases['before'].items()}, separators=(',', ':'))
+    if re.search(r'^BREENGEL TABLES ', serial, re.M):
+        phases = parse_breengel_tables(serial)
+        table = json.dumps({**{k: phases['after'][k] - phases['before'][k]
+                               for k in ('runner_pte_kb', 'all_pte_kb')},
+                            'top_before': phases['before']['top_pte'],
+                            'top_after': phases['after']['top_pte']}, separators=(',', ':'))
     return births, census_info, table
 
 

@@ -25,8 +25,8 @@ class SuiteMemoryOwnersTest(unittest.TestCase):
                     'SUITE breengel MEMORY before free=2013754 heap_free_kb=51864 user_stacks=16 user_pages=2729 page_tables=81 page_cache=0 kernel_stacks=848 buffers=18579 other=16498 receipts=0 settle_ms=203\n'
                     f'SUITE breengel MEMORY after free={free} heap_free_kb=48804 user_stacks=12 user_pages=2747 page_tables={tables} page_cache=0 kernel_stacks=848 buffers=18579 other=16498 receipts=0 settle_ms=206\n'
                     f'SUITE breengel MEMORY reclaimed={verdict} free_before=2013754 free_after={free} allowance=48\n'
-                    'BREENGEL TABLES before runner_pte_kb=40\n'
-                    'BREENGEL TABLES after runner_pte_kb=52\n')
+                    'BREENGEL TABLES before runner_pte_kb=40 all_pte_kb=120 top_pte=7:runner:40,2:init:32,9:worker:16\n'
+                    'BREENGEL TABLES after runner_pte_kb=52 all_pte_kb=136 top_pte=7:runner:52,2:init:32,9:worker:20\n')
             census = {'schema': 1, 'phase': 401, 'dropped': 0, 'count': 3,
                       'entries': [[1, 16, 1, 0, ''], [2, 16, 1, 7, ''], [3, 16, 1, 7, '']]}
             (root / rows[1][0] / 'gt710-final.rle').write_text('GT710_BREENGL_ALLOCATIONS ' + json.dumps(census) + '\n')
@@ -36,7 +36,9 @@ class SuiteMemoryOwnersTest(unittest.TestCase):
                              [('45', '31', '18', '-4', 'PASS'), ('49', '35', '18', '-4', 'FAIL')])
             self.assertEqual(json.loads(report[1]['allocation_births']), {'0': 1, '7': 2})
             self.assertEqual(report[0]['allocation_births'], '')
-            self.assertEqual(json.loads(report[0]['runner_tables_delta']), {'runner_pte_kb': 12})
+            self.assertEqual(json.loads(report[0]['runner_tables_delta']), {'runner_pte_kb': 12, 'all_pte_kb': 16,
+                'top_before': [[7, 'runner', 40], [2, 'init', 32], [9, 'worker', 16]],
+                'top_after': [[7, 'runner', 52], [2, 'init', 32], [9, 'worker', 20]]})
 
 
 if __name__ == '__main__':
