@@ -19,7 +19,9 @@ static BOUND: spin::Mutex<[Option<&'static dyn Replay>; 2]> = spin::Mutex::new([
 
 /// First bound keyboard/pointer wins; the driver revalidates its instance on each replay.
 pub fn register(driver: &'static dyn Replay, pointer: bool) {
-    BOUND.lock()[usize::from(pointer)].get_or_insert(driver);
+    crate::arch_without_interrupts(|| {
+        BOUND.lock()[usize::from(pointer)].get_or_insert(driver);
+    })
 }
 fn authorize() -> Result<(), u64> {
     if !crate::test_control::enabled() { return Err(ENOSYS as u64); }

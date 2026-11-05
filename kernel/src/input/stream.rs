@@ -1198,26 +1198,28 @@ pub use super::hardware::report as publish_hardware;
 pub fn register_hardware(
     description: super::hardware::Description,
 ) -> Result<super::hardware::Device, &'static str> {
-    let mut s = STATE.lock();
-    let id = s.next_hardware;
-    if id as usize >= super::hardware::DEVICE_LIMIT {
-        return Err("hardware input identities exhausted");
-    }
-    s.next_hardware += 1;
-    s.devices.insert(
-        id,
-        Device {
-            capabilities: description.capabilities,
-            injector_time: false,
-            last_time: 0,
-            modifiers: 0,
-            reserved: 0,
-            held: BTreeMap::new(),
-        },
-    );
-    Ok(super::hardware::Device {
-        id,
-        keyboard: description.keyboard,
+    crate::arch_without_interrupts(|| {
+        let mut s = STATE.lock();
+        let id = s.next_hardware;
+        if id as usize >= super::hardware::DEVICE_LIMIT {
+            return Err("hardware input identities exhausted");
+        }
+        s.next_hardware += 1;
+        s.devices.insert(
+            id,
+            Device {
+                capabilities: description.capabilities,
+                injector_time: false,
+                last_time: 0,
+                modifiers: 0,
+                reserved: 0,
+                held: BTreeMap::new(),
+            },
+        );
+        Ok(super::hardware::Device {
+            id,
+            keyboard: description.keyboard,
+        })
     })
 }
 
