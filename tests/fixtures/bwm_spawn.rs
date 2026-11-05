@@ -104,9 +104,12 @@ impl Manager {
 }
 thread_local! { static KERNEL: RefCell<Option<Manager>> = const { RefCell::new(None) }; }
 mod libbreenix {
+    pub mod error {
+        #[derive(Debug)] pub enum Error { Os(i32) }
+        impl Error { pub fn from_syscall(value: i64) -> Result<u64, Self> { if value < 0 { Err(Self::Os((-value) as i32)) } else { Ok(value as u64) } } }
+    }
     pub mod process {
-        #[derive(Debug)] pub struct Error;
-        impl Error { pub fn from_syscall(value: i64) -> Result<u64, Self> { if value < 0 { Err(Self) } else { Ok(value as u64) } } }
+        use super::error::Error;
         pub struct Pid(u64);
         impl Pid { fn from_raw(value: u64) -> Self { Self(value) } pub fn raw(self) -> u64 { self.0 } }
         mod nr { pub const SPAWN: u64 = 0x1234; }
@@ -141,6 +144,7 @@ struct Stack;
 enum Input { Close }
 fn send_to(_: &[Window], _: usize, _: Input) { panic!("unexpected close") }
 fn focus_index(_: &[Window], _: &Stack) -> usize { 0 }
+fn show_error(_: &[u8], _: children::LaunchError) { panic!("unexpected launch error") }
 @HOTKEY@
 
 #[test]
