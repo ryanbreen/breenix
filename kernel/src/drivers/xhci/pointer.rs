@@ -75,6 +75,7 @@ pub(super) struct Pipe {
     stride: usize,
     posted: spec::Posted,
     layout: Option<Layout>,
+    input: Option<crate::input::hardware::Device>,
     buttons: u8,
     errors: u8,
 }
@@ -118,8 +119,12 @@ impl Controller {
         // auxiliary HID interface must not leave an unpolled endpoint behind.
         let mut device = self.devices.remove(index);
         let setup = spec::setup(0x81, 6, 0x2200, hid.interface as u16, hid.report_length);
-        let descriptor =
-            self.read_descriptor(&mut device, &|_| setup, hid.report_length, hid.report_length);
+        let descriptor = self.read_descriptor(
+            &mut device,
+            &|_| setup,
+            hid.report_length,
+            hid.report_length,
+        );
         self.devices.insert(index, device);
         let descriptor = descriptor?;
         let layout = match Layout::parse(&descriptor) {
@@ -188,6 +193,7 @@ impl Controller {
                     stride,
                     posted: spec::Posted::new(),
                     layout: Some(layout),
+                    input: None,
                     buttons: 0,
                     errors: 0,
                 });
@@ -203,13 +209,45 @@ impl Controller {
             stride,
             posted: spec::Posted::new(),
             layout: Some(layout),
+            input: None,
             buttons: 0,
             errors: 0,
         });
+        let pipe = self.devices[index].pointers.last_mut().unwrap();
+        let mut capabilities = Vec::new();
+        pipe.layout
+            .as_ref()
+            .unwrap()
+            .capabilities(&mut |kind, code, minimum, maximum| {
+                if let Some(c) = capabilities
+                    .iter_mut()
+                    .find(|c: &&mut input_abi::Capability| c.kind == kind && c.code == code)
+                {
+                    c.minimum = c.minimum.min(minimum);
+                    c.maximum = c.maximum.max(maximum);
+                } else {
+                    capabilities.push(input_abi::Capability {
+                        kind,
+                        code,
+                        minimum,
+                        maximum,
+                    });
+                }
+            });
+        pipe.input = Some(crate::input::stream::register_hardware(
+            crate::input::hardware::Description {
+                capabilities,
+                keyboard: None,
+            },
+        )?);
         // Stay in Report protocol, including wheel/absolute axes and report IDs.
         // Boot mouse protocol's fixed three bytes cannot describe a tablet.
         self.queue_pointer(index, self.devices[index].pointers.len() - 1);
-        let axes = self.devices[index].pointers.last().and_then(|p| p.layout.as_ref()).map_or("none", Layout::axes);
+        let axes = self.devices[index]
+            .pointers
+            .last()
+            .and_then(|p| p.layout.as_ref())
+            .map_or("none", Layout::axes);
         log::info!("[usb] HID pointer attached: port={port} slot={slot} interface={} endpoint={:#x} axes={axes} report-descriptor={} bytes", hid.interface, hid.endpoint, hid.report_length);
         ATTACHED.lock().push(Attached {
             port,
@@ -267,10 +305,16 @@ impl Controller {
                 (pipe.request - (event.status & 0xff_ffff)) as usize,
             );
             #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
-            let replayed = self.replay_at.take_if(|(_, at)| *at == event.parameter & !15);
+            let replayed = self
+                .replay_at
+                .take_if(|(_, at)| *at == event.parameter & !15);
             #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
             if replayed.is_none() {
-                record(self.devices[index].port, self.devices[index].pointers[pipe_index].endpoint, &data);
+                record(
+                    self.devices[index].port,
+                    self.devices[index].pointers[pipe_index].endpoint,
+                    &data,
+                );
             }
             let delivered = self.deliver_pointer(index, pipe_index, &data);
             if let Err(error) = delivered {
@@ -280,7 +324,10 @@ impl Controller {
             #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
             if let Some((seq, _)) = replayed {
                 let armed = self.devices[index].pointers[pipe_index].posted.full();
-                replay::answer(seq, delivered.map(|delivered| delivered as u64 | (armed as u64) << 1));
+                replay::answer(
+                    seq,
+                    delivered.map(|delivered| delivered as u64 | (armed as u64) << 1),
+                );
             }
         } else if !matches!(event.code(), 26..=28) {
             pipe.errors += 1;
@@ -329,6 +376,47 @@ impl Controller {
         else {
             return Ok(false);
         };
+        // Stream the interface's own buttons; merge interfaces only for the legacy snapshot.
+        let mut events = Vec::new();
+        for (code, axis) in [
+            (input_abi::axis::X, motion.x),
+            (input_abi::axis::Y, motion.y),
+        ] {
+            if let Some(axis) = axis {
+                events.push(crate::input::hardware::Event {
+                    kind: if axis.relative {
+                        input_abi::kind::REL
+                    } else {
+                        input_abi::kind::ABS
+                    },
+                    code,
+                    value: axis.value,
+                });
+            }
+        }
+        if let Some(buttons) = motion.buttons {
+            let changed = buttons ^ pipe.buttons as u32;
+            for bit in 0..8 {
+                if changed & (1 << bit) != 0 {
+                    events.push(crate::input::hardware::Event {
+                        kind: input_abi::kind::KEY,
+                        code: 0x110 + bit,
+                        value: i32::from(buttons & (1 << bit) != 0),
+                    });
+                }
+            }
+        }
+        if motion.wheel != 0 {
+            events.push(crate::input::hardware::Event {
+                kind: input_abi::kind::REL,
+                code: input_abi::axis::WHEEL,
+                value: motion.wheel,
+            });
+        }
+        if let Some(input) = pipe.input {
+            events.push(crate::input::hardware::Event::default());
+            crate::input::stream::publish_hardware(input, &events, false);
+        }
         if let Some(buttons) = motion.buttons {
             self.devices[index].pointers[pipe_index].buttons = buttons as u8;
             motion.buttons = Some(
@@ -426,7 +514,11 @@ impl Controller {
 /// Keep a report the device sent, for replay (measurement kernels only).
 #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
 fn record(port: u8, endpoint: u8, data: &[u8]) {
-    if let Some(p) = ATTACHED.lock().iter_mut().find(|p| p.port == port && p.endpoint == endpoint) {
+    if let Some(p) = ATTACHED
+        .lock()
+        .iter_mut()
+        .find(|p| p.port == port && p.endpoint == endpoint)
+    {
         if p.recorded.len() == RECORDED {
             p.recorded.pop_front();
         }
@@ -436,6 +528,12 @@ fn record(port: u8, endpoint: u8, data: &[u8]) {
 }
 
 impl Pipe {
+    pub(super) fn unregister(&mut self) {
+        if let Some(input) = self.input.take() {
+            crate::input::hardware::unregister(input);
+        }
+    }
+
     pub(super) fn release(self) -> usize {
         self.ring.memory.release() + self.buffer.release()
     }
@@ -483,7 +581,11 @@ pub mod replay {
             Ok(asked) => asked,
             Err(error) => return SyscallResult::Err(error),
         };
-        if asked.len == 0 || asked.len as usize > REPORT_MAX || asked.port > 255 || asked.endpoint > 255 {
+        if asked.len == 0
+            || asked.len as usize > REPORT_MAX
+            || asked.port > 255
+            || asked.endpoint > 255
+        {
             return SyscallResult::Err(errno::EINVAL as u64);
         }
         let seq = ASKED.fetch_add(1, Ordering::AcqRel) + 1;

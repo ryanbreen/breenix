@@ -43,6 +43,7 @@ pub(super) struct Pipe {
     stride: usize,
     pub(super) posted: spec::Posted,
     state: report::Keyboard,
+    input: Option<crate::input::hardware::Device>,
     errors: u32,
     bad_reports: u64,
     pub(super) reports: u64,
@@ -59,7 +60,14 @@ impl Controller {
                 // The census's resets count against this attach's budget.
                 let used = self.devices[index].census_resets;
                 let first = self.attach_keyboard(index, used);
-                recovery::reset_while_refused(&mut Reattach { controller: self, port }, first, used);
+                recovery::reset_while_refused(
+                    &mut Reattach {
+                        controller: self,
+                        port,
+                    },
+                    first,
+                    used,
+                );
                 if let Some(index) = self.devices.iter().position(|d| d.port == port) {
                     if let Err(error) = self.attach_pointers(index) {
                         log::error!("[usb] port {port}: pointer attach FAILED: {error}");
@@ -142,7 +150,8 @@ impl Controller {
     #[cfg(target_arch = "x86_64")]
     fn replay_keys(&mut self) {
         if super::HOST_KEYS.swap(false, Ordering::SeqCst) {
-            self.host_keys.extend(super::HOST_KEY_REPORTS.lock().drain(..));
+            self.host_keys
+                .extend(super::HOST_KEY_REPORTS.lock().drain(..));
         }
         let now = now();
         if now < self.next_host_key {
@@ -153,7 +162,8 @@ impl Controller {
         };
         self.next_host_key = now + HOST_KEY_GAP_NS;
         let result = self.replay_key(&report);
-        super::host_keys::REPLAY_MAX_NS.fetch_max(super::now().saturating_sub(now), Ordering::Relaxed);
+        super::host_keys::REPLAY_MAX_NS
+            .fetch_max(super::now().saturating_sub(now), Ordering::Relaxed);
         if let Err(error) = result {
             // The rest of the line would act on a keyboard state this report did not make.
             let dropped = self.host_keys.len();
@@ -170,7 +180,10 @@ impl Controller {
     /// dequeue moves past it (4.6.10). `keyboard_event` posts the freed TD
     /// again and rings the doorbell, which restarts the endpoint.
     #[cfg(target_arch = "x86_64")]
-    fn replay_key(&mut self, report: &[u8; super::host_keys::REPORT_LEN]) -> Result<(), &'static str> {
+    fn replay_key(
+        &mut self,
+        report: &[u8; super::host_keys::REPORT_LEN],
+    ) -> Result<(), &'static str> {
         let index = self
             .devices
             .iter()
@@ -178,7 +191,10 @@ impl Controller {
             .ok_or("no boot keyboard attached")?;
         let (slot, dci, request) = {
             let device = &self.devices[index];
-            let pipe = device.keyboard.as_ref().ok_or("no boot keyboard attached")?;
+            let pipe = device
+                .keyboard
+                .as_ref()
+                .ok_or("no boot keyboard attached")?;
             (device.slot, pipe.dci, pipe.request)
         };
         match self.command_code(spec::stop_endpoint(slot, dci))? {
@@ -188,10 +204,20 @@ impl Controller {
         // The TD the controller was working on reports Stopped (26-28); it
         // goes back to software with the others. Completions it posted before
         // stopping stay queued for `dispatch`.
-        let ours = |e: &Trb| e.kind() == 32 && e.slot() == slot && (e.control >> 16) & 31 == dci as u32;
-        self.completions.retain(|e| !(ours(e) && matches!(e.code(), 26..=28)));
-        let completed: Vec<u64> = self.completions.iter().filter(|e| ours(e)).map(|e| e.parameter & !15).collect();
-        let pipe = self.devices[index].keyboard.as_mut().ok_or("no boot keyboard attached")?;
+        let ours =
+            |e: &Trb| e.kind() == 32 && e.slot() == slot && (e.control >> 16) & 31 == dci as u32;
+        self.completions
+            .retain(|e| !(ours(e) && matches!(e.code(), 26..=28)));
+        let completed: Vec<u64> = self
+            .completions
+            .iter()
+            .filter(|e| ours(e))
+            .map(|e| e.parameter & !15)
+            .collect();
+        let pipe = self.devices[index]
+            .keyboard
+            .as_mut()
+            .ok_or("no boot keyboard attached")?;
         let ring = pipe.ring.memory.phys;
         let (buffer_slot, at) = pipe
             .posted
@@ -363,6 +389,7 @@ impl Controller {
             stride,
             posted: spec::Posted::new(),
             state: report::Keyboard::new(),
+            input: None,
             errors: 0,
             bad_reports: 0,
             reports: 0,
@@ -396,6 +423,23 @@ impl Controller {
         }
         let leds = self.send_leds(index);
         self.queue_report(index)?;
+        let mut codes: Vec<_> = (0..=255).filter_map(report::usage_code).collect();
+        codes.extend([29, 42, 56, 125, 97, 54, 100, 126]);
+        codes.sort_unstable();
+        codes.dedup();
+        let input = crate::input::stream::register_hardware(crate::input::hardware::Description {
+            capabilities: codes
+                .into_iter()
+                .map(|code| input_abi::Capability {
+                    kind: input_abi::kind::KEY,
+                    code,
+                    minimum: 0,
+                    maximum: 2,
+                })
+                .collect(),
+            keyboard: Some(crate::input::Device::UsbBootKeyboard(port)),
+        })?;
+        self.devices[index].keyboard.as_mut().unwrap().input = Some(input);
         log::info!(
             "[usb] boot keyboard attached: port={port} path=root speed={speed} bit/s slot={slot} \
              interface={} endpoint={:#04x} max-packet={} bInterval={} interval={interval} leds={leds} \
@@ -412,7 +456,12 @@ impl Controller {
     /// A control transfer on EP0 with no data stage or one OUT byte. Returns
     /// its completion code; a request that halted EP0 is recovered and resent
     /// (`Controller::ep0_transfer`).
-    pub(super) fn control(&mut self, index: usize, setup: u64, out: Option<u8>) -> Result<u8, &'static str> {
+    pub(super) fn control(
+        &mut self,
+        index: usize,
+        setup: u64,
+        out: Option<u8>,
+    ) -> Result<u8, &'static str> {
         // The device leaves the list for the transfer so the controller can
         // wait for it. The list is read by `dispatch`, between transfers.
         let mut device = self.devices.remove(index);
@@ -508,12 +557,18 @@ impl Controller {
                 pipe.errors = 0;
                 let residual = event.status & 0x00ff_ffff;
                 let report = if residual <= pipe.request {
-                    pipe.buffer.copy(buffer_slot * pipe.stride, (pipe.request - residual) as usize)
+                    pipe.buffer.copy(
+                        buffer_slot * pipe.stride,
+                        (pipe.request - residual) as usize,
+                    )
                 } else {
                     Vec::new()
                 };
                 #[cfg(target_arch = "x86_64")]
-                if let Some((_, expected)) = self.host_key_event.take_if(|(at, _)| *at == event.parameter & !15) {
+                if let Some((_, expected)) = self
+                    .host_key_event
+                    .take_if(|(at, _)| *at == event.parameter & !15)
+                {
                     super::host_keys::DISPATCHED.fetch_add(1, Ordering::Relaxed);
                     if report.as_slice() != expected {
                         super::host_keys::CHANGED.fetch_add(1, Ordering::Relaxed);
@@ -526,7 +581,21 @@ impl Controller {
                 let Some(pipe) = devices[index].keyboard.as_mut() else {
                     return;
                 };
-                match pipe.state.report(&report, now, &mut |code, value| console.event(port, code, value)) {
+                let mut events = Vec::new();
+                let decoded = pipe.state.report(&report, now, &mut |code, value| {
+                    events.push(crate::input::hardware::Event {
+                        kind: input_abi::kind::KEY,
+                        code,
+                        value,
+                    });
+                });
+                if decoded.is_ok() {
+                    if let Some(input) = pipe.input {
+                        events.push(crate::input::hardware::Event::default());
+                        crate::input::stream::publish_hardware(input, &events, false);
+                    }
+                }
+                match decoded {
                     Ok(summary) => {
                         pipe.reports += 1;
                         console.note_report(&summary);
@@ -571,14 +640,22 @@ impl Controller {
 
     fn tick_keyboards(&mut self) {
         let now = now();
-        let Controller {
-            devices, console, ..
-        } = self;
-        for device in devices.iter_mut() {
+        for device in &mut self.devices {
             if let Some(pipe) = device.keyboard.as_mut() {
-                let port = device.port;
-                pipe.state
-                    .tick(now, &mut |code, value| console.event(port, code, value));
+                let mut events = Vec::new();
+                pipe.state.tick(now, &mut |code, value| {
+                    events.push(crate::input::hardware::Event {
+                        kind: input_abi::kind::KEY,
+                        code,
+                        value,
+                    })
+                });
+                if !events.is_empty() {
+                    if let Some(input) = pipe.input {
+                        events.push(crate::input::hardware::Event::default());
+                        crate::input::stream::publish_hardware(input, &events, false);
+                    }
+                }
             }
         }
     }
@@ -616,7 +693,14 @@ impl Controller {
     /// it is refused and resets are left.
     pub(super) fn attach(&mut self, port: u8) {
         let first = self.attach_once(port, 0);
-        recovery::reset_while_refused(&mut Reattach { controller: self, port }, first, 0);
+        recovery::reset_while_refused(
+            &mut Reattach {
+                controller: self,
+                port,
+            },
+            first,
+            0,
+        );
         if let Some(index) = self.devices.iter().position(|d| d.port == port) {
             if let Err(error) = self.attach_pointers(index) {
                 log::error!("[usb] port {port}: pointer attach FAILED: {error}");
@@ -640,13 +724,18 @@ impl Controller {
 
     pub(super) fn teardown(&mut self, index: usize, why: &str) {
         let mut device = self.devices.remove(index);
+        for pipe in &mut device.pointers {
+            pipe.unregister();
+        }
         if !device.pointers.is_empty() {
             crate::input::pointer::release(device.port);
             super::pointer::detached(device.port);
         }
         if let Some(pipe) = device.keyboard.as_mut() {
-            pipe.state
-                .release_all(&mut |code, value| self.console.event(device.port, code, value));
+            pipe.state.release_all(&mut |_, _| {});
+            if let Some(input) = pipe.input.take() {
+                crate::input::hardware::unregister(input);
+            }
         }
         let (port, slot, keyboard) = (device.port, device.slot, device.keyboard.is_some());
         let reclaimed = self.reclaim(device);
@@ -805,7 +894,10 @@ impl recovery::Port for Reattach<'_> {
         self.controller.portsc(self.port) & CCS != 0
     }
     fn reset(&mut self, reset: u32) -> Attach {
-        log::warn!("[usb] port {}: resetting the device ({reset} of {DEVICE_RESETS})", self.port);
+        log::warn!(
+            "[usb] port {}: resetting the device ({reset} of {DEVICE_RESETS})",
+            self.port
+        );
         self.controller.attach_once(self.port, reset)
     }
 }

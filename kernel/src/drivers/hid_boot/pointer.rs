@@ -70,6 +70,23 @@ fn signed(value: u32, bytes: usize) -> i32 {
 }
 
 impl Layout {
+    /// Advertise exactly the fields decoded by this layout, including report IDs.
+    pub fn capabilities(&self, emit: &mut dyn FnMut(u16, u16, i32, i32)) {
+        for f in &self.fields[..self.count] {
+            match (f.page, f.usage) {
+                (1, 0x30 | 0x31) => emit(
+                    if f.relative { 2 } else { 3 },
+                    f.usage - 0x30,
+                    f.minimum,
+                    f.maximum,
+                ),
+                (1, 0x38) => emit(2, 8, f.minimum, f.maximum),
+                (9, 1..=8) => emit(1, 0x110 + f.usage - 1, 0, 1),
+                _ => {}
+            }
+        }
+    }
+
     pub fn parse(descriptor: &[u8]) -> Result<Self, &'static str> {
         let mut layout = Self {
             fields: [Field::default(); 64],
@@ -179,8 +196,8 @@ impl Layout {
                         if value == 1 {
                             // Generic Desktop Pointer or Mouse application. A
                             // joystick/gamepad may use identical X/Y/Button fields.
-                            pointer_application = used != 0
-                                && matches!(usages[0], 0x0001_0001 | 0x0001_0002);
+                            pointer_application =
+                                used != 0 && matches!(usages[0], 0x0001_0001 | 0x0001_0002);
                         }
                     } else if tag == 12 {
                         if collection_depth == 0 {
@@ -356,7 +373,10 @@ mod tests {
         for usage in [4, 5] {
             let mut descriptor = MOUSE.to_vec();
             descriptor[3] = usage;
-            assert!(matches!(Layout::parse(&descriptor), Err("HID descriptor has no pointer fields")));
+            assert!(matches!(
+                Layout::parse(&descriptor),
+                Err("HID descriptor has no pointer fields")
+            ));
             // A mouse in the same descriptor still works; the preceding
             // gamepad's bits occupy their own report ID.
             let mut composite = vec![0x85, 1];
@@ -365,7 +385,10 @@ mod tests {
             composite.extend_from_slice(MOUSE);
             let layout = Layout::parse(&composite).unwrap();
             assert_eq!(layout.decode(&[1, 1, 10, 20, 0]).unwrap(), None);
-            assert_eq!(layout.decode(&[2, 1, 10, 20, 0]).unwrap().unwrap().buttons, Some(1));
+            assert_eq!(
+                layout.decode(&[2, 1, 10, 20, 0]).unwrap().unwrap().buttons,
+                Some(1)
+            );
         }
     }
 
@@ -385,7 +408,8 @@ mod tests {
         // Maximum precedes a new minimum: the previous negative minimum
         // must not sign-extend the new unsigned 255 maximum.
         let descriptor = [
-            0x05, 1, 0x09, 2, 0xa1, 1, 0x09, 0x30, 0x15, 0x81, 0x25, 0xff, 0x15, 0, 0x75, 8, 0x95, 1, 0x81, 2, 0xc0,
+            0x05, 1, 0x09, 2, 0xa1, 1, 0x09, 0x30, 0x15, 0x81, 0x25, 0xff, 0x15, 0, 0x75, 8, 0x95,
+            1, 0x81, 2, 0xc0,
         ];
         let motion = Layout::parse(&descriptor)
             .unwrap()
@@ -398,8 +422,8 @@ mod tests {
     #[test]
     fn report_ids_absolute_axes_and_unrelated_reports() {
         let descriptor = [
-            0x05, 1, 0x09, 2, 0xa1, 1, 0x85, 3, 0x09, 0x30, 0x09, 0x31, 0x15, 0, 0x26, 0xff, 0x7f, 0x75, 16, 0x95, 2,
-            0x81, 2, 0xc0,
+            0x05, 1, 0x09, 2, 0xa1, 1, 0x85, 3, 0x09, 0x30, 0x09, 0x31, 0x15, 0, 0x26, 0xff, 0x7f,
+            0x75, 16, 0x95, 2, 0x81, 2, 0xc0,
         ];
         let layout = Layout::parse(&descriptor).unwrap();
         assert_eq!(layout.axes(), "absolute");

@@ -14,10 +14,16 @@
 
 #![cfg(target_arch = "aarch64")]
 
+use super::input_decode::{self, Frame};
 use super::mmio::{
     device_id, VirtioMmioDevice, VIRTIO_MMIO_BASE, VIRTIO_MMIO_COUNT, VIRTIO_MMIO_SIZE,
 };
+use crate::input::hardware;
 use core::sync::atomic::{fence, AtomicBool, AtomicU16, AtomicU32, Ordering};
+static KBD_FRAME: spin::Mutex<Frame> = spin::Mutex::new(Frame::new());
+static TABLET_FRAME: spin::Mutex<Frame> = spin::Mutex::new(Frame::new());
+static KBD_INPUT: spin::Once<hardware::Device> = spin::Once::new();
+static TABLET_INPUT: spin::Once<hardware::Device> = spin::Once::new();
 
 /// VirtIO descriptor flags
 const DESC_F_WRITE: u16 = 2; // Device writes (vs reads)
@@ -370,6 +376,18 @@ fn init_keyboard_device(device: &mut VirtioMmioDevice, slot: usize) -> Result<()
     use crate::arch_impl::traits::InterruptController;
     gic::Gicv2::enable_irq(irq as u8);
 
+    let input = crate::input::stream::register_hardware(hardware::Description {
+        capabilities: (1..=255)
+            .map(|code| input_abi::Capability {
+                kind: 1,
+                code,
+                minimum: 0,
+                maximum: 2,
+            })
+            .collect(),
+        keyboard: Some(crate::input::Device::VirtioKeyboard),
+    })?;
+    KBD_INPUT.call_once(|| input);
     KBD_INITIALIZED.store(true, Ordering::Release);
     crate::serial_println!(
         "[virtio-input] Keyboard initialized ({} buffers)",
@@ -405,6 +423,54 @@ fn init_tablet_device(device: &mut VirtioMmioDevice, slot: usize) -> Result<(), 
     use crate::arch_impl::traits::InterruptController;
     gic::Gicv2::enable_irq(irq as u8);
 
+    let input = crate::input::stream::register_hardware(hardware::Description {
+        capabilities: alloc::vec![
+            input_abi::Capability {
+                kind: 3,
+                code: 0,
+                minimum: 0,
+                maximum: 32767
+            },
+            input_abi::Capability {
+                kind: 3,
+                code: 1,
+                minimum: 0,
+                maximum: 32767
+            },
+            input_abi::Capability {
+                kind: 1,
+                code: 272,
+                minimum: 0,
+                maximum: 1
+            },
+            input_abi::Capability {
+                kind: 1,
+                code: 273,
+                minimum: 0,
+                maximum: 1
+            },
+            input_abi::Capability {
+                kind: 1,
+                code: 274,
+                minimum: 0,
+                maximum: 1
+            },
+            input_abi::Capability {
+                kind: 2,
+                code: 6,
+                minimum: i32::MIN,
+                maximum: i32::MAX
+            },
+            input_abi::Capability {
+                kind: 2,
+                code: 8,
+                minimum: i32::MIN,
+                maximum: i32::MAX
+            },
+        ],
+        keyboard: None,
+    })?;
+    TABLET_INPUT.call_once(|| input);
     TABLET_INITIALIZED.store(true, Ordering::Release);
     crate::serial_println!(
         "[virtio-input] Tablet initialized ({} buffers)",
@@ -649,9 +715,7 @@ pub fn handle_interrupt() {
     // Each key event goes to the input core, which keeps the modifier state
     // and turns keys into console input.
     for event in poll_events() {
-        if event.event_type == event_type::EV_KEY {
-            crate::input::report_key(crate::input::Device::VirtioKeyboard, event.code, event.value as i32);
-        }
+        report_event(false, event);
     }
 }
 
@@ -808,6 +872,7 @@ pub fn handle_tablet_interrupt() {
     }
 
     for event in poll_tablet_events() {
+        report_event(true, event);
         match event.event_type {
             event_type::EV_ABS => match event.code {
                 abs_code::ABS_X => {
@@ -833,6 +898,30 @@ pub fn handle_tablet_interrupt() {
                 }
             }
             _ => {} // EV_SYN and others — ignore
+        }
+    }
+}
+
+/// A partial virtio frame survives IRQ boundaries. The shared handoff copies it
+/// at SYN_REPORT; the task service allocates stream records and routes console keys.
+fn report_event(tablet: bool, event: VirtioInputEvent) {
+    let mut bytes = [0; 8];
+    bytes[..2].copy_from_slice(&event.event_type.to_le_bytes());
+    bytes[2..4].copy_from_slice(&event.code.to_le_bytes());
+    bytes[4..].copy_from_slice(&event.value.to_le_bytes());
+    if let Some(event) = input_decode::decode(bytes) {
+        let frame = if tablet { &TABLET_FRAME } else { &KBD_FRAME };
+        let device = if tablet {
+            TABLET_INPUT.get()
+        } else {
+            KBD_INPUT.get()
+        };
+        if let Some(device) = device {
+            crate::arch_without_interrupts(|| {
+                if let Some((events, overflow)) = frame.lock().push(event) {
+                    crate::input::stream::publish_hardware(*device, events, overflow);
+                }
+            });
         }
     }
 }

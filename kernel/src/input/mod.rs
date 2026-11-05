@@ -14,8 +14,9 @@
 //! tries the others; it does not allocate and does not log.
 
 pub mod event;
-pub mod stream;
+pub mod hardware;
 pub mod pointer;
+pub mod stream;
 
 use core::sync::atomic::{AtomicU16, AtomicU64, AtomicU8, Ordering};
 use event::Modifiers;
@@ -80,14 +81,7 @@ pub fn take_super_tap_count() -> u64 {
 
 /// One key event from `device`. Returns how many bytes it sent the foreground terminal.
 pub fn report_key(device: Device, code: u16, value: i32) -> usize {
-    // One device reports from one context at a time, so its own word needs no read-modify-write.
-    let slot = &HELD[device.index()];
-    let previous = slot.load(Ordering::Relaxed);
-    let next = event::update_modifiers(previous, code, value);
-    slot.store(next, Ordering::Relaxed);
-    if !Modifiers(previous).meta() && Modifiers(next).meta() {
-        SUPER_TAPS.fetch_add(1, Ordering::Release);
-    }
+    observe_key(device, code, value);
     let modifiers = Modifiers(
         HELD.iter()
             .fold(0, |all, held| all | held.load(Ordering::Relaxed)),
@@ -110,4 +104,21 @@ pub fn report_key(device: Device, code: u16, value: i32) -> usize {
         reserved,
         device.source(),
     )
+}
+
+/// Update the legacy modifier snapshot without delivering a second console event.
+pub(super) fn observe_key(device: Device, code: u16, value: i32) {
+    // One device reports from one context at a time, so its own word needs no read-modify-write.
+    let slot = &HELD[device.index()];
+    let previous = slot.load(Ordering::Relaxed);
+    let next = event::update_modifiers(previous, code, value);
+    slot.store(next, Ordering::Relaxed);
+    if !Modifiers(previous).meta() && Modifiers(next).meta() {
+        SUPER_TAPS.fetch_add(1, Ordering::Release);
+    }
+}
+
+pub(super) fn reset_keyboard(device: Device) {
+    HELD[device.index()].store(0, Ordering::Relaxed);
+    RESERVED[device.index()].store(0, Ordering::Relaxed);
 }

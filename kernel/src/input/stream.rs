@@ -68,6 +68,7 @@ struct ConsoleKey {
 struct State {
     next_reader: u64,
     next_device: u32,
+    next_hardware: u32,
     next_serial: u64,
     readers: BTreeMap<u64, Reader>,
     devices: BTreeMap<u32, Device>,
@@ -84,6 +85,7 @@ impl State {
         Self {
             next_reader: 1,
             next_device: 1024,
+            next_hardware: 1,
             next_serial: 1,
             readers: BTreeMap::new(),
             devices: BTreeMap::new(),
@@ -991,6 +993,7 @@ fn release_service() {
     loop {
         crate::per_cpu::preempt_disable();
         let generation = SERVICE_GENERATION.load(Ordering::Acquire);
+        while super::hardware::drain_one() {}
         loop {
             let console = {
                 let mut s = STATE.lock();
@@ -1106,4 +1109,116 @@ fn release_service() {
 pub fn wake_service() {
     SERVICE_GENERATION.fetch_add(1, Ordering::Release);
     RELEASE_WORK.wake_up_deferred();
+}
+
+/// IRQ-safe driver publication; the service drains the fixed-storage handoff.
+pub use super::hardware::report as publish_hardware;
+
+/// The shared registration interface. USB HID and ARM virtio-input supply the
+/// same driver-neutral description from their task-context initialization paths.
+pub fn register_hardware(
+    description: super::hardware::Description,
+) -> Result<super::hardware::Device, &'static str> {
+    let mut s = STATE.lock();
+    let id = s.next_hardware;
+    if id as usize >= super::hardware::DEVICE_LIMIT {
+        return Err("hardware input identities exhausted");
+    }
+    s.next_hardware += 1;
+    s.devices.insert(
+        id,
+        Device {
+            capabilities: description.capabilities,
+            injector_time: false,
+            last_time: 0,
+            modifiers: 0,
+            reserved: 0,
+            held: BTreeMap::new(),
+        },
+    );
+    Ok(super::hardware::Device {
+        id,
+        keyboard: description.keyboard,
+    })
+}
+
+pub(super) fn drain_hardware(
+    device: super::hardware::Device,
+    events: &[super::hardware::Event],
+    time_ns: u64,
+    dropped: bool,
+) -> bool {
+    let mut s = STATE.lock();
+    if s.reserve_ledger(events.len() + usize::from(dropped))
+        .is_err()
+    {
+        return false;
+    }
+    let prefix = dropped.then_some(super::hardware::Event {
+        kind: kind::SYN,
+        code: syn::DROPPED,
+        value: 0,
+    });
+    if let Some(keyboard) = device.keyboard {
+        for e in prefix.iter().chain(events) {
+            if e.kind == kind::SYN && e.code == syn::DROPPED {
+                super::reset_keyboard(keyboard);
+            }
+            if e.kind == kind::KEY {
+                super::observe_key(keyboard, e.code, e.value);
+            }
+        }
+    }
+    let records = prefix
+        .iter()
+        .chain(events)
+        .map(|e| Record {
+            event: Event {
+                kind: e.kind,
+                code: e.code,
+                value: e.value,
+                time_ns,
+                ..Event::default()
+            },
+            payload: Vec::new(),
+        })
+        .collect();
+    let console = s.publish(device.id, records);
+    drop(s);
+    wake_readers();
+    deliver_hardware_console(device, console);
+    true
+}
+fn deliver_hardware_console(device: super::hardware::Device, console: Vec<ConsoleKey>) {
+    let Some(keyboard) = device.keyboard else {
+        return;
+    };
+    for e in console {
+        let sent = crate::console::keys::key(
+            keyboard.index(),
+            e.code,
+            e.value,
+            e.modifiers,
+            e.reserved,
+            keyboard.source(),
+        );
+        if matches!(keyboard, super::Device::UsbBootKeyboard(_)) {
+            crate::drivers::hid_boot::console_delivery(sent);
+        }
+    }
+}
+pub(super) fn remove_hardware(device: super::hardware::Device) -> bool {
+    let mut s = STATE.lock();
+    let count = s.removal_count(device.id);
+    if s.reserve_ledger(count).is_err() {
+        return false;
+    }
+    let console = s.remove_device(device.id);
+    drop(s);
+    if let Some(keyboard) = device.keyboard {
+        super::reset_keyboard(keyboard);
+    }
+    wake_readers();
+    deliver_hardware_console(device, console);
+    true
 }
