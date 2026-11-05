@@ -14,7 +14,7 @@ impl Timing {
     pub(super) fn key(&mut self, event: Event, focus: Option<u64>, consumed: bool, now: u64) -> bool {
         if event.kind == kind::SYN && event.code == syn::DROPPED {
             // Reader overflow may lose releases from several devices while
-            // naming only one device in its marker. None remain known held.
+            // naming only one device in its marker. Discard held-key state.
             self.held.clear();
             return true;
         }
