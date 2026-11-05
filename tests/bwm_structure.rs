@@ -58,3 +58,41 @@ fn bwm_has_no_architecture_branches() {
         assert!(!fs::read_to_string(&file).unwrap().contains("target_arch"), "architecture branch in {}", file.display());
     }
 }
+
+#[test]
+fn bwm_reads_the_grabbed_core_descriptor_instead_of_terminal_bytes() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let main = fs::read_to_string(root.join("userspace/programs/src/bwm.rs")).unwrap();
+    let input = fs::read_to_string(root.join("userspace/programs/src/bwm/input.rs")).unwrap();
+    let reader = fs::read_to_string(root.join("libs/libbreenix/src/input.rs")).unwrap();
+    assert!(reader.contains("\"/dev/input/events\""));
+    assert!(input.contains("Reader::open(true)"));
+    assert!(input.contains(".grab(&[])"));
+    assert!(input.contains(".read("));
+    assert!(main.contains("stream.fd()"));
+    let mut files = vec![root.join("userspace/programs/src/bwm.rs")];
+    source_files(&root.join("userspace/programs/src/bwm"), &mut files);
+    for file in files {
+        let source = fs::read_to_string(&file).unwrap();
+        for legacy in ["InputParser", "InputState", "stdin", "tcgetattr", "cfmakeraw",
+                       "tcsetattr", "mouse_pos()", "mouse_state_with_scroll()", "key_state()",
+                       "GET_MOUSE_POS", "target_arch"] {
+            assert!(!source.contains(legacy), "{legacy} in {}", file.display());
+        }
+        let compact: String = source.chars().filter(|c| !c.is_whitespace()).collect();
+        for arity in 0..=6 {
+            assert!(!compact.contains(&format!("syscall{arity}(413")), "syscall 413 in {}", file.display());
+        }
+    }
+}
+
+#[test]
+fn pointer_ranges_come_from_the_shared_input_descriptor() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let input = fs::read_to_string(root.join("userspace/programs/src/bwm/input.rs")).unwrap();
+    let reader = fs::read_to_string(root.join("libs/libbreenix/src/input.rs")).unwrap();
+    let producer = fs::read_to_string(root.join("kernel/src/input/stream.rs")).unwrap();
+    assert!(input.contains(".capabilities("));
+    assert!(reader.contains("abi::ioctl::CAPABILITIES"));
+    assert!(producer.contains("ioctl::CAPABILITIES"));
+}

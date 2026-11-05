@@ -30,6 +30,11 @@ required-features = ["std"]
 name = "input_abi"
 path = "../../tests/input_abi.rs"
 
+[[test]]
+name = "bwm_core_input"
+path = "../../tests/bwm_core_input.rs"
+required-features = ["std"]
+
 [features]
 default = []
 std = []
