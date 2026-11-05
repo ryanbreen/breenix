@@ -646,6 +646,11 @@ pub(crate) enum AbandonReason {
 }
 
 impl ProcessPageTable {
+    /// Frames owned by this address space's page tables, including its root.
+    pub fn table_frames(&self) -> usize {
+        1 + self.tables.leases.len()
+    }
+
     /// Refuse to change a table a fork is copying (`memory::fork_copy`). The
     /// paths that can reach one wait for the copy before they get here, so
     /// reaching this with the claim in force is a missed wait, not a race to

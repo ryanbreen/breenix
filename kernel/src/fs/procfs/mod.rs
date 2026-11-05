@@ -43,6 +43,7 @@
 mod net;
 mod pid_stat;
 mod pid_path;
+mod status_memory;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -1674,6 +1675,7 @@ fn generate_pid_dir(pid: u64) -> String {
 /// VmHeap: 64 kB
 /// VmStack:    16 kB
 /// VmRSS:      120 kB
+/// VmPTE:      16 kB
 /// ```
 fn generate_pid_status(pid: u64) -> String {
     use crate::process::ProcessId;
@@ -1758,6 +1760,10 @@ fn generate_pid_status(pid: u64) -> String {
         });
         resident * 4
     });
+    let vm_pte_frames = manager.find_process_by_cr3(process.inherited_cr3.unwrap_or_else(|| {
+        process.page_table.as_ref().map_or(0, |table| table.level_4_frame().start_address().as_u64())
+    })).and_then(|(_, owner)| owner.page_table.as_ref())
+        .map_or(0, |table| table.table_frames());
     let (user_ns, system_ns) = process.cpu.split_ns();
     let cpu_time_us = user_ns / 1_000 + system_ns / 1_000;
 
@@ -1776,6 +1782,7 @@ fn generate_pid_status(pid: u64) -> String {
          VmStack:\t{} kB\n\
          VmLck:\t{} kB\n\
          VmRSS:\t{} kB\n\
+         {}\
          CpuTicks:\t{}\n\
          CpuTimeUs:\t{}\n\
          CpuSampleTicks:\t{}\n\
@@ -1811,6 +1818,7 @@ fn generate_pid_status(pid: u64) -> String {
             process.page_table.as_ref().map_or(0, |t| t.level_4_frame().start_address().as_u64())
         })).map_or(0, |(_, owner)| owner.memory_locks.bytes() / 1024),
         vm_rss_kb,
+        status_memory::vm_pte(vm_pte_frames),
         process.cpu.ticks(),
         cpu_time_us,
         cpu_sample_ticks,
