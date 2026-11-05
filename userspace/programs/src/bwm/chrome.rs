@@ -12,7 +12,15 @@ pub(super) struct PresentedScene {
 pub(super) fn measure_check<T>(check: impl FnOnce() -> T) -> T {
     let begin = std::time::Instant::now();
     let result = check();
-    print!("VALUE bwm-check-us {}\n", begin.elapsed().as_micros());
+    let record = format!("VALUE bwm-check-us {}\n", begin.elapsed().as_micros());
+    print!("{record}");
+    // Suite desktops redirect stdout into their private readiness pipe. The
+    // shared root-only evidence device retains measurements on either arch.
+    // Outside a suite the device refuses writes and stdout remains the sink.
+    if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
+        use std::io::Write;
+        let _ = evidence.write_all(record.as_bytes());
+    }
     result
 }
 
