@@ -1093,6 +1093,25 @@ fn fb_draw(op: u32, p1: i32, p2: i32, p3: i32, p4: i32) -> i64 {
 }
 
 fn isolation_test_hooks_absent() -> CaseResult {
+    step("21", child("input replay authority", 1000, None, || {
+        let open = || std::fs::OpenOptions::new().read(true).write(true)
+            .open("/proc/breenix/input-replay");
+        if test_control_state() == 1 {
+            let mut file = open().map_err(|e| format!("suite replay open: {e}"))?;
+            if setuid(1000) != 0 { return Err("input replay setuid failed".into()); }
+            if !matches!(open(), Err(e) if e.raw_os_error() == Some(1)) {
+                return Err("non-root input replay open did not return EPERM".into());
+            }
+            use std::io::{Read, Write};
+            if !matches!(file.write(&[0; 64]), Err(e) if e.raw_os_error() == Some(1))
+                || !matches!(file.read(&mut [0; 64]), Err(e) if e.raw_os_error() == Some(1)) {
+                return Err("root-open input replay remained usable after setuid".into());
+            }
+        } else if !matches!(open(), Err(e) if matches!(e.raw_os_error(), Some(1 | 2 | 13 | 38))) {
+            return Err("input replay is present in a production boot".into());
+        }
+        Ok(())
+    }))?;
     let mut stats = [0u64; 4];
     let ptr = stats.as_mut_ptr() as u64;
     let mut seen = vec![(27, fb_draw(27, 0, 0, 0, 0)), (29, fb_draw(29, 0, 0, 0, 0)),

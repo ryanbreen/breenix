@@ -48,7 +48,8 @@ class WindowLifetimes(unittest.TestCase):
         native = (ROOT / 'kernel/src/gpu/gk208/resource.rs').read_text()
         fixture = (ROOT / 'tests/fixtures/gt710_window_lifetime.rs').read_text()
         fixture = fixture.replace('// CORE_LIFETIME', '\n'.join(item(core, m) for m in (
-            '    fn unhold(', '    fn free_if_unused(', '    fn retire_if_unused(', '    fn reclaim(')))
+            '    fn unhold(', '    fn free_if_unused(', '    fn retire_if_unused(', '    fn reclaim(',
+            '    fn end_reading(', '    fn sync_ended(')))
         for marker, body in {
             '// SETTLE': item(core, '    fn settle('),
             '// MAPPED_BYTES': item((ROOT / 'kernel/src/process/limits.rs').read_text(), '    pub fn mapped_bytes('),
@@ -75,6 +76,15 @@ class WindowLifetimes(unittest.TestCase):
             '// STORAGE_CONSTRUCTOR': item((ROOT / 'kernel/src/gpu/gk208/adapter.rs').read_text(), '    pub(crate) fn storage('),
         }.items():
             fixture = fixture.replace(marker, body)
+        releases = item(core, 'fn release_other(')
+        if 'fn release_cpu_read(' in core:
+            releases += '\n' + item(core, 'fn release_cpu_read(')
+        fixture = fixture.replace('// READ_RELEASES', releases)
+        capture = item(target, '    fn read_to_inner(')
+        mark = capture[capture.index('            r.reading = true;'):capture.index('            Some(Ok((r.last')]
+        tail = re.search(r'release_(?:other|cpu_read)\([^;]+;', capture)
+        self.assertIsNotNone(tail)
+        fixture = fixture.replace('// CAPTURE_MARK', mark).replace('// CAPTURE_TAIL', tail[0].replace('self.id', 'id'))
         suite = (ROOT / 'userspace/programs/src/suite_breengel/window_cases/windows.rs').read_text()
         churn = item(suite, 'fn windows_churn(')
         drain = churn[churn.index('    let drain ='):churn.index('    drain()?;')]

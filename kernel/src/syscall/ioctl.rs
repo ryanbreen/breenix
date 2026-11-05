@@ -108,6 +108,13 @@ pub fn sys_ioctl(fd: u64, request: u64, arg: u64) -> SyscallResult {
     if matches!(kind, FdKind::Device(crate::fs::devfs::DeviceType::Rtc)) {
         return rtc_ioctl(request, arg);
     }
+    if let FdKind::Ipc(object) = &kind {
+        if let Some(input) = object.as_any().downcast_ref::<crate::input::stream::InputFile>() {
+            return match input.ioctl(request, arg) {
+                Ok(n) => SyscallResult::Ok(n), Err(e) => SyscallResult::Err(e),
+            };
+        }
+    }
     let resolved = resolve_terminal(kind);
     let (tty, side) = match resolved {
         Ok(resolved) => resolved,

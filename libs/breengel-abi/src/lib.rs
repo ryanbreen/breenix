@@ -767,12 +767,13 @@ pub mod tc_point {
     pub const COMPOSITE_STALL: u32 = 16;
     pub const MOVE_POINTER: u32 = 17;
     pub const CAPTURE_STALL: u32 = 18;
+    pub const INPUT_REPORT_SKIPPED: u32 = 33;
     /// The highest point number section 21 defines.
-    pub const LAST: u32 = CAPTURE_STALL;
+    pub const LAST: u32 = INPUT_REPORT_SKIPPED;
 
     /// Whether section 21 defines `point`.
     pub const fn defined(point: u32) -> bool {
-        matches!(point, IGNORE_DAMAGE..=CAPTURE_STALL)
+        matches!(point, IGNORE_DAMAGE..=CAPTURE_STALL | INPUT_REPORT_SKIPPED)
     }
 }
 

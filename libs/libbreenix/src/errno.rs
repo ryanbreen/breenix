@@ -98,6 +98,8 @@ pub enum Errno {
     ETIMEDOUT = 110,
     /// Connection refused
     ECONNREFUSED = 111,
+    /// Operation already in progress
+    EALREADY = 114,
     /// Operation now in progress
     EINPROGRESS = 115,
     /// Bad message
@@ -167,6 +169,7 @@ impl Errno {
             107 => Errno::ENOTCONN,
             110 => Errno::ETIMEDOUT,
             111 => Errno::ECONNREFUSED,
+            114 => Errno::EALREADY,
             115 => Errno::EINPROGRESS,
             74 => Errno::EBADMSG,
             90 => Errno::EMSGSIZE,

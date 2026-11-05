@@ -865,7 +865,7 @@ class RootStagingTest(unittest.TestCase):
                                         prep_message)
             # A tests boot's root is a default boot's: the testing kernel does not read the target.
             for mode, suite, expected in [('default', None, 'default'), ('shell', None, 'shell'),
-                                          ('suite', 'smoke', 'suite smoke hostkeys xhci-replay'), ('tests', None, 'default')]:
+                                          ('suite', 'smoke', 'suite smoke hostkeys host-channel'), ('tests', None, 'default')]:
                 facts = metal_root.stage_root(image, mode, suite, site, hasher=hasher)
                 self.assertEqual(facts['siteFields'], 1)
                 def read(name):
@@ -904,12 +904,12 @@ class RootStagingTest(unittest.TestCase):
                 metal_root.stage_root(image, 'default', None, {'GUEST_PASSWORD': 'fixture'})
             # Several suites: the first is the boot target, the list is beside it, each binary is on the root.
             metal_root.stage_root(image, 'suite', 'smoke,time', site)
-            self.assertEqual(read('boot-target'), 'suite smoke hostkeys xhci-replay\n')
+            self.assertEqual(read('boot-target'), 'suite smoke hostkeys host-channel\n')
             self.assertEqual(read('suite-sequence'), 'smoke,time\n')
             with self.assertRaises(ValueError):
                 metal_root.stage_root(image, 'suite', 'smoke,absent', site)
             metal_root.stage_root(image, 'suite', 'time', site)
-            self.assertEqual(read('boot-target'), 'suite time hostkeys xhci-replay\n')
+            self.assertEqual(read('boot-target'), 'suite time hostkeys host-channel\n')
             self.assertEqual(read('suite-sequence'), '')
             # install-persistent's userland carries the operator's account; ordinary staging removes it.
             import base64
@@ -1256,7 +1256,7 @@ class DriverTest(StateTest):
         self.assertEqual(boot.final_marker(metal, 'probe', catalog, 'disk-root'),
                          ('PROBE dir OK', 'contains'))
         self.assertEqual(boot.final_marker(metal, 'default', catalog, 'ramdisk'),
-                         ('Breenix login:', 'contains'))
+                         ('[bwm] composited client frame:', 'contains'))
 
     def test_mode_completion_waits_for_delayed_kernel_producers(self):
         d = self.driver
@@ -1303,6 +1303,7 @@ class DriverTest(StateTest):
         d = self.driver
         d.args.mode, d.args.suite = 'suite', 'console'
         d.console_send = Mock()
+        d.wait_replay_ack = Mock(return_value=True)
         record = 'SUITE console HOSTKEY keys/alt-fn seq=4 keys=alt-f2,a'
         with patch.object(boot.hostkeys.time, 'sleep'):
             d.on_line(record)  # before the kernel starts: not a case's record
@@ -1312,17 +1313,42 @@ class DriverTest(StateTest):
             d.on_line(record)  # a serial replay of the same record is answered once
             d.on_line('SUITE console HOSTKEY keys/alt-fn seq=5 keys=alt-f2')
         self.assertEqual([c.args[0] for c in d.console_send.call_args_list], [
-            'BXKEY 0400000000000000,04003b0000000000,0400000000000000,0000000000000000',
-            'BXKEY 0000040000000000,0000000000000000',
-            'BXKEY 0400000000000000,04003b0000000000,0400000000000000,0000000000000000'])
+            'BXKEY @0000000000000001:4129063a 0400000000000000,04003b0000000000,0400000000000000,0000000000000000',
+            'BXKEY @0000000000000002:070f28f9 0000040000000000,0000000000000000',
+            'BXKEY @0000000000000003:3052f883 0400000000000000,04003b0000000000,0400000000000000,0000000000000000'])
+        self.assertEqual([c.args for c in d.wait_replay_ack.call_args_list], [(1,), (2,), (3,)])
         logged = [c.kwargs['message'] for c in d.event.call_args_list if c.args[0] == 'hostkeys']
         self.assertEqual(len(logged), 2)
-        self.assertIn('seq=4 keys=alt-f2,a sent via xhci-replay', logged[0])
+        self.assertIn('seq=4 keys=alt-f2,a sent via replay', logged[0])
         # A console boot types no host keys.
         d.args.mode, d.hostkey_watcher = 'console', None
         d.console_send.reset_mock()
         d.on_line('SUITE console HOSTKEY keys/alt-fn seq=6 keys=alt-f2')
         self.assertFalse(d.console_send.called)
+
+    def test_host_text_transport_fits_the_existing_two_second_case_wait(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'window-manager'
+        elapsed = [0.0]
+        chunks = []
+        def run(command, **kwargs):
+            # Retained 080812Z spent 2.5 seconds sending this request. Model
+            # four milliseconds per tmux process, in addition to pacing.
+            elapsed[0] += 0.004
+            if 'input' in kwargs:
+                chunks.append(kwargs['input'])
+        def sleep(seconds):
+            elapsed[0] += seconds
+        d.wait_replay_ack = Mock(return_value=True)
+        d.hostkey_watcher = boot.hostkeys.Watcher(
+            boot.hostkeys.ReplayKeys(d.replay_send, pace=sleep), 'replay', lambda _: None)
+        d.kernel_started = 120
+        with patch.object(boot.subprocess, 'run', side_effect=run), patch.object(boot.time, 'sleep', side_effect=sleep):
+            d.on_line('SUITE window-manager HOSTKEY focus/text-exact seq=398 keys=shift-h,e,l,l,o,space,shift-w,o,r,l,d')
+        self.assertEqual(len(d.wait_replay_ack.call_args_list), 11)
+        self.assertTrue(chunks)
+        self.assertTrue(all(len(chunk) <= 8 for chunk in chunks))
+        self.assertLess(elapsed[0], 2.0)
 
     def test_failed_probe_keeps_failure_and_waits_for_kernel_producers(self):
         d = self.driver

@@ -22,7 +22,7 @@ use abi::stream::{cmd, encode};
 use libgfx::surface::{Format, Surface};
 use wabi::{op, Plain};
 
-use super::session::cursor_shape;
+use libbreenix::window::abi::cursor_shape;
 
 /// How long bwm waits for the GPU core to admit its device before giving up.
 const ADMISSION_WAIT_MS: u32 = 5000;

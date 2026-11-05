@@ -611,6 +611,7 @@ extern "C" fn kernel_main_on_kernel_stack_checked(
 
     // Initialize workqueue subsystem (depends on kthread infrastructure)
     task::workqueue::init_workqueue();
+    kernel::input::stream::init().expect("input release service");
     kernel::fs::ext2::writeback::init().expect("ext2 finalization service");
     #[cfg(feature = "btrt")]
     kernel::test_framework::btrt::pass(kernel::test_framework::catalog::WORKQUEUE_INIT);
@@ -1221,10 +1222,7 @@ fn launch_x86_production_init(
             }
         })
     } else { None };
-    // The bare-metal boot loop answers host keys over the serial console.
-    if hostkeys.as_deref().is_some_and(|value| value.split(';').next() == Some("xhci-replay")) {
-        kernel::drivers::xhci::arm_host_keys();
-    }
+    if hostkeys.is_some() { kernel::input::host::init()?; }
     let (thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = process::manager();
         let manager = manager_guard

@@ -109,6 +109,8 @@ pub enum ProcEntryType {
     Ext2,
     /// /proc/breenix/frames - allocated physical frames by allocation site
     Frames,
+    InputLedger,
+    InputReplay,
     /// /proc/pids - list of all process IDs
     Pids,
     /// /proc/kmsg - kernel log messages
@@ -217,6 +219,8 @@ impl ProcEntryType {
             ProcEntryType::Ext2 => "ext2",
             ProcEntryType::Filesystems => "filesystems",
             ProcEntryType::Frames => "frames",
+            ProcEntryType::InputLedger => "input-ledger",
+            ProcEntryType::InputReplay => "input-replay",
             ProcEntryType::Pids => "pids",
             ProcEntryType::Kmsg => "kmsg",
             ProcEntryType::KmsgSequence => "kmsg-sequence",
@@ -298,6 +302,8 @@ impl ProcEntryType {
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
             ProcEntryType::Filesystems => "/proc/breenix/filesystems",
             ProcEntryType::Frames => "/proc/breenix/frames",
+            ProcEntryType::InputLedger => "/proc/breenix/input-ledger",
+            ProcEntryType::InputReplay => "/proc/breenix/input-replay",
             ProcEntryType::Pids => "/proc/pids",
             ProcEntryType::Kmsg => "/proc/kmsg",
             ProcEntryType::KmsgSequence => "/proc/kmsg-sequence",
@@ -380,6 +386,8 @@ impl ProcEntryType {
             ProcEntryType::Ext2 => 202,
             ProcEntryType::Filesystems => 209,
             ProcEntryType::Frames => 203,
+            ProcEntryType::InputLedger => 218,
+            ProcEntryType::InputReplay => 219,
             ProcEntryType::Pids => 9,
             ProcEntryType::Kmsg => 10,
             ProcEntryType::KmsgSequence => 31,
@@ -539,6 +547,8 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Filesystems));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::InputLedger));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::InputReplay));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Kmsg));
     procfs.entries.push(ProcEntry::new(ProcEntryType::KmsgSequence));
@@ -693,6 +703,8 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::BreenixTesting
                     | ProcEntryType::CompositorStatus
                     | ProcEntryType::Composites
+                    | ProcEntryType::InputLedger
+                    | ProcEntryType::InputReplay
                     | ProcEntryType::Filesystems
                     | ProcEntryType::Frames
                     | ProcEntryType::XhciTrace
@@ -847,7 +859,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::BootSerialTimed|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::Composites))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::BootSerialTimed|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::Composites|ProcEntryType::InputLedger|ProcEntryType::InputReplay))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -968,6 +980,9 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::Ext2 => generate_ext2().map(String::into_bytes),
         ProcEntryType::Filesystems => crate::fs::ext2::filesystem_states().map(String::into_bytes).map_err(|_| -5),
         ProcEntryType::Frames => generate_frames().map(String::into_bytes),
+        ProcEntryType::InputLedger => text(crate::input::stream::ledger()),
+        // syscall/fs.rs opens the live input::control descriptor for I/O.
+        ProcEntryType::InputReplay => Err(-38),
         ProcEntryType::NetDir => {
             let mut listing = Vec::new();
             listing.try_reserve_exact(8).map_err(|_| -12)?;
@@ -1128,6 +1143,8 @@ fn generate_frames() -> Result<String, i32> {
     use core::fmt::Write;
 
     let mut text = crate::memory::frame_allocator::frame_census()?;
+    text.push_str(&crate::gpu::ownership_census());
+    text.push_str(&crate::window::ownership_census());
     #[cfg(target_arch = "x86_64")]
     {
         text.push_str(&crate::gpu::dma_owner::census());

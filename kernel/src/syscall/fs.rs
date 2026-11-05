@@ -2742,7 +2742,7 @@ fn access_resolved(
             if let Some(result) = crate::ipc::shmem::access_path(resolved.virtual_path().unwrap_or(""), mode, cred) {
                 return result;
             }
-            if resolved.is_mount_point() {
+            if resolved.is_mount_point() || resolved.virtual_path() == Some("/dev/input") {
                 return SyscallResult::Ok(0);
             }
             if let Some(device) = resolved.virtual_path().unwrap_or("").strip_prefix("/dev/") {
@@ -2789,6 +2789,28 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
     use crate::ipc::fd::{FdKind, FileDescriptor};
 
     let normalized = path.trim_end_matches('/');
+
+    // Replay is a live descriptor: check the latch and credentials at open and I/O.
+    match crate::input::control::open(normalized) {
+        Err(e) => return SyscallResult::Err(e),
+        Ok(Some(file)) => {
+            let entry = match FileDescriptor::try_opened(FdKind::Ipc(file), flags) {
+                Ok(entry) => entry, Err(e) => return SyscallResult::Err(e),
+            };
+            let Some(tid) = crate::task::scheduler::current_thread_id() else {
+                return SyscallResult::Err(3);
+            };
+            let mut guard = crate::process::manager();
+            return match guard.as_mut().and_then(|pm| pm.find_process_by_thread_mut(tid)) {
+                Some((_, process)) => match process.fd_table.alloc_with_entry(entry) {
+                    Ok(fd) => SyscallResult::Ok(fd as u64),
+                    Err(e) => SyscallResult::Err(e as u64),
+                },
+                None => SyscallResult::Err(3),
+            };
+        }
+        Ok(None) => {}
+    }
 
     // Check if this is a directory path
     // /proc itself is the root directory; for sub-paths, check if the entry is a directory type
@@ -2917,6 +2939,9 @@ fn handle_devfs_open(
         return handle_devpts_open(pty_name, flags, reserved);
     }
 
+    if device_name == "input" {
+        return open_input(None, flags, native_inode, reserved);
+    }
     // Check for /dev/pts directory itself
     if device_name == "pts" {
         return handle_devpts_directory_open(flags);
@@ -2944,6 +2969,9 @@ fn handle_devfs_open(
         Ok(cred) if cred.may(device.device_type.attrs(), wanted) => {}
         Ok(_) => return SyscallResult::Err(13), // EACCES
         Err(errno) => return SyscallResult::Err(errno),
+    }
+    if matches!(device.device_type, devfs::DeviceType::InputEvents | devfs::DeviceType::Uinput) {
+        return open_input(Some(device.device_type == devfs::DeviceType::Uinput), flags, native_inode, reserved);
     }
     if device.device_type == devfs::DeviceType::Ptmx {
         return open_ptmx(flags, native_inode, reserved);
@@ -3212,6 +3240,35 @@ fn open_ptmx(
             crate::tty::pty::close_master_ref(&pair);
             SyscallResult::Err(e as u64)
         }
+    }
+}
+
+/// Each input open creates one independently queued reader or virtual device.
+fn open_input(
+    injector: Option<bool>, flags: u32, native_inode: Option<crate::ipc::fd::NativeInode>,
+    reserved: Option<ReservedSlot>,
+) -> SyscallResult {
+    use crate::ipc::fd::FileDescriptor;
+    if injector.is_none() && flags & (3 | O_CREAT | O_TRUNC) != 0 {
+        return SyscallResult::Err(super::errno::EISDIR as u64);
+    }
+    if injector.is_some() && flags & O_DIRECTORY != 0 {
+        return SyscallResult::Err(super::errno::ENOTDIR as u64);
+    }
+    let object: alloc::sync::Arc<dyn crate::ipc::object::IpcFile> = match injector {
+        Some(injector) => crate::input::stream::InputFile::open(injector),
+        None => alloc::sync::Arc::new(crate::fs::devfs::input::Directory::default()),
+    };
+    let entry = match FileDescriptor::try_opened(FdKind::Ipc(object), flags) {
+        Ok(entry) => entry.with_inode(native_inode), Err(e) => return SyscallResult::Err(e),
+    };
+    let Some(tid) = crate::task::scheduler::current_thread_id() else { return SyscallResult::Err(3); };
+    let mut guard = crate::process::manager();
+    match guard.as_mut().and_then(|pm| pm.find_process_by_thread_mut(tid)) {
+        Some((_, process)) => match install_descriptor(&mut process.fd_table, reserved, entry) {
+            Ok(fd) => SyscallResult::Ok(fd as u64), Err(e) => SyscallResult::Err(e as u64),
+        },
+        None => SyscallResult::Err(3),
     }
 }
 

@@ -832,14 +832,21 @@ case reads its effect back in the guest. The host key is the input; the in-guest
 - **The launcher** watches the serial for HOSTKEY records of its run and injects each within one second: QMP
   `send-key` on ARM64 and x86-64 QEMU, `prlctl send-key-event` on Parallels, and the result of the VMware VNC
   spike on VMware (Q5, recorded here by V6). It logs each injection in its own records, not on the guest's
-  serial. The x86-metal boot loop has no virtual keyboard it may press (it reaches the machine through power
-  control and the serial console only), so it declares `xhci-replay`: for each chord it types
-  `BXKEY <report>[,<report>...]` on the serial console, the HID boot keyboard reports of the modifiers pressed in
-  order, the key, and their release in reverse. The kernel, armed by that declaration, takes serial input as these
-  lines only and replays each report, 10 ms apart, on the attached boot keyboard through the path a device's report
-  takes: the endpoint is stopped, the report is written to the buffer of its oldest posted TD, the dequeue moves
-  past that TD, and a Transfer Event for it is dispatched to the keyboard driver
-  (`kernel/src/drivers/xhci/host_keys.rs`). The device's own DMA write is the one step this replaces.
+  serial. The x86-metal boot loop uses the shared serial host channel
+  (`kernel/src/input/host.rs`), under E21 ruling W1: suite input enters the same kernel-owned virtual devices
+  on both x86 and ARM. A suite target declaring `hostkeys` creates a host keyboard and absolute pointer.
+  The serial transport accepts `BXKEY <report>[,<report>...]` and numbered
+  `BXKEY @<sequence:16 lowercase hex>:<crc32:8 lowercase hex> <reports>` lines. Each report is the same
+  eight-byte HID boot keyboard report; `hid_boot/report.rs` decodes it into shared input-core key events.
+  CRC-32 covers the sixteen sequence digits, one space and the report text. Numbered sequences start at one;
+  a retransmission is acknowledged with `BXKEY_ACK <sequence>` without delivering it twice. An invalid,
+  out-of-order, busy or full-queue packet is refused without advancing sequence or acknowledging it.
+  The bounded channel admits a whole line before acknowledging it; decoding, stream/console delivery and
+  ACK output run in the input task; receive interrupts only admit packets. With no compositor reader, the console
+  keymap consumes this keyboard as it does any other. x86's serial task and ARM's PL011 receive path call
+  the same `host::serial_line`; the PL011 path is built but unbooted. The attached USB keyboard's production
+  completion path is exercised separately by the USB milestone and the input replay control, not by HOSTKEY.
+  `BXPTR` uses the same channel and is specified in [input.md](../gui/input.md).
 - **The launcher declares its path before the suite starts**, so a case knows what to expect: QEMU passes
   `-fw_cfg name=opt/breenix/hostkeys,string=<method>[;missing=<key>,...]`, the disk launchers write the same
   value as a `hostkeys` field of `/etc/breenix/boot-target`, and the kernel passes it to the suite as

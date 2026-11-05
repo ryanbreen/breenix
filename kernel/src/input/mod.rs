@@ -13,8 +13,12 @@
 //! worker thread: it waits only on locks whose holders mask interrupts, and only
 //! tries the others; it does not allocate and does not log.
 
+pub mod control;
 pub mod event;
+pub mod hardware;
+pub mod host;
 pub mod pointer;
+pub mod stream;
 
 use core::sync::atomic::{AtomicU16, AtomicU64, AtomicU8, Ordering};
 use event::Modifiers;
@@ -24,6 +28,8 @@ use event::Modifiers;
 pub enum Device {
     /// The i8042 keyboard (x86-64).
     Ps2,
+    /// The shared suite host-channel keyboard, independent of transport.
+    HostKeyboard,
     /// `virtio-keyboard-device` over MMIO (ARM64 QEMU).
     VirtioKeyboard,
     /// A USB HID boot keyboard on the clean-room xHCI (x86-metal).
@@ -31,12 +37,13 @@ pub enum Device {
 }
 
 // USB root ports are numbered 1..=255 by xHCI. Keep their identities stable on detach.
-const DEVICES: usize = 258;
+pub(crate) const DEVICES: usize = 259;
 
 impl Device {
     pub(crate) fn index(self) -> usize {
         match self {
             Device::Ps2 => 0,
+            Device::HostKeyboard => 258,
             Device::VirtioKeyboard => 1,
             Device::UsbBootKeyboard(port) => 2 + port as usize,
         }
@@ -46,6 +53,7 @@ impl Device {
     fn source(self) -> crate::tty::InputSource {
         match self {
             Device::Ps2 => crate::tty::InputSource::Ps2,
+            Device::HostKeyboard => crate::tty::InputSource::Other,
             Device::VirtioKeyboard => crate::tty::InputSource::Other,
             Device::UsbBootKeyboard(_) => crate::tty::InputSource::UsbKeyboard,
         }
@@ -79,14 +87,7 @@ pub fn take_super_tap_count() -> u64 {
 
 /// One key event from `device`. Returns how many bytes it sent the foreground terminal.
 pub fn report_key(device: Device, code: u16, value: i32) -> usize {
-    // One device reports from one context at a time, so its own word needs no read-modify-write.
-    let slot = &HELD[device.index()];
-    let previous = slot.load(Ordering::Relaxed);
-    let next = event::update_modifiers(previous, code, value);
-    slot.store(next, Ordering::Relaxed);
-    if !Modifiers(previous).meta() && Modifiers(next).meta() {
-        SUPER_TAPS.fetch_add(1, Ordering::Release);
-    }
+    observe_key(device, code, value);
     let modifiers = Modifiers(
         HELD.iter()
             .fold(0, |all, held| all | held.load(Ordering::Relaxed)),
@@ -109,4 +110,21 @@ pub fn report_key(device: Device, code: u16, value: i32) -> usize {
         reserved,
         device.source(),
     )
+}
+
+/// Update the legacy modifier snapshot without delivering a second console event.
+pub(super) fn observe_key(device: Device, code: u16, value: i32) {
+    // One device reports from one context at a time, so its own word needs no read-modify-write.
+    let slot = &HELD[device.index()];
+    let previous = slot.load(Ordering::Relaxed);
+    let next = event::update_modifiers(previous, code, value);
+    slot.store(next, Ordering::Relaxed);
+    if !Modifiers(previous).meta() && Modifiers(next).meta() {
+        SUPER_TAPS.fetch_add(1, Ordering::Release);
+    }
+}
+
+pub(super) fn reset_keyboard(device: Device) {
+    HELD[device.index()].store(0, Ordering::Relaxed);
+    RESERVED[device.index()].store(0, Ordering::Relaxed);
 }

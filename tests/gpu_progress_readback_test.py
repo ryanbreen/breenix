@@ -64,7 +64,7 @@ impl Device { fn has_room(&self, size: usize) -> bool { self.room >= size } }
 struct Writer { ctx: u32, ended: bool }
 impl Writer { fn ended(&self) -> bool { self.ended } }
 struct Resource {
-    kind: u32, writers: u32, accepted: Vec<Writer>, reading: bool, progress_context: Option<u32>,
+    kind: u32, writers: u32, accepted: Vec<Writer>, reading: bool, cpu_reading: bool, progress_context: Option<u32>,
     invalid: bool, lost: bool, backing: (), pitch: u32, epoch: u64, holds: u32,
 }
 struct Sub { published: bool, requests: u32, sent_ns: Option<u64>, written: Vec<u32>, ctx: u32 }
@@ -91,7 +91,7 @@ impl Core {
         Self { reset_wanted: false, resetting: false, stalled: false, backlog: VecDeque::new(),
             subs: BTreeMap::from([(1,Sub { published: false, requests: 1, sent_ns: Some(0), written: vec![7], ctx: 3 })]),
             resources: BTreeMap::from([(7,Resource { kind: kind::TARGET, writers: 1,
-                accepted: vec![Writer { ctx: 3, ended: false }], reading: false, progress_context: None,
+                accepted: vec![Writer { ctx: 3, ended: false }], reading: false, cpu_reading: false, progress_context: None,
                 invalid: false, lost: false, backing: (), pitch: 256, epoch: 1, holds: 1 })]),
             dev: Some(Device { room: 2 }), syncs: BTreeMap::new(), done: BTreeMap::new(), canvas: vec![],
             epoch: 1, next: 0, next_fence: 0, flushes: 0,
@@ -176,7 +176,7 @@ fn drain_reads_the_drawn_target_and_other_contexts_pass_it() {
     let mut c = Core::new();
     c.contexts.get_mut(&3).unwrap().scratch = 9;
     c.resources.insert(9,Resource { kind: kind::TARGET, writers: 0, accepted: vec![],
-        reading: false, progress_context: None, invalid: false, lost: false,
+        reading: false, cpu_reading: false, progress_context: None, invalid: false, lost: false,
         backing: (), pitch: 256, epoch: 1, holds: 1 });
     c.progress_readback();
     let Request::Virgl(read) = &c.backlog[0].1;

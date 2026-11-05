@@ -87,7 +87,9 @@ pub fn flush(pane: FbMmapInfo, mut rows: Range<usize>, mut columns: Range<usize>
         if r.lost || r.dropped { return Some(Err(EIO)); }
         if r.writers != 0 || r.reading || display::write_blocked(c, &[target.id]) { return None; }
         let data = (r.backing.clone(), r.pitch as usize, r.last.is_none() || r.invalid);
-        c.resources.get_mut(&target.id)?.reading = true;
+        let r = c.resources.get_mut(&target.id)?;
+        r.reading = true;
+        r.cpu_reading = true;
         Some(Ok(data))
     }).map_err(|_| EINTR)??;
     // Initialize the whole surface on its first frame, including outside the dirty rectangle.
@@ -109,7 +111,7 @@ pub fn flush(pane: FbMmapInfo, mut rows: Range<usize>, mut columns: Range<usize>
         r.invalid = written.is_err();
         if let Ok(last) = &written { r.last = Some(*last); r.generation += 1; }
     });
-    release_other(Some(target.id));
+    release_cpu_read(target.id);
     written?;
     let (_, status, _) = display::present_as(owner, target.context, target.handle, &|_| Ok(()))?;
     if status == fence_status::OK { Ok(()) } else { Err(EIO) }
@@ -129,6 +131,7 @@ pub fn pixel(x: usize, y: usize) -> Result<u32, i64> {
         if x >= r.width as usize || y >= r.height as usize { return Some(Err(EINVAL)); }
         if r.writers != 0 || r.reading { return None; }
         r.reading = true;
+        r.cpu_reading = true;
         Some(Ok((binding.id, r.last, r.backing.clone(), r.pitch, r.format)))
     }).map_err(|_| EINTR)??;
     let observed = (|| {
@@ -141,6 +144,6 @@ pub fn pixel(x: usize, y: usize) -> Result<u32, i64> {
         let mut pixel = [0; 4]; stage.pages.read(0, &mut pixel);
         Ok(u32::from(pixel[2]) << 16 | u32::from(pixel[1]) << 8 | u32::from(pixel[0]))
     })();
-    release_other(Some(id));
+    release_cpu_read(id);
     observed
 }

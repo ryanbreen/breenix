@@ -17,15 +17,23 @@ thread_local! {
     static COMPLETE_AT:Cell<u64>=const {Cell::new(25)};
     static CONTEXT_DROPS:Cell<usize>=const {Cell::new(0)};
     static RESOURCE_DROPS:Cell<usize>=const {Cell::new(0)};
+    static UNREFS:RefCell<Vec<u32>>=RefCell::new(Vec::new());
     static NEXT:Cell<u32>=const {Cell::new(1)};
 }
-#[derive(Default)] struct Proc {quota:gpu::quota::Quota,resources:BTreeMap<u64,u32>,contexts:BTreeMap<u64,u32>,prepared_context:Option<u64>}
+#[derive(Default)] struct Totals{device_errors:u64}
+#[derive(Default)] struct Proc {totals:Totals,quota:gpu::quota::Quota,resources:BTreeMap<u64,u32>,contexts:BTreeMap<u64,u32>,prepared_context:Option<u64>}
 #[derive(PartialEq)] enum CtxState {Live,Creating,Quarantined}
 struct Scratch{id:u32}
-struct Ctx {owner:u64,state:CtxState,dropped:bool,device_alive:bool,busy:bool,inflight:Vec<u64>,vertex_arena:Option<Scratch>,private_scratch:Vec<Scratch>,vb:u32,scratch:u32,scratch_texture:u32}
-struct Resource {owner:u64,backing:Arc<Pages>,holds:u32,writers:u32,reading:bool,dropped:bool,lost:bool,epoch:u64}
-#[derive(Default)] struct Core {procs:BTreeMap<u64,Proc>,resources:BTreeMap<u32,Resource>,contexts:BTreeMap<u32,Ctx>}
+struct Ctx {totals:Totals,errors_in_row:u32,owner:u64,state:CtxState,dropped:bool,device_alive:bool,busy:bool,inflight:Vec<u64>,vertex_arena:Option<Scratch>,private_scratch:Vec<Scratch>,vb:u32,scratch:u32,scratch_texture:u32}
+struct Resource {owner:u64,backing:Arc<Pages>,holds:u32,writers:u32,reading:bool,cpu_reading:bool,progress_context:Option<u32>,invalid:bool,invalidated_by:u64,window_owner_hold:bool,dropped:bool,lost:bool,epoch:u64}
+#[derive(Default)] struct SyncReq{ctx:u32,warm:Option<u64>,upload:Option<(u32,u64)>,holds:Vec<u32>,reading:Vec<u32>,abandoned:bool}
+struct Done{answer:u32}
+impl Done{fn matches_fence(&self,_:u64)->bool{true}fn none(_:Tag)->Self{panic!("fixture models answered requests");}}
+mod completion{pub fn finish_write(_: &mut bool,_: &mut u64,_:u64,_:bool,_:bool){panic!("fixture does not submit uploads");}}
+#[derive(Default)] struct Core {syncs:BTreeMap<u64,SyncReq>,done:BTreeMap<u64,Done>,canvas:Vec<(u32,())>,procs:BTreeMap<u64,Proc>,resources:BTreeMap<u32,Resource>,contexts:BTreeMap<u32,Ctx>}
 impl Core {
+    fn fault(&mut self){panic!("unexpected device fault");}
+    fn warm_returned(&mut self,_:Option<bool>){panic!("fixture does not warm contexts");}
     fn handle(&mut self)->u64{NEXT.with(|n|{let id=n.get();n.set(id+1);u64::from(id)+20000})}
     fn proc_mut(&mut self,owner:u64)->&mut Proc {self.procs.entry(owner).or_default()}
     fn ctx_of(&self,owner:u64,h:u64)->Option<u32>{self.procs.get(&owner)?.contexts.get(&h).copied()}
@@ -39,13 +47,20 @@ fn notify(){}
 mod display {pub fn ended(_: &mut super::Core,_:u64){}}
 static GPU_RESOURCES:u8=0; static GPU_CONTEXTS:u8=1;
 fn gauge(kind: &u8,n:i64){assert_eq!(n,-1);if *kind==0{RESOURCE_DROPS.with(|c|c.set(c.get()+1));}else{CONTEXT_DROPS.with(|c|c.set(c.get()+1));}}
+// READ_RELEASES
+fn begin_capture(id:u32){with_core(|c|{let r=c.resources.get_mut(&id).unwrap();
+    // CAPTURE_MARK
+});}
+fn finish_capture(id:u32){
+    // CAPTURE_TAIL
+}
 // DESTROY_RESOURCE
 // DESTROY_CONTEXT
 fn create_context_with_catalogue(owner:u64,warm:bool)->Result<(u64,u32),i64>{
     assert!(!warm);
     let id=NEXT.with(|n|{let id=n.get();n.set(id+1);id});let h=u64::from(id)+10000;
     drop(gk208::resource::ctx_create(Tag::Background,id).unwrap());
-    with_core(|c|{c.contexts.insert(id,Ctx{owner,state:CtxState::Live,dropped:false,device_alive:true,busy:false,inflight:vec![],vertex_arena:None,private_scratch:vec![],vb:0,scratch:0,scratch_texture:0});c.proc_mut(owner).contexts.insert(h,id);});
+    with_core(|c|{c.contexts.insert(id,Ctx{totals:Totals::default(),errors_in_row:0,owner,state:CtxState::Live,dropped:false,device_alive:true,busy:false,inflight:vec![],vertex_arena:None,private_scratch:vec![],vb:0,scratch:0,scratch_texture:0});c.proc_mut(owner).contexts.insert(h,id);});
     Ok((h,0))
 }
 struct CreationGuard;
@@ -89,8 +104,13 @@ mod gpu {
     pub(crate) use crate::quota;
     pub(crate) use crate::targets as window_targets;
     pub mod dev {
-        pub enum Tag {Background}
-        pub(crate) use crate::gk208::resource::{resource_unref,ctx_destroy};
+        pub enum Tag {Background,Sync(u64)}
+        pub(crate) use crate::gk208::resource::ctx_destroy;
+        pub fn ok(answer:u32)->bool{answer==0x60000000}
+        pub fn resource_unref(tag:Tag,id:u32,backing:Option<std::sync::Arc<super::dma::Pages>>)->Option<crate::gk208::adapter::Request>{
+            crate::UNREFS.with(|seen|seen.borrow_mut().push(id));
+            crate::gk208::resource::resource_unref(tag,id,backing)
+        }
         pub fn backend()->u32{crate::BACKEND.with(|b|b.get())}
         pub fn is_svga()->bool{backend()==5}
     }
@@ -115,7 +135,7 @@ mod console {
         let id=NEXT.with(|n|{let id=n.get();n.set(id+1);id});
         gk208::resource::resource_create(dev::Tag::Background,id,k,f,w,h,scanout).ok_or(ENOMEM)?;
         drop(gk208::resource::attach_backing(dev::Tag::Background,id,pages.clone()).ok_or(ENOMEM)?);
-        with_core(|c|{c.resources.insert(id,Resource{owner:0,backing:pages,holds:1,writers:0,reading:false,dropped:false,lost:false,epoch:0});});
+        with_core(|c|{c.resources.insert(id,Resource{owner:0,backing:pages,holds:1,writers:0,reading:false,cpu_reading:false,progress_context:None,invalid:false,invalidated_by:0,window_owner_hold:false,dropped:false,lost:false,epoch:0});});
         Ok(id)
     }
     pub(super) fn target_pitch(w:u32)->u32{pitch_of(kind::TARGET,format::B8G8R8A8,w)}
@@ -250,14 +270,17 @@ fn usage(owner:u64)->u64{
 
 }
 fn add_window(id:u64,holder:Option<u64>)->(u32,std::sync::Weak<Target>,std::sync::Weak<window::Tree>){
-    let buffers:Vec<_>=(0..3).map(|_|window::Buffer{mem:Target::new(7,128,64)}).collect();
+    add_window_sized(id,holder,128,64)
+}
+fn add_window_sized(id:u64,holder:Option<u64>,width:u32,height:u32)->(u32,std::sync::Weak<Target>,std::sync::Weak<window::Tree>){
+    let buffers:Vec<_>=(0..3).map(|_|window::Buffer{mem:Target::new(7,width,height)}).collect();
     let front=Arc::downgrade(&buffers[1].mem);let rid=buffers[1].mem.resource();
     let mut bytes=vec![0;3*64*1024];bytes[64*1024..64*1024+16].copy_from_slice(b"published-tree!!");
     // A later, uncommitted tree is deliberately different from the front.
     bytes[2*64*1024..2*64*1024+16].copy_from_slice(b"pending-not-kept");
     let tree=Arc::new(window::Tree{bytes});let weak=Arc::downgrade(&tree);
     PROCESS.with(|p|p.borrow().rows[&7].vmas[0].bytes.set(p.borrow().rows[&7].vmas[0].bytes.get()+tree.bytes.len() as u64));
-    window::REGISTRY.lock().windows.insert(id,window::Window{tree_addr:0,id,owner:7,holder,front:Some(1),buffers,tree,width:128,height:64,front_commit:42,waits:Default::default(),present:window::Present{shown:()}});
+    window::REGISTRY.lock().windows.insert(id,window::Window{tree_addr:0,id,owner:7,holder,front:Some(1),buffers,tree,width,height,front_commit:42,waits:Default::default(),present:window::Present{shown:()}});
     (rid,front,weak)
 }
 fn end_gpu_owner(){with_core(|c|c.reclaim(7));PROCESS.with(|p|p.borrow().rows[&7].vmas[0].bytes.set(0));}
@@ -383,4 +406,32 @@ fn native_device_holds_outlive_window_and_unref_receipt(){
     assert_eq!(usage(7),0);
     targets::release_context(7);end_gpu_owner();drain_receipts();
     assert_eq!(gk208::resource::ownership_census(),baseline);
+}
+
+#[test]
+fn owner_exit_retires_front_after_capture_ends_before_normal_replay_completion(){
+    let baseline=gk208::resource::ownership_census();
+    let (id,front,tree)=add_window_sized(1,None,240,160);
+    let backing=with_core(|c|c.resources[&id].backing.clone()).unwrap();
+    assert_eq!(backing.count(),38);
+    let pages:Vec<_>=(0..backing.count()).map(|i|backing.page_addr(i)).collect();
+    gk208::ce::with_resources(|r,a,io|r.map_backing(a,io,id,&backing,&pages,backing.bytes() as u64)).unwrap();
+    drop(backing);
+    begin_capture(id);
+    let dma=gk208::ce::with_resources(|r,_,_|r.hold(id)).unwrap();
+    with_core(|c|{
+        let ctx=*c.contexts.keys().next().unwrap();
+        c.resources.get_mut(&id).unwrap().holds+=1;
+        c.syncs.insert(903,SyncReq{ctx,holds:vec![id],reading:vec![id],..SyncReq::default()});
+    });
+    finish_capture(id);
+    drop(dma);
+    with_core(|c|c.sync_ended(903,Some(Done{answer:0x60000000})));
+    assert!(!UNREFS.with(|seen|seen.borrow().contains(&id)),"live window target was unref'd before owner exit");
+    stop_peer();window::row_exit(process::ProcessId::new(7));end_gpu_owner();
+    let retained=with_core(|c|c.resources.get(&id).map(|r|(r.holds,r.writers,r.reading,r.dropped))).unwrap();
+    assert!(retained.is_none(),"owner exit retained front {id}: {retained:?}; {}",gk208::resource::ownership_census());
+    assert_eq!(UNREFS.with(|seen|seen.borrow().iter().filter(|&&rid|rid==id).count()),1,"owner exit must issue the real native unref exactly once");
+    assert!(front.upgrade().is_none()&&tree.upgrade().is_none());
+    drain_receipts();assert_eq!(usage(7),0);assert_eq!(gk208::resource::ownership_census(),baseline);
 }

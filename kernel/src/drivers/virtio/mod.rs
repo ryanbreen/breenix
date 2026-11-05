@@ -34,6 +34,8 @@ pub mod gpu_pci;
 #[cfg(target_arch = "aarch64")]
 pub mod input_mmio;
 #[cfg(target_arch = "aarch64")]
+pub mod input_decode;
+#[cfg(target_arch = "aarch64")]
 pub mod mmio;
 #[cfg(target_arch = "aarch64")]
 pub mod net_mmio;

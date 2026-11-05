@@ -278,6 +278,7 @@ pub fn init_gop_framebuffer() -> Result<(), &'static str> {
         is_bgr,
     });
 
+    crate::input::pointer::set_screen(width as u32, height as u32);
     let _ = SHELL_FRAMEBUFFER.try_init_once(|| Mutex::new(shell_fb));
 
     crate::serial_println!(
@@ -359,6 +360,7 @@ pub fn init_gpu_pci_gop_framebuffer() -> Result<(), &'static str> {
         is_bgr: true,
     });
 
+    crate::input::pointer::set_screen(width as u32, height as u32);
     let _ = SHELL_FRAMEBUFFER.try_init_once(|| Mutex::new(shell_fb));
 
     crate::serial_println!(
@@ -995,6 +997,7 @@ pub fn init_shell_framebuffer() -> Result<(), &'static str> {
         is_bgr: fb.is_bgr(),
     });
 
+    crate::input::pointer::set_screen(fb.width() as u32, fb.height() as u32);
     let _ = SHELL_FRAMEBUFFER.try_init_once(|| Mutex::new(fb));
     Ok(())
 }

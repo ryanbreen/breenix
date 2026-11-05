@@ -344,6 +344,41 @@ impl Registry {
 /// process-manager acquisition happens while it is held.
 pub static REGISTRY: IrqSafeMutex<Registry> = IrqSafeMutex::new(Registry::new());
 
+/// Cold metadata snapshot; copy identities/counts without cloning pixel owners.
+pub(crate) fn ownership_census() -> alloc::string::String {
+    use core::fmt::Write;
+    let (buffer_capacity, remnant_capacity) = {
+        let reg = REGISTRY.lock();
+        (reg.windows.values().map(|w| w.buffers.len()).sum::<usize>().min(4096), reg.remnants.len().min(4096))
+    };
+    let mut buffers = Vec::with_capacity(buffer_capacity);
+    let mut remnants = Vec::with_capacity(remnant_capacity);
+    let counts = {
+        let reg = REGISTRY.lock();
+        for (&id, w) in &reg.windows {
+            for b in &w.buffers {
+                if buffers.len() == buffers.capacity() { break; }
+                buffers.push((id, w.owner, b.uid, b.mem.handle(), Arc::strong_count(&b.mem), b.pins, b.state));
+            }
+        }
+        for (&id, r) in reg.remnants.iter().take(remnants.capacity()) {
+            remnants.push((id, r.holder, r.pixels.as_ref().map_or(0, |p| p.handle()),
+                r.pixels.as_ref().map_or(0, Arc::strong_count)));
+        }
+        (reg.windows.len(), reg.remnants.len(), reg.claim.map(|c| c.holder),
+            reg.windows.values().map(|w| w.buffers.len()).sum::<usize>())
+    };
+    let mut text = alloc::format!("window-owners counts={counts:?} omitted_buffers={} omitted_remnants={}\n",
+        counts.3.saturating_sub(buffers.len()), counts.1.saturating_sub(remnants.len()));
+    for (id, owner, uid, handle, refs, pins, state) in buffers {
+        let _ = writeln!(text, "window-buffer window={id} owner={owner} uid={uid} handle={handle} refs={refs} pins={pins} state={state:?}");
+    }
+    for (id, holder, handle, refs) in remnants {
+        let _ = writeln!(text, "window-remnant window={id} holder={holder} handle={handle} refs={refs}");
+    }
+    text
+}
+
 /// The authority rules of section 17.4, as `allow` arguments of `Registry::window`.
 pub mod who {
     use super::Caller;

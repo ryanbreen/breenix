@@ -178,3 +178,38 @@ fn close_survives_overflow_and_retries_until_the_client_drains() {
     backlog.retain_windows(|_| false);
     assert!(backlog.is_empty());
 }
+
+#[test]
+fn core_serials_survive_delivery_retries_and_discarded_events_are_accounted_for() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let input = std::fs::read_to_string(root.join("userspace/programs/src/bwm/input.rs")).unwrap();
+    for required in ["Reader::open(true)", ".grab(&[])", ".read(", ".dispose(", "event.serial", "event.time_ns", "take_discarded()",
+                     "outcome::DELIVERED", "outcome::LOST", "outcome::WM_HANDLED", "outcome::REJECTED"] {
+        assert!(input.contains(required), "input reader missing {required}");
+    }
+    for forbidden in ["InputParser", "stdin", "syscall2(413", "target_arch"] {
+        assert!(!input.contains(forbidden), "legacy input path: {forbidden}");
+    }
+}
+
+#[test]
+fn backlog_reports_source_events_lost_to_pressure_failure_and_removal() {
+    use input_backlog::DropReason;
+    let mut backlog = Backlog::new();
+    for value in 0..MAX_PENDING + 1 { backlog.push(1, event(1, value as u16), motion); }
+    let discarded = backlog.take_discarded();
+    assert_eq!(discarded.len(), 1);
+    assert_eq!((discarded[0].0, discarded[0].1), (1, event(1, 0)));
+    assert!(matches!(discarded[0].2, DropReason::Overflow));
+    backlog.flush(|_, _| Delivery::Failed, overflow);
+    let discarded = backlog.take_discarded();
+    assert_eq!(discarded.len(), MAX_PENDING);
+    assert!(discarded.iter().all(|(_, _, why)| matches!(why, DropReason::Failed)));
+    backlog.push(2, event(1, 42), motion);
+    backlog.retain_windows(|_| false);
+    let discarded = backlog.take_discarded();
+    assert_eq!(discarded.len(), 1);
+    assert_eq!((discarded[0].0, discarded[0].1), (2, event(1, 42)));
+    assert!(matches!(discarded[0].2, DropReason::Gone));
+    assert!(backlog.take_discarded().is_empty());
+}

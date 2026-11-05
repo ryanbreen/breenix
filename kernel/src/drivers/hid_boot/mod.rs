@@ -21,7 +21,6 @@ pub struct Console {
     /// one-shot first-key lines report only keys pressed after that.
     armed: bool,
     first_report: bool,
-    first_typed: bool,
 }
 
 impl Console {
@@ -29,13 +28,13 @@ impl Console {
         Self {
             armed: false,
             first_report: false,
-            first_typed: false,
         }
     }
 
     /// Arm the first-key lines, and TTY 0's first-USB-byte line with them.
     pub fn arm(&mut self) {
         self.armed = true;
+        CONSOLE_ARMED.store(true, core::sync::atomic::Ordering::Release);
         if let Some(tty) = crate::tty::console() {
             tty.arm_first_usb();
         }
@@ -51,26 +50,32 @@ impl Console {
         }
     }
 
-    /// One key event for the input core.
-    pub fn event(&mut self, port: u8, code: u16, value: i32) {
-        // The input core wakes the compositor for keyboard readiness (`input::report_key`).
-        let sent =
-            crate::input::report_key(crate::input::Device::UsbBootKeyboard(port), code, value);
-        if sent == 0 {
-            return;
-        }
-        // Report from the xHCI worker after TTY admission.
-        if let Some(tty) = crate::tty::console() {
-            tty.report_first_usb();
-        }
-        if self.armed && !self.first_typed {
-            self.first_typed = true;
-            log::info!("[hid] typed into the console tty: {} bytes", sent);
-        }
-    }
-
     /// The keyboards' LED report for the console's lock state.
     pub fn leds(&self) -> u8 {
         crate::console::keys::leds()
+    }
+}
+
+static CONSOLE_ARMED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static FIRST_TYPED: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+static LAST_LEDS: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
+
+/// Called by the task-context input service after actual console TTY admission.
+pub fn console_delivery(sent: usize) {
+    use core::sync::atomic::Ordering;
+    // Console routing now runs after the xHCI worker's completion dispatch.
+    // Wake that worker when a lock key changes, even if no TTY byte was sent.
+    let leds = crate::console::keys::leds();
+    if LAST_LEDS.swap(leds, Ordering::AcqRel) != leds {
+        crate::drivers::xhci::lock_state_changed();
+    }
+    if sent == 0 {
+        return;
+    }
+    if let Some(tty) = crate::tty::console() {
+        tty.report_first_usb();
+    }
+    if CONSOLE_ARMED.load(Ordering::Acquire) && !FIRST_TYPED.swap(true, Ordering::AcqRel) {
+        log::info!("[hid] typed into the console tty: {sent} bytes");
     }
 }

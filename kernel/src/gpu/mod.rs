@@ -219,6 +219,44 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
     r
 }
 
+/// Cold ownership metadata, without pumping requests or retiring sampling pins.
+pub(crate) fn ownership_census() -> alloc::string::String {
+    use core::fmt::Write;
+    crate::per_cpu::preempt_disable();
+    let capacity = panic::lock(&CORE).as_ref().map_or(0, |c| c.resources.len().min(4096));
+    crate::per_cpu::preempt_enable();
+    let mut rows = Vec::with_capacity(capacity);
+    crate::per_cpu::preempt_disable();
+    let counts = {
+        let core = panic::lock(&CORE);
+        core.as_ref().map(|c| {
+            for (&id, r) in c.resources.iter().take(rows.capacity()) {
+                let handle = c.procs.get(&r.owner).and_then(|p| p.resources.iter()
+                    .find_map(|(&handle, &resource)| (resource == id).then_some(handle))).unwrap_or(0);
+                let sync_holds: usize = c.syncs.values().map(|s| s.holds.iter().filter(|&&rid| rid == id).count()).sum();
+                let submit_holds: usize = c.subs.values().map(|s| s.held.iter().filter(|&&rid| rid == id).count()).sum();
+                let display_holds = usize::from(c.display.holds.contains(&id))
+                    + c.display.stack.iter().filter(|o| o.last.is_some_and(|b| b.id == id)).count();
+                let context_holds: usize = c.contexts.values().map(|ctx|
+                    usize::from(ctx.vertex_arena.as_ref().is_some_and(|a| a.id == id))
+                    + ctx.private_scratch.iter().filter(|s| s.id == id).count()).sum();
+                rows.push((id, r.owner, handle, c.procs.contains_key(&r.owner), r.backing.count(),
+                    Arc::strong_count(&r.backing), r.holds, r.writers, r.dropped, r.reading, r.cpu_reading,
+                    r.width, r.height, r.last.map_or(0, |last| last.ctx), r.window_owner_hold,
+                    sync_holds, submit_holds, display_holds, context_holds, r.lost, r.invalid, r.epoch));
+            }
+            (c.resources.len(), c.contexts.len(), c.procs.len(), c.subs.len(), c.syncs.len(), c.canvas.len())
+        })
+    };
+    crate::per_cpu::preempt_enable();
+    let mut text = alloc::format!("gpu-core counts={counts:?} omitted={}\n",
+        counts.map_or(0, |c| c.0.saturating_sub(rows.len())));
+    for (id, owner, handle, owner_present, pages, refs, holds, writers, dropped, reading, cpu_reading, width, height, ctx, window_hold, sync_holds, submit_holds, display_holds, context_holds, lost, invalid, epoch) in rows {
+        let _ = writeln!(text, "gpu-core resource={id} owner={owner} handle={handle} owner_present={owner_present} pages={pages} backing_refs={refs} holds={holds} writers={writers} dropped={dropped} reading={reading} cpu_reading={cpu_reading} width={width} height={height} last_ctx={ctx} window_hold={window_hold} sync_holds={sync_holds} submit_holds={submit_holds} display_holds={display_holds} context_holds={context_holds} lost={lost} invalid={invalid} epoch={epoch}");
+    }
+    text
+}
+
 /// Notify the device of the requests [`Core::flush`] made available, after the core's lock
 /// is released. The notification is an MMIO write, and a hypervisor may hold the writing
 /// CPU until its device model accepts it; no thread waits for the lock meanwhile. The
@@ -488,8 +526,12 @@ struct Res {
     deliberate_invalidation: u64,
     dropped: bool,
     holds: u32,
+    /// The independent hold owned by a window Target, until its destructor runs.
+    window_owner_hold: bool,
     lost: bool,
     reading: bool,
+    /// The CPU-side owner of this exclusion; device requests may outlive it.
+    cpu_reading: bool,
     /// The context of a queued progress transfer reading this target. It excludes CPU
     /// access only; GPU writes of any context may follow it.
     progress_context: Option<u32>,
@@ -1506,11 +1548,10 @@ impl Core {
         for id in &s.holds {
             self.unhold(*id);
         }
-        if s.abandoned {
-            for id in s.reading {
-                self.end_reading(id);
-            }
-        } else {
+        // A normal request can be the last device reader after its CPU
+        // owner has returned. Keep a still-active CPU owner's mark intact.
+        for &id in &s.reading { self.end_reading(id); }
+        if !s.abandoned {
             let d = d.unwrap_or_else(|| Done::none(Tag::Sync(serial)));
             self.done.insert(serial, d);
         }
@@ -1701,10 +1742,11 @@ impl Core {
         self.free_if_unused(id);
     }
 
-    /// Once no request reads resource `id`, clear its `reading` mark, end the console hold
-    /// an interrupted observation of it left, and free it when it is otherwise unused.
+    /// Once neither the CPU owner nor a device request reads `id`, end its exclusion,
+    /// release a deferred console hold, and retire otherwise unused storage.
     fn end_reading(&mut self, id: u32) {
-        if self.syncs.values().any(|s| s.reading.contains(&id)) {
+        if self.resources.get(&id).is_some_and(|r| r.cpu_reading)
+            || self.syncs.values().any(|s| s.reading.contains(&id)) {
             return;
         }
         if let Some(r) = self.resources.get_mut(&id) {
@@ -1723,7 +1765,7 @@ impl Core {
     /// Return an unref receipt when removing an unused resource from the core.
     fn retire_if_unused(&mut self, id: u32) -> Option<u64> {
         let r = self.resources.get(&id)?;
-        if !r.dropped || r.holds > 0 || r.writers > 0 || r.reading {
+        if !r.dropped || r.holds > 0 || r.writers > 0 || r.reading || r.cpu_reading {
             return None;
         }
         let r = self.resources.remove(&id)?;
@@ -3192,8 +3234,10 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
         deliberate_invalidation: 0,
         dropped: false,
         holds: 0,
+        window_owner_hold: false,
         lost: false,
         reading: false,
+        cpu_reading: false,
         progress_context: None,
         window_sealed: false,
         observed_in: 0,
@@ -5415,7 +5459,9 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
         if r.reading || r.writers > 0 || c.subs.values().any(|s| s.ctx != ctx && s.held.contains(&id)) {
             return None;
         }
-        c.resources.get_mut(&id)?.reading = true;
+        let r = c.resources.get_mut(&id)?;
+        r.reading = true;
+        r.cpu_reading = true;
         Some(Ok(()))
     });
     #[cfg(target_arch = "x86_64")]
@@ -5425,18 +5471,7 @@ fn op_upload(arg: u64, len: u64) -> Result<u64, i64> {
         Ok(Err(e)) => return Err(e),
         Err(_) => return Err(EINTR),
     }
-    let release = || {
-        with_core(|c| {
-            if !c.syncs.values().any(|s| s.reading.contains(&id)) {
-                if let Some(r) = c.resources.get_mut(&id) {
-                    r.reading = false;
-                    r.progress_context = None;
-                }
-                c.free_if_unused(id);
-            }
-        });
-        notify();
-    };
+    let release = || release_cpu_read(id);
     if rkind == kind::BUFFER {
         let mut chunk = [0u8; STAGING_CHUNK];
         let mut done = 0usize;
@@ -5876,6 +5911,7 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
             return None;
         }
         r.reading = true;
+        r.cpu_reading = true;
         let composition = r.composition.clone().filter(|p| observer.records_composition() && p.generation == r.generation);
         Some(Ok((r.invalid, r.invalidated_by, r.generation, r.last, composition)))
     }, #[cfg(target_arch = "x86_64")] trace.as_ref().map(|t| (t, 1)),
@@ -5891,6 +5927,7 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     // console's hold, since the device may still write the backing the console draws in.
     let release = || {
         with_core(|c| {
+            if let Some(r) = c.resources.get_mut(&id) { r.cpu_reading = false; }
             if let Some(hold) = canvas.take() {
                 if c.syncs.values().any(|s| s.reading.contains(&id)) {
                     c.canvas.push((id, hold));
@@ -6466,18 +6503,18 @@ fn device_reason((e, status): (i64, u32)) -> (i64, u32) {
     }
 }
 
-/// Clear test point 21's mark on resource `rid` once no request reads it. The mark stays
-/// with a request whose waiter left before the answer.
+/// Recheck a device reader's exclusion without ending another CPU's active access.
 fn release_other(rid: Option<u32>) {
     let Some(rid) = rid else { return };
+    with_core(|c| c.end_reading(rid));
+    notify();
+}
+
+/// End a CPU copy/observation, keeping its exclusion until outstanding DMA ends.
+fn release_cpu_read(rid: u32) {
     with_core(|c| {
-        if !c.syncs.values().any(|s| s.reading.contains(&rid)) {
-            if let Some(r) = c.resources.get_mut(&rid) {
-                r.reading = false;
-                r.progress_context = None;
-            }
-            c.free_if_unused(rid);
-        }
+        if let Some(r) = c.resources.get_mut(&rid) { r.cpu_reading = false; }
+        c.end_reading(rid);
     });
     notify();
 }

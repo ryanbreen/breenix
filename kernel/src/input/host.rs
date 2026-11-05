@@ -1,26 +1,6 @@
-//! Host keys over the serial console, for x86-metal suite boots
-//! (docs/console/contract.md section 10, "Host-injected keys").
-//!
-//! The bare-metal boot loop has no virtual keyboard it may press: it reaches
-//! the machine through power control and the serial console only. A suite
-//! boot whose target declares `hostkeys xhci-replay` takes the boot loop's
-//! answers to its HOSTKEY records as serial lines,
-//!
-//! ```text
-//! BXKEY <report>[,<report>...]
-//! BXKEY @<sequence:16 hex>:<crc32:8 hex> <report>[,<report>...]
-//! ```
-//!
-//! Numbered packets cover the sequence, a space and report text with IEEE CRC-32;
-//! the receiver acknowledges accepted packets and suppresses retransmissions.
-//! Each report is sixteen hex digits: one HID boot keyboard report (HID 1.11
-//! B.1: modifier bits, a reserved byte, six usages). The xHCI worker replays
-//! the reports in order through the keyboard's interrupt-IN completion path
-//! (`Controller::replay_key`), the path a report takes once the device has
-//! written it. While the path is armed, serial input is this channel only.
-//!
-//! This file is the line format, kept free of kernel state so the host can
-//! test it (`rustc --edition=2021 --test`).
+//! Shared serial host input (E21 W1), independent of the serial controller.
+//! BXKEY keeps the original HID 1.11 wire format, sequencing and IEEE CRC-32.
+//! BXPTR carries exact pixel coordinates and the mode that gives them meaning.
 
 /// Bytes in one HID boot keyboard report.
 pub const REPORT_LEN: usize = 8;
@@ -229,3 +209,230 @@ mod tests {
         assert_eq!(lines(&[&line[..], b"BXKEY 0000000000000000\r"].concat()).len(), 2);
     }
 }
+
+/// One transport line, including the numbered BXKEY header. Overflow is
+/// discarded through the next terminator without parsing a partial packet.
+pub struct SerialLines {
+    bytes: [u8; MAX_LINE + 28],
+    len: usize,
+    overflow: bool,
+}
+impl Default for SerialLines {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl SerialLines {
+    pub const fn new() -> Self {
+        Self {
+            bytes: [0; MAX_LINE + 28],
+            len: 0,
+            overflow: false,
+        }
+    }
+    pub fn feed(&mut self, byte: u8, consume: impl FnOnce(&[u8])) {
+        if matches!(byte, b'\r' | b'\n') {
+            if self.len != 0 && !self.overflow {
+                consume(&self.bytes[..self.len]);
+            }
+            self.len = 0;
+            self.overflow = false;
+        } else if self.len == self.bytes.len() {
+            self.overflow = true;
+        } else {
+            self.bytes[self.len] = byte;
+            self.len += 1;
+        }
+    }
+}
+
+/// Normalized ABS_X/Y and full button state; wheel is a signed REL_WHEEL delta.
+#[derive(Clone, Copy, Debug)]
+pub struct Pointer {
+    pub x: i32,
+    pub y: i32,
+    pub buttons: u8,
+    pub wheel: i32,
+}
+#[derive(Clone, Copy, Debug)]
+pub enum Packet {
+    Key([u8; REPORT_LEN]),
+    Pointer(Pointer),
+}
+#[derive(Clone, Copy)]
+pub struct Ack {
+    pub pointer: bool,
+    pub sequence: u64,
+}
+pub struct Receipt {
+    pub added: usize,
+    pub ack: Option<Ack>,
+}
+pub const BACKLOG: usize = 256;
+
+/// A pixel is mapped to the lowest absolute value whose integer projection
+/// returns that pixel. Modes wider than the axis domain cannot be exact.
+pub fn absolute_value(pixel: u32, size: u32) -> Result<i32, &'static str> {
+    if size == 0 || size > 32768 || pixel >= size {
+        return Err("unrepresentable host pointer coordinate");
+    }
+    if size == 1 {
+        return Ok(0);
+    }
+    Ok((pixel as u64 * 32767).div_ceil((size - 1) as u64) as i32)
+}
+fn parse_pointer(line: &[u8], screen: (u32, u32)) -> Result<(u64, Pointer), &'static str> {
+    let body = line
+        .strip_prefix(b"BXPTR @")
+        .ok_or("not a numbered BXPTR line")?;
+    if body.len() < 27 || body[16] != b':' || body[25] != b' ' {
+        return Err("invalid host pointer header");
+    }
+    let seq = hex_word(&body[..16])?;
+    let payload = &body[26..];
+    if seq == 0
+        || crc32(
+            body[..16]
+                .iter()
+                .copied()
+                .chain(core::iter::once(b' '))
+                .chain(payload.iter().copied()),
+        ) != hex_word(&body[17..25])? as u32
+    {
+        return Err("host pointer checksum mismatch");
+    }
+    let mut fields = payload.split(|&b| b == b' ');
+    let mut unsigned =
+        || -> Result<u32, &'static str> { decimal(fields.next().ok_or("missing pointer field")?) };
+    let (x, y, width, height, buttons) = (
+        unsigned()?,
+        unsigned()?,
+        unsigned()?,
+        unsigned()?,
+        unsigned()?,
+    );
+    if (width, height) != screen {
+        return Err("host pointer mode mismatch");
+    }
+    if buttons > 7 {
+        return Err("invalid host pointer buttons");
+    }
+    let wheel = fields.next().ok_or("missing pointer wheel")?;
+    let (negative, magnitude) = wheel
+        .strip_prefix(b"-")
+        .map_or((false, wheel), |w| (true, w));
+    let wheel = decimal(magnitude)? as i64 * if negative { -1 } else { 1 };
+    let wheel = i32::try_from(wheel).map_err(|_| "host pointer wheel overflow")?;
+    if fields.next().is_some() {
+        return Err("extra pointer field");
+    }
+    Ok((
+        seq,
+        Pointer {
+            x: absolute_value(x, width)?,
+            y: absolute_value(y, height)?,
+            buttons: buttons as u8,
+            wheel,
+        },
+    ))
+}
+fn decimal(bytes: &[u8]) -> Result<u32, &'static str> {
+    if bytes.is_empty() {
+        return Err("empty pointer field");
+    }
+    bytes.iter().try_fold(0u32, |n, &b| {
+        if !b.is_ascii_digit() {
+            return Err("invalid pointer decimal");
+        }
+        n.checked_mul(10)
+            .and_then(|n| n.checked_add((b - b'0') as u32))
+            .ok_or("pointer field overflow")
+    })
+}
+
+/// Entire packets are admitted or refused. Sequence state advances only after
+/// admission; retransmissions are ACKed without publishing another input event.
+pub struct Channel {
+    packets: [Packet; BACKLOG],
+    head: usize,
+    count: usize,
+    sequences: [u64; 2],
+}
+impl Default for Channel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+impl Channel {
+    pub const fn new() -> Self {
+        Self {
+            packets: [Packet::Key([0; REPORT_LEN]); BACKLOG],
+            head: 0,
+            count: 0,
+            sequences: [0; 2],
+        }
+    }
+    pub fn accept(&mut self, line: &[u8], screen: (u32, u32)) -> Result<Receipt, &'static str> {
+        if line.starts_with(b"BXPTR ") {
+            let (sequence, pointer) = parse_pointer(line, screen)?;
+            let ack = Some(Ack {
+                pointer: true,
+                sequence,
+            });
+            if sequence == self.sequences[1] {
+                return Ok(Receipt { added: 0, ack });
+            }
+            if self.sequences[1].checked_add(1) != Some(sequence) {
+                return Err("host pointer packet out of sequence");
+            }
+            if self.count == BACKLOG {
+                return Err("host input backlog full");
+            }
+            self.push(Packet::Pointer(pointer));
+            self.sequences[1] = sequence;
+            Ok(Receipt { added: 1, ack })
+        } else {
+            let reports = parse(line)?;
+            let ack = reports.sequence.map(|sequence| Ack {
+                pointer: false,
+                sequence,
+            });
+            if !reports.enqueue_after(self.sequences[0])? {
+                return Ok(Receipt { added: 0, ack });
+            }
+            if self.count + reports.as_slice().len() > BACKLOG {
+                return Err("host input backlog full");
+            }
+            for &report in reports.as_slice() {
+                self.push(Packet::Key(report));
+            }
+            if let Some(seq) = reports.sequence {
+                self.sequences[0] = seq;
+            }
+            Ok(Receipt {
+                added: reports.as_slice().len(),
+                ack,
+            })
+        }
+    }
+    fn push(&mut self, packet: Packet) {
+        self.packets[(self.head + self.count) % BACKLOG] = packet;
+        self.count += 1;
+    }
+    pub fn pop(&mut self) -> Option<Packet> {
+        if self.count == 0 {
+            return None;
+        }
+        let packet = self.packets[self.head];
+        self.head = (self.head + 1) % BACKLOG;
+        self.count -= 1;
+        Some(packet)
+    }
+}
+
+#[cfg(not(test))]
+mod runtime;
+#[cfg(not(test))]
+pub(super) use runtime::drain_one;
+#[cfg(not(test))]
+pub use runtime::{armed, init, serial_line};

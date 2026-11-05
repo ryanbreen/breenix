@@ -1188,6 +1188,9 @@ impl Suite {
             if self.gui { crate::suite_stage::memory_owners("after"); }
             let (line, reclaimed) = memory_record::verdict(self.id, before.as_ref(), after.as_ref());
             emit(&line);
+            if !reclaimed {
+                memory_failure_detail(self.id);
+            }
             reclaimed
         };
 
@@ -1339,6 +1342,18 @@ fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
             emit(&std::format!("SUITE {id} ERROR memory {when}: {}", plain(&why)));
             None
         }
+    }
+}
+
+/// Capture ownership only after the settled reclamation verdict fails.
+fn memory_failure_detail(id: &str) {
+    match std::fs::read_to_string("/proc/breenix/frames") {
+        Ok(frames) => {
+            for line in frames.lines() {
+                emit(&std::format!("SUITE_MEMORY_DETAIL {id} after {line}"));
+            }
+        }
+        Err(error) => emit(&std::format!("SUITE_MEMORY_DETAIL {id} after unavailable={error}")),
     }
 }
 

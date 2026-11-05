@@ -20,7 +20,7 @@ static NUM: AtomicBool = AtomicBool::new(false);
 static SCROLL: AtomicBool = AtomicBool::new(false);
 
 // Key codes in the console bindings fit in two words. Track each physical keyboard.
-static CONSUMED: [[AtomicU64; 2]; 258] = [const { [const { AtomicU64::new(0) }; 2] }; 258];
+static CONSUMED: [[AtomicU64; 2]; crate::input::DEVICES] = [const { [const { AtomicU64::new(0) }; 2] }; crate::input::DEVICES];
 
 /// One key event. Returns how many bytes it sent the foreground terminal.
 pub fn key(device: usize, code: u16, value: i32, modifiers: Modifiers, reserved: bool, source: crate::tty::InputSource) -> usize {
@@ -34,7 +34,7 @@ pub fn key(device: usize, code: u16, value: i32, modifiers: Modifiers, reserved:
         caps: CAPS[fg - 1].load(Ordering::Relaxed),
         num: NUM.load(Ordering::Relaxed),
     };
-    if code < 128 {
+    if code < 128 && device < CONSUMED.len() {
         let word = &CONSUMED[device][code as usize / 64];
         let bit = 1u64 << (code % 64);
         if value == RELEASE {

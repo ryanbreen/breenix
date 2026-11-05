@@ -3,6 +3,8 @@
 //! No device-specific byte offsets: report IDs, padding, signed relative axes
 //! and absolute logical ranges come from the device's report descriptor.
 
+extern crate alloc;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Axis {
     pub value: i32,
@@ -70,6 +72,23 @@ fn signed(value: u32, bytes: usize) -> i32 {
 }
 
 impl Layout {
+    /// Advertise exactly the fields decoded by this layout, including report IDs.
+    pub fn capabilities(&self, emit: &mut dyn FnMut(u16, u16, i32, i32)) {
+        for f in &self.fields[..self.count] {
+            match (f.page, f.usage) {
+                (1, 0x30 | 0x31) => emit(
+                    if f.relative { 2 } else { 3 },
+                    f.usage - 0x30,
+                    f.minimum,
+                    f.maximum,
+                ),
+                (1, 0x38) => emit(2, 8, f.minimum, f.maximum),
+                (9, 1..=8) => emit(1, 0x110 + f.usage - 1, 0, 1),
+                _ => {}
+            }
+        }
+    }
+
     pub fn parse(descriptor: &[u8]) -> Result<Self, &'static str> {
         let mut layout = Self {
             fields: [Field::default(); 64],
@@ -179,8 +198,8 @@ impl Layout {
                         if value == 1 {
                             // Generic Desktop Pointer or Mouse application. A
                             // joystick/gamepad may use identical X/Y/Button fields.
-                            pointer_application = used != 0
-                                && matches!(usages[0], 0x0001_0001 | 0x0001_0002);
+                            pointer_application =
+                                used != 0 && matches!(usages[0], 0x0001_0001 | 0x0001_0002);
                         }
                     } else if tag == 12 {
                         if collection_depth == 0 {
@@ -285,6 +304,59 @@ impl Layout {
         }
     }
 
+    /// Encode a suite's absolute position and left press/release using this
+    /// descriptor's fields (HID 1.11 6.2.2.7 and 8). Relative layouts refuse.
+    pub fn replay_reports(&self, x: i32, y: i32, width: u32, height: u32)
+        -> Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, &'static str>
+    {
+        if x < 0 || y < 0 || x as u32 >= width || y as u32 >= height {
+            return Err("replay position outside screen");
+        }
+        let fields = &self.fields[..self.count];
+        for usage in [0x30, 0x31] {
+            if !fields.iter().any(|f| f.page == 1 && f.usage == usage && !f.relative && f.maximum > f.minimum) {
+                return Err("replay needs absolute X and Y");
+            }
+        }
+        if !fields.iter().any(|f| f.page == 9 && f.usage == 1 && f.minimum <= 0 && f.maximum >= 1) {
+            return Err("replay needs a left button");
+        }
+        let mut ids = alloc::vec::Vec::new();
+        for f in fields {
+            if ((f.page == 1 && matches!(f.usage, 0x30 | 0x31) && !f.relative)
+                || (f.page == 9 && f.usage == 1)) && !ids.contains(&f.id) {
+                ids.push(f.id);
+            }
+        }
+        let mut reports = alloc::vec::Vec::new();
+        for pressed in [true, false] {
+            for id in &ids {
+                let prefix = usize::from(self.ids);
+                let mut report = alloc::vec![0u8; prefix + (self.bits[*id as usize] as usize).div_ceil(8)];
+                if self.ids { report[0] = *id; }
+                for f in fields.iter().filter(|f| f.id == *id) {
+                    let value = if f.page == 9 && f.usage == 1 {
+                        i64::from(pressed)
+                    } else if f.page == 1 && matches!(f.usage, 0x30 | 0x31) && !f.relative {
+                        let (pixel, extent) = if f.usage == 0x30 { (x, width) } else { (y, height) };
+                        let range = f.maximum as i64 - f.minimum as i64;
+                        if range <= 0 { return Err("empty absolute range"); }
+                        let last = extent.saturating_sub(1).max(1) as i64;
+                        let raw = (pixel as i64 * range + last - 1) / last;
+                        if raw * last / range != pixel as i64 { return Err("unrepresentable replay position"); }
+                        f.minimum as i64 + raw
+                    } else { 0 };
+                    for bit in 0..f.size as usize {
+                        let at = f.offset as usize + bit;
+                        report[prefix + at / 8] |= (((value as u32 >> bit) & 1) as u8) << (at % 8);
+                    }
+                }
+                reports.push(report);
+            }
+        }
+        Ok(reports)
+    }
+
     pub fn decode(&self, report: &[u8]) -> Result<Option<Motion>, &'static str> {
         let (id, data) = if self.ids {
             let (&id, data) = report.split_first().ok_or("missing HID report ID")?;
@@ -356,7 +428,10 @@ mod tests {
         for usage in [4, 5] {
             let mut descriptor = MOUSE.to_vec();
             descriptor[3] = usage;
-            assert!(matches!(Layout::parse(&descriptor), Err("HID descriptor has no pointer fields")));
+            assert!(matches!(
+                Layout::parse(&descriptor),
+                Err("HID descriptor has no pointer fields")
+            ));
             // A mouse in the same descriptor still works; the preceding
             // gamepad's bits occupy their own report ID.
             let mut composite = vec![0x85, 1];
@@ -365,7 +440,10 @@ mod tests {
             composite.extend_from_slice(MOUSE);
             let layout = Layout::parse(&composite).unwrap();
             assert_eq!(layout.decode(&[1, 1, 10, 20, 0]).unwrap(), None);
-            assert_eq!(layout.decode(&[2, 1, 10, 20, 0]).unwrap().unwrap().buttons, Some(1));
+            assert_eq!(
+                layout.decode(&[2, 1, 10, 20, 0]).unwrap().unwrap().buttons,
+                Some(1)
+            );
         }
     }
 
@@ -385,7 +463,8 @@ mod tests {
         // Maximum precedes a new minimum: the previous negative minimum
         // must not sign-extend the new unsigned 255 maximum.
         let descriptor = [
-            0x05, 1, 0x09, 2, 0xa1, 1, 0x09, 0x30, 0x15, 0x81, 0x25, 0xff, 0x15, 0, 0x75, 8, 0x95, 1, 0x81, 2, 0xc0,
+            0x05, 1, 0x09, 2, 0xa1, 1, 0x09, 0x30, 0x15, 0x81, 0x25, 0xff, 0x15, 0, 0x75, 8, 0x95,
+            1, 0x81, 2, 0xc0,
         ];
         let motion = Layout::parse(&descriptor)
             .unwrap()
@@ -398,8 +477,8 @@ mod tests {
     #[test]
     fn report_ids_absolute_axes_and_unrelated_reports() {
         let descriptor = [
-            0x05, 1, 0x09, 2, 0xa1, 1, 0x85, 3, 0x09, 0x30, 0x09, 0x31, 0x15, 0, 0x26, 0xff, 0x7f, 0x75, 16, 0x95, 2,
-            0x81, 2, 0xc0,
+            0x05, 1, 0x09, 2, 0xa1, 1, 0x85, 3, 0x09, 0x30, 0x09, 0x31, 0x15, 0, 0x26, 0xff, 0x7f,
+            0x75, 16, 0x95, 2, 0x81, 2, 0xc0,
         ];
         let layout = Layout::parse(&descriptor).unwrap();
         assert_eq!(layout.axes(), "absolute");

@@ -57,7 +57,7 @@ fn defined(point: u32) -> bool {
     breengel_abi::tc_point::defined(point)
         || test_point::defined(point)
 }
-const POINTS: usize = CRED_ORPHAN as usize + 1;
+const POINTS: usize = breengel_abi::tc_point::LAST as usize + 1;
 
 mod point;
 use point::Point;
@@ -183,13 +183,15 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
                 return err(EINVAL);
             }
             let p = &POINT_TABLE[a.point as usize];
-            p.arm(a.target, a.param);
+            if a.point == breengel_abi::tc_point::INPUT_REPORT_SKIPPED {
+                crate::arch_without_interrupts(|| p.arm(a.target, a.param));
+            } else { p.arm(a.target, a.param); }
             SyscallResult::Ok(0)
         }
         tc_op::DISARM_ALL => {
-            for p in POINT_TABLE.iter() {
-                p.disarm();
-            }
+            crate::arch_without_interrupts(|| {
+                for p in POINT_TABLE.iter() { p.disarm(); }
+            });
             // A case's measurements start clean: the IRQ-masked gauges restart at 0.
             crate::tracing::providers::gpu::reset_irq_masked();
             crate::tracing::providers::window::reset_irq_masked();
@@ -203,7 +205,9 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
             if f.reserved != 0 || !defined(f.point) {
                 return err(EINVAL);
             }
-            f.count = POINT_TABLE[f.point as usize].fired();
+            f.count = if f.point == breengel_abi::tc_point::INPUT_REPORT_SKIPPED {
+                crate::arch_without_interrupts(|| POINT_TABLE[f.point as usize].fired())
+            } else { POINT_TABLE[f.point as usize].fired() };
             match crate::syscall::userptr::copy_to_user(arg as *mut TcFired, &f) {
                 Ok(()) => SyscallResult::Ok(0),
                 Err(_) => err(EFAULT),
@@ -213,3 +217,6 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
         _ => err(EINVAL),
     }
 }
+
+mod input_replay;
+pub(crate) use input_replay::{input_report_allowed, InputReplay};
