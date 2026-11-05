@@ -106,5 +106,15 @@ pub(super) fn acknowledge(children: &mut children::Children, serial: u64) {
     let listed: Vec<_> = infos.iter().map(|w| children::Listed { id: w.id, owner: w.owner, commit: w.commit_id }).collect();
     let frame: Vec<_> = record.entries[..(record.header.count as usize).min(record.entries.len())].iter()
         .map(|e| children::Composed { id: e.id, commit: e.commit_id, pixels: e.pixel_gen }).collect();
-    for pid in children.acknowledge(&listed, &frame) { print!("[bwm] launch ack pid={}\n", pid); }
+    for pid in children.acknowledge(&listed, &frame) { record_ack(pid); }
+}
+
+/// Retain launch receipts when the suite redirects the readiness pipe.
+pub(super) fn record_ack(pid: u32) {
+    let record = format!("[bwm] launch ack pid={pid}\n");
+    print!("{record}");
+    if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
+        use std::io::Write;
+        let _ = evidence.write_all(record.as_bytes());
+    }
 }
