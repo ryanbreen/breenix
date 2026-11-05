@@ -8682,6 +8682,33 @@ fn process_page_table_custody_ratchets_are_exact() {
 }
 
 #[test]
+fn live_table_reclaim_unlinks_and_invalidates_before_returning_lease() {
+    let planner = repo_text("kernel/src/memory/table_reclaim.rs");
+    let walk = function_body(&planner, "walk");
+    let unlink = walk.find("let frame = self.ops.unlink(table, index);").unwrap();
+    let invalidate = walk.find("self.ops.flush();").unwrap();
+    let release = walk.find("self.ops.release(frame);").unwrap();
+    assert!(unlink < invalidate && invalidate < release);
+
+    let process_memory = repo_text("kernel/src/memory/process_memory.rs");
+    let adapter = &process_memory[process_memory
+        .find("impl crate::memory::table_reclaim::TableOps for ReclaimTables<'_>")
+        .unwrap()..];
+    let unlink = function_body(adapter, "unlink");
+    let clear = unlink.find("[index].store(0, Ordering::Release);").unwrap();
+    let custody = unlink.find("self.0.tables.leases.swap_remove(lease_index)").unwrap();
+    assert!(clear < custody);
+    assert!(!unlink.contains("return_lease("));
+    let flush = function_body(adapter, "flush");
+    assert!(flush.contains(
+        "crate::memory::tlb::flush_user_tables(self.0.level_4_frame.start_address().as_u64());"
+    ));
+    assert!(!flush.contains("return_lease("));
+    let release = function_body(adapter, "release");
+    assert_eq!(release.matches("return_lease(frame)").count(), 1);
+}
+
+#[test]
 fn frame_ledger_return_and_initialization_ratchets_are_exact() {
     let sources = rust_sources_below("kernel/src");
     let mut failures = Vec::new();
