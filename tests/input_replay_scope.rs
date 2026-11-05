@@ -8,6 +8,7 @@ static POINT_TABLE:[point::Point;34]=[const {point::Point::new()};34];
 static ENABLED:AtomicBool=AtomicBool::new(false);
 static MASKED:AtomicU32=AtomicU32::new(0);
 static MASKS:AtomicU32=AtomicU32::new(0);
+static PEER_AT_ARM:AtomicBool=AtomicBool::new(false);
 fn enabled()->bool { ENABLED.load(Ordering::Relaxed) }
 fn take(point:u32,target:u64)->Option<u64> {
     assert!(MASKED.load(Ordering::Relaxed)>0,"input point consumed without masking IRQs");
@@ -15,7 +16,13 @@ fn take(point:u32,target:u64)->Option<u64> {
 }
 fn arch_without_interrupts<T>(f:impl FnOnce()->T)->T {
     MASKS.fetch_add(1,Ordering::Relaxed); MASKED.fetch_add(1,Ordering::Relaxed);
-    let result=f(); MASKED.fetch_sub(1,Ordering::Relaxed); result
+    let result=f();
+    if PEER_AT_ARM.swap(false,Ordering::Relaxed) {
+        task::scheduler::TID.store(2,Ordering::Relaxed);
+        assert!(input_replay::input_report_allowed(7), "peer consumed replay fault during arm publication");
+        task::scheduler::TID.store(1,Ordering::Relaxed);
+    }
+    MASKED.fetch_sub(1,Ordering::Relaxed); result
 }
 mod syscall { pub mod errno { pub const ENOSYS:i32=38; pub const ESRCH:i32=3; pub const EBUSY:i32=16; } }
 mod task { pub mod scheduler {
@@ -28,6 +35,7 @@ fn suppression_is_one_firing_for_the_replay_pair_and_cannot_leak_or_be_stolen() 
     assert!(InputReplay::begin(7,true).is_err());
     assert!(input_report_allowed(7));
     ENABLED.store(true,Ordering::Relaxed);
+    PEER_AT_ARM.store(true,Ordering::Relaxed);
     let scope=InputReplay::begin(7,true).unwrap();
     assert!(InputReplay::begin(8,false).is_err());
     assert!(input_report_allowed(8));
