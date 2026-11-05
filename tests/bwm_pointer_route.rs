@@ -210,3 +210,15 @@ fn contiguous_axes_route_at_batch_final_position_without_losing_source_slots() {
         assert!(has(&out.notices, 20, NoticeKind::Move, 10, 10));
     }
 }
+
+#[test]
+fn button_only_report_does_not_generate_pointer_motion() {
+    let (mut s, windows, mut r) = scene();
+    r.route(&mut s, &windows, 1, (20, 30), true, button(0x110, 1));
+    let action = pointer_route::motion_action((20, 30), (20, 30));
+    let out = r.route(&mut s, &windows, 1, (20, 30), true, action);
+    assert!(!out.notices.iter().any(|n| n.kind == NoticeKind::Move));
+    let action = pointer_route::motion_action((20, 30), (21, 30));
+    let out = r.route(&mut s, &windows, 1, (21, 30), true, action);
+    assert!(has(&out.notices, 10, NoticeKind::Move, 11, 10));
+}

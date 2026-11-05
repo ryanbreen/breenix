@@ -332,7 +332,7 @@ fn main() {
                     (kind::KEY, _) => Action::Button { code: event.code, value: event.value },
                     (kind::REL, axis::WHEEL) => Action::Wheel(event.value),
                     (kind::SYN, syn::DROPPED) => Action::Cancel,
-                    _ => Action::Move,
+                    _ => pointer_route::motion_action((mouse_x, mouse_y), (new_mx, new_my)),
                 };
                 let chrome_active = chrome_device == Some(event.device)
                     && (dragging.is_some() || resizing.is_some());

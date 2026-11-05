@@ -49,6 +49,7 @@ pub(super) enum Action {
     Wheel(i32),
     Cancel,
 }
+pub(super) fn motion_action(_previous: (i32, i32), _current: (i32, i32)) -> Action { Action::Move }
 pub(super) struct Routed {
     pub focus: Option<(Option<u64>, Option<u64>)>,
     pub notices: Vec<Notice>,
