@@ -53,6 +53,9 @@ use geometry::*;
 #[path = "bwm/desk.rs"]
 mod desk;
 use desk::*;
+#[path = "bwm/stack.rs"]
+mod stack;
+use stack::Stack;
 #[path = "bwm/chrome.rs"]
 mod chrome;
 use chrome::*;
@@ -133,7 +136,7 @@ fn main() {
     paint_background(&mut gpu.background);
 
     let mut windows: Vec<Window> = Vec::new();
-    let mut focused_win: usize = 0;
+    let mut stack = Stack::new();
     let mut stream = input::Stream::new();
     let mut consumed_keys = std::collections::BTreeSet::new();
     let (mut mouse_x, mut mouse_y) = (0, 0);
@@ -162,7 +165,7 @@ fn main() {
     // Initial composite: the desktop alone (background, taskbar and app bar), before any
     // client window is discovered. It is read back from the scanout and compared with the
     // desktop target and the pointer's bitmap (`compositor`).
-    compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
+    compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
     let fills = check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index);
     let first_pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
     let first = gpu
@@ -193,8 +196,8 @@ fn main() {
 
     // Initial window discovery (before entering event loop)
     if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
-        focused_win = next_visible_window(&windows, 0);
-        compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
+        reconcile_stack(&windows, &mut stack);
+        compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
         full_redraw = true;
     }
 
@@ -226,17 +229,12 @@ fn main() {
         // ── 1. Discover new/removed client windows, and see client frames ──
         if scene_changed {
             if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
-                // Chromeless windows always float to top of z-order
-                let chromeless_idx = windows.iter().position(|w| w.chromeless);
-                if let Some(idx) = chromeless_idx {
-                    if idx < windows.len() - 1 {
-                        let win = windows.remove(idx);
-                        windows.push(win);
-                    }
+                if reconcile_stack(&windows, &mut stack) {
+                    // Removal can shift the metadata indices held by existing gestures.
+                    dragging = None;
+                    resizing = None;
                 }
-                update_kernel_z_order(&windows);
-                focused_win = next_visible_window(&windows, 0);
-                compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
+                compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
                 full_redraw = true;
             }
             // A committed client frame is composed without repainting the desktop.
@@ -266,12 +264,10 @@ fn main() {
                 let mut consumed = released_chord;
                 if event.value != 0 {
                     if (key::F1..key::F1 + 5).contains(&event.code) {
-                        let new_focus = (event.code - key::F1) as usize;
-                        if new_focus < windows.len() && new_focus != focused_win {
-                            send_focus_event(&windows, focused_win, false);
-                            focused_win = new_focus;
-                            send_focus_event(&windows, focused_win, true);
-                            compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
+                        if let Some(&id) = stack.order().get((event.code - key::F1) as usize) {
+                            let transition = stack.raise(id);
+                            publish_transition(&windows, &stack, transition);
+                            compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
                             full_redraw = true;
                         }
                         consumed = true;
@@ -286,34 +282,23 @@ fn main() {
                     if consumed { consumed_keys.insert(slot); }
                 }
                 if !consumed {
-                    input::send_keys(&windows, focused_win, event, &payload);
+                    input::send_keys(&windows, &stack, event, &payload);
                 }
             } else if event.kind == kind::TEXT {
-                input::send_keys(&windows, focused_win, event, &payload);
+                input::send_keys(&windows, &stack, event, &payload);
             }
             hotkey_actions.extend(hotkey_mgr.update(current_mods, super_taps));
             for action in &hotkey_actions {
                 match action {
-                    HotkeyAction::FocusNext => {
-                        if !windows.is_empty() {
-                            send_focus_event(&windows, focused_win, false);
-                            focused_win = next_visible_window(&windows, (focused_win + 1) % windows.len());
-                            send_focus_event(&windows, focused_win, true);
-                            compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
+                    HotkeyAction::FocusNext | HotkeyAction::FocusPrev => {
+                        if let Some(id) = cycle_target(&stack, matches!(action, HotkeyAction::FocusPrev)) {
+                            let transition = stack.raise(id);
+                            publish_transition(&windows, &stack, transition);
+                            compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
                             full_redraw = true;
                         }
                     }
-                    HotkeyAction::FocusPrev => {
-                        if !windows.is_empty() {
-                            send_focus_event(&windows, focused_win, false);
-                            focused_win = if focused_win == 0 { windows.len() - 1 } else { focused_win - 1 };
-                            focused_win = next_visible_window(&windows, focused_win);
-                            send_focus_event(&windows, focused_win, true);
-                            compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
-                            full_redraw = true;
-                        }
-                    }
-                    _ => execute_hotkey_action(action, &mut windows, focused_win),
+                    _ => execute_hotkey_action(action, &windows, &stack),
                 }
             }
 
@@ -322,6 +307,7 @@ fn main() {
                 let mouse_moved = new_mx != mouse_x || new_my != mouse_y;
                 mouse_moved_this_frame |= mouse_moved;
 
+                let focused = focus_index(&windows, &stack);
                 if mouse_moved {
                     mouse_x = new_mx;
                     mouse_y = new_my;
@@ -338,18 +324,14 @@ fn main() {
                             windows[win_idx].x = new_x;
                             windows[win_idx].y = new_y;
                             // Publish the window's new place for composition
-                            if windows[win_idx].window_id != 0 {
-                                let cx = windows[win_idx].content_x();
-                                let cy = windows[win_idx].content_y();
-                                let _ = session::set_geometry(windows[win_idx].window_id, cx, cy, win_idx as u32, true);
-                            }
+                            update_kernel_z_order(&windows, &stack);
                             // Dirty region = union of old and new bounds
                             let (nx0, ny0, nx1, ny1) = windows[win_idx].bounds();
                             let dr_x0 = ox0.min(nx0).max(0) as usize;
                             let dr_y0 = oy0.min(ny0).max(0) as usize;
                             let dr_x1 = ox1.max(nx1) as usize;
                             let dr_y1 = oy1.max(ny1) as usize;
-                            compose_partial_redraw(&mut gpu, &windows, focused_win, &clock_text, dr_x0, dr_y0, dr_x1, dr_y1, &mut ui_font);
+                            compose_partial_redraw(&mut gpu, &windows, &stack, &clock_text, dr_x0, dr_y0, dr_x1, dr_y1, &mut ui_font);
                             dirty_x0 = dirty_x0.min(dr_x0 as i32);
                             dirty_y0 = dirty_y0.min(dr_y0 as i32);
                             dirty_x1 = dirty_x1.max(dr_x1 as i32);
@@ -382,20 +364,21 @@ fn main() {
                         let width = new_w.saturating_sub((px(BORDER_WIDTH) * 2) as i32).clamp(1, 4096) as u32;
                         let height = new_h.saturating_sub((px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2) as i32).clamp(1, 4096) as u32;
                         send_to(&windows, win_idx, Input::Resize { width, height });
-                    } else if !windows.is_empty() && focused_win < windows.len()
-                        && !windows[focused_win].minimized
-                        && windows[focused_win].hit_content(mouse_x, mouse_y)
+                    } else if !windows.is_empty() && focused < windows.len()
+                        && !stack.minimized(windows[focused].window_id)
+                        && windows[focused].hit_content(mouse_x, mouse_y)
                     {
-                        let local_x = mouse_x - windows[focused_win].content_x();
-                        let local_y = mouse_y - windows[focused_win].content_y();
-                        send_to(&windows, focused_win, Input::Move { x: local_x, y: local_y });
+                        let local_x = mouse_x - windows[focused].content_x();
+                        let local_y = mouse_y - windows[focused].content_y();
+                        send_to(&windows, focused, Input::Move { x: local_x, y: local_y });
                     }
 
                     // Update cursor shape based on resize edge hover
                     if dragging.is_none() && resizing.is_none() {
                         let mut hover_shape = cursor_shape::ARROW;
-                        for i in (0..windows.len()).rev() {
-                            if windows[i].minimized { continue; }
+                        for id in stack.order().iter().rev() {
+                            let Some(i) = windows.iter().position(|w| w.window_id == *id) else { continue; };
+                            if stack.minimized(*id) { continue; }
                             if let Some(edge) = windows[i].hit_resize_edge(mouse_x, mouse_y) {
                                 hover_shape = match edge {
                                     ResizeEdge::Top | ResizeEdge::Bottom => cursor_shape::RESIZE_NS,
@@ -434,24 +417,24 @@ fn main() {
                         let drag_idx = dragging.unwrap().0;
                         dragging = None;
                         save_window_defaults(&windows[drag_idx], &mut win_defaults);
-                    } else if !windows.is_empty() && focused_win < windows.len()
-                        && !windows[focused_win].minimized
-                        && windows[focused_win].hit_content(mouse_x, mouse_y)
+                    } else if !windows.is_empty() && focused < windows.len()
+                        && !stack.minimized(windows[focused].window_id)
+                        && windows[focused].hit_content(mouse_x, mouse_y)
                     {
-                        let local_x = mouse_x - windows[focused_win].content_x();
-                        let local_y = mouse_y - windows[focused_win].content_y();
-                        send_to(&windows, focused_win, Input::Button { button: 1, pressed: false, x: local_x, y: local_y });
+                        let local_x = mouse_x - windows[focused].content_x();
+                        let local_y = mouse_y - windows[focused].content_y();
+                        send_to(&windows, focused, Input::Button { button: 1, pressed: false, x: local_x, y: local_y });
                     }
                 }
 
                 // Scroll wheel: forward to focused window content area
-                if scroll_delta != 0 && !windows.is_empty() && focused_win < windows.len()
-                    && !windows[focused_win].minimized
-                    && windows[focused_win].window_id != 0
+                if scroll_delta != 0 && !windows.is_empty() && focused < windows.len()
+                    && !stack.minimized(windows[focused].window_id)
+                    && windows[focused].window_id != 0
                 {
-                    let local_x = mouse_x - windows[focused_win].content_x();
-                    let local_y = mouse_y - windows[focused_win].content_y();
-                    send_to(&windows, focused_win, Input::Scroll { x: local_x, y: local_y, delta_y: scroll_delta });
+                    let local_x = mouse_x - windows[focused].content_x();
+                    let local_y = mouse_y - windows[focused].content_y();
+                    send_to(&windows, focused, Input::Scroll { x: local_x, y: local_y, delta_y: scroll_delta });
                 }
 
                 // Click: focus change + drag or route click to client
@@ -466,31 +449,14 @@ fn main() {
                     // Check appbar area
                     else if mouse_y >= (screen_h - px(APPBAR_HEIGHT)) as i32 {
                         if let Some(idx) = appbar_hit_test(&windows, screen_w, screen_h, mouse_x, mouse_y) {
-                            if idx == focused_win && !windows[idx].minimized {
-                                // Click focused window button → minimize
-                                windows[idx].minimized = true;
-                                send_focus_event(&windows, focused_win, false);
-                                focused_win = next_visible_window(&windows, focused_win);
-                                send_focus_event(&windows, focused_win, true);
+                            let id = windows[idx].window_id;
+                            let transition = if stack.focus() == Some(id) {
+                                stack.minimize(id)
                             } else {
-                                // Click unfocused/minimized → restore and focus
-                                windows[idx].minimized = false;
-                                // Bring to top of z-order
-                                if idx < windows.len() - 1 {
-                                    let win = windows.remove(idx);
-                                    windows.push(win);
-                                }
-                                let top = windows.len() - 1;
-                                if top != focused_win {
-                                    send_focus_event(&windows, focused_win, false);
-                                    focused_win = top;
-                                    send_focus_event(&windows, focused_win, true);
-                                } else {
-                                    focused_win = top;
-                                }
-                            }
-                            update_kernel_z_order(&windows);
-                            compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
+                                stack.restore(id)
+                            };
+                            publish_transition(&windows, &stack, transition);
+                            compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
                             full_redraw = true;
                         }
                     }
@@ -499,8 +465,9 @@ fn main() {
                         let mut clicked_idx: Option<usize> = None;
                         let mut clicked_title = false;
                         let mut clicked_resize: Option<ResizeEdge> = None;
-                        for i in (0..windows.len()).rev() {
-                            if windows[i].minimized { continue; }
+                        for id in stack.order().iter().rev() {
+                            let Some(i) = windows.iter().position(|w| w.window_id == *id) else { continue; };
+                            if stack.minimized(*id) { continue; }
                             // Check resize edges first (they extend slightly outside)
                             if let Some(edge) = windows[i].hit_resize_edge(mouse_x, mouse_y) {
                                 clicked_idx = Some(i);
@@ -516,22 +483,13 @@ fn main() {
                             }
                         }
                         if let Some(ci) = clicked_idx {
-                            let z_changed = ci < windows.len() - 1;
-                            if z_changed {
-                                let win = windows.remove(ci);
-                                windows.push(win);
-                                update_kernel_z_order(&windows);
-                            }
-                            let top = windows.len() - 1;
-                            let focus_changed = top != focused_win;
-
-                            if focus_changed {
-                                send_focus_event(&windows, focused_win, false);
-                                focused_win = top;
-                                send_focus_event(&windows, focused_win, true);
-                            } else {
-                                focused_win = top;
-                            }
+                            let id = windows[ci].window_id;
+                            let old_order = stack.order().to_vec();
+                            let transition = stack.raise(id);
+                            let z_changed = stack.order() != old_order;
+                            let focus_changed = transition.0 != transition.1;
+                            publish_transition(&windows, &stack, transition);
+                            let top = ci;
 
                             if let Some(edge) = clicked_resize {
                                 // Start resize — set cursor shape for the edge
@@ -563,14 +521,9 @@ fn main() {
                                         let _ = signal::kill(windows[top].owner_pid as i32, signal::SIGTERM);
                                     }
                                 } else if windows[top].hit_minimize_button(mouse_x, mouse_y) {
-                                    windows[top].minimized = true;
-                                    if focused_win == top {
-                                        send_focus_event(&windows, focused_win, false);
-                                        focused_win = next_visible_window(&windows, focused_win);
-                                        send_focus_event(&windows, focused_win, true);
-                                    }
-                                    update_kernel_z_order(&windows);
-                                    compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
+                                    let transition = stack.minimize(windows[top].window_id);
+                                    publish_transition(&windows, &stack, transition);
+                                    compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
                                     full_redraw = true;
                                 } else {
                                     dragging = Some((top, mouse_x - windows[top].x, mouse_y - windows[top].y));
@@ -578,12 +531,12 @@ fn main() {
                             } else if windows[top].hit_content(mouse_x, mouse_y) {
                                 let local_x = mouse_x - windows[top].content_x();
                                 let local_y = mouse_y - windows[top].content_y();
-                                send_to(&windows, focused_win, Input::Button { button: 1, pressed: true, x: local_x, y: local_y });
+                                send_to(&windows, top, Input::Button { button: 1, pressed: true, x: local_x, y: local_y });
                             }
 
                             // Full redraw for z-order or focus change
                             if !full_redraw && (z_changed || focus_changed) {
-                                compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
+                                compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
                                 full_redraw = true;
                             }
                         }
@@ -624,7 +577,7 @@ fn main() {
                 damage.extend(drawn_pointer.map(|p| compositor::pointer_footprint(p, ui().scale as i32)));
                 damage.push(compositor::pointer_footprint(pointer, ui().scale as i32));
             }
-            let layers = frame_layers(&windows);
+            let layers = frame_layers(&windows, &stack);
             let frame = gpu.compose(&layers, Some(pointer), &damage);
             full_redraw = false;
             content_dirty = false;
@@ -664,7 +617,7 @@ fn main() {
                         process::exit(1);
                     }
                     paint_background(&mut gpu.background);
-                    compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
+                    compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
                     drawn_pointer = None;
                     full_redraw = true;
                 }
@@ -681,4 +634,49 @@ fn main() {
             run_deferred_check(&mut validation, &mut gpu, &mut windows, &mut poll_fds, resizing.is_some());
         }
     }
+}
+
+
+/// Send the current focus notices after a policy operation; u4 owns pre-raise ordering.
+fn publish_transition(windows: &[Window], stack: &Stack, transition: (Option<u64>, Option<u64>)) {
+    if transition.0 != transition.1 {
+        for (id, gained) in [(transition.0, false), (transition.1, true)] {
+            if let Some(index) = id.and_then(|id| windows.iter().position(|w| w.window_id == id)) {
+                send_focus_event(windows, index, gained);
+            }
+        }
+    }
+    update_kernel_z_order(windows, stack);
+}
+
+/// Reconcile membership without disturbing surviving ids' policy order.
+fn reconcile_stack(windows: &[Window], stack: &mut Stack) -> bool {
+    let removed: Vec<_> = stack.order().iter().copied()
+        .filter(|id| !windows.iter().any(|w| w.window_id == *id)).collect();
+    for &id in &removed {
+        let transition = stack.remove(id);
+        publish_transition(windows, stack, transition);
+    }
+    for win in windows {
+        if !stack.order().contains(&win.window_id) {
+            let transition = stack.add(win.window_id, win.chromeless);
+            publish_transition(windows, stack, transition);
+        }
+    }
+    // LIST can also change dimensions and therefore the content origin.
+    update_kernel_z_order(windows, stack);
+    !removed.is_empty()
+}
+
+fn cycle_target(stack: &Stack, reverse: bool) -> Option<u64> {
+    let visible: Vec<_> = stack.order().iter().copied().filter(|id| !stack.minimized(*id)).collect();
+    if visible.is_empty() { return None; }
+    let current = visible.iter().position(|id| Some(*id) == stack.focus());
+    let index = match current {
+        Some(i) if reverse => (i + visible.len() - 1) % visible.len(),
+        Some(i) => (i + 1) % visible.len(),
+        None if reverse => visible.len() - 1,
+        None => 0,
+    };
+    Some(visible[index])
 }

@@ -64,7 +64,6 @@ pub(super) struct Window {
     pub(super) title_len: usize,
     pub(super) window_id: u64,
     pub(super) owner_pid: u32,
-    pub(super) minimized: bool,
     /// The first composed frame showing this client has been checked.
     pub(super) frame_checked: bool,
     /// Delay resize validation until input and the owner have settled.
@@ -148,7 +147,7 @@ impl Window {
     }
 
     pub(super) fn hit_resize_edge(&self, mx: i32, my: i32) -> Option<ResizeEdge> {
-        if self.minimized || self.chromeless { return None; }
+        if self.chromeless { return None; }
 
         let x0 = self.x;
         let y0 = self.y;
@@ -206,7 +205,7 @@ pub(super) fn discover_windows(
     let mut added = false;
     let mut resized = false;
     for info in &win_infos {
-        if let Some((index, w)) = windows.iter_mut().enumerate().find(|(_, w)| w.window_id == info.id) {
+        if let Some(w) = windows.iter_mut().find(|w| w.window_id == info.id) {
             let width = info.width as usize + if w.chromeless { 0 } else { px(BORDER_WIDTH) * 2 };
             let height = info.height as usize + if w.chromeless { 0 } else { px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2 };
             if (w.width, w.height) != (width, height) {
@@ -217,7 +216,6 @@ pub(super) fn discover_windows(
                 w.frame_checked = false;
                 w.check_moved = 0;
                 w.check_after_ms = monotonic_ms().unwrap_or(0) + 150;
-                let _ = session::set_geometry(w.window_id, w.content_x(), w.content_y(), index as u32, true);
                 resized = true;
             }
             continue;
@@ -272,21 +270,12 @@ pub(super) fn discover_windows(
             if chromeless { " chromeless" } else { "" },
             win_x, win_y);
 
-        let (content_x, content_y) = if chromeless {
-            (win_x, win_y)
-        } else {
-            (win_x + px(BORDER_WIDTH) as i32, win_y + px(TITLE_BAR_HEIGHT) as i32 + px(BORDER_WIDTH) as i32)
-        };
-        let z_order = windows.len() as u32;
-        let _ = session::set_geometry(info.id, content_x, content_y, z_order, true);
-
         let order = *next_order;
         *next_order += 1;
         windows.push(Window {
             x: win_x, y: win_y, width: win_w, height: win_h,
             title, title_len, window_id: info.id,
             owner_pid: info.owner_pid,
-            minimized: false,
             frame_checked: false,
             check_after_ms: 0,
             resize_right: None,
@@ -303,10 +292,33 @@ pub(super) fn discover_windows(
 
 /// Publish each window's place: its content position, its stacking (z from the bottom) and
 /// whether it is shown or minimized. Called after any change to them.
-pub(super) fn update_kernel_z_order(windows: &[Window]) {
-    for (i, win) in windows.iter().enumerate() {
-        if win.window_id != 0 {
-            let _ = session::set_geometry(win.window_id, win.content_x(), win.content_y(), i as u32, !win.minimized);
+pub(super) fn update_kernel_z_order(windows: &[Window], stack: &Stack) {
+    use libbreenix::window::abi::geometry_flags;
+    // Clear the previous focus before publishing the next one, including when
+    // discovery order differs from stacking order.
+    for focused_pass in [false, true] {
+        for win in windows {
+            if let Some((z, minimized, focused)) = stack.state(win.window_id) {
+                if focused != focused_pass { continue; }
+                let flags = if minimized { geometry_flags::MINIMIZED } else { geometry_flags::VISIBLE }
+                    | if focused { geometry_flags::FOCUSED } else { 0 };
+                let _ = libbreenix::window::set_geometry(
+                    win.window_id, win.content_x(), win.content_y(), z, flags,
+                );
+            }
         }
     }
+}
+
+/// Iterate metadata in the policy's bottom-to-top order.
+pub(super) fn ordered_windows<'a>(windows: &'a [Window], stack: &'a Stack)
+    -> impl DoubleEndedIterator<Item = &'a Window> + 'a
+{
+    stack.order().iter().filter_map(|id| windows.iter().find(|w| w.window_id == *id))
+}
+
+/// Resolve a policy id only at the existing index-based transport boundary.
+pub(super) fn focus_index(windows: &[Window], stack: &Stack) -> usize {
+    stack.focus().and_then(|id| windows.iter().position(|w| w.window_id == id))
+        .unwrap_or(usize::MAX)
 }

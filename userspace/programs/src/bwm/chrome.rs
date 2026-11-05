@@ -299,7 +299,7 @@ pub(super) fn sorted_by_creation(windows: &[Window]) -> ([usize; 16], usize) {
     (idx, n)
 }
 
-pub(super) fn draw_appbar(fb: &mut Surface, windows: &[Window], focused_win: usize,
+pub(super) fn draw_appbar(fb: &mut Surface, windows: &[Window], stack: &Stack,
                ui_font: &mut Option<CachedFont>) {
     let screen_h = fb.height();
     let screen_w = fb.width();
@@ -319,9 +319,9 @@ pub(super) fn draw_appbar(fb: &mut Surface, windows: &[Window], focused_win: usi
         if win.chromeless { continue; }
         let btn_w = appbar_button_width(win.title_len);
 
-        let bg = if i == focused_win && !win.minimized {
+        let bg = if stack.focus() == Some(win.window_id) && !stack.minimized(win.window_id) {
             APPBAR_BTN_FOCUSED
-        } else if win.minimized {
+        } else if stack.minimized(win.window_id) {
             APPBAR_BTN_MINIMIZED
         } else {
             APPBAR_BTN_BG
@@ -364,34 +364,25 @@ pub(super) fn appbar_hit_test(windows: &[Window], screen_w: usize, screen_h: usi
     None
 }
 
-pub(super) fn next_visible_window(windows: &[Window], current: usize) -> usize {
-    for i in (0..windows.len()).rev() {
-        if !windows[i].minimized {
-            return i;
-        }
-    }
-    current
-}
-
-/// Redraw the windows in z-order (index 0 = bottom), plus taskbar and app bar.
+/// Redraw the windows in stack order, plus taskbar and app bar.
 /// Window frames and decorations go into the desktop target; the compositor draws client
 /// content above them from the windows' committed fronts.
-pub(super) fn redraw_all_windows(fb: &mut Surface, windows: &[Window], focused_win: usize,
+pub(super) fn redraw_all_windows(fb: &mut Surface, windows: &[Window], stack: &Stack,
                       clock_text: &[u8], ui_font: &mut Option<CachedFont>) {
     draw_taskbar(fb, clock_text, ui_font);
-    for i in 0..windows.len() {
-        if windows[i].minimized || windows[i].chromeless { continue; }
-        draw_window_frame(fb, &windows[i], i == focused_win, ui_font);
+    for win in ordered_windows(windows, stack) {
+        if stack.minimized(win.window_id) || win.chromeless { continue; }
+        draw_window_frame(fb, win, stack.focus() == Some(win.window_id), ui_font);
     }
-    draw_appbar(fb, windows, focused_win, ui_font);
+    draw_appbar(fb, windows, stack, ui_font);
 }
 
 /// Repaint the whole desktop target: the background, then the chrome.
-pub(super) fn compose_full_redraw(gpu: &mut Compositor, windows: &[Window], focused: usize, clock: &[u8],
+pub(super) fn compose_full_redraw(gpu: &mut Compositor, windows: &[Window], stack: &Stack, clock: &[u8],
                        ui_font: &mut Option<CachedFont>) {
     let Compositor { desktop, background, .. } = gpu;
     libgfx::blit::blit(desktop, background, 0, 0);
-    redraw_all_windows(desktop, windows, focused, clock, ui_font);
+    redraw_all_windows(desktop, windows, stack, clock, ui_font);
 }
 
 /// Partial redraw: repaint only the dirty sub-region `(dx0, dy0)..(dx1, dy1)` of the desktop
@@ -399,7 +390,7 @@ pub(super) fn compose_full_redraw(gpu: &mut Compositor, windows: &[Window], focu
 pub(super) fn compose_partial_redraw(
     gpu: &mut Compositor,
     windows: &[Window],
-    focused: usize,
+    stack: &Stack,
     clock: &[u8],
     dx0: usize, dy0: usize, dx1: usize, dy1: usize,
     ui_font: &mut Option<CachedFont>,
@@ -415,27 +406,26 @@ pub(super) fn compose_partial_redraw(
     if dy0 < px(TASKBAR_HEIGHT) {
         draw_taskbar(fb, clock, ui_font);
     }
-    for i in 0..windows.len() {
-        if windows[i].minimized || windows[i].chromeless { continue; }
-        let (wx0, wy0, wx1, wy1) = windows[i].bounds();
+    for win in ordered_windows(windows, stack) {
+        if stack.minimized(win.window_id) || win.chromeless { continue; }
+        let (wx0, wy0, wx1, wy1) = win.bounds();
         if (wx1 as usize) > dx0 && (wx0 as usize) < dx1
             && (wy1 as usize) > dy0 && (wy0 as usize) < dy1
         {
-            draw_window_frame(fb, &windows[i], i == focused, ui_font);
+            draw_window_frame(fb, win, stack.focus() == Some(win.window_id), ui_font);
         }
     }
     if dy1 > screen_h - px(APPBAR_HEIGHT) {
-        draw_appbar(fb, windows, focused, ui_font);
+        draw_appbar(fb, windows, stack, ui_font);
     }
     fb.pop_clip();
 }
 
 /// The visible client windows as the compositor stacks them, bottom to top: each one's
 /// frame and drop shadow (as `draw_window_frame` paints them) beneath its content.
-pub(super) fn frame_layers(windows: &[Window]) -> Vec<Layer> {
-    windows
-        .iter()
-        .filter(|w| !w.minimized)
+pub(super) fn frame_layers(windows: &[Window], stack: &Stack) -> Vec<Layer> {
+    ordered_windows(windows, stack)
+        .filter(|w| !stack.minimized(w.window_id))
         .map(|w| {
             let (mut frame, mut frame_len) = ([[0i32; 4]; 3], 0);
             if !w.chromeless {

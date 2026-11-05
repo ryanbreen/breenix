@@ -175,8 +175,9 @@ pub(super) fn send_to(windows: &[Window], index: usize, input: Input) {
         },
     );
 }
-pub(super) fn send_keys(windows: &[Window], index: usize, source: Event, payload: &[u8]) {
-    let Some(w) = windows.get(index).filter(|w| !w.minimized) else {
+pub(super) fn send_keys(windows: &[Window], stack: &super::Stack, source: Event, payload: &[u8]) {
+    let Some(w) = stack.focus().and_then(|id| windows.iter().find(|w| w.window_id == id))
+        .filter(|w| !stack.minimized(w.window_id)) else {
         reject(reason::NO_FOCUS);
         return;
     };

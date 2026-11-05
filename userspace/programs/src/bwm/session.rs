@@ -59,12 +59,6 @@ pub fn list_windows(out: &mut Vec<WindowInfo>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Place window `id`'s content at `(x, y)`, `z` from the bottom, shown or minimized.
-pub fn set_geometry(id: u64, x: i32, y: i32, z: u32, visible: bool) -> Result<(), Error> {
-    let flags = if visible { abi::geometry_flags::VISIBLE } else { abi::geometry_flags::MINIMIZED };
-    window::set_geometry(id, x, y, z, flags).map(|_| ())
-}
-
 /// What bwm tells a client window. Pointer positions are window-local.
 #[derive(Clone, Copy)]
 pub enum Input {

@@ -14,6 +14,12 @@ impl Stack {
     pub(super) fn order(&self) -> &[u64] { &self.order }
     pub(super) fn focus(&self) -> Option<u64> { self.focus }
     pub(super) fn minimized(&self, id: u64) -> bool { self.minimized.contains(&id) }
+    /// Published z, minimized and focused state for a registered id.
+    pub(super) fn state(&self, id: u64) -> Option<(u32, bool, bool)> {
+        let z = self.order.iter().position(|&item| item == id)? as u32;
+        let minimized = self.minimized(id);
+        Some((z, minimized, !minimized && self.focus == Some(id)))
+    }
     fn transition(&mut self, next: Option<u64>) -> (Option<u64>, Option<u64>) {
         let old = self.focus;
         self.focus = next;
