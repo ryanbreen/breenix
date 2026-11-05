@@ -1106,17 +1106,6 @@ impl Suite {
                     .find(|&&(suite, case, _)| suite == self.id && case == name)
                     .map_or(self.case_limit_ms, |&(_, _, limit)| limit);
                 let mut outcome = run_case(case, limit_ms, self.id, &name, &mut screen, &mut feed);
-                // Cold teardown evidence after the case and its orphan sweep. This
-                // does not pump GPU work or change the case outcome/timing.
-                if self.id == "window-manager" {
-                    match std::fs::read_to_string("/proc/breenix/frames") {
-                        Ok(frames) => for line in frames.lines().filter(|line|
-                            line.starts_with("gpu-core ") || line.starts_with("window-")) {
-                            emit(&std::format!("SUITE_MEMORY_CASE {} {} {}", self.id, name, line));
-                        },
-                        Err(error) => emit(&std::format!("SUITE_MEMORY_CASE {} {} unavailable={error}", self.id, name)),
-                    }
-                }
                 if let Some(error) = screen.stage_error.take() { outcome = with_note(outcome, &error); }
                 let picture_hash = frame_hash(screen.judged.as_deref());
                 let intent_picture = if proof { screen.judged.clone() } else { None };

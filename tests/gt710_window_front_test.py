@@ -22,6 +22,13 @@ class WindowFronts(unittest.TestCase):
         window = (ROOT / 'kernel/src/window/mod.rs').read_text()
         present = (ROOT / 'kernel/src/window/present.rs').read_text()
         fixture = (ROOT / 'tests/fixtures/gt710_window_front.rs').read_text()
+        core = (ROOT / 'kernel/src/gpu/mod.rs').read_text()
+        fixture = fixture.replace('// CORE_READ_LIFETIME', '\n'.join(item(core, m) for m in (
+            '    fn unhold(', '    fn end_reading(', '    fn sync_ended(')))
+        releases = item(core, 'fn release_other(')
+        if 'fn release_cpu_read(' in core:
+            releases += '\n' + item(core, 'fn release_cpu_read(')
+        fixture = fixture.replace('// READ_RELEASES', releases)
         fixture = fixture.replace('// WRITER', '\n'.join(item(target, m) for m in (
             'pub(super) struct Writer {', 'impl Writer {')) + '\n#[derive(Clone)]\n' +
             item(target, 'pub struct Seal {') + '\n' + item(target, 'impl Seal {'))

@@ -382,6 +382,7 @@ impl Target {
                 || c.syncs.values().any(|s| s.reading.contains(&self.id)) { return None; }
             if r.invalid { return Some(Err(EIO)); }
             r.reading = true;
+            r.cpu_reading = true;
             Some(Ok((r.last,r.backing.clone(),r.pitch)))
         }).map_err(|_| EINTR)??;
         let result = (|| {
@@ -411,7 +412,7 @@ impl Target {
             }
             Ok(())
         })();
-        release_other(Some(self.id));
+        release_cpu_read(self.id);
         result
     }
 }

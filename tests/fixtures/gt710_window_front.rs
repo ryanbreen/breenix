@@ -29,16 +29,25 @@ impl Charge {fn new(_:u64,bytes:u64,_:bool)->Result<Self,i64>{
 struct Staging{pages:Pages}
 impl Staging {fn new(_:u64,n:usize)->Result<Self,i64>{Ok(Self{pages:Pages::new(n.div_ceil(PAGE)).unwrap()})}}
 #[derive(Clone,Copy)] struct LastWrite{ctx:u32,device_ctx:u32,fence:u64,serial:u64,answer:u32,kind:u32}
-#[derive(PartialEq)] enum CtxState{Live}
+#[derive(PartialEq)] enum CtxState{Live,Quarantined}
 #[derive(Clone,Default)] struct Objects;
 #[derive(Clone,Default)] struct Dx;
-struct Ctx{state:CtxState,dropped:bool,busy:bool,inflight:Vec<u64>,objects:Objects,dx:Dx,vb:u32,scratch:u32,scratch_texture:u32}
-struct Resource{lost:bool,invalid:bool,window_sealed:bool,reading:bool,writers:u32,
+#[derive(Default)] struct Totals{device_errors:u64}
+struct Proc{totals:Totals}
+struct Ctx{owner:u64,totals:Totals,errors_in_row:u32,state:CtxState,dropped:bool,busy:bool,inflight:Vec<u64>,objects:Objects,dx:Dx,vb:u32,scratch:u32,scratch_texture:u32}
+struct Resource{lost:bool,invalid:bool,window_sealed:bool,reading:bool,cpu_reading:bool,progress_context:Option<u32>,holds:u32,invalidated_by:u64,writers:u32,
     accepted:Vec<Arc<gpu::window_targets::Writer>>,epoch:u64,generation:u64,last:Option<LastWrite>,
     backing:Arc<Pages>,pitch:u32,image:Vec<u8>}
-struct SyncReq{reading:Vec<u32>}
-#[derive(Default)] struct Core{syncs:BTreeMap<u64,SyncReq>,resources:BTreeMap<u32,Resource>,contexts:BTreeMap<u32,Ctx>,sequence:u64}
-impl Core{fn serial(&mut self)->u64{self.sequence+=1;self.sequence} fn device_fence(&mut self)->u64{self.sequence+100}}
+#[derive(Default)] struct SyncReq{reading:Vec<u32>,holds:Vec<u32>,ctx:u32,warm:Option<u64>,upload:Option<(u32,u64)>,abandoned:bool}
+mod completion {pub fn finish_write(_: &mut bool,_: &mut u64,_:u64,_:bool,_:bool){panic!("fixture does not submit uploads");}}
+#[derive(Default)] struct Core{canvas:Vec<(u32,())>,procs:BTreeMap<u64,Proc>,done:BTreeMap<u64,Done>,syncs:BTreeMap<u64,SyncReq>,resources:BTreeMap<u32,Resource>,contexts:BTreeMap<u32,Ctx>,sequence:u64}
+impl Core{fn serial(&mut self)->u64{self.sequence+=1;self.sequence} fn device_fence(&mut self)->u64{self.sequence+100}
+    fn free_if_unused(&mut self,_:u32){} // Static fixture targets remain installed for assertions.
+    fn fault(&mut self){panic!("unexpected device fault");}
+    fn warm_returned(&mut self,_:Option<bool>){panic!("fixture does not warm contexts");}
+    fn settle(&mut self,_:u32){}
+    // CORE_READ_LIFETIME
+}
 thread_local!{
     static CORE:RefCell<Core>=RefCell::default();
     static USER:RefCell<Vec<u8>>=RefCell::new(vec![0;16384]);
@@ -61,13 +70,9 @@ fn wait_for<T>(_:Option<u64>,_:bool,mut f:impl FnMut(&mut Core)->Option<T>)->Res
     }
     panic!("wait failed to make progress")
 }
-fn release_other(id:Option<u32>){with_core(|c|{
-    if let Some(id)=id{if !c.syncs.values().any(|s|s.reading.contains(&id)){
-        c.resources.get_mut(&id).unwrap().reading=false;
-    }}
-});}
+// READ_RELEASES
 struct Done{answer:u32,echoed:u64}
-impl Done{fn matches_fence(&self,f:u64)->bool{self.echoed==f}}
+impl Done{fn matches_fence(&self,f:u64)->bool{self.echoed==f} fn none(_:Tag)->Self{Self{answer:abi::gk208::SUCCESS,echoed:0}}}
 enum Request{Attach,Virtual,Native(gk208::encode::Chunk)}
 #[derive(Clone,Copy)] enum Tag{Sync(u64)}
 mod dev {
@@ -86,11 +91,17 @@ mod dev {
 fn exec_ok(build:impl FnOnce(Tag)->Option<Request>,_:u32,_:&[u32])->Result<Done,i64>{
     assert!(matches!(build(Tag::Sync(0)),Some(Request::Attach))); Ok(Done{answer:abi::gk208::SUCCESS,echoed:0})
 }
+fn replay_request(serial:u64,req:Request,ctx:u32,holds:&[u32],reading:&[u32])->Result<Done,i64>{
+    match req {
+        Request::Attach => exec_ok(|_|Some(Request::Attach),ctx,holds),
+        req => exec_req(serial,req,ctx,holds,reading),
+    }
+}
 fn exec_req(serial:u64,req:Request,_:u32,holds:&[u32],reading:&[u32])->Result<Done,i64>{
     let Request::Native(chunk)=req else{event("virtual-submit");return Err(EIO);};
     event("native-submit");
     if INTERRUPT_COPY.with(|f|*f.borrow()){
-        with_core(|c|{c.syncs.insert(serial,SyncReq{reading:reading.to_vec()});});
+        with_core(|c|{c.syncs.insert(serial,SyncReq{reading:reading.to_vec(),..SyncReq::default()});});
         return Err(EINTR);
     }
     if FAIL_COPY.with(|f|*f.borrow()){return Err(EIO);}
@@ -112,7 +123,7 @@ fn exec_req(serial:u64,req:Request,_:u32,holds:&[u32],reading:&[u32])->Result<Do
     Ok(Done{answer:abi::gk208::SUCCESS,echoed:fence})
 }
 struct Seen{unwritten:u64}
-fn observe(_:u64,id:u32,last:Option<LastWrite>,_:&Arc<Pages>,_:u32,_:u32,a:abi::Readback,stage:&Pages,_:Option<u32>)
+fn observe(_:u64,id:u32,last:Option<LastWrite>,_:&Arc<Pages>,_:u32,_:u32,a:abi::Readback,stage:&Pages,_:Option<u32>,_:Option<()>)
     ->Result<Seen,(i64,u32)>{
     event("native-readback");
     with_core(|c|{
@@ -250,9 +261,9 @@ fn setup(){
     CHARGE_LIMIT.with(|limit|limit.set(u64::MAX));
     INTERRUPT_COPY.with(|f|*f.borrow_mut()=false);
     window::reset();USER.with(|u|u.borrow_mut().fill(0));EVENTS.with(|e|e.borrow_mut().clear());FAIL_COPY.with(|f|*f.borrow_mut()=false);
-    with_core(|c|{*c=Core::default();c.contexts.insert(1,Ctx{state:CtxState::Live,dropped:false,busy:false,inflight:vec![],objects:Objects,dx:Dx,vb:3,scratch:4,scratch_texture:5});
+    with_core(|c|{*c=Core::default();c.contexts.insert(1,Ctx{owner:7,totals:Totals::default(),errors_in_row:0,state:CtxState::Live,dropped:false,busy:false,inflight:vec![],objects:Objects,dx:Dx,vb:3,scratch:4,scratch_texture:5});
         for id in [1,2]{let mut image=vec![id as u8*0x11;256];for p in image.chunks_exact_mut(4){p[3]=0x13;}
-            c.resources.insert(id,Resource{lost:false,invalid:false,window_sealed:id==1,reading:false,writers:0,accepted:vec![],epoch:1,generation:1,last:None,
+            c.resources.insert(id,Resource{lost:false,invalid:false,window_sealed:id==1,reading:false,cpu_reading:false,progress_context:None,holds:0,invalidated_by:0,writers:0,accepted:vec![],epoch:1,generation:1,last:None,
                 backing:Arc::new(Pages::new(1).unwrap()),pitch:64,image});}
     });window::install();
 }
@@ -335,4 +346,30 @@ fn end(id:u32,w:&gpu::window_targets::Writer){w.end_access();with_core(|c|{c.res
     with_core(|c|c.syncs.clear());
     release_other(Some(1));release_other(Some(2));
     assert_eq!(source.seal(false),Ok(()));
+}
+
+#[test] fn normal_replay_completion_preserves_live_capture_and_releases_a_finished_capture() {
+    for late in [false,true] {
+        setup();
+        CAPTURE_ACTION.with(|action|*action.borrow_mut()=Some(Box::new(move || {
+            // The queue accepted a read-only replay from the captured front.
+            // Model normal completion on either side of CPU copyout.
+            with_core(|c| {
+                for id in [1,2] { c.resources.get_mut(&id).unwrap().holds += 1; }
+                c.syncs.insert(901,SyncReq{reading:vec![1,2],holds:vec![1,2],..SyncReq::default()});
+                if !late { c.sync_ended(901,Some(Done{answer:abi::gk208::SUCCESS,echoed:0})); }
+                assert!(c.resources[&1].reading,"device completion must preserve the active CPU capture");
+            });
+        })));
+        let capture=window::capture();assert_eq!(capture.commit_id,1);
+        with_core(|c| {
+            if late {
+                assert!(c.resources[&1].reading,"queued replay still excludes writes after CPU copyout");
+                c.sync_ended(901,Some(Done{answer:abi::gk208::SUCCESS,echoed:0}));
+            }
+            assert!(!c.resources[&1].reading,"normal replay completion left the finished capture's read mark orphaned");
+            assert_eq!(c.resources[&1].holds,0);
+        });
+        assert_eq!(window::target(0).seal(false),Ok(()));
+    }
 }
