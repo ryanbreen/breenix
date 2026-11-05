@@ -89,8 +89,11 @@ impl IpcFile for Control {
     }
     fn write(&self, bytes: &[u8], _append: bool) -> Result<u64, u64> {
         authorize()?;
+        // The driver may block for a real completion; no descriptor guard may
+        // survive the wait's preemption release.
+        let reply = replay(bytes)?;
         let mut state = self.state.lock();
-        state.reply = replay(bytes)?;
+        state.reply = reply;
         state.at = 0;
         Ok(bytes.len() as u64)
     }

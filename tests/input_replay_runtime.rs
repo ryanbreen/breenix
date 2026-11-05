@@ -1,6 +1,22 @@
 //! Execute the production replay descriptor with only authority and the driver replaced.
 extern crate alloc;
+extern crate self as spin;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+static LOCK_DEPTH:AtomicU32=AtomicU32::new(0);
+#[derive(Debug)]
+pub struct Mutex<T>(std::sync::Mutex<T>);
+impl<T> Mutex<T> {
+    pub const fn new(value:T)->Self { Self(std::sync::Mutex::new(value)) }
+    pub fn lock(&self)->Guard<'_,T> {
+        let guard=self.0.lock().unwrap();
+        LOCK_DEPTH.fetch_add(1,Ordering::Relaxed);
+        Guard(guard)
+    }
+}
+pub struct Guard<'a,T>(std::sync::MutexGuard<'a,T>);
+impl<T> std::ops::Deref for Guard<'_,T> { type Target=T;fn deref(&self)->&T { &self.0 } }
+impl<T> std::ops::DerefMut for Guard<'_,T> { fn deref_mut(&mut self)->&mut T { &mut self.0 } }
+impl<T> Drop for Guard<'_,T> { fn drop(&mut self) { LOCK_DEPTH.fetch_sub(1,Ordering::Relaxed); } }
 #[path = "../kernel/src/input/control.rs"] mod control;
 mod pointer { pub fn screen() -> Option<(u32,u32)> { Some((2560,1600)) } }
 mod test_control {
@@ -40,10 +56,12 @@ struct Driver;
 static CALL: AtomicU32 = AtomicU32::new(0);
 impl control::Replay for Driver {
     fn replay_keyboard(&self, suppress:bool) -> Result<control::Receipt,u64> {
+        assert_eq!(LOCK_DEPTH.load(Ordering::Relaxed),0,"descriptor guard held across a blocking driver replay");
         CALL.store(if suppress {0x101} else {1},Ordering::Relaxed);
         Ok(control::Receipt {calls:if suppress {0} else {2},posted:4,ring:4})
     }
     fn replay_pointer(&self,x:i32,y:i32,suppress:bool) -> Result<control::Receipt,u64> {
+        assert_eq!(LOCK_DEPTH.load(Ordering::Relaxed),0,"descriptor guard held across a blocking driver replay");
         assert_eq!((x,y),(2559,1599));
         CALL.store(if suppress {0x102} else {2},Ordering::Relaxed);
         Ok(control::Receipt {calls:if suppress {0} else {2},posted:4,ring:4})
