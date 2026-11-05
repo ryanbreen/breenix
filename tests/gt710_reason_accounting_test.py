@@ -21,14 +21,14 @@ def fixture():
     owner='gpu_status=0 contexts=0 device_contexts=0 resources=0 resource_bytes=16384000 copy_bytes=0 picture_bytes=0 readback_bytes=0 panes=0 thumbnails=0 runner_threads=1'
     lines = ['SUITE breengel START cases=401',
         'BREENGEL OWNERS before '+owner,
-        'BREENGEL TABLES before runner_pte_kb=40 all_pte_kb=120 top_pte=7:runner:40,2:init:32,9:worker:16',
+        'BREENGEL TABLES before runner_pte_kb=40 processes=3 all_pte_kb=120 top_pte=7:runner:40,2:init:32,9:worker:16',
         'SUITE breengel MEMORY before free=1000 heap_free_kb=100 user_stacks=16 user_pages=100 page_tables=10 page_cache=0 kernel_stacks=8 buffers=20 other=5 receipts=0 settle_ms=200']
     lines += [f'SUITE breengel CASE {name} '+('FAIL ms=1 msg=pointer unavailable' if name in failed else 'PASS ms=1') for name in names]
     lines += ['SUITE breengel DONE passed=399 failed=2 skipped=0 total=401',
         'SUITE breengel MEMORY after free=951 heap_free_kb=100 user_stacks=16 user_pages=102 page_tables=57 page_cache=0 kernel_stacks=8 buffers=20 other=5 receipts=0 settle_ms=200',
         'SUITE breengel MEMORY reclaimed=FAIL free_before=1000 free_after=951 allowance=48',
         'BREENGEL OWNERS after '+owner,
-        'BREENGEL TABLES after runner_pte_kb=52 all_pte_kb=136 top_pte=7:runner:52,2:init:32,9:worker:20']
+        'BREENGEL TABLES after runner_pte_kb=52 processes=3 all_pte_kb=136 top_pte=7:runner:52,2:init:32,9:worker:20']
     rows = [[0x100010+i*4096,64,1,names.index(name),(b'pointer unavailable'+bytes(45)).hex()] for i,name in enumerate(names) if name in failed]
     record = dict(schema=1, phase=401, dropped=0, count=2, entries=rows)
     return lines, record
