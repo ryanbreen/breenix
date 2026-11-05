@@ -33,12 +33,19 @@ impl Resize {
             Edge::BottomLeft => { width -= dx; height += dy; },
             Edge::BottomRight => { width += dx; height += dy; },
         }
-        width = width.min(screen_w as i32 - x.max(0)).max((120 * scale) as i32);
-        height = height.min(screen_h as i32 - (36 * scale) as i32 - y);
-        if matches!(self.edge, Edge::Top | Edge::TopLeft | Edge::TopRight) {
-            height = height.min(y + h as i32 - (28 * scale) as i32);
+        // Left/top gestures keep the far edge fixed; right/bottom gestures
+        // keep the origin fixed. An untouched axis keeps its current size,
+        // including when a dragged window extends beyond the desktop.
+        if matches!(self.edge, Edge::Left | Edge::TopLeft | Edge::BottomLeft) {
+            width = width.min(x + w as i32).max((120 * scale) as i32);
+        } else if matches!(self.edge, Edge::Right | Edge::TopRight | Edge::BottomRight) {
+            width = width.min(screen_w as i32 - x.max(0)).max((120 * scale) as i32);
         }
-        height = height.max((116 * scale) as i32);
+        if matches!(self.edge, Edge::Top | Edge::TopLeft | Edge::TopRight) {
+            height = height.min(y + h as i32 - (28 * scale) as i32).max((116 * scale) as i32);
+        } else if matches!(self.edge, Edge::Bottom | Edge::BottomLeft | Edge::BottomRight) {
+            height = height.min(screen_h as i32 - (36 * scale) as i32 - y).max((116 * scale) as i32);
+        }
         ((width - (4 * scale) as i32).clamp(1, 4096) as u32,
          (height - (36 * scale) as i32).clamp(1, 4096) as u32)
     }

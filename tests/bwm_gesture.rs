@@ -58,3 +58,31 @@ fn other_edges_preserve_the_untouched_dimension() {
     }
     assert_eq!(Drag::new(42, (1, 1), (0, 0)).id(), Some(42));
 }
+
+#[test]
+fn offscreen_and_near_boundary_resizes_use_the_fixed_opposite_edge() {
+    for scale in [1, 2] {
+        let s = scale as i32;
+        let size = |edge, origin: (i32, i32, usize, usize), motion: (i32, i32)| {
+            Resize::new(10, edge, (0, 0),
+                (origin.0 * s, origin.1 * s, origin.2 * scale, origin.3 * scale))
+                .size((motion.0 * s, motion.1 * s), scale as u32, 1920 * scale, 1080 * scale)
+        };
+        // A vertical edge must leave the horizontally offscreen window's width alone.
+        assert_eq!(size(Edge::Top, (1800, 600, 600, 300), (0, -100)),
+            (596 * scale as u32, 364 * scale as u32));
+        assert_eq!(size(Edge::Bottom, (1800, 600, 600, 300), (0, 100)),
+            (596 * scale as u32, 364 * scale as u32));
+        assert_eq!(size(Edge::Left, (1500, 600, 400, 300), (-900, 0)),
+            (1296 * scale as u32, 264 * scale as u32));
+        assert_eq!(size(Edge::Top, (100, 600, 400, 300), (0, -500)),
+            (396 * scale as u32, 764 * scale as u32));
+        assert_eq!(size(Edge::TopLeft, (1500, 600, 400, 300), (-900, -500)),
+            (1296 * scale as u32, 764 * scale as u32));
+        // Moving edges still stop at the desktop bounds.
+        assert_eq!(size(Edge::TopLeft, (1500, 600, 400, 300), (-2000, -1000)),
+            (1896 * scale as u32, 836 * scale as u32));
+        assert_eq!(size(Edge::BottomRight, (1500, 600, 400, 300), (1000, 1000)),
+            (416 * scale as u32, 408 * scale as u32));
+    }
+}
