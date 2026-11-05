@@ -25,6 +25,9 @@ fn replay_control_uses_one_driver_interface_on_both_architectures() {
         assert!(driver.contains("fnreplay_keyboard("));
         assert!(driver.contains("fnreplay_pointer("));
     }
+    let procfs = compact(&read("kernel/src/fs/procfs/mod.rs"));
+    assert!(procfs.contains("InputReplay=>\"/proc/breenix/input-replay\""));
+    assert!(procfs.contains("ProcEntry::new(ProcEntryType::InputReplay)"));
     let fs = compact(&read("kernel/src/syscall/fs.rs"));
     assert!(fs.contains("input::control::open(normalized)"));
 }
