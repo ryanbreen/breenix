@@ -34,7 +34,7 @@ pub fn read(caller: &Caller) -> Result<CompositorStatus, i32> {
         epoch: claim.ack.epoch,
         handled_serial: claim.ack.handled_serial,
         presented: claim.ack.presented,
-        scene_version: reg.present.changes,
+        scene_version: reg.scene_version,
         composites: completed().saturating_sub(claim.composites_base),
         next_deadline_ns: claim.ack.next_deadline_ns,
         owner: claim.holder as u32,

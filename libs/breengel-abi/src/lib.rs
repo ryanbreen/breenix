@@ -51,7 +51,8 @@ pub mod op {
     pub const COMPOSITE_SNAPSHOT: u32 = 29;
     pub const COMPOSITOR_ACK: u32 = 30;
     pub const COMPOSITOR_STATUS: u32 = 31;
-    pub const LAST: u32 = COMPOSITOR_STATUS;
+    pub const HIT_TEST: u32 = 32;
+    pub const LAST: u32 = HIT_TEST;
 }
 
 /// Linux's errno values, which the interface returns negated (section 25).
@@ -594,6 +595,14 @@ pub struct CompositorStatus {
     pub owner: u32, pub flags: u32, pub reserved: [u64; 2],
 }
 
+/// Query the topmost window at a screen coordinate.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct HitTest {
+    pub x: i32, pub y: i32, pub id: u64, pub scene_version: u64,
+    pub flags: u32, pub reserved: u32,
+}
+
 /// A window and the commit an observation shows (`ObservationRecord.windows`).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -667,6 +676,11 @@ pub mod event_kind {
     pub const COMPOSITOR_CHANGED: u16 = 13;
     pub const OVERFLOW: u16 = 14;
     pub const RESIZE_REQUESTED: u16 = 15;
+    pub const POINTER_ENTER: u16 = 16;
+    pub const POINTER_LEAVE: u16 = 17;
+    pub const POINTER_CANCEL: u16 = 18;
+    /// Highest assigned event kind; extend with the catalogue.
+    pub const LAST: u16 = POINTER_CANCEL;
 }
 
 /// `WindowEvent.flags` bit 0: a repeat.
@@ -714,7 +728,8 @@ pub struct WindowEvent {
     pub text_len: u32,
     /// `Overflow` only.
     pub lost: u32,
-    pub reserved: u32,
+    /// Pointer-button click count.
+    pub clicks: u32,
     pub text: [u8; 240],
 }
 
@@ -871,6 +886,7 @@ layout!(Give, 8, pid @ 0, reserved @ 4);
 layout!(MetaQuery, 24, id @ 0, meta @ 8, commit_id @ 16);
 layout!(CompositeRecordHeader, 24, serial @ 0, pixels @ 8, count @ 16, flags @ 20);
 layout!(CompositorAck, 48, claim_epoch @ 0, epoch @ 8, handled_serial @ 16, presented @ 24, next_deadline_ns @ 32, flags @ 40, reserved @ 44);
+layout!(HitTest, 32, x @ 0, y @ 4, id @ 8, scene_version @ 16, flags @ 24, reserved @ 28);
 layout!(CompositorStatus, 80, claim_epoch @ 0, epoch @ 8, handled_serial @ 16, presented @ 24, scene_version @ 32, composites @ 40, next_deadline_ns @ 48, owner @ 56, flags @ 60, reserved @ 64);
 layout!(CompositeEntry, 32, id @ 0, commit_id @ 8, pixel_gen @ 16, pixels @ 24);
 layout!(ObservedWindow, 16, id @ 0, commit_id @ 8);
@@ -880,7 +896,7 @@ layout!(ObservationRecord, 512, serial @ 0, backend @ 8, flags @ 12, width @ 16,
     completions @ 304, boundary @ 496, reserved @ 500);
 layout!(WindowEvent, 320, serial @ 0, time_ns @ 8, epoch @ 16, kind @ 24, flags @ 26, modifiers @ 28,
     keycode @ 32, button @ 36, x @ 40, y @ 44, scroll_x @ 48, scroll_y @ 52, width @ 56, height @ 60,
-    pressed @ 64, text_len @ 68, lost @ 72, reserved @ 76, text @ 80);
+    pressed @ 64, text_len @ 68, lost @ 72, clicks @ 76, text @ 80);
 layout!(TcArm, 24, point @ 0, reserved @ 4, target @ 8, param @ 16);
 layout!(TcFired, 16, point @ 0, reserved @ 4, count @ 8);
 
@@ -913,6 +929,7 @@ pub const fn arg_size(op: u32) -> Option<usize> {
         op::COMPOSITE_SNAPSHOT => size_of::<SceneSnapshot>(),
         op::COMPOSITOR_ACK => size_of::<CompositorAck>(),
         op::COMPOSITOR_STATUS => size_of::<CompositorStatus>(),
+        op::HIT_TEST => size_of::<HitTest>(),
         _ => return None,
     })
 }

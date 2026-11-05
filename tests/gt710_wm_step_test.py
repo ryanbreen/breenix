@@ -117,6 +117,30 @@ class WmStep(unittest.TestCase):
         result = metal_score.score(self.path)['milestones']['metal-gt710/wm-step']
         self.assertTrue(result['passed'], result)
 
+    def test_failed_selection_reports_its_scope_and_case_ids(self):
+        step4 = json.loads((ROOT / 'docs/gui/gt710-step-21-4.json').read_text())['cases']
+        q1 = 'input-devices/pointer-completion-path'
+        passed = set(step4) - {q1}
+        passed.update([name for name in NAMES if name not in step4][:6])
+        text = serial()
+        for name in NAMES:
+            old = f'CASE {name} ' + ('PASS ms=1' if name in SELECTED else 'FAIL ms=1 msg=pending')
+            new = f'CASE {name} ' + ('PASS ms=1' if name in passed else 'FAIL ms=1 msg=pending')
+            text = text.replace(old, new)
+        text = text.replace('DONE passed=9 failed=73', 'DONE passed=63 failed=19')
+        (self.path / 'serial.txt').write_text(text)
+        for number, required in ((4, step4), (7, NAMES)):
+            with self.subTest(step=number):
+                self.assertEqual(API['record_wm_capture'](self.path, SHA, number), 1)
+                report = json.loads((self.path / 'gt710-wm-step.json').read_text())
+                failed = [name for name in required if name not in passed]
+                self.assertEqual(report['selection'], f'gt710-step-21-{number}.json')
+                self.assertEqual(report['cases'][0]['result'], 'FAIL')
+                self.assertEqual(report['cases'][0]['reason'],
+                    f'selected WM cases failed: {len(required) - len(failed)}/{len(required)} '
+                    f'passed in gt710-step-21-{number}.json; failed: {", ".join(failed)}; '
+                    'full suite: 63/82 passed, 19 failed')
+
     def test_complete_large_panel(self):
         global BODIES
         original = BODIES

@@ -534,8 +534,14 @@ impl Desktop {
         c.clear()?;
         let w = c.info()?;
         self.click(w.x + 20, w.y + 20)?;
-        c.await_event("positive click delivery to target client", |e| {
+        let press = c.await_event("positive click delivery to target client", |e| {
             e.kind == abi::event_kind::POINTER_BUTTON && e.pressed == 1
+        })?;
+        c.await_event("focus click release delivery to target client", |e| {
+            e.kind == abi::event_kind::POINTER_BUTTON
+                && e.pressed == 0
+                && e.button == press.button
+                && e.serial > press.serial
         })?;
         Ok(())
     }

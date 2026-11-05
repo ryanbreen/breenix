@@ -83,12 +83,6 @@ pub(super) const CHROME_RESERVED: usize = 52;
 /// Resize grab zone width in pixels (edges and corners)
 pub(super) const RESIZE_GRAB: usize = 8;
 
-/// Minimum total window width (including decorations)
-pub(super) const MIN_WIN_WIDTH: usize = 120;
-
-/// Minimum total window height (including decorations)
-pub(super) const MIN_WIN_HEIGHT: usize = 80 + TITLE_BAR_HEIGHT + BORDER_WIDTH * 2;
-
 /// Maximum remembered window positions/sizes
 pub(super) const MAX_DEFAULTS: usize = 16;
 

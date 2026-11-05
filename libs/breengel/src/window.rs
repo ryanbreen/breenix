@@ -286,7 +286,7 @@ impl Window {
             }
         }
         if matches!(self.font_watcher.poll(), Ok(Some(_))) {
-            handler(&Delivered { serial: 0, time_ns: 0, event: Event::FontChanged });
+            handler(&Delivered { serial: 0, time_ns: 0, clicks: 0, event: Event::FontChanged });
             count += 1;
         }
         count

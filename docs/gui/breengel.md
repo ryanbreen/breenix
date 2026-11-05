@@ -883,9 +883,12 @@ architecture only.
 | 27 | `GIVE_DISPLAY` | `Give` (8) | 0 | EPERM, EINVAL, ESRCH, EBUSY, ENODEV, ENOMEM, EINTR, EIO; core custody rules in section 18 |
 | 28 | `READ_META` | `MetaQuery` (24) | 0 | ENOENT |
 | 29 | `COMPOSITE_SNAPSHOT` | `SceneSnapshot` (96) | 0 | EPERM, EINVAL, EBUSY, EAGAIN pending render, ENOMEM, ENODEV, EIO |
+| 32 | `HIT_TEST` | `HitTest` (32) | 0 | EPERM, EINVAL flags or reserved |
 
 Argument structures (offsets in bytes):
 
+- `HitTest`: `x: i32 @0`, `y: i32 @4`, *out* `id: u64 @8`, *out* `scene_version: u64 @16`, `flags: u32 @24` and reserved `@28` (both must be 0). Root or the compositor may query. The result is the registered, visible, non-minimized window with greatest `(z, id)` containing the point; right and bottom edges are exclusive. An id of 0 means no hit. The version changes when a registered window appears, leaves, or changes x, y, z, VISIBLE or MINIMIZED, and is also returned by compositor status.
+- `CompositorStatus.scene_version` now reports that same geometry version, rather than the present-change counter. Present-only updates do not advance it; presentation progress remains available in `presented` and `composites`.
 - `WinId`: `id: u64 @0`.
 - `Create`: `width: u32 @0`, `height: u32 @4`, `buffers: u32 @8` (2 or 3), `tree_kib: u32 @12` (0 means 64;
   at most 1,024; the kernel rounds it up to whole 4 KiB pages, so no two buffers share a tree page, and writes
@@ -1254,22 +1257,26 @@ The claim is singleton, not an ownership-stack entry. The stage normally needs n
 | 64 | `pressed: u32` | 1 press, 0 release, `PointerButton` only |
 | 68 | `text_len: u32` | bytes of `text`, at most 240 |
 | 72 | `lost: u32` | events lost before this one, `Overflow` only |
-| 76 | reserved | zero |
+| 76 | `clicks: u32` | pointer-button click count; other kinds require 0 |
 | 80 | `text: [u8; 240]` | UTF-8, `KeyPress` (the text the compositor attached) and `Text` |
 
 <!-- claim-lint:ok: Normative event kinds specified by coordinator B41 and #2312. -->
 Kinds: 1 `KeyPress`, 2 `KeyRelease`, 3 `Text`, 4 `PointerMove`, 5 `PointerButton`, 6 `Scroll`,
 7 `FocusGained`, 8 `FocusLost`, 9 `CloseRequested`, 10 `Resized`, 11 `ResizeFailed`, 12 `FontChanged`
-(made by Breengel, section 9.3), 13 `CompositorChanged`, 14 `Overflow`, 15 `ResizeRequested`. No field carries another field's
+(made by Breengel, section 9.3), 13 `CompositorChanged`, 14 `Overflow`, 15 `ResizeRequested`, 16 `PointerEnter`, 17 `PointerLeave`, 18 `PointerCancel`. No field carries another field's
 meaning. Breengel maps an unknown kind to `Event::Unknown { kind }`, never to a key press.
+The ABI's `event_kind::LAST` names the highest assigned kind. The unknown-kind
+example is `LAST + 1` (19 after PointerCancel), as required by W12.
 
 ### 19.2 Delivery
 
 <!-- claim-lint:ok: Normative request validation specified by coordinator B41 and #2312. -->
-- `WRITE_EVENTS` (compositor only) queues events on one window's ring of 64. A kind outside 1 to 15, the kind
+- `WRITE_EVENTS` (compositor only) queues events on one window's ring of 64. A kind outside 1 to 18, the kind
   Breengel makes (`FontChanged`), a kind the kernel makes (`Resized`, `ResizeFailed`, `CompositorChanged`), a `ResizeRequested` whose width or height is outside 1 to 4,096 (section 17.2) or a
   `text_len` above 240 is EINVAL, and nothing in that call is delivered.
   Writing to a destroyed window is ENOENT.
+  The unassigned-kind refusal example is `event_kind::LAST + 1`, following W12;
+  the refusal and atomic delivery rule apply as the assigned catalogue grows.
 <!-- claim-lint:ok: Normative input admission and overflow contract adopted by B48 for #2339. -->
 - Events arrive in the order written. `WRITE_EVENTS` returns the queued prefix's count. A full ring returns
   zero without changing its contents or counting the refused events as lost. The compositor retains the

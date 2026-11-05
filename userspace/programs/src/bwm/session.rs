@@ -59,12 +59,6 @@ pub fn list_windows(out: &mut Vec<WindowInfo>) -> Result<(), Error> {
     Ok(())
 }
 
-/// Place window `id`'s content at `(x, y)`, `z` from the bottom, shown or minimized.
-pub fn set_geometry(id: u64, x: i32, y: i32, z: u32, visible: bool) -> Result<(), Error> {
-    let flags = if visible { abi::geometry_flags::VISIBLE } else { abi::geometry_flags::MINIMIZED };
-    window::set_geometry(id, x, y, z, flags).map(|_| ())
-}
-
 /// What bwm tells a client window. Pointer positions are window-local.
 #[derive(Clone, Copy)]
 pub enum Input {
@@ -73,8 +67,11 @@ pub enum Input {
     KeyRelease { keycode: u32, modifiers: u32 },
     Text { bytes: [u8; 240], len: u32 },
     Move { x: i32, y: i32 },
+    Enter { x: i32, y: i32 },
+    Leave { x: i32, y: i32 },
+    Cancel { x: i32, y: i32 },
     /// `button` 1 left, 2 right, 3 middle.
-    Button { button: u32, pressed: bool, x: i32, y: i32 },
+    Button { button: u32, pressed: bool, x: i32, y: i32, clicks: u32 },
     Scroll { x: i32, y: i32, delta_y: i32 },
     FocusGained,
     FocusLost,
@@ -112,7 +109,15 @@ pub fn event(input: Input) -> abi::WindowEvent {
             event.kind = kind::POINTER_MOVE;
             (event.x, event.y) = (x, y);
         }
-        Input::Button { button, pressed, x, y } => {
+        Input::Enter { x, y } | Input::Leave { x, y } | Input::Cancel { x, y } => {
+            event.kind = match input {
+                Input::Enter { .. } => kind::POINTER_ENTER,
+                Input::Leave { .. } => kind::POINTER_LEAVE,
+                _ => kind::POINTER_CANCEL,
+            };
+            (event.x, event.y) = (x, y);
+        }
+        Input::Button { button, pressed, x, y, clicks } => {
             event.kind = kind::POINTER_BUTTON;
             event.button = match button {
                 1 => abi::button::LEFT,
@@ -121,6 +126,7 @@ pub fn event(input: Input) -> abi::WindowEvent {
                 _ => 0,
             };
             event.pressed = u32::from(pressed);
+            event.clicks = clicks;
             (event.x, event.y) = (x, y);
         }
         Input::Scroll { x, y, delta_y } => {

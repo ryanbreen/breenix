@@ -12,7 +12,7 @@
 use breengel_abi::errno::{EFAULT, EINVAL, ENOSYS, EPERM};
 use breengel_abi::{
     arg_size, op, Acquire, Capture, Claim, Commit, Composite, CompositeEntry, CompositeRecordHeader,
-    CompositorAck, CompositorStatus, Create, Cursor, Geometry, Give, List, MapTree, Meta, MetaQuery, NoChange, Plain, ReadEvents,
+    CompositorAck, CompositorStatus, HitTest, Create, Cursor, Geometry, Give, List, MapTree, Meta, MetaQuery, NoChange, Plain, ReadEvents,
     Readback, RecordQuery, Resize, SceneSnapshot, Title, WinId, WriteEvents, INTERFACE_VERSION,
 };
 
@@ -203,6 +203,17 @@ fn dispatch(caller: &Caller, op: u32, arg: u64) -> Result<u64, i32> {
             let (commit_id, meta) = ops::read_meta(&caller, q.id)?;
             output(q.meta, &meta)?;
             q.commit_id = commit_id;
+            Ok(0)
+        }),
+        op::HIT_TEST => inout::<HitTest>(arg, |q| {
+            if q.reserved != 0 { return Err(EINVAL); }
+            let reg = REGISTRY.lock();
+            if !caller.is_root() && !reg.is_compositor(&caller) { return Err(EPERM); }
+            q.id = crate::window::policy::select(reg.windows.values().map(|w| crate::window::policy::Target {
+                id: w.id, x: w.x, y: w.y, z: w.z, width: w.width, height: w.height,
+                flags: w.geometry, registered: w.registered,
+            }), q.x, q.y, q.flags)?;
+            q.scene_version = reg.scene_version;
             Ok(0)
         }),
         op::COMPOSITOR_ACK => crate::window::status::ack(&caller, &input::<CompositorAck>(arg)?),

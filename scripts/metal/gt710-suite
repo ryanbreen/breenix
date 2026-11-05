@@ -4088,11 +4088,14 @@ def wm_step_capture(directory, sha, step_number):
             or records[83][0] != 'DONE' or records[84][0] != 'ELAPSED'):
         raise ValueError('WM requires manifest-ordered START/82 CASE/DONE/ELAPSED')
     cases = records[1:83]
-    if any(k != 'PASS' for k, m, _ in cases if m[1] in required):
-        raise ValueError('selected WM case failed')
     tally = (sum(k == 'PASS' for k, _, _ in cases), sum(k == 'FAIL' for k, _, _ in cases), 0, 82)
     if tuple(map(int, records[83][1].groups())) != tally:
         raise ValueError('WM DONE disagrees with cases or contains skips')
+    failed = [m[1] for k, m, _ in cases if m[1] in required and k != 'PASS']
+    if failed:
+        raise ValueError(f'selected WM cases failed: {len(required) - len(failed)}/{len(required)} '
+                         f'passed in {selection}; failed: {", ".join(failed)}; '
+                         f'full suite: {tally[0]}/82 passed, {tally[1]} failed')
     if not 0 < int(records[84][1][1]) <= 1800000:
         raise ValueError('WM elapsed time exceeds 1800 seconds')
     memory = runpy.run_path(str(root / 'scripts/suite-verdict.py'))['memory_problem'](parsed)

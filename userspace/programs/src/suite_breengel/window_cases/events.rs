@@ -417,7 +417,7 @@ fn events_compositor_changed() -> CaseResult {
 }
 
 fn events_unknown_type() -> CaseResult {
-    for k in [0u16, 16, 99, u16::MAX] {
+    for k in [0u16, kind::LAST + 1, 99, u16::MAX] {
         let mut e = key(k, 30);
         e.text = [b'x'; 240];
         e.text_len = 1;
@@ -860,7 +860,7 @@ fn events_malformed_write() -> CaseResult {
     let mut long = key(kind::KEY_PRESS, 30);
     long.text_len = 241;
     let mut reserved = key(kind::KEY_PRESS, 30);
-    reserved.reserved = 1;
+    reserved.clicks = 1;
     let mut zero_width = ev(kind::RESIZE_REQUESTED);
     zero_width.height = 24;
     let mut zero_height = ev(kind::RESIZE_REQUESTED);
@@ -872,10 +872,10 @@ fn events_malformed_write() -> CaseResult {
     let cases = [
         ("resize width 0", zero_width), ("resize height 0", zero_height),
         ("resize width 4097", too_wide), ("resize height 4097", too_tall),
-        ("kind 0", ev(0)), ("kind 16", ev(16)), ("FontChanged, which Breengel makes", ev(kind::FONT_CHANGED)),
+        ("kind 0", ev(0)), ("first unassigned kind", ev(kind::LAST + 1)), ("FontChanged, which Breengel makes", ev(kind::FONT_CHANGED)),
         ("Resized, which the kernel makes", ev(kind::RESIZED)),
         ("ResizeFailed, which the kernel makes", ev(kind::RESIZE_FAILED)), ("CompositorChanged, which the kernel makes", ev(kind::COMPOSITOR_CHANGED)),
-        ("text_len 241", long), ("a nonzero reserved field", reserved),
+        ("text_len 241", long), ("a nonzero clicks field on a key event", reserved),
     ];
     for (what, bad) in cases {
         let answer = k.ask(&format!("event {} {}", w.id(), event_hex(&bad))).cite("24")?;

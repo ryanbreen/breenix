@@ -1,5 +1,5 @@
 //! Source swap from #2476 dfc2e318: /dev/input/events owns the compositor grab.
-//! Policy still uses today's focus index and chrome gestures; 21.4 replaces it.
+//! Content routing lives in pointer_route; chrome gestures remain in the caller.
 use super::{input_backlog, input_keys, session, Input, Window};
 use libbreenix::input::{
     self as core_input, axis, disposition as outcome, key, kind, reason, syn, Event,
@@ -139,6 +139,9 @@ pub(super) fn send_to(windows: &[Window], index: usize, input: Input) {
     let Some(w) = windows.get(index).filter(|w| w.window_id != 0) else {
         return;
     };
+    send_id(w.window_id, input);
+}
+pub(super) fn send_id(id: u64, input: Input) {
     let mut event = session::event(input);
     let mut context = SOURCE.lock().unwrap();
     let source = context.event;
@@ -167,7 +170,7 @@ pub(super) fn send_to(windows: &[Window], index: usize, input: Input) {
     context.accounted |= raw;
     drop(context);
     enqueue(
-        w.window_id,
+        id,
         Queued {
             event,
             source: source.serial,
@@ -175,8 +178,9 @@ pub(super) fn send_to(windows: &[Window], index: usize, input: Input) {
         },
     );
 }
-pub(super) fn send_keys(windows: &[Window], index: usize, source: Event, payload: &[u8]) {
-    let Some(w) = windows.get(index).filter(|w| !w.minimized) else {
+pub(super) fn send_keys(windows: &[Window], stack: &super::Stack, source: Event, payload: &[u8]) {
+    let Some(w) = stack.focus().and_then(|id| windows.iter().find(|w| w.window_id == id))
+        .filter(|w| !stack.minimized(w.window_id)) else {
         reject(reason::NO_FOCUS);
         return;
     };
@@ -202,7 +206,6 @@ pub(super) struct Stream {
     capabilities: BTreeMap<u32, Vec<core_input::Capability>>,
     x: i32,
     y: i32,
-    buttons: BTreeMap<u32, u32>,
     pub(super) modifiers: u8,
 }
 impl Stream {
@@ -214,7 +217,6 @@ impl Stream {
             capabilities: BTreeMap::new(),
             x: 0,
             y: 0,
-            buttons: BTreeMap::new(),
             modifiers: 0,
         }
     }
@@ -257,48 +259,44 @@ impl Stream {
             .find(|c| c.kind == kind::ABS && c.code == event.code)?;
         Some(input_keys::normalize(event.value, *cap, extent))
     }
-    /// Feed one source record through the current snapshot-based pointer policy.
+    /// Normalize axes once, then route contiguous same-device axes at their final position.
+    pub(super) fn positions(
+        &mut self, records: &[(Event, Vec<u8>)], width: usize, height: usize,
+    ) -> Vec<Option<(i32, i32)>> {
+        use super::pointer_route::{batch_positions, Axis};
+        let samples: Vec<_> = records.iter().map(|(event, _)| {
+            let axis = match (event.kind, event.code) {
+                (kind::ABS, axis::X) => self.absolute(*event, width).map(Axis::AbsoluteX),
+                (kind::ABS, axis::Y) => self.absolute(*event, height).map(Axis::AbsoluteY),
+                (kind::REL, axis::X) => Some(Axis::RelativeX(event.value)),
+                (kind::REL, axis::Y) => Some(Axis::RelativeY(event.value)),
+                _ => None,
+            };
+            (event.device, axis.unwrap_or(Axis::Boundary))
+        }).collect();
+        batch_positions(&samples, (self.x, self.y), (width, height))
+    }
+    /// Feed the normalized snapshot to content routing and the existing chrome policy.
     pub(super) fn pointer(
-        &mut self,
-        event: Event,
-        width: usize,
-        height: usize,
-    ) -> Option<(i32, i32, u32, i32)> {
-        let mut wheel = 0;
+        &mut self, event: Event, position: Option<(i32, i32)>,
+    ) -> Option<(i32, i32)> {
         match (event.kind, event.code) {
-            (kind::ABS, axis::X) => self.x = self.absolute(event, width)?,
-            (kind::ABS, axis::Y) => self.y = self.absolute(event, height)?,
-            (kind::REL, axis::X) => {
-                self.x = (self.x as i64 + event.value as i64)
-                    .clamp(0, width.saturating_sub(1) as i64) as i32
+            (kind::ABS | kind::REL, axis::X | axis::Y) => {
+                (self.x, self.y) = position?;
             }
-            (kind::REL, axis::Y) => {
-                self.y = (self.y as i64 + event.value as i64)
-                    .clamp(0, height.saturating_sub(1) as i64) as i32
-            }
-            (kind::REL, axis::WHEEL) => wheel = event.value,
-            (kind::KEY, key::BUTTON_LEFT | key::BUTTON_RIGHT | key::BUTTON_MIDDLE) => {
-                let bit = 1 << (event.code - key::BUTTON_LEFT);
-                let buttons = self.buttons.entry(event.device).or_default();
-                if event.value == 0 {
-                    *buttons &= !bit;
-                } else {
-                    *buttons |= bit;
-                }
-                if *buttons == 0 {
-                    self.buttons.remove(&event.device);
-                }
-            }
-            (kind::SYN, syn::DROPPED) => {
-                self.buttons.remove(&event.device);
-            }
+            (kind::REL, axis::WHEEL)
+            | (kind::KEY, key::BUTTON_LEFT | key::BUTTON_RIGHT | key::BUTTON_MIDDLE)
+            | (kind::SYN, syn::DROPPED) => {}
             _ => return None,
         }
-        Some((
-            self.x,
-            self.y,
-            self.buttons.values().fold(0, |all, b| all | b),
-            wheel,
-        ))
+        Some((self.x, self.y))
     }
+}
+
+pub(super) fn send_repeat(repeat: super::timing::Repeat) {
+    let mut event = input_keys::events(repeat.source, &[]).remove(0);
+    event.flags |= abi::EVENT_REPEAT;
+    event.serial = core_input::abi::derived_serial(repeat.source.serial, repeat.derived).expect("input derivation");
+    event.time_ns = repeat.time;
+    enqueue(repeat.target, Queued { event, source: repeat.source.serial, derived: repeat.derived });
 }
