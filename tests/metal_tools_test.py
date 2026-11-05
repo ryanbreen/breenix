@@ -1347,7 +1347,8 @@ class DriverTest(StateTest):
         d = self.driver
         d.args.mode, d.args.suite = 'suite', 'smoke'
         definition = d.dir / 'definition'
-        for name in ('scripts/suite-verdict.py', 'docs/boot-path.json', 'docs/suites/smoke.json'):
+        for name in ('scripts/suite-verdict.py', 'docs/boot-path.json', 'docs/suites/smoke.json',
+                     'libs/libbreenix/src/suite_memory.rs'):
             path = definition / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('fixture')
@@ -1370,7 +1371,8 @@ class DriverTest(StateTest):
         d = self.driver
         d.args.mode, d.args.suite = 'suite', 'console'
         definition = d.dir / 'definition'
-        for name in ('scripts/suite-verdict.py', 'docs/boot-path.json', 'docs/suites/console.json'):
+        for name in ('scripts/suite-verdict.py', 'docs/boot-path.json', 'docs/suites/console.json',
+                     'libs/libbreenix/src/suite_memory.rs'):
             path = definition / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('fixture')
@@ -1402,6 +1404,7 @@ class DriverTest(StateTest):
         definition = d.dir / 'definition'
         for source, target in ((repo / 'scripts/suite-verdict.py', 'scripts/suite-verdict.py'),
                                (repo / 'docs/boot-path.json', 'docs/boot-path.json'),
+                               (repo / 'libs/libbreenix/src/suite_memory.rs', 'libs/libbreenix/src/suite_memory.rs'),
                                (repo / 'tests/fixtures/suite-verdict/manifest.json', 'docs/suites/fixture.json')):
             path = definition / target
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1437,7 +1440,7 @@ class DriverTest(StateTest):
             shutil.copyfile(repo / name, target)
         source = definition / source_name
         source.write_text(source.read_text() + '\n// Retained definition fixture.\n')
-        captured = (repo / 'tests/fixtures/metal-suite-verdict/20261105T043719Z-metal.txt').read_text()
+        captured = (repo / 'tests/fixtures/metal-suite-verdict/serials/20261105T043719Z-metal.txt').read_text()
         real_run = subprocess.run
 
         def scorer(command, **options):
