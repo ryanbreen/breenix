@@ -4450,6 +4450,8 @@ const RETURN_LEASE_PRODUCTION_CALLS: &[(&str, &str, usize)] = &[
     // #583: a dropped GuardedStack gives back its user stack's external leaves.
     ("kernel/src/memory/frame_allocator.rs", "fn release_external_leaf_frame", 1),
     ("kernel/src/memory/process_memory.rs", "impl ProcessPageTable::fn retire_bounded", 2),
+    // G35: live unmap returns empty tables after unlink and invalidation.
+    ("kernel/src/memory/process_memory.rs", "impl crate::memory::table_reclaim::TableOps for ReclaimTables<'_>::fn release", 1),
 ];
 #[rustfmt::skip]
 const RETURN_LEASE_BOOT_FIXTURE_CALLS: &[(&str, &str, usize)] = &[
@@ -6815,10 +6817,17 @@ fn validate_frame_return_choke_point(
     let process_memory = source(sources, "kernel/src/memory/process_memory.rs");
     let all_returns = code_offsets(process_memory, &code_mask(process_memory), "return_lease(");
     let retire = function_body(process_memory, "retire_bounded");
+    let adapter = process_memory
+        .split("impl crate::memory::table_reclaim::TableOps for ReclaimTables<'_>")
+        .nth(1)
+        .expect("live table reclaim adapter");
+    let release = function_body(adapter, "release");
     record_unit(
         &mut failures,
-        "process-memory return_lease calls escaped retire_bounded",
-        (all_returns.len() == 2 && retire.matches("return_lease(").count() == all_returns.len())
+        "process-memory return_lease calls escaped retirement and table reclaim",
+        (all_returns.len() == 3
+            && retire.matches("return_lease(").count() == 2
+            && release.matches("return_lease(").count() == 1)
             .then_some(())
             .ok_or(()),
     );
@@ -7454,12 +7463,12 @@ fn validate_frame_ledger_counter_inventory(provider: &str) -> Result<(), ()> {
     // to gain a counter in this PR) = 86. The two TOMBSTONE_JOIN counters were
     // already declared in PR-1 and are not part of this delta.
     // #653 adds RECLAIM_PASS_SELECTION_CAPPED, the production drain's
-    // selection-cap counter, for 87.
+    // selection-cap counter, for 87. G35 adds PT_RECLAIM_NONEMPTY, for 88.
     (declared == expected
         && EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        && provider.contains("pub const COUNTER_COUNT: usize = 87;"))
+        && provider.contains("pub const COUNTER_COUNT: usize = 88;"))
     .then_some(())
     .ok_or(())
 }
@@ -7691,7 +7700,7 @@ fn validate_process_page_table_retire_site(
 }
 
 fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -> Result<(), ()> {
-    const EXPECTED: [&str; 12] = [
+    const EXPECTED: [&str; 13] = [
         "PT_TABLE_FRAMES_RECORDED",
         "PT_ROOT_ABANDONED_NO_PROOF",
         "PT_ROOT_ABANDONED_NO_ARCH",
@@ -7704,6 +7713,7 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
         "PT_RETIRE_BUDGET_REQUEUED",
         "PT_ROOT_SLOT_REFUSED",
         "PT_SHADOW_ROOT_CLEARED",
+        "PT_RECLAIM_NONEMPTY",
     ];
     let provider = source(sources, "kernel/src/tracing/providers/teardown.rs");
     let expected: BTreeSet<_> = EXPECTED.into_iter().map(str::to_owned).collect();
@@ -7731,12 +7741,12 @@ fn validate_process_page_table_counter_inventory(sources: &[(String, String)]) -
     // to gain a counter in this PR) = 86. The two TOMBSTONE_JOIN counters were
     // already declared in PR-1 and are not part of this delta.
     // #653 adds RECLAIM_PASS_SELECTION_CAPPED, the production drain's
-    // selection-cap counter, for 87.
+    // selection-cap counter, for 87. G35 adds PT_RECLAIM_NONEMPTY, for 88.
     if declared != expected
         || !EXPECTED
             .iter()
             .all(|counter| inventory.contains(&format!("&{counter},")))
-        || !provider.contains("pub const COUNTER_COUNT: usize = 87;")
+        || !provider.contains("pub const COUNTER_COUNT: usize = 88;")
     {
         return Err(());
     }
@@ -8803,11 +8813,11 @@ fn frame_ledger_return_and_initialization_ratchets_are_exact() {
     // to gain a counter in this PR) = 86. The two TOMBSTONE_JOIN counters were
     // already declared in PR-1 and are not part of this delta.
     // #653 adds RECLAIM_PASS_SELECTION_CAPPED, the production drain's
-    // selection-cap counter, for 87.
+    // selection-cap counter, for 87. G35 adds PT_RECLAIM_NONEMPTY, for 88.
     check(
         &mut failures,
-        "COUNTER_COUNT is no longer 86",
-        provider.contains("pub const COUNTER_COUNT: usize = 87;"),
+        "COUNTER_COUNT is no longer 88",
+        provider.contains("pub const COUNTER_COUNT: usize = 88;"),
     );
     assert!(failures.is_empty(), "{}", failures.join("\n"));
 }
@@ -10096,8 +10106,8 @@ fn all_phase_zero_counters_have_registered_readers_and_honest_runtime_gates() {
     // to gain a counter in this PR) = 86. The two TOMBSTONE_JOIN counters were
     // already declared in PR-1 and are not part of this delta.
     // #653 adds RECLAIM_PASS_SELECTION_CAPPED, the production drain's
-    // selection-cap counter, for 87.
-    assert_eq!(declarations.len(), 87);
+    // selection-cap counter, for 87. G35 adds PT_RECLAIM_NONEMPTY, for 88.
+    assert_eq!(declarations.len(), 88);
     assert_eq!(
         readers, declarations,
         "every counter must have an inventory reader"
@@ -12663,6 +12673,12 @@ fn deliberately_broken_variants_fail_the_ratchet() {
         process_escape,
     );
     assert!(validate_frame_return_choke_point(&process_escape).is_err());
+    let extra_process_return = with_replaced_source(
+        &sources,
+        "kernel/src/memory/process_memory.rs",
+        format!("{process_memory}\nfn rogue_lease_return(lease: FrameLease) {{ return_lease(lease); }}"),
+    );
+    assert!(validate_frame_return_choke_point(&extra_process_return).is_err());
     let cross_file_return = with_replaced_source(
         &sources,
         "kernel/src/process/manager.rs",
