@@ -38,6 +38,20 @@ fn ignored_request_does_not_change_size_or_release_pending() {
 }
 
 #[test]
+fn new_gesture_recovers_after_an_owner_refuses_the_previous_request() {
+    let mut queue = ResizeQueue::default();
+    let current = (200, 100);
+    assert_eq!(queue.motion(current, (250, 100)), Some((250, 100)));
+    assert_eq!(queue.motion(current, (260, 100)), None);
+    assert_eq!(queue.observed(current, current), None);
+    queue.begin();
+    // No size was fabricated, and neither the refused nor coalesced request
+    // from the old gesture blocks or gets replayed into the new gesture.
+    assert_eq!(queue.motion(current, (270, 100)), Some((270, 100)));
+    assert_eq!(queue.observed(current, (270, 100)), None);
+}
+
+#[test]
 fn crossing_opposite_edge_clamps_minimum_content_width() {
     for scale in [1, 2] {
         let resize = Resize::new(10, Edge::Right, (300, 100), (100, 50, 200, 150));

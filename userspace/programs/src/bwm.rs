@@ -473,6 +473,7 @@ fn main() {
                             let top = ci;
 
                             if let Some(edge) = clicked_resize {
+                                windows[top].resize_queue.begin();
                                 // Start resize — set cursor shape for the edge
                                 let shape = match edge {
                                     ResizeEdge::Top | ResizeEdge::Bottom => cursor_shape::RESIZE_NS,

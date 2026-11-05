@@ -54,6 +54,9 @@ impl Resize {
 #[derive(Default)]
 pub(super) struct ResizeQueue { pending: Option<(u32, u32)>, desired: Option<(u32, u32)> }
 impl ResizeQueue {
+    /// Coalescing lasts for one gesture. Owners may refuse without a LIST
+    /// size change, so a new press must not inherit an unanswered request.
+    pub(super) fn begin(&mut self) { *self = Self::default(); }
     pub(super) fn motion(&mut self, current: (u32, u32), candidate: (u32, u32)) -> Option<(u32, u32)> {
         if let Some(pending) = self.pending {
             self.desired = (candidate != pending).then_some(candidate);
