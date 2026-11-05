@@ -18,7 +18,7 @@
 - Reproduce the mechanism deterministically off the hardware where possible: a host test, a model or fixture loop, or a targeted case that forces the ordering. It must fail before the fix and pass after it.
 - Boot only to answer a specific ambiguity the code reading left open. Add the instrumentation for that question, and write the prediction down before the boot. Diagnostics stay on in every boot and are written out only on failure; never toggle them per boot.
 - Never boot to see if a failure happens again, to collect samples, or to fish. Back-to-back diagnostic boots change timing and create heisenbugs: nine of them failed to reproduce #2740, while one code read found the cause.
-- Acceptance boots after a fix, such as N consecutive clean runs, are validation and stay required.
+- A fix is proven by the code reading and a deterministic test that fails on the old code and passes on the fix, then one acceptance boot per affected suite at the final head. Never run N-in-a-row boot streaks to "prove" a fix (operator, 2026-11-05: "the theater of 10 boots in a row").
 
 ## Project Overview
 
