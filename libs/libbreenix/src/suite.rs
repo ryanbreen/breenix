@@ -1333,6 +1333,18 @@ fn memory_sample(id: &str, when: &str) -> Option<memory_record::Sample> {
     match memory_record::settled() {
         Ok(sample) => {
             emit(&sample.record(id, when));
+            // Retain allocation-site evidence beside the owner totals. A stable
+            // owner count alone cannot identify backing left after a suite.
+            // This is a separate diagnostic record; the settled sample and its
+            // reclamation verdict keep their existing meaning and allowance.
+            match std::fs::read_to_string("/proc/breenix/frames") {
+                Ok(frames) => {
+                    for line in frames.lines() {
+                        emit(&std::format!("SUITE_MEMORY_DETAIL {id} {when} {line}"));
+                    }
+                }
+                Err(error) => emit(&std::format!("SUITE_MEMORY_DETAIL {id} {when} unavailable={error}")),
+            }
             Some(sample)
         }
         Err(why) => {
