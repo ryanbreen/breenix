@@ -1037,6 +1037,12 @@ impl Controller {
             self.events.get32(at), self.events.get32(at + 8), self.events.get32(at + 12),
             INTERRUPTS.load(Ordering::Acquire), WORK.pending(), rd(self.op, USBSTS),
             rd(self.ir, IMAN), rd(self.ir, ERDP), rd(self.ir, ERDP + 4), now());
+        log::warn!("[xhci] delivery snapshot {} gpu_irq_masked_max_us={}",
+            platform::interrupt_delivery_snapshot(&self.pci),
+            crate::tracing::providers::gpu::GPU_IRQ_MASKED_MAX_US.aggregate());
+        let next = ((self.consumer.index + 1) % EVENT_TRBS) * 16;
+        log::warn!("[xhci] following event={:#x}/{:#x}/{:#x}",
+            self.events.get32(next), self.events.get32(next + 8), self.events.get32(next + 12));
     }
     fn event(&mut self, pointers: &[u64], kind: u32) -> Result<Trb, &'static str> {
         let event = self.event_any(pointers, kind)?;

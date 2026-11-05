@@ -43,6 +43,32 @@ pub(super) fn enable_interrupt(device: &pci::Device, handler: fn()) -> Result<u3
     crate::arch_impl::x86_64::msi::enable(device, handler).map(u32::from)
 }
 
+/// Cold delivery evidence; the ARM counterpart reports its bound SPI and CPU state.
+#[cfg(target_arch = "x86_64")]
+pub(super) fn interrupt_delivery_snapshot(device: &pci::Device) -> alloc::string::String {
+    use crate::arch_impl::x86_64::{apic, smp};
+    let Some(cap) = device.find_msi_capability() else { return alloc::format!("msi=absent"); };
+    let read = |at| pci::pci_read_config_dword(device.bus, device.device, device.function, at);
+    let control = pci::pci_read_config_word(device.bus, device.device, device.function, cap + 2);
+    let address = read(cap + 4);
+    let data_at = cap + if control & (1 << 7) != 0 { 12 } else { 8 };
+    let data = pci::pci_read_config_word(device.bus, device.device, device.function, data_at);
+    let mask = if control & (1 << 8) != 0 { read(data_at + 4) } else { 0 };
+    let target = smp::cpu_of_apic_id((address >> 12) & 255);
+    let now = crate::time::get_ticks();
+    let credit = target.map(|cpu| smp::credited_to_tick(cpu));
+    let (irr, isr) = apic::vector_pending_state(data as u8);
+    alloc::format!("cpu={} apic={} if={} preempt={} msi_control={control:#x} address={address:#x} data={data:#x} mask={mask:#x} target_cpu={target:?} tick={now} target_credit={credit:?} local_irr={irr} local_isr={isr}",
+        crate::task::scheduler::current_cpu(), apic::id(), crate::arch_interrupts_enabled(), crate::per_cpu::preempt_count())
+}
+
+#[cfg(target_arch = "aarch64")]
+pub(super) fn interrupt_delivery_snapshot(device: &pci::Device) -> alloc::string::String {
+    alloc::format!("cpu={} if={} preempt={} spi={:?} msi={:?} msix={:?} tick={}",
+        crate::task::scheduler::current_cpu(), crate::arch_interrupts_enabled(), crate::per_cpu::preempt_count(),
+        get_irq(), device.find_msi_capability(), device.find_msix_capability(), crate::time::get_ticks())
+}
+
 #[cfg(target_arch = "aarch64")]
 static IRQ: core::sync::atomic::AtomicU32 = core::sync::atomic::AtomicU32::new(0);
 
