@@ -32,6 +32,7 @@ mod init_services {
         pub fn load(_: Scope, _: bool) -> Self { super::record("load"); Self }
         pub fn tick(&mut self) { super::record("tick"); }
         pub fn running(&self, _: &str) -> bool { true }
+        pub fn fallback_to_console(&mut self) { panic!("unexpected fallback") }
         pub fn run(self) -> ! { panic!("supervisor") }
     }
 }

@@ -346,6 +346,7 @@ fn run_desktop_mode() -> ! {
         print!("[init] desktop services started\n");
     } else {
         print!("[init] desktop services incomplete\n");
+        supervisor.fallback_to_console();
     }
     supervisor.run()
 }

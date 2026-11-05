@@ -259,6 +259,7 @@ struct Connection {
 
 pub struct Supervisor {
     scope: Scope,
+    desktop_fallback: bool,
     /// Publish state and serve `svc`: only the system's init (PID 1) does.
     publish: bool,
     entries: Vec<Entry>,
@@ -308,6 +309,7 @@ impl Supervisor {
         print!("[init] supervising {} services from {}\n", entries.len(), services::TABLE);
         let mut supervisor = Supervisor {
             scope,
+            desktop_fallback: false,
             publish,
             entries,
             facts: services::Supervisor { pid: std::process::id(), began_ms: now, entropy_ms: 0, network_ms: 0 },
@@ -360,6 +362,7 @@ impl Supervisor {
         if self.shutdown.is_some() {
             self.shutdown_tick(now);
         } else {
+            self.recover_desktop(now);
             self.conditions(now);
             self.start_due(now);
             self.mark_stable(now);
@@ -368,6 +371,48 @@ impl Supervisor {
             self.changed = false;
             self.write_state();
         }
+    }
+
+    /// Admission or terminal startup failed; finish stopping bwm before logins own the tty.
+    pub fn fallback_to_console(&mut self) {
+        self.desktop_fallback = true;
+    }
+
+    fn recover_desktop(&mut self, now: u64) {
+        if self.scope != Scope::Desktop { return; }
+        let compositor = self.entries.iter().position(|e| e.def.name == "bwm");
+        if !self.desktop_fallback
+            && compositor.is_some_and(|i| self.entries[i].state != State::Failed)
+        {
+            return;
+        }
+        self.desktop_fallback = true;
+        if let Some(index) = compositor {
+            let entry = &mut self.entries[index];
+            if entry.state.is_live() {
+                if entry.state != State::Stopping {
+                    Self::stop(entry, AfterStop::Stay, now);
+                }
+                return;
+            }
+            if entry.state != State::Failed {
+                entry.set(State::Stopped, now);
+            }
+        }
+        self.notices.alert("[init] desktop unavailable; starting login terminals");
+        crate::console_text_mode();
+        crate::detach_console();
+        self.scope = if self.publish { Scope::All } else { Scope::Logins };
+        let (definitions, problems) = services::load(Path::new("/"));
+        for problem in problems {
+            self.notices.alert(&format!("[init] service table: {}", problem));
+        }
+        for service in definitions.into_iter().filter(|s| login_terminal(s).is_some()) {
+            if !self.entries.iter().any(|e| e.def.name == service.name) {
+                self.entries.push(Entry::new(service, now));
+            }
+        }
+        self.changed = true;
     }
 
     /// Shutdown receipts need entropy; console and service startup do not wait for it.
