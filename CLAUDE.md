@@ -925,3 +925,13 @@ Do not use `pkill`, `killall`, or kill by process name or pattern.
 This repository is public. Never file or describe the operator's physical hardware (host disks, device names, hardware failures, filesystem-full events, container or VM names, addresses) in issues, pull requests, comments, or committed docs. A gate red caused by a host condition is described generically (a host storage fault, host contention) and the specifics stay off GitHub.
 
 We use GitHub Issues (not Beads/bd, and not Markdown TODO files) for issue tracking. Run `gh issue list` to see open work and `gh issue create` to file new issues in this repo.
+
+## Debugging is code-first (absolute, operator 2026-11-05)
+
+"The only time we do boots is when we've specifically instrumented them to answer some ambiguity that comes from the code. But it all starts with reading the code to understand where the root cause could be."
+
+- Debugging any failure starts with reading the code to find where the root cause could be. Use the captures that already exist as evidence: serial, census and memory owners. Compare failing boots with clean ones.
+- Reproduce the mechanism deterministically off the hardware where possible: a host test, a model or fixture loop, or a targeted case that forces the ordering. It must fail before the fix and pass after it.
+- Boot only to answer a specific ambiguity the code reading left open. Add the instrumentation for that question, and write the prediction down before the boot. Diagnostics stay on in every boot and are written out only on failure; never toggle them per boot.
+- Never boot to see if a failure happens again, to collect samples, or to fish. Back-to-back diagnostic boots change timing and create heisenbugs: nine of them failed to reproduce #2740, while one code read found the cause.
+- Acceptance boots after a fix, such as N consecutive clean runs, are validation and stay required.
