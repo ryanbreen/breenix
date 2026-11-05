@@ -193,14 +193,19 @@ fn main() {
         io::PollFd { fd: scene_fd, events: io::poll_events::POLLIN as i16, revents: 0 },
     ];
 
+    eprintln!("[bwm] trace: initial discovery");
     // Initial window discovery (before entering event loop)
     if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
+        eprintln!("[bwm] trace: initial redraw");
         focused_win = next_visible_window(&windows, 0);
         compose_full_redraw(&mut gpu, &windows, focused_win, &clock_text, &mut ui_font);
         full_redraw = true;
     }
 
+    let mut trace_iterations = 0;
     loop {
+        trace_iterations += 1;
+        if trace_iterations <= 3 { eprintln!("[bwm] trace: loop {}", trace_iterations); }
         flush_input();
         // ── 0. Sleep until input or a scene change ──
         // The scene descriptor is readable when a window registered, committed, moved or
@@ -220,6 +225,7 @@ fn main() {
             fd.revents = 0;
         }
         let _ = io::poll(&mut poll_fds, timeout);
+        if trace_iterations <= 3 { eprintln!("[bwm] trace: poll {:?}", poll_fds); }
         clock.begin_epoch();
         let stdin_ready = poll_fds[0].revents & io::poll_events::POLLIN as i16 != 0;
         let scene_changed = poll_fds[1].revents & io::poll_events::POLLIN as i16 != 0;
@@ -258,6 +264,7 @@ fn main() {
             windows_dirty |= gpu.pending();
         }
 
+        if trace_iterations <= 3 { eprintln!("[bwm] trace: discovery complete"); }
         // ── 2. Process keyboard input ──
         let now_ms = monotonic_ms().expect("bwm input requires the monotonic clock");
         let mut input_events: Vec<InputEvent> = input_parser.expire_escape(now_ms).into_iter().collect();
@@ -610,6 +617,7 @@ fn main() {
             }
         }
 
+        if trace_iterations <= 3 { eprintln!("[bwm] trace: input complete"); }
         // ── 4. Update chrome on real UI-clock seconds ──
         if let Some(sec) = clock.update_clock() {
             format_clock(sec, &mut clock_text);
@@ -641,10 +649,12 @@ fn main() {
                 damage.push(compositor::pointer_footprint(pointer, ui().scale as i32));
             }
             let layers = frame_layers(&windows);
+            if trace_iterations <= 3 { eprintln!("[bwm] trace: compose begin"); }
             let frame = gpu.compose(&layers, Some(pointer), &damage);
             full_redraw = false;
             content_dirty = false;
             windows_dirty = false;
+            if trace_iterations <= 3 { eprintln!("[bwm] trace: compose complete"); }
             match frame {
                 Ok(()) => {
                     frame_failed = false;
@@ -694,6 +704,7 @@ fn main() {
                 eprintln!("[bwm] compositor acknowledgment failed: {}", error);
                 process::exit(1);
             }
+            if trace_iterations <= 3 { eprintln!("[bwm] trace: acknowledged; validation begin"); }
             run_deferred_check(&mut validation, &mut gpu, &mut windows, &mut poll_fds, resizing.is_some());
         }
     }
