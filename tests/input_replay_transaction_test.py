@@ -19,6 +19,9 @@ class ReplayTransaction(unittest.TestCase):
             end += 1
         method = source[start:end]
         program = r'''
+extern crate self as log;
+#[macro_export]
+macro_rules! warn { ($($arg:tt)*) => { eprintln!($($arg)*) }; }
 use std::sync::atomic::{AtomicBool,AtomicU32,Ordering};
 static RESTART_PENDING: AtomicBool = AtomicBool::new(false);
 static CALLS: AtomicU32 = AtomicU32::new(0);

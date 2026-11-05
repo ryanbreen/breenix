@@ -879,13 +879,19 @@ impl Controller {
         use crate::syscall::errno::{ENODEV, EIO};
         let input = self.devices.iter().find_map(|d| d.keyboard.as_ref()?.input).ok_or(ENODEV as u64)?;
         let scope = crate::test_control::InputReplay::begin(input.id, suppress)?;
-        let (index, event) = self.replay_key(&[0, 0, 4, 0, 0, 0, 0, 0]).map_err(|_| EIO as u64)?;
+        let (index, event) = self.replay_key(&[0, 0, 4, 0, 0, 0, 0, 0]).map_err(|error| {
+            log::warn!("[usb] completion replay press refused: {error}");
+            EIO as u64
+        })?;
         self.keyboard_event(index, event);
         // keyboard_event posts a replacement TD and restarts the endpoint.
         // Preserve main's inter-report interval before stopping it again for
         // the release; a doorbell write alone is not a completed restart.
         delay(10_000_000);
-        let (index, event) = self.replay_key(&[0; 8]).map_err(|_| EIO as u64)?;
+        let (index, event) = self.replay_key(&[0; 8]).map_err(|error| {
+            log::warn!("[usb] completion replay release refused: {error}");
+            EIO as u64
+        })?;
         self.keyboard_event(index, event);
         let pipe = self.devices[index].keyboard.as_ref().ok_or(ENODEV as u64)?;
         let posted = pipe.posted.free().count();
