@@ -16,6 +16,11 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Shared window-manager input, stable-ID focus and resize policy for E21 step 21.4
+land through [PR #2745](https://github.com/ryanbreen/breenix/pull/2745).
+The PR records hardware acceptance and review repairs; the remaining geometry-version,
+timing and repeat-text Minors are grouped in [#2746](https://github.com/ryanbreen/breenix/issues/2746).
+
 Mac cross-compilation and verified prebuilt payload delivery for x86-metal are
 in progress in [#2697](https://github.com/ryanbreen/breenix/issues/2697).
 The [Mac caller command](../metal/README.md#choose-the-builder-from-this-mac)
