@@ -6,6 +6,7 @@ use crate::{
     task::waitqueue::WaitQueueHead,
 };
 use alloc::{
+    boxed::Box,
     collections::{BTreeMap, VecDeque},
     sync::Arc,
     vec::Vec,
@@ -375,6 +376,38 @@ fn row_mut(ledger: &mut VecDeque<Row>, serial: u64) -> Option<&mut Row> {
 }
 static STATE: spin::Mutex<State> = spin::Mutex::new(State::new());
 
+// Allocate with the open description, then transfer ownership at final close.
+// Descriptor teardown can run under PM; it must neither wait on STATE nor
+// allocate storage for the deferred work.
+struct Retirement {
+    reader: Option<u64>,
+    device: Option<u32>,
+    next: Option<Box<Retirement>>,
+}
+static RETIRED_INPUT: crate::irq_safe_mutex::IrqSafeMutex<Option<Box<Retirement>>> =
+    crate::irq_safe_mutex::IrqSafeMutex::new(None);
+
+fn retire_descriptors() {
+    loop {
+        let next = {
+            let mut pending = RETIRED_INPUT.lock();
+            pending.take().map(|mut entry| {
+                *pending = entry.next.take();
+                entry
+            })
+        };
+        let Some(entry) = next else { break };
+        let mut s = STATE.lock();
+        if let Some(id) = entry.reader {
+            s.readers.remove(&id);
+            s.release_grab(id, disposition::LOST, reason::COMPOSITOR_DIED);
+        }
+        if let Some(id) = entry.device {
+            s.removals.push_back(id);
+        }
+    }
+}
+
 fn batch(records: Vec<Record>) -> Batch {
     let mut bytes = Vec::new();
     for r in &records {
@@ -422,6 +455,7 @@ pub struct InputFile {
     device: spin::Mutex<Option<u32>>,
     read_gate: spin::Mutex<()>,
     wake: Arc<WaitQueueHead>,
+    retirement: Option<Box<Retirement>>,
 }
 impl core::fmt::Debug for InputFile {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
@@ -432,6 +466,7 @@ impl core::fmt::Debug for InputFile {
 }
 impl InputFile {
     pub fn open(injector: bool) -> Arc<dyn IpcFile> {
+        retire_descriptors();
         let wake = Arc::new(WaitQueueHead::new());
         let reader = if injector {
             None
@@ -455,9 +490,15 @@ impl InputFile {
             device: spin::Mutex::new(None),
             read_gate: spin::Mutex::new(()),
             wake,
+            retirement: Some(Box::new(Retirement {
+                reader,
+                device: None,
+                next: None,
+            })),
         })
     }
     pub fn ioctl(&self, request: u64, arg: u64) -> Result<u64, u64> {
+        retire_descriptors();
         let reader = self.reader.ok_or(ENOTTY as u64)?;
         if request == ioctl::CAPABILITIES {
             let mut query = userptr::copy_from_user::<input_abi::Capabilities>(arg as *const _)?;
@@ -934,17 +975,12 @@ impl IpcFile for InputFile {
 }
 impl Drop for InputFile {
     fn drop(&mut self) {
-        let mut s = STATE.lock();
-        if let Some(id) = self.reader {
-            s.readers.remove(&id);
-            s.release_grab(id, disposition::LOST, reason::COMPOSITOR_DIED);
+        if let Some(mut entry) = self.retirement.take() {
+            entry.device = *self.device.get_mut();
+            let mut pending = RETIRED_INPUT.lock();
+            entry.next = pending.take();
+            *pending = Some(entry);
         }
-        if let Some(id) = *self.device.lock() {
-            s.removals.push_back(id);
-        }
-
-        drop(s);
-        wake_readers();
         wake_service();
     }
 }
@@ -1014,6 +1050,7 @@ fn release_service() {
     loop {
         crate::per_cpu::preempt_disable();
         let generation = SERVICE_GENERATION.load(Ordering::Acquire);
+        retire_descriptors();
         while super::hardware::drain_one() {}
         while super::host::drain_one() {}
         loop {
