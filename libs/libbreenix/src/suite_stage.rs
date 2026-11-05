@@ -1891,6 +1891,14 @@ pub(super) fn memory_owners(when: &str) {
     let guard = GPU.lock().unwrap();
     let (seen, panes, cells) = guard.as_ref().map_or((0, 0, 0), |g| (g.seen.len(), g.panes.len(), g.cells.iter().flatten().count()));
     super::suite::emit(&std::format!("BREENGEL OWNERS {when} gpu_status={r} contexts={} device_contexts={} resources={} resource_bytes={} copy_bytes={} picture_bytes={picture_bytes} readback_bytes={seen} panes={panes} thumbnails={cells} runner_threads={threads}", c.contexts, c.device_contexts, c.resources, c.resource_bytes, c.copy_bytes));
+    let runner_pte_kb = std::fs::read_to_string("/proc/self/status").ok()
+        .and_then(|status| status.lines().find_map(|line| {
+            let mut fields = line.strip_prefix("VmPTE:")?.split_whitespace();
+            let value = fields.next()?.parse::<usize>().ok()?;
+            (fields.next() == Some("kB") && fields.next().is_none()).then_some(value)
+        }))
+        .map_or_else(|| "unavailable".to_string(), |value| value.to_string());
+    super::suite::emit(&std::format!("BREENGEL TABLES {when} runner_pte_kb={runner_pte_kb}"));
 }
 
 #[cfg(test)]
