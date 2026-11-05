@@ -25,12 +25,17 @@ enum Entry {
 #[derive(Debug, PartialEq, Eq)]
 enum Event {
     Unlink(usize),
+    RemoveLease(usize),
+    Flush,
     Return(usize),
 }
 
 #[derive(Default)]
 struct State {
     tables: BTreeMap<usize, [Entry; 512]>,
+    leases: BTreeSet<usize>,
+    next_table: usize,
+    refused_nonempty: usize,
     returned: BTreeSet<usize>,
     events: Vec<Event>,
 }
@@ -41,6 +46,7 @@ impl Mock {
     fn new() -> Self {
         let mut state = State::default();
         state.tables.insert(ROOT, [Entry::Empty; 512]);
+        state.next_table = 1;
         Self(Rc::new(RefCell::new(state)))
     }
 
@@ -54,7 +60,9 @@ impl Mock {
             let child = match state.tables[&parent][index] {
                 Entry::Table(child) => child,
                 Entry::Empty => {
-                    let child = state.tables.len();
+                    let child = state.next_table;
+                    state.next_table += 1;
+                    assert!(state.leases.insert(child));
                     state.tables.insert(child, [Entry::Empty; 512]);
                     state.tables.get_mut(&parent).unwrap()[index] = Entry::Table(child);
                     child
@@ -72,25 +80,16 @@ impl Mock {
     }
 
     fn run(&mut self, unmapped: Range<u64>, bounds: Range<u64>, user_end: u64) -> Vec<usize> {
-        let state = Rc::clone(&self.0);
-        let mut frames = Vec::new();
-        let count = reclaim_range(self, ROOT, unmapped, bounds, user_end, |frame| {
-            let mut state = state.borrow_mut();
-            assert_ne!(frame, ROOT, "the root must stay allocated");
-            assert!(state.tables[&frame].iter().all(|e| *e == Entry::Empty));
-            assert!(
-                state
-                    .tables
-                    .values()
-                    .flatten()
-                    .all(|e| *e != Entry::Table(frame)),
-                "frame {frame} is still linked when returned"
-            );
-            assert_eq!(state.events.last(), Some(&Event::Unlink(frame)));
-            assert!(state.returned.insert(frame), "frame returned twice");
-            state.events.push(Event::Return(frame));
-            frames.push(frame);
-        });
+        let before = self.0.borrow().events.len();
+        let count = reclaim_range(self, ROOT, unmapped, bounds, user_end);
+        let state = self.0.borrow();
+        let frames: Vec<_> = state.events[before..]
+            .iter()
+            .filter_map(|event| match event {
+                Event::Return(frame) => Some(*frame),
+                _ => None,
+            })
+            .collect();
         assert_eq!(count, frames.len());
         frames
     }
@@ -127,7 +126,46 @@ impl TableOps for Mock {
         assert!(state.tables[&frame].iter().all(|e| *e == Entry::Empty));
         state.tables.get_mut(&parent).unwrap()[index] = Entry::Empty;
         state.events.push(Event::Unlink(frame));
+        assert!(state.leases.remove(&frame));
+        state.events.push(Event::RemoveLease(frame));
         frame
+    }
+
+    fn flush(&mut self) {
+        let mut state = self.0.borrow_mut();
+        assert!(matches!(state.events.last(), Some(Event::RemoveLease(_))));
+        state.events.push(Event::Flush);
+    }
+
+    fn release(&mut self, frame: usize) {
+        let mut state = self.0.borrow_mut();
+        assert_ne!(frame, ROOT, "the root must stay allocated");
+        assert!(state.tables[&frame].iter().all(|e| *e == Entry::Empty));
+        assert!(
+            state
+                .tables
+                .values()
+                .flatten()
+                .all(|e| *e != Entry::Table(frame)),
+            "frame {frame} is still linked when returned"
+        );
+        let n = state.events.len();
+        assert_eq!(
+            state.events[n - 3..],
+            [
+                Event::Unlink(frame),
+                Event::RemoveLease(frame),
+                Event::Flush,
+            ]
+        );
+        assert!(!state.leases.contains(&frame));
+        assert!(state.returned.insert(frame), "frame returned twice");
+        state.tables.remove(&frame).unwrap();
+        state.events.push(Event::Return(frame));
+    }
+
+    fn refuse_nonempty(&self) {
+        self.0.borrow_mut().refused_nonempty += 1;
     }
 }
 
@@ -240,4 +278,39 @@ fn empty_reversed_or_out_of_user_ranges_do_not_unlink() {
         assert!(ops.run(start..end, floor..ceiling, user_end).is_empty());
     }
     assert!(ops.0.borrow().events.is_empty());
+}
+
+#[test]
+fn eligible_nonempty_table_is_refused_and_counted() {
+    let mut ops = Mock::new();
+    let [_, _, leaf] = ops.path(M2);
+    ops.set_leaf(leaf, 511);
+    // Only the leaf-table window fits the bounds, so one refusal is expected.
+    assert!(ops.run(M2..M2 + PAGE, M2..2 * M2, 1 << 47).is_empty());
+    let state = ops.0.borrow();
+    assert_eq!(state.refused_nonempty, 1);
+    assert_eq!(state.tables.len(), 4);
+    assert_eq!(state.leases.len(), 3);
+    assert!(state.events.is_empty());
+}
+
+#[test]
+fn sparse_map_unmap_cycles_return_table_count_to_baseline() {
+    let mut ops = Mock::new();
+    let [_, _, anchor] = ops.path(PAGE);
+    ops.set_leaf(anchor, 1);
+    let baseline = ops.0.borrow().tables.len();
+    for cycle in 1..=1024 {
+        let address = cycle * M2;
+        let [_, _, leaf] = ops.path(address);
+        ops.set_leaf(leaf, 0);
+        // The leaf unmap precedes the production table reclaim call.
+        ops.0.borrow_mut().tables.get_mut(&leaf).unwrap()[0] = Entry::Empty;
+        assert!(!ops
+            .run(address..address + PAGE, 2 * PAGE..G512, 1 << 47)
+            .is_empty());
+        let state = ops.0.borrow();
+        assert_eq!(state.tables.len(), baseline, "cycle {cycle}");
+        assert_eq!(state.leases.len() + 1, baseline, "cycle {cycle}");
+    }
 }
