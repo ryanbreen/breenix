@@ -2,7 +2,6 @@
 /// are IDs, so replacing a scene does not accumulate snapshots per client.
 pub struct ValidationQueue<S> {
     scene: Option<S>,
-    full_scene: bool,
     first_frames: Vec<FirstFrame>,
 }
 
@@ -13,12 +12,11 @@ struct FirstFrame {
 
 impl<S> ValidationQueue<S> {
     pub fn new() -> Self {
-        Self { scene: None, full_scene: false, first_frames: Vec::new() }
+        Self { scene: None, first_frames: Vec::new() }
     }
 
     pub fn presented(&mut self, scene: S) {
         self.scene = Some(scene);
-        self.full_scene = true;
         for client in &mut self.first_frames {
             client.attempted = false;
         }
@@ -44,7 +42,6 @@ impl<S> ValidationQueue<S> {
 
     pub fn invalidate_scene(&mut self) {
         self.scene = None;
-        self.full_scene = false;
     }
 
     /// Leave work pending while either source is ready. The caller performs one
@@ -57,10 +54,9 @@ impl<S> ValidationQueue<S> {
         self.scene.as_ref()?;
         let clients: Vec<_> = self.first_frames.iter()
             .filter(|client| !client.attempted && eligible(client.id)).map(|client| client.id).collect();
-        if (!self.full_scene && clients.is_empty()) || !idle() {
+        if clients.is_empty() || !idle() {
             return None;
         }
-        self.full_scene = false;
         // A moving source is retried against a later presentation, rather than
         // spending its retry allowance on the same sampled scene.
         for client in &mut self.first_frames {

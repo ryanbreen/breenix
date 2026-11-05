@@ -72,3 +72,23 @@ fn production_loop_acknowledges_before_idle_validation() {
     assert!(chrome.contains("mod validation;"), "chrome owns the queue");
     assert!(chrome.contains("VALUE bwm-check-us"));
 }
+
+#[test]
+fn idle_presentations_without_pending_first_frames_do_not_read_back() {
+    let mut queue = ValidationQueue::new();
+    for frame in 0..10 {
+        queue.presented(frame);
+        assert!(queue.next_if_idle(|_| true, || panic!("no pending client")).is_none());
+    }
+    queue.first_frame(1);
+    assert_eq!(queue.next_if_idle(|_| true, || true).unwrap().1, [1]);
+    assert!(queue.next_if_idle(|_| true, || panic!("already attempted")).is_none());
+    queue.presented(10);
+    assert_eq!(queue.next_if_idle(|_| true, || true).unwrap().1, [1]);
+    queue.complete(1);
+    queue.presented(11);
+    assert!(queue.next_if_idle(|_| true, || panic!("client completed")).is_none());
+    queue.first_frame(2);
+    queue.retain_clients(|_| false);
+    assert!(queue.next_if_idle(|_| true, || panic!("client departed")).is_none());
+}
