@@ -33,6 +33,11 @@ fn main() {
         e.kind = kind;
         assert!(!writable(&e), "nonzero clicks accepted for kind {}", kind);
     }
+    e.clicks = 0;
+    for kind in [POINTER_ENTER, POINTER_LEAVE, POINTER_CANCEL] {
+        e.kind = kind;
+        assert!(writable(&e), "pointer transition rejected for kind {}", kind);
+    }
 }
 '''
         with tempfile.TemporaryDirectory() as directory:
