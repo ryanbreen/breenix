@@ -1,6 +1,6 @@
 #[path = "../userspace/programs/src/bwm/timing.rs"]
 mod timing;
-use libbreenix::input::{key, kind, Event};
+use libbreenix::input::{key, kind, syn, Event};
 
 fn event(serial: u64, value: i32) -> Event {
     Event { serial, time_ns: 0, device: 1, kind: kind::KEY, code: key::A, value, flags: 0 }
@@ -23,6 +23,23 @@ fn repeat_boundaries_and_cancellation() {
     assert!(timing.due(500_000_000, Some(4)).is_empty());
     assert!(timing.due(1_000_000_000, Some(3)).is_empty());
     assert_eq!(timing.deadline(), None);
+}
+
+#[test]
+fn stream_loss_cancels_repeats_even_when_the_marker_names_another_device() {
+    let mut timing = timing::Timing::new();
+    timing.key(event(10, 1), Some(3), false, 0);
+    timing.key(Event { device: 2, ..event(11, 1) }, Some(3), false, 0);
+    assert_eq!(timing.due(500_000_000, Some(3)).len(), 2);
+    // Reader overflow can evict batches from several devices but publishes
+    // one marker with the incoming device's id.
+    let dropped = Event { kind: kind::SYN, code: syn::DROPPED, device: 99,
+        ..event(12, 0) };
+    timing.key(dropped, Some(3), false, 500_000_001);
+    assert_eq!(timing.deadline(), None);
+    assert!(timing.due(1_000_000_000, Some(3)).is_empty());
+    timing.key(event(13, 1), Some(3), false, 1_000_000_000);
+    assert_eq!(timing.due(1_500_000_000, Some(3)).len(), 1);
 }
 
 #[test]

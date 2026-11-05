@@ -1,5 +1,5 @@
 //! Repeat and multi-press policy, adapted from #2476 dfc2e318.
-use libbreenix::input::Event;
+use libbreenix::input::{kind, syn, Event};
 use std::collections::BTreeMap;
 
 pub(super) fn within(first: u64, second: u64) -> bool {
@@ -12,6 +12,12 @@ impl Timing {
     pub(super) fn new() -> Self { Self { held: BTreeMap::new() } }
     /// Returns false for device repeats, which the caller must dispose as handled.
     pub(super) fn key(&mut self, event: Event, focus: Option<u64>, consumed: bool, now: u64) -> bool {
+        if event.kind == kind::SYN && event.code == syn::DROPPED {
+            // Reader overflow may lose releases from several devices while
+            // naming only one device in its marker. None remain known held.
+            self.held.clear();
+            return true;
+        }
         let slot = (event.device, event.code);
         match event.value {
             0 => { self.held.remove(&slot); }

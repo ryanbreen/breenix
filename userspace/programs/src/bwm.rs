@@ -265,6 +265,9 @@ fn main() {
         let positions = stream.positions(&records, screen_w, screen_h);
         for ((event, payload), position) in records.into_iter().zip(positions) {
             input::begin(event);
+            if event.kind == kind::SYN && event.code == libbreenix::input::syn::DROPPED {
+                timing.key(event, stack.focus(), false, libbreenix::ui_clock::now_ns());
+            }
             if event.kind == kind::KEY && event.value == 2
                 && !timing.key(event, stack.focus(), false, libbreenix::ui_clock::now_ns()) {
                 input::finish();
