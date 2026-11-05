@@ -54,6 +54,7 @@ fn content_press_focuses_and_raises_with_u4_notice_order() {
 fn grab_routes_motion_and_release_outside_content_in_local_coordinates() {
     let (mut s, mut windows, mut r) = scene();
     r.route(&mut s, &windows, 1, (20, 30), true, button(0x110, 1));
+    assert!(r.grabbed(1));
     windows[1].x = 30;
     let out = r.route(&mut s, &windows, 1, (5, 200), true, Action::Move);
     assert!(has(&out.notices, 10, NoticeKind::Move, -25, 180));
@@ -61,6 +62,7 @@ fn grab_routes_motion_and_release_outside_content_in_local_coordinates() {
     assert!(has(&out.notices, 10, NoticeKind::Button { code: 0x110, pressed: false }, -25, 180));
     let out = r.route(&mut s, &windows, 1, (5, 201), true, Action::Move);
     assert!(out.notices.is_empty());
+    assert!(!r.grabbed(1));
 }
 
 #[test]

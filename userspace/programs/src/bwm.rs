@@ -2,7 +2,7 @@
 //!
 //! Discovers Breengel client windows registered on the window interface (version 2,
 //! `docs/gui/breengel.md` section 17), composes them with its own desktop on the GPU core
-//! (`compositor`, ruling B13), and routes keyboard and pointer input to the focused window
+//! (`compositor`, ruling B13), and routes keyboard input by focus and pointer input by content hit test
 //! as window events (section 19).
 //!
 //! BWM does not emulate terminals; init starts the session's programs, and bwm starts only
@@ -20,6 +20,8 @@ mod input_backlog;
 mod input;
 #[path = "bwm/input_keys.rs"]
 mod input_keys;
+#[path = "bwm/pointer_route.rs"]
+mod pointer_route;
 use input::{flush_input, send_to};
 use libbreenix::input::{key, kind};
 
@@ -141,7 +143,8 @@ fn main() {
     let mut consumed_keys = std::collections::BTreeSet::new();
     let (mut mouse_x, mut mouse_y) = (0, 0);
     let mut active_cursor_shape = cursor_shape::ARROW;
-    let mut prev_buttons: u32 = 0;
+    let mut pointer_routes = pointer_route::Router::new();
+    let mut chrome_device = None;
     let mut dragging: Option<(usize, i32, i32)> = None;
     // Active resize: (win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)
     let mut resizing: Option<(usize, ResizeEdge, i32, i32, i32, i32, usize, usize)> = None;
@@ -233,6 +236,7 @@ fn main() {
                     // Removal can shift the metadata indices held by existing gestures.
                     dragging = None;
                     resizing = None;
+                    chrome_device = None;
                 }
                 compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
                 full_redraw = true;
@@ -240,6 +244,8 @@ fn main() {
             // A committed client frame is composed without repainting the desktop.
             windows_dirty |= gpu.pending();
         }
+
+        send_pointer_notices(pointer_routes.reconcile(&stack, &pointer_contents(&windows)));
 
         // Dirty rect tracking is shared by the records drained in this epoch.
         let mut dirty_x0 = i32::MAX;
@@ -250,7 +256,8 @@ fn main() {
         let mut mouse_moved_this_frame = false;
 
         let records = if input_ready { stream.read() } else { Vec::new() };
-        for (event, payload) in records {
+        let positions = stream.positions(&records, screen_w, screen_h);
+        for ((event, payload), position) in records.into_iter().zip(positions) {
             input::begin(event);
             let current_mods = event.flags as u8;
             let super_taps = u32::from(event.kind == kind::KEY
@@ -302,17 +309,42 @@ fn main() {
                 }
             }
 
-            // ── Pointer records use today's routing policy ──
-            if let Some((new_mx, new_my, buttons, scroll_delta)) = stream.pointer(event, screen_w, screen_h) {
+            // Content policy and chrome share one normalized pointer snapshot.
+            if let Some((new_mx, new_my)) = stream.pointer(event, position) {
                 let mouse_moved = new_mx != mouse_x || new_my != mouse_y;
                 mouse_moved_this_frame |= mouse_moved;
 
-                let focused = focus_index(&windows, &stack);
+                use pointer_route::Action;
+                use libbreenix::input::{axis, syn};
+                let action = match (event.kind, event.code) {
+                    (kind::KEY, _) => Action::Button { code: event.code, value: event.value },
+                    (kind::REL, axis::WHEEL) => Action::Wheel(event.value),
+                    (kind::SYN, syn::DROPPED) => Action::Cancel,
+                    _ => Action::Move,
+                };
+                let chrome_active = chrome_device == Some(event.device)
+                    && (dragging.is_some() || resizing.is_some());
+                let enabled = !chrome_active && pointer_content_enabled(
+                    &windows, &stack, (new_mx, new_my), screen_h,
+                );
+                let was_grabbed = pointer_routes.grabbed(event.device);
+                let routed = pointer_routes.route(&mut stack, &pointer_contents(&windows),
+                    event.device, (new_mx, new_my), enabled, action);
+                if let Some(transition) = routed.focus {
+                    publish_transition(&windows, &stack, transition);
+                    compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
+                    full_redraw = true;
+                }
+                let new_click = routed.press_edge && event.code == key::BUTTON_LEFT
+                    && !pointer_routes.grabbed(event.device);
+                let release_chrome = routed.release_edge && event.code == key::BUTTON_LEFT
+                    && chrome_device == Some(event.device);
+                send_pointer_notices(routed.notices);
                 if mouse_moved {
                     mouse_x = new_mx;
                     mouse_y = new_my;
 
-                    if let Some((win_idx, off_x, off_y)) = dragging {
+                    if let Some((win_idx, off_x, off_y)) = dragging.filter(|_| chrome_active) {
                         let new_x = mouse_x - off_x;
                         // Clamp drag to stay below taskbar
                         let new_y = (mouse_y - off_y).max(px(TASKBAR_HEIGHT) as i32);
@@ -338,7 +370,7 @@ fn main() {
                             dirty_y1 = dirty_y1.max(dr_y1 as i32);
                             content_dirty = true;
                         }
-                    } else if let Some((win_idx, edge, anchor_x, anchor_y, _, orig_y, orig_w, orig_h)) = resizing {
+                    } else if let Some((win_idx, edge, anchor_x, anchor_y, _, orig_y, orig_w, orig_h)) = resizing.filter(|_| chrome_active) {
                         let dx = mouse_x - anchor_x;
                         let dy = mouse_y - anchor_y;
 
@@ -364,43 +396,16 @@ fn main() {
                         let width = new_w.saturating_sub((px(BORDER_WIDTH) * 2) as i32).clamp(1, 4096) as u32;
                         let height = new_h.saturating_sub((px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2) as i32).clamp(1, 4096) as u32;
                         send_to(&windows, win_idx, Input::Resize { width, height });
-                    } else if !windows.is_empty() && focused < windows.len()
-                        && !stack.minimized(windows[focused].window_id)
-                        && windows[focused].hit_content(mouse_x, mouse_y)
-                    {
-                        let local_x = mouse_x - windows[focused].content_x();
-                        let local_y = mouse_y - windows[focused].content_y();
-                        send_to(&windows, focused, Input::Move { x: local_x, y: local_y });
                     }
 
-                    // Update cursor shape based on resize edge hover
-                    if dragging.is_none() && resizing.is_none() {
-                        let mut hover_shape = cursor_shape::ARROW;
-                        for id in stack.order().iter().rev() {
-                            let Some(i) = windows.iter().position(|w| w.window_id == *id) else { continue; };
-                            if stack.minimized(*id) { continue; }
-                            if let Some(edge) = windows[i].hit_resize_edge(mouse_x, mouse_y) {
-                                hover_shape = match edge {
-                                    ResizeEdge::Top | ResizeEdge::Bottom => cursor_shape::RESIZE_NS,
-                                    ResizeEdge::Left | ResizeEdge::Right => cursor_shape::RESIZE_EW,
-                                    ResizeEdge::TopLeft | ResizeEdge::BottomRight => cursor_shape::RESIZE_NWSE,
-                                    ResizeEdge::TopRight | ResizeEdge::BottomLeft => cursor_shape::RESIZE_NESW,
-                                };
-                                break;
-                            }
-                            if windows[i].hit_any(mouse_x, mouse_y) {
-                                break; // Inside window but not on edge
-                            }
-                        }
-                        cursor_dirty |= active_cursor_shape != hover_shape;
-                        active_cursor_shape = hover_shape;
-                    }
+
                 }
 
                 // Release: end drag or route release event.
                 // Per-endpoint button tracking in the kernel prevents dual USB HID
                 // endpoints from racing (one endpoint can't cancel the other's press).
-                if (buttons & 1) == 0 && (prev_buttons & 1) != 0 {
+                if release_chrome {
+                    chrome_device = None;
                     if let Some((win_idx, _, _, _, _, _, orig_w, orig_h)) = resizing.take() {
                         // Reset cursor shape back to arrow
                         cursor_dirty |= active_cursor_shape != cursor_shape::ARROW;
@@ -417,31 +422,16 @@ fn main() {
                         let drag_idx = dragging.unwrap().0;
                         dragging = None;
                         save_window_defaults(&windows[drag_idx], &mut win_defaults);
-                    } else if !windows.is_empty() && focused < windows.len()
-                        && !stack.minimized(windows[focused].window_id)
-                        && windows[focused].hit_content(mouse_x, mouse_y)
-                    {
-                        let local_x = mouse_x - windows[focused].content_x();
-                        let local_y = mouse_y - windows[focused].content_y();
-                        send_to(&windows, focused, Input::Button { button: 1, pressed: false, x: local_x, y: local_y });
                     }
                 }
-
-                // Scroll wheel: forward to focused window content area
-                if scroll_delta != 0 && !windows.is_empty() && focused < windows.len()
-                    && !stack.minimized(windows[focused].window_id)
-                    && windows[focused].window_id != 0
-                {
-                    let local_x = mouse_x - windows[focused].content_x();
-                    let local_y = mouse_y - windows[focused].content_y();
-                    send_to(&windows, focused, Input::Scroll { x: local_x, y: local_y, delta_y: scroll_delta });
+                if matches!(action, Action::Cancel) && chrome_device == Some(event.device) {
+                    chrome_device = None;
+                    dragging = None;
+                    resizing = None;
                 }
 
-                // Click: focus change + drag or route click to client
-                let new_click = (buttons & 1) != 0 && (prev_buttons & 1) == 0;
-                prev_buttons = buttons;
-
-                if new_click {
+                // A content grab owns further presses from its device, including over chrome.
+                if new_click && !was_grabbed {
                     // Check taskbar area — ignore clicks
                     if mouse_y < px(TASKBAR_HEIGHT) as i32 {
                         // Taskbar click — no action
@@ -507,6 +497,7 @@ fn main() {
                                 windows[top].resize_bottom = matches!(edge,
                                     ResizeEdge::Top | ResizeEdge::TopLeft | ResizeEdge::TopRight)
                                     .then_some(windows[top].y + windows[top].height as i32);
+                                chrome_device = Some(event.device);
                                 resizing = Some((
                                     top, edge,
                                     mouse_x, mouse_y,
@@ -526,12 +517,9 @@ fn main() {
                                     compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
                                     full_redraw = true;
                                 } else {
+                                    chrome_device = Some(event.device);
                                     dragging = Some((top, mouse_x - windows[top].x, mouse_y - windows[top].y));
                                 }
-                            } else if windows[top].hit_content(mouse_x, mouse_y) {
-                                let local_x = mouse_x - windows[top].content_x();
-                                let local_y = mouse_y - windows[top].content_y();
-                                send_to(&windows, top, Input::Button { button: 1, pressed: true, x: local_x, y: local_y });
                             }
 
                             // Full redraw for z-order or focus change
@@ -544,7 +532,31 @@ fn main() {
                 }
             }
 
+            send_pointer_notices(pointer_routes.reconcile(&stack, &pointer_contents(&windows)));
             input::finish();
+        }
+
+        // f48a2564: scene geometry can change under a stationary pointer.
+        if dragging.is_none() && resizing.is_none() {
+            let mut hover_shape = cursor_shape::ARROW;
+            for id in stack.order().iter().rev() {
+                let Some(i) = windows.iter().position(|w| w.window_id == *id) else { continue; };
+                if stack.minimized(*id) { continue; }
+                if let Some(edge) = windows[i].hit_resize_edge(mouse_x, mouse_y) {
+                    hover_shape = match edge {
+                        ResizeEdge::Top | ResizeEdge::Bottom => cursor_shape::RESIZE_NS,
+                        ResizeEdge::Left | ResizeEdge::Right => cursor_shape::RESIZE_EW,
+                        ResizeEdge::TopLeft | ResizeEdge::BottomRight => cursor_shape::RESIZE_NWSE,
+                        ResizeEdge::TopRight | ResizeEdge::BottomLeft => cursor_shape::RESIZE_NESW,
+                    };
+                    break;
+                }
+                if windows[i].hit_any(mouse_x, mouse_y) {
+                    break; // Inside window but not on edge
+                }
+            }
+            cursor_dirty |= active_cursor_shape != hover_shape;
+            active_cursor_shape = hover_shape;
         }
 
         // ── 4. Update chrome on real UI-clock seconds ──
@@ -665,4 +677,37 @@ fn reconcile_stack(windows: &[Window], stack: &mut Stack) -> bool {
     // LIST can also change dimensions and therefore the content origin.
     update_kernel_z_order(windows, stack);
     !removed.is_empty()
+}
+
+fn pointer_contents(windows: &[Window]) -> Vec<pointer_route::Content> {
+    windows.iter().map(|w| pointer_route::Content {
+        id: w.window_id, x: w.content_x(), y: w.content_y(),
+        width: w.content_width(), height: w.content_height(),
+    }).collect()
+}
+
+fn pointer_content_enabled(windows: &[Window], stack: &Stack, (x, y): (i32, i32), screen_h: usize) -> bool {
+    if y < px(TASKBAR_HEIGHT) as i32 || y >= screen_h.saturating_sub(px(APPBAR_HEIGHT)) as i32 {
+        return false;
+    }
+    // Chrome and its resize margin occlude lower content as in the existing hit path.
+    ordered_windows(windows, stack).rev().filter(|w| !stack.minimized(w.window_id))
+        .find(|w| w.hit_any(x, y) || w.hit_resize_edge(x, y).is_some())
+        .is_some_and(|w| w.hit_content(x, y) && w.hit_resize_edge(x, y).is_none())
+}
+
+fn send_pointer_notices(notices: Vec<pointer_route::Notice>) {
+    use pointer_route::NoticeKind;
+    for notice in notices {
+        let (x, y) = (notice.x, notice.y);
+        let input = match notice.kind {
+            NoticeKind::Move => Input::Move { x, y },
+            NoticeKind::Button { code, pressed } => Input::Button { button: (code - 0x110 + 1) as u32, pressed, x, y },
+            NoticeKind::Wheel(delta_y) => Input::Scroll { x, y, delta_y },
+            NoticeKind::Enter => Input::Enter { x, y },
+            NoticeKind::Leave => Input::Leave { x, y },
+            NoticeKind::Cancel => Input::Cancel { x, y },
+        };
+        input::send_id(notice.id, input);
+    }
 }

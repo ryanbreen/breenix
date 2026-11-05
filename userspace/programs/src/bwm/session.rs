@@ -67,6 +67,9 @@ pub enum Input {
     KeyRelease { keycode: u32, modifiers: u32 },
     Text { bytes: [u8; 240], len: u32 },
     Move { x: i32, y: i32 },
+    Enter { x: i32, y: i32 },
+    Leave { x: i32, y: i32 },
+    Cancel { x: i32, y: i32 },
     /// `button` 1 left, 2 right, 3 middle.
     Button { button: u32, pressed: bool, x: i32, y: i32 },
     Scroll { x: i32, y: i32, delta_y: i32 },
@@ -104,6 +107,14 @@ pub fn event(input: Input) -> abi::WindowEvent {
         }
         Input::Move { x, y } => {
             event.kind = kind::POINTER_MOVE;
+            (event.x, event.y) = (x, y);
+        }
+        Input::Enter { x, y } | Input::Leave { x, y } | Input::Cancel { x, y } => {
+            event.kind = match input {
+                Input::Enter { .. } => kind::POINTER_ENTER,
+                Input::Leave { .. } => kind::POINTER_LEAVE,
+                _ => kind::POINTER_CANCEL,
+            };
             (event.x, event.y) = (x, y);
         }
         Input::Button { button, pressed, x, y } => {
