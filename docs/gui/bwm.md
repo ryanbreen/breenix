@@ -28,3 +28,10 @@ of this shutdown and launch behavior when ARM execution is released.
 ### Launch errors
 
 A failed launch opens one bwm-owned BreenGL window. It identifies a missing executable, a fork failure, or another spawn error. A launch that has not presented a window within five seconds of UI time reports a timeout. Later errors replace its contents; closing the window dismisses it. Suite-mode point 34 can refuse one fork for a target caller.
+
+### Clipboard framing
+
+BCLIP001 SET accepts payloads through 16 MiB inclusive. Larger payloads are
+refused with E2BIG and leave the stored bytes unchanged. GET carries no payload.
+The serial begins nonzero and advances on each successful SET; stored bytes do
+not depend on the setting window's lifetime.
