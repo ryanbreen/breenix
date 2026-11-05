@@ -45,11 +45,14 @@ pub(super) struct Notice {
 #[derive(Clone, Copy)]
 pub(super) enum Action {
     Move,
+    Stationary,
     Button { code: u16, value: i32 },
     Wheel(i32),
     Cancel,
 }
-pub(super) fn motion_action(_previous: (i32, i32), _current: (i32, i32)) -> Action { Action::Move }
+pub(super) fn motion_action(previous: (i32, i32), current: (i32, i32)) -> Action {
+    if previous == current { Action::Stationary } else { Action::Move }
+}
 pub(super) struct Routed {
     pub focus: Option<(Option<u64>, Option<u64>)>,
     pub notices: Vec<Notice>,
@@ -217,7 +220,7 @@ impl Router {
                     }
                 }
             }
-            Action::Button { .. } | Action::Cancel => {}
+            Action::Button { .. } | Action::Stationary | Action::Cancel => {}
         }
         // Discard idle device state instead of retaining removed virtual devices.
         if d.held == 0 && d.grab.is_none() {
