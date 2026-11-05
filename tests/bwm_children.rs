@@ -34,3 +34,16 @@ fn acknowledges_composed_first_commit_for_listed_owner() {
     assert!(children.acknowledge(&[Listed { id: 7, owner: 42, commit: 2 }], &frame).is_empty());
     assert!(children.is_empty());
 }
+
+#[test]
+fn launch_failures_and_expiry_produce_errors() {
+    use children::LaunchError;
+    for (errno, expected) in [(2, LaunchError::Missing), (11, LaunchError::Fork), (12, LaunchError::Fork), (13, LaunchError::Other)] {
+        assert_eq!(Children::spawn_error(errno), expected);
+    }
+    let mut children = Children::default();
+    children.track_path(42, 100, b"/bin/example");
+    assert!(children.expire(5_000_000_099).is_empty());
+    assert_eq!(children.expire(5_000_000_100), vec![(b"/bin/example".to_vec(), LaunchError::NoWindow)]);
+    assert!(children.expire(5_000_000_101).is_empty());
+}
