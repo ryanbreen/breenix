@@ -148,6 +148,7 @@ impl Target {
             let handle = c.handle();
             let resource = c.resources.get_mut(&id).ok_or(EIO)?;
             resource.owner = owner;
+            resource.window_owner_hold = true;
             c.proc_mut(owner).resources.insert(handle, id);
             Ok::<u64,i64>(handle)
         }).ok_or(ENODEV).and_then(|result| result);
@@ -418,7 +419,10 @@ impl Target {
 impl Drop for Target {
     fn drop(&mut self) {
         let _ = destroy_resource(self.context.owner,self.handle);
-        with_core(|c| c.unhold(self.id));
+        with_core(|c| {
+            if let Some(r) = c.resources.get_mut(&self.id) { r.window_owner_hold = false; }
+            c.unhold(self.id);
+        });
         notify();
     }
 }

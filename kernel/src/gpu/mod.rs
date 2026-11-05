@@ -233,9 +233,17 @@ pub(crate) fn ownership_census() -> alloc::string::String {
             for (&id, r) in c.resources.iter().take(rows.capacity()) {
                 let handle = c.procs.get(&r.owner).and_then(|p| p.resources.iter()
                     .find_map(|(&handle, &resource)| (resource == id).then_some(handle))).unwrap_or(0);
+                let sync_holds: usize = c.syncs.values().map(|s| s.holds.iter().filter(|&&rid| rid == id).count()).sum();
+                let submit_holds: usize = c.subs.values().map(|s| s.held.iter().filter(|&&rid| rid == id).count()).sum();
+                let display_holds = usize::from(c.display.holds.contains(&id))
+                    + c.display.stack.iter().filter(|o| o.last.is_some_and(|b| b.id == id)).count();
+                let context_holds: usize = c.contexts.values().map(|ctx|
+                    usize::from(ctx.vertex_arena.as_ref().is_some_and(|a| a.id == id))
+                    + ctx.private_scratch.iter().filter(|s| s.id == id).count()).sum();
                 rows.push((id, r.owner, handle, c.procs.contains_key(&r.owner), r.backing.count(),
                     Arc::strong_count(&r.backing), r.holds, r.writers, r.dropped, r.reading,
-                    r.width, r.height, r.last.map_or(0, |last| last.ctx)));
+                    r.width, r.height, r.last.map_or(0, |last| last.ctx), r.window_owner_hold,
+                    sync_holds, submit_holds, display_holds, context_holds, r.lost, r.invalid, r.epoch));
             }
             (c.resources.len(), c.contexts.len(), c.procs.len(), c.subs.len(), c.syncs.len(), c.canvas.len())
         })
@@ -243,8 +251,8 @@ pub(crate) fn ownership_census() -> alloc::string::String {
     crate::per_cpu::preempt_enable();
     let mut text = alloc::format!("gpu-core counts={counts:?} omitted={}\n",
         counts.map_or(0, |c| c.0.saturating_sub(rows.len())));
-    for (id, owner, handle, owner_present, pages, refs, holds, writers, dropped, reading, width, height, ctx) in rows {
-        let _ = writeln!(text, "gpu-core resource={id} owner={owner} handle={handle} owner_present={owner_present} pages={pages} backing_refs={refs} holds={holds} writers={writers} dropped={dropped} reading={reading} width={width} height={height} last_ctx={ctx}");
+    for (id, owner, handle, owner_present, pages, refs, holds, writers, dropped, reading, width, height, ctx, window_hold, sync_holds, submit_holds, display_holds, context_holds, lost, invalid, epoch) in rows {
+        let _ = writeln!(text, "gpu-core resource={id} owner={owner} handle={handle} owner_present={owner_present} pages={pages} backing_refs={refs} holds={holds} writers={writers} dropped={dropped} reading={reading} width={width} height={height} last_ctx={ctx} window_hold={window_hold} sync_holds={sync_holds} submit_holds={submit_holds} display_holds={display_holds} context_holds={context_holds} lost={lost} invalid={invalid} epoch={epoch}");
     }
     text
 }
@@ -518,6 +526,8 @@ struct Res {
     deliberate_invalidation: u64,
     dropped: bool,
     holds: u32,
+    /// The independent hold owned by a window Target, until its destructor runs.
+    window_owner_hold: bool,
     lost: bool,
     reading: bool,
     /// The context of a queued progress transfer reading this target. It excludes CPU
@@ -3222,6 +3232,7 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
         deliberate_invalidation: 0,
         dropped: false,
         holds: 0,
+        window_owner_hold: false,
         lost: false,
         reading: false,
         progress_context: None,
