@@ -94,13 +94,18 @@ impl Controller {
             if LEDS.swap(false, Ordering::SeqCst) {
                 self.sync_leds();
             }
+            self.suite_replay();
             #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
             if super::REPLAY.swap(false, Ordering::SeqCst) {
                 let pending = super::pointer::replay::PENDING.lock().take();
                 if let Some((seq, port, endpoint, report)) = pending {
                     // Answered from `dispatch`, with the event it queued.
-                    if let Err(error) = self.replay_pointer(seq, port, endpoint, &report) {
-                        super::pointer::replay::answer(seq, Err(error));
+                    match self.replay_pointer_report(port, endpoint, &report) {
+                        Ok((_, _, event)) => {
+                            self.replay_at = Some((seq, event.parameter & !15));
+                            self.completions.push_back(event);
+                        }
+                        Err(error) => super::pointer::replay::answer(seq, Err(error)),
                     }
                 }
             }
@@ -132,6 +137,71 @@ impl Controller {
             .filter_map(|d| d.keyboard.as_ref()?.state.repeat_due())
             .min();
         repeat
+    }
+
+    /// Replay one boot report on the first attached boot keyboard, through the
+    /// path a device's report takes: a Transfer Event for a posted TD, the
+    /// report read from that TD's buffer by `keyboard_event`. The endpoint is
+    /// stopped first (4.6.9), so the controller has given its TDs back; the
+    /// oldest TD it did not complete takes the report, and the endpoint's
+    /// dequeue moves past it (4.6.10). `keyboard_event` posts the freed TD
+    /// again and rings the doorbell, which restarts the endpoint.
+    fn replay_key(
+        &mut self,
+        report: &[u8; report::REPORT_LEN],
+    ) -> Result<(usize, Trb), &'static str> {
+        let index = self
+            .devices
+            .iter()
+            .position(|d| d.keyboard.is_some())
+            .ok_or("no boot keyboard attached")?;
+        let (slot, dci, request) = {
+            let device = &self.devices[index];
+            let pipe = device
+                .keyboard
+                .as_ref()
+                .ok_or("no boot keyboard attached")?;
+            (device.slot, pipe.dci, pipe.request)
+        };
+        match self.command_code(spec::stop_endpoint(slot, dci))? {
+            1 | 19 => {}
+            _ => return Err("Stop Endpoint refused"),
+        }
+        // The TD the controller was working on reports Stopped (26-28); it
+        // goes back to software with the others. Completions it posted before
+        // stopping stay queued for `dispatch`.
+        let ours =
+            |e: &Trb| e.kind() == 32 && e.slot() == slot && (e.control >> 16) & 31 == dci as u32;
+        self.completions
+            .retain(|e| !(ours(e) && matches!(e.code(), 26..=28)));
+        let completed: Vec<u64> = self
+            .completions
+            .iter()
+            .filter(|e| ours(e))
+            .map(|e| e.parameter & !15)
+            .collect();
+        let pipe = self.devices[index]
+            .keyboard
+            .as_mut()
+            .ok_or("no boot keyboard attached")?;
+        let ring = pipe.ring.memory.phys;
+        let (buffer_slot, at) = pipe
+            .posted
+            .oldest_uncompleted(&completed, ring, pipe.ring.enqueue())
+            .ok_or("no posted TD to replay into")?;
+        for (i, byte) in report.iter().enumerate() {
+            pipe.buffer.put8(buffer_slot * pipe.stride + i, *byte);
+        }
+        let at_index = ((at - ring) / 16) as usize;
+        let cycle = pipe.ring.memory.get32(at_index * 16 + 12) & 1 != 0;
+        self.set_dequeue(slot, dci, spec::ring_next(ring, at_index, cycle))?;
+        // `request` is at least a boot report's length (`configure_keyboard`).
+        let residual = request - report.len() as u32;
+        let code = if residual == 0 { 1u32 } else { 13 };
+        Ok((index, Trb::new(
+            32, at, code << 24 | residual,
+            (slot as u32) << 24 | (dci as u32) << 16,
+        )))
     }
 
     pub(super) fn dispatch(&mut self) {
@@ -331,6 +401,7 @@ impl Controller {
             keyboard: Some(crate::input::Device::UsbBootKeyboard(port)),
         })?;
         self.devices[index].keyboard.as_mut().unwrap().input = Some(input);
+        crate::input::control::register(&SUITE_REPLAY, false);
         log::info!(
             "[usb] boot keyboard attached: port={port} path=root speed={speed} bit/s slot={slot} \
              interface={} endpoint={:#04x} max-packet={} bInterval={} interval={interval} leds={leds} \
@@ -780,5 +851,42 @@ impl recovery::Port for Reattach<'_> {
             self.port
         );
         self.controller.attach_once(self.port, reset)
+    }
+}
+
+/// USB HID on both architectures; the ARM MMIO input driver implements the same trait.
+struct SuiteReplay;
+static SUITE_REPLAY: SuiteReplay = SuiteReplay;
+impl crate::input::control::Replay for SuiteReplay {
+    fn replay_keyboard(&self, suppress: bool) -> Result<crate::input::control::Receipt, u64> {
+        super::suite_replay::submit(super::suite_replay::Request::Keyboard, suppress)
+    }
+    fn replay_pointer(&self, x: i32, y: i32, suppress: bool) -> Result<crate::input::control::Receipt, u64> {
+        super::suite_replay::submit(super::suite_replay::Request::Pointer(x, y), suppress)
+    }
+}
+pub(super) fn register_pointer_replay() { crate::input::control::register(&SUITE_REPLAY, true); }
+impl Controller {
+    fn suite_replay(&mut self) {
+        let Some((request, suppress)) = super::suite_replay::take() else { return; };
+        let result = match request {
+            super::suite_replay::Request::Keyboard => self.replay_keyboard_transaction(suppress),
+            super::suite_replay::Request::Pointer(x, y) => self.replay_pointer(x, y, suppress),
+        };
+        super::suite_replay::answer(result);
+    }
+    fn replay_keyboard_transaction(&mut self, suppress: bool) -> Result<crate::input::control::Receipt, u64> {
+        use crate::syscall::errno::{ENODEV, EIO};
+        let input = self.devices.iter().find_map(|d| d.keyboard.as_ref()?.input).ok_or(ENODEV as u64)?;
+        let scope = crate::test_control::InputReplay::begin(input.id, suppress)?;
+        let (index, event) = self.replay_key(&[0, 0, 4, 0, 0, 0, 0, 0]).map_err(|_| EIO as u64)?;
+        self.keyboard_event(index, event);
+        let (index, event) = self.replay_key(&[0; 8]).map_err(|_| EIO as u64)?;
+        self.keyboard_event(index, event);
+        let pipe = self.devices[index].keyboard.as_ref().ok_or(ENODEV as u64)?;
+        let posted = pipe.posted.free().count();
+        Ok(crate::input::control::Receipt {
+            calls: scope.calls(), posted: (spec::POSTED_TDS - posted) as u32, ring: spec::POSTED_TDS as u32,
+        })
     }
 }

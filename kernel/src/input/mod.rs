@@ -13,6 +13,7 @@
 //! worker thread: it waits only on locks whose holders mask interrupts, and only
 //! tries the others; it does not allocate and does not log.
 
+pub mod control;
 pub mod event;
 pub mod hardware;
 pub mod host;

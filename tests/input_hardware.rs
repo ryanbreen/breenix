@@ -18,6 +18,7 @@ pub mod input_decode;
 fn arch_without_interrupts<T>(f: impl FnOnce() -> T) -> T {
     f()
 }
+mod test_control { pub fn input_report_allowed(_:u32) -> bool { true } }
 mod window {
     pub mod events {
         pub fn now_ns() -> u64 {

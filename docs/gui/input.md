@@ -114,3 +114,34 @@ The six original BXKEY parser tests moved unchanged from the xHCI driver.
 normalization, mode/CRC/sequence refusal and atomic queue admission. ARM still
 lacks boot proof of PL011 reception and launcher support for serial host input;
 no ARM launcher or host-side BXPTR sender is added by this kernel-only unit.
+
+## Completion replay
+
+`/proc/breenix/input-replay` uses the shared `input::control::Replay` interface.
+The endpoint checks the immutable PID-1 suite latch and effective root authority at
+open, read and write; a root-open descriptor loses authority after `setuid`.
+Production opens return ENOSYS. Procfs registers the pathname so name resolution
+can reach the live descriptor instead of a content snapshot.
+
+Selector 1 replays the boot keyboard's A and release reports. Selector 2 encodes
+an absolute position and left press/release from the bound HID layout, including
+its report IDs, logical ranges and padding. A relative-only layout refuses selector
+2; it cannot supply the absolute events required by `pointer-completion-path`.
+Q1 and that case are unchanged.
+
+The xHCI worker owns Stop Endpoint, DMA-buffer writes, dequeue advancement,
+production completion dispatch and reposting. USB HID on ARM uses that same path.
+The ARM virtio-input implementation resets its bound device to recover DMA custody,
+then uses the same completion/repost adapter as its used-ring IRQ path before
+returning DRIVER_OK. Neither implementation synthesizes a virtual input device.
+
+Bit 8 arms test-control point 33, `INPUT_REPORT_SKIPPED`, for the replay's device.
+The press/release pair is one observed transaction: the fault fires once and keeps
+both reports silent while decoding and requeue still run. The receipt counts calls
+at the shared hardware ingress and reports the bound ring's posted descriptors.
+Other devices and reporting threads cannot consume that transaction's fault.
+
+The BreenGL `isolation/test-hooks-absent` addition is coverage of this new authority;
+its acceptance PR must name that coverage addition. ARM registration, replay and
+PL011 input remain built but unbooted until the operator releases ARM. ARM launcher
+serial host-channel transport remains later work.

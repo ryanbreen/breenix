@@ -240,6 +240,7 @@ impl Controller {
                 keyboard: None,
             },
         )?);
+        super::keyboard::register_pointer_replay();
         // Stay in Report protocol, including wheel/absolute axes and report IDs.
         // Boot mouse protocol's fixed three bytes cannot describe a tablet.
         self.queue_pointer(index, self.devices[index].pointers.len() - 1);
@@ -436,16 +437,14 @@ impl Controller {
     /// buffer, decoded, and the pipe's TDs posted again. The endpoint is stopped
     /// first (4.6.9), so the controller has given its TDs back; the oldest TD it
     /// did not complete takes the report, and the endpoint's dequeue moves past
-    /// it (4.6.10). The event is dispatched with the controller's own; `dispatch`
-    /// answers request `seq`.
-    #[cfg(all(target_arch = "aarch64", feature = "usb_pointer_replay"))]
-    pub(super) fn replay_pointer(
+    /// it (4.6.10). Return the Transfer Event for the production dispatcher;
+    /// the suite consumes it synchronously and the measurement ioctl queues it.
+    pub(super) fn replay_pointer_report(
         &mut self,
-        seq: u64,
         port: u8,
         endpoint: u8,
         data: &[u8],
-    ) -> Result<(), &'static str> {
+    ) -> Result<(usize, usize, Trb), &'static str> {
         let (index, pipe_index) = self
             .devices
             .iter()
@@ -500,15 +499,38 @@ impl Controller {
         self.set_dequeue(slot, dci, next)?;
         let residual = request - data.len() as u32;
         let code = if residual == 0 { 1u32 } else { 13 };
-        self.replay_at = Some((seq, at));
-        self.completions.push_back(Trb::new(
-            32,
-            at,
-            code << 24 | residual,
+        Ok((index, pipe_index, Trb::new(
+            32, at, code << 24 | residual,
             (slot as u32) << 24 | (dci as u32) << 16,
-        ));
-        Ok(())
+        )))
     }
+    /// Encode the bound absolute layout, then consume its own posted TDs.
+    pub(super) fn replay_pointer(&mut self, x: i32, y: i32, suppress: bool) -> Result<crate::input::control::Receipt, u64> {
+        use crate::syscall::errno::{ENODEV, EINVAL, EIO};
+        let (width, height) = crate::input::pointer::screen().ok_or(ENODEV as u64)?;
+        let (index, pipe_index, reports) = self.devices.iter().enumerate().find_map(|(i, d)| {
+            d.pointers.iter().enumerate().find_map(|(p, pipe)| {
+                pipe.layout.as_ref()?.replay_reports(x, y, width, height).ok().map(|r| (i, p, r))
+            })
+        }).ok_or(ENODEV as u64)?;
+        let port = self.devices[index].port;
+        let pipe = &self.devices[index].pointers[pipe_index];
+        let endpoint = pipe.endpoint;
+        let input = pipe.input.ok_or(ENODEV as u64)?;
+        if reports.iter().any(|r| r.len() > pipe.request as usize) { return Err(EINVAL as u64); }
+        let scope = crate::test_control::InputReplay::begin(input.id, suppress)?;
+        for report in reports {
+            let (_, _, event) = self.replay_pointer_report(port, endpoint, &report).map_err(|_| EIO as u64)?;
+            if !self.dispatch_pointer(event) { return Err(EIO as u64); }
+        }
+        let pipe = &self.devices[index].pointers[pipe_index];
+        Ok(crate::input::control::Receipt {
+            calls: scope.calls(),
+            posted: (spec::POSTED_TDS - pipe.posted.free().count()) as u32,
+            ring: spec::POSTED_TDS as u32,
+        })
+    }
+
 }
 
 /// Keep a report the device sent, for replay (measurement kernels only).

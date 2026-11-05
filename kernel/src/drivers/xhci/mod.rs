@@ -11,6 +11,7 @@
 #[cfg(target_arch = "x86_64")]
 pub use crate::input::host as host_keys;
 mod keyboard;
+mod suite_replay;
 mod recovery;
 #[cfg(feature = "xhci_fault_inject")]
 mod fault;
@@ -941,7 +942,8 @@ impl Controller {
             requests
                 && (CONSOLE_START.load(Ordering::SeqCst)
                     || LEDS.load(Ordering::SeqCst)
-                    || replay_requested())
+                    || replay_requested()
+                    || suite_replay::pending())
         };
         loop {
             WORK.publish(tid);

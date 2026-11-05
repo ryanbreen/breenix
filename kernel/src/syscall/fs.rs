@@ -2790,6 +2790,28 @@ fn handle_procfs_open(path: &str, flags: u32) -> SyscallResult {
 
     let normalized = path.trim_end_matches('/');
 
+    // Replay is a live descriptor: check the latch and credentials at open and I/O.
+    match crate::input::control::open(normalized) {
+        Err(e) => return SyscallResult::Err(e),
+        Ok(Some(file)) => {
+            let entry = match FileDescriptor::try_opened(FdKind::Ipc(file), flags) {
+                Ok(entry) => entry, Err(e) => return SyscallResult::Err(e),
+            };
+            let Some(tid) = crate::task::scheduler::current_thread_id() else {
+                return SyscallResult::Err(3);
+            };
+            let mut guard = crate::process::manager();
+            return match guard.as_mut().and_then(|pm| pm.find_process_by_thread_mut(tid)) {
+                Some((_, process)) => match process.fd_table.alloc_with_entry(entry) {
+                    Ok(fd) => SyscallResult::Ok(fd as u64),
+                    Err(e) => SyscallResult::Err(e as u64),
+                },
+                None => SyscallResult::Err(3),
+            };
+        }
+        Ok(None) => {}
+    }
+
     // Check if this is a directory path
     // /proc itself is the root directory; for sub-paths, check if the entry is a directory type
     let is_directory = if normalized == "/proc" {

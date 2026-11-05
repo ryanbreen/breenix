@@ -362,6 +362,7 @@ fn init_keyboard_device(device: &mut VirtioMmioDevice, slot: usize) -> Result<()
         core::mem::offset_of!(KbdQueueMemory, used_flags) as u64,
         NUM_KBD_BUFFERS,
         &raw mut KBD_DEVICE_BASE,
+        None,
     )?;
 
     unsafe {
@@ -389,6 +390,7 @@ fn init_keyboard_device(device: &mut VirtioMmioDevice, slot: usize) -> Result<()
     })?;
     KBD_INPUT.call_once(|| input);
     KBD_INITIALIZED.store(true, Ordering::Release);
+    crate::input::control::register(&REPLAY, false);
     crate::serial_println!(
         "[virtio-input] Keyboard initialized ({} buffers)",
         NUM_KBD_BUFFERS
@@ -409,6 +411,7 @@ fn init_tablet_device(device: &mut VirtioMmioDevice, slot: usize) -> Result<(), 
         core::mem::offset_of!(TabletQueueMemory, used_flags) as u64,
         NUM_TABLET_BUFFERS,
         &raw mut TABLET_DEVICE_BASE,
+        None,
     )?;
 
     unsafe {
@@ -472,6 +475,7 @@ fn init_tablet_device(device: &mut VirtioMmioDevice, slot: usize) -> Result<(), 
     })?;
     TABLET_INPUT.call_once(|| input);
     TABLET_INITIALIZED.store(true, Ordering::Release);
+    crate::input::control::register(&REPLAY, true);
     crate::serial_println!(
         "[virtio-input] Tablet initialized ({} buffers)",
         NUM_TABLET_BUFFERS
@@ -491,7 +495,8 @@ fn init_input_device_queue(
     used_offset: u64,
     num_buffers: usize,
     device_base_ptr: *mut u64,
-) -> Result<(), &'static str> {
+    replay: Option<&[VirtioInputEvent]>,
+) -> Result<u32, &'static str> {
     let version = device.version();
 
     if version == 1 {
@@ -502,7 +507,6 @@ fn init_input_device_queue(
 
     device.select_queue(0);
     let queue_size = device.get_queue_num_max();
-    crate::serial_println!("[virtio-input] Event queue max size: {}", queue_size);
 
     if queue_size == 0 {
         return Err("Event queue not available");
@@ -510,6 +514,8 @@ fn init_input_device_queue(
 
     let actual_size = num_buffers.min(queue_size as usize);
     device.set_queue_num(actual_size as u32);
+    let size = if num_buffers == NUM_TABLET_BUFFERS { &TABLET_QUEUE_SIZE } else { &KBD_QUEUE_SIZE };
+    size.store(actual_size as u16, Ordering::Release);
 
     let queue_phys = virt_to_phys(queue_mem_base as u64);
     let desc_addr = queue_phys;
@@ -546,18 +552,38 @@ fn init_input_device_queue(
     // Write available ring (the avail_ring starts right after avail_flags(2) + avail_idx(2))
     // We need to write directly to the queue memory
     // The avail_ring array is at offset avail_offset + 4
-    unsafe {
+    let posted = unsafe {
         let avail_idx_ptr = (queue_mem_base as u64 + avail_offset + 2) as *mut u16;
         let avail_ring_ptr = (queue_mem_base as u64 + avail_offset + 4) as *mut u16;
 
+        core::ptr::write_volatile(avail_idx_ptr, 0);
+        // Replay owns buffers only while reset has returned DMA custody. It
+        // consumes the recorded completions through the ordinary adapter and
+        // reposts those exact descriptors before DRIVER_OK resumes the device.
+        let tablet = num_buffers == NUM_TABLET_BUFFERS;
+        let replayed = replay.map_or(0, |events| events.len());
         for i in 0..actual_size {
-            core::ptr::write_volatile(avail_ring_ptr.add(i), i as u16);
+            if let Some(event) = replay.and_then(|events| events.get(i)) {
+                core::ptr::write_volatile(
+                    (event_buffers_base_virt as *mut VirtioInputEvent).add(i),
+                    *event,
+                );
+                complete_buffer(tablet, i);
+            } else {
+                let at = core::ptr::read_volatile(avail_idx_ptr);
+                core::ptr::write_volatile(avail_ring_ptr.add(at as usize % actual_size), i as u16);
+                core::ptr::write_volatile(avail_idx_ptr, at.wrapping_add(1));
+            }
         }
-
+        if replayed > actual_size {
+            return Err("Replay exceeds bound input ring");
+        }
         fence(Ordering::SeqCst);
-        core::ptr::write_volatile(avail_idx_ptr, actual_size as u16);
-        fence(Ordering::SeqCst);
-    }
+        let used_idx = (queue_mem_base as u64 + used_offset + 2) as *const u16;
+        let posted = core::ptr::read_volatile(avail_idx_ptr)
+            .wrapping_sub(core::ptr::read_volatile(used_idx)) as u32;
+        posted
+    };
 
     // Notify device (queue 0)
     // device.base() is already the virtual MMIO address (probe adds phys_offset)
@@ -569,98 +595,80 @@ fn init_input_device_queue(
     }
 
     device.driver_ok();
-    Ok(())
+    Ok(posted)
 }
 
 // =============================================================================
 // Keyboard Polling and Interrupt Handling
 // =============================================================================
 
-/// Poll for new keyboard input events.
-pub fn poll_events() -> impl Iterator<Item = VirtioInputEvent> {
-    let mut events = [VirtioInputEvent::empty(); NUM_KBD_BUFFERS];
-    let mut count = 0;
-
-    if !KBD_INITIALIZED.load(Ordering::Acquire) {
-        return EventIterator {
-            events,
-            count,
-            index: 0,
-        };
-    }
-
-    unsafe {
-        let queue_mem = &raw mut KBD_QUEUE_MEM;
-        let event_buffers = &raw const KBD_EVENT_BUFFERS;
-        let device_base = &raw const KBD_DEVICE_BASE;
-
-        let last_seen = KBD_LAST_USED_IDX.load(Ordering::Relaxed);
-
-        fence(Ordering::SeqCst);
-        let current_used = (*queue_mem).used_idx;
-        fence(Ordering::SeqCst);
-
-        if current_used != last_seen {
-            let mut idx = last_seen;
-            while idx != current_used && count < NUM_KBD_BUFFERS {
-                let ring_idx = (idx as usize) % NUM_KBD_BUFFERS;
-                let used_entry = &(*queue_mem).used_ring[ring_idx];
-                let desc_idx = u32::from_le_bytes([
-                    used_entry[0],
-                    used_entry[1],
-                    used_entry[2],
-                    used_entry[3],
-                ]) as usize;
-
-                if desc_idx < NUM_KBD_BUFFERS {
-                    events[count] = (*event_buffers).events[desc_idx];
-                    count += 1;
-
-                    let avail_idx = (*queue_mem).avail_idx as usize;
-                    (*queue_mem).avail_ring[avail_idx % NUM_KBD_BUFFERS] = desc_idx as u16;
-                    fence(Ordering::SeqCst);
-                    (*queue_mem).avail_idx = (*queue_mem).avail_idx.wrapping_add(1);
-                }
-
-                idx = idx.wrapping_add(1);
-            }
-
-            KBD_LAST_USED_IDX.store(current_used, Ordering::Release);
-
-            let base = *device_base;
-            if count > 0 && base != 0 {
-                fence(Ordering::SeqCst);
-                let notify_addr = (base + 0x50) as *mut u32;
-                crate::arch_impl::aarch64::mmio::write32(notify_addr, 0);
-            }
-        }
-    }
-
-    EventIterator {
-        events,
-        count,
-        index: 0,
-    }
+/// Drain actual used descriptors through the completion/rearm adapter.
+fn poll_events() {
+    poll_completions(false);
 }
 
-struct EventIterator {
-    events: [VirtioInputEvent; NUM_KBD_BUFFERS],
-    count: usize,
-    index: usize,
-}
-
-impl Iterator for EventIterator {
-    type Item = VirtioInputEvent;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index < self.count {
-            let event = self.events[self.index];
-            self.index += 1;
-            Some(event)
+fn poll_completions(tablet: bool) {
+    crate::arch_without_interrupts(|| unsafe {
+        let _gate = COMPLETION_GATE.lock();
+        let (used_idx, used_ring, last, size, base) = if tablet {
+            (
+                &raw const TABLET_QUEUE_MEM.used_idx,
+                (&raw const TABLET_QUEUE_MEM.used_ring).cast::<[u8; 8]>(),
+                &TABLET_LAST_USED_IDX,
+                TABLET_QUEUE_SIZE.load(Ordering::Acquire) as usize,
+                TABLET_DEVICE_BASE,
+            )
         } else {
-            None
+            (
+                &raw const KBD_QUEUE_MEM.used_idx,
+                (&raw const KBD_QUEUE_MEM.used_ring).cast::<[u8; 8]>(),
+                &KBD_LAST_USED_IDX,
+                KBD_QUEUE_SIZE.load(Ordering::Acquire) as usize,
+                KBD_DEVICE_BASE,
+            )
+        };
+        let mut at = last.load(Ordering::Relaxed);
+        let end = core::ptr::read_volatile(used_idx);
+        fence(Ordering::Acquire);
+        while at != end {
+            let entry = core::ptr::read_volatile(used_ring.add(at as usize % size));
+            let descriptor = u32::from_le_bytes(entry[..4].try_into().unwrap()) as usize;
+            if descriptor < size {
+                complete_buffer(tablet, descriptor);
+            }
+            at = at.wrapping_add(1);
         }
-    }
+        last.store(at, Ordering::Release);
+        fence(Ordering::Release);
+        crate::arch_impl::aarch64::mmio::write32((base + 0x50) as *mut u32, 0);
+    });
+}
+
+/// The same buffer read, pure decoder, report, wake decision and descriptor
+/// repost are used by real used-ring completions and reset-custody replays.
+unsafe fn complete_buffer(tablet: bool, descriptor: usize) {
+    let (buffer, avail_idx, avail_ring, size) = if tablet {
+        (
+            (&raw const TABLET_EVENT_BUFFERS.events).cast::<VirtioInputEvent>(),
+            &raw mut TABLET_QUEUE_MEM.avail_idx,
+            (&raw mut TABLET_QUEUE_MEM.avail_ring).cast::<u16>(),
+            TABLET_QUEUE_SIZE.load(Ordering::Acquire) as usize,
+        )
+    } else {
+        (
+            (&raw const KBD_EVENT_BUFFERS.events).cast::<VirtioInputEvent>(),
+            &raw mut KBD_QUEUE_MEM.avail_idx,
+            (&raw mut KBD_QUEUE_MEM.avail_ring).cast::<u16>(),
+            KBD_QUEUE_SIZE.load(Ordering::Acquire) as usize,
+        )
+    };
+    let raw = core::ptr::read_volatile(buffer.add(descriptor));
+    report_event(tablet, raw);
+    if tablet { report_tablet_event(raw); }
+    let at = core::ptr::read_volatile(avail_idx);
+    core::ptr::write_volatile(avail_ring.add(at as usize % size), descriptor as u16);
+    fence(Ordering::Release);
+    core::ptr::write_volatile(avail_idx, at.wrapping_add(1));
 }
 
 /// Check if the keyboard device is initialized
@@ -714,101 +722,12 @@ pub fn handle_interrupt() {
 
     // Each key event goes to the input core, which keeps the modifier state
     // and turns keys into console input.
-    for event in poll_events() {
-        report_event(false, event);
-    }
+    poll_events();
 }
 
 // =============================================================================
 // Tablet Polling and Interrupt Handling
 // =============================================================================
-
-/// Poll for new tablet events.
-fn poll_tablet_events() -> TabletEventIterator {
-    let mut events = [VirtioInputEvent::empty(); NUM_TABLET_BUFFERS];
-    let mut count = 0;
-
-    if !TABLET_INITIALIZED.load(Ordering::Acquire) {
-        return TabletEventIterator {
-            events,
-            count,
-            index: 0,
-        };
-    }
-
-    unsafe {
-        let queue_mem = &raw mut TABLET_QUEUE_MEM;
-        let event_buffers = &raw const TABLET_EVENT_BUFFERS;
-        let device_base = &raw const TABLET_DEVICE_BASE;
-
-        let last_seen = TABLET_LAST_USED_IDX.load(Ordering::Relaxed);
-
-        fence(Ordering::SeqCst);
-        let current_used = (*queue_mem).used_idx;
-        fence(Ordering::SeqCst);
-
-        if current_used != last_seen {
-            let mut idx = last_seen;
-            while idx != current_used && count < NUM_TABLET_BUFFERS {
-                let ring_idx = (idx as usize) % NUM_TABLET_BUFFERS;
-                let used_entry = &(*queue_mem).used_ring[ring_idx];
-                let desc_idx = u32::from_le_bytes([
-                    used_entry[0],
-                    used_entry[1],
-                    used_entry[2],
-                    used_entry[3],
-                ]) as usize;
-
-                if desc_idx < NUM_TABLET_BUFFERS {
-                    events[count] = (*event_buffers).events[desc_idx];
-                    count += 1;
-
-                    let avail_idx = (*queue_mem).avail_idx as usize;
-                    (*queue_mem).avail_ring[avail_idx % NUM_TABLET_BUFFERS] = desc_idx as u16;
-                    fence(Ordering::SeqCst);
-                    (*queue_mem).avail_idx = (*queue_mem).avail_idx.wrapping_add(1);
-                }
-
-                idx = idx.wrapping_add(1);
-            }
-
-            TABLET_LAST_USED_IDX.store(current_used, Ordering::Release);
-
-            let base = *device_base;
-            if count > 0 && base != 0 {
-                fence(Ordering::SeqCst);
-                let notify_addr = (base + 0x50) as *mut u32;
-                crate::arch_impl::aarch64::mmio::write32(notify_addr, 0);
-            }
-        }
-    }
-
-    TabletEventIterator {
-        events,
-        count,
-        index: 0,
-    }
-}
-
-struct TabletEventIterator {
-    events: [VirtioInputEvent; NUM_TABLET_BUFFERS],
-    count: usize,
-    index: usize,
-}
-
-impl Iterator for TabletEventIterator {
-    type Item = VirtioInputEvent;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.index < self.count {
-            let event = self.events[self.index];
-            self.index += 1;
-            Some(event)
-        } else {
-            None
-        }
-    }
-}
 
 /// Check if the tablet device is initialized
 pub fn is_tablet_initialized() -> bool {
@@ -871,8 +790,10 @@ pub fn handle_tablet_interrupt() {
         }
     }
 
-    for event in poll_tablet_events() {
-        report_event(true, event);
+    poll_completions(true);
+}
+
+fn report_tablet_event(event: VirtioInputEvent) {
         match event.event_type {
             event_type::EV_ABS => match event.code {
                 abs_code::ABS_X => {
@@ -899,7 +820,6 @@ pub fn handle_tablet_interrupt() {
             }
             _ => {} // EV_SYN and others — ignore
         }
-    }
 }
 
 /// A partial virtio frame survives IRQ boundaries. The shared handoff copies it
@@ -924,4 +844,108 @@ fn report_event(tablet: bool, event: VirtioInputEvent) {
             });
         }
     }
+}
+
+static KBD_QUEUE_SIZE: AtomicU16 = AtomicU16::new(0);
+static TABLET_QUEUE_SIZE: AtomicU16 = AtomicU16::new(0);
+static COMPLETION_GATE: spin::Mutex<()> = spin::Mutex::new(());
+
+/// Reset returns the bound ring's DMA buffers before the replay writes them.
+/// Recorded completions then read those buffers and repost their descriptors
+/// through complete_buffer, before DRIVER_OK returns custody to the device.
+fn replay(tablet: bool, events: &[VirtioInputEvent], suppress: bool) -> Result<crate::input::control::Receipt, u64> {
+    use crate::syscall::errno::{EIO, ENODEV};
+    if if tablet {
+        !is_tablet_initialized()
+    } else {
+        !is_initialized()
+    } {
+        return Err(ENODEV as u64);
+    }
+    crate::arch_without_interrupts(|| {
+        let _gate = COMPLETION_GATE.lock();
+        let input = if tablet { TABLET_INPUT.get() } else { KBD_INPUT.get() }.ok_or(ENODEV as u64)?;
+        let scope = crate::test_control::InputReplay::begin(input.id, suppress)?;
+        let slot = unsafe {
+            if tablet {
+                TABLET_DEVICE_SLOT
+            } else {
+                KBD_DEVICE_SLOT
+            }
+        };
+        let mut device = VirtioMmioDevice::probe(VIRTIO_MMIO_BASE + slot as u64 * VIRTIO_MMIO_SIZE)
+            .ok_or(ENODEV as u64)?;
+        device.reset();
+        let mut reset = false;
+        for _ in 0..1000 {
+            if device.read_status() == 0 {
+                reset = true;
+                break;
+            }
+            core::hint::spin_loop();
+        }
+        if !reset {
+            return Err(EIO as u64);
+        }
+        unsafe {
+            let posted = if tablet {
+                TABLET_LAST_USED_IDX.store(0, Ordering::Release);
+                core::ptr::write_volatile(&raw mut TABLET_QUEUE_MEM.used_idx, 0);
+                *TABLET_FRAME.lock() = Frame::new();
+                init_input_device_queue(
+                    &mut device,
+                    (&raw mut TABLET_QUEUE_MEM).cast(),
+                    (&raw const TABLET_EVENT_BUFFERS).cast::<VirtioInputEvent>() as u64,
+                    (&raw mut TABLET_QUEUE_MEM).cast(),
+                    core::mem::offset_of!(TabletQueueMemory, avail_flags) as u64,
+                    core::mem::offset_of!(TabletQueueMemory, used_flags) as u64,
+                    NUM_TABLET_BUFFERS,
+                    &raw mut TABLET_DEVICE_BASE,
+                    Some(events),
+                )
+            } else {
+                KBD_LAST_USED_IDX.store(0, Ordering::Release);
+                core::ptr::write_volatile(&raw mut KBD_QUEUE_MEM.used_idx, 0);
+                *KBD_FRAME.lock() = Frame::new();
+                init_input_device_queue(
+                    &mut device,
+                    (&raw mut KBD_QUEUE_MEM).cast(),
+                    (&raw const KBD_EVENT_BUFFERS).cast::<VirtioInputEvent>() as u64,
+                    (&raw mut KBD_QUEUE_MEM).cast(),
+                    core::mem::offset_of!(KbdQueueMemory, avail_flags) as u64,
+                    core::mem::offset_of!(KbdQueueMemory, used_flags) as u64,
+                    NUM_KBD_BUFFERS,
+                    &raw mut KBD_DEVICE_BASE,
+                    Some(events),
+                )
+            }
+            .map_err(|_| EIO as u64)?;
+            device.select_queue(0);
+            let size = (if tablet {
+                NUM_TABLET_BUFFERS
+            } else {
+                NUM_KBD_BUFFERS
+            })
+            .min(device.get_queue_num_max() as usize) as u32;
+            Ok(crate::input::control::Receipt { calls: scope.calls(), posted, ring: size })
+        }
+    })
+}
+
+struct ReplayDriver;
+static REPLAY: ReplayDriver = ReplayDriver;
+impl crate::input::control::Replay for ReplayDriver {
+    fn replay_keyboard(&self, suppress: bool) -> Result<crate::input::control::Receipt, u64> {
+        replay(false, &[recorded(1, 30, 1), recorded(1, 30, 0), recorded(0, 0, 0)], suppress)
+    }
+    fn replay_pointer(&self, x: i32, y: i32, suppress: bool) -> Result<crate::input::control::Receipt, u64> {
+        let (width, height) = screen_dimensions();
+        let ax = crate::input::host::absolute_value(x as u32, width).map_err(|_| crate::syscall::errno::EINVAL as u64)?;
+        let ay = crate::input::host::absolute_value(y as u32, height).map_err(|_| crate::syscall::errno::EINVAL as u64)?;
+        replay(true, &[recorded(3, 0, ax), recorded(3, 1, ay), recorded(1, 272, 1),
+            recorded(1, 272, 0), recorded(0, 0, 0)], suppress)
+    }
+}
+fn recorded(event_type: u16, code: u16, value: i32) -> VirtioInputEvent {
+    VirtioInputEvent { event_type, code, value: value as u32 }
 }

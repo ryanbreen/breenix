@@ -3,6 +3,8 @@
 //! No device-specific byte offsets: report IDs, padding, signed relative axes
 //! and absolute logical ranges come from the device's report descriptor.
 
+extern crate alloc;
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Axis {
     pub value: i32,
@@ -300,6 +302,59 @@ impl Layout {
             (false, true) => "relative",
             (false, false) => "none",
         }
+    }
+
+    /// Encode a suite's absolute position and left press/release using this
+    /// descriptor's fields (HID 1.11 6.2.2.7 and 8). Relative layouts refuse.
+    pub fn replay_reports(&self, x: i32, y: i32, width: u32, height: u32)
+        -> Result<alloc::vec::Vec<alloc::vec::Vec<u8>>, &'static str>
+    {
+        if x < 0 || y < 0 || x as u32 >= width || y as u32 >= height {
+            return Err("replay position outside screen");
+        }
+        let fields = &self.fields[..self.count];
+        for usage in [0x30, 0x31] {
+            if !fields.iter().any(|f| f.page == 1 && f.usage == usage && !f.relative && f.maximum > f.minimum) {
+                return Err("replay needs absolute X and Y");
+            }
+        }
+        if !fields.iter().any(|f| f.page == 9 && f.usage == 1 && f.minimum <= 0 && f.maximum >= 1) {
+            return Err("replay needs a left button");
+        }
+        let mut ids = alloc::vec::Vec::new();
+        for f in fields {
+            if ((f.page == 1 && matches!(f.usage, 0x30 | 0x31) && !f.relative)
+                || (f.page == 9 && f.usage == 1)) && !ids.contains(&f.id) {
+                ids.push(f.id);
+            }
+        }
+        let mut reports = alloc::vec::Vec::new();
+        for pressed in [true, false] {
+            for id in &ids {
+                let prefix = usize::from(self.ids);
+                let mut report = alloc::vec![0u8; prefix + (self.bits[*id as usize] as usize).div_ceil(8)];
+                if self.ids { report[0] = *id; }
+                for f in fields.iter().filter(|f| f.id == *id) {
+                    let value = if f.page == 9 && f.usage == 1 {
+                        i64::from(pressed)
+                    } else if f.page == 1 && matches!(f.usage, 0x30 | 0x31) && !f.relative {
+                        let (pixel, extent) = if f.usage == 0x30 { (x, width) } else { (y, height) };
+                        let range = f.maximum as i64 - f.minimum as i64;
+                        if range <= 0 { return Err("empty absolute range"); }
+                        let last = extent.saturating_sub(1).max(1) as i64;
+                        let raw = (pixel as i64 * range + last - 1) / last;
+                        if raw * last / range != pixel as i64 { return Err("unrepresentable replay position"); }
+                        f.minimum as i64 + raw
+                    } else { 0 };
+                    for bit in 0..f.size as usize {
+                        let at = f.offset as usize + bit;
+                        report[prefix + at / 8] |= (((value as u32 >> bit) & 1) as u8) << (at % 8);
+                    }
+                }
+                reports.push(report);
+            }
+        }
+        Ok(reports)
     }
 
     pub fn decode(&self, report: &[u8]) -> Result<Option<Motion>, &'static str> {

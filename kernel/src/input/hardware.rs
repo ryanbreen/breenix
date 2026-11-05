@@ -77,6 +77,7 @@ static INGRESS: spin::Mutex<Ingress> = spin::Mutex::new(Ingress {
 /// No allocation, logging, scheduler lock or task-context input lock in IRQs.
 /// Drivers submit complete SYN_REPORT batches; an overlong frame becomes loss.
 pub fn report(device: Device, events: &[Event], overflow: bool) {
+    if !crate::test_control::input_report_allowed(device.id) { return; }
     crate::arch_without_interrupts(|| {
         let mut queue = INGRESS.lock();
         let id = device.id as usize;
