@@ -146,7 +146,9 @@ fn main() {
     // Active resize: (win_idx, edge, anchor_x, anchor_y, orig_x, orig_y, orig_w, orig_h)
     let mut resizing: Option<(usize, ResizeEdge, i32, i32, i32, i32, usize, usize)> = None;
     let mut content_dirty = false;
-    let mut windows_dirty = false;
+    // Raw startup PRESENT has no window receipt. Schedule the initial window
+    // composite even when there is no client, clock tick or later scene change.
+    let mut windows_dirty = true;
     let mut win_defaults: [WindowDefaults; MAX_DEFAULTS] = core::array::from_fn(|_| WindowDefaults {
         title: [0; 32], title_len: 0, x: 0, y: 0, width: 0, height: 0, valid: false,
     });
