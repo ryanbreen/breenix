@@ -33,8 +33,8 @@ fn pointer_events_and_clicks_decode() {
     assert_eq!(Event::from_raw(&raw), Event::MouseMove { x: -7, y: 31 });
     raw.kind = event_kind::FOCUS_GAINED;
     assert_eq!(Event::from_raw(&raw), Event::FocusGained);
-    raw.kind = 19;
-    assert_eq!(Event::from_raw(&raw), Event::Unknown { kind: 19 });
+    raw.kind = event_kind::LAST + 1;
+    assert_eq!(Event::from_raw(&raw), Event::Unknown { kind: raw.kind });
 }
 
 #[test]
