@@ -1256,7 +1256,7 @@ The claim is singleton, not an ownership-stack entry. The stage normally needs n
 | 64 | `pressed: u32` | 1 press, 0 release, `PointerButton` only |
 | 68 | `text_len: u32` | bytes of `text`, at most 240 |
 | 72 | `lost: u32` | events lost before this one, `Overflow` only |
-| 76 | `clicks: u32` | pointer-button click count |
+| 76 | `clicks: u32` | pointer-button click count; other kinds require 0 |
 | 80 | `text: [u8; 240]` | UTF-8, `KeyPress` (the text the compositor attached) and `Text` |
 
 <!-- claim-lint:ok: Normative event kinds specified by coordinator B41 and #2312. -->
