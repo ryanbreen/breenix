@@ -63,7 +63,7 @@ def retained_capture(directory):
         'docs/metal/boot-path.json', 'docs/boot-path.json', 'docs/efforts/metal.json',
         'docs/suites/gt710.json', 'docs/suites/gpu.json', 'docs/suites/console.json',
         'docs/gui/gt710-step-8-2.json', 'docs/gui/gt710-step-8-3.json',
-        'scripts/metal/gt710-suite', 'scripts/suite-verdict.py',
+        'scripts/metal/gt710-suite', 'scripts/suite-verdict.py', 'libs/libbreenix/src/suite_memory.rs',
         'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json',
     ] + ['kernel/src/gpu/gk208/caps/' + name for name in set(PROBE_FILES)]
     for name in files:

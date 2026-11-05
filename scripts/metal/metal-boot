@@ -978,7 +978,8 @@ class Driver:
             root = Path(temporary)
             root.chmod(0o755)
             several = len(suites(self.args)) > 1
-            names = ['scripts/suite-verdict.py', 'docs/boot-path.json'] + ['docs/suites/' + s + '.json' for s in suites(self.args)]
+            names = ['scripts/suite-verdict.py', 'docs/boot-path.json',
+                     'libs/libbreenix/src/suite_memory.rs'] + ['docs/suites/' + s + '.json' for s in suites(self.args)]
             if getattr(self.args, 'milestone', None):
                 names.append('docs/efforts/path.json')
             for name in names + (['scripts/suite-sequence.py'] if several else []):

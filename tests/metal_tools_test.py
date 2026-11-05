@@ -1349,7 +1349,8 @@ class DriverTest(StateTest):
         d = self.driver
         d.args.mode, d.args.suite = 'suite', 'smoke'
         definition = d.dir / 'definition'
-        for name in ('scripts/suite-verdict.py', 'docs/boot-path.json', 'docs/suites/smoke.json'):
+        for name in ('scripts/suite-verdict.py', 'docs/boot-path.json', 'docs/suites/smoke.json',
+                     'libs/libbreenix/src/suite_memory.rs'):
             path = definition / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('fixture')
@@ -1372,7 +1373,8 @@ class DriverTest(StateTest):
         d = self.driver
         d.args.mode, d.args.suite = 'suite', 'console'
         definition = d.dir / 'definition'
-        for name in ('scripts/suite-verdict.py', 'docs/boot-path.json', 'docs/suites/console.json'):
+        for name in ('scripts/suite-verdict.py', 'docs/boot-path.json', 'docs/suites/console.json',
+                     'libs/libbreenix/src/suite_memory.rs'):
             path = definition / name
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text('fixture')
@@ -1404,6 +1406,7 @@ class DriverTest(StateTest):
         definition = d.dir / 'definition'
         for source, target in ((repo / 'scripts/suite-verdict.py', 'scripts/suite-verdict.py'),
                                (repo / 'docs/boot-path.json', 'docs/boot-path.json'),
+                               (repo / 'libs/libbreenix/src/suite_memory.rs', 'libs/libbreenix/src/suite_memory.rs'),
                                (repo / 'tests/fixtures/suite-verdict/manifest.json', 'docs/suites/fixture.json')):
             path = definition / target
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -1424,6 +1427,54 @@ class DriverTest(StateTest):
         with patch.object(boot.subprocess, 'run', side_effect=scorer):
             self.assertTrue(d.score_suite())
         self.assertIn('milestone categories=first passed=2 total=2', (d.dir / 'suite-verdict.txt').read_text())
+
+    def test_suite_sandbox_scores_retained_breengel_capture_and_refuses_64(self):
+        # G35a(2): suite and clock records extracted unchanged from this retained boot.
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'breengel'
+        repo = TOOLS.parents[1]
+        definition = d.dir / 'definition'
+        source_name = 'libs/libbreenix/src/suite_memory.rs'
+        for name in ('scripts/suite-verdict.py', 'docs/boot-path.json',
+                     'docs/suites/breengel.json', source_name):
+            target = definition / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(repo / name, target)
+        source = definition / source_name
+        source.write_text(source.read_text() + '\n// Retained definition fixture.\n')
+        captured = (repo / 'tests/fixtures/metal-suite-verdict/serials/20261105T043719Z-metal.txt').read_text()
+        real_run = subprocess.run
+
+        def scorer(command, **options):
+            binding = next(arg.split('=', 2)[2] for arg in command
+                           if arg.startswith('--property=BindReadOnlyPaths='))
+            root, sandbox = binding.split(':')
+            start = command.index(sys.executable)
+            args = [arg.replace(sandbox, root) for arg in command[start:]]
+            result = real_run(args, **options)
+            staged_source = Path(root) / source_name
+            if staged_source.exists():
+                self.assertEqual(staged_source.read_bytes(), source.read_bytes())
+            return result
+
+        for allowance, expected in ((48, True), (64, False)):
+            with self.subTest(allowance=allowance):
+                (d.dir / 'serial.txt').write_text(captured.replace('allowance=48', f'allowance={allowance}'))
+                with patch.object(boot.subprocess, 'run', side_effect=scorer):
+                    self.assertEqual(d.score_suite(), expected,
+                                     (d.dir / 'suite-verdict.txt').read_text())
+                verdict = (d.dir / 'suite-verdict.txt').read_text()
+                if expected:
+                    self.assertIn('PASS: SUITE breengel DONE passed=401 failed=0 skipped=0 total=401', verdict)
+                else:
+                    self.assertIn('memory allowance 64 differs from MEMORY_RECLAIM_ALLOWANCE_PAGES=48', verdict)
+
+        source.unlink()
+        with patch.object(boot.subprocess, 'run', return_value=SimpleNamespace(
+                returncode=1, stdout='FAIL: missing source\n', stderr='')) as run:
+            with self.assertRaises(FileNotFoundError):
+                d.score_suite()
+        run.assert_not_called()
 
     def test_suite_scoring_only_runs_after_confirmed_power_off(self):
         d = self.driver

@@ -15,6 +15,7 @@ pub mod per_cpu_stack;
 pub mod process_memory;
 pub mod slab;
 pub mod stack;
+pub mod table_reclaim;
 pub mod tlb;
 pub mod vma;
 pub mod locked;

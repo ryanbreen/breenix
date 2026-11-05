@@ -109,7 +109,7 @@ class G21Receipts(unittest.TestCase):
         serial = (anchors[0] + f'GT710_BULK {len(bodies[0])} {hashlib.sha256(bodies[0]).hexdigest()}\n'
                   + 'SUITE console START cases=1\nSUITE console CASE screen/test PASS ms=1\n'
                   + 'SUITE console DONE passed=1 failed=0 skipped=0 total=1\n'
-                  + 'SUITE console MEMORY reclaimed=PASS free_before=1 free_after=1 allowance=0\n'
+                  + 'SUITE console MEMORY reclaimed=PASS free_before=1 free_after=1 allowance=48\n'
                   + anchors[1] + f'GT710_FINAL_BULK {len(bodies[1])} {hashlib.sha256(bodies[1]).hexdigest()}\n'
                   + 'SUITE_SEQUENCE READY console\n')
         with tempfile.TemporaryDirectory() as tmp:

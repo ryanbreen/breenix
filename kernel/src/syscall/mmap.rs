@@ -990,13 +990,33 @@ pub(crate) fn unmap_range(
         process.vmas.extend(prefix.into_iter().chain(suffix));
     }
 
+    // Leaf invalidation is finished, and the surviving VMAs now define the
+    // floor/ceiling for empty table windows. The process manager keeps this
+    // tree stable through unlink, walk-cache invalidation and allocator return.
+    let floor = process
+        .vmas
+        .iter()
+        .map(|vma| vma.end.as_u64())
+        .filter(|end| *end <= addr)
+        .max()
+        .unwrap_or(0);
+    let ceiling = process
+        .vmas
+        .iter()
+        .map(|vma| vma.start.as_u64())
+        .filter(|start| *start >= end_addr)
+        .min()
+        .unwrap_or(crate::memory::layout::USER_STACK_REGION_END);
+    page_table.reclaim_empty_tables(addr..end_addr, floor..ceiling);
+
     process.memory_locks.remove(addr, end_addr);
     // A later mapping can use the range again. Placement searches down from the
     // mmap hint (`place_below_hint`), so a range freed above it brings the hint
-    // back up to its end. While the hint only moved down, no freed range was
-    // used again: a process that maps and unmaps in turn (this C library's
-    // malloc gives each block a mapping of its own) walked down the region and
-    // kept a page-table frame for each 2 MiB it passed until it exited.
+    // back up to its end. The PID-1 suite runner's malloc maps each block; a
+    // hint that only moved down visited fresh 2 MiB windows (#2729). Unmap used
+    // to retain those windows' empty table frames until process exit. The
+    // reclaim above now returns tables no surviving mapping uses on both
+    // architectures; restoring the hint also permits reuse of the freed range.
     let region = crate::memory::vma::MMAP_REGION_START..=crate::memory::vma::MMAP_REGION_END;
     if region.contains(&addr) && region.contains(&end_addr) && end_addr > process.mmap_hint {
         process.mmap_hint = end_addr;

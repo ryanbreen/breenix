@@ -145,7 +145,7 @@ def transcript(suite='gpu', all_pass=False):
         text += f'SUITE {suite} CASE {n} {result} ms=1' + (' msg=not implemented' if result == 'FAIL' else '') + '\n'
     text += (f'SUITE {suite} DONE passed={passed} failed={len(names)-passed} skipped=0 total={len(names)}\n'
              f'SUITE {suite} MEMORY after free=1000 heap_free_kb=500 user_pages=100\n'
-             f'SUITE {suite} MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=64\n'
+             f'SUITE {suite} MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=48\n'
              f'SUITE {suite} ELAPSED ms=900000\nSUITE_SEQUENCE READY {suite}\n'
              'USERSPACE TEST REPORT DONE\n')
     return text
@@ -388,7 +388,7 @@ class ResourcesReport(unittest.TestCase):
             # including the new step list and the source probe expectations.
             files = ['docs/metal/boot-path.json', 'docs/boot-path.json', 'docs/efforts/metal.json',
                      'docs/suites/gt710.json', 'docs/suites/gpu.json', 'docs/suites/console.json',
-                     'docs/gui/gt710-step-8-2.json', 'scripts/metal/gt710-suite', 'scripts/suite-verdict.py',
+                     'docs/gui/gt710-step-8-2.json', 'scripts/metal/gt710-suite', 'scripts/suite-verdict.py', 'libs/libbreenix/src/suite_memory.rs',
                      'scripts/screen-verdict.py', 'docs/suites/frames/screens.json',
                      'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json']
             files += ['kernel/src/gpu/gk208/caps/' + n for n in set(PROBE_FILES)]

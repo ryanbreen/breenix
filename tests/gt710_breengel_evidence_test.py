@@ -176,7 +176,7 @@ fn main(){print!("{}",String::from_utf8(heap::fixture()).unwrap());}
             serial += 'SUITE breengel START cases=401\n'+anchor('GT710_BREENGL_CHUNK 0', payload)
             serial += ''.join(f'SUITE breengel CASE raster/case-{n} PASS ms=1 sha256={digest}\n' for n in range(1, 402))
             serial += 'SUITE breengel DONE passed=401 failed=0 skipped=0 total=401\n'
-            serial += 'SUITE breengel MEMORY reclaimed=PASS free_before=100 free_after=100 allowance=64\n'
+            serial += 'SUITE breengel MEMORY reclaimed=PASS free_before=100 free_after=100 allowance=48\n'
             serial += anchor('GT710_CASE_HEAP_BULK', text.encode())+anchor('GT710_BREENGL_MANIFEST_BULK', manifest)+anchor('GT710_ALLOCATIONS_BULK', allocations)+anchor('GT710_FINAL_BULK', final)
             serial += f'GT710_BREENGL_TOTAL bytes={len(startup)+len(payload)+len(final)} uploads=3 picture_bytes={len(payload)} pictures=1 unique=1\n'
             serial += 'SUITE_SEQUENCE READY breengel\n'
@@ -273,7 +273,7 @@ fn main(){
                         data = (p / f'gt710-breengel-{n:04}.rle').read_bytes()
                         serial += anchor(f'GT710_BREENGL_CHUNK {n}', data)
             serial += 'SUITE breengel DONE passed=1 failed=1 skipped=0 total=2\n'
-            serial += 'SUITE breengel MEMORY reclaimed=PASS free_before=100 free_after=100 allowance=64\n'
+            serial += 'SUITE breengel MEMORY reclaimed=PASS free_before=100 free_after=100 allowance=48\n'
             serial += anchor('GT710_BREENGL_MANIFEST_BULK', manifest) + anchor('GT710_FINAL_BULK', final)
             serial += f'GT710_BREENGL_TOTAL bytes={len(startup)+len(final)+2400000} uploads=4 picture_bytes=2400000 pictures=2 unique=1\n'
             serial += 'SUITE_SEQUENCE READY breengel\n'
