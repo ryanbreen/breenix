@@ -24,8 +24,11 @@
 //! - Live unmap also frees empty page tables. In #2729 the PID-1 runner's malloc
 //!   mapped each block; empty tables for visited 2 MiB windows stayed until exit,
 //!   retaining 29-35 frames per BreenGL run. The shared unmap path now reclaims
-//!   tables no mapping uses on both architectures. `BREENGEL TABLES before|after
-//!   runner_pte_kb=<kB>` reports the runner's own VmPTE separately from global owners.
+//!   tables no mapping uses on both architectures. `BREENGEL TABLES` at before,
+//!   finale, retired and after reports `runner_pte_kb`, `processes`, `all_pte_kb`
+//!   and `top_pte` (the largest min(3, processes) pid:name:KiB owners). Failed reads
+//!   produce `unavailable`; the GT 710 scorer and ownership-report parser reject
+//!   incomplete censuses (G35b). See the memory-record documentation for the format.
 //! - The suite's memory is reclaimed when `free_after` is at most
 //!   [`MEMORY_RECLAIM_ALLOWANCE_PAGES`] below `free_before`. `reclaimed=FAIL`
 //!   fails the suite like a failing case (`scripts/suite-verdict.py`), which also

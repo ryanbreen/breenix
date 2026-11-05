@@ -309,18 +309,23 @@ path now frees a table no surviving mapping uses, after unlink and walk-cache in
 The mmap hint also moves back over a freed range so later allocations can reuse it.
 Neither the 48-page allowance nor the sampling boundary changes.
 
-BreenGL emits an additional diagnostic at its ownership boundaries:
+BreenGL emits a table census at four ownership boundaries:
 
 ```text
-BREENGEL TABLES before runner_pte_kb=<kB>
-BREENGEL TABLES after runner_pte_kb=<kB>
+BREENGEL TABLES before|finale|retired|after runner_pte_kb=<kB> processes=<n> all_pte_kb=<kB> top_pte=<pid>:<name>:<kB>,...
 ```
 
-`runner_pte_kb` is the PID-1 runner's `VmPTE` from `/proc/self/status`, in KiB, or
-`unavailable` if that field cannot be read. Subtract before from after and divide by 4
-to express the runner's table growth in 4 KiB frames. This identifies the runner's share
-of the global `page_tables` owner; it is diagnostic evidence, not an allowance or a
-replacement for the `SUITE breengel MEMORY` samples and verdict.
+`runner_pte_kb` is the PID-1 runner's `VmPTE` from `/proc/self/status`, in KiB.
+`processes` counts the live processes read, `all_pte_kb` sums their VmPTE, and
+`top_pte` lists the largest min(3, processes) owners in descending KiB order.
+The producer emits `unavailable` when the runner field cannot be read or when the
+process census fails; a partial census is not reported as a complete sum.
+The GT 710 scorer and the ownership-report parser reject unavailable or malformed
+censuses (G35b), even when the separate MEMORY verdict passes.
+Subtract before from after and divide by 4 to express table growth in 4 KiB frames.
+The all-process growth identifies the process-owned share of the global `page_tables`
+delta; the remainder belongs to kernel tables. These records supplement the
+`SUITE breengel MEMORY` samples and verdict without changing the 48-page allowance.
 
 ## Writing a suite
 
