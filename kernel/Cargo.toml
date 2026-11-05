@@ -205,6 +205,7 @@ disable_x86_prod_init = []
 
 [dependencies]
 screen-capture = { path = "../libs/screen-capture" }
+input-abi = { path = "../libs/input-abi" }
 gpu-abi = { path = "../libs/gpu-abi", features = ["alloc"] }
 bootloader_api = { git = "https://github.com/rust-osdev/bootloader.git", rev = "707db11201b19541b7cfef84037866ee03aa0927" }
 embedded-graphics = "0.8.1"

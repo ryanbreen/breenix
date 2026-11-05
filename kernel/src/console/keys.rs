@@ -34,7 +34,7 @@ pub fn key(device: usize, code: u16, value: i32, modifiers: Modifiers, reserved:
         caps: CAPS[fg - 1].load(Ordering::Relaxed),
         num: NUM.load(Ordering::Relaxed),
     };
-    if code < 128 {
+    if code < 128 && device < CONSUMED.len() {
         let word = &CONSUMED[device][code as usize / 64];
         let bit = 1u64 << (code % 64);
         if value == RELEASE {

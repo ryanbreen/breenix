@@ -30,12 +30,6 @@ pub fn screen() -> Option<(u32, u32)> {
 pub fn report(port: u8, motion: Motion) {
     let (width, height) = match screen() {
         Some((width, height)) => (width as usize, height as usize),
-        #[cfg(target_arch = "aarch64")]
-        None => match crate::graphics::arm64_fb::FB_INFO_CACHE.get() {
-            Some(info) => (info.width, info.height),
-            None => return,
-        },
-        #[cfg(target_arch = "x86_64")]
         None => return,
     };
     let old = POINTER.load(Ordering::Acquire);

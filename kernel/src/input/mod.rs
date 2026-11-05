@@ -14,6 +14,7 @@
 //! tries the others; it does not allocate and does not log.
 
 pub mod event;
+pub mod stream;
 pub mod pointer;
 
 use core::sync::atomic::{AtomicU16, AtomicU64, AtomicU8, Ordering};
