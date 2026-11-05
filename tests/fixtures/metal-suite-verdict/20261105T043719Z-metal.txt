@@ -1,0 +1,476 @@
+GT710_CLOCK_STARTUP full=true gpc_khz=1306451 gpc_counter_khz=81653 memory_khz=900001 temperature_c=31 status=ok
+SUITE breengel START cases=401
+SUITE breengel MEMORY before free=2013757 heap_free_kb=51865 user_stacks=16 user_pages=2729 page_tables=65 page_cache=0 kernel_stacks=848 buffers=18579 other=16498 receipts=0 settle_ms=206
+SUITE breengel CASE raster/fill-rect PASS ms=21 sha256=87056d74474e8bbfced17edd5b9ffc49869412d29f40cb47328a758a1fc4fa44
+SUITE breengel CASE raster/fill-rect-clip-left PASS ms=13 sha256=41f92cb3c2b79184199e770fdde280e7178ea3046d449e71f9369a493b8f471a
+SUITE breengel CASE raster/fill-rect-offscreen-left PASS ms=53 sha256=b311d438e4e951130d568da3557b3d1adf409952ec8c6a82f8cff87eee5ff7e2
+SUITE breengel CASE raster/fill-rect-offscreen-top PASS ms=38 sha256=b311d438e4e951130d568da3557b3d1adf409952ec8c6a82f8cff87eee5ff7e2
+SUITE breengel CASE raster/fill-rect-overflow PASS ms=82 sha256=87ccb07d05cf4015758663ab1e0a15ba081bd19256380ee6c8fe385e657b8c9d
+SUITE breengel CASE raster/fill-rect-empty PASS ms=85 sha256=b311d438e4e951130d568da3557b3d1adf409952ec8c6a82f8cff87eee5ff7e2
+SUITE breengel CASE raster/draw-rect PASS ms=9 sha256=2a41c5ffba924834bc1b678de33268e4ad573d956d01672e977fa05d53db87c4
+SUITE breengel CASE raster/line-axes PASS ms=10 sha256=b18eb78070989342d0c661ccb81c2bee28d1fec66c5c4784ee6095a20311e610
+SUITE breengel CASE raster/line-bresenham PASS ms=19 sha256=124fc29a3d88c63d31526b4e1a38f164526b1f3fd622bf657c5131c30fb2a265
+SUITE breengel CASE raster/line-clip PASS ms=86 sha256=44c5f5b25aa85df60947488d2e2991d0feba5089cc4100dd9ad7ffb7f82835e6
+SUITE breengel CASE raster/circle-fill PASS ms=20 sha256=d57813a83f11f04e5b66553e2db2c2c888c00d27ff41723cd81095b073d62612
+SUITE breengel CASE raster/circle-fill-offscreen-left PASS ms=53 sha256=b311d438e4e951130d568da3557b3d1adf409952ec8c6a82f8cff87eee5ff7e2
+SUITE breengel CASE raster/circle-outline PASS ms=80 sha256=c065ba909e76919e904b738e9e879cb75933dc466a6650a5f47920e2a2a8117f
+SUITE breengel CASE raster/guard-pages PASS ms=15
+SUITE breengel CASE raster/extreme-work-bound PASS ms=486 sha256=b311d438e4e951130d568da3557b3d1adf409952ec8c6a82f8cff87eee5ff7e2
+SUITE breengel CASE raster/stride-padding PASS ms=12
+SUITE breengel CASE raster/surface-validate PASS ms=9
+SUITE breengel CASE raster/bpp3-bpp4 PASS ms=4
+SUITE breengel CASE raster/bgr-order PASS ms=8 sha256=340fcd2e21badcb34bc59e9471984aa7500e35e70db7d13de57a3d5bd51a4a29
+SUITE breengel CASE raster/x-byte PASS ms=13 sha256=563bada41d9ce17548b4fb04749f0dab62cff3b971a130acc5fcc98fa79fb56f
+SUITE breengel CASE raster/copy-row-clip PASS ms=4
+SUITE breengel CASE raster/premultiply PASS ms=10
+SUITE breengel CASE raster/alpha-over-examples PASS ms=10
+SUITE breengel CASE raster/alpha-over-sweep PASS ms=10
+SUITE breengel CASE raster/alpha-extremes PASS ms=14 sha256=bb00b62be955499d4f14234c432f97089d6b23f3ace09aabebeeed30f66e90fd
+SUITE breengel CASE raster/alpha-output PASS ms=11 sha256=44a09ab07f1711b809c21a26cbbcdc0ee66fb385f1f66f12b4114eb48f05ec0b
+SUITE breengel CASE raster/blit PASS ms=13 sha256=8c97c8caa0d0653f313472fc5e09b20f15e28f0cd1334dd39763563b1e752e7b
+SUITE breengel CASE raster/blit-clip PASS ms=14 sha256=b311d438e4e951130d568da3557b3d1adf409952ec8c6a82f8cff87eee5ff7e2
+SUITE breengel CASE raster/blit-alpha PASS ms=8 sha256=7dc051b30cf9027432aae64be14b73ef3cbc97198a337e54bb96475fbd2425e5
+SUITE breengel CASE raster/blit-straight PASS ms=8 sha256=5133d24f1f2217f2cf171c84fb33a829b4c12cb47e98bff85d03c98b07abcc11
+SUITE breengel CASE raster/blit-scale PASS ms=19 sha256=b311d438e4e951130d568da3557b3d1adf409952ec8c6a82f8cff87eee5ff7e2
+SUITE breengel CASE raster/clip-rect PASS ms=50 sha256=0f41cbca506849775460a065cdce93648a3ddb13c3a2ebe8827898350f36b9ad
+SUITE breengel CASE raster/clip-stack PASS ms=13 sha256=ca4c01445d139c550b980e8d46d285884c6b7b284da5c1e613090f5bb8824eb3
+SUITE breengel CASE raster/clip-empty PASS ms=93 sha256=b311d438e4e951130d568da3557b3d1adf409952ec8c6a82f8cff87eee5ff7e2
+SUITE breengel CASE raster/rounded-rect PASS ms=22 sha256=c8e5d4b64870752d571050a79c16bcfc3c2b3a133d27185338d0a84e6dff5df3
+SUITE breengel CASE raster/gradient PASS ms=15 sha256=b977f87623a6a0e9aa5d99d7feb3ff5dfb8f0935b14e09e5e9ef0a1d4a2dd085
+SUITE breengel CASE raster/damage-exact PASS ms=11
+SUITE breengel CASE raster/damage-noop PASS ms=92
+SUITE breengel CASE raster/damage-sound PASS ms=143 sha256=57b9e53953209392a14fd7bfbac14e028cc66705eb8c7c681165dc7f5bcaa94f
+SUITE breengel CASE raster/surface-owned PASS ms=3
+SUITE breengel CASE raster/cpu-pixels-zero PASS ms=415
+SUITE breengel CASE raster/cpu-render-planted PASS ms=11
+SUITE breengel CASE text/fonts-pinned PASS ms=20
+SUITE breengel CASE text/raster-identical PASS ms=1259
+SUITE breengel CASE text/metrics-independent PASS ms=4
+SUITE breengel CASE text/cmap-independent PASS ms=3
+SUITE breengel CASE text/bitmap-glyph PASS ms=12 sha256=76660ed5dbee52f0dfd82bc10f51a6231195d3c5899913bf2075da2b2a4ba037
+SUITE breengel CASE text/bitmap-scale PASS ms=3 sha256=e246447083eab79adb4d839b03e6824046dc9bafd21fcf6ac8ce0a978245dc54
+SUITE breengel CASE text/bitmap-unknown PASS ms=5 sha256=723f8b4e5abfecc4d6821863f77bfb4ab9e60e78160c91970ed3da541b7bf2e6
+SUITE breengel CASE text/noto-ascii PASS ms=82 sha256=f8faf6dde116c881873456d64ff953ed87cafee30719f7358330ccf5bbcbb75c
+SUITE breengel CASE text/noto-coverage PASS ms=7 sha256=ed57e0a5e1cccbcb2785d532f9caf7d76a6d488e114ab92c83ea25dd381f9c63
+SUITE breengel CASE text/ttf-glyph PASS ms=14 sha256=cbfbe276544402d801bcf4c345cf544f1244b54855dd3bf46a85c50215e5d5af
+SUITE breengel CASE text/ttf-sizes PASS ms=71 sha256=e367c682a9b8be543c8455a87f471824ace54adfa26b7d94bd554ec510ed3b16
+SUITE breengel VALUE text/ttf-advance advance=1928px expect=1928..1928px
+SUITE breengel CASE text/ttf-advance PASS ms=14
+SUITE breengel CASE text/ttf-kerning PASS ms=18
+SUITE breengel CASE text/ttf-width PASS ms=23
+SUITE breengel CASE text/ttf-clip-left PASS ms=27 sha256=1f6ae7657fcc3027fc979c20db3b0b75eb9ce6e02465f81a30f0abc3633935c2
+SUITE breengel CASE text/ttf-clip-top PASS ms=39 sha256=1f6ae7657fcc3027fc979c20db3b0b75eb9ce6e02465f81a30f0abc3633935c2
+SUITE breengel CASE text/ttf-subpixel PASS ms=117 sha256=cb543305d345573663914711e915c3463fe1be97057129cb85cdff594f5f4cd5
+SUITE breengel CASE text/ttf-notdef PASS ms=11 sha256=0474735ae94f2cd56da3c3c15e767cbaa02bb3700f57fc0b8dceeb7bd4ae3b4e
+SUITE breengel CASE text/utf8-text PASS ms=9 sha256=57f68d65297dac7de55b7a8b6a42d920e6dcc6137122fc0b903f738e8b6f08ef
+SUITE breengel CASE text/utf8-invalid PASS ms=1257 sha256=618e3697049c8bf736720844499752c7cd368ba08eed8cf9580d42137ea66f46
+SUITE breengel CASE text/compound-glyph PASS ms=3
+SUITE breengel CASE text/compound-transform PASS ms=18 sha256=d7d9b219ba72ff6c87edea80a6d8766ee8060fa83113f88c413e46b95c947391
+SUITE breengel CASE text/line-metrics PASS ms=10
+SUITE breengel CASE text/size-range PASS ms=4162
+SUITE breengel CASE text/many-args-abi PASS ms=17 sha256=a336115e757cb4799972d435c384d28c72c33b31465cc02345537e41f3be7585
+SUITE breengel CASE text/cache-hit PASS ms=10
+SUITE breengel CASE text/cache-bound PASS ms=5844
+SUITE breengel VALUE text/cache-evict-correct scratch-reset-replacements=2targets expect=2..2targets
+SUITE breengel CASE text/cache-evict-correct PASS ms=4663
+SUITE breengel CASE text/hidpi-sizes PASS ms=16 sha256=15bc2dfa53dadeb9fb75317776e59589471445c957ac5812795fc0ed3e009558
+SUITE breengel CASE text/fontwatch-reload PASS ms=344 sha256=34de1e88281bb6bcabf0e614a9ae4d52fee88eeb056d5a0fffd3dd8c6e084d03
+SUITE breengel CASE text/fontwatch-size PASS ms=311 sha256=2ef39ef9585bc432118703711514782c15c5b7306314a3b40ecc25cdd8ab8a11
+SUITE breengel CASE text/fontwatch-missing PASS ms=329 sha256=803d80a25398a62d35db7fa2abad82699f27577ab5d6dd2783e8dd2b72d08655
+SUITE breengel CASE text/fontwatch-malformed-config PASS ms=334 sha256=182fa9ce62f930b698366eff53007709a6dbbfa3324ab594e883774c88f92f8d
+SUITE breengel CASE text/fontwatch-partial PASS ms=316
+SUITE breengel CASE text/fontwatch-repeated PASS ms=380 sha256=22cfec947901005e1e4522ba3d296095fe2a2c1c6d0baffaaf3832ffea78285b
+SUITE breengel CASE text/fontwatch-independent PASS ms=395 sha256=22cfec947901005e1e4522ba3d296095fe2a2c1c6d0baffaaf3832ffea78285b
+SUITE breengel CASE text/fontwatch-idle PASS ms=334 sha256=34de1e88281bb6bcabf0e614a9ae4d52fee88eeb056d5a0fffd3dd8c6e084d03
+SUITE breengel CASE text/fontwatch-file-replaced PASS ms=564 sha256=34de1e88281bb6bcabf0e614a9ae4d52fee88eeb056d5a0fffd3dd8c6e084d03
+SUITE breengel CASE font-parser/truncated PASS ms=10
+SUITE breengel CASE font-parser/table-offsets PASS ms=40
+SUITE breengel CASE font-parser/loca-range PASS ms=31
+SUITE breengel CASE font-parser/loca-order PASS ms=10
+SUITE breengel CASE font-parser/numglyphs PASS ms=20
+SUITE breengel CASE font-parser/cmap4-segments PASS ms=33
+SUITE breengel CASE font-parser/cmap4-odd-segments PASS ms=0
+SUITE breengel CASE font-parser/cmap4-range-offset PASS ms=10
+SUITE breengel CASE font-parser/cmap12-groups PASS ms=31
+SUITE breengel CASE font-parser/glyf-endpoints PASS ms=13
+SUITE breengel CASE font-parser/glyf-points PASS ms=28
+SUITE breengel CASE font-parser/glyf-flags PASS ms=57
+SUITE breengel CASE font-parser/compound-depth PASS ms=27
+SUITE breengel CASE font-parser/compound-cycle PASS ms=27
+SUITE breengel CASE font-parser/compound-missing PASS ms=14
+SUITE breengel CASE font-parser/hmtx-compressed PASS ms=4
+SUITE breengel CASE font-parser/hmtx-truncated PASS ms=34
+SUITE breengel CASE font-parser/units-per-em PASS ms=31
+SUITE breengel CASE font-parser/coords-extreme PASS ms=243
+SUITE breengel VALUE font-parser/work-bound square-steps=91349steps expect=8192..214084steps
+SUITE breengel CASE font-parser/work-bound PASS ms=4639
+SUITE breengel CASE font-parser/alloc-bound PASS ms=50
+SUITE breengel CASE font-parser/corpus PASS ms=944
+SUITE breengel CASE inflate/stored PASS ms=0
+SUITE breengel CASE inflate/stored-length PASS ms=0
+SUITE breengel CASE inflate/fixed-huffman PASS ms=0
+SUITE breengel CASE inflate/dynamic-huffman PASS ms=0
+SUITE breengel CASE inflate/block-sequence PASS ms=0
+SUITE breengel CASE inflate/block-type-invalid PASS ms=0
+SUITE breengel CASE inflate/code-oversubscribed PASS ms=0
+SUITE breengel CASE inflate/code-incomplete PASS ms=0
+SUITE breengel CASE inflate/code-single PASS ms=0
+SUITE breengel CASE inflate/no-distance-codes PASS ms=0
+SUITE breengel CASE inflate/repeat-first PASS ms=0
+SUITE breengel CASE inflate/symbols-invalid PASS ms=0
+SUITE breengel CASE inflate/distance-too-far PASS ms=0
+SUITE breengel CASE inflate/distance-max PASS ms=2
+SUITE breengel CASE inflate/length-258 PASS ms=0
+SUITE breengel CASE inflate/truncated PASS ms=1
+SUITE breengel CASE inflate/zlib-header PASS ms=0
+SUITE breengel CASE inflate/adler32 PASS ms=0
+SUITE breengel CASE inflate/output-limit PASS ms=0
+SUITE breengel CASE inflate/byte-split PASS ms=7
+SUITE breengel CASE inflate/independent-fixtures PASS ms=40
+SUITE breengel CASE bmp/decode-fixtures PASS ms=44 sha256=5cdff2ba035ca618dc33cb4293c8b93db6496a058567ecb0bb9cb9dc85f8b834
+SUITE breengel CASE bmp/orientation PASS ms=38 sha256=7609014879290d139cebf488e17d2ec0e68956c3bb8df42fad08a5260b385877
+SUITE breengel CASE bmp/padding PASS ms=89 sha256=ee2b0baf8365f57c2fee6e94ba970c4ff5fd640ef30d7c66155f056e66c4a4ef
+SUITE breengel CASE bmp/encode-bytes PASS ms=0
+SUITE breengel CASE bmp/roundtrip PASS ms=72 sha256=6d881b7b59bc9e35d4c0adb3069a7e8ed9a00e44b90ff10840da833d94ef834e
+SUITE breengel CASE bmp/truncated PASS ms=36 sha256=e8e175e483640d12ebee48442ab6d46fd036b4e4b68b0a59c44d2d82eb16d8e1
+SUITE breengel CASE bmp/size-overflow PASS ms=38
+SUITE breengel CASE bmp/huge PASS ms=34
+SUITE breengel CASE bmp/unsupported PASS ms=0
+SUITE breengel CASE png-decode/gray-depths PASS ms=50 sha256=6ec2450dde1b1e116cda2434dd6d7c1979c5551d3f53de5a21dd956fb6dddd93
+SUITE breengel CASE png-decode/gray-alpha PASS ms=25 sha256=8c955761159fddc8fa3115de353ddb114e612259c728f1af5b29d71fb8c67f19
+SUITE breengel CASE png-decode/rgb PASS ms=25 sha256=003e3dda5efbee4a4c4ed33d5194b5372c77a0c288ad14ef58239b6171b51c10
+SUITE breengel CASE png-decode/rgba PASS ms=26 sha256=fb4290189309e83dece6258a1daa6565f7acda4c09163a5e5a97c329b9e31a2e
+SUITE breengel CASE png-decode/palette-depths PASS ms=29 sha256=425c1fb2eb058d4b1b5cf10ba528884980568265fb33ed41bae046ba419b92bf
+SUITE breengel CASE png-decode/trns-gray PASS ms=116 sha256=71c7dd01cce17d851d7ff38a86a744320f68f4e60b7f51e105f20ac7f9b457c3
+SUITE breengel CASE png-decode/trns-rgb PASS ms=45 sha256=423f129f09d883b7f2145db64f1a46f6df1e51569e432a11f549f36660703bde
+SUITE breengel CASE png-decode/trns-palette PASS ms=9 sha256=81f087e414cdf0a2b67944adf1bba487ea46c67bcb51a49a61e25829328dd023
+SUITE breengel CASE png-decode/invalid-combos PASS ms=19
+SUITE breengel CASE png-decode/rounding-16bit PASS ms=3 sha256=76644088bdf7babe7b8107162850b415c2519225976f565d48587a5bba07ebb9
+SUITE breengel CASE png-decode/filters PASS ms=137 sha256=9fe1a67392fe592afb15d24c7cc54794e606ef8a72a6dab597812486383a35af
+SUITE breengel CASE png-decode/filter-invalid PASS ms=0
+SUITE breengel CASE png-decode/interlace PASS ms=20 sha256=1783a49b22639397790e6a55205216c878eca08171a21b270cbaf41ae08ee0c9
+SUITE breengel CASE png-decode/interlace-small PASS ms=220 sha256=641b9dfeb164628216eebd740cb6ccc87d82a1df1947df810230f243146a532a
+SUITE breengel CASE png-decode/multi-idat PASS ms=24 sha256=c390d821c824e8013bd03acb2da7a4a600a59d7357283dcc9285ce6f96ed41c4
+SUITE breengel CASE png-decode/crc PASS ms=0
+SUITE breengel CASE png-decode/chunk-order PASS ms=24 sha256=c390d821c824e8013bd03acb2da7a4a600a59d7357283dcc9285ce6f96ed41c4
+SUITE breengel CASE png-decode/plte-required PASS ms=0
+SUITE breengel CASE png-decode/plte-size PASS ms=0
+SUITE breengel CASE png-decode/palette-index PASS ms=0
+SUITE breengel CASE png-decode/critical-unknown PASS ms=0
+SUITE breengel CASE png-decode/ancillary-ignored PASS ms=168 sha256=b1d3c5bc93d86bfb3bf3ca31fe0daf257919427e4f8ef6ca5effef3abfa1a6c7
+SUITE breengel CASE png-decode/ihdr-invalid PASS ms=0
+SUITE breengel CASE png-decode/chunk-length PASS ms=0
+SUITE breengel CASE png-decode/huge PASS ms=0
+SUITE breengel CASE png-decode/bomb PASS ms=1
+SUITE breengel CASE png-decode/truncated PASS ms=0
+SUITE breengel CASE png-decode/signature PASS ms=0
+SUITE breengel CASE png-decode/independent-fixtures PASS ms=458 sha256=6c3085f4cc79e959b57e267160896dd509b63e8fce0cccab53fb16b1514e885d
+SUITE breengel CASE png-decode/blit PASS ms=11 sha256=658a1c14e29c54a2e30aa450ef21e95d3f2483c71be2e5486d7671bc0d928ddf
+SUITE breengel CASE png-decode/from-disk PASS ms=25 sha256=b5c13b845ccc6b90c93bd69ad5b337f3af68030227c9a3a2eb5d66b192728234
+SUITE breengel CASE png-encode/decodes PASS ms=26 sha256=a32dc9b7bdadd462dc75a8e17348a4b4de747d0b42ddbe3747d7c966a5ef2254
+SUITE breengel CASE png-encode/stable PASS ms=13 sha256=817ef15202503e8f0075716cd43b88101bad7409100616f7b3488b1e23a1c919
+SUITE breengel CASE png-encode/format PASS ms=0
+SUITE breengel CASE png-encode/chunk-crc PASS ms=0
+SUITE breengel CASE png-encode/zlib-adler PASS ms=0
+SUITE breengel CASE png-encode/sizes PASS ms=392 sha256=206b02d6bcbfb4a8d55bc0fbdf83909bb06c38af4697059b331d94b81e5820fa
+SUITE breengel CASE png-encode/limits PASS ms=0
+SUITE breengel CASE widgets/button-draw PASS ms=21 sha256=e587a31544686df30b53bebb949bb3dd0ba1e4ba422eb7af81850e3a91125215
+SUITE breengel CASE widgets/button-click PASS ms=0
+SUITE breengel CASE widgets/button-cancel PASS ms=0
+SUITE breengel CASE widgets/button-disabled PASS ms=21 sha256=87211bd3a2786d3d63eb4a0fbc26b5b62b91cb12d42910914860800aa968cdaf
+SUITE breengel CASE widgets/checkbox-toggle PASS ms=26 sha256=6ac702e9204aa67c7e72a2ba5cda029a0c813c84f96a01fc2450f96f8f4137c3
+SUITE breengel CASE widgets/checkbox-space PASS ms=0
+SUITE breengel CASE widgets/slider-drag PASS ms=0
+SUITE breengel CASE widgets/slider-clamp PASS ms=0
+SUITE breengel CASE widgets/slider-keys PASS ms=0
+SUITE breengel CASE widgets/label-clip PASS ms=102 sha256=b8559399c36e6a6e6651ab276f4ce9120bde30b40861235352b4037fcfbe5c66
+SUITE breengel CASE widgets/tabbar-select PASS ms=1
+SUITE breengel CASE widgets/tabbar-overflow PASS ms=38 sha256=f7b1905d5bb5830e8ecc2ae4fe48010353060e7d84d2d49443d9aba736b9f84e
+SUITE breengel CASE widgets/scrollbar-drag PASS ms=0
+SUITE breengel CASE widgets/scrollbar-wheel PASS ms=0
+SUITE breengel CASE widgets/scrollbar-thumb PASS ms=20 sha256=e7d0ad8f71cc3391d0aa9b413a8d2e028c7882dd9fb6f02c261e892cf0f971c0
+SUITE breengel CASE widgets/menubar-open PASS ms=100 sha256=3d09b627635b8018da224b486c781e0af0ccc499284235e2edf47ff647f6052c
+SUITE breengel CASE widgets/menubar-shortcut PASS ms=0
+SUITE breengel CASE widgets/menu-keys PASS ms=1
+SUITE breengel CASE widgets/menu-disabled PASS ms=95 sha256=3d09b627635b8018da224b486c781e0af0ccc499284235e2edf47ff647f6052c
+SUITE breengel CASE widgets/menu-dismiss PASS ms=1
+SUITE breengel CASE widgets/layout-stack PASS ms=0
+SUITE breengel CASE widgets/focus-ring PASS ms=71 sha256=042bbe6ffd7c4d18e398314bc1bb0acfe71b5b4bf689cd68d9edadc06f021ad1
+SUITE breengel CASE widgets/no-change-ack PASS ms=2
+SUITE breengel CASE widgets/scale-2 PASS ms=31 sha256=03a947582137df0341922cb2abcbebce65af51bdce35a01e6b7e634171eec993
+SUITE breengel CASE text-entry/insert PASS ms=1
+SUITE breengel CASE text-entry/delete PASS ms=1
+SUITE breengel CASE text-entry/move PASS ms=1
+SUITE breengel CASE text-entry/select PASS ms=1
+SUITE breengel CASE text-entry/utf8 PASS ms=1
+SUITE breengel CASE text-entry/maxlen PASS ms=1
+SUITE breengel CASE text-entry/scroll-to-cursor PASS ms=33 sha256=d083edbc61dbffbdbcd92beb63d15d049787c2dfe4a56fe98ece82d40c0eef72
+SUITE breengel CASE text-entry/selection-text PASS ms=1
+SUITE breengel CASE text-entry/paste-insert PASS ms=1
+SUITE breengel CASE text-entry/focus-tab PASS ms=0
+SUITE breengel CASE text-entry/focus-shift-tab PASS ms=0
+SUITE breengel CASE text-entry/focus-skip-disabled PASS ms=0
+SUITE breengel CASE text-entry/focus-click PASS ms=0
+SUITE breengel CASE text-entry/filepicker-list PASS ms=2
+SUITE breengel CASE text-entry/filepicker-keys PASS ms=2
+SUITE breengel CASE text-entry/filepicker-path PASS ms=2
+SUITE breengel CASE text-entry/filepicker-mouse PASS ms=2
+SUITE breengel CASE text-entry/filepicker-scroll PASS ms=6
+SUITE breengel CASE text-entry/filepicker-errors PASS ms=98 sha256=8055a4c0684aa4e9bd330d0599051a4eb8f4aa225cb8b84cd355ebf4ce309041
+SUITE breengel CASE icons/states PASS ms=0
+SUITE breengel CASE icons/spring-steps PASS ms=0
+SUITE breengel CASE icons/step-invariance PASS ms=125 sha256=86adab90d74af348abbb7e892d9b97e83269fe2d97f330a731a20adfacee6686
+SUITE breengel CASE icons/settles PASS ms=165 sha256=b2770ddd8b183e2929ef19f4735497ef679b2af22926fcbddddeda6123a95bd3
+SUITE breengel CASE icons/interrupt PASS ms=4
+SUITE breengel CASE icons/reversal PASS ms=16
+SUITE breengel CASE icons/reset PASS ms=44 sha256=34618b3180266cada5f80d3ba303ecd597af78a87d70c55962d7a49e348c3f2d
+SUITE breengel CASE icons/bounded PASS ms=9082 sha256=150018441a3e0a7524e436f28dae6a223485b78e5b2dfa5cddacd71d9bbf38ef
+SUITE breengel CASE icons/easing PASS ms=0
+SUITE breengel VALUE icons/sin-approx worst-error-ppm=1090 expect=0..1200
+SUITE breengel CASE icons/sin-approx PASS ms=12
+SUITE breengel CASE icons/particles-bounded PASS ms=170 sha256=01e9aedbff7602e707449dd815c151a7a86b5fd0cabc1859aeda81490c56cbed
+SUITE breengel CASE icons/assets PASS ms=109 sha256=e275024c51db7bcb346d78a07727dbf9cf2442907f94ac7a7319b9a9e3aa8070
+SUITE breengel CASE windows/create PASS ms=6 sha256=5e9d5b686a0c4122c77d69144a5874dcbbcd05c1b4717bb11d8d730cc17a6659
+SUITE breengel CASE windows/create-zeroed PASS ms=4 sha256=53c755389e904555b4c8eb951b77dbb7ec857eb3dee49b39b1f99759960a2f3f
+SUITE breengel CASE windows/register-listed PASS ms=1
+SUITE breengel CASE windows/title-limit PASS ms=1
+SUITE breengel CASE windows/title-utf8 PASS ms=1
+SUITE breengel CASE windows/title-change PASS ms=1
+SUITE breengel CASE windows/size-zero PASS ms=0
+SUITE breengel CASE windows/size-too-big PASS ms=2
+SUITE breengel CASE windows/limit PASS ms=134
+SUITE breengel CASE windows/multi-window PASS ms=36 sha256=70bd8c70c78429758d9721f04bb715824f418b40cdac09122e8b40e7362059a1
+SUITE breengel CASE windows/destroy PASS ms=3 sha256=5e9d5b686a0c4122c77d69144a5874dcbbcd05c1b4717bb11d8d730cc17a6659
+SUITE breengel CASE windows/drop-destroys PASS ms=3
+SUITE breengel CASE windows/stale-id PASS ms=4
+SUITE breengel CASE windows/register-unwinds PASS ms=2
+SUITE breengel CASE windows/exit-cleanup PASS ms=15
+SUITE breengel CASE windows/exec-cleanup PASS ms=18
+SUITE breengel CASE windows/fork-no-mapping PASS ms=15 sha256=9503245a0161a939de15c2414db2d336e761822fa6cff8136e4148f58f1f782e
+SUITE breengel CASE windows/fork-no-authority PASS ms=15
+SUITE breengel CASE windows/commit-swaps PASS ms=9 sha256=df89c574380f33c72e694a76c981c2b856913f93e1dab27fbd2315b22c73f98a
+SUITE breengel CASE windows/acquire-replays-damage PASS ms=2313 sha256=a5d54d779ccb6113867d7498c25ea529453ee68ac5464e21b7619527b837a801
+SUITE breengel CASE windows/acquire-full-copy PASS ms=314 sha256=3972b17fee62b6d31e2852b054912ac724506a182ce0b2ac2cecc8a0966bd3b5
+SUITE breengel CASE windows/stale-base-commit PASS ms=266 sha256=55029e484f4861ea60502461d79eba295aa9a4d080f24939a40d0911fca6289e
+SUITE breengel CASE windows/commit-immutable PASS ms=25 sha256=22d915ec42c379b4568547a8edfcab02a3becb208e06d2ff6643d1460213745a
+SUITE breengel CASE windows/commit-busy PASS ms=1
+SUITE breengel CASE windows/thread-commit PASS ms=86
+SUITE breengel VALUE windows/release-order captures=513
+SUITE breengel CASE windows/release-order PASS ms=1572 sha256=878683381ac8e29509af777585b19044e9e23060d5f393e6197414841348a868
+SUITE breengel VALUE windows/acquire-timeout timeout-wait=201ms expect=200..300ms
+SUITE breengel CASE windows/acquire-timeout PASS ms=202
+SUITE breengel CASE windows/resize PASS ms=391 sha256=4d4d578a612be00b78c41b6312d00d533e50f822da0f92e293e63de2ec843cf9
+SUITE breengel CASE windows/resize-error PASS ms=1
+SUITE breengel CASE windows/resize-rlimit PASS ms=23
+SUITE breengel CASE windows/resize-rollback PASS ms=32
+SUITE breengel CASE windows/rlimit-accounting PASS ms=2
+SUITE breengel VALUE windows/capture-across-destroy mem-free-change=6112kb
+SUITE breengel CASE windows/capture-across-destroy PASS ms=464 sha256=77e09425d8ea1d5e9a63ce5eae14ea1f1799c8e14bc0782ed650eb3a0e88ddc5
+SUITE breengel VALUE windows/two-buffer-capture-load acquire-wait-max=8ms
+SUITE breengel VALUE windows/two-buffer-capture-load capture-max=17ms
+SUITE breengel CASE windows/two-buffer-capture-load PASS ms=3013
+SUITE breengel VALUE windows/remnant-on-death mem-free-change=588kb
+SUITE breengel CASE windows/remnant-on-death PASS ms=23 sha256=068fb0fa42a030dab01c8fd8608cd6a126070c8d54a2c4a70ab07ae3441fb23d
+SUITE breengel VALUE windows/churn buffer-allocs=200 expect=200..200
+SUITE breengel VALUE windows/churn mem-free-change=17608kb
+SUITE breengel CASE windows/churn PASS ms=115
+SUITE breengel CASE windows/distinct-content PASS ms=363
+SUITE breengel SCREEN windows/distinct-content end sha256=9fb7ae09341b0f6a24a097d14a872aa9053c329c05ade8df3594a1e8deb2a4bc mode=2560x1600 binding=2560x1600
+SUITE breengel CASE windows/raw-client PASS ms=39 sha256=9ab6b6355933216fef0e2b6a09fbeb872c32cf62484c471d24c1ca049e28df31
+SUITE breengel CASE windows/every-target PASS ms=1
+SUITE breengel CASE windows/commit-waits-render PASS ms=4540 sha256=22d915ec42c379b4568547a8edfcab02a3becb208e06d2ff6643d1460213745a
+SUITE breengel SCREEN windows/commit-waits-render end sha256=6dd90e8284a5870a6c74fa5a8f1ec2b6c667b9e4562669fad0aa9ebb1e324227 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE isolation/list-by-user PASS ms=69 sha256=d35ee741178c87dd3e1ecf3d0d1ae953680955023ec66e9731d4d55b67cdea66
+SUITE breengel CASE isolation/other-register PASS ms=31
+SUITE breengel CASE isolation/other-commit PASS ms=40 sha256=35b6444d2fb9316a7064175dd941aa5d61f0f6b8f88e121b257307ba35664a78
+SUITE breengel CASE isolation/other-position PASS ms=38
+SUITE breengel CASE isolation/other-inject PASS ms=39
+SUITE breengel CASE isolation/other-read PASS ms=37
+SUITE breengel CASE isolation/other-map PASS ms=230 sha256=5edd8600987031c3d30075f4e9b3c5ff2e3a642a760f6d78c745c661e6d26115
+SUITE breengel CASE isolation/other-resize PASS ms=38 sha256=2a20d6f0e80d59d7201003c79e3cb08f1f49dbba0a004bf051662ff841ad05fb
+SUITE breengel CASE isolation/other-destroy PASS ms=40 sha256=8daef2eb711edf50d9ab9d933fd4c9e4a4958a2db3e4947d94ef97437e7fe0ba
+SUITE breengel CASE isolation/other-tree PASS ms=37
+SUITE breengel CASE isolation/texture-map PASS ms=87
+SUITE breengel SCREEN isolation/texture-map end sha256=5fe48cac64d1ef80b1c2ca283fc62742b202902192926883d98afe78e2872192 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE isolation/composite-denied PASS ms=71
+SUITE breengel CASE isolation/claim-unprivileged PASS ms=29
+SUITE breengel CASE isolation/claim-twice PASS ms=17
+SUITE breengel CASE isolation/claim-after-death PASS ms=34
+SUITE breengel CASE isolation/compositor-authorized PASS ms=138 sha256=46f9f3a73afef18809d6974f22181b7293b960ed152e77a725831fb744b7f846
+SUITE breengel SCREEN isolation/compositor-authorized end sha256=9f95c02e869f075083442fc7de70efb60ecb46d32c3327527581b27adc09b727 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE isolation/pid-reuse PASS ms=503
+SUITE breengel CASE isolation/efault-create PASS ms=1
+SUITE breengel CASE isolation/efault-register PASS ms=1
+SUITE breengel CASE isolation/efault-list PASS ms=9
+SUITE breengel CASE isolation/efault-capture PASS ms=8
+SUITE breengel CASE isolation/efault-events PASS ms=127
+SUITE breengel CASE isolation/efault-inject PASS ms=29
+SUITE breengel CASE isolation/efault-composite PASS ms=1
+SUITE breengel CASE isolation/efault-mouse PASS ms=18
+SUITE breengel CASE isolation/efault-commit PASS ms=16 sha256=ab6cb747a79cb890911c4bad2c869a11a17a4c1871214a1445108131aca7f838
+SUITE breengel CASE isolation/efault-readback PASS ms=36
+SUITE breengel CASE isolation/efault-claim PASS ms=17
+SUITE breengel CASE isolation/efault-cross-page PASS ms=35
+SUITE breengel CASE isolation/efault-overflow PASS ms=9
+SUITE breengel CASE isolation/efault-readonly PASS ms=8
+SUITE breengel CASE isolation/cow-output PASS ms=24
+SUITE breengel CASE isolation/destroy-during-commit PASS ms=100
+SUITE breengel CASE isolation/test-hooks-absent PASS ms=114
+SUITE breengel CASE isolation/retired-ops PASS ms=0
+SUITE breengel CASE isolation/unknown-op PASS ms=0
+SUITE breengel CASE isolation/killable PASS ms=232
+SUITE breengel CASE isolation/quiet-errors PASS ms=12
+SUITE breengel CASE isolation/controls-latched PASS ms=20
+SUITE breengel CASE composition/compose-position PASS ms=477 sha256=1b10638a7548738152f8a358fbc0b307347a64625bd418b3749bc9a774307042
+SUITE breengel SCREEN composition/compose-position end sha256=1b10638a7548738152f8a358fbc0b307347a64625bd418b3749bc9a774307042 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/compose-overlap PASS ms=718 sha256=b579277a8fd7c54193a270a820184490b61131023e925bad69ff69708ce9871f
+SUITE breengel SCREEN composition/compose-overlap end sha256=b579277a8fd7c54193a270a820184490b61131023e925bad69ff69708ce9871f mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/compose-offscreen PASS ms=504 sha256=a3a4150e09d8fcf163a3109159811cbea49224801c841a93a88fcdc92cdab014
+SUITE breengel SCREEN composition/compose-offscreen end sha256=a3a4150e09d8fcf163a3109159811cbea49224801c841a93a88fcdc92cdab014 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/compose-fullscreen PASS ms=526 sha256=befc1c465b86339034ea88e20bfe129950d56f65400f16fe7b092c6fbbb2f8d3
+SUITE breengel SCREEN composition/compose-fullscreen end sha256=befc1c465b86339034ea88e20bfe129950d56f65400f16fe7b092c6fbbb2f8d3 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/compose-many PASS ms=1050 sha256=ababb6469caef76b01354dff6446ca7c65ea8b441b762100dc822582cab0a122
+SUITE breengel SCREEN composition/compose-many end sha256=28249cbdf0acefe04c4600405c705761ba5a5f024c87652676f50dff19e6b7f6 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/generation PASS ms=16
+SUITE breengel VALUE composition/no-compositor commit-ms=8ms expect=0..250ms
+SUITE breengel CASE composition/no-compositor PASS ms=492 sha256=c0c0d60355df9adbb07a1be65b6ef38a50d2845b43db6d9658c96bce5cd63de3
+SUITE breengel SCREEN composition/no-compositor end sha256=c0c0d60355df9adbb07a1be65b6ef38a50d2845b43db6d9658c96bce5cd63de3 mode=2560x1600 binding=2560x1600
+SUITE breengel VALUE composition/compositor-dies read-events-after-death-ms=0ms expect=0..250ms
+SUITE breengel VALUE composition/compositor-dies acquire-after-death-ms=8ms expect=0..250ms
+SUITE breengel CASE composition/compositor-dies PASS ms=262
+SUITE breengel CASE composition/eintr PASS ms=118
+SUITE breengel CASE composition/damage-metadata PASS ms=29
+SUITE breengel VALUE composition/damage-work damage-pixels=100px expect=100..100px
+SUITE breengel VALUE composition/damage-work ignore-damage-excess=29900px
+SUITE breengel CASE composition/damage-work PASS ms=169
+SUITE breengel SCREEN composition/damage-work end sha256=8ab59b7b2682333c01fd08add1f40eac11b67b22107382cb0ff3a90133c27d46 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/damage-screen PASS ms=349
+SUITE breengel SCREEN composition/damage-screen end sha256=3ea461b40db90ace6579b45fd51fea0092b45606941fb88a4b0c7233b90afd77 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/composite-record PASS ms=137
+SUITE breengel SCREEN composition/composite-record end sha256=fb03c0f35a8b056c8061a1ceaa85768651d396e11139fda87c1b1bf205d619ae mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/backend-error PASS ms=1094 sha256=bbc34064c20f5fe126e9127ab2b3317ceaadd5f256bd227da4ea7a3c432bc04d
+SUITE breengel SCREEN composition/backend-error end sha256=bbc34064c20f5fe126e9127ab2b3317ceaadd5f256bd227da4ea7a3c432bc04d mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/inflight-bound PASS ms=1175
+SUITE breengel SCREEN composition/inflight-bound end sha256=cdbfca1d7d5370ff64fc999c807efa85048ad951c56dd573eb7ffdbf263ae08a mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/no-change-commit PASS ms=120
+SUITE breengel SCREEN composition/no-change-commit end sha256=37d68cfecadffe24f6b639a94c3839d911d067ac54cd86d1d924a5ad2f74da5d mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/cursor-hidden PASS ms=478 sha256=7097c26482fd20f7818cc4bf2530c1eb2d0b390ce0dc45e81ca5e14eb4dd0cec
+SUITE breengel SCREEN composition/cursor-hidden end sha256=7097c26482fd20f7818cc4bf2530c1eb2d0b390ce0dc45e81ca5e14eb4dd0cec mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/cursor-no-trail PASS ms=937 sha256=7168cfaff5ccfeaf7f48a7c281b892342d32d44a85e904ba1ce7dd57f6a90ac3
+SUITE breengel SCREEN composition/cursor-no-trail end sha256=7168cfaff5ccfeaf7f48a7c281b892342d32d44a85e904ba1ce7dd57f6a90ac3 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/cursor-shape PASS ms=1178 sha256=f9fa14e5f19a352a34094ee07473032d999a18dbdd88682b35ab2f5be7dbe46b
+SUITE breengel SCREEN composition/cursor-shape end sha256=f9fa14e5f19a352a34094ee07473032d999a18dbdd88682b35ab2f5be7dbe46b mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/cursor-stationary-repaint PASS ms=669 sha256=27bf3ef2988902b5e82ba9c58865773e224e025e420ca4402ac3fff23e2e6547
+SUITE breengel SCREEN composition/cursor-stationary-repaint end sha256=27bf3ef2988902b5e82ba9c58865773e224e025e420ca4402ac3fff23e2e6547 mode=2560x1600 binding=2560x1600
+SUITE breengel VALUE composition/irq-bound irq-hold-gauge=2000us expect=2000..9223372036854775807us
+SUITE breengel VALUE composition/irq-bound irq-masked-max=63us expect=0..500us
+SUITE breengel CASE composition/irq-bound PASS ms=1894
+SUITE breengel SCREEN composition/irq-bound end sha256=ac30dfaa7fd6aa44f36c0a44b7bb25e1e2ad88372c1fa8f061ddc9ce45759801 mode=2560x1600 binding=2560x1600
+SUITE breengel VALUE composition/present-rate composites-per-second=60019millihertz expect=60000..9223372036854775807millihertz
+SUITE breengel CASE composition/present-rate PASS ms=2887
+SUITE breengel SCREEN composition/present-rate end sha256=cdbfca1d7d5370ff64fc999c807efa85048ad951c56dd573eb7ffdbf263ae08a mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/takeover-giveback PASS ms=497 sha256=572b94850eca08e2b0bad1a422cce44f7d1dbcc135af7d3c7cbcc6a502b64189
+SUITE breengel CASE composition/ownership-stack PASS ms=828 sha256=2a71f8e583de8712f05d4987872ef7e739cd5c1b6de1068846d2c2ed7941f64f
+SUITE breengel SCREEN composition/ownership-stack end sha256=2a71f8e583de8712f05d4987872ef7e739cd5c1b6de1068846d2c2ed7941f64f mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/gpu-composite PASS ms=490 sha256=2bb9aaf6a2f3753804881afd3fd9f82ba580ae4aacd8ba0335d76766f8d30899
+SUITE breengel SCREEN composition/gpu-composite end sha256=2bb9aaf6a2f3753804881afd3fd9f82ba580ae4aacd8ba0335d76766f8d30899 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/scale-2 PASS ms=586 sha256=6e12fbd8296f8b76ec787918d44d6fadd727a93a4c28cb0db891abde3753c7fe
+SUITE breengel SCREEN composition/scale-2 end sha256=6e12fbd8296f8b76ec787918d44d6fadd727a93a4c28cb0db891abde3753c7fe mode=2560x1600 binding=2560x1600
+SUITE breengel CASE composition/target-lifetime PASS ms=574 sha256=0596b604a887fb1761570661629576409259c3ce2dcaa71261f6a1df7610d9c7
+SUITE breengel CASE composition/fbinfo-geometry PASS ms=286
+SUITE breengel SCREEN composition/fbinfo-geometry end sha256=cdbfca1d7d5370ff64fc999c807efa85048ad951c56dd573eb7ffdbf263ae08a mode=2560x1600 binding=2560x1600
+SUITE breengel CASE events/key-press-release PASS ms=25
+SUITE breengel CASE events/key-text PASS ms=26
+SUITE breengel CASE events/key-modifiers PASS ms=26
+SUITE breengel CASE events/key-repeat PASS ms=26
+SUITE breengel CASE events/text-event PASS ms=26
+SUITE breengel CASE events/mouse-move PASS ms=26
+SUITE breengel CASE events/mouse-buttons PASS ms=27
+SUITE breengel CASE events/scroll PASS ms=26
+SUITE breengel CASE events/focus PASS ms=26
+SUITE breengel CASE events/close-requested PASS ms=25
+SUITE breengel CASE events/resized PASS ms=38
+SUITE breengel CASE events/resize-failed PASS ms=1
+SUITE breengel CASE events/resize-request PASS ms=55 sha256=6eb61cde9bfbc2c28251b2af2a607616336b4cef70a6253a234a9f18fa5bb98e
+SUITE breengel CASE events/font-changed PASS ms=676
+SUITE breengel CASE events/compositor-changed PASS ms=40
+SUITE breengel CASE events/unknown-type PASS ms=0
+SUITE breengel CASE events/order PASS ms=21
+SUITE breengel CASE events/serial PASS ms=44
+SUITE breengel CASE events/processed-serial PASS ms=31
+SUITE breengel CASE events/processed-not-polled PASS ms=33
+SUITE breengel CASE events/processed-at-acquire PASS ms=33
+SUITE breengel CASE events/no-change-after-redraw PASS ms=31
+SUITE breengel CASE events/processed-ack PASS ms=32 sha256=6eb61cde9bfbc2c28251b2af2a607616336b4cef70a6253a234a9f18fa5bb98e
+SUITE breengel CASE events/overflow PASS ms=22
+SUITE breengel VALUE events/wait-timeout timeout-50ms=51ms expect=50..150ms
+SUITE breengel VALUE events/wait-timeout timeout-200ms=200ms expect=200..300ms
+SUITE breengel CASE events/wait-timeout PASS ms=253
+SUITE breengel CASE events/wait-eintr PASS ms=117
+SUITE breengel CASE events/wait-targeted PASS ms=274
+SUITE breengel CASE events/pollable PASS ms=92
+SUITE breengel CASE events/per-window PASS ms=23
+SUITE breengel CASE events/after-destroy PASS ms=21
+SUITE breengel CASE events/abi-layout PASS ms=21
+SUITE breengel CASE events/no-overloaded-fields PASS ms=26
+SUITE breengel CASE events/malformed-write PASS ms=31
+SUITE breengel CASE scanout/mode-set PASS ms=218
+SUITE breengel SCREEN scanout/mode-set end sha256=531e6c309905c944133b9eb36ded6f1585b3f799d2a58924adb77e5f48beab90 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE scanout/device-path PASS ms=221
+SUITE breengel SCREEN scanout/device-path end sha256=60a5976f04ec67abc49098d7aca2831fe9e2928f60e8ef9448bd849c408b233f mode=2560x1600 binding=2560x1600
+SUITE breengel CASE scanout/changing-scene PASS ms=1035 sha256=0554e3f6ca626032b1379388cabd58a2225e684eecf7994f725fdf1853221aea
+SUITE breengel SCREEN scanout/changing-scene end sha256=cdbfca1d7d5370ff64fc999c807efa85048ad951c56dd573eb7ffdbf263ae08a mode=2560x1600 binding=2560x1600
+SUITE breengel CASE scanout/full-destination PASS ms=725 sha256=ca32e82c06173611c394d3fdb2077782b6a51ad92911a4ff13b5c27573d73c99
+SUITE breengel SCREEN scanout/full-destination end sha256=ca32e82c06173611c394d3fdb2077782b6a51ad92911a4ff13b5c27573d73c99 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE scanout/binding PASS ms=820 sha256=7a238e73ab97683e8e724806266d4f92386b7fe993bd645160851e11bfe0bd05
+SUITE breengel SCREEN scanout/binding end sha256=7a238e73ab97683e8e724806266d4f92386b7fe993bd645160851e11bfe0bd05 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE scanout/completion PASS ms=263
+SUITE breengel SCREEN scanout/completion end sha256=4082bef0610d323bb612bc08015e1a79f1c956e06113fd8c60ed4986d3d98e47 mode=2560x1600 binding=2560x1600
+SUITE breengel VALUE scanout/atomic-record distinct-commits=20 expect=5..20
+SUITE breengel CASE scanout/atomic-record PASS ms=2647 sha256=632fb6063b296d196a37f56f764a1bec6462f004ab9c7e3f2ff471fca34db40f
+SUITE breengel SCREEN scanout/atomic-record end sha256=cdbfca1d7d5370ff64fc999c807efa85048ad951c56dd573eb7ffdbf263ae08a mode=2560x1600 binding=2560x1600
+SUITE breengel CASE scanout/window-commits PASS ms=183
+SUITE breengel SCREEN scanout/window-commits end sha256=37897ae06df3750e90afd04b88a344af830e5f8ae5a3450db2663d50ed840fc0 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE scanout/format-canonical PASS ms=490 sha256=e7a5bb0e7efef21c58707e879a56b0b45f698c31cd4f25cb9620c6f1e60ccdab
+SUITE breengel SCREEN scanout/format-canonical end sha256=e7a5bb0e7efef21c58707e879a56b0b45f698c31cd4f25cb9620c6f1e60ccdab mode=2560x1600 binding=2560x1600
+SUITE breengel CASE scanout/root-only PASS ms=243
+SUITE breengel SCREEN scanout/root-only end sha256=e09846442686a1bb9ab5e8e00a560e31348239562100a4cdc0d62fce52674377 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE scanout/fault-skipped-transfer PASS ms=711 sha256=6011e8daf9af019a6eae65ab29995ffd7d013cf8410c4bba95b0439b2678b898
+SUITE breengel SCREEN scanout/fault-skipped-transfer end sha256=6011e8daf9af019a6eae65ab29995ffd7d013cf8410c4bba95b0439b2678b898 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE scanout/fault-wrong-resource PASS ms=724 sha256=d8bc8c40c031ec6d1e22a8160c71a037a2a7a50eb3e4ed6eb1ce7298c6cc1535
+SUITE breengel SCREEN scanout/fault-wrong-resource end sha256=d8bc8c40c031ec6d1e22a8160c71a037a2a7a50eb3e4ed6eb1ce7298c6cc1535 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE scanout/fault-stale-fence PASS ms=697 sha256=95665474142fc0622bccc29256cac79c3f9000d6e36f1b992c5da125a47ed9f7
+SUITE breengel SCREEN scanout/fault-stale-fence end sha256=95665474142fc0622bccc29256cac79c3f9000d6e36f1b992c5da125a47ed9f7 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE scanout/fault-outside-damage PASS ms=728 sha256=f610ff6d213b5da8b601384cbfd843329917f0cf1e2e6ae27369ef0adfed6fca
+SUITE breengel SCREEN scanout/fault-outside-damage end sha256=f610ff6d213b5da8b601384cbfd843329917f0cf1e2e6ae27369ef0adfed6fca mode=2560x1600 binding=2560x1600
+SUITE breengel CASE scanout/boundary-stated PASS ms=224
+SUITE breengel SCREEN scanout/boundary-stated end sha256=f610ff6d213b5da8b601384cbfd843329917f0cf1e2e6ae27369ef0adfed6fca mode=2560x1600 binding=2560x1600
+SUITE breengel CASE scanout/present-flip PASS ms=1120 sha256=f44a5ae214d46909a1923f913e02a1ddef936bd29dc4876925bae501945f6bf4
+SUITE breengel SCREEN scanout/present-flip end sha256=f44a5ae214d46909a1923f913e02a1ddef936bd29dc4876925bae501945f6bf4 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE scanout/hidpi-mode PASS ms=860 sha256=3f2879422970f9f0ba7e673af4ae4df540701a457c9c124912488f32cad4cc20
+SUITE breengel SCREEN scanout/hidpi-mode end sha256=3f2879422970f9f0ba7e673af4ae4df540701a457c9c124912488f32cad4cc20 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE panel/stage-layout PASS ms=494 sha256=dbfec8a861ecfe683a0bfa76c205305f777bce2907d3712492b2b2af43ecb589
+SUITE breengel CASE panel/tile-stamps PASS ms=1004 sha256=1de1c78749b24af86dd63278ad3b30bab5f443d5aa78d9ff0acfcc4ca1050158
+SUITE breengel CASE panel/tile-thumbnail PASS ms=154 sha256=ed2329411155441edd6e1db57ad0632e7fae81c6d0af514ad2e5ec4ae9220689
+SUITE breengel CASE panel/spotlight-picture PASS ms=509 sha256=555fc3d980d3f469708c2c5ca91f5910e3b7fc743422df680a67895eac145da3
+SUITE breengel CASE panel/spotlight-timing PASS ms=891 sha256=d9c94cc5ec7fb25e1799991959883c463e020fae0ae71c70fc72152b6ebebaa1
+SUITE breengel CASE panel/milestone-ribbon PASS ms=233 sha256=ec46f44f52ddbed2e1f0ce6a7eb02a3af1d56257e1fa332ca55b8746b149d54e
+SUITE breengel CASE panel/finale PASS ms=399 sha256=be365cd6ce052c4adeb0022bbae0f17369b0411f98a3c9ed598455e26b43179f
+SUITE breengel CASE panel/deterministic PASS ms=103 sha256=09eaebfa3c94f8ef969f559ca1f4ea84f3335d4418c109db9f505a7e0888f2ef
+SUITE breengel CASE panel/judged-frame-shown PASS ms=4914
+SUITE breengel CASE panel/serial-agreement PASS ms=960
+SUITE breengel CASE panel/quiet-window PASS ms=774
+SUITE breengel SCREEN panel/quiet-window end sha256=7a5fab41af7e9f6bda7713e7155d5970112903493c0e16330ae10883a3cc4963 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE panel/boot-ribbon PASS ms=3041
+SUITE breengel CASE panel/boundary-notice PASS ms=539
+SUITE breengel SCREEN panel/boundary-notice end sha256=cd1c8a62e435396d8fda945aedc721556b74d1042c3aa16299723ef6b2f5b222 mode=2560x1600 binding=2560x1600
+SUITE breengel CASE panel/stage-hidpi PASS ms=193 sha256=b6ffbe5068e77d43214fc3ea4655b56211f3086835aabc85e5c41531a9fe22f5
+SUITE breengel CASE panel/handoff PASS ms=473 sha256=63fcc122fdc7ce54db02f24a43c995adde9e9212313f75d6ad0fded7de28b5bd
+SUITE breengel CASE panel/between-cases PASS ms=686 sha256=c11fb51909370336dbfa6e1a5352cfa42fd6c29691f8664df4b15aae763f87bf
+SUITE breengel CASE panel/cursor-restore PASS ms=944 sha256=cc98b1551d9e49165d38b825f6b49872c7f96d81d5938f13cd429b95fcb7cfca
+SUITE breengel CASE panel/cursor-trail-detected PASS ms=819 sha256=719522624c9abdda0c790888a312356f8c4ed76f64fa8bcabf2c0770a500c4f5
+SUITE breengel CASE panel/kernel-screens PASS ms=3371 sha256=b860a622e3e4d2c66fae61ff4a0646a658d3032bc1d25a6548e5008b92ab26f1
+SUITE breengel DONE passed=401 failed=0 skipped=0 total=401
+SUITE breengel MEMORY after free=2013739 heap_free_kb=48680 user_stacks=12 user_pages=2747 page_tables=69 page_cache=0 kernel_stacks=848 buffers=18579 other=16498 receipts=0 settle_ms=205
+SUITE breengel MEMORY reclaimed=PASS free_before=2013757 free_after=2013739 allowance=48
+SUITE breengel ELAPSED ms=303316
