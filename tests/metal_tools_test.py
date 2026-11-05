@@ -1303,6 +1303,7 @@ class DriverTest(StateTest):
         d = self.driver
         d.args.mode, d.args.suite = 'suite', 'console'
         d.console_send = Mock()
+        d.wait_replay_ack = Mock(return_value=True)
         record = 'SUITE console HOSTKEY keys/alt-fn seq=4 keys=alt-f2,a'
         with patch.object(boot.hostkeys.time, 'sleep'):
             d.on_line(record)  # before the kernel starts: not a case's record
@@ -1312,9 +1313,10 @@ class DriverTest(StateTest):
             d.on_line(record)  # a serial replay of the same record is answered once
             d.on_line('SUITE console HOSTKEY keys/alt-fn seq=5 keys=alt-f2')
         self.assertEqual([c.args[0] for c in d.console_send.call_args_list], [
-            'BXKEY 0400000000000000,04003b0000000000,0400000000000000,0000000000000000',
-            'BXKEY 0000040000000000,0000000000000000',
-            'BXKEY 0400000000000000,04003b0000000000,0400000000000000,0000000000000000'])
+            'BXKEY @0000000000000001:4129063a 0400000000000000,04003b0000000000,0400000000000000,0000000000000000',
+            'BXKEY @0000000000000002:070f28f9 0000040000000000,0000000000000000',
+            'BXKEY @0000000000000003:3052f883 0400000000000000,04003b0000000000,0400000000000000,0000000000000000'])
+        self.assertEqual([c.args for c in d.wait_replay_ack.call_args_list], [(1,), (2,), (3,)])
         logged = [c.kwargs['message'] for c in d.event.call_args_list if c.args[0] == 'hostkeys']
         self.assertEqual(len(logged), 2)
         self.assertIn('seq=4 keys=alt-f2,a sent via host-channel', logged[0])
