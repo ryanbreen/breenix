@@ -139,6 +139,9 @@ pub(super) fn send_to(windows: &[Window], index: usize, input: Input) {
     let Some(w) = windows.get(index).filter(|w| w.window_id != 0) else {
         return;
     };
+    send_id(w.window_id, input);
+}
+pub(super) fn send_id(id: u64, input: Input) {
     let mut event = session::event(input);
     let mut context = SOURCE.lock().unwrap();
     let source = context.event;
@@ -167,7 +170,7 @@ pub(super) fn send_to(windows: &[Window], index: usize, input: Input) {
     context.accounted |= raw;
     drop(context);
     enqueue(
-        w.window_id,
+        id,
         Queued {
             event,
             source: source.serial,

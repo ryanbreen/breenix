@@ -355,10 +355,4 @@ pub(super) fn trim(s: &[u8]) -> &[u8] {
     &s[start..end]
 }
 
-// ─── Input Routing ──────────────────────────────────────────────────────────
-
-pub(super) fn send_focus_event(windows: &[Window], win_idx: usize, gained: bool) {
-    send_to(windows, win_idx, if gained { Input::FocusGained } else { Input::FocusLost });
-}
-
 // ─── Window Discovery ───────────────────────────────────────────────────────

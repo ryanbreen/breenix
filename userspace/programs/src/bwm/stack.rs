@@ -2,6 +2,7 @@
 
 pub(super) struct Stack {
     order: Vec<u64>,
+    creation: Vec<u64>,
     chromeless: Vec<u64>,
     minimized: Vec<u64>,
     focus: Option<u64>,
@@ -9,7 +10,7 @@ pub(super) struct Stack {
 
 impl Stack {
     pub(super) fn new() -> Self {
-        Self { order: Vec::new(), chromeless: Vec::new(), minimized: Vec::new(), focus: None }
+        Self { order: Vec::new(), creation: Vec::new(), chromeless: Vec::new(), minimized: Vec::new(), focus: None }
     }
     pub(super) fn order(&self) -> &[u64] { &self.order }
     pub(super) fn focus(&self) -> Option<u64> { self.focus }
@@ -30,6 +31,7 @@ impl Stack {
     }
     pub(super) fn add(&mut self, id: u64, chromeless: bool) -> (Option<u64>, Option<u64>) {
         if self.order.contains(&id) { return (self.focus, self.focus); }
+        self.creation.push(id);
         if chromeless { self.chromeless.push(id); }
         self.order.push(id);
         self.raise(id)
@@ -44,6 +46,18 @@ impl Stack {
         self.order.insert(index, id);
         self.transition(Some(id))
     }
+    pub(super) fn cycle(&self, reverse: bool) -> Option<u64> {
+        let visible: Vec<_> = self.creation.iter().copied().filter(|id| !self.minimized(*id)).collect();
+        if visible.is_empty() { return None; }
+        let current = visible.iter().position(|id| Some(*id) == self.focus);
+        let index = match current {
+            Some(i) if reverse => (i + visible.len() - 1) % visible.len(),
+            Some(i) => (i + 1) % visible.len(),
+            None if reverse => visible.len() - 1,
+            None => 0,
+        };
+        Some(visible[index])
+    }
     pub(super) fn minimize(&mut self, id: u64) -> (Option<u64>, Option<u64>) {
         if !self.order.contains(&id) || self.minimized(id) { return (self.focus, self.focus); }
         self.minimized.push(id);
@@ -56,9 +70,27 @@ impl Stack {
     }
     pub(super) fn remove(&mut self, id: u64) -> (Option<u64>, Option<u64>) {
         self.order.retain(|&item| item != id);
+        self.creation.retain(|&item| item != id);
         self.chromeless.retain(|&item| item != id);
         self.minimized.retain(|&item| item != id);
         let next = if self.focus == Some(id) { self.top() } else { self.focus };
         self.transition(next)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum FocusNotice { Lost(u64), Gained(u64) }
+
+pub(super) fn publish_focus(
+    (old, next): (Option<u64>, Option<u64>),
+    mut send: impl FnMut(FocusNotice),
+    publish: impl FnOnce(),
+) {
+    if old != next {
+        if let Some(id) = old { send(FocusNotice::Lost(id)); }
+    }
+    publish();
+    if old != next {
+        if let Some(id) = next { send(FocusNotice::Gained(id)); }
     }
 }

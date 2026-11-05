@@ -291,7 +291,7 @@ fn main() {
             for action in &hotkey_actions {
                 match action {
                     HotkeyAction::FocusNext | HotkeyAction::FocusPrev => {
-                        if let Some(id) = cycle_target(&stack, matches!(action, HotkeyAction::FocusPrev)) {
+                        if let Some(id) = stack.cycle(matches!(action, HotkeyAction::FocusPrev)) {
                             let transition = stack.raise(id);
                             publish_transition(&windows, &stack, transition);
                             compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
@@ -637,16 +637,15 @@ fn main() {
 }
 
 
-/// Send the current focus notices after a policy operation; u4 owns pre-raise ordering.
+/// Publish focus notices around the kernel stack update.
 fn publish_transition(windows: &[Window], stack: &Stack, transition: (Option<u64>, Option<u64>)) {
-    if transition.0 != transition.1 {
-        for (id, gained) in [(transition.0, false), (transition.1, true)] {
-            if let Some(index) = id.and_then(|id| windows.iter().position(|w| w.window_id == id)) {
-                send_focus_event(windows, index, gained);
-            }
-        }
-    }
-    update_kernel_z_order(windows, stack);
+    stack::publish_focus(transition, |notice| {
+        let (id, input) = match notice {
+            stack::FocusNotice::Lost(id) => (id, Input::FocusLost),
+            stack::FocusNotice::Gained(id) => (id, Input::FocusGained),
+        };
+        input::send_id(id, input);
+    }, || update_kernel_z_order(windows, stack));
 }
 
 /// Reconcile membership without disturbing surviving ids' policy order.
@@ -666,17 +665,4 @@ fn reconcile_stack(windows: &[Window], stack: &mut Stack) -> bool {
     // LIST can also change dimensions and therefore the content origin.
     update_kernel_z_order(windows, stack);
     !removed.is_empty()
-}
-
-fn cycle_target(stack: &Stack, reverse: bool) -> Option<u64> {
-    let visible: Vec<_> = stack.order().iter().copied().filter(|id| !stack.minimized(*id)).collect();
-    if visible.is_empty() { return None; }
-    let current = visible.iter().position(|id| Some(*id) == stack.focus());
-    let index = match current {
-        Some(i) if reverse => (i + visible.len() - 1) % visible.len(),
-        Some(i) => (i + 1) % visible.len(),
-        None if reverse => visible.len() - 1,
-        None => 0,
-    };
-    Some(visible[index])
 }
