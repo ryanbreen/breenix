@@ -1319,12 +1319,36 @@ class DriverTest(StateTest):
         self.assertEqual([c.args for c in d.wait_replay_ack.call_args_list], [(1,), (2,), (3,)])
         logged = [c.kwargs['message'] for c in d.event.call_args_list if c.args[0] == 'hostkeys']
         self.assertEqual(len(logged), 2)
-        self.assertIn('seq=4 keys=alt-f2,a sent via host-channel', logged[0])
+        self.assertIn('seq=4 keys=alt-f2,a sent via replay', logged[0])
         # A console boot types no host keys.
         d.args.mode, d.hostkey_watcher = 'console', None
         d.console_send.reset_mock()
         d.on_line('SUITE console HOSTKEY keys/alt-fn seq=6 keys=alt-f2')
         self.assertFalse(d.console_send.called)
+
+    def test_host_text_transport_fits_the_existing_two_second_case_wait(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'window-manager'
+        elapsed = [0.0]
+        chunks = []
+        def run(command, **kwargs):
+            # Retained 080812Z spent 2.5 seconds sending this request. Model
+            # four milliseconds per tmux process, in addition to pacing.
+            elapsed[0] += 0.004
+            if 'input' in kwargs:
+                chunks.append(kwargs['input'])
+        def sleep(seconds):
+            elapsed[0] += seconds
+        d.wait_replay_ack = Mock(return_value=True)
+        d.hostkey_watcher = boot.hostkeys.Watcher(
+            boot.hostkeys.ReplayKeys(d.replay_send, pace=sleep), 'replay', lambda _: None)
+        d.kernel_started = 120
+        with patch.object(boot.subprocess, 'run', side_effect=run), patch.object(boot.time, 'sleep', side_effect=sleep):
+            d.on_line('SUITE window-manager HOSTKEY focus/text-exact seq=398 keys=shift-h,e,l,l,o,space,shift-w,o,r,l,d')
+        self.assertEqual(len(d.wait_replay_ack.call_args_list), 11)
+        self.assertTrue(chunks)
+        self.assertTrue(all(len(chunk) <= 8 for chunk in chunks))
+        self.assertLess(elapsed[0], 2.0)
 
     def test_failed_probe_keeps_failure_and_waits_for_kernel_producers(self):
         d = self.driver
