@@ -98,6 +98,21 @@ pub fn flush_user_all(root: u64) {
     let _ = root;
 }
 
+/// Invalidate intermediate table descriptors before returning their frames.
+/// x86's root-targeted full shootdown reloads CR3 on CPUs that may cache the
+/// root, dropping paging-structure caches as well as leaf translations.
+/// ARM64 broadcasts an ASID invalidation including intermediate walk entries;
+/// process roots use the shared dispatch ASID (see `ttbr0::USER_ASID_TTBR0`).
+pub fn flush_user_tables(root: u64) {
+    #[cfg(target_arch = "x86_64")]
+    flush_user_all(root);
+    #[cfg(target_arch = "aarch64")]
+    {
+        let _ = root;
+        tlb::flush_asid((crate::arch_impl::aarch64::ttbr0::USER_ASID_TTBR0 >> 48) as u16);
+    }
+}
+
 /// Invalidate removed user leaves before their frames can be released.
 /// x86 uses one root-targeted full shootdown for a multi-page set; ARM64
 /// broadcasts the addresses for all ASIDs with one pair of data barriers.

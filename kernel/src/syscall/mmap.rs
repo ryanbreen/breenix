@@ -990,6 +990,25 @@ pub(crate) fn unmap_range(
         process.vmas.extend(prefix.into_iter().chain(suffix));
     }
 
+    // Leaf invalidation is finished, and the surviving VMAs now define the
+    // floor/ceiling for empty table windows. The process manager keeps this
+    // tree stable through unlink, walk-cache invalidation and allocator return.
+    let floor = process
+        .vmas
+        .iter()
+        .map(|vma| vma.end.as_u64())
+        .filter(|end| *end <= addr)
+        .max()
+        .unwrap_or(0);
+    let ceiling = process
+        .vmas
+        .iter()
+        .map(|vma| vma.start.as_u64())
+        .filter(|start| *start >= end_addr)
+        .min()
+        .unwrap_or(crate::memory::layout::USER_STACK_REGION_END);
+    page_table.reclaim_empty_tables(addr..end_addr, floor..ceiling);
+
     process.memory_locks.remove(addr, end_addr);
     // A later mapping can use the range again. Placement searches down from the
     // mmap hint (`place_below_hint`), so a range freed above it brings the hint

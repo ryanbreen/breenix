@@ -539,6 +539,85 @@ impl OwnedTableFrames {
     }
 }
 
+/// Custody-aware adapter for both the x86 mapper and ARM64 arch_stub mapper.
+/// Both expose native descriptors through `descriptor_entry`; only frames in
+/// this address space's allocation ledger can become reclaimable children.
+struct ReclaimTables<'a>(&'a mut ProcessPageTable);
+
+impl crate::memory::table_reclaim::TableOps for ReclaimTables<'_> {
+    type Table = PhysAddr;
+    type Frame = FrameLease;
+
+    fn child_table(&self, table: PhysAddr, index: usize) -> Option<PhysAddr> {
+        if table == self.0.level_4_frame.start_address() && !self.0.owned_root_slots.contains(index)
+        {
+            return None;
+        }
+        // SAFETY: the planner starts at our root and descends through owned
+        // table descriptors under PROCESS_MANAGER, with fork copying excluded.
+        let raw = (unsafe { descriptors(table) })[index].load(Ordering::Relaxed);
+        let entry = descriptor_entry(raw);
+        let flags = entry.flags();
+        if !flags.contains(PageTableFlags::PRESENT) || flags.contains(PageTableFlags::HUGE_PAGE) {
+            return None;
+        }
+        let child = entry.addr();
+        self.0
+            .tables
+            .leases
+            .iter()
+            .any(|lease| lease.frame().start_address() == child)
+            .then_some(child)
+    }
+
+    fn entry_empty(&self, table: PhysAddr, index: usize) -> bool {
+        // SAFETY: child_table admitted this owned frame under the same lock.
+        (unsafe { descriptors(table) })[index].load(Ordering::Relaxed) == 0
+    }
+
+    fn unlink(&mut self, parent: PhysAddr, index: usize) -> FrameLease {
+        let child = self
+            .child_table(parent, index)
+            .expect("unowned reclaim table");
+        let lease_index = self
+            .0
+            .tables
+            .leases
+            .iter()
+            .position(|lease| lease.frame().start_address() == child)
+            .expect("reclaim table lost its lease");
+        // SAFETY: PROCESS_MANAGER excludes software walkers/mutators, and
+        // assert_unclaimed excludes the fork's outside-lock copy. Hardware
+        // walkers are drained by flush before release consumes this lease.
+        (unsafe { descriptors(parent) })[index].store(0, Ordering::Release);
+        self.0.tables.leases.swap_remove(lease_index)
+    }
+
+    fn flush(&mut self) {
+        crate::memory::tlb::flush_user_tables(self.0.level_4_frame.start_address().as_u64());
+    }
+
+    fn release(&mut self, frame: FrameLease) {
+        match return_lease(frame) {
+            ReturnOutcome::Returned => {
+                crate::trace_count!(crate::tracing::providers::teardown::PT_TABLE_FRAMES_RETURNED);
+            }
+            ReturnOutcome::LostContended => {
+                crate::trace_count!(crate::tracing::providers::teardown::PT_RETIRE_FRAMES_LOST);
+            }
+            ReturnOutcome::RefusedDoubleRelease
+            | ReturnOutcome::RefusedStale
+            | ReturnOutcome::RefusedNeverAllocated
+            | ReturnOutcome::RefusedUntracked
+            | ReturnOutcome::RefusedLiveLeaf => {}
+        }
+    }
+
+    fn refuse_nonempty(&self) {
+        crate::trace_count!(crate::tracing::providers::teardown::PT_RECLAIM_NONEMPTY);
+    }
+}
+
 struct TableRecorder<'a>(&'a mut OwnedTableFrames);
 
 unsafe impl FrameAllocator<Size4KiB> for TableRecorder<'_> {
@@ -2097,6 +2176,25 @@ impl ProcessPageTable {
             }
         }
         true
+    }
+
+    /// Reclaim empty table windows after leaf invalidation and VMA removal.
+    /// PROCESS_MANAGER held; `bounds` names the surviving neighbour VMAs.
+    pub(crate) fn reclaim_empty_tables(
+        &mut self,
+        unmapped: core::ops::Range<u64>,
+        bounds: core::ops::Range<u64>,
+    ) -> usize {
+        self.await_copy();
+        self.assert_unclaimed();
+        let root = self.level_4_frame.start_address();
+        crate::memory::table_reclaim::reclaim_range(
+            &mut ReclaimTables(self),
+            root,
+            unmapped,
+            bounds,
+            USER_STACK_REGION_END,
+        )
     }
 
     /// Remove one user page's mapping, telling an absent page apart from one

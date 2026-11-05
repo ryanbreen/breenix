@@ -17,12 +17,12 @@ const ROOT_SPAN: u64 = 1 << 48;
 ///
 /// The adapter owns table-frame custody and excludes concurrent software
 /// walks and mutations while reclaiming. Inherited/shared tables must not be
-/// exposed as reclaimable children. Hardware translation invalidation and
-/// deferred frame return remain the caller's responsibility.
+/// exposed as reclaimable children. The walker orders unlink, invalidation
+/// and frame release through this interface.
 pub trait TableOps {
     /// A handle used to access a table's descriptors.
     type Table: Copy;
-    /// Custody of an unlinked table frame, suitable for deferred return.
+    /// Custody of an unlinked table frame, held until invalidation completes.
     type Frame;
 
     /// Decode an owned child table. Report absent entries, block mappings
@@ -38,6 +38,16 @@ pub trait TableOps {
     /// The child has been checked for emptiness. Clear the link before
     /// returning custody; do not release the physical frame here.
     fn unlink(&mut self, parent: Self::Table, index: usize) -> Self::Frame;
+
+    /// Finish paging-structure/walk-cache invalidation for the address space
+    /// on CPUs that can cache it. Called after unlink and before release.
+    fn flush(&mut self);
+
+    /// Return the unlinked, invalidated frame to its allocator.
+    fn release(&mut self, frame: Self::Frame);
+
+    /// Count an eligible window refused because its table still has an entry.
+    fn refuse_nonempty(&self);
 }
 
 /// Reclaim empty table windows touched by `unmapped`, in bottom-up order.
@@ -49,18 +59,14 @@ pub trait TableOps {
 /// and to the four-level tree. A table's complete span must fit in those
 /// bounds, even when only part of that span was unmapped. The root stays.
 ///
-/// `unlinked` receives frame custody after the descriptor is cleared. It must
-/// retain that custody until the required TLB/walk-cache invalidations and
-/// translation quiescence have completed, before returning the frame to the
-/// allocator. This function only selects and unlinks tables; it does not
-/// invalidate translations. Returns the number of transferred frames.
+/// The walker keeps unlinked frame custody across `flush` before calling
+/// `release`. Returns the number of frames submitted for allocator return.
 pub fn reclaim_range<O: TableOps>(
     ops: &mut O,
     root: O::Table,
     unmapped: Range<u64>,
     bounds: Range<u64>,
     user_end: u64,
-    unlinked: impl FnMut(O::Frame),
 ) -> usize {
     let limit = user_end.min(ROOT_SPAN);
     let floor = bounds.start.min(limit);
@@ -75,19 +81,17 @@ pub fn reclaim_range<O: TableOps>(
         ops,
         floor,
         ceiling,
-        unlinked,
     }
     .walk(root, 0, ROOT_ENTRY_SPAN, start..end)
 }
 
-struct Walker<'a, O: TableOps, F> {
+struct Walker<'a, O: TableOps> {
     ops: &'a mut O,
     floor: u64,
     ceiling: u64,
-    unlinked: F,
 }
 
-impl<O: TableOps, F: FnMut(O::Frame)> Walker<'_, O, F> {
+impl<O: TableOps> Walker<'_, O> {
     fn walk(
         &mut self,
         table: O::Table,
@@ -114,12 +118,14 @@ impl<O: TableOps, F: FnMut(O::Frame)> Walker<'_, O, F> {
             }
             // Scan after the children have been unlinked, including entries
             // outside the unmap that could keep this parent table live.
-            if base >= self.floor
-                && end <= self.ceiling
-                && (0..ENTRIES).all(|entry| self.ops.entry_empty(child, entry))
-            {
+            if base >= self.floor && end <= self.ceiling {
+                if !(0..ENTRIES).all(|entry| self.ops.entry_empty(child, entry)) {
+                    self.ops.refuse_nonempty();
+                    continue;
+                }
                 let frame = self.ops.unlink(table, index);
-                (self.unlinked)(frame);
+                self.ops.flush();
+                self.ops.release(frame);
                 reclaimed += 1;
             }
         }
