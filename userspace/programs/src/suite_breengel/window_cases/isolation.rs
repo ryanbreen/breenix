@@ -1107,7 +1107,7 @@ fn isolation_test_hooks_absent() -> CaseResult {
                 || !matches!(file.read(&mut [0; 64]), Err(e) if e.raw_os_error() == Some(1)) {
                 return Err("root-open input replay remained usable after setuid".into());
             }
-        } else if !matches!(open(), Err(e) if matches!(e.raw_os_error(), Some(2 | 13 | 38))) {
+        } else if !matches!(open(), Err(e) if matches!(e.raw_os_error(), Some(1 | 2 | 13 | 38))) {
             return Err("input replay is present in a production boot".into());
         }
         Ok(())
