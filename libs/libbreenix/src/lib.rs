@@ -86,3 +86,5 @@ pub use signal::{
     alarm, getitimer, kill, setitimer, sigaction, sigaltstack, sigpending, sigprocmask,
     sigsuspend, Itimerval, Sigaction, StackT, Timeval,
 };
+
+pub mod input;

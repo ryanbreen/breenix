@@ -29,6 +29,7 @@ rust-os-gdb
 
 # Ignore most of libs directory (except libraries we maintain)
 libs/*
+!libs/input-abi/
 !libs/screen-capture/
 !libs/screen-capture/**
 !libs/breenix-logo/
