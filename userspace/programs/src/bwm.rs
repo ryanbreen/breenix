@@ -65,6 +65,8 @@ use stack::Stack;
 #[path = "bwm/chrome.rs"]
 mod chrome;
 use chrome::*;
+#[path = "bwm/children.rs"]
+mod children;
 #[path = "bwm/launch.rs"]
 mod launch;
 use launch::*;
@@ -147,6 +149,7 @@ fn main() {
     let mut stack = Stack::new();
     let mut stream = input::Stream::new();
     let mut timing = timing::Timing::new();
+    let mut children = children::Children::default();
     let mut closing = close::Close::default();
     let mut clicks = timing::Clicks::new();
     let mut consumed_keys = std::collections::BTreeSet::new();
@@ -230,6 +233,7 @@ fn main() {
         }
         let _ = io::poll(&mut poll_fds, timeout);
         clock.begin_epoch();
+        launch::reap(&mut children);
         let input_ready = poll_fds[0].revents & io::poll_events::POLLIN as i16 != 0;
         let scene_changed = poll_fds[1].revents & io::poll_events::POLLIN as i16 != 0;
         if scene_changed {
@@ -336,7 +340,7 @@ fn main() {
                             full_redraw = true;
                         }
                     }
-                    _ => execute_hotkey_action(action, &windows, &stack),
+                    _ => execute_hotkey_action(action, &windows, &stack, &mut children),
                 }
             }
 
@@ -615,6 +619,7 @@ fn main() {
                         print!("[bwm] display back: composing again\n");
                     }
                     drawn_pointer = Some(pointer);
+                    launch::acknowledge(&mut children, gpu.last_serial);
                     clock.presented(gpu.last_serial);
                     validation.presented(PresentedScene { layers, pointer });
                 }
