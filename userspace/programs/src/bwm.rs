@@ -18,6 +18,8 @@ mod session;
 mod input_backlog;
 #[path = "bwm/input.rs"]
 mod input;
+#[path = "bwm/timing.rs"]
+mod timing;
 #[path = "bwm/input_keys.rs"]
 mod input_keys;
 #[path = "bwm/pointer_route.rs"]
@@ -142,6 +144,8 @@ fn main() {
     let mut windows: Vec<Window> = Vec::new();
     let mut stack = Stack::new();
     let mut stream = input::Stream::new();
+    let mut timing = timing::Timing::new();
+    let mut clicks = timing::Clicks::new();
     let mut consumed_keys = std::collections::BTreeSet::new();
     let (mut mouse_x, mut mouse_y) = (0, 0);
     let mut active_cursor_shape = cursor_shape::ARROW;
@@ -261,6 +265,11 @@ fn main() {
         let positions = stream.positions(&records, screen_w, screen_h);
         for ((event, payload), position) in records.into_iter().zip(positions) {
             input::begin(event);
+            if event.kind == kind::KEY && event.value == 2
+                && !timing.key(event, stack.focus(), false, libbreenix::ui_clock::now_ns()) {
+                input::finish();
+                continue;
+            }
             let current_mods = event.flags as u8;
             let super_taps = u32::from(event.kind == kind::KEY
                 && matches!(event.code, key::LEFT_SUPER | key::RIGHT_SUPER)
@@ -290,13 +299,14 @@ fn main() {
                     }
                     if consumed { consumed_keys.insert(slot); }
                 }
+                timing.key(event, stack.focus(), consumed, libbreenix::ui_clock::now_ns());
                 if !consumed {
                     input::send_keys(&windows, &stack, event, &payload);
                 }
             } else if event.kind == kind::TEXT {
                 input::send_keys(&windows, &stack, event, &payload);
             }
-            hotkey_actions.extend(hotkey_mgr.update(current_mods, super_taps));
+            hotkey_actions.extend(hotkey_mgr.update(current_mods, super_taps, event.time_ns));
             for action in &hotkey_actions {
                 match action {
                     HotkeyAction::FocusNext | HotkeyAction::FocusPrev => {
@@ -341,7 +351,7 @@ fn main() {
                     && !pointer_routes.grabbed(event.device);
                 let release_chrome = routed.release_edge && event.code == key::BUTTON_LEFT
                     && chrome_device == Some(event.device);
-                send_pointer_notices(routed.notices);
+                send_timed_pointer_notices(routed.notices, &mut clicks, event, (new_mx, new_my));
                 if mouse_moved {
                     mouse_x = new_mx;
                     mouse_y = new_my;
@@ -511,6 +521,11 @@ fn main() {
 
             send_pointer_notices(pointer_routes.reconcile(&stack, &pointer_contents(&windows)));
             input::finish();
+            timing.focus(stack.focus());
+        }
+
+        for repeat in timing.due(libbreenix::ui_clock::now_ns(), stack.focus()) {
+            input::send_repeat(repeat);
         }
 
         // f48a2564: scene geometry can change under a stationary pointer.
@@ -614,6 +629,9 @@ fn main() {
         }
         if !full_redraw && !content_dirty && !windows_dirty && !display_lost && !frame_failed {
             let mut ack = clock.acknowledgment(claim_epoch);
+            if let Some(deadline) = timing.deadline() {
+                if ack.next_deadline_ns == 0 || deadline < ack.next_deadline_ns { ack.next_deadline_ns = deadline; }
+            }
             if let Err(error) = libbreenix::window::call(
                 libbreenix::window::abi::op::COMPOSITOR_ACK, &mut ack,
             ) {
@@ -679,12 +697,21 @@ fn send_pointer_notices(notices: Vec<pointer_route::Notice>) {
         let (x, y) = (notice.x, notice.y);
         let input = match notice.kind {
             NoticeKind::Move => Input::Move { x, y },
-            NoticeKind::Button { code, pressed } => Input::Button { button: (code - 0x110 + 1) as u32, pressed, x, y },
+            NoticeKind::Button { code, pressed } => Input::Button { button: (code - 0x110 + 1) as u32, pressed, x, y, clicks: 1 },
             NoticeKind::Wheel(delta_y) => Input::Scroll { x, y, delta_y },
             NoticeKind::Enter => Input::Enter { x, y },
             NoticeKind::Leave => Input::Leave { x, y },
             NoticeKind::Cancel => Input::Cancel { x, y },
         };
         input::send_id(notice.id, input);
+    }
+}
+
+fn send_timed_pointer_notices(notices: Vec<pointer_route::Notice>, clicks: &mut timing::Clicks, event: libbreenix::input::Event, point: (i32, i32)) {
+    for notice in notices {
+        if let pointer_route::NoticeKind::Button { code, pressed } = notice.kind {
+            let count = if pressed { clicks.press(event.device, code, notice.id, point, event.time_ns) } else { clicks.release(event.device, code) };
+            input::send_id(notice.id, Input::Button { button: (code - 0x110 + 1) as u32, pressed, x: notice.x, y: notice.y, clicks: count });
+        } else { send_pointer_notices(vec![notice]); }
     }
 }

@@ -292,3 +292,11 @@ impl Stream {
         Some((self.x, self.y))
     }
 }
+
+pub(super) fn send_repeat(repeat: super::timing::Repeat) {
+    let mut event = input_keys::events(repeat.source, &[]).remove(0);
+    event.flags |= abi::EVENT_REPEAT;
+    event.serial = core_input::abi::derived_serial(repeat.source.serial, repeat.derived).expect("input derivation");
+    event.time_ns = repeat.time;
+    enqueue(repeat.target, Queued { event, source: repeat.source.serial, derived: repeat.derived });
+}

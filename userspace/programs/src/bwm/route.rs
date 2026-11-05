@@ -238,7 +238,7 @@ impl HotkeyManager {
     }
 
     /// Feed the existing modifier matcher a core edge; Super press edges are explicit.
-    pub(super) fn update(&mut self, current_mods: u8, super_taps: u32) -> Option<HotkeyAction> {
+    pub(super) fn update(&mut self, current_mods: u8, super_taps: u32, now_ns: u64) -> Option<HotkeyAction> {
         let prev = self.prev_modifiers;
         self.prev_modifiers = current_mods;
 
@@ -258,15 +258,10 @@ impl HotkeyManager {
 
                 self.tap_modifier = modifier::SUPER;
 
-                let now_ns = match libbreenix::time::now_monotonic() {
-                    Ok(ts) => ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64,
-                    Err(_) => 0,
-                };
-
                 // Count this tap; continue a sequence only if the previous tap
                 // was within the 400ms window, otherwise start a fresh sequence.
                 if self.tap_count > 0
-                    && now_ns.saturating_sub(self.tap_release_ns) < 400_000_000
+                    && super::timing::within(self.tap_release_ns, now_ns)
                 {
                     self.tap_count += 1;
                 } else {
@@ -313,12 +308,8 @@ impl HotkeyManager {
                 self.combo_used = false;
             } else if !now && was {
                 if mod_bit == self.tap_modifier && !self.combo_used {
-                    let now_ns = match libbreenix::time::now_monotonic() {
-                        Ok(ts) => ts.tv_sec as u64 * 1_000_000_000 + ts.tv_nsec as u64,
-                        Err(_) => 0,
-                    };
 
-                    if self.tap_count > 0 && now_ns.saturating_sub(self.tap_release_ns) < 400_000_000 {
+                    if self.tap_count > 0 && super::timing::within(self.tap_release_ns, now_ns) {
                         self.tap_count += 1;
                     } else {
                         self.tap_count = 1;

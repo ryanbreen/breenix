@@ -71,7 +71,7 @@ pub enum Input {
     Leave { x: i32, y: i32 },
     Cancel { x: i32, y: i32 },
     /// `button` 1 left, 2 right, 3 middle.
-    Button { button: u32, pressed: bool, x: i32, y: i32 },
+    Button { button: u32, pressed: bool, x: i32, y: i32, clicks: u32 },
     Scroll { x: i32, y: i32, delta_y: i32 },
     FocusGained,
     FocusLost,
@@ -117,7 +117,7 @@ pub fn event(input: Input) -> abi::WindowEvent {
             };
             (event.x, event.y) = (x, y);
         }
-        Input::Button { button, pressed, x, y } => {
+        Input::Button { button, pressed, x, y, clicks } => {
             event.kind = kind::POINTER_BUTTON;
             event.button = match button {
                 1 => abi::button::LEFT,
@@ -126,6 +126,7 @@ pub fn event(input: Input) -> abi::WindowEvent {
                 _ => 0,
             };
             event.pressed = u32::from(pressed);
+            event.clicks = clicks;
             (event.x, event.y) = (x, y);
         }
         Input::Scroll { x, y, delta_y } => {
