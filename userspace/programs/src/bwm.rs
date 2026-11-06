@@ -82,6 +82,8 @@ mod clipboard_socket;
 
 #[path = "bwm/clock.rs"]
 mod clock;
+#[path = "bwm/clock_wake.rs"]
+mod clock_wake;
 #[path = "bwm/close.rs"]
 mod close;
 #[path = "bwm/shutdown.rs"]
@@ -181,6 +183,7 @@ fn main() {
 
     // Clock state
     let mut clock = clock::Clock::new(std::env::var_os("BREENIX_UI_CLOCK").is_some());
+    let clock_wake = clock_wake::open().expect("UI clock wake setup failed");
     let mut clock_text = [0u8; 11];
     format_clock(clock.wall_sec(), &mut clock_text);
     let mut next_creation_order: u32 = 0;
@@ -245,6 +248,9 @@ fn main() {
         let timeout = closing.timeout_ms(libbreenix::ui_clock::now_ns(), timeout);
         let timeout = clipboard.as_ref().map_or(timeout, |c| c.timeout_ms(libbreenix::ui_clock::now_ns(), timeout));
         poll_fds.truncate(2);
+        if let Some(wake) = &clock_wake {
+            poll_fds.push(io::PollFd { fd: wake.fd(), events: io::poll_events::POLLIN as i16, revents: 0 });
+        }
         if let Some(clipboard) = &clipboard { clipboard.append_poll(&mut poll_fds); }
         for fd in poll_fds.iter_mut() {
             fd.revents = 0;
@@ -252,6 +258,9 @@ fn main() {
         let mut wait = ShutdownWait { fds: &mut poll_fds, timeout, failed: false };
         if shutdown::boundary(&mut wait).is_none() { return; }
         if let Some(clipboard) = &mut clipboard { clipboard.service(&poll_fds, libbreenix::ui_clock::now_ns()); }
+        if let Some(wake) = &clock_wake {
+            if poll_fds[2].revents & io::poll_events::POLLIN as i16 != 0 { wake.drain(); }
+        }
         clock.begin_epoch();
         launch::reap(&mut children);
         launch::poll_errors(&mut children);
