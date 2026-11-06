@@ -97,6 +97,7 @@ fn non_owner_is_refused_at_its_header_before_bwm_buffers_the_payload() {
 fn idle_connection_expires_and_progress_extends_it() {
     let (_client, server) = UnixStream::pair().unwrap();
     let mut conn = Connection::accepted(server, 42, 1_000);
+    assert_eq!(conn.peer(), 42);
     assert_eq!(conn.deadline(), 1_000 + IDLE_NS);
     conn.idle(1_000 + IDLE_NS - 1, false);
     assert!(!conn.done());

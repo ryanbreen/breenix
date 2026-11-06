@@ -74,3 +74,13 @@ fn malformed_headers_are_refused() {
         for chunk in [1, 65536] { assert_eq!(parse(wire, chunk).unwrap_err(), -22); }
     }
 }
+
+#[test]
+fn decoder_names_the_window_once_its_header_is_complete() {
+    let request = wire(1, 9, b"payload");
+    let mut decoder = Decoder::new();
+    assert_eq!(decoder.feed(&request[..23]).1, None);
+    assert_eq!(decoder.window(), None);
+    assert_eq!(decoder.feed(&request[23..26]).1, None);
+    assert_eq!(decoder.window(), Some(9));
+}

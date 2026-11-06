@@ -32,6 +32,11 @@ impl Decoder {
         }
     }
 
+    /// The window a decoded header names, while its payload is still arriving.
+    pub fn window(&self) -> Option<u64> {
+        self.request.as_ref().map(|request| request.window)
+    }
+
     /// Consume at most one request, returning the number of input bytes consumed.
     /// A completed or rejected decoder must be replaced before the next request.
     pub fn feed(&mut self, input: &[u8]) -> (usize, Option<Result<Request, i32>>) {

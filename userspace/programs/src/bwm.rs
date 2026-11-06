@@ -242,6 +242,7 @@ fn main() {
             POINTER_POLL_MS
         };
         let timeout = closing.timeout_ms(libbreenix::ui_clock::now_ns(), timeout);
+        let timeout = clipboard.timeout_ms(libbreenix::ui_clock::now_ns(), timeout);
         poll_fds.truncate(2);
         clipboard.append_poll(&mut poll_fds);
         for fd in poll_fds.iter_mut() {
@@ -249,7 +250,7 @@ fn main() {
         }
         let mut wait = ShutdownWait { fds: &mut poll_fds, timeout, failed: false };
         if shutdown::boundary(&mut wait).is_none() { return; }
-        clipboard.service(&poll_fds);
+        clipboard.service(&poll_fds, libbreenix::ui_clock::now_ns());
         clock.begin_epoch();
         launch::reap(&mut children);
         launch::poll_errors(&mut children);
