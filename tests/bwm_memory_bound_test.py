@@ -17,7 +17,7 @@ class MemoryBound(unittest.TestCase):
             (path / 'Cargo.toml').write_text(
                 '[package]\nname="bwm-memory-host"\nversion="0.0.0"\nedition="2021"\n'
                 '[workspace]\n[dependencies]\n' + deps + '\n'
-                f'[[test]]\nname="memory"\npath="{ROOT / "tests/bwm_memory_bound.rs"}"\n')
+                f'[[test]]\nname="memory"\npath="{ROOT / "tests/fixtures/bwm_memory_bound.rs"}"\n')
             env = dict(os.environ, CARGO_BUILD_JOBS='4')
             command = (['taskpolicy', '-b'] if sys.platform == 'darwin' else []) + ['cargo', '-Z', 'bindeps', 'test', '--manifest-path', str(path / 'Cargo.toml'), '--', '--test-threads=1']
             subprocess.run(command, cwd=path, env=env, check=True)

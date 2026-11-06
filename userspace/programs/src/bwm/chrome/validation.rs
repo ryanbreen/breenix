@@ -15,11 +15,17 @@ impl<S> ValidationQueue<S> {
         Self { scene: None, first_frames: Vec::new() }
     }
 
-    pub fn presented(&mut self, scene: S) {
-        self.scene = Some(scene);
+    /// Update the saved scene in place and return the working scene for reuse.
+    pub fn presented(&mut self, scene: S) -> S where S: Clone {
+        if let Some(saved) = &mut self.scene {
+            saved.clone_from(&scene);
+        } else {
+            self.scene = Some(scene.clone());
+        }
         for client in &mut self.first_frames {
             client.attempted = false;
         }
+        scene
     }
 
     pub fn scene(&self) -> Option<&S> {

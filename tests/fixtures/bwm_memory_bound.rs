@@ -1,13 +1,13 @@
 //! Run retained production buffers for the case's 60 + 600 epochs, without a GPU.
-include!("fixtures/bwm_memory_runtime.rs");
+include!("bwm_memory_runtime.rs");
 #[allow(dead_code)] // The path-included modules also implement rendering and input policy outside this workload.
-#[path = "../userspace/programs/src/bwm/compositor.rs"]
+#[path = "../../userspace/programs/src/bwm/compositor.rs"]
 mod compositor;
 #[allow(dead_code)] // Other queue operations are exercised in bwm_validation.rs.
-#[path = "../userspace/programs/src/bwm/chrome/validation.rs"]
+#[path = "../../userspace/programs/src/bwm/chrome/validation.rs"]
 mod validation;
 #[allow(dead_code)]
-#[path = "../userspace/programs/src/bwm/timing.rs"]
+#[path = "../../userspace/programs/src/bwm/timing.rs"]
 mod timing;
 
 use std::alloc::{GlobalAlloc, Layout, System};

@@ -214,6 +214,7 @@ fn main() {
     let mut drawn_pointer = first_presented.then_some(first_pointer);
     let mut full_redraw = !first_presented;
     let mut validation = ValidationQueue::new();
+    let mut working_scene = PresentedScene { layers: Vec::new(), pointer: first_pointer };
 
     // The desktop outlives a clipboard that cannot open; clipboard clients then see ENOENT.
     let mut clipboard = clipboard_socket::Server::open().map_err(|e| eprintln!("[bwm] clipboard socket: {e}")).ok();
@@ -626,8 +627,9 @@ fn main() {
                 damage.extend(drawn_pointer.map(|p| compositor::pointer_footprint(p, ui().scale as i32)));
                 damage.push(compositor::pointer_footprint(pointer, ui().scale as i32));
             }
-            let layers = frame_layers(&windows, &stack);
-            let frame = gpu.compose(&layers, Some(pointer), &damage);
+            frame_layers(&windows, &stack, &mut working_scene.layers);
+            working_scene.pointer = pointer;
+            let frame = gpu.compose(&working_scene.layers, Some(pointer), &damage);
             full_redraw = false;
             content_dirty = false;
             windows_dirty = false;
@@ -641,7 +643,7 @@ fn main() {
                     drawn_pointer = Some(pointer);
                     launch::acknowledge(&mut children, gpu.last_serial);
                     clock.presented(gpu.last_serial);
-                    validation.presented(PresentedScene { layers, pointer });
+                    working_scene = validation.presented(working_scene);
                 }
                 Err(FrameError::NotOwner) => {
                     validation.invalidate_scene();
