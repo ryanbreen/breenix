@@ -95,3 +95,20 @@ fn idle_presentations_without_pending_first_frames_do_not_read_back() {
     queue.retain_clients(|_| false);
     assert!(queue.next_if_idle(|_| true, || panic!("client departed")).is_none());
 }
+
+#[test]
+fn wait_deadline_only_tracks_a_check_that_can_still_run() {
+    let mut queue = ValidationQueue::new();
+    queue.first_frame(7);
+    assert!(!queue.pending(7), "no scene is available to validate");
+    queue.presented(1);
+    assert!(queue.pending(7));
+    assert!(queue.next_if_idle(|_| true, || false).is_none());
+    assert!(queue.pending(7));
+    assert!(queue.next_if_idle(|_| true, || true).is_some());
+    assert!(!queue.pending(7), "an attempted scene must not force zero-timeout polling");
+    queue.presented(2);
+    assert!(queue.pending(7));
+    queue.complete(7);
+    assert!(!queue.pending(7));
+}

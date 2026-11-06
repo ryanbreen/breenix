@@ -8,6 +8,7 @@ fn each_deadline_and_priority() {
     assert_eq!(timeout(false, false, 100, 100, base), -1);
     assert_eq!(timeout(true, false, 100, 100, base), 0);
     assert_eq!(timeout(false, true, 100, 100, base), 100);
+    assert_eq!(timeout(true, true, 100, 100, base), 100, "lost display backs off even with a dirty frame");
     for deadlines in [
         Deadlines { closing: Some(2_000_100), ..base },
         Deadlines { clipboard: Some(2_000_100), ..base },
@@ -38,4 +39,18 @@ fn idle_five_seconds_wakes_only_for_wall_seconds() {
     }
     assert_eq!((wakes, composites), (5, 5));
     assert_eq!(5000 / 10, 500);
+}
+
+#[test]
+fn independent_clock_domains_choose_the_earliest_work() {
+    let deadlines = Deadlines {
+        closing: Some(9_000_000_000), clipboard: Some(8_000_000_000),
+        repeat: Some(7_000_000_000), launch: Some(6_000_000_000),
+        check_after_ms: Some(100_125), wall: Some(5_000_000_000),
+    };
+    assert_eq!(timeout(false, false, 4_000_000_000, 100_000_000_000, deadlines), 125);
+    assert_eq!(timeout(false, false, 4_000_000_000, 100_000_000_000,
+        Deadlines { check_after_ms: None, ..deadlines }), 1000);
+    assert_eq!(timeout(false, false, 0, 0,
+        Deadlines { wall: Some(u64::MAX), ..Deadlines::default() }), i32::MAX);
 }

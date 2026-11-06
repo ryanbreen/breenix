@@ -86,11 +86,15 @@ mod clock;
 mod clock_wake;
 #[path = "bwm/close.rs"]
 mod close;
+#[path = "bwm/wake.rs"]
+mod wake;
 #[path = "bwm/shutdown.rs"]
 mod shutdown;
+#[path = "bwm/signal_wake.rs"]
+mod signal_wake;
 
 fn main() {
-    initialize_shutdown();
+    let signal_wake = initialize_shutdown();
     print!("[bwm] Breenix Window Manager starting... (v2-chromeless-skip)\n");
 
     if let Err(e) = libbreenix::graphics::take_over_display() {
@@ -216,7 +220,7 @@ fn main() {
     // The pointer the last composed frame drew, so a move repaints where it was.
     let mut drawn_pointer = first_presented.then_some(first_pointer);
     let mut full_redraw = !first_presented;
-    let mut validation = ValidationQueue::new();
+    let mut validation: ValidationQueue<PresentedScene> = ValidationQueue::new();
     let mut working_scene = PresentedScene { layers: Vec::new(), pointer: first_pointer };
 
     // The desktop outlives a clipboard that cannot open; clipboard clients then see ENOENT.
@@ -236,27 +240,39 @@ fn main() {
     loop {
         flush_input();
         // ── 0. Sleep until input or a scene change ──
-        // Input and scene changes both wake the loop. Keep the existing bounded
-        // sleep until descriptor-only pacing lands in 21.7.
-        let timeout = if display_lost {
-            DISPLAY_WAIT_MS
-        } else if full_redraw || content_dirty || windows_dirty {
-            0
-        } else {
-            POINTER_POLL_MS
-        };
-        let timeout = closing.timeout_ms(libbreenix::ui_clock::now_ns(), timeout);
-        let timeout = clipboard.as_ref().map_or(timeout, |c| c.timeout_ms(libbreenix::ui_clock::now_ns(), timeout));
+        clock.begin_epoch();
+        let now = libbreenix::ui_clock::now_ns();
+        let monotonic_ns = monotonic_ms().unwrap_or(0).saturating_mul(1_000_000);
+        let wall = clock.acknowledgment(claim_epoch).next_deadline_ns;
+        let shown = validation.scene().map(|scene| gpu.shown_clients(&scene.layers, Some(scene.pointer)))
+            .unwrap_or_default();
+        let timeout = wake::timeout(
+            full_redraw || content_dirty || windows_dirty, display_lost, now, monotonic_ns,
+            wake::Deadlines {
+                closing: closing.deadline(),
+                clipboard: clipboard.as_ref().and_then(|c| c.deadline()),
+                repeat: timing.deadline(),
+                launch: children.deadline(),
+                check_after_ms: if resizing.is_none() {
+                    windows.iter().filter(|w| validation.pending(w.window_id)
+                        && shown.iter().any(|(id, _)| *id == w.window_id))
+                        .map(|w| w.check_after_ms).min()
+                } else { None },
+                wall: (wall != 0).then_some(wall),
+            });
+        let timeout = closing.timeout_ms(now, timeout);
         poll_fds.truncate(2);
         if let Some(wake) = &clock_wake {
             poll_fds.push(io::PollFd { fd: wake.fd(), events: io::poll_events::POLLIN as i16, revents: 0 });
         }
+        poll_fds.push(io::PollFd { fd: signal_wake.fd(), events: io::poll_events::POLLIN as i16, revents: 0 });
         if let Some(clipboard) = &clipboard { clipboard.append_poll(&mut poll_fds); }
         for fd in poll_fds.iter_mut() {
             fd.revents = 0;
         }
         let mut wait = ShutdownWait { fds: &mut poll_fds, timeout, failed: false };
         if shutdown::boundary(&mut wait).is_none() { return; }
+        signal_wake.drain();
         if let Some(clipboard) = &mut clipboard { clipboard.service(&poll_fds, libbreenix::ui_clock::now_ns()); }
         if let Some(wake) = &clock_wake {
             if poll_fds[2].revents & io::poll_events::POLLIN as i16 != 0 { wake.drain(); }
@@ -801,22 +817,34 @@ static TERMINATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 
 extern "C" fn terminate(_: i32) {
     TERMINATE.store(true, std::sync::atomic::Ordering::Relaxed);
+    signal_wake::notify();
 }
 
 fn term_mask(how: i32) {
-    let mask = 1u64 << (signal::SIGTERM - 1);
+    let mask = (1u64 << (signal::SIGTERM - 1)) | (1u64 << (signal::SIGCHLD - 1));
     if let Err(error) = signal::sigprocmask(how, Some(&mask), None) {
         eprintln!("[bwm] cannot set shutdown signal mask: {error}");
         process::exit(1);
     }
 }
 
-fn initialize_shutdown() {
+extern "C" fn child_exited(_: i32) { signal_wake::notify(); }
+
+fn initialize_shutdown() -> signal_wake::SignalWake {
     term_mask(signal::SIG_BLOCK);
+    let wake = signal_wake::SignalWake::open().unwrap_or_else(|error| {
+        eprintln!("[bwm] cannot create signal wake pipe: {error}");
+        process::exit(1);
+    });
+    if let Err(error) = signal::sigaction(signal::SIGCHLD, Some(&signal::Sigaction::new(child_exited)), None) {
+        eprintln!("[bwm] cannot install child handler: {error}");
+        process::exit(1);
+    }
     if let Err(error) = signal::sigaction(signal::SIGTERM, Some(&signal::Sigaction::new(terminate)), None) {
         eprintln!("[bwm] cannot install shutdown handler: {error}");
         process::exit(1);
     }
+    wake
 }
 
 struct ShutdownWait<'a> {

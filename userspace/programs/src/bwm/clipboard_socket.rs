@@ -28,10 +28,8 @@ impl Server {
             fds.push(PollFd { fd: client.stream().as_raw_fd(), events: if client.wants_write() { poll_events::POLLOUT } else { poll_events::POLLIN }, revents: 0 });
         }
     }
-    /// Bound the caller's poll timeout by the nearest connection deadline.
-    pub fn timeout_ms(&self, now: u64, timeout: i32) -> i32 {
-        self.clients.iter().map(|c| c.deadline().saturating_sub(now).saturating_add(999_999) / 1_000_000)
-            .fold(timeout, |bound, ms| bound.min(ms.min(i32::MAX as u64) as i32))
+    pub fn deadline(&self) -> Option<u64> {
+        self.clients.iter().map(|c| c.deadline()).min()
     }
     pub fn service(&mut self, fds: &[PollFd], now: u64) {
         let find = |fd| fds.iter().find(|p| p.fd == fd).map_or(0, |p| p.revents);

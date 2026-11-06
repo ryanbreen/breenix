@@ -58,9 +58,13 @@ impl Close {
         }
     }
 
+    pub(super) fn deadline(&self) -> Option<u64> {
+        self.pending.iter().filter(|p| !p.killed).filter_map(|p| p.deadline).min()
+    }
     pub(super) fn timeout_ms(&self, now: u64, timeout: i32) -> i32 {
-        self.pending.iter().filter(|p| !p.killed).filter_map(|p| p.deadline)
-            .map(|deadline| deadline.saturating_sub(now).saturating_add(999_999) / 1_000_000)
-            .fold(timeout, |bound, ms| bound.min(ms.min(i32::MAX as u64) as i32))
+        self.deadline().map_or(timeout, |deadline| {
+            let ms = (deadline.saturating_sub(now).saturating_add(999_999) / 1_000_000).min(i32::MAX as u64) as i32;
+            if timeout < 0 { ms } else { timeout.min(ms) }
+        })
     }
 }
