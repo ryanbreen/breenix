@@ -137,7 +137,7 @@ class WmStep(unittest.TestCase):
                 result = metal_score.score(self.path)['milestones']['metal-gt710/wm-step']
                 self.assertTrue(result['passed'], result)
                 self.assertEqual((self.path / 'serial.txt').read_text(), text)
-        # A device that passes Q1 needs no exception, and all 68 results count.
+        # A passing Q1 is counted normally, without an exception.
         (self.path / 'serial.txt').write_text(self.step_serial(5, []))
         self.assertEqual(API['record_wm_capture'](self.path, SHA, 5), 0)
         report = json.loads((self.path / 'gt710-wm-step.json').read_text())
@@ -150,7 +150,7 @@ class WmStep(unittest.TestCase):
         mutations = [
             (self.step_serial(5, [Q1, 'clipboard/large']), 'failed: clipboard/large'),
             (original.replace('allowance=48', 'allowance=64'), 'allowance'),
-            (original.replace('reclaimed=PASS', 'reclaimed=FAIL'), 'memory'),
+            (original.replace('reclaimed=PASS', 'reclaimed=FAIL'), 'MEMORY reclaimed=FAIL'),
             (original.replace('skipped=0', 'skipped=1'), 'DONE'),
             (original.replace(f'CASE {Q1} FAIL', f'CASE {Q1} SKIP'), 'malformed WM record'),
             (original.replace(f'SUITE window-manager CASE {Q1} FAIL ms=1 msg=pending\n', ''), 'manifest-ordered'),
