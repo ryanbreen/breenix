@@ -518,11 +518,11 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
 pub(super) fn composite_present_time(fence: u64, content_ready_ns: u64) -> Result<u64, i64> {
     #[cfg(target_arch = "x86_64")]
     if dev::backend() == abi::backend::GK208 {
-        let id = wait_for(None, true, |c| {
+        let id = wait_for_traced(None, true, |c| {
             if c.display.outstanding != 0 { return None; }
             Some(c.display.binding.filter(|b| b.fence == fence && c.display.known)
                 .map(|b| b.id).ok_or(EIO))
-        }).map_err(|_| EINTR)??;
+        }, None, true, None).map_err(|_| EINTR)??;
         let resource = dev::resource_id(id).ok_or(EIO)?;
         return crate::gk208::completed_present_time(resource, content_ready_ns).ok_or(EIO);
     }
