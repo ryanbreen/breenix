@@ -815,13 +815,24 @@ case reads its effect back in the guest. The host key is the input; the in-guest
   a `breenix_suite::suite` helper, between the suite's START and DONE):
 
   ```text
-  SUITE console HOSTKEY <category>/<case> seq=<n> keys=<chord>[,<chord>...]
+  SUITE console HOSTKEY <category>/<case> seq=<n> keys=<chord>[,<chord>...] [ticket=<u64>]
   ```
 
   `breenix_suite::suite::hostkeys(chords)` emits the record and returns its sequence;
   `hostkey_method()` exposes the declaration. The helper rejects an absent method
   or a chord containing a declared missing key. Sequence ranges are reserved in
   the parent before each case forks, and `--hostkeys` is retained across a suite sequence.
+
+  The optional `ticket` correlates an acknowledged request with its guest case.
+  HOSTPOINTER records likewise allow a trailing `ticket=<u64>` after `wheel=<n>`.
+  A ticket is transport metadata; it cannot replace the case's read-back or result.
+
+  The acknowledged helpers open an independent `/dev/input/events` observer before
+  emitting a native-device request. Keys complete after the requested presses
+  and releases; absolute motion completes after a matching complete motion batch and
+  pointer-state observation. The returned guest timestamp anchors the delivery bound.
+  The serial host channel instead retains its correlated ticketed ACK. Native
+  keyboard/tablet transports do not need to synthesize serial ACKs.
 
   `seq` increases across the run, so a launcher that sees a line twice (a serial replay) injects it once. A
   chord is modifiers and one key joined by `-`: modifiers `ctrl`, `alt`, `shift`, `super` (left keys) and

@@ -57,11 +57,14 @@ fn production_loop_acknowledges_before_idle_validation() {
     let chrome = include_str!("../userspace/programs/src/bwm/chrome.rs");
     let loop_body = &main[main.find("    loop {\n        flush_input();").unwrap()..];
     let mut tail = loop_body;
-    for part in ["io::poll(&mut poll_fds, timeout)", "if stdin_ready", "gpu.compose(",
+    for part in ["shutdown::boundary(&mut wait)", "if input_ready", "gpu.compose(",
         "clock.acknowledgment(claim_epoch)", "op::COMPOSITOR_ACK", "run_deferred_check("] {
         let at = tail.find(part).unwrap_or_else(|| panic!("missing or out of order: {part}"));
         tail = &tail[at + part.len()..];
     }
+    let wait = &main[main.find("impl shutdown::Runtime for ShutdownWait").unwrap()..];
+    assert!(wait.contains("fn wait(&mut self) { let _ = io::poll(self.fds, self.timeout); }"),
+        "the shutdown boundary waits on the input and scene descriptors");
     assert!(!loop_body.contains("gpu.check("), "presentation must only enqueue checks");
     assert_eq!(loop_body.matches("run_deferred_check(").count(), 1);
     let idle = &chrome[chrome.find("fn validation_idle").expect("idle descriptor poll")..];

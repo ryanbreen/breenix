@@ -98,6 +98,25 @@ advance sequence. A sender retries a missing ACK with identical sequence and
 payload. ACK means the whole packet has entered the kernel's bounded queue.
 ACK output is deferred to task context on both transports.
 
+W14 adds an optional ` ticket=<nonzero-u64-decimal>` suffix to a numbered
+packet's payload, inside its CRC. It correlates a suite request with the wire
+sequence without changing input events or sequence admission. Only the final
+key chord carries the request's ticket. The ordinary `BXKEY_ACK <sequence>` and
+`BXPTR_ACK <sequence>` lines keep their format. For a tagged packet, the shared
+input task also publishes `HOSTINPUT_ACK <kind> <sequence> ticket=<ticket>
+ns=<monotonic-ns>` on serial and in `/proc/kmsg`, at that ACK boundary. A retry
+queues no extra input; the waiting reader uses the first matching timestamp.
+The suite's ticket includes its case-process pid, so a previous case's ACK
+cannot complete this request. Missing or overwritten ACK evidence fails within
+the existing case deadline. Parking waits for its own pointer ACK; text-exact
+starts its unchanged 2000 ms bound at the final key ACK's published time.
+
+This stays in the shared serial host channel. x86 serial and ARM's PL011 call
+the same ingress and input task; there is no new driver-facing interface. ARM
+still lacks launcher support for this serial channel and a booted run of tagged
+ACK publication, parking and typed-text delivery. The existing QMP, Parallels
+and VMware host backends do not provide tagged serial ACKs.
+
 For pixel `x` and dimension `w > 1`, the core chooses
 `v = ceil(x * 32767 / (w - 1))`. Thus the consumer's contract formula
 `(v - min) * (w - 1) / (max - min)`, with min=0 and max=32767, returns exactly x,

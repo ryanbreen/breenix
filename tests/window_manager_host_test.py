@@ -37,6 +37,9 @@ class Socket:
     def connect(self, path):
         pass
 
+    def close(self):
+        pass
+
     def makefile(self, mode):
         return self
 
@@ -51,6 +54,17 @@ class Socket:
 
 
 class PointerTests(unittest.TestCase):
+    def test_qmp_chord_waits_for_its_scheduled_release(self):
+        socket = Socket()
+        with patch.object(HOST.socket, 'socket', return_value=socket), \
+             patch.object(HOST.time, 'sleep') as sleep:
+            HOST.QMPKeys('fixture').send(('shift',), 'h')
+        self.assertEqual(socket.commands[-1], {
+            'execute': 'send-key', 'arguments': {
+                'keys': [{'type': 'qcode', 'data': 'shift'}, {'type': 'qcode', 'data': 'h'}],
+                'hold-time': 100}})
+        sleep.assert_called_once_with(0.15)
+
     def test_qmp_extents_buttons_and_wheel_release(self):
         socket = Socket()
         with patch.object(HOST.socket, 'socket', return_value=socket):

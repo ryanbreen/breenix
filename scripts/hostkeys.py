@@ -67,13 +67,13 @@ import time
 import zlib
 
 REQUEST = re.compile(r'^SUITE ([a-z0-9]+(?:-[a-z0-9]+)*) HOSTKEY ([a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*)'
-                     r' seq=(\d+) keys=([a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*)\r?$')
+                     r' seq=(\d+) keys=([a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*)(?: ticket=(\d+))?\r?$')
 
 POINTER_REQUEST = re.compile(r'^USB POINTER HOST seq=(\d+) axes=(absolute|relative) x=(\d+) y=(\d+) buttons=([0-7])'
                              r' wheel=(-?1|0)\r?$')
 
 SUITE_POINTER = re.compile(r'^SUITE ([a-z0-9-]+) HOSTPOINTER ([a-z0-9-]+/[a-z0-9-]+) seq=(\d+)'
-                           r' x=(\d+) y=(\d+) width=(\d+) height=(\d+) buttons=([0-7]) wheel=(-?1|0)\r?$')
+                           r' x=(\d+) y=(\d+) width=(\d+) height=(\d+) buttons=([0-7]) wheel=(-?1|0)(?: ticket=(\d+))?\r?$')
 
 MODIFIERS = ('ctrl', 'alt', 'shift', 'super', 'rctrl', 'ralt')
 NAMED = ('left', 'right', 'up', 'down', 'pageup', 'pagedown', 'home', 'end', 'insert', 'delete', 'enter', 'tab',
@@ -135,6 +135,10 @@ class QMPKeys:
                         break
         finally:
             sock.close()
+
+        # send-key's reply schedules the release; wait for it before another
+        # chord can replace QEMU's held-key set.
+        time.sleep((self.hold_ms + 50) / 1000)
 
     def pointer(self, x, y, buttons, wheel, axes, width=32768, height=32768):
         if axes != 'absolute' or width < 2 or height < 2 or not (0 <= x < width and 0 <= y < height):
@@ -395,6 +399,7 @@ class ReplayKeys:
               'pageup': 0x4B, 'delete': 0x4C, 'end': 0x4D, 'pagedown': 0x4E, 'right': 0x4F, 'left': 0x50,
               'down': 0x51, 'up': 0x52}
     HOST_KEY_GAP_MS = 10
+    tickets = True
 
     def __init__(self, write, pace=time.sleep):
         self.write, self.pace = write, pace
@@ -413,11 +418,12 @@ class ReplayKeys:
     def line(cls, mods, key):
         return 'BXKEY ' + ','.join(report.hex() for report in cls.reports(mods, key))
 
-    def send(self, mods, key):
-        self.write(self.line(mods, key))
+    def send(self, mods, key, ticket=None):
+        tag = "" if ticket is None else f" ticket={ticket}"
+        self.write(self.line(mods, key) + tag)
         self.pace(len(self.reports(mods, key)) * self.HOST_KEY_GAP_MS / 1000)
 
-    def pointer(self, x, y, buttons, wheel, axes, width, height):
+    def pointer(self, x, y, buttons, wheel, axes, width, height, ticket=None):
         if axes != 'absolute' or not (2 <= width <= 32768 and 2 <= height <= 32768
                                        and 0 <= x < width and 0 <= y < height and 0 <= buttons <= 7
                                        and -(2**31) <= wheel < 2**31):
@@ -425,6 +431,8 @@ class ReplayKeys:
         self.pointer_sequence += 1
         sequence = self.pointer_sequence
         payload = f'{x} {y} {width} {height} {buttons} {wheel}'
+        if ticket is not None:
+            payload += f' ticket={ticket}'
         body = f'{sequence:016x} {payload}'
         self.write(f'BXPTR @{sequence:016x}:{zlib.crc32(body.encode()):08x} {payload}')
 
@@ -459,7 +467,7 @@ class Watcher:
     def line(self, line):
         suite_pointer = SUITE_POINTER.fullmatch(line)
         if suite_pointer:
-            suite, case, seq, *numbers = suite_pointer.groups()
+            suite, case, seq, *numbers, ticket = suite_pointer.groups()
             if self.suite and suite != self.suite:
                 return
             identity = (suite, case, int(seq))
@@ -473,7 +481,8 @@ class Watcher:
                 send = getattr(self.keys, 'pointer', None)
                 if send is None:
                     raise NoPath('this backend has no pointer transport')
-                send(x, y, buttons, wheel, 'absolute', width, height)
+                tag = {'ticket': int(ticket)} if ticket is not None and getattr(self.keys, 'tickets', False) else {}
+                send(x, y, buttons, wheel, 'absolute', width, height, **tag)
                 self.log('[hostpointer] case=%s seq=%s sent via %s' % (case, seq, self.name))
             except (NoPath, OSError, RuntimeError, ValueError) as error:
                 self.log('[hostpointer] case=%s seq=%s failed: %s' % (case, seq, error))
@@ -501,16 +510,19 @@ class Watcher:
         match = REQUEST.match(line)
         if not match or (self.suite and match.group(1) != self.suite):
             return
-        suite, case, seq, chords = match.groups()
+        suite, case, seq, chords, ticket = match.groups()
         identity = (suite, case, seq)
         if identity in self.seen:
             return
         self.seen.add(identity)
         done = []
         try:
-            for chord in chords.split(','):
+            chords_list = chords.split(',')
+            for index, chord in enumerate(chords_list):
                 mods, key = parse_chord(chord)
-                self.keys.send(mods, key)
+                tag = {'ticket': int(ticket)} if (ticket is not None and index + 1 == len(chords_list)
+                                                 and getattr(self.keys, 'tickets', False)) else {}
+                self.keys.send(mods, key, **tag)
                 done.append(chord)
             self.log('[hostkeys] case=%s seq=%s keys=%s sent via %s' % (case, seq, chords, self.name))
         except NoPath as why:

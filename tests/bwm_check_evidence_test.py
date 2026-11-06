@@ -29,6 +29,24 @@ class CheckEvidence(unittest.TestCase):
             self.assertRegex(evidence.read_text(), r'^VALUE bwm-check-us [0-9]+\n$')
             self.assertEqual(evidence.read_text(), (temp / 'stdout').read_text())
 
+    def test_launch_ack_reaches_the_evidence_descriptor(self):
+        source = (ROOT / 'userspace/programs/src/bwm/launch.rs').read_text()
+        record = item(source, 'pub(super) fn record_ack') if 'pub(super) fn record_ack' in source else ''
+        acknowledgment = item(source, 'for pid in children.acknowledge')
+        with tempfile.TemporaryDirectory(prefix='bwm-launch-evidence-') as directory:
+            temp = Path(directory)
+            evidence = temp / 'evidence'
+            evidence.touch()
+            record = record.replace('"/dev/screen-evidence"', f'"{evidence}"')
+            fixture = 'struct Children; impl Children { fn acknowledge(&mut self, _: &(), _: &()) -> Vec<u32> { vec![42] } } let mut children = Children; let listed = (); let frame = ();'
+            (temp / 'check.rs').write_text('mod launch { ' + record + ' pub(super) fn check() { ' + fixture + acknowledgment + ' } }\nfn main() { launch::check(); }')
+            compiler = (['taskpolicy', '-b'] if sys.platform == 'darwin' else []) + ['rustc', '--edition=2021', '-Dwarnings']
+            subprocess.run(compiler + [str(temp / 'check.rs'), '-o', str(temp / 'check')], check=True)
+            with (temp / 'stdout').open('w') as output:
+                subprocess.run([str(temp / 'check')], stdout=output, check=True)
+            self.assertEqual(evidence.read_text(), '[bwm] launch ack pid=42\n')
+            self.assertEqual(evidence.read_text(), (temp / 'stdout').read_text())
+
 
 if __name__ == '__main__':
     unittest.main()

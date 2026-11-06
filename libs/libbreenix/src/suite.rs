@@ -102,6 +102,8 @@ pub mod prerequisites;
 pub mod sequence;
 #[path = "suite_evidence.rs"]
 mod evidence;
+#[path = "suite_host_input.rs"]
+mod host_input;
 
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -754,6 +756,10 @@ pub fn hostkey_method() -> Option<&'static str> {
 /// Ask the launcher to press ordered chords through the case's serial record path.
 /// The case must check the resulting guest state before it reports success.
 pub fn hostkeys(chords: &str) -> Result<u64, String> {
+    hostkeys_request(chords, None)
+}
+
+fn hostkeys_request(chords: &str, ticket: Option<u64>) -> Result<u64, String> {
     let method = hostkey_method().filter(|value| !value.is_empty())
         .ok_or_else(|| String::from("no host key path"))?;
     let (path, missing) = method.split_once(";missing=").unwrap_or((method, ""));
@@ -770,13 +776,18 @@ pub fn hostkeys(chords: &str) -> Result<u64, String> {
     }
     usb_input_attached()?;
     let seq = HOSTKEY_SEQ.fetch_add(1, Ordering::Relaxed);
-    record("HOSTKEY", &std::format!("seq={seq} keys={chords}"));
+    let tag = ticket.map_or_else(String::new, |n| std::format!(" ticket={n}"));
+    record("HOSTKEY", &std::format!("seq={seq} keys={chords}{tag}"));
     Ok(seq)
 }
 
 /// Ask the boot host to move its real virtual tablet and set its buttons (HID order).
 /// Success means only that a request was emitted; the case must observe client delivery.
 pub fn hostpointer(x: u32, y: u32, width: u32, height: u32, buttons: u32, wheel: i32) -> Result<u64, String> {
+    hostpointer_request(x, y, width, height, buttons, wheel, None)
+}
+
+fn hostpointer_request(x: u32, y: u32, width: u32, height: u32, buttons: u32, wheel: i32, ticket: Option<u64>) -> Result<u64, String> {
     hostkey_method().filter(|v| !v.is_empty()).ok_or("no host pointer path")?;
     if width < 2 || height < 2 || x >= width || y >= height || buttons > 7 || !(-1..=1).contains(&wheel) {
         return Err(String::from("invalid host pointer coordinates, buttons or wheel"));
@@ -786,8 +797,65 @@ pub fn hostpointer(x: u32, y: u32, width: u32, height: u32, buttons: u32, wheel:
     }
     usb_input_attached()?;
     let seq = HOSTKEY_SEQ.fetch_add(1, Ordering::Relaxed);
-    record("HOSTPOINTER", &std::format!("seq={seq} x={x} y={y} width={width} height={height} buttons={buttons} wheel={wheel}"));
+    let tag = ticket.map_or_else(String::new, |n| std::format!(" ticket={n}"));
+    record("HOSTPOINTER", &std::format!("seq={seq} x={x} y={y} width={width} height={height} buttons={buttons} wheel={wheel}{tag}"));
     Ok(seq)
+}
+
+// A case runs in its own process. Include its pid so a retained ACK from an
+// earlier case cannot satisfy a new request after the per-process seq resets.
+fn host_ack_ticket() -> Result<u64, String> {
+    let pid = process::getpid().map_err(|e| e.to_string())?.raw();
+    let seq = HOSTKEY_SEQ.load(Ordering::Relaxed).checked_add(1)
+        .filter(|n| *n <= u32::MAX as u64).ok_or("host ACK ticket exhausted")?;
+    Ok((pid << 32) | seq)
+}
+
+/// W14: return the guest delivery timestamp. The serial path uses its final
+/// ticketed BXKEY_ACK; native devices are observed through the input stream.
+pub fn hostkeys_acked(chords: &str) -> Result<u64, String> {
+    if hostkey_method().is_some_and(|v| v.split(';').next() != Some("host-channel")) {
+        return host_input::keys(chords, || hostkeys_request(chords, None));
+    }
+    let ticket = host_ack_ticket()?;
+    hostkeys_request(chords, Some(ticket))?;
+    wait_host_ack(ticket, "BXKEY_ACK")
+}
+
+/// W14: wait for the parking request's serial ACK or native motion batch.
+pub fn hostpointer_acked(x: u32, y: u32, width: u32, height: u32, buttons: u32, wheel: i32) -> Result<u64, String> {
+    if hostkey_method().is_some_and(|v| v.split(';').next() != Some("host-channel")) {
+        return host_input::pointer(x, y, width, height, buttons, wheel,
+            || hostpointer_request(x, y, width, height, buttons, wheel, None));
+    }
+    let ticket = host_ack_ticket()?;
+    hostpointer_request(x, y, width, height, buttons, wheel, Some(ticket))?;
+    wait_host_ack(ticket, "BXPTR_ACK")
+}
+
+fn host_ack_time(text: &str, marker: &str, ticket: u64) -> Option<u64> {
+    text.split_inclusive('\n').find_map(|line| {
+        let mut fields = line.strip_suffix('\n')?.split_whitespace();
+        if fields.next()? != "HOSTINPUT_ACK" || fields.next()? != marker { return None; }
+        let sequence = fields.next()?;
+        if sequence.len() != 16 || !sequence.bytes().all(|b| b.is_ascii_hexdigit())
+            || u64::from_str_radix(sequence, 16).ok()? == 0 { return None; }
+        if fields.next()?.strip_prefix("ticket=")?.parse::<u64>().ok()? != ticket { return None; }
+        let ns = fields.next()?.strip_prefix("ns=")?.parse::<u64>().ok()?;
+        (ns != 0 && fields.next().is_none()).then_some(ns)
+    })
+}
+
+fn wait_host_ack(ticket: u64, marker: &str) -> Result<u64, String> {
+    loop {
+        let text = std::fs::read_to_string("/proc/kmsg").map_err(|e| e.to_string())?;
+        if let Some(ns) = host_ack_time(&text, marker, ticket) {
+            if monotonic_ns().is_some_and(|now| i128::from(ns) <= now) { return Ok(ns); }
+            return Err(String::from("host ACK is ahead of the guest clock"));
+        }
+        if case_ms_left() < 200 { return Err(std::format!("{marker} ticket={ticket}: case deadline")); }
+        time::sleep_ms(5).map_err(|e| e.to_string())?;
+    }
 }
 
 static HOSTSSH_SEQ: AtomicU64 = AtomicU64::new(0);

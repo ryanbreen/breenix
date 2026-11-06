@@ -19,6 +19,7 @@ NAMES = [c['id'] + '/' + t['id'] for c in MANIFEST['categories'] for t in c['cas
 SELECTED = json.loads((ROOT / 'docs/gui/gt710-step-21-1.json').read_text())['cases']
 SHA = 'a' * 40
 BOOT = '20261104T000000Z-metal'
+Q1 = 'input-devices/pointer-completion-path'
 def panel(width=2, height=1, pixels=None):
     record = bytearray(1024)
     for offset, value in [(0, 2), (4, 1024), (16, 6), (20, 5), (24, 1),
@@ -108,6 +109,62 @@ class WmStep(unittest.TestCase):
     def record(self):
         return API['record_wm_capture'](self.path, SHA, 1)
 
+    def step_serial(self, number, failures):
+        selected = json.loads((ROOT / f'docs/gui/gt710-step-21-{number}.json').read_text())['cases']
+        passed = set(selected) - set(failures)
+        text = serial()
+        for name in NAMES:
+            old = f'CASE {name} ' + ('PASS ms=1' if name in SELECTED else 'FAIL ms=1 msg=pending')
+            new = f'CASE {name} ' + ('PASS ms=1' if name in passed else 'FAIL ms=1 msg=pending')
+            text = text.replace(old, new)
+        return text.replace('DONE passed=9 failed=73',
+                            f'DONE passed={len(passed)} failed={82 - len(passed)}')
+
+    def test_w10a_accepts_only_q1_and_reports_its_actual_failure(self):
+        for number in range(3, 8):
+            with self.subTest(step=number):
+                text = self.step_serial(number, [Q1])
+                (self.path / 'serial.txt').write_text(text)
+                self.assertEqual(API['record_wm_capture'](self.path, SHA, number), 0)
+                report = json.loads((self.path / 'gt710-wm-step.json').read_text())
+                self.assertEqual(report['expectedFailures'], [dict(
+                    id=Q1, result='FAIL', ruling='W10a', issue=2743)])
+                count = json.loads((ROOT / f'docs/gui/gt710-step-21-{number}.json').read_text())['total']
+                self.assertEqual(report['cases'][0]['reason'],
+                    f'{count - 1}/{count} selected WM cases passed; '
+                    f'expected failure under W10a (#2743): {Q1}; '
+                    '82 cases, memory and uploads verified')
+                result = metal_score.score(self.path)['milestones']['metal-gt710/wm-step']
+                self.assertTrue(result['passed'], result)
+                self.assertEqual((self.path / 'serial.txt').read_text(), text)
+        # A passing Q1 is counted normally, without an exception.
+        (self.path / 'serial.txt').write_text(self.step_serial(5, []))
+        self.assertEqual(API['record_wm_capture'](self.path, SHA, 5), 0)
+        report = json.loads((self.path / 'gt710-wm-step.json').read_text())
+        self.assertEqual(report.get('expectedFailures', []), [])
+        self.assertEqual(report['cases'][0]['reason'],
+                         '68/68 selected WM cases passed; 82 cases, memory and uploads verified')
+
+    def test_q1_exception_does_not_bypass_other_selected_cases_or_evidence(self):
+        original = self.step_serial(5, [Q1])
+        mutations = [
+            (self.step_serial(5, [Q1, 'clipboard/large']), 'failed: clipboard/large'),
+            (original.replace('allowance=48', 'allowance=64'), 'allowance'),
+            (original.replace('reclaimed=PASS', 'reclaimed=FAIL'), 'MEMORY reclaimed=FAIL'),
+            (original.replace('skipped=0', 'skipped=1'), 'DONE'),
+            (original.replace(f'CASE {Q1} FAIL', f'CASE {Q1} SKIP'), 'malformed WM record'),
+            (original.replace(f'SUITE window-manager CASE {Q1} FAIL ms=1 msg=pending\n', ''), 'manifest-ordered'),
+            (original.replace('full=true', 'full=false'), 'full'),
+            (original.replace('ELAPSED ms=1000', 'ELAPSED ms=1800001'), 'elapsed'),
+            (original.replace(hashlib.sha256(BODIES[1]).hexdigest(), '0' * 64), 'digest'),
+        ]
+        for text, reason in mutations:
+            with self.subTest(reason=reason):
+                (self.path / 'serial.txt').write_text(text)
+                self.assertEqual(API['record_wm_capture'](self.path, SHA, 5), 1)
+                report = json.loads((self.path / 'gt710-wm-step.json').read_text())
+                self.assertIn(reason, report['cases'][0]['reason'])
+
     def test_closed_failed_suite_can_pass_only_its_selection(self):
         self.assertEqual(self.record(), 0)
         report = json.loads((self.path / 'gt710-wm-step.json').read_text())
@@ -120,26 +177,27 @@ class WmStep(unittest.TestCase):
     def test_failed_selection_reports_its_scope_and_case_ids(self):
         step4 = json.loads((ROOT / 'docs/gui/gt710-step-21-4.json').read_text())['cases']
         q1 = 'input-devices/pointer-completion-path'
-        passed = set(step4) - {q1}
+        passed = set(step4) - {q1, 'focus/initial-focus'}
         passed.update([name for name in NAMES if name not in step4][:6])
         text = serial()
         for name in NAMES:
             old = f'CASE {name} ' + ('PASS ms=1' if name in SELECTED else 'FAIL ms=1 msg=pending')
             new = f'CASE {name} ' + ('PASS ms=1' if name in passed else 'FAIL ms=1 msg=pending')
             text = text.replace(old, new)
-        text = text.replace('DONE passed=9 failed=73', 'DONE passed=63 failed=19')
+        text = text.replace('DONE passed=9 failed=73', 'DONE passed=62 failed=20')
         (self.path / 'serial.txt').write_text(text)
         for number, required in ((4, step4), (7, NAMES)):
             with self.subTest(step=number):
                 self.assertEqual(API['record_wm_capture'](self.path, SHA, number), 1)
                 report = json.loads((self.path / 'gt710-wm-step.json').read_text())
-                failed = [name for name in required if name not in passed]
+                failed = [name for name in required if name not in passed and name != q1]
                 self.assertEqual(report['selection'], f'gt710-step-21-{number}.json')
                 self.assertEqual(report['cases'][0]['result'], 'FAIL')
                 self.assertEqual(report['cases'][0]['reason'],
-                    f'selected WM cases failed: {len(required) - len(failed)}/{len(required)} '
+                    f'selected WM cases failed: {len(required) - len(failed) - 1}/{len(required)} '
                     f'passed in gt710-step-21-{number}.json; failed: {", ".join(failed)}; '
-                    'full suite: 63/82 passed, 19 failed')
+                    f'expected failure under W10a (#2743): {q1}; '
+                    'full suite: 62/82 passed, 20 failed')
 
     def test_complete_large_panel(self):
         global BODIES

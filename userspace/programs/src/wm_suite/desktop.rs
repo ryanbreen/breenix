@@ -17,9 +17,17 @@ pub fn pause() {
 pub fn until(
     ms: u64,
     what: &str,
+    test: impl FnMut() -> Result<bool, String>,
+) -> Result<(), String> {
+    until_from(now(), ms, what, test)
+}
+pub fn until_from(
+    begin: u64,
+    ms: u64,
+    what: &str,
     mut test: impl FnMut() -> Result<bool, String>,
 ) -> Result<(), String> {
-    let end = now() + ms * 1_000_000;
+    let end = begin + ms * 1_000_000;
     loop {
         if test()? {
             return Ok(());

@@ -24,6 +24,7 @@ pub struct Reports {
     reports: [[u8; REPORT_LEN]; MAX_REPORTS],
     count: usize,
     pub sequence: Option<u64>,
+    pub ticket: Option<u64>,
 }
 
 impl Reports {
@@ -60,7 +61,9 @@ pub fn parse(line: &[u8]) -> Result<Reports, &'static str> {
     } else {
         (body, None)
     };
-    let mut parsed = Reports { reports: [[0; REPORT_LEN]; MAX_REPORTS], count: 0, sequence };
+    let (body, ticket) = split_ticket(body)?;
+    if ticket.is_some() && sequence.is_none() { return Err("host ticket needs a numbered packet"); }
+    let mut parsed = Reports { reports: [[0; REPORT_LEN]; MAX_REPORTS], count: 0, sequence, ticket };
     for field in body.split(|&b| b == b',') {
         if parsed.count == MAX_REPORTS {
             return Err("more reports than one line may carry");
@@ -75,6 +78,23 @@ pub fn parse(line: &[u8]) -> Result<Reports, &'static str> {
         parsed.count += 1;
     }
     Ok(parsed)
+}
+
+// Optional request correlation is covered by the packet CRC. The transport's
+// sequence is still strictly ordered; the ticket is opaque to input delivery.
+fn split_ticket(body: &[u8]) -> Result<(&[u8], Option<u64>), &'static str> {
+    let Some(at) = body.windows(8).position(|w| w == b" ticket=") else {
+        return Ok((body, None));
+    };
+    let digits = &body[at + 8..];
+    if digits.is_empty() { return Err("empty host ticket"); }
+    let ticket = digits.iter().try_fold(0u64, |n, &b| {
+        if !b.is_ascii_digit() { return Err("invalid host ticket"); }
+        n.checked_mul(10).and_then(|n| n.checked_add(u64::from(b - b'0')))
+            .ok_or("host ticket overflow")
+    })?;
+    if ticket == 0 { return Err("zero host ticket"); }
+    Ok((&body[..at], Some(ticket)))
 }
 
 fn hex_word(bytes: &[u8]) -> Result<u64, &'static str> {
@@ -210,10 +230,10 @@ mod tests {
     }
 }
 
-/// One transport line, including the numbered BXKEY header. Overflow is
+/// One transport line, including the numbered BXKEY header and optional ticket. Overflow is
 /// discarded through the next terminator without parsing a partial packet.
 pub struct SerialLines {
-    bytes: [u8; MAX_LINE + 28],
+    bytes: [u8; MAX_LINE + 28 + 28],
     len: usize,
     overflow: bool,
 }
@@ -225,7 +245,7 @@ impl Default for SerialLines {
 impl SerialLines {
     pub const fn new() -> Self {
         Self {
-            bytes: [0; MAX_LINE + 28],
+            bytes: [0; MAX_LINE + 28 + 28],
             len: 0,
             overflow: false,
         }
@@ -263,6 +283,7 @@ pub enum Packet {
 pub struct Ack {
     pub pointer: bool,
     pub sequence: u64,
+    pub ticket: Option<u64>,
 }
 pub struct Receipt {
     pub added: usize,
@@ -281,7 +302,7 @@ pub fn absolute_value(pixel: u32, size: u32) -> Result<i32, &'static str> {
     }
     Ok((pixel as u64 * 32767).div_ceil((size - 1) as u64) as i32)
 }
-fn parse_pointer(line: &[u8], screen: (u32, u32)) -> Result<(u64, Pointer), &'static str> {
+fn parse_pointer(line: &[u8], screen: (u32, u32)) -> Result<(u64, Pointer, Option<u64>), &'static str> {
     let body = line
         .strip_prefix(b"BXPTR @")
         .ok_or("not a numbered BXPTR line")?;
@@ -301,6 +322,7 @@ fn parse_pointer(line: &[u8], screen: (u32, u32)) -> Result<(u64, Pointer), &'st
     {
         return Err("host pointer checksum mismatch");
     }
+    let (payload, ticket) = split_ticket(payload)?;
     let mut fields = payload.split(|&b| b == b' ');
     let mut unsigned =
         || -> Result<u32, &'static str> { decimal(fields.next().ok_or("missing pointer field")?) };
@@ -334,6 +356,7 @@ fn parse_pointer(line: &[u8], screen: (u32, u32)) -> Result<(u64, Pointer), &'st
             buttons: buttons as u8,
             wheel,
         },
+        ticket,
     ))
 }
 fn decimal(bytes: &[u8]) -> Result<u32, &'static str> {
@@ -374,10 +397,11 @@ impl Channel {
     }
     pub fn accept(&mut self, line: &[u8], screen: (u32, u32)) -> Result<Receipt, &'static str> {
         if line.starts_with(b"BXPTR ") {
-            let (sequence, pointer) = parse_pointer(line, screen)?;
+            let (sequence, pointer, ticket) = parse_pointer(line, screen)?;
             let ack = Some(Ack {
                 pointer: true,
                 sequence,
+                ticket,
             });
             if sequence == self.sequences[1] {
                 return Ok(Receipt { added: 0, ack });
@@ -396,6 +420,7 @@ impl Channel {
             let ack = reports.sequence.map(|sequence| Ack {
                 pointer: false,
                 sequence,
+                ticket: reports.ticket,
             });
             if !reports.enqueue_after(self.sequences[0])? {
                 return Ok(Receipt { added: 0, ack });

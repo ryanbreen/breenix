@@ -65,14 +65,28 @@ use stack::Stack;
 #[path = "bwm/chrome.rs"]
 mod chrome;
 use chrome::*;
+#[path = "bwm/children.rs"]
+mod children;
 #[path = "bwm/launch.rs"]
 mod launch;
 use launch::*;
 
+#[path = "bwm/clipboard.rs"]
+mod clipboard;
+#[path = "bwm/clipboard_server.rs"]
+mod clipboard_server;
+#[path = "bwm/clipboard_socket.rs"]
+mod clipboard_socket;
+
 #[path = "bwm/clock.rs"]
 mod clock;
+#[path = "bwm/close.rs"]
+mod close;
+#[path = "bwm/shutdown.rs"]
+mod shutdown;
 
 fn main() {
+    initialize_shutdown();
     print!("[bwm] Breenix Window Manager starting... (v2-chromeless-skip)\n");
 
     if let Err(e) = libbreenix::graphics::take_over_display() {
@@ -145,6 +159,8 @@ fn main() {
     let mut stack = Stack::new();
     let mut stream = input::Stream::new();
     let mut timing = timing::Timing::new();
+    let mut children = children::Children::default();
+    let mut closing = close::Close::for_process(libbreenix::process::getpid().map_or(0, |pid| pid.raw() as u32));
     let mut clicks = timing::Clicks::new();
     let mut consumed_keys = std::collections::BTreeSet::new();
     let (mut mouse_x, mut mouse_y) = (0, 0);
@@ -197,7 +213,9 @@ fn main() {
     let mut full_redraw = !first_presented;
     let mut validation = ValidationQueue::new();
 
-    let mut poll_fds = [
+    // The desktop outlives a clipboard that cannot open; clipboard clients then see ENOENT.
+    let mut clipboard = clipboard_socket::Server::open().map_err(|e| eprintln!("[bwm] clipboard socket: {e}")).ok();
+    let mut poll_fds = vec![
         io::PollFd { fd: stream.fd(), events: io::poll_events::POLLIN as i16, revents: 0 },
         io::PollFd { fd: scene_fd, events: io::poll_events::POLLIN as i16, revents: 0 },
     ];
@@ -221,11 +239,19 @@ fn main() {
         } else {
             POINTER_POLL_MS
         };
+        let timeout = closing.timeout_ms(libbreenix::ui_clock::now_ns(), timeout);
+        let timeout = clipboard.as_ref().map_or(timeout, |c| c.timeout_ms(libbreenix::ui_clock::now_ns(), timeout));
+        poll_fds.truncate(2);
+        if let Some(clipboard) = &clipboard { clipboard.append_poll(&mut poll_fds); }
         for fd in poll_fds.iter_mut() {
             fd.revents = 0;
         }
-        let _ = io::poll(&mut poll_fds, timeout);
+        let mut wait = ShutdownWait { fds: &mut poll_fds, timeout, failed: false };
+        if shutdown::boundary(&mut wait).is_none() { return; }
+        if let Some(clipboard) = &mut clipboard { clipboard.service(&poll_fds, libbreenix::ui_clock::now_ns()); }
         clock.begin_epoch();
+        launch::reap(&mut children);
+        launch::poll_errors(&mut children);
         let input_ready = poll_fds[0].revents & io::poll_events::POLLIN as i16 != 0;
         let scene_changed = poll_fds[1].revents & io::poll_events::POLLIN as i16 != 0;
         if scene_changed {
@@ -249,6 +275,18 @@ fn main() {
             }
             // A committed client frame is composed without repainting the desktop.
             windows_dirty |= gpu.pending();
+        }
+
+        closing.retain(|id, owner| windows.iter().any(|w| w.window_id == id && w.owner_pid == owner));
+        let close_now = libbreenix::ui_clock::now_ns();
+        if closing.has_due(close_now) {
+            let mut listed = Vec::new();
+            if session::list_windows(&mut listed).is_ok() {
+                closing.retain(|id, owner| listed.iter().any(|w| w.id == id && w.owner_pid == owner));
+                closing.due(close_now, |pid, _| {
+                    let _ = signal::kill(pid as i32, signal::SIGKILL);
+                });
+            }
         }
 
         send_pointer_notices(pointer_routes.reconcile(&stack, &pointer_contents(&windows)));
@@ -320,7 +358,7 @@ fn main() {
                             full_redraw = true;
                         }
                     }
-                    _ => execute_hotkey_action(action, &windows, &stack),
+                    _ => execute_hotkey_action(action, &windows, &stack, &mut children),
                 }
             }
 
@@ -498,9 +536,10 @@ fn main() {
                             } else if clicked_title {
                                 // Check chrome buttons before starting drag
                                 if windows[top].hit_close_button(mouse_x, mouse_y) {
-                                    send_to(&windows, top, Input::Close);
-                                    if windows[top].owner_pid > 0 {
-                                        let _ = signal::kill(windows[top].owner_pid as i32, signal::SIGTERM);
+                                    match closing.request(id, windows[top].owner_pid, libbreenix::ui_clock::now_ns()) {
+                                        close::Action::Request => send_to(&windows, top, Input::Close),
+                                        close::Action::Term(pid) => { let _ = signal::kill(pid as i32, signal::SIGTERM); }
+                                        _ => {}
                                     }
                                 } else if windows[top].hit_minimize_button(mouse_x, mouse_y) {
                                     let transition = stack.minimize(windows[top].window_id);
@@ -598,6 +637,7 @@ fn main() {
                         print!("[bwm] display back: composing again\n");
                     }
                     drawn_pointer = Some(pointer);
+                    launch::acknowledge(&mut children, gpu.last_serial);
                     clock.presented(gpu.last_serial);
                     validation.presented(PresentedScene { layers, pointer });
                 }
@@ -718,4 +758,53 @@ fn send_timed_pointer_notices(notices: Vec<pointer_route::Notice>, clicks: &mut 
             input::send_id(notice.id, Input::Button { button: (code - 0x110 + 1) as u32, pressed, x: notice.x, y: notice.y, clicks: count });
         } else { send_pointer_notices(vec![notice]); }
     }
+}
+
+static TERMINATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn terminate(_: i32) {
+    TERMINATE.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+fn term_mask(how: i32) {
+    let mask = 1u64 << (signal::SIGTERM - 1);
+    if let Err(error) = signal::sigprocmask(how, Some(&mask), None) {
+        eprintln!("[bwm] cannot set shutdown signal mask: {error}");
+        process::exit(1);
+    }
+}
+
+fn initialize_shutdown() {
+    term_mask(signal::SIG_BLOCK);
+    if let Err(error) = signal::sigaction(signal::SIGTERM, Some(&signal::Sigaction::new(terminate)), None) {
+        eprintln!("[bwm] cannot install shutdown handler: {error}");
+        process::exit(1);
+    }
+}
+
+struct ShutdownWait<'a> {
+    fds: &'a mut [io::PollFd],
+    timeout: i32,
+    failed: bool,
+}
+
+impl shutdown::Runtime for ShutdownWait<'_> {
+    type Ready = ();
+    fn unblock(&mut self) { term_mask(signal::SIG_UNBLOCK); }
+    fn wait(&mut self) { let _ = io::poll(self.fds, self.timeout); }
+    fn block(&mut self) { term_mask(signal::SIG_BLOCK); }
+    fn terminated(&self) -> bool { TERMINATE.load(std::sync::atomic::Ordering::Relaxed) }
+    fn release(&mut self) {
+        if let Err(error) = libbreenix::window::release_compositor() {
+            eprintln!("[bwm] cannot release compositor: {error}");
+            self.failed = true;
+        }
+    }
+    fn restore(&mut self) {
+        if let Err(error) = libbreenix::graphics::give_back_display() {
+            eprintln!("[bwm] cannot restore display: {error}");
+            self.failed = true;
+        }
+    }
+    fn exit(&mut self, status: i32) { process::exit(if self.failed { 1 } else { status }); }
 }
