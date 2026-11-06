@@ -54,7 +54,7 @@ fn run(commands: &mut File, replies: &mut File) -> Result<(), String> {
             }
             for e in &batch[..n] {
                 events.push(*e);
-                processed = processed.max(e.serial);
+                processed = libbreenix::input::abi::advance_watermark(processed, e.serial);
                 if e.kind == abi::event_kind::RESIZE_REQUESTED && !refuse {
                     let r = window::resize(c.id, e.width, e.height)
                         .map_err(|e| format!("owner RESIZE: {e}"))?;

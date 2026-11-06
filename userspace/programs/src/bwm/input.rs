@@ -36,7 +36,7 @@ static QUEUES: std::sync::Mutex<input_backlog::Backlog<Queued>> =
     std::sync::Mutex::new(input_backlog::Backlog::new());
 
 pub(super) fn serial_key(serial: u64) -> super::pace::Serial {
-    core_input::abi::derived_source(serial).unwrap_or(if serial >> 63 != 0 { (0, 0) } else { (serial, 0) })
+    core_input::abi::source_order(serial).unwrap_or((0, 0))
 }
 static DELIVERED: std::sync::Mutex<BTreeMap<u64,u64>> = std::sync::Mutex::new(BTreeMap::new());
 pub(super) fn take_delivered() -> BTreeMap<u64,u64> {

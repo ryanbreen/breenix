@@ -195,3 +195,13 @@ pub fn derived_source(serial: u64) -> Option<(u64, u32)> {
     let index = (serial & ((1 << 22) - 1)) as u32;
     (source != 0 && index != 0).then_some((source, index))
 }
+
+/// Order source input and its compositor derivations independently of encoding.
+/// Kernel-generated releases have no source watermark and cannot advance it.
+pub fn source_order(serial: u64) -> Option<(u64, u32)> {
+    derived_source(serial).or_else(|| (serial != 0 && serial >> 63 == 0).then_some((serial, 0)))
+}
+
+pub fn advance_watermark(previous: u64, handled: u64) -> u64 {
+    if source_order(handled) > source_order(previous) { handled } else { previous }
+}

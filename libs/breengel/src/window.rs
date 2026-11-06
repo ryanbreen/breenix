@@ -210,7 +210,8 @@ impl Window {
 
     fn published(&mut self, done: Committed) {
         self.published = done.processed_serial;
-        self.since_pixel.retain(|&(serial, _)| serial > done.processed_serial);
+        self.since_pixel.retain(|&(serial, _)| libbreenix::input::abi::source_order(serial)
+            > libbreenix::input::abi::source_order(done.processed_serial));
         self.last = Some(done);
     }
 
@@ -244,7 +245,7 @@ impl Window {
             if handled == Handled::Redraw {
                 break;
             }
-            processed = processed.max(serial);
+            processed = libbreenix::input::abi::advance_watermark(processed, serial);
         }
         let meta = self.meta(processed);
         let commit_id = window::commit_no_change(self.id, Some(&meta))?;
@@ -281,7 +282,7 @@ impl Window {
             let handled = handler(&d);
             count += 1;
             if d.serial != 0 {
-                self.handled = self.handled.max(d.serial);
+                self.handled = libbreenix::input::abi::advance_watermark(self.handled, d.serial);
                 self.since_pixel.push((d.serial, handled));
             }
         }
