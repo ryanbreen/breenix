@@ -190,7 +190,7 @@ fn main() {
 
     // Clock state
     let mut clock = clock::Clock::new(std::env::var_os("BREENIX_UI_CLOCK").is_some());
-    let clock_wake = clock_wake::open().expect("UI clock wake setup failed");
+    let mut clock_wake = clock_wake::open().expect("UI clock wake setup failed");
     let mut clock_text = [0u8; 11];
     let mut taskbar_prepare_ns = None;
     format_clock(clock.wall_sec(), &mut clock_text);
@@ -287,7 +287,12 @@ fn main() {
         signal_wake.drain();
         if let Some(clipboard) = &mut clipboard { clipboard.service(&poll_fds, libbreenix::ui_clock::now_ns()); }
         if let Some(wake) = &clock_wake {
-            if poll_fds[2].revents & io::poll_events::POLLIN as i16 != 0 { wake.drain(); }
+            if poll_fds[2].revents != 0 {
+                if let Err(error) = wake.drain() {
+                    eprintln!("[bwm] UI clock wake stopped: {error}");
+                    clock_wake = None;
+                }
+            }
         }
         clock.begin_epoch();
         launch::reap(&mut children);

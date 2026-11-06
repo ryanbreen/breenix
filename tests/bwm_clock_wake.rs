@@ -33,15 +33,25 @@ fn step_wakes_and_no_step_stays_idle() {
     assert!(!readable(wake.fd(), 20));
     fake.step();
     assert!(readable(wake.fd(), 1000));
-    wake.drain();
+    wake.drain().unwrap();
     assert!(!readable(wake.fd(), 20));
     fake.step();
     assert!(readable(wake.fd(), 1000));
-    wake.drain();
+    wake.drain().unwrap();
     fake.stop();
     std::thread::sleep(Duration::from_millis(10));
 }
 #[test]
 fn no_page_has_no_descriptor_or_worker() {
     assert!(ClockWake::start::<Arc<Fake>>(None).unwrap().is_none());
+}
+
+#[test]
+fn worker_exit_reports_eof_so_the_caller_can_drop_the_descriptor() {
+    let fake = Arc::new(Fake::default());
+    let wake = ClockWake::start(Some(fake.clone())).unwrap().unwrap();
+    fake.stop();
+    let mut p = PollFd { fd: wake.fd(), events: 1, revents: 0 };
+    assert_eq!(unsafe { poll(&mut p, 1, 1000) }, 1);
+    assert_eq!(wake.drain().unwrap_err().kind(), std::io::ErrorKind::UnexpectedEof);
 }

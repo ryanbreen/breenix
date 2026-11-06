@@ -48,10 +48,10 @@ impl ClockWake {
         Ok(Some(Self { read, pending }))
     }
     pub(super) fn fd(&self) -> i32 { self.read.as_raw_fd() }
-    pub(super) fn drain(&self) {
+    pub(super) fn drain(&self) -> io::Result<()> {
         // Clear before reading: a concurrent step can queue the next byte.
         self.pending.store(false, Ordering::Release);
-        let _ = (&self.read).read_exact(&mut [0]);
+        (&self.read).read_exact(&mut [0])
     }
 }
 
