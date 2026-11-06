@@ -16,6 +16,13 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Window-manager restart adoption and bounded retained state for E21 step 21.6
+land through [PR #2752](https://github.com/ryanbreen/breenix/pull/2752).
+The PR records R240 acceptance, including the unchanged memory bound and
+Q1's expected selected failure under W10a. Nonblocking calibration, restart
+policy and input-retirement follow-ups are grouped in
+[#2756](https://github.com/ryanbreen/breenix/issues/2756).
+
 Shared window-manager input, stable-ID focus and resize policy for E21 step 21.4
 land through [PR #2745](https://github.com/ryanbreen/breenix/pull/2745).
 The PR records hardware acceptance and review repairs; the remaining geometry-version,

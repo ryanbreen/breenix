@@ -116,8 +116,11 @@ pending double-click. Input timestamp validation is per device
 by device registration, not by cross-device timestamp comparisons. The 5/5
 timing checks and the affected 660-epoch click-capacity check pass; unchanged
 compositor/queue capacity results stand. The final click-capacity loop retires
-its short-lived devices after each batch through the production retention
-method. The original red run used the check-first `fad73c34` workload against
+its short-lived devices after each batch by calling the production retention
+method directly. It does not exercise bwm's input-ready call site or the
+device-registration query; that integration coverage is follow-up work in
+[#2756](https://github.com/ryanbreen/breenix/issues/2756).
+The original red run used the check-first `fad73c34` workload against
 the baseline, before that retention method existed.
 The original
 memory case, shared cases, cumulative selection and threshold are unchanged.
@@ -135,6 +138,10 @@ interface is involved.
 
 The 2/2 scoped release builds of `userspace/programs --bin bwm` passed for x86_64 and
 aarch64 with CARGO_BUILD_JOBS=4 under `taskpolicy -b`, with zero warnings.
-No kernel source changed. Hardware acceptance remains in the acceptance unit;
+This allocation unit changes userspace storage. The complete
+[PR #2752](https://github.com/ryanbreen/breenix/pull/2752) also changes
+`kernel/src/gpu/gk208/native.rs`, `kernel/src/gpu/gk208/vblank_clock.rs` and
+`kernel/src/window/status_pages.rs` for native receipt timing and history
+formatting. Hardware acceptance is recorded in that PR;
 ARM still lacks runtime validation of restart adoption, supervision and the
-600-epoch VmRSS bound. No VM or hardware boot, PR or merge was performed here.
+600-epoch VmRSS bound. No VM or hardware boot was performed in this allocation unit.
