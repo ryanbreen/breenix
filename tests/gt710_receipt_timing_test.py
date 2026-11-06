@@ -125,7 +125,7 @@ fn exercise(drift_ppm: i64) {
         functions = '\n'.join(item(native, marker) for marker in [
             'pub(in crate::gk208) fn vblank_counter(', 'fn presentation_sample('])
         methods = '\n'.join(item(native, marker) for marker in [
-            'fn start_clock(', 'pub(in crate::gk208) fn record_presentation('])
+            'fn presentation_attempts(', 'fn start_clock(', 'pub(in crate::gk208) fn record_presentation('])
         fixture = r'''
 use std::cell::Cell;
 const EPOCH: u64 = 2_000_000_000;

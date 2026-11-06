@@ -540,6 +540,13 @@ fn presentation_sample(regs: &Registers, head: u32)
 }
 
 impl Evo {
+    // W20 can select +2. Allow another period of dispatch margin at any mode.
+    fn presentation_attempts(&self) -> u64 {
+        let period = (u128::from(self.frame_pixels) * 1_000_000_000)
+            .div_ceil(u128::from(self.pixel_hz.max(1))).min(u128::from(u64::MAX)) as u64;
+        period.saturating_mul(3).saturating_add(1_000_000).div_ceil(100_000)
+    }
+
     pub(in crate::gk208) fn presentation_schedule(&self, regs: &Registers) -> Result<(u64,u64), &'static str> {
         let total=regs.read(0x640414+self.head as usize*0x300);
         let (width,height)=(total&0xffff,total>>16);
@@ -590,6 +597,7 @@ impl Evo {
     }
     fn finish_presentation(&mut self, regs: &Registers, resource: u32)
         -> Result<bool, &'static str> {
+        let result = (|| {
         let (sampled_ns, vert, pixel) = presentation_sample(regs, self.head)?;
         let pending = self.pending_presentation.as_mut().ok_or("native presentation not armed")?;
         if pending.resource != resource { return Err("native presentation identity mismatch"); }
@@ -643,10 +651,16 @@ impl Evo {
         self.last_presentation = Some((resource, at));
         self.pending_presentation = None;
         Ok(true)
+        })();
+        if result.is_err() && self.pending_presentation.is_some_and(|p| p.resource == resource) {
+            self.pending_presentation = None;
+        }
+        result
     }
     /// G26 acceptance and G33a content time are separate completion points.
     pub(in crate::gk208) fn content_presentation(&mut self, regs: &Registers,
         resource: u32, not_before: u64) -> Result<Option<u64>, &'static str> {
+        let result = (|| {
         if let Some(pending) = self.pending_presentation {
             if pending.resource != resource { return Err("native content presentation identity mismatch"); }
             if !self.finish_presentation(regs, resource)? { return Ok(None); }
@@ -654,6 +668,11 @@ impl Evo {
         let (id, at) = self.last_presentation.ok_or("native presentation clock absent")?;
         if id != resource || at < not_before { return Err("native content presentation is stale"); }
         Ok(Some(at))
+        })();
+        if result.is_err() && self.pending_presentation.is_some_and(|p| p.resource == resource) {
+            self.pending_presentation = None;
+        }
+        result
     }
     /// Identify the counter edge's raster line before any client UPDATE.
     /// MIT rnndb NV_HEAD_STAT.VERT (notice above): no display register writes.
@@ -668,7 +687,7 @@ impl Evo {
         let line_ns = u64::from(width) * 1_000_000_000 / self.pixel_hz;
         let mut previous = presentation_sample(regs, self.head)?;
         let start = previous.0;
-        while crate::signal::monotonic_nanos().saturating_sub(start) < 40_000_000 {
+        while crate::signal::monotonic_nanos().saturating_sub(start) < self.presentation_attempts().saturating_mul(100_000) {
             let sample = presentation_sample(regs, self.head)?;
             let (at, vert, pixel) = sample;
             let count = (vert >> 16) as u16;
@@ -849,20 +868,28 @@ pub(in crate::gk208) fn present_accepted(evo: &mut Evo, regs: &mut Registers,
 pub(in crate::gk208) fn wait_present(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface,
 ) -> Result<super::present::Receipt, &'static str> {
+        let result = (|| {
     if evo.pending_presentation.is_some_and(|p| p.acknowledged.is_none()) {
         complete(regs, evo.total, evo.notifier, &evo.limits, &evo.coefficients,
             (evo.head, evo.sor, true, true), &evo.scripts)?;
     }
-    for _ in 0..400 {
+    for _ in 0..evo.presentation_attempts() {
         if let Some(receipt) = present_latched(evo, regs, surface)? { return Ok(receipt); }
         regs.delay_us(100);
     }
     Err("native accepted flip did not latch")
-}
+
+        })();
+        if result.is_err() && evo.pending_presentation.is_some_and(|p| p.resource == surface.resource) {
+            evo.pending_presentation = None;
+        }
+        result
+    }
 
 pub(in crate::gk208) fn present_latched(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
+        let result = (|| {
     let before_notifier = presentation_sample(regs, evo.head)?;
     let value = match evo.pending_presentation.and_then(|p| p.acknowledged) {
         Some(value) => value,
@@ -884,7 +911,13 @@ pub(in crate::gk208) fn present_latched(evo: &mut Evo, regs: &mut Registers,
     super::memx_display::Health::read(regs, evo.head, evo.sor).check()?;
     super::display_evidence::record(regs, evo.head, surface, &receipt);
     Ok(Some(receipt))
-}
+
+        })();
+        if result.is_err() && evo.pending_presentation.is_some_and(|p| p.resource == surface.resource) {
+            evo.pending_presentation = None;
+        }
+        result
+    }
 
 // Receipt validation uses the same both-bank check as synchronous presentation.
 struct PresentRead<'a>(&'a mut Registers);
@@ -905,6 +938,7 @@ pub(super) fn observed_scanout(regs: &mut Registers, head: u32,
 fn present_inner(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface, wait: bool,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
+        let result = (|| {
     evo.start_clock(regs)?;
     let _cost = super::cost::phase(super::cost::Slot::Evo);
     let phase=MEMX_PRESENT_PHASE.load(core::sync::atomic::Ordering::Acquire);
@@ -998,7 +1032,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
     };
     if evo.pending_presentation.is_some() && !retained_ack {
         let mut finished = false;
-        for _ in 0..400 {
+        for _ in 0..evo.presentation_attempts() {
             if evo.finish_presentation(regs, surface.resource)? { finished = true; break; }
             regs.delay_us(100);
         }
@@ -1017,7 +1051,13 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
     super::display_evidence::record(regs, head, surface, &receipt);
     if surface.resource == u32::MAX { super::presentation_trace::dump(); }
     Ok(Some(receipt))
-}
+
+        })();
+        if result.is_err() && evo.pending_presentation.is_some_and(|p| p.resource == surface.resource) {
+            evo.pending_presentation = None;
+        }
+        result
+    }
 
 pub fn takeover(
     regs: &mut Registers,
