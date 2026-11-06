@@ -17,7 +17,12 @@ fn presentation_rate_is_independent_of_sample_phase_and_poll_delay() {
         for delay in [0, 100_000, 1_000_000, 5_000_000] {
             let begin = 20_000_000 + delay;
             let end = begin + 5_000_000_000;
-            let sample = |v: &[u64]| v.iter().copied().filter(|&t| t >= begin && t < end).collect::<Vec<_>>();
+            let sample = |v: &[u64]| {
+                v.iter()
+                    .copied()
+                    .filter(|&t| t >= begin && t < end)
+                    .collect::<Vec<_>>()
+            };
             assert!(rate::measure(&sample(&times)).unwrap().passes);
             assert!(!rate::measure(&sample(&slow)).unwrap().passes);
             assert!(!rate::measure(&sample(&missed)).unwrap().passes);
@@ -29,4 +34,6 @@ fn presentation_rate_is_independent_of_sample_phase_and_poll_delay() {
 fn fewer_than_two_receipts_cannot_pass() {
     assert!(rate::measure(&[]).is_none());
     assert!(rate::measure(&[42]).is_none());
+    let measured = rate::measure(&[100, 200, 300]).unwrap();
+    assert_eq!((measured.intervals, measured.span_ns), (2, 200));
 }

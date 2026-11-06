@@ -1360,24 +1360,22 @@ pub fn frame_floor() -> CaseResult {
     let end = now();
     c.command(ANIMATE, 0, 0)?;
     let receipts = measure::receipts()?;
-    let mut generations = std::collections::BTreeSet::new();
+    let mut generations = std::collections::BTreeMap::new();
     for r in receipts
         .into_iter()
         .filter(|r| r.window == c.id && r.ns >= begin && r.ns < end)
     {
-        generations.insert(r.generation);
+        generations.entry(r.generation).or_insert(r.ns);
     }
-    let frames = generations.len();
-    let elapsed = end - begin;
+    let times: Vec<_> = generations.into_values().collect();
+    let rate = crate::rate::measure(&times);
     d.shown(&c)?;
-    value(
-        "composites-per-second",
-        (frames as u64 * 1_000_000_000 / elapsed) as i64,
-        "hz",
-        Some((60, i64::MAX)),
-    );
+    let hz = rate.as_ref().map_or(0, |r| {
+        (u128::from(r.intervals) * 1_000_000_000 / u128::from(r.span_ns)) as i64
+    });
+    value("composites-per-second", hz, "hz", Some((60, i64::MAX)));
     check(
-        frames as u64 * 1_000_000_000 >= 60 * elapsed,
+        rate.is_some_and(|r| r.passes),
         "one client did not receive 60 completed composites per second",
     )
 }
