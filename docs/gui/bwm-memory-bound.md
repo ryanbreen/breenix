@@ -21,15 +21,15 @@ unlimited number of clients consumes constant memory.
 | Window metadata, `bwm.rs:160`, `bwm/desk.rs:284` | One fixed-size `Window` per discovered client | O(N) capacity; no title allocation (inline 32 bytes); discovery removes departed windows at `desk.rs:204`. No append for an ordinary client commit. |
 | Stack order, creation order, chromeless ids and minimized ids, `bwm/stack.rs:4` | Window creation/minimization | Four O(N) vectors; duplicate membership is refused, removal retires ids at `stack.rs:87`. Raises remove and insert at unchanged length. |
 | Working frame layers, `bwm.rs:217`, `bwm/chrome.rs:445` | Visible client count | O(N) `Layer` capacity. Previously collected a replacement each presentation; now clears and extends the working vector. Eight layers occupy 640 capacity bytes on the tested host. |
-| Saved validation layers, `bwm/chrome.rs:8`, `bwm/chrome/validation.rs:19`, `bwm.rs:646` | Successful presentation | One O(N) scene; a presentation updates that single scene. `PresentedScene::clone_from` reuses its layer vector; the working scene is returned to the loop for reuse. Invalidation drops the saved scene at `validation.rs:49`; a later reacquisition can allocate it again. |
-| Validation first-frame requests, `bwm/chrome/validation.rs:35` | Newly discovered or resized client | At most one fixed-size request per unchecked live client, O(N) capacity. Retained against live unchecked windows at `bwm.rs:611`; success or exhausted retry removes it. Attempt flags reset on presentation without allocating. |
+| Saved validation layers, `bwm/chrome.rs:8`, `bwm/chrome/validation.rs:19`, `bwm.rs:653` | Successful presentation | One O(N) scene; a presentation updates that single scene. `PresentedScene::clone_from` reuses its layer vector; the working scene is returned to the loop for reuse. Invalidation drops the saved scene at `validation.rs:49`; a later reacquisition can allocate it again. |
+| Validation first-frame requests, `bwm/chrome/validation.rs:35` | Newly discovered or resized client | At most one fixed-size request per unchecked live client, O(N) capacity. Retained against live unchecked windows at `bwm.rs:618`; success or exhausted retry removes it. Attempt flags reset on presentation without allocating. |
 | Sampled-front metadata, `bwm/compositor.rs:117`, `bwm/compositor.rs:305` | Successful presentation | One snapshot's O(N) metadata. Previously collected a replacement each presentation; now clear/extend reuses capacity. Eight entries occupy 256 capacity bytes on the tested host. Startup clears it; reopen replaces the compositor. |
-| Consumed hotkey keys, `bwm.rs:167`, `bwm.rs:325`, `bwm.rs:344` | A consumed press from a distinct device/key tuple | One BTreeSet entry per outstanding tuple, O(K), removed by the matching release. The input core synthesizes held-key releases on device removal (`kernel/src/input/stream.rs:170`). The animation workload creates no such entries. |
+| Consumed hotkey keys, `bwm.rs:167`, `bwm.rs:325`, `bwm.rs:344` | A consumed press from a distinct device/key tuple | One BTreeSet entry per outstanding tuple, O(K), removed by the matching release. After ready input batches, registration pruning at `bwm.rs:577` also drops retired device ids even if reader pressure lost a release. The input core synthesizes held-key releases on removal (`kernel/src/input/stream.rs:170`). The animation workload creates no such entries. |
 | Repeat keys, `bwm/timing.rs:10` | Non-consumed key press | One map row per held device/key tuple, O(K). Release, focus change or SYN_DROPPED clears relevant state (`timing.rs:15`, `timing.rs:31`). Due-repeat vectors are temporary. |
-| Last clicks, `bwm/timing.rs:49` | Distinct device/button press | Previously one map entry per historical device/button. Now a reused vector of distinct device/button slots in the inclusive 400 ms click window, pruned at each press (`timing.rs:56`). Capacity is the high-water slots in that window, not lifetime device count. No epoch term for a fixed input workload. |
-| Active click counts, `bwm/timing.rs:49`, `bwm/timing.rs:62` | Button press | One map row per unreleased device/button, at most three per held pointer; release removes it at `timing.rs:65`. |
+| Last clicks, `bwm/timing.rs:49` | Distinct device/button press | Previously one map entry per historical device/button. Now a reused vector with at most three button slots per registered pointer. `timing.rs:63` and `bwm.rs:576` retire removed device ids after ready input batches, using the shared capability query (`bwm/input.rs:228`). Capacity follows the high-water simultaneous pointer count, with retired slots reused. Source timestamps from different devices are not compared for retirement. No epoch term for a fixed input workload. |
+| Active click counts, `bwm/timing.rs:49`, `bwm/timing.rs:62` | Button press | One map row per unreleased device/button, at most three per held pointer; release removes it at `timing.rs:67`. |
 | Pointer device state, `bwm/pointer_route.rs:70`, `bwm/pointer_route.rs:169` | First pointer event or held button | One map row per device with held buttons/grab; idle rows are removed at `pointer_route.rs:226`, cancellation removes its device at `pointer_route.rs:141`. Hover and captured `Content` are inline copies, not allocations. |
-| Absolute-axis capability cache, `bwm/input.rs:206`, `bwm/input.rs:240` | Cache miss by device id | At most 64 cache entries, each at most 512 `Capability` values. A full cache is cleared before insertion (`input.rs:252`); removed device ids therefore cannot accumulate indefinitely. Re-querying after eviction is intentional bounded-cache work, not epoch growth. |
+| Absolute-axis capability cache, `bwm/input.rs:206`, `bwm/input.rs:246` | Cache miss by device id | At most 64 cache entries, each at most 512 `Capability` values. A full cache is cleared before insertion (`input.rs:258`); removed device ids therefore cannot accumulate indefinitely. Re-querying after eviction is intentional bounded-cache work, not epoch growth. |
 | Input retry queues, `bwm/input_backlog.rs:26`, `bwm/input_backlog.rs:71` | Delivery backpressure | At most 1,024 events per registered target (`input_backlog.rs:4`, `input_backlog.rs:78`), plus one overflow count and one close request per target. Successful queues disappear on flush; failed-window tombstones last only to registry removal (`input_backlog.rs:48`). O(1024 N) pending-event storage, independent of epoch count. |
 | Discarded input identities, `bwm/input_backlog.rs:29` | Pressure, terminal send failure, registry removal | Drained by `input::losses` via `take_discarded`, before/after flush and on retain (`input.rs:83`, `input.rs:97`, `input.rs:124`). Production enqueue immediately flushes (`input.rs:142`); this vector does not grow across completed loop iterations. |
 | Pending child launches and copied executable paths, `bwm/children.rs:4`, `bwm/children.rs:14` | Hotkey spawn | One entry/path per launch awaiting a composed first frame. Acknowledgment, exit or five seconds of UI time retires it (`children.rs:24`, `children.rs:34`, `children.rs:43`). O(P) plus path bytes; paths come from the fixed hotkey configuration. No spawn occurs per animation epoch. |
@@ -69,7 +69,7 @@ acceptance, but they are not accumulating scene history:
   clones, normalized input batches/payloads/positions and due repeats
   (`bwm.rs:286`, `:305`, `:322`, `:404`, `:715`, `:742`,
   `bwm/input.rs:226`, `:267`, `bwm/pointer_route.rs:247`, `bwm/stack.rs:66`).
-- The frame damage vector has at most three rectangles (`bwm.rs:619`). Snapshot
+- The frame damage vector has at most three rectangles (`bwm.rs:626`). Snapshot
   window/damage arrays, clipped damage (at most 16 emitted rectangles, or one
   bounding rectangle), GPU stream words and pointer-run arrays are temporary
   (`bwm/compositor.rs:258`, `:259`, `:291`, `:337`, `:383`, `:829`).
@@ -108,14 +108,28 @@ exercise the generic production queue; the actual `PresentedScene` uses
 
 The 3/3 checks pass after the repair, reporting zero newly allocated
 retained capacity after warmup. The existing four validation and three timing
-checks also pass, including the inclusive double-click boundary. The original
+checks also pass, including the inclusive double-click boundary. Two additional cross-device timing checks, committed first as `15aaf878`
+and `3625aacb`, fail on the initial expiry change (`af6deef2`): either an
+earlier or a later second-device timestamp can erase the first device's
+pending double-click. Input timestamp validation is per device
+(`kernel/src/input/stream.rs:761`). The final repair therefore retires history
+by device registration, not by cross-device timestamp comparisons. The 5/5
+timing checks and the affected 660-epoch click-capacity check pass; unchanged
+compositor/queue capacity results stand. The final click-capacity loop retires
+its short-lived devices after each batch through the production retention
+method. The original red run used the check-first `fad73c34` workload against
+the baseline, before that retention method existed.
+The original
 memory case, shared cases, cumulative selection and threshold are unchanged.
 
 The implementation uses Vec capacity reuse rather than an arbitrary window
 ceiling. The working scene and saved validation scene remain distinct so a
 failed composition cannot corrupt the last successfully presented geometry.
-Click history uses the existing inclusive 400 ms policy instead of retaining
-removed-device ids forever. This is a first-principles userspace change; no
+Click matching keeps the existing inclusive 400 ms policy. History retirement
+uses the shared device-registration query and reuses storage. The query runs
+after ready input batches, keeps state on transient errors, and treats only
+ENODEV as retirement. The same query retires stale consumed-key device ids.
+It adds no idle-loop queries or driver-specific interface. This is a first-principles userspace change; no
 external driver source, firmware, architecture branch or backend-specific
 interface is involved.
 

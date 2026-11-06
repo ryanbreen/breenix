@@ -76,12 +76,13 @@ fn latest_validation_scene_reuses_eight_layers() {
 fn removed_pointer_devices_do_not_accumulate_click_history() {
     let mut clicks = timing::Clicks::new();
     epochs(|epoch| {
-        // Eight windows, successive short-lived pointer devices, beyond the
-        // existing double-click interval. Each release must keep its press count.
+        // Eight windows and successive short-lived pointer devices. Each
+        // release keeps its press count, then the input batch retires the devices.
         for window in 1..=8 {
             let device = (epoch * 8 + window) as u32;
             assert_eq!(clicks.press(device, 0x110, window as u64, (0, 0), epoch as u64 * 500_000_000), 1);
             assert_eq!(clicks.release(device, 0x110), 1);
         }
+        clicks.retain_devices(|_| false);
     });
 }
