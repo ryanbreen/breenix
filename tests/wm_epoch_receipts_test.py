@@ -21,7 +21,7 @@ class EpochReceipts(unittest.TestCase):
         functions = '\n'.join(item(source, marker) for marker in [
             'pub fn completed_commit(', 'pub fn epoch('])
         helpers = '\n'.join(item(source, marker) for marker in [
-            'fn checked_receipt(', 'fn completed_in('] if marker in source)
+            'fn checked_receipt(', 'fn completed_in(', 'fn completed_commit_in('] if marker in source)
         fixture = r'''
 use std::cell::Cell;
 thread_local! { static NOW: Cell<u64> = const { Cell::new(10_000_000_000) }; }
@@ -69,7 +69,7 @@ fn history_text() -> Result<String, std::io::Error> {
     let mut text = String::new();
     for serial in 1..=4096 {
         let window = (serial - 1) % 8 + 1;
-        let commit = if window == 8 && (mode == 4 || mode == 1 && read == 1) { 99 } else { 100 };
+        let commit = if (window == 8 && (mode == 4 || mode == 1 && read == 1)) || (mode == 7 && read == 1) || (mode == 8 && (read == 1 || read == 2 && window >= 5)) { 99 } else { 100 };
         let generation = if mode == 2 && window == 8 { 0 } else { 1 };
         let ns = if mode == 3 && window == 8 { now() + 1 } else { 1_000_000 };
         let serial = if mode == 5 && serial == 1 { 0 } else { serial };
@@ -104,6 +104,18 @@ fn run(mode: u32) -> Result<u64, String> {
     assert_eq!(run(1).unwrap(), 8);
     assert_eq!((READS.with(Cell::get), ROWS.with(Cell::get)), (2, 8192));
     assert_eq!(DEADLINES.with(|d| d.borrow().clone()), [2000]);
+}
+#[test] fn one_refresh_is_reused_for_every_missing_client() {
+    assert_eq!(run(7).unwrap(), 8);
+    let counts = (READS.with(Cell::get), ROWS.with(Cell::get));
+    println!("initially missing epoch history reads={} parsed_rows={}", counts.0, counts.1);
+    assert_eq!(counts, (2, 8192), "fresh completed history was discarded between clients");
+    assert_eq!(DEADLINES.with(|d| d.borrow().clone()), [2000]);
+}
+#[test] fn later_completion_cohort_refreshes_only_when_still_missing() {
+    assert_eq!(run(8).unwrap(), 8);
+    assert_eq!((READS.with(Cell::get), ROWS.with(Cell::get)), (3, 12288));
+    assert_eq!(DEADLINES.with(|d| d.borrow().clone()), [2000, 2000]);
 }
 #[test] fn cached_history_keeps_generation_time_commit_and_row_validation() {
     for (mode, message) in [
