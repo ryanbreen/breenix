@@ -575,18 +575,25 @@ impl Evo {
             * u64::from(width) + u64::from(pixel);
         let count = (vert >> 16) as u16;
         let clock = self.clock.as_mut().ok_or("native vblank clock absent")?;
-        if clock.last != count {
-            // G33a: subtract raster phase, rather than publishing the time
-            // this completion was polled. Oscillator error spans one frame,
-            // not the lifetime since start_clock. Keep a frame's first time.
-            let phase_ns = (u128::from(pixels) * 1_000_000_000
-                / u128::from(self.pixel_hz)) as u64;
-            let edge_ns = sampled_ns.checked_sub(phase_ns)
-                .ok_or("native presentation phase predates clock")?;
+        // G33a: subtract raster phase instead of publishing the poll time.
+        let phase_ns = (u128::from(pixels) * 1_000_000_000
+            / u128::from(self.pixel_hz)) as u64;
+        let edge_ns = sampled_ns.checked_sub(phase_ns)
+            .ok_or("native presentation phase predates clock")?;
+        let current = clock.at(clock.last);
+        let half_period_ns = (u128::from(self.frame_pixels) * 1_000_000_000
+            / u128::from(self.pixel_hz) / 2) as u64;
+        // Identify the physical frame by its raster edge, not just the raw
+        // count. A delayed count must not reuse the preceding frame's time;
+        // a count transition within this frame must keep its first time.
+        if edge_ns.abs_diff(current) > half_period_ns {
+            if edge_ns < current {
+                return Err("native presentation raster moved backwards");
+            }
             *clock = super::vblank_clock::VblankClock::new(
                 count, edge_ns, self.frame_pixels, self.pixel_hz);
         }
-        let at = clock.at(count);
+        let at = clock.at(clock.last);
         self.last_presentation = Some((resource, at));
         Ok(())
     }
