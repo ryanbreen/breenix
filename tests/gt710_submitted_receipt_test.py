@@ -70,6 +70,23 @@ mod native{
   assert!(e.content_presentation(&regs,9,accepted).is_err());
   assert!(e.content_presentation(&regs,7,at+1).is_err());
  }
+ pub fn retained_replacement(){
+  let regs=Registers{base:0};let mut e=setup(0);
+  NOW.with(|n|n.set(EPOCH+1_000_000));e.arm_presentation(&regs,7).unwrap();
+  assert!(e.arm_presentation(&regs,8).is_err(),"an outstanding real flip was replaced");
+  e.pending_presentation.as_mut().unwrap().acknowledged=Some(1);
+  // Ordinary retained acceptance already completed; it must not pin a
+  // historical content timestamp across a subsequent refresh or binding.
+  for resource in [7,8] {
+   NOW.with(|n|n.set(EPOCH+2_000_000));e.arm_presentation(&regs,resource).unwrap();
+   let p=e.pending_presentation.as_ref().unwrap();assert_eq!(p.resource,resource);
+   assert_eq!(p.accepted_ns,EPOCH+2_000_000);
+   assert_eq!(e.content_presentation(&regs,resource,EPOCH+2_000_000).unwrap(),None);
+   e.pending_presentation.as_mut().unwrap().acknowledged=Some(1);
+  }
+  NOW.with(|n|n.set(EPOCH+nanos(PIXELS)+100_000));
+  assert!(e.content_presentation(&regs,8,EPOCH+2_000_000).unwrap().unwrap()>=EPOCH+2_000_000);
+ }
  pub fn stream(){
   let regs=Registers{base:65535};let mut e=setup(65535);let mut times=Vec::new();
   for frame in 0..310{
@@ -134,6 +151,7 @@ mod native{
   }}
  }
 }
+#[test]fn accepted_retained_content_can_be_superseded(){native::retained_replacement();}
 #[test]fn schedule_uses_programmed_raster_and_calibrated_lead(){native::schedule();}
 #[test]fn retained_content_waits_after_ordinary_acknowledgement(){native::retained_content();}
 #[test]fn deadline_comes_from_a_bracketed_mode_transition(){native::calibrate();}

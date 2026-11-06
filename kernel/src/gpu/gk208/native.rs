@@ -555,9 +555,12 @@ impl Evo {
     }
     fn arm_presentation(&mut self, regs: &Registers, resource: u32)
         -> Result<(), &'static str> {
-        if self.pending_presentation.is_some() {
+        if self.pending_presentation.is_some_and(|p| p.acknowledged.is_none()) {
             return Err("native presentation already pending");
         }
+        // A retained ordinary PRESENT has already returned its fresh ACK.
+        // A later submission supersedes that optional content-time candidate;
+        // an actual flip still owns its pending slot until it latches.
         let (accepted_ns, vert, pixel) = presentation_sample(regs, self.head)?;
         let height = regs.read(0x640414 + self.head as usize * 0x300) >> 16;
         if height == 0 { return Err("native presentation raster height absent"); }
