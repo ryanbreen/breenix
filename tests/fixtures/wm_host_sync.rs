@@ -62,7 +62,7 @@ pub mod breenix_suite {
             Ok(7)
         }
         pub fn host_ack_ticket() -> Result<u64, String> { Ok(7) }
-        pub fn monotonic_ns() -> Option<u64> { Some(super::super::now()) }
+        pub fn monotonic_ns() -> Option<i128> { Some(i128::from(super::super::now())) }
         // HELPERS
     }
 }

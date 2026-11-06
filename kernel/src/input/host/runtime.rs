@@ -181,10 +181,18 @@ pub(crate) fn drain_one() -> bool {
     drop(receiver);
     // Serial output is deliberately task-only, after releasing the IRQ's lock.
     if let Some(ack) = ack {
+        let acknowledged_ns = crate::window::events::now_ns();
         if ack.pointer {
             crate::serial_println!("\nBXPTR_ACK {:016x}", ack.sequence);
         } else {
             crate::serial_println!("\nBXKEY_ACK {:016x}", ack.sequence);
+        }
+        if let Some(ticket) = ack.ticket {
+            // W14: the same task-only ACK is visible to the requesting case on
+            // both arches. Keep the ordinary wire ACK byte-for-byte unchanged.
+            crate::diag_println!("HOSTINPUT_ACK {} {:016x} ticket={} ns={}",
+                if ack.pointer { "BXPTR_ACK" } else { "BXKEY_ACK" },
+                ack.sequence, ticket, acknowledged_ns);
         }
     }
     if let Some(packet) = packet {

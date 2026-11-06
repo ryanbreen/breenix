@@ -24,7 +24,7 @@ pub(super) struct Close {
 }
 
 impl Close {
-    /// bwm's own windows (its launch error) close by event only, never by signal.
+    /// Keep bwm's launch-error window on the close event without signal escalation.
     pub(super) fn for_process(own: u32) -> Self {
         Self { own, pending: Vec::new() }
     }

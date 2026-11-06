@@ -32,8 +32,9 @@ fn key(c: &mut Client, chords: &str, code: u32) -> Result<abi::WindowEvent, Stri
     )
 }
 fn parked(d: &Desktop) -> Result<(), String> {
-    d.pointer(d.width as i32 - 40, d.height as i32 - 100, 0, 0)?;
-    time::sleep_ms(150).map_err(|e| e.to_string())
+    breenix_suite::suite::hostpointer_acked(
+        d.width - 40, d.height - 100, d.width, d.height, 0, 0,
+    ).map(|_| ())
 }
 fn content(d: &mut Desktop, c: &Client) -> CaseResult {
     parked(d)?;
@@ -646,8 +647,8 @@ pub fn text_exact() -> CaseResult {
     let (mut d, mut c) = one()?;
     d.focus(&mut c)?;
     c.clear()?;
-    hostkeys("shift-h,e,l,l,o,space,shift-w,o,r,l,d")?;
-    until(2000, "typed text", || {
+    let acknowledged = breenix_suite::suite::hostkeys_acked("shift-h,e,l,l,o,space,shift-w,o,r,l,d")?;
+    until_from(acknowledged, 2000, "typed text", || {
         c.snapshot()?;
         Ok(c.events
             .iter()
