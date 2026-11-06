@@ -4092,9 +4092,15 @@ def wm_step_capture(directory, sha, step_number):
     if tuple(map(int, records[83][1].groups())) != tally:
         raise ValueError('WM DONE disagrees with cases or contains skips')
     failed = [m[1] for k, m, _ in cases if m[1] in required and k != 'PASS']
-    if failed:
+    # E21 W10a (2026-11-05): Q1 stays selected and FAIL until it has a device.
+    # This exception affects step acceptance, never the raw suite result.
+    q1 = 'input-devices/pointer-completion-path'
+    expected = [name for name in failed if name == q1]
+    blocking = [name for name in failed if name != q1]
+    exception = f'expected failure under W10a (#2743): {q1}; ' if expected else ''
+    if blocking:
         raise ValueError(f'selected WM cases failed: {len(required) - len(failed)}/{len(required)} '
-                         f'passed in {selection}; failed: {", ".join(failed)}; '
+                         f'passed in {selection}; failed: {", ".join(blocking)}; {exception}'
                          f'full suite: {tally[0]}/82 passed, {tally[1]} failed')
     if not 0 < int(records[84][1][1]) <= 1800000:
         raise ValueError('WM elapsed time exceeds 1800 seconds')
@@ -4166,9 +4172,13 @@ def wm_step_capture(directory, sha, step_number):
         raise ValueError('WM uploads exceed the per-boot evidence bound')
     if receipts[1]['route'] != receipts[0]['route'] + '/final':
         raise ValueError('WM uploads belong to different routes')
-    return dict(boot=boot['id'], commit=sha, milestone='metal-gt710/wm-step',
-                selection=selection, cases=[dict(id='wm-step/suite', result='PASS',
-                    reason=f'{len(required)}/{len(required)} selected WM cases passed; 82 cases, memory and uploads verified')])
+    report = dict(boot=boot['id'], commit=sha, milestone='metal-gt710/wm-step',
+                  selection=selection, cases=[dict(id='wm-step/suite', result='PASS',
+                    reason=f'{len(required) - len(failed)}/{len(required)} selected WM cases passed; '
+                           f'{exception}82 cases, memory and uploads verified')])
+    if expected:
+        report['expectedFailures'] = [dict(id=q1, result='FAIL', ruling='W10a', issue=2743)]
+    return report
 
 
 def record_wm_capture(directory, sha, step_number):
