@@ -213,10 +213,8 @@ fn main() {
     let mut full_redraw = !first_presented;
     let mut validation = ValidationQueue::new();
 
-    let mut clipboard = clipboard_socket::Server::open().unwrap_or_else(|e| {
-        eprintln!("[bwm] clipboard socket: {e}");
-        process::exit(1);
-    });
+    // The desktop outlives a clipboard that cannot open; clipboard clients then see ENOENT.
+    let mut clipboard = clipboard_socket::Server::open().map_err(|e| eprintln!("[bwm] clipboard socket: {e}")).ok();
     let mut poll_fds = vec![
         io::PollFd { fd: stream.fd(), events: io::poll_events::POLLIN as i16, revents: 0 },
         io::PollFd { fd: scene_fd, events: io::poll_events::POLLIN as i16, revents: 0 },
@@ -242,15 +240,15 @@ fn main() {
             POINTER_POLL_MS
         };
         let timeout = closing.timeout_ms(libbreenix::ui_clock::now_ns(), timeout);
-        let timeout = clipboard.timeout_ms(libbreenix::ui_clock::now_ns(), timeout);
+        let timeout = clipboard.as_ref().map_or(timeout, |c| c.timeout_ms(libbreenix::ui_clock::now_ns(), timeout));
         poll_fds.truncate(2);
-        clipboard.append_poll(&mut poll_fds);
+        if let Some(clipboard) = &clipboard { clipboard.append_poll(&mut poll_fds); }
         for fd in poll_fds.iter_mut() {
             fd.revents = 0;
         }
         let mut wait = ShutdownWait { fds: &mut poll_fds, timeout, failed: false };
         if shutdown::boundary(&mut wait).is_none() { return; }
-        clipboard.service(&poll_fds, libbreenix::ui_clock::now_ns());
+        if let Some(clipboard) = &mut clipboard { clipboard.service(&poll_fds, libbreenix::ui_clock::now_ns()); }
         clock.begin_epoch();
         launch::reap(&mut children);
         launch::poll_errors(&mut children);
