@@ -25,10 +25,10 @@ class WorkerFenceWait(unittest.TestCase):
         wait = item(src, 'fn wait_for_completion<')
         deadline = item(src, 'fn next_deadline(')
         block = item(src, 'fn reaper_block(')
-        period = re.search(r'const POLL_NS: u64 = ([0-9_]+);', src).group(1)
+        period = re.search(r'const POLL_NS: u64 = ([0-9_]+);', src if 'const POLL_NS:' in src else (ROOT / 'kernel/src/gpu/completion_timing.rs').read_text()).group(1)
         modern = 'enum CompletionWait' in src
         policy = (ROOT / 'kernel/src/gpu/completion_timing.rs').read_text().replace('//!', '//') if modern else ''
-        mode = item(src, 'enum CompletionWait') if modern else ''
+        mode = item(src, '#[derive(Clone, Copy, PartialEq)]\nenum CompletionWait') if modern else ''
         fence_mode = 'CompletionWait::Fence' if modern else 'false'
         worker_mode = 'CompletionWait::Worker' if modern else 'false'
         content_mode = 'CompletionWait::Presentation' if modern else 'true'
@@ -40,7 +40,7 @@ mod completion_timing { POLICY }
 @MODE@
 static EVENTS:AtomicU64=AtomicU64::new(0);static SENT:AtomicU64=AtomicU64::new(0);
 thread_local!{static CLOCK:Cell<u64>=const{Cell::new(0)};static CPU:Cell<u64>=const{Cell::new(0)};static WORK:Cell<u64>=const{Cell::new(0)};
-static READY:Cell<u64>=const{Cell::new(0)};static WORKER:Cell<u64>=const{Cell::new(0)};static NEXT:Cell<u64>=const{Cell::new(0)};
+static READY:Cell<u64>=const{Cell::new(0)};static WORKER:Cell<u64>=const{Cell::new(0)};static NEXT:Cell<u64>=const{Cell::new(0)};static ARMED:Cell<u64>=const{Cell::new(0)};
 static LATE:Cell<bool>=const{Cell::new(false)};static DONE:Cell<bool>=const{Cell::new(false)};
 static PRESENTATION:Cell<Option<u64>>=const{Cell::new(None)};static SIGNAL:Cell<bool>=const{Cell::new(false)};static VIRTUAL:Cell<bool>=const{Cell::new(false)};
 static CORE:RefCell<Core>=RefCell::new(Core::new());}
@@ -57,7 +57,7 @@ impl Core{
  fn new()->Self{Self{subs:BTreeMap::from([(1,Req{published:false,failed:false,sent_ns:Some(0)})]),syncs:BTreeMap::new(),contexts:BTreeMap::new(),quarantined_at:None,last_progress:0,dev:Some(Device),stalled:false}}
  DEADLINE
  fn progress_readback(&mut self){if VIRTUAL.with(Cell::get){DONE.with(|c|c.set(true));}}
- fn poll_traced(&mut self, _:Option<()>){charge(50_000);self.observe();}
+ fn poll_traced(&mut self, #[cfg(target_arch = "x86_64")] _:Option<()>){charge(50_000);self.observe();}
  fn observe(&mut self){if now_ns()>=READY.with(Cell::get){DONE.with(|c|c.set(true));EVENTS.fetch_add(1,Ordering::Release);}}
 }
 mod abi {pub mod backend {pub const SVGA3D_DX:u32=2;pub const GK208:u32=6;}}
@@ -68,7 +68,7 @@ fn with_core<T>(f:impl FnOnce(&mut Core)->T)->Option<T>{charge(3_000);CORE.with(
 fn wake_reaper(){}
 mod syscall {pub fn check_signals_for_wait()->Option<()>{crate::SIGNAL.with(|s|s.get().then_some(()))}}
 mod per_cpu {pub fn preempt_count()->u32{1}pub fn preempt_disable(){}pub fn preempt_enable(){}}
-mod time {pub mod wakeup {pub fn arm(at:u64)->bool{assert!(at<=crate::now_ns()+crate::POLL_NS);true}}}
+mod time {pub mod wakeup {pub fn arm(at:u64)->bool{crate::ARMED.with(|c|c.set(at));true}}}
 mod task {pub mod scheduler {
  pub struct Sched;impl Sched{pub fn block_current_for_io_with_timeout(&mut self,wake:Option<u64>){crate::NEXT.with(|n|n.set(wake.unwrap()));}pub fn unblock(&mut self,_:u64){}}
  pub fn with_scheduler<T>(f:impl FnOnce(&mut Sched)->T)->Option<T>{Some(f(&mut Sched))}
@@ -107,6 +107,11 @@ fn publication(latch:u64)->u64{
  reset(u64::MAX,false);PRESENTATION.with(|p|p.set(Some(latch)));
  assert_eq!(wait_for_completion(Some(100_000_000),true,CONTENT_MODE,|_|(now_ns()>=latch).then_some(7)),Ok(7));now_ns()
 }
+#[test]fn predicted_latch_deadline_is_armed_beyond_the_poll_period(){
+ reset(u64::MAX,false);let latch=16_661_185+30_000;
+ reaper_block(1,EVENTS.load(Ordering::Acquire),SENT.load(Ordering::Acquire),Some(latch));
+ assert_eq!(ARMED.with(Cell::get),latch,"physical deadline would round to the 5ms tick");
+}
 #[test]fn t_b_content_is_published_within_200us_of_latch(){
  for phase in [100u64,700,949]{
   let accept=phase*1688*1_000_000_000/108_000_000;
@@ -131,12 +136,14 @@ fn publication(latch:u64)->u64{
    }
   }
   values.sort_by(f64::total_cmp);let median=values[values.len()/2];
+  println!("closed loop jitter={jitter} median={median:.3}ms paint={paint:.3}ms publication={pub_delay:.3}ms");
   assert!(median<=16.0,"jitter={jitter} median={median} paint={paint} pub={pub_delay}");
   assert!(*values.last().unwrap()<=33.0);
  }
 }
 #[test]fn long_wait_combined_cpu_stays_below_five_percent(){
  for ready in [50_000_000,112_000_000]{let(at,caller,worker)=observe(true,ready,false);
+ println!("fence {ready}ns: caller={caller}ns worker={worker}ns wall={at}ns");
  assert!(caller*100<=at*5,"caller CPU {caller}/{at}");assert!((caller+worker)*100<=at*5,"combined CPU {caller}+{worker}/{at}");}
 }
 #[test]fn t_d_late_worker_cannot_hold_a_short_fence_past_the_next_frame_start(){
@@ -161,7 +168,7 @@ fn publication(latch:u64)->u64{
             (p / 'check.rs').write_text(fixture)
             command = (['taskpolicy', '-b'] if sys.platform == 'darwin' else []) + ['rustc', '--edition=2021', '--test', '-Dwarnings']
             subprocess.run(command + [str(p / 'check.rs'), '-o', str(p / 'check')], check=True)
-            subprocess.run([str(p / 'check'), '--test-threads=1'], check=True)
+            subprocess.run([str(p / 'check'), '--test-threads=1', '--nocapture'], check=True)
 
 
 if __name__ == '__main__':

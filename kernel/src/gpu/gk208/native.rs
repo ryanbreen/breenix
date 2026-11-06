@@ -494,6 +494,7 @@ struct PendingPresentation {
     completed: Option<(u64, u32, u32)>,
     last_negative: Option<(u64, u32, u32)>,
     accepted_edges: Option<u16>,
+    predicted_latch_ns: u64,
 }
 pub struct FlipSnapshot {
     pub notifier_before: u32,
@@ -566,12 +567,26 @@ impl Evo {
         if height == 0 { return Err("native presentation raster height absent"); }
         let phase = ((vert & 0xffff) + height - u32::from(self.vblank_line)) % height;
         let accepted_edges = self.latch_phase.map(|deadline| if phase < u32::from(deadline) { 1 } else { 2 });
+        let width = self.frame_pixels / u64::from(height);
+        if self.pixel_hz == 0 || width == 0 || u64::from(pixel) >= width {
+            return Err("native presentation prediction extent mismatch");
+        }
+        let remaining = u64::from(accepted_edges.unwrap_or(2)) * self.frame_pixels
+            - u64::from(phase) * width - u64::from(pixel);
+        let predicted_latch_ns = accepted_ns.saturating_add(
+            (u128::from(remaining) * 1_000_000_000 / u128::from(self.pixel_hz)) as u64);
         crate::window::pipeline::at(15, u64::from(resource), u64::from(vert), u64::from(pixel), accepted_ns);
         self.pending_presentation = Some(PendingPresentation {
             resource, accepted_ns, count: (vert >> 16) as u16, vert, pixel,
-            acknowledged: None, completed: None, last_negative: None, accepted_edges,
+            acknowledged: None, completed: None, last_negative: None, accepted_edges, predicted_latch_ns,
         });
         Ok(())
+    }
+    /// A retained capabilities ACK is not worker-owned display work. Its content
+    /// consumer can still ask for the scheduled edge explicitly.
+    pub(in crate::gk208) fn presentation_probe(&self, include_acknowledged: bool) -> Option<u64> {
+        self.pending_presentation.filter(|p| include_acknowledged || p.acknowledged.is_none())
+            .map(|p| p.predicted_latch_ns.saturating_add(30_000))
     }
     fn finish_presentation(&mut self, regs: &Registers, resource: u32)
         -> Result<bool, &'static str> {

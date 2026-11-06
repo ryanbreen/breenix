@@ -16,7 +16,7 @@ class ContentReceipt(unittest.TestCase):
         sample = item(native, 'fn presentation_sample(')
         clock = source('kernel/src/gpu/gk208/vblank_clock.rs').replace('//!', '//')
         pending = item(native, '#[derive(Clone, Copy)]\nstruct PendingPresentation {')
-        methods = '\n'.join(item(native, name) for name in ['fn arm_presentation(', 'fn finish_presentation(', 'pub(in crate::gk208) fn content_presentation(']).replace('super::presentation_trace', 'crate::presentation_trace')
+        methods = '\n'.join(item(native, name) for name in ['fn arm_presentation(', 'pub(in crate::gk208) fn presentation_probe(', 'fn finish_presentation(', 'pub(in crate::gk208) fn content_presentation(']).replace('super::presentation_trace', 'crate::presentation_trace')
         call = 'completed_present_time(7, ready)'
         fixture = r'''
 use std::cell::{Cell, RefCell};
@@ -68,6 +68,18 @@ CONSUMER
   assert!(got>=ready,"receipt {got} predates content release {ready}");
   assert!(got.abs_diff(EPOCH+nanos(PIXELS))<1000,"receipt must name the next real edge");
   assert!(got<=signal::monotonic_nanos());
+ }
+}
+#[test]fn predicted_probe_tracks_the_selected_physical_edge(){
+ for line in [100u64,700,949,950,955] {
+  let accepted=EPOCH+nanos(line*1688)+2000;NOW.with(|n|n.set(accepted));
+  let mut e=Evo{head:0,clock:None,frame_pixels:PIXELS,pixel_hz:HZ,vblank_line:1047,latch_phase:Some(950),pending_presentation:None,last_presentation:None};
+  e.arm_presentation(&Registers,7).unwrap();
+  let edge=EPOCH+nanos(PIXELS*if line<950{1}else{2});
+  assert!(e.presentation_probe(false).unwrap().abs_diff(edge+30_000)<1000);
+  e.pending_presentation.as_mut().unwrap().acknowledged=Some(1);
+  assert_eq!(e.presentation_probe(false),None,"worker must not poll an ordinary retained ACK forever");
+  assert!(e.presentation_probe(true).is_some());
  }
 }
 #[test]fn a_real_latch_is_preserved_and_foreign_identity_is_refused(){

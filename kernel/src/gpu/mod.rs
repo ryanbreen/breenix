@@ -80,6 +80,7 @@ mod quota;
 mod staging;
 mod vertex_arena;
 mod compose;
+mod completion_timing;
 use quota::{Charge, Quota, QuotaCharge};
 use staging::Staging;
 mod arch;
@@ -132,9 +133,7 @@ const FLIP_Y: bool = false;
 const RESET_BUDGET_NS: u64 = 100_000_000;
 /// The watchdog examines outstanding work at least this often (section 1.4.1).
 const EXAMINE_NS: u64 = 250_000_000;
-/// Completion checks on interrupt-free devices. W22 estimates about
-/// 45us/check from the capture; 1.5ms leaves margin below the 5% CPU bound.
-const POLL_NS: u64 = 1_500_000;
+use completion_timing::POLL_NS;
 /// How long a waiter looks for its answer itself, on a device that raises no interrupt,
 /// before it sleeps until kgpu's next look. kgpu's timed block ends at the next timer
 /// tick, so its 250 us looks came about 0.8 ms late on average, once per request: 5.6 s
@@ -1951,16 +1950,21 @@ impl Core {
         let hangs = self.subs.values().filter(|s| !s.published).filter_map(|s| s.sent_ns);
         let waits = self.syncs.values().filter(|s| !s.failed).filter_map(|s| s.sent_ns);
         let progress = self.quarantined_at.map(|q| q.max(self.last_progress));
-        // SVGA3 and the native channel have no completion interrupt here; kgpu looks
-        // for their answers at POLL_NS intervals.
-        let poll = (matches!(dev::backend(), abi::backend::SVGA3D_DX | abi::backend::GK208) && self.dev.as_ref().is_some_and(|d| d.outstanding() > 0) && !self.stalled)
-            .then(|| now + POLL_NS);
+        // Short work gets early sleeping probes; long work retains W22's CPU
+        // margin. Use submission age so unrelated worker wakes cannot postpone it.
+        let poll = (matches!(dev::backend(), abi::backend::SVGA3D_DX | abi::backend::GK208)
+            && self.dev.as_ref().is_some_and(|d| d.outstanding() > 0) && !self.stalled)
+            .then(|| self.subs.values().filter(|s| !s.published).filter_map(|s| s.sent_ns)
+                .chain(self.syncs.values().filter(|s| !s.failed).filter_map(|s| s.sent_ns))
+                .map(|sent| completion_timing::next_probe(sent, now)).min()
+                .unwrap_or_else(|| now.saturating_add(POLL_NS)));
+        let presentation = dev::presentation_probe(false).map(|at| if at > now { at } else { now.saturating_add(100_000) });
         // Grace deadlines are independent across processes.
         let grace = self.contexts.values()
             .filter(|x| x.warm_catalogue && x.state == CtxState::Live && !x.dropped && x.warm != catalogue_mask())
             .map(|x| x.warm_after).filter(|&g| g > now).min();
         let watchdog = hangs.chain(waits).chain(progress).min().map(|at| (at + limits::WATCHDOG_NS).min(now + EXAMINE_NS));
-        watchdog.into_iter().chain(grace).chain(poll).min()
+        watchdog.into_iter().chain(grace).chain(poll).chain(presentation).min()
     }
 
     /// The reset decision, on `kgpu`: every context fails with `DEVICE_RESET` and every
@@ -2205,16 +2209,29 @@ enum Stop {
     Interrupted,
 }
 
-/// kgpu owns device polling; callers wait for publication. A physical
-/// timestamp query may also request sleeping fine probes after acceptance.
-fn wait_for_completion<T>(deadline: Option<u64>, interruptible: bool, fine: bool,
+/// Shared completion observation policy.
+#[derive(Clone, Copy, PartialEq)]
+enum CompletionWait {
+    Worker,
+    Fence,
+    Presentation,
+}
+
+/// Sleep between checks. A fence caller makes at most five checks to survive a
+/// late worker wake; physical content queries sleep until the accepted latch.
+fn wait_for_completion<T>(deadline: Option<u64>, interruptible: bool, mode: CompletionWait,
     mut f: impl FnMut(&mut Core) -> Option<T>) -> Result<T, Stop> {
+    let start = now_ns();
+    let mut checks = 0;
     loop {
         let seen = EVENTS.load(Ordering::Acquire);
         let found = with_core(|c| {
+            if mode == CompletionWait::Fence && checks < 5 {
+                c.poll_traced(#[cfg(target_arch = "x86_64")] None);
+                checks += 1;
+            }
             let found = f(c);
-            // VirGL can need its existing fenced transfer to drain rendering.
-            // This requests worker work; it does not poll from the caller.
+            // VirGL's completion-driven counterpart can need a fenced transfer.
             if found.is_none() { c.progress_readback(); }
             found
         }).flatten();
@@ -2222,10 +2239,16 @@ fn wait_for_completion<T>(deadline: Option<u64>, interruptible: bool, fine: bool
         if deadline.is_some_and(|d| now_ns() >= d) { return Err(Stop::Timeout); }
         if interruptible && crate::syscall::check_signals_for_wait().is_some() { return Err(Stop::Interrupted); }
         wake_reaper();
-        let wake = if fine { Some(deadline.unwrap_or(u64::MAX).min(now_ns().saturating_add(POLL_NS))) } else { deadline };
+        let probe = if mode == CompletionWait::Fence {
+            completion_timing::caller_probe(start, checks, now_ns())
+        } else if mode == CompletionWait::Presentation {
+            Some(dev::presentation_probe(true).filter(|&at| at > now_ns())
+                .unwrap_or_else(|| now_ns().saturating_add(100_000)))
+        } else { None };
+        let wake = probe.map(|at| deadline.unwrap_or(u64::MAX).min(at)).or(deadline);
         let unheld = crate::per_cpu::preempt_count() == 0;
         if unheld { crate::per_cpu::preempt_disable(); }
-        let woke = wait_event_prepared(seen, wake, fine);
+        let woke = wait_event_prepared(seen, wake, mode != CompletionWait::Worker && probe.is_some());
         if unheld { crate::per_cpu::preempt_enable(); }
         if woke.is_err() && interruptible { return Err(Stop::Interrupted); }
     }
@@ -2731,7 +2754,7 @@ fn reaper_block(tid: u64, seen: u64, sent: u64, wake: Option<u64>) {
     });
     // Interrupt-free devices publish a bounded poll deadline. Arm that deadline
     // on the shared clock-event driver instead of rounding it to a 5ms tick.
-    if let Some(at) = wake.filter(|&at| at <= now_ns().saturating_add(POLL_NS)) {
+    if let Some(at) = wake {
         crate::time::wakeup::arm(at);
     }
     crate::task::scheduler::yield_current();
@@ -5388,7 +5411,7 @@ fn op_wait(arg: u64, len: u64) -> Result<u64, i64> {
     .flatten()
     .ok_or(EINVAL)?;
     let deadline = now_ns().saturating_add(a.timeout_ns);
-    let outcome = wait_for_completion(Some(deadline), true, false, |c| {
+    let outcome = wait_for_completion(Some(deadline), true, CompletionWait::Fence, |c| {
         let Some(ctx) = c.contexts.get(&id) else { return Some(Err(EINVAL)) };
         (n <= ctx.done_upto).then(|| Ok(ctx.outcomes.get(&n).copied().unwrap_or((fence_status::OK, 0))))
     });

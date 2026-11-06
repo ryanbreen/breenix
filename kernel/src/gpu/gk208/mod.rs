@@ -686,6 +686,11 @@ pub(crate) fn presentation_schedule() -> Result<(u64,u64), &'static str> {
     ce::with_clock_owner(|regs,evo,_| evo.presentation_schedule(regs))
 }
 
+/// Wake hint only; the raster/notifier still decides completion.
+pub(crate) fn presentation_probe(include_acknowledged: bool) -> Option<u64> {
+    ce::with_clock_owner(|_, evo, _| Ok(evo.presentation_probe(include_acknowledged))).ok().flatten()
+}
+
 /// G33a: the completed native binding, in the scanout clock domain.
 pub(crate) fn completed_present_time(resource: u32, not_before: u64) -> Result<Option<u64>, &'static str> {
     ce::with_clock_owner(|regs, evo, _| {
