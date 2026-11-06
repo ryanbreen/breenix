@@ -1334,6 +1334,10 @@ pub fn present_latency() -> CaseResult {
         c.command(PAINT, n, 0)?;
         let r = measure::completed_commit(&c, c.commit)?;
         receipt_serial = receipt_serial.max(r.serial);
+        if r.ns < c.commit_ns {
+            value("commit-time", c.commit_ns as i64, "ns", None);
+            value("receipt-time", r.ns as i64, "ns", None);
+        }
         check(r.ns >= c.commit_ns, "composite receipt predates the commit")?;
         if n >= 30 {
             samples.push((r.ns - c.commit_ns) / 1000);
@@ -1373,7 +1377,13 @@ pub fn frame_floor() -> CaseResult {
     let hz = rate.as_ref().map_or(0, |r| {
         (u128::from(r.intervals) * 1_000_000_000 / u128::from(r.span_ns)) as i64
     });
+    value("presentation-intervals", rate.as_ref().map_or(0, |r| r.intervals) as i64, "intervals", None);
+    value("presentation-span", rate.as_ref().map_or(0, |r| r.span_ns) as i64, "ns", None);
     value("composites-per-second", hz, "hz", Some((60, i64::MAX)));
+    if !rate.as_ref().is_some_and(|r| r.passes) {
+        let gap = times.windows(2).map(|w| w[1].saturating_sub(w[0])).max().unwrap_or(0);
+        value("presentation-gap-max", gap as i64, "ns", None);
+    }
     check(
         rate.is_some_and(|r| r.passes),
         "one client did not receive 60 completed composites per second",
@@ -1425,6 +1435,10 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
         })?;
         let r = measure::completed_commit(&c, c.handling_commit)?;
         receipt_serial = receipt_serial.max(r.serial);
+        if r.ns < begin {
+            value("input-time", begin as i64, "ns", None);
+            value("receipt-time", r.ns as i64, "ns", None);
+        }
         check(r.ns >= begin, "completion predates injected input")?;
         if n >= 10 {
             samples.push((r.ns - begin) / 1000);
