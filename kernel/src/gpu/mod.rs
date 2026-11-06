@@ -2394,10 +2394,8 @@ fn wait_event_prepared(seen: u64, wake: Option<u64>, fine: bool) -> Result<(), i
         WAITERS.finish_wait_for(tid);
         return Err(crate::syscall::errno::ESRCH);
     }
-    if fine && !wake.is_some_and(crate::time::wakeup::arm) {
-            WAITERS.finish_wait_for(tid);
-            return Err(crate::syscall::errno::ENODEV);
-    }
+    // A refused fine arm leaves the published coarse scheduler timeout intact.
+    if fine { if let Some(at) = wake { crate::time::wakeup::arm(at); } }
     if EVENTS.load(Ordering::Acquire) != seen {
         WAITERS.finish_wait_for(tid);
         return Ok(());
