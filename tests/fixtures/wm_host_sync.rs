@@ -41,6 +41,11 @@ mod time {
 pub mod breenix_suite {
     pub mod suite {
         use super::super::STATE;
+        pub fn hostkey_method() -> Option<&'static str> { Some("host-channel") }
+        mod host_input {
+            pub fn keys(_: &str, _: impl FnOnce() -> Result<u64,String>) -> Result<u64,String> { panic!("native path on serial") }
+            pub fn pointer(_: u32,_: u32,_: u32,_: u32,_: u32,_: i32,_: impl FnOnce() -> Result<u64,String>) -> Result<u64,String> { panic!("native path on serial") }
+        }
         pub fn case_ms_left() -> u64 { super::super::case_ms_left() }
         pub mod time { pub use super::super::super::time::sleep_ms; }
         pub fn hostkeys(chords: &str) -> Result<u64, String> { hostkeys_request(chords, None) }

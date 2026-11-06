@@ -14,6 +14,32 @@ SPEC.loader.exec_module(hostkeys)
 
 
 class HostInputWatch(unittest.TestCase):
+    def test_tagged_requests_do_not_kill_native_watchers(self):
+        import inspect
+        def record(method, sent):
+            signature = inspect.signature(method)
+            def call(*args, **kwargs):
+                signature.bind(*args, **kwargs)
+                sent.append(args)
+            return call
+        for cls in (hostkeys.QMPKeys, hostkeys.ParallelsKeys, hostkeys.VNCKeys, hostkeys.NoKeys):
+            with self.subTest(backend=cls.__name__):
+                keys, sent, logs = object.__new__(cls), [], []
+                if cls is hostkeys.NoKeys:
+                    keys.why = 'no backend'
+                else:
+                    keys.send = record(keys.send, sent)
+                    keys.pointer = record(keys.pointer, sent)
+                watcher = hostkeys.Watcher(keys, cls.__name__, logs.append)
+                watcher.line('SUITE window-manager HOSTPOINTER lifecycle/close-request seq=1 '
+                             'x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0 ticket=55')
+                watcher.line('SUITE window-manager HOSTKEY focus/text-exact seq=2 keys=shift-h,e ticket=56')
+                watcher.line('SUITE window-manager HOSTKEY focus/key seq=3 keys=a ticket=57')
+                watcher.line('SUITE window-manager HOSTKEY focus/key seq=4 keys=b')
+                self.assertEqual(len(logs), 4)
+                if cls is not hostkeys.NoKeys:
+                    self.assertEqual(len(sent), 5)
+
     @unittest.skipUnless(hasattr(select, 'kqueue'), 'native macOS/BSD file notifications')
     def test_append_between_eof_and_wait_delivers_pointer_without_poll_sleep(self):
         with tempfile.TemporaryDirectory() as folder:

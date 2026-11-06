@@ -102,6 +102,8 @@ pub mod prerequisites;
 pub mod sequence;
 #[path = "suite_evidence.rs"]
 mod evidence;
+#[path = "suite_host_input.rs"]
+mod host_input;
 
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -809,16 +811,23 @@ fn host_ack_ticket() -> Result<u64, String> {
     Ok((pid << 32) | seq)
 }
 
-/// W14: wait for this request's final BXKEY_ACK and return its publication time.
-/// Only the last chord carries the ticket; serial retries precede this boundary.
+/// W14: return the guest delivery timestamp. The serial path uses its final
+/// ticketed BXKEY_ACK; native devices are observed through the input stream.
 pub fn hostkeys_acked(chords: &str) -> Result<u64, String> {
+    if hostkey_method().is_some_and(|v| v.split(';').next() != Some("host-channel")) {
+        return host_input::keys(chords, || hostkeys_request(chords, None));
+    }
     let ticket = host_ack_ticket()?;
     hostkeys_request(chords, Some(ticket))?;
     wait_host_ack(ticket, "BXKEY_ACK")
 }
 
-/// W14: wait for the BXPTR_ACK of this exact parking request.
+/// W14: wait for the parking request's serial ACK or native motion batch.
 pub fn hostpointer_acked(x: u32, y: u32, width: u32, height: u32, buttons: u32, wheel: i32) -> Result<u64, String> {
+    if hostkey_method().is_some_and(|v| v.split(';').next() != Some("host-channel")) {
+        return host_input::pointer(x, y, width, height, buttons, wheel,
+            || hostpointer_request(x, y, width, height, buttons, wheel, None));
+    }
     let ticket = host_ack_ticket()?;
     hostpointer_request(x, y, width, height, buttons, wheel, Some(ticket))?;
     wait_host_ack(ticket, "BXPTR_ACK")

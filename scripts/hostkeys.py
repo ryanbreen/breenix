@@ -136,6 +136,10 @@ class QMPKeys:
         finally:
             sock.close()
 
+        # send-key's reply schedules the release; wait for it before another
+        # chord can replace QEMU's held-key set.
+        time.sleep((self.hold_ms + 50) / 1000)
+
     def pointer(self, x, y, buttons, wheel, axes, width=32768, height=32768):
         if axes != 'absolute' or width < 2 or height < 2 or not (0 <= x < width and 0 <= y < height):
             raise NoPath('QMP tablet requires absolute coordinates within its declared mode')
@@ -395,6 +399,7 @@ class ReplayKeys:
               'pageup': 0x4B, 'delete': 0x4C, 'end': 0x4D, 'pagedown': 0x4E, 'right': 0x4F, 'left': 0x50,
               'down': 0x51, 'up': 0x52}
     HOST_KEY_GAP_MS = 10
+    tickets = True
 
     def __init__(self, write, pace=time.sleep):
         self.write, self.pace = write, pace
@@ -476,7 +481,8 @@ class Watcher:
                 send = getattr(self.keys, 'pointer', None)
                 if send is None:
                     raise NoPath('this backend has no pointer transport')
-                send(x, y, buttons, wheel, 'absolute', width, height, **({} if ticket is None else {'ticket': int(ticket)}))
+                tag = {'ticket': int(ticket)} if ticket is not None and getattr(self.keys, 'tickets', False) else {}
+                send(x, y, buttons, wheel, 'absolute', width, height, **tag)
                 self.log('[hostpointer] case=%s seq=%s sent via %s' % (case, seq, self.name))
             except (NoPath, OSError, RuntimeError, ValueError) as error:
                 self.log('[hostpointer] case=%s seq=%s failed: %s' % (case, seq, error))
@@ -514,7 +520,8 @@ class Watcher:
             chords_list = chords.split(',')
             for index, chord in enumerate(chords_list):
                 mods, key = parse_chord(chord)
-                tag = {} if ticket is None or index + 1 != len(chords_list) else {'ticket': int(ticket)}
+                tag = {'ticket': int(ticket)} if (ticket is not None and index + 1 == len(chords_list)
+                                                 and getattr(self.keys, 'tickets', False)) else {}
                 self.keys.send(mods, key, **tag)
                 done.append(chord)
             self.log('[hostkeys] case=%s seq=%s keys=%s sent via %s' % (case, seq, chords, self.name))

@@ -15,6 +15,48 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class HostSync(unittest.TestCase):
+    def test_native_guest_input_completion(self):
+        program = (ROOT / 'tests/fixtures/wm_native_input.rs').read_text().replace(
+            'HOST_INPUT_PATH', str(ROOT / 'libs/libbreenix/src/suite_host_input.rs'))
+        with tempfile.TemporaryDirectory(prefix='wm-native-input-') as directory:
+            temp = Path(directory)
+            (temp / 'check.rs').write_text(program)
+            compiler = (['taskpolicy', '-b'] if sys.platform == 'darwin' else []) + ['rustc', '--edition=2021', '-Dwarnings']
+            subprocess.run(compiler + ['--test', str(temp / 'check.rs'), '-o', str(temp / 'check')], check=True)
+            subprocess.run([str(temp / 'check'), '--test-threads=1'], check=True)
+
+    def test_native_transports_wait_on_guest_input_not_serial_tickets(self):
+        suite = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
+        helpers = '\n'.join(item(suite, marker) for marker in [
+            'pub fn hostkeys_acked(', 'pub fn hostpointer_acked(',
+        ])
+        program = r'''
+pub fn hostkey_method() -> Option<&'static str> { Some("qmp") }
+fn host_ack_ticket() -> Result<u64,String> { Ok(7) }
+fn hostkeys_request(_: &str, ticket: Option<u64>) -> Result<u64,String> {
+    assert!(ticket.is_none(), "native requests cannot obtain a serial ticket ACK"); Ok(1)
+}
+fn hostpointer_request(_: u32,_: u32,_: u32,_: u32,_: u32,_: i32,ticket: Option<u64>) -> Result<u64,String> {
+    assert!(ticket.is_none(), "native requests cannot obtain a serial ticket ACK"); Ok(2)
+}
+fn wait_host_ack(_: u64,_: &str) -> Result<u64,String> { Err("no serial ACK on native input".into()) }
+pub mod host_input {
+    pub fn keys(_: &str, request: impl FnOnce() -> Result<u64,String>) -> Result<u64,String> { request()?; Ok(2150000000) }
+    pub fn pointer(_: u32,_: u32,_: u32,_: u32,_: u32,_: i32,request: impl FnOnce() -> Result<u64,String>) -> Result<u64,String> { request()?; Ok(202000000) }
+}
+// HELPERS
+#[test] fn native_delivery_without_serial_ack() {
+    assert_eq!(hostkeys_acked("shift-h,e"), Ok(2150000000));
+    assert_eq!(hostpointer_acked(2520,1500,2560,1600,0,0), Ok(202000000));
+}
+'''.replace('// HELPERS', helpers)
+        with tempfile.TemporaryDirectory(prefix='wm-native-sync-') as directory:
+            temp = Path(directory)
+            (temp / 'check.rs').write_text(program)
+            compiler = (['taskpolicy', '-b'] if sys.platform == 'darwin' else []) + ['rustc', '--edition=2021', '-Dwarnings']
+            subprocess.run(compiler + ['--test', str(temp / 'check.rs'), '-o', str(temp / 'check')], check=True)
+            subprocess.run([str(temp / 'check')], check=True)
+
     def test_delayed_park_and_key_resend(self):
         cases = (ROOT / 'userspace/programs/src/wm_suite/cases.rs').read_text()
         desktop = (ROOT / 'userspace/programs/src/wm_suite/desktop.rs').read_text()

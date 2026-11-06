@@ -827,6 +827,13 @@ case reads its effect back in the guest. The host key is the input; the in-guest
   HOSTPOINTER records likewise allow a trailing `ticket=<u64>` after `wheel=<n>`.
   A ticket is transport metadata; it cannot replace the case's read-back or result.
 
+  The acknowledged helpers open an independent `/dev/input/events` observer before
+  emitting a native-device request. Keys complete after the requested presses
+  and releases; absolute motion completes after a matching complete motion batch and
+  pointer-state observation. The returned guest timestamp anchors the delivery bound.
+  The serial host channel instead retains its correlated ticketed ACK. Native
+  keyboard/tablet transports do not need to synthesize serial ACKs.
+
   `seq` increases across the run, so a launcher that sees a line twice (a serial replay) injects it once. A
   chord is modifiers and one key joined by `-`: modifiers `ctrl`, `alt`, `shift`, `super` (left keys) and
   `rctrl`, `ralt` (right keys); keys `a`-`z`, `0`-`9`, `f1`-`f12`, `left`, `right`, `up`, `down`, `pageup`,
