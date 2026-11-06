@@ -233,11 +233,11 @@ pub static CPU0_DISPATCH_SPSR: AtomicU64 = AtomicU64::new(0);
 /// Whether the timer is initialized
 static TIMER_INITIALIZED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
-static FINE_DEADLINES: [AtomicU64; super::constants::MAX_CPUS] =
-    [const { AtomicU64::new(u64::MAX) }; super::constants::MAX_CPUS];
-
-static FINE_LAST: [AtomicU64; super::constants::MAX_CPUS] =
-    [const { AtomicU64::new(0) }; super::constants::MAX_CPUS];
+struct FineDeadlines(core::cell::UnsafeCell<crate::time::deadlines::Deadlines>);
+// Only the owning CPU accesses a slot, with local IRQs masked.
+unsafe impl Sync for FineDeadlines {}
+static FINE_DEADLINES: [FineDeadlines; super::constants::MAX_CPUS] =
+    [const { FineDeadlines(core::cell::UnsafeCell::new(crate::time::deadlines::Deadlines::new())) }; super::constants::MAX_CPUS];
 
 /// Check if the timer interrupt has been initialized (for AHCI wfi/wfe decision).
 pub fn timer_is_running() -> bool {
@@ -474,8 +474,9 @@ pub fn request_wakeup(deadline_ns: u64) -> bool {
     crate::arch_without_interrupts(|| {
         let cpu = super::percpu::Aarch64PerCpu::cpu_id() as usize;
         if cpu >= FINE_DEADLINES.len() { return false; }
-        FINE_DEADLINES[cpu].fetch_min(deadline_ns, Ordering::AcqRel);
-        FINE_LAST[cpu].fetch_max(deadline_ns, Ordering::AcqRel);
+        // SAFETY: this CPU owns the slot and local IRQs are masked.
+        let fine = unsafe { &mut *FINE_DEADLINES[cpu].0.get() };
+        if !fine.insert(deadline_ns) { return false; }
         let delta = deadline_ns.saturating_sub(crate::signal::monotonic_nanos()).max(1);
         let ticks = (u128::from(delta) * u128::from(frequency)).div_ceil(1_000_000_000)
             .min(u128::from(u64::MAX)) as u64;
@@ -499,27 +500,26 @@ pub fn request_wakeup(deadline_ns: u64) -> bool {
     })
 }
 fn fine_interval(ticks: u64, delivery: bool) -> u64 {
-    let cpu = super::percpu::Aarch64PerCpu::cpu_id() as usize;
-    let Some(fine) = FINE_DEADLINES.get(cpu) else { return ticks; };
-    if fine.load(Ordering::Acquire) == u64::MAX { return ticks; }
-    let now = crate::signal::monotonic_nanos();
-    let mut deadline = FINE_DEADLINES[cpu].load(Ordering::Acquire);
-    if now >= deadline {
-        if !delivery { return 1; }
-        crate::time::wakeup::record_wake(deadline, now);
-        let last = FINE_LAST[cpu].load(Ordering::Acquire);
-        if now >= last {
-            FINE_DEADLINES[cpu].store(u64::MAX, Ordering::Release);
-            FINE_LAST[cpu].store(0, Ordering::Release);
-            return ticks;
+    crate::arch_without_interrupts(|| {
+        let cpu = super::percpu::Aarch64PerCpu::cpu_id() as usize;
+        let Some(fine) = FINE_DEADLINES.get(cpu) else { return ticks; };
+        // SAFETY: this CPU owns the slot and the wrapper masks local IRQs.
+        let fine = unsafe { &mut *fine.0.get() };
+        let now = crate::signal::monotonic_nanos();
+        let deadline = fine.next();
+        if deadline == u64::MAX { return ticks; }
+        if now >= deadline {
+            if !delivery { return 1; }
+            crate::time::wakeup::record_wake(deadline, now);
+            fine.expire(now);
         }
-        deadline = now.saturating_add(crate::time::wakeup::POLL_NS).min(last);
-        FINE_DEADLINES[cpu].store(deadline, Ordering::Release);
-    }
-    let frequency = super::timer::frequency_hz();
-    let fine = (deadline.saturating_sub(now).min(1_000_000_000) * frequency)
-        .div_ceil(1_000_000_000).max(1);
-    ticks.min(fine)
+        let deadline = fine.next();
+        if deadline == u64::MAX { return ticks; }
+        let frequency = super::timer::frequency_hz();
+        let fine = (deadline.saturating_sub(now).min(1_000_000_000) * frequency)
+            .div_ceil(1_000_000_000).max(1);
+        ticks.min(fine)
+    })
 }
 
 /// Arm the timer to fire after `ticks` counter increments from now.

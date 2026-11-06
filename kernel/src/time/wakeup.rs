@@ -1,7 +1,6 @@
 //! Shared finite fine wake requests, backed by LAPIC or ARM absolute-compare drivers.
 use core::sync::atomic::{AtomicU64, Ordering};
 use crate::arch_impl::TimerOps;
-pub const POLL_NS: u64 = 250_000;
 static REQUESTS: AtomicU64 = AtomicU64::new(0);
 static IRQS: AtomicU64 = AtomicU64::new(0);
 static LATE_MAX: AtomicU64 = AtomicU64::new(0);

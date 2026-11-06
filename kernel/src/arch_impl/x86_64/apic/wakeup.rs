@@ -33,7 +33,7 @@ pub fn request_wakeup(deadline_ns: u64) -> bool {
         let left = u64::from(super::read(0x390)) * PERIOD_NS / count;
         // SAFETY: this CPU owns the slot and local IRQs are masked.
         let event = unsafe { &mut *slot.0.get() };
-        let next = event.request(now_ns(), left, deadline_ns);
+        let Some(next) = event.request(now_ns(), left, deadline_ns) else { return false; };
         program(next);
         true
     })
@@ -45,7 +45,7 @@ fn interrupt() {
     let now = now_ns();
     let event = unsafe { &mut *slot.0.get() };
     let deadline = event.wake_deadline();
-    let (tick, wake, next) = event.interrupt(now, PERIOD_NS, crate::time::wakeup::POLL_NS);
+    let (tick, wake, next) = event.interrupt(now, PERIOD_NS);
     if wake {
         crate::time::wakeup::record_wake(deadline, now);
     }

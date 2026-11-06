@@ -14,6 +14,7 @@ mod slew;
 pub mod time;
 pub mod timer;
 pub(crate) mod wakeup;
+pub(crate) mod deadlines;
 pub mod tsc;
 
 #[cfg(test)]

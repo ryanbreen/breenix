@@ -21,7 +21,8 @@ mod per_cpu {pub fn cpu_id()->usize{crate::CPU.with(std::cell::Cell::get)}}
 mod signal {pub fn monotonic_nanos()->u64{crate::NOW.with(std::cell::Cell::get)}}
 mod time {
  pub mod timer {pub const MS_PER_TICK:u64=5;}
- pub mod wakeup {pub const POLL_NS:u64=250_000;pub fn record_wake(deadline:u64,now:u64){assert!(now>=deadline);crate::FINE.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}}
+ #[path="DEADLINES"] pub mod deadlines;
+ pub mod wakeup {pub fn record_wake(deadline:u64,now:u64){assert!(now>=deadline);crate::FINE.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}}
 }
 mod task {pub mod scheduler {
  pub const MAX_CPUS:usize=2;
@@ -58,7 +59,7 @@ fn main(){
  NOW.with(|n|n.set(13_000_000));wakeup::fire();assert_eq!(TICKS.load(Ordering::Relaxed),1);assert_eq!(apic::LVT.load(Ordering::Relaxed),(1<<17)|32);assert_eq!(apic::COUNT.load(Ordering::Relaxed),5000);
  assert_eq!(IPIS.load(Ordering::Relaxed),2,"regular tick lost its scheduling epilogue");
 }
-'''.replace('CLOCKEVENT', str(ROOT / 'kernel/src/arch_impl/x86_64/apic/clockevent.rs')).replace('DRIVER', driver)
+'''.replace('DEADLINES', str(ROOT / 'kernel/src/time/deadlines.rs')).replace('CLOCKEVENT', str(ROOT / 'kernel/src/arch_impl/x86_64/apic/clockevent.rs')).replace('DRIVER', driver)
         with tempfile.TemporaryDirectory(prefix='lapic-fine-') as directory:
             p = Path(directory)
             (p / 'check.rs').write_text(fixture)
