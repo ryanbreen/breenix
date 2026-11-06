@@ -290,10 +290,21 @@ pub(super) fn draw_taskbar(fb: &mut Surface, clock_text: &[u8], ui_font: &mut Op
     let w = fb.width();
     fill_rect(fb, 0, 0, w, px(TASKBAR_HEIGHT), TASKBAR_BG);
     let label_y = ((px(TASKBAR_HEIGHT) - ui().cell_h) / 2 + px(1)) as i32;
-    draw_text_at(fb, b"Breenix", pxi(8), label_y, TASKBAR_TEXT, ui_font.as_mut());
-    if !clock_text.is_empty() {
-        let clock_x = w as i32 - (clock_text.len() as i32 * ui().cell_w as i32) - pxi(8);
-        draw_text_at(fb, clock_text, clock_x, label_y, TASKBAR_TEXT, ui_font.as_mut());
+    let clock_x = w as i32 - (clock_text.len() as i32 * ui().cell_w as i32) - pxi(8);
+    if let Some(font) = ui_font.as_mut() {
+        let clip = fb.clip();
+        let runs = [
+            ttf_font::TextRun { bytes: b"Breenix", x: pxi(8), y: label_y,
+                size: TTF_FONT_SIZE * ui().scale as f32, fg: TASKBAR_TEXT, clip },
+            ttf_font::TextRun { bytes: clock_text, x: clock_x, y: label_y,
+                size: TTF_FONT_SIZE * ui().scale as f32, fg: TASKBAR_TEXT, clip },
+        ];
+        ttf_font::draw_runs_subpixel(fb, font, &runs);
+    } else {
+        draw_text_at(fb, b"Breenix", pxi(8), label_y, TASKBAR_TEXT, None);
+        if !clock_text.is_empty() {
+            draw_text_at(fb, clock_text, clock_x, label_y, TASKBAR_TEXT, None);
+        }
     }
 }
 

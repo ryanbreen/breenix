@@ -192,6 +192,7 @@ fn main() {
     let mut clock = clock::Clock::new(std::env::var_os("BREENIX_UI_CLOCK").is_some());
     let clock_wake = clock_wake::open().expect("UI clock wake setup failed");
     let mut clock_text = [0u8; 11];
+    let mut taskbar_prepare_ns = None;
     format_clock(clock.wall_sec(), &mut clock_text);
     let mut next_creation_order: u32 = 0;
     // Hotkey system: load config from /etc/hotkeys.conf
@@ -642,7 +643,9 @@ fn main() {
         // ── 4. Update chrome on real UI-clock seconds ──
         if let Some(sec) = clock.update_clock() {
             format_clock(sec, &mut clock_text);
+            let began = pacing_ns();
             draw_taskbar(&mut gpu.desktop, &clock_text, &mut ui_font);
+            taskbar_prepare_ns = Some(pacing_ns().saturating_sub(began));
             dirty_x0 = 0;
             dirty_y0 = 0;
             dirty_x1 = dirty_x1.max(screen_w as i32);
@@ -683,6 +686,16 @@ fn main() {
                 windows_dirty = false;
                 match frame {
                     Ok(()) => {
+                        if let Some(draw_ns) = taskbar_prepare_ns.take() {
+                            let prepare_ns = gpu.last_timing.prepare_ns;
+                            let period_ns = gpu.last_timing.period_ns;
+                            if period_ns != 0 && draw_ns.saturating_add(prepare_ns) >= period_ns {
+                                use std::io::Write;
+                                if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
+                                    let _ = writeln!(evidence, "VALUE bwm-taskbar-overrun draw_ns={} prepare_ns={} period_ns={} serial={}", draw_ns, prepare_ns, period_ns, gpu.last_serial);
+                                }
+                            }
+                        }
                         pacing.presented(gpu.last_timing);
                         frame_failed = false;
                         if display_lost {

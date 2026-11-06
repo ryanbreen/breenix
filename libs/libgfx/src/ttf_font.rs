@@ -833,6 +833,16 @@ pub struct TextRun<'a> {
 /// glyphs that meet. When gathering the runs' glyphs evicted an atlas entry, an earlier run's
 /// glyph may name a reused slot, so the runs are drawn one by one instead.
 pub fn draw_runs(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>]) {
+    draw_runs_mode(fb, font, runs, false);
+}
+
+/// Batched LCD text, preserving `draw_text_subpixel` coverage and overlap order.
+/// As with `draw_runs`, separate runs must not overlap one another.
+pub fn draw_runs_subpixel(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>]) {
+    draw_runs_mode(fb, font, runs, true);
+}
+
+fn draw_runs_mode(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>], lcd: bool) {
     type Placed = (Arc<AtlasGlyph>, i64, i64, Box64, Color);
     let before = font.cache_stats();
     let mut layers: Vec<Vec<Placed>> = Vec::new();
@@ -844,7 +854,7 @@ pub fn draw_runs(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>]) 
         // Each earlier glyph of this run that draws: its box and layer.
         let mut drawn: Vec<(Box64, usize)> = Vec::new();
         let mut failed = None;
-        font.run(&placed, Font::size26(r.size).unwrap_or(0), |got| match got {
+        font.run_mode(&placed, Font::size26(r.size).unwrap_or(0), lcd, |got| match got {
             Ok((image, dx)) => {
                 let (x, y) = (r.x as i64 + dx, r.y as i64);
                 let b = Box64::wide(x + image.x_offset as i64, y + image.y_offset as i64, image.width as i64, image.height as i64).intersect(&clip);
@@ -869,7 +879,12 @@ pub fn draw_runs(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>]) 
     if before.entries + (after.misses - before.misses) as usize > after.entries {
         for r in runs {
             fb.push_clip(r.clip);
-            draw_text_bytes(fb, font, r.bytes, r.x, r.y, r.size, r.fg);
+            if lcd {
+                let glyphs = glyphs_of(font, decode_utf8(r.bytes)).collect();
+                draw_glyphs_subpixel(fb, font, glyphs, r.x, r.y, r.size, r.fg);
+            } else {
+                draw_text_bytes(fb, font, r.bytes, r.x, r.y, r.size, r.fg);
+            }
             fb.pop_clip();
         }
         return;
