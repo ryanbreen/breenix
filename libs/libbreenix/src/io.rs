@@ -381,6 +381,20 @@ pub fn poll(fds: &mut [PollFd], timeout: i32) -> Result<usize, Error> {
     Error::from_syscall(ret as i64).map(|v| v as usize)
 }
 
+/// Poll descriptors with a nanosecond timeout; an absent timeout waits indefinitely.
+/// Readiness and signals can end the wait before the timer expires.
+pub fn poll_ns(fds: &mut [PollFd], timeout_ns: Option<u64>) -> Result<usize, Error> {
+    let ts = timeout_ns.map(|ns| crate::types::Timespec {
+        tv_sec: (ns / 1_000_000_000) as i64,
+        tv_nsec: (ns % 1_000_000_000) as i64,
+    });
+    let ret = unsafe {
+        raw::syscall5(nr::PPOLL, fds.as_mut_ptr() as u64, fds.len() as u64,
+            ts.as_ref().map_or(0, |t| t as *const crate::types::Timespec as u64), 0, 0)
+    };
+    Error::from_syscall(ret as i64).map(|v| v as usize)
+}
+
 // ============ select() implementation ============
 
 /// fd_set type for select() - a u64 bitmap supporting fds 0-63

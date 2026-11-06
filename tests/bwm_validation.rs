@@ -63,7 +63,7 @@ fn production_loop_acknowledges_before_idle_validation() {
         tail = &tail[at + part.len()..];
     }
     let wait = &main[main.find("impl shutdown::Runtime for ShutdownWait").unwrap()..];
-    assert!(wait.contains("fn wait(&mut self) { let _ = io::poll(self.fds, self.timeout); }"),
+    assert!(wait.contains("fn wait(&mut self) { let _ = io::poll_ns(self.fds, self.timeout); }"),
         "the shutdown boundary waits on the input and scene descriptors");
     assert!(!loop_body.contains("gpu.check("), "presentation must only enqueue checks");
     assert_eq!(loop_body.matches("run_deferred_check(").count(), 1);

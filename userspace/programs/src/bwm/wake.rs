@@ -25,3 +25,12 @@ pub fn timeout(dirty: bool, display_lost: bool, now: u64, monotonic_ns: u64, dea
         (ns.saturating_add(999_999) / 1_000_000).min(i32::MAX as u64) as i32
     })
 }
+
+/// Cap the UI timers' coarse timeout at the exact response-hold deadline.
+pub fn wait_ns(timeout_ms: i32, monotonic_ns: u64, presentation: Option<u64>) -> Option<u64> {
+    let coarse = (timeout_ms >= 0).then(|| timeout_ms as u64 * 1_000_000);
+    match (coarse, presentation.map(|d| d.saturating_sub(monotonic_ns))) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (a, b) => a.or(b),
+    }
+}

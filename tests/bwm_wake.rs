@@ -64,3 +64,12 @@ fn response_hold_uses_the_monotonic_clock_and_does_not_hide_other_deadlines() {
     assert_eq!(timeout(false, false, 80_000_000_000, 1_000_000_000,
         Deadlines { closing: Some(80_000_100_000), ..pending }), 1);
 }
+
+#[test]
+fn precise_hold_caps_the_wait_without_hiding_an_earlier_timer() {
+    assert_eq!(wake::wait_ns(-1, 100, None), None);
+    assert_eq!(wake::wait_ns(100, 100, None), Some(100_000_000));
+    assert_eq!(wake::wait_ns(1, 100, Some(1_200_100)), Some(1_000_000));
+    assert_eq!(wake::wait_ns(2, 100, Some(1_200_100)), Some(1_200_000));
+    assert_eq!(wake::wait_ns(2, 100, Some(99)), Some(0));
+}

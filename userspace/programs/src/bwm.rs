@@ -245,7 +245,7 @@ fn main() {
         // ── 0. Sleep until input or a scene change ──
         clock.begin_epoch();
         let now = libbreenix::ui_clock::now_ns();
-        let monotonic_ns = monotonic_ms().unwrap_or(0).saturating_mul(1_000_000);
+        let monotonic_ns = pacing_ns();
         let wall = clock.acknowledgment(claim_epoch).next_deadline_ns;
         let shown = validation.scene().map(|scene| gpu.shown_clients(&scene.layers, Some(scene.pointer)))
             .unwrap_or_default();
@@ -270,6 +270,8 @@ fn main() {
                 wall: (wall != 0).then_some(wall),
             });
         let timeout = closing.timeout_ms(now, timeout);
+        let hold = if display_lost { None } else { hold };
+        let timeout = wake::wait_ns(timeout, pacing_ns(), hold);
         poll_fds.truncate(2);
         if let Some(wake) = &clock_wake {
             poll_fds.push(io::PollFd { fd: wake.fd(), events: io::poll_events::POLLIN as i16, revents: 0 });
@@ -877,14 +879,14 @@ fn initialize_shutdown() -> signal_wake::SignalWake {
 
 struct ShutdownWait<'a> {
     fds: &'a mut [io::PollFd],
-    timeout: i32,
+    timeout: Option<u64>,
     failed: bool,
 }
 
 impl shutdown::Runtime for ShutdownWait<'_> {
     type Ready = ();
     fn unblock(&mut self) { term_mask(signal::SIG_UNBLOCK); }
-    fn wait(&mut self) { let _ = io::poll(self.fds, self.timeout); }
+    fn wait(&mut self) { let _ = io::poll_ns(self.fds, self.timeout); }
     fn block(&mut self) { term_mask(signal::SIG_BLOCK); }
     fn terminated(&self) -> bool { TERMINATE.load(std::sync::atomic::Ordering::Relaxed) }
     fn release(&mut self) {
