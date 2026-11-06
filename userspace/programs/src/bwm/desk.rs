@@ -80,6 +80,7 @@ pub(super) struct Window {
     /// Chromeless windows have no title bar, border, or chrome buttons.
     /// Detected by title prefix \x01.
     pub(super) chromeless: bool,
+    pub(super) published_stack: Option<(u32, bool, bool)>,
 }
 
 impl Window {
@@ -292,6 +293,13 @@ pub(super) fn discover_windows(
             check_moved: 0,
             creation_order: order,
             chromeless,
+            published_stack: {
+                use libbreenix::window::abi::win_flags;
+                (info.flags & (win_flags::VISIBLE | win_flags::MINIMIZED) != 0).then_some((
+                    info.z, info.flags & win_flags::MINIMIZED != 0,
+                    info.flags & win_flags::FOCUSED != 0,
+                ))
+            },
         });
         added = true;
     }

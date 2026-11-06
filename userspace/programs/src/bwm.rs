@@ -224,7 +224,7 @@ fn main() {
 
     // Initial window discovery (before entering event loop)
     if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
-        reconcile_stack(&windows, &mut stack);
+        reconcile_stack(&windows, &mut stack, true);
         compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
         full_redraw = true;
     }
@@ -265,7 +265,7 @@ fn main() {
         // ── 1. Discover new/removed client windows, and see client frames ──
         if scene_changed {
             if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
-                reconcile_stack(&windows, &mut stack);
+                reconcile_stack(&windows, &mut stack, false);
                 if dragging.as_ref().and_then(|d| d.id()).is_some_and(|id| !windows.iter().any(|w| w.window_id == id))
                     || resizing.as_ref().is_some_and(|r| !windows.iter().any(|w| w.window_id == r.id)) {
                     dragging = None;
@@ -702,7 +702,14 @@ fn publish_transition(windows: &[Window], stack: &Stack, transition: (Option<u64
 }
 
 /// Reconcile membership without disturbing surviving ids' policy order.
-fn reconcile_stack(windows: &[Window], stack: &mut Stack) -> bool {
+fn reconcile_stack(windows: &[Window], stack: &mut Stack, initial: bool) -> bool {
+    if initial {
+        let adopted: Vec<_> = windows.iter().filter_map(|win| {
+            win.published_stack.map(|(z, minimized, focused)|
+                (win.window_id, z, minimized, focused, win.chromeless))
+        }).collect();
+        stack.adopt(&adopted);
+    }
     let removed: Vec<_> = stack.order().iter().copied()
         .filter(|id| !windows.iter().any(|w| w.window_id == *id)).collect();
     for &id in &removed {
@@ -712,7 +719,17 @@ fn reconcile_stack(windows: &[Window], stack: &mut Stack) -> bool {
     for win in windows {
         if !stack.order().contains(&win.window_id) {
             let transition = stack.add(win.window_id, win.chromeless);
-            publish_transition(windows, stack, transition);
+            if initial {
+                stack::publish_focus(transition, |notice| {
+                    let (id, input) = match notice {
+                        stack::FocusNotice::Lost(id) => (id, Input::FocusLost),
+                        stack::FocusNotice::Gained(id) => (id, Input::FocusGained),
+                    };
+                    input::send_id(id, input);
+                }, || {});
+            } else {
+                publish_transition(windows, stack, transition);
+            }
         }
     }
     // LIST can also change dimensions and therefore the content origin.
