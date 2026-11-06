@@ -1344,7 +1344,7 @@ pub fn present_latency() -> CaseResult {
         }
     }
     value("pipeline-window", c.id as i64, "", None);
-    full_pipeline();
+    full_pipeline("window-pipeline-present");
     measure::observed(&mut d, &[&c], receipt_serial)?;
     samples.sort_unstable();
     let median = samples[samples.len() / 2];
@@ -1378,7 +1378,7 @@ pub fn frame_floor() -> CaseResult {
     value("pipeline-window", c.id as i64, "", None);
     value("measurement-begin", begin as i64, "ns", None);
     value("measurement-end", end as i64, "ns", None);
-    full_pipeline();
+    full_pipeline("window-pipeline-frame-floor");
     d.shown(&c)?;
     let hz = rate.as_ref().map_or(0, |r| {
         (u128::from(r.intervals) * 1_000_000_000 / u128::from(r.span_ns)) as i64
@@ -1398,8 +1398,34 @@ pub fn frame_floor() -> CaseResult {
 pub(super) fn failure_pipeline() {
     export_pipeline("/proc/breenix/window-pipeline");
 }
-fn full_pipeline() {
-    export_pipeline("/proc/breenix/window-pipeline-full");
+fn pipeline_blob(trace: &str) -> Result<Vec<u8>, String> {
+    let mut blob = b"WMPIPE01".to_vec();
+    blob.extend_from_slice(&0u32.to_le_bytes());
+    let mut count = 0u32;
+    for row in trace.lines() {
+        if count == 32768 { return Err("pipeline-row-bound".into()); }
+        let mut fields = row.split_whitespace();
+        for _ in 0..5 {
+            let n = fields.next().ok_or("pipeline-fields")?.parse::<u64>().map_err(|e| e.to_string())?;
+            blob.extend_from_slice(&n.to_le_bytes());
+        }
+        if fields.next().is_some() { return Err("pipeline-fields".into()); }
+        count += 1;
+    }
+    if count == 0 { return Err("pipeline-empty".into()); }
+    blob[8..12].copy_from_slice(&count.to_le_bytes());
+    Ok(blob)
+}
+fn full_pipeline(label: &str) {
+    use std::io::Write;
+    let result = (|| -> Result<(), String> {
+        let trace = std::fs::read_to_string("/proc/breenix/window-pipeline-full").map_err(|e| e.to_string())?;
+        let blob = pipeline_blob(&trace)?;
+        let receipt = breenix_suite::suite::upload_diagnostic("window-manager", label, &blob)?;
+        let mut evidence = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence").map_err(|e| e.to_string())?;
+        evidence.write_all(format!("VALUE window-pipeline-bulk {label} {receipt}\n").as_bytes()).map_err(|e| e.to_string())
+    })();
+    if let Err(error) = result { value("pipeline-bulk-export-errno", 5, &error, None); }
 }
 fn export_pipeline(path: &str) {
     use std::io::Write;

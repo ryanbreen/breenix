@@ -5,7 +5,7 @@
 //! physical/virtual presentation, and receipt publication (1 through 13), and front publication (14).
 use alloc::{string::String, vec::Vec};
 use core::fmt::Write;
-const CAPACITY: usize = 4096;
+const CAPACITY: usize = 32768;
 type Row = [u64; 5];
 struct Ring { rows: [Row; CAPACITY], count: u64 }
 static RING: spin::Mutex<Ring> = spin::Mutex::new(Ring {

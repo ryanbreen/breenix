@@ -36,10 +36,10 @@ fn main() {{
  assert!(rows.len()<=256);
  for stage in 1..=4 {{assert!(rows.iter().any(|r|r[0]==stage && r[3]==777),"input stage {{stage}} erased by other clients");}}
  for stage in 8..=12 {{assert!(rows.iter().any(|r|r[0]==stage));}}
- for n in 0..5000 {{pipeline::record(14,99,n,0);}}
+ for n in 0..40000 {{pipeline::record(14,99,n,0);}}
  let full=pipeline::full_text();
- let complete:Vec<_>=full.lines().collect();assert_eq!(complete.len(),4096);
- assert_eq!(complete.last().unwrap().split_whitespace().nth(2),Some("4999"));
+ let complete:Vec<_>=full.lines().collect();assert_eq!(complete.len(),32768);
+ assert_eq!(complete.last().unwrap().split_whitespace().nth(2),Some("39999"));
 }}
 ''')
             compiler = (['taskpolicy', '-b'] if sys.platform == 'darwin' else []) + ['rustc', '--edition=2021', '-Dwarnings']

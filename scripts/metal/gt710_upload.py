@@ -81,17 +81,22 @@ def receive(handler):
         picture = re.fullmatch(re.escape(intent.get('route', '')) + r'/pictures/(0|[1-9]\d*)', route) if intent else None
         picture_index = int(picture[1]) if picture else None
         is_picture = picture_index is not None
-        if (not intent or (route!=intent.get('route') and not final and not is_picture)
+        diagnostic = re.fullmatch(re.escape(intent.get('route', '')) + r'/diagnostics/([a-z][a-z0-9-]{0,63})', route) if intent else None
+        diagnostic_label = diagnostic[1] if diagnostic else None
+        is_diagnostic = diagnostic_label is not None
+        if (not intent or (route!=intent.get('route') and not final and not is_picture and not is_diagnostic)
                 or (is_picture and (intent.get('suite') not in ('breengel', 'window-manager') or not intent.get('complete')
                     or intent.get('finalComplete') or picture_index != intent.get('pictureUploads', 0)))
-                or (intent.get('finalComplete') if final else (False if is_picture else intent.get('complete')))
+                or (is_diagnostic and (intent.get('suite') != 'window-manager' or not intent.get('complete')
+                    or intent.get('finalComplete') or len(intent.get('diagnosticUploads', {})) >= 16))
+                or (intent.get('finalComplete') if final else (False if is_picture or is_diagnostic else intent.get('complete')))
                 or (final and not intent.get('complete'))
                 or lease.get('id')!=intent.get('id') or lease.get('state')!='powered'):
             handler.send_error(404);return
         boot_directory=m.boot_dir(intent['id'])
         directory = boot_directory / 'native-suites' / suite_directory if suite_directory else boot_directory
         directory.mkdir(parents=True, exist_ok=True)
-        filename = f'gt710-breengel-{picture_index:04}.rle' if is_picture else ('gt710-final.rle' if final else 'gt710-pixels.rle')
+        filename = f'diagnostic-{diagnostic_label}.bin' if is_diagnostic else f'gt710-breengel-{picture_index:04}.rle' if is_picture else ('gt710-final.rle' if final else 'gt710-pixels.rle')
         # Publishing the verified payload consumes the slot even if the
         # bookkeeping below has not finished (or its writer was interrupted).
         if (directory/filename).exists():
@@ -103,7 +108,7 @@ def receive(handler):
             if (handler.headers.get('Transfer-Encoding') or not 0<length<=MAX_BYTES
                     or not re.fullmatch('[a-f0-9]{64}',expected) or (boot_directory/'ended').exists()):
                 raise ValueError('invalid display artifact framing')
-            total = root_intent.get('aggregateBytes', 0) if suite_directory else intent.get('bytes', 0) + intent.get('pictureBytes', 0)
+            total = root_intent.get('aggregateBytes', 0) if suite_directory else intent.get('bytes', 0) + intent.get('pictureBytes', 0) + intent.get('diagnosticBytes', 0)
             if total + length > MAX_TOTAL:
                 raise ValueError('native per-boot evidence exceeds 64 MiB')
             handler.connection.settimeout(30)
@@ -118,7 +123,10 @@ def receive(handler):
             temporary.replace(directory/filename)
             receipt=dict(id=intent['id'],route=route,complete=True,bytes=length,
                          sha256=expected,receivedAt=m.now())
-            if is_picture:
+            if is_diagnostic:
+                intent.setdefault('diagnosticUploads', {})[diagnostic_label] = receipt
+                intent['diagnosticBytes'] = intent.get('diagnosticBytes', 0) + length
+            elif is_picture:
                 intent['pictureUploads'] = picture_index + 1
                 intent['pictureBytes'] = intent.get('pictureBytes', 0) + length
             elif final:
@@ -138,7 +146,7 @@ def receive(handler):
         # window. Keep the slot lock until they finish; a persistence error
         # propagates to the service instead of attempting a second HTTP status
         # after the 200 already sent.
-        receipt_name = f'native-picture-upload-{picture_index:04}.json' if is_picture else ('native-final-upload.json' if final else 'native-upload.json')
+        receipt_name = f'native-diagnostic-{diagnostic_label}.json' if is_diagnostic else f'native-picture-upload-{picture_index:04}.json' if is_picture else ('native-final-upload.json' if final else 'native-upload.json')
         m.write_json(directory/receipt_name,receipt)
         if suite_directory:
             root_intent['aggregateBytes'] = total + length
