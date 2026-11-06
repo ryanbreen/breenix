@@ -539,6 +539,20 @@ fn presentation_sample(regs: &Registers, head: u32)
 }
 
 impl Evo {
+    pub(in crate::gk208) fn presentation_schedule(&self, regs: &Registers) -> Result<(u64,u64), &'static str> {
+        let total=regs.read(0x640414+self.head as usize*0x300);
+        let (width,height)=(total&0xffff,total>>16);
+        if width==0 || height==0 || self.pixel_hz==0
+            || u64::from(width)*u64::from(height)!=self.frame_pixels {
+            return Err("native presentation schedule extent mismatch");
+        }
+        let phase=self.latch_phase.map_or(0,u32::from);
+        if phase>=height { return Err("native presentation schedule phase mismatch"); }
+        let period=(u128::from(self.frame_pixels)*1_000_000_000).div_ceil(u128::from(self.pixel_hz)) as u64;
+        let lead=(u128::from(height-phase)*u128::from(width)*1_000_000_000)
+            .div_ceil(u128::from(self.pixel_hz)) as u64;
+        Ok((period,lead))
+    }
     fn arm_presentation(&mut self, regs: &Registers, resource: u32)
         -> Result<(), &'static str> {
         if self.pending_presentation.is_some() {

@@ -11,6 +11,7 @@ class SubmittedReceipt(unittest.TestCase):
         native = timing.source('kernel/src/gpu/gk208/native.rs')
         clock = timing.source('kernel/src/gpu/gk208/vblank_clock.rs').replace('//!', '//')
         sample = item(native, 'fn presentation_sample(')
+        schedule = item(native, 'pub(in crate::gk208) fn presentation_schedule(')
         record = item(native, 'pub(in crate::gk208) fn record_presentation(')
         pending = item(native, '#[derive(Clone, Copy)]\nstruct PendingPresentation {') if 'struct PendingPresentation {' in native else ''
         arm = item(native, 'fn arm_presentation(') if 'fn arm_presentation(' in native else '''
@@ -46,7 +47,7 @@ mod native{
  pub struct Evo{head:u32,clock:Option<vblank_clock::VblankClock>,frame_pixels:u64,pixel_hz:u64,
   vblank_line:u16,latch_phase:Option<u16>,last_presentation:Option<(u32,u64)>,PENDING_FIELD}
  SAMPLE
- impl Evo{ RECORD ARM FINISH }
+ impl Evo{ SCHEDULE RECORD ARM FINISH }
  fn setup(base:u16)->Evo{Evo{head:0,clock:Some(vblank_clock::VblankClock::new(base,EPOCH,PIXELS,HZ)),frame_pixels:PIXELS,pixel_hz:HZ,vblank_line:1047,latch_phase:Some(1065),last_presentation:Some((9,EPOCH)),PENDING_INIT}}
  pub fn late(){
   let regs=Registers{base:65535};let mut e=setup(65535);
@@ -68,6 +69,14 @@ mod native{
  }
  // Existing early-acceptance fixtures use a synthetic deadline at phase1065.
  // W20's R240-mode fixture has counter-relative deadline952 and includes its band.
+ pub fn schedule(){
+  let regs=Registers{base:0};let mut e=setup(0);e.latch_phase=Some(952);
+  let period=((u128::from(PIXELS)*1_000_000_000+u128::from(HZ)-1)/u128::from(HZ))as u64;
+  let lead=((114u128*1688*1_000_000_000+u128::from(HZ)-1)/u128::from(HZ))as u64;
+  assert_eq!(e.presentation_schedule(&regs).unwrap(),(period,lead));
+  e.latch_phase=None;assert_eq!(e.presentation_schedule(&regs).unwrap(),(period,period));
+  e.frame_pixels-=1;assert!(e.presentation_schedule(&regs).is_err());
+ }
  pub fn calibrate(){
   let regs=Registers{base:0};let mut e=setup(0);e.latch_phase=None;
   NOW.with(|n|n.set(EPOCH+1_000_000));e.arm_presentation(&regs,7).unwrap();
@@ -111,12 +120,13 @@ mod native{
   }}
  }
 }
+#[test]fn schedule_uses_programmed_raster_and_calibrated_lead(){native::schedule();}
 #[test]fn deadline_comes_from_a_bracketed_mode_transition(){native::calibrate();}
 #[test]fn late_acceptances_and_boundary_band_use_the_second_edge(){native::late_accept();}
 #[test]fn submitted_frame_is_independent_of_completion_poll_delay(){native::check();}
 #[test]fn a_late_reap_keeps_the_accepted_frame(){native::late();}
 #[test]fn reaper_schedule_does_not_change_the_presentation_rate(){native::stream();}
-'''.replace('CLOCK', clock).replace('RATE', rate).replace('PENDING_FIELD', 'pending_presentation:Option<PendingPresentation>,' if pending else '').replace('PENDING_INIT', 'pending_presentation:None,' if pending else '').replace('PENDING', pending).replace('SAMPLE', sample).replace('RECORD', record).replace('ARM', arm).replace('FINISH', finish)
+'''.replace('CLOCK', clock).replace('RATE', rate).replace('PENDING_FIELD', 'pending_presentation:Option<PendingPresentation>,' if pending else '').replace('PENDING_INIT', 'pending_presentation:None,' if pending else '').replace('PENDING', pending).replace('SAMPLE', sample).replace('SCHEDULE',schedule).replace('RECORD', record).replace('ARM', arm).replace('FINISH', finish)
         self.run_fixture(fixture.replace('pub(in crate::gk208)', 'pub(crate)'))
 
 

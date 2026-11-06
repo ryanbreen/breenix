@@ -44,5 +44,9 @@ pub fn read(caller: &Caller) -> Result<CompositorStatus, i32> {
 }
 
 pub fn text(caller: &Caller) -> Result<alloc::string::String, i32> {
-    read(caller).map(|s| super::status_pages::format_status(&s))
+    read(caller).map(|s| {
+        let mut text = super::status_pages::format_status(&s);
+        text.push_str(&super::pacing::text());
+        text
+    })
 }

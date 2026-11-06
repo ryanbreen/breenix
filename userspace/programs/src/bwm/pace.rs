@@ -12,6 +12,19 @@ pub fn decide(now: u64, pending: bool, edge: u64, period: u64, work: u64) -> Dec
     let latest = next.saturating_sub(work.saturating_add(GUARD_NS));
     if now < latest { Decision::WaitUntil(latest) } else { Decision::Compose }
 }
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Timing { pub presented_ns: u64, pub period_ns: u64, pub prepare_ns: u64, pub lead_ns: u64 }
+impl Timing {
+    pub fn parse(serial: u64, text: &str) -> Result<Self, &'static str> {
+        let field=|prefix: &str| text.split_whitespace().find_map(|word| word.strip_prefix(prefix))
+            .and_then(|value| value.parse::<u64>().ok()).ok_or("compositor timing field absent");
+        if serial==0 || field("pacing_serial=")?!=serial { return Err("compositor timing serial differs"); }
+        let timing=Self { presented_ns:field("presentation_ns=")?, period_ns:field("period_ns=")?,
+            prepare_ns:field("prepare_ns=")?, lead_ns:field("accept_lead_ns=")? };
+        if timing.presented_ns==0 || timing.lead_ns>timing.period_ns { return Err("invalid compositor timing"); }
+        Ok(timing)
+    }
+}
 pub type Serial = (u64, u32);
 #[derive(Default)]
 pub struct Pacer {
@@ -20,6 +33,8 @@ pub struct Pacer {
     period: Option<u64>,
     work: Option<u64>,
     waiting: Option<u64>,
+    recent: [u64; 8],
+    next: usize,
 }
 impl Pacer {
     pub fn delivered(&mut self, window: u64, serial: Serial) {
@@ -45,17 +60,14 @@ impl Pacer {
         if let Decision::WaitUntil(deadline) = decision { self.waiting = Some(deadline); }
         decision
     }
-    pub fn presented(&mut self, began: u64, ended: u64) {
-        // COMPOSITE returns after publication on both physical and virtual devices.
-        // Learn conservative deadlines from observed completions, without backend constants.
-        let elapsed = ended.saturating_sub(began);
-        if elapsed != 0 { self.work = Some(self.work.map_or(elapsed, |old| old.min(elapsed))); }
-        if let Some(old) = self.edge {
-            let span = ended.saturating_sub(old);
-            if span != 0 { self.period = Some(self.period.map_or(span, |p| p.min(span))); }
-        }
-        self.edge = Some(ended);
+    pub fn presented(&mut self, timing: Timing) {
+        if self.period!=Some(timing.period_ns) { self.recent=[0;8];self.next=0; }
+        self.recent[self.next%self.recent.len()]=timing.prepare_ns;
+        self.next=self.next.wrapping_add(1);
+        self.work=Some(self.recent.iter().copied().max().unwrap_or(0).saturating_add(timing.lead_ns));
+        self.period=Some(timing.period_ns);
+        self.edge=Some(timing.presented_ns);
         self.routed.clear();
-        self.waiting = None;
+        self.waiting=None;
     }
 }

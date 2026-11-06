@@ -108,6 +108,7 @@ pub struct Compositor {
     scanout: [u64; 2],
     /// The most recently completed window composite.
     pub last_serial: u64,
+    pub last_timing: super::pace::Timing,
     /// The scanout target the next frame writes: the one not shown.
     next: usize,
     /// The desktop: background, taskbar, window frames and app bar.
@@ -152,6 +153,7 @@ impl Compositor {
             scene: 0,
             scanout: [0; 2],
             last_serial: 0,
+            last_timing: super::pace::Timing::default(),
             next: 0,
             desktop,
             background,
@@ -244,6 +246,7 @@ impl Compositor {
     /// the scene snapshot names as damaged, in C from the desktop, the windows in `layers`
     /// and the pointer, then show it. The whole of C is redrawn after opening or a failure.
     pub fn compose(&mut self, layers: &[Layer], pointer: Option<Pointer>, damage: &[[i32; 4]]) -> Result<(), FrameError> {
+        let began_ns=monotonic_ns();
         const EPERM: i64 = -(wabi::errno::EPERM as i64);
         const EAGAIN: i64 = -(wabi::errno::EAGAIN as i64);
         const EBUSY: i64 = -(wabi::errno::EBUSY as i64);
@@ -296,9 +299,12 @@ impl Compositor {
             c.stream = words.as_ptr() as u64;
             c.length = (words.len() * 4) as u64;
             c.scene_target = self.scene;
+            let userspace_prepare=monotonic_ns().saturating_sub(began_ns);
             let r = call(op::COMPOSITE, &mut c);
             match r {
                 0 => {
+                    self.last_timing=super::session::timing(c.serial).map_err(FrameError::Failed)?;
+                    self.last_timing.prepare_ns=self.last_timing.prepare_ns.saturating_add(userspace_prepare);
                     self.next ^= 1;
                     self.last_serial = c.serial;
                     self.full = false;
@@ -626,6 +632,10 @@ fn intersect(a: [i32; 4], b: [i32; 4]) -> Option<[i32; 4]> {
 fn call<T: Plain>(op: u32, value: &mut T) -> i64 {
     // SAFETY: `value` is a live plain structure of its own size.
     unsafe { window::raw_call(op, value as *mut T as *mut u8, core::mem::size_of::<T>()) }
+}
+
+fn monotonic_ns() -> u64 {
+    libbreenix::time::now_monotonic().map_or(0, |t| t.as_nanos() as u64)
 }
 
 fn monotonic_ms() -> u64 {

@@ -675,14 +675,13 @@ fn main() {
                 }
                 frame_layers(&windows, &stack, &mut working_scene.layers);
                 working_scene.pointer = pointer;
-                let began = pacing_ns();
                 let frame = gpu.compose(&working_scene.layers, Some(pointer), &damage);
                 full_redraw = false;
                 content_dirty = false;
                 windows_dirty = false;
                 match frame {
                     Ok(()) => {
-                        pacing.presented(began, pacing_ns());
+                        pacing.presented(gpu.last_timing);
                         frame_failed = false;
                         if display_lost {
                             display_lost = false;

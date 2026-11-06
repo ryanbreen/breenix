@@ -385,6 +385,7 @@ pub struct Admission {
     reservation: Reservation,
     pub sources: Vec<AdmittedSource>,
     pub serial: u64,
+    pub began_ns: u64,
     entries: Vec<CompositeEntry>,
 }
 impl Admission {
@@ -431,6 +432,7 @@ impl Drop for Admission {
 }
 
 pub fn submit(caller: &Caller, a: &mut Composite, out: u64) -> Result<u64, i32> {
+    let began_ns=super::events::now_ns();
     let claim = authority(caller)?;
     if a.reserved != 0
         || a.flags > 1
@@ -562,6 +564,7 @@ pub fn submit(caller: &Caller, a: &mut Composite, out: u64) -> Result<u64, i32> 
         reservation,
         sources,
         serial: 0,
+        began_ns,
         entries,
     };
     // Test point 16, `composite-stall`: a composite that includes the armed window pauses

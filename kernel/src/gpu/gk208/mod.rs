@@ -680,6 +680,12 @@ pub(crate) fn heap_footprint() -> [usize; 8] {
     values
 }
 
+/// Physical scheduling hints. ARM's virtual counterpart completes its present
+/// through the completion-driven branch of gpu::dev::presentation_schedule.
+pub(crate) fn presentation_schedule() -> Result<(u64,u64), &'static str> {
+    ce::with_clock_owner(|regs,evo,_| evo.presentation_schedule(regs))
+}
+
 /// G33a: the completed native binding, in the scanout clock domain.
 pub(crate) fn completed_present_time(resource: u32, not_before: u64) -> Option<u64> {
     ce::with_clock_owner(|regs, evo, _| {
