@@ -1461,6 +1461,9 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
             time::sleep_ms(50 - spent)?;
         }
     }
+    // W21 compares the bounded stage tail after the timed workload, before
+    // scanout observation and continuing animators can displace its input.
+    failure_pipeline();
     measure::observed(&mut d, &[&c], receipt_serial)?;
     samples.sort_unstable();
     let median = samples[50];
@@ -1477,9 +1480,6 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
         Some((0, median_bound)),
     );
     value("latency-max", max as i64, "us", Some((0, max_bound)));
-    // W21 acceptance compares the bounded stage tail even when latency passes.
-    // Export after the timed workload so evidence output cannot affect its samples.
-    failure_pipeline();
     check(
         median <= median_bound as u64 && max <= max_bound as u64,
         "input-to-composited-ack latency exceeds the GUI plan bound",
