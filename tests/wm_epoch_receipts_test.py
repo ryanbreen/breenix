@@ -36,7 +36,7 @@ thread_local! {
     static MODE: Cell<u32> = const { Cell::new(0) };
     static DEADLINES: RefCell<Vec<u64>> = const { RefCell::new(Vec::new()) };
 }
-pub struct Clock { costs: [u64; 3] }
+pub struct Clock { costs: [u64; 3], receipt_reads: u64, receipt_rows: u64 }
 impl Clock {
     fn step(&mut self, epoch: u64, ns: u64) -> Result<(), String> {
         assert_eq!((epoch, ns), (77, 77 * 16_000_000));
@@ -88,10 +88,17 @@ fn run(mode: u32) -> Result<u64, String> {
     let mut clients: Vec<_> = (1..=8).map(|id| Client {
         id, commit: if mode == 6 && id == 8 { 0 } else { 100 },
     }).collect();
-    let mut clock = Clock { costs: [0; 3] };
+    let mut clock = Clock { costs: [0; 3], receipt_reads: 0, receipt_rows: 0 };
     let result = epoch(&mut clock, &mut clients, 77, true);
     assert_eq!(clock.costs.len(), 3);
+    assert_eq!(clock.receipt_reads as usize, READS.with(Cell::get));
+    if result.is_ok() { assert_eq!(clock.receipt_rows as usize, ROWS.with(Cell::get)); }
     result
+}
+#[test] fn standalone_completed_commit_keeps_its_wait() {
+    run(0).unwrap();
+    assert_eq!(completed_commit(&Client { id: 8, commit: 100 }, 100).unwrap().serial, 8);
+    assert_eq!(DEADLINES.with(|d| d.borrow().clone()), [2000]);
 }
 #[test] fn completed_epoch_parses_one_history_for_eight_clients() {
     assert_eq!(run(0).unwrap(), 8);

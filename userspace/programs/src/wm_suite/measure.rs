@@ -13,6 +13,8 @@ pub struct Clock {
     ptr: *mut u8,
     path: String,
     costs: [u64; 3],
+    receipt_reads: u64,
+    receipt_rows: u64,
 }
 impl Clock {
     pub fn new() -> Result<Self, String> {
@@ -38,7 +40,7 @@ impl Clock {
         )
         .map_err(|e| e.to_string())?;
         std::env::set_var("BREENIX_UI_CLOCK", &path);
-        Ok(Self { ptr, path, costs: [0; 3] })
+        Ok(Self { ptr, path, costs: [0; 3], receipt_reads: 0, receipt_rows: 0 })
     }
     pub fn step(&mut self, epoch: u64, ns: u64) -> Result<(), String> {
         // SAFETY: the shared file mapping is page-aligned, writable and lives through this call.
@@ -138,6 +140,24 @@ fn completed_in(history: &[Receipt], c: &Client, commit: u64) -> Result<Option<R
         .map(checked_receipt)
         .transpose()
 }
+// Keep the freshest snapshot for subsequent clients in this epoch. A clock
+// acknowledgment can precede their presentation, so the first snapshot may be stale.
+fn completed_commit_in(
+    history: &mut Vec<Receipt>, c: &Client, commit: u64, clock: &mut Clock,
+) -> Result<Receipt, String> {
+    if let Some(receipt) = completed_in(history, c, commit)? {
+        return Ok(receipt);
+    }
+    let mut found = None;
+    until(2000, "device-completed target commit", || {
+        clock.receipt_reads += 1;
+        *history = receipts()?;
+        clock.receipt_rows += history.len() as u64;
+        found = completed_in(history, c, commit)?;
+        Ok(found.is_some())
+    })?;
+    Ok(found.unwrap())
+}
 /// Kernel device-completion history supplies timing without observer readbacks per sample.
 /// The caller still validates the final completed scanout after the measured workload.
 pub fn completed_commit(c: &Client, commit: u64) -> Result<Receipt, String> {
@@ -190,24 +210,24 @@ pub fn epoch(
         stage = "receipts";
         client = 0;
         let began = now();
+        clock.receipt_reads += 1;
         let history = receipts();
         clock.costs[2] += now() - began;
-        let history = history?;
+        let mut history = history?;
+        clock.receipt_rows += history.len() as u64;
         let mut serial = 0;
         for c in clients.iter() {
             client = c.id;
             let began = now();
-            let result = completed_in(&history, c, c.commit).and_then(|found| match found {
-                Some(receipt) => Ok(receipt),
-                None => completed_commit(c, c.commit),
-            });
+            let result = completed_commit_in(&mut history, c, c.commit, clock);
             clock.costs[2] += now() - began;
             serial = serial.max(result?.serial);
         }
         Ok(serial)
     })();
     result.map_err(|error: String| format!(
-        "epoch={n} stage={stage} client={client} commands_ms={} ack_ms={} receipts_ms={}: {error}",
+        "epoch={n} stage={stage} client={client} commands_ms={} ack_ms={} receipts_ms={} receipt_reads={} receipt_rows={}: {error}",
         clock.costs[0] / 1_000_000, clock.costs[1] / 1_000_000, clock.costs[2] / 1_000_000,
+        clock.receipt_reads, clock.receipt_rows,
     ))
 }

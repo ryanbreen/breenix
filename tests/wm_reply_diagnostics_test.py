@@ -71,7 +71,7 @@ READER
         source = (ROOT / 'userspace/programs/src/wm_suite/measure.rs').read_text()
         epoch = item(source, 'pub fn epoch(')
         helpers = '\n'.join(item(source, marker) for marker in [
-            'fn checked_receipt(', 'fn completed_in('])
+            'fn checked_receipt(', 'fn completed_in(', 'fn completed_commit_in('])
         fixture = r"""
 use std::cell::Cell;
 thread_local! { static NOW: Cell<u64> = const { Cell::new(0) }; }
@@ -79,7 +79,7 @@ fn now() -> u64 { NOW.with(Cell::get) }
 mod protocol { pub const STEP: u32 = 7; }
 mod measure {
     use super::now;
-    pub struct Clock { costs: [u64; 3] }
+    pub struct Clock { costs: [u64; 3], receipt_reads: u64, receipt_rows: u64 }
     impl Clock {
         fn step(&mut self, _: u64, _: u64) -> Result<(), String> { Ok(()) }
     }
@@ -95,18 +95,17 @@ mod measure {
     #[derive(Clone, Copy)]
     struct Receipt { serial: u64, ns: u64, window: u64, commit: u64, generation: u64 }
     fn receipts() -> Result<Vec<Receipt>, String> { Ok(Vec::new()) }
-    fn completed_commit(c: &Client, commit: u64) -> Result<Receipt, String> {
-        assert_eq!(c.commit, commit);
-        Ok(Receipt { serial: 1, ns: now(), window: c.id, commit, generation: 1 })
+    fn until(_: u64, _: &str, _: impl FnMut() -> Result<bool, String>) -> Result<(), String> {
+        panic!("command failure must precede receipt polling")
     }
     HELPERS
     EPOCH
     #[test] fn failing_epoch_reports_prior_work_and_current_client() {
-        let mut clock = Clock { costs: [25_000_000, 3_000_000, 4_000_000] };
+        let mut clock = Clock { costs: [25_000_000, 3_000_000, 4_000_000], receipt_reads: 9, receipt_rows: 36864 };
         let mut clients = [Client { id: 11, commit: 3 }, Client { id: 12, commit: 4 }];
         let error = epoch(&mut clock, &mut clients, 61, true).unwrap_err();
         for expected in ["epoch=61", "stage=command", "client=12", "commands_ms=35",
-                         "ack_ms=3", "receipts_ms=4", "forced case deadline"] {
+                         "ack_ms=3", "receipts_ms=4", "receipt_reads=9", "receipt_rows=36864", "forced case deadline"] {
             assert!(error.contains(expected), "missing {expected}: {error}");
         }
         assert!(clock.costs[0] >= 25_000_000);
