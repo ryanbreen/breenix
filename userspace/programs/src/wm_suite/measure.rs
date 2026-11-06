@@ -122,6 +122,22 @@ pub fn receipts() -> Result<Vec<Receipt>, String> {
         })
         .collect()
 }
+fn checked_receipt(r: Receipt) -> Result<Receipt, String> {
+    if r.ns > now() || r.generation == 0 {
+        return Err("completion receipt has no completed pixel generation".into());
+    }
+    Ok(r)
+}
+fn completed_in(history: &[Receipt], c: &Client, commit: u64) -> Result<Option<Receipt>, String> {
+    if commit == 0 {
+        return Err("no input handling commit".into());
+    }
+    history.iter().copied()
+        .filter(|r| r.window == c.id && r.commit >= commit)
+        .min_by_key(|r| r.serial)
+        .map(checked_receipt)
+        .transpose()
+}
 /// Kernel device-completion history supplies timing without observer readbacks per sample.
 /// The caller still validates the final completed scanout after the measured workload.
 pub fn completed_commit(c: &Client, commit: u64) -> Result<Receipt, String> {
@@ -136,11 +152,7 @@ pub fn completed_commit(c: &Client, commit: u64) -> Result<Receipt, String> {
             .min_by_key(|r| r.serial);
         Ok(found.is_some())
     })?;
-    let r = found.unwrap();
-    if r.ns > now() || r.generation == 0 {
-        return Err("completion receipt has no completed pixel generation".into());
-    }
-    Ok(r)
+    checked_receipt(found.unwrap())
 }
 /// A final native observation must cover the receipts and client commits judged above.
 pub fn observed(d: &mut Desktop, clients: &[&Client], serial: u64) -> Result<(), String> {
@@ -176,11 +188,19 @@ pub fn epoch(
         clock.costs[1] += now() - began;
         result?;
         stage = "receipts";
+        client = 0;
+        let began = now();
+        let history = receipts();
+        clock.costs[2] += now() - began;
+        let history = history?;
         let mut serial = 0;
         for c in clients.iter() {
             client = c.id;
             let began = now();
-            let result = completed_commit(c, c.commit);
+            let result = completed_in(&history, c, c.commit).and_then(|found| match found {
+                Some(receipt) => Ok(receipt),
+                None => completed_commit(c, c.commit),
+            });
             clock.costs[2] += now() - began;
             serial = serial.max(result?.serial);
         }

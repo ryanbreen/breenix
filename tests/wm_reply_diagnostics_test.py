@@ -68,8 +68,10 @@ READER
             subprocess.run([str(path / 'test')], check=True)
 
     def test_epoch_failure_names_progress_and_stage_cost(self):
-        epoch = item((ROOT / 'userspace/programs/src/wm_suite/measure.rs').read_text(),
-                     'pub fn epoch(')
+        source = (ROOT / 'userspace/programs/src/wm_suite/measure.rs').read_text()
+        epoch = item(source, 'pub fn epoch(')
+        helpers = '\n'.join(item(source, marker) for marker in [
+            'fn checked_receipt(', 'fn completed_in('])
         fixture = r"""
 use std::cell::Cell;
 thread_local! { static NOW: Cell<u64> = const { Cell::new(0) }; }
@@ -90,11 +92,14 @@ mod measure {
         }
     }
     fn acknowledged(_: u64) -> Result<(), String> { Ok(()) }
-    struct Receipt { serial: u64 }
+    #[derive(Clone, Copy)]
+    struct Receipt { serial: u64, ns: u64, window: u64, commit: u64, generation: u64 }
+    fn receipts() -> Result<Vec<Receipt>, String> { Ok(Vec::new()) }
     fn completed_commit(c: &Client, commit: u64) -> Result<Receipt, String> {
         assert_eq!(c.commit, commit);
-        Ok(Receipt { serial: 1 })
+        Ok(Receipt { serial: 1, ns: now(), window: c.id, commit, generation: 1 })
     }
+    HELPERS
     EPOCH
     #[test] fn failing_epoch_reports_prior_work_and_current_client() {
         let mut clock = Clock { costs: [25_000_000, 3_000_000, 4_000_000] };
@@ -108,7 +113,7 @@ mod measure {
         assert_eq!(now(), 10_000_000);
     }
 }
-""".replace('EPOCH', epoch)
+""".replace('HELPERS', helpers).replace('EPOCH', epoch)
         with tempfile.TemporaryDirectory(prefix='wm-epoch-') as directory:
             path = Path(directory)
             (path / 'test.rs').write_text(fixture)
