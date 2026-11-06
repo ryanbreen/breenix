@@ -2211,6 +2211,9 @@ Real time on `CLOCK_MONOTONIC`, with the workloads and bounds in section 12.2.
 - `latency-under-animation` — With four clients animating, keys reach a composited commit within a median of 33 ms and a maximum of 100 ms.
 - `present-latency` — Commit to composite stays within a median of 16 ms and a maximum of 33 ms.
 - `frame-floor` — A single animating client gets at least 60 composites a second.
+  In the five-second sample, the first and last receipts must each lie within
+  one 60 Hz period of their respective sample boundary; the receipt interval
+  rate must also be at least 60/s. A short burst cannot cover a stalled edge.
 - `idle-cpu` — An idle desktop with three static clients uses at most 2% of one CPU.
 - `clipboard-latency` — A 64 KiB copy and paste completes within 50 ms.
 

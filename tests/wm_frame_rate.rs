@@ -23,17 +23,26 @@ fn presentation_rate_is_independent_of_sample_phase_and_poll_delay() {
                     .filter(|&t| t >= begin && t < end)
                     .collect::<Vec<_>>()
             };
-            assert!(rate::measure(&sample(&times)).unwrap().passes);
-            assert!(!rate::measure(&sample(&slow)).unwrap().passes);
-            assert!(!rate::measure(&sample(&missed)).unwrap().passes);
+            assert!(rate::measure(&sample(&times), begin, end).unwrap().passes);
+            assert!(!rate::measure(&sample(&slow), begin, end).unwrap().passes);
+            assert!(!rate::measure(&sample(&missed), begin, end).unwrap().passes);
         }
     }
 }
 
 #[test]
 fn fewer_than_two_receipts_cannot_pass() {
-    assert!(rate::measure(&[]).is_none());
-    assert!(rate::measure(&[42]).is_none());
-    let measured = rate::measure(&[100, 200, 300]).unwrap();
+    assert!(rate::measure(&[], 0, 5_000_000_000).is_none());
+    assert!(rate::measure(&[42], 0, 5_000_000_000).is_none());
+    let measured = rate::measure(&[100, 200, 300], 0, 5_000_000_000).unwrap();
+    assert!(!measured.passes);
     assert_eq!((measured.intervals, measured.span_ns), (2, 200));
+}
+
+#[test]
+fn short_bursts_cannot_hide_stalls_at_sample_edges() {
+    for times in [vec![0, 16_661_168, 33_322_336],
+                  vec![4_966_677_664, 4_983_338_832, 4_999_999_999]] {
+        assert!(!rate::measure(&times, 0, 5_000_000_000).unwrap().passes);
+    }
 }

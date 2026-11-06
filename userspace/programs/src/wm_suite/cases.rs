@@ -1374,7 +1374,7 @@ pub fn frame_floor() -> CaseResult {
         generations.entry(r.generation).or_insert(r.ns);
     }
     let times: Vec<_> = generations.into_values().collect();
-    let rate = crate::rate::measure(&times);
+    let rate = crate::rate::measure(&times, begin, end);
     value("pipeline-window", c.id as i64, "", None);
     value("measurement-begin", begin as i64, "ns", None);
     value("measurement-end", end as i64, "ns", None);
