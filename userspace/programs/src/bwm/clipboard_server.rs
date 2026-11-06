@@ -50,7 +50,7 @@ impl<S: Read + Write> Connection<S> {
     }
     /// After a hangup the queued request bytes are still read; only an unreadable reply is dropped.
     pub fn retained(&self, hangup: bool, error: bool) -> bool {
-        !self.done && !error && !(hangup && self.wants_write())
+        !self.done() && !error && !(hangup && self.wants_write())
     }
     /// Returns whether any bytes moved.
     pub fn advance(&mut self, readable: bool, writable: bool, store: &mut Store, owns: impl Fn(u32, u64) -> bool) -> io::Result<bool> {
