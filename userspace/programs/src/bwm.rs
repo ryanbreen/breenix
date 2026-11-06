@@ -56,6 +56,8 @@ mod gesture;
 #[path = "bwm/geometry.rs"]
 mod geometry;
 use geometry::*;
+#[path = "bwm/adopt.rs"]
+mod adopt;
 #[path = "bwm/desk.rs"]
 mod desk;
 use desk::*;

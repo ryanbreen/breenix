@@ -246,10 +246,12 @@ pub(super) fn discover_windows(
             info.height as usize + px(TITLE_BAR_HEIGHT) + px(BORDER_WIDTH) * 2
         };
 
-        // Use saved defaults if available, otherwise cascade (or origin for fullscreen chromeless)
-        let (win_x, win_y, win_w, win_h) = match find_window_defaults(
+        // Adopt published positions before saved defaults or initial placement.
+        let (win_x, win_y, win_w, win_h) = match adopt::frame_origin(info, chromeless, ui().scale)
+            .map(|(x, y)| (x, y, total_w, total_h))
+            .or_else(|| find_window_defaults(
             &title[..title_len], title_len, win_defaults,
-        ) {
+        )) {
             Some((dx, dy, _, _)) => (dx, dy, total_w, total_h),
             None => {
                 if chromeless && total_w >= screen_w && total_h >= screen_h {
@@ -270,11 +272,11 @@ pub(super) fn discover_windows(
             }
         };
 
-        print!("[bwm] Discovered window '{}' (id={}, {}x{}{}) at ({},{})\n",
+        print!("[bwm] Discovered window '{}' (id={}, {}x{}{}) at ({},{}) z={}\n",
             core::str::from_utf8(&title[..title_len]).unwrap_or("?"),
             info.id, info.width, info.height,
             if chromeless { " chromeless" } else { "" },
-            win_x, win_y);
+            win_x, win_y, info.z);
 
         let order = *next_order;
         *next_order += 1;

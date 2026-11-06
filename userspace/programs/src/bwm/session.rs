@@ -15,6 +15,10 @@ pub struct WindowInfo {
     pub owner_pid: u32,
     pub width: u32,
     pub height: u32,
+    pub x: i32,
+    pub y: i32,
+    pub z: u32,
+    pub flags: u32,
     pub title_len: u32,
     pub title: [u8; 64],
 }
@@ -53,6 +57,10 @@ pub fn list_windows(out: &mut Vec<WindowInfo>) -> Result<(), Error> {
         owner_pid: i.owner,
         width: i.width,
         height: i.height,
+        x: i.x,
+        y: i.y,
+        z: i.z,
+        flags: i.flags,
         title_len: i.title_len.min(64),
         title: i.title,
     }));
