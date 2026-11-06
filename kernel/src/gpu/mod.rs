@@ -132,8 +132,9 @@ const FLIP_Y: bool = false;
 const RESET_BUDGET_NS: u64 = 100_000_000;
 /// The watchdog examines outstanding work at least this often (section 1.4.1).
 const EXAMINE_NS: u64 = 250_000_000;
-/// How often kgpu looks for an SVGA3 device's answers while it holds requests.
-const POLL_NS: u64 = 250_000;
+/// Completion checks on interrupt-free devices. W22 estimates about
+/// 45us/check from the capture; 1.5ms leaves margin below the 5% CPU bound.
+const POLL_NS: u64 = 1_500_000;
 /// How long a waiter looks for its answer itself, on a device that raises no interrupt,
 /// before it sleeps until kgpu's next look. kgpu's timed block ends at the next timer
 /// tick, so its 250 us looks came about 0.8 ms late on average, once per request: 5.6 s
@@ -2721,7 +2722,7 @@ fn reaper_block(tid: u64, seen: u64, sent: u64, wake: Option<u64>) {
             sched.unblock(tid);
         }
     });
-    // Interrupt-free devices publish a 250us poll deadline. Arm that deadline
+    // Interrupt-free devices publish a bounded poll deadline. Arm that deadline
     // on the shared clock-event driver instead of rounding it to a 5ms tick.
     if let Some(at) = wake.filter(|&at| at <= now_ns().saturating_add(POLL_NS)) {
         crate::time::wakeup::arm(at);

@@ -1,6 +1,7 @@
 """Exercise the worker-owned completion wait with costly interrupt-free polling."""
 from pathlib import Path
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -19,12 +20,13 @@ class WorkerFenceWait(unittest.TestCase):
         if name == 'wait_for_fine':
             wait = wait.replace('interruptible: bool,', 'interruptible: bool, _fine: bool,')
         block = item(source, 'fn reaper_block(')
+        period = re.search(r'const POLL_NS: u64 = ([0-9_]+);', source).group(1)
         fixture = r'''
 #![allow(dead_code)] // Driver fixture exposes the old and new wait dependencies.
 use std::{cell::Cell,sync::atomic::{AtomicU64,Ordering}};
-const POLL_NS:u64=250_000;
+const POLL_NS:u64=POLL_VALUE;
 static EVENTS:AtomicU64=AtomicU64::new(0);static SENT:AtomicU64=AtomicU64::new(0);
-thread_local!{static CLOCK:Cell<u64>=const{Cell::new(0)};static CPU:Cell<u64>=const{Cell::new(0)};
+thread_local!{static CLOCK:Cell<u64>=const{Cell::new(0)};static CPU:Cell<u64>=const{Cell::new(0)};static WORK:Cell<u64>=const{Cell::new(0)};
 static READY:Cell<u64>=const{Cell::new(50_000_000)};static NEXT:Cell<u64>=const{Cell::new(0)};
 static ARMED:Cell<u32>=const{Cell::new(0)};static DONE:Cell<bool>=const{Cell::new(false)};static SIGNAL:Cell<bool>=const{Cell::new(false)};}
 fn now_ns()->u64{CLOCK.with(Cell::get)}
@@ -42,7 +44,8 @@ mod task {pub mod scheduler {
  pub fn with_scheduler<T>(f:impl FnOnce(&mut Sched)->T)->Option<T>{Some(f(&mut Sched))}
  pub fn yield_current(){
   // Worker polling is real work on kgpu, not CPU time on the sleeping caller.
-  crate::CLOCK.with(|n|n.set(crate::NEXT.with(std::cell::Cell::get)+50_000));
+  crate::WORK.with(|n|n.set(n.get()+55_000));
+  crate::CLOCK.with(|n|n.set(crate::NEXT.with(std::cell::Cell::get)+55_000));
   if crate::now_ns()>=crate::READY.with(std::cell::Cell::get){crate::DONE.with(|d|d.set(true));crate::EVENTS.fetch_add(1,std::sync::atomic::Ordering::Release);}
  }
 }}
@@ -50,7 +53,7 @@ fn arch_halt_while_blocked(){}
 #[derive(Debug,PartialEq)]enum Stop{Timeout,Interrupted}
 BLOCK
 fn wait_event(_:u64,deadline:Option<u64>)->Result<(),i32>{
- // kgpu's next_deadline requests 250us while the device holds a request.
+ // kgpu's next_deadline requests 1.5ms while the device holds a request.
  // Keep the caller parked while that worker takes successive fine wakes.
  while !DONE.with(Cell::get)&&now_ns()<deadline.unwrap_or(u64::MAX){
   reaper_block(1,EVENTS.load(Ordering::Acquire),SENT.load(Ordering::Acquire),Some(now_ns()+POLL_NS));
@@ -63,17 +66,17 @@ fn wait_event_prepared(seen:u64,wake:Option<u64>,_:bool)->Result<(),i32>{wait_ev
 WAIT
 fn main(){
  for fine in [false,true] {for delay in [80_000,1_100_000,50_000_000]{
-  CLOCK.with(|c|c.set(0));CPU.with(|c|c.set(0));ARMED.with(|c|c.set(0));DONE.with(|c|c.set(false));READY.with(|c|c.set(delay));
+  CLOCK.with(|c|c.set(0));CPU.with(|c|c.set(0));WORK.with(|c|c.set(0));ARMED.with(|c|c.set(0));DONE.with(|c|c.set(false));READY.with(|c|c.set(delay));
   assert_eq!(wait_for_completion(Some(100_000_000),true,fine,|_|DONE.with(Cell::get).then_some(7)),Ok(7));
-  assert!(now_ns()<=delay+500_000);let cpu=CPU.with(Cell::get);
-  if delay>=20_000_000{assert!(cpu*100<=now_ns()*5,"caller did worker polling: {cpu}/{}",now_ns());}
+  assert!(now_ns()<=delay+1_600_000);let cpu=CPU.with(Cell::get);
+  if delay>=20_000_000{assert!((cpu+WORK.with(Cell::get))*100<=now_ns()*5,"combined caller and worker CPU exceeded bound");assert!(cpu*100<=now_ns()*5,"caller did worker polling: {cpu}/{}",now_ns());}
  }}
  DONE.with(|c|c.set(false));READY.with(|c|c.set(u64::MAX));CLOCK.with(|c|c.set(0));
  assert_eq!(wait_for_completion(Some(100_000),true,false,|_|None::<u8>),Err(Stop::Timeout));
  let armed=ARMED.with(Cell::get);assert_eq!(wait_for_completion(None,true,false,|_|Some(7)),Ok(7));assert_eq!(ARMED.with(Cell::get),armed,"ready completion slept");
  SIGNAL.with(|s|s.set(true));assert_eq!(wait_for_completion(None,true,false,|_|None::<u8>),Err(Stop::Interrupted));
 }
-'''.replace('BLOCK', block).replace('WAIT', wait)
+'''.replace('POLL_VALUE', period).replace('BLOCK', block).replace('WAIT', wait)
         with tempfile.TemporaryDirectory(prefix='worker-fence-') as directory:
             p = Path(directory)
             (p / 'check.rs').write_text(fixture)
