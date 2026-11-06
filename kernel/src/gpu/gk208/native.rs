@@ -469,6 +469,7 @@ pub struct Evo {
     pixel_hz: u64,
     clock: Option<super::vblank_clock::VblankClock>,
     vblank_line: u16,
+    latch_phase: Option<u16>,
     pub(super) last_presentation: Option<(u32, u64)>,
     pending_presentation: Option<PendingPresentation>,
     pub head: u32,
@@ -491,6 +492,8 @@ struct PendingPresentation {
     pixel: u32,
     acknowledged: Option<u32>,
     completed: Option<(u64, u32, u32)>,
+    last_negative: Option<(u64, u32, u32)>,
+    accepted_edges: Option<u16>,
 }
 pub struct FlipSnapshot {
     pub notifier_before: u32,
@@ -542,9 +545,13 @@ impl Evo {
             return Err("native presentation already pending");
         }
         let (accepted_ns, vert, pixel) = presentation_sample(regs, self.head)?;
+        let height = regs.read(0x640414 + self.head as usize * 0x300) >> 16;
+        if height == 0 { return Err("native presentation raster height absent"); }
+        let phase = ((vert & 0xffff) + height - u32::from(self.vblank_line)) % height;
+        let accepted_edges = self.latch_phase.map(|deadline| if phase < u32::from(deadline) { 1 } else { 2 });
         self.pending_presentation = Some(PendingPresentation {
             resource, accepted_ns, count: (vert >> 16) as u16, vert, pixel,
-            acknowledged: None, completed: None,
+            acknowledged: None, completed: None, last_negative: None, accepted_edges,
         });
         Ok(())
     }
@@ -557,7 +564,6 @@ impl Evo {
         let pending = *pending;
         let count = (vert >> 16) as u16;
         let advanced = count.wrapping_sub(pending.count);
-        if advanced == 0 { return Ok(false); }
         let total = regs.read(0x640414 + self.head as usize * 0x300);
         let (width, height) = (total & 0xffff, total >> 16);
         let line = vert & 0xffff;
@@ -566,12 +572,29 @@ impl Evo {
             || u64::from(width) * u64::from(height) != self.frame_pixels {
             return Err("native presentation raster extent mismatch");
         }
+        // A tightly bracketed notifier transition bounds the mode's latch deadline
+        // from below. The earlier negative sample is conservative in the boundary band.
+        if let Some((negative_ns, negative_vert, _)) = pending.last_negative {
+            let line_ns = (u64::from(width) * 1_000_000_000).div_ceil(self.pixel_hz);
+            let before = ((negative_vert & 0xffff) + height - u32::from(self.vblank_line)) % height;
+            let after = ((completed.1 & 0xffff) + height - u32::from(self.vblank_line)) % height;
+            if negative_vert >> 16 == completed.1 >> 16 && after >= before
+                && completed.0.saturating_sub(negative_ns) <= 2 * line_ns {
+                self.latch_phase = Some(self.latch_phase.map_or(before as u16, |old| old.min(before as u16)));
+            }
+        }
+        // W20: freeze +1/+2 from acceptance, independently of a delayed first poll.
+        // Without calibration, DONE seen before +1 can confirm it; otherwise choose +2.
+        let edges = if pending.acknowledged.is_some() { 1 } else {
+            pending.accepted_edges.unwrap_or(if completed.1 >> 16 == u32::from(pending.count) { 1 } else { 2 })
+        };
+        if advanced < edges { return Ok(false); }
         let pixels = u64::from((line + height - u32::from(self.vblank_line)) % height)
             * u64::from(width) + u64::from(pixel);
-        // The accepted UPDATE names the next edge. A late reap must subtract
-        // intervening periods rather than relabel the flip with the reap frame.
+        // Subtract intervening periods from the selected acceptance edge;
+        // a late first poll does not move that edge earlier or relabel it.
         let elapsed_pixels = u128::from(pixels)
-            + u128::from(advanced - 1) * u128::from(self.frame_pixels);
+            + u128::from(advanced - edges) * u128::from(self.frame_pixels);
         let elapsed_ns = (elapsed_pixels * 1_000_000_000 / u128::from(self.pixel_hz)) as u64;
         let at = sampled_ns.checked_sub(elapsed_ns)
             .ok_or("native presentation edge predates clock")?;
@@ -582,6 +605,7 @@ impl Evo {
             sampled_ns, u64::from(vert), u64::from(pixel), u64::from(self.vblank_line),
             u64::from(regs.read(0x64041c + self.head as usize * 0x300)),
             u64::from(regs.read(0x640420 + self.head as usize * 0x300)),
+            self.latch_phase.map_or(u64::MAX, u64::from),
         ]);
         self.last_presentation = Some((resource, at));
         self.pending_presentation = None;
@@ -795,12 +819,16 @@ pub(in crate::gk208) fn wait_present(evo: &mut Evo, regs: &mut Registers,
 pub(in crate::gk208) fn present_latched(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
+    let before_notifier = presentation_sample(regs, evo.head)?;
     let value = match evo.pending_presentation.and_then(|p| p.acknowledged) {
         Some(value) => value,
         None => completion(regs, evo.total, evo.notifier, &evo.limits, &evo.coefficients,
             (evo.head, evo.sor, true, true), &evo.scripts, false)?,
     };
-    if value & 1 == 0 { return Ok(None); }
+    if value & 1 == 0 {
+        if let Some(pending) = evo.pending_presentation.as_mut() { pending.last_negative = Some(before_notifier); }
+        return Ok(None);
+    }
     if !evo.finish_presentation(regs, surface.resource)? { return Ok(None); }
     let receipt = super::present::receipt(&mut PresentRead(regs), evo.head, surface, value)?;
     let h = evo.head as usize * 0x300;
@@ -1219,7 +1247,7 @@ pub fn takeover(
         return Ok((console, Evo {
             frame_pixels: u64::from(t.htotal) * u64::from(t.vtotal),
             pixel_hz: u64::from(t.clock_khz) * 1000,
-            clock: None, vblank_line: 0, last_presentation: None, pending_presentation: None,
+            clock: None, vblank_line: 0, latch_phase: None, last_presentation: None, pending_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
             limits, coefficients, scripts,
@@ -1531,7 +1559,7 @@ pub fn takeover(
     Ok((console, Evo {
             frame_pixels: u64::from(t.htotal) * u64::from(t.vtotal),
             pixel_hz: u64::from(t.clock_khz) * 1000,
-            clock: None, vblank_line: 0, last_presentation: None, pending_presentation: None,
+            clock: None, vblank_line: 0, latch_phase: None, last_presentation: None, pending_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
             limits, coefficients, scripts,

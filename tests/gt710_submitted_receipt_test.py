@@ -33,7 +33,7 @@ thread_local!{static NOW:Cell<u64>=const{Cell::new(EPOCH)};}
 mod signal{pub fn monotonic_nanos()->u64{super::NOW.with(Cell::get)}use std::cell::Cell;}
 mod vblank_clock{ CLOCK }
 mod rate{ RATE }
-mod presentation_trace {pub fn record(row:[u64;14]){assert!(row[7]>=row[1]);assert_ne!(row[2]>>16,row[9]>>16);}}
+mod presentation_trace {pub fn record(row:[u64;15]){assert!(row[7]>=row[1]);assert_ne!(row[2]>>16,row[9]>>16);}}
 mod native{
  use super::*;
  pub struct Registers{pub base:u16}
@@ -44,10 +44,10 @@ mod native{
  }}
  PENDING
  pub struct Evo{head:u32,clock:Option<vblank_clock::VblankClock>,frame_pixels:u64,pixel_hz:u64,
-  vblank_line:u16,last_presentation:Option<(u32,u64)>,PENDING_FIELD}
+  vblank_line:u16,latch_phase:Option<u16>,last_presentation:Option<(u32,u64)>,PENDING_FIELD}
  SAMPLE
  impl Evo{ RECORD ARM FINISH }
- fn setup(base:u16)->Evo{Evo{head:0,clock:Some(vblank_clock::VblankClock::new(base,EPOCH,PIXELS,HZ)),frame_pixels:PIXELS,pixel_hz:HZ,vblank_line:1047,last_presentation:Some((9,EPOCH)),PENDING_INIT}}
+ fn setup(base:u16)->Evo{Evo{head:0,clock:Some(vblank_clock::VblankClock::new(base,EPOCH,PIXELS,HZ)),frame_pixels:PIXELS,pixel_hz:HZ,vblank_line:1047,latch_phase:Some(1065),last_presentation:Some((9,EPOCH)),PENDING_INIT}}
  pub fn late(){
   let regs=Registers{base:65535};let mut e=setup(65535);
   NOW.with(|n|n.set(EPOCH+1_000_000));e.arm_presentation(&regs,7).unwrap();
@@ -66,12 +66,37 @@ mod native{
   assert!(rate::measure(&times).unwrap().passes,"reaper scheduling changed the W2 frame floor");
   times.remove(150);assert!(!rate::measure(&times).unwrap().passes,"a missing presentation was hidden");
  }
+ // Existing early-acceptance fixtures use a synthetic deadline at phase1065.
+ // W20's R240-mode fixture has counter-relative deadline952 and includes its band.
+ pub fn calibrate(){
+  let regs=Registers{base:0};let mut e=setup(0);e.latch_phase=None;
+  NOW.with(|n|n.set(EPOCH+1_000_000));e.arm_presentation(&regs,7).unwrap();
+  NOW.with(|n|n.set(EPOCH+nanos(950*1688)+1000));
+  e.pending_presentation.as_mut().unwrap().last_negative=Some(presentation_sample(&regs,0).unwrap());
+  NOW.with(|n|n.set(EPOCH+nanos(952*1688)+1000));
+  assert!(!e.finish_presentation(&regs,7).unwrap());
+  assert_eq!(e.latch_phase,Some(950),"deadline must use the conservative negative side of the measured transition");
+  NOW.with(|n|n.set(EPOCH+nanos(PIXELS)+100_000));assert!(e.finish_presentation(&regs,7).unwrap());
+ }
+ pub fn late_accept(){
+  for line in [952,953,954,955,956,960,1050]{for delay in [100_000,17_000_000]{
+   let regs=Registers{base:65535};let mut e=setup(65535);e.latch_phase=Some(952);
+   NOW.with(|n|n.set(EPOCH+nanos(line*1688)+2000));e.arm_presentation(&regs,7).unwrap();
+   if delay==100_000 {
+    NOW.with(|n|n.set(EPOCH+nanos(PIXELS)+100_000));
+    assert!(!e.finish_presentation(&regs,7).unwrap(),"late acceptance was published at +1");
+   }
+   NOW.with(|n|n.set(EPOCH+nanos(2*PIXELS)+delay));
+   assert!(e.finish_presentation(&regs,7).unwrap());
+   assert!(e.last_presentation.unwrap().1.abs_diff(EPOCH+nanos(2*PIXELS))<1000,"late/band acceptance did not keep +2 under delayed first poll");
+  }}
+ }
  pub fn check(){
   for base in [0,65535]{for phase in [1_000_000,8_000_000,16_000_000]{
    for delay in [100_000,600_000,5_000_000,17_000_000]{
     let regs=Registers{base};
     let mut e=Evo{head:0,clock:Some(vblank_clock::VblankClock::new(base,EPOCH,PIXELS,HZ)),
-     frame_pixels:PIXELS,pixel_hz:HZ,vblank_line:1047,last_presentation:Some((9,EPOCH)),PENDING_INIT};
+     frame_pixels:PIXELS,pixel_hz:HZ,vblank_line:1047,latch_phase:Some(1065),last_presentation:Some((9,EPOCH)),PENDING_INIT};
     let accepted=EPOCH+phase;NOW.with(|n|n.set(accepted));
     e.arm_presentation(&regs,7).unwrap();
     // A notifier visible at acceptance is not a completed presentation.
@@ -86,6 +111,8 @@ mod native{
   }}
  }
 }
+#[test]fn deadline_comes_from_a_bracketed_mode_transition(){native::calibrate();}
+#[test]fn late_acceptances_and_boundary_band_use_the_second_edge(){native::late_accept();}
 #[test]fn submitted_frame_is_independent_of_completion_poll_delay(){native::check();}
 #[test]fn a_late_reap_keeps_the_accepted_frame(){native::late();}
 #[test]fn reaper_schedule_does_not_change_the_presentation_rate(){native::stream();}
