@@ -80,3 +80,27 @@ fn another_devices_later_timestamp_preserves_a_pending_double_click() {
     assert_eq!(clicks.press(1, 272, 8, (10, 10), 100_000_000), 2);
     assert_eq!(clicks.release(1, 272), 2);
 }
+
+#[test]
+fn ready_batch_queries_each_device_once_and_preserves_transient_state() {
+    use std::collections::{BTreeMap, BTreeSet};
+    let mut clicks = timing::Clicks::new();
+    for device in 1..=3 {
+        clicks.press(device, 272, 8, (0, 0), 1);
+        clicks.press(device, 273, 8, (0, 0), 1);
+    }
+    let mut keys = BTreeSet::from([(1, 10), (1, 11), (2, 10), (3, 10)]);
+    let mut calls = BTreeMap::new();
+    timing::retire_unregistered(&mut clicks, &mut keys, |device| {
+        *calls.entry(device).or_insert(0) += 1;
+        // Device 2 is gone; device 3 represents a transient query error,
+        // which the production registration predicate treats as registered.
+        device != 2
+    });
+    assert_eq!(calls, BTreeMap::from([(1, 1), (2, 1), (3, 1)]));
+    assert_eq!(keys, BTreeSet::from([(1, 10), (1, 11), (3, 10)]));
+    assert_eq!(clicks.release(2, 272), 1);
+    assert_eq!(clicks.press(2, 273, 8, (0, 0), 2), 1);
+    assert_eq!(clicks.press(1, 272, 8, (0, 0), 2), 2);
+    assert_eq!(clicks.press(3, 272, 8, (0, 0), 2), 2);
+}
