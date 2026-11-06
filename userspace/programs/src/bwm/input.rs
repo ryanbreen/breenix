@@ -204,6 +204,7 @@ pub(super) fn send_keys(windows: &[Window], stack: &super::Stack, source: Event,
 
 pub(super) struct Stream {
     capabilities: BTreeMap<u32, Vec<core_input::Capability>>,
+    read_buffer: Vec<u8>,
     x: i32,
     y: i32,
     pub(super) modifiers: u8,
@@ -215,6 +216,7 @@ impl Stream {
         assert!(READER.set(reader).is_ok(), "one input reader");
         Self {
             capabilities: BTreeMap::new(),
+            read_buffer: vec![0; core_input::abi::READER_EVENTS * (32 + 256)],
             x: 0,
             y: 0,
             modifiers: 0,
@@ -229,9 +231,8 @@ impl Stream {
         !matches!(READER.get().unwrap().capabilities(device, &mut []),
             Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENODEV)))
     }
-    pub(super) fn read(&self) -> Vec<(Event, Vec<u8>)> {
-        let mut bytes = vec![0; core_input::abi::READER_EVENTS * (32 + 256)];
-        match READER.get().unwrap().read(&mut bytes) {
+    pub(super) fn read(&mut self) -> Vec<(Event, Vec<u8>)> {
+        match READER.get().unwrap().read(&mut self.read_buffer) {
             Ok(records) => records
                 .map(|r| r.map(|r| (r.event, r.payload.to_vec())))
                 .collect::<Result<Vec<_>, _>>()
