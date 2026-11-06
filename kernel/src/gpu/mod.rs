@@ -5349,12 +5349,10 @@ fn op_wait(arg: u64, len: u64) -> Result<u64, i64> {
     .flatten()
     .ok_or(EINVAL)?;
     let deadline = now_ns().saturating_add(a.timeout_ns);
-    let outcome = wait_for_traced(Some(deadline), true, |c| {
+    let outcome = wait_for(Some(deadline), true, |c| {
         let Some(ctx) = c.contexts.get(&id) else { return Some(Err(EINVAL)) };
         (n <= ctx.done_upto).then(|| Ok(ctx.outcomes.get(&n).copied().unwrap_or((fence_status::OK, 0))))
-    }, #[cfg(target_arch = "x86_64")] None,
-        #[cfg(target_arch = "x86_64")] true,
-        #[cfg(target_arch = "x86_64")] None);
+    });
     match outcome {
         Ok(Ok((fence_status::OK, _))) => Ok(0),
         Ok(Ok((status, answer))) => {
