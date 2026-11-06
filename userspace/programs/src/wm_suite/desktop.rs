@@ -129,13 +129,18 @@ pub struct Client {
     pub events: Vec<abi::WindowEvent>,
 }
 fn read_n(file: &mut File, bytes: &mut [u8]) -> Result<(), String> {
-    let end = now() + 2_000_000_000;
+    let began = now();
+    let end = began + 2_000_000_000;
     let mut done = 0;
     while done < bytes.len() {
-        if now() >= end || case_ms_left() < 200 {
-            return Err(
-                "wm-client reply deadline (client exited, hung or failed its GPU operation)".into(),
-            );
+        let at = now();
+        let left = case_ms_left();
+        if at >= end || left < 200 {
+            let cause = if left < 200 { "case deadline" } else { "reply deadline" };
+            return Err(format!(
+                "wm-client {cause} waited_ms={} case_left_ms={left} bytes={done}/{}",
+                (at - began) / 1_000_000, bytes.len(),
+            ));
         }
         let mut fds = [io::PollFd {
             fd: file.as_raw_fd(),

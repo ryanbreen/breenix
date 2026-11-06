@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 pub struct Clock {
     ptr: *mut u8,
     path: String,
+    costs: [u64; 3],
 }
 impl Clock {
     pub fn new() -> Result<Self, String> {
@@ -37,7 +38,7 @@ impl Clock {
         )
         .map_err(|e| e.to_string())?;
         std::env::set_var("BREENIX_UI_CLOCK", &path);
-        Ok(Self { ptr, path })
+        Ok(Self { ptr, path, costs: [0; 3] })
     }
     pub fn step(&mut self, epoch: u64, ns: u64) -> Result<(), String> {
         // SAFETY: the shared file mapping is page-aligned, writable and lives through this call.
@@ -154,13 +155,35 @@ pub fn epoch(
     animate: bool,
 ) -> Result<u64, String> {
     clock.step(n as u64, n as u64 * 16_000_000)?;
-    for c in clients.iter_mut() {
-        c.command(super::protocol::STEP, n, u32::from(animate))?;
-    }
-    acknowledged(n as u64)?;
-    let mut serial = 0;
-    for c in clients.iter() {
-        serial = serial.max(completed_commit(c, c.commit)?.serial);
-    }
-    Ok(serial)
+    // Accumulate scalar costs; format them on an epoch failure.
+    let mut stage = "command";
+    let mut client = 0;
+    let result = (|| {
+        for c in clients.iter_mut() {
+            client = c.id;
+            let began = now();
+            let result = c.command(super::protocol::STEP, n, u32::from(animate));
+            clock.costs[0] += now() - began;
+            result?;
+        }
+        stage = "ack";
+        let began = now();
+        let result = acknowledged(n as u64);
+        clock.costs[1] += now() - began;
+        result?;
+        stage = "receipts";
+        let mut serial = 0;
+        for c in clients.iter() {
+            client = c.id;
+            let began = now();
+            let result = completed_commit(c, c.commit);
+            clock.costs[2] += now() - began;
+            serial = serial.max(result?.serial);
+        }
+        Ok(serial)
+    })();
+    result.map_err(|error: String| format!(
+        "epoch={n} stage={stage} client={client} commands_ms={} ack_ms={} receipts_ms={}: {error}",
+        clock.costs[0] / 1_000_000, clock.costs[1] / 1_000_000, clock.costs[2] / 1_000_000,
+    ))
 }
