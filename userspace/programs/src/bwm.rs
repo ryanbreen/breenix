@@ -598,8 +598,7 @@ fn main() {
         // Device retirement may follow a release evicted by reader pressure.
         // Run after the batch so queued clicks keep their source-time ordering.
         if input_ready {
-            clicks.retain_devices(|device| stream.registered(device));
-            consumed_keys.retain(|(device, _)| stream.registered(*device));
+            timing::retire_unregistered(&mut clicks, &mut consumed_keys, |device| stream.registered(device));
         }
 
         for repeat in timing.due(libbreenix::ui_clock::now_ns(), stack.focus()) {
