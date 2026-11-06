@@ -55,3 +55,15 @@ fn press_timing_and_distance_are_inclusive() {
     assert!(!timing::within(1, 400_000_002));
     assert!(!timing::within(2, 1));
 }
+
+#[test]
+fn another_devices_earlier_timestamp_preserves_a_pending_double_click() {
+    let mut clicks = timing::Clicks::new();
+    assert_eq!(clicks.press(1, 272, 8, (10, 10), 500_000_000), 1);
+    assert_eq!(clicks.release(1, 272), 1);
+    // Injector timestamps are per device; this event does not age device 1.
+    assert_eq!(clicks.press(2, 272, 9, (10, 10), 1), 1);
+    assert_eq!(clicks.release(2, 272), 1);
+    assert_eq!(clicks.press(1, 272, 8, (10, 10), 600_000_000), 2);
+    assert_eq!(clicks.release(1, 272), 2);
+}
