@@ -229,6 +229,8 @@ pub trait SyscallFrame {
 /// Abstracts over architecture-specific high-resolution timers
 /// (TSC on x86_64, generic timer on ARM64).
 pub trait TimerOps {
+    /// Advance this CPU's next interrupt to service a monotonic sleep deadline.
+    fn request_wakeup(deadline_ns: u64) -> bool;
     /// Read the current timestamp counter value.
     fn read_timestamp() -> u64;
 

@@ -31,6 +31,9 @@ const PIT_GATE_PORT: u16 = 0x61;
 pub struct X86Timer;
 
 impl TimerOps for X86Timer {
+    fn request_wakeup(deadline_ns: u64) -> bool {
+        super::apic::request_wakeup(deadline_ns)
+    }
     #[inline(always)]
     fn read_timestamp() -> u64 {
         rdtsc()

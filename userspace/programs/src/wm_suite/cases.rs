@@ -1395,7 +1395,8 @@ pub(super) fn failure_pipeline() {
         let trace = std::fs::read_to_string("/proc/breenix/window-pipeline")?;
         let mut evidence = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence")?;
         for row in trace.lines() {
-            evidence.write_all(format!("VALUE window-pipeline {row}\n").as_bytes())?;
+            let name = if row.starts_with("fine_wake_requests=") { "timer-wake" } else { "window-pipeline" };
+            evidence.write_all(format!("VALUE {name} {row}\n").as_bytes())?;
         }
         Ok(())
     })();

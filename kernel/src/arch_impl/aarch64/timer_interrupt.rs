@@ -233,6 +233,11 @@ pub static CPU0_DISPATCH_SPSR: AtomicU64 = AtomicU64::new(0);
 /// Whether the timer is initialized
 static TIMER_INITIALIZED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
+static FINE_DEADLINES: [AtomicU64; super::constants::MAX_CPUS] =
+    [const { AtomicU64::new(u64::MAX) }; super::constants::MAX_CPUS];
+
+static FINE_LAST: [AtomicU64; super::constants::MAX_CPUS] =
+    [const { AtomicU64::new(0) }; super::constants::MAX_CPUS];
 
 /// Check if the timer interrupt has been initialized (for AHCI wfi/wfe decision).
 pub fn timer_is_running() -> bool {
@@ -461,6 +466,62 @@ pub fn init() {
     log::info!("ARM64 timer interrupt initialized");
 }
 
+/// Advance the local compare for a sleeping deadline; LAPIC is the x86 counterpart.
+pub fn request_wakeup(deadline_ns: u64) -> bool {
+    if !TIMER_INITIALIZED.load(Ordering::Acquire) { return false; }
+    let frequency = super::timer::frequency_hz();
+    if frequency == 0 { return false; }
+    crate::arch_without_interrupts(|| {
+        let cpu = super::percpu::Aarch64PerCpu::cpu_id() as usize;
+        if cpu >= FINE_DEADLINES.len() { return false; }
+        FINE_DEADLINES[cpu].fetch_min(deadline_ns, Ordering::AcqRel);
+        FINE_LAST[cpu].fetch_max(deadline_ns, Ordering::AcqRel);
+        let delta = deadline_ns.saturating_sub(crate::signal::monotonic_nanos()).max(1);
+        let ticks = (u128::from(delta) * u128::from(frequency)).div_ceil(1_000_000_000)
+            .min(u128::from(u64::MAX)) as u64;
+        let (ctl, compare, now): (u64, u64, u64);
+        if crate::platform_config::use_physical_timer() {
+            unsafe {
+                core::arch::asm!("mrs {}, cntp_ctl_el0", out(reg) ctl, options(nomem, nostack));
+                core::arch::asm!("mrs {}, cntp_cval_el0", out(reg) compare, options(nomem, nostack));
+                core::arch::asm!("mrs {}, cntpct_el0", out(reg) now, options(nomem, nostack));
+            }
+        } else {
+            unsafe {
+                core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) ctl, options(nomem, nostack));
+                core::arch::asm!("mrs {}, cntv_cval_el0", out(reg) compare, options(nomem, nostack));
+                core::arch::asm!("mrs {}, cntvct_el0", out(reg) now, options(nomem, nostack));
+            }
+        }
+        let remaining = compare.wrapping_sub(now) as i64;
+        if ctl & 3 != 1 || remaining <= 0 || remaining as u64 > ticks { arm_timer(ticks.max(1)); }
+        true
+    })
+}
+fn fine_interval(ticks: u64, delivery: bool) -> u64 {
+    let cpu = super::percpu::Aarch64PerCpu::cpu_id() as usize;
+    let Some(fine) = FINE_DEADLINES.get(cpu) else { return ticks; };
+    if fine.load(Ordering::Acquire) == u64::MAX { return ticks; }
+    let now = crate::signal::monotonic_nanos();
+    let mut deadline = FINE_DEADLINES[cpu].load(Ordering::Acquire);
+    if now >= deadline {
+        if !delivery { return 1; }
+        crate::time::wakeup::record_wake(deadline, now);
+        let last = FINE_LAST[cpu].load(Ordering::Acquire);
+        if now >= last {
+            FINE_DEADLINES[cpu].store(u64::MAX, Ordering::Release);
+            FINE_LAST[cpu].store(0, Ordering::Release);
+            return ticks;
+        }
+        deadline = now.saturating_add(crate::time::wakeup::POLL_NS).min(last);
+        FINE_DEADLINES[cpu].store(deadline, Ordering::Release);
+    }
+    let frequency = super::timer::frequency_hz();
+    let fine = (deadline.saturating_sub(now).min(1_000_000_000) * frequency)
+        .div_ceil(1_000_000_000).max(1);
+    ticks.min(fine)
+}
+
 /// Arm the timer to fire after `ticks` counter increments from now.
 ///
 /// Uses CVAL (absolute compare value) instead of TVAL, and never disables the
@@ -473,7 +534,9 @@ pub fn init() {
 /// handler) sets IMASK=1 at handler entry to acknowledge the interrupt to the
 /// hypervisor's vtimer masking logic, then this function clears IMASK when the
 /// new deadline is safely in the future (ISTATUS=0).
+
 fn arm_timer(ticks: u64) {
+    let ticks = fine_interval(ticks, false);
     if crate::platform_config::use_physical_timer() {
         unsafe {
             // Read current physical counter
@@ -683,7 +746,7 @@ pub extern "C" fn timer_interrupt_handler(frame: *const Aarch64ExceptionFrame) {
     // message: `timer_ctl[0]=0x7 (ENABLE=1, IMASK=1, ISTATUS=1)` on a dead
     // CPU0 before the fix. See also docs/planning/cpu0-user-guard-autopsy
     // for the broader CPU0-liveness story.
-    let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
+    let ticks = fine_interval(TICKS_PER_INTERRUPT.load(Ordering::Relaxed), true);
     if crate::platform_config::is_vmware() {
         // VMware: re-arm both timers using CVAL (absolute compare value)
         unsafe {
@@ -1202,7 +1265,7 @@ fn tick_pending(ctl: u64, cval: u64, now: u64, ticks: u64) -> bool {
 /// thread immediately re-enters a short interrupt-masked region. A timer that
 /// is masked, disabled, or overdue by more than an interval is re-programmed.
 pub fn rearm_timer() {
-    let ticks = TICKS_PER_INTERRUPT.load(Ordering::Relaxed);
+    let ticks = fine_interval(TICKS_PER_INTERRUPT.load(Ordering::Relaxed), false);
     let (vctl, vcval, vnow): (u64, u64, u64);
     unsafe {
         core::arch::asm!("mrs {}, cntv_ctl_el0", out(reg) vctl, options(nomem, nostack));

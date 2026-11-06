@@ -50,6 +50,9 @@ static MS_SCALE: AtomicU64 = AtomicU64::new(0);
 pub struct Aarch64Timer;
 
 impl TimerOps for Aarch64Timer {
+    fn request_wakeup(deadline_ns: u64) -> bool {
+        super::timer_interrupt::request_wakeup(deadline_ns)
+    }
     #[inline]
     fn read_timestamp() -> u64 {
         read_cntvct()

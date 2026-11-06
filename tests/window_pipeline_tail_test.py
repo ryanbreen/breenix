@@ -20,6 +20,7 @@ mod spin {{
  pub fn lock(&self)->std::sync::MutexGuard<'_,T>{{self.0.lock().unwrap()}}}}
 }}
 mod events {{pub fn now_ns()->u64 {{1}}}}
+mod time {{pub mod wakeup {{pub fn stats()->[u64;3]{{[4,3,99]}}}}}}
 mod pipeline {{use crate::spin;
 {pipeline}
 }}
@@ -29,7 +30,9 @@ fn main() {{
  for n in 0..1000 {{pipeline::record(8,99,n,0);}}
  pipeline::record(8,42,12,777); pipeline::record(9,42,12,50);
  pipeline::record(10,50,7,0); pipeline::record(11,50,7,9); pipeline::record(12,50,7,9);
- let text=pipeline::text();let rows:Vec<Vec<u64>>=text.lines().map(|r|r.split_whitespace().map(|v|v.parse().unwrap()).collect()).collect();
+ let text=pipeline::text();
+ assert!(text.ends_with("fine_wake_requests=4 fine_wake_irqs=3 fine_wake_late_max_ns=99\n"));
+ let rows:Vec<Vec<u64>>=text.lines().filter(|r|!r.starts_with("fine_wake_requests=")).map(|r|r.split_whitespace().map(|v|v.parse().unwrap()).collect()).collect();
  assert!(rows.len()<=256);
  for stage in 1..=4 {{assert!(rows.iter().any(|r|r[0]==stage && r[3]==777),"input stage {{stage}} erased by other clients");}}
  for stage in 8..=12 {{assert!(rows.iter().any(|r|r[0]==stage));}}

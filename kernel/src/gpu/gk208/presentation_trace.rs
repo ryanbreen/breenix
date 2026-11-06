@@ -28,6 +28,8 @@ static TRACE: spin::Mutex<Trace> = spin::Mutex::new(Trace::new());
 pub(super) fn record(row: Row) { TRACE.lock().record(row); }
 
 pub(super) fn dump() {
+    let [requests, irqs, late] = crate::time::wakeup::stats();
+    crate::serial_println!("TIMER_WAKE requests={} irqs={} late_max_ns={}", requests, irqs, late);
     let trace = {
         let mut live = TRACE.lock();
         if live.count == 0 { return; }

@@ -5,6 +5,9 @@
 //! every CPU runs from its per-CPU init. Only the BSP is started here.
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 use x86_64::registers::model_specific::Msr;
+mod wakeup;
+mod clockevent;
+pub use wakeup::request_wakeup;
 
 pub const SPURIOUS_VECTOR: u8 = 0xff;
 const MASKED: u32 = 1 << 16;
@@ -256,6 +259,7 @@ pub fn calibrate_timer(hz: u32) -> u32 {
         let count = (u64::from(elapsed) * 1_193_182 / u64::from(PIT_TICKS) / u64::from(hz)) as u32;
         assert!(count != 0, "LAPIC timer did not count");
         TIMER_COUNT.store(count, Ordering::Release);
+        wakeup::init();
         count
     }
 }

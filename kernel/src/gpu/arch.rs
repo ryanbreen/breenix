@@ -1,6 +1,10 @@
 //! The small OS/architecture seam of the shared GPU core.
 use core::sync::atomic::{AtomicBool, Ordering};
 
+pub(super) fn poll(core: &mut super::Core) {
+    core.poll_traced(#[cfg(target_arch = "x86_64")] None);
+}
+
 /// x86 syscall entry masks IRQs. Firmware uploads and device waits must allow
 /// timer/USB delivery; restore entry state after success, refusal or a signal.
 #[cfg(target_arch = "x86_64")]

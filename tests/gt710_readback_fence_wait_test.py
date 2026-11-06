@@ -62,7 +62,7 @@ class ReadbackFenceWait(unittest.TestCase):
         self.assertIn('replay_request(', attachment,
                       'source attachment must not hand a preceding native draw to the timer worker')
 
-    def run_receipt_wait(self, selected_policy, main_override=None):
+    def run_receipt_wait(self, selected_policy, main_override=None, extra_wait=''):
         core = (ROOT / 'kernel/src/gpu/mod.rs').read_text()
         wait = item(core, 'fn wait_for_traced<').replace('#[cfg(target_arch = "x86_64")]', '')
         # Accommodate the explicit readback policy argument without changing
@@ -186,7 +186,10 @@ fn main(){
         if not pause:
             fixture = fixture[:fixture.index('mod arch {')] + fixture[fixture.index('mod syscall {'):]
         if main_override is not None:
-            fixture = fixture[:fixture.index('fn main(){')] + main_override
+            fixture = fixture[:fixture.index('fn main(){')] + extra_wait + main_override
+            if extra_wait:
+                fixture = fixture.replace('mod arch {', 'mod arch { pub fn poll(c:&mut crate::Core){c.poll_traced(None);}')
+                fixture = fixture.replace('const EXAMINE_NS:', 'const POLL_NS:u64=250_000; const EXAMINE_NS:')
             fixture = fixture.replace('static SLEEPS:Cell<u32>', 'static SLEPT:Cell<u64>=const{Cell::new(0)};\n static SLEEPS:Cell<u32>')
             fixture = fixture.replace('CLOCK.with(|c|c.set((c.get()/5_000_000+1)*5_000_000));Ok(())',
                 'CLOCK.with(|c|{let next=(c.get()/5_000_000+1)*5_000_000; SLEPT.with(|s|s.set(s.get()+next-c.get()));c.set(next)});Ok(())')

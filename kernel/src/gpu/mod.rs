@@ -2204,6 +2204,30 @@ enum Stop {
     Interrupted,
 }
 
+/// W22: poll an interrupt-free completion only after a sleeping fine wake.
+/// The hardware timer shares scheduler deadlines on both architectures.
+fn wait_for_fine<T>(deadline: Option<u64>, interruptible: bool,
+    mut f: impl FnMut(&mut Core) -> Option<T>) -> Result<T, Stop> {
+    loop {
+        let seen = EVENTS.load(Ordering::Acquire);
+        let found = with_core(|c| {
+            arch::poll(c);
+            let found = f(c);
+            if found.is_none() { c.progress_readback(); }
+            found
+        }).flatten();
+        if let Some(found) = found { return Ok(found); }
+        if deadline.is_some_and(|d| now_ns() >= d) { return Err(Stop::Timeout); }
+        if interruptible && crate::syscall::check_signals_for_wait().is_some() { return Err(Stop::Interrupted); }
+        let wake = deadline.unwrap_or(u64::MAX).min(now_ns().saturating_add(POLL_NS));
+        let unheld = crate::per_cpu::preempt_count() == 0;
+        if unheld { crate::per_cpu::preempt_disable(); }
+        let woke = wait_event_fine(seen, wake);
+        if unheld { crate::per_cpu::preempt_enable(); }
+        if woke.is_err() && interruptible { return Err(Stop::Interrupted); }
+    }
+}
+
 /// Wait until `f` (run under the core's lock after taking completions) returns a value,
 /// the absolute `deadline` passes, or a signal arrives.
 fn wait_for<T>(deadline: Option<u64>, interruptible: bool, f: impl FnMut(&mut Core) -> Option<T>) -> Result<T, Stop> {
@@ -2330,6 +2354,12 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
 /// after the take reads the new count, and one taken before it publishes reads it too,
 /// because its wake reached it running.
 fn wait_event(seen: u64, wake: Option<u64>) -> Result<(), i32> {
+    wait_event_prepared(seen, wake, false)
+}
+fn wait_event_fine(seen: u64, wake: u64) -> Result<(), i32> {
+    wait_event_prepared(seen, Some(wake), true)
+}
+fn wait_event_prepared(seen: u64, wake: Option<u64>, fine: bool) -> Result<(), i32> {
     let Some(tid) = crate::task::scheduler::current_thread_id() else {
         return Err(crate::syscall::errno::ESRCH);
     };
@@ -2340,6 +2370,10 @@ fn wait_event(seen: u64, wake: Option<u64>) -> Result<(), i32> {
     if !published {
         WAITERS.finish_wait_for(tid);
         return Err(crate::syscall::errno::ESRCH);
+    }
+    if fine && !wake.is_some_and(crate::time::wakeup::arm) {
+            WAITERS.finish_wait_for(tid);
+            return Err(crate::syscall::errno::ENODEV);
     }
     if EVENTS.load(Ordering::Acquire) != seen {
         WAITERS.finish_wait_for(tid);
@@ -5349,7 +5383,7 @@ fn op_wait(arg: u64, len: u64) -> Result<u64, i64> {
     .flatten()
     .ok_or(EINVAL)?;
     let deadline = now_ns().saturating_add(a.timeout_ns);
-    let outcome = wait_for(Some(deadline), true, |c| {
+    let outcome = wait_for_fine(Some(deadline), true, |c| {
         let Some(ctx) = c.contexts.get(&id) else { return Some(Err(EINVAL)) };
         (n <= ctx.done_upto).then(|| Ok(ctx.outcomes.get(&n).copied().unwrap_or((fence_status::OK, 0))))
     });

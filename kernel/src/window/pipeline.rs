@@ -42,5 +42,7 @@ pub fn text() -> String {
     for r in &selected[selected.len().saturating_sub(256)..] {
         let _ = writeln!(out, "{} {} {} {} {}", r[0], r[1], r[2], r[3], r[4]);
     }
+    let [requests, irqs, late] = crate::time::wakeup::stats();
+    let _ = writeln!(out, "fine_wake_requests={} fine_wake_irqs={} fine_wake_late_max_ns={}", requests, irqs, late);
     out
 }

@@ -48,6 +48,14 @@ pub fn available() -> bool {
     super::apic::active() && super::platform::msi_allowed()
 }
 
+/// Reserve a local-APIC interrupt gate without programming a PCI function.
+pub(super) fn reserve(handler: fn()) -> Result<u8, &'static str> {
+    let index = (0..VECTORS).find(|&index| HANDLERS[index]
+        .compare_exchange(0, handler as usize, Ordering::AcqRel, Ordering::Relaxed).is_ok())
+        .ok_or("no free local interrupt vector")?;
+    Ok(FIRST_VECTOR + index as u8)
+}
+
 /// Program `device`'s MSI capability to raise one vector whose gate runs
 /// `handler`, and turn its INTx off. Returns the vector.
 pub fn enable(device: &Device, handler: fn()) -> Result<u8, &'static str> {
