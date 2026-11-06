@@ -19,13 +19,19 @@ struct Pending {
 
 #[derive(Default)]
 pub(super) struct Close {
+    own: u32,
     pending: Vec<Pending>,
 }
 
 impl Close {
+    /// bwm's own windows (its launch error) close by event only, never by signal.
+    pub(super) fn for_process(own: u32) -> Self {
+        Self { own, pending: Vec::new() }
+    }
+
     pub(super) fn request(&mut self, id: u64, owner: u32, now: u64) -> Action {
         if let Some(pending) = self.pending.iter_mut().find(|p| p.id == id) {
-            if pending.owner == owner && owner != 0 && pending.deadline.is_none() {
+            if pending.owner == owner && owner != 0 && owner != self.own && pending.deadline.is_none() {
                 pending.deadline = Some(now.saturating_add(KILL_DELAY_NS));
                 return Action::Term(owner);
             }

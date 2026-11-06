@@ -160,7 +160,7 @@ fn main() {
     let mut stream = input::Stream::new();
     let mut timing = timing::Timing::new();
     let mut children = children::Children::default();
-    let mut closing = close::Close::default();
+    let mut closing = close::Close::for_process(libbreenix::process::getpid().map_or(0, |pid| pid.raw() as u32));
     let mut clicks = timing::Clicks::new();
     let mut consumed_keys = std::collections::BTreeSet::new();
     let (mut mouse_x, mut mouse_y) = (0, 0);
