@@ -2173,6 +2173,8 @@ importer. The input format and its normalized sample status are documented in
 G33a native composite clock: kernel/src/gpu/gk208/native.rs additionally uses
 NV_HEAD_STAT.VERT.VBLANK_COUNT from the already-listed MIT envytools
 rnndb/display/g80_pdisplay.xml at f102b82381f3f11cee113d16374c87091db039d9.
+Receipt clock synchronization also reads that group's VERT.VLINE and
+HORZ.HLINE fields to subtract the current raster phase from a monotonic sample.
 The imported rnndb/copyright.xml grant and author list remain in native.rs.
 vblank_clock.rs contains Breenix-owned rational frame-period arithmetic;
 no external implementation was imported.

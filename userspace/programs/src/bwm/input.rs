@@ -223,6 +223,12 @@ impl Stream {
     pub(super) fn fd(&self) -> i32 {
         READER.get().unwrap().fd().raw() as i32
     }
+    /// A zero-capacity capability query tests registration without copying entries.
+    /// Preserve state on transient errors; only ENODEV marks the id as retired.
+    pub(super) fn registered(&self, device: u32) -> bool {
+        !matches!(READER.get().unwrap().capabilities(device, &mut []),
+            Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENODEV)))
+    }
     pub(super) fn read(&self) -> Vec<(Event, Vec<u8>)> {
         let mut bytes = vec![0; core_input::abi::READER_EVENTS * (32 + 256)];
         match READER.get().unwrap().read(&mut bytes) {

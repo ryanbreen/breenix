@@ -1,6 +1,7 @@
 //! Shared compositor status and bounded presentation history formatting.
 use alloc::{format, string::String};
 use core::sync::atomic::{AtomicU64, Ordering};
+use core::fmt::Write;
 use breengel_abi::CompositorStatus;
 
 pub fn format_status(s: &CompositorStatus) -> String {
@@ -35,13 +36,17 @@ impl CompositeHistory {
     }
     pub fn format(&self) -> String {
         let end = self.next.load(Ordering::SeqCst);
-        let mut text = String::new();
-        for n in end.saturating_sub(HISTORY_CAPACITY as u64)..end {
+        let start = end.saturating_sub(HISTORY_CAPACITY as u64);
+        // Five maximum-width u64 fields, four spaces and a newline per row.
+        // Reserve once and write into the output: receipt readers must not
+        // allocate and free a temporary formatting buffer for each history row.
+        let mut text = String::with_capacity((end - start) as usize * (5 * 20 + 5));
+        for n in start..end {
             let slot = &self.slots[n as usize % HISTORY_CAPACITY];
             if slot.version.load(Ordering::SeqCst) != n + 1 { continue; }
             let values = slot.fields.each_ref().map(|field| field.load(Ordering::SeqCst));
             if slot.version.load(Ordering::SeqCst) == n + 1 {
-                text.push_str(&format!("{} {} {} {} {}\n", values[0], values[1], values[2], values[3], values[4]));
+                let _ = writeln!(text, "{} {} {} {} {}", values[0], values[1], values[2], values[3], values[4]);
             }
         }
         text

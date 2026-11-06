@@ -12,6 +12,22 @@ impl Stack {
     pub(super) fn new() -> Self {
         Self { order: Vec::new(), creation: Vec::new(), chromeless: Vec::new(), minimized: Vec::new(), focus: None }
     }
+    pub(super) fn adopt(&mut self, windows: &[(u64, u32, bool, bool, bool)]) {
+        let mut windows = windows.to_vec();
+        windows.sort_by_key(|&(id, z, _, _, _)| (z, id));
+        self.order.clear();
+        self.creation.clear();
+        self.chromeless.clear();
+        self.minimized.clear();
+        self.focus = None;
+        for (id, _, minimized, focused, chromeless) in windows {
+            self.order.push(id);
+            self.creation.push(id);
+            if minimized { self.minimized.push(id); }
+            if chromeless { self.chromeless.push(id); }
+            if focused && !minimized { self.focus = Some(id); }
+        }
+    }
     pub(super) fn order(&self) -> &[u64] { &self.order }
     pub(super) fn focus(&self) -> Option<u64> { self.focus }
     pub(super) fn minimized(&self, id: u64) -> bool { self.minimized.contains(&id) }

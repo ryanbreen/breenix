@@ -468,6 +468,7 @@ pub struct Evo {
     frame_pixels: u64,
     pixel_hz: u64,
     clock: Option<super::vblank_clock::VblankClock>,
+    vblank_line: u16,
     pub(super) last_presentation: Option<(u32, u64)>,
     pub head: u32,
     sor: u32,
@@ -504,27 +505,88 @@ pub(in crate::gk208) fn vblank_counter(regs: &Registers, head: u32)
     Ok((at, count))
 }
 
+/// MIT rnndb NV_HEAD_STAT: VERT contains VLINE and VBLANK_COUNT; HORZ
+/// contains HLINE. Bracket HLINE with an unchanged VERT so neither a line
+/// transition nor a counter wrap can mix the phase of two different frames.
+fn presentation_sample(regs: &Registers, head: u32)
+    -> Result<(u64, u32, u32), &'static str> {
+    if head >= 4 { return Err("invalid native display head"); }
+    let base = 0x616340 + head as usize * 0x800;
+    for _ in 0..64 {
+        let before = regs.read(base);
+        let start = crate::signal::monotonic_nanos();
+        let pixel = regs.read(base + 4) & 0xffff;
+        let end = crate::signal::monotonic_nanos();
+        if regs.read(base) == before {
+            return Ok((start + (end - start) / 2, before, pixel));
+        }
+    }
+    Err("native presentation raster did not stabilize")
+}
+
 impl Evo {
-    /// Anchor once on a real VBLANK_COUNT edge, before any client UPDATE.
+    /// Identify the counter edge's raster line before any client UPDATE.
     /// MIT rnndb NV_HEAD_STAT.VERT (notice above): no display register writes.
     fn start_clock(&mut self, regs: &Registers) -> Result<(), &'static str> {
         if self.clock.is_some() { return Ok(()); }
-        let (start, before) = vblank_counter(regs, self.head)?;
+        let total = regs.read(0x640414 + self.head as usize * 0x300);
+        let (width, height) = (total & 0xffff, total >> 16);
+        if width == 0 || height == 0 || self.pixel_hz == 0
+            || u64::from(width) * u64::from(height) != self.frame_pixels {
+            return Err("native presentation raster extent mismatch");
+        }
+        let line_ns = u64::from(width) * 1_000_000_000 / self.pixel_hz;
+        let mut previous = presentation_sample(regs, self.head)?;
+        let start = previous.0;
         while crate::signal::monotonic_nanos().saturating_sub(start) < 40_000_000 {
-            let (at, count) = vblank_counter(regs, self.head)?;
-            if count != before {
+            let sample = presentation_sample(regs, self.head)?;
+            let (at, vert, pixel) = sample;
+            let count = (vert >> 16) as u16;
+            let line = vert & 0xffff;
+            // A delayed/preempted poll must not choose a later raster line as
+            // the edge. Accept only adjacent lines less than one line apart.
+            if count.wrapping_sub((previous.1 >> 16) as u16) == 1
+                && line == ((previous.1 & 0xffff) + 1) % height
+                && at - previous.0 < line_ns && pixel < width {
+                let edge_ns = at.checked_sub(u64::from(pixel) * 1_000_000_000 / self.pixel_hz)
+                    .ok_or("native vblank edge predates clock")?;
                 self.clock = Some(super::vblank_clock::VblankClock::new(
-                    count, at, self.frame_pixels, self.pixel_hz));
+                    count, edge_ns, self.frame_pixels, self.pixel_hz));
+                self.vblank_line = line as u16;
                 return Ok(());
             }
+            previous = sample;
             core::hint::spin_loop();
         }
         Err("native vblank clock did not advance")
     }
     pub(in crate::gk208) fn record_presentation(&mut self, regs: &Registers, resource: u32)
         -> Result<(), &'static str> {
-        let (_, count) = vblank_counter(regs, self.head)?;
-        let at = self.clock.as_mut().ok_or("native vblank clock absent")?.at(count);
+        let (sampled_ns, vert, pixel) = presentation_sample(regs, self.head)?;
+        let total = regs.read(0x640414 + self.head as usize * 0x300);
+        let (width, height) = (total & 0xffff, total >> 16);
+        let line = vert & 0xffff;
+        if width == 0 || height == 0 || self.pixel_hz == 0 || line >= height || pixel >= width
+            || u32::from(self.vblank_line) >= height
+            || u64::from(width) * u64::from(height) != self.frame_pixels {
+            return Err("native presentation raster extent mismatch");
+        }
+        let pixels = u64::from((line + height - u32::from(self.vblank_line)) % height)
+            * u64::from(width) + u64::from(pixel);
+        let count = (vert >> 16) as u16;
+        let clock = self.clock.as_mut().ok_or("native vblank clock absent")?;
+        if clock.last != count {
+            // G33a: subtract raster phase, rather than publishing the time
+            // this completion was polled. Oscillator error spans one frame,
+            // not the lifetime since start_clock. Keep a frame's first time.
+            let phase_ns = (u128::from(pixels) * 1_000_000_000
+                / u128::from(self.pixel_hz)) as u64;
+            let edge_ns = sampled_ns.checked_sub(phase_ns)
+                .ok_or("native presentation phase predates clock")?;
+            *clock = super::vblank_clock::VblankClock::new(
+                count, edge_ns, self.frame_pixels, self.pixel_hz);
+        }
+        let at = clock.at(count);
         self.last_presentation = Some((resource, at));
         Ok(())
     }
@@ -1061,7 +1123,7 @@ pub fn takeover(
         return Ok((console, Evo {
             frame_pixels: u64::from(t.htotal) * u64::from(t.vtotal),
             pixel_hz: u64::from(t.clock_khz) * 1000,
-            clock: None, last_presentation: None,
+            clock: None, vblank_line: 0, last_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
             limits, coefficients, scripts,
@@ -1373,7 +1435,7 @@ pub fn takeover(
     Ok((console, Evo {
             frame_pixels: u64::from(t.htotal) * u64::from(t.vtotal),
             pixel_hz: u64::from(t.clock_khz) * 1000,
-            clock: None, last_presentation: None,
+            clock: None, vblank_line: 0, last_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
             limits, coefficients, scripts,

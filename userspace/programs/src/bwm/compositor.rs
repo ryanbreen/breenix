@@ -38,6 +38,7 @@ const CURSOR_BLACK: u32 = 0xFF00_0000;
 const BLACK: u32 = 0xFF00_0000;
 
 /// One client window as the frame shows it, bottom to top.
+#[derive(Clone)]
 pub struct Layer {
     pub window_id: u64,
     /// The window's decorations and shadow, drawn from the desktop target beneath its
@@ -301,9 +302,10 @@ impl Compositor {
                     self.next ^= 1;
                     self.last_serial = c.serial;
                     self.full = false;
-                    self.sampled = windows.iter().map(|w| Sampled {
+                    self.sampled.clear();
+                    self.sampled.extend(windows.iter().map(|w| Sampled {
                         id: w.id, sample: w.sample, commit_id: w.commit_id, width: w.width, height: w.height,
-                    }).collect();
+                    }));
                     return Ok(());
                 }
                 EAGAIN if monotonic_ms() < deadline => {

@@ -83,6 +83,7 @@ fn stepped_clock_acknowledges_without_clock_composites_or_fps() {
     let mut clicks = timing::Clicks::new();
     assert_eq!(clicks.press(7, 272, 9, (2, 3), ui_clock::now_ns()), 1);
     assert_eq!(clicks.release(7, 272), 1);
+    clicks.retain_devices(|device| device == 7);
     page.write_all_at(&4_400_000_000u64.to_le_bytes(), 16).unwrap();
     assert_eq!(clicks.press(7, 272, 9, (2, 3), ui_clock::now_ns()), 2);
     assert!(timing::within(4_000_000_000, ui_clock::now_ns()));

@@ -9,6 +9,16 @@ pub(super) struct PresentedScene {
     pub pointer: Pointer,
 }
 
+impl Clone for PresentedScene {
+    fn clone(&self) -> Self {
+        Self { layers: self.layers.clone(), pointer: self.pointer }
+    }
+    fn clone_from(&mut self, source: &Self) {
+        self.layers.clone_from(&source.layers);
+        self.pointer = source.pointer;
+    }
+}
+
 pub(super) fn measure_check<T>(check: impl FnOnce() -> T) -> T {
     let begin = std::time::Instant::now();
     let result = check();
@@ -432,8 +442,9 @@ pub(super) fn compose_partial_redraw(
 
 /// The visible client windows as the compositor stacks them, bottom to top: each one's
 /// frame and drop shadow (as `draw_window_frame` paints them) beneath its content.
-pub(super) fn frame_layers(windows: &[Window], stack: &Stack) -> Vec<Layer> {
-    ordered_windows(windows, stack)
+pub(super) fn frame_layers(windows: &[Window], stack: &Stack, layers: &mut Vec<Layer>) {
+    layers.clear();
+    layers.extend(ordered_windows(windows, stack)
         .filter(|w| !stack.minimized(w.window_id))
         .map(|w| {
             let (mut frame, mut frame_len) = ([[0i32; 4]; 3], 0);
@@ -451,7 +462,7 @@ pub(super) fn frame_layers(windows: &[Window], stack: &Stack) -> Vec<Layer> {
                 content: [w.content_x(), w.content_y(), w.content_width() as i32, w.content_height() as i32],
             }
         })
-        .collect()
+    );
 }
 
 /// Show that the desktop covers the whole scanout at the chosen scale. bwm composes the

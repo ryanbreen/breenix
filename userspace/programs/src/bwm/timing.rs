@@ -46,15 +46,23 @@ impl Timing {
 }
 #[derive(Clone, Copy)]
 struct Click { target: u64, point: (i32, i32), time: u64, count: u32 }
-pub(super) struct Clicks { last: BTreeMap<(u32, u16), Click>, active: BTreeMap<(u32, u16), u32> }
+pub(super) struct Clicks { last: Vec<((u32, u16), Click)>, active: BTreeMap<(u32, u16), u32> }
 impl Clicks {
-    pub(super) fn new() -> Self { Self { last: BTreeMap::new(), active: BTreeMap::new() } }
+    pub(super) fn new() -> Self { Self { last: Vec::new(), active: BTreeMap::new() } }
     pub(super) fn press(&mut self, device: u32, button: u16, target: u64, point: (i32, i32), time: u64) -> u32 {
         let slot = (device, button);
-        let count = if self.last.get(&slot).is_some_and(|c| c.count == 1 && c.target == target && within(c.time, time) && (i64::from(c.point.0) - i64::from(point.0)).abs() <= 4 && (i64::from(c.point.1) - i64::from(point.1)).abs() <= 4) { 2 } else { 1 };
-        self.last.insert(slot, Click { target, point, time, count });
+        let previous = self.last.iter().position(|(key, _)| *key == slot);
+        let count = if previous.map(|index| &self.last[index].1).is_some_and(|c| c.count == 1 && c.target == target && within(c.time, time) && (i64::from(c.point.0) - i64::from(point.0)).abs() <= 4 && (i64::from(c.point.1) - i64::from(point.1)).abs() <= 4) { 2 } else { 1 };
+        let click = Click { target, point, time, count };
+        if let Some(index) = previous { self.last[index].1 = click; }
+        else { self.last.push((slot, click)); }
         self.active.insert(slot, count);
         count
+    }
+    /// Removed device ids are not reused; keep history only for registered sources.
+    pub(super) fn retain_devices(&mut self, mut registered: impl FnMut(u32) -> bool) {
+        self.last.retain(|(slot, _)| registered(slot.0));
+        self.active.retain(|slot, _| registered(slot.0));
     }
     pub(super) fn release(&mut self, device: u32, button: u16) -> u32 { self.active.remove(&(device, button)).unwrap_or(1) }
 }
