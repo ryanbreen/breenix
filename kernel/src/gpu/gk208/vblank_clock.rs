@@ -1,10 +1,12 @@
 //! G33a presentation time on the native scanout timeline.
 //! The epoch is one observed vblank edge. Accumulate the hardware frame count,
 //! then convert the total with the exact programmed pixel clock and totals;
-//! rounding each period separately would accumulate error. Call at least once
-//! per 16-bit counter wrap (over 18 minutes at 60 Hz).
+//! rounding each period separately would accumulate error. The scanout and
+//! CLOCK_MONOTONIC oscillators are independent: re-anchor completed frames from
+//! a live raster sample, subtracting only the current frame's pixel phase.
 pub struct VblankClock {
-    last: u16,
+    /// Native receipt sampling re-anchors only when the hardware frame changes.
+    pub(super) last: u16,
     frames: u64,
     epoch_ns: u64,
     frame_pixels: u64,
