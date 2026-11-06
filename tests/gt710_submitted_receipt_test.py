@@ -35,6 +35,7 @@ thread_local!{static NOW:Cell<u64>=const{Cell::new(EPOCH)};}
 mod signal{pub fn monotonic_nanos()->u64{super::NOW.with(Cell::get)}use std::cell::Cell;}
 mod vblank_clock{ CLOCK }
 mod rate{ RATE }
+mod window {pub mod pipeline {pub fn at(_:u64,_:u64,_:u64,_:u64,_:u64){}}}
 mod presentation_trace {pub fn record(row:[u64;15]){assert!(row[7]>=row[1]);assert_ne!(row[2]>>16,row[9]>>16);}}
 mod native{
  use super::*;

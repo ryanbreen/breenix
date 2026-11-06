@@ -2,7 +2,8 @@
 //! Columns are stage, object, related object, source input serial, monotonic ns.
 //! Stages: input publication/read, window delivery/read, acquire begin/end,
 //! commit begin/end, scene admission, render completion, PRESENT return,
-//! physical/virtual presentation, and receipt publication (1 through 13), and front publication (14).
+//! physical/virtual presentation, and receipt publication (1 through 13), front publication (14), and driver
+//! acceptance raster samples (15: native resource, packed counter/line, pixel).
 use alloc::{string::String, vec::Vec};
 use core::fmt::Write;
 const CAPACITY: usize = 32768;

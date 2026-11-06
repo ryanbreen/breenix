@@ -566,6 +566,7 @@ impl Evo {
         if height == 0 { return Err("native presentation raster height absent"); }
         let phase = ((vert & 0xffff) + height - u32::from(self.vblank_line)) % height;
         let accepted_edges = self.latch_phase.map(|deadline| if phase < u32::from(deadline) { 1 } else { 2 });
+        crate::window::pipeline::at(15, u64::from(resource), u64::from(vert), u64::from(pixel), accepted_ns);
         self.pending_presentation = Some(PendingPresentation {
             resource, accepted_ns, count: (vert >> 16) as u16, vert, pixel,
             acknowledged: None, completed: None, last_negative: None, accepted_edges,
