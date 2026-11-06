@@ -2211,7 +2211,14 @@ fn wait_for_completion<T>(deadline: Option<u64>, interruptible: bool, fine: bool
     mut f: impl FnMut(&mut Core) -> Option<T>) -> Result<T, Stop> {
     loop {
         let seen = EVENTS.load(Ordering::Acquire);
-        if let Some(found) = with_core(|c| f(c)).flatten() { return Ok(found); }
+        let found = with_core(|c| {
+            let found = f(c);
+            // VirGL can need its existing fenced transfer to drain rendering.
+            // This requests worker work; it does not poll from the caller.
+            if found.is_none() { c.progress_readback(); }
+            found
+        }).flatten();
+        if let Some(found) = found { return Ok(found); }
         if deadline.is_some_and(|d| now_ns() >= d) { return Err(Stop::Timeout); }
         if interruptible && crate::syscall::check_signals_for_wait().is_some() { return Err(Stop::Interrupted); }
         wake_reaper();

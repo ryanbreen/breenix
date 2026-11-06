@@ -28,11 +28,11 @@ const POLL_NS:u64=POLL_VALUE;
 static EVENTS:AtomicU64=AtomicU64::new(0);static SENT:AtomicU64=AtomicU64::new(0);
 thread_local!{static CLOCK:Cell<u64>=const{Cell::new(0)};static CPU:Cell<u64>=const{Cell::new(0)};static WORK:Cell<u64>=const{Cell::new(0)};
 static READY:Cell<u64>=const{Cell::new(50_000_000)};static NEXT:Cell<u64>=const{Cell::new(0)};
-static ARMED:Cell<u32>=const{Cell::new(0)};static DONE:Cell<bool>=const{Cell::new(false)};static SIGNAL:Cell<bool>=const{Cell::new(false)};}
+static ARMED:Cell<u32>=const{Cell::new(0)};static DONE:Cell<bool>=const{Cell::new(false)};static VIRTUAL:Cell<bool>=const{Cell::new(false)};static PROGRESS:Cell<u32>=const{Cell::new(0)};static SIGNAL:Cell<bool>=const{Cell::new(false)};}
 fn now_ns()->u64{CLOCK.with(Cell::get)}
 fn charge(ns:u64){CPU.with(|c|c.set(c.get()+ns));CLOCK.with(|c|c.set(c.get()+ns));}
 struct Core;
-impl Core{fn progress_readback(&mut self){}}
+impl Core{fn progress_readback(&mut self){if VIRTUAL.with(Cell::get){PROGRESS.with(|p|p.set(p.get()+1));DONE.with(|d|d.set(true));}}}
 fn with_core<T>(f:impl FnOnce(&mut Core)->T)->Option<T>{charge(3_000);Some(f(&mut Core))}
 fn wake_reaper(){}
 mod arch {pub fn poll(_: &mut crate::Core){crate::charge(50_000);crate::DONE.with(|d|d.set(crate::now_ns()>=crate::READY.with(std::cell::Cell::get)));}}
@@ -74,6 +74,9 @@ fn main(){
  DONE.with(|c|c.set(false));READY.with(|c|c.set(u64::MAX));CLOCK.with(|c|c.set(0));
  assert_eq!(wait_for_completion(Some(100_000),true,false,|_|None::<u8>),Err(Stop::Timeout));
  let armed=ARMED.with(Cell::get);assert_eq!(wait_for_completion(None,true,false,|_|Some(7)),Ok(7));assert_eq!(ARMED.with(Cell::get),armed,"ready completion slept");
+ VIRTUAL.with(|v|v.set(true));CLOCK.with(|c|c.set(0));
+ assert_eq!(wait_for_completion(Some(1_000_000),true,false,|_|DONE.with(Cell::get).then_some(7)),Ok(7),"virtual renderer never received its drain request");
+ assert!(PROGRESS.with(Cell::get)>0);VIRTUAL.with(|v|v.set(false));DONE.with(|d|d.set(false));
  SIGNAL.with(|s|s.set(true));assert_eq!(wait_for_completion(None,true,false,|_|None::<u8>),Err(Stop::Interrupted));
 }
 '''.replace('POLL_VALUE', period).replace('BLOCK', block).replace('WAIT', wait)
