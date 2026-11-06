@@ -44,6 +44,7 @@ fn idle_five_seconds_wakes_only_for_wall_seconds() {
 #[test]
 fn independent_clock_domains_choose_the_earliest_work() {
     let deadlines = Deadlines {
+        presentation: None,
         closing: Some(9_000_000_000), clipboard: Some(8_000_000_000),
         repeat: Some(7_000_000_000), launch: Some(6_000_000_000),
         check_after_ms: Some(100_125), wall: Some(5_000_000_000),
@@ -53,4 +54,13 @@ fn independent_clock_domains_choose_the_earliest_work() {
         Deadlines { check_after_ms: None, ..deadlines }), 1000);
     assert_eq!(timeout(false, false, 0, 0,
         Deadlines { wall: Some(u64::MAX), ..Deadlines::default() }), i32::MAX);
+}
+
+#[test]
+fn response_hold_uses_the_monotonic_clock_and_does_not_hide_other_deadlines() {
+    let pending = Deadlines { presentation: Some(1_001_200_000), ..Deadlines::default() };
+    assert_eq!(timeout(false, false, 80_000_000_000, 1_000_000_000, pending), 2);
+    assert_eq!(timeout(false, false, 80_000_000_000, 1_002_000_000, pending), 0);
+    assert_eq!(timeout(false, false, 80_000_000_000, 1_000_000_000,
+        Deadlines { closing: Some(80_000_100_000), ..pending }), 1);
 }

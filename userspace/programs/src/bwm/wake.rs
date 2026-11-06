@@ -11,6 +11,7 @@ pub struct Deadlines {
     pub launch: Option<u64>,
     pub check_after_ms: Option<u64>,
     pub wall: Option<u64>,
+    pub presentation: Option<u64>,
 }
 
 pub fn timeout(dirty: bool, display_lost: bool, now: u64, monotonic_ns: u64, deadlines: Deadlines) -> i32 {
@@ -20,7 +21,7 @@ pub fn timeout(dirty: bool, display_lost: bool, now: u64, monotonic_ns: u64, dea
     let ui = [deadlines.closing, deadlines.clipboard, deadlines.repeat, deadlines.launch, deadlines.wall]
         .into_iter().flatten().map(|d| d.saturating_sub(now));
     let check = deadlines.check_after_ms.map(|d| d.saturating_mul(1_000_000).saturating_sub(monotonic_ns));
-    ui.chain(check).min().map_or(-1, |ns| {
+    ui.chain(check).chain(deadlines.presentation.map(|d| d.saturating_sub(monotonic_ns))).min().map_or(-1, |ns| {
         (ns.saturating_add(999_999) / 1_000_000).min(i32::MAX as u64) as i32
     })
 }

@@ -20,6 +20,8 @@ mod input_backlog;
 mod input;
 #[path = "bwm/timing.rs"]
 mod timing;
+#[path = "bwm/pace.rs"]
+mod pace;
 #[path = "bwm/input_keys.rs"]
 mod input_keys;
 #[path = "bwm/pointer_route.rs"]
@@ -181,6 +183,7 @@ fn main() {
     // Raw startup PRESENT has no window receipt. Schedule the initial window
     // composite even when there is no client, clock tick or later scene change.
     let mut windows_dirty = true;
+    let mut pacing = pace::Pacer::default();
     let mut win_defaults: [WindowDefaults; MAX_DEFAULTS] = core::array::from_fn(|_| WindowDefaults {
         title: [0; 32], title_len: 0, x: 0, y: 0, width: 0, height: 0, valid: false,
     });
@@ -246,9 +249,15 @@ fn main() {
         let wall = clock.acknowledgment(claim_epoch).next_deadline_ns;
         let shown = validation.scene().map(|scene| gpu.shown_clients(&scene.layers, Some(scene.pointer)))
             .unwrap_or_default();
+        refresh_pacing(&mut pacing);
+        let hold = match pacing.decision(pacing_ns()) {
+            pace::Decision::WaitUntil(deadline) => Some(deadline),
+            pace::Decision::Compose => None,
+        };
         let timeout = wake::timeout(
-            full_redraw || content_dirty || windows_dirty, display_lost, now, monotonic_ns,
+            (full_redraw || content_dirty || windows_dirty) && hold.is_none(), display_lost, now, monotonic_ns,
             wake::Deadlines {
+                presentation: hold,
                 closing: closing.deadline(),
                 clipboard: clipboard.as_ref().and_then(|c| c.deadline()),
                 repeat: timing.deadline(),
@@ -646,63 +655,72 @@ fn main() {
 
         // ── 5. Composite on the GPU (only when something changed) ──
         if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
-            let pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
-            let mut damage = Vec::new();
-            if full_redraw {
-                damage.push([0, 0, screen_w as i32, screen_h as i32]);
-            } else if content_dirty {
-                damage.push([dirty_x0.max(0), dirty_y0.max(0), dirty_x1.min(screen_w as i32), dirty_y1.min(screen_h as i32)]);
-            }
-            // The pointer where the last frame drew it and where this one draws it.
-            if drawn_pointer.is_none_or(|p| (p.x, p.y, p.shape) != (pointer.x, pointer.y, pointer.shape)) {
-                damage.extend(drawn_pointer.map(|p| compositor::pointer_footprint(p, ui().scale as i32)));
-                damage.push(compositor::pointer_footprint(pointer, ui().scale as i32));
-            }
-            frame_layers(&windows, &stack, &mut working_scene.layers);
-            working_scene.pointer = pointer;
-            let frame = gpu.compose(&working_scene.layers, Some(pointer), &damage);
-            full_redraw = false;
-            content_dirty = false;
-            windows_dirty = false;
-            match frame {
-                Ok(()) => {
-                    frame_failed = false;
-                    if display_lost {
-                        display_lost = false;
-                        print!("[bwm] display back: composing again\n");
-                    }
-                    drawn_pointer = Some(pointer);
-                    launch::acknowledge(&mut children, gpu.last_serial);
-                    clock.presented(gpu.last_serial);
-                    working_scene = validation.presented(working_scene);
+            refresh_pacing(&mut pacing);
+            if matches!(pacing.decision(pacing_ns()), pace::Decision::WaitUntil(_)) {
+                // Carry cursor/window dirt through descriptor wakes while the client handles input.
+                windows_dirty = true;
+                if content_dirty { full_redraw = true; }
+            } else {
+                let pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
+                let mut damage = Vec::new();
+                if full_redraw {
+                    damage.push([0, 0, screen_w as i32, screen_h as i32]);
+                } else if content_dirty {
+                    damage.push([dirty_x0.max(0), dirty_y0.max(0), dirty_x1.min(screen_w as i32), dirty_y1.min(screen_h as i32)]);
                 }
-                Err(FrameError::NotOwner) => {
-                    validation.invalidate_scene();
-                    // Another process took the display (probe, say): wait for it to give the
-                    // display back, or exit, and then repaint everything.
-                    if !display_lost {
-                        print!("[bwm] display held by another process: waiting for it\n");
-                    }
-                    display_lost = true;
-                    drawn_pointer = None;
-                    full_redraw = true;
+                // The pointer where the last frame drew it and where this one draws it.
+                if drawn_pointer.is_none_or(|p| (p.x, p.y, p.shape) != (pointer.x, pointer.y, pointer.shape)) {
+                    damage.extend(drawn_pointer.map(|p| compositor::pointer_footprint(p, ui().scale as i32)));
+                    damage.push(compositor::pointer_footprint(pointer, ui().scale as i32));
                 }
-                Err(FrameError::Failed(e)) => {
-                    validation.invalidate_scene();
-                    // Start again with a fresh context and targets; the next frame
-                    // repaints everything.
-                    if !frame_failed {
-                        print!("[bwm] GPU frame failed: {}\n", e);
+                frame_layers(&windows, &stack, &mut working_scene.layers);
+                working_scene.pointer = pointer;
+                let began = pacing_ns();
+                let frame = gpu.compose(&working_scene.layers, Some(pointer), &damage);
+                full_redraw = false;
+                content_dirty = false;
+                windows_dirty = false;
+                match frame {
+                    Ok(()) => {
+                        pacing.presented(began, pacing_ns());
+                        frame_failed = false;
+                        if display_lost {
+                            display_lost = false;
+                            print!("[bwm] display back: composing again\n");
+                        }
+                        drawn_pointer = Some(pointer);
+                        launch::acknowledge(&mut children, gpu.last_serial);
+                        clock.presented(gpu.last_serial);
+                        working_scene = validation.presented(working_scene);
                     }
-                    frame_failed = true;
-                    if let Err(e) = gpu.reopen() {
-                        print!("[bwm] ERROR: GPU compositor could not be reopened: {}\n", e);
-                        process::exit(1);
+                    Err(FrameError::NotOwner) => {
+                        validation.invalidate_scene();
+                        // Another process took the display (probe, say): wait for it to give the
+                        // display back, or exit, and then repaint everything.
+                        if !display_lost {
+                            print!("[bwm] display held by another process: waiting for it\n");
+                        }
+                        display_lost = true;
+                        drawn_pointer = None;
+                        full_redraw = true;
                     }
-                    paint_background(&mut gpu.background);
-                    compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
-                    drawn_pointer = None;
-                    full_redraw = true;
+                    Err(FrameError::Failed(e)) => {
+                        validation.invalidate_scene();
+                        // Start again with a fresh context and targets; the next frame
+                        // repaints everything.
+                        if !frame_failed {
+                            print!("[bwm] GPU frame failed: {}\n", e);
+                        }
+                        frame_failed = true;
+                        if let Err(e) = gpu.reopen() {
+                            print!("[bwm] ERROR: GPU compositor could not be reopened: {}\n", e);
+                            process::exit(1);
+                        }
+                        paint_background(&mut gpu.background);
+                        compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
+                        drawn_pointer = None;
+                        full_redraw = true;
+                    }
                 }
             }
         }
@@ -722,6 +740,18 @@ fn main() {
     }
 }
 
+
+fn pacing_ns() -> u64 {
+    libbreenix::time::now_monotonic().map_or(0, |time| time.as_nanos() as u64)
+}
+fn refresh_pacing(pacing: &mut pace::Pacer) {
+    for (id, serial) in input::take_delivered() { pacing.delivered(id,input::serial_key(serial)); }
+    pacing.refresh(|id, wanted| match libbreenix::window::read_meta(id) {
+        Ok((_, meta)) => Some(input::serial_key(meta.processed_serial)),
+        Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENOENT)) => Some(wanted),
+        Err(_) => None,
+    });
+}
 
 /// Publish focus notices around the kernel stack update.
 fn publish_transition(windows: &[Window], stack: &Stack, transition: (Option<u64>, Option<u64>)) {

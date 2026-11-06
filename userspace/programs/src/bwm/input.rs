@@ -35,6 +35,20 @@ struct Queued {
 static QUEUES: std::sync::Mutex<input_backlog::Backlog<Queued>> =
     std::sync::Mutex::new(input_backlog::Backlog::new());
 
+pub(super) fn serial_key(serial: u64) -> super::pace::Serial {
+    core_input::abi::derived_source(serial).unwrap_or(if serial >> 63 != 0 { (0, 0) } else { (serial, 0) })
+}
+static DELIVERED: std::sync::Mutex<BTreeMap<u64,u64>> = std::sync::Mutex::new(BTreeMap::new());
+pub(super) fn take_delivered() -> BTreeMap<u64,u64> {
+    std::mem::take(&mut *DELIVERED.lock().unwrap())
+}
+fn delivered(window: u64, serial: u64) {
+    if serial == 0 { return; }
+    DELIVERED.lock().unwrap().entry(window).and_modify(|old| {
+        if serial_key(serial) > serial_key(*old) { *old=serial; }
+    }).or_insert(serial);
+}
+
 fn dispose(serial: u64, derived: u32, window: u64, disposition: u32, reason: u32) {
     if serial == 0 {
         return;
@@ -98,6 +112,7 @@ pub(super) fn flush_input() {
         |id, q| match session::send(id, q.event) {
             Ok(1) => {
                 dispose(q.source, q.derived, id, outcome::DELIVERED, reason::NONE);
+                delivered(id, q.event.serial);
                 Delivery::Accepted
             }
             Ok(_) | Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN)) => {
