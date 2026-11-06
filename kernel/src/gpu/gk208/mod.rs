@@ -680,9 +680,19 @@ pub(crate) fn heap_footprint() -> [usize; 8] {
 }
 
 /// G33a: the completed native binding, in the scanout clock domain.
-pub(crate) fn completed_present_time(resource: u32) -> Option<u64> {
-    ce::with_clock_owner(|_, evo, _| {
-        evo.last_presentation.filter(|(id, _)| *id == resource)
-            .map(|(_, at)| at).ok_or("native presentation clock identity mismatch")
+pub(crate) fn completed_present_time(resource: u32, not_before: u64) -> Option<u64> {
+    ce::with_clock_owner(|regs, evo, _| {
+        // A retained surface's capabilities acknowledgement consumes no latch.
+        // COMPOSITE must observe an edge after its render release, while ordinary
+        // PRESENT keeps its GET-acceptance semantics (G26 amendment 2).
+        for _ in 0..400 {
+            let (id, at) = evo.last_presentation
+                .ok_or("native presentation clock absent")?;
+            if id != resource { return Err("native presentation clock identity mismatch"); }
+            if at >= not_before { return Ok(at); }
+            evo.record_presentation(regs, resource)?;
+            modeset::Io::delay_us(regs, 100);
+        }
+        Err("native content presentation edge did not advance")
     }).ok()
 }

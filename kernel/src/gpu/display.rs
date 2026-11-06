@@ -515,7 +515,7 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
 
 /// Composite accounting needs actual native latch completion, while ordinary
 /// PRESENT keeps G26's GET-acceptance semantics. No core lock spans the wait.
-pub(super) fn composite_present_time(fence: u64) -> Result<u64, i64> {
+pub(super) fn composite_present_time(fence: u64, content_ready_ns: u64) -> Result<u64, i64> {
     #[cfg(target_arch = "x86_64")]
     if dev::backend() == abi::backend::GK208 {
         let id = wait_for(None, true, |c| {
@@ -524,11 +524,11 @@ pub(super) fn composite_present_time(fence: u64) -> Result<u64, i64> {
                 .map(|b| b.id).ok_or(EIO))
         }).map_err(|_| EINTR)??;
         let resource = dev::resource_id(id).ok_or(EIO)?;
-        return crate::gk208::completed_present_time(resource).ok_or(EIO);
+        return crate::gk208::completed_present_time(resource, content_ready_ns).ok_or(EIO);
     }
     // Virtual backends have no physical vblank: their completed flush is the
     // presentation event. Capture it here, before scene bookkeeping/copy-out.
-    let _ = fence;
+    let _ = (fence, content_ready_ns);
     Ok(now_ns())
 }
 

@@ -388,6 +388,7 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
         }
     });
     a.phase = 2;
+    let content_ready_ns = now_ns();
     let (fence, status, answer) = display::present_as(tgid, context, target, &|_| Ok(()))?;
     a.present_fence = fence;
     if status != fence_status::OK {
@@ -396,7 +397,7 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
         a.reason = reason(status);
         return Err(EIO);
     }
-    let presented_ns = display::composite_present_time(fence)?;
+    let presented_ns = display::composite_present_time(fence, content_ready_ns)?;
     a.answer = answer;
     let (pixels, per_window) = scene_work;
     a.pixels = pixels;
