@@ -22,6 +22,7 @@ class SubmittedReceipt(unittest.TestCase):
             self.record_presentation(regs,resource)?;Ok(true)
         }
         '''
+        content = item(native, 'pub(in crate::gk208) fn content_presentation(')
         rate = timing.source('userspace/programs/src/wm_suite/rate.rs')
         fixture = r'''
 #![allow(dead_code)] // Extracted native APIs include paths outside this fixture.
@@ -47,7 +48,7 @@ mod native{
  pub struct Evo{head:u32,clock:Option<vblank_clock::VblankClock>,frame_pixels:u64,pixel_hz:u64,
   vblank_line:u16,latch_phase:Option<u16>,last_presentation:Option<(u32,u64)>,PENDING_FIELD}
  SAMPLE
- impl Evo{ SCHEDULE RECORD ARM FINISH }
+ impl Evo{ SCHEDULE RECORD ARM FINISH CONTENT }
  fn setup(base:u16)->Evo{Evo{head:0,clock:Some(vblank_clock::VblankClock::new(base,EPOCH,PIXELS,HZ)),frame_pixels:PIXELS,pixel_hz:HZ,vblank_line:1047,latch_phase:Some(1065),last_presentation:Some((9,EPOCH)),PENDING_INIT}}
  pub fn late(){
   let regs=Registers{base:65535};let mut e=setup(65535);
@@ -55,6 +56,19 @@ mod native{
   NOW.with(|n|n.set(EPOCH+nanos(PIXELS)+17_000_000));
   assert!(e.finish_presentation(&regs,7).unwrap());
   assert!(e.last_presentation.unwrap().1.abs_diff(EPOCH+nanos(PIXELS))<1000,"late reap relabelled the accepted frame");
+ }
+ pub fn retained_content(){
+  let regs=Registers{base:0};let mut e=setup(0);
+  let accepted=EPOCH+1_000_000;NOW.with(|n|n.set(accepted));
+  e.arm_presentation(&regs,7).unwrap();
+  e.pending_presentation.as_mut().unwrap().acknowledged=Some(1);
+  assert_eq!(e.content_presentation(&regs,7,accepted).unwrap(),None,
+   "fresh ordinary acknowledgement published content before its edge");
+  NOW.with(|n|n.set(EPOCH+nanos(PIXELS)+100_000));
+  let at=e.content_presentation(&regs,7,accepted).unwrap().unwrap();
+  assert!(at>=accepted);assert!(at.abs_diff(EPOCH+nanos(PIXELS))<1000);
+  assert!(e.content_presentation(&regs,9,accepted).is_err());
+  assert!(e.content_presentation(&regs,7,at+1).is_err());
  }
  pub fn stream(){
   let regs=Registers{base:65535};let mut e=setup(65535);let mut times=Vec::new();
@@ -121,12 +135,13 @@ mod native{
  }
 }
 #[test]fn schedule_uses_programmed_raster_and_calibrated_lead(){native::schedule();}
+#[test]fn retained_content_waits_after_ordinary_acknowledgement(){native::retained_content();}
 #[test]fn deadline_comes_from_a_bracketed_mode_transition(){native::calibrate();}
 #[test]fn late_acceptances_and_boundary_band_use_the_second_edge(){native::late_accept();}
 #[test]fn submitted_frame_is_independent_of_completion_poll_delay(){native::check();}
 #[test]fn a_late_reap_keeps_the_accepted_frame(){native::late();}
 #[test]fn reaper_schedule_does_not_change_the_presentation_rate(){native::stream();}
-'''.replace('CLOCK', clock).replace('RATE', rate).replace('PENDING_FIELD', 'pending_presentation:Option<PendingPresentation>,' if pending else '').replace('PENDING_INIT', 'pending_presentation:None,' if pending else '').replace('PENDING', pending).replace('SAMPLE', sample).replace('SCHEDULE',schedule).replace('RECORD', record).replace('ARM', arm).replace('FINISH', finish)
+'''.replace('CLOCK', clock).replace('RATE', rate).replace('PENDING_FIELD', 'pending_presentation:Option<PendingPresentation>,' if pending else '').replace('PENDING_INIT', 'pending_presentation:None,' if pending else '').replace('PENDING', pending).replace('SAMPLE', sample).replace('SCHEDULE',schedule).replace('RECORD', record).replace('ARM', arm).replace('FINISH', finish).replace('CONTENT', content)
         self.run_fixture(fixture.replace('pub(in crate::gk208)', 'pub(crate)'))
 
 

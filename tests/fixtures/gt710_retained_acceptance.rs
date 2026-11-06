@@ -56,7 +56,9 @@ fn setup()->(Evo,Registers,present::Surface){
 #[test]fn retained_refresh_does_not_schedule_a_redundant_flip(){
  let(mut e,mut r,s)=setup();
  for _ in 0..950 {
-  assert!(native::run(&mut e,&mut r,s).unwrap().is_none(),"W17 retained content must await its next edge");
+  // G2/G26 amendment 2: ordinary PRESENT returns the fresh acknowledgement;
+  // W17's separate content timestamp still awaits the next edge.
+  assert!(native::run(&mut e,&mut r,s).unwrap().is_some(),"ordinary retained PRESENT waited for the content timestamp");
   assert_eq!(e.pending_presentation.as_ref().unwrap().acknowledged,Some(0xcafe0001));
   assert!(e.finish_presentation(&r,s.resource).unwrap());
  }

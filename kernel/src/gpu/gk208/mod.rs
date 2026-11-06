@@ -693,11 +693,7 @@ pub(crate) fn completed_present_time(resource: u32, not_before: u64) -> Option<u
         // COMPOSITE must observe an edge after its render release, while ordinary
         // PRESENT keeps its GET-acceptance semantics (G26 amendment 2).
         for _ in 0..400 {
-            let (id, at) = evo.last_presentation
-                .ok_or("native presentation clock absent")?;
-            if id != resource { return Err("native presentation clock identity mismatch"); }
-            if at >= not_before { return Ok(at); }
-            evo.record_presentation(regs, resource)?;
+            if let Some(at) = evo.content_presentation(regs, resource, not_before)? { return Ok(at); }
             modeset::Io::delay_us(regs, 100);
         }
         Err("native content presentation edge did not advance")

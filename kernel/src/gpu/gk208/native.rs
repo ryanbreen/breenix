@@ -625,6 +625,17 @@ impl Evo {
         self.pending_presentation = None;
         Ok(true)
     }
+    /// G26 acceptance and G33a content time are separate completion points.
+    pub(in crate::gk208) fn content_presentation(&mut self, regs: &Registers,
+        resource: u32, not_before: u64) -> Result<Option<u64>, &'static str> {
+        if let Some(pending) = self.pending_presentation {
+            if pending.resource != resource { return Err("native content presentation identity mismatch"); }
+            if !self.finish_presentation(regs, resource)? { return Ok(None); }
+        }
+        let (id, at) = self.last_presentation.ok_or("native presentation clock absent")?;
+        if id != resource || at < not_before { return Err("native content presentation is stale"); }
+        Ok(Some(at))
+    }
     /// Identify the counter edge's raster line before any client UPDATE.
     /// MIT rnndb NV_HEAD_STAT.VERT (notice above): no display register writes.
     fn start_clock(&mut self, regs: &Registers) -> Result<(), &'static str> {
@@ -937,7 +948,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
         fn read(&mut self, register:usize) -> u32 {self.regs.read(register)}
     }
     let head=evo.head;
-    let receipt = {
+    let (receipt, retained_ack) = {
         let mut update = Update { evo, regs, view, resource: surface.resource };
         // A retained binding is already latched. Refresh its contents through
         // the existing fresh capabilities report before considering a flip.
@@ -950,7 +961,9 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
                     Ok(value)
                 })?
         } else { None };
-        if retained.is_some() && !wait { return Ok(None); }
+        // The fresh acknowledgement completes ordinary retained PRESENT (G26).
+        // COMPOSITE separately waits for its pending physical content timestamp.
+        let retained_ack = retained.is_some() && !wait;
         if retained.is_none() && !wait {
             use super::present::Io;
             update.clear_notifier()?;
@@ -958,19 +971,20 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
             modeset::wait(update.regs, 0x640004, u32::MAX, update.evo.put)?;
             return Ok(None);
         }
-        match retained {
+        let receipt = match retained {
             Some(receipt) => receipt,
             None => super::present::flush(&mut update, head, surface)?,
-        }
+        };
+        (receipt, retained_ack)
     };
-    if evo.pending_presentation.is_some() {
+    if evo.pending_presentation.is_some() && !retained_ack {
         let mut finished = false;
         for _ in 0..400 {
             if evo.finish_presentation(regs, surface.resource)? { finished = true; break; }
             regs.delay_us(100);
         }
         if !finished { return Err("native synchronous presentation edge did not advance"); }
-    } else {
+    } else if evo.pending_presentation.is_none() {
         evo.record_presentation(regs, surface.resource)?;
     }
     view.verify(regs,head)?;
