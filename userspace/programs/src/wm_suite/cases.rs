@@ -1389,6 +1389,19 @@ pub fn frame_floor() -> CaseResult {
         "one client did not receive 60 completed composites per second",
     )
 }
+pub(super) fn failure_pipeline() {
+    use std::io::Write;
+    let result = (|| -> std::io::Result<()> {
+        let trace = std::fs::read_to_string("/proc/breenix/window-pipeline")?;
+        let mut evidence = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence")?;
+        for row in trace.lines() {
+            evidence.write_all(format!("VALUE window-pipeline {row}\n").as_bytes())?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = result { value("pipeline-export-errno", error.raw_os_error().unwrap_or(5) as i64, "", None); }
+}
+
 fn input_latency(pointer: bool, animation: bool) -> CaseResult {
     measure::receipts()?;
     let mut device = Virtual::create()?;
@@ -1465,9 +1478,7 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
     );
     value("latency-max", max as i64, "us", Some((0, max_bound)));
     if median > median_bound as u64 || max > max_bound as u64 {
-        if let Ok(trace) = std::fs::read_to_string("/proc/breenix/window-pipeline") {
-            for row in trace.lines() { println!("VALUE window-pipeline {row}"); }
-        }
+        failure_pipeline();
     }
     check(
         median <= median_bound as u64 && max <= max_bound as u64,
