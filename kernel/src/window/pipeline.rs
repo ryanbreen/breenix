@@ -2,7 +2,7 @@
 //! Columns are stage, object, related object, source input serial, monotonic ns.
 //! Stages: input publication/read, window delivery/read, acquire begin/end,
 //! commit begin/end, scene admission, render completion, PRESENT return,
-//! physical/virtual presentation, and receipt publication (1 through 13).
+//! physical/virtual presentation, and receipt publication (1 through 13), and front publication (14).
 use alloc::{string::String, vec::Vec};
 use core::fmt::Write;
 const CAPACITY: usize = 4096;
@@ -20,7 +20,7 @@ pub fn at(stage: u64, object: u64, related: u64, source: u64, ns: u64) {
     ring.rows[slot] = [stage, object, related, source, ns];
     ring.count += 1;
 }
-pub fn text() -> String {
+fn snapshot() -> Vec<Row> {
     // Copy a bounded tail before formatting; no formatter holds the writer lock.
     let mut rows = Vec::with_capacity(CAPACITY);
     {
@@ -30,13 +30,24 @@ pub fn text() -> String {
             rows.push(ring.rows[(ring.count as usize - count + i) % CAPACITY]);
         }
     };
+    rows
+}
+pub fn full_text() -> String {
+    let mut out = String::new();
+    for r in snapshot() {
+        let _ = writeln!(out, "{} {} {} {} {}", r[0], r[1], r[2], r[3], r[4]);
+    }
+    out
+}
+pub fn text() -> String {
+    let rows = snapshot();
     // Keep the last input window's path rather than unrelated animation draws.
     // Selection and formatting are read-side work, after the bounded ring copy.
     let target = rows.iter().rev().find(|r| r[0] == 3 && r[3] != 0).map(|r| r[1]);
     let frames: Vec<_> = rows.iter().filter(|r| r[0] == 9 && Some(r[1]) == target)
         .map(|r| r[3]).collect();
     let selected: Vec<_> = rows.iter().filter(|r| target.is_none() || r[0] <= 4
-        || (Some(r[1]) == target && matches!(r[0], 5..=9 | 13))
+        || (Some(r[1]) == target && matches!(r[0], 5..=9 | 13 | 14))
         || (matches!(r[0], 10..=12) && frames.contains(&r[1]))).collect();
     let mut out = String::new();
     for r in &selected[selected.len().saturating_sub(256)..] {

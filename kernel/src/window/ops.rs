@@ -748,6 +748,7 @@ pub fn publish_ready() {
                 w.commit_id = pending.commit_id;
                 w.pixel_gen = pending.pixel_gen;
                 w.meta = pending.meta;
+                super::pipeline::record(14, w.id, w.commit_id, w.meta.processed_serial);
                 if w.log.len() == limits::DAMAGE_LOG {
                     if let Some((evicted, _)) = w.log.pop_front() { w.log_floor = evicted; }
                 }

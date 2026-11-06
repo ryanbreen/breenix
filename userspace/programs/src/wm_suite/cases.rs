@@ -1343,6 +1343,8 @@ pub fn present_latency() -> CaseResult {
             samples.push((r.ns - c.commit_ns) / 1000);
         }
     }
+    value("pipeline-window", c.id as i64, "", None);
+    full_pipeline();
     measure::observed(&mut d, &[&c], receipt_serial)?;
     samples.sort_unstable();
     let median = samples[samples.len() / 2];
@@ -1373,6 +1375,10 @@ pub fn frame_floor() -> CaseResult {
     }
     let times: Vec<_> = generations.into_values().collect();
     let rate = crate::rate::measure(&times);
+    value("pipeline-window", c.id as i64, "", None);
+    value("measurement-begin", begin as i64, "ns", None);
+    value("measurement-end", end as i64, "ns", None);
+    full_pipeline();
     d.shown(&c)?;
     let hz = rate.as_ref().map_or(0, |r| {
         (u128::from(r.intervals) * 1_000_000_000 / u128::from(r.span_ns)) as i64
@@ -1390,9 +1396,15 @@ pub fn frame_floor() -> CaseResult {
     )
 }
 pub(super) fn failure_pipeline() {
+    export_pipeline("/proc/breenix/window-pipeline");
+}
+fn full_pipeline() {
+    export_pipeline("/proc/breenix/window-pipeline-full");
+}
+fn export_pipeline(path: &str) {
     use std::io::Write;
     let result = (|| -> std::io::Result<()> {
-        let trace = std::fs::read_to_string("/proc/breenix/window-pipeline")?;
+        let trace = std::fs::read_to_string(path)?;
         let mut evidence = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence")?;
         for row in trace.lines() {
             let name = if row.starts_with("fine_wake_requests=") { "timer-wake" } else { "window-pipeline" };

@@ -11,6 +11,8 @@ class PipelineEvidence(unittest.TestCase):
         source=(ROOT/'userspace/programs/src/wm_suite/cases.rs').read_text()
         if 'fn failure_pipeline(' in source:
             body=item(source,'fn failure_pipeline(')
+            if 'fn export_pipeline(' in source:
+                body+='\n'+item(source,'fn export_pipeline(')
         else:
             body='fn failure_pipeline() { '+item(source,'if let Ok(trace) = std::fs::read_to_string("/proc/breenix/window-pipeline")')+' }'
         with tempfile.TemporaryDirectory(prefix='wm-pipeline-') as directory:
