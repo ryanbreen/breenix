@@ -237,6 +237,29 @@ class SuiteVerdictTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertIn("outside START..DONE", detail)
 
+    def test_ticketed_host_requests_are_transport_records(self):
+        original = (FIXTURES / "all-pass.txt").read_text()
+        requests = [
+            "SUITE fixture HOSTKEY first/one seq=0 keys=shift-h,e ticket=18446744073709551615\n",
+            "SUITE fixture HOSTPOINTER first/one seq=1 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0 ticket=55\n",
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            serial = Path(temporary) / "serial"
+            first, rest = original.split('\n', 1)
+            for request in requests:
+                with self.subTest(request=request):
+                    serial.write_text(first + '\n' + request + rest)
+                    ok, detail = SCORER.verdict(MANIFEST, serial, [serial])
+                    self.assertTrue(ok, detail)
+                    for bad in [request.replace('ticket=', 'ticket=-'), request.rstrip() + ' junk\n']:
+                        serial.write_text(first + '\n' + bad + rest)
+                        self.assertFalse(SCORER.verdict(MANIFEST, serial, [serial])[0])
+                    serial.write_text(original + request)
+                    self.assertIn('outside START..DONE', SCORER.verdict(MANIFEST, serial, [serial])[1])
+                    serial.write_text((first + '\n' + request + rest).replace(
+                        'SUITE fixture CASE first/one PASS ms=1\n', ''))
+                    self.assertFalse(SCORER.verdict(MANIFEST, serial, [serial])[0])
+
     def test_one_case_requires_explicit_selection_and_exact_records(self):
         with tempfile.TemporaryDirectory() as temporary:
             serial = Path(temporary) / "serial"

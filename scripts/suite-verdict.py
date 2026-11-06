@@ -123,8 +123,8 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
                              r"(?:sha256=[0-9a-f]{64} mode=\d+x\d+ binding=\d+x\d+(?: crc=[0-9a-f]{8} crc2=[0-9a-f]{8} raster=\d+x\d+ out=sor\d+)?"
                              r"|error=[a-z0-9]+(?:-[a-z0-9]+)*(?: errno=[1-9][0-9]* eio_reason=[0-9]+ failed_submission=[0-9]+)?))$"),
         "WAIT": re.compile(rf"^SUITE {suite} WAIT {name} until=\d+ for=\d+ result=[a-z0-9]+(?:-[a-z0-9]+)*$"),
-        "HOSTKEY": re.compile(rf"^SUITE {suite} HOSTKEY {name} seq=\d+ keys=[a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*$"),
-        "HOSTPOINTER": re.compile(rf"^SUITE {suite} HOSTPOINTER {name} seq=\d+ x=\d+ y=\d+ width=\d+ height=\d+ buttons=[0-7] wheel=-?[01]$"),
+        "HOSTKEY": re.compile(rf"^SUITE {suite} HOSTKEY {name} seq=\d+ keys=[a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*(?: ticket=\d+)?$"),
+        "HOSTPOINTER": re.compile(rf"^SUITE {suite} HOSTPOINTER {name} seq=\d+ x=\d+ y=\d+ width=\d+ height=\d+ buttons=[0-7] wheel=-?[01](?: ticket=\d+)?$"),
         "HOSTSSH": re.compile(rf"^SUITE {suite} HOSTSSH {name} seq=\d+ try=(?:account|root) addr=\d+\.\d+\.\d+\.\d+"
                               rf" port=\d+ user=[a-z_][a-z0-9_-]* fp=SHA256:[A-Za-z0-9+/]+$"),
         "PULSES": re.compile(rf"^SUITE {suite} PULSES {name} every=\d+ limit=\d+ at=(?:-?\d+(?:,-?\d+)*)?$"),
