@@ -3,6 +3,16 @@ mod stack;
 use stack::Stack;
 
 #[test]
+fn adopt_restores_published_stack_and_later_add_focuses_on_top() {
+    let mut s = Stack::new();
+    s.adopt(&[(20, 1, true, false, false), (10, 0, false, true, false)]);
+    assert_eq!(s.state(10), Some((0, false, true)));
+    assert_eq!(s.state(20), Some((1, true, false)));
+    assert_eq!(s.add(30, false), (Some(10), Some(30)));
+    assert_eq!(s.state(30), Some((2, false, true)));
+}
+
+#[test]
 fn raise_uses_ids_and_keeps_chromeless_above_frames() {
     let mut s = Stack::new();
     s.add(1, false); s.add(2, false); s.add(3, true);
