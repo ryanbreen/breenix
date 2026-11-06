@@ -1464,6 +1464,11 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
         Some((0, median_bound)),
     );
     value("latency-max", max as i64, "us", Some((0, max_bound)));
+    if median > median_bound as u64 || max > max_bound as u64 {
+        if let Ok(trace) = std::fs::read_to_string("/proc/breenix/window-pipeline") {
+            for row in trace.lines() { println!("VALUE window-pipeline {row}"); }
+        }
+    }
     check(
         median <= median_bound as u64 && max <= max_bound as u64,
         "input-to-composited-ack latency exceeds the GUI plan bound",

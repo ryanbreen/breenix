@@ -389,8 +389,10 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
     });
     a.phase = 2;
     let content_ready_ns = now_ns();
+    crate::window::pipeline::at(10, frame.serial, target_id as u64, 0, content_ready_ns);
     let (fence, status, answer) = display::present_as(tgid, context, target, &|_| Ok(()))?;
     a.present_fence = fence;
+    crate::window::pipeline::record(11, frame.serial, target_id as u64, fence);
     if status != fence_status::OK {
         a.fence_status = status;
         a.answer = answer;
@@ -398,6 +400,7 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
         return Err(EIO);
     }
     let presented_ns = display::composite_present_time(fence, content_ready_ns)?;
+    crate::window::pipeline::at(12, frame.serial, target_id as u64, fence, presented_ns);
     a.answer = answer;
     let (pixels, per_window) = scene_work;
     a.pixels = pixels;

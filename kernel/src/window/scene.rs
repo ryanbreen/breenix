@@ -414,6 +414,9 @@ impl Admission {
         }
         reg.present.serial += 1;
         self.serial = reg.present.serial;
+        for entry in &self.entries {
+            super::pipeline::record(9, entry.id, entry.commit_id, self.serial);
+        }
         Ok(())
     }
 }
@@ -612,6 +615,7 @@ fn finish(frame: &mut Admission, result: Result<Composed, i32>, reason: u32) -> 
                 reg.present.force_full = false;
             }
             for e in &frame.entries {
+                super::pipeline::record(13, e.id, e.commit_id, frame.serial);
                 HISTORY.push(super::status_pages::HistoryEntry {
                     composite_serial: frame.serial, presented_ns: c.presented_ns,
                     window_id: e.id, commit_id: e.commit_id, pixel_generation: e.pixel_gen,
