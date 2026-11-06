@@ -45,6 +45,6 @@ pub(super) fn dump() {
 fn emit(sequence: u64, r: Row) {
     crate::serial_println!(concat!("GT710_PRESENT_EDGE seq={} resource={} accept_ns={} accept_vert={} accept_horz={} ",
         "complete_ns={} complete_vert={} complete_horz={} presented_ns={} observed_ns={} observed_vert={} observed_horz={} ",
-        "counter_line={} blank_start={} blank_end={}"),
+        "counter_line={} blank_end={} blank_start={}"),
         sequence, r[0], r[1], r[2], r[3], r[4], r[5], r[6], r[7], r[8], r[9], r[10], r[11], r[12], r[13]);
 }
