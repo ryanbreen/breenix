@@ -100,12 +100,16 @@ pub fn receipts() -> Result<Vec<Receipt>, String> {
     })?;
     text.lines()
         .map(|s| {
-            let fields = s
-                .split_whitespace()
-                .map(str::parse::<u64>)
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|e| e.to_string())?;
-            if fields.len() != 5 || fields[0] == 0 || fields[1] == 0 {
+            let mut fields = [0; 5];
+            let mut count = 0;
+            for field in s.split_whitespace() {
+                let value = field.parse::<u64>().map_err(|e| e.to_string())?;
+                if let Some(slot) = fields.get_mut(count) {
+                    *slot = value;
+                }
+                count += 1;
+            }
+            if count != 5 || fields[0] == 0 || fields[1] == 0 {
                 return Err("malformed completed-composite receipt".into());
             }
             Ok(Receipt {
