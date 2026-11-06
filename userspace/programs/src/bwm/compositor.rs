@@ -303,7 +303,8 @@ impl Compositor {
             let r = call(op::COMPOSITE, &mut c);
             match r {
                 0 => {
-                    self.last_timing=super::session::timing(c.serial).map_err(FrameError::Failed)?;
+                    // Scheduling hints cannot undo an already completed COMPOSITE.
+                    self.last_timing=super::session::timing(c.serial).unwrap_or_default();
                     self.last_timing.prepare_ns=self.last_timing.prepare_ns.saturating_add(userspace_prepare);
                     self.next ^= 1;
                     self.last_serial = c.serial;

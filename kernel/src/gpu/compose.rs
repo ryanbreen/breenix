@@ -403,7 +403,9 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
     }
     let presented_ns = display::composite_present_time(fence, content_ready_ns)?;
     crate::window::pipeline::at(12, frame.serial, target_id as u64, fence, presented_ns);
-    let (period,lead)=dev::presentation_schedule().ok_or(EIO)?;
+    // The physical presentation succeeded; an unavailable scheduling hint
+    // uses the existing completion-driven timing representation.
+    let (period,lead)=dev::presentation_schedule().unwrap_or((0,0));
     crate::window::pacing::publish(frame.serial,presented_ns,period,accepted_ns.saturating_sub(began_ns),lead);
     a.answer = answer;
     let (pixels, per_window) = scene_work;
