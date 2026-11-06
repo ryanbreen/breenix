@@ -620,6 +620,7 @@ pub mod resource;
 #[cfg(feature = "gt710_core_probe")]
 mod spans_diagnostic;
 mod vblank_clock;
+mod presentation_trace;
 pub mod adapter;
 pub mod caps;
 

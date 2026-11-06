@@ -470,6 +470,7 @@ pub struct Evo {
     clock: Option<super::vblank_clock::VblankClock>,
     vblank_line: u16,
     pub(super) last_presentation: Option<(u32, u64)>,
+    pending_presentation: Option<PendingPresentation>,
     pub head: u32,
     sor: u32,
     total: u64,
@@ -480,6 +481,16 @@ pub struct Evo {
     limits: modeset::PllLimits,
     coefficients: modeset::Pll,
     scripts: [Vec<modeset::Op>; 4],
+}
+#[derive(Clone, Copy)]
+struct PendingPresentation {
+    resource: u32,
+    accepted_ns: u64,
+    count: u16,
+    vert: u32,
+    pixel: u32,
+    acknowledged: Option<u32>,
+    completed: Option<(u64, u32, u32)>,
 }
 pub struct FlipSnapshot {
     pub notifier_before: u32,
@@ -525,6 +536,57 @@ fn presentation_sample(regs: &Registers, head: u32)
 }
 
 impl Evo {
+    fn arm_presentation(&mut self, regs: &Registers, resource: u32)
+        -> Result<(), &'static str> {
+        if self.pending_presentation.is_some() {
+            return Err("native presentation already pending");
+        }
+        let (accepted_ns, vert, pixel) = presentation_sample(regs, self.head)?;
+        self.pending_presentation = Some(PendingPresentation {
+            resource, accepted_ns, count: (vert >> 16) as u16, vert, pixel,
+            acknowledged: None, completed: None,
+        });
+        Ok(())
+    }
+    fn finish_presentation(&mut self, regs: &Registers, resource: u32)
+        -> Result<bool, &'static str> {
+        let (sampled_ns, vert, pixel) = presentation_sample(regs, self.head)?;
+        let pending = self.pending_presentation.as_mut().ok_or("native presentation not armed")?;
+        if pending.resource != resource { return Err("native presentation identity mismatch"); }
+        let completed = *pending.completed.get_or_insert((sampled_ns, vert, pixel));
+        let pending = *pending;
+        let count = (vert >> 16) as u16;
+        let advanced = count.wrapping_sub(pending.count);
+        if advanced == 0 { return Ok(false); }
+        let total = regs.read(0x640414 + self.head as usize * 0x300);
+        let (width, height) = (total & 0xffff, total >> 16);
+        let line = vert & 0xffff;
+        if width == 0 || height == 0 || self.pixel_hz == 0 || line >= height || pixel >= width
+            || u32::from(self.vblank_line) >= height
+            || u64::from(width) * u64::from(height) != self.frame_pixels {
+            return Err("native presentation raster extent mismatch");
+        }
+        let pixels = u64::from((line + height - u32::from(self.vblank_line)) % height)
+            * u64::from(width) + u64::from(pixel);
+        // The accepted UPDATE names the next edge. A late reap must subtract
+        // intervening periods rather than relabel the flip with the reap frame.
+        let elapsed_pixels = u128::from(pixels)
+            + u128::from(advanced - 1) * u128::from(self.frame_pixels);
+        let elapsed_ns = (elapsed_pixels * 1_000_000_000 / u128::from(self.pixel_hz)) as u64;
+        let at = sampled_ns.checked_sub(elapsed_ns)
+            .ok_or("native presentation edge predates clock")?;
+        if at < pending.accepted_ns { return Err("native presentation edge predates acceptance"); }
+        super::presentation_trace::record([
+            u64::from(resource), pending.accepted_ns, u64::from(pending.vert), u64::from(pending.pixel),
+            completed.0, u64::from(completed.1), u64::from(completed.2), at,
+            sampled_ns, u64::from(vert), u64::from(pixel), u64::from(self.vblank_line),
+            u64::from(regs.read(0x64041c + self.head as usize * 0x300)),
+            u64::from(regs.read(0x640420 + self.head as usize * 0x300)),
+        ]);
+        self.last_presentation = Some((resource, at));
+        self.pending_presentation = None;
+        Ok(true)
+    }
     /// Identify the counter edge's raster line before any client UPDATE.
     /// MIT rnndb NV_HEAD_STAT.VERT (notice above): no display register writes.
     fn start_clock(&mut self, regs: &Registers) -> Result<(), &'static str> {
@@ -719,18 +781,27 @@ pub(in crate::gk208) fn present_accepted(evo: &mut Evo, regs: &mut Registers,
 pub(in crate::gk208) fn wait_present(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface,
 ) -> Result<super::present::Receipt, &'static str> {
-    complete(regs, evo.total, evo.notifier, &evo.limits, &evo.coefficients,
-        (evo.head, evo.sor, true, true), &evo.scripts)?;
-    present_latched(evo, regs, surface)?.ok_or("native accepted flip did not latch")
+    if evo.pending_presentation.is_some_and(|p| p.acknowledged.is_none()) {
+        complete(regs, evo.total, evo.notifier, &evo.limits, &evo.coefficients,
+            (evo.head, evo.sor, true, true), &evo.scripts)?;
+    }
+    for _ in 0..400 {
+        if let Some(receipt) = present_latched(evo, regs, surface)? { return Ok(receipt); }
+        regs.delay_us(100);
+    }
+    Err("native accepted flip did not latch")
 }
 
 pub(in crate::gk208) fn present_latched(evo: &mut Evo, regs: &mut Registers,
     surface: super::present::Surface,
 ) -> Result<Option<super::present::Receipt>, &'static str> {
-    let value = completion(regs, evo.total, evo.notifier, &evo.limits, &evo.coefficients,
-        (evo.head, evo.sor, true, true), &evo.scripts, false)?;
+    let value = match evo.pending_presentation.and_then(|p| p.acknowledged) {
+        Some(value) => value,
+        None => completion(regs, evo.total, evo.notifier, &evo.limits, &evo.coefficients,
+            (evo.head, evo.sor, true, true), &evo.scripts, false)?,
+    };
     if value & 1 == 0 { return Ok(None); }
-    evo.record_presentation(regs, surface.resource)?;
+    if !evo.finish_presentation(regs, surface.resource)? { return Ok(None); }
     let receipt = super::present::receipt(&mut PresentRead(regs), evo.head, surface, value)?;
     let h = evo.head as usize * 0x300;
     let blank = regs.read(0x64041c + h);
@@ -777,7 +848,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
     let view=modeset::Viewport::for_raster((end&0xffff).checked_sub(blank&0xffff)
         .ok_or("invalid native raster width")?,(end>>16).checked_sub(blank>>16)
         .ok_or("invalid native raster height")?,surface.width,surface.height)?;
-    struct Update<'a> { evo:&'a mut Evo, regs:&'a mut Registers, view:modeset::Viewport }
+    struct Update<'a> { evo:&'a mut Evo, regs:&'a mut Registers, view:modeset::Viewport, resource:u32 }
     impl super::present::Io for Update<'_> {
         fn clear_notifier(&mut self) -> Result<(), &'static str> {
             modeset::wait(self.regs,0x640004,u32::MAX,self.evo.put)?;
@@ -810,7 +881,9 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
                 modeset::wait(self.regs,0x640004,u32::MAX,0)?;
                 self.evo.put=0;
             }
-            submit(self.regs,self.evo.total,self.evo.push,&mut self.evo.put,methods)
+            submit(self.regs,self.evo.total,self.evo.push,&mut self.evo.put,methods)?;
+            modeset::wait(self.regs,0x640004,u32::MAX,self.evo.put)?;
+            self.evo.arm_presentation(self.regs,self.resource)
         }
         fn complete(&mut self) -> Result<u32, &'static str> {
             let e=&self.evo;
@@ -823,13 +896,19 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
     }
     let head=evo.head;
     let receipt = {
-        let mut update = Update { evo, regs, view };
+        let mut update = Update { evo, regs, view, resource: surface.resource };
         // A retained binding is already latched. Refresh its contents through
         // the existing fresh capabilities report before considering a flip.
         let retained = if view.verify(update.regs, head).is_ok() {
             super::present::retained(&mut update, head, surface,
-                |u| acknowledge(u.evo, u.regs))?
+                |u| {
+                    let value = acknowledge(u.evo, u.regs)?;
+                    u.evo.arm_presentation(u.regs, surface.resource)?;
+                    u.evo.pending_presentation.as_mut().unwrap().acknowledged = Some(value);
+                    Ok(value)
+                })?
         } else { None };
+        if retained.is_some() && !wait { return Ok(None); }
         if retained.is_none() && !wait {
             use super::present::Io;
             update.clear_notifier()?;
@@ -842,7 +921,16 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
             None => super::present::flush(&mut update, head, surface)?,
         }
     };
-    evo.record_presentation(regs, surface.resource)?;
+    if evo.pending_presentation.is_some() {
+        let mut finished = false;
+        for _ in 0..400 {
+            if evo.finish_presentation(regs, surface.resource)? { finished = true; break; }
+            regs.delay_us(100);
+        }
+        if !finished { return Err("native synchronous presentation edge did not advance"); }
+    } else {
+        evo.record_presentation(regs, surface.resource)?;
+    }
     view.verify(regs,head)?;
     let health=super::memx_display::Health::read(regs,evo.head,evo.sor);
     if phase!=0 {
@@ -852,6 +940,7 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
         MEMX_PRESENT_PHASE.store(0,core::sync::atomic::Ordering::Release);
     }else{health.check()?;}
     super::display_evidence::record(regs, head, surface, &receipt);
+    if surface.resource == u32::MAX { super::presentation_trace::dump(); }
     Ok(Some(receipt))
 }
 
@@ -1130,7 +1219,7 @@ pub fn takeover(
         return Ok((console, Evo {
             frame_pixels: u64::from(t.htotal) * u64::from(t.vtotal),
             pixel_hz: u64::from(t.clock_khz) * 1000,
-            clock: None, vblank_line: 0, last_presentation: None,
+            clock: None, vblank_line: 0, last_presentation: None, pending_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
             limits, coefficients, scripts,
@@ -1442,7 +1531,7 @@ pub fn takeover(
     Ok((console, Evo {
             frame_pixels: u64::from(t.htotal) * u64::from(t.vtotal),
             pixel_hz: u64::from(t.clock_khz) * 1000,
-            clock: None, vblank_line: 0, last_presentation: None,
+            clock: None, vblank_line: 0, last_presentation: None, pending_presentation: None,
             head, sor: u32::from(route.sor), total, push: evo, put, notifier,
             surfaces: [layout.objects[0].range, layout.objects[1].range],
             limits, coefficients, scripts,

@@ -3,8 +3,15 @@ extern crate alloc;
 use std::collections::BTreeMap;
 #[path="@ROOT@/kernel/src/gpu/gk208/present.rs"] mod present;
 struct Registers { words:BTreeMap<usize,u32>, updates:usize, acks:usize, acknowledge:bool }
-impl Registers {fn read(&self,r:usize)->u32{*self.words.get(&r).unwrap_or(&0)}}
-struct Evo {head:u32,sor:u32,total:u64,push:u64,put:u32,notifier:u64,limits:(),coefficients:(),scripts:[Vec<()>;4]}
+impl Registers {fn read(&self,r:usize)->u32{*self.words.get(&r).unwrap_or(&0)}fn delay_us(&mut self,_:u32){}}
+struct PendingPresentation {acknowledged:Option<u32>}
+struct Evo {head:u32,sor:u32,total:u64,push:u64,put:u32,notifier:u64,limits:(),coefficients:(),scripts:[Vec<()>;4],pending_presentation:Option<PendingPresentation>}
+impl Evo {
+ fn start_clock(&mut self,_:&Registers)->Result<(),&'static str>{Ok(())}
+ fn record_presentation(&mut self,_:&Registers,_:u32)->Result<(),&'static str>{Ok(())}
+ fn arm_presentation(&mut self,_:&Registers,_:u32)->Result<(),&'static str>{assert!(self.pending_presentation.is_none());self.pending_presentation=Some(PendingPresentation{acknowledged:None});Ok(())}
+ fn finish_presentation(&mut self,_:&Registers,_:u32)->Result<bool,&'static str>{assert!(self.pending_presentation.take().is_some());Ok(true)}
+}
 mod modeset {
  #[derive(Clone,Copy)]pub struct Viewport;
  impl Viewport {
@@ -21,6 +28,7 @@ mod memx_display {
  impl Health {pub fn read(_: &mut super::Registers,_:u32,_:u32)->Self{Self}pub fn check(&self)->Result<(),&'static str>{Ok(())}}
 }
 mod display_evidence {pub fn record(_: &mut super::Registers,_:u32,_:super::present::Surface,_:&super::present::Receipt){}}
+mod presentation_trace {pub fn dump(){}}
 mod native {
  use super::*;
  static MEMX_PRESENT_PHASE:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(0);
@@ -43,11 +51,15 @@ fn setup()->(Evo,Registers,present::Surface){
  let s=present::Surface{resource:71,address:0x12340000,width:1280,height:800,pitch:5120,block_height:0,format:0,dma:1};
  let mut r=Registers{words:BTreeMap::from([(0x64041c,0),(0x640420,1280|1024<<16),(0x4c0,1)]),updates:0,acks:0,acknowledge:true};
  for &(m,v)in &s.methods(0).unwrap()[..5]{for bank in [0x640000,0x660000]{r.words.insert(bank+m as usize,v);}}
- (Evo{head:0,sor:0,total:1<<30,push:0x2000,put:0,notifier:0x1000,limits:(),coefficients:(),scripts:std::array::from_fn(|_|vec![])},r,s)
+ (Evo{head:0,sor:0,total:1<<30,push:0x2000,put:0,notifier:0x1000,limits:(),coefficients:(),scripts:std::array::from_fn(|_|vec![]),pending_presentation:None},r,s)
 }
 #[test]fn retained_refresh_does_not_schedule_a_redundant_flip(){
  let(mut e,mut r,s)=setup();
- for _ in 0..950 {let receipt=native::run(&mut e,&mut r,s).unwrap().expect("retained surface was put behind a vblank latch");assert_eq!(receipt.notifier,0xcafe0001);assert_eq!(receipt.active,receipt.armed);}
+ for _ in 0..950 {
+  assert!(native::run(&mut e,&mut r,s).unwrap().is_none(),"W17 retained content must await its next edge");
+  assert_eq!(e.pending_presentation.as_ref().unwrap().acknowledged,Some(0xcafe0001));
+  assert!(e.finish_presentation(&r,s.resource).unwrap());
+ }
  assert_eq!(r.acks,950);assert_eq!(r.updates,0);
 }
 #[test]fn retained_refresh_refuses_a_missing_fresh_device_ack(){
