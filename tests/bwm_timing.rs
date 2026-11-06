@@ -67,3 +67,14 @@ fn another_devices_earlier_timestamp_preserves_a_pending_double_click() {
     assert_eq!(clicks.press(1, 272, 8, (10, 10), 600_000_000), 2);
     assert_eq!(clicks.release(1, 272), 2);
 }
+
+#[test]
+fn another_devices_later_timestamp_preserves_a_pending_double_click() {
+    let mut clicks = timing::Clicks::new();
+    assert_eq!(clicks.press(1, 272, 8, (10, 10), 1), 1);
+    assert_eq!(clicks.release(1, 272), 1);
+    assert_eq!(clicks.press(2, 272, 9, (10, 10), 5_000_000_000), 1);
+    assert_eq!(clicks.release(2, 272), 1);
+    assert_eq!(clicks.press(1, 272, 8, (10, 10), 100_000_000), 2);
+    assert_eq!(clicks.release(1, 272), 2);
+}
