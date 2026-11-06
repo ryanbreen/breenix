@@ -1344,13 +1344,13 @@ pub fn present_latency() -> CaseResult {
         }
     }
     value("pipeline-window", c.id as i64, "", None);
-    full_pipeline("window-pipeline-present");
     measure::observed(&mut d, &[&c], receipt_serial)?;
     samples.sort_unstable();
     let median = samples[samples.len() / 2];
     let max = *samples.last().unwrap();
     value("present-median", median as i64, "us", Some((0, 16000)));
     value("present-max", max as i64, "us", Some((0, 33000)));
+    if median > 16000 || max > 33000 { failure_pipeline(); }
     check(
         median <= 16000 && max <= 33000,
         "commit-to-observed-composite latency exceeds median 16 ms or max 33 ms",
@@ -1378,7 +1378,6 @@ pub fn frame_floor() -> CaseResult {
     value("pipeline-window", c.id as i64, "", None);
     value("measurement-begin", begin as i64, "ns", None);
     value("measurement-end", end as i64, "ns", None);
-    full_pipeline("window-pipeline-frame-floor");
     d.shown(&c)?;
     let hz = rate.as_ref().map_or(0, |r| {
         (u128::from(r.intervals) * 1_000_000_000 / u128::from(r.span_ns)) as i64
@@ -1387,6 +1386,7 @@ pub fn frame_floor() -> CaseResult {
     value("presentation-span", rate.as_ref().map_or(0, |r| r.span_ns) as i64, "ns", None);
     value("composites-per-second", hz, "hz", Some((60, i64::MAX)));
     if !rate.as_ref().is_some_and(|r| r.passes) {
+        failure_pipeline();
         let gap = times.windows(2).map(|w| w[1].saturating_sub(w[0])).max().unwrap_or(0);
         value("presentation-gap-max", gap as i64, "ns", None);
     }
@@ -1396,6 +1396,7 @@ pub fn frame_floor() -> CaseResult {
     )
 }
 pub(super) fn failure_pipeline() {
+    full_pipeline("window-pipeline-failure");
     export_pipeline("/proc/breenix/window-pipeline");
 }
 fn pipeline_blob(trace: &str) -> Result<Vec<u8>, String> {
@@ -1500,9 +1501,6 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
             time::sleep_ms(50 - spent)?;
         }
     }
-    // W21 compares the bounded stage tail after the timed workload, before
-    // scanout observation and continuing animators can displace its input.
-    failure_pipeline();
     measure::observed(&mut d, &[&c], receipt_serial)?;
     samples.sort_unstable();
     let median = samples[50];
@@ -1519,6 +1517,7 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
         Some((0, median_bound)),
     );
     value("latency-max", max as i64, "us", Some((0, max_bound)));
+    if median > median_bound as u64 || max > max_bound as u64 { failure_pipeline(); }
     check(
         median <= median_bound as u64 && max <= max_bound as u64,
         "input-to-composited-ack latency exceeds the GUI plan bound",
