@@ -49,6 +49,18 @@ impl Model {
     }
 }
 fn sample(crc:u32,crc2:u32)->Sample { Sample {status:1,crc,crc2} }
+#[test] fn u13_stable_sor_with_explicit_secondary_absence_is_eligible() {
+    let mut m = Model::new();
+    m.available = vec![sample(91,0), sample(11,0), sample(11,0), sample(11,0), sample(11,0)];
+    let record = m.capture().expect("U13: stable SOR does not require RG words");
+    m.disarmed();
+    assert!(record.eligible());
+    assert_eq!(record.samples, m.available);
+    let raw = record.encode().unwrap();
+    assert_eq!(u32::from_le_bytes(raw[8..12].try_into().unwrap()), 2);
+    assert_eq!(u32::from_le_bytes(raw[116..120].try_into().unwrap()), 1);
+    assert!(screen_crc::Record::decode(&raw).unwrap().eligible());
+}
 impl modeset::Io for Model {
     fn read(&mut self, reg:usize)->u32 {
         let method=(reg&0xffff) as u32;
