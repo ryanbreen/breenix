@@ -1,6 +1,8 @@
 //! UI testing suite skeleton; each unbuilt case fails with its planned layer.
 #[path = "uitest_suite/runner.rs"]
 mod runner;
+#[path = "uitest_suite/inner.rs"]
+mod inner;
 #[path = "suite_breengel/stage_painter.rs"]
 mod stage_painter;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
@@ -42,17 +44,17 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // The real runner, run as a subreaper, kills and reaps every descendant of the fixture, a double-forked helper included, and nothing outside it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("sweep-descendants", "The real runner as a subreaper kills and reaps every descendant of the fixture and nothing outside it", runner::sweep_descendants),
         // A clean scenario run in the inner executor returns Pass. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("inner-pass", "A clean scenario run in the inner executor returns Pass", || pending("runner", 1)),
+        case("inner-pass", "A clean scenario run in the inner executor returns Pass", inner::inner_pass),
         // A scenario with a planted pixel fault returns pixel-mismatch with its check and first pixel. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("inner-expected-failure", "A scenario with a planted pixel fault returns pixel-mismatch with its check and first pixel", || pending("runner", 4)),
         // An outer case expecting pixel-mismatch fails when the scenario fails another way. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("inner-wrong-class", "An outer case expecting pixel-mismatch fails when the scenario fails another way", || pending("runner", 1)),
+        case("inner-wrong-class", "An outer case expecting pixel-mismatch fails when the scenario fails another way", inner::inner_wrong_class),
         // A scenario whose app crashes is not accepted as detecting a pixel fault. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("inner-crash-not-detection", "A scenario whose app crashes is not accepted as detecting a pixel fault", || pending("runner", 1)),
+        case("inner-crash-not-detection", "A scenario whose app crashes is not accepted as detecting a pixel fault", inner::inner_crash_not_detection),
         // Inner teardown kills only the scenario's descendants, and the outer case's helpers survive. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("inner-teardown-scoped", "Inner teardown kills only the scenario's descendants, and the outer case's helpers survive", || pending("runner", 1)),
+        case("inner-teardown-scoped", "Inner teardown kills only the scenario's descendants, and the outer case's helpers survive", inner::inner_teardown_scoped),
         // An inner scenario's records never appear in the outer suite's records. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("inner-records-contained", "An inner scenario's records never appear in the outer suite's records", || pending("runner", 1)),
+        case("inner-records-contained", "An inner scenario's records never appear in the outer suite's records", inner::inner_records_contained),
         // In a boot session, an inner scenario and the real-runner fixture alike, a double-forked descendant that exits with status 7 after its parent has died is reparented to that session's supervisor (its parent pid read from `/proc/<pid>/stat` is the supervisor's) and reaped there, and the supervisor reports its pid and status 7 to the case; when the supervisor is killed first, the orphan goes to the runner, the runner writes `artifacts=none:supervisor-died`, and the case fails naming the dead supervisor. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("subreaper", "A double-forked orphan is reparented to and reaped by its session supervisor, or by the runner when the supervisor died first", || pending("runner", 3)),
     ]),
