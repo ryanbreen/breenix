@@ -108,12 +108,18 @@ class VerifyPanelTest(unittest.TestCase):
         frame=verifier.checker((2560,1600))
         x,y,r,b=page['border']
         ImageDraw.Draw(frame).rectangle((x,y,r-1,b-1),fill='white')
+        ImageDraw.Draw(frame).rectangle((x+2,y+2,r-3,b-3),fill='#0C131F')
         for (dx,dy,dw,dh),(sx,sy,sw,sh) in page['tiles']:
             frame.paste(source.crop((sx,sy,sx+sw,sy+sh)),(dx,dy))
         result=verifier.verify_picture(frame,'PngSuite fixture comparison','intent',case=case,suite='breengel')
         self.assertFalse(result['failed_claims'],result)
         self.assertEqual(len(result['panel']['tiles']),72)
         self.assertEqual(result['picture']['scale'],1)
+        # U15: the empty final band is navy, not leftover white border fill.
+        tail=frame.copy()
+        tail.putpixel((1280,1247),(255,255,255))
+        result=verifier.verify_picture(tail,'PngSuite fixture comparison','intent',case=case,suite='breengel')
+        self.assertTrue(result['failed_claims'],result)
         # First fixture's actual colour plane: one altered visible pixel must fail.
         dx,dy,_,_=page['tiles'][0][0]
         frame.putpixel((dx+9,dy+37),(1,2,3))

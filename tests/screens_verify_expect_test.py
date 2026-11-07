@@ -192,6 +192,7 @@ class VerifyExpectTest(unittest.TestCase):
         frame = v.checker((2560,1600))
         draw=ImageDraw.Draw(frame)
         draw.rectangle((0,791,2559,808),fill='white')
+        draw.rectangle((2,793,2557,806),fill='#0C131F')
         # Seven 2556-wide source bands, each retaining the two source rows.
         for i,x in enumerate(range(0,16384,2556)):
             frame.paste(picture.crop((x,0,min(x+2556,16384),2)),(2,793+2*i))
@@ -219,6 +220,7 @@ class VerifyExpectTest(unittest.TestCase):
                 x,y,r,b=p['border']
                 self.assertTrue(0<=x<r<=2560 and 0<=y<b<=1600)
                 ImageDraw.Draw(frame).rectangle((x,y,r-1,b-1),fill='white')
+                ImageDraw.Draw(frame).rectangle((x+2,y+2,r-3,b-3),fill='#0C131F')
                 for (dx,dy,dw,dh),(sx,sy,sw,sh) in p['tiles']:
                     self.assertEqual((dw,dh),(sw,sh))
                     frame.paste(source.crop((sx,sy,sx+sw,sy+sh)),(dx,dy))

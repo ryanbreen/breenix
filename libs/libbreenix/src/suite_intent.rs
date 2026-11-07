@@ -129,8 +129,15 @@ pub(super) fn streams(source: [u32; 2], mode: [u32; 2], target: u64, texture: u6
     }
     encode::draw(&mut stream, abi::pipeline::SOLID, 0xFF7A_7A7A, &light);
     if let Some([x, y, w, h]) = layout.border {
-        encode::draw(&mut stream, abi::pipeline::SOLID, 0xFFFF_FFFF,
-            &[[x as i32, y as i32, (x + w) as i32, (y + h) as i32]]);
+        // Paint only the border white. A folded page can have an unoccupied
+        // tail inside its bounding box; keep that space the panel's navy.
+        let (left, top, right, bottom) = (x as i32, y as i32, (x+w) as i32, (y+h) as i32);
+        encode::draw(&mut stream, abi::pipeline::SOLID, 0xFFFF_FFFF, &[
+            [left, top, right, top+2], [left, bottom-2, right, bottom],
+            [left, top+2, left+2, bottom-2], [right-2, top+2, right, bottom-2],
+        ]);
+        encode::draw(&mut stream, abi::pipeline::SOLID, 0xFF0C_131F,
+            &[[left+2, top+2, right-2, bottom-2]]);
     }
     let mut streams = vec![stream];
     let steps = abi::draw::steps(abi::pipeline::NEAREST_SCALED).ok_or("intent-pipeline")?;

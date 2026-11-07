@@ -407,6 +407,7 @@ def restore_intent(image, size, checkpoint, source_cells=()):
     if page['border']:
         x,y,r,b = page['border']
         ImageDraw.Draw(template).rectangle((x,y,r-1,b-1),fill='white')
+        ImageDraw.Draw(template).rectangle((x+2,y+2,r-3,b-3),fill='#0C131F')
     picture = Image.new('RGB',size)
     scale_mismatch = None
     for (dx,dy,dw,dh),(sx,sy,sw,sh) in page['tiles']:
