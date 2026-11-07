@@ -5,6 +5,8 @@ mod runner;
 mod inner;
 #[path = "uitest_suite/sessions.rs"]
 mod sessions;
+#[path = "uitest_suite/config.rs"]
+mod config;
 #[path = "suite_breengel/stage_painter.rs"]
 mod stage_painter;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
@@ -310,13 +312,13 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Apps in a session receive its fonts, clock, seed, mode, time zone, locale and config root. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("environment", "Apps in a session receive its fonts, clock, seed, mode, time zone, locale and config root", sessions::environment).session(libuitest::supervisor::serve),
         // bwm, Breengel's font configuration and every app read and write under the session's config root. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("config-root", "bwm, Breengel's font configuration and every app read and write under the session's config root", || pending("sessions", 3)),
+        case("config-root", "bwm, Breengel's font configuration and every app read and write under the session's config root", config::config_root).session(libuitest::supervisor::serve),
         // A session that changes every setting leaves the global configuration files unchanged. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("global-untouched", "A session that changes every setting leaves the global configuration files unchanged", || pending("sessions", 3)),
+        case("global-untouched", "A session that changes every setting leaves the global configuration files unchanged", config::global_untouched).session(libuitest::supervisor::serve),
         // A case killed while changing settings is followed by a case that sees the defaults. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("restore-after-crash", "A case killed while changing settings is followed by a case that sees the defaults", || pending("sessions", 3)),
+        case("restore-after-crash", "A case killed while changing settings is followed by a case that sees the defaults", config::restore_after_crash),
         // Two settings scenarios give the same results in either order. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("order-independent", "Two settings scenarios give the same results in either order", || pending("sessions", 3)),
+        case("order-independent", "Two settings scenarios give the same results in either order", config::order_independent),
         // After a case its virtual devices are gone and no key or button is held. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("devices-reset", "After a case its virtual devices are gone and no key or button is held", sessions::devices_reset).session(libuitest::supervisor::serve),
         // After a case, no session process remains and the runner owns the display. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
