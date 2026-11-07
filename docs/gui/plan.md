@@ -2320,7 +2320,7 @@ bwm built with one named fault per run (`misroute-focus`, `chrome-offset`, `keym
 - `input-during-animation` — Input arrives in order while the app animates.
 - `two-windows` — Input addressed to two windows of one app arrives at each.
 - `wm-hotkey-scripted` — A scripted Super double tap opens the launcher through bwm's real hotkey path.
-- `real-input-excluded` — Events from a device outside the session's selection change nothing in the session.
+- `real-input-excluded` — Events from a device outside the session's selection, modifier keys included, change nothing in the session.
 
 #### `tree` — semantic trees of windows & widgets (23)
 - `roles-keys` — The test app's tree lists every widget with its expected role and key.
@@ -2351,8 +2351,8 @@ bwm built with one named fault per run (`misroute-focus`, `chrome-offset`, `keym
 - `window-capture` — A window capture equals the committed buffer of that commit.
 - `capture-while-drawing` — Capturing commit N while the app draws N+1 returns N whole.
 - `capture-two-readers` — Two readers capturing the same window each get whole commits.
-- `capture-resize-race` — A resize during a capture gives the whole old commit or ENOENT, never a mixture.
-- `capture-destroy-race` — A destroy during a capture gives the whole commit, and the buffer is freed afterwards.
+- `capture-resize-race` — A resize during a capture gives the whole old commit, pixels and tree, never ENOENT or a mixture.
+- `capture-destroy-race` — A destroy during a capture gives the whole commit and frees the buffer afterwards; a destroy before the copy begins gives ENOENT.
 - `capture-threads` — Commits from two producer threads are each captured whole.
 - `screen-capture` — A screen capture shows the window at its position, with its observation record.
 - `capture-commits` — A screen capture lists the commit of each window it contains.
@@ -2468,14 +2468,14 @@ Each fault case runs its scenario in the inner executor twice: clean, which must
 which must fail with the stated class for the stated reason.
 - `clean-passes` — The test app with no fault passes every check of a full script.
 - `fault-off-by-one` — A frame drawn one pixel off fails as pixel-mismatch at the first shifted pixel.
-- `fault-wrong-colour` — A widget drawn in the wrong colour fails as pixel-mismatch with both colours.
+- `fault-wrong-color` — A widget drawn in the wrong color fails as pixel-mismatch with both colors.
 - `fault-drain-no-render` — An app that drains a key and never commits fails as unprocessed-serial for that key.
 - `fault-stale-pixels` — An app that updates its tree but not its pixels fails as pixel-mismatch.
 - `fault-drop-key` — An app that drops one key fails as tree-mismatch on the text field's value.
 - `fault-misroute` — bwm-fault_test sending keys to the wrong window fails as pixel-mismatch and tree-mismatch on the intended window.
 - `fault-chrome-offset` — bwm-fault_test drawing chrome one pixel off fails as pixel-mismatch against the contract table.
 - `fault-keymap-swap` — bwm-fault_test with two keys swapped fails as tree-mismatch on typed text.
-- `fault-lie-bounds` — A tree whose bounds disagree with the drawn widget fails as tree-mismatch through a role invariant.
+- `fault-lie-bounds` — A tree whose bounds disagree with the drawn widget, still inside its parent, fails as tree-mismatch against the literal expected geometry.
 - `fault-lie-text` — A label drawn "FAIL" whose tree says "PASS", with valid ink and bounds, fails as pixel-mismatch.
 - `fault-slow-commit` — An app that never settles fails as settle-timeout, naming it.
 - `fault-wallclock` — An app animating on the real clock fails as clock-violation on every run.
