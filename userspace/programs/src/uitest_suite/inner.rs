@@ -10,7 +10,7 @@ fn run(checks: &[&str], body: &mut dyn FnMut(&mut RecordClient<'_>) -> ScenarioO
 pub fn inner_pass() -> CaseResult {
     let outer = process::getpid()?;
     let result = run(&[], &mut |_| {
-        if process::getpid().is_ok_and(|pid| pid != outer) && process::get_child_subreaper() == Ok(true) {
+        if process::getpid().is_ok_and(|pid| pid != outer) && matches!(process::get_child_subreaper(), Ok(true)) {
             ScenarioOutcome::pass()
         } else { ScenarioOutcome::fail(FailureClass::Infrastructure, "subreaper", "wrong process or flag") }
     });

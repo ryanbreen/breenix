@@ -1,0 +1,11 @@
+[package]
+name = "libuitest"
+version = "0.1.0"
+edition = "2021"
+description = "Shared userspace UI test records and contained scenario execution"
+
+[workspace]
+
+[dependencies]
+libbreenix = { path = "../libbreenix", features = ["std"] }
+breenix-suite = { path = "../libbreenix/suite" }

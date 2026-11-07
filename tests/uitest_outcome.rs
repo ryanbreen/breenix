@@ -78,3 +78,45 @@ fn classification_requires_exact_fault_operation_and_evidence() {
     assert!(CleanPass.accepted());
     assert!(!UnexpectedFailure.accepted());
 }
+
+// Reuse the production accounting and client on the host. The only substitute
+// is the guest pipe write; its call count distinguishes outer from inner routes.
+extern crate self as breenix_suite;
+#[path = "../libs/libbreenix/src/suite_result.rs"]
+pub mod result;
+pub mod suite {
+    pub use crate::result;
+    pub static WRITES: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    pub fn result_record(line: &str) -> Result<(), &'static str> {
+        WRITES.lock().unwrap().push(line.into());
+        Ok(())
+    }
+}
+#[path = "../libs/libuitest/src/client.rs"]
+mod client;
+
+#[test]
+fn record_client_contains_inner_records_and_refuses_ignored_errors() {
+    use client::RecordClient;
+    let line = format!("SUITE inner FRAME scenario/one label def=0123abcd ref=formula source=window:main commit=1 epoch=2 w=3 h=4 sha256={} result=match", "a".repeat(64));
+    let mut inner = RecordClient::contained("inner", "scenario/one", &["label"]).unwrap();
+    inner.record(&line).unwrap();
+    let outcome = inner.finish(ScenarioOutcome::pass());
+    assert!(classify(&Expected::Pass, &outcome).accepted());
+    assert_eq!(outcome.records(), &[line.clone()]);
+    assert!(suite::WRITES.lock().unwrap().is_empty());
+    let mut outer = RecordClient::outer("inner", "scenario/one", &["label"]).unwrap();
+    outer.record(&line).unwrap();
+    assert!(classify(&Expected::Pass, &outer.finish(ScenarioOutcome::pass())).accepted());
+    assert_eq!(*suite::WRITES.lock().unwrap(), [line.clone()]);
+    let mut duplicate = RecordClient::contained("inner", "scenario/one", &["label"]).unwrap();
+    duplicate.record(&line).unwrap();
+    assert!(duplicate.record(&line).is_err());
+    assert_eq!(classify(&Expected::Pass, &duplicate.finish(ScenarioOutcome::pass())), Classification::InfrastructureError);
+    let missing = RecordClient::contained("inner", "scenario/one", &["label"]).unwrap();
+    assert_eq!(classify(&Expected::Pass, &missing.finish(ScenarioOutcome::pass())), Classification::InfrastructureError);
+    let mut malformed = RecordClient::contained("inner", "scenario/one", &[]).unwrap();
+    assert!(malformed.record("bad record").is_err());
+    let planted = fault(FailureClass::PixelMismatch, "label", "first=12,4");
+    assert_eq!(classify(&Expected::Pass, &malformed.finish(planted)), Classification::InfrastructureError);
+}
