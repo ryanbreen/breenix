@@ -182,7 +182,8 @@ def mode_deadline_seconds(args, suite=None):
     """Give long-running suites their own DONE deadlines."""
     name = suite or (suites(args)[0] if args.mode == 'suite' else None)
     if args.mode == 'suite':
-        return {'breengel': 900, 'window-manager': 1800, 'ui-testing': 1800}.get(name, MODE_DEADLINE_SECONDS['suite'])
+        base = {'breengel': 900, 'window-manager': 1800, 'ui-testing': 1800}.get(name, MODE_DEADLINE_SECONDS['suite'])
+        return base + ({'gpu': 121, 'breengel': 163}.get(name, 0) if getattr(args, 'screen_proof', False) else 0)
     return MODE_DEADLINE_SECONDS[args.mode]
 
 # The testing kernel's last report line (kernel/src/syscall/handlers.rs), where a testing boot ends. x86-64 prints it
@@ -376,6 +377,8 @@ class Driver:
                'evidenceEligible': not fault and (persistent(self.args) or not session(self.args)) and getattr(self.args, 'case', None) is None}
         if getattr(self.args, 'case', None) is not None:
             run['onlyCase'] = self.args.case
+        if getattr(self.args, 'screen_proof', False):
+            run['screenProof'] = True
         if getattr(self.args, 'build_choice', None) is not None:
             run['buildChoice'] = self.args.build_choice
             m.write_json(self.dir / 'metal-run.json', run)
@@ -591,7 +594,8 @@ class Driver:
                 idle_minutes=getattr(self.args, 'idle_minutes', 30) if session(self.args) else None,
                 replug=self.args.mode == 'console' and not session(self.args) and not xhci_fault(self.args),
                 xhci_fault=xhci_fault(self.args), power_token=self.shutdown_token,
-                watchdog_fault=self.args.inject.removeprefix('watchdog-') if self.args.inject in WATCHDOG_FAULTS else None)
+                watchdog_fault=self.args.inject.removeprefix('watchdog-') if self.args.inject in WATCHDOG_FAULTS else None,
+                screen_proof=getattr(self.args, 'screen_proof', False))
             if disk == 'install':
                 write = self.delivery['root']['diskWrite']
                 m.write_json(self.dir / 'disk-write.json', write)
@@ -603,7 +607,8 @@ class Driver:
             facts, suite_files = metal_disk.stage(self.dir, inputs, self.id, self.args.commit, self.site, build,
                 mode=self.args.mode, suite=getattr(self.args, 'suite', None),
                 idle_minutes=self.args.idle_minutes if session(self.args) else None,
-                replug=self.args.mode == 'console' and not session(self.args))
+                replug=self.args.mode == 'console' and not session(self.args),
+                screen_proof=getattr(self.args, 'screen_proof', False))
             self.delivery['diskRoot'] = facts
             files.update(suite_files)
             if self.args.mode == 'suite' and m.read_json(manifest).get('diskChecks'):
@@ -1250,7 +1255,7 @@ class Driver:
                 and (panic_line or dead_suite or any(p.search(line) for p in self.fatal_patterns))):
             self.fatal_at = observed_at
             self.event('fatal', observed_at=observed_at, seconds=seconds)
-        if self.args.mode == 'suite' and re.fullmatch(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+', line):
+        if self.args.mode == 'suite' and re.fullmatch(r'SUITE \S+ START cases=\d+(?: only=\S+)?(?: pace_ms=\d+)?(?: screen_proof=on)?|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+', line):
             self.suite_name = line.split()[1 if line.startswith('SUITE ') else 2]
             if len(suites(self.args)) > 1 or self.suite_name in ('breengel', 'window-manager', 'ui-testing'):
                 self.suite_started = observed_at
@@ -2379,6 +2384,7 @@ def main():
         p.add_argument('--input', choices=('sol',))
         p.add_argument('--wait', type=float, default=None, metavar='MIN', help='queue wait (default 240 minutes)')
         p.add_argument('--session', action='store_true', help='hold the console for operator input, without scoring')
+        p.add_argument('--screen-proof', action='store_true', help='enable screen proof checkpoints')
         p.add_argument('--idle-minutes', type=int, default=30, help='session input idle limit (1 through 240; default 30)')
         p.add_argument('--suite')
         p.add_argument('--case')
@@ -2454,6 +2460,8 @@ def main():
             parser.error('tests mode needs a disk-root boot without --inject')
         if args.session and (args.mode != 'console' or args.input or args.disk == 'install'):
             parser.error('--session needs console mode, operator input and no disk install')
+        if args.screen_proof and (args.session or args.payload != 'image' or args.mode != 'suite'):
+            parser.error('--screen-proof needs an automated image suite boot, without --session')
         if not 1 <= args.idle_minutes <= 240 or (args.idle_minutes != 30 and not args.session):
             parser.error('--idle-minutes needs a console session and 1 through 240 minutes')
         if args.wait is None:

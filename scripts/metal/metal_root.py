@@ -204,7 +204,7 @@ def console_shadow(site, hasher, image_shadow='', account='root'):
 
 
 def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False, xhci_fault=None,
-               install_partition=None, operator=None, watchdog_fault=None, power_token=None, gt710_upload=None):
+               install_partition=None, operator=None, watchdog_fault=None, power_token=None, gt710_upload=None, screen_proof=False):
     """`operator`, the operator file (operator_account), is written for install-persistent's userland only."""
     if watchdog_fault not in (None, 'feeder-hang', 'health-hang') or (watchdog_fault and mode != 'default'):
         raise ValueError('invalid watchdog fault-test target')
@@ -278,7 +278,9 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         if mode == 'suite' and ',' in suite:
             files['suite-sequence'] = suite + '\n'
         # Clear a prior route when reusing a root for a suite without this facility.
-        commands = ['rm /etc/breenix/evidence-route']
+        commands = ['rm /etc/breenix/evidence-route', 'rm /etc/breenix/screen-proof']
+        if screen_proof:
+            files['screen-proof'] = 'on\n'
         if gt710_upload and mode == 'suite' and {'window-manager', 'ui-testing'}.intersection(suite.split(',')):
             files['evidence-route'] = gt710_upload + '\n'
         for name, text in files.items():

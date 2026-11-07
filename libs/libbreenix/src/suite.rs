@@ -1200,7 +1200,7 @@ impl Suite {
         let suite_start = monotonic_ns();
 
         let pace_suffix = if pace_ms > 0 { std::format!(" pace_ms={pace_ms}") } else { String::new() };
-        emit(&std::format!("SUITE {} START cases={}{}{}", self.id, total, suffix, pace_suffix));
+        emit(&start_record(self.id, total, &suffix, &pace_suffix, proof));
         if let Some(message) = &error {
             emit(&std::format!("SUITE {} ERROR {}", self.id, message));
             emit(&std::format!("SUITE {} DONE passed=0 failed=1 skipped=0 total={}{}", self.id, total, suffix));
@@ -1378,6 +1378,11 @@ impl Suite {
         if place.is_some() { sequence::finish(); }
         idle(&mut screen, &feed)
     }
+}
+
+fn start_record(id: &str, total: usize, suffix: &str, pace_suffix: &str, proof: bool) -> String {
+    let proof_suffix = if proof && matches!(id, "gpu" | "breengel") { " screen_proof=on" } else { "" };
+    std::format!("SUITE {id} START cases={total}{suffix}{pace_suffix}{proof_suffix}")
 }
 
 // Launcher-supplied HTTP route.
