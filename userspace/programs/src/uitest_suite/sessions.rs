@@ -6,6 +6,67 @@ use libuitest::{Session, ScenarioSpec, ScenarioOutcome, FailureClass, run_scenar
 const APP: &[u8] = b"/usr/libexec/breenix/uitest-app_test";
 const FIXTURE: &[u8] = b"/usr/libexec/breenix/ui-runner-fixture_test";
 
+fn monotonic_ns() -> Result<u64, String> {
+    libbreenix::time::now_monotonic().map(|t| t.as_nanos() as u64).map_err(|e| e.to_string())
+}
+
+fn first_window(session: &mut Session, title: &str, end: u64) -> Result<libuitest::WindowReady, String> {
+    let pid = session.launch_app(&[APP, title.as_bytes()], 0)?;
+    let ready = session.wait_window_until(title, end)?;
+    // Inspect the root observation interfaces independently of wait_window.
+    let mut registry = vec![libbreenix::window::abi::WinInfo::default(); 64];
+    let count = libbreenix::window::list(&mut registry).map_err(|e| e.to_string())?;
+    check(count <= registry.len(), "test registry exceeds capacity")?;
+    check(registry[..count].iter().any(|w| w.id == ready.id && u64::from(w.owner) == pid
+        && w.title.get(..w.title_len as usize) == Some(title.as_bytes())), "returned window is absent or owned by another app")?;
+    let records = std::fs::read_to_string("/proc/breenix/composites").map_err(|e| e.to_string())?;
+    let expected = format!("{} {} {} {} {}", ready.composite_serial, ready.presented_ns, ready.id, ready.commit_id, ready.pixel_generation);
+    check(ready.commit_id != 0 && records.lines().any(|line| line == expected), "returned commit has no completed composite record")?;
+    Ok(ready)
+}
+
+fn start(kiosk: bool) -> CaseResult {
+    let began = monotonic_ns()?;
+    let mut session = if kiosk { Session::kiosk()? } else { Session::desktop()? };
+    let result = first_window(&mut session, "startup app", began + 300_000_000);
+    let elapsed = monotonic_ns()? - began;
+    // Preserve the stage evidence for diagnosing a miss; keep the 300 ms bound.
+    let result = result.map_err(|error| format!("{error}; startup_ns={elapsed}; stages={}",
+        std::fs::read_to_string("/proc/breenix/stage-composites").unwrap_or_else(|e| e.to_string())));
+    result?;
+    check(elapsed <= 300_000_000, &format!("first composited app took {elapsed} ns; bound=300000000"))?;
+    session.teardown()?;
+    Ok(())
+}
+pub fn start_desktop() -> CaseResult { start(false) }
+pub fn start_kiosk() -> CaseResult { start(true) }
+
+pub fn wait_window() -> CaseResult {
+    let mut session = Session::kiosk()?;
+    let ready = first_window(&mut session, "wait for this title", monotonic_ns()? + 2_000_000_000)?;
+    // Window discovery also works after excluding the window from clock participation.
+    session.exclude(ready.id);
+    check(session.is_excluded(ready.id), "excluded window was not retained")?;
+    let again = session.wait_window("wait for this title")?;
+    check(again.id == ready.id && again.commit_id != 0, "waiting for an already composited window differs")?;
+    session.teardown()?;
+    Ok(())
+}
+
+pub fn wait_window_timeout() -> CaseResult {
+    let mut session = Session::kiosk()?;
+    let began = monotonic_ns()?;
+    let result = session.wait_window("a title that never appears");
+    let elapsed = monotonic_ns()? - began;
+    check(matches!(&result, Err(message) if message.contains("wait-window-timeout") && message.contains("a title that never appears")),
+        &format!("wrong missing-window outcome: {result:?}"))?;
+    check(elapsed >= 2_000_000_000, "missing-window wait ended before its bound")?;
+    // Timeout leaves the session usable for a later, successful wait.
+    first_window(&mut session, "after timeout", monotonic_ns()? + 2_000_000_000)?;
+    session.teardown()?;
+    Ok(())
+}
+
 pub fn launch_argv() -> CaseResult {
     let mut session = Session::connect()?;
     let argv: &[&[u8]] = &[APP, b"title with spaces\n=\\\"", b"--hang"];

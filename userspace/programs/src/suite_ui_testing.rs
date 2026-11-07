@@ -304,9 +304,9 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     ]),
     category("sessions", "Sessions, state isolation & cleanup", &[
         // A desktop session with one app reaches its first composited commit within 300 ms. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("start-desktop", "A desktop session with one app reaches its first composited commit within 300 ms", || pending("sessions", 3)),
+        case("start-desktop", "A desktop session with one app reaches its first composited commit within 300 ms", sessions::start_desktop).session(libuitest::supervisor::serve),
         // A kiosk session with one app reaches its first composited commit within 300 ms. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("start-kiosk", "A kiosk session with one app reaches its first composited commit within 300 ms", || pending("sessions", 3)),
+        case("start-kiosk", "A kiosk session with one app reaches its first composited commit within 300 ms", sessions::start_kiosk).session(libuitest::supervisor::serve),
         // Apps in a session receive its fonts, clock, seed, mode, time zone, locale and config root. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("environment", "Apps in a session receive its fonts, clock, seed, mode, time zone, locale and config root", sessions::environment).session(libuitest::supervisor::serve),
         // bwm, Breengel's font configuration and every app read and write under the session's config root. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -340,9 +340,9 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Twenty sessions in a row leave windows, processes and memory at the baseline. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("twenty-sessions", "Twenty sessions in a row leave windows, processes and memory at the baseline", || pending("sessions", 3)),
         // wait_window(title) returns after that window's first composited commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wait-window", "wait_window(title) returns after that window's first composited commit", || pending("sessions", 3)),
+        case("wait-window", "wait_window(title) returns after that window's first composited commit", sessions::wait_window).session(libuitest::supervisor::serve),
         // wait_window for a window that never appears fails, naming the title. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wait-window-timeout", "wait_window for a window that never appears fails, naming the title", || pending("sessions", 3)),
+        case("wait-window-timeout", "wait_window for a window that never appears fails, naming the title", sessions::wait_window_timeout).session(libuitest::supervisor::serve),
         // launch passes argv and the environment exactly. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("launch-argv", "launch passes argv and the environment exactly", sessions::launch_argv).session(libuitest::supervisor::serve),
         // A GUI suite runs inside a suite sequence and hands off at READY. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
