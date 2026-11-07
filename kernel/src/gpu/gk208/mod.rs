@@ -100,6 +100,7 @@ mod edid;
 mod bulk;
 mod clock;
 mod display_evidence;
+pub mod display_crc;
 pub(crate) mod timing;
 pub(crate) use timing::gpu_clock as gpu_time;
 pub(crate) mod cost;

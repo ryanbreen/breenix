@@ -1180,6 +1180,12 @@ pub fn takeover(
     }
     let iso = modeset::dma_object(0, total)?;
     let notify = modeset::dma_object(notifier, 4096)?;
+    // Separate CRC907D notifier: the existing guarded DMA page is disjoint
+    // from present, retained-acknowledgement and terminal notifier slots.
+    let crc = modeset::dma_object(layout.objects[5].range.start, 4096)?;
+    write_words(regs, total, instance + 0x1060, &crc)?;
+    write_words(regs, total, instance + modeset::ramht_slot(4, 0),
+        &[4, (0x1060 << 9) | 1])?;
     write_words(regs, total, instance + 0x1000, &iso)?;
     write_words(regs, total, instance + 0x1020, &notify)?;
     write_words(
@@ -1920,4 +1926,100 @@ impl CoreProducer {
         crate::serial_println!("{}", super::core_record::anchor(self.rows.as_bytes()));
         Ok(())
     }
+}
+
+/// CRC907D adapter to the retained core channel. The caller holds the shared
+/// observation transition and the native session/resource owner.
+#[cfg(target_os = "none")]
+pub(super) fn capture_crc(evo: &mut Evo, regs: &mut Registers, notifier: u64,
+    surface: super::present::Surface, checkpoint: super::display_crc::Checkpoint<'_>,
+    binding: super::display_crc::Binding, mode: [u32;2])
+    -> Result<super::display_crc::Record, &'static str> {
+    struct Crc<'a> {
+        evo: &'a mut Evo, regs: &'a mut Registers, notifier: u64,
+        surface: super::present::Surface, binding: super::display_crc::Binding,
+    }
+    impl Crc<'_> {
+        fn wait(&mut self, register: usize, mask: u32, value: u32, deadline: u64)
+            -> Result<(), &'static str> {
+            loop {
+                if self.regs.read(register) & mask == value { return Ok(()); }
+                if crate::signal::monotonic_nanos()/1000 >= deadline {
+                    return Err("CRC core channel deadline");
+                }
+                self.regs.delay_us(100);
+            }
+        }
+    }
+    impl modeset::Io for Crc<'_> {
+        fn read(&mut self, reg: usize) -> u32 { self.regs.read(reg) }
+        fn write(&mut self, reg: usize, value: u32) { self.regs.write(reg,value); }
+        fn delay_us(&mut self, us: u32) { self.regs.delay_us(us); }
+    }
+    impl super::display_crc::Io for Crc<'_> {
+        fn now_us(&self) -> u64 { crate::signal::monotonic_nanos()/1000 }
+        fn binding(&mut self) -> Result<super::display_crc::Binding, &'static str> {
+            let observed = observed_scanout(self.regs,self.evo.head,core::iter::once(self.surface))?;
+            if u64::from(observed) != self.binding.resource { return Err("CRC physical binding changed"); }
+            Ok(self.binding)
+        }
+        fn clear(&mut self) -> Result<(), &'static str> {
+            self.wait(0x640004,u32::MAX,self.evo.put,self.now_us()+20_000)?;
+            // 8 header bytes + 255 * 16 bytes; the page tail is cleared too.
+            write_words(self.regs,self.evo.total,self.notifier,&[0;1024])?;
+            for i in 0..1024 {
+                if read_word(self.regs,self.evo.total,self.notifier+i*4)? != 0 {
+                    return Err("CRC notifier did not clear");
+                }
+            }
+            Ok(())
+        }
+        fn update(&mut self, methods: &[(u32,u32)], deadline: u64)
+            -> Result<(), &'static str> {
+            self.wait(0x640004,u32::MAX,self.evo.put,deadline)?;
+            write_words(self.regs,self.evo.total,self.evo.notifier,&[0;4])?;
+            if self.evo.put as usize + (methods.len()+1)*8 > 2044 {
+                write_words(self.regs,self.evo.total,self.evo.push+u64::from(self.evo.put),&[0x20000000])?;
+                modeset::publish(self.regs,0)?;
+                self.wait(0x640004,u32::MAX,0,deadline)?;
+                self.evo.put=0;
+            }
+            // Existing publication provides the BAR drain and NOTIFY=0 tail.
+            submit(self.regs,self.evo.total,self.evo.push,&mut self.evo.put,methods)?;
+            loop {
+                if self.display_error()!=0 {return Err("CRC display method error");}
+                if self.regs.read(0x6100ac)&7!=0 {return Err("CRC unexpected display supervisor");}
+                if read_word(self.regs,self.evo.total,self.evo.notifier)?&1!=0 {
+                    self.wait(0x640004,u32::MAX,self.evo.put,deadline)?;
+                    if self.now_us()>deadline {return Err("CRC UPDATE completion deadline");}
+                    return Ok(());
+                }
+                if self.now_us()>=deadline {return Err("CRC UPDATE notifier deadline");}
+                self.regs.delay_us(100);
+            }
+        }
+        fn context_status(&mut self) -> Result<u32, &'static str> {
+            read_word(self.regs,self.evo.total,self.notifier)
+        }
+        fn sample(&mut self, index: usize) -> Result<Option<super::display_crc::Sample>, &'static str> {
+            let address=self.notifier+super::display_crc::notifier_offset(index)?;
+            // crc907d.c reads output_crc[0] at entry+8. Recheck it after the
+            // secondary read; neither the entry-status nor compositor word is
+            // substituted for written output data.
+            let crc=read_word(self.regs,self.evo.total,address+8)?;
+            if crc==0 {return Ok(None);}
+            let crc2=read_word(self.regs,self.evo.total,address+12)?;
+            if read_word(self.regs,self.evo.total,address+8)?!=crc {return Ok(None);}
+            Ok(Some(super::display_crc::Sample{status:1,crc,crc2}))
+        }
+        fn display_error(&mut self) -> u32 {
+            self.regs.read(0x61009c) | (self.regs.read(0x616308+self.evo.head as usize*0x800)&0x110)
+        }
+        fn recover_present(&mut self) -> Result<(), &'static str> {
+            present(self.evo,self.regs,self.surface).map(|_| ())
+        }
+    }
+    let (head,sor)=(evo.head,evo.sor);
+    super::display_crc::capture(&mut Crc{evo,regs,notifier,surface,binding},
+        checkpoint,binding,mode,head,sor,4)
 }

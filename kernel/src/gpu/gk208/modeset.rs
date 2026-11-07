@@ -1,4 +1,25 @@
 /*
+ * Copyright (c) 1993-2014, NVIDIA CORPORATION. All rights reserved.
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a
+ * copy of this software and associated documentation files (the "Software"),
+ * to deal in the Software without restriction, including without limitation
+ * the rights to use, copy, modify, merge, publish, distribute, sublicense,
+ * and/or sell copies of the Software, and to permit persons to whom the
+ * Software is furnished to do so, subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+ * THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+ * FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+ * DEALINGS IN THE SOFTWARE.
+ */
+/*
  * Copyright 2012 Red Hat Inc.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a
@@ -1089,4 +1110,46 @@ pub fn board_scripts(
         script(r, result[2], head, sor, protocol)?,
         script(r, result[3], head, sor, protocol)?,
     ])
+}
+
+/// CRC907D core methods (MIT crc907d.c and its cl907d.h definitions).
+/// The ordinary core submitter scopes the UPDATE notifier by appending NOTIFY=0.
+pub fn crc_methods(head: u32, sor: u32, handle: u32, arm: bool)
+    -> Result<[(u32, u32); 4], &'static str> {
+    if head >= 4 || sor >= 4 || handle == 0 {
+        return Err("invalid native CRC route or notifier");
+    }
+    let control = 0x430 + head * 0x300;
+    let context = 0x438 + head * 0x300;
+    // Core channel, no collapse/timestamps/snooze, wide pipe enabled.
+    let sources = if arm { ((0xff8 + head) << 20) | ((0xf0f + sor * 16) << 8) }
+        else { 0xffffff00 };
+    let pair = if arm { [(context, handle), (control, sources | 0x40)] }
+        else { [(control, sources | 0x40), (context, 0)] };
+    Ok([pair[0], pair[1], (0x84, 0x80000000), (0x80, 0)])
+}
+
+/// Snapshot output state from the active bank, refusing an unlatched assembly
+/// bank. The register map is the existing GF119/NV927D modeset map above.
+/// Surface addresses and CRC notifier controls are not output configuration.
+pub fn crc_output_methods(io: &mut impl Io, head: u32, sor: u32)
+    -> Result<Vec<(u32, u32)>, &'static str> {
+    if head >= 4 || sor >= 4 { return Err("invalid native CRC output"); }
+    let mut methods = Vec::new();
+    methods.try_reserve_exact(34).map_err(|_| "CRC output allocation")?;
+    methods.push((0x200 + sor * 0x20, 0));
+    for offset in [0x400,0x404,0x408,0x410,0x414,0x418,0x41c,0x420,
+        0x424,0x428,0x42c,0x440,0x448,0x450,0x454,0x458,0x468,0x46c,
+        0x470,0x474,0x480,0x494,0x498,0x4a0,0x4b0,0x4b8,0x4bc,0x4c0,
+        0x4c4,0x4c8,0x4d0,0x4d4] {
+        methods.push((offset + head * 0x300, 0));
+    }
+    methods.sort_unstable_by_key(|p| p.0);
+    for (method, value) in &mut methods {
+        *value = io.read(0x640000 + *method as usize);
+        if io.read(0x660000 + *method as usize) != *value {
+            return Err("CRC output is not latched");
+        }
+    }
+    Ok(methods)
 }

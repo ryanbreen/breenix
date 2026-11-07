@@ -2178,3 +2178,23 @@ HORZ.HLINE fields to subtract the current raster phase from a monotonic sample.
 The imported rnndb/copyright.xml grant and author list remain in native.rs.
 vblank_clock.rs contains Breenix-owned rational frame-period arithmetic;
 no external implementation was imported.
+
+E22 backend-6 display CRC producer
+---------------------------------
+Consumer files: kernel/src/gpu/gk208/{display_crc.rs,modeset.rs,native.rs} and
+kernel/src/gpu/gk208/ce/process.rs; host model tests/fixtures/gt710_display_crc.rs.
+
+The pinned Linux v6.8 revision above supplies dispnv50/crc907d.c and crc.c
+(SPDX-License-Identifier: MIT; no additional copyright header). Their checked
+facts are the 8-byte context header, 255 16-byte entries, output CRC offsets,
+zero-primary unwritten sentinel, context completion bit 0 and overflow mask
+0x3e, and the context-before-control / control-before-context arm/disarm order.
+The methods used by crc907d.c are defined in its include/nvhw/class/cl907d.h
+at that revision (Copyright (c) 1993-2014 NVIDIA CORPORATION; MIT permission
+grant). The original grant is included in modeset.rs. That encoder selects
+primary SOR, secondary RG, core controlling channel, wide pipe, and active raster.
+
+The active/assembly register map and the existing physical DMA descriptor,
+RAMHT and scoped UPDATE publication paths retain the previously listed MIT
+sources and grants. The record format and bounded collection state machine are
+Breenix implementations. No DRM integration, GPL source or firmware was imported.

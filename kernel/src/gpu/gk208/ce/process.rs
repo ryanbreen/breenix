@@ -406,3 +406,23 @@ pub(crate) fn console_receipt() -> Result<u64, &'static str> {
         .ok_or("logical console allocation absent")?.range;
     super::super::native::console_receipt(&s.evo,&mut Registers(s.registers),s.console,allocation)
 }
+
+/// The shared observation transition has already drained pending flips. Keep the
+/// native owner and its display/resource holds for the bounded CRC collection.
+#[cfg(target_os = "none")]
+pub(in crate::gk208) fn capture_crc(checkpoint: super::super::display_crc::Checkpoint<'_>,
+    binding: super::super::display_crc::Binding, mode: [u32;2])
+    -> Result<super::super::display_crc::Record, &'static str> {
+    let mut owner = SESSION.lock();
+    let s = owner.as_mut().ok_or("CRC display owner unavailable")?;
+    if s.work.is_some() || s.pending_present.is_some() {
+        return Err("CRC observation precedes presentation completion");
+    }
+    let id = u32::try_from(binding.resource).map_err(|_| "CRC resource namespace")?;
+    let surface = s.resources.scanout(id).ok_or("CRC scanout absent")?;
+    let _hold = s.resources.hold(id)?;
+    let notifier = s.layout.objects.iter().find(|o| o.name == "dma")
+        .filter(|o|o.range.size==4096).ok_or("CRC notifier allocation absent")?.range.start;
+    super::super::native::capture_crc(&mut s.evo, &mut Registers(s.registers),
+        notifier, surface, checkpoint, binding, mode)
+}
