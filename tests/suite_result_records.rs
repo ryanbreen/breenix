@@ -149,11 +149,19 @@ fn runner_conversion_uses_exact_missing_name_and_preserves_primary_failure() {
 #[path = {path:?}] pub mod result;
 mod runner {{
 use super::result;
+fn monotonic_ns() -> Option<i128> {{ Some(0) }}
+const SWEEP_MS: u64 = 2000;
+mod io {{
+    pub mod poll_events {{ pub const POLLIN: i16 = 1; }}
+    pub struct PollFd;
+    impl PollFd {{ pub fn new(_: i32, _: i16) -> Self {{ Self }} }}
+    pub fn poll(_: &mut [PollFd], _: i32) -> Result<usize, ()> {{ panic!("conversion fixture already reached EOF") }}
+}}
 {}
 const MSG_MAX: usize = 160;
 {}
 {}
-struct ResultPipe<'a> {{ accounting: result::Accounting<'a>, eof: bool }}
+struct ResultPipe<'a> {{ accounting: result::Accounting<'a>, eof: bool, reader: i32 }}
 impl ResultPipe<'_> {{
     // This check drives the runner's conversion after its EOF drain, without I/O.
     fn drain_reads(&mut self, _reads: usize) {{ self.eof = true; }}
@@ -161,7 +169,7 @@ impl ResultPipe<'_> {{
 }}
 #[test] fn conversions() {{
     for verdict in 0..3 {{
-        let mut pipe = ResultPipe {{ accounting: result::Accounting::new("fixture", "first/one", &["label"], false).unwrap(), eof: false }};
+        let mut pipe = ResultPipe {{ accounting: result::Accounting::new("fixture", "first/one", &["label"], false).unwrap(), eof: false, reader: 3 }};
         let prior = match verdict {{ 0 => Outcome::Pass {{ms: 17}}, 1 => Outcome::Fail {{ms: 17, msg: "primary fault".into()}}, _ => Outcome::Skip {{msg: "skip fault".into()}} }};
         match pipe.finish(prior) {{
             Outcome::Fail {{ms, msg}} => {{

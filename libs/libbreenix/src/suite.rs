@@ -1964,9 +1964,19 @@ impl<'a> ResultPipe<'a> {
     }
 
     fn finish(&mut self, outcome: Outcome) -> Outcome {
-        // After teardown a legal case has at most 256 PIPE_BUF records left, then EOF.
-        // A leaked writer must fail closed rather than hold the runner forever.
-        self.drain_reads(result::RECORDS_PER_CASE + 1);
+        // Reaping can precede the kernel's out-of-lock descriptor closes. Drain
+        // to EOF, waiting for that close within the existing teardown bound.
+        // A retained writer still fails closed when the bound expires.
+        let deadline = monotonic_ns().map(|now| now + i128::from(SWEEP_MS) * 1_000_000);
+        loop {
+            self.drain_reads(result::RECORDS_PER_CASE + 1);
+            if self.eof { break; }
+            let Some(left) = deadline.zip(monotonic_ns()).map(|(end, now)| end - now) else { break };
+            if left <= 0 { break; }
+            let timeout = ((left + 999_999) / 1_000_000).min(100) as i32;
+            let mut fd = [io::PollFd::new(self.reader, io::poll_events::POLLIN)];
+            if io::poll(&mut fd, timeout).is_err() { break; }
+        }
         if !self.eof { self.accounting.refuse("result pipe did not reach EOF after case teardown"); }
         match self.accounting.problem() {
             Some(note) => match outcome {
