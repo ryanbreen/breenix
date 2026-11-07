@@ -348,7 +348,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // launch passes argv and the environment exactly. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("launch-argv", "launch passes argv and the environment exactly", sessions::launch_argv).session(libuitest::supervisor::serve),
         // A GUI suite runs inside a suite sequence and hands off at READY. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("sequence-compatible", "A GUI suite runs inside a suite sequence and hands off at READY", || pending("sessions", 3)),
+        case("sequence-compatible", "A GUI suite runs inside a suite sequence and hands off at READY", sessions::sequence_compatible),
         // The session's fixture tree, fonts and locale match their pinned hashes. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("fixtures-pinned", "The session's fixture tree, fonts and locale match their pinned hashes", sessions::fixtures_pinned).session(libuitest::supervisor::serve),
     ]),

@@ -327,7 +327,11 @@ class RunnerRoles(unittest.TestCase):
         for signature in ['fn sweep()', 'fn idle(']:
             self.assertEqual(item(source, signature), item(main, signature))
         seq = 'libs/libbreenix/src/suite_sequence.rs'
-        self.assertEqual((ROOT / seq).read_text(), historical(MAIN, seq))
+        sequence = (ROOT / seq).read_text()
+        original = historical(MAIN, seq)
+        self.assertEqual(item(sequence, 'fn hand_off()'), item(original, 'fn hand_off()'))
+        self.assertEqual(item(sequence, 'fn reap_all_pid_one()').replace('fn reap_all_pid_one()', 'fn reap_all()'),
+                         item(original, 'fn reap_all()'))
 
     def test_only_admitted_role_branches_change_the_runner(self):
         source = (ROOT / PATH).read_text()
@@ -361,7 +365,10 @@ class RunnerRoles(unittest.TestCase):
         ]:
             self.assertEqual(expected.count(old), 1)
             expected = expected.replace(old, new)
-        self.assertEqual(item(source, 'pub fn run_with_finalizer('), session_wiring(self, expected))
+        expected = session_wiring(self, expected).replace(
+            'if scoped { process::exit(if counts.failed == 0 && reclaimed { 0 } else { 1 }); }',
+            'if scoped {\n            if place.is_some() {\n                emit(&std::format!("SUITE_SEQUENCE READY {}", self.id));\n                sequence::finish();\n            }\n            process::exit(if counts.failed == 0 && reclaimed { 0 } else { 1 });\n        }')
+        self.assertEqual(item(source, 'pub fn run_with_finalizer('), expected)
         expected = item(base, 'fn run_case(').replace('match sweep()', 'match sweep_for_role(gui)')
         expected = expected.replace('keep_record_output(suite, name);',
                                     'keep_record_output(suite, name);\n            detach_transcript();')
@@ -379,7 +386,7 @@ class RunnerRoles(unittest.TestCase):
         start = item(source, 'fn start_scoped_runner(')
         self.assertIn('process::set_child_subreaper(true)', start)
         self.assertIn('BREENIX_SUITE_TRANSCRIPT_FD', start)
-        self.assertIn('FD_CLOEXEC', start)
+        self.assertIn('if number > 2 { flags | i64::from(io::fd_flags::FD_CLOEXEC) } else { flags & !i64::from(io::fd_flags::FD_CLOEXEC) }', start)
         self.assertEqual(source.count('start_scoped_runner()'), 2)
         self.assertEqual(source.count('scoped_gui('), 3)
         self.assertEqual(source.count('descendants::sweep_descendants()'), 1)
@@ -387,6 +394,20 @@ class RunnerRoles(unittest.TestCase):
         self.assertIn('if self.gui {\n            for category in self.categories', source)
         self.assertIn('let mut results = if gui {', source)
         self.assertEqual(source.count('ResultPipe::new('), 1)
+
+    def test_sequence_has_only_the_two_d4_role_gates(self):
+        source = (ROOT / 'libs/libbreenix/src/suite_sequence.rs').read_text()
+        original = historical(MAIN, 'libs/libbreenix/src/suite_sequence.rs')
+        self.assertEqual(source.count('process::getpid()'), original.count('process::getpid()') + 2)
+        self.assertEqual(source.count('BREENIX_SUITE_SEQUENCE_DIR'), 1)
+        self.assertEqual(item(source, 'fn reap_all()'), 'fn reap_all() -> bool {\n    if process::getpid().is_ok_and(|pid| pid.raw() != 1) {\n        return super::descendants::sweep_descendants().is_none();\n    }\n    reap_all_pid_one()\n}')
+        self.assertEqual(source.count('super::descendants::sweep_descendants()'), 1)
+        gate = item(source, 'fn sequence_paths()')
+        self.assertLess(gate.index('pid.raw() != 1'), gate.index('BREENIX_SUITE_SEQUENCE_DIR'))
+        self.assertIn('std::fs::read_to_string(&sequence_paths().list)', item(source, 'pub fn read('))
+        self.assertIn('sequence_paths().executables', item(source, 'pub fn prepare('))
+        for signature in ['fn record_baseline()', 'fn load_baseline()', 'fn skipped(']:
+            self.assertIn('sequence_paths().baseline', item(source, signature))
 
 
 if __name__ == '__main__':

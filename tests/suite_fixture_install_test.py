@@ -10,6 +10,28 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class FixtureInstall(unittest.TestCase):
+    def test_sequence_sentinel_uses_main_layout(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            base = Path(scratch)
+            root, binaries = base / 'root', base / 'binaries'
+            root.mkdir(); binaries.mkdir()
+            cargo = tomllib.loads((ROOT / 'userspace/programs/Cargo.toml').read_text())
+            self.assertTrue(any(b['name'] == 'ui-sequence-sentinel_test'
+                                and b['path'] == 'src/suite_sequence_sentinel.rs' for b in cargo['bin']))
+            self.assertIn('"ui-sequence-sentinel_test"', (ROOT / 'userspace/programs/build.sh').read_text())
+            (binaries / 'ui-sequence-sentinel_test.elf').write_bytes(b'sentinel ELF')
+            layout = base / 'layout.tsv'
+            layout.write_bytes(subprocess.check_output(['git', 'show', 'origin/main:libs/libbreenix/src/layout.tsv'], cwd=ROOT))
+            self.assertEqual(layout.read_bytes(), (ROOT / 'libs/libbreenix/src/layout.tsv').read_bytes())
+            result = subprocess.run(['sh', str(ROOT / 'scripts/install-layout.sh'), str(root),
+                                     str(binaries), str(layout)],
+                                    env=dict(os.environ, BREENIX_EXT2_OWNERS=str(base / 'owners')),
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((root / 'usr/libexec/breenix/ui-sequence-sentinel_test').read_bytes(), b'sentinel ELF')
+            self.assertFalse((root / 'sbin/ui-sequence-sentinel_test').exists())
+            self.assertFalse((root / 'usr/local').exists())
+
     def test_uitest_app_uses_main_layout(self):
         with tempfile.TemporaryDirectory() as scratch:
             base = Path(scratch)

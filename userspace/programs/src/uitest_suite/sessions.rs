@@ -417,3 +417,106 @@ pub fn twenty_sessions() -> CaseResult {
 
 /// A real-runner logic timeout keeps evidence inside its original limit.
 pub fn case_timeout() -> CaseResult { super::runner::collection_evidence("collection-timeout", "timeout") }
+
+/// Run a private two-suite sequence and judge its actual exec handoff (E22 D4).
+pub fn sequence_compatible() -> CaseResult {
+    use breenix_suite::suite::{spawn, Run};
+    use libbreenix::{io, time, types::{Fd, Pid}};
+    use std::{fs::File, io::Read, os::fd::FromRawFd};
+    struct Child(Option<Pid>);
+    impl Drop for Child {
+        fn drop(&mut self) {
+            if let Some(pid) = self.0.take() {
+                let _ = signal::kill(pid.raw() as i32, signal::SIGKILL);
+                let _ = process::waitpid(pid.raw() as i32, &mut 0, 0);
+            }
+        }
+    }
+    struct Directory(std::path::PathBuf);
+    impl Drop for Directory { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+    let own = process::getpid()?.raw();
+    let directory = Directory(format!("/tmp/ui-sequence-{own}").into());
+    std::fs::create_dir(&directory.0).map_err(|e| e.to_string())?;
+    std::fs::write(directory.0.join("suite-sequence"), b"runner-fixture,sequence-sentinel\n").map_err(|e| e.to_string())?;
+    // The scoped executable directory follows the usual suite-<id> lookup,
+    // with private links to U7a's installed libexec fixtures.
+    for (id, path) in [("runner-fixture", "/usr/libexec/breenix/ui-runner-fixture_test"),
+                       ("sequence-sentinel", "/usr/libexec/breenix/ui-sequence-sentinel_test")] {
+        std::os::unix::fs::symlink(path, directory.0.join(format!("suite-{id}"))).map_err(|e| e.to_string())?;
+    }
+    let mut hold = || -> i32 { loop { let _ = time::sleep_ms(100); } };
+    let helper = Child(Some(spawn(&[], Run::Call(&mut hold))?));
+    let (r, w) = io::pipe2(io::status_flags::O_CLOEXEC)?;
+    let mut reader = unsafe { File::from_raw_fd(r.raw() as i32) };
+    let writer = unsafe { File::from_raw_fd(w.raw() as i32) };
+    io::fcntl_setfl(r, io::status_flags::O_NONBLOCK)?;
+    let mut exec = || {
+        std::env::set_var("BREENIX_SUITE_TRANSCRIPT_FD", "1");
+        std::env::set_var("BREENIX_SUITE_SEQUENCE_DIR", &directory.0);
+        std::env::set_var("BREENIX_UI_SEQUENCE_FIXTURE", "1");
+        let path = b"/usr/libexec/breenix/ui-runner-fixture_test\0";
+        let argv = [path.as_ptr(), core::ptr::null()];
+        let _ = process::execv(path, argv.as_ptr());
+        127
+    };
+    let mut fixture = Child(Some(spawn(&[(w, Fd::STDOUT), (w, Fd::STDERR)], Run::Call(&mut exec))?));
+    let fixture_pid = fixture.0.unwrap().raw();
+    drop(writer);
+    let end = monotonic_ns()? + 8_000_000_000;
+    let mut bytes = Vec::new();
+    let mut status = None;
+    let mut eof = false;
+    while !eof || status.is_none() {
+        let mut chunk = [0; 8192];
+        match reader.read(&mut chunk) {
+            Ok(0) => eof = true,
+            Ok(n) => bytes.extend_from_slice(&chunk[..n]),
+            Err(e) if matches!(e.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted) => {},
+            Err(e) => return Err(e.to_string().into()),
+        }
+        check(bytes.len() <= 2 * 1024 * 1024, "sequence transcript exceeds bound")?;
+        if status.is_none() {
+            let mut value = 0;
+            if process::waitpid(fixture_pid as i32, &mut value, 1)?.raw() != 0 {
+                status = Some(value); fixture.0 = None;
+            }
+        }
+        check(monotonic_ns()? < end, "sequence did not exit with transcript EOF")?;
+        time::sleep_ms(1)?;
+    }
+    let text = String::from_utf8(bytes).map_err(|e| e.to_string())?;
+    let lines: Vec<_> = text.lines().filter(|s| !s.is_empty()).collect();
+    let expected = [
+        "SUITE runner-fixture START cases=1",
+        "SUITE runner-fixture CASE fixture/sequence-session PASS ms=",
+        "SUITE runner-fixture DONE passed=1 failed=0 skipped=0 total=1",
+        "SUITE_SEQUENCE READY runner-fixture",
+        "SUITE_SEQUENCE RESET sequence-sentinel removed=",
+        "SUITE sequence-sentinel START cases=1",
+        "SUITE sequence-sentinel CASE reset/state PASS ms=0",
+        "SUITE sequence-sentinel DONE passed=1 failed=0 skipped=0 total=1",
+        "SUITE_SEQUENCE DONE suites=2",
+    ];
+    let mut after = 0;
+    for record in expected {
+        let matches: Vec<_> = lines.iter().enumerate().filter(|(_, line)| line.starts_with(record)).collect();
+        check(matches.len() == 1 && matches[0].0 >= after, &format!("sequence missing, repeated or out of order: {record}; {text}"))?;
+        after = matches[0].0 + 1;
+    }
+    check(!lines.iter().any(|l| l.starts_with("SUITE_SEQUENCE RESET ") && l.contains(" FAIL ")), "sequence reset failed")?;
+    check(!text.contains("SUITE_SEQUENCE FAIL exec"), "sequence skipped an unexecutable suite")?;
+    let reset = lines.iter().find(|l| l.starts_with("SUITE_SEQUENCE RESET sequence-sentinel ")).unwrap();
+    check(reset.contains(" changed=0 tcp=0 "), &format!("sequence filesystem or TCP reset differs: {reset}"))?;
+    let witness = lines.iter().find_map(|l| l.strip_prefix("SEQUENCE-DESCENDANT pid=")).ok_or("missing sequence sweep witness")?;
+    let descendant: u64 = witness.parse().map_err(|_| "bad sequence descendant pid")?;
+    check(descendant > 1 && !std::path::Path::new(&format!("/proc/{descendant}/stat")).exists(), "fixture descendant survived handoff")?;
+    let status = status.unwrap();
+    check(process::wifexited(status) && process::wexitstatus(status) == 0, &format!("sentinel failed: {text}"))?;
+    // GIVE_BACK is EPERM unless this outer case still owns the display.
+    libbreenix::graphics::give_back_display()?;
+    libbreenix::graphics::take_over_display()?;
+    check(signal::kill(helper.0.unwrap().raw() as i32, 0).is_ok(), "sequence killed outer helper")?;
+    let stat = std::fs::read_to_string(format!("/proc/{}/stat", helper.0.unwrap().raw())).map_err(|e| e.to_string())?;
+    check(stat.rsplit_once(") ").and_then(|(_, s)| s.split_whitespace().nth(1)).and_then(|s| s.parse::<u64>().ok()) == Some(own),
+        "outer case lost helper parentage")
+}
