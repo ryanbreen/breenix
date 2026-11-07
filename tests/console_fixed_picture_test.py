@@ -24,7 +24,12 @@ noto-sans-mono-bitmap={version="0.3",default-features=false,features=["size_16",
     kit=(root/'userspace/programs/src/suite_breengel/window_cases/kit.rs').read_text()
     pattern=re.search(r'pub\(crate\) fn pattern\([^\n]+\{\n.*?\n\}',kit,re.S)[0]
     pattern=pattern.replace('pub(crate) fn pattern','fn production_pattern')
-    (path / 'src/lib.rs').write_text(modules + pattern + '\n' +
+    scanout=(root/'userspace/programs/src/suite_breengel/window_cases/scanout.rs').read_text()
+    atomic=scanout.split('fn scanout_atomic_record()',1)[1].split('fn scanout_window_commits()',1)[0]
+    check=atomic[atomic.index('let differ ='):atomic.index('if let Some((x, y)) = differ')]
+    check=check.replace('pattern(commit as u32, x, y)','production_pattern(commit as u32, x, y)')
+    live_check='fn production_live_mismatch(px:&[u8],width:usize,commit:u64)->Option<(u32,u32)> {'+check+'differ}\n'
+    (path / 'src/lib.rs').write_text(modules + pattern + '\n' + live_check +
         (root / 'tests/console_fixed_picture_test.rs').read_text() + '\n' +
         (root / 'tests/atomic_fixed_picture_test.rs').read_text())
     subprocess.run(['taskpolicy', '-b', 'cargo', 'test', '--manifest-path', str(path / 'Cargo.toml'), '--lib'],

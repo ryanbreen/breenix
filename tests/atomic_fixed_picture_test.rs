@@ -17,11 +17,11 @@ fn fixed_atomic_handoff_keeps_the_live_oracle_exact() {
         for commit in [20,40,256,300] {
             let live=render(commit);
             let saved=live.clone();
-            // The existing case compares each readback with its actual commit.
-            for y in 0..64 {for x in 0..64 {
-                let at=((400+y)*width+600+x)*4;
-                assert_eq!(&live[at..at+3],&production_pattern(commit,x as u32,y as u32)[..3]);
-            }}
+            assert_eq!(production_live_mismatch(&live,width,commit as u64),None);
+            assert!(production_live_mismatch(&live,width,commit as u64+1).is_some());
+            let mut damaged=live.clone();
+            damaged[(400*width+600)*4]^=1;
+            assert_eq!(production_live_mismatch(&damaged,width,commit as u64),Some((0,0)));
             let handed=subject::atomic_picture(width,height,production_pattern).unwrap();
             assert_eq!(handed,fixed);
             assert_eq!(live,saved);

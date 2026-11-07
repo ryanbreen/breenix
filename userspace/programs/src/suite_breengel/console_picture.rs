@@ -10,7 +10,9 @@ pub mod status;
 #[path = "../../../../kernel/src/console/raster.rs"]
 pub mod raster;
 
-pub const FIXED_INPUT_CASES: &[&str] = &["panel/kernel-screens"];
+pub const FIXED_INPUT_CASES: &[&str] = &["panel/kernel-screens", "scanout/atomic-record"];
+/// U14a: shortest valid atomic-record observation schedule.
+pub const FIXED_ATOMIC_COMMIT: u32 = 20;
 /// The elapsed input of the #2779 sample, per coordinator ruling U14.
 pub const FIXED_ELAPSED_SECONDS: u64 = 679;
 
@@ -19,7 +21,7 @@ pub const FIXED_ELAPSED_SECONDS: u64 = 679;
 /// live check and applies only to the explicitly listed case.
 pub fn picture(case: &str, live: &[u8], width: usize, height: usize, serial: &str) -> Result<Vec<u8>, String> {
     let mut pixels = live.to_vec();
-    if !FIXED_INPUT_CASES.contains(&case) { return Ok(pixels); }
+    if case != "panel/kernel-screens" || !FIXED_INPUT_CASES.contains(&case) { return Ok(pixels); }
     if live.len() != width * height * 4 { return Err("fixed-input console picture has the wrong extent".into()); }
     let mut suite = status::SuiteStatus::new();
     let mut started = None;
@@ -43,5 +45,27 @@ pub fn picture(case: &str, live: &[u8], width: usize, height: usize, serial: &st
     let (font, scale) = if g.stage_scale == 0 { (layout.font, 1) }
         else { (raster::Font::new(noto_sans_mono_bitmap::RasterHeight::Size20), g.stage_scale) };
     raster::panel_text(&mut pixels, &layout, g.heading, font, scale, &text);
+    Ok(pixels)
+}
+
+/// U14a fixed approval input; the case judges its continuously committed frame first.
+/// The callback is the same production pattern used by the window and its live oracle.
+pub fn atomic_picture(width: usize, height: usize,
+    pattern: fn(u32, u32, u32) -> [u8; 4]) -> Result<Vec<u8>, String>
+{
+    if !FIXED_INPUT_CASES.contains(&"scanout/atomic-record") {
+        return Err("atomic-record fixed input is not authorized".into());
+    }
+    if width < 664 || height < 464 {
+        return Err("atomic-record picture has the wrong extent".into());
+    }
+    let len = width.checked_mul(height).and_then(|n|n.checked_mul(4))
+        .ok_or("atomic-record picture extent overflows")?;
+    let mut pixels = vec![0; len];
+    for pixel in pixels.chunks_mut(4) { pixel[3] = 255; }
+    for y in 0..64 { for x in 0..64 {
+        let at = ((400+y)*width+600+x)*4;
+        pixels[at..at+3].copy_from_slice(&pattern(FIXED_ATOMIC_COMMIT, x as u32, y as u32)[..3]);
+    } }
     Ok(pixels)
 }
