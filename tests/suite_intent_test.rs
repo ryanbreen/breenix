@@ -65,6 +65,7 @@ fn intent_commands_fit_the_existing_gpu_work_budget() {
 fn intent_background_alternates_at_frame_origin_behind_border_and_picture() {
     const PICTURE: u32 = 0xFF12_3456;
     for (picture, mode) in [
+        ([1872, 1788], [2560, 1600]),
         ([17, 9], [1280, 800]),
         ([1, 1], [1301, 815]),
         ([2560, 1600], [1280, 800]),
@@ -72,7 +73,9 @@ fn intent_background_alternates_at_frame_origin_behind_border_and_picture() {
         ([17, 9], [2560, 1600]),
     ] {
         let mut pixels = vec![0; (mode[0] * mode[1]) as usize];
-        for l in super::intent::layout(picture, mode, &[]).unwrap() {
+        for l in if picture == [1872,1788] {
+            super::intent::picture_pages("breengel","png-decode/independent-fixtures",picture,mode).unwrap()
+        } else { super::intent::layout(picture, mode, &[]).unwrap() } {
         for words in super::intent::streams(picture, mode, 1, 2, l.clone()).unwrap() {
             stream::validate(&words[..], &IntentResources { picture, mode }).unwrap();
             let mut at = 0;
@@ -114,6 +117,7 @@ fn intent_background_alternates_at_frame_origin_behind_border_and_picture() {
         for y in 0..mode[1] {
             for x in 0..mode[0] {
                 let expected = if picture_pixels[(y*mode[0]+x) as usize] { PICTURE }
+                    else if contains(l.picture, x, y) { 0xFF0C_131F }
                     else if l.border.is_some_and(|b| contains(b, x, y)) { 0xFFFF_FFFF }
                     else if (x / 16 + y / 16) % 2 == 0 { 0xFF5A_5A5A }
                     else { 0xFF7A_7A7A };
