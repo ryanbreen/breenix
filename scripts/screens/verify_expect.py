@@ -455,9 +455,12 @@ def verify_picture(image, expect, checkpoint='intent', *, case=None, suite=None,
     if suite == 'breengel' and case and case.split('/')[0] in ('bmp', 'png-decode', 'png-encode'):
         return verify_panel(image, expect, case, checkpoint, commit)
     # Literal scene declarations describe the retained composed end surface.
-    scene = re.search(r'seed mosaics \(x,y,width,height,z,seed\): ([0-9(),; ]+)\.', expect)
+    scene = re.search(r'seed mosaics \(x,y,width,height,z,seed\): '
+                      r'(for i=0\.\.15, \(40\+60\*i,30\+40\*i,160,120,15-i,10\+i\); )?'
+                      r'([0-9(),; ]+)\.', expect)
     if scene:
-        windows = [tuple(map(int, values.split(','))) for values in re.findall(r'\(([0-9,]+)\)', scene[1])]
+        windows = [(40+60*i,30+40*i,160,120,15-i,10+i) for i in range(16)] if scene[1] else []
+        windows += [tuple(map(int, values.split(','))) for values in re.findall(r'\(([0-9,]+)\)', scene[2])]
         size = re.search(r'(\d+)x(\d+) screen', expect)
         if not size or not windows or any(len(w) != 6 for w in windows):
             return dict(verdict='unparseable', checked_claims=[], failed_claims=[],
