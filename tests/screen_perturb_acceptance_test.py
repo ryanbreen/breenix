@@ -159,6 +159,22 @@ class PerturbationAcceptance(unittest.TestCase):
                 with self.subTest(field=field), self.assertRaises(ValueError):
                     API['capture_identity'](p, HEAD, 'breengel', 'metal')
 
+    def test_r240_health_reads_producer_full_clock_evidence(self):
+        text = ('GT710_CLOCK_STARTUP full=true gpc_khz=1306451 gpc_counter_khz=81651 '
+                'memory_khz=900001 temperature_c=32 status=ok\n'
+                'SUITE gpu MEMORY before free=1000 heap_free_kb=500 user_pages=100\n'
+                'SUITE gpu MEMORY after free=1000 heap_free_kb=500 user_pages=100\n'
+                'SUITE gpu MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=48\n')
+        API['r240_health']('gpu', text)
+        for bad in (text.replace('full=true', 'full=false'),
+                    text.replace('status=ok', 'status=failed'),
+                    text + 'GT710_CLOCK_FALLBACK reason=failed\n',
+                    text + 'GT710_CLOCK_GUARD reason=failed\n',
+                    text + 'GT710_CLOCK_CRITICAL reason=failed\n',
+                    text + 'cmdline gt710.clocks=post\n'):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                API['r240_health']('gpu', bad)
+
     def test_shared_verdict_admits_phases_without_changing_case_counts(self):
         scorer = runpy.run_path(str(ROOT / 'scripts/suite-verdict.py'))
         text, _, _ = fixture()
