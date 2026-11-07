@@ -10,4 +10,5 @@ pub use outcome::{classify, Classification, Expected, FailureClass, ScenarioOutc
 pub mod supervisor;
 mod channel;
 mod session;
-pub use session::{Session, ProcessExit};
+pub use session::{Session, ProcessExit, AppStderr};
+pub mod fixtures;

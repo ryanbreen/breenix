@@ -6,6 +6,11 @@ pub const MAX_FRAME: usize = 64 * 1024;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Message {
     Launch { argv: Vec<Vec<u8>>, env: Vec<Vec<u8>> },
+    Configure { case_pid: u64, seed: u64, mode: String },
+    Configured,
+    LaunchApp { argv: Vec<Vec<u8>>, uid: u32 },
+    ReadStderr(u64),
+    Stderr { pid: u64, dropped: u64, bytes: Vec<u8>, done: bool },
     Teardown,
     Ready(u64),
     Launched(u64),
@@ -33,6 +38,7 @@ fn strings(out: &mut Vec<u8>, values: &[Vec<u8>]) {
 pub fn encode(message: &Message) -> Result<Vec<u8>, String> {
     match message {
         Message::Output { bytes, .. } if bytes.len() > MAX_FRAME - 13 => return Err("control frame exceeds limit".into()),
+        Message::Stderr { bytes, .. } if bytes.len() > 4096 => return Err("stderr chunk exceeds limit".into()),
         Message::Error(error) if error.len() > MAX_FRAME - 5 => return Err("control frame exceeds limit".into()),
         _ => {},
     }
@@ -41,6 +47,21 @@ pub fn encode(message: &Message) -> Result<Vec<u8>, String> {
         Message::Launch { argv, env } => {
             if !valid_launch(argv, env) { return Err("invalid launch argv/env".into()); }
             out.push(1); strings(&mut out, argv); strings(&mut out, env);
+        }
+        Message::Configure { case_pid, seed, mode } => {
+            SessionEnvironment::new(*case_pid, *seed, mode)?;
+            out.push(9); out.extend_from_slice(&case_pid.to_le_bytes());
+            out.extend_from_slice(&seed.to_le_bytes()); bytes(&mut out, mode.as_bytes());
+        }
+        Message::Configured => out.push(10),
+        Message::LaunchApp { argv, uid } => {
+            if !valid_launch(argv, &[]) || !matches!(uid, 0 | 1000) { return Err("invalid app launch".into()); }
+            out.push(11); out.extend_from_slice(&uid.to_le_bytes()); strings(&mut out, argv);
+        }
+        Message::ReadStderr(pid) => { out.push(12); out.extend_from_slice(&pid.to_le_bytes()); }
+        Message::Stderr { pid, dropped, bytes: value, done } => {
+            out.push(13); out.extend_from_slice(&pid.to_le_bytes()); out.extend_from_slice(&dropped.to_le_bytes());
+            out.push(u8::from(*done)); bytes(&mut out, value);
         }
         Message::Teardown => out.push(2),
         Message::Ready(pid) => { out.push(3); out.extend_from_slice(&pid.to_le_bytes()); }
@@ -87,6 +108,26 @@ pub fn decode(payload: &[u8]) -> Result<Message, String> {
         6 => Message::Output { pid: cur.pid()?, bytes: cur.bytes()? },
         7 => Message::Error(String::from_utf8(cur.bytes()?).map_err(|_| "invalid error text")?),
         8 => Message::Stopped,
+        9 => {
+            let case_pid = cur.pid()?; let seed = cur.pid()?;
+            let mode = String::from_utf8(cur.bytes()?).map_err(|_| "invalid mode text")?;
+            SessionEnvironment::new(case_pid, seed, &mode)?;
+            Message::Configure { case_pid, seed, mode }
+        }
+        10 => Message::Configured,
+        11 => {
+            let uid = cur.word()?; let argv = cur.strings()?;
+            if !valid_launch(&argv, &[]) || !matches!(uid, 0 | 1000) { return Err("invalid app launch".into()); }
+            Message::LaunchApp { argv, uid }
+        }
+        12 => Message::ReadStderr(cur.pid()?),
+        13 => {
+            let pid = cur.pid()?; let dropped = cur.pid()?;
+            let done = match cur.take(1)?[0] { 0 => false, 1 => true, _ => return Err("invalid stderr end flag".into()) };
+            let bytes = cur.bytes()?;
+            if bytes.len() > 4096 { return Err("stderr chunk exceeds limit".into()); }
+            Message::Stderr { pid, dropped, bytes, done }
+        }
         _ => return Err("unknown control message".into()),
     };
     if !cur.0.is_empty() { return Err("trailing control bytes".into()); }
@@ -126,3 +167,52 @@ pub fn signal_name(signal: i32) -> &'static str {
 mod runtime;
 #[cfg(target_os = "breenix")]
 pub use runtime::serve;
+
+
+pub const STDERR_CAP: usize = 64 * 1024;
+
+/// Retain the newest bytes without allowing a writer to grow its evidence buffer.
+#[derive(Default)]
+pub struct StderrRing {
+    bytes: std::collections::VecDeque<u8>,
+    dropped: u64,
+}
+impl StderrRing {
+    pub fn push(&mut self, input: &[u8]) {
+        let overflow = self.bytes.len().saturating_add(input.len()).saturating_sub(STDERR_CAP);
+        self.dropped = self.dropped.saturating_add(overflow as u64);
+        if input.len() >= STDERR_CAP {
+            self.bytes.clear();
+            self.bytes.extend(&input[input.len() - STDERR_CAP..]);
+        } else {
+            self.bytes.drain(..overflow);
+            self.bytes.extend(input);
+        }
+    }
+    pub fn bytes(&self) -> Vec<u8> { self.bytes.iter().copied().collect() }
+    pub fn dropped(&self) -> u64 { self.dropped }
+}
+
+#[derive(Clone, Debug)]
+pub struct SessionEnvironment {
+    root: String,
+    seed: u64,
+    mode: String,
+}
+impl SessionEnvironment {
+    pub fn new(case_pid: u64, seed: u64, mode: &str) -> Result<Self, String> {
+        if case_pid <= 1 || mode.is_empty() || mode.len() > 64 || !mode.bytes().all(|b| b.is_ascii_graphic() && b != b'=') {
+            return Err("invalid session configuration".into());
+        }
+        Ok(Self { root: format!("/tmp/uitest/{case_pid}/"), seed, mode: mode.into() })
+    }
+    pub fn config_root(&self) -> &str { &self.root }
+    /// Fonts are selected by the pinned etc/fonts.conf under this config root.
+    pub fn environment(&self) -> Vec<Vec<u8>> {
+        ["TZ=UTC".into(), "LANG=C.UTF-8".into(),
+            format!("BREENIX_UI_CLOCK={}ui-clock", self.root),
+            format!("BREENIX_UI_SEED={}", self.seed), format!("BREENIX_UI_MODE={}", self.mode),
+            format!("BREENIX_CONFIG_ROOT={}", self.root)]
+            .into_iter().map(String::into_bytes).collect()
+    }
+}

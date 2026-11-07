@@ -1,5 +1,5 @@
 #[path = "../libs/libuitest/src/supervisor.rs"]
-mod supervisor;
+pub mod supervisor;
 use supervisor::{decode, encode, Decoder, Message, MAX_FRAME};
 
 #[test]

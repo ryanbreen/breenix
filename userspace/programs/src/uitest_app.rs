@@ -29,6 +29,29 @@ fn main() {
         .unwrap_or_else(|error| { eprintln!("window: {error}"); std::process::exit(1); });
     win.surface().unwrap_or_else(|error| { eprintln!("surface: {error}"); std::process::exit(1); });
     win.present().unwrap_or_else(|error| { eprintln!("present: {error}"); std::process::exit(1); });
+    if options.session_probe {
+        extern "C" {
+            fn getuid() -> u32;
+            fn geteuid() -> u32;
+            fn access(path: *const u8, mode: i32) -> i32;
+            fn setlocale(category: i32, name: *const u8) -> *const std::ffi::c_char;
+        }
+        let root = std::env::var("BREENIX_CONFIG_ROOT").expect("session root");
+        let root = std::path::Path::new(&root);
+        let font_config = std::fs::read(root.join("etc/fonts.conf")).expect("session fonts");
+        let locale = std::fs::read(root.join("etc/locale.conf")).expect("session locale");
+        let config_path = std::ffi::CString::new(root.join("etc/fonts.conf").as_os_str().as_bytes()).unwrap();
+        // Breenix's <locale.h> assigns LC_ALL=0. An empty name selects LANG.
+        let selected = unsafe { setlocale(0, b"\0".as_ptr()) };
+        assert!(!selected.is_null(), "session locale refused");
+        assert_eq!(unsafe { std::ffi::CStr::from_ptr(selected) }.to_bytes(), b"C.UTF-8");
+        println!("UITEST-SESSION uid={} euid={} clock={} epoch={} seed={} mode={} fonts={} locale={} config_writable={}",
+            unsafe { getuid() }, unsafe { geteuid() }, libbreenix::ui_clock::now_ns(), libbreenix::ui_clock::epoch(),
+            std::env::var("BREENIX_UI_SEED").unwrap(), std::env::var("BREENIX_UI_MODE").unwrap(),
+            libuitest::fixtures::digest(&font_config), libuitest::fixtures::digest(&locale),
+            unsafe { access(config_path.as_ptr().cast(), 2) } == 0);
+        let _ = io::stdout().flush();
+    }
     let block = [b'x'; 4096];
     let mut remaining = options.stderr_flood;
     let mut stderr = io::stderr().lock();
