@@ -335,6 +335,11 @@ pub(crate) fn device_death_round() -> Result<(u64, u64), CaseError> {
     let compositor = compositor_owner()?;
     check(compositor != session.supervisor_pid(), "supervisor holds a live compositor's grab")?;
     signal::kill(compositor as i32, signal::SIGKILL)?;
+    let end = monotonic_ns()? + 2_000_000_000;
+    while compositor_owner().ok() == Some(compositor) {
+        check(monotonic_ns()? < end, "killed compositor retained its claim")?;
+        libbreenix::time::sleep_ms(1)?;
+    }
     // Do not wait for Exited first: input requested at death must wait for re-grab.
     session.raw_press(key::B)?;
     let after = probe.event(ids[0], key::B, 1)?;

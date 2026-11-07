@@ -3,6 +3,9 @@
 
 #[path = "ownership.rs"]
 pub mod ownership;
+#[path = "devices.rs"]
+pub mod devices;
+use devices::RawInput;
 
 pub const MAX_FRAME: usize = 64 * 1024;
 
@@ -15,6 +18,9 @@ pub enum Message {
     StartCompositor { kiosk: bool },
     ReadStderr(u64),
     Stderr { pid: u64, dropped: u64, bytes: Vec<u8>, done: bool },
+    Devices([u32; 2]),
+    Input(RawInput),
+    InputDone,
     Teardown,
     Ready(u64),
     Launched(u64),
@@ -68,6 +74,16 @@ pub fn encode(message: &Message) -> Result<Vec<u8>, String> {
             out.push(13); out.extend_from_slice(&pid.to_le_bytes()); out.extend_from_slice(&dropped.to_le_bytes());
             out.push(u8::from(*done)); bytes(&mut out, value);
         }
+        Message::Devices(ids) => {
+            if ids.contains(&0) || ids[0] == ids[1] { return Err("invalid session device ids".into()); }
+            out.push(15); for id in ids { out.extend_from_slice(&id.to_le_bytes()); }
+        }
+        Message::Input(event) => {
+            event.validate()?;
+            out.push(16); out.extend_from_slice(&event.kind.to_le_bytes());
+            out.extend_from_slice(&event.code.to_le_bytes()); out.extend_from_slice(&event.value.to_le_bytes());
+        }
+        Message::InputDone => out.push(17),
         Message::Teardown => out.push(2),
         Message::Ready(pid) => { out.push(3); out.extend_from_slice(&pid.to_le_bytes()); }
         Message::Launched(pid) => { out.push(4); out.extend_from_slice(&pid.to_le_bytes()); }
@@ -136,6 +152,19 @@ pub fn decode(payload: &[u8]) -> Result<Message, String> {
         14 => Message::StartCompositor { kiosk: match cur.take(1)?[0] {
             0 => false, 1 => true, _ => return Err("invalid compositor kind".into()),
         } },
+        15 => {
+            let ids = [cur.word()?, cur.word()?];
+            if ids.contains(&0) || ids[0] == ids[1] { return Err("invalid session device ids".into()); }
+            Message::Devices(ids)
+        }
+        16 => {
+            let kind = u16::from_le_bytes(cur.take(2)?.try_into().unwrap());
+            let code = u16::from_le_bytes(cur.take(2)?.try_into().unwrap());
+            let event = RawInput { kind, code, value: cur.word()? as i32 };
+            event.validate()?;
+            Message::Input(event)
+        }
+        17 => Message::InputDone,
         _ => return Err("unknown control message".into()),
     };
     if !cur.0.is_empty() { return Err("trailing control bytes".into()); }

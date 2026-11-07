@@ -2,6 +2,7 @@
 //! onto the separate collector socket by the collection unit.
 use libbreenix::{error::Error, errno::Errno, fs, io, process, signal, time, types::Fd};
 use breenix_suite::suite::{descendants::descendant_victims, spawn, Run};
+use super::devices::{runtime::Devices, RawInput};
 use super::{Message, SessionEnvironment, StderrRing};
 use super::ownership::{Custody, Event, Owner, Ownership};
 use crate::channel::{Channel, now};
@@ -27,6 +28,8 @@ struct Output {
     stdout: Option<Pipe>, stderr: Option<Pipe>, stdout_bytes: usize,
     ring: StderrRing, status: Option<i32>,
     stdin: Option<Pipe>,
+    startup: Option<Vec<u8>>,
+    input_ready: bool,
 }
 extern "C" {
     fn setgroups(count: usize, groups: *const u32) -> i32;
@@ -79,7 +82,7 @@ fn launch(argv: &[Vec<u8>], env: &[Vec<u8>], uid: u32, kiosk: bool) -> Result<(u
         io::write(write.0, b"auto 1\n").map_err(|e| e.to_string())?;
         Some(write)
     } else { None };
-    Ok((pid, Output { stdout: Some(r), stderr: Some(err_r), stdout_bytes: 0, ring: StderrRing::default(), status: None, stdin }))
+    Ok((pid, Output { stdout: Some(r), stderr: Some(err_r), stdout_bytes: 0, ring: StderrRing::default(), status: None, stdin, startup: kiosk.then(Vec::new), input_ready: false }))
 }
 
 fn outputs(outputs: &mut BTreeMap<u64, Output>, channel: &mut Channel, connected: bool) -> Result<(), String> {
@@ -97,6 +100,16 @@ fn outputs(outputs: &mut BTreeMap<u64, Output>, channel: &mut Channel, connected
                         budget -= n;
                         if stderr { output.ring.push(&chunk[..n]); }
                         else {
+                            if let Some(startup) = &mut output.startup {
+                                if startup.len() + n > 128 { return Err("invalid kiosk startup reply".into()); }
+                                startup.extend_from_slice(&chunk[..n]);
+                                if let Some(at) = startup.iter().position(|&b| b == b'\n') {
+                                    output.input_ready = std::str::from_utf8(&startup[..at]).ok()
+                                        .and_then(|s| s.strip_prefix("ready "))
+                                        .and_then(|s| s.parse::<u64>().ok()).is_some_and(|epoch| epoch != 0);
+                                    output.startup = None;
+                                }
+                            }
                             let keep = n.min((64 * 1024usize).saturating_sub(output.stdout_bytes));
                             output.stdout_bytes += keep;
                             if connected && keep != 0 { channel.queue(&Message::Output { pid, bytes: chunk[..keep].to_vec() })?; }
@@ -154,19 +167,34 @@ fn kill_descendants() -> Result<(), String> {
     }
     Ok(())
 }
-fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mut connected: bool, compositor: Option<u64>, ownership: &mut Ownership) -> Result<(), String> {
+fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mut connected: bool, compositor: Option<u64>, ownership: &mut Ownership, devices: &mut Option<Devices>) -> Result<(), String> {
     let end = now()? + 1000;
     loop {
         kill_descendants()?;
         outputs(outputs_state, channel, connected)?;
-        let empty = reap(channel, outputs_state, connected, compositor, ownership, false)?;
+        let empty = reap(channel, outputs_state, connected, compositor, ownership, true)?;
+        if ownership.owner() == Owner::SupervisorHolds {
+            if let Some(pair) = devices.as_mut() {
+                pair.recover(process::getpid().map_err(|e| e.to_string())?.raw())?;
+                pair.drain()?;
+            }
+        }
         outputs(outputs_state, channel, connected)?;
         if connected && channel.flush().is_err() { connected = false; }
         if empty && outputs_state.values().all(|o| o.stdout.is_none() && o.stderr.is_none()) { break; }
         if now()? >= end { return Err("session descendants outlived SIGKILL".into()); }
         time::sleep_ms(1).map_err(|e| e.to_string())?;
     }
-    ownership.apply(Event::End, &mut Display)
+    // Reap recovers the compositor claim before releases can reach the console.
+    let release = if let Some(mut pair) = devices.take() {
+        let grabbed = if ownership.owner() == Owner::SupervisorHolds {
+            pair.recover(process::getpid().map_err(|e| e.to_string())?.raw())
+        } else { Ok(()) };
+        let destroyed = pair.destroy();
+        grabbed.and(destroyed)
+    } else { Ok(()) };
+    let handback = ownership.apply(Event::End, &mut Display);
+    release.and(handback)
 }
 
 /// Runner callback. Its first operation registers the subreaper; failure refuses
@@ -181,16 +209,20 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
     let mut output = BTreeMap::new();
     let mut environment: Option<SessionEnvironment> = None;
     let mut compositor = None;
+    let mut devices = None;
     let mut ownership = Ownership::default();
     let result = (|| -> Result<(), String> {
         signal::sigaction(signal::SIGPIPE, Some(&signal::Sigaction::ignore()), None).map_err(|e| e.to_string())?;
         io::fcntl_setfl(collector, io::status_flags::O_NONBLOCK).map_err(|e| e.to_string())?;
         ownership.apply(Event::Begin, &mut Display)?;
+        devices = Some(Devices::create()?);
+        channel.send(&Message::Devices(devices.as_ref().unwrap().ids()))?;
         channel.send(&Message::Ready(process::getpid().map_err(|e| e.to_string())?.raw()))?;
         let mut ended = Vec::new();
         let mut stopped = false;
         let mut connected = true;
         let mut stderr_request = None;
+        let mut pending_input: Option<(RawInput, i128)> = None;
         loop {
             // Collector is independent of the case: a dead case cannot hold cleanup.
             let mut bytes = [0; 128];
@@ -201,7 +233,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     if ended.len() > 128 { return Err("invalid collector message".into()); }
                     if ended.ends_with(b"\n") {
                         if ended != b"end discard\n" { return Err("unsupported collector request in session core".into()); }
-                        if !stopped { teardown(&mut channel, &mut output, false, compositor, &mut ownership)?; }
+                        if !stopped { teardown(&mut channel, &mut output, false, compositor, &mut ownership, &mut devices)?; }
                         if let Some(config) = environment.take() { std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())?; }
                         io::write(collector, b"done\n").map_err(|e| e.to_string())?;
                         return Ok(());
@@ -211,6 +243,16 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                 Err(error) => return Err(error.to_string()),
             }
             if !stopped {
+                // Death is serviced before a queued input request, and re-grab is
+                // completed before Exited can be flushed to the case.
+                reap(&mut channel, &mut output, connected, compositor, &mut ownership, true)?;
+                let pair = devices.as_mut().ok_or("session devices missing")?;
+                if ownership.owner() == Owner::SupervisorHolds {
+                    pair.recover(process::getpid().map_err(|e| e.to_string())?.raw())?;
+                }
+                let kiosk_ready = compositor.and_then(|pid| output.get(&pid)).is_some_and(|o| o.input_ready);
+                pair.observe(compositor, kiosk_ready)?;
+                pair.drain()?;
                 match if connected { channel.receive() } else { Ok(None) } {
                     Ok(Some(Message::Launch { argv, env })) => match launch(&argv, &env, 0, false) {
                         Ok((pid, pipe)) => { output.insert(pid, pipe); channel.queue(&Message::Launched(pid))?; }
@@ -248,7 +290,8 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     }
                     Ok(Some(Message::StartCompositor { kiosk })) => {
                         if compositor.is_some() { return Err("session compositor already started".into()); }
-                        let env = environment.as_ref().ok_or("session not configured")?.environment();
+                        let mut env = environment.as_ref().ok_or("session not configured")?.environment();
+                        env.push(devices.as_ref().ok_or("session devices missing")?.environment());
                         let path = if kiosk { "/usr/libexec/breenix/kiosk_test" } else { "/usr/bin/bwm" };
                         let (pid, pipes) = launch(&[path.as_bytes().to_vec()], &env, 0, kiosk)?;
                         compositor = Some(pid);
@@ -256,11 +299,16 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                         output.insert(pid, pipes);
                         channel.queue(&Message::Launched(pid))?;
                     }
+                    Ok(Some(Message::Input(event))) => {
+                        if pending_input.is_some() { return Err("input request already pending".into()); }
+                        event.validate()?;
+                        pending_input = Some((event, now()? + 2000));
+                    }
                     Ok(Some(Message::ReadStderr(pid))) => {
                         if stderr_request.is_some() || !output.contains_key(&pid) { return Err("invalid app stderr request".into()); }
                         stderr_request = Some(pid);
                     }
-                    Ok(Some(Message::Teardown)) => { teardown(&mut channel, &mut output, true, compositor, &mut ownership)?;
+                    Ok(Some(Message::Teardown)) => { teardown(&mut channel, &mut output, true, compositor, &mut ownership, &mut devices)?;
                         if let Some(config) = environment.take() { std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())?; }
                         stopped = true; channel.send(&Message::Stopped)?; }
                     Ok(Some(_)) => return Err("unexpected case control message".into()),
@@ -270,7 +318,13 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     Err(error) => return Err(error),
                 }
                 outputs(&mut output, &mut channel, connected)?;
-                reap(&mut channel, &mut output, connected, compositor, &mut ownership, true)?;
+                if let Some((event, end)) = pending_input {
+                    if stopped { pending_input = None; }
+                    else if devices.as_mut().ok_or("session devices missing")?.inject(event)? {
+                        pending_input = None;
+                        channel.queue(&Message::InputDone)?;
+                    } else if now()? >= end { return Err("input paused awaiting compositor grab".into()); }
+                }
                 if let Some(pid) = stderr_request {
                     let app = output.get(&pid).ok_or("unknown app stderr pid")?;
                     // A live snapshot is the ring now. After exit, finish draining
@@ -294,11 +348,12 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
     })();
     if let Err(error) = &result { let _ = channel.send(&Message::Error(error.clone())); }
     let cleanup = if result.is_err() && !matches!(ownership.owner(), Owner::Initial | Owner::CaseEnd | Owner::RunnerHolds) {
-        teardown(&mut channel, &mut output, false, compositor, &mut ownership)
+        teardown(&mut channel, &mut output, false, compositor, &mut ownership, &mut devices)
     } else { Ok(()) };
+    let device_cleanup = if let Some(pair) = devices { pair.destroy() } else { Ok(()) };
     let root_cleanup = if let Some(config) = environment {
         std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())
     } else { Ok(()) };
     let _ = io::close(collector);
-    i32::from(result.is_err() || cleanup.is_err() || root_cleanup.is_err())
+    i32::from(result.is_err() || cleanup.is_err() || device_cleanup.is_err() || root_cleanup.is_err())
 }

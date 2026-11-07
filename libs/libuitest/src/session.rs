@@ -2,6 +2,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use libbreenix::{process, time};
 use crate::{channel::{Channel, now}, supervisor::{Message, SessionEnvironment, signal_name}};
+use crate::supervisor::devices::RawInput;
 use crate::window_wait::{WaitWindow, WindowReady};
 
 #[derive(Clone, Debug)]
@@ -13,6 +14,8 @@ pub struct AppStderr { pub bytes: Vec<u8>, pub dropped: u64 }
 pub struct Session {
     environment: SessionEnvironment,
     configured: bool,
+    devices: Option<[u32; 2]>,
+    input_done: bool,
     stderr: Option<(u64, AppStderr, bool)>,
     control: Channel,
     supervisor: u64,
@@ -55,14 +58,30 @@ impl Session {
         let mode = libbreenix::gpu::current_mode().map_err(|e| format!("session mode: {e}"))?;
         let mode = format!("{}x{}@{}", mode.width, mode.height, mode.scale);
         let environment = SessionEnvironment::new(case_pid, seed, &mode)?;
-        let mut session = Self { environment, configured: false, stderr: None, control, supervisor: 0, names: BTreeMap::new(), output: BTreeMap::new(), exits: Vec::new(), launched: None, stopped: false, compositor: None, excluded: BTreeSet::new() };
+        let mut session = Self { environment, configured: false, devices: None, input_done: false, stderr: None, control, supervisor: 0, names: BTreeMap::new(), output: BTreeMap::new(), exits: Vec::new(), launched: None, stopped: false, compositor: None, excluded: BTreeSet::new() };
         let end = now()? + 1000;
-        while session.supervisor == 0 { session.poll(end)?; }
+        while session.supervisor == 0 || session.devices.is_none() { session.poll(end)?; }
         session.control.send(&Message::Configure { case_pid, seed, mode })?;
         let end = now()? + 1000;
         while !session.configured { session.poll(end)?; }
         Ok(session)
     }
+    pub fn input_devices(&self) -> [u32; 2] { self.devices.expect("connected session devices") }
+    fn raw_input(&mut self, event: RawInput) -> Result<(), String> {
+        if self.stopped { return Err("session has ended".into()); }
+        self.input_done = false;
+        self.control.send(&Message::Input(event))?;
+        let end = now()? + 2000;
+        while !self.input_done { self.poll(end)?; }
+        Ok(())
+    }
+    pub fn raw_press(&mut self, code: u16) -> Result<(), String> { self.raw_input(RawInput { kind: 1, code, value: 1 }) }
+    pub fn raw_release(&mut self, code: u16) -> Result<(), String> { self.raw_input(RawInput { kind: 1, code, value: 0 }) }
+    pub fn raw_motion(&mut self, x: i32, y: i32) -> Result<(), String> {
+        self.raw_input(RawInput { kind: 2, code: 0, value: x })?;
+        self.raw_input(RawInput { kind: 2, code: 1, value: y })
+    }
+    pub fn raw_wheel(&mut self, delta: i32) -> Result<(), String> { self.raw_input(RawInput { kind: 2, code: 8, value: delta }) }
     pub fn config_root(&self) -> &str { self.environment.config_root() }
     /// Exclude a window from required clock/settle participation (plan 6.3).
     pub fn exclude(&mut self, window: u64) { self.excluded.insert(window); }
@@ -144,6 +163,8 @@ impl Session {
     fn poll_once(&mut self) -> Result<(), String> {
         match self.control.receive()? {
             Some(Message::Ready(pid)) if self.supervisor == 0 && pid > 1 => self.supervisor = pid,
+            Some(Message::Devices(ids)) if self.devices.is_none() => self.devices = Some(ids),
+            Some(Message::InputDone) if !self.input_done => self.input_done = true,
             Some(Message::Configured) if !self.configured => self.configured = true,
             Some(Message::Stderr { pid, dropped, bytes, done }) => {
                 let (wanted, snapshot, complete) = self.stderr.as_mut().ok_or("unsolicited stderr")?;
