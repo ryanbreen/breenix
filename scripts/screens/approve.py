@@ -102,30 +102,53 @@ def indexed(rows, check):
     return result
 
 
+def approval_author(doc, row):
+    author = row.get('by', doc['by'])
+    require(author in ('operator', 'agent') and (doc['by'] != 'agent' or author == 'agent'),
+            'invalid decision author')
+    return author
+
+
+def decision_time(stamp):
+    require(matches(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})', stamp),
+            'decision time must be timezone-qualified ISO 8601')
+    require(datetime.fromisoformat(stamp.replace('Z', '+00:00')).utcoffset() is not None,
+            'missing decision timezone')
+
+
 def approval_export(doc):
-    fields(doc, {'candidates', 'by', 'entries'})
+    fields(doc, {'candidates', 'by', 'entries'}, {'non_decisions'})
     require(matches(HEX64, doc['candidates']) and doc['by'] in ('operator', 'agent'),
             'approval must name candidates and be by operator or agent')
 
     def decision(row):
+        author = approval_author(doc, row)
         required = PICTURE | {'verdict', 'decided_at'}
-        if doc['by'] == 'agent':
+        if author == 'agent':
             required |= {'evidence', 'delegation'}
-        fields(row, required, {'reason'})
-        if doc['by'] == 'agent':
+        fields(row, required, {'reason', 'by'})
+        if author == 'agent':
             agent_evidence(row)
             require(row['verdict'] == 'approve', 'agent may only approve')
         key = picture(row)
         require(row['verdict'] in ('approve', 'reject'), 'invalid verdict')
         require('reason' not in row or type(row['reason']) is str, 'invalid reason')
         require(row['verdict'] != 'reject' or nonempty(row.get('reason')), 'reject requires reason')
-        stamp = row['decided_at']
-        require(matches(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})', stamp),
-                'decision time must be timezone-qualified ISO 8601')
-        require(datetime.fromisoformat(stamp.replace('Z', '+00:00')).utcoffset() is not None,
-                'missing decision timezone')
+        decision_time(row['decided_at'])
         return key
-    return indexed(doc['entries'], decision)
+
+    def non_decision(row):
+        fields(row, PICTURE | {'state', 'issue', 'reason', 'marked_at'})
+        key = picture(row)
+        require(row['state'] == 'investigating' and nonempty(row['issue']) and nonempty(row['reason']),
+                'invalid non-decision')
+        decision_time(row['marked_at'])
+        return key
+
+    decisions = indexed(doc['entries'], decision)
+    marks = indexed(doc.get('non_decisions', []), non_decision)
+    require(not decisions.keys() & marks.keys(), 'checkpoint both decided and marked')
+    return decisions
 
 
 def candidates(path):
@@ -206,14 +229,13 @@ def validate_table(table, path, pending=None):
         evidence = pending[a['file']] if pending and a['file'] in pending else read_json(evidence_path)
         require(type(evidence) is dict and evidence.get('candidates') == a['candidates'] and
                 type(evidence.get('entries')) is list, 'approval candidates mismatch')
+        approved = approval_export(evidence).get(key)
+        require(approved is not None and approval_author(evidence, approved) == a['by'],
+                'approval attribution mismatch')
         if a['by'] == 'agent':
-            require(evidence.get('by') == 'agent', 'agent attribution mismatch')
-            approved = approval_export(evidence).get(key)
-            require(approved is not None and all(approved[k] == row[k] for k in PICTURE) and
+            require(all(approved[k] == row[k] for k in PICTURE) and
                     all(approved[k] == a[k] for k in ('evidence', 'delegation')),
                     'agent verification evidence mismatch')
-        else:
-            require(evidence.get('by', 'operator') == 'operator', 'operator attribution mismatch')
         require(any(type(item) is dict and all(item.get(k) == row[k] for k in
                     (*IDENTITY, 'sha256')) and item.get('verdict') == 'approve'
                     for item in evidence['entries']), 'digest not approved')
@@ -232,6 +254,9 @@ def import_decisions(table, path, manifest, approval):
     decisions = approval_export(doc)
     require(doc['candidates'] == candidate_id, 'approval candidates mismatch')
     entries = validate_table(table, path)
+    for mark in doc.get('non_decisions', []):
+        require(identity(mark) in rows and all(mark[k] == rows[identity(mark)][k] for k in PICTURE),
+                'non-decision is not in candidates')
     for key, decision in decisions.items():
         require(key in rows and all(decision[k] == rows[key][k] for k in PICTURE),
                 'decision is not in candidates')
@@ -244,9 +269,10 @@ def import_decisions(table, path, manifest, approval):
             continue
         row = rows[key]
         entry = {k: row[k] for k in PICTURE | {'intent'}}
-        entry['approval'] = dict(by=doc['by'], file=filename, candidates=candidate_id,
+        author = approval_author(doc, decision)
+        entry['approval'] = dict(by=author, file=filename, candidates=candidate_id,
                                  capture_run=row['boot_id'], capture_commit=row['commit'])
-        if doc['by'] == 'agent':
+        if author == 'agent':
             entry['approval'].update({k: decision[k] for k in ('evidence', 'delegation')})
         previous = entries.get(key)
         if previous and previous['sha256'] == row['sha256'] and previous['mode'] == row['mode'] and 'native' in previous:

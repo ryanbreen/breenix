@@ -47,6 +47,16 @@ operator quote in [the approval contract](../../docs/suites/frames/approvals/REA
 These fields are copied into the table's approval metadata and checked against
 the retained decision. The operator format above is unchanged.
 
+Vigil also exports files with a file-level `by: "operator"` and each decided
+entry's explicit `by: "agent"` or `by: "operator"`. The importer uses that entry's
+author, requires the agent evidence and delegation for agent entries, and still
+refuses agent rejection. Legacy files without per-entry authors keep their
+file-level author. Marked rows are retained in `non_decisions`, with their exact
+picture identity, `state: "investigating"`, issue, reason and timezone-qualified
+`marked_at`. They must match a candidate, cannot duplicate a decision, and grant
+no approval. The exported file is retained byte for byte, including these marks.
+Unknown fields remain errors.
+
 ## Mechanical Expect report
 
 ```sh

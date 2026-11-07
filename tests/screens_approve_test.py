@@ -40,7 +40,8 @@ class ApproveTest(unittest.TestCase):
         self.assertEqual(len(rows),1)
         self.assertEqual(rows[0]['approval']['by'],'agent')
         self.assertEqual(rows[0]['approval']['evidence'],decision['evidence'])
-        for bad in [dict(mark,state='approve'),dict(mark,sha256='invalid'),dict(mark,unexpected=1)]:
+        for bad in [dict(mark,state='approve'),dict(mark,sha256='invalid'),
+                    dict(mark,sha256='e'*64),dict(mark,unexpected=1)]:
             self.decisions['non_decisions']=[bad];self.save_decisions();self.run_import(good=False)
         self.decisions['non_decisions']=[mark]
         decision['verdict']='reject';decision['reason']='Agent cannot reject'
