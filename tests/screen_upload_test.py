@@ -50,6 +50,14 @@ pub mod crypto { #[path="SHA"] pub mod sha256; }
     let decoded = screen_capture::decode(&joined).unwrap().0;
     assert_eq!(decoded.pixels,noise);
     assert!(!path.exists());
+    // A later checkpoint may name pixels already retained by this boot.
+    let alias = screen_capture::Record {suite:"gpu",case:"draw/alias",checkpoint:"intent",..record};
+    queue::queue(&path, "", &alias).unwrap();
+    let before = sent;
+    let aliases = queue::flush(&path, &mut upload, |_,_,body,_| {sent+=body.len(); Ok(())});
+    assert!(aliases.is_empty(), "duplicate picture was sent again");
+    assert_eq!(sent, before);
+    assert!(!path.exists());
     // The budget includes startup/final panel bodies and checkpoint records.
     assert!(upload.capture("suite-final-panel", panel, |_,_,body,_| {sent+=body.len(); Ok(())}).contains(" sha256="));
     let raw = vec![7;2<<20];
