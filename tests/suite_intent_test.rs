@@ -1,6 +1,19 @@
 use super::intent::{layout, samples};
 use crate::gpu::abi::{self, stream::{self, Resolver, SourceInfo, TargetInfo}};
 
+#[test]
+fn start_record_marks_only_configured_screen_suites() {
+    for id in ["gpu", "breengel", "ui-testing", "console", "window-manager", "other"] {
+        for configured in [false, true] {
+            let old = format!("SUITE {id} START cases=12 only=case pace_ms=50");
+            let expected = if configured && matches!(id, "gpu" | "breengel") {
+                format!("{old} screen_proof=on")
+            } else { old };
+            assert_eq!(super::start_record(id, 12, " only=case", " pace_ms=50", configured), expected);
+        }
+    }
+}
+
 struct IntentResources { picture: [u32; 2], mode: [u32; 2] }
 impl Resolver for IntentResources {
     fn target(&self, handle: u64) -> Option<TargetInfo> {

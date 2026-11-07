@@ -809,6 +809,23 @@ class MissingStagingToolCleanupTest(StateTest):
 
 
 class RootStagingTest(unittest.TestCase):
+    def test_screen_proof_staging_and_clear(self):
+        import metal_root
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch)
+            tree = root / 'tree'
+            (tree / 'etc/breenix').mkdir(parents=True)
+            (tree / 'sbin').mkdir()
+            (tree / 'sbin/suite-gpu').write_bytes(b'\x7fELFfixture')
+            image = root / 'root.img'
+            subprocess.run([self.mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'], check=True, capture_output=True)
+            def read():
+                return subprocess.run([self.debugfs, '-R', 'cat /etc/breenix/screen-proof', str(image)], capture_output=True).stdout
+            metal_root.stage_root(image, 'suite', 'gpu', {}, screen_proof=True)
+            self.assertEqual(read(), b'on\n')
+            metal_root.stage_root(image, 'suite', 'gpu', {})
+            self.assertEqual(read(), b'')
+
     def test_numbered_operator_keys_are_validated_and_staged_in_order(self):
         import base64
         import metal_root
@@ -1145,6 +1162,30 @@ class ModeApplicabilityTest(StateTest):
 
 
 class DriverTest(StateTest):
+    def test_screen_proof_deadline_and_record(self):
+        d = self.driver
+        d.args.mode, d.args.suite, d.args.screen_proof = 'suite', 'gpu,breengel', True
+        for name, production, holds in [('gpu', 420, 121), ('breengel', 900, 163), ('ui-testing', 1800, 0)]:
+            self.assertEqual(boot.mode_deadline_seconds(d.args, name), production + holds * 1000 // 1000)
+            d.args.screen_proof = False
+            self.assertEqual(boot.mode_deadline_seconds(d.args, name), production)
+            d.args.screen_proof = True
+        d.args.target, d.args.commit, d.args.task = 'main', '', ''
+        d.dir.rmdir()
+        d.create_record()
+        self.assertIs(m.read_json(d.dir / 'run.json')['screenProof'], True)
+        d.args.screen_proof = False
+        shutil.rmtree(d.dir)
+        d.create_record()
+        self.assertNotIn('screenProof', m.read_json(d.dir / 'run.json'))
+
+    def test_screen_proof_session_is_refused(self):
+        run = load_script('metal-run')
+        args = SimpleNamespace(suite=None, mode='console', payload='image', inject=None, input=None,
+                               session=True, screen_proof=True)
+        with self.assertRaisesRegex(SystemExit, 'screen-proof'):
+            run.boot(args)
+
     def setUp(self):
         super().setUp()
         self.args = SimpleNamespace(id='20261017T000009Z-metal', mode='default', payload='image',
