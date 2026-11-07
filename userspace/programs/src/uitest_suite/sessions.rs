@@ -220,3 +220,40 @@ pub fn fixtures_pinned() -> CaseResult {
     session.teardown()?;
     Ok(())
 }
+
+
+// Independent literal colors from diagnostics.rs and the GPU tile view.
+const PANEL_COLORS: [[u8; 3]; 6] = [
+    [31, 19, 12], [59, 39, 24], [77, 112, 26], [58, 50, 145],
+    [106, 196, 69], [66, 77, 232],
+];
+pub(crate) fn screen_pixels() -> Result<Vec<u8>, String> {
+    let mode = libbreenix::gpu::current_mode().map_err(|e| e.to_string())?;
+    let mut pixels = vec![0; mode.width as usize * mode.height as usize * 4];
+    let mut record = [0; libbreenix::gpu::abi::record::SIZE];
+    let r = libbreenix::gpu::readback(0, [0, 0, mode.width, mode.height], &mut pixels, mode.width * 4, &mut record);
+    if r != 0 { return Err(format!("screen readback: {r}")); }
+    Ok(pixels)
+}
+pub fn panel_not_in_case() -> CaseResult {
+    let mut session = Session::kiosk()?;
+    first_window(&mut session, "session without panel", monotonic_ns()? + 2_000_000_000)?;
+    let pixels = screen_pixels()?;
+    check(!pixels.chunks_exact(4).any(|p| PANEL_COLORS.iter().any(|c| p[..3] == *c)),
+        "runner panel pixels leaked into session screen readback")?;
+    session.teardown()?;
+    Ok(())
+}
+fn display_fixture(mode: &str) -> CaseResult {
+    let (text, exit) = super::runner::fixture(mode)?;
+    let failed = mode == "session-panel-fail";
+    check(exit == i32::from(failed), "display fixture exit differs")?;
+    check(text.contains(&format!("CASE fixture/{mode} {} ms=", if failed { "FAIL" } else { "PASS" })), "display fixture verdict differs")?;
+    check(text.contains("SESSION-DISPLAY reaped=true owned=true panel=true"), "missing post-case process, ownership and panel witness")?;
+    Ok(())
+}
+pub fn teardown() -> CaseResult { display_fixture("session-teardown") }
+pub fn panel_after_case() -> CaseResult {
+    display_fixture("session-panel-pass")?;
+    display_fixture("session-panel-fail")
+}

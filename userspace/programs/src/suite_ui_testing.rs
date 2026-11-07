@@ -320,13 +320,13 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // After a case its virtual devices are gone and no key or button is held. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("devices-reset", "After a case its virtual devices are gone and no key or button is held", || pending("sessions", 3)),
         // After a case, no session process remains and the runner owns the display. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("teardown", "After a case, no session process remains and the runner owns the display", || pending("sessions", 3)),
+        case("teardown", "After a case, no session process remains and the runner owns the display", sessions::teardown),
         // A hung app is killed and reaped at teardown. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("teardown-hung", "A hung app is killed and reaped at teardown", sessions::teardown_hung).session(libuitest::supervisor::serve),
         // A screen capture during a case contains no panel pixels. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("panel-not-in-case", "A screen capture during a case contains no panel pixels", || pending("sessions", 3)),
+        case("panel-not-in-case", "A screen capture during a case contains no panel pixels", sessions::panel_not_in_case).session(libuitest::supervisor::serve),
         // The panel is redrawn after the case, with that case's result. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("panel-after-case", "The panel is redrawn after the case, with that case's result", || pending("sessions", 3)),
+        case("panel-after-case", "The panel is redrawn after the case, with that case's result", sessions::panel_after_case),
         // When a session's compositor dies, the display goes to the session supervisor, then to the runner at case end. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("ownership-stack", "When a session's compositor dies, the display goes to the session supervisor, then to the runner at case end", || pending("sessions", 3)),
         // A scenario that runs out of time fails, and its evidence is saved inside the reserve. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)

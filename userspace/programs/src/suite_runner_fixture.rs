@@ -216,6 +216,51 @@ fn orphan_helper(expected: u64) -> i32 {
     }
 }
 
+fn session_display() -> CaseResult {
+    let mut session = libuitest::Session::kiosk()?;
+    let app = session.launch_app(&[b"/usr/libexec/breenix/uitest-app_test", b"panel fixture"], 0)?;
+    session.wait_window("panel fixture")?;
+    let mut status = libbreenix::window::abi::CompositorStatus::default();
+    let result = unsafe { libbreenix::window::raw_call(libbreenix::window::abi::op::COMPOSITOR_STATUS,
+        &mut status as *mut _ as *mut u8, core::mem::size_of_val(&status)) };
+    check(result == 0 && status.owner != 0, "missing live session compositor")?;
+    std::fs::write(format!("/tmp/ui-display-{}", parent_pid()),
+        format!("{} {} {}", session.supervisor_pid(), app, status.owner)).map_err(|e| e.to_string())?;
+    // Leave compositor and app running: the real runner must end the session.
+    if mode() == "session-panel-fail" { return Err("planted panel result".into()); }
+    Ok(())
+}
+fn display_observer(done: usize, _: usize, name: &str) {
+    if done == 0 || !name.starts_with("fixture/session-") { return; }
+    let result = (|| -> CaseResult {
+        let path = format!("/tmp/ui-display-{}", process::getpid()?.raw());
+        let pids = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        for pid in pids.split_whitespace() {
+            check(!std::path::Path::new(&format!("/proc/{pid}/stat")).exists(), "session process survived case end")?;
+        }
+        std::fs::remove_file(path).map_err(|e| e.to_string())?;
+        let mut status = 0;
+        check(matches!(process::waitpid(-1, &mut status, process::WNOHANG),
+            Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ECHILD))), "fixture still has descendants")?;
+        let pixels = sessions::screen_pixels()?;
+        let failed = name.ends_with("-fail");
+        // The text panel and tile panel each have literal, distinct result fills.
+        let colors = if failed { [[58, 50, 145], [66, 77, 232]] } else { [[77, 112, 26], [106, 196, 69]] };
+        let opposite = if failed { [[77, 112, 26], [106, 196, 69]] } else { [[58, 50, 145], [66, 77, 232]] };
+        check(pixels.chunks_exact(4).any(|p| colors.iter().any(|c| p[..3] == *c)), "case result color absent from panel")?;
+        check(!pixels.chunks_exact(4).any(|p| opposite.iter().any(|c| p[..3] == *c)), "panel shows opposite case result")?;
+        // GIVE_BACK is EPERM for a process that is not the current owner.
+        libbreenix::graphics::give_back_display()?;
+        libbreenix::graphics::take_over_display()?;
+        Ok(())
+    })();
+    let line = match result {
+        Ok(()) => "SESSION-DISPLAY reaped=true owned=true panel=true\n".to_owned(),
+        Err(error) => format!("SESSION-DISPLAY failed {error:?}\n"),
+    };
+    let _ = io::write(Fd::from_raw(3), line.as_bytes());
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).is_some_and(|s| s == "--orphan-helper") {
@@ -240,6 +285,7 @@ fn main() {
         "forgery-exec" => (forgery_exec, vec!["label"]),
         "forgery-fork" => (forgery_fork, vec!["label"]),
         "subreaper" => (sessions::reaped_orphan, vec![]),
+        "session-teardown" | "session-panel-pass" | "session-panel-fail" => (session_display, vec![]),
         "supervisor-died" => (supervisor_died, vec![]),
         "sweep-descendants" => (descendants, vec!["label"]),
         "outer-positive" | "transport-always" | "transport-exit-race" => (positive, vec!["label"]),
@@ -248,9 +294,9 @@ fn main() {
     let id = Box::leak(selected.to_string().into_boxed_str());
     let checks = Box::leak(checks.into_boxed_slice());
     let entry = case(id, "Scoped runner control", body).checks(checks);
-    let entry = if matches!(selected, "subreaper" | "supervisor-died") { entry.session(libuitest::supervisor::serve) } else { entry };
+    let entry = if matches!(selected, "subreaper" | "supervisor-died" | "session-teardown" | "session-panel-pass" | "session-panel-fail") { entry.session(libuitest::supervisor::serve) } else { entry };
     let cases = Box::leak(vec![entry].into_boxed_slice());
     let categories = Box::leak(vec![category("fixture", "Scoped runner", cases)].into_boxed_slice());
     suite::set_painter(Box::new(stage_painter::StagePainter::new()));
-    suite::suite("runner-fixture", "Runner fixture", categories).gui().defer_display().case_limit_ms(3000).run()
+    suite::suite("runner-fixture", "Runner fixture", categories).gui().defer_display().with_case_observer(display_observer).case_limit_ms(3000).run()
 }
