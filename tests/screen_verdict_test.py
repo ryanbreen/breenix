@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise screen verdicts with small serial and approval-table fixtures."""
 import json
+import importlib.util
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SCORER = ROOT / 'scripts/screen-verdict.py'
 DIGEST = 'a' * 64
 CONFIG = 'c' * 64
+spec = importlib.util.spec_from_file_location('screen_verdict', SCORER)
+scorer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(scorer)
 
 
 class ScreenVerdictTest(unittest.TestCase):
@@ -33,6 +37,27 @@ class ScreenVerdictTest(unittest.TestCase):
         return subprocess.run([sys.executable, str(SCORER), str(self.dir / 'manifest.json'),
                                str(self.dir / 'serial.txt'), '--table', str(self.dir / 'table.json'),
                                *args], capture_output=True, text=True)
+
+    def test_checkpoint_modes(self):
+        intent = dict(self.entry, checkpoint='intent')
+        intent_line = self.line.replace(' end ', ' intent ')
+        table = {'version': 1, 'entries': [self.entry, intent]}
+        def score(lines, guest, host):
+            start = 'SUITE gpu START cases=2' + (' screen_proof=on' if guest else '')
+            serial = '\n'.join([start, 'SUITE gpu CASE draw/one PASS ms=1'] + lines)
+            return scorer.score(self.manifest, serial, table, run={'screenProof': host})
+        for mode in (False, True):
+            with self.subTest(missing_end=mode), self.assertRaises(ValueError):
+                score([intent_line] if mode else [], mode, mode)
+        self.assertEqual(score([self.line], False, False)[0], 1)
+        with self.assertRaises(ValueError):
+            score([self.line], True, True)
+        with self.assertRaises(ValueError):
+            score([self.line, intent_line], False, False)
+        for guest, host in ((True, False), (False, True)):
+            with self.subTest(guest=guest, host=host), self.assertRaises(ValueError):
+                score([self.line, intent_line], guest, host)
+        self.assertEqual(score([self.line, intent_line], True, True)[0], 2)
 
     def test_match_and_unapproved(self):
         extra = f'SUITE gpu SCREEN draw/two intent sha256={DIGEST} mode=1280x800 binding=1280x800'
