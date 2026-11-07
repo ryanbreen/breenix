@@ -15,7 +15,7 @@ before any replacement instance’s reports.
 
 | Target | Keyboard | Pointer | State |
 |---|---|---|---|
-| x86-metal | `xhci-hid-boot-keyboard` (port 2, interface 0) | `xhci-hid-pointer` (port 2, interface 1, relative); absolute device pending Q1 | Registration implemented; acceptance boot belongs to the later unit. |
+| x86-metal | `xhci-hid-boot-keyboard` (port 2, interface 0) | `xhci-hid-pointer` (port 2, interface 1, relative) | Registration implemented; acceptance boot belongs to the later unit. |
 | ARM64 with xHCI HID | `xhci-hid-boot-keyboard` | `xhci-hid-pointer`, capabilities from the bound report layout | Same USB drivers and input interface; built only. |
 | ARM64 virtio-input MMIO | `virtio-input` keyboard | `virtio-input` tablet, absolute X/Y 0..32767, buttons and relative wheel | Counterpart harvested from e753f9a2; built only. |
 
@@ -26,10 +26,17 @@ belong to that interface; the old pointer snapshot merges interfaces on a port.
 `input::pointer` remains the atomic USB pointer snapshot for syscall 413's
 16-byte form. Virtio's existing tablet snapshot remains available too.
 
-Q1 is open: the x86-metal attached pointer is relative. The shared
-`input-devices/pointer-completion-path` case still requires an absolute pointer
-and is unchanged. ARM still lacks boot validation of this registration and of the
-host-channel transport and later replay work; no ARM boot is authorized for this step.
+W27 (operator, 2026-11-06) removes
+`input-devices/pointer-completion-path` from the shared window-manager suite on
+supported targets. The R240 has a USB mouse, and the operator has no plans to attach
+a tablet or touchscreen. Revisit the case if absolute-pointer hardware is added.
+W10a's Q1 scoring exception is retired. Keyboard completion, replay-report-fault
+and pointer cases through host replay keep their coverage. These do not exercise
+the physical relative USB mouse completion path; that gap is tracked by #2765.
+Removing the case also removes its ARM virtio-tablet completion coverage, tracked
+by #2763.
+ARM still lacks boot validation of this registration and of the host-channel
+transport and later replay work; no ARM boot is authorized for this step.
 
 ## Producer and registration map
 
@@ -57,8 +64,8 @@ creates a kernel-owned host keyboard and host absolute pointer. Their capabiliti
 are the HID boot decoder's keyboard codes, ABS_X and ABS_Y in 0..32767, left,
 right and middle buttons, and signed REL_WHEEL. They use the ordinary input stream,
 serials, SYN_REPORT batches, ledger, compositor grab and console fallback. They
-are separate from the bound physical devices and do not satisfy Q1's physical
-absolute-pointer requirement.
+are separate from the bound physical devices; host replay supplies virtual input independently of physical absolute-pointer
+completion.
 
 The one line entry is `host::serial_line(&[u8])`, called by
 `kernel/src/serial/command.rs` and its ARM counterpart,
@@ -145,8 +152,8 @@ can reach the live descriptor instead of a content snapshot.
 Selector 1 replays the boot keyboard's A and release reports. Selector 2 encodes
 an absolute position and left press/release from the bound HID layout, including
 its report IDs, logical ranges and padding. A relative-only layout refuses selector
-2; it cannot supply the absolute events required by `pointer-completion-path`.
-Q1 and that case are unchanged.
+2. The absolute-pointer completion case that used selector 2 was removed under
+W27; the replay interface remains available if that hardware is added later.
 
 The xHCI worker owns Stop Endpoint, DMA-buffer writes, dequeue advancement,
 production completion dispatch and reposting. USB HID on ARM uses that same path.

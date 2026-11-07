@@ -4,16 +4,16 @@
   "boardStep": "21.3",
   "title": "Shared input core with host-channel virtual devices, the R240 USB devices, the replay control, and bwm reading /dev/input/events",
   "basis": "origin/main 87775882 (fetched 2026-11-04), docs/suites/window-manager.json manifest order; cumulative",
-  "added": 18,
-  "total": 39,
+  "added": 17,
+  "total": 38,
   "reasons": {
     "input-core": {
       "added": 9,
       "why": "All nine need /dev/uinput, /dev/input/events, serials, EV_TEXT, removal releases and the ledger (lane 1A, shared code) plus bwm routing from the core."
     },
     "input-devices": {
-      "added": 3,
-      "why": "keyboard-completion-path and replay-report-fault replay through the port-2 boot keyboard; pointer-completion-path also needs an absolute pointer the R240 lacks (open question Q1)."
+      "added": 2,
+      "why": "keyboard-completion-path and replay-report-fault replay through the port-2 boot keyboard; W27 removes the absolute-pointer completion case because no tablet or touchscreen is planned."
     },
     "focus": {
       "added": 6,
@@ -31,7 +31,6 @@
     "input-core/ledger-complete",
     "input-core/capabilities",
     "input-devices/keyboard-completion-path",
-    "input-devices/pointer-completion-path",
     "input-devices/replay-report-fault",
     "startup/desktop-control",
     "startup/claims-display",
