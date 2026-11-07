@@ -918,9 +918,9 @@ running the real runner as a scoped fixture:
   instead of idling as PID 1 does. These are the only places the runner branches on its role, and a host
   structure test pins that.
 - **The fixture.** `ui-runner-fixture_test`, installed only in `/usr/libexec/breenix`, is a GUI suite built
-  from the real `Suite::gui()` runner. Its cases misbehave on purpose: a check declared and never run; a
+  from the real `Suite::gui()` runner. Its cases misbehave on purpose: a declared check left unexecuted; a
   malformed record; a duplicate record; a record naming another case; `Ok` returned after a mismatch record;
-  the case killed in the middle of a scenario; a supervisor that never answers `collect`; a supervisor that
+  the case killed in the middle of a scenario; a supervisor that does not answer `collect`; a supervisor that
   dies; a double-forked helper left behind. One case passes cleanly as the positive control. Each fixture case has a 3 s limit, and
   each outer case runs the fixture with only the case it checks: the fixture builds its case table from its
   argument, and the runner code is unchanged.
@@ -1116,7 +1116,7 @@ happen by itself.
 
 Like `bwm-fault_test`, `guskit_test` and `bterm_test` are the real program built with one named fault, and
 `ui-runner-fixture_test` is the real runner with fixture cases, installed only in
-`/usr/libexec/breenix` by the `*_test` layout rule. The production builds contain none of these faults.
+`/usr/libexec/breenix` by the `*_test` layout rule. Production binaries are built separately from these fault fixtures.
 
 ## 12. Measurements
 
@@ -2257,7 +2257,7 @@ transport, FRAME accounting, collector socket and collection handshake; the desc
 transcript descriptor in the shared runner; `ui-runner-fixture_test`; the FRAME, TREE, INPUT and COLLECT
 records;
 `frameChecks` in the manifests, the validators, the verdict script and Vigil; `PR_SET_CHILD_SUBREAPER`;
-`BREENIX_CONFIG_ROOT` support in every GUI program; `docs/suites/frames/` with its provenance file, the
+`BREENIX_CONFIG_ROOT` support in the GUI programs; `docs/suites/frames/` with its provenance file, the
 installer and `tools/gfx-refgen`; `/var/uitest` artifacts and `scripts/uitest-artifacts.py`; and
 `uitest-app_test`.
 
@@ -3719,7 +3719,7 @@ second re-check's eight. After this revision no finding is open. Every remaining
 | 8 | External state and real input uncontrolled | fixed | — | Session device selection and grab (§5.4); one config root for every participant; pinned TZ, locale and ordering; independent sampling for system data (§9). |
 | 9 | Semantic cross-check cannot catch lying text | fixed | — | The tree is not an oracle; text is checked against certified-renderer pixels; role-specific invariants; WM policy against an operation model (§7.1, §7.3). `proof/fault-lie-text`, `tree/text-pixels`. |
 | 10 | Shared code makes both sides wrong | fixed | — | Independence rules (§2.5): literal tables in `docs/gui/bwm.md`, libuitest's own key table, `bwm-fault_test` chrome-offset and keymap-swap proofs. |
-| 11 | Self-tests conflict with the outer runner | open | contract | §8.4: the real `Suite::gui()` runner runs as a scoped fixture (`ui-runner-fixture_test`) with a transcript descriptor and a descendant-scoped sweep, and the outer case checks the exact CASE and COLLECT records that runner produced. Proved by `ui-testing/runner/never-ran`, `mismatch-is-fail`, `record-malformed`, `record-duplicate`, `record-binding`, `outer-positive`, `outer-case-death`, `outer-collector-timeout`, `sweep-descendants`. The host scorer keeps its own fixtures (§2.2). Third revision: the fixture gains a supervisor that dies, and the runner's `supervisor-died` fallback is proved by `outer-collector-timeout` and `runner/subreaper` (N17). |
+| 11 | Self-tests conflict with the outer runner | open | contract | §8.4: the real `Suite::gui()` runner runs as a scoped fixture (`ui-runner-fixture_test`) with a transcript descriptor and a descendant-scoped sweep, and the outer case checks the exact CASE and COLLECT records that runner produced. Verification cases: `ui-testing/runner/never-ran`, `mismatch-is-fail`, `record-malformed`, `record-duplicate`, `record-binding`, `outer-positive`, `outer-case-death`, `outer-collector-timeout`, `sweep-descendants`. The host scorer keeps its own fixtures (§2.2). Third revision: the fixture gains a supervisor that dies, and the runner's `supervisor-died` fallback has planned checks `outer-collector-timeout` and `runner/subreaper` (N17). |
 | 12 | Assertions on an optional, lossy pipe | fixed | — | A mandatory result transport, separate from the live strip (§8.2). Second revision: the supervisor reports on its own collector socket, never the result pipe (finding 42). |
 | 13 | `frameChecks` lacks a complete schema | open | open → contract (N18) | §7.5: every field typed with its range; formulas declare typed signatures that `params` must match; each structural predicate has its parameter list and non-vacuity rule; schema version 1 has no edge exemption and rejects `edgeRadius`. Proved by `ui-testing/frames/unknown-field`, `formula-params`, `structural-vacuous`, `mask-cap`, `channel-tolerance`, `max-differing`, `schema-version`. Third revision: non-vacuity is checked on each predicate's effective domain after masks, operands are bound by name to declared regions, and an empty domain is a validation failure, never a match (N18). Contract in `ui-testing/frames`, closed by `structural-vacuous` (with the masked-border fixture) and `mask-cap`. |
 | 14 | Cases without a guest observable | open | open → repaired (N13) | §12.1: every observable has a positive control and every measured claim a negative twin in its case. Kernel output is counted per thread at every emission entry point on both architectures (fatal paths into an unattributed counter), enforced by a host structure test, so direct `serial_println!` is covered and other threads' logging is not counted. Proved by `breengel/isolation/quiet-errors` with `emit-diagnostic`, `composition/damage-work` with `ignore-damage`, `flush-irq-bound` with `irq-hold`. Third revision: kernel output is counted at exactly one accounting boundary per byte (x86-64 `queue_byte`, the COM2 log ring's `append` and the emergency port writer; ARM64 `uart_owner::write`), wrappers and drains never count, deferred notices count when posted, and the structure test proves each writer reaches one boundary once (N13). Proved by `breengel/isolation/quiet-errors` with a subcase per writer path, nested wrappers included, on both architectures. |
