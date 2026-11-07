@@ -34,6 +34,12 @@ class EndExpect(unittest.TestCase):
         image.putpixel((2500,1500),(1,2,3))
         self.assertEqual(v.verify_picture(image,expect,'end',suite='breengel',case=case)['verdict'],'fail')
 
+    def test_end_descriptions_fit_candidate_contract(self):
+        doc=json.loads((ROOT/'docs/suites/breengel.json').read_text())
+        for category,name in [('isolation','compositor-authorized'),('composition','compose-many')]:
+            entry=next(e for c in doc['categories'] if c['id']==category for e in c['cases'] if e['id']==name)
+            self.assertLessEqual(len(entry['expectEnd']),300,(category,name))
+
     def test_authorized(self):
         self.check_end('isolation/compositor-authorized',[(100,40,20,10,0,13),(150,40,12,8,1,14)])
 

@@ -28,6 +28,24 @@ def canonical_id(rows):
 
 
 class ApproveTest(unittest.TestCase):
+    def test_vigil_entry_authors_and_marked_nondecisions(self):
+        decision=self.decisions['entries'][0]
+        decision.update(by='agent',evidence='Exact pixel check and independent Opus review match.',delegation=approve.DELEGATION)
+        mark={k:self.rows[1][k] for k in approve.PICTURE}
+        mark.update(state='investigating',issue='#2678',reason='Operator decision pending',marked_at='2026-11-07T14:00:00Z')
+        self.decisions['entries']=[decision]
+        self.decisions['non_decisions']=[mark]
+        self.save_decisions()
+        rows=self.run_import()
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['approval']['by'],'agent')
+        self.assertEqual(rows[0]['approval']['evidence'],decision['evidence'])
+        for bad in [dict(mark,state='approve'),dict(mark,sha256='invalid'),dict(mark,unexpected=1)]:
+            self.decisions['non_decisions']=[bad];self.save_decisions();self.run_import(good=False)
+        self.decisions['non_decisions']=[mark]
+        decision['verdict']='reject';decision['reason']='Agent cannot reject'
+        self.save_decisions();self.run_import(good=False)
+
     def test_utc_decision_works_with_python39_timestamp_parser(self):
         parser = approve.datetime
 
