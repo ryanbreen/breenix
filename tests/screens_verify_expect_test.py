@@ -82,6 +82,25 @@ class VerifyExpectTest(unittest.TestCase):
         self.assertEqual(result['verdict'], 'fail', result)
         self.assertTrue(result['failed_claims'])
 
+    def test_commit_mosaic_checks_formula_and_conditional_example(self):
+        expect = ('A 256x128 mosaic picture with blue column ramps, green row ramps '
+                  'and red diagonal flecks; seed k is the captured nonzero commit id '
+                  '(for k=1 the upper-left pixel is dark green (#011D0D)), '
+                  'with B=(7*x+13*k)%256, G=(5*y+29*k)%256, '
+                  'R=(x XOR y XOR k)%256; no text.')
+        for seed in (1, 200, 256):
+            picture = Image.new('RGB', (256, 128))
+            picture.putdata([((x ^ y ^ seed) % 256, (5*y+29*seed) % 256,
+                              (7*x+13*seed) % 256)
+                             for y in range(128) for x in range(256)])
+            result = self.verify(picture, expect, 'intent')
+            self.assertFalse(result['failed_claims'], result)
+            formula = next(c for c in result['checked_claims'] if c['kind'] == 'mosaic')
+            self.assertEqual(formula['measured']['compared_pixels'], 32768)
+            picture.putpixel((123, 45), (1, 2, 3))
+            self.assertTrue(self.verify(picture, expect, 'intent')['failed_claims'])
+        self.assertTrue(self.verify(picture, expect.replace('#011D0D', '#011D0E'), 'intent')['failed_claims'])
+
     def test_bad_dimensions_border_background_and_scaled_pixels(self):
         frame = intent(Image.new('RGB', (8, 6), '#123456'))
         for damaged in ('dimensions', 'border', 'background', 'scaled'):

@@ -555,6 +555,29 @@ def verify_picture(image, expect, checkpoint='intent', *, case=None, suite=None,
             check('blend', blend[0], dict(size=[width,height], rounding='nearest /255'),
                   dict(mismatch_box=mismatch), mismatch is None)
             presence_text = expect[:blend.start()]+expect[blend.end():]
+    mosaic = re.search(
+        r'seed k is the captured nonzero commit id '
+        r'\(for k=1 the upper-left pixel is dark green \((#[0-9A-Fa-f]{6})\)\), '
+        r'with B=\(7\*x\+13\*k\)%256, G=\(5\*y\+29\*k\)%256, '
+        r'R=\(x XOR y XOR k\)%256', expect)
+    if mosaic:
+        # The example describes k=1. The blue origin gives
+        # k modulo 256 because 197 is the inverse of 13 modulo 256. Check
+        # the picture's B,G,R channels against that one common residue.
+        seed = (picture.getpixel((0, 0))[2] * 197) % 256
+        expected = Image.new('RGB', picture.size)
+        expected.putdata([((x ^ y ^ seed) % 256, (5*y+29*seed) % 256,
+                           (7*x+13*seed) % 256)
+                          for y in range(picture.height) for x in range(picture.width)])
+        mismatch = ImageChops.difference(picture, expected).getbbox()
+        check('mosaic', 'one common commit residue satisfies all B,G,R formulas',
+              dict(formula=mosaic[0]),
+              dict(seed_modulo_256=seed, compared_pixels=total, mismatch_box=mismatch),
+              mismatch is None)
+        check('mosaic-example', 'k=1 upper-left example', '#011D0D', mosaic[1].upper(),
+              rgb(mosaic[1]) == (1, 29, 13))
+        unresolved('captured commit id', 'pixel formula identifies its residue only; the live case checks commit identity')
+        presence_text = presence_text.replace(mosaic[0], '', 1)
     colours = list(dict.fromkeys(m[0].upper() for m in HEX.finditer(presence_text)))
     for colour in colours:
         count = counts[rgb(colour)]
