@@ -109,7 +109,7 @@ impl Io for Model {
 #[test] fn discard_first_and_capture_four_consecutive_nonzero_entries() {
     let mut m=Model::new();let r=m.capture().unwrap();m.disarmed();
     assert_eq!(m.submitted[0],[(0x438,4),(0x430,0xff8f0f40),(0x84,0x80000000),(0x80,0)]);
-    assert_eq!(r.samples,m.available);assert_eq!(m.reads,[0,1,2,3,4,5]);
+    assert_eq!(r.samples,m.available);assert_eq!(m.reads,[0,1,2,3,4,0,1,2,3,4,5]);
     assert_eq!(r.binding_before,PIN);assert_eq!(r.binding_after,PIN);
     assert!(r.disarmed);assert_eq!(r.status,1);assert_eq!(r.display_error,0);
     assert!(r.elapsed_us<=250000);assert_eq!(m.recovered,0);
@@ -131,8 +131,9 @@ impl Io for Model {
     assert!(m.capture().is_err());m.disarmed();
     assert!(!m.reads.contains(&3));
     let mut m=Model::new();m.available[2]=sample(11,0);
-    assert!(m.capture().is_err());m.disarmed();
-    assert!(!m.reads.contains(&3));
+    assert_eq!(m.capture().unwrap_err(), "CRC completed notifier tail is unstable or partial");
+    m.disarmed();
+    assert_eq!(m.reads, [0,1,2,3,4,0,1,2]);
 }
 #[test] fn unstable_output_overflow_binding_move_and_display_errors_refuse() {
     for second in [false,true] {

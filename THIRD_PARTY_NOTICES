@@ -2212,3 +2212,14 @@ uses value 0x19 in those fields. dispnv50/head917d.c:28-41 (MIT, Copyright
 method usage. The save/restore state machine is Breenix code. ARM's virtual
 displays have no equivalent output control; their latched-binding readback
 and host-renderer attestation boundary is described in screen-proof.md.
+
+E22 CRC completion ordering
+--------------------------
+NVIDIA open-gpu-doc at 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+Display-CRC/display-crc.txt (MIT, Copyright (c) 2019 NVIDIA CORPORATION).
+Consumers: kernel/src/gpu/gk208/display_crc.rs and
+tests/fixtures/gt710_display_crc.rs. The capture sequence stops the context,
+waits for DONE, then interprets its notifier. The producer polls primary writes
+for its bounded collection interval, then re-reads and validates both CRC words
+from the completed notifier. Its original permission and warranty notice is
+retained in display_crc.rs. The nonzero pair/quorum and stability checks remain.

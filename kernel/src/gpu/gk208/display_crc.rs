@@ -1,4 +1,25 @@
 // SPDX-License-Identifier: MIT
+/*
+Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
+
+Permission is hereby granted, free of charge, to any person obtaining a
+copy of this software and associated documentation files (the "Software"),
+to deal in the Software without restriction, including without limitation
+the rights to use, copy, modify, merge, publish, distribute, sublicense,
+and/or sell copies of the Software, and to permit persons to whom the
+Software is furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included
+in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL
+THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR
+OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
+ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR
+OTHER DEALINGS IN THE SOFTWARE.
+*/
 // Hardware facts: nouveau dispnv50/{crc.c,crc907d.c}, Linux v6.8 (MIT).
 // The method encoder's original MIT grant is in modeset.rs and THIRD_PARTY_NOTICES.
 //! Bounded native output observation for G29(3), independent of picture approval.
@@ -222,14 +243,12 @@ pub fn capture(
                 return Err("CRC notifier extent exhausted");
             }
             if let Some(sample) = io.sample(index)? {
-                if sample.crc != 0 && sample.crc2 != 0 {
-                    // Record only normalized written entries; retain the first
-                    // entry, but exclude it from the stability comparison.
+                if sample.crc != 0 {
+                    // Primary writes bound collection. Secondary words are
+                    // interpreted after disarm and DONE, per NVIDIA's MIT
+                    // Display-CRC/display-crc.txt capture sequence and layout.
                     if sample.status != 1 {
                         return Err("CRC sample is not written");
-                    }
-                    if index >= 2 && sample != samples[1] {
-                        return Err("CRC output is unstable");
                     }
                     samples.push(sample);
                     if samples.len() >= 5 {
@@ -267,8 +286,10 @@ pub fn capture(
         }
         io.delay_us(100);
     };
-    // The disarm completion can race another raster entry. Read the finished
-    // notifier tail too, retaining those raw entries and checking their pair.
+    // DONE publishes the complete notifier, including secondary writes and
+    // entries produced during disarm. Re-read its entire written extent;
+    // provisional primary observations cannot establish a final CRC pair.
+    samples.clear();
     while samples.len() < MAX_SAMPLES {
         if io.now_us() >= deadline {
             return Err("CRC final sample deadline");
@@ -279,11 +300,13 @@ pub fn capture(
         if sample.crc == 0 {
             break;
         }
-        if sample.status != 1 || sample.crc2 == 0 || sample != samples[1] {
+        if sample.status != 1 || sample.crc2 == 0
+            || (samples.len() >= 2 && sample != samples[1]) {
             return Err("CRC completed notifier tail is unstable or partial");
         }
         samples.push(sample);
     }
+    if samples.len() < 5 { return Err("CRC completed notifier lacks quorum"); }
     let binding_after = io.binding()?;
     if binding_after != expected {
         return Err("CRC binding changed after disarm");

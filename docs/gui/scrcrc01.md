@@ -64,11 +64,14 @@ instance is inactive. Ordinary present, retained acknowledgement and terminal
 notification use the existing `notifier` allocation, with no overlapping slots.
 
 The production collector clears the CRC page, arms context DMA then primary SOR
-and secondary RG through a notifier-scoped core UPDATE, and collects five
-consecutive nonzero output pairs. The first is retained but discarded from
-stability; the following four must agree. After disarm (disabled output selectors, context
-DMA 0, fresh UPDATE), it waits for context completion and reads the completed
-notifier tail. A changed tail refuses the observation too. The 255-entry layout
+and secondary RG through a notifier-scoped core UPDATE. Five written primary
+entries bound the collection interval. After disarm (disabled output selectors,
+context DMA 0, fresh UPDATE), it waits for context completion and re-reads the
+complete notifier, as NVIDIA Display-CRC/display-crc.txt specifies. Only that
+completed snapshot establishes the nonzero output pairs: the first is retained
+but discarded from stability; the following four must agree. Written tail
+entries must agree too. A secondary word missing after DONE still refuses the
+observation; provisional primary reads are not approval evidence. The 255-entry layout
 allows at most 254 entries after the discarded first.
 
 The collector refuses an overflow, changed binding or output configuration,
