@@ -7,6 +7,26 @@ use crate::error::Error;
 use crate::syscall::{nr, raw};
 use crate::types::{Fd, Pid, Tid};
 
+/// Breenix process-control request IDs, also published by sys/prctl.h.
+pub const PR_SET_CHILD_SUBREAPER: i32 = 0x42520007;
+pub const PR_GET_CHILD_SUBREAPER: i32 = 0x42520008;
+
+/// Adopt orphaned descendants at this process instead of the next subreaper
+/// ancestor or init. Not inherited by fork; kept across exec.
+pub fn set_child_subreaper(enabled: bool) -> Result<(), Error> {
+    let ret = unsafe { raw::syscall2(nr::PRCTL, PR_SET_CHILD_SUBREAPER as u64, u64::from(enabled)) };
+    Error::from_syscall(ret as i64)?;
+    Ok(())
+}
+
+/// Whether this process adopts orphaned descendants as a child subreaper.
+pub fn get_child_subreaper() -> Result<bool, Error> {
+    let mut value = 0i32;
+    let ret = unsafe { raw::syscall2(nr::PRCTL, PR_GET_CHILD_SUBREAPER as u64, &mut value as *mut i32 as u64) };
+    Error::from_syscall(ret as i64)?;
+    Ok(value != 0)
+}
+
 /// Result of a fork() call.
 pub enum ForkResult {
     /// We are the parent; contains the child's PID.

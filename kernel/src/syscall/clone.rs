@@ -510,7 +510,7 @@ pub fn sys_clone_thread(
             }
         }
     };
-    let mut child_process = Process::new(child_pid, child_name, entry_point);
+    let mut child_process = Process::fork_child(child_pid, child_name, entry_point, parent);
     child_process.forked_without_exec = flags & CLONE_THREAD == 0;
     child_process.limits = parent.limits.clone();
     child_process.cred = parent.cred.clone();
@@ -524,6 +524,7 @@ pub fn sys_clone_thread(
     }
     // A thread's CPU time is its process's: the group shares one account.
     if flags & CLONE_THREAD != 0 {
+        child_process.reaper = parent.reaper.share_thread();
         child_process.cpu = parent.cpu.clone();
         child_process.itimers = parent.itimers.clone();
     }

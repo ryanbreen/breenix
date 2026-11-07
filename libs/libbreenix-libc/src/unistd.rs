@@ -575,12 +575,17 @@ pub unsafe extern "C" fn times(buf: *mut u8) -> i64 {
     r
 }
 
-/// Breenix has no prctl syscall implementation. Reject every operation without
-/// inspecting optional arguments: C17 7.16.1.1 forbids reading absent arguments.
+/// Only the child-subreaper extensions have a kernel implementation. Unsupported
+/// requests read no optional arguments (C17 7.16.1.1).
 #[no_mangle]
-pub unsafe extern "C" fn prctl(_option: i32, _args: ...) -> i32 {
-    set_errno(ENOSYS);
-    -1
+pub unsafe extern "C" fn prctl(option: i32, mut args: ...) -> i32 {
+    let arg = match option {
+        libbreenix::process::PR_SET_CHILD_SUBREAPER => args.arg::<i32>() as u64,
+        libbreenix::process::PR_GET_CHILD_SUBREAPER => args.arg::<*mut i32>() as u64,
+        _ => { set_errno(ENOSYS); return -1; }
+    };
+    let result = libbreenix::raw::syscall2(libbreenix::syscall::nr::PRCTL, option as u64, arg);
+    crate::syscall_result_to_c_int(result as i64)
 }
 
 extern "C" {

@@ -24,6 +24,12 @@ fn item<'a>(source: &'a str, signature: &str) -> &'a str {
     panic!("unclosed {signature}");
 }
 
+fn process_new_count(source: &str) -> usize {
+    source.match_indices("Process::new(").filter(|(offset, _)| {
+        !source[..*offset].chars().next_back().is_some_and(|c| c.is_alphanumeric() || c == '_')
+    }).count()
+}
+
 fn run_production(source: String) {
     let dir = std::env::temp_dir().join(format!("breenix-subreaper-{}-{:?}", std::process::id(), std::thread::current().id()));
     fs::create_dir_all(&dir).unwrap();
@@ -189,8 +195,8 @@ fn fork_paths_use_the_child_constructor_and_exec_keeps_state() {
     assert!(CLONE.contains("Process::fork_child("));
     assert!(CLONE.contains("child_process.reaper = parent.reaper.share_thread()"));
     // Inventory constructor sites, including future fork/clone functions.
-    assert_eq!(MANAGER.matches("Process::new(").count(), 4, "new fork path bypassed the constructor");
-    assert_eq!(CLONE.matches("Process::new(").count(), 0);
+    assert_eq!(process_new_count(MANAGER), 4, "new fork path bypassed the constructor");
+    assert_eq!(process_new_count(CLONE), 0);
     assert_eq!(MANAGER.matches("process.note_exec()").count(), 4);
     for body in MANAGER.split("fn exec_process").skip(1) {
         let body = item(&format!("fn exec_process{body}"), "fn exec_process").to_owned();

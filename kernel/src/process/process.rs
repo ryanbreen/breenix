@@ -48,6 +48,54 @@ impl ProcessId {
     }
 }
 
+/// Subreaper state belongs to a process, shared by its thread rows. Exec keeps
+/// this state; a fork gets a fresh, clear state (prctl(2)).
+pub struct ReaperState {
+    child_subreaper: alloc::sync::Arc<core::sync::atomic::AtomicBool>,
+}
+
+impl ReaperState {
+    pub fn new_process() -> Self {
+        Self { child_subreaper: alloc::sync::Arc::new(core::sync::atomic::AtomicBool::new(false)) }
+    }
+
+    pub fn fork_child(&self) -> Self {
+        Self::new_process()
+    }
+
+    pub fn share_thread(&self) -> Self {
+        Self { child_subreaper: self.child_subreaper.clone() }
+    }
+
+    pub fn is_subreaper(&self) -> bool {
+        self.child_subreaper.load(core::sync::atomic::Ordering::Relaxed)
+    }
+
+    pub fn set_subreaper(&self, enabled: bool) {
+        self.child_subreaper.store(enabled, core::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Choose the nearest live subreaper, walking from the exiting row's parent.
+/// `ancestor` supplies (parent, live, subreaper). Missing ancestry falls back
+/// to init; the row-count bound also terminates a malformed ancestry cycle.
+pub fn select_child_reaper(
+    mut parent: Option<ProcessId>,
+    init: Option<ProcessId>,
+    row_count: usize,
+    mut ancestor: impl FnMut(ProcessId) -> Option<(Option<ProcessId>, bool, bool)>,
+) -> Option<ProcessId> {
+    for _ in 0..row_count {
+        let Some(pid) = parent else { break };
+        let Some((next, live, subreaper)) = ancestor(pid) else { break };
+        if live && subreaper {
+            return Some(pid);
+        }
+        parent = next;
+    }
+    init
+}
+
 /// Process state
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProcessState {
@@ -224,6 +272,7 @@ impl AddressSpaceLifetime {
 
 /// A process represents a running program and an address-space owner.
 pub struct Process {
+    pub reaper: ReaperState,
     pub limits: alloc::sync::Arc<super::limits::Limits>,
     pub memory_locks: crate::memory::locked::MemoryLocks,
     pub image_size: u64,
@@ -494,7 +543,25 @@ pub fn next_exec_id() -> u64 {
 impl Process {
     /// Create a new process
     pub fn new(id: ProcessId, name: String, entry_point: VirtAddr) -> Self {
+        Self::with_reaper(id, name, entry_point, ReaperState::new_process())
+    }
+
+    /// Create a fork child without inheriting the parent's subreaper setting.
+    pub fn fork_child(id: ProcessId, name: String, entry_point: VirtAddr, parent: &Self) -> Self {
+        let mut child = Self::with_reaper(id, name, entry_point, parent.reaper.fork_child());
+        child.forked_without_exec = true;
+        child
+    }
+
+    /// Commit the image-lifetime flags. Process reaper state survives exec.
+    pub fn note_exec(&mut self) {
+        self.forked_without_exec = false;
+        self.has_exec = true;
+    }
+
+    fn with_reaper(id: ProcessId, name: String, entry_point: VirtAddr, reaper: ReaperState) -> Self {
         Process {
+            reaper,
             limits: super::limits::Limits::new(),
             memory_locks: crate::memory::locked::MemoryLocks::default(),
             image_size: 0,

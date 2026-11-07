@@ -57,6 +57,7 @@ pub(crate) mod at_path;
 mod multiplex;
 pub mod pipe;
 pub mod priority;
+pub mod prctl;
 pub mod pty;
 pub mod random;
 pub mod reboot;
@@ -937,6 +938,11 @@ pub const REBOOT_SYSCALL_NUMBER: u64 = 169;
 #[cfg(target_arch = "aarch64")]
 pub const REBOOT_SYSCALL_NUMBER: u64 = 142;
 
+#[cfg(target_arch = "x86_64")]
+pub const PRCTL_SYSCALL_NUMBER: u64 = 157;
+#[cfg(target_arch = "aarch64")]
+pub const PRCTL_SYSCALL_NUMBER: u64 = 167;
+
 pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
     if let Some(r) = ipc::dispatch(number, a) {
         return Some(r);
@@ -946,6 +952,7 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
         return Some(crate::gpu_fault_acceptance::dispatch(a[0]));
     }
     Some(match number {
+        PRCTL_SYSCALL_NUMBER => prctl::sys_prctl(a[0], a[1]),
         REBOOT_SYSCALL_NUMBER => reboot::sys_reboot(a[0], a[1], a[2]),
         ADJTIMEX_SYSCALL_NUMBER => clocks::sys_adjtimex(a[0]),
         #[cfg(target_arch = "aarch64")]

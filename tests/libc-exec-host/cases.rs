@@ -7,12 +7,14 @@ pub mod process {
     pub const PR_SET_CHILD_SUBREAPER: i32 = 0x42520007;
     pub const PR_GET_CHILD_SUBREAPER: i32 = 0x42520008;
 }
-pub mod nr {
-    pub const PRCTL: u64 = 167;
+pub mod syscall {
+    pub mod nr {
+        pub const PRCTL: u64 = 167;
+    }
 }
 pub mod raw {
     pub unsafe fn syscall2(number: u64, option: u64, arg: u64) -> u64 {
-        assert_eq!(number, super::nr::PRCTL);
+        assert_eq!(number, super::syscall::nr::PRCTL);
         super::PRCTL_CALL.with(|call| call.set(Some((option, arg))));
         super::PRCTL_RESULT.with(|result| result.get() as u64)
     }
