@@ -99,3 +99,63 @@ pub fn subreaper() -> CaseResult {
     }
     Ok(())
 }
+
+pub fn app_stderr_capped() -> CaseResult {
+    let mut session = Session::connect()?;
+    let pid = session.launch_app(&[APP, b"stderr", b"--stderr-flood=196645", b"--crash=15"], 0)?;
+    let exit = session.wait_exit(pid)?;
+    check(process::wifsignaled(exit.status) && process::wtermsig(exit.status) == signal::SIGTERM, "flood did not finish with its requested signal")?;
+    let stderr = session.stderr(pid)?;
+    check(stderr.bytes == vec![b'x'; 65_536], "stderr tail differs or exceeds 64 KiB")?;
+    check(stderr.dropped == 131_109, "stderr dropped-byte count differs")?;
+    session.teardown()?;
+    Ok(())
+}
+
+pub fn unprivileged_app() -> CaseResult {
+    let mut session = Session::connect()?;
+    let pid = session.launch_app(&[APP, b"unprivileged", b"--session-probe", b"--hang"], 1000)?;
+    session.read_line(pid)?;
+    let probe = session.read_line(pid)?;
+    check(probe.starts_with("UITEST-SESSION uid=1000 euid=1000 "), &format!("app identity: {probe}"))?;
+    for (who, expected) in [(pid, "1000"), (session.supervisor_pid(), "0"), (process::getpid().map_err(|e| e.to_string())?.raw(), "0")] {
+        let status = std::fs::read_to_string(format!("/proc/{who}/status")).map_err(|e| e.to_string())?;
+        let ids: Vec<_> = status.lines().find_map(|line| line.strip_prefix("Uid:")).ok_or("missing Uid")?.split_whitespace().collect();
+        check(ids == vec![expected; 4], &format!("process {who} uid tuple {ids:?}"))?;
+    }
+    let root = session.config_root();
+    let protected = std::path::Path::new(root).join("etc/fonts.conf");
+    let bytes = std::fs::read(&protected).map_err(|e| e.to_string())?;
+    std::fs::write(&protected, bytes).map_err(|e| e.to_string())?;
+    check(probe.contains("config_writable=false"), "uid 1000 could write the root-owned config")?;
+    session.teardown()?;
+    Ok(())
+}
+
+pub fn environment() -> CaseResult {
+    let mut session = Session::connect()?;
+    let pid = session.launch_app(&[APP, b"environment", b"--session-probe", b"--hang"], 0)?;
+    let echo = session.read_line(pid)?;
+    let case_pid = process::getpid().map_err(|e| e.to_string())?.raw();
+    let mode = libbreenix::gpu::current_mode().map_err(|e| format!("mode: {e}"))?;
+    let env = ["TZ=UTC".into(), "LANG=C.UTF-8".into(),
+        format!("BREENIX_UI_CLOCK=/tmp/uitest/{case_pid}/ui-clock"), "BREENIX_UI_SEED=0".into(),
+        format!("BREENIX_UI_MODE={}x{}@{}", mode.width, mode.height, mode.scale),
+        format!("BREENIX_CONFIG_ROOT=/tmp/uitest/{case_pid}/")];
+    let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let expected = format!("UITEST-ECHO 4 {} {} {} {} 6 {}", hex(APP), hex(b"environment"), hex(b"--session-probe"), hex(b"--hang"), env.iter().map(|s: &String| hex(s.as_bytes())).collect::<Vec<_>>().join(" "));
+    check(echo == expected, &format!("session environment differs: {echo}"))?;
+    let probe = session.read_line(pid)?;
+    check(probe.contains("clock=0 epoch=0 seed=0") && probe.contains(&format!("mode={}x{}@{}", mode.width, mode.height, mode.scale)), &format!("app session inputs: {probe}"))?;
+    check(probe.contains(&format!("fonts={}", libuitest::fixtures::FONT_CONFIG_SHA256)) && probe.contains(&format!("locale={}", libuitest::fixtures::LOCALE_SHA256)), "app read different fonts or locale")?;
+    let root = session.config_root().to_owned();
+    session.teardown()?;
+    check(!std::path::Path::new(&root).exists(), "session root survived teardown")
+}
+
+pub fn fixtures_pinned() -> CaseResult {
+    let mut session = Session::connect()?;
+    libuitest::fixtures::verify(std::path::Path::new(session.config_root()))?;
+    session.teardown()?;
+    Ok(())
+}

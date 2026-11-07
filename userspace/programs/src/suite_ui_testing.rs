@@ -308,7 +308,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A kiosk session with one app reaches its first composited commit within 300 ms. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("start-kiosk", "A kiosk session with one app reaches its first composited commit within 300 ms", || pending("sessions", 3)),
         // Apps in a session receive its fonts, clock, seed, mode, time zone, locale and config root. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("environment", "Apps in a session receive its fonts, clock, seed, mode, time zone, locale and config root", || pending("sessions", 3)),
+        case("environment", "Apps in a session receive its fonts, clock, seed, mode, time zone, locale and config root", sessions::environment).session(libuitest::supervisor::serve),
         // bwm, Breengel's font configuration and every app read and write under the session's config root. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("config-root", "bwm, Breengel's font configuration and every app read and write under the session's config root", || pending("sessions", 3)),
         // A session that changes every setting leaves the global configuration files unchanged. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -334,9 +334,9 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // An app crashing during a scenario fails it, naming the app and the signal. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("app-crash", "An app crashing during a scenario fails it, naming the app and the signal", sessions::app_crash),
         // An app's stderr is saved, capped at 64 KiB. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("app-stderr-capped", "An app's stderr is saved, capped at 64 KiB", || pending("sessions", 3)),
+        case("app-stderr-capped", "An app's stderr is saved, capped at 64 KiB", sessions::app_stderr_capped).session(libuitest::supervisor::serve),
         // An app launched as uid 1000 runs in the session while the harness keeps root observation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("unprivileged-app", "An app launched as uid 1000 runs in the session while the harness keeps root observation", || pending("sessions", 3)),
+        case("unprivileged-app", "An app launched as uid 1000 runs in the session while the harness keeps root observation", sessions::unprivileged_app).session(libuitest::supervisor::serve),
         // Twenty sessions in a row leave windows, processes and memory at the baseline. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("twenty-sessions", "Twenty sessions in a row leave windows, processes and memory at the baseline", || pending("sessions", 3)),
         // wait_window(title) returns after that window's first composited commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -348,7 +348,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A GUI suite runs inside a suite sequence and hands off at READY. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("sequence-compatible", "A GUI suite runs inside a suite sequence and hands off at READY", || pending("sessions", 3)),
         // The session's fixture tree, fonts and locale match their pinned hashes. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("fixtures-pinned", "The session's fixture tree, fonts and locale match their pinned hashes", || pending("sessions", 3)),
+        case("fixtures-pinned", "The session's fixture tree, fonts and locale match their pinned hashes", sessions::fixtures_pinned).session(libuitest::supervisor::serve),
     ]),
     category("diagnosis", "Saved evidence & failure messages", &[
         // A mismatch saves the got image, diff image, tree, input log and screen. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
