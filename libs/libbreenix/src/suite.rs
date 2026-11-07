@@ -1180,9 +1180,9 @@ impl Suite {
         };
         // Final text-panel storage belongs in both memory samples. Each reason
         // already has the serial MSG_MAX bound; keep its slot for the panel's life.
-        let textual = !self.gui && (screen.fb.is_some() || self.defer_display);
+        let textual = !screen.gui && (screen.fb.is_some() || self.defer_display);
         let mut panel_reasons = panel_reason_storage(&states, textual);
-        let pace_ms = if self.gui {crate::suite_stage::init(self)} else {0};
+        let pace_ms = if screen.gui {crate::suite_stage::init(self)} else {0};
         let proof = intent::configured(self.id);
         let intent_pace_ms = if proof { intent::pace_ms() } else { 0 };
         let title = std::format!("BREENIX / {} SUITE", self.title.to_uppercase());
@@ -1225,7 +1225,7 @@ impl Suite {
         }
         // Match the retired ownership boundary at the end. The warm-up leaves
         // only the bound scanout; no stage owner freed later can subsidize a leak.
-        let baseline_ready = if recording && self.gui {
+        let baseline_ready = if recording && screen.gui {
             match crate::suite_stage::retire() {
                 Ok(()) => true,
                 Err(error) => {
@@ -1236,7 +1236,7 @@ impl Suite {
         } else { true };
         if recording && self.gui { crate::suite_stage::memory_owners("before"); }
         let before = if recording && baseline_ready { memory_sample(self.id, "before") } else { None };
-        if recording && self.gui {
+        if recording && screen.gui {
             crate::suite_stage::init(self);
             screen.prepare();
         }
@@ -1271,14 +1271,14 @@ impl Suite {
                 #[cfg(target_arch = "x86_64")]
                 let observed_frame = self.judged_observer.and(screen.judged.clone());
                 // Non-GUI suites retain no runner-owned pixels between cases.
-                if !self.gui { screen.judged = None; }
+                if !screen.gui { screen.judged = None; }
                 let make_line = |outcome: &Outcome| match outcome {
                     Outcome::Pass { ms } => std::format!("SUITE {} CASE {} PASS ms={}{}", self.id, name, ms, picture_hash),
                     Outcome::Fail { ms, msg } => std::format!("SUITE {} CASE {} FAIL ms={}{} msg={}", self.id, name, ms, picture_hash, msg),
                     Outcome::Skip { msg } => std::format!("SUITE {} CASE {} SKIP msg={}", self.id, name, msg),
                 };
                 let mut line = make_line(&outcome);
-                if self.gui {
+                if screen.gui {
                     // Use the exact emitted VALUE records, not the best-effort live pipe.
                     let readings = match collect_values(self.id, &name) {
                         Ok(values) => values,
@@ -1304,7 +1304,7 @@ impl Suite {
                 emit(&line);
                 // GPU tiles consume only status. Serial already owns the reason;
                 // keep its allocation only for a current or deferred text panel.
-                if !self.gui && screen.fb.is_none() && !self.defer_display {
+                if !screen.gui && screen.fb.is_none() && !self.defer_display {
                     if let Outcome::Fail { msg, .. } | Outcome::Skip { msg } = &mut outcome {
                         *msg = String::new();
                     }
@@ -1315,7 +1315,7 @@ impl Suite {
                 for checkpoint in screen::collect(self.id, &name) { screen::emit(&checkpoint); }
                 if let Some(picture) = intent_picture.as_deref() {
                     intent::show(self.id, &name, picture, intent_pace_ms);
-                    if self.gui { let _ = crate::suite_stage::redraw(); }
+                    if screen.gui { let _ = crate::suite_stage::redraw(); }
                 }
                 if let Some(observe) = self.case_observer { observe(done, total, &name); }
                 if place.is_some() { sequence::progress_after(done); }
@@ -1325,11 +1325,11 @@ impl Suite {
             self.id, counts.passed, counts.failed, counts.skipped, total, suffix));
         // The graphical finale owns its readings. The runner's live transport
         // has no consumer after the last case; release its buffers at their owner.
-        if self.gui { feed = Feed::default(); }
+        if screen.gui { feed = Feed::default(); }
         let reclaimed = !recording || {
             // Each case's processes were swept after it; any left since go now.
             let _ = sweep();
-            let retired = if self.gui {
+            let retired = if screen.gui {
                 crate::suite_stage::memory_owners("finale");
                 let result = crate::suite_stage::retire();
                 crate::suite_stage::memory_owners("retired");
@@ -1362,7 +1362,7 @@ impl Suite {
         if scoped { process::exit(if counts.failed == 0 && reclaimed { 0 } else { 1 }); }
         feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
         if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }
-        if !self.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }
+        if !screen.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }
         if let Some(upload) = &mut evidence {
             emit(&upload.capture("suite-final-panel", evidence_scanout, evidence_transfer));
         }

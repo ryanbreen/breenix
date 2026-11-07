@@ -44,6 +44,27 @@ class RunnerRoles(unittest.TestCase):
             'if scoped { process::exit(1); }\n            if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }', 1)
         expected = expected.replace('finalize();\n        feed.finish(',
             'finalize();\n        if scoped { process::exit(if counts.failed == 0 && reclaimed { 0 } else { 1 }); }\n        feed.finish(')
+        # G2: this unmerged inventory also includes the deferred-display repair.
+        # Suite::defer_display promises no display until the final panel; GUI
+        # metadata keeps transport, while Screen.gui controls visual stages.
+        for old, new in [
+            ('let textual = !self.gui &&', 'let textual = !screen.gui &&'),
+            ('let pace_ms = if self.gui {', 'let pace_ms = if screen.gui {'),
+            ('let baseline_ready = if recording && self.gui {', 'let baseline_ready = if recording && screen.gui {'),
+            ('if recording && self.gui {\n            crate::suite_stage::init(self);',
+             'if recording && screen.gui {\n            crate::suite_stage::init(self);'),
+            ('if !self.gui { screen.judged = None; }', 'if !screen.gui { screen.judged = None; }'),
+            ('if self.gui {\n                    // Use the exact emitted VALUE records',
+             'if screen.gui {\n                    // Use the exact emitted VALUE records'),
+            ('if !self.gui && screen.fb.is_none()', 'if !screen.gui && screen.fb.is_none()'),
+            ('if self.gui { let _ = crate::suite_stage::redraw(); }', 'if screen.gui { let _ = crate::suite_stage::redraw(); }'),
+            ('if self.gui { feed = Feed::default(); }', 'if screen.gui { feed = Feed::default(); }'),
+            ('let retired = if self.gui {', 'let retired = if screen.gui {'),
+            ('if !self.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }',
+             'if !screen.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }'),
+        ]:
+            self.assertEqual(expected.count(old), 1)
+            expected = expected.replace(old, new)
         self.assertEqual(item(source, 'pub fn run_with_finalizer('), expected)
         expected = item(base, 'fn run_case(').replace('match sweep()', 'match sweep_for_role(gui)')
         expected = expected.replace('keep_record_output(suite, name);',
