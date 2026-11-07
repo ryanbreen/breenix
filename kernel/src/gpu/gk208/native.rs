@@ -1049,7 +1049,6 @@ fn present_inner(evo: &mut Evo, regs: &mut Registers,
         MEMX_PRESENT_PHASE.store(0,core::sync::atomic::Ordering::Release);
     }else{health.check()?;}
     super::display_evidence::record(regs, head, surface, &receipt);
-    if surface.resource == u32::MAX { super::presentation_trace::dump(); }
     Ok(Some(receipt))
 
         })();

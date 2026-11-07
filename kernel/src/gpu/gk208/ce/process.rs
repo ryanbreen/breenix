@@ -366,30 +366,37 @@ pub(crate) fn observed_scanout() -> Result<u32, &'static str> {
 pub(crate) fn set_mode(index:u32)->Result<(), &'static str> {
     if index>1 {return Err("invalid native logical mode");}
     let mut owner=SESSION.lock();
-    let s=owner.as_mut().ok_or("native display owner absent")?;
-    if let Some(pending) = s.pending_present.take() {
-        if s.ready_present.take().is_none() {
-            super::super::native::wait_present(&mut s.evo,&mut Registers(s.registers),pending)?;
+    let mut diagnostics=None;
+    let result=(|| {
+        let s=owner.as_mut().ok_or("native display owner absent")?;
+        if let Some(pending) = s.pending_present.take() {
+            if s.ready_present.take().is_none() {
+                super::super::native::wait_present(&mut s.evo,&mut Registers(s.registers),pending)?;
+            }
         }
-    }
-    let surface=if index==1 {
-        let c=s.console;
-        super::super::present::Surface{resource:u32::MAX,address:c.vram,
-            width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1}
-    } else {
-        let range=s.layout.objects.iter().find(|o|o.name=="logical-low")
-            .ok_or("logical low-mode allocation absent")?.range;
-        super::super::present::Surface{resource:u32::MAX,address:range.start,
-            width:1280,height:800,pitch:5120,block_height:0,format:0,dma:1}
-    };
-    let receipt=super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface)?;
-    let allocation=s.layout.objects.iter().find(|o|o.range.start==surface.address)
-        .ok_or("logical mode allocation absent")?.range;
-    super::super::display_evidence::transition(&mut Registers(s.registers),s.evo.head,surface,&receipt,
-        [allocation.start,allocation.size],[s.console.vram,s.console.bytes as u64],"mode")?;
-    s.mode=index;
-    s.scanout.clear();
-    Ok(())
+        let surface=if index==1 {
+            let c=s.console;
+            super::super::present::Surface{resource:u32::MAX,address:c.vram,
+                width:2560,height:1600,pitch:10240,block_height:0,format:0,dma:1}
+        } else {
+            let range=s.layout.objects.iter().find(|o|o.name=="logical-low")
+                .ok_or("logical low-mode allocation absent")?.range;
+            super::super::present::Surface{resource:u32::MAX,address:range.start,
+                width:1280,height:800,pitch:5120,block_height:0,format:0,dma:1}
+        };
+        let receipt=super::super::native::present(&mut s.evo,&mut Registers(s.registers),surface)?;
+        diagnostics=Some(super::super::presentation_trace::snapshot());
+        let allocation=s.layout.objects.iter().find(|o|o.range.start==surface.address)
+            .ok_or("logical mode allocation absent")?.range;
+        super::super::display_evidence::transition(&mut Registers(s.registers),s.evo.head,surface,&receipt,
+            [allocation.start,allocation.size],[s.console.vram,s.console.bytes as u64],"mode")?;
+        s.mode=index;
+        s.scanout.clear();
+        Ok(())
+    })();
+    drop(owner);
+    if let Some(snapshot)=diagnostics { super::super::presentation_trace::export(snapshot); }
+    result
 }
 /// Prepare a disjoint terminal command packet while the display owner is live.
 pub(in crate::gk208) fn terminal_display(surface: super::super::present::Surface)

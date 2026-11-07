@@ -27,14 +27,31 @@ static TRACE: spin::Mutex<Trace> = spin::Mutex::new(Trace::new());
 
 pub(super) fn record(row: Row) { TRACE.lock().record(row); }
 
-pub(super) fn dump() {
-    let [requests, irqs, late] = crate::time::wakeup::stats();
-    crate::serial_println!("TIMER_WAKE requests={} irqs={} late_max_ns={}", requests, irqs, late);
+/// Detached receipt samples and wakeup counters from one restoration boundary.
+pub(super) struct Snapshot {
+    wakeup: [u64; 3],
+    trace: Option<Trace>,
+}
+
+/// Detach while the native session still serializes presentation. Serial output
+/// belongs after the session guard is dropped.
+pub(super) fn snapshot() -> Snapshot {
+    let wakeup = crate::time::wakeup::stats();
     let trace = {
         let mut live = TRACE.lock();
-        if live.count == 0 { return; }
-        core::mem::replace(&mut *live, Trace::new())
+        if live.count == 0 { None }
+        else { Some(core::mem::replace(&mut *live, Trace::new())) }
     };
+    Snapshot { wakeup, trace }
+}
+
+#[cfg(not(feature = "gt710_clock_probe"))]
+pub(super) fn dump() { export(snapshot()); }
+
+pub(super) fn export(snapshot: Snapshot) {
+    let [requests, irqs, late] = snapshot.wakeup;
+    crate::serial_println!("TIMER_WAKE requests={} irqs={} late_max_ns={}", requests, irqs, late);
+    let Some(trace) = snapshot.trace else { return; };
     crate::serial_println!("GT710_PRESENT_TIMELINE count={} early={} completion_same_count={} min_after_ns={}",
         trace.count, trace.early, trace.same_count, trace.min_after_ns);
     // Accumulate receipt totals and keep the first and most recent samples
