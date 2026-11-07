@@ -105,10 +105,11 @@ pub(super) struct Upload {
     bytes: usize,
     parts: usize,
     startup_failure: Option<String>,
+    pub(super) screen_digests: Vec<(u32, u32, [u8; 32])>,
 }
 impl Upload {
     pub fn new(suite: &'static str, route: Result<Option<Route>, String>) -> Self {
-        Self { suite, route, bytes: 0, parts: 0, startup_failure: None }
+        Self { suite, route, bytes: 0, parts: 0, startup_failure: None, screen_digests: Vec::new() }
     }
     /// Send complete bodies as bounded ordered parts, accounting before any request.
     pub fn send_parts(&mut self, data: &[u8],

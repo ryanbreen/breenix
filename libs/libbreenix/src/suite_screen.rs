@@ -459,6 +459,10 @@ fn snapshot(name: &str) -> Snapshot {
 // Take the first successful native end while its owner is still alive. The
 // shared case clock carries the claim back to the runner even on child death.
 fn snapshot_end() -> Snapshot {
+    // Stage checks leave custody with the runner, even when its GPU buffer is replaced.
+    if super::running_case().is_some_and(|case| !crate::suite_stage::case_takes_display(case)) {
+        return Err("no-case-scanout".into());
+    }
     let result = snapshot("end");
     let clock = CLOCK.load(Ordering::Relaxed);
     if !native_crc_enabled() || clock.is_null() { return result; }

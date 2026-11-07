@@ -44,8 +44,12 @@ pub(super) fn flush(path: &Path, upload: &mut Upload,
         match screen_capture::decode(&bytes) {
             Ok((record, _)) => {
                 let identity = format!("{} {} {}", record.suite, record.case, record.checkpoint);
+                let key = (record.width, record.height, record.digest);
+                if upload.screen_digests.contains(&key) { continue; }
                 drop(record);
-                lines.push(picture(upload, &identity, &bytes, &mut send));
+                let (line, complete) = picture(upload, &identity, &bytes, &mut send);
+                if complete { upload.screen_digests.push(key); }
+                lines.push(line);
             },
             Err(error) => { lines.push(format!("SCREEN_UPLOAD refused={error}")); break; },
         }
@@ -55,9 +59,9 @@ pub(super) fn flush(path: &Path, upload: &mut Upload,
 }
 
 pub(super) fn picture(upload: &mut Upload, identity: &str, data: &[u8],
-    send: impl FnMut(&Route, &str, &[u8], [u8; 32]) -> Result<(), String>) -> String {
+    send: impl FnMut(&Route, &str, &[u8], [u8; 32]) -> Result<(), String>) -> (String, bool) {
     match upload.send_parts(data, send) {
-        Ok((first, parts, hash)) => format!("SCREEN_UPLOAD {identity} first={first} parts={parts} bytes={} sha256={hash}", data.len()),
-        Err(error) => format!("SCREEN_UPLOAD {identity} refused={error}"),
+        Ok((first, parts, hash)) => (format!("SCREEN_UPLOAD {identity} first={first} parts={parts} bytes={} sha256={hash}", data.len()), true),
+        Err(error) => (format!("SCREEN_UPLOAD {identity} refused={error}"), false),
     }
 }

@@ -64,12 +64,12 @@ pub mod crypto { #[path="SHA"] pub mod sha256; }
     let mut refused = false;
     for _ in 0..40 {
         let line = queue::picture(&mut upload, "gpu draw/three end", &raw, |_,_,body,_| {sent+=body.len(); Ok(())});
-        if line.contains("refused=") { assert!(line.ends_with("refused=total-bound")); refused=true; break; }
+        if line.0.contains("refused=") { assert!(line.0.ends_with("refused=total-bound")); refused=true; break; }
     }
     assert!(refused);
     let over = vec![0; evidence::MAX_TOTAL - sent + 1];
     assert!(queue::picture(&mut upload, "gpu draw/three end", &over,
-        |_,_,_,_|panic!("panel and checkpoint bytes must share the budget")).ends_with("refused=total-bound"));
+        |_,_,_,_|panic!("panel and checkpoint bytes must share the budget")).0.ends_with("refused=total-bound"));
 }
 '''
         with tempfile.TemporaryDirectory() as tmp:
