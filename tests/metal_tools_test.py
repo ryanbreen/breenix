@@ -121,6 +121,39 @@ class ScreenPictureUploadTest(StateTest):
 
 
 
+class CrcUploadTest(StateTest):
+    def test_proof_crc_admission_and_caps(self):
+        import gt710_upload as upload
+        import io
+        class Handler:
+            def __init__(self, path):
+                self.path, self.rfile, self.connection = path, io.BytesIO(b'x'), self
+                self.headers = {'Content-Length': '1', 'X-Content-SHA256': hashlib.sha256(b'x').hexdigest()}
+                self.code = None
+            def settimeout(self, value): pass
+            def send_error(self, code, *args): self.code = code
+            def send_response(self, code): self.code = code
+            def send_header(self, *args): pass
+            def end_headers(self): pass
+        directory = m.STATE / 'boots/sample'; directory.mkdir(parents=True)
+        route = '/gt710-upload/' + 'a'*64
+        with patch.object(m, 'read_lease', return_value=dict(id='sample', state='powered')):
+            for suite in ('gpu', 'breengel'):
+                for proof in (False, True):
+                    m.write_json(directory/'run.json', dict(screenProof=proof))
+                    m.write_json(m.STATE/'gt710-upload.json', dict(id='sample', route=route, suite=suite, complete=True))
+                    h = Handler(route+'/diagnostics/crc-'+suite+'-'+'1'*16)
+                    upload.receive(h); self.assertEqual(h.code, 200 if proof else 404)
+                h = Handler(route+'/diagnostics/other')
+                upload.receive(h); self.assertEqual(h.code, 404)
+                count = upload.crc_checkpoint_cap(suite)
+                state = dict(id='sample', route=route, suite=suite, complete=True,
+                             diagnosticUploads={str(i): {} for i in range(count)})
+                m.write_json(m.STATE/'gt710-upload.json', state)
+                h = Handler(route+'/diagnostics/crc-'+suite+'-'+'2'*16)
+                upload.receive(h); self.assertEqual(h.code, 404)
+
+
 class SerialCleanerTest(unittest.TestCase):
     def clean(self, *chunks):
         cleaner = m.SerialCleaner()
