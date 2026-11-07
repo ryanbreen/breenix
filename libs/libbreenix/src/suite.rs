@@ -104,6 +104,9 @@ pub mod sequence;
 mod evidence;
 #[path = "suite_host_input.rs"]
 mod host_input;
+#[path = "suite_descendants.rs"]
+pub mod descendants;
+
 #[path = "suite_result.rs"]
 pub mod result;
 
@@ -755,6 +758,8 @@ static RECORD_FD: AtomicI32 = AtomicI32::new(-1);
 static LIVE_FD: AtomicI32 = AtomicI32::new(-1);
 /// The mandatory GUI result writer: blocking and close-on-exec, held only by the case.
 static RESULT_FD: AtomicI32 = AtomicI32::new(-1);
+/// Runner transcript; GUI subreapers may supply an inherited destination.
+static TRANSCRIPT_FD: AtomicI32 = AtomicI32::new(1);
 
 /// Write one complete GUI result line (without its newline) in one blocking write.
 /// The runner validates and binds the record, including records used by its negative fixtures.
@@ -1119,7 +1124,9 @@ impl Suite {
     /// Finish a suite-owned evidence producer after the cases and memory verdict,
     /// before publishing readiness to the boot driver or replacing this process.
     pub fn run_with_finalizer(&self, finalize: impl FnOnce()) -> ! {
+        let scoped = scoped_gui(self.gui);
         let mut result_table_error = None;
+        if scoped { result_table_error = start_scoped_runner().err(); }
         if self.gui {
             for category in self.categories {
                 for case in category.cases {
@@ -1197,6 +1204,7 @@ impl Suite {
         if let Some(message) = &error {
             emit(&std::format!("SUITE {} ERROR {}", self.id, message));
             emit(&std::format!("SUITE {} DONE passed=0 failed=1 skipped=0 total={}{}", self.id, total, suffix));
+            if scoped { process::exit(1); }
             if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }
             screen.draw(self, &title, &subtitle, &states, Verdict::Failed(message), &feed, only);
             idle(&mut screen, &feed);
@@ -1351,6 +1359,7 @@ impl Suite {
         let ms = ms_since(suite_start);
         emit(&std::format!("SUITE {} ELAPSED ms={}", self.id, ms));
         finalize();
+        if scoped { process::exit(if counts.failed == 0 && reclaimed { 0 } else { 1 }); }
         feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
         if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }
         if !self.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }
@@ -1525,7 +1534,7 @@ fn memory_failure_detail(id: &str) {
 
 /// Write one serial line with a single write, so it is never split, starting with
 /// a newline so it always begins a line of its own.
-pub(super) fn emit(line: &str) { emit_to(Fd::STDOUT, line) }
+pub(super) fn emit(line: &str) { emit_to(transcript_output(), line) }
 
 fn emit_to(fd: Fd, line: &str) {
     let mut bytes = Vec::with_capacity(line.len() + 2);
@@ -1778,6 +1787,38 @@ fn stop_child(pid: i32) -> &'static str {
     }
 }
 
+// The GUI role boundary: production PID 1 and non-GUI runners keep their paths.
+fn scoped_gui(gui: bool) -> bool {
+    gui && process::getpid().is_ok_and(|pid| pid.raw() != 1)
+}
+
+fn start_scoped_runner() -> Result<(), String> {
+    if let Some(value) = std::env::var_os("BREENIX_SUITE_TRANSCRIPT_FD") {
+        let number = value.to_str().and_then(|s| s.parse::<i32>().ok()).filter(|&fd| fd >= 0)
+            .ok_or("invalid suite transcript descriptor")?;
+        let fd = Fd::from_raw(number as u64);
+        let flags = io::fcntl(fd, io::fcntl_cmd::F_GETFD, 0).map_err(|e| e.to_string())?;
+        io::fcntl(fd, io::fcntl_cmd::F_SETFD, flags | i64::from(io::fd_flags::FD_CLOEXEC))
+            .map_err(|e| e.to_string())?;
+        TRANSCRIPT_FD.store(number, Ordering::Relaxed);
+    }
+    process::set_child_subreaper(true).map_err(|e| std::format!("runner subreaper: {e}"))
+}
+
+fn transcript_output() -> Fd {
+    Fd::from_raw(TRANSCRIPT_FD.load(Ordering::Relaxed) as u64)
+}
+
+// A case keeps its VALUE/WAIT copy and closes the private transcript.
+fn detach_transcript() {
+    let fd = TRANSCRIPT_FD.swap(1, Ordering::Relaxed);
+    if fd > 2 { let _ = io::close(Fd::from_raw(fd as u64)); }
+}
+
+fn sweep_for_role(gui: bool) -> Option<&'static str> {
+    if scoped_gui(gui) { descendants::sweep_descendants() } else { sweep() }
+}
+
 /// How long the runner waits for the processes a case left behind to die once killed.
 const SWEEP_MS: u64 = 2000;
 /// How often the sweep repeats its kill(-1), for a process forked after the last one.
@@ -1867,7 +1908,7 @@ fn silence_output() -> Result<(), Error> {
 /// In the child: keep a close-on-exec copy of stdout for the case's VALUE and WAIT
 /// records, named for the suite and the case.
 fn keep_record_output(suite: &str, name: &str) {
-    if let Ok(fd) = io::fcntl(Fd::STDOUT, io::fcntl_cmd::F_DUPFD_CLOEXEC, 3) {
+    if let Ok(fd) = io::fcntl(transcript_output(), io::fcntl_cmd::F_DUPFD_CLOEXEC, 3) {
         RECORD_FD.store(fd as i32, Ordering::Relaxed);
         let _ = RECORD_NAMES.set((std::format!("SUITE {suite} "), String::from(name)));
     }
@@ -2044,6 +2085,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
             CASE_DEADLINE_NS.store(deadline, Ordering::Relaxed);
             let _ = CASE_NAME.set(String::from(name));
             keep_record_output(suite, name);
+            detach_transcript();
             let ready = if screen.gui && crate::suite_stage::case_takes_display(name) { graphics::take_over_display() } else { Ok(()) };
             let outcome = match ready.and_then(|()| silence_output()) {
                 Ok(()) => run_inline(case),
@@ -2124,7 +2166,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
                 feed.drain(fd);
                 let _ = io::close(fd);
             }
-            let outcome = match sweep() {
+            let outcome = match sweep_for_role(gui) {
                 Some(note) => with_note(outcome, note),
                 None => outcome,
             };
