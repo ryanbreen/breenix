@@ -40,6 +40,68 @@ EXPECTATIONS = {
 }
 
 
+class GuiResultVerdictTests(unittest.TestCase):
+    records = json.loads((FIXTURES / "gui-records.json").read_text())
+
+    def score(self, records, *, checks=("label",), collect=True):
+        manifest = dict(MANIFEST, frameChecks=[dict(case="first/one", check=name) for name in checks])
+        manifest = json.loads(json.dumps(manifest))
+        manifest["categories"][0]["cases"][0]["collects"] = collect
+        text = (FIXTURES / "all-pass.txt").read_text()
+        text = text.replace("SUITE fixture CASE first/one", "\n".join(records) + "\nSUITE fixture CASE first/one", 1)
+        with tempfile.TemporaryDirectory() as directory:
+            serial = Path(directory) / "serial.txt"
+            serial.write_text(text)
+            return SCORER.verdict(manifest, serial, [serial])
+
+    def test_four_record_forms_and_no_pixel_comparison(self):
+        ok, reason = self.score([self.records[k] for k in ("frame", "tree", "input", "collect")])
+        self.assertTrue(ok, reason)
+        ok, reason = self.score([self.records["frame"].replace("a" * 64, "c" * 64)])
+        self.assertTrue(ok, reason)
+
+    def test_missing_mismatch_duplicate_and_binding_failures(self):
+        frame = self.records["frame"]
+        for records in ([], [self.records["mismatch"]], [frame, frame],
+                        [frame.replace(" label ", " unknown ")],
+                        [frame.replace("first/one", "second/three")],
+                        [frame, self.records["collect"], self.records["collect"]]):
+            with self.subTest(records=records):
+                self.assertFalse(self.score(records)[0])
+        self.assertFalse(self.score([frame, self.records["collect"]], collect=False)[0])
+
+    def test_grammar_negatives_and_capacity(self):
+        frame, mismatch = self.records["frame"], self.records["mismatch"]
+        for bad in (frame.replace("0123abcd", "0123abcZ"), frame.replace("ref=formula", "ref=unknown"),
+                    frame.replace("w=3", "w=0"), frame.replace("epoch=2", "epoch=-2"),
+                    frame.replace("commit=1", "commit=18446744073709551616"),
+                    frame.replace("result=match", "result=maybe"), frame + " extra=1",
+                    mismatch.replace("differing=1", "differing=13"),
+                    mismatch.replace("first=2,3", "first=3,3"),
+                    mismatch.replace("artifacts=none:io", "artifacts=partial:"),
+                    frame.replace(" FRAME ", "  FRAME "),
+                    self.records["input"].replace("lost=0", "lost=-1"),
+                    self.records["collect"].replace("trigger=fail", "trigger=pass")):
+            with self.subTest(bad=bad):
+                self.assertFalse(self.score([bad])[0])
+        names = [f"check-{i}" for i in range(257)]
+        records = [frame.replace(" label ", f" {name} ") for name in names]
+        ok, reason = self.score(records[:256], checks=names[:256])
+        self.assertTrue(ok, reason)
+        self.assertFalse(self.score(records, checks=names)[0])
+
+    def test_records_must_precede_their_case_line(self):
+        text = (FIXTURES / "all-pass.txt").read_text()
+        frame = self.records["frame"]
+        manifest = dict(MANIFEST, frameChecks=[dict(case="first/one", check="label")])
+        for wire in (frame + "\n" + text, text + frame + "\n",
+                     text.replace("SUITE fixture CASE first/two", frame + "\nSUITE fixture CASE first/two")):
+            with tempfile.TemporaryDirectory() as directory:
+                serial = Path(directory) / "serial.txt"
+                serial.write_text(wire)
+                self.assertFalse(SCORER.verdict(manifest, serial, [serial])[0])
+
+
 class SuiteVerdictTests(unittest.TestCase):
     def test_elapsed_follows_done_without_replacing_case_or_memory_evidence(self):
         original=(FIXTURES/'all-pass.txt').read_text()

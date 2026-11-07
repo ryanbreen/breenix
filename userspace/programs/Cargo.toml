@@ -12,6 +12,7 @@ description = "Userspace programs and utilities for Breenix"
 framebuffer-v1 = []
 
 [dependencies]
+libuitest = { path = "../../libs/libuitest" }
 # The 16 px bitmap font libgfx draws; suite-breengel reads its rasters as the reference cells.
 noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "size_20", "size_24", "size_32", "regular", "unicode-basic-latin", "unicode-latin-1-supplement", "unicode-specials"] }
 bgl = { path = "../../libs/bgl" }
@@ -783,6 +784,10 @@ name = "suite-gpu"
 path = "src/suite_gpu.rs"
 
 [[bin]]
+name = "suite-ui-testing"
+path = "src/suite_ui_testing.rs"
+
+[[bin]]
 name = "suite-window-manager"
 path = "src/suite_window_manager.rs"
 
@@ -873,3 +878,7 @@ name = "poweroff"
 path = "src/poweroff.rs"
 test = false
 bench = false
+
+[[bin]]
+name = "ui-runner-fixture_test"
+path = "src/suite_runner_fixture.rs"

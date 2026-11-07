@@ -70,7 +70,7 @@ def receive(handler):
         sequence = (intent.get('suite') or '').split(',')
         suite_directory = None
         if len(sequence) > 1:
-            scoped = re.fullmatch(re.escape(intent.get('route', '')) + r'/suites/(console|gpu|breengel|window-manager)(/.*)?', route)
+            scoped = re.fullmatch(re.escape(intent.get('route', '')) + r'/suites/(console|gpu|breengel|window-manager|ui-testing)(/.*)?', route)
             if not scoped or scoped[1] not in sequence:
                 handler.send_error(404);return
             suite = scoped[1]
@@ -85,10 +85,10 @@ def receive(handler):
         diagnostic_label = diagnostic[1] if diagnostic else None
         is_diagnostic = diagnostic_label is not None
         if (not intent or (route!=intent.get('route') and not final and not is_picture and not is_diagnostic)
-                or (is_picture and (intent.get('suite') not in ('breengel', 'window-manager') or not intent.get('complete')
+                or (is_picture and (intent.get('suite') not in ('breengel', 'window-manager', 'ui-testing') or not intent.get('complete')
                     or intent.get('finalComplete') or picture_index != intent.get('pictureUploads', 0)))
-                or (is_diagnostic and (intent.get('suite') != 'window-manager' or not intent.get('complete')
-                    or intent.get('finalComplete') or len(intent.get('diagnosticUploads', {})) >= 16))
+                or (is_diagnostic and (intent.get('suite') not in ('window-manager', 'ui-testing') or not intent.get('complete')
+                    or intent.get('finalComplete') or len(intent.get('diagnosticUploads', {})) >= (206 if intent.get('suite') == 'ui-testing' else 16)))
                 or (intent.get('finalComplete') if final else (False if is_picture or is_diagnostic else intent.get('complete')))
                 or (final and not intent.get('complete'))
                 or lease.get('id')!=intent.get('id') or lease.get('state')!='powered'):

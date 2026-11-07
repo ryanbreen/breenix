@@ -186,6 +186,17 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
             errors.push(format!("{at}: hostRunner is true when present"));
         }
     }
+    if let Some(aggregate) = object.get("aggregate") {
+        expected.push("aggregate");
+        let valid = aggregate.as_str().and_then(|value| value.strip_prefix("after E"))
+            .and_then(|value| value.split_once(' '))
+            .and_then(|(effort, version)| version.split_once('.').map(|(major, minor)| (effort, major, minor)))
+            .is_some_and(|(effort, major, minor)| [effort, major, minor].iter()
+                .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())));
+        if !valid {
+            errors.push(format!("{at}: aggregate must match after E[0-9]+ [0-9]+\\.[0-9]+"));
+        }
+    }
     keys(object, &expected, &at, errors);
     let id = text(object, "id", &at, errors).to_string();
     if !id.is_empty() && !is_id(&id) {
@@ -415,6 +426,13 @@ fn source_suite_files(files: &[(String, String)]) -> Result<(Entry, Vec<Category
         Some(syn::Stmt::Expr(syn::Expr::MethodCall(method), _)) if method.method == "run" && method.args.is_empty() => {
             match &*method.receiver {
                 syn::Expr::Path(path) if path.path.get_ident().is_some() => path.path.get_ident().cloned(),
+                syn::Expr::MethodCall(upload) if upload.method == "with_evidence_upload"
+                    && upload.args.is_empty() && upload.attrs.is_empty() && upload.turbofish.is_none() => {
+                    match &*upload.receiver {
+                        syn::Expr::Path(path) if path.path.get_ident().is_some() => path.path.get_ident().cloned(),
+                        _ => None,
+                    }
+                }
                 _ => None,
             }
         }
@@ -761,7 +779,13 @@ fn suite_manifests_match_their_binaries() {
         }
     }
 
-    for (name, _) in &bins {
+    for (name, path) in &bins {
+        // E22 22.1 section 7: the argv-built scoped fixture is not an effort suite.
+        if name == "ui-runner-fixture_test" {
+            assert_eq!(path, "src/suite_runner_fixture.rs");
+            assert_scoped_runner_fixture(&root, &binaries);
+            continue;
+        }
         if let Some(id) = name.strip_prefix("suite-") {
             if !manifest_ids.contains(id) {
                 errors.push(format!("Cargo binary {name} has no manifest docs/suites/{id}.json"));
@@ -770,6 +794,32 @@ fn suite_manifests_match_their_binaries() {
     }
 
     assert!(errors.is_empty(), "suite manifest problems:\n{}", errors.join("\n"));
+}
+
+// The plan's fixture-table exemption is exact and requires private installation.
+fn assert_scoped_runner_fixture(root: &Path, binaries: &[String]) {
+    assert!(binaries.iter().any(|b| b == "ui-runner-fixture_test"));
+    let layout = fs::read_to_string(root.join("libs/libbreenix/src/layout.tsv")).unwrap();
+    let rules: Vec<Vec<&str>> = layout.lines().map(|l| l.split_whitespace().collect())
+        .filter(|r: &Vec<&str>| r.first() == Some(&"bin")).collect();
+    assert!(rules.iter().any(|r| r == &["bin", "*_test", "usr/libexec/breenix", "0755", "0"]));
+    assert!(!layout.contains("usr/local/test"));
+    let runner = fs::read_to_string(root.join("userspace/programs/src/uitest_suite/runner.rs")).unwrap();
+    assert!(runner.contains(r#"const FIXTURE: &[u8] = b"/usr/libexec/breenix/ui-runner-fixture_test\0";"#));
+    let source = fs::read_to_string(root.join("userspace/programs/src/suite_runner_fixture.rs")).unwrap();
+    assert!(source.contains("std::env::args()"));
+    assert!(source.contains("match selected"));
+    assert!(source.contains("case_limit_ms(3000)"));
+    assert!(source.contains(".gui()"));
+}
+
+#[test]
+fn scoped_runner_fixture_has_private_installation() {
+    let root = repo_root();
+    let bins = std_binaries(&fs::read_to_string(root.join("userspace/programs/build.sh")).unwrap());
+    let cargo = cargo_bins(&fs::read_to_string(root.join("userspace/programs/Cargo.toml")).unwrap());
+    assert!(cargo.iter().any(|(name, path)| name == "ui-runner-fixture_test" && path == "src/suite_runner_fixture.rs"));
+    assert_scoped_runner_fixture(&root, &bins);
 }
 
 /// The case ids in a libc-suite C source's `libc_cases[]` table, in order, from its
@@ -1528,5 +1578,55 @@ fn setup_is_silent_and_cannot_bypass_the_table() {
     assert!(source_suite(&format!("{table} fn prepare() -> Result<(), ()> {{ Ok(()) }} fn main() {{ let _ = prepare(); S.run() }}")).is_ok());
     for setup in ["return;", r#"println!("early");"#, "std::process::exit(0);", "let _ = prepare()?;", "prepare();"] {
         assert!(source_suite(&format!(r#"{table} fn prepare() {{ eprintln!("hidden"); }} fn main() {{ {setup} S.run() }}"#)).is_err(), "{setup}");
+    }
+}
+
+#[test]
+fn aggregate_is_optional_and_strict_and_unknown_keys_stay_rejected() {
+    let root = repo_root();
+    let manifest: Value = serde_json::from_str(&fs::read_to_string(root.join("docs/suites/ui-testing.json")).unwrap()).unwrap();
+    let dir = std::env::temp_dir().join(format!("suite-aggregate-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ui-testing.json");
+    let validate = |value: &Value| {
+        fs::write(&path, serde_json::to_vec(value).unwrap()).unwrap();
+        let mut errors = Vec::new();
+        assert!(read_manifest(&path, &mut errors).is_some());
+        errors
+    };
+    let mut value = manifest.clone();
+    value.as_object_mut().unwrap().remove("aggregate");
+    assert!(validate(&value).is_empty());
+    for valid in ["after E22 22.8", "after E0 0.0", "after E123 456.789"] {
+        value["aggregate"] = serde_json::json!(valid);
+        assert!(validate(&value).is_empty(), "{valid}");
+    }
+    for invalid in [serde_json::json!(null), serde_json::json!(true), serde_json::json!(22),
+        serde_json::json!("after E22 22"), serde_json::json!("after E 22.8"),
+        serde_json::json!("after E22 22x8"), serde_json::json!("after E22 22.8\n"),
+        serde_json::json!(" after E22 22.8"), serde_json::json!("after E22 22.8 extra")] {
+        value["aggregate"] = invalid.clone();
+        assert!(validate(&value).iter().any(|error| error.contains("aggregate")), "{invalid}");
+    }
+    value = manifest;
+    value["unknown"] = serde_json::json!(true);
+    assert!(validate(&value).iter().any(|error| error.contains("unexpected key \"unknown\"")));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn evidence_upload_runs_the_table_and_cannot_bypass_it() {
+    let table = r#"static SUITE: Suite = suite("ui-testing", "UI testing", &[]);"#;
+    assert!(source_suite(&format!("{table} fn main() {{ SUITE.with_evidence_upload().run() }}")).is_ok());
+    for body in [
+        "return; SUITE.with_evidence_upload().run()",
+        "std::process::exit(0); SUITE.with_evidence_upload().run()",
+        "if true { return; } SUITE.with_evidence_upload().run()",
+        "SUITE.with_evidence_upload()",
+        "SUITE.with_evidence_upload(1).run()",
+        "SUITE.other().run()",
+        "SUITE.with_evidence_upload().other().run()",
+    ] {
+        assert!(source_suite(&format!("{table} fn main() {{ {body} }}")).is_err(), "{body}");
     }
 }

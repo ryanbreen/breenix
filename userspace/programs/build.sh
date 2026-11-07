@@ -449,6 +449,8 @@ STD_BINARIES=(
     # Native x86-metal uses this producer too; layout.tsv places it in /sbin.
     "suite-gpu"
     "suite-window-manager"
+    "suite-ui-testing"
+    "ui-runner-fixture_test"
     "wm-client_test"
     "gpu-exec-probe"
     "suite-console"

@@ -156,13 +156,13 @@ const fn total(parts: &[&[Case]]) -> usize {
 
 /// The cases of `parts`, in order, as one table.
 const fn join<const N: usize>(parts: &[&[Case]]) -> [Case; N] {
-    let mut out = [const { Case { id: "", title: "", run: unjoined } }; N];
+    let mut out = [const { case("", "", unjoined) }; N];
     let (mut k, mut i) = (0, 0);
     while i < parts.len() {
         let mut j = 0;
         while j < parts[i].len() {
             let c = &parts[i][j];
-            out[k] = Case { id: c.id, title: c.title, run: c.run };
+            out[k] = Case { id: c.id, title: c.title, run: c.run, checks: c.checks, collects: c.collects };
             k += 1;
             j += 1;
         }

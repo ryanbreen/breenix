@@ -848,6 +848,7 @@ class RootStagingTest(unittest.TestCase):
             (tree / 'sbin/init').write_bytes(b'\x7fELFfixture')
             (tree / 'sbin/suite-smoke').write_bytes(b'\x7fELFsuite')
             (tree / 'sbin/suite-time').write_bytes(b'\x7fELFsuite')
+            (tree / 'sbin/suite-ui-testing').write_bytes(b'\x7fELFsuite')
             image = root / 'root.img'
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
                            check=True, capture_output=True)
@@ -881,6 +882,8 @@ class RootStagingTest(unittest.TestCase):
             subprocess.run(['bash', str(TOOLS.parent / 'write-boot-target.sh'), str(image), '--desktop'],
                            check=True, capture_output=True)
             self.assertEqual(read('boot-target'), 'desktop\n')
+            metal_root.stage_root(image, 'suite', 'ui-testing', site, hasher=hasher, gt710_upload='http://fixture.invalid/route')
+            self.assertEqual(read('evidence-route'), 'http://fixture.invalid/route\n')
             probe_site = dict(site, BOOT_URL='http://fixture.invalid/breenix/boot.img')
             metal_root.stage_root(image, 'probe', None, probe_site)
             self.assertEqual(read('boot-target'), 'probe\n')
@@ -1053,6 +1056,12 @@ class ModeApplicabilityTest(StateTest):
         marker = stage['stages']['suite'][0]['marker']
         self.assertTrue(boot.marker_matches((marker, 'contains'),
             f'SUITE window-manager DONE passed=9 failed={WM_CASES - 9} skipped=0 total={WM_CASES}'))
+
+    def test_ui_testing_done_satisfies_suite_finished_stage(self):
+        stage = next(item for item in self.definition['milestones'] if item['id'] == 'suite-finished')
+        marker = stage['stages']['suite'][0]['marker']
+        self.assertTrue(boot.marker_matches((marker, 'contains'),
+            'SUITE ui-testing DONE passed=18 failed=188 skipped=0 total=206'))
 
     def test_definition_and_driver_measure_fbcon_only_when_console_keeps_screen(self):
         import metal_score
@@ -1681,6 +1690,49 @@ class DriverTest(StateTest):
         d.args.mode = 'default'
         self.assertEqual(boot.mode_deadline_seconds(d.args), 300)
         self.assertEqual(boot.ceiling_seconds(d.args), 900)
+
+    def test_ui_testing_deadline_ceiling_and_start(self):
+        d = self.driver
+        d.args.mode, d.args.suite = 'suite', 'ui-testing'
+        self.assertEqual(boot.mode_deadline_seconds(d.args), 1800)
+        self.assertEqual(boot.ceiling_seconds(d.args), 2220)
+        d.on_line('SUITE ui-testing START cases=206', observed_at=130)
+        self.assertEqual(d.suite_started, 130)
+        with patch.object(boot.threading, 'Thread') as thread:
+            d.start_hostkey_reader()
+            thread.assert_not_called()
+
+    def test_ui_upload_scoped_routes_and_diagnostic_caps(self):
+        import gt710_upload as upload
+        import io
+        class Handler:
+            def __init__(self, path):
+                self.path, self.rfile, self.connection = path, io.BytesIO(b'x'), self
+                self.headers = {'Content-Length': '1', 'X-Content-SHA256': hashlib.sha256(b'x').hexdigest()}
+                self.code = None
+            def settimeout(self, value): pass
+            def send_error(self, code, *args): self.code = code
+            def send_response(self, code): self.code = code
+            def send_header(self, *args): pass
+            def end_headers(self): pass
+        with tempfile.TemporaryDirectory() as tmp:
+            state = Path(tmp)
+            (state / 'boots/sample/native-suites/ui-testing').mkdir(parents=True)
+            route = '/gt710-upload/' + 'a' * 64
+            with patch.object(upload.m, 'STATE', state), \
+                 patch.object(upload.m, 'read_lease', return_value=dict(id='sample', state='powered')):
+                for suite, count, expected in [('ui-testing', 205, 200), ('ui-testing', 206, 404),
+                                               ('window-manager', 16, 404)]:
+                    directory = state / 'boots/sample/native-suites' / suite
+                    directory.mkdir(parents=True, exist_ok=True)
+                    intent = dict(id='sample', route=route, suite='console,' + suite, suiteSlots={suite: dict(
+                        id='sample', route=route + '/suites/' + suite, suite=suite, complete=True,
+                        diagnosticUploads={str(n): {} for n in range(count)})})
+                    (state / 'gt710-upload.json').write_text(json.dumps(intent))
+                    h = Handler(route + '/suites/' + suite + '/diagnostics/test')
+                    upload.receive(h)
+                    self.assertEqual(h.code, expected)
+                    (directory / 'diagnostic-test.bin').unlink(missing_ok=True)
 
     def test_window_manager_starts_the_hostkey_reader(self):
         d = self.driver

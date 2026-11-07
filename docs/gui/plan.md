@@ -917,10 +917,10 @@ running the real runner as a scoped fixture:
   that is not PID 1 makes itself a subreaper at start, so its orphans come back to it, and after DONE it exits
   instead of idling as PID 1 does. These are the only places the runner branches on its role, and a host
   structure test pins that.
-- **The fixture.** `suite-runner-fixture_test`, installed only in `/usr/local/test/bin`, is a GUI suite built
-  from the real `Suite::gui()` runner. Its cases misbehave on purpose: a check declared and never run; a
+- **The fixture.** `ui-runner-fixture_test`, installed only in `/usr/libexec/breenix`, is a GUI suite built
+  from the real `Suite::gui()` runner. Its cases misbehave on purpose: a declared check left unexecuted; a
   malformed record; a duplicate record; a record naming another case; `Ok` returned after a mismatch record;
-  the case killed in the middle of a scenario; a supervisor that never answers `collect`; a supervisor that
+  the case killed in the middle of a scenario; a supervisor that does not answer `collect`; a supervisor that
   dies; a double-forked helper left behind. One case passes cleanly as the positive control. Each fixture case has a 3 s limit, and
   each outer case runs the fixture with only the case it checks: the fixture builds its case table from its
   argument, and the runner code is unchanged.
@@ -1112,11 +1112,11 @@ happen by itself.
 | malformed peers and inputs | fixture programs that write exact malformed bytes | `guskit-collab/invalid-*`, `font-parser/*`, `inflate/*`, `png-decode/*` |
 | hung, stopped and crashing clients | `wm-client_test` and `uitest-app_test` flags, `SIGSTOP`, `SIGSEGV` | `liveness/*`, `lifecycle/*`, `proof/*` |
 | WM layout, routing, keymap and disposition faults | `bwm-fault_test`: the real bwm built with one named fault, installed in `/usr/local/test/bin` only | `proof/fault-misroute`, `fault-chrome-offset`, `fault-keymap-swap`, `fault-lost-disposition`, `fault-real-input` |
-| runner protocol violations | `suite-runner-fixture_test`, the real GUI runner with misbehaving cases (section 8.4) | `runner/never-ran`, `mismatch-is-fail`, `record-*`, `outer-*`, `sweep-descendants` |
+| runner protocol violations | `ui-runner-fixture_test`, the real GUI runner with misbehaving cases (section 8.4) | `runner/never-ran`, `mismatch-is-fail`, `record-*`, `outer-*`, `sweep-descendants` |
 
 Like `bwm-fault_test`, `guskit_test` and `bterm_test` are the real program built with one named fault, and
-`suite-runner-fixture_test` is the real runner with fixture cases. All are installed only in
-`/usr/local/test/bin`, and the production builds contain none of these faults.
+`ui-runner-fixture_test` is the real runner with fixture cases, installed only in
+`/usr/libexec/breenix` by the `*_test` layout rule. Production binaries are built separately from these fault fixtures.
 
 ## 12. Measurements
 
@@ -2254,10 +2254,10 @@ scripted input with dispositions, tree queries, frame checks, the epoch-and-sett
 inner scenario executor); the tree pages and builder in Breengel, libbui and bwm, with layout versions; the
 input serial chain through bwm and Breengel, with scene and layout tags; `Suite::gui()`'s mandatory result
 transport, FRAME accounting, collector socket and collection handshake; the descendant-scoped sweep and the
-transcript descriptor in the shared runner; `suite-runner-fixture_test`; the FRAME, TREE, INPUT and COLLECT
+transcript descriptor in the shared runner; `ui-runner-fixture_test`; the FRAME, TREE, INPUT and COLLECT
 records;
 `frameChecks` in the manifests, the validators, the verdict script and Vigil; `PR_SET_CHILD_SUBREAPER`;
-`BREENIX_CONFIG_ROOT` support in every GUI program; `docs/suites/frames/` with its provenance file, the
+`BREENIX_CONFIG_ROOT` support in the GUI programs; `docs/suites/frames/` with its provenance file, the
 installer and `tools/gfx-refgen`; `/var/uitest` artifacts and `scripts/uitest-artifacts.py`; and
 `uitest-app_test`.
 
@@ -2320,7 +2320,7 @@ bwm built with one named fault per run (`misroute-focus`, `chrome-offset`, `keym
 - `input-during-animation` — Input arrives in order while the app animates.
 - `two-windows` — Input addressed to two windows of one app arrives at each.
 - `wm-hotkey-scripted` — A scripted Super double tap opens the launcher through bwm's real hotkey path.
-- `real-input-excluded` — Events from a device outside the session's selection change nothing in the session.
+- `real-input-excluded` — Events from a device outside the session's selection, modifier keys included, change nothing in the session. <!-- claim-lint:ok: docs/gui/plan.md section 17 specifies a future case, not a completed result. -->
 
 #### `tree` — semantic trees of windows & widgets (23)
 - `roles-keys` — The test app's tree lists every widget with its expected role and key.
@@ -2351,8 +2351,8 @@ bwm built with one named fault per run (`misroute-focus`, `chrome-offset`, `keym
 - `window-capture` — A window capture equals the committed buffer of that commit.
 - `capture-while-drawing` — Capturing commit N while the app draws N+1 returns N whole.
 - `capture-two-readers` — Two readers capturing the same window each get whole commits.
-- `capture-resize-race` — A resize during a capture gives the whole old commit or ENOENT, never a mixture.
-- `capture-destroy-race` — A destroy during a capture gives the whole commit, and the buffer is freed afterwards.
+- `capture-resize-race` — A resize during a capture gives the whole old commit, pixels and tree, never ENOENT or a mixture. <!-- claim-lint:ok: docs/gui/plan.md section 3.1 specifies the capture contract this future case checks. -->
+- `capture-destroy-race` — A destroy during a capture gives the whole commit and frees the buffer afterwards; a destroy before the copy begins gives ENOENT.
 - `capture-threads` — Commits from two producer threads are each captured whole.
 - `screen-capture` — A screen capture shows the window at its position, with its observation record.
 - `capture-commits` — A screen capture lists the commit of each window it contains.
@@ -2468,14 +2468,14 @@ Each fault case runs its scenario in the inner executor twice: clean, which must
 which must fail with the stated class for the stated reason.
 - `clean-passes` — The test app with no fault passes every check of a full script.
 - `fault-off-by-one` — A frame drawn one pixel off fails as pixel-mismatch at the first shifted pixel.
-- `fault-wrong-colour` — A widget drawn in the wrong colour fails as pixel-mismatch with both colours.
+- `fault-wrong-color` — A widget drawn in the wrong color fails as pixel-mismatch with both colors.
 - `fault-drain-no-render` — An app that drains a key and never commits fails as unprocessed-serial for that key.
 - `fault-stale-pixels` — An app that updates its tree but not its pixels fails as pixel-mismatch.
 - `fault-drop-key` — An app that drops one key fails as tree-mismatch on the text field's value.
 - `fault-misroute` — bwm-fault_test sending keys to the wrong window fails as pixel-mismatch and tree-mismatch on the intended window.
 - `fault-chrome-offset` — bwm-fault_test drawing chrome one pixel off fails as pixel-mismatch against the contract table.
 - `fault-keymap-swap` — bwm-fault_test with two keys swapped fails as tree-mismatch on typed text.
-- `fault-lie-bounds` — A tree whose bounds disagree with the drawn widget fails as tree-mismatch through a role invariant.
+- `fault-lie-bounds` — A tree whose bounds disagree with the drawn widget, still inside its parent, fails as tree-mismatch against the literal expected geometry.
 - `fault-lie-text` — A label drawn "FAIL" whose tree says "PASS", with valid ink and bounds, fails as pixel-mismatch.
 - `fault-slow-commit` — An app that never settles fails as settle-timeout, naming it.
 - `fault-wallclock` — An app animating on the real clock fails as clock-violation on every run.
@@ -3719,7 +3719,7 @@ second re-check's eight. After this revision no finding is open. Every remaining
 | 8 | External state and real input uncontrolled | fixed | — | Session device selection and grab (§5.4); one config root for every participant; pinned TZ, locale and ordering; independent sampling for system data (§9). |
 | 9 | Semantic cross-check cannot catch lying text | fixed | — | The tree is not an oracle; text is checked against certified-renderer pixels; role-specific invariants; WM policy against an operation model (§7.1, §7.3). `proof/fault-lie-text`, `tree/text-pixels`. |
 | 10 | Shared code makes both sides wrong | fixed | — | Independence rules (§2.5): literal tables in `docs/gui/bwm.md`, libuitest's own key table, `bwm-fault_test` chrome-offset and keymap-swap proofs. |
-| 11 | Self-tests conflict with the outer runner | open | contract | §8.4: the real `Suite::gui()` runner runs as a scoped fixture (`suite-runner-fixture_test`) with a transcript descriptor and a descendant-scoped sweep, and the outer case checks the exact CASE and COLLECT records that runner produced. Proved by `ui-testing/runner/never-ran`, `mismatch-is-fail`, `record-malformed`, `record-duplicate`, `record-binding`, `outer-positive`, `outer-case-death`, `outer-collector-timeout`, `sweep-descendants`. The host scorer keeps its own fixtures (§2.2). Third revision: the fixture gains a supervisor that dies, and the runner's `supervisor-died` fallback is proved by `outer-collector-timeout` and `runner/subreaper` (N17). |
+| 11 | Self-tests conflict with the outer runner | open | contract | §8.4: the real `Suite::gui()` runner runs as a scoped fixture (`ui-runner-fixture_test`) with a transcript descriptor and a descendant-scoped sweep, and the outer case checks the exact CASE and COLLECT records that runner produced. Verification cases: `ui-testing/runner/never-ran`, `mismatch-is-fail`, `record-malformed`, `record-duplicate`, `record-binding`, `outer-positive`, `outer-case-death`, `outer-collector-timeout`, `sweep-descendants`. The host scorer keeps its own fixtures (§2.2). Third revision: the fixture gains a supervisor that dies, and the runner's `supervisor-died` fallback has planned checks `outer-collector-timeout` and `runner/subreaper` (N17). |
 | 12 | Assertions on an optional, lossy pipe | fixed | — | A mandatory result transport, separate from the live strip (§8.2). Second revision: the supervisor reports on its own collector socket, never the result pipe (finding 42). |
 | 13 | `frameChecks` lacks a complete schema | open | open → contract (N18) | §7.5: every field typed with its range; formulas declare typed signatures that `params` must match; each structural predicate has its parameter list and non-vacuity rule; schema version 1 has no edge exemption and rejects `edgeRadius`. Proved by `ui-testing/frames/unknown-field`, `formula-params`, `structural-vacuous`, `mask-cap`, `channel-tolerance`, `max-differing`, `schema-version`. Third revision: non-vacuity is checked on each predicate's effective domain after masks, operands are bound by name to declared regions, and an empty domain is a validation failure, never a match (N18). Contract in `ui-testing/frames`, closed by `structural-vacuous` (with the masked-border fixture) and `mask-cap`. |
 | 14 | Cases without a guest observable | open | open → repaired (N13) | §12.1: every observable has a positive control and every measured claim a negative twin in its case. Kernel output is counted per thread at every emission entry point on both architectures (fatal paths into an unattributed counter), enforced by a host structure test, so direct `serial_println!` is covered and other threads' logging is not counted. Proved by `breengel/isolation/quiet-errors` with `emit-diagnostic`, `composition/damage-work` with `ignore-damage`, `flush-irq-bound` with `irq-hold`. Third revision: kernel output is counted at exactly one accounting boundary per byte (x86-64 `queue_byte`, the COM2 log ring's `append` and the emergency port writer; ARM64 `uart_owner::write`), wrappers and drains never count, deferred notices count when posted, and the structure test proves each writer reaches one boundary once (N13). Proved by `breengel/isolation/quiet-errors` with a subcase per writer path, nested wrappers included, on both architectures. |

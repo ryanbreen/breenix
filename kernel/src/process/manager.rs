@@ -15,6 +15,7 @@ use x86_64::VirtAddr;
 use crate::memory::arch_stub::VirtAddr;
 
 use super::{Process, ProcessId};
+use super::process::select_child_reaper;
 #[cfg(target_arch = "x86_64")]
 use crate::elf;
 use crate::memory::process_memory::ProcessPageTable;
@@ -482,9 +483,9 @@ impl ProcessManager {
         publication.main_thread
     }
 
-    /// Reparent `children` onto the designated init. With no designated init there is nothing
-    /// to reparent onto and the children keep their existing parent -- the defined behaviour on
-    /// a build with no real init. Returns whether reparenting actually ran.
+    /// Reparent children within the thread group, then to the nearest live
+    /// subreaper ancestor, else to designated init. Without either, keep the
+    /// existing parent. Returns whether reparenting actually ran.
     pub fn reparent_children_to_init(
         &mut self,
         exiting: ProcessId,
@@ -510,21 +511,28 @@ impl ProcessManager {
             return true;
         }
 
-        let Some(init) = self.designated_init else {
+        let parent = self.processes.live_row(&exiting).and_then(|row| row.parent);
+        let reaper = select_child_reaper(
+            parent,
+            self.designated_init.filter(|init| *init != exiting),
+            self.processes.len(),
+            |pid| self.processes.get(&pid).map(|row| (
+                row.parent,
+                !row.is_terminated() && !row.exit_started,
+                row.reaper.is_subreaper(),
+            )),
+        );
+        let Some(reaper) = reaper else {
             crate::tracing::providers::teardown::record_init_reparent(children.len(), false);
             return false;
         };
-        if exiting == init {
-            crate::tracing::providers::teardown::record_init_reparent(children.len(), false);
-            return false;
-        }
 
         for child in children {
             if let Some(process) = self.processes.live_row_mut(child) {
-                process.parent = Some(init);
+                process.parent = Some(reaper);
             }
         }
-        if let Some(process) = self.processes.live_row_mut(&init) {
+        if let Some(process) = self.processes.live_row_mut(&reaper) {
             process.children.extend_from_slice(children);
         }
         crate::tracing::providers::teardown::record_init_reparent(children.len(), true);
@@ -2940,9 +2948,8 @@ impl ProcessManager {
             .map_err(|_| "fork allocation failed")?;
 
         // Create the child process with the same entry point
-        let mut child_process = Process::new(child_pid, child_name.clone(), parent_entry_point);
-        child_process.forked_without_exec = true;
         let parent_row = self.processes.live_row(&parent_pid).ok_or("Parent process not found")?;
+        let mut child_process = Process::fork_child(child_pid, child_name.clone(), parent_entry_point, parent_row);
         child_process.exe_path = parent_row.exe_path.clone();
         child_process.cmdline = parent_row.cmdline.clone();
         child_process.cmdline_area = parent_row.cmdline_area;
@@ -3069,12 +3076,12 @@ impl ProcessManager {
         // process group, session and working directory (POSIX), with the
         // parent's heap, mmap state, memory usage and stack bounds: its table
         // shares the parent's pages, grown stack pages included.
-        let mut child_process = Process::new(
+        let mut child_process = Process::fork_child(
             child_pid,
             crate::syscall::exec::copy_string(&parent.name).map_err(|_| "fork allocation failed")?,
             parent.entry_point,
+            parent,
         );
-        child_process.forked_without_exec = true;
         child_process.exe_path = parent.exe_path.clone();
         child_process.cmdline = parent.cmdline.clone();
         child_process.cmdline_area = parent.cmdline_area;
@@ -3685,8 +3692,7 @@ impl ProcessManager {
         let parent_cwd = parent.cwd.copy();
 
         // Create the child process with the same entry point
-        let mut child_process = Process::new(child_pid, child_name.clone(), parent.entry_point);
-        child_process.forked_without_exec = true;
+        let mut child_process = Process::fork_child(child_pid, child_name.clone(), parent.entry_point, parent);
         child_process.exe_path = parent.exe_path.clone();
         child_process.cmdline = parent.cmdline.clone();
         child_process.cmdline_area = parent.cmdline_area;
@@ -4154,7 +4160,7 @@ impl ProcessManager {
         process.exe_path = None;
         process.cmdline = None;
         process.cmdline_area = None;
-        process.forked_without_exec = false;
+        process.note_exec();
         if let Some(name) = program_name {
             process.name = String::from(name);
             log::debug!("exec_process: Updated process name to '{}'", name);
@@ -4180,7 +4186,6 @@ impl ProcessManager {
         // The thread's exit-notification word belonged to the old image.
         process.clear_child_tid = None;
         process.signals.drop_timer_signals();
-        process.has_exec = true;
         // Reset mmap state for the new address space
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
@@ -4617,7 +4622,7 @@ impl ProcessManager {
             process.name = name;
         }
         process.exe_path = exe_path;
-        process.forked_without_exec = false;
+        process.note_exec();
         process.cmdline = Some(cmdline);
         process.cmdline_area = Some(cmdline_area);
         process.entry_point = loaded_elf.entry_point;
@@ -4637,7 +4642,6 @@ impl ProcessManager {
         // The thread's exit-notification word belonged to the old image.
         process.clear_child_tid = None;
         process.signals.drop_timer_signals();
-        process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
         process.memory_locks.clear();
@@ -5026,7 +5030,7 @@ impl ProcessManager {
             process.name = name;
         }
         process.exe_path = exe_path;
-        process.forked_without_exec = false;
+        process.note_exec();
         process.cmdline = Some(cmdline);
         process.cmdline_area = Some(cmdline_area);
         process.entry_point = VirtAddr::new(new_entry_point);
@@ -5045,7 +5049,6 @@ impl ProcessManager {
         // The thread's exit-notification word belonged to the old image.
         process.clear_child_tid = None;
         process.signals.drop_timer_signals();
-        process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
         process.memory_locks.clear();
@@ -5358,7 +5361,7 @@ impl ProcessManager {
         process.exe_path = None;
         process.cmdline = None;
         process.cmdline_area = None;
-        process.forked_without_exec = false;
+        process.note_exec();
         if let Some(name) = program_name {
             process.name = String::from(name);
             log::debug!("exec_process [ARM64]: Updated process name to '{}'", name);
@@ -5383,7 +5386,6 @@ impl ProcessManager {
         // The thread's exit-notification word belonged to the old image.
         process.clear_child_tid = None;
         process.signals.drop_timer_signals();
-        process.has_exec = true;
         process.mmap_hint = crate::memory::vma::MMAP_REGION_END;
         process.vmas.clear();
         process.memory_locks.clear();

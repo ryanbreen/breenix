@@ -15,6 +15,8 @@ def function(source, name):
         pos += 1
     return source[start:pos]
 manager = (ROOT / "kernel/src/process/manager.rs").read_text()
+process = (ROOT / "kernel/src/process/process.rs").read_text()
+reaper = process[process.index("pub struct ReaperState"):process.index("/// Process state")]
 handlers = (ROOT / "kernel/src/syscall/handlers.rs").read_text()
 methods = "\n".join(function(manager, n) for n in ["wait_children", "thread_group_peers", "reparent_children_to_init"])
 change = function(handlers, "change_credentials")
@@ -25,6 +27,7 @@ use std::collections::BTreeMap;
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub struct ProcessId(u64);
 impl ProcessId { pub fn as_u64(self) -> u64 { self.0 } }
+REAPER_STATE
 pub mod fs {
     #[path = "ATTRS_PATH"]
     pub mod attrs;
@@ -32,6 +35,7 @@ pub mod fs {
 #[path = "CREDENTIALS_PATH"]
 pub mod credentials;
 pub struct Row {
+    pub reaper: ReaperState,
     pub thread_group_id: Option<u64>,
     pub children: Vec<ProcessId>,
     pub parent: Option<ProcessId>,
@@ -49,6 +53,8 @@ impl Row {
 }
 pub struct Rows(BTreeMap<ProcessId, Row>);
 impl Rows {
+    fn get(&self, pid: &ProcessId) -> Option<&Row> { self.0.get(pid) }
+    fn len(&self) -> usize { self.0.len() }
     fn live_row(&self, pid: &ProcessId) -> Option<&Row> { self.0.get(pid) }
     fn live_row_mut(&mut self, pid: &ProcessId) -> Option<&mut Row> { self.0.get_mut(pid) }
     fn iter(&self) -> std::collections::btree_map::Iter<'_, ProcessId, Row> { self.0.iter() }
@@ -62,7 +68,7 @@ impl Manager {
 METHODS
 }
 fn row(group: u64, children: &[u64]) -> Row {
-    Row { thread_group_id: Some(group), children: children.iter().map(|&p| ProcessId(p)).collect(),
+    Row { reaper: ReaperState::new_process(), thread_group_id: Some(group), children: children.iter().map(|&p| ProcessId(p)).collect(),
           parent: Some(ProcessId(1)), exit_started: false, terminated: false, cred: credentials::ProcessCredentials::root(),
           published_identity: std::cell::Cell::new((0, 0, 0)) }
 }
@@ -132,9 +138,26 @@ fn children_remain_in_group_when_spawning_thread_exits() {
     assert!(m.reparent_children_to_init(ProcessId(11), &[ProcessId(20), ProcessId(21)]));
     assert_eq!(m.processes.live_row(&ProcessId(20)).unwrap().parent, Some(ProcessId(1)));
 }
+#[test]
+fn orphans_go_to_nearest_live_subreaper_and_then_init() {
+    for nearest_alive in [true, false] {
+        let mut m = manager();
+        m.processes.live_row_mut(&ProcessId(30)).unwrap().parent = Some(ProcessId(20));
+        m.processes.live_row_mut(&ProcessId(20)).unwrap().parent = Some(ProcessId(10));
+        m.processes.live_row_mut(&ProcessId(20)).unwrap().reaper.set_subreaper(true);
+        m.processes.live_row_mut(&ProcessId(10)).unwrap().reaper.set_subreaper(true);
+        m.processes.live_row_mut(&ProcessId(20)).unwrap().exit_started = !nearest_alive;
+        m.processes.0.insert(ProcessId(31), row(31, &[]));
+        assert!(m.reparent_children_to_init(ProcessId(30), &[ProcessId(31)]));
+        let target = ProcessId(if nearest_alive { 20 } else { 10 });
+        assert_eq!(m.processes.live_row(&ProcessId(31)).unwrap().parent, Some(target));
+        assert!(m.processes.live_row(&target).unwrap().children.contains(&ProcessId(31)));
+        assert!(!m.processes.live_row(&ProcessId(1)).unwrap().children.contains(&ProcessId(31)));
+    }
+}
 '''
 harness = harness.replace("CREDENTIALS_PATH", str(ROOT / "kernel/src/process/credentials.rs"))
-harness = harness.replace("ATTRS_PATH", str(ROOT / "kernel/src/fs/attrs.rs")).replace("METHODS", methods).replace("CHANGE", change)
+harness = harness.replace("ATTRS_PATH", str(ROOT / "kernel/src/fs/attrs.rs")).replace("METHODS", methods).replace("CHANGE", change).replace("REAPER_STATE", reaper)
 with tempfile.TemporaryDirectory(prefix="breenix-process-group-") as tmp:
     test = Path(tmp) / "tests.rs"
     test.write_text(harness)

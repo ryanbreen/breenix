@@ -279,7 +279,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
             files['suite-sequence'] = suite + '\n'
         # Clear a prior route when reusing a root for a suite without this facility.
         commands = ['rm /etc/breenix/evidence-route']
-        if gt710_upload and mode == 'suite' and 'window-manager' in suite.split(','):
+        if gt710_upload and mode == 'suite' and {'window-manager', 'ui-testing'}.intersection(suite.split(',')):
             files['evidence-route'] = gt710_upload + '\n'
         for name, text in files.items():
             source = scratch / name

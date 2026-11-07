@@ -1,5 +1,7 @@
 /* Breenix process-control extension. ISO C17/POSIX.1-2024 do not specify
- * these operations. The implementation currently returns ENOSYS for every one.
+ * these operations. SET_CHILD_SUBREAPER takes an int (nonzero enables), and
+ * GET_CHILD_SUBREAPER takes an int * receiving 0 or 1. The setting survives
+ * exec and is not inherited by fork. Other requests return ENOSYS.
  * Request IDs are our reserved "BR" namespace (ASCII B=0x42, R=0x52 in the
  * implementation's execution character set), followed by an ordinal. */
 #ifndef _SYS_PRCTL_H

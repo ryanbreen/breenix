@@ -48,7 +48,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 # The records a case prints while it runs, which do not count.
-LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY", "HOSTPOINTER", "HOSTSSH", "SCREEN")
+RESULT = ("FRAME", "TREE", "INPUT", "COLLECT")
+LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY", "HOSTPOINTER", "HOSTSSH", "SCREEN") + RESULT
 # The runner's memory record, around the cases.
 MEMORY = ("MEMORY", "RECLAIMED")
 
@@ -68,6 +69,141 @@ def milestone_categories(path, milestone, suite):
                     raise ValueError(f"{milestone} does not measure categories of suite {suite}")
                 return measure["categories"]
     raise ValueError(f"unknown milestone {milestone}")
+
+
+def parse_result(line, suite, case, checks, collects):
+    """The section 8.3 grammar, also exercised against suite_result.rs on the host.
+
+    Returns (duplicate key, matched FRAME check or None, mismatch check or None).
+    No image or reference bytes are read by this parser.
+    """
+    def name(value):
+        return re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", value) is not None
+
+    def hexdigits(value, size):
+        return re.fullmatch(rf"[0-9a-f]{{{size}}}", value) is not None
+
+    def field(token, key):
+        if not token.startswith(key + "="):
+            raise ValueError("malformed result field")
+        return token[len(key) + 1:]
+
+    def number(token, key):
+        value = field(token, key)
+        if re.fullmatch(r"[0-9]+", value) is None or len(value) > 20 or int(value) > 2**64 - 1:
+            raise ValueError("malformed result number")
+        return int(value)
+
+    def artifacts(value):
+        return value == "complete" or re.fullmatch(r"(?:partial|none):[a-z0-9]+(?:-[a-z0-9]+)*", value) is not None
+
+    t = line.split(" ")
+    if (len(line.encode("utf-8")) + 1 > 4096 or not line.isascii() or len(t) < 4
+            or any(not token or any(ord(c) <= 32 or ord(c) == 127 for c in token) for token in t)
+            or t[0] != "SUITE" or t[1] != suite or t[3] != case):
+        raise ValueError("malformed or other-case result record")
+    kind = t[2]
+    if kind == "FRAME" and len(t) in (14, 20):
+        check = t[4]
+        reference, source = field(t[6], "ref"), field(t[7], "source")
+        if (not name(check) or check not in checks or not hexdigits(field(t[5], "def"), 8)
+                or not (reference in ("formula", "structural") or hexdigits(reference, 8))
+                or not (source in ("screen", "surface") or source.startswith("window:") and name(source[7:]))):
+            raise ValueError("malformed or undeclared FRAME check")
+        number(t[8], "commit")
+        number(t[9], "epoch")
+        width, height = number(t[10], "w"), number(t[11], "h")
+        if not width or not height or not hexdigits(field(t[12], "sha256"), 64):
+            raise ValueError("malformed FRAME dimensions or hash")
+        result = field(t[13], "result")
+        if result == "match" and len(t) == 14:
+            return "FRAME:" + check, check, None
+        if result == "mismatch" and len(t) == 20:
+            compared, differing = number(t[14], "compared"), number(t[15], "differing")
+            first = field(t[16], "first").split(",")
+            if len(first) != 2:
+                raise ValueError("malformed first pixel")
+            x, y = number("x=" + first[0], "x"), number("y=" + first[1], "y")
+            if (not 0 < differing <= compared <= width * height <= 2**64 - 1 or x >= width or y >= height
+                    or re.fullmatch(r"#[0-9a-f]{6}", field(t[17], "got")) is None
+                    or re.fullmatch(r"#[0-9a-f]{6}", field(t[18], "want")) is None
+                    or not artifacts(field(t[19], "artifacts"))):
+                raise ValueError("malformed FRAME mismatch")
+            return "FRAME:" + check, None, check
+    elif kind == "TREE" and len(t) == 9:
+        if not name(t[4]) or t[4] not in checks or not name(field(t[5], "window")) or not hexdigits(field(t[8], "sha256"), 64):
+            raise ValueError("malformed or undeclared TREE check")
+        number(t[6], "commit")
+        number(t[7], "nodes")
+        return "TREE:" + t[4], None, None
+    elif kind == "INPUT" and len(t) in (9, 10):
+        for token, key in zip(t[4:9], ("sent", "processed", "handled", "rejected", "lost")):
+            number(token, key)
+        if len(t) == 10:
+            number(t[9], "missing")
+        return "INPUT", None, None
+    elif kind == "COLLECT" and len(t) == 9:
+        screen = field(t[5], "screen")
+        if (not collects or field(t[4], "trigger") not in ("fail", "crash", "timeout", "save-all")
+                or not (screen in ("at-failure", "at-collection") or screen.startswith("none:") and name(screen[5:]))
+                or not artifacts(field(t[8], "artifacts"))):
+            raise ValueError("malformed or unrequested COLLECT")
+        number(t[6], "windows")
+        number(t[7], "remnants")
+        return "COLLECT", None, None
+    raise ValueError("malformed result record")
+
+
+def result_problem(manifest, records, cases):
+    """Bind records to the active case; a guest PASS must satisfy every FRAME obligation."""
+    checks = {f"{cat['id']}/{row['id']}": [] for cat in manifest["categories"] for row in cat["cases"]}
+    for entry in manifest.get("frameChecks", []):
+        case, check = entry.get("case"), entry.get("check")
+        if case not in checks:
+            return "declared FRAME check names no manifest case"
+        if (not isinstance(check, str) or re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", check) is None
+                or check in checks[case]):
+            return "invalid or duplicate declared FRAME check"
+        checks[case].append(check)
+        if len(checks[case]) > 256:
+            return "more than 256 declared checks"
+    collects = {f"{cat['id']}/{row['id']}": row.get("collects", False)
+                for cat in manifest["categories"] for row in cat["cases"]}
+    seen, matched, mismatched = set(), set(), set()
+    count, index, started, done = 0, 0, False, False
+    for kind, match, line in records:
+        if kind == "START":
+            started = True
+        elif kind == "DONE":
+            done = True
+        elif kind in RESULT:
+            if not started or done or index >= len(cases) or match.group(1) != cases[index]:
+                return f"a {kind} record is not bound to the running case"
+            case = cases[index]
+            count += 1
+            if count > 256:
+                return "result record limit exceeded (256)"
+            try:
+                key, hit, miss = parse_result(line, manifest["id"], case, checks[case], collects[case])
+            except ValueError as error:
+                return str(error)
+            if key in seen:
+                return f"duplicate result record {key}"
+            seen.add(key)
+            if hit:
+                matched.add(hit)
+            if miss:
+                mismatched.add(miss)
+        elif kind in ("PASS", "FAIL", "SKIP"):
+            if index < len(cases) and match.group(1) == cases[index] and kind == "PASS":
+                if mismatched:
+                    return f"frame check `{sorted(mismatched)[0]}` mismatched but CASE passed"
+                missing = [check for check in checks[cases[index]] if check not in matched]
+                if missing:
+                    return f"frame check `{missing[0]}` never ran but CASE passed"
+            index += 1
+            count, seen, matched, mismatched = 0, set(), set(), set()
+    return None
 
 
 def verdict(manifest, records_log, logs, only=None, categories=None):
@@ -131,6 +267,7 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
         "MEMORY": re.compile(rf"^SUITE {suite} MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+$"),
         "RECLAIMED": re.compile(rf"^SUITE {suite} MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)$"),
     }
+    shapes.update({kind: re.compile(rf"^SUITE {suite} {kind} {name} .+$") for kind in RESULT})
     records = []
     for line in read_lines(records_log):
         if not line.startswith(prefix):
@@ -151,6 +288,9 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
 
     if not records:
         return False, f"no 'SUITE {suite}' lines in {records_log}"
+    problem = result_problem(manifest, records, cases)
+    if problem:
+        return False, problem
     for index, (kind, match, line) in enumerate(records):
         if kind not in LIVE:
             continue
