@@ -2241,6 +2241,14 @@ class SetupOriginalsTest(StateTest):
 
 
 class StagingTest(unittest.TestCase):
+    def test_screen_known_survives_suite_sequence_handoff(self):
+        run = load_script('metal-run')
+        args = run.argument_parser().parse_args([
+            'boot', '--suite', 'gpu', '--screen-proof', '--screen-known', '/tmp/known.json'
+        ])
+        restored = json.loads(json.dumps(vars(args)))
+        self.assertEqual(restored['screen_known'], '/tmp/known.json')
+
     def test_build_pushes_only_stub_sources_and_replaces_stage(self):
         run = load_script('metal-run')
         env = dict(BUILD_ROOT='/fixture', BUILD_INSTANCE='builder', METAL_INSTANCE='service',
