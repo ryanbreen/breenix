@@ -125,6 +125,7 @@ fn write_raw(id: u64, ptr: u64, count: u32) -> i64 {
 
 struct Kiosk {
     auto: bool,
+    session: bool,
     gpu_fixtures: Vec<(bgl::Context,u64)>,
     /// The next input serial.
     serial: u64,
@@ -423,7 +424,29 @@ impl Kiosk {
 
 /// Compose when the scene has damage: new pixels, geometry, stacking or registration, or
 /// the cursor. Composition starts once a window is visible with a commit.
+fn place_session_windows() -> Result<(), libbreenix::error::Error> {
+    let mut infos = vec![abi::WinInfo::default(); 64];
+    loop {
+        let count = window::list(&mut infos)?;
+        if count > infos.len() {
+            infos.resize(count, abi::WinInfo::default());
+            continue;
+        }
+        for info in &infos[..count] {
+            // Ordinary kiosk callers place their own windows. Session callers
+            // launch apps without a placement command; show each new window once.
+            if info.flags & abi::win_flags::REGISTERED != 0
+                && info.flags & (abi::win_flags::VISIBLE | abi::win_flags::MINIMIZED) == 0
+            {
+                window::set_geometry(info.id, 0, 0, 0, abi::geometry_flags::VISIBLE)?;
+            }
+        }
+        return Ok(());
+    }
+}
+
 fn compose_damage(kiosk: &mut Kiosk) {
+    if kiosk.session && place_session_windows().is_err() { return; }
     // Automatic composition takes display custody once some window is visible with a commit.
     if kiosk.compositor.is_none() {
         let mut infos = vec![abi::WinInfo::default(); 64];
@@ -455,13 +478,14 @@ fn main() {
     let value = std::env::var_os("BREENIX_INPUT_DEVICES");
     let selection = libbreenix::input::input_device_selection(value.as_ref().map(|v| v.to_str().expect("input devices must be UTF-8")))
         .expect("invalid input device selection");
+    let session = selection.is_some();
     let _input_reader = selection.map(|devices| {
         let reader = libbreenix::input::Reader::open(true).expect("open compositor input reader");
         reader.grab(&devices).expect("claim compositor input grab");
         reader
     });
     say(&format!("ready {epoch}"));
-    let mut kiosk = Kiosk { auto: true, serial: 1, gpu_fixtures:Vec::new(), compositor: None, last: 0 };
+    let mut kiosk = Kiosk { auto: true, session, serial: 1, gpu_fixtures:Vec::new(), compositor: None, last: 0 };
     let scene = window::call(op::EVENT_FD, &mut abi::WinId { id: 0 }).map(|fd| fd as i32);
     if let Err(e) = scene {
         say(&format!("scene-descriptor-failed {}", errno(e)));

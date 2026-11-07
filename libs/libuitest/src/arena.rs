@@ -33,10 +33,31 @@ pub struct Record {
 #[derive(Debug)]
 pub enum SlotRead { Free, Partial(&'static str), Final { record: Record, bytes: Vec<u8> } }
 extern "C" {
+    fn getpagesize() -> i32;
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
     fn munmap(addr: *mut u8, len: usize) -> i32;
 }
-pub struct Arena { ptr: *mut u8, layout: Layout }
+struct Mapping { base: *mut u8, ptr: *mut u8, len: usize }
+impl Mapping {
+    fn new(file: &File, offset: usize, len: usize) -> Result<Self, String> {
+        let page = usize::try_from(unsafe { getpagesize() }).map_err(|_| "invalid mapping page size")?;
+        if !page.is_power_of_two() { return Err("invalid mapping page size".into()); }
+        let skip = offset % page;
+        let len = (skip + len).next_multiple_of(page);
+        // File mappings populate resident pages on Breenix. Map only the range
+        // needed now; defer unused screen/frame payloads until accessed.
+        let ptr = unsafe { mmap(core::ptr::null_mut(), len, 3, 1, file.as_raw_fd(), (offset - skip) as i64) };
+        if ptr as isize == -1 { return Err(std::io::Error::last_os_error().to_string()); }
+        Ok(Self { base: ptr, ptr: unsafe { ptr.add(skip) }, len })
+    }
+}
+impl Drop for Mapping { fn drop(&mut self) { unsafe { munmap(self.base, self.len); } } }
+pub struct Arena {
+    file: File,
+    headers: Vec<Mapping>,
+    payloads: [Option<Mapping>; 3],
+    layout: Layout,
+}
 impl Arena {
     pub fn create(path: &Path, layout: Layout) -> Result<Self, String> {
         let mut file = OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(path).map_err(|e| e.to_string())?;
@@ -59,18 +80,19 @@ impl Arena {
         Self::map(file, layout)
     }
     fn map(file: File, layout: Layout) -> Result<Self, String> {
-        // POSIX PROT_READ|PROT_WRITE and MAP_SHARED, also used by BGCLK001.
-        let ptr = unsafe { mmap(core::ptr::null_mut(), layout.len(), 3, 1, file.as_raw_fd(), 0) };
-        if ptr as isize == -1 { return Err(std::io::Error::last_os_error().to_string()); }
-        Ok(Self { ptr, layout })
+        let headers = [Slot::Screen, Slot::Frame, Slot::Tree].into_iter()
+            .map(|slot| Mapping::new(&file, layout.header_offset(slot), HEADER))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(Self { file, headers, payloads: [None, None, None], layout })
     }
     pub fn layout(&self) -> Layout { self.layout }
     fn state(&self, slot: Slot) -> &AtomicU32 {
         // Slot headers start on page boundaries; state is their first word.
-        unsafe { &*self.ptr.add(self.layout.header_offset(slot)).cast::<AtomicU32>() }
+        unsafe { &*self.headers[slot.index()].ptr.cast::<AtomicU32>() }
     }
     pub fn begin(&mut self, slot: Slot) -> Result<Writer<'_>, String> {
         self.state(slot).compare_exchange(FREE, WRITING, Ordering::AcqRel, Ordering::Acquire).map_err(|_| "arena slot already used")?;
+        self.payloads[slot.index()] = Some(Mapping::new(&self.file, self.layout.data_offset(slot), self.layout.capacity(slot))?);
         Ok(Writer { arena: self, slot })
     }
     pub fn read(&self, slot: Slot) -> Result<SlotRead, String> {
@@ -79,12 +101,13 @@ impl Arena {
             FINAL => {}, _ => return Err("invalid arena state".into()),
         }
         // FINAL is terminal. No writer can touch either range after the release.
-        let h = unsafe { std::slice::from_raw_parts(self.ptr.add(self.layout.header_offset(slot) + 4), HEADER - 4) };
+        let h = unsafe { std::slice::from_raw_parts(self.headers[slot.index()].ptr.add(4), HEADER - 4) };
         let q = |at| u64::from_le_bytes(h[at..at+8].try_into().unwrap());
         let n = usize::try_from(q(0)).map_err(|_| "invalid arena length")?;
         let check_len = q(56) as usize;
         if n > self.layout.capacity(slot) || check_len > 256 { return Err("invalid arena record lengths".into()); }
-        let bytes = unsafe { std::slice::from_raw_parts(self.ptr.add(self.layout.data_offset(slot)), n) };
+        let payload = if n == 0 { None } else { Some(Mapping::new(&self.file, self.layout.data_offset(slot), n)?) };
+        let bytes = payload.as_ref().map_or(&[][..], |mapping| unsafe { std::slice::from_raw_parts(mapping.ptr, n) });
         if sha256(bytes).as_slice() != &h[64..96] { return Err("arena payload hash mismatch".into()); }
         let observation_len = q(360) as usize;
         if observation_len > 1024 { return Err("invalid arena observation length".into()); }
@@ -93,19 +116,18 @@ impl Arena {
         Ok(SlotRead::Final { record, bytes: bytes.to_vec() })
     }
 }
-impl Drop for Arena { fn drop(&mut self) { unsafe { munmap(self.ptr, self.layout.len()); } } }
 /// Dropping an unpublished writer leaves WRITING visible to the collector.
 pub struct Writer<'a> { arena: &'a mut Arena, slot: Slot }
 impl Writer<'_> {
     pub fn bytes_mut(&mut self) -> &mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut(self.arena.ptr.add(self.arena.layout.data_offset(self.slot)), self.arena.layout.capacity(self.slot)) }
+        unsafe { std::slice::from_raw_parts_mut(self.arena.payloads[self.slot.index()].as_ref().expect("writer payload").ptr, self.arena.layout.capacity(self.slot)) }
     }
     pub fn publish(mut self, mut record: Record, requested: usize) -> Result<(), String> {
         if record.observation.len() > 1024 || record.check.len() > 256 || record.check.contains(['\n', '\r', '\0']) { return Err("invalid arena check name".into()); }
         let n = requested.min(self.arena.layout.capacity(self.slot));
         record.oversize |= requested > n;
         let hash = sha256(&self.bytes_mut()[..n]);
-        let h = unsafe { std::slice::from_raw_parts_mut(self.arena.ptr.add(self.arena.layout.header_offset(self.slot) + 4), HEADER - 4) };
+        let h = unsafe { std::slice::from_raw_parts_mut(self.arena.headers[self.slot.index()].ptr.add(4), HEADER - 4) };
         for (i, value) in [n as u64, record.window, record.commit, record.epoch, record.composite,
             u64::from(record.width), u64::from(record.height), record.check.len() as u64].into_iter().enumerate() {
             h[i*8..i*8+8].copy_from_slice(&value.to_le_bytes());

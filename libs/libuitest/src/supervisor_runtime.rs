@@ -219,8 +219,8 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
         let mut evidence = Evidence::new()?;
         ownership.apply(Event::Begin, &mut Display)?;
         devices = Some(Devices::create()?);
-        channel.send(&Message::Devices(devices.as_ref().unwrap().ids()))?;
-        channel.send(&Message::Ready(process::getpid().map_err(|e| e.to_string())?.raw()))?;
+        channel.queue(&Message::Devices(devices.as_ref().unwrap().ids()))?;
+        channel.queue(&Message::Ready(process::getpid().map_err(|e| e.to_string())?.raw()))?;
         let mut ended = Vec::new();
         let mut stopped = false;
         let mut connected = true;
