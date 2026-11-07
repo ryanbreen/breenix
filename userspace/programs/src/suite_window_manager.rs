@@ -27,7 +27,6 @@ static SUITE: Suite = suite("window-manager", "Window manager", &[
     ]),
     category("input-devices", "Keyboard & pointer drivers on every target", &[
         case("keyboard-completion-path", "The bound keyboard completion reports, wakes bwm, delivers A and rearms", cases::keyboard_completion),
-        case("pointer-completion-path", "The bound pointer completion reports, wakes bwm, delivers motion and rearms", cases::pointer_completion),
         case("replay-report-fault", "Suppressing the production report loses the event after a positive delivery", cases::replay_faults),
     ]),
     category("startup", "bwm starts and shows clients", &[

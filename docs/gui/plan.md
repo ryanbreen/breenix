@@ -442,6 +442,14 @@ The spike results are written into section 4.1 before the `scanout` cases are wr
 
 ### 5.2 Real drivers: decoders, completion path and binding
 
+W27 (operator, 2026-11-06) removes `input-devices/pointer-completion-path`
+from the shared window-manager suite on supported targets. The R240 has a USB mouse;
+the operator has no plans to attach a tablet or touchscreen. Revisit the case
+if absolute-pointer hardware is added. The completion plan below no longer
+requires that case: keyboard-completion-path, replay-report-fault and pointer
+cases through host replay remain. Its ARM virtio-tablet completion coverage is
+also removed (#2763). W10a's Q1 exception is retired.
+
 Three layers of evidence, each failable in the guest:
 
 1. **Decoders** are pure functions from a recorded report (USB HID boot keyboard, Parallels and VMware tablet
@@ -468,8 +476,9 @@ targets cover every driver that reports input:
 | VMware | xHCI USB HID boot keyboard | xHCI USB HID tablet (VMware layout, merged endpoints) |
 
 The map is a literal table in `docs/gui/input.md`. In the guest, `input-devices/devices-bound` requires this
-target's row exactly, and `keyboard-completion-path` and `pointer-completion-path` replay through the row's two
-drivers. A host structure test lists every kernel function that calls `input::report` and fails when one
+target's row exactly, and `keyboard-completion-path` replays through its keyboard driver.
+The absolute-pointer completion replay case is removed under W27. A host structure test
+lists kernel functions that call `input::report` and fails when one
 belongs to a driver that no row of the map names, so a driver no target exercises is a visible gap rather than
 an unmeasured one. If a target's device configuration changes, the map and the gate configuration change in
 the same commit. *(checked)* On x86-64 the PS/2 scancode is read and handled inside `keyboard_interrupt_handler`
@@ -2956,6 +2965,13 @@ operation lost before admission cannot drop out of the expectation.
 - `idle-all-apps` — With every app open and idle, the session uses at most 5% of one CPU.
 
 ## 19. Gate sizing and runtime
+
+Under W27 (operator, 2026-11-06), the window-manager manifest contains 81 cases
+after removing `input-devices/pointer-completion-path` on supported targets. The R240's
+USB mouse is relative, and no tablet or touchscreen is planned; restore the case
+only if absolute-pointer hardware is added. Scorers and host fixtures derive the
+suite size from the manifest and require selected cases to pass, with no
+W10a Q1 exception. Stale captures containing the removed case are refused.
 
 - **Case limits.** The default is 10 s. A case whose workload is longer gets a **named allowance** in the suite
   table and the manifest: the workload plus startup plus the 1.5 s collection reserve, rounded up. The runner's

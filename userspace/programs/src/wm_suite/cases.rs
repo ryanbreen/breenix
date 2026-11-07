@@ -319,22 +319,6 @@ pub fn keyboard_completion() -> CaseResult {
     })?;
     Ok(())
 }
-pub fn pointer_completion() -> CaseResult {
-    let mut stream = Stream::open()?;
-    let (_d, mut c) = one()?;
-    {
-        let w = c.info()?;
-        replay(2, w.x + 40, w.y + 50)?;
-    };
-    check(
-        stream.read(4)?.iter().any(|e| e.kind == 3),
-        "bound pointer completion did not report absolute axes",
-    )?;
-    c.await_event("bound pointer completion wakes bwm", |e| {
-        e.kind == kind::POINTER_MOVE
-    })?;
-    Ok(())
-}
 pub fn replay_faults() -> CaseResult {
     let mut stream = Stream::open()?;
     let (_d, mut c) = one()?;

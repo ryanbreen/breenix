@@ -1,4 +1,5 @@
 """Final text-panel reasons belong to the runner's pre-case storage boundary."""
+import json
 from pathlib import Path
 import subprocess
 import sys
@@ -17,6 +18,8 @@ class PanelStorage(unittest.TestCase):
                             ('panel_reason_storage', 'retain_panel_reason') if 'fn ' + name + '(' in source)
         setup = next((line.strip() for line in source.splitlines() if 'let mut panel_reasons =' in line), '')
         retention = next((line.strip() for line in source.splitlines() if 'retain_panel_reason(&mut states' in line), '')
+        manifest = json.loads((ROOT / 'docs/suites/window-manager.json').read_text())
+        count = sum(len(category['cases']) for category in manifest['categories'])
         fixture = r'''
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicIsize, Ordering};
@@ -31,11 +34,11 @@ const MSG_MAX:usize=160;
 KINDS
 HELPERS
 #[test]fn retained_panel() {
- let mut states:Vec<Vec<State>>=vec![(0..82).map(|_|State::Pending).collect()];
+ let mut states:Vec<Vec<State>>=vec![(0..CASE_COUNT).map(|_|State::Pending).collect()];
  let textual=true;
  SETUP
  let before=PAGES.load(Ordering::Relaxed);
- for k in 0..82 {
+ for k in 0..CASE_COUNT {
   states[0][k]=State::Running;
   states[0][k]=State::Done(if k%10==0 {Outcome::Pass{ms:3}} else if k%10==1 {Outcome::Skip{msg:"pending target".into()}} else {Outcome::Fail{ms:7,msg:"exact failure reason including UTF-8: café".into()}});
   let c=0;
@@ -51,7 +54,7 @@ HELPERS
  }}
  let _=(MSG_MAX,textual);
 }
-'''.replace('KINDS', kinds.replace('pub(super)', 'pub')).replace('HELPERS', helpers).replace('SETUP', setup).replace('RETENTION', retention)
+'''.replace('CASE_COUNT', str(count)).replace('KINDS', kinds.replace('pub(super)', 'pub')).replace('HELPERS', helpers).replace('SETUP', setup).replace('RETENTION', retention)
         # Before the repair the production retention call is absent.
         if not retention:
             fixture = fixture.replace('  let c=0;','')

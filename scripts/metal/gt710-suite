@@ -4036,7 +4036,8 @@ def wm_step_capture(directory, sha, step_number):
     manifest = json.loads((root / 'docs/suites/window-manager.json').read_text())
     names = [c['id'] + '/' + t['id'] for c in manifest['categories'] for t in c['cases']]
     required = step['cases']
-    if (len(names) != 82 or step.get('suite') != 'window-manager'
+    case_count = len(names)
+    if (not case_count or step.get('suite') != 'window-manager'
             or not required or step.get('total') != len(required)
             or required != [name for name in names if name in required]):
         raise ValueError('invalid WM selection or manifest order')
@@ -4082,33 +4083,27 @@ def wm_step_capture(directory, sha, step_number):
         else:
             raise ValueError('malformed WM record: ' + line[:180])
     records = [(k, m, line) for k, m, line in parsed if k in ('START', 'PASS', 'FAIL', 'DONE', 'ELAPSED')]
-    if (len(records) != 85 or records[0][0] != 'START' or records[0][1][1] != '82'
-            or any(k not in ('PASS', 'FAIL') for k, _, _ in records[1:83])
-            or [m[1] for _, m, _ in records[1:83]] != names
-            or records[83][0] != 'DONE' or records[84][0] != 'ELAPSED'):
-        raise ValueError('WM requires manifest-ordered START/82 CASE/DONE/ELAPSED')
-    cases = records[1:83]
-    tally = (sum(k == 'PASS' for k, _, _ in cases), sum(k == 'FAIL' for k, _, _ in cases), 0, 82)
-    if tuple(map(int, records[83][1].groups())) != tally:
+    if (len(records) != case_count + 3 or records[0][0] != 'START' or int(records[0][1][1]) != case_count
+            or any(k not in ('PASS', 'FAIL') for k, _, _ in records[1:case_count + 1])
+            or [m[1] for _, m, _ in records[1:case_count + 1]] != names
+            or records[case_count + 1][0] != 'DONE' or records[case_count + 2][0] != 'ELAPSED'):
+        raise ValueError(f'WM requires manifest-ordered START/{case_count} CASE/DONE/ELAPSED')
+    cases = records[1:case_count + 1]
+    tally = (sum(k == 'PASS' for k, _, _ in cases), sum(k == 'FAIL' for k, _, _ in cases), 0, case_count)
+    if tuple(map(int, records[case_count + 1][1].groups())) != tally:
         raise ValueError('WM DONE disagrees with cases or contains skips')
     failed = [m[1] for k, m, _ in cases if m[1] in required and k != 'PASS']
-    # E21 W10a (2026-11-05): Q1 stays selected and FAIL until it has a device.
-    # This exception affects step acceptance, never the raw suite result.
-    q1 = 'input-devices/pointer-completion-path'
-    expected = [name for name in failed if name == q1]
-    blocking = [name for name in failed if name != q1]
-    exception = f'expected failure under W10a (#2743): {q1}; ' if expected else ''
-    if blocking:
+    if failed:
         raise ValueError(f'selected WM cases failed: {len(required) - len(failed)}/{len(required)} '
-                         f'passed in {selection}; failed: {", ".join(blocking)}; {exception}'
-                         f'full suite: {tally[0]}/82 passed, {tally[1]} failed')
-    if not 0 < int(records[84][1][1]) <= 1800000:
+                         f'passed in {selection}; failed: {", ".join(failed)}; '
+                         f'full suite: {tally[0]}/{case_count} passed, {tally[1]} failed')
+    if not 0 < int(records[case_count + 2][1][1]) <= 1800000:
         raise ValueError('WM elapsed time exceeds 1800 seconds')
     memory = runpy.run_path(str(root / 'scripts/suite-verdict.py'))['memory_problem'](parsed)
     if not memory[0]:
         raise ValueError(memory[1])
     start_at = text.index(records[0][2])
-    done_at = text.index(records[83][2])
+    done_at = text.index(records[case_count + 1][2])
     for kind, match, line in parsed:
         if kind == 'LIVE' and (match[1] not in names or not start_at < text.index(line) < done_at):
             raise ValueError('WM live record outside its manifest run')
@@ -4175,9 +4170,7 @@ def wm_step_capture(directory, sha, step_number):
     report = dict(boot=boot['id'], commit=sha, milestone='metal-gt710/wm-step',
                   selection=selection, cases=[dict(id='wm-step/suite', result='PASS',
                     reason=f'{len(required) - len(failed)}/{len(required)} selected WM cases passed; '
-                           f'{exception}82 cases, memory and uploads verified')])
-    if expected:
-        report['expectedFailures'] = [dict(id=q1, result='FAIL', ruling='W10a', issue=2743)]
+                           f'{case_count} cases, memory and uploads verified')])
     return report
 
 

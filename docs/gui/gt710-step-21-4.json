@@ -5,7 +5,7 @@
   "title": "bwm policy from #2476: desk by stable id, focus pairs, FOCUSED, capture, hit-test routing, gestures by id",
   "basis": "origin/main 87775882 (fetched 2026-11-04), docs/suites/window-manager.json manifest order; cumulative",
   "added": 19,
-  "total": 58,
+  "total": 57,
   "reasons": {
     "stacking": {
       "added": 5,
@@ -35,7 +35,6 @@
     "input-core/ledger-complete",
     "input-core/capabilities",
     "input-devices/keyboard-completion-path",
-    "input-devices/pointer-completion-path",
     "input-devices/replay-report-fault",
     "startup/desktop-control",
     "startup/claims-display",
