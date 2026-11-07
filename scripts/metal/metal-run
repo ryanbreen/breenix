@@ -604,7 +604,7 @@ def argument_parser(automatic=False):
     p.add_argument('--input', choices=('sol',))
     p.add_argument('--wait', type=float, default=None, metavar='MIN', help='queue wait (default 240 minutes)')
     p.add_argument('--session', action='store_true', help='hold console input for the operator without scoring')
-    p.add_argument('--screen-known', type=Path, help='suppress checkpoint uploads named by this candidates manifest')
+    p.add_argument('--screen-known', help='suppress checkpoint uploads named by this candidates manifest')
     p.add_argument('--screen-proof', action='store_true', help='enable screen proof checkpoints')
     p.add_argument('--idle-minutes', type=int, default=30, help='console session input idle limit; default 30')
     p.add_argument('--disk', choices=('install', 'root'),
