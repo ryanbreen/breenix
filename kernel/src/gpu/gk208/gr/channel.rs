@@ -294,6 +294,42 @@ pub trait Poll {
     fn now_us(&mut self) -> u64;
     fn relax(&mut self);
 }
+#[derive(Clone, Copy)]
+#[cfg(target_os = "none")]
+struct StreamSample {
+    channel: u32,
+    get: u32,
+    reference: u32,
+    userd_get: u32,
+    bind: u32,
+}
+#[cfg(target_os = "none")]
+fn stream_get_progress(get: u32, sequence: u32, queued_put: Option<u32>) -> bool {
+    if let Some(put) = queued_put {
+        crate::gk208::queue::Queue::consumed(put, get).is_some_and(|n| n >= sequence)
+    } else {
+        get == sequence
+    }
+}
+#[cfg(target_os = "none")]
+fn stream_consumed(sample: StreamSample, id: Identity, sequence: u32, queued_put: Option<u32>) -> bool {
+    let current = sample.channel & 0x2fff == 0x2000 | id.id;
+    let get = if current { sample.get } else { sample.userd_get };
+    let progress = stream_get_progress(get, sequence, queued_put)
+        && if queued_put.is_some() { sample.reference >= sequence } else { sample.reference == sequence };
+    progress && sample.bind == 0x80000000 | (id.instance >> 12) as u32
+}
+#[cfg(target_os = "none")]
+fn await_consumed(io: &mut impl Poll) -> Result<(), &'static str> {
+    let start = io.now_us();
+    while !io.snapshot()?.2 {
+        if io.now_us().saturating_sub(start) >= BOUND_US {
+            return Err("GR control stream not consumed; backing retained");
+        }
+        io.relax();
+    }
+    Ok(())
+}
 pub fn wait(
     io: &mut impl Poll,
     epoch: u64,
@@ -887,20 +923,23 @@ mod native {
                 retry_traps: true,
                 release_slot: 0,
                 queued_put: None,
+                resident_polls: 0, nonresident_polls: 0,
             };
             if budget < BOUND_US {
                 // A cold context restore gets the normal engine bound before
                 // the negative-control observation window starts.
                 let start = monitor.now_us();
-                while !monitor.snapshot()?.2 {
-                    if monitor.now_us().saturating_sub(start) >= BOUND_US {
-                        return Err("GR control stream not consumed; backing retained");
+                if let Err(error) = await_consumed(&mut monitor) {
+                    if error == "GR control stream not consumed; backing retained" {
+                        let elapsed_us = monitor.now_us().saturating_sub(start);
+                        monitor.stream_failure(elapsed_us);
                     }
-                    monitor.relax();
+                    return Err(error);
                 }
             }
             let sample = wait(&mut monitor, self.report.identity.epoch, nonce, budget)?;
             if !sample.consumed {
+                monitor.stream_failure(sample.elapsed_us);
                 return Err("GR stream not consumed; backing retained");
             }
             Ok(sample)
@@ -1592,7 +1631,7 @@ mod native {
             let mut monitor = Monitor { session: &self.session,
                 regs: &mut Registers(self.registers), total: self.total,
                 sequence: self.put.max(1), stop_on_trap: true, retry_traps, release_slot: 0,
-                queued_put: Some(self.put) };
+                queued_put: Some(self.put), resident_polls: 0, nonresident_polls: 0 };
             monitor.check_health()
         }
         pub(crate) fn error_trap(&self) -> Result<Option<super::super::error::Trap>, &'static str> {
@@ -1861,7 +1900,7 @@ mod native {
             let mut regs = Registers(self.registers);
             let mut monitor = Monitor { session: &self.session, regs: &mut regs, total: self.total,
                 sequence, stop_on_trap: true, retry_traps, release_slot: crate::gk208::queue::Queue::slot(sequence) as usize,
-                queued_put: Some(self.put) };
+                queued_put: Some(self.put), resident_polls: 0, nonresident_polls: 0 };
             let (value, epoch, consumed) = monitor.snapshot()?;
             let bound = regs.read(0x800000 + self.session.report.identity.id as usize * 8);
             if value == sequence && epoch == self.session.report.identity.epoch && consumed
@@ -2186,8 +2225,38 @@ mod native {
         retry_traps: bool,
         release_slot: usize,
         queued_put: Option<u32>,
+        resident_polls: u64,
+        nonresident_polls: u64,
     }
     impl Monitor<'_> {
+        // Capture before teardown, and only on the two stream refusal paths.
+        fn stream_failure(&mut self, elapsed_us: u64) {
+            let s = self.session;
+            let b = s.pbdma * 0x2000;
+            let c = s.report.identity;
+            let pbdma_40120 = self.regs.read(0x40120 + b);
+            let pbdma_40014 = self.regs.read(0x40014 + b);
+            let pbdma_40028 = self.regs.read(0x40028 + b);
+            let pbdma_3080 = self.regs.read(0x3080 + s.pbdma * 4);
+            // These addresses were validated when the retained channel was built.
+            // A failed read is represented by u32::MAX, without hiding refusal.
+            let userd_48 = read(self.regs, self.total, s.userd + 0x48).unwrap_or(u32::MAX);
+            let userd_88 = read(self.regs, self.total, s.userd + 0x88).unwrap_or(u32::MAX);
+            let userd_8c = read(self.regs, self.total, s.userd + 0x8c).unwrap_or(u32::MAX);
+            let ramfc_48 = read(self.regs, self.total, c.instance + 0x48).unwrap_or(u32::MAX);
+            let ch0_800000 = self.regs.read(0x800000);
+            let ch0_800004 = self.regs.read(0x800004);
+            let ch1_800000 = self.regs.read(0x800008);
+            let ch1_800004 = self.regs.read(0x80000c);
+            let runlist_2284 = self.regs.read(0x2284 + c.runlist as usize * 8);
+            let engine_2640 = self.regs.read(0x2640);
+            let engine_2644 = self.regs.read(0x2644);
+            crate::serial_println!("GT710_GR_STREAM_STATE pbdma_40120={:#x} pbdma_40014={:#x} pbdma_40028={:#x} pbdma_3080={:#x} userd_48={:#x} userd_88={:#x} userd_8c={:#x} ramfc_48={:#x} ch0_800000={:#x} ch0_800004={:#x} ch1_800000={:#x} ch1_800004={:#x} runlist_2284={:#x} engine_2640={:#x} engine_2644={:#x} elapsed_us={} resident_polls={} nonresident_polls={}",
+                pbdma_40120, pbdma_40014, pbdma_40028, pbdma_3080,
+                userd_48, userd_88, userd_8c, ramfc_48, ch0_800000,
+                ch0_800004, ch1_800000, ch1_800004, runlist_2284,
+                engine_2640, engine_2644, elapsed_us, self.resident_polls, self.nonresident_polls);
+        }
         fn check_health(&mut self) -> Result<(), &'static str> {
             if self.stop_on_trap {
                 let words = if self.retry_traps {
@@ -2221,22 +2290,31 @@ mod native {
                 )
             };
             let b = s.pbdma * 0x2000;
-            let current = self.regs.read(0x40120 + b) & 0x2fff == 0x2000 | self.session.report.identity.id;
-            let get = if current {
-                self.regs.read(0x40014 + b)
+            let channel = self.regs.read(0x40120 + b);
+            let current = channel & 0x2fff == 0x2000 | s.report.identity.id;
+            if current { self.resident_polls += 1; } else { self.nonresident_polls += 1; }
+            let (get, userd_get) = if current {
+                (self.regs.read(0x40014 + b), 0)
             } else {
-                read(self.regs, self.total, s.userd + 0x88)?
+                (0, read(self.regs, self.total, s.userd + 0x88)?)
             };
-            let progress = if let Some(put) = self.queued_put {
-                crate::gk208::queue::Queue::consumed(put, get).is_some_and(|n| n >= self.sequence)
-                    && self.regs.read(0x40028 + b) >= self.sequence
-            } else {
-                get == self.sequence && self.regs.read(0x40028 + b) == self.sequence
-            };
-            let consumed = current
-                && progress
-                && self.regs.read(0x800000 + s.report.identity.id as usize * 8)
-                    == 0x80000000 | (s.report.identity.instance >> 12) as u32;
+            let selected_get = if current { get } else { userd_get };
+            let reference = if stream_get_progress(selected_get, self.sequence, self.queued_put) {
+                if current {
+                    self.regs.read(0x40028 + b)
+                } else {
+                    // MIT open-gpu-doc cla06f.h: NvA06FControl.Reference is
+                    // channel-local USERD +0x48, beside GPGet at +0x88.
+                    read(self.regs, self.total, s.userd + 0x48)?
+                }
+            } else { 0 };
+            let mut sample = StreamSample { channel, get, userd_get, reference, bind: 0 };
+            // Preserve the original short-circuit order of register reads.
+            sample.bind = 0x80000000 | (s.report.identity.instance >> 12) as u32;
+            if stream_consumed(sample, s.report.identity, self.sequence, self.queued_put) {
+                sample.bind = self.regs.read(0x800000 + s.report.identity.id as usize * 8);
+            }
+            let consumed = stream_consumed(sample, s.report.identity, self.sequence, self.queued_put);
             Ok((value, u64::from(lo) | (u64::from(hi) << 32), consumed))
         }
         fn now_us(&mut self) -> u64 {

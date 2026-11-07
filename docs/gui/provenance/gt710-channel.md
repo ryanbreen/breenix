@@ -61,3 +61,17 @@ the exact source bytes inspected for this step.
 | `cla06f.h` | `6c5db0562c117a76f145acbe35a6bacafe612493424078439d1a83c627fbc0b8` |
 | `gf100_pfifo.xml` | `7fa832b0ab438b301370a69deadf48a8f8c350ae697011a20e82b20b10cbf065` |
 | `copyright.xml` | `689484f97d5c003a6c3bb84ee09ab4b4f79266250b9b44dc3edaf859930db7a6` |
+
+### Startup stream refusal snapshot
+
+The cold control-stream wait and the subsequent completion wait emit one
+`GT710_GR_STREAM_STATE` line only when stream consumption is refused, before
+channel teardown. It records the PBDMA channel, GET and reference registers,
+PBDMA status, channel 0 USERD reference, GP_GET and GP_PUT, the RAMFC GPFIFO
+base word at +0x48, both channel bind/control pairs, runlist and engine status,
+the wait duration in microseconds and resident/nonresident poll counts. The
+PBDMA and runlist addresses use the selected PBDMA and runlist indices. USERD
+and RAMFC reads that fail are represented by `0xffffffff`; the original refusal
+is preserved. Counts reflect the existing channel-residency read, and successful
+polling adds no MMIO reads or output. The RAMFC word is the initialized GPFIFO
+base, not an inferred saved-reference location.
