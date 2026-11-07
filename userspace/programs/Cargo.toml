@@ -880,5 +880,5 @@ test = false
 bench = false
 
 [[bin]]
-name = "suite-runner-fixture_test"
+name = "ui-runner-fixture_test"
 path = "src/suite_runner_fixture.rs"

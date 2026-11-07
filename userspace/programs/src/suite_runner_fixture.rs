@@ -4,7 +4,7 @@ mod stage_painter;
 use breenix_suite::suite::{self, case, category, check, spawn, CaseResult, Run};
 use libbreenix::{io, process, signal, time, types::Fd};
 
-const PATH: &[u8] = b"/usr/local/test/bin/suite-runner-fixture_test\0";
+const PATH: &[u8] = b"/usr/libexec/breenix/ui-runner-fixture_test\0";
 
 fn frame(check: &str, case: &str, mismatch: bool, wide: bool) -> String {
     let source = if wide { format!("window:{}", "a".repeat(3700)) } else { "surface".into() };

@@ -3,7 +3,7 @@ use breenix_suite::suite::{check, fail, spawn, CaseResult, Run};
 use libbreenix::{io, process, signal, time, types::{Fd, Pid}};
 use std::{fs::File, io::Read, os::fd::{AsRawFd, FromRawFd}};
 
-const FIXTURE: &[u8] = b"/usr/local/test/bin/suite-runner-fixture_test\0";
+const FIXTURE: &[u8] = b"/usr/libexec/breenix/ui-runner-fixture_test\0";
 
 struct Child(Option<Pid>);
 impl Drop for Child {
