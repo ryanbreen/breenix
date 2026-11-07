@@ -473,7 +473,7 @@ def verify_picture(image, expect, checkpoint='intent', *, case=None, suite=None,
         return result
     dimensions = dimension_claims(expect)
     # Largest surface is the picture, while smaller stated sizes can be objects.
-    end_size = re.search(r'end screen.*?across (\d+)x(\d+)', expect)
+    end_size = re.search(r'end screen.*?(?:across|fills) (\d+)x(\d+)', expect)
     judged_size = re.search(r'judged crop is (\d+)x(\d+)', expect)
     if checkpoint == 'end' and end_size:
         source = tuple(map(int, end_size.groups()))
@@ -531,7 +531,31 @@ def verify_picture(image, expect, checkpoint='intent', *, case=None, suite=None,
 
     counts = Counter(dict((colour, count) for count, colour in picture.getcolors(picture.width * picture.height)))
     total = picture.width * picture.height
-    colours = list(dict.fromkeys(m[0].upper() for m in HEX.finditer(expect)))
+    # Source blend endpoints describe the formula inputs, not colors that must
+    # appear in its output. Validate the stated B,G,R blend output pixels instead.
+    presence_text = expect
+    blend = re.search(r'B,G,R coverage is x, 255-x and \(([0-9]+)\*x modulo 256\), '
+                      r'blended between [^;]+', expect)
+    if blend:
+        endpoints = list(HEX.finditer(blend[0]))
+        patch = re.search(r'(\d+)x(\d+) (?:picture|strip)', expect)
+        if len(endpoints) == 2 and patch:
+            width, height = map(int, patch.groups())
+            back, front = (rgb(v[0]) for v in endpoints)
+            extent = width == 256 and 0 < height <= image.height
+            expected = Image.new('RGB', (256, height)) if extent else None
+            if expected is not None:
+                for x in range(256):
+                    alpha = ((int(blend[1])*x)%256, 255-x, x)
+                    pixel = tuple((front[c]*alpha[c]+back[c]*(255-alpha[c])+127)//255
+                                  for c in range(3))
+                    for y in range(height): expected.putpixel((x,y), pixel)
+            area = picture.crop((0,0,width,height)) if extent and picture.width >= width else None
+            mismatch = ImageChops.difference(area, expected).getbbox() if area is not None else 'extent'
+            check('blend', blend[0], dict(size=[width,height], rounding='nearest /255'),
+                  dict(mismatch_box=mismatch), mismatch is None)
+            presence_text = expect[:blend.start()]+expect[blend.end():]
+    colours = list(dict.fromkeys(m[0].upper() for m in HEX.finditer(presence_text)))
     for colour in colours:
         count = counts[rgb(colour)]
         check('colour', f'{colour} present', dict(minimum_pixels=1),
