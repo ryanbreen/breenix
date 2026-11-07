@@ -2220,13 +2220,9 @@ Display-CRC/display-crc.txt (MIT, Copyright (c) 2019 NVIDIA CORPORATION).
 Consumers: kernel/src/gpu/gk208/display_crc.rs and
 tests/fixtures/gt710_display_crc.rs. The capture sequence stops the context,
 waits for DONE, then interprets its notifier. The producer polls primary writes
-for its bounded collection interval, then re-reads and validates both CRC words
-from the completed notifier. Its original permission and warranty notice is
-retained in display_crc.rs. The nonzero pair/quorum and stability checks remain.
-
-The E22 failure-only RG probes also use primary/secondary selectors and
-WIDE_PIPE_CRC from NVIDIA open-gpu-doc classes/display/cl927d.h at the same
-revision (MIT, Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES).
-The original copyright and MIT permission notice are retained in
-kernel/src/gpu/gk208/display_crc.rs. The narrow/wide probe variants retain
-diagnostic measurements and do not produce approval records.
+for its bounded collection interval, then re-reads and validates SOR from the
+completed notifier. Its original permission and warranty notice is retained in
+display_crc.rs. Coordinator U13 records RG as absent-with-reason on backend 6.
+The NV907D CRC_DURING_SNOOZE field at lines 314-319 controls reporting during
+snooze frames; the pinned static-frame capture enables that bit. The former
+failure-only primary-RG, reversed-pair and narrow/wide probes are removed.

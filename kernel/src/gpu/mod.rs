@@ -6217,9 +6217,9 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
                 let sample = captured.samples[1];
                 let c = &captured.output_config;
                 *DISPLAY_CRC_SUMMARY.lock() = Some(alloc::format!(
-                    "backend=6 head={} out=sor{} raster={}x{} resource={} present_fence={} crc={:08x} crc2={:08x} entries={} status={}\n",
+                    "backend=6 head={} out=sor{} raster={}x{} resource={} present_fence={} crc={:08x} crc2={} entries={} status={}\n",
                     c.rg,c.sor,c.raster[0],c.raster[1],device_resource,present.fence,
-                    sample.crc,sample.crc2,captured.samples.len(),captured.status));
+                    sample.crc,if captured.secondary_absent { "none".into() } else { alloc::format!("{:08x}",sample.crc2) },captured.samples.len(),captured.status));
             }
             #[cfg(not(target_arch = "x86_64"))]
             { let _ = request; return Err(ENODEV); }

@@ -2407,7 +2407,7 @@ def breengel_fronts_suite(serial, boot, step_number=1):
         'WAIT': r'SUITE breengel WAIT .*',
     }
     screen = runpy.run_path(str(root / 'scripts/screen-verdict.py'))
-    screen['score'](manifest, serial, json.loads((root / 'docs/suites/frames/screens.json').read_text()), run=boot)
+    screen['score'](manifest, serial, json.loads((root / 'docs/suites/frames/screens.json').read_text()), run=boot, backend=6)
     shapes['SCREEN'] = screen['RECORD'].pattern
     shapes['SCREENPERTURB'] = screen['PERTURB_RECORD'].pattern
     parsed = []
@@ -2483,7 +2483,7 @@ def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
         'WAIT': r'SUITE gpu WAIT ([a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*) until=(\d+) for=(\d+) result=[a-z0-9]+(?:-[a-z0-9]+)*',
     }
     screen = runpy.run_path(str(root / 'scripts/screen-verdict.py'))
-    screen['score'](manifest, serial, json.loads((root / 'docs/suites/frames/screens.json').read_text()), run=boot)
+    screen['score'](manifest, serial, json.loads((root / 'docs/suites/frames/screens.json').read_text()), run=boot, backend=6)
     shapes['SCREEN'] = screen['RECORD'].pattern
     shapes['SCREENPERTURB'] = screen['PERTURB_RECORD'].pattern
     parsed = []

@@ -159,30 +159,47 @@ the output configuration. A directory passed to `--native` must contain:
       "disarmed": true,
       "display_error": 0,
       "status": 1,
+      "secondary_absent": "gk208-rg-no-words-u13",
       "samples": [
-        {"status": 1, "crc": "12345678", "crc2": "abcdef12"},
-        {"status": 1, "crc": "12345678", "crc2": "abcdef12"},
-        {"status": 1, "crc": "12345678", "crc2": "abcdef12"},
-        {"status": 1, "crc": "12345678", "crc2": "abcdef12"},
-        {"status": 1, "crc": "12345678", "crc2": "abcdef12"}
+        {"status": 1, "crc": "12345678", "crc2": null},
+        {"status": 1, "crc": "12345678", "crc2": null},
+        {"status": 1, "crc": "12345678", "crc2": null},
+        {"status": 1, "crc": "12345678", "crc2": null},
+        {"status": 1, "crc": "12345678", "crc2": null}
       ]
     }
   ]
 }
 ```
 
+<!-- claim-lint:ok: U13 sidecar contract, exercised by tests/screen_sor_crc_test.py. -->
 `methods` contains the latched viewport, scaler and output configuration's
 method/value pairs as unsigned 32-bit integers, ordered by unique, aligned
 method address. The illustrated values are placeholders, not a hardware
 configuration. The producer must supply the values actually used by the head.
 `viewport` is `[x, y, width, height]` in the raster. Sources are primary SOR and
-secondary RG. The configuration digest is SHA-256 of `output_config` with the
+secondary RG selectors as programmed; the RG result is explicitly absent under
+coordinator ruling U13 (E22 rulings, 2026-11-07). Captures
+20261107T082545Z, 20261107T084839Z, 20261107T090458Z and 20261107T092218Z
+recorded SOR words and no RG words. `secondary_absent` must equal
+`gk208-rg-no-words-u13`, backend must be 6 and each sample must have `crc2: null`;
+serial must say `crc2=none`. An absent secondary on backend 4 or 5 is refused.
+Numeric zero, garbage, a missing reason and a mismatched secondary are refused.
+Legacy dual-source records omit `secondary_absent` and require nonzero CRCs
+in both fields. `SCRCRC01` v2 carries reason tag 1 at byte 116, followed by the
+names at byte 120; each raw secondary word must be 0 as a reserved absence
+word. A v1 numeric zero never becomes an absence.
+The configuration digest is SHA-256 of `output_config` with the
 same canonical JSON encoding described above; this is also the digest to pass
-to `screen-verdict.py --native --config` for that configuration.
+to `screen-verdict.py --native --config` for that configuration. The metal tools
+pass `backend=6` for picture-only scoring; the CLI equivalent is `--backend 6`.
+That admits the U13 record grammar and still checks approved pictures;
+`--native --config` additionally matches the approved output CRC row.
+An explicit run backend must agree with the caller.
 
 <!-- claim-lint:ok: Input requirements from docs/gui/screen-proof.md and the pinned MIT crc.c and crc907d.c; not a hardware measurement. -->
 `samples` contains consecutive written notifier entries: the first is discarded,
-then at least K=4 (at most 254) must agree with the serial CRC pair. Sample `status: 1` is the producer's normalized written marker, not the
+then at least K=4 (at most 254) must agree with the serial SOR CRC. Sample `status: 1` is the producer's normalized written marker, not the
 undocumented hardware entry-status word. A primary CRC of `00000000` is unwritten,
 following the pinned MIT `crc.c` reader. Context `status` must have bit 0 set and no bits in mask 0x3e.
 These status meanings follow the pinned MIT
@@ -195,7 +212,7 @@ no copied driver code.
 The binding must remain pinned with nonzero resource and present fence, capture
 must finish within 250000 microseconds, disarm must complete and display error
 must be zero. The named SCREEN must match an approved table digest and mode in
-this run, and its CRC pair, output and raster must match the capture evidence.
+this run, and its SOR CRC, explicit secondary state, output and raster must match the capture evidence.
 A missing or inconsistent parent refuses the import. Native rows record the
 run and commit; they cannot add a picture expectation. This sidecar contract is
 an input for U14/U18; U12 does not claim hardware acceptance or produce captures.

@@ -209,7 +209,10 @@ pub fn capture(
 ) -> Result<Record, &'static str> {
     let mut arm = modeset::crc_methods(head, sor, handle, true)?;
     // The observation pins a static frame. Request CRCs during snooze too;
-    // NVIDIA Display-CRC defines bit 5 as the snooze-frame reporting control.
+    // NVIDIA MIT open-gpu-doc 9fdf5c4062007929d9f4e6cbad9c9771fe61b880,
+    // Display-CRC/display-crc.txt:314-319: "This field control the reporting
+    // of CRC's during snooze frames." NV907D CRC_DURING_SNOOZE_ENABLE is 1
+    // at bit 5; enable reporting while the pinned frame is static.
     arm[1].1 |= 0x20;
     let disarm = modeset::crc_methods(head, sor, handle, false)?;
     let start = io.now_us();
@@ -290,9 +293,10 @@ pub fn capture(
         }
         io.delay_us(100);
     };
-    // DONE publishes the complete notifier, including secondary writes and
-    // entries produced during disarm. Re-read its entire written extent;
-    // provisional primary observations cannot establish a final CRC pair.
+    // claim-lint:ok: U13 contract; tests/fixtures/gt710_display_crc.rs checks completed SOR collection.
+    // DONE publishes the complete notifier, including entries produced during
+    // disarm. Re-read its entire written extent before judging SOR stability.
+    // U13 records RG as absent, with a reason; it is never a numeric zero CRC.
     samples.clear();
     while samples.len() < MAX_SAMPLES {
         if io.now_us() >= deadline {
@@ -304,7 +308,7 @@ pub fn capture(
         if sample.crc == 0 {
             break;
         }
-        if sample.status != 1 || sample.crc2 == 0
+        if sample.status != 1 || sample.crc2 != 0
             || (samples.len() >= 2 && sample != samples[1]) {
             return Err("CRC completed notifier tail is unstable or partial");
         }
@@ -334,6 +338,7 @@ pub fn capture(
         disarmed: true,
         display_error,
         status,
+        secondary_absent: true,
         samples,
     })
 }
@@ -367,62 +372,6 @@ pub fn failure_snapshot(io: &mut impl Io, error: &str, head: u32, sor: u32) -> a
         }
     }
     text
-}
-
-/// Failure-only diagnostic: ask the documented primary selector for RG data.
-/// This returns text, not an eligible checkpoint or a substitute CRC pair.
-pub fn probe_primary_rg(io: &mut impl Io, expected: Binding, head: u32, sor: u32,
-    handle: u32, secondary_sor: bool, wide: bool) -> alloc::string::String {
-    use core::fmt::Write;
-    let result = (|| -> Result<alloc::string::String, &'static str> {
-        let mut arm = modeset::crc_methods(head, sor, handle, true)?;
-        // NVIDIA Display-CRC: primary RG(i)=0xff8+i; secondary can name SOR.
-        let secondary = if secondary_sor { 0xf0f + sor * 16 } else { 0xfff };
-        arm[1].1 = (secondary << 20) | ((0xff8 + head) << 8) | 0x20 | (u32::from(wide) << 6);
-        let disarm = modeset::crc_methods(head, sor, handle, false)?;
-        let deadline = io.now_us().saturating_add(150_000);
-        let mut armed = false;
-        let acquired = (|| -> Result<(), &'static str> {
-            if io.binding()? != expected { return Err("RG probe binding changed"); }
-            io.clear()?;
-            armed = true;
-            io.update(&arm, deadline)?;
-            let mut count = 0;
-            while count < 5 {
-                if io.now_us() >= deadline.saturating_sub(CLEANUP_US) {
-                    return Err("RG probe primary deadline");
-                }
-                if io.binding()? != expected || io.display_error() != 0 {
-                    return Err("RG probe binding or display error");
-                }
-                if io.context_status()? & 0x3e != 0 { return Err("RG probe overflow"); }
-                if io.sample(count)?.is_some_and(|s| s.crc != 0) { count += 1; }
-                else { io.delay_us(100); }
-            }
-            Ok(())
-        })();
-        let cleanup = io.update(&disarm, deadline.max(io.now_us().saturating_add(CLEANUP_US)));
-        if (armed && acquired.is_err()) || cleanup.is_err() { io.recover_present()?; }
-        cleanup?;
-        acquired?;
-        let status = loop {
-            let status = io.context_status()?;
-            if status & 0x3e != 0 { return Err("RG probe completed overflow"); }
-            if status & 1 != 0 { break status; }
-            if io.now_us() >= deadline { return Err("RG probe completion deadline"); }
-            io.delay_us(100);
-        };
-        if io.binding()? != expected { return Err("RG probe final binding changed"); }
-        let mut text = alloc::format!("rg_secondary_sor={} rg_wide={} rg_status={status:08x}", u8::from(secondary_sor), u8::from(wide));
-        for i in 0..5 {
-            let sample = io.sample(i)?.ok_or("RG probe completed entry absent")?;
-            if i == 0 { let _ = write!(text, " rg_primary={:08x}", sample.crc); }
-            let _ = write!(text, " rg_sample{i}={:08x}:{:08x}", sample.crc, sample.crc2);
-        }
-        Ok(text)
-    })();
-    result.unwrap_or_else(|error| alloc::format!("rg_secondary_sor={} rg_wide={} rg_probe_error={}",
-        u8::from(secondary_sor), u8::from(wide), error.replace(' ', "_")))
 }
 
 /// Driver boundary for a suite checkpoint whose binding is pinned by the shared

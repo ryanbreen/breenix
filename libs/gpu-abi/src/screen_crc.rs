@@ -2,6 +2,8 @@
 use alloc::{string::String, vec::Vec};
 pub const MAX_SAMPLES: usize = 255;
 pub const MAX_RECORD: usize = 4096;
+/// SCRCRC01 v2 reason tag 1, reserved to backend 6 by coordinator ruling U13.
+pub const SECONDARY_ABSENT_REASON: &str = "gk208-rg-no-words-u13";
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Binding {
     pub resource: u64,
@@ -34,12 +36,15 @@ pub struct Record {
     pub disarmed: bool,
     pub display_error: u32,
     pub status: u32,
+    pub secondary_absent: bool,
     pub samples: Vec<Sample>,
 }
 
 impl Record {
-    /// SCRCRC01 v1: explicit little endian fields, no Rust struct layout.
-    /// Header (116 bytes), UTF-8 suite/case/checkpoint, method pairs, then samples.
+    // claim-lint:ok: U13 binary contract; tests/fixtures/gt710_display_crc.rs checks v2 and reserved words.
+    /// Explicit little endian fields, no Rust struct layout. v1 has a 116-byte
+    /// header; v2 adds an absence reason (1 = SECONDARY_ABSENT_REASON) at 116.
+    /// An absent secondary retains a reserved zero word, never a numeric CRC.
     /// The source ids encode out=sorN and sources=[sorN,rgN] without inference
     /// from methods; run/commit belong to the enclosing host boot, not the head.
     pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
@@ -53,7 +58,10 @@ impl Record {
         {
             return Err("CRC record extent or method order");
         }
-        let size = 116
+        if self.secondary_absent && self.samples.iter().any(|s| s.crc2 != 0) {
+            return Err("CRC secondary contradicts absence");
+        }
+        let size = if self.secondary_absent { 120 } else { 116 }
             + names.iter().map(|s| s.len()).sum::<usize>()
             + methods.len() * 8
             + self.samples.len() * 12;
@@ -65,7 +73,7 @@ impl Record {
             .try_reserve_exact(size)
             .map_err(|_| "CRC record allocation")?;
         bytes.extend_from_slice(b"SCRCRC01");
-        for v in [1, size as u32, 6] {
+        for v in [if self.secondary_absent { 2 } else { 1 }, size as u32, 6] {
             bytes.extend_from_slice(&v.to_le_bytes());
         }
         for v in [
@@ -99,6 +107,9 @@ impl Record {
         {
             bytes.extend_from_slice(&v.to_le_bytes());
         }
+        if self.secondary_absent {
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+        }
         for name in names {
             bytes.extend_from_slice(name.as_bytes());
         }
@@ -127,13 +138,18 @@ impl Record {
         let lengths = [u16_at(20), u16_at(22), u16_at(24)];
         let methods = u16_at(26);
         let samples = u16_at(28);
-        if u32_at(8) != 1 || u32_at(12) as usize != bytes.len() || u32_at(16) != 6
+        let header = match u32_at(8) {
+            1 => 116,
+            2 if bytes.len() >= 120 && u32_at(116) == 1 => 120,
+            _ => return Err("crc-record-version-or-absence"),
+        };
+        if u32_at(12) as usize != bytes.len() || u32_at(16) != 6
             || u16_at(30) > 1 || lengths.iter().any(|n| *n == 0 || *n > 255)
             || methods > 64 || samples > MAX_SAMPLES
-            || 116 + lengths.iter().sum::<usize>() + methods * 8 + samples * 12 != bytes.len() {
+            || header + lengths.iter().sum::<usize>() + methods * 8 + samples * 12 != bytes.len() {
             return Err("crc-record-extent");
         }
-        let mut at = 116;
+        let mut at = header;
         let mut name = |len| -> Result<String, &'static str> {
             let text = core::str::from_utf8(&bytes[at..at+len]).map_err(|_| "crc-record-name")?;
             at += len;
@@ -151,7 +167,11 @@ impl Record {
         for _ in 0..samples {
             raw.push(Sample {status:u32_at(at),crc:u32_at(at+4),crc2:u32_at(at+8)}); at += 12;
         }
+        if header == 120 && raw.iter().any(|s| s.crc2 != 0) {
+            return Err("crc-record-secondary-contradicts-absence");
+        }
         Ok(Self {suite,case,checkpoint,
+            secondary_absent: header == 120,
             binding_before:Binding {resource:u64_at(32),present_fence:u64_at(40)},
             binding_after:Binding {resource:u64_at(48),present_fence:u64_at(56)},
             elapsed_us:u32_at(64),disarmed:u16_at(30)==1,display_error:u32_at(68),status:u32_at(72),
@@ -165,7 +185,9 @@ impl Record {
         self.disarmed && self.display_error == 0 && self.status & 1 == 1 && self.status & 0x3e == 0
             && self.elapsed_us <= 250_000 && self.binding_before == self.binding_after
             && self.binding_before.resource != 0 && self.binding_before.present_fence != 0
-            && self.samples.len() >= 5 && self.samples.iter().all(|s|s.status == 1 && s.crc != 0 && s.crc2 != 0)
+            && self.samples.len() >= 5 && self.samples.len() <= MAX_SAMPLES
+            && self.samples.iter().all(|s|s.status == 1 && s.crc != 0
+                && if self.secondary_absent { s.crc2 == 0 } else { s.crc2 != 0 })
             && self.samples[1..].iter().all(|s|*s == self.samples[1])
     }
 }

@@ -23,7 +23,7 @@ The runner emits each record through the root-only, suite-only `/dev/screen-evid
 
 ```text
 SUITE <id> SCREEN <category>/<case> <checkpoint> sha256=<64 hex> mode=<W>x<H> binding=<BW>x<BH>
-SUITE <id> SCREEN <category>/<case> <checkpoint> sha256=<64 hex> mode=<W>x<H> binding=<BW>x<BH> crc=<8 hex> crc2=<8 hex> raster=<W>x<H> out=sor<N>
+SUITE <id> SCREEN <category>/<case> <checkpoint> sha256=<64 hex> mode=<W>x<H> binding=<BW>x<BH> crc=<8 hex> crc2=<8 hex|none> raster=<W>x<H> out=sor<N>
 SUITE <id> SCREEN <category>/<case> <checkpoint> error=<reason-word> errno=<n> eio_reason=<n> failed_submission=<n>
 SUITE <id> SCREEN <category>/<case> end unobservable reason=<device-reset|target-invalidated> errno=<n> eio_reason=<n> failed_submission=<n>
 ```
@@ -73,19 +73,50 @@ Vigil's Breenix screen gallery presents verified captured pictures and their cas
 
 ## Native display output
 
-On backend 6 a checkpoint also captures the SOR and raster-generator (RG) CRCs of the active raster. Pin the latched resource and present fence, clear the notifier, arm SOR and RG through the core channel, and wait for four stable nonzero entries after the first written entry, within 250 ms. Require no overflow or display error and an unchanged binding, then disarm. The compositor CRC is retained as evidence but is not judged until characterized. If hardware does not populate the secondary output, capture RG separately and omit `crc2`.
+On backend 6 a native row judges the SOR output CRC alone (coordinator ruling U13,
+E22 `rulings.md`, 2026-11-07). The SOR is the output resource closest to the
+connector. Captures 20261107T082545Z, 20261107T084839Z, 20261107T090458Z and
+20261107T092218Z supplied SOR words but no RG words, including primary-RG,
+reversed-pair, wide/narrow and snooze-enabled observations. No RG probe runs in
+the production checkpoint path.
+
+Pin the latched resource and present fence, clear the notifier and arm the
+core-channel CRC context. Acquire at least five written primary entries, disarm,
+wait for DONE, then re-read the completed notifier. Discard its first entry;
+require K=4 or more consecutive stable nonzero SOR entries within 250 ms.
+Overflow, display errors, an unstable completed tail, a deadline, a moved binding
+or changed output methods refuse the observation.
+
+<!-- claim-lint:ok: U13 contract, exercised by tests/screen_sor_crc_test.py and tests/fixtures/gt710_display_crc.rs. -->
+The SCREEN record explicitly says `crc2=none`. `SCRCRC01` v2 adds a little-endian
+u32 reason tag at byte 116 (1 = `gk208-rg-no-words-u13`), extending the fixed
+header from 116 to 120 bytes. The unchanged three-word sample layout retains a
+reserved secondary word that must be 0; it is not a numeric CRC. The exporter
+writes `secondary_absent: "gk208-rg-no-words-u13"` and sample `crc2: null`.
+Unknown reasons and contradictory secondary words fail. Legacy v1 records
+remain dual-source records and must supply nonzero, stable secondary CRCs.
+Only backend 6 admits the explicit absence; backends 4 and 5 retain their
+readback/host-renderer contract. Native approved rows carry `backend: 6`,
+`crc2: "none"` and the same `secondary_absent` reason. Numeric zero, garbage,
+a serial/sample mismatch or an unmarked absence is refused.
+
+The completion sequence follows NVIDIA's MIT
+[Display-CRC notes](https://github.com/NVIDIA/open-gpu-doc/blob/9fdf5c4062007929d9f4e6cbad9c9771fe61b880/Display-CRC/display-crc.txt#L69-L78).
+For a static pinned frame, CRC reporting during snooze is enabled using the
+same document's NV907D `CRC_DURING_SNOOZE` bit 5 (lines 314-319).
 
 The root-only, suite-boot-only `/proc/breenix/display-crc` read returns:
 
 ```text
-backend=6 head=H out=sorN raster=WxH resource=R present_fence=F crc=XXXXXXXX crc2=XXXXXXXX entries=K status=S
+backend=6 head=H out=sorN raster=WxH resource=R present_fence=F crc=XXXXXXXX crc2=none entries=K status=S
 ```
 
 It returns ENOSYS outside suite boots and ENODEV on backends 4 and 5. A checkpoint emits CRCs only when the read's resource and present fence match the scanout record. This interface does not add a syscall 416 operation or consume reserved record bytes.
 
 A native CRC row is derived only from a native run where the checkpoint digest matched an operator-approved entry, with stable entries and no overflow. It is keyed by that digest and output configuration, including raster, mode, viewport, scaler methods, output and source. It judges display output after memory: it cannot admit a picture or override a digest mismatch. Mode 0 covers the 1:1 raster; mode 1 covers the scaled output, with source-pixel sensitivity characterized separately. The CRC does not establish the behavior of the link after the SOR, cable or panel.
 
-One-shot test-control point 35, `display-output-perturb`, enables dithering for the next backend 6 checkpoint. Its native case requires the memory digest to stay unchanged while the CRC changes, then disarms and requires the approved CRC again. On ARM the point returns EINVAL.
+One-shot test-control point 35, `display-output-perturb`, enables dithering for the next backend 6 checkpoint. Its native case requires the memory digest to stay unchanged while the SOR CRC changes in phase 3, then disarms and requires the approved
+SOR CRC again in phase 4. A secondary-only change cannot satisfy phase 3. On ARM the point returns EINVAL.
 
 <!-- claim-lint:ok: Proposed host-surface experiment and observation boundary in docs/gui/screen-proof.md, not an acceptance result. -->
 ARM64 QEMU has no equivalent display CRC. A proof-mode host-surface capture spike may compare QEMU's displayed surface with serial during the held intent frame. If it cannot produce a valid current surface, the stated ARM boundary is the latched-binding readback and host-renderer attestation, not proof of the host window.

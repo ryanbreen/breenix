@@ -36,8 +36,8 @@ impl Model {
             vsync_start:1025,vsync_end:1028,vtotal:1066,flags:30 };
         let methods = modeset::logical_head_methods(&t,0,0,1,0x08000000,10240,2560,1600)
             .unwrap().into_iter().collect();
-        Self { now:0,methods,submitted:vec![],available:vec![sample(91,92),
-            sample(11,12),sample(11,12),sample(11,12),sample(11,12)],
+        Self { now:0,methods,submitted:vec![],available:vec![sample(91,0),
+            sample(11,0),sample(11,0),sample(11,0),sample(11,0)],
             reads:vec![],fault:0,phase:0,recovered:0,changed:false,status:1,error:0 }
     }
     fn capture(&mut self) -> Result<display_crc::Record, &'static str> {
@@ -96,12 +96,12 @@ impl Io for Model {
         if self.phase<2 {self.now+=16000;}
         if self.fault==7 {return Err("notifier read failed")}
         let sample = self.available.get(index).copied();
-        // A pinned static head can snooze its RG while SOR keeps transmitting.
+        // A static pinned head needs the documented snooze reporting control.
         if self.fault == 9 && self.submitted.first().is_some_and(|m| m[1].1 & 0x20 == 0) {
-            return Ok(sample.map(|s| Sample { crc2: 0, ..s }));
+            return Ok(sample.map(|s| Sample { crc: 0, ..s }));
         }
         if self.fault == 8 && self.phase < 2 {
-            return Ok(sample.map(|s| Sample { crc2: 0, ..s }));
+            return Ok(sample.map(|s| Sample { crc: 99, ..s }));
         }
         Ok(sample)
     }
@@ -143,17 +143,17 @@ impl Io for Model {
     let mut m=Model::new();m.available.truncate(4);
     assert!(m.capture().is_err());m.disarmed();
     assert!(m.reads.iter().filter(|&&i|i==4).count()>1);
-    let mut m=Model::new();m.available[2]=sample(0,12);
+    let mut m=Model::new();m.available[2]=sample(0,0);
     assert!(m.capture().is_err());m.disarmed();
     assert!(!m.reads.contains(&3));
-    let mut m=Model::new();m.available[2]=sample(11,0);
+    let mut m=Model::new();m.available[2]=sample(11,12);
     assert_eq!(m.capture().unwrap_err(), "CRC completed notifier tail is unstable or partial");
     m.disarmed();
     assert_eq!(m.reads, [0,1,2,3,4,0,1,2]);
 }
 #[test] fn unstable_output_overflow_binding_move_and_display_errors_refuse() {
     for second in [false,true] {
-        let mut m=Model::new();m.available[3]=if second {sample(11,13)} else {sample(13,12)};
+        let mut m=Model::new();m.available[3]=if second {sample(11,13)} else {sample(13,0)};
         assert!(m.capture().is_err());m.disarmed();
     }
     for status in [0,2,4,8,16,32,63] {
@@ -175,7 +175,7 @@ impl Io for Model {
 #[test] fn notifier_and_time_bounds_are_not_extended() {
     let mut m=Model::new();m.now=1_000_000;
     let r=m.capture().unwrap();assert!(r.elapsed_us<=250000);
-    let mut m=Model::new();m.available=vec![sample(11,12);255];
+    let mut m=Model::new();m.available=vec![sample(11,0);255];
     // Collection stops at K=4, then drains the completed notifier extent.
     let r=m.capture().unwrap();assert_eq!(r.samples.len(),255);
     assert_eq!(display_crc::MAX_SAMPLES,255);
@@ -186,12 +186,12 @@ impl Io for Model {
 #[test] fn binary_record_carries_sidecar_values_without_struct_padding() {
     let mut m=Model::new();let mut r=m.capture().unwrap();
     // Test the upper record size with the notifier's complete written extent.
-    r.samples=vec![sample(0x12345678,0xabcdef12);255];
+    r.samples=vec![sample(0x12345678,0);255];
     let bytes=r.encode().unwrap();assert!(bytes.len()<4096);
     assert_eq!(&bytes[..8],b"SCRCRC01");
     let u32at=|i|u32::from_le_bytes(bytes[i..i+4].try_into().unwrap());
     let u64at=|i|u64::from_le_bytes(bytes[i..i+8].try_into().unwrap());
-    assert_eq!(u32at(8),1);assert_eq!(u32at(12) as usize,bytes.len());
+    assert_eq!(u32at(8),2);assert_eq!(u32at(116),1);assert_eq!(u32at(12) as usize,bytes.len());
     assert_eq!(u32at(16),6);
     assert_eq!(u64at(32),7);assert_eq!(u64at(40),9);
     assert_eq!(u64at(48),7);assert_eq!(u64at(56),9);
@@ -200,20 +200,20 @@ impl Io for Model {
     assert_eq!([u32at(92),u32at(96),u32at(100),u32at(104)],[0,112,1280,800]);
     assert_eq!([u32at(108),u32at(112)],[0,0]);
     let names=b"gpupresent/exampleend";
-    assert_eq!(&bytes[116..116+names.len()],names);
-    let mut at=116+names.len();
+    assert_eq!(&bytes[120..120+names.len()],names);
+    let mut at=120+names.len();
     for &(method,value) in &r.output_config.methods {
         assert_eq!(u32at(at),method);assert_eq!(u32at(at+4),value);at+=8;
     }
-    for _ in 0..255 {assert_eq!([u32at(at),u32at(at+4),u32at(at+8)],[1,0x12345678,0xabcdef12]);at+=12;}
+    for _ in 0..255 {assert_eq!([u32at(at),u32at(at+4),u32at(at+8)],[1,0x12345678,0]);at+=12;}
     assert_eq!(at,bytes.len());
     r.samples.push(sample(1,2));assert!(r.encode().is_err());
 }
 
 #[test] fn entries_written_before_disarm_are_retained_and_validated() {
-    let mut m=Model::new();m.available.push(sample(11,12));
+    let mut m=Model::new();m.available.push(sample(11,0));
     let r=m.capture().unwrap();assert_eq!(r.samples,m.available);m.disarmed();
-    for tail in [sample(13,12),sample(11,13),sample(11,0)] {
+    for tail in [sample(13,0),sample(11,13),sample(11,12)] {
         let mut m=Model::new();m.available.push(tail);
         assert!(m.capture().is_err());m.disarmed();
     }
@@ -272,68 +272,25 @@ fn crc_codec_and_request_roundtrip() {
     assert!(detail.contains("error=CRC_output_is_not_latched"), "{detail}");
     assert!(detail.contains("method=000004a0"), "{detail}");
     assert!(detail.contains("active=00000000 assembly=00000001"), "{detail}");
-    assert!(detail.contains("sample0=0000005b:0000005c"), "{detail}");
+    assert!(detail.contains("sample0=0000005b:00000000"), "{detail}");
     assert!(detail.contains("status=00000000"), "{detail}");
 }
 
-#[test] fn secondary_words_are_judged_after_context_done() {
+#[test] fn completed_notifier_is_reread_after_context_done() {
     let mut m = Model::new();
     m.fault = 8;
-    let record = m.capture().expect("secondary writes become valid at completion");
+    let record = m.capture().expect("SOR values are interpreted after completion");
     m.disarmed();
     assert_eq!(record.samples, m.available);
-    assert!(record.samples.iter().all(|s| s.crc != 0 && s.crc2 != 0));
+    assert!(record.samples.iter().all(|s| s.crc != 0 && s.crc2 == 0));
     assert_eq!(record.status, 1);
-}
-
-#[test] fn missing_secondary_probe_selects_rg_as_primary_without_approval() {
-    let mut m = Model::new();
-    m.available = vec![sample(33,0); 6];
-    let detail = display_crc::probe_primary_rg(&mut m, PIN, 0, 0, 4, false, true);
-    assert_eq!(m.submitted[0], [(0x438,4),(0x430,0xfffff860),(0x84,0x80000000),(0x80,0)]);
-    m.disarmed();
-    assert!(detail.contains("rg_primary=00000021"), "{detail}");
-    assert!(detail.contains("rg_status=00000001"), "{detail}");
-    // An observation with a missing simultaneous secondary still fails.
-    let mut m = Model::new();
-    m.available = vec![sample(33,0); 6];
-    assert!(m.capture().is_err());
-}
-
-#[test] fn rg_probe_can_discriminate_reversed_source_routing() {
-    let mut m = Model::new();
-    m.available = vec![sample(33,44); 6];
-    let detail = display_crc::probe_primary_rg(&mut m, PIN, 0, 0, 4, true, true);
-    assert_eq!(m.submitted[0], [(0x438,4),(0x430,0xf0fff860),(0x84,0x80000000),(0x80,0)]);
-    m.disarmed();
-    assert!(detail.contains("rg_secondary_sor=1"), "{detail}");
-    assert!(detail.contains("rg_sample0=00000021:0000002c"), "{detail}");
 }
 
 #[test] fn pinned_static_checkpoint_requests_crc_during_snooze() {
     let mut m = Model::new();
     m.fault = 9;
-    let record = m.capture().expect("pinned checkpoint must measure snoozing RG");
+    let record = m.capture().expect("pinned checkpoint must measure snoozing SOR");
     m.disarmed();
     assert_eq!(m.submitted[0][1], (0x430, 0xff8f0f60));
     assert_eq!(record.samples, m.available);
-}
-
-#[test] fn rg_probe_can_discriminate_narrow_pipe_capture() {
-    let mut m = Model::new();
-    m.available = vec![sample(33,44); 6];
-    let detail = display_crc::probe_primary_rg(&mut m, PIN, 0, 0, 4, true, false);
-    assert_eq!(m.submitted[0], [(0x438,4),(0x430,0xf0fff820),(0x84,0x80000000),(0x80,0)]);
-    m.disarmed();
-    assert!(detail.contains("rg_wide=0"), "{detail}");
-    assert!(detail.contains("rg_sample0=00000021:0000002c"), "{detail}");
-}
-
-#[test] fn failed_rg_probe_retains_raw_entry_even_with_unwritten_primary() {
-    let mut m = Model::new();
-    m.available = vec![sample(0,44); 6];
-    let detail = display_crc::probe_primary_rg(&mut m, PIN, 0, 0, 4, false, false);
-    assert!(detail.contains("rg_probe_error=RG_probe_primary_deadline"), "{detail}");
-    assert!(detail.contains("rg_status=00000001"), "{detail}");
-    assert!(detail.contains("rg_raw0=00000001:00000000:00000000:0000002c"), "{detail}");
 }

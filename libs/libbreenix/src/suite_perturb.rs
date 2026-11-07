@@ -21,7 +21,7 @@ fn same_config(a: &OutputConfig, b: &OutputConfig) -> bool {
     a.mode == b.mode && a.raster == b.raster && a.viewport == b.viewport
         && a.sor == b.sor && a.rg == b.rg && a.methods == b.methods
 }
-fn crc(record: &Record) -> (u32, u32) { (record.samples[1].crc, record.samples[1].crc2) }
+fn crc(record: &Record) -> u32 { record.samples[1].crc }
 fn checked(observation: &Observation, suite: &str, case: &str, name: &str) -> Result<Record, String> {
     super::screen::format_crc_record(suite, case, name, observation.hash,
         observation.mode, observation.binding, &observation.raw)?;
@@ -63,7 +63,7 @@ pub(super) fn run(suite: &str, case: &str, baseline: &Observation, driver: &mut 
         let three = driver.observe(NAMES[2])?;
         let third = checked(&three, suite, case, NAMES[2])?;
         if driver.fired()? != fired || !same_frame(&one, &two, &first, &second)
-            || !same_frame(&one, &three, &first, &third) || crc(&first).0 == crc(&third).0
+            || !same_frame(&one, &three, &first, &third) || crc(&first) == crc(&third)
             || !same_config(&second.output_config, &third.output_config) {
             return Err("perturb-observation".into());
         }

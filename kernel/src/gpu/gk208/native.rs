@@ -2065,12 +2065,8 @@ pub(super) fn capture_crc(evo: &mut Evo, regs: &mut Registers, notifier: u64,
     if let Err(error) = result.as_ref() {
         let detail = super::display_crc::failure_snapshot(&mut io, error, head, sor);
         let selected = io.armed;
-        let probe = super::display_crc::probe_primary_rg(&mut io, binding, head, sor, 4, false, true);
-        let reversed = super::display_crc::probe_primary_rg(&mut io, binding, head, sor, 4, true, true);
-        let narrow = super::display_crc::probe_primary_rg(&mut io, binding, head, sor, 4, false, false);
-        let narrow_reversed = super::display_crc::probe_primary_rg(&mut io, binding, head, sor, 4, true, false);
         crate::gpu::record_display_crc_failure(alloc::format!(
-            "{detail} source_active={:08x} source_assembly={:08x} context_active={:08x} context_assembly={:08x} {probe} {reversed} {narrow} {narrow_reversed}",
+            "{detail} source_active={:08x} source_assembly={:08x} context_active={:08x} context_assembly={:08x}",
             selected[0], selected[1], selected[2], selected[3]));
     }
     result

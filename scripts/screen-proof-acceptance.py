@@ -295,14 +295,14 @@ def r240_screens(manifest, serial, table, boot, checkpoints, perturbations):
     codec = runpy.run_path(str(ROOT / 'scripts/metal/screen-crc-export.py'))
     suite = manifest['id']
     if not screens['proof_mode'](suite, serial, boot): raise ValueError('R240 screens requires proof mode')
-    count, extra = screens['score'](manifest, serial, table, run=boot)
+    count, extra = screens['score'](manifest, serial, table, run=boot, backend=6)
     if not count or extra: raise ValueError('R240 screens requires a nonempty strict approved table match')
     approved = {(e['case'], e['checkpoint']): e for e in table['entries'] if e['suite'] == suite}
     raw = {(r['case'], r['checkpoint']): r for r in checkpoints}
     if len(raw) != len(checkpoints) or raw.keys() != approved.keys():
         raise ValueError('native CRC upload inventory differs from approved checkpoints')
     for key, record in raw.items():
-        codec['validate_record'](record)
+        crc, crc2 = codec['validate_record'](record)
         if record['suite'] != suite: raise ValueError('foreign native checkpoint')
         # Output configurations may differ by checkpoint mode. Pass each exact
         # uploaded configuration to the unchanged native scorer for its row.
@@ -313,7 +313,7 @@ def r240_screens(manifest, serial, table, boot, checkpoints, perturbations):
         match = next(screens['RECORD'].fullmatch(line) for line in selected.splitlines()
                      if line.startswith(f'SUITE {suite} SCREEN '))
         config = record['output_config']
-        if (record['samples'][1]['crc'], record['samples'][1]['crc2']) != (match['crc'], match['crc2']) or any(
+        if (crc, crc2) != (match['crc'], match['crc2']) or any(
                 config[field] != match[field] for field in ('mode', 'raster', 'out')):
             raise ValueError('native checkpoint record differs from SCREEN')
     result = check_perturbation(suite, serial, table, perturbations)

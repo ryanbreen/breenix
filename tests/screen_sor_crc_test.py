@@ -83,12 +83,32 @@ class SorContract(unittest.TestCase):
         table = json.loads(self.helper.table.read_text())
         self.assertEqual(SCREENS['score'](manifest, serial, table, native=True,
                          config=row['config'], run=run)[0], 1)
-        for backend in (4, 5):
+        for backend in (4, 5, 6.0):
             with self.subTest(scorer_backend=backend), self.assertRaises(ValueError):
                 SCREENS['score'](manifest, serial, table, native=True,
                                  config=row['config'], run=dict(run, backend=backend))
+            with self.subTest(picture_backend=backend), self.assertRaises(ValueError):
+                SCREENS['score'](manifest, serial, table, run=run, backend=backend)
+        with self.assertRaises(ValueError):
+            SCREENS['score'](manifest, serial, table, run=dict(run, backend=4), backend=6)
         with self.assertRaises(ValueError):
             SCREENS['score'](manifest, serial, table, run=run)
+        for field, value in (('backend', 4), ('backend', 5), ('backend', 6.0),
+                             ('secondary_absent', ''), ('secondary_absent', 'unknown')):
+            bad = copy.deepcopy(table)
+            bad['entries'][0]['native'][0][field] = value
+            with self.subTest(row_field=field, value=value), self.assertRaises(ValueError):
+                SCREENS['score'](manifest, serial, bad, native=True, config=row['config'], run=run)
+        for secondary in ('00000000', 'garbage', 'abcdef12'):
+            bad = serial.replace('crc2=none', 'crc2=' + secondary)
+            with self.subTest(serial_secondary=secondary), self.assertRaises(ValueError):
+                SCREENS['score'](manifest, bad, table, native=True, config=row['config'], run=run)
+        bad = bytearray(raw)
+        struct.pack_into('<I', bad, 116, 0)
+        with self.assertRaises(ValueError): CODEC['decode'](bad)
+        bad = bytearray(raw)
+        struct.pack_into('<I', bad, len(bad) - 4, 0xabcdef12)
+        with self.assertRaises(ValueError): CODEC['decode'](bad)
 
     def test_sor_absence_is_not_zero_garbage_or_a_foreign_backend(self):
         for backend in (4, 5):
@@ -113,6 +133,7 @@ class SorContract(unittest.TestCase):
                 CODEC['validate_record'](bad)
             self.save(bad)
             self.helper.run_import(native=self.boot, good=False)
+        # claim-lint:ok: tests/screen_sor_crc_test.py exercises the U13 placeholder refusal.
         # Numeric zero in a legacy dual-source record is still not absence.
         legacy = copy.deepcopy(self.evidence['checkpoints'][0])
         legacy.pop('secondary_absent')
@@ -143,6 +164,63 @@ class SorContract(unittest.TestCase):
         lines[3] = lines[3].replace('crc=87654321', 'crc=12345678').replace('crc2=abcdef12', 'crc2=11111111')
         with self.assertRaises(ValueError):
             ACCEPT['check_perturbation']('gpu', '\n'.join(lines), table, records)
+
+    def test_sor_live_grammar_and_uploaded_numeric_secondary_refusal(self):
+        serial, _, _ = fixture()
+        serial = serial.replace('crc2=abcdef12', 'crc2=none')
+        serial = ('SUITE gpu START cases=1 screen_proof=on\n'
+                  'SUITE gpu MEMORY before free=1000 heap_free_kb=500 user_pages=100\n'
+                  'SUITE gpu CASE draw/one PASS ms=1\n' + serial +
+                  'SUITE gpu DONE passed=1 failed=0 skipped=0 total=1\n'
+                  'SUITE gpu MEMORY after free=1000 heap_free_kb=500 user_pages=100\n'
+                  'SUITE gpu MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=48\n')
+        path = self.boot / 'serial.txt'
+        path.write_text(serial)
+        manifest = dict(id='gpu', categories=[dict(id='draw', cases=[dict(id='one')])])
+        verdict = runpy.run_path(str(ROOT / 'scripts/suite-verdict.py'))['verdict']
+        ok, why = verdict(manifest, path, [path])
+        self.assertTrue(ok, why)
+        # Convert the v2 envelope to v1: these are numeric secondary words,
+        # without an absence reason. The rehashed upload must be refused.
+        raw = bytearray(encode(self.record))
+        del raw[116:120]
+        struct.pack_into('<II', raw, 8, 1, len(raw))
+        run = json.loads((self.boot / 'run.json').read_text())
+        run['screenProof'] = True
+        (self.boot / 'run.json').write_text(json.dumps(run))
+        (self.boot / 'commit').write_text(run['commit'])
+        label = 'crc-gpu-' + hashlib.sha256(b'draw/picture-0\0end').hexdigest()[:16]
+        sha = hashlib.sha256(raw).hexdigest()
+        (self.boot / ('diagnostic-' + label + '.bin')).write_bytes(raw)
+        (self.boot / ('native-diagnostic-' + label + '.json')).write_text(json.dumps(
+            dict(id=run['id'], sha256=sha, bytes=len(raw), complete=True)))
+        path.write_text(f'SCREEN_CRC_UPLOAD gpu draw/picture-0 end label={label} bytes={len(raw)} sha256={sha} result=ok\n')
+        with self.assertRaisesRegex(ValueError, 'unwritten CRC sample'):
+            CODEC['export'](self.boot)
+
+    def test_sor_r240_picture_gate_and_both_native_callers(self):
+        serial, table, records = fixture()
+        serial = ('SUITE gpu START cases=1 screen_proof=on\nSUITE gpu CASE draw/one PASS ms=1\n' +
+                  serial.replace('crc2=abcdef12', 'crc2=none'))
+        table['entries'][0]['native'][0].update(backend=6, crc2='none', secondary_absent=REASON)
+        records = [absent(r) for r in records]
+        baseline = [dict(records[0], checkpoint='end')]
+        manifest = dict(id='gpu', categories=[dict(id='draw', cases=[dict(id='one')])])
+        self.assertEqual(ACCEPT['r240_screens'](manifest, serial, table,
+                         dict(screenProof=True), baseline, records)[0], 1)
+        from gt710_resources_report_test import transcript, boot as gpu_boot
+        from gt710_breengel_evidence_test import composition_capture
+        from gt710_breengel_selection_test import boot as breengel_boot
+        native = runpy.run_path(str(ROOT / 'scripts/metal/gt710-suite'))
+        for suite, text, boot in [('gpu', transcript(all_pass=True), gpu_boot()),
+                                  ('breengel', composition_capture(), breengel_boot())]:
+            case = next(line.split()[3] for line in text.splitlines() if line.startswith(f'SUITE {suite} CASE '))
+            end = (f'SUITE {suite} SCREEN {case} u13-observed sha256={"a" * 64} '
+                   'mode=2x1 binding=2x1 crc=12345678 crc2=none raster=1280x1024 out=sor0\n')
+            text = text.replace(f'SUITE {suite} DONE ', end + f'SUITE {suite} DONE ')
+            with self.subTest(suite=suite):
+                if suite == 'gpu': native['resources_suite'](text, boot)
+                else: native['breengel_fronts_suite'](text, boot, 4)
 
 
 if __name__ == '__main__':

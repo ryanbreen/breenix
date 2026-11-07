@@ -211,14 +211,14 @@ fn crc_screen_record_and_diagnostic_label() {
     let record = gpu_abi::screen_crc::Record {
         suite:"gpu".into(), case:"draw/one".into(), checkpoint:"end".into(),
         binding_before:binding, binding_after:binding, elapsed_us:1000,
-        disarmed:true, display_error:0, status:1,
+        disarmed:true, display_error:0, status:1, secondary_absent:true,
         output_config:gpu_abi::screen_crc::OutputConfig {mode:[2,1],raster:[1280,1024],
             viewport:[0,112,1280,800],sor:0,rg:0,methods:vec![(0x200,1)]},
-        samples:vec![gpu_abi::screen_crc::Sample {status:1,crc:0x1234,crc2:0xabcd};5],
+        samples:vec![gpu_abi::screen_crc::Sample {status:1,crc:0x1234,crc2:0};5],
     };
     let bytes = record.encode().unwrap();
     let line = screen::format_crc_record("gpu", "draw/one", "end", [3;32], mode(), mode(), &bytes).unwrap();
-    assert_eq!(line, format!("SUITE gpu SCREEN draw/one end sha256={} mode=2x1 binding=2x1 crc=00001234 crc2=0000abcd raster=1280x1024 out=sor0\n", "03".repeat(32)));
+    assert_eq!(line, format!("SUITE gpu SCREEN draw/one end sha256={} mode=2x1 binding=2x1 crc=00001234 crc2=none raster=1280x1024 out=sor0\n", "03".repeat(32)));
     assert!(screen::unpack(&screen::pack(&line),"gpu","draw/one").is_ok());
     assert!(screen::format_crc_record("gpu", "draw/two", "end", [3;32], mode(), mode(), &bytes).is_err());
     let label = screen::crc_label("gpu", "draw/one", "end");
@@ -237,7 +237,7 @@ fn crc_handoff_preserves_bytes_digest_and_refuses_torn_or_foreign_records() {
     use gpu_abi::screen_crc::{Binding,OutputConfig,Record,Sample};
     let binding = Binding {resource:7,present_fence:9};
     let mut record = Record {suite:"gpu".into(),case:"draw/one".into(),checkpoint:"end".into(),
-        binding_before:binding,binding_after:binding,elapsed_us:1000,disarmed:true,display_error:0,status:1,
+        binding_before:binding,binding_after:binding,elapsed_us:1000,disarmed:true,display_error:0,status:1,secondary_absent:false,
         output_config:OutputConfig {mode:[2,1],raster:[1280,1024],viewport:[0,112,1280,800],sor:0,rg:0,methods:vec![(0x200,1)]},
         samples:vec![Sample {status:1,crc:0x1234,crc2:0xabcd};5]};
     let path = std::env::temp_dir().join(format!("crc-handoff-{}",std::process::id()));
@@ -284,10 +284,10 @@ fn perturbation_orders_control_and_observations_and_restores_on_error() {
             if self.armed { self.count = 11; }
             let b = Binding { resource: 7, present_fence: 9 };
             let rec = Record { suite:"gpu".into(), case:"draw/one".into(), checkpoint:name.into(),
-                binding_before:b, binding_after:b, elapsed_us:1000, disarmed:true, display_error:0, status:1,
+                binding_before:b, binding_after:b, elapsed_us:1000, disarmed:true, display_error:0, status:1, secondary_absent:true,
                 output_config:OutputConfig { mode:[2,1], raster:[1280,1024], viewport:[0,112,1280,800],
                     sor:0, rg:0, methods:vec![(0x4a0,u32::from(self.armed))] },
-                samples:vec![Sample {status:1,crc:if self.armed {0x5678} else {0x1234},crc2:0xabcd};5] };
+                samples:vec![Sample {status:1,crc:if self.armed {0x5678} else {0x1234},crc2:0};5] };
             Ok(Observation { hash:[3;32], mode:mode(), binding:mode(), raw:rec.encode().unwrap() })
         }
     }

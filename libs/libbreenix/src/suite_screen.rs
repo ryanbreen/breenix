@@ -83,8 +83,9 @@ pub(super) fn format_crc_record(suite: &str, case: &str, name: &str, hash: [u8;3
     line.pop();
     let sample = record.samples[1];
     let c = record.output_config;
-    let _ = writeln!(line, " crc={:08x} crc2={:08x} raster={}x{} out=sor{}",
-        sample.crc,sample.crc2,c.raster[0],c.raster[1],c.sor);
+    let secondary = if record.secondary_absent { "none".into() } else { std::format!("{:08x}", sample.crc2) };
+    let _ = writeln!(line, " crc={:08x} crc2={} raster={}x{} out=sor{}",
+        sample.crc,secondary,c.raster[0],c.raster[1],c.sor);
     Ok(line)
 }
 
@@ -126,7 +127,7 @@ pub(super) fn unpack<'a>(bytes: &'a [u8], suite: &str, case: &str) -> Result<&'a
                     s.len()==8 && s.bytes().all(|b|b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
                 let raster = raster.strip_prefix("raster=").and_then(|s|s.split_once('x')).is_some_and(|(w,h)|
                     w.parse::<u32>().is_ok_and(|n|n>0) && h.parse::<u32>().is_ok_and(|n|n>0));
-                if !hex(crc,"crc=") || !hex(crc2,"crc2=") || !raster
+                if !hex(crc,"crc=") || (!hex(crc2,"crc2=") && *crc2 != "crc2=none") || !raster
                     || !out.strip_prefix("out=sor").is_some_and(|s|!s.is_empty() && s.bytes().all(|b|b.is_ascii_digit())) {
                     return Err("side-file-crc");
                 }

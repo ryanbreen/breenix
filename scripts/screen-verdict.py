@@ -15,18 +15,19 @@ NAME = r'[a-z0-9]+(?:-[a-z0-9]+)*'
 CASE = rf'{NAME}/{NAME}'
 MODE = r'[1-9][0-9]*x[1-9][0-9]*'
 HEX64 = r'[0-9a-f]{64}'
+SECONDARY_ABSENT_REASON = 'gk208-rg-no-words-u13'
 DETAIL = r' errno=[1-9][0-9]* eio_reason=[0-9]+ failed_submission=[0-9]+'
 RECORD = re.compile(
     rf'SUITE (?P<suite>{NAME}) SCREEN (?P<case>{CASE}) (?P<checkpoint>{NAME}) '
     rf'(?:error=(?P<error>{NAME})(?:{DETAIL})?|unobservable reason=(?P<unobservable>device-reset|target-invalidated)(?:{DETAIL})?|sha256=(?P<sha>{HEX64}) mode=(?P<mode>{MODE})'
     rf' binding=(?P<binding>{MODE})'
-    rf'(?: crc=(?P<crc>[0-9a-f]{{8}}) crc2=(?P<crc2>[0-9a-f]{{8}})'
+    rf'(?: crc=(?P<crc>[0-9a-f]{{8}}) crc2=(?P<crc2>[0-9a-f]{{8}}|none)'
     rf' raster=(?P<raster>{MODE}) out=(?P<out>sor[0-9]+))?)\Z')
 
 
 PERTURB_FIELDS = (
     rf'(?:phase=(?P<phase>[1-4]) sha256=(?P<sha>{HEX64}) mode=(?P<mode>{MODE}) binding=(?P<binding>{MODE})'
-    rf' crc=(?P<crc>[0-9a-f]{{8}}) crc2=(?P<crc2>[0-9a-f]{{8}}) raster=(?P<raster>{MODE}) out=(?P<out>sor[0-9]+)'
+    rf' crc=(?P<crc>[0-9a-f]{{8}}) crc2=(?P<crc2>[0-9a-f]{{8}}|none) raster=(?P<raster>{MODE}) out=(?P<out>sor[0-9]+)'
     r' resource=(?P<resource>[1-9][0-9]*) present_fence=(?P<present_fence>[1-9][0-9]*)'
     r' fired=(?P<fired>[0-9]+) disarmed=(?P<disarmed>[01])|error=sequence-failed)')
 PERTURB_RECORD = re.compile(rf'SUITE (?P<suite>{NAME}) SCREENPERTURB (?P<case>{CASE}) end {PERTURB_FIELDS}\Z')
@@ -51,9 +52,14 @@ def proof_mode(suite, serial, run):
     return guest
 
 
-def score(manifest, serial, table, native=False, config=None, captures=None, ineligible=None, run=None):
+def score(manifest, serial, table, native=False, config=None, captures=None, ineligible=None, run=None, backend=None):
     suite = manifest['id']
     proof = proof_mode(suite, serial, {} if run is None else run)
+    declared = None if run is None else run.get('backend')
+    if backend is None:
+        backend = declared if declared is not None else (6 if native else None)
+    elif declared is not None and (type(declared) is not int or declared != backend):
+        raise ValueError('caller and run backends disagree')
     cases = {f"{category['id']}/{case['id']}" for category in manifest['categories']
              for case in category['cases']}
     approved = {}
@@ -83,6 +89,13 @@ def score(manifest, serial, table, native=False, config=None, captures=None, ine
         if not match:
             raise ValueError(f'malformed SCREEN line: {line}')
         record = match.groupdict()
+        if record['crc'] == '00000000' or record['crc2'] == '00000000':
+            raise ValueError('numeric zero CRC is not an absence')
+        # claim-lint:ok: U13 backend contract tested in tests/screen_sor_crc_test.py.
+        # Backend admission also applies to the native tools' picture-only pass;
+        # --native additionally requires an approved output CRC row below.
+        if record['crc2'] == 'none' and (type(backend) is not int or backend != 6):
+            raise ValueError('secondary absence requires backend 6')
         if record['binding']:
             w, h = map(int, record['mode'].split('x'))
             bw, bh = map(int, record['binding'].split('x'))
@@ -120,6 +133,9 @@ def score(manifest, serial, table, native=False, config=None, captures=None, ine
             if (not record['crc'] or len(rows) != 1 or
                     any(record[field] != rows[0][field] for field in ('crc', 'crc2'))):
                 raise ValueError(f'native CRC or configuration mismatch for {key[0]} {key[1]}')
+            if record['crc2'] == 'none' and (type(rows[0].get('backend')) is not int or rows[0]['backend'] != 6 or
+                    rows[0].get('secondary_absent') != SECONDARY_ABSENT_REASON):
+                raise ValueError('native row lacks backend-6 secondary absence reason')
     if captures is not None:
         if not captures.is_dir():
             raise ValueError(f'host captures directory not found: {captures}')
@@ -142,6 +158,7 @@ def main():
     parser.add_argument('--table', type=Path, default=ROOT / 'docs/suites/frames/screens.json')
     parser.add_argument('--run', type=Path, help='boot run.json')
     parser.add_argument('--native', action='store_true')
+    parser.add_argument('--backend', type=int, choices=(4, 5, 6), help='capture backend (native CRC matching defaults to 6)')
     parser.add_argument('--config', help='SHA-256 of native output configuration (required with --native)')
     parser.add_argument('--host-captures', type=Path)
     args = parser.parse_args()
@@ -153,7 +170,7 @@ def main():
         ineligible = []
         count, extra = score(manifest, args.serial_log.read_text(encoding='utf-8'), table,
                              args.native, args.config, args.host_captures, ineligible,
-                             json.loads(args.run.read_text(encoding='utf-8')) if args.run else {})
+                             json.loads(args.run.read_text(encoding='utf-8')) if args.run else {}, args.backend)
     except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
         print(f'SCREENS FAIL: {exc}')
         return 1
