@@ -1,5 +1,7 @@
 """Private, bounded actual-display-row upload for the powered boot's lease."""
 import hashlib
+import json
+import intent_manifest
 import http.client
 import os
 from pathlib import Path
@@ -12,6 +14,13 @@ MAX_BYTES=2<<20
 # R6 amended: includes startup, picture chunks and the final evidence slot.
 MAX_TOTAL=64<<20
 PREFIX='/gt710-upload/'
+def crc_checkpoint_cap(suite):
+    root = Path(__file__).resolve().parents[2]
+    path = root / 'docs/suites/frames/checkpoints.json'
+    if not path.exists(): path = Path(__file__).with_name('checkpoints.json')
+    checkpoints = json.loads(path.read_text())
+    return len(checkpoints[suite]) + intent_manifest.counts()[suite]
+
 def prepare(directory,boot_id,site,suite=None):
     route=PREFIX+secrets.token_hex(32)
     intent=dict(id=boot_id,route=route,suite=suite)
@@ -94,8 +103,12 @@ def receive(handler):
                     or intent.get('finalComplete') or screen_index != intent.get('screenUploads', 0)))
                 or (is_picture and (intent.get('suite') not in (('gpu', 'breengel', 'window-manager', 'ui-testing') if proof else ('breengel', 'window-manager', 'ui-testing')) or not intent.get('complete')
                     or intent.get('finalComplete') or picture_index != intent.get('pictureUploads', 0)))
-                or (is_diagnostic and (intent.get('suite') not in ('window-manager', 'ui-testing') or not intent.get('complete')
-                    or intent.get('finalComplete') or len(intent.get('diagnosticUploads', {})) >= (206 if intent.get('suite') == 'ui-testing' else 16)))
+                or (is_diagnostic and (not intent.get('complete') or intent.get('finalComplete') or
+                    (len(intent.get('diagnosticUploads', {})) >= (206 if intent.get('suite') == 'ui-testing' else 16)
+                     if intent.get('suite') in ('window-manager', 'ui-testing') else
+                     not (proof and intent.get('suite') in ('gpu', 'breengel') and
+                          re.fullmatch(r'crc-' + intent['suite'] + r'-[0-9a-f]{16}', diagnostic_label) and
+                          len(intent.get('diagnosticUploads', {})) < crc_checkpoint_cap(intent['suite'])))))
                 or (intent.get('finalComplete') if final else (False if is_picture or is_diagnostic or is_screen else intent.get('complete')))
                 or (final and not intent.get('complete'))
                 or lease.get('id')!=intent.get('id') or lease.get('state')!='powered'):
