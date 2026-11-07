@@ -17,6 +17,7 @@ fn pipe() -> Result<(Pipe, Pipe), String> {
 struct Output {
     stdout: Option<Pipe>, stderr: Option<Pipe>, stdout_bytes: usize,
     ring: StderrRing, status: Option<i32>,
+    stdin: Option<Pipe>,
 }
 extern "C" {
     fn setgroups(count: usize, groups: *const u32) -> i32;
@@ -41,10 +42,15 @@ fn child_identity(uid: u32) -> Result<(), String> {
     }
     Ok(())
 }
-fn launch(argv: &[Vec<u8>], env: &[Vec<u8>], uid: u32) -> Result<(u64, Output), String> {
+fn launch(argv: &[Vec<u8>], env: &[Vec<u8>], uid: u32, kiosk: bool) -> Result<(u64, Output), String> {
     let (r, w) = pipe()?;
     let (err_r, err_w) = pipe()?;
     let null = Pipe(fs::open("/dev/null", fs::O_RDWR).map_err(|e| e.to_string())?);
+    let input = if kiosk { Some(pipe()?) } else { None };
+    if let Some((read, _)) = &input {
+        io::fcntl_setfl(read.0, 0).map_err(|e| e.to_string())?;
+    }
+    let stdin = input.as_ref().map_or(null.0, |(read, _)| read.0);
     let args: Vec<Vec<u8>> = argv.iter().map(|s| { let mut s = s.clone(); s.push(0); s }).collect();
     let vars: Vec<Vec<u8>> = env.iter().map(|s| { let mut s = s.clone(); s.push(0); s }).collect();
     let mut exec = || {
@@ -56,9 +62,15 @@ fn launch(argv: &[Vec<u8>], env: &[Vec<u8>], uid: u32) -> Result<(u64, Output), 
         let _ = process::execve(&args[0], ap.as_ptr(), ep.as_ptr());
         127
     };
-    let pid = spawn(&[(null.0, Fd::STDIN), (w.0, Fd::STDOUT), (err_w.0, Fd::STDERR)], Run::Call(&mut exec))
+    let pid = spawn(&[(stdin, Fd::STDIN), (w.0, Fd::STDOUT), (err_w.0, Fd::STDERR)], Run::Call(&mut exec))
         .map_err(|e| e.to_string())?.raw();
-    Ok((pid, Output { stdout: Some(r), stderr: Some(err_r), stdout_bytes: 0, ring: StderrRing::default(), status: None }))
+    let stdin = if let Some((_, write)) = input {
+        // The reply is a barrier after kiosk has opened its scene descriptor.
+        // Keep the writer alive: kiosk's normal command loop exits on EOF.
+        io::write(write.0, b"auto 1\n").map_err(|e| e.to_string())?;
+        Some(write)
+    } else { None };
+    Ok((pid, Output { stdout: Some(r), stderr: Some(err_r), stdout_bytes: 0, ring: StderrRing::default(), status: None, stdin }))
 }
 
 fn outputs(outputs: &mut BTreeMap<u64, Output>, channel: &mut Channel, connected: bool) -> Result<(), String> {
@@ -95,7 +107,7 @@ fn reap(channel: &mut Channel, outputs: &mut BTreeMap<u64, Output>, connected: b
         let mut status = 0;
         match process::waitpid(-1, &mut status, process::WNOHANG) {
             Ok(pid) if pid.raw() != 0 => {
-                if let Some(output) = outputs.get_mut(&pid.raw()) { output.status = Some(status); }
+                if let Some(output) = outputs.get_mut(&pid.raw()) { output.status = Some(status); output.stdin.take(); }
                 if connected { channel.queue(&Message::Exited { pid: pid.raw(), status })?; }
             }
             Ok(_) => return Ok(false),
@@ -154,6 +166,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
     }
     let mut output = BTreeMap::new();
     let mut environment: Option<SessionEnvironment> = None;
+    let mut compositor = None;
     let result = (|| -> Result<(), String> {
         signal::sigaction(signal::SIGPIPE, Some(&signal::Sigaction::ignore()), None).map_err(|e| e.to_string())?;
         io::fcntl_setfl(collector, io::status_flags::O_NONBLOCK).map_err(|e| e.to_string())?;
@@ -183,7 +196,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
             }
             if !stopped {
                 match if connected { channel.receive() } else { Ok(None) } {
-                    Ok(Some(Message::Launch { argv, env })) => match launch(&argv, &env, 0) {
+                    Ok(Some(Message::Launch { argv, env })) => match launch(&argv, &env, 0, false) {
                         Ok((pid, pipe)) => { output.insert(pid, pipe); channel.queue(&Message::Launched(pid))?; }
                         Err(error) => channel.queue(&Message::Error(error))?,
                     },
@@ -212,10 +225,19 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     }
                     Ok(Some(Message::LaunchApp { argv, uid })) => {
                         let env = environment.as_ref().ok_or("session not configured")?.environment();
-                        match launch(&argv, &env, uid) {
+                        match launch(&argv, &env, uid, false) {
                             Ok((pid, pipe)) => { output.insert(pid, pipe); channel.queue(&Message::Launched(pid))?; }
                             Err(error) => channel.queue(&Message::Error(error))?,
                         }
+                    }
+                    Ok(Some(Message::StartCompositor { kiosk })) => {
+                        if compositor.is_some() { return Err("session compositor already started".into()); }
+                        let env = environment.as_ref().ok_or("session not configured")?.environment();
+                        let path = if kiosk { "/usr/libexec/breenix/kiosk_test" } else { "/usr/bin/bwm" };
+                        let (pid, pipes) = launch(&[path.as_bytes().to_vec()], &env, 0, kiosk)?;
+                        compositor = Some(pid);
+                        output.insert(pid, pipes);
+                        channel.queue(&Message::Launched(pid))?;
                     }
                     Ok(Some(Message::ReadStderr(pid))) => {
                         if stderr_request.is_some() || !output.contains_key(&pid) { return Err("invalid app stderr request".into()); }

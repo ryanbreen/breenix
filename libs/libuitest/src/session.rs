@@ -1,7 +1,8 @@
 //! Case-side client for the runner's sibling session supervisor.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use libbreenix::{process, time};
 use crate::{channel::{Channel, now}, supervisor::{Message, SessionEnvironment, signal_name}};
+use crate::window_wait::{WaitWindow, WindowReady};
 
 #[derive(Clone, Debug)]
 pub struct ProcessExit { pub pid: u64, pub status: i32 }
@@ -20,8 +21,32 @@ pub struct Session {
     exits: Vec<ProcessExit>,
     launched: Option<u64>,
     stopped: bool,
+    compositor: Option<u64>,
+    excluded: BTreeSet<u64>,
 }
 impl Session {
+    /// Start bwm under the runner's sibling supervisor, with the session defaults.
+    pub fn desktop() -> Result<Self, String> { Self::start(false) }
+    /// Start the automatic test compositor with a live supervisor-owned stdin.
+    pub fn kiosk() -> Result<Self, String> { Self::start(true) }
+    fn start(kiosk: bool) -> Result<Self, String> {
+        let mut session = Self::connect()?;
+        session.control.send(&Message::StartCompositor { kiosk })?;
+        let path: &[u8] = if kiosk { b"/usr/libexec/breenix/kiosk_test" } else { b"/usr/bin/bwm" };
+        let pid = session.await_launch(&[path])?;
+        session.compositor = Some(pid);
+        if kiosk {
+            let line = session.read_line(pid)?;
+            if !line.strip_prefix("ready ").and_then(|s| s.parse::<u64>().ok()).is_some_and(|epoch| epoch != 0) {
+                return Err(format!("kiosk startup: {line}"));
+            }
+            // The queued auto command is answered after EVENT_FD is open. This
+            // closes the race where an app commits before the scene fd exists.
+            let line = session.read_line(pid)?;
+            if line != "ok" { return Err(format!("kiosk automatic composition: {line}")); }
+        }
+        Ok(session)
+    }
     pub fn connect() -> Result<Self, String> { Self::connect_with_seed(0) }
     pub fn connect_with_seed(seed: u64) -> Result<Self, String> {
         let fd = breenix_suite::suite::take_session_control().ok_or("case did not declare a session")?;
@@ -30,7 +55,7 @@ impl Session {
         let mode = libbreenix::gpu::current_mode().map_err(|e| format!("session mode: {e}"))?;
         let mode = format!("{}x{}@{}", mode.width, mode.height, mode.scale);
         let environment = SessionEnvironment::new(case_pid, seed, &mode)?;
-        let mut session = Self { environment, configured: false, stderr: None, control, supervisor: 0, names: BTreeMap::new(), output: BTreeMap::new(), exits: Vec::new(), launched: None, stopped: false };
+        let mut session = Self { environment, configured: false, stderr: None, control, supervisor: 0, names: BTreeMap::new(), output: BTreeMap::new(), exits: Vec::new(), launched: None, stopped: false, compositor: None, excluded: BTreeSet::new() };
         let end = now()? + 1000;
         while session.supervisor == 0 { session.poll(end)?; }
         session.control.send(&Message::Configure { case_pid, seed, mode })?;
@@ -39,6 +64,44 @@ impl Session {
         Ok(session)
     }
     pub fn config_root(&self) -> &str { self.environment.config_root() }
+    /// Exclude a window from required clock/settle participation (plan 6.3).
+    pub fn exclude(&mut self, window: u64) { self.excluded.insert(window); }
+    pub fn is_excluded(&self, window: u64) -> bool { self.excluded.contains(&window) }
+
+    /// Wait at most two real seconds for a registered title's completed commit.
+    pub fn wait_window(&mut self, title: &str) -> Result<WindowReady, String> {
+        self.wait_window_until(title, Self::now_ns()?.saturating_add(2_000_000_000))
+    }
+    /// Absolute monotonic deadline, so a startup budget includes connect/launch.
+    pub fn wait_window_until(&mut self, title: &str, deadline_ns: u64) -> Result<WindowReady, String> {
+        if self.stopped { return Err("session has ended".into()); }
+        let wait = WaitWindow::new(title, deadline_ns);
+        let mut infos = vec![libbreenix::window::abi::WinInfo::default(); 64];
+        loop {
+            let at = Self::now_ns()?;
+            if at > deadline_ns { return Err(format!("wait-window-timeout title={title:?} deadline_ns={deadline_ns}")); }
+            let total = libbreenix::window::list(&mut infos).map_err(|e| format!("wait-window title={title:?} registry: {e}"))?;
+            if total > infos.len() {
+                infos.resize(total, libbreenix::window::abi::WinInfo::default());
+                continue;
+            }
+            let registry: Vec<_> = infos[..total].iter().map(|w| {
+                w.title.get(..w.title_len as usize).map(|title| (w.id, title)).ok_or("invalid registry title length")
+            }).collect::<Result<_, _>>()?;
+            let records = std::fs::read_to_string("/proc/breenix/composites")
+                .map_err(|e| format!("wait-window title={title:?} composites: {e}"))?;
+            if let Some(ready) = wait.observe(&registry, &records, Self::now_ns()?)? { return Ok(ready); }
+            self.poll_once().map_err(|e| format!("wait-window title={title:?}: {e}"))?;
+            if let Some(pid) = self.compositor {
+                if let Some(exit) = self.exits.iter().find(|exit| exit.pid == pid) {
+                    return Err(format!("wait-window title={title:?} compositor={} pid={pid} exited status={}", self.names[&pid], exit.status));
+                }
+            }
+        }
+    }
+    fn now_ns() -> Result<u64, String> {
+        time::now_monotonic().map(|t| t.as_nanos() as u64).map_err(|e| e.to_string())
+    }
     /// Session-default environment, with the uid switch confined to the child.
     pub fn launch_app(&mut self, argv: &[&[u8]], uid: u32) -> Result<u64, String> {
         if self.stopped { return Err("session has ended".into()); }
@@ -76,6 +139,9 @@ impl Session {
     }
     fn poll(&mut self, end: i128) -> Result<(), String> {
         if now()? >= end { return Err("session control deadline".into()); }
+        self.poll_once()
+    }
+    fn poll_once(&mut self) -> Result<(), String> {
         match self.control.receive()? {
             Some(Message::Ready(pid)) if self.supervisor == 0 && pid > 1 => self.supervisor = pid,
             Some(Message::Configured) if !self.configured => self.configured = true,

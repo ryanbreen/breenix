@@ -1,5 +1,5 @@
 //! Session core checks; helpers run through the real sibling supervisor.
-use breenix_suite::suite::{check, CaseResult};
+use breenix_suite::suite::{check, CaseError, CaseResult};
 use libbreenix::{process, signal};
 use libuitest::{Session, ScenarioSpec, ScenarioOutcome, FailureClass, run_scenario};
 
@@ -10,7 +10,7 @@ fn monotonic_ns() -> Result<u64, String> {
     libbreenix::time::now_monotonic().map(|t| t.as_nanos() as u64).map_err(|e| e.to_string())
 }
 
-fn first_window(session: &mut Session, title: &str, end: u64) -> Result<libuitest::WindowReady, String> {
+fn first_window(session: &mut Session, title: &str, end: u64) -> Result<libuitest::WindowReady, CaseError> {
     let pid = session.launch_app(&[APP, title.as_bytes()], 0)?;
     let ready = session.wait_window_until(title, end)?;
     // Inspect the root observation interfaces independently of wait_window.
@@ -31,7 +31,7 @@ fn start(kiosk: bool) -> CaseResult {
     let result = first_window(&mut session, "startup app", began + 300_000_000);
     let elapsed = monotonic_ns()? - began;
     // Preserve the stage evidence for diagnosing a miss; keep the 300 ms bound.
-    let result = result.map_err(|error| format!("{error}; startup_ns={elapsed}; stages={}",
+    let result = result.map_err(|error| format!("{error:?}; startup_ns={elapsed}; stages={}",
         std::fs::read_to_string("/proc/breenix/stage-composites").unwrap_or_else(|e| e.to_string())));
     result?;
     check(elapsed <= 300_000_000, &format!("first composited app took {elapsed} ns; bound=300000000"))?;

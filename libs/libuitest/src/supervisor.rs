@@ -9,6 +9,7 @@ pub enum Message {
     Configure { case_pid: u64, seed: u64, mode: String },
     Configured,
     LaunchApp { argv: Vec<Vec<u8>>, uid: u32 },
+    StartCompositor { kiosk: bool },
     ReadStderr(u64),
     Stderr { pid: u64, dropped: u64, bytes: Vec<u8>, done: bool },
     Teardown,
@@ -58,6 +59,7 @@ pub fn encode(message: &Message) -> Result<Vec<u8>, String> {
             if !valid_launch(argv, &[]) || !matches!(uid, 0 | 1000) { return Err("invalid app launch".into()); }
             out.push(11); out.extend_from_slice(&uid.to_le_bytes()); strings(&mut out, argv);
         }
+        Message::StartCompositor { kiosk } => { out.push(14); out.push(u8::from(*kiosk)); }
         Message::ReadStderr(pid) => { out.push(12); out.extend_from_slice(&pid.to_le_bytes()); }
         Message::Stderr { pid, dropped, bytes: value, done } => {
             out.push(13); out.extend_from_slice(&pid.to_le_bytes()); out.extend_from_slice(&dropped.to_le_bytes());
@@ -128,6 +130,9 @@ pub fn decode(payload: &[u8]) -> Result<Message, String> {
             if bytes.len() > 4096 { return Err("stderr chunk exceeds limit".into()); }
             Message::Stderr { pid, dropped, bytes, done }
         }
+        14 => Message::StartCompositor { kiosk: match cur.take(1)?[0] {
+            0 => false, 1 => true, _ => return Err("invalid compositor kind".into()),
+        } },
         _ => return Err("unknown control message".into()),
     };
     if !cur.0.is_empty() { return Err("trailing control bytes".into()); }
