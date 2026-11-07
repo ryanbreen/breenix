@@ -112,7 +112,7 @@ impl Io for Model {
 }
 #[test] fn discard_first_and_capture_four_consecutive_nonzero_entries() {
     let mut m=Model::new();let r=m.capture().unwrap();m.disarmed();
-    assert_eq!(m.submitted[0],[(0x438,4),(0x430,0xff8f0f40),(0x84,0x80000000),(0x80,0)]);
+    assert_eq!(m.submitted[0],[(0x438,4),(0x430,0xff8f0f60),(0x84,0x80000000),(0x80,0)]);
     assert_eq!(r.samples,m.available);assert_eq!(m.reads,[0,1,2,3,4,0,1,2,3,4,5]);
     assert_eq!(r.binding_before,PIN);assert_eq!(r.binding_after,PIN);
     assert!(r.disarmed);assert_eq!(r.status,1);assert_eq!(r.display_error,0);
@@ -277,8 +277,8 @@ fn crc_codec_and_request_roundtrip() {
 #[test] fn missing_secondary_probe_selects_rg_as_primary_without_approval() {
     let mut m = Model::new();
     m.available = vec![sample(33,0); 6];
-    let detail = display_crc::probe_primary_rg(&mut m, PIN, 0, 0, 4, false);
-    assert_eq!(m.submitted[0], [(0x438,4),(0x430,0xfffff840),(0x84,0x80000000),(0x80,0)]);
+    let detail = display_crc::probe_primary_rg(&mut m, PIN, 0, 0, 4, false, true);
+    assert_eq!(m.submitted[0], [(0x438,4),(0x430,0xfffff860),(0x84,0x80000000),(0x80,0)]);
     m.disarmed();
     assert!(detail.contains("rg_primary=00000021"), "{detail}");
     assert!(detail.contains("rg_status=00000001"), "{detail}");
@@ -291,8 +291,8 @@ fn crc_codec_and_request_roundtrip() {
 #[test] fn rg_probe_can_discriminate_reversed_source_routing() {
     let mut m = Model::new();
     m.available = vec![sample(33,44); 6];
-    let detail = display_crc::probe_primary_rg(&mut m, PIN, 0, 0, 4, true);
-    assert_eq!(m.submitted[0], [(0x438,4),(0x430,0xf0fff840),(0x84,0x80000000),(0x80,0)]);
+    let detail = display_crc::probe_primary_rg(&mut m, PIN, 0, 0, 4, true, true);
+    assert_eq!(m.submitted[0], [(0x438,4),(0x430,0xf0fff860),(0x84,0x80000000),(0x80,0)]);
     m.disarmed();
     assert!(detail.contains("rg_secondary_sor=1"), "{detail}");
     assert!(detail.contains("rg_sample0=00000021:0000002c"), "{detail}");
@@ -305,4 +305,14 @@ fn crc_codec_and_request_roundtrip() {
     m.disarmed();
     assert_eq!(m.submitted[0][1], (0x430, 0xff8f0f60));
     assert_eq!(record.samples, m.available);
+}
+
+#[test] fn rg_probe_can_discriminate_narrow_pipe_capture() {
+    let mut m = Model::new();
+    m.available = vec![sample(33,44); 6];
+    let detail = display_crc::probe_primary_rg(&mut m, PIN, 0, 0, 4, true, false);
+    assert_eq!(m.submitted[0], [(0x438,4),(0x430,0xf0fff820),(0x84,0x80000000),(0x80,0)]);
+    m.disarmed();
+    assert!(detail.contains("rg_wide=0"), "{detail}");
+    assert!(detail.contains("rg_sample0=00000021:0000002c"), "{detail}");
 }

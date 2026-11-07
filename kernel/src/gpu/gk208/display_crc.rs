@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 /*
+Copyright (c) 1993-2022 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 Copyright (c) 2019, NVIDIA CORPORATION. All rights reserved.
 
 Permission is hereby granted, free of charge, to any person obtaining a
@@ -206,7 +207,10 @@ pub fn capture(
     sor: u32,
     handle: u32,
 ) -> Result<Record, &'static str> {
-    let arm = modeset::crc_methods(head, sor, handle, true)?;
+    let mut arm = modeset::crc_methods(head, sor, handle, true)?;
+    // The observation pins a static frame. Request CRCs during snooze too;
+    // NVIDIA Display-CRC defines bit 5 as the snooze-frame reporting control.
+    arm[1].1 |= 0x20;
     let disarm = modeset::crc_methods(head, sor, handle, false)?;
     let start = io.now_us();
     let deadline = start.saturating_add(TIMEOUT_US);
@@ -368,13 +372,13 @@ pub fn failure_snapshot(io: &mut impl Io, error: &str, head: u32, sor: u32) -> a
 /// Failure-only diagnostic: ask the documented primary selector for RG data.
 /// This returns text, not an eligible checkpoint or a substitute CRC pair.
 pub fn probe_primary_rg(io: &mut impl Io, expected: Binding, head: u32, sor: u32,
-    handle: u32, secondary_sor: bool) -> alloc::string::String {
+    handle: u32, secondary_sor: bool, wide: bool) -> alloc::string::String {
     use core::fmt::Write;
     let result = (|| -> Result<alloc::string::String, &'static str> {
         let mut arm = modeset::crc_methods(head, sor, handle, true)?;
         // NVIDIA Display-CRC: primary RG(i)=0xff8+i; secondary can name SOR.
         let secondary = if secondary_sor { 0xf0f + sor * 16 } else { 0xfff };
-        arm[1].1 = (secondary << 20) | ((0xff8 + head) << 8) | 0x40;
+        arm[1].1 = (secondary << 20) | ((0xff8 + head) << 8) | 0x20 | (u32::from(wide) << 6);
         let disarm = modeset::crc_methods(head, sor, handle, false)?;
         let deadline = io.now_us().saturating_add(150_000);
         let mut armed = false;
@@ -409,7 +413,7 @@ pub fn probe_primary_rg(io: &mut impl Io, expected: Binding, head: u32, sor: u32
             io.delay_us(100);
         };
         if io.binding()? != expected { return Err("RG probe final binding changed"); }
-        let mut text = alloc::format!("rg_secondary_sor={} rg_status={status:08x}", u8::from(secondary_sor));
+        let mut text = alloc::format!("rg_secondary_sor={} rg_wide={} rg_status={status:08x}", u8::from(secondary_sor), u8::from(wide));
         for i in 0..5 {
             let sample = io.sample(i)?.ok_or("RG probe completed entry absent")?;
             if i == 0 { let _ = write!(text, " rg_primary={:08x}", sample.crc); }
@@ -417,7 +421,8 @@ pub fn probe_primary_rg(io: &mut impl Io, expected: Binding, head: u32, sor: u32
         }
         Ok(text)
     })();
-    result.unwrap_or_else(|error| alloc::format!("rg_probe_error={}", error.replace(' ', "_")))
+    result.unwrap_or_else(|error| alloc::format!("rg_secondary_sor={} rg_wide={} rg_probe_error={}",
+        u8::from(secondary_sor), u8::from(wide), error.replace(' ', "_")))
 }
 
 /// Driver boundary for a suite checkpoint whose binding is pinned by the shared

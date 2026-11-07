@@ -64,7 +64,9 @@ instance is inactive. Ordinary present, retained acknowledgement and terminal
 notification use the existing `notifier` allocation, with no overlapping slots.
 
 The production collector clears the CRC page, arms context DMA then primary SOR
-and secondary RG through a notifier-scoped core UPDATE. Five written primary
+and secondary RG through a notifier-scoped core UPDATE. The capture requests
+CRC reporting during snooze frames because the observation pins a static frame.
+Five written primary
 entries bound the collection interval. After disarm (disabled output selectors,
 context DMA 0, fresh UPDATE), it waits for context completion and re-reads the
 complete notifier, as NVIDIA Display-CRC/display-crc.txt specifies. Only that
