@@ -1,0 +1,29 @@
+"""U14: fixed-input picture uses the production renderer; live oracle stays exact."""
+from pathlib import Path
+import os
+import subprocess
+import tempfile
+
+root = Path(__file__).resolve().parents[1]
+subject = root / 'userspace/programs/src/suite_breengel/console_picture.rs'
+with tempfile.TemporaryDirectory(prefix='console-fixed-picture-') as tmp:
+    path = Path(tmp)
+    (path / 'src').mkdir()
+    (path / 'Cargo.toml').write_text('''[package]
+name="console-fixed-picture-check"
+version="0.1.0"
+edition="2021"
+[dependencies]
+noto-sans-mono-bitmap={version="0.3",default-features=false,features=["size_16","size_20","size_24","size_32","regular","bold","unicode-basic-latin","unicode-latin-1-supplement","unicode-latin-extended-a","unicode-specials"]}
+''')
+    modules = f'extern crate alloc;\n#[path="{subject}"] pub mod subject;\n'
+    for name in ['boxdraw', 'grid', 'status', 'raster', 'ribbon', 'panel']:
+        modules += f'#[path="{root}/kernel/src/console/{name}.rs"] pub mod {name};\n'
+    modules += f'#[path="{root}/userspace/programs/src/suite_breengel/window_cases/kernel_restore.rs"] pub mod oracle;\n'
+    (path / 'src/lib.rs').write_text(modules + (root / 'tests/console_fixed_picture_test.rs').read_text())
+    subprocess.run(['taskpolicy', '-b', 'cargo', 'test', '--manifest-path', str(path / 'Cargo.toml'), '--lib'],
+                   check=True, env=dict(os.environ, CARGO_BUILD_JOBS='4', RUSTFLAGS='-Dwarnings'))
+
+panel_case = (root / 'userspace/programs/src/suite_breengel/window_cases/panel.rs').read_text()
+assert 'console_picture::picture("panel/kernel-screens", &redrawn, width, height, &serial)' in panel_case
+assert 'kernel_restore::compare(&console,&redrawn,width,height,&heading,[(shown_start,shown_end),(again_start,again_end)])' in panel_case

@@ -166,5 +166,8 @@ fn panel_kernel_screens() -> CaseResult {
     ensure(matches!(ended.cite("23")?, Ended::Exit(0)), "23", "the display-taking child did not take, paint and give back the display")?;
     let (width,height) = screen_size()?;
     crate::remember_frame(&redrawn,width,height,Some(console.clone()));
-    kernel_restore::compare(&console,&redrawn,width,height,&heading,[(shown_start,shown_end),(again_start,again_end)]).cite("23.7")
+    kernel_restore::compare(&console,&redrawn,width,height,&heading,[(shown_start,shown_end),(again_start,again_end)]).cite("23.7")?;
+    let fixed = crate::console_picture::picture("panel/kernel-screens", &redrawn, width, height, &serial).cite("23.7")?;
+    crate::remember_frame(&fixed,width,height,Some(fixed.clone()));
+    Ok(())
 }

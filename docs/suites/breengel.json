@@ -1884,7 +1884,7 @@
         {
           "id": "kernel-screens",
           "title": "The kernel's console screen redraws exactly after the display is given back",
-          "expect": "The kernel console's saved text returns in pale grey (#CDD7EB) on midnight blue (#0F1423), with its boot-stage ribbon at the bottom; the text is the existing console contents, not a fixed test string."
+          "expect": "Kernel console text in pale grey (#CDD7EB) on midnight blue (#0F1423), with its boot-stage ribbon; production rendering uses elapsed 679 s (11:19), with other inputs from the live restoration case. The exact live check uses captured serial."
         }
       ]
     }

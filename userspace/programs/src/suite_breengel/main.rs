@@ -17,6 +17,10 @@
 //! section. The kernel window interface is probed through its `VERSION` op: without it the
 //! case says so; with it, a case whose checks are not written here fails saying that, so no
 //! case passes for want of a layer.
+extern crate alloc;
+
+pub mod console_picture;
+
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
