@@ -450,6 +450,7 @@ STD_BINARIES=(
     "suite-gpu"
     "suite-window-manager"
     "suite-ui-testing"
+    "suite-runner-fixture_test"
     "wm-client_test"
     "gpu-exec-probe"
     "suite-console"

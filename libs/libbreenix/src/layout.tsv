@@ -2,6 +2,9 @@
 dir bin 0755 0 0
 dir sbin 0755 0 0
 dir usr 0755 0 0
+dir usr/local 0755 0 0
+dir usr/local/test 0755 0 0
+dir usr/local/test/bin 0755 0 0
 dir usr/bin 0755 0 0
 dir usr/sbin 0755 0 0
 dir usr/lib 0755 0 0
@@ -52,6 +55,7 @@ bin init sbin 0755 0
 bin persistent-install sbin 0755 0
 bin etc-reconcile sbin 0755 0
 bin probe sbin 0755 0
+bin suite-runner-fixture_test usr/local/test/bin 0755 0
 bin suite-* sbin 0755 0
 bin bsshd usr/sbin 0755 0
 bin blogd usr/sbin 0755 0

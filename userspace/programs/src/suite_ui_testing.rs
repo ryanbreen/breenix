@@ -1,4 +1,8 @@
 //! UI testing suite skeleton; each unbuilt case fails with its planned layer.
+#[path = "uitest_suite/runner.rs"]
+mod runner;
+#[path = "suite_breengel/stage_painter.rs"]
+mod stage_painter;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
 
 fn pending(layer: &str, step: u8) -> CaseResult {
@@ -8,35 +12,35 @@ fn pending(layer: &str, step: u8) -> CaseResult {
 static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     category("runner", "Result transport & proof executor", &[
         // Records reach the runner with the live strip turned off. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("transport-always", "Records reach the runner with the live strip turned off", || pending("runner", 1)),
+        case("transport-always", "Records reach the runner with the live strip turned off", runner::transport_always),
         // A writer that fills the pipe blocks, and all 256 records arrive. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("transport-blocking", "A writer that fills the pipe blocks, and all 256 records arrive", || pending("runner", 1)),
+        case("transport-blocking", "A writer that fills the pipe blocks, and all 256 records arrive", runner::transport_blocking),
         // A record written immediately before the case exits still arrives. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("transport-exit-race", "A record written immediately before the case exits still arrives", || pending("runner", 1)),
+        case("transport-exit-race", "A record written immediately before the case exits still arrives", runner::transport_exit_race),
         // A suite table declaring more checks for one case than the record limit is refused at suite start. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("transport-capacity", "A suite table declaring more checks for one case than the record limit is refused at suite start", || pending("runner", 1)),
+        case("transport-capacity", "A suite table declaring more checks for one case than the record limit is refused at suite start", runner::transport_capacity),
         // Under the real runner in the scoped fixture (section 8.4), a record naming another case or an undeclared check makes that runner report the case FAIL. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("record-binding", "Under the real runner in the fixture, a record naming another case or an undeclared check fails the case", || pending("runner", 1)),
+        case("record-binding", "Under the real runner in the fixture, a record naming another case or an undeclared check fails the case", runner::record_binding),
         // Under the real runner in the fixture, a malformed record makes it report the case FAIL. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("record-malformed", "Under the real runner in the fixture, a malformed record fails the case", || pending("runner", 1)),
+        case("record-malformed", "Under the real runner in the fixture, a malformed record fails the case", runner::record_malformed),
         // Under the real runner in the fixture, a second record for the same check makes it report the case FAIL. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("record-duplicate", "Under the real runner in the fixture, a second record for the same check fails the case", || pending("runner", 1)),
+        case("record-duplicate", "Under the real runner in the fixture, a second record for the same check fails the case", runner::record_duplicate),
         // An app the case execs cannot write records. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("forgery-exec", "An app the case execs cannot write records", || pending("runner", 1)),
+        case("forgery-exec", "An app the case execs cannot write records", runner::forgery_exec),
         // A helper created through `suite::spawn` that never execs cannot write records. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("forgery-fork", "A helper created through suite::spawn that never execs cannot write records", || pending("runner", 1)),
+        case("forgery-fork", "A helper created through suite::spawn that never execs cannot write records", runner::forgery_fork),
         // Under the real runner in the fixture, a case that declares a frame check and never runs it is reported FAIL, naming the check. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("never-ran", "Under the real runner in the fixture, a declared frame check that never runs fails the case, naming the check", || pending("runner", 1)),
+        case("never-ran", "Under the real runner in the fixture, a declared frame check that never runs fails the case, naming the check", runner::never_ran),
         // Under the real runner in the fixture, a case that returns Ok after a mismatch record is reported FAIL. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("mismatch-is-fail", "Under the real runner in the fixture, a case that returns Ok after a mismatch record fails", || pending("runner", 1)),
+        case("mismatch-is-fail", "Under the real runner in the fixture, a case that returns Ok after a mismatch record fails", runner::mismatch_is_fail),
         // The fixture's clean case passes under the real runner, and the fixture's transcript ends in a consistent DONE. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("outer-positive", "The fixture's clean case passes under the real runner and its transcript ends in a consistent DONE", || pending("runner", 1)),
+        case("outer-positive", "The fixture's clean case passes under the real runner and its transcript ends in a consistent DONE", runner::outer_positive),
         // A fixture case killed mid-scenario is reported FAIL by the real runner, its supervisor's COLLECT and `done` arrive before the sweep, and the evidence it names is on disk. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("outer-case-death", "A fixture case killed mid-scenario fails, its COLLECT and done arrive before the sweep, and its evidence is on disk", || pending("runner", 3)),
         // A fixture supervisor that never answers is swept at the case limit, the runner writes `artifacts=none:collector-timeout`, and the case's primary failure stands; a fixture supervisor that dies instead makes the runner write `artifacts=none:supervisor-died` and reap the session's orphans. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("outer-collector-timeout", "A silent fixture supervisor is swept at the limit as collector-timeout, and a dead one is recorded supervisor-died with its orphans reaped", || pending("runner", 3)),
         // The real runner, run as a subreaper, kills and reaps every descendant of the fixture, a double-forked helper included, and nothing outside it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("sweep-descendants", "The real runner as a subreaper kills and reaps every descendant of the fixture and nothing outside it", || pending("runner", 1)),
+        case("sweep-descendants", "The real runner as a subreaper kills and reaps every descendant of the fixture and nothing outside it", runner::sweep_descendants),
         // A clean scenario run in the inner executor returns Pass. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("inner-pass", "A clean scenario run in the inner executor returns Pass", || pending("runner", 1)),
         // A scenario with a planted pixel fault returns pixel-mismatch with its check and first pixel. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -439,5 +443,6 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
 ]).gui().defer_display();
 
 fn main() {
+    breenix_suite::suite::set_painter(Box::new(stage_painter::StagePainter::new()));
     SUITE.with_evidence_upload().run()
 }

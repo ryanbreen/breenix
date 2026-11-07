@@ -761,7 +761,13 @@ fn suite_manifests_match_their_binaries() {
         }
     }
 
-    for (name, _) in &bins {
+    for (name, path) in &bins {
+        // E22 22.1 section 7: the argv-built scoped fixture is not an effort suite.
+        if name == "suite-runner-fixture_test" {
+            assert_eq!(path, "src/suite_runner_fixture.rs");
+            assert_scoped_runner_fixture(&root, &binaries);
+            continue;
+        }
         if let Some(id) = name.strip_prefix("suite-") {
             if !manifest_ids.contains(id) {
                 errors.push(format!("Cargo binary {name} has no manifest docs/suites/{id}.json"));
@@ -770,6 +776,31 @@ fn suite_manifests_match_their_binaries() {
     }
 
     assert!(errors.is_empty(), "suite manifest problems:\n{}", errors.join("\n"));
+}
+
+// The plan's fixture-table exemption is exact and requires private installation.
+fn assert_scoped_runner_fixture(root: &Path, binaries: &[String]) {
+    assert!(binaries.iter().any(|b| b == "suite-runner-fixture_test"));
+    let layout = fs::read_to_string(root.join("libs/libbreenix/src/layout.tsv")).unwrap();
+    let rules: Vec<Vec<&str>> = layout.lines().map(|l| l.split_whitespace().collect())
+        .filter(|r: &Vec<&str>| r.first() == Some(&"bin")).collect();
+    let explicit = rules.iter().position(|r| r.get(1) == Some(&"suite-runner-fixture_test")).unwrap();
+    assert_eq!(rules[explicit], ["bin", "suite-runner-fixture_test", "usr/local/test/bin", "0755", "0"]);
+    assert!(explicit < rules.iter().position(|r| r.get(1) == Some(&"suite-*")).unwrap());
+    let source = fs::read_to_string(root.join("userspace/programs/src/suite_runner_fixture.rs")).unwrap();
+    assert!(source.contains("std::env::args()"));
+    assert!(source.contains("match selected"));
+    assert!(source.contains("case_limit_ms(3000)"));
+    assert!(source.contains(".gui()"));
+}
+
+#[test]
+fn scoped_runner_fixture_has_private_installation() {
+    let root = repo_root();
+    let bins = std_binaries(&fs::read_to_string(root.join("userspace/programs/build.sh")).unwrap());
+    let cargo = cargo_bins(&fs::read_to_string(root.join("userspace/programs/Cargo.toml")).unwrap());
+    assert!(cargo.iter().any(|(name, path)| name == "suite-runner-fixture_test" && path == "src/suite_runner_fixture.rs"));
+    assert_scoped_runner_fixture(&root, &bins);
 }
 
 /// The case ids in a libc-suite C source's `libc_cases[]` table, in order, from its
