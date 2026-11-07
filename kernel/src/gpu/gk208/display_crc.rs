@@ -311,6 +311,37 @@ pub fn capture(
     })
 }
 
+/// Read a bounded snapshot after an observation fails and attempts cleanup.
+/// The success path does not request this diagnostic snapshot.
+pub fn failure_snapshot(io: &mut impl Io, error: &str, head: u32, sor: u32) -> alloc::string::String {
+    use core::fmt::Write;
+    let mut text = alloc::format!("error={} head={head} sor={sor}", error.replace(' ', "_"));
+    for register in [0x61009c, 0x6100ac, 0x616308 + head as usize * 0x800, 0x640004] {
+        let value = io.read(register);
+        let _ = write!(text, " r{register:06x}={value:08x}");
+    }
+    match io.context_status() {
+        Ok(status) => { let _ = write!(text, " status={status:08x}"); }
+        Err(error) => { let _ = write!(text, " status_error={}", error.replace(' ', "_")); }
+    }
+    // Keep the viewport, output route and dithering bank pairs.
+    for method in [0x200 + sor * 0x20, 0x404 + head * 0x300,
+        0x41c + head * 0x300, 0x420 + head * 0x300, 0x4a0 + head * 0x300,
+        0x4b8 + head * 0x300, 0x4bc + head * 0x300, 0x4c0 + head * 0x300] {
+        let active = io.read(0x640000 + method as usize);
+        let assembly = io.read(0x660000 + method as usize);
+        let _ = write!(text, " method={method:08x} active={active:08x} assembly={assembly:08x}");
+    }
+    for index in 0..5 {
+        match io.sample(index) {
+            Ok(Some(sample)) => { let _ = write!(text, " sample{index}={:08x}:{:08x}", sample.crc, sample.crc2); }
+            Ok(None) => { let _ = write!(text, " sample{index}=unwritten"); }
+            Err(error) => { let _ = write!(text, " sample{index}={}", error.replace(' ', "_")); }
+        }
+    }
+    text
+}
+
 /// Driver boundary for a suite checkpoint whose binding is pinned by the shared
 /// display observation transition. It must remain held through this call.
 /// The physical head is checked against that resource during collection; the

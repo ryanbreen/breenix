@@ -655,7 +655,18 @@ pub(super) fn observe_checkpoint(suite: &str, case: &str, name: &str, pixels: &m
             record:observation.as_mut_ptr() as u64}.encode().to_vec()
     };
     let mut device = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence").map_err(|_| "readback-open")?;
-    device.write_all(&request).map_err(|error|endpoint_error(error.raw_os_error().unwrap_or(0),observation))?;
+    device.write_all(&request).map_err(|error| {
+        if !crc.is_empty() {
+            if let Ok(detail) = std::fs::read_to_string("/proc/breenix/display-crc") {
+                // Each device text write is bounded to 512 bytes.
+                let fields: Vec<_> = detail.split_whitespace().collect();
+                for (part, fields) in fields.chunks(4).enumerate() {
+                    emit(&std::format!("SCREEN_CRC_FAILURE {suite} {case} {name} part={part} {}\n", fields.join(" ")));
+                }
+            }
+        }
+        endpoint_error(error.raw_os_error().unwrap_or(0), observation)
+    })?;
     if crc.is_empty() { return Ok(None); }
     let length = word(&crc,12) as usize;
     if !(116..gpu::abi::screen_crc::MAX_RECORD).contains(&length) { return Err("crc-record-length".into()); }

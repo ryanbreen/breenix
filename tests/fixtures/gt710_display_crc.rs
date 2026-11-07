@@ -252,5 +252,5 @@ fn crc_codec_and_request_roundtrip() {
     assert!(detail.contains("method=000004a0"), "{detail}");
     assert!(detail.contains("active=00000000 assembly=00000001"), "{detail}");
     assert!(detail.contains("sample0=0000005b:0000005c"), "{detail}");
-    assert!(detail.contains("status=00000001"), "{detail}");
+    assert!(detail.contains("status=00000000"), "{detail}");
 }

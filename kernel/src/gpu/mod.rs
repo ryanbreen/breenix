@@ -5795,6 +5795,11 @@ fn screen_proof_enabled() -> bool {
 
 static DISPLAY_CRC_SUMMARY: spin::Mutex<Option<alloc::string::String>> = spin::Mutex::new(None);
 
+#[cfg(target_arch = "x86_64")]
+pub(crate) fn record_display_crc_failure(detail: alloc::string::String) {
+    *DISPLAY_CRC_SUMMARY.lock() = Some(detail);
+}
+
 /// A human-readable summary of the last completed checkpoint.
 pub fn display_crc_summary() -> Result<alloc::string::String, i64> {
     if !crate::test_control::enabled() { return Err(38); }
@@ -6197,10 +6202,15 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
             #[cfg(target_arch = "x86_64")]
             {
                 let present = binding.ok_or(EIO)?;
+                *DISPLAY_CRC_SUMMARY.lock() = None;
                 let captured = crate::gk208::display_crc::observe(
                     crate::gk208::display_crc::Checkpoint {suite:request.suite,case:request.case,checkpoint:request.checkpoint},
                     abi::screen_crc::Binding {resource:u64::from(device_resource),present_fence:present.fence},
-                    [a.width,a.height]).map_err(|_| EIO)?;
+                    [a.width,a.height]).map_err(|error| {
+                        let mut detail = DISPLAY_CRC_SUMMARY.lock();
+                        if detail.is_none() { *detail = Some(alloc::format!("error={}", error.replace(' ', "_"))); }
+                        EIO
+                    })?;
                 if !captured.eligible() { return Err(EIO); }
                 let bytes = captured.encode().map_err(|_| EIO)?;
                 crate::syscall::userptr::write_user_bytes(request.record, bytes.as_ptr(), bytes.len()).map_err(|_| EFAULT)?;

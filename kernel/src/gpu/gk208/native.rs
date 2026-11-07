@@ -2051,6 +2051,11 @@ pub(super) fn capture_crc(evo: &mut Evo, regs: &mut Registers, notifier: u64,
     }
     let (head,sor)=(evo.head,evo.sor);
     let mut io = Crc{evo,regs,notifier,surface,binding};
-    super::display_crc::perturb_checkpoint(&mut io,state,binding,head,sor)?;
-    super::display_crc::capture(&mut io,checkpoint,binding,mode,head,sor,4)
+    let result = super::display_crc::perturb_checkpoint(&mut io,state,binding,head,sor)
+        .and_then(|()| super::display_crc::capture(&mut io,checkpoint,binding,mode,head,sor,4));
+    if let Err(error) = result.as_ref() {
+        let detail = super::display_crc::failure_snapshot(&mut io, error, head, sor);
+        crate::gpu::record_display_crc_failure(detail);
+    }
+    result
 }
