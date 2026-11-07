@@ -242,5 +242,8 @@ The directory includes a manifest binding the reference hashes, exact Expect
 sentences and production source hashes. Pass it to `verify_expect.py` with
 `--fixed-renderer-frames <directory>`: the verifier compares the full frame and
 requires those sources and claims to equal the captured commit. A changed pixel,
-stale source, changed claim or malformed reference fails. This supplies U16
-mechanical evidence; it does not make an approval decision or alter the table.
+stale source, changed claim or malformed reference fails. Because guest and host
+share the renderer, equality leaves the Expect claims unresolved for independent
+vision review under U16. Atomic-record also runs the independent seed-scene
+formula check. This supplies mechanical evidence; it does not make an approval
+decision or alter the table.

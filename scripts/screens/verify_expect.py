@@ -517,17 +517,28 @@ def verify_fixed_renderer(image, expect, case, commit, directory):
         raise ValueError('renderer reference extent or digest mismatch')
     reference = Image.frombytes('RGB',(2560,1600),data,'raw','BGRX')
     mismatch = 'dimensions' if image.size != reference.size else ImageChops.difference(image.convert('RGB'),reference).getbbox()
-    claim = dict(kind='production-fixed-renderer',claim=expect,verdict='fail' if mismatch else 'pass',
+    claim = dict(kind='production-fixed-renderer',claim='candidate equals source-bound renderer frame',verdict='fail' if mismatch else 'pass',
                  expected=dict(mode=frame['mode'],sha256=frame['sha256'],source_hashes=doc['sources']),
                  measured=dict(source_pixels=2560*1600,mismatch_box=mismatch))
-    return dict(verdict=claim['verdict'],checked_claims=[claim],
-                failed_claims=[claim] if mismatch else [],unparseable_claims=[])
+    # Guest and reference share the renderer. Equality cannot independently check
+    # its text, stage counts, layout or other Expect claims under U16.
+    return dict(verdict='fail' if mismatch else 'unparseable',checked_claims=[claim],
+                failed_claims=[claim] if mismatch else [],unparseable_claims=[dict(
+                    claim=expect,reason='shared renderer equality leaves Expect claims for independent vision review')])
 
 
 def verify_picture(image, expect, checkpoint='intent', *, case=None, suite=None, commit=None, renderer_frames=None):
     image = image.convert('RGB')
     if renderer_frames and suite == 'breengel' and case in FIXED_RENDERER_CASES and checkpoint == 'intent':
-        return verify_fixed_renderer(image,expect,case,commit,renderer_frames)
+        result = verify_fixed_renderer(image,expect,case,commit,renderer_frames)
+        if case == 'scanout/atomic-record':
+            # Also run the independent literal seed-scene oracle below, without
+            # the shared renderer route, so a common mutation still fails.
+            independent = verify_picture(image,expect,checkpoint,case=case,suite=suite,commit=commit)
+            result['checked_claims'] += independent['checked_claims']
+            result['failed_claims'] += independent['failed_claims']
+            if result['failed_claims']: result['verdict'] = 'fail'
+        return result
     # Comparison panels describe interior fixture sizes, not the outer picture.
     # Check them before the generic prose grammar can mistake those dimensions.
     if suite == 'breengel' and case and case.split('/')[0] in ('bmp', 'png-decode', 'png-encode'):
