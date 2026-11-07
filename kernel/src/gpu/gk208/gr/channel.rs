@@ -295,6 +295,7 @@ pub trait Poll {
     fn relax(&mut self);
 }
 #[derive(Clone, Copy)]
+#[cfg(target_os = "none")]
 struct StreamSample {
     channel: u32,
     get: u32,
@@ -302,6 +303,7 @@ struct StreamSample {
     userd_get: u32,
     bind: u32,
 }
+#[cfg(target_os = "none")]
 fn stream_get_progress(get: u32, sequence: u32, queued_put: Option<u32>) -> bool {
     if let Some(put) = queued_put {
         crate::gk208::queue::Queue::consumed(put, get).is_some_and(|n| n >= sequence)
@@ -309,13 +311,15 @@ fn stream_get_progress(get: u32, sequence: u32, queued_put: Option<u32>) -> bool
         get == sequence
     }
 }
+#[cfg(target_os = "none")]
 fn stream_consumed(sample: StreamSample, id: Identity, sequence: u32, queued_put: Option<u32>) -> bool {
     let current = sample.channel & 0x2fff == 0x2000 | id.id;
     let get = if current { sample.get } else { sample.userd_get };
     let progress = stream_get_progress(get, sequence, queued_put)
         && if queued_put.is_some() { sample.reference >= sequence } else { sample.reference == sequence };
-    current && progress && sample.bind == 0x80000000 | (id.instance >> 12) as u32
+    progress && sample.bind == 0x80000000 | (id.instance >> 12) as u32
 }
+#[cfg(target_os = "none")]
 fn await_consumed(io: &mut impl Poll) -> Result<(), &'static str> {
     let start = io.now_us();
     while !io.snapshot()?.2 {
@@ -2256,7 +2260,13 @@ mod native {
             };
             let selected_get = if current { get } else { userd_get };
             let reference = if stream_get_progress(selected_get, self.sequence, self.queued_put) {
-                self.regs.read(0x40028 + b)
+                if current {
+                    self.regs.read(0x40028 + b)
+                } else {
+                    // MIT open-gpu-doc cla06f.h: NvA06FControl.Reference is
+                    // channel-local USERD +0x48, beside GPGet at +0x88.
+                    read(self.regs, self.total, s.userd + 0x48)?
+                }
             } else { 0 };
             let mut sample = StreamSample { channel, get, userd_get, reference, bind: 0 };
             // Preserve the original short-circuit order of register reads.
