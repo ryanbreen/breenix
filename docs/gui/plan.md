@@ -1980,7 +1980,7 @@ or misbehave, on every target."*
 - `ledger-gap` — A serial left without a disposition is reported as the first missing serial.
 - `console-after-compositor` — When the compositor dies, keys return to the console.
 
-#### `input-devices` — keyboard & pointer drivers on every target (15)
+#### `input-devices` — keyboard & pointer drivers on supported targets (14)
 - `hid-keyboard-decode` — Recorded USB boot-keyboard reports decode to the literal expected events.
 - `hid-rollover` — Six-key rollover and phantom-state reports decode as the contract says.
 - `hid-tablet-parallels` — Recorded Parallels tablet reports decode to the expected pointer events.
@@ -1991,7 +1991,6 @@ or misbehave, on every target."*
 - `virtio-tablet-decode` — Recorded virtio-input absolute, button and wheel events decode correctly.
 - `ps2-scancodes` — Recorded PS/2 sequences, including E0- and E1-prefixed keys, decode correctly.
 - `keyboard-completion-path` — A recorded report replayed through the production completion function of this target's keyboard driver (the coverage map's row: virtio-input, PS/2 or xHCI HID) reaches a reader with a disposition, wakes the compositor and leaves the device armed.
-- `pointer-completion-path` — The same for this target's pointer driver (virtio-input or xHCI HID tablet).
 - `replay-report-fault` — With the report call skipped by a test control, the completion-path case's event never arrives, and the case says so.
 - `replay-wake-fault` — With the wake skipped, the idle compositor's wake is missing, and the case says so.
 - `devices-bound` — This target binds exactly the keyboard and pointer drivers its row of the coverage map names, by name.
@@ -3654,7 +3653,7 @@ operator's suite-mode gate (section 3.4; `isolation/controls-latched`).
    Closed by `startup/epoch-ack` and `liveness/idle-no-composites`.
 3. **The per-target driver coverage map**, confirmed against the bound devices once the entry spikes have run,
    and the Tier-2 factoring of the PS/2 handler (section 5.2). Closed by `input-devices/devices-bound`,
-   `keyboard-completion-path`, `pointer-completion-path`, `replay-report-fault`, `replay-wake-fault`.
+   `keyboard-completion-path`, `replay-report-fault`, `replay-wake-fault`; pointer completion coverage remains a gap (#2765, #2763).
 
 **`ui-testing` must settle:**
 1. **Gesture identity** (section 5.5): gesture ids in `SYN_SCENE`, Breengel's pointer capture, `PointerCancel`
@@ -3734,7 +3733,7 @@ second re-check's eight. After this revision no finding is open. Every remaining
 | 22 | Invalid PNG formats and a hidden codec | fixed | — | Legal combination matrix and `invalid-combos`; separate `inflate` milestone; separate decode and encode categories. Second revision: the inflate incompleteness rule is corrected (N5). |
 | 23 | Font and surface safety too shallow | open | open → repaired (N12) | §12.3: always-on `work` counters count every loop iteration, rejected ones included; numeric step and allocation bounds for font load, glyph outline and rasterization, inflate and raster primitives; image and surface limits; `Surface::from_raw` checks every numeric rule and leaves only memory validity to its caller. Proved by `breengel/raster/extreme-work-bound`, `surface-validate`, `font-parser/work-bound`, `alloc-bound`, `coords-extreme`. The two invalid font expectations are corrected (N4). Third revision: the raster half is repaired as for finding 19 (N12): flattening and rasterization each have step and allocation bounds that count every loop, and an over-bound glyph is refused before any raster loop runs. |
 | 24 | Authority and lifetimes under-specified | fixed | — | Authority and error table (§3.2). Second revision: a row for evidence holders and remnants. |
-| 25 | Decoder replay does not prove the driver path | open | contract | §5.2: a per-target coverage map names each target's bound keyboard and pointer drivers; replays run only through bound instances; a host structure test fails any `input::report` caller no row covers. Proved by `window-manager/input-devices/devices-bound`, `keyboard-completion-path`, `pointer-completion-path`, `replay-report-fault`, `replay-wake-fault`. |
+| 25 | Driver completion coverage beyond decoder replay | open | contract | §5.2: the coverage map names bound keyboard and pointer drivers. Binding and keyboard completion are covered by `window-manager/input-devices/devices-bound`, `keyboard-completion-path`, `replay-report-fault`, `replay-wake-fault`; pointer completion coverage remains a gap (#2765, #2763). |
 | 26 | Semantic clicks ignore occlusion and races | open | contract | §5.5: per-window layout versions, bumped by libbui and `layout_changed()`; tags carry scene and layout versions; bwm rejects stale scenes and Breengel rejects stale layouts at dispatch as `client-rejected(stale-layout)`. Proved by `ui-testing/input/click-stale-scene` and `click-stale-layout`. Third revision: gestures carry ids; both stale checks apply only to a gesture's first batch, later events follow bwm's grab and Breengel's pointer capture, and only an unstarted gesture is retried (N16). Contract closed by `ui-testing/input/click-stale-layout`, `drag-steps` and `window-manager/pointer/stale-scene`. |
 | 27 | WM death and restart unspecified | fixed | — | Compositor epochs, an ownership stack, commits that never block (§3.3); a `recovery` milestone; a shared desktop supervisor. |
 | 28 | Cleanup leaves files and devices | fixed | — | Per-case config root, runner hash-and-restore of global files, device reset, uid 1000 with asserted preconditions (§9). Second revision: device reset and config-root removal happen in the collection handshake (§10.2). |
