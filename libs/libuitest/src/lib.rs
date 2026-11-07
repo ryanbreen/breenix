@@ -14,3 +14,8 @@ pub use session::{Session, ProcessExit, AppStderr};
 mod window_wait;
 pub use window_wait::WindowReady;
 pub mod fixtures;
+
+pub mod arena;
+pub mod artifacts;
+#[cfg(target_os = "breenix")]
+mod collect;

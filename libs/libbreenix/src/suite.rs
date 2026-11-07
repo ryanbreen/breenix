@@ -2267,7 +2267,13 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
                         Ok(())
                     });
                     match collected {
-                        Ok(()) => outcome,
+                        Ok(()) => {
+                            if matches!(request, collection::Request::Collect(_)) {
+                                emit(&std::format!("SUITE {suite} VALUE {name} collection-done=1bool\n"));
+                                emit(&std::format!("SUITE {suite} VALUE {name} collection-ms={}ms\n", ms_since(start)));
+                            }
+                            outcome
+                        },
                         Err(note) => {
                             let reason = if note == "session supervisor died" { "supervisor-died" } else { "collector-timeout" };
                             let trigger = match request { collection::Request::Collect(t) => t, collection::Request::Discard => trigger };

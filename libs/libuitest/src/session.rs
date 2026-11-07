@@ -12,6 +12,8 @@ pub struct ProcessExit { pub pid: u64, pub status: i32 }
 pub struct AppStderr { pub bytes: Vec<u8>, pub dropped: u64 }
 
 pub struct Session {
+    arena: Option<crate::arena::Arena>,
+    held_window: Option<u64>,
     environment: SessionEnvironment,
     configured: bool,
     devices: Option<[u32; 2]>,
@@ -65,13 +67,23 @@ impl Session {
         let mode = libbreenix::gpu::current_mode().map_err(|e| format!("session mode: {e}"))?;
         let mode = format!("{}x{}@{}", mode.width, mode.height, mode.scale);
         let environment = SessionEnvironment::new(case_pid, seed, &mode)?;
-        let mut session = Self { environment, configured: false, devices: None, input_done: false, stderr: None, control, supervisor: 0, names: BTreeMap::new(), output: BTreeMap::new(), exits: Vec::new(), launched: None, stopped: false, compositor: None, excluded: BTreeSet::new() };
+        let mut session = Self { arena: None, held_window: None, environment, configured: false, devices: None, input_done: false, stderr: None, control, supervisor: 0, names: BTreeMap::new(), output: BTreeMap::new(), exits: Vec::new(), launched: None, stopped: false, compositor: None, excluded: BTreeSet::new() };
         let end = now()? + 1000;
         while session.supervisor == 0 || session.devices.is_none() { session.poll(end)?; }
         session.control.send(&Message::Configure { case_pid, seed, mode })?;
         let end = now()? + 1000;
         while !session.configured { session.poll(end)?; }
+        session.arena = Some(crate::arena::Arena::open(&std::path::Path::new(session.config_root()).join("evidence.arena"))?);
         Ok(session)
+    }
+    pub fn arena_mut(&mut self) -> &mut crate::arena::Arena { self.arena.as_mut().expect("connected evidence arena") }
+    /// Wait for the supervisor to witness the live window and register its remnant hold.
+    pub fn hold_window(&mut self, id: u64) -> Result<(), String> {
+        self.held_window = None;
+        self.control.send(&Message::HoldWindow(id))?;
+        let end = now()? + 1000;
+        while self.held_window != Some(id) { self.poll(end)?; }
+        Ok(())
     }
     pub fn input_devices(&self) -> [u32; 2] { self.devices.expect("connected session devices") }
     fn raw_input(&mut self, event: RawInput) -> Result<(), String> {
@@ -173,6 +185,7 @@ impl Session {
             Some(Message::Devices(ids)) if self.devices.is_none() => self.devices = Some(ids),
             Some(Message::InputDone) if !self.input_done => self.input_done = true,
             Some(Message::Configured) if !self.configured => self.configured = true,
+            Some(Message::WindowHeld(id)) if self.held_window.is_none() => self.held_window = Some(id),
             Some(Message::Stderr { pid, dropped, bytes, done }) => {
                 let (wanted, snapshot, complete) = self.stderr.as_mut().ok_or("unsolicited stderr")?;
                 if pid != *wanted || *complete || snapshot.bytes.len() + bytes.len() > 64 * 1024 {

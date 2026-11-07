@@ -7,6 +7,7 @@ use super::ownership::{Custody, Event, Owner, Ownership};
 use crate::channel::{Channel, now};
 use breenix_suite::suite::{collection::Request, result::Accounting};
 use std::{collections::BTreeMap, path::Path};
+use crate::collect::Evidence;
 
 struct Display;
 impl Custody for Display {
@@ -214,6 +215,8 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
     let result = (|| -> Result<(), String> {
         signal::sigaction(signal::SIGPIPE, Some(&signal::Sigaction::ignore()), None).map_err(|e| e.to_string())?;
         io::fcntl_setfl(collector, io::status_flags::O_NONBLOCK).map_err(|e| e.to_string())?;
+        let own = process::getpid().map_err(|e| e.to_string())?.raw();
+        let mut evidence = Evidence::new()?;
         ownership.apply(Event::Begin, &mut Display)?;
         devices = Some(Devices::create()?);
         channel.send(&Message::Devices(devices.as_ref().unwrap().ids()))?;
@@ -224,6 +227,9 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
         let mut stderr_request = None;
         let mut pending_input: Option<(RawInput, i128)> = None;
         loop {
+            if !stopped && ownership.owner() != Owner::SupervisorHolds {
+                evidence.observe(own, &output.keys().copied().collect())?;
+            }
             // Collector is independent of the case: a dead case cannot hold cleanup.
             let mut bytes = [0; 128];
             match io::read(collector, &mut bytes) {
@@ -233,16 +239,17 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     if ended.len() > 128 { return Err("invalid collector message".into()); }
                     if ended.ends_with(b"\n") {
                         let request = Request::parse(std::str::from_utf8(&ended).map_err(|_| "invalid collector command UTF-8")?)?;
-                        // Arena and artifact producers are added by the local
-                        // evidence unit. Report absence rather than saved bytes.
+                        outputs(&mut output, &mut channel, false)?;
                         let record = if let Request::Collect(trigger) = request {
                             let suite = std::env::var("BREENIX_COLLECT_SUITE").map_err(|e| e.to_string())?;
                             let case = std::env::var("BREENIX_COLLECT_CASE").map_err(|e| e.to_string())?;
                             Accounting::new(&suite, &case, &[], true)?;
-                            Some(format!("SUITE {suite} COLLECT {case} trigger={} screen=none:unavailable windows=0 remnants=0 artifacts=none:unavailable\n", trigger.name()))
+                            let stderr = output.iter().map(|(&pid, app)| (pid, app.ring.dropped(), app.ring.bytes())).collect::<Vec<_>>();
+                            Some(evidence.collect(&suite, &case, trigger, &stderr))
                         } else { None };
                         if !stopped { teardown(&mut channel, &mut output, false, compositor, &mut ownership, &mut devices)?; }
                         if let Some(config) = environment.take() { std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())?; }
+                        evidence.release_remnants();
                         let reply = format!("{}done\n", record.unwrap_or_default());
                         let mut left = reply.as_bytes();
                         while !left.is_empty() {
@@ -296,6 +303,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                         let root = Path::new(environment.as_ref().unwrap().config_root());
                         crate::fixtures::prepare(root)?;
                         crate::fixtures::verify(root)?;
+                        evidence.configure(root)?;
                         channel.queue(&Message::Configured)?;
                     }
                     Ok(Some(Message::LaunchApp { argv, uid })) => {
@@ -315,6 +323,11 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                         ownership.apply(Event::Started, &mut Display)?;
                         output.insert(pid, pipes);
                         channel.queue(&Message::Launched(pid))?;
+                    }
+                    Ok(Some(Message::HoldWindow(id))) => {
+                        evidence.observe(own, &output.keys().copied().collect())?;
+                        if !evidence.holds(id) { channel.queue(&Message::Error(format!("window {id} is not a held session window")))?; }
+                        else { channel.queue(&Message::WindowHeld(id))?; }
                     }
                     Ok(Some(Message::Input(event))) => {
                         if pending_input.is_some() { return Err("input request already pending".into()); }

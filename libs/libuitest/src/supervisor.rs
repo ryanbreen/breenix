@@ -21,6 +21,8 @@ pub enum Message {
     Devices([u32; 2]),
     Input(RawInput),
     InputDone,
+    HoldWindow(u64),
+    WindowHeld(u64),
     Teardown,
     Ready(u64),
     Launched(u64),
@@ -84,6 +86,8 @@ pub fn encode(message: &Message) -> Result<Vec<u8>, String> {
             out.extend_from_slice(&event.code.to_le_bytes()); out.extend_from_slice(&event.value.to_le_bytes());
         }
         Message::InputDone => out.push(17),
+        Message::HoldWindow(id) => { out.push(18); out.extend_from_slice(&id.to_le_bytes()); }
+        Message::WindowHeld(id) => { out.push(19); out.extend_from_slice(&id.to_le_bytes()); }
         Message::Teardown => out.push(2),
         Message::Ready(pid) => { out.push(3); out.extend_from_slice(&pid.to_le_bytes()); }
         Message::Launched(pid) => { out.push(4); out.extend_from_slice(&pid.to_le_bytes()); }
@@ -165,6 +169,8 @@ pub fn decode(payload: &[u8]) -> Result<Message, String> {
             Message::Input(event)
         }
         17 => Message::InputDone,
+        18 => Message::HoldWindow(cur.pid()?),
+        19 => Message::WindowHeld(cur.pid()?),
         _ => return Err("unknown control message".into()),
     };
     if !cur.0.is_empty() { return Err("trailing control bytes".into()); }
