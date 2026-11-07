@@ -119,10 +119,19 @@ fn production_constructors_exec_and_ancestor_selection() {
         item(PROCESS, "impl ReaperState"),
         item(PROCESS, "pub fn select_child_reaper"),
     ].join("\n");
-    let methods = ["pub fn new(", "pub fn fork_child(", "pub fn note_exec("]
-        .map(|name| item(process_impl, name)).join("\n");
-    // Only the row's unrelated allocation is replaced. The constructors, exec
-    // transition, reaper storage and selector below are production source.
+    let new = item(process_impl, "pub fn new(");
+    let allocation = item(new, "Process {");
+    let fields = allocation.lines().filter(|line| {
+        ["reaper:", "forked_without_exec:", "has_exec:"].iter()
+            .any(|field| line.trim_start().starts_with(field))
+    }).collect::<Vec<_>>().join("\n");
+    assert_eq!(fields.lines().count(), 3);
+    // Project only unrelated row fields out of the literal. Keep the production
+    // reaper and image-lifetime initializers, fork constructor and exec method.
+    let new = new.replace(allocation, &format!("Process {{\n{fields}\n}}"))
+        .replacen('{', "{ let _ = (id, name, entry_point);", 1);
+    let methods = [new, item(process_impl, "pub fn fork_child(").to_owned(),
+        item(process_impl, "pub fn note_exec(").to_owned()].join("\n");
     run_production(format!(r#"
 extern crate alloc;
 type ProcessId = u64;
@@ -131,9 +140,6 @@ type VirtAddr = u64;
 {pieces}
 struct Process {{ reaper: ReaperState, forked_without_exec: bool, has_exec: bool }}
 impl Process {{
-    fn with_reaper(_id: ProcessId, _name: String, _entry: VirtAddr, reaper: ReaperState) -> Self {{
-        Self {{ reaper, forked_without_exec: false, has_exec: false }}
-    }}
     {methods}
 }}
 #[test]

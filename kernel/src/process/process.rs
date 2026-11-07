@@ -543,25 +543,8 @@ pub fn next_exec_id() -> u64 {
 impl Process {
     /// Create a new process
     pub fn new(id: ProcessId, name: String, entry_point: VirtAddr) -> Self {
-        Self::with_reaper(id, name, entry_point, ReaperState::new_process())
-    }
-
-    /// Create a fork child without inheriting the parent's subreaper setting.
-    pub fn fork_child(id: ProcessId, name: String, entry_point: VirtAddr, parent: &Self) -> Self {
-        let mut child = Self::with_reaper(id, name, entry_point, parent.reaper.fork_child());
-        child.forked_without_exec = true;
-        child
-    }
-
-    /// Commit the image-lifetime flags. Process reaper state survives exec.
-    pub fn note_exec(&mut self) {
-        self.forked_without_exec = false;
-        self.has_exec = true;
-    }
-
-    fn with_reaper(id: ProcessId, name: String, entry_point: VirtAddr, reaper: ReaperState) -> Self {
         Process {
-            reaper,
+            reaper: ReaperState::new_process(),
             limits: super::limits::Limits::new(),
             memory_locks: crate::memory::locked::MemoryLocks::default(),
             image_size: 0,
@@ -629,6 +612,20 @@ impl Process {
             unqueued_fatal_exit: None,
             group_exit_reported: false,
         }
+    }
+
+    /// Create a fork child without inheriting the parent's subreaper setting.
+    pub fn fork_child(id: ProcessId, name: String, entry_point: VirtAddr, parent: &Self) -> Self {
+        let mut child = Self::new(id, name, entry_point);
+        child.reaper = parent.reaper.fork_child();
+        child.forked_without_exec = true;
+        child
+    }
+
+    /// Commit the image-lifetime flags. Process reaper state survives exec.
+    pub fn note_exec(&mut self) {
+        self.forked_without_exec = false;
+        self.has_exec = true;
     }
 
     /// Set the main thread for this process
