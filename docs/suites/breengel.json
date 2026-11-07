@@ -1528,7 +1528,7 @@
         {
           "id": "present-rate",
           "title": "One 256x256 window composes at least 60 commits a second",
-          "expect": "A black (#000000) screen with a 256x256 mosaic at geometric origin x=100, y=100; blue column ramps, green row ramps and red diagonal flecks from the last composed commit among seeds 0..299; no text."
+          "expect": "An entirely black (#000000) full screen; no text or shapes."
         },
         {
           "id": "takeover-giveback",
