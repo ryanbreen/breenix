@@ -1833,10 +1833,10 @@
       "title": "UI test framework",
       "outcome": "Any GUI program can be driven by scripted keyboard, pointer and text input from inside the guest and judged by its committed frames and semantic tree at acknowledged clock epochs and causal barriers, deterministically and identically on every target, with every check shown able to fail and every failure leaving its evidence.",
       "targets": [
-        "x86-metal",
         "arm64-qemu",
         "parallels",
-        "vmware"
+        "vmware",
+        "x86-metal"
       ],
       "targetsNote": "x86-64 leads on bare metal; ARM64 QEMU, Parallels and VMware await the operator's release for catch-up (operator choice, 2026-11-06).",
       "suite": "ui-testing",
