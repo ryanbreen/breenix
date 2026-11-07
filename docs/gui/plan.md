@@ -447,8 +447,9 @@ from the shared window-manager suite on supported targets. The R240 has a USB mo
 the operator has no plans to attach a tablet or touchscreen. Revisit the case
 if absolute-pointer hardware is added. The completion plan below no longer
 requires that case: keyboard-completion-path, replay-report-fault and pointer
-cases through host replay remain. Its ARM virtio-tablet completion coverage is
-also removed (#2763). W10a's Q1 exception is retired.
+cases through host replay remain. They do not exercise the physical relative USB
+mouse completion path (#2765). Its ARM virtio-tablet completion coverage is also
+removed (#2763). W10a's Q1 exception is retired.
 
 Three layers of evidence, each failable in the guest:
 
@@ -463,10 +464,12 @@ Three layers of evidence, each failable in the guest:
    planted faults prove the case can fail: the report call skipped, and the wake skipped.
 3. **Binding.** Each target binds the expected drivers by name, with their capabilities.
 
-**Per-target coverage map.** A completion replay runs only through a driver instance the target actually bound
-to a present controller. The plan never instantiates a driver for an absent controller, and it never counts
-enumeration as execution. Each target exercises its own keyboard and pointer drivers, and together the four
-targets cover every driver that reports input:
+**Per-target coverage map.** A completion replay must use a driver instance bound
+to a present controller. A target must not instantiate a driver for an absent
+controller or count enumeration as execution. The table names device families; pointer binding and
+decoder coverage do not establish pointer completion coverage. The physical
+relative USB mouse completion path is untested (#2765), and the removed
+ARM virtio-tablet completion coverage is tracked by #2763:
 
 | Target | Keyboard: driver and completion function | Pointer: driver and completion function |
 |---|---|---|

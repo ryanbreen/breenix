@@ -31,8 +31,10 @@ W27 (operator, 2026-11-06) removes
 supported targets. The R240 has a USB mouse, and the operator has no plans to attach
 a tablet or touchscreen. Revisit the case if absolute-pointer hardware is added.
 W10a's Q1 scoring exception is retired. Keyboard completion, replay-report-fault
-and pointer cases through host replay keep their coverage. Removing the case
-also removes its ARM virtio-tablet completion coverage, tracked by #2763.
+and pointer cases through host replay keep their coverage. These do not exercise
+the physical relative USB mouse completion path; that gap is tracked by #2765.
+Removing the case also removes its ARM virtio-tablet completion coverage, tracked
+by #2763.
 ARM still lacks boot validation of this registration and of the host-channel
 transport and later replay work; no ARM boot is authorized for this step.
 
