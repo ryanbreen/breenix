@@ -188,3 +188,69 @@ impl ResultPipe<'_> {{
     assert!(run.status.success(), "{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
     std::fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn runner_waits_for_post_reap_eof_and_refuses_a_retained_writer() {
+    let source = include_str!("../libs/libbreenix/src/suite.rs");
+    let path = std::env::current_dir().unwrap().join("libs/libbreenix/src/suite_result.rs");
+    let code = format!(r#"
+#[path = {path:?}] pub mod result;
+pub mod runner {{
+use super::result;
+use std::sync::atomic::{{AtomicU64, Ordering}};
+pub static NOW: AtomicU64 = AtomicU64::new(0);
+pub fn monotonic_ns() -> Option<i128> {{ Some(i128::from(NOW.load(Ordering::Relaxed)) * 1_000_000) }}
+pub const SWEEP_MS: u64 = 2000;
+pub mod io {{
+    pub mod poll_events {{ pub const POLLIN: i16 = 1; }}
+    pub struct PollFd;
+    impl PollFd {{ pub fn new(_: i32, _: i16) -> Self {{ Self }} }}
+    pub fn poll(_: &mut [PollFd], timeout: i32) -> Result<usize, ()> {{
+        super::NOW.fetch_add(timeout as u64, super::Ordering::Relaxed);
+        Ok(0)
+    }}
+}}
+{}
+const MSG_MAX: usize = 160;
+{}
+{}
+struct ResultPipe<'a> {{ accounting: result::Accounting<'a>, eof: bool, reader: i32, close_at: u64 }}
+impl ResultPipe<'_> {{
+    fn drain_reads(&mut self, _reads: usize) {{
+        self.eof = NOW.load(Ordering::Relaxed) >= self.close_at;
+        if self.eof {{ self.accounting.eof(); }}
+    }}
+    {}
+}}
+#[test] fn post_reap_close() {{
+    let _ = Outcome::Skip {{ msg: "unused alternative".into() }};
+    for close_at in [1, 2, 17, 100, u64::MAX] {{
+        NOW.store(0, Ordering::Relaxed);
+        let mut pipe = ResultPipe {{ accounting: result::Accounting::new("fixture", "first/one", &[], false).unwrap(),
+                                    eof: false, reader: 3, close_at }};
+        // Also use the mocked poll surface on the old implementation: no dead-code suppression.
+        let _ = io::poll(&mut [io::PollFd::new(pipe.reader, io::poll_events::POLLIN)], 0);
+        let _ = monotonic_ns();
+        match pipe.finish(Outcome::Pass {{ms: 7}}) {{
+            Outcome::Pass {{ms}} if close_at != u64::MAX => assert_eq!(ms, 7),
+            Outcome::Fail {{msg, ..}} if close_at == u64::MAX =>
+                assert!(msg.contains("result pipe did not reach EOF after case teardown")),
+            _ => panic!("post-reap writer close at {{close_at}} gave the wrong verdict"),
+        }}
+        assert!(NOW.load(Ordering::Relaxed) <= SWEEP_MS, "EOF wait exceeded its bound");
+        if close_at == u64::MAX {{ assert_eq!(NOW.load(Ordering::Relaxed), SWEEP_MS); }}
+    }}
+}}
+}}
+"#, item(source, "pub(super) enum Outcome"), item(source, "fn plain("),
+        item(source, "fn with_note("), item(source, "fn finish(&mut self, outcome:"));
+    let dir = std::env::temp_dir().join(format!("e22-result-eof-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("check.rs"), code).unwrap();
+    let build = std::process::Command::new("rustc").args(["--edition=2021", "-Dwarnings", "--test"])
+        .arg(dir.join("check.rs")).arg("-o").arg(dir.join("check")).output().unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let run = std::process::Command::new(dir.join("check")).output().unwrap();
+    assert!(run.status.success(), "{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+    std::fs::remove_dir_all(dir).unwrap();
+}
