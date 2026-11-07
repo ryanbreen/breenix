@@ -67,6 +67,7 @@ pub fn spawn(keep: Keep<'_>, run: Run<'_>) -> Result<Pid, Error> {
     match process::fork()? {
         ForkResult::Parent(pid) => Ok(pid),
         ForkResult::Child => {
+            crate::suite::close_result_output();
             if arrange(keep).is_err() {
                 process::exit(126);
             }

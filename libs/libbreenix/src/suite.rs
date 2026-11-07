@@ -104,6 +104,8 @@ pub mod sequence;
 mod evidence;
 #[path = "suite_host_input.rs"]
 mod host_input;
+#[path = "suite_result.rs"]
+pub mod result;
 
 use core::sync::atomic::{AtomicI32, AtomicU32, AtomicU64, Ordering};
 use std::sync::OnceLock;
@@ -463,10 +465,19 @@ pub struct Case {
     pub id: &'static str,
     pub title: &'static str,
     pub run: fn() -> CaseResult,
+    /// FRAME checks that must each report one match before the case can pass.
+    pub checks: &'static [&'static str],
+    /// Whether the case requests local collection (section 8.3).
+    pub collects: bool,
 }
 
 pub const fn case(id: &'static str, title: &'static str, run: fn() -> CaseResult) -> Case {
-    Case { id, title, run }
+    Case { id, title, run, checks: &[], collects: false }
+}
+
+impl Case {
+    pub const fn checks(self, checks: &'static [&'static str]) -> Self { Self { checks, ..self } }
+    pub const fn collects(self) -> Self { Self { collects: true, ..self } }
 }
 
 /// A category of cases, shown as one group with its own progress bar.
@@ -742,6 +753,34 @@ static RECORD_FD: AtomicI32 = AtomicI32::new(-1);
 /// In a case's process, the write end of the runner's pipe for the live panel's copy
 /// of its records (close-on-exec, non-blocking); -1 elsewhere or with the strip off.
 static LIVE_FD: AtomicI32 = AtomicI32::new(-1);
+/// The mandatory GUI result writer: blocking and close-on-exec, held only by the case.
+static RESULT_FD: AtomicI32 = AtomicI32::new(-1);
+
+/// Write one complete GUI result line (without its newline) in one blocking write.
+/// The runner validates and binds the record, including records used by its negative fixtures.
+pub fn result_record(line: &str) -> CaseResult {
+    let fd = RESULT_FD.load(Ordering::Relaxed);
+    if fd < 0 { return fail("GUI result transport is not active"); }
+    let bytes = if line.len() + 1 > result::MAX_RECORD_BYTES || line.contains(['\n', '\r']) {
+        // Refuse on both sides even if the caller ignores the returned error.
+        b"invalid oversized or multiline result\n".to_vec()
+    } else { std::format!("{line}\n").into_bytes() };
+    loop {
+        match io::write(Fd::from_raw(fd as u64), &bytes) {
+            Err(Error::Os(crate::errno::Errno::EINTR)) => continue,
+            Ok(n) if n == bytes.len() => break,
+            Ok(_) => return fail("short GUI result write"),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    if bytes.starts_with(b"invalid ") { fail("GUI result exceeds 4096 bytes or contains a newline") } else { Ok(()) }
+}
+
+/// A helper must not retain or explicitly keep the case's result authority.
+pub(crate) fn close_result_output() {
+    let fd = RESULT_FD.swap(-1, Ordering::Relaxed);
+    if fd >= 0 { let _ = io::close(Fd::from_raw(fd as u64)); }
+}
 /// In a case's process, `SUITE <id> ` and the case's `<category>/<case>`.
 static RECORD_NAMES: OnceLock<(String, String)> = OnceLock::new();
 /// Records this process has printed.
@@ -1080,6 +1119,19 @@ impl Suite {
     /// Finish a suite-owned evidence producer after the cases and memory verdict,
     /// before publishing readiness to the boot driver or replacing this process.
     pub fn run_with_finalizer(&self, finalize: impl FnOnce()) -> ! {
+        let mut result_table_error = None;
+        if self.gui {
+            for category in self.categories {
+                for case in category.cases {
+                    let name = std::format!("{}/{}", category.id, case.id);
+                    if let Err(error) = result::Accounting::new(self.id, &name, case.checks, case.collects) {
+                        result_table_error = Some(std::format!("result table {name}: {error}"));
+                        break;
+                    }
+                }
+                if result_table_error.is_some() { break; }
+            }
+        }
         let args: Vec<String> = std::env::args().skip(1).collect();
         let mut only = None;
         let mut method = None;
@@ -1099,6 +1151,8 @@ impl Suite {
         }).collect();
         let error = if !usable_args {
             Some(std::format!("expected [--case <category>[/<case>]] [--hostkeys <method>], found {:?}", args))
+        } else if result_table_error.is_some() {
+            result_table_error
         } else {
             only.filter(|name| !names.iter().any(|valid| valid == name) && !self.categories.iter().any(|c| c.id == *name))
                 .map(|name| std::format!("unknown case {}; valid ids: {}", name, names.join(", ")))
@@ -1201,7 +1255,7 @@ impl Suite {
                 let limit_ms = NAMED_CASE_ALLOWANCES.iter()
                     .find(|&&(suite, case, _)| suite == self.id && case == name)
                     .map_or(self.case_limit_ms, |&(_, _, limit)| limit);
-                let mut outcome = run_case(case, limit_ms, self.id, &name, &mut screen, &mut feed);
+                let mut outcome = run_case(case, limit_ms, self.id, &name, self.gui, &mut screen, &mut feed);
                 if let Some(error) = screen.stage_error.take() { outcome = with_note(outcome, &error); }
                 let picture_hash = frame_hash(screen.judged.as_deref());
                 let intent_picture = if proof { screen.judged.clone() } else { None };
@@ -1616,7 +1670,7 @@ const FRAME_MS: i128 = 66;
 /// A wait that timed out with the monotonic clock standing still counts towards
 /// `CLOCK_STALL_WAKES`, which ends the wait as a stopped clock. (A poll's timeout runs on
 /// that clock, so a stopped clock wakes the runner only through the pipes.)
-fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut(), window: Option<Fd>, published: Option<Fd>, mut report: Option<Fd>, mut stage: Option<(Fd, Fd)>) -> Waited {
+fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn FnMut(), window: Option<Fd>, published: Option<Fd>, mut report: Option<Fd>, mut stage: Option<(Fd, Fd)>, mut results: Option<&mut ResultPipe<'_>>) -> Waited {
     let case_clock = report.is_some();
     let mut awaiting_window = window.is_some();
     let mut excluded_before = 0;
@@ -1625,6 +1679,7 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
     let mut drawn = last;
     let mut timed_out = false;
     loop {
+        if let Some(results) = results.as_mut() { results.drain(); }
         if awaiting_window {
             let mut bytes = [0u8; 8];
             if let Some(fd) = window {
@@ -1681,9 +1736,9 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
                 next_frame = FRAME_MS - (now - then) / 1_000_000;
             }
         }
-        let mut fds = [PollFd::new(Fd::from_raw(0), poll_events::POLLIN); 4];
+        let mut fds = [PollFd::new(Fd::from_raw(0), poll_events::POLLIN); 5];
         let mut n = 0;
-        for fd in [report, published, window.filter(|_| awaiting_window), stage.map(|(r, _)| r)].into_iter().flatten() {
+        for fd in [report, published, window.filter(|_| awaiting_window), stage.map(|(r, _)| r), results.as_ref().and_then(|r| r.poll_fd())].into_iter().flatten() {
             fds[n] = PollFd::new(fd, poll_events::POLLIN);
             n += 1;
         }
@@ -1716,7 +1771,7 @@ fn stop_child(pid: i32) -> &'static str {
     if signal::kill(pid, SIGKILL).is_err() {
         return "; SIGKILL failed, the case may still be running";
     }
-    match wait_exit(pid, monotonic_ns(), 1000, &mut || {}, None, None, None, None) {
+    match wait_exit(pid, monotonic_ns(), 1000, &mut || {}, None, None, None, None, None) {
         Waited::Exited(_) => "",
         Waited::Failed(_) => "; waitpid failed after SIGKILL",
         Waited::TimedOut(_) | Waited::ClockStopped(_) | Waited::Published(_) => "; still running after SIGKILL",
@@ -1818,10 +1873,87 @@ fn keep_record_output(suite: &str, name: &str) {
     }
 }
 
+/// The reader alone is nonblocking. Its writer remains a blocking PIPE_BUF writer.
+struct ResultPipe<'a> {
+    reader: Fd,
+    writer: Option<Fd>,
+    accounting: result::Accounting<'a>,
+    eof: bool,
+}
+
+impl<'a> ResultPipe<'a> {
+    fn new(suite: &'a str, name: &'a str, checks: &'a [&'a str], collects: bool) -> Result<Self, String> {
+        let accounting = result::Accounting::new(suite, name, checks, collects)?;
+        let (reader, writer) = io::pipe2(status_flags::O_CLOEXEC).map_err(|e| std::format!("result pipe: {e}"))?;
+        if let Err(error) = io::fcntl_setfl(reader, status_flags::O_NONBLOCK) {
+            let _ = (io::close(reader), io::close(writer));
+            return Err(std::format!("result pipe reader: {error}"));
+        }
+        Ok(Self { reader, writer: Some(writer), accounting, eof: false })
+    }
+
+    fn in_child(&self) {
+        let _ = io::close(self.reader);
+        RESULT_FD.store(self.writer.unwrap().raw() as i32, Ordering::Relaxed);
+    }
+
+    fn in_parent(&mut self) {
+        if let Some(writer) = self.writer.take() { let _ = io::close(writer); }
+    }
+
+    fn poll_fd(&self) -> Option<Fd> { (!self.eof).then_some(self.reader) }
+
+    fn drain(&mut self) {
+        // Yield to waitpid and the deadline even if a misbehaving child keeps writing.
+        self.drain_reads(16);
+    }
+
+    fn drain_reads(&mut self, reads: usize) {
+        let mut bytes = [0u8; result::MAX_RECORD_BYTES];
+        for _ in 0..reads {
+            if self.eof { break; }
+            match io::read(self.reader, &mut bytes) {
+                Ok(0) => { self.eof = true; self.accounting.eof(); }
+                Ok(n) => self.accounting.feed(&bytes[..n], emit),
+                Err(Error::Os(crate::errno::Errno::EINTR)) => continue,
+                Err(Error::Os(crate::errno::Errno::EAGAIN)) => break,
+                Err(error) => { self.accounting.refuse(&std::format!("result pipe read: {error}")); break; }
+            }
+        }
+    }
+
+    fn finish(&mut self, outcome: Outcome) -> Outcome {
+        // After teardown a legal case has at most 256 PIPE_BUF records left, then EOF.
+        // A leaked writer must fail closed rather than hold the runner forever.
+        self.drain_reads(result::RECORDS_PER_CASE + 1);
+        if !self.eof { self.accounting.refuse("result pipe did not reach EOF after case teardown"); }
+        match self.accounting.problem() {
+            Some(note) => match outcome {
+                Outcome::Pass { ms } => Outcome::Fail { ms, msg: plain(&note) },
+                other => with_note(other, &note),
+            },
+            None => outcome,
+        }
+    }
+}
+
+impl Drop for ResultPipe<'_> {
+    fn drop(&mut self) {
+        let _ = io::close(self.reader);
+        if let Some(writer) = self.writer { let _ = io::close(writer); }
+    }
+}
+
 /// Run a case in a forked child, giving it `limit_ms`, and keep the live strip up to
 /// date while it runs.
-fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Screen, feed: &mut Feed) -> Outcome {
+fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, screen: &mut Screen, feed: &mut Feed) -> Outcome {
     screen.judged = None;screen.timing=None;
+    let mut results = if gui {
+        match ResultPipe::new(suite, name, case.checks, case.collects) {
+            Ok(pipe) => Some(pipe),
+            Err(msg) => return Outcome::Fail { ms: 0, msg: plain(&msg) },
+        }
+    } else { None };
     // The live strip's copy of the case's records, when the strip is on.
     let live = if screen.live_on() || screen.gui {
         io::pipe2(status_flags::O_CLOEXEC | status_flags::O_NONBLOCK).ok()
@@ -1890,6 +2022,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
     match process::fork() {
         Ok(ForkResult::Child) => {
             sequence::in_child();
+            if let Some(results) = &results { results.in_child(); }
             let _ = io::close(reader);
             if let Some((r, w)) = window {
                 let _ = io::close(r);
@@ -1927,6 +2060,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
         }
         Ok(ForkResult::Parent(pid)) => {
             let pid = pid.raw() as i32;
+            if let Some(results) = results.as_mut() { results.in_parent(); }
             let _ = io::close(writer);
             if let Some((_, w)) = window { let _ = io::close(w); }
             let live_reader = live.map(|(live_reader, live_writer)| {
@@ -1945,7 +2079,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                     if let Some(fd) = live_reader { feed.drain(fd); }
                     screen.frame(feed);
                 };
-                wait_exit(pid, start, limit_ms, &mut frame, window.map(|(r, _)| r), tell, Some(reader), stage)
+                wait_exit(pid, start, limit_ms, &mut frame, window.map(|(r, _)| r), tell, Some(reader), stage, results.as_mut())
             };
             if let Waited::Published(message) = waited {
                 // The case has reported: its measured window ends before the stage composes.
@@ -1955,7 +2089,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                     screen.stage_result(crate::suite_stage::sample(p));
                 }
                 if let Some(fd) = answer { let _ = io::write(fd, &[1]); }
-                waited = match wait_exit(pid, monotonic_ns(), 5_000, &mut || {}, None, None, None, None) {
+                waited = match wait_exit(pid, monotonic_ns(), 5_000, &mut || {}, None, None, None, None, results.as_mut()) {
                     Waited::TimedOut(_) => Waited::TimedOut(ms),
                     other => other,
                 };
@@ -1994,6 +2128,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, screen: &mut Sc
                 Some(note) => with_note(outcome, note),
                 None => outcome,
             };
+            let outcome = if let Some(results) = results.as_mut() { results.finish(outcome) } else { outcome };
             let outcome = match collect_judged() {
                 Ok(frame) => { screen.judged = frame.map(std::sync::Arc::new); outcome }
                 Err(note) => with_note(outcome, &note),
