@@ -265,9 +265,13 @@ def derive_native(table, path, directory):
     spec = importlib.util.spec_from_file_location('screen_verdict', ROOT / 'scripts/screen-verdict.py')
     scorer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(scorer)
+    serial = (directory / 'serial.txt').read_text(encoding='utf-8')
+    suites = {capture['suite'] for capture in evidence.get('checkpoints', [])}
+    for suite in suites:
+        scorer.proof_mode(suite, serial, run)
     records = {}
     reported = set()
-    for line in (directory / 'serial.txt').read_text(encoding='utf-8').splitlines():
+    for line in serial.splitlines():
         case = re.match(rf'^SUITE ({NAME}) CASE ({NAME}/{NAME}) ', line)
         if case:
             reported.add((case[1], case[2]))

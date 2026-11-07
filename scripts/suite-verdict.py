@@ -243,8 +243,9 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
     name = r"([a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*)"
     picture = r"(?: sha256=[0-9a-f]{64})?"
     pace = r"(?: pace_ms=([1-9][0-9]{0,9}))?" if suite == "breengel" else ""
+    proof = r"(?: screen_proof=on)?" if suite in ("gpu", "breengel") else ""
     shapes = {
-        "START": re.compile(rf"^SUITE {suite} START cases=(\d+){suffix}{pace}$"),
+        "START": re.compile(rf"^SUITE {suite} START cases=(\d+){suffix}{pace}{proof}$"),
         "PASS": re.compile(rf"^SUITE {suite} CASE {name} PASS ms=\d+{picture}$"),
         "FAIL": re.compile(rf"^SUITE {suite} CASE {name} FAIL ms=\d+{picture} msg=\S.*$"),
         "SKIP": re.compile(rf"^SUITE {suite} CASE {name} SKIP msg=\S.*$"),

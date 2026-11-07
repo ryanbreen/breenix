@@ -24,17 +24,40 @@ RECORD = re.compile(
     rf' raster=(?P<raster>{MODE}) out=(?P<out>sor[0-9]+))?)\Z')
 
 
-def score(manifest, serial, table, native=False, config=None, captures=None, ineligible=None):
+def proof_mode(suite, serial, run):
+    if type(run) is not dict:
+        raise ValueError('invalid host run record')
+    host = run.get('screenProof', False)
+    if type(host) is not bool:
+        raise ValueError('invalid host screenProof')
+    starts = re.findall(rf'^SUITE {re.escape(suite)} START [^\n]*$', serial, re.M)
+    if len(starts) != 1:
+        raise ValueError('expected one suite START record')
+    shape = rf'SUITE {re.escape(suite)} START cases=[0-9]+(?: only=\S+)?(?: pace_ms=[1-9][0-9]*)?(?P<proof> screen_proof=on)?'
+    start = re.fullmatch(shape, starts[0])
+    if not start:
+        raise ValueError('malformed suite START record')
+    guest = bool(start['proof'])
+    if guest != host:
+        raise ValueError('guest and host screen proof modes disagree')
+    return guest
+
+
+def score(manifest, serial, table, native=False, config=None, captures=None, ineligible=None, run=None):
     suite = manifest['id']
+    proof = proof_mode(suite, serial, {} if run is None else run)
     cases = {f"{category['id']}/{case['id']}" for category in manifest['categories']
              for case in category['cases']}
     approved = {}
+    table_keys = set()
     for entry in table['entries']:
         if entry['suite'] == suite:
             key = (entry['case'], entry['checkpoint'])
-            if key in approved or key[0] not in cases:
+            if key in table_keys or key[0] not in cases:
                 raise ValueError(f'invalid or duplicate table entry {key}')
-            approved[key] = entry
+            table_keys.add(key)
+            if proof or key[1] == 'end':
+                approved[key] = entry
     if table['version'] != 1:
         raise ValueError('unsupported table version')
     records = {}
@@ -56,6 +79,8 @@ def score(manifest, serial, table, native=False, config=None, captures=None, ine
             if bw < w or bh < h:
                 raise ValueError('binding smaller than mode')
         key = (record['case'], record['checkpoint'])
+        if not proof and key[1] == 'intent':
+            raise ValueError('intent checkpoint in production capture')
         if key[0] not in cases:
             raise ValueError(f'SCREEN names unknown case {key[0]}')
         if key[0] not in reported:
@@ -105,6 +130,7 @@ def main():
     parser.add_argument('manifest', type=Path)
     parser.add_argument('serial_log', type=Path)
     parser.add_argument('--table', type=Path, default=ROOT / 'docs/suites/frames/screens.json')
+    parser.add_argument('--run', type=Path, help='boot run.json')
     parser.add_argument('--native', action='store_true')
     parser.add_argument('--config', help='SHA-256 of native output configuration (required with --native)')
     parser.add_argument('--host-captures', type=Path)
@@ -116,7 +142,8 @@ def main():
         table = json.loads(args.table.read_text(encoding='utf-8'))
         ineligible = []
         count, extra = score(manifest, args.serial_log.read_text(encoding='utf-8'), table,
-                             args.native, args.config, args.host_captures, ineligible)
+                             args.native, args.config, args.host_captures, ineligible,
+                             json.loads(args.run.read_text(encoding='utf-8')) if args.run else {})
     except (OSError, UnicodeError, ValueError, KeyError, TypeError) as exc:
         print(f'SCREENS FAIL: {exc}')
         return 1

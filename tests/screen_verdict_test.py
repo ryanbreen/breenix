@@ -29,14 +29,15 @@ class ScreenVerdictTest(unittest.TestCase):
                                   'crc': '12345678', 'crc2': '87654321'}]}
         self.line = f'SUITE gpu SCREEN draw/one end sha256={DIGEST} mode=1280x800 binding=1280x800'
 
-    def run_score(self, lines, *, entries=None, args=(), include_cases=True):
+    def run_score(self, lines, *, entries=None, args=(), include_cases=True, proof=False):
         (self.dir / 'manifest.json').write_text(json.dumps(self.manifest))
         (self.dir / 'table.json').write_text(json.dumps({'version': 1, 'entries': [self.entry] if entries is None else entries}))
+        (self.dir / 'run.json').write_text(json.dumps({'screenProof': proof}))
         prefix = ['SUITE gpu CASE draw/one PASS ms=1', 'SUITE gpu CASE draw/two PASS ms=1'] if include_cases else []
-        (self.dir / 'serial.txt').write_text('\n'.join(prefix + lines) + '\n')
+        (self.dir / 'serial.txt').write_text('\n'.join(['SUITE gpu START cases=2' + (' screen_proof=on' if proof else '')] + prefix + lines) + '\n')
         return subprocess.run([sys.executable, str(SCORER), str(self.dir / 'manifest.json'),
                                str(self.dir / 'serial.txt'), '--table', str(self.dir / 'table.json'),
-                               *args], capture_output=True, text=True)
+                               '--run', str(self.dir / 'run.json'), *args], capture_output=True, text=True)
 
     def test_checkpoint_modes(self):
         intent = dict(self.entry, checkpoint='intent')
@@ -61,7 +62,7 @@ class ScreenVerdictTest(unittest.TestCase):
 
     def test_match_and_unapproved(self):
         extra = f'SUITE gpu SCREEN draw/two intent sha256={DIGEST} mode=1280x800 binding=1280x800'
-        result = self.run_score([self.line, extra])
+        result = self.run_score([self.line, extra], proof=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('SCREENS PASS approved=1 matched=1 unapproved=1', result.stdout)
         self.assertIn('draw/two intent', result.stdout)

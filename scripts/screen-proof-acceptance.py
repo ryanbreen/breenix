@@ -287,7 +287,7 @@ def accept(commit, captures, phase='checkpoints', candidates=None):
             if suite != 'console':
                 # resources_suite already ran the SCREEN validator on native GPU.
                 if platform != 'metal':
-                    screens['score'](manifest, serial, table)
+                    screens['score'](manifest, serial, table, run=boot)
                 actual = [list(m.groups()) for m in re.finditer(
                     rf'^SUITE {suite} SCREEN (\S+) (\S+) ', serial, re.M)]
                 expected = checkpoint_inventory(suite, serial, inventories[suite], phase, platform)
