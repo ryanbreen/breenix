@@ -96,9 +96,11 @@ mod shutdown;
 mod signal_wake;
 
 fn main() {
+    libuitest::startup::mark("compositor-exec");
     let paths = settings::Paths::environment();
     let loaded = settings::Settings::load(&paths.bwm).unwrap_or_else(|e| { eprintln!("[bwm] config: {e}"); process::exit(1); });
     let _ = SETTINGS.set(loaded);
+    libuitest::startup::mark("config-ready");
     print!("[bwm] settings font.size={} clock.visible={}\n", settings().font_size, settings().clock_visible);
     let signal_wake = initialize_shutdown();
     print!("[bwm] Breenix Window Manager starting... (v2-chromeless-skip)\n");
@@ -143,6 +145,7 @@ fn main() {
         }
     };
 
+    libuitest::startup::mark("scene-ready");
     // The GPU core composes the desktop (`compositor`); there is no CPU-only fallback.
     let mut gpu = match Compositor::open(screen_w as u32, screen_h as u32, px(APPBAR_HEIGHT) as u32, ui().scale as u32) {
         Ok(c) => c,
@@ -153,6 +156,7 @@ fn main() {
     };
     print!("[bwm] GPU compositing mode (GPU core), display: {}x{}\n", screen_w, screen_h);
 
+    libuitest::startup::mark("targets-ready");
     let mut ui_font: Option<CachedFont> = {
         let config = FontConfig::load();
         print!("[bwm] fonts {config:?}\n");
@@ -167,6 +171,7 @@ fn main() {
         font
     };
 
+    libuitest::startup::mark("fonts-ready");
     // Paint the decorative background once; each desktop repaint copies it.
     paint_background(&mut gpu.background);
 
@@ -223,6 +228,7 @@ fn main() {
         Ok(line) => print!("[bwm] desktop fills the scanout: {}\n", line),
         Err(e) => print!("[bwm] desktop fill check FAILED: {}\n", e),
     }
+    libuitest::startup::mark("desktop-ready");
     let mut frame_failed = false;
     // Another process holds the display: bwm composes again when it has it back.
     let mut display_lost = false;

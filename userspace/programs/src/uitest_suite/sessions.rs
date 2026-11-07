@@ -31,6 +31,11 @@ fn start(kiosk: bool) -> CaseResult {
     let connected = monotonic_ns()? - began;
     let result = first_window(&mut session, "startup app", began + 300_000_000);
     let elapsed = monotonic_ns()? - began;
+    if result.is_err() || elapsed > 300_000_000 {
+        for (name, ns) in session.startup_times() {
+            breenix_suite::suite::value(name, ns as i64, "ns", None);
+        }
+    }
     // Preserve the stage evidence for diagnosing a miss; keep the 300 ms bound.
     let result = result.map_err(|error| format!("{error:?}; startup_ns={elapsed}; connected_ns={connected}; stages={}",
         std::fs::read_to_string("/proc/breenix/stage-composites").unwrap_or_else(|e| e.to_string())));

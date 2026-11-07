@@ -19,3 +19,5 @@ pub mod arena;
 pub mod artifacts;
 #[cfg(target_os = "breenix")]
 mod collect;
+
+pub mod startup;

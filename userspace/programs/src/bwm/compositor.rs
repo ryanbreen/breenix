@@ -137,7 +137,9 @@ impl Compositor {
     /// targets, which the caller draws. The pointer is drawn at `scale` pixels per bitmap cell.
     pub fn open(width: u32, height: u32, appbar_height: u32, scale: u32) -> Result<Self, String> {
         wait_for_admission()?;
+        libuitest::startup::mark("context-begin");
         let context = gpu::context_create().map_err(|e| format!("context: errno {}", -e))?;
+        libuitest::startup::mark("context-ready");
         let (desktop, background) = match (Surface::new(width as usize, height as usize, Format::BGRX),
             Surface::new(width as usize, height as usize, Format::BGRX)) {
             (Ok(d), Ok(b)) => (d, b),

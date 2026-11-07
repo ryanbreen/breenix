@@ -13,6 +13,7 @@ pub struct AppStderr { pub bytes: Vec<u8>, pub dropped: u64 }
 
 pub struct Session {
     arena: Option<crate::arena::Arena>,
+    startup: Option<crate::startup::Trace>,
     held_window: Option<u64>,
     environment: SessionEnvironment,
     configured: bool,
@@ -67,14 +68,19 @@ impl Session {
         let mode = libbreenix::gpu::current_mode().map_err(|e| format!("session mode: {e}"))?;
         let mode = format!("{}x{}@{}", mode.width, mode.height, mode.scale);
         let environment = SessionEnvironment::new(case_pid, seed, &mode)?;
-        let mut session = Self { arena: None, held_window: None, environment, configured: false, devices: None, input_done: false, stderr: None, control, supervisor: 0, names: BTreeMap::new(), output: BTreeMap::new(), exits: Vec::new(), launched: None, stopped: false, compositor: None, excluded: BTreeSet::new() };
+        let mut session = Self { arena: None, startup: None, held_window: None, environment, configured: false, devices: None, input_done: false, stderr: None, control, supervisor: 0, names: BTreeMap::new(), output: BTreeMap::new(), exits: Vec::new(), launched: None, stopped: false, compositor: None, excluded: BTreeSet::new() };
         let end = now()? + 1000;
         while session.supervisor == 0 || session.devices.is_none() { session.poll(end)?; }
         session.control.send(&Message::Configure { case_pid, seed, mode })?;
         let end = now()? + 1000;
         while !session.configured { session.poll(end)?; }
+        session.startup = Some(crate::startup::Trace::open(std::path::Path::new(session.config_root()))?);
+        session.startup.as_ref().unwrap().mark("case-connected");
         session.arena = Some(crate::arena::Arena::open(&std::path::Path::new(session.config_root()).join("evidence.arena"))?);
         Ok(session)
+    }
+    pub fn startup_times(&self) -> Vec<(&'static str, u64)> {
+        self.startup.as_ref().map_or_else(Vec::new, |trace| trace.snapshot())
     }
     pub fn arena_mut(&mut self) -> &mut crate::arena::Arena { self.arena.as_mut().expect("connected evidence arena") }
     /// Wait for the supervisor to witness the live window and register its remnant hold.
@@ -128,7 +134,10 @@ impl Session {
             }).collect::<Result<_, _>>()?;
             let records = std::fs::read_to_string("/proc/breenix/composites")
                 .map_err(|e| format!("wait-window title={title:?} composites: {e}"))?;
-            if let Some(ready) = wait.observe(&registry, &records, Self::now_ns()?)? { return Ok(ready); }
+            if let Some(ready) = wait.observe(&registry, &records, Self::now_ns()?)? {
+                if let Some(trace) = &self.startup { trace.at("first-composite", ready.presented_ns); }
+                return Ok(ready);
+            }
             self.poll_once().map_err(|e| format!("wait-window title={title:?}: {e}"))?;
             if let Some(pid) = self.compositor {
                 if let Some(exit) = self.exits.iter().find(|exit| exit.pid == pid) {

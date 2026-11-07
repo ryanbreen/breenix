@@ -284,6 +284,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     },
                     Ok(Some(Message::Configure { case_pid, seed, mode })) => {
                         if environment.is_some() || !output.is_empty() { return Err("session already configured or launched".into()); }
+                        let configure_began = crate::startup::now();
                         let config = SessionEnvironment::new(case_pid, seed, &mode)?;
                         // The parent directory is harness-owned. Refuse a symlink or
                         // an untrusted owner before creating a case-PID directory.
@@ -302,14 +303,21 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                         environment = Some(config);
                         let root = Path::new(environment.as_ref().unwrap().config_root());
                         crate::fixtures::prepare(root)?;
+                        let trace = crate::startup::Trace::create(root)?;
+                        trace.at("configure-begin", configure_began);
+                        trace.mark("fixtures-ready");
                         crate::fixtures::verify(root)?;
+                        trace.mark("pins-ready");
                         evidence.configure(root)?;
+                        trace.mark("arena-ready");
                         channel.queue(&Message::Configured)?;
                     }
                     Ok(Some(Message::LaunchApp { argv, uid })) => {
                         let env = environment.as_ref().ok_or("session not configured")?.environment();
+                        let trace = crate::startup::Trace::open(Path::new(environment.as_ref().unwrap().config_root()))?;
+                        trace.mark("app-request");
                         match launch(&argv, &env, uid, false) {
-                            Ok((pid, pipe)) => { output.insert(pid, pipe); channel.queue(&Message::Launched(pid))?; }
+                            Ok((pid, pipe)) => { trace.mark("app-forked"); output.insert(pid, pipe); channel.queue(&Message::Launched(pid))?; }
                             Err(error) => channel.queue(&Message::Error(error))?,
                         }
                     }
@@ -318,7 +326,10 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                         let mut env = environment.as_ref().ok_or("session not configured")?.environment();
                         env.push(devices.as_ref().ok_or("session devices missing")?.environment());
                         let path = if kiosk { "/usr/libexec/breenix/kiosk_test" } else { "/usr/bin/bwm" };
+                        let trace = crate::startup::Trace::open(Path::new(environment.as_ref().unwrap().config_root()))?;
+                        trace.mark("compositor-request");
                         let (pid, pipes) = launch(&[path.as_bytes().to_vec()], &env, 0, kiosk)?;
+                        trace.mark("compositor-forked");
                         compositor = Some(pid);
                         ownership.apply(Event::Started, &mut Display)?;
                         output.insert(pid, pipes);

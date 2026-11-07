@@ -6,6 +6,7 @@ use std::os::unix::ffi::OsStrExt;
 use breengel::{Event, Window};
 
 fn main() {
+    libuitest::startup::mark("app-exec");
     let args: Vec<_> = std::env::args_os().collect();
     let env: Vec<Vec<u8>> = std::env::vars_os().map(|(key, value)| {
         let mut entry = key.as_bytes().to_vec();
@@ -29,6 +30,7 @@ fn main() {
         .unwrap_or_else(|error| { eprintln!("window: {error}"); std::process::exit(1); });
     win.surface().unwrap_or_else(|error| { eprintln!("surface: {error}"); std::process::exit(1); });
     win.present().unwrap_or_else(|error| { eprintln!("present: {error}"); std::process::exit(1); });
+    libuitest::startup::mark("app-commit");
     if options.session_probe {
         extern "C" {
             fn getuid() -> u32;

@@ -151,7 +151,9 @@ impl Kiosk {
         if let Some(c) = &self.compositor {
             return Ok(c.clone());
         }
+        libuitest::startup::mark("context-begin");
         let c = Arc::new(Mutex::new(Compositor::new()?));
+        libuitest::startup::mark("targets-ready");
         self.compositor = Some(c.clone());
         Ok(c)
     }
@@ -488,6 +490,7 @@ fn drain_session_input(reader: &libbreenix::input::Reader) -> Result<(), libbree
 }
 
 fn main() {
+    libuitest::startup::mark("compositor-exec");
     let epoch = match window::claim_compositor() {
         Ok(epoch) => epoch,
         Err(e) => {
@@ -512,6 +515,7 @@ fn main() {
         std::process::exit(1);
     }
     let scene = scene.unwrap_or(-1);
+    libuitest::startup::mark("scene-ready");
     let mut pending = Vec::new();
     loop {
         let mut fds = [PollFd { fd: 0, events: POLLIN, revents: 0 },
