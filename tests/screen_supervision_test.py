@@ -38,14 +38,16 @@ enum Waited{Exited(i32),TimedOut(u64),ClockStopped(u64),Failed(Error),Published(
 fn read_message(_:Fd)->Option<[u8;1]>{None}
 fn write_message(_:Fd,_:&[u8;1])->bool{true}
 mod crate_stage{pub fn serve(_:&[u8;1])->[u8;1]{[0]}}
+struct ResultPipe<'a>(std::marker::PhantomData<&'a ()>);
+impl ResultPipe<'_>{fn drain(&mut self){} fn poll_fd(&self)->Option<Fd>{None}}
 WAIT
 #[test] fn frozen_observation_and_dead_child_are_bounded(){
  screen::CLOCK.start(1);
- let waited=wait_exit(7,Some(1),10,&mut ||{},None,None,Some(Fd(1)),None);
+ let waited=wait_exit(7,Some(1),10,&mut ||{},None,None,Some(Fd(1)),None,None);
  assert!(matches!(waited,Waited::TimedOut(_)));
  assert!(NOW.load(Ordering::SeqCst)>=120_000_000_001);
  let start=monotonic_ns();
- let waited=wait_exit(7,start,1000,&mut ||{},None,None,None,None);
+ let waited=wait_exit(7,start,1000,&mut ||{},None,None,None,None,None);
  assert!(matches!(waited,Waited::TimedOut(ms) if ms>=1000));
  assert!(NOW.load(Ordering::SeqCst)<122_000_000_000);
 }

@@ -26,6 +26,11 @@ class ScreenAcceptance(unittest.TestCase):
         # Phase two draws intent frames only in ARM proof captures; the native run is a production companion.
         self.assertEqual(self.api['checkpoint_inventory']('gpu', serial, ends, 'gallery', 'metal'), ends)
 
+    def test_gallery_inventory_requires_numbered_pages_from_manifest(self):
+        serial='SUITE gpu CASE performance/upload-bandwidth PASS ms=1 sha256='+'a'*64+'\n'
+        expected=self.api['checkpoint_inventory']('gpu',serial,[],'gallery')
+        self.assertEqual(expected,[['performance/upload-bandwidth','intent-p1'],['performance/upload-bandwidth','intent-p2']])
+
     def test_gallery_gate_keeps_failed_boot_records_and_requires_both_sets(self):
         with tempfile.TemporaryDirectory() as tmp:
             p = Path(tmp)

@@ -2245,7 +2245,7 @@ def parse_breengel_tables(serial):
 def breengel_memory_accounting(serial):
     """Keep the raw verdict; account only the coordinator's measured intermediate exception."""
     shapes = {
-        'START': r'SUITE breengel START cases=(\d+)',
+        'START': r'SUITE breengel START cases=(\d+)(?: pace_ms=[1-9][0-9]*)?(?: screen_proof=on)?',
         'PASS': r'SUITE breengel CASE (\S+) PASS ms=\d+(?: sha256=[a-f0-9]{64})?',
         'FAIL': r'SUITE breengel CASE (\S+) FAIL ms=\d+(?: sha256=[a-f0-9]{64})? msg=(.*)',
         'DONE': r'SUITE breengel DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)',
@@ -2396,7 +2396,7 @@ def breengel_fronts_suite(serial, boot, step_number=1):
             fatal + [r'KERNEL PANIC[:!]', r'SUITE_SEQUENCE (?:STALLED|FAIL)']):
         raise ValueError('incomplete or fatal BreenGL capture')
     shapes = {
-        'START': r'SUITE breengel START cases=(\d+)',
+        'START': r'SUITE breengel START cases=(\d+)(?: pace_ms=[1-9][0-9]*)?(?: screen_proof=on)?',
         'PASS': r'SUITE breengel CASE ([a-z0-9/-]+) PASS ms=(\d+)(?: sha256=(?P<sha256>[0-9a-f]{64}))?',
         'FAIL': r'SUITE breengel CASE ([a-z0-9/-]+) FAIL ms=(\d+)(?: sha256=(?P<sha256>[0-9a-f]{64}))? msg=(\S.*)',
         'DONE': r'SUITE breengel DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)',
@@ -2407,8 +2407,9 @@ def breengel_fronts_suite(serial, boot, step_number=1):
         'WAIT': r'SUITE breengel WAIT .*',
     }
     screen = runpy.run_path(str(root / 'scripts/screen-verdict.py'))
-    screen['score'](manifest, serial, json.loads((root / 'docs/suites/frames/screens.json').read_text()))
+    screen['score'](manifest, serial, json.loads((root / 'docs/suites/frames/screens.json').read_text()), run=boot, backend=6)
     shapes['SCREEN'] = screen['RECORD'].pattern
+    shapes['SCREENPERTURB'] = screen['PERTURB_RECORD'].pattern
     parsed = []
     for line in serial.splitlines():
         if not line.startswith('SUITE breengel '):
@@ -2471,7 +2472,7 @@ def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
         raise ValueError('resources GPU capture incomplete, fatal or stalled')
     # These are the suite-verdict wire shapes, with the existing memory oracle.
     shapes = {
-        'START': r'SUITE gpu START cases=(\d+)',
+        'START': r'SUITE gpu START cases=(\d+)(?: screen_proof=on)?',
         'PASS': r'SUITE gpu CASE ([a-z0-9/-]+) PASS ms=(\d+)(?: sha256=[0-9a-f]{64})?',
         'FAIL': r'SUITE gpu CASE ([a-z0-9/-]+) FAIL ms=(\d+)(?: sha256=[0-9a-f]{64})? msg=(\S.*)',
         'DONE': r'SUITE gpu DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)',
@@ -2482,8 +2483,9 @@ def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
         'WAIT': r'SUITE gpu WAIT ([a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*) until=(\d+) for=(\d+) result=[a-z0-9]+(?:-[a-z0-9]+)*',
     }
     screen = runpy.run_path(str(root / 'scripts/screen-verdict.py'))
-    screen['score'](manifest, serial, json.loads((root / 'docs/suites/frames/screens.json').read_text()))
+    screen['score'](manifest, serial, json.loads((root / 'docs/suites/frames/screens.json').read_text()), run=boot, backend=6)
     shapes['SCREEN'] = screen['RECORD'].pattern
+    shapes['SCREENPERTURB'] = screen['PERTURB_RECORD'].pattern
     parsed = []
     for line in serial.splitlines():
         if 'SUITE gpu ' not in line:

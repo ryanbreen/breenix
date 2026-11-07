@@ -204,7 +204,7 @@ def console_shadow(site, hasher, image_shadow='', account='root'):
 
 
 def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False, xhci_fault=None,
-               install_partition=None, operator=None, watchdog_fault=None, power_token=None, gt710_upload=None):
+               install_partition=None, operator=None, watchdog_fault=None, power_token=None, gt710_upload=None, screen_proof=False, screen_known=None):
     """`operator`, the operator file (operator_account), is written for install-persistent's userland only."""
     if watchdog_fault not in (None, 'feeder-hang', 'health-hang') or (watchdog_fault and mode != 'default'):
         raise ValueError('invalid watchdog fault-test target')
@@ -278,8 +278,15 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         if mode == 'suite' and ',' in suite:
             files['suite-sequence'] = suite + '\n'
         # Clear a prior route when reusing a root for a suite without this facility.
-        commands = ['rm /etc/breenix/evidence-route']
-        if gt710_upload and mode == 'suite' and {'window-manager', 'ui-testing'}.intersection(suite.split(',')):
+        commands = ['rm /etc/breenix/evidence-route', 'rm /etc/breenix/screen-proof', 'rm /etc/breenix/screen-known']
+        if screen_proof:
+            files['screen-proof'] = 'on\n'
+            digests = (screen_known or {}).get('digests', [])
+            if not isinstance(digests, list) or len(digests) > 4096 or any(
+                    not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value) for value in digests):
+                raise ValueError('invalid screen-known digest list')
+            files['screen-known'] = ''.join(value + '\n' for value in sorted(set(digests)))
+        if gt710_upload and mode == 'suite' and ({'window-manager', 'ui-testing'} | ({'gpu', 'breengel'} if screen_proof else set())).intersection(suite.split(',')):
             files['evidence-route'] = gt710_upload + '\n'
         for name, text in files.items():
             source = scratch / name

@@ -63,3 +63,39 @@ u32 nonzero pixel count followed by one four-byte pixel. The encoder selects
 RLE only when its payload is smaller than raw; ties use raw. Names are at
 most 255 bytes. The decoded picture limit is 2560 × 1600 × 4 bytes. The
 encoder and decoder are shared by the guest, kernel sink and host verifier.
+
+## Metal checkpoint captures
+
+For an automated GPU or BreenGL checkpoint run, `metal-run boot --suite gpu
+--screen-proof --screen-known /path/to/candidates/manifest.json` stages the
+manifest's distinct digests as `/etc/breenix/screen-known`. Omit `--screen-known`
+to request new pictures for the run. The run record retains the manifest path,
+file digest and suppression list. Ordinary staging clears the list and mode flag.
+The staging regression check is in `tests/metal_tools_test.py`.
+
+The shared runner queues SCR1 records beside each case's screen handoff, then
+uploads them from the parent in checkpoint order. Known digests still produce
+SCREEN records; their pixels are omitted. The dedicated
+`<evidence-route>/screens/pictures/N` stream uses the suite-panel ordered sender,
+with requests at most 2 MiB. It has its own indices so SCR1 bytes are distinct
+from the native BreenGL judged-picture stream. Both streams count against the
+receiver's existing 64 MiB per-boot limit, including across suite sequences.
+A refused upload produces a refusal record; partial transfers are not gallery
+candidates.
+
+Each completed record emits `SCREEN_UPLOAD <suite> <case> <checkpoint>
+first=<N> parts=<count> bytes=<length> sha256=<wire digest>`. This digest covers
+the complete encoded SCR1 record; SCREEN retains the canonical-pixel digest.
+
+After the boot, export host evidence with:
+
+```sh
+python3 tools/screen-gallery/export.py --metal-boot /path/to/boot \
+  --known-candidates /path/to/candidates/manifest.json --output /path/to/output
+```
+
+The exporter checks ordered part receipts, the aggregate wire digest, SCR1's
+pixel digest and identity against serial. A missing uploaded digest may be
+filled from the named manifest only after decoding its PNG and matching the
+canonical B,G,R,255 SHA-256 to serial. The resulting candidates carry this metal
+boot's id and commit. This operation creates candidates, not approvals.

@@ -105,6 +105,7 @@ pub enum ProcEntryType {
     ShowcasePace,
     ScreenCheckpoints,
     ScreenProof,
+    DisplayCrc,
     /// /proc/breenix/ext2 - mounted ext2 allocation counters
     Ext2,
     /// /proc/breenix/frames - allocated physical frames by allocation site
@@ -212,6 +213,7 @@ impl ProcEntryType {
             ProcEntryType::ShowcasePace => "pace",
             ProcEntryType::ScreenCheckpoints => "screen-checkpoints",
             ProcEntryType::ScreenProof => "screen-proof",
+            ProcEntryType::DisplayCrc => "display-crc",
             ProcEntryType::BootRibbon => "boot-ribbon",
             ProcEntryType::BootSerial => "boot-serial",
             ProcEntryType::BootSerialTimed => "boot-serial-timed",
@@ -297,6 +299,7 @@ impl ProcEntryType {
             ProcEntryType::ShowcasePace => "/proc/breenix/pace",
             ProcEntryType::ScreenCheckpoints => "/proc/breenix/screen-checkpoints",
             ProcEntryType::ScreenProof => "/proc/breenix/screen-proof",
+            ProcEntryType::DisplayCrc => "/proc/breenix/display-crc",
             ProcEntryType::BootRibbon => "/proc/breenix/boot-ribbon",
             ProcEntryType::BootSerial => "/proc/breenix/boot-serial",
             ProcEntryType::BootSerialTimed => "/proc/breenix/boot-serial-timed",
@@ -382,6 +385,7 @@ impl ProcEntryType {
             ProcEntryType::StageControl => 208,
             ProcEntryType::ScreenCheckpoints => 213,
             ProcEntryType::ScreenProof => 214,
+            ProcEntryType::DisplayCrc => 222,
             ProcEntryType::ShowcasePace => 207,
             ProcEntryType::BootRibbon => 204,
             ProcEntryType::BootSerial => 205,
@@ -544,6 +548,7 @@ pub fn init() {
 
     procfs.entries.push(ProcEntry::new(ProcEntryType::ScreenCheckpoints));
     procfs.entries.push(ProcEntry::new(ProcEntryType::ScreenProof));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::DisplayCrc));
     procfs.entries.push(ProcEntry::new(ProcEntryType::StageControl));
     procfs.entries.push(ProcEntry::new(ProcEntryType::ShowcasePace));
     procfs.entries.push(ProcEntry::new(ProcEntryType::BootRibbon));
@@ -871,7 +876,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::BootSerialTimed|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::Composites|ProcEntryType::WindowPipeline|ProcEntryType::WindowPipelineFull|ProcEntryType::InputLedger|ProcEntryType::InputReplay))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::DisplayCrc|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::BootSerialTimed|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::Composites|ProcEntryType::WindowPipeline|ProcEntryType::WindowPipelineFull|ProcEntryType::InputLedger|ProcEntryType::InputReplay))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -908,6 +913,12 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             let caller = crate::window::Caller::current().map_err(|e| -e)?;
             if !caller.is_root() { return Err(-1); }
             text(crate::window::scene::history_text())
+        }
+        ProcEntryType::DisplayCrc => {
+            if !crate::test_control::enabled() { return Err(-38); }
+            let caller = crate::window::Caller::current().map_err(|e|-e)?;
+            if !caller.is_root() { return Err(-1); }
+            crate::gpu::display_crc_summary().map(|s|s.into_bytes()).map_err(|e|-(e as i32))
         }
         ProcEntryType::ScreenProof => {
             #[cfg(target_arch="aarch64")]

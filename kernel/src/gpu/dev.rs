@@ -21,6 +21,22 @@ pub fn backend() -> u32 {
     BACKEND.load(Ordering::Acquire)
 }
 
+/// The native output control is a driver boundary. ARM's virtual displays
+/// retain latched-binding readback/host-renderer attestation and refuse the arm.
+pub fn output_perturb_supported() -> bool {
+    cfg!(target_arch = "x86_64") && backend() == gpu_abi::backend::GK208
+}
+
+/// DISARM_ALL restores any output method saved by the native checkpoint control.
+/// Virtual backends, including ARM's counterpart, have no saved hardware method.
+pub fn restore_output_perturbation() -> Result<(), i32> {
+    #[cfg(target_arch = "x86_64")]
+    if backend() == backend::GK208 {
+        return crate::gk208::display_crc::restore_perturbation().map_err(|_| crate::syscall::errno::EIO);
+    }
+    Ok(())
+}
+
 /// Period and advance deadline for physical presentation. VirGL and SVGA's
 /// ARM-capable counterpart uses completion-driven presents, with no periodic deadline.
 pub fn presentation_schedule() -> Option<(u64,u64)> {

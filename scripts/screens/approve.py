@@ -166,10 +166,16 @@ def candidates(path):
 
 
 def native_row(row):
-    fields(row, {'out', 'raster', 'config', 'crc', 'derived_from_run', 'commit'}, {'crc2'})
+    fields(row, {'out', 'raster', 'config', 'crc', 'derived_from_run', 'commit'},
+           {'crc2', 'backend', 'secondary_absent'})
+    absent = row.get('crc2') == 'none'
+    require((row.get('backend') == 6 and type(row['backend']) is int and
+             row.get('secondary_absent') == 'gk208-rg-no-words-u13') if absent else
+            'secondary_absent' not in row and ('backend' not in row or
+             (type(row['backend']) is int and row['backend'] == 6)), 'invalid native secondary absence')
     require(matches(r'sor[0-9]+', row['out']) and matches(MODE, row['raster']) and
-            matches(HEX64, row['config']) and matches(HEX8, row['crc']) and
-            ('crc2' not in row or matches(HEX8, row['crc2'])) and
+            matches(HEX64, row['config']) and matches(HEX8, row['crc']) and row['crc'] != '00000000' and
+            ('crc2' not in row or absent or (matches(HEX8, row['crc2']) and row['crc2'] != '00000000')) and
             nonempty(row['derived_from_run']) and matches(HEX40, row['commit']), 'invalid native row')
     return row['out'], row['raster'], row['config']
 
@@ -265,9 +271,16 @@ def derive_native(table, path, directory):
     spec = importlib.util.spec_from_file_location('screen_verdict', ROOT / 'scripts/screen-verdict.py')
     scorer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(scorer)
+    spec = importlib.util.spec_from_file_location('screen_crc_export', ROOT / 'scripts/metal/screen-crc-export.py')
+    codec = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(codec)
+    serial = (directory / 'serial.txt').read_text(encoding='utf-8')
+    suites = {capture['suite'] for capture in evidence.get('checkpoints', [])}
+    for suite in suites:
+        scorer.proof_mode(suite, serial, run)
     records = {}
     reported = set()
-    for line in (directory / 'serial.txt').read_text(encoding='utf-8').splitlines():
+    for line in serial.splitlines():
         case = re.match(rf'^SUITE ({NAME}) CASE ({NAME}/{NAME}) ', line)
         if case:
             reported.add((case[1], case[2]))
@@ -283,7 +296,8 @@ def derive_native(table, path, directory):
     seen = set()
     for capture in evidence['checkpoints']:
         fields(capture, IDENTITY | {'backend', 'output_config', 'binding_before', 'binding_after',
-                                    'elapsed_us', 'disarmed', 'display_error', 'status', 'samples'})
+                                    'elapsed_us', 'disarmed', 'display_error', 'status', 'samples'},
+               {'secondary_absent'})
         key = identity(capture)
         require(key not in seen, 'duplicate native checkpoint')
         seen.add(key)
@@ -325,17 +339,12 @@ def derive_native(table, path, directory):
         require(type(methods) is list and bool(methods) and all(type(m) is list and len(m) == 2 and
                 all(uint(v) for v in m) and m[0] % 4 == 0 for m in methods), 'invalid output methods')
         require([m[0] for m in methods] == sorted({m[0] for m in methods}), 'output methods must be unique and sorted')
-        samples = capture['samples']
-        require(type(samples) is list and 5 <= len(samples) <= 255, 'requires first written entry plus K=4 samples')
-        for sample in samples:
-            fields(sample, {'status', 'crc', 'crc2'})
-            require(type(sample['status']) is int and sample['status'] == 1 and
-                    matches(HEX8, sample['crc']) and sample['crc'] != '00000000' and
-                    matches(HEX8, sample['crc2']), 'unwritten or invalid CRC entry')
-        require(all(sample['crc'] == record['crc'] and sample['crc2'] == record['crc2']
-                    for sample in samples[1:]), 'unstable CRC or serial CRC mismatch')
+        crc, crc2 = codec.validate_record(capture)
+        require((crc, crc2) == (record['crc'], record['crc2']), 'unstable CRC or serial CRC mismatch')
         native = dict(out=config['out'], raster=config['raster'], config=digest(config),
                       crc=record['crc'], crc2=record['crc2'], derived_from_run=run['id'], commit=run['commit'])
+        if crc2 == 'none':
+            native.update(backend=6, secondary_absent=capture['secondary_absent'])
         native_key = native_row(native)
         parent['native'] = [row for row in parent.get('native', []) if native_row(row) != native_key] + [native]
     validate_table(table, path)

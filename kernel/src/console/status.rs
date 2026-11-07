@@ -230,7 +230,7 @@ fn parse(line: &[u8]) -> Option<Record<'_>> {
         "START" => {
             let mut fields = rest.split(' ');
             let total = field(fields.next()?, "cases=")?;
-            let (mut only, mut pace) = (false, false);
+            let (mut only, mut pace, mut proof) = (false, false, false);
             for extra in fields {
                 if let Some(value) = extra.strip_prefix("only=") {
                     if only || !selection(value) {
@@ -242,6 +242,8 @@ fn parse(line: &[u8]) -> Option<Record<'_>> {
                         return None;
                     }
                     pace = true;
+                } else if extra == "screen_proof=on" && matches!(id, "gpu" | "breengel") && !proof {
+                    proof = true;
                 } else {
                     return None;
                 }

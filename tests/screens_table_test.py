@@ -105,10 +105,16 @@ def validate(table_path):
         require(type(native) is list, 'native must be an array')
         native_keys = set()
         for item in native:
-            fields(item, {'out', 'raster', 'config', 'crc', 'derived_from_run', 'commit'}, {'crc2'})
+            fields(item, {'out', 'raster', 'config', 'crc', 'derived_from_run', 'commit'}, {'crc2', 'backend', 'secondary_absent'})
+            absent = item.get('crc2') == 'none'
+            require((type(item.get('backend')) is int and item['backend'] == 6 and
+                     item.get('secondary_absent') == 'gk208-rg-no-words-u13') if absent else
+                    'secondary_absent' not in item and ('backend' not in item or
+                    (type(item['backend']) is int and item['backend'] == 6)), 'invalid secondary absence')
             require(type(item['out']) is str and re.fullmatch(r'sor[0-9]+', item['out']) is not None and
                     matches(MODE, item['raster']) and matches(HEX64, item['config']) and
-                    matches(HEX8, item['crc']) and ('crc2' not in item or matches(HEX8, item['crc2'])) and
+                    matches(HEX8, item['crc']) and item['crc'] != '00000000' and
+                    ('crc2' not in item or absent or (matches(HEX8, item['crc2']) and item['crc2'] != '00000000')) and
                     nonempty(item['derived_from_run']) and matches(HEX40, item['commit']), 'invalid native row')
             native_key = (item['out'], item['raster'], item['config'])
             require(native_key not in native_keys, 'duplicate native configuration')

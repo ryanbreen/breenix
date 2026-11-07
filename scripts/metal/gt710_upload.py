@@ -1,5 +1,7 @@
 """Private, bounded actual-display-row upload for the powered boot's lease."""
 import hashlib
+import json
+import intent_manifest
 import http.client
 import os
 from pathlib import Path
@@ -12,6 +14,13 @@ MAX_BYTES=2<<20
 # R6 amended: includes startup, picture chunks and the final evidence slot.
 MAX_TOTAL=64<<20
 PREFIX='/gt710-upload/'
+def crc_checkpoint_cap(suite):
+    root = Path(__file__).resolve().parents[2]
+    path = root / 'docs/suites/frames/checkpoints.json'
+    if not path.exists(): path = Path(__file__).with_name('checkpoints.json')
+    checkpoints = json.loads(path.read_text())
+    return len(checkpoints[suite]) + intent_manifest.counts()[suite] + 4
+
 def prepare(directory,boot_id,site,suite=None):
     route=PREFIX+secrets.token_hex(32)
     intent=dict(id=boot_id,route=route,suite=suite)
@@ -77,6 +86,11 @@ def receive(handler):
             intent = root_intent.setdefault('suiteSlots', {}).setdefault(suite, dict(
                 id=root_intent['id'], route=root_intent['route'] + '/suites/' + suite, suite=suite))
             suite_directory = suite
+        boot_directory=m.boot_dir(intent['id']) if intent else None
+        proof = bool(boot_directory) and m.read_json(boot_directory / 'run.json', {}).get('screenProof') is True
+        screen = re.fullmatch(re.escape(intent.get('route', '')) + r'/screens/pictures/(0|[1-9]\d*)', route) if intent else None
+        screen_index = int(screen[1]) if screen else None
+        is_screen = screen_index is not None
         final=bool(intent) and route==intent.get('route','')+'/final'
         picture = re.fullmatch(re.escape(intent.get('route', '')) + r'/pictures/(0|[1-9]\d*)', route) if intent else None
         picture_index = int(picture[1]) if picture else None
@@ -84,19 +98,25 @@ def receive(handler):
         diagnostic = re.fullmatch(re.escape(intent.get('route', '')) + r'/diagnostics/([a-z][a-z0-9-]{0,63})', route) if intent else None
         diagnostic_label = diagnostic[1] if diagnostic else None
         is_diagnostic = diagnostic_label is not None
-        if (not intent or (route!=intent.get('route') and not final and not is_picture and not is_diagnostic)
-                or (is_picture and (intent.get('suite') not in ('breengel', 'window-manager', 'ui-testing') or not intent.get('complete')
+        if (not intent or (route!=intent.get('route') and not final and not is_picture and not is_diagnostic and not is_screen)
+                or (is_screen and (not proof or intent.get('suite') not in ('gpu', 'breengel') or not intent.get('complete')
+                    or intent.get('finalComplete') or screen_index != intent.get('screenUploads', 0)))
+                or (is_picture and (intent.get('suite') not in (('gpu', 'breengel', 'window-manager', 'ui-testing') if proof else ('breengel', 'window-manager', 'ui-testing')) or not intent.get('complete')
                     or intent.get('finalComplete') or picture_index != intent.get('pictureUploads', 0)))
-                or (is_diagnostic and (intent.get('suite') not in ('window-manager', 'ui-testing') or not intent.get('complete')
-                    or intent.get('finalComplete') or len(intent.get('diagnosticUploads', {})) >= (206 if intent.get('suite') == 'ui-testing' else 16)))
-                or (intent.get('finalComplete') if final else (False if is_picture or is_diagnostic else intent.get('complete')))
+                or (is_diagnostic and (not intent.get('complete') or intent.get('finalComplete') or
+                    (len(intent.get('diagnosticUploads', {})) >= (206 if intent.get('suite') == 'ui-testing' else 16)
+                     if intent.get('suite') in ('window-manager', 'ui-testing') else
+                     not (proof and intent.get('suite') in ('gpu', 'breengel') and
+                          re.fullmatch(r'crc-' + intent['suite'] + r'-[0-9a-f]{16}', diagnostic_label) and
+                          len(intent.get('diagnosticUploads', {})) < crc_checkpoint_cap(intent['suite'])))))
+                or (intent.get('finalComplete') if final else (False if is_picture or is_diagnostic or is_screen else intent.get('complete')))
                 or (final and not intent.get('complete'))
                 or lease.get('id')!=intent.get('id') or lease.get('state')!='powered'):
             handler.send_error(404);return
         boot_directory=m.boot_dir(intent['id'])
         directory = boot_directory / 'native-suites' / suite_directory if suite_directory else boot_directory
         directory.mkdir(parents=True, exist_ok=True)
-        filename = f'diagnostic-{diagnostic_label}.bin' if is_diagnostic else f'gt710-breengel-{picture_index:04}.rle' if is_picture else ('gt710-final.rle' if final else 'gt710-pixels.rle')
+        filename = f'screen-part-{screen_index:04}.bin' if is_screen else f'diagnostic-{diagnostic_label}.bin' if is_diagnostic else f'gt710-breengel-{picture_index:04}.rle' if is_picture else ('gt710-final.rle' if final else 'gt710-pixels.rle')
         # Publishing the verified payload consumes the slot even if the
         # bookkeeping below has not finished (or its writer was interrupted).
         if (directory/filename).exists():
@@ -108,7 +128,7 @@ def receive(handler):
             if (handler.headers.get('Transfer-Encoding') or not 0<length<=MAX_BYTES
                     or not re.fullmatch('[a-f0-9]{64}',expected) or (boot_directory/'ended').exists()):
                 raise ValueError('invalid display artifact framing')
-            total = root_intent.get('aggregateBytes', 0) if suite_directory else intent.get('bytes', 0) + intent.get('pictureBytes', 0) + intent.get('diagnosticBytes', 0)
+            total = root_intent.get('aggregateBytes', 0) if suite_directory else intent.get('bytes', 0) + intent.get('pictureBytes', 0) + intent.get('diagnosticBytes', 0) + intent.get('screenBytes', 0)
             if total + length > MAX_TOTAL:
                 raise ValueError('native per-boot evidence exceeds 64 MiB')
             handler.connection.settimeout(30)
@@ -123,7 +143,10 @@ def receive(handler):
             temporary.replace(directory/filename)
             receipt=dict(id=intent['id'],route=route,complete=True,bytes=length,
                          sha256=expected,receivedAt=m.now())
-            if is_diagnostic:
+            if is_screen:
+                intent['screenUploads'] = screen_index + 1
+                intent['screenBytes'] = intent.get('screenBytes', 0) + length
+            elif is_diagnostic:
                 intent.setdefault('diagnosticUploads', {})[diagnostic_label] = receipt
                 intent['diagnosticBytes'] = intent.get('diagnosticBytes', 0) + length
             elif is_picture:
@@ -146,7 +169,7 @@ def receive(handler):
         # window. Keep the slot lock until they finish; a persistence error
         # propagates to the service instead of attempting a second HTTP status
         # after the 200 already sent.
-        receipt_name = f'native-diagnostic-{diagnostic_label}.json' if is_diagnostic else f'native-picture-upload-{picture_index:04}.json' if is_picture else ('native-final-upload.json' if final else 'native-upload.json')
+        receipt_name = f'screen-part-upload-{screen_index:04}.json' if is_screen else f'native-diagnostic-{diagnostic_label}.json' if is_diagnostic else f'native-picture-upload-{picture_index:04}.json' if is_picture else ('native-final-upload.json' if final else 'native-upload.json')
         m.write_json(directory/receipt_name,receipt)
         if suite_directory:
             root_intent['aggregateBytes'] = total + length

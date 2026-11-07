@@ -265,6 +265,7 @@ class ApproveTest(unittest.TestCase):
         (directory / 'run.json').write_text(json.dumps(run))
         row = self.rows[0]
         (directory / 'serial.txt').write_text(
+            'SUITE gpu START cases=1\n'
             'SUITE gpu CASE draw/picture-0 PASS ms=1\n'
             f'SUITE gpu SCREEN draw/picture-0 end sha256={row["sha256"]} mode=2x1 binding=2x1 '
             'crc=12345678 crc2=abcdef12 raster=1280x1024 out=sor0\n')
@@ -278,6 +279,20 @@ class ApproveTest(unittest.TestCase):
         evidence = {'version': 1, 'run': run['id'], 'commit': run['commit'], 'checkpoints': [capture]}
         (directory / 'screen-crc.json').write_text(json.dumps(evidence))
         return directory, evidence
+
+    def test_native_rejects_disagreeing_proof_modes(self):
+        self.run_import()
+        directory, _ = self.native_fixture()
+        run_path = directory / 'run.json'
+        run = json.loads(run_path.read_text())
+        run['screenProof'] = True
+        run_path.write_text(json.dumps(run))
+        self.run_import(native=directory, good=False)
+        run['screenProof'] = False
+        run_path.write_text(json.dumps(run))
+        serial = directory / 'serial.txt'
+        serial.write_text(serial.read_text().replace('START cases=1', 'START cases=1 screen_proof=on'))
+        self.run_import(native=directory, good=False)
 
     def test_native_refuses_unwritten_zero_crc_entries(self):
         self.run_import()

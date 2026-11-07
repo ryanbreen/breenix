@@ -42,7 +42,7 @@ required-features = ["std"]
 
 [features]
 default = []
-std = []
+std = ["gpu-abi/alloc"]
 runtime = []
 # Suite-mode upload auditing; the harness lives in the breenix-suite package.
 suite = ["std"]

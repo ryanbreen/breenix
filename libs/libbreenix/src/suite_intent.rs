@@ -2,56 +2,102 @@
 use crate::{gpu::{self, abi::{self, stream::encode}}, graphics, time};
 use std::vec::Vec;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) struct Layout {
     pub scale: u32,
-    pub divisor: u32,
     pub picture: [u32; 4],
     pub border: Option<[u32; 4]>,
+    tiles: Vec<([u32; 4], [u32; 4])>,
 }
 
-/// Coordinator's large-picture ruling: integer enlargement, exact mode, or decimation.
-pub(super) fn layout(picture: [u32; 2], mode: [u32; 2]) -> Result<Layout, &'static str> {
+fn centered(mode: [u32; 2], size: [u32; 2], scale: u32,
+    mut tiles: Vec<([u32; 4], [u32; 4])>) -> Layout
+{
+    let [w, h] = size;
+    let (x, y) = ((mode[0] - w) / 2, (mode[1] - h) / 2);
+    for (dst, _) in &mut tiles { dst[0] += x; dst[1] += y; }
+    Layout { scale, picture: [x, y, w, h],
+        border: Some([x - 2, y - 2, w + 4, h + 4]), tiles }
+}
+
+/// U11: pack whole source cells into bands, then pages, without resampling.
+pub(super) fn layout(picture: [u32; 2], mode: [u32; 2], cells: &[[u32; 4]])
+    -> Result<Vec<Layout>, &'static str>
+{
     let [w, h] = picture;
     let [mw, mh] = mode;
     if w == 0 || h == 0 || mw <= 64 || mh <= 64 || [w, h, mw, mh].iter().any(|&v| v > 16384) {
         return Err("intent-dimensions");
     }
     if picture == mode {
-        return Ok(Layout { scale: 1, divisor: 1, picture: [0, 0, w, h], border: None });
+        return Ok(vec![Layout { scale: 1, picture: [0, 0, w, h], border: None,
+            tiles: vec![([0, 0, w, h], [0, 0, w, h])] }]);
     }
     let scale = ((mw - 64) / w).min((mh - 64) / h);
-    let (scale, divisor, width, height) = if scale > 0 {
-        (scale, 1, w * scale, h * scale)
-    } else {
-        let k = w.div_ceil(mw - 64).max(h.div_ceil(mh - 64));
-        (1, k, w.div_ceil(k), h.div_ceil(k))
-    };
-    let (x, y) = ((mw - width) / 2, (mh - height) / 2);
-    Ok(Layout { scale, divisor, picture: [x, y, width, height],
-        border: Some([x - 2, y - 2, width + 4, height + 4]) })
-}
-
-/// Up to four GPU sample rectangles preserve exact k-spaced samples at partial edges.
-pub(super) fn samples(picture: [u32; 2], layout: Layout) -> Vec<([u32; 4], [u32; 4])> {
-    if layout.divisor == 1 {
-        return vec![(layout.picture, [0, 0, picture[0], picture[1]])];
+    if scale > 0 || (w <= mw - 4 && h <= mh - 4) {
+        let scale = scale.max(1);
+        return Ok(vec![centered(mode, [w*scale, h*scale], scale,
+            vec![([0, 0, w*scale, h*scale], [0, 0, w, h])])]);
     }
-    let k = layout.divisor;
-    let axes = |size: u32| {
-        let n = size / k;
-        let mut spans = Vec::new();
-        if n > 0 { spans.push((0, n, 0, n * k)); }
-        if size % k != 0 { spans.push((n, 1, n * k, 1)); }
-        spans
-    };
-    let mut tiles = Vec::new();
-    for (dy, dh, sy, sh) in axes(picture[1]) {
-        for (dx, dw, sx, sw) in axes(picture[0]) {
-            tiles.push(([layout.picture[0] + dx, layout.picture[1] + dy, dw, dh], [sx, sy, sw, sh]));
+    let (bw, bh) = (mw - 4, mh - 4);
+    let mut source = cells.to_vec();
+    if source.is_empty() {
+        if w <= bw && u64::from(w)*u64::from(h) > u64::from(bw)*u64::from(bh) {
+            // Without fixture boundaries, pages end on whole source rows.
+            for y in (0..h).step_by(bh as usize) { source.push([0, y, w, bh.min(h-y)]); }
+        } else {
+            // Wide strips retain their full height. Other folds use small cells;
+            // fixture panels supply their actual column/row boundaries instead.
+            let (cw, ch) = if h <= bh && w > bw { (bw, h) } else { (32.min(w), 32.min(h)) };
+            for y in (0..h).step_by(ch as usize) { for x in (0..w).step_by(cw as usize) {
+                source.push([x, y, cw.min(w-x), ch.min(h-y)]);
+            } }
         }
     }
-    tiles
+    let mut result = Vec::new();
+    let (mut x, mut y, mut row_h, mut width) = (0, 0, 0, 0);
+    let mut tiles = Vec::new();
+    for src in source {
+        let [sx, sy, sw, sh] = src;
+        if sw == 0 || sh == 0 || sx+sw > w || sy+sh > h || sw > bw || sh > bh {
+            return Err("intent-cell");
+        }
+        if x + sw > bw { x = 0; y += row_h; row_h = 0; }
+        if y + sh > bh {
+            result.push(centered(mode, [width, y+row_h], 1, std::mem::take(&mut tiles)));
+            x = 0; y = 0; row_h = 0; width = 0;
+        }
+        tiles.push(([x, y, sw, sh], src));
+        x += sw; width = width.max(x); row_h = row_h.max(sh);
+    }
+    if !tiles.is_empty() { result.push(centered(mode, [width, y+row_h], 1, tiles)); }
+    Ok(result)
+}
+
+pub(super) fn samples(_: [u32; 2], layout: Layout) -> Vec<([u32; 4], [u32; 4])> { layout.tiles }
+
+const MANIFEST: &str = include_str!("../../../scripts/metal/intent-pictures.tsv");
+
+pub(super) fn picture_pages(suite: &str, case: &str, source: [u32; 2], mode: [u32; 2])
+    -> Result<Vec<Layout>, &'static str>
+{
+    let row = MANIFEST.lines().filter(|s| !s.starts_with('#')).find(|s| {
+        let mut f = s.split('\t'); f.next(); f.next() == Some(suite) && f.next() == Some(case)
+    }).ok_or("intent-inventory")?;
+    let fields: Vec<_> = row.split('\t').collect();
+    let mut cells = Vec::new();
+    if fields[7] != "-" {
+        let expected = [fields[3].parse().map_err(|_| "intent-inventory")?,
+            fields[4].parse().map_err(|_| "intent-inventory")?];
+        if source != expected { return Err("intent-panel-dimensions"); }
+        let cuts = |s: &str| s.split(',').map(|n| n.parse::<u32>().map_err(|_| "intent-inventory"))
+            .collect::<Result<Vec<_>, _>>();
+        let (xs, ys) = (cuts(fields[7])?, cuts(fields[8])?);
+        for y in ys.windows(2) { for x in xs.windows(2) {
+            cells.push([x[0], y[0], x[1]-x[0], y[1]-y[0]]);
+        } }
+    }
+    layout(source, mode, &cells)
 }
 
 pub(super) fn configured(suite: &str) -> bool {
@@ -66,10 +112,9 @@ pub(super) fn pace_ms() -> u64 {
         .find_map(|s| s.trim().parse::<u32>().ok()).map_or(1000, u64::from)
 }
 
-pub(super) fn streams(source: [u32; 2], mode: [u32; 2], target: u64, texture: u64)
+pub(super) fn streams(source: [u32; 2], mode: [u32; 2], target: u64, texture: u64, layout: Layout)
     -> Result<Vec<Vec<u32>>, &'static str>
 {
-    let layout = layout(source, mode)?;
     let mut stream = Vec::new();
     encode::begin(&mut stream, target);
     encode::clear(&mut stream, 0xFF5A_5A5A);
@@ -118,7 +163,7 @@ impl Drop for Frame {
 }
 
 impl Frame {
-    fn present(&mut self, picture: &super::JudgedFrame, mode: abi::Mode) -> Result<(), &'static str> {
+    fn present(&mut self, picture: &super::JudgedFrame, mode: abi::Mode, layout: Layout) -> Result<(), &'static str> {
         let source = [picture.width as u32, picture.height as u32];
         self.context = gpu::context_create().map_err(|_| "intent-context")?;
         let start = super::monotonic_ns().ok_or("intent-clock")?;
@@ -141,7 +186,7 @@ impl Frame {
         let (r, _) = gpu::upload(self.context, self.texture, [0, 0, source[0], source[1]],
             &picture.pixels, source[0] * 4, abi::upload_source::B8G8R8A8, abi::purpose::IMAGE);
         if r != 0 { return Err("intent-upload"); }
-        for stream in streams(source, [mode.width, mode.height], self.target, self.texture)? {
+        for stream in streams(source, [mode.width, mode.height], self.target, self.texture, layout)? {
             let (r, submitted) = gpu::submit(self.context, &stream);
             if r != 0 { return Err("intent-submit"); }
             if gpu::wait(self.context, submitted.fence, 10_000_000_000).0 != 0 { return Err("intent-wait"); }
@@ -154,7 +199,7 @@ impl Frame {
         Ok(())
     }
 
-    fn snapshot(&self, suite: &str, case: &str, mode: abi::Mode) -> Result<([u8; 32], abi::Mode, abi::Mode), &'static str> {
+    fn snapshot(&self, suite: &str, case: &str, checkpoint: &str, mode: abi::Mode) -> Result<([u8; 32], abi::Mode, abi::Mode), &'static str> {
         // Records name device IDs, not userspace handles. Resolve this target's
         // identity through its readback before comparing the latched binding.
         let mut probe = [0; 4];
@@ -167,28 +212,41 @@ impl Frame {
         pixels.try_reserve_exact(len).map_err(|_| "intent-allocation")?;
         pixels.resize(len, 0);
         let mut record = [0; abi::record::SIZE];
-        if gpu::readback(0, [0, 0, mode.width, mode.height], &mut pixels, mode.width * 4, &mut record) != 0 {
-            return Err("intent-readback");
-        }
+        let crc = if gpu::caps().1.backend == abi::backend::GK208 {
+            super::screen::observe_checkpoint(suite,case,checkpoint,&mut pixels,&mut record).map_err(|_|"intent-readback")?
+        } else {
+            if gpu::readback(0, [0, 0, mode.width, mode.height], &mut pixels, mode.width * 4, &mut record) != 0 {
+                return Err("intent-readback");
+            }
+            None
+        };
         super::screen::validate(&record, mode, gpu::caps().1.backend, 0)?;
         for at in [abi::record::CONTEXT, abi::record::RESOURCE, abi::record::GENERATION] {
             if record[at..at+8] != expected[at..at+8] { return Err("intent-binding"); }
         }
         let hash = super::screen::canonical_hash(&mut pixels, mode)?;
-        super::screen::capture(suite, case, "intent", mode, hash, &pixels)?;
+        super::screen::capture(suite, case, checkpoint, mode, hash, &pixels)?;
+        if let Some(bytes) = crc { super::screen::intent_crc(bytes)?; }
         Ok((hash, mode, mode))
     }
 }
 
 pub(super) fn show(suite: &str, case: &str, picture: &super::JudgedFrame, pace: u64) {
-    let mut frame = Frame { context: 0, texture: 0, target: 0, display: false };
-    let result = gpu::current_mode().map_err(|_| "intent-mode").and_then(|mode|
-        frame.present(picture, mode).and_then(|()| frame.snapshot(suite, case, mode)));
-    super::screen::emit(&super::screen::format_record(suite, case, "intent", result));
-    if frame.display {
-        if time::sleep_ms(pace).is_err() {
-            // A hold failure is screen evidence, independent of the published CASE.
-            super::emit(&std::format!("SUITE {suite} ERROR intent hold failed for {case}"));
+    let result = gpu::current_mode().map_err(|_| "intent-mode").and_then(|mode| {
+        let plans = picture_pages(suite, case, [picture.width as u32, picture.height as u32], [mode.width, mode.height])?;
+        let count = plans.len();
+        for (i, plan) in plans.into_iter().enumerate() {
+            let checkpoint = if count == 1 { "intent".into() } else { std::format!("intent-p{}", i+1) };
+            let mut frame = Frame { context: 0, texture: 0, target: 0, display: false };
+            let captured = frame.present(picture, mode, plan).and_then(|()| frame.snapshot(suite, case, &checkpoint, mode));
+            super::screen::emit_intent(suite, case, &checkpoint, captured);
+            if frame.display && time::sleep_ms(pace).is_err() {
+                super::emit(&std::format!("SUITE {suite} ERROR intent hold failed for {case} {checkpoint}"));
+            }
         }
+        Ok(())
+    });
+    if let Err(error) = result {
+        super::screen::emit(&super::screen::format_record(suite, case, "intent", Err(error)));
     }
 }

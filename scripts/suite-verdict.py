@@ -49,7 +49,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 # The records a case prints while it runs, which do not count.
 RESULT = ("FRAME", "TREE", "INPUT", "COLLECT")
-LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY", "HOSTPOINTER", "HOSTSSH", "SCREEN") + RESULT
+LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY", "HOSTPOINTER", "HOSTSSH", "SCREEN", "SCREENPERTURB") + RESULT
 # The runner's memory record, around the cases.
 MEMORY = ("MEMORY", "RECLAIMED")
 
@@ -243,8 +243,9 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
     name = r"([a-z0-9]+(?:-[a-z0-9]+)*/[a-z0-9]+(?:-[a-z0-9]+)*)"
     picture = r"(?: sha256=[0-9a-f]{64})?"
     pace = r"(?: pace_ms=([1-9][0-9]{0,9}))?" if suite == "breengel" else ""
+    proof = r"(?: screen_proof=on)?" if suite in ("gpu", "breengel") else ""
     shapes = {
-        "START": re.compile(rf"^SUITE {suite} START cases=(\d+){suffix}{pace}$"),
+        "START": re.compile(rf"^SUITE {suite} START cases=(\d+){suffix}{pace}{proof}$"),
         "PASS": re.compile(rf"^SUITE {suite} CASE {name} PASS ms=\d+{picture}$"),
         "FAIL": re.compile(rf"^SUITE {suite} CASE {name} FAIL ms=\d+{picture} msg=\S.*$"),
         "SKIP": re.compile(rf"^SUITE {suite} CASE {name} SKIP msg=\S.*$"),
@@ -256,7 +257,7 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
                              r"(?:end unobservable reason=(?:device-reset|target-invalidated)"
                              r"(?: errno=[1-9][0-9]* eio_reason=[0-9]+ failed_submission=[0-9]+)?"
                              r"|[a-z0-9]+(?:-[a-z0-9]+)* "
-                             r"(?:sha256=[0-9a-f]{64} mode=\d+x\d+ binding=\d+x\d+(?: crc=[0-9a-f]{8} crc2=[0-9a-f]{8} raster=\d+x\d+ out=sor\d+)?"
+                             r"(?:sha256=[0-9a-f]{64} mode=\d+x\d+ binding=\d+x\d+(?: crc=[0-9a-f]{8} crc2=(?:[0-9a-f]{8}|none) raster=\d+x\d+ out=sor\d+)?"
                              r"|error=[a-z0-9]+(?:-[a-z0-9]+)*(?: errno=[1-9][0-9]* eio_reason=[0-9]+ failed_submission=[0-9]+)?))$"),
         "WAIT": re.compile(rf"^SUITE {suite} WAIT {name} until=\d+ for=\d+ result=[a-z0-9]+(?:-[a-z0-9]+)*$"),
         "HOSTKEY": re.compile(rf"^SUITE {suite} HOSTKEY {name} seq=\d+ keys=[a-z0-9]+(?:-[a-z0-9]+)*(?:,[a-z0-9]+(?:-[a-z0-9]+)*)*(?: ticket=\d+)?$"),
@@ -267,6 +268,13 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
         "MEMORY": re.compile(rf"^SUITE {suite} MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+$"),
         "RECLAIMED": re.compile(rf"^SUITE {suite} MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)$"),
     }
+    if suite in ("gpu", "breengel"):
+        # Same wire shape as screen-verdict.py; keep the suite scorer self-contained.
+        fields = (r'(?:phase=[1-4] sha256=[0-9a-f]{64} mode=[1-9][0-9]*x[1-9][0-9]*'
+                  r' binding=[1-9][0-9]*x[1-9][0-9]* crc=[0-9a-f]{8} crc2=(?:[0-9a-f]{8}|none)'
+                  r' raster=[1-9][0-9]*x[1-9][0-9]* out=sor[0-9]+ resource=[1-9][0-9]*'
+                  r' present_fence=[1-9][0-9]* fired=[0-9]+ disarmed=[01]|error=sequence-failed)')
+        shapes['SCREENPERTURB'] = re.compile(rf"^SUITE {suite} SCREENPERTURB {name} end {fields}$")
     shapes.update({kind: re.compile(rf"^SUITE {suite} {kind} {name} .+$") for kind in RESULT})
     records = []
     for line in read_lines(records_log):

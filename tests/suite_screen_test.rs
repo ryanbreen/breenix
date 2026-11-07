@@ -204,3 +204,116 @@ fn unexpected_target_invalidation_cannot_be_declared() {
     let error = screen::endpoint_error(5, &failure.encode());
     assert!(error.starts_with("readback-failed "));
 }
+
+#[test]
+fn crc_screen_record_and_diagnostic_label() {
+    let binding = gpu_abi::screen_crc::Binding {resource: 7, present_fence: 9};
+    let record = gpu_abi::screen_crc::Record {
+        suite:"gpu".into(), case:"draw/one".into(), checkpoint:"end".into(),
+        binding_before:binding, binding_after:binding, elapsed_us:1000,
+        disarmed:true, display_error:0, status:1, secondary_absent:true,
+        output_config:gpu_abi::screen_crc::OutputConfig {mode:[2,1],raster:[1280,1024],
+            viewport:[0,112,1280,800],sor:0,rg:0,methods:vec![(0x200,1)]},
+        samples:vec![gpu_abi::screen_crc::Sample {status:1,crc:0x1234,crc2:0};5],
+    };
+    let bytes = record.encode().unwrap();
+    let line = screen::format_crc_record("gpu", "draw/one", "end", [3;32], mode(), mode(), &bytes).unwrap();
+    assert_eq!(line, format!("SUITE gpu SCREEN draw/one end sha256={} mode=2x1 binding=2x1 crc=00001234 crc2=none raster=1280x1024 out=sor0\n", "03".repeat(32)));
+    assert!(screen::unpack(&screen::pack(&line),"gpu","draw/one").is_ok());
+    assert!(screen::format_crc_record("gpu", "draw/two", "end", [3;32], mode(), mode(), &bytes).is_err());
+    let label = screen::crc_label("gpu", "draw/one", "end");
+    let hash = libpixcheck::sha256(b"draw/one\0end");
+    let short: String = hash[..8].iter().map(|b|format!("{b:02x}")).collect();
+    assert_eq!(label, format!("crc-gpu-{short}"));
+    assert!(label.len() <= 64 && label.bytes().all(|b|b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'));
+    assert_ne!(label, screen::crc_label("gpu", "draw/one", "after-present"));
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/screen-verdict.py");
+    let python = "import importlib.util,re,sys; s=importlib.util.spec_from_file_location('v',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); assert m.RECORD.fullmatch(sys.argv[2].strip()); assert re.fullmatch(r'[a-z][a-z0-9-]{0,63}',sys.argv[3])";
+    assert!(std::process::Command::new("python3").args(["-c",python]).arg(script).arg(&line).arg(label).status().unwrap().success());
+}
+
+#[test]
+fn crc_handoff_preserves_bytes_digest_and_refuses_torn_or_foreign_records() {
+    use gpu_abi::screen_crc::{Binding,OutputConfig,Record,Sample};
+    let binding = Binding {resource:7,present_fence:9};
+    let mut record = Record {suite:"gpu".into(),case:"draw/one".into(),checkpoint:"end".into(),
+        binding_before:binding,binding_after:binding,elapsed_us:1000,disarmed:true,display_error:0,status:1,secondary_absent:false,
+        output_config:OutputConfig {mode:[2,1],raster:[1280,1024],viewport:[0,112,1280,800],sor:0,rg:0,methods:vec![(0x200,1)]},
+        samples:vec![Sample {status:1,crc:0x1234,crc2:0xabcd};5]};
+    let path = std::env::temp_dir().join(format!("crc-handoff-{}",std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let bytes = record.encode().unwrap();
+    screen::queue_crc(&path,&bytes).unwrap();
+    let mut uploads = Vec::new();
+    let lines = screen::flush_crc(&path,"gpu","draw/one",|label,raw|{
+        uploads.push((label.to_string(),raw.to_vec())); Ok("sent".into())
+    });
+    assert_eq!(uploads,vec![(screen::crc_label("gpu","draw/one","end"),bytes.clone())]);
+    let hex: String = libpixcheck::sha256(&bytes).iter().map(|b|format!("{b:02x}")).collect();
+    assert!(lines[0].contains(&format!(" bytes={} sha256={hex} result=ok",bytes.len())));
+    assert!(!path.exists());
+    for kind in ["corrupt","partial","foreign","moved"] {
+        record.binding_after = binding;
+        record.case = if kind=="foreign" {"draw/two"} else {"draw/one"}.into();
+        if kind=="moved" { record.binding_after.present_fence += 1; }
+        screen::queue_crc(&path,&record.encode().unwrap()).unwrap();
+        let mut queued = std::fs::read(&path).unwrap();
+        if kind=="corrupt" { queued[0]^=1; }
+        if kind=="partial" { queued.pop(); }
+        std::fs::write(&path,queued).unwrap();
+        let lines = screen::flush_crc(&path,"gpu","draw/one",|_,_|panic!("invalid handoff reached uploader"));
+        assert_eq!(lines.len(),1);
+        assert!(lines[0].contains(" refused="),"{kind}: {lines:?}");
+    }
+}
+
+#[test]
+fn perturbation_orders_control_and_observations_and_restores_on_error() {
+    use super::perturb::{self, Driver, Observation};
+    use gpu_abi::screen_crc::{Binding, OutputConfig, Record, Sample};
+    struct Model { calls: Vec<String>, armed: bool, count: u64, fail: bool }
+    impl Driver for Model {
+        fn fired(&mut self) -> Result<u64, String> { self.calls.push("fired".into()); Ok(self.count) }
+        fn arm(&mut self, resource: u64) -> Result<(), String> {
+            assert_eq!(resource, 7); self.calls.push("arm".into()); self.armed = true; Ok(())
+        }
+        fn disarm(&mut self) -> Result<(), String> { self.calls.push("disarm".into()); self.armed = false; Ok(()) }
+        fn observe(&mut self, name: &str) -> Result<Observation, String> {
+            self.calls.push(name.into());
+            if self.fail && name == "perturb-three" { return Err("forced-readback".into()); }
+            if self.armed { self.count = 11; }
+            let b = Binding { resource: 7, present_fence: 9 };
+            let rec = Record { suite:"gpu".into(), case:"draw/one".into(), checkpoint:name.into(),
+                binding_before:b, binding_after:b, elapsed_us:1000, disarmed:true, display_error:0, status:1, secondary_absent:true,
+                output_config:OutputConfig { mode:[2,1], raster:[1280,1024], viewport:[0,112,1280,800],
+                    sor:0, rg:0, methods:vec![(0x4a0,u32::from(self.armed))] },
+                samples:vec![Sample {status:1,crc:if self.armed {0x5678} else {0x1234},crc2:0};5] };
+            Ok(Observation { hash:[3;32], mode:mode(), binding:mode(), raw:rec.encode().unwrap() })
+        }
+    }
+    for fail in [false, true] {
+        let mut model = Model { calls:Vec::new(), armed:false, count:10, fail };
+        let baseline = model.observe("end").unwrap(); model.calls.clear();
+        let result = perturb::run("gpu", "draw/one", &baseline, &mut model);
+        assert!(!model.armed, "a failed observation must still disarm");
+        if fail {
+            assert!(result.is_err());
+            assert_eq!(model.calls.last().unwrap(), "disarm");
+        } else {
+            let (lines, records) = result.unwrap();
+            assert_eq!(model.calls, ["fired", "perturb-one", "arm", "perturb-two", "fired",
+                "perturb-three", "fired", "disarm", "perturb-four", "fired"]);
+            assert_eq!(lines.len(), 4); assert_eq!(records.len(), 4);
+            let body = lines.join("");
+            assert_eq!(screen::unpack(&screen::pack(&body), "gpu", "draw/one").unwrap(), body);
+            for (i, bytes) in records.iter().enumerate() {
+                let record = Record::decode(bytes).unwrap();
+                let checkpoint = ["perturb-one", "perturb-two", "perturb-three", "perturb-four"][i];
+                assert_eq!(record.checkpoint, checkpoint);
+                assert!(lines[i].contains(&format!(" phase={} ", i+1)));
+                assert_ne!(screen::crc_label("gpu", "draw/one", checkpoint), screen::crc_label("gpu", "draw/one", "end"));
+            }
+            assert!(screen::unpack(&screen::pack(&body.replace("phase=3 ", "phase=2 ")), "gpu", "draw/one").is_err());
+        }
+    }
+}

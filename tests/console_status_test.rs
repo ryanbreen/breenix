@@ -201,3 +201,20 @@ fn ribbon_colours_gaps_and_bounds_follow_the_amended_band() {
     assert_eq!(status::BACKGROUND, [12, 19, 31]);
     assert_eq!(status::TEXT, [214, 225, 244]);
 }
+
+#[test]
+fn proof_start_suffix_drives_live_heading_only_for_picture_suites() {
+    for id in ["gpu", "breengel"] {
+        let mut status = SuiteStatus::new();
+        assert!(status.observe(format!("SUITE {id} START cases=2 screen_proof=on").as_bytes(), 1000));
+        assert!(status.observe(format!("SUITE {id} CASE draw/one PASS ms=1").as_bytes(), 2000));
+        assert_eq!((status.passed(), status.pending(), status.total()), (1, 1, 2));
+        assert_eq!(status.elapsed(4000), (0, 3));
+    }
+    for line in ["SUITE console START cases=2 screen_proof=on",
+                 "SUITE ui-testing START cases=2 screen_proof=on",
+                 "SUITE gpu START cases=2 screen_proof=off",
+                 "SUITE breengel START cases=2 screen_proof=on screen_proof=on"] {
+        assert!(!SuiteStatus::new().observe(line.as_bytes(), 1), "accepted {line}");
+    }
+}

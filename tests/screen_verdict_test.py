@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise screen verdicts with small serial and approval-table fixtures."""
 import json
+import importlib.util
 import subprocess
 import sys
 import tempfile
@@ -11,6 +12,9 @@ ROOT = Path(__file__).resolve().parents[1]
 SCORER = ROOT / 'scripts/screen-verdict.py'
 DIGEST = 'a' * 64
 CONFIG = 'c' * 64
+spec = importlib.util.spec_from_file_location('screen_verdict', SCORER)
+scorer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(scorer)
 
 
 class ScreenVerdictTest(unittest.TestCase):
@@ -25,18 +29,52 @@ class ScreenVerdictTest(unittest.TestCase):
                                   'crc': '12345678', 'crc2': '87654321'}]}
         self.line = f'SUITE gpu SCREEN draw/one end sha256={DIGEST} mode=1280x800 binding=1280x800'
 
-    def run_score(self, lines, *, entries=None, args=(), include_cases=True):
+    def run_score(self, lines, *, entries=None, args=(), include_cases=True, proof=False):
         (self.dir / 'manifest.json').write_text(json.dumps(self.manifest))
         (self.dir / 'table.json').write_text(json.dumps({'version': 1, 'entries': [self.entry] if entries is None else entries}))
+        (self.dir / 'run.json').write_text(json.dumps({'screenProof': proof}))
         prefix = ['SUITE gpu CASE draw/one PASS ms=1', 'SUITE gpu CASE draw/two PASS ms=1'] if include_cases else []
-        (self.dir / 'serial.txt').write_text('\n'.join(prefix + lines) + '\n')
+        (self.dir / 'serial.txt').write_text('\n'.join(['SUITE gpu START cases=2' + (' screen_proof=on' if proof else '')] + prefix + lines) + '\n')
         return subprocess.run([sys.executable, str(SCORER), str(self.dir / 'manifest.json'),
                                str(self.dir / 'serial.txt'), '--table', str(self.dir / 'table.json'),
-                               *args], capture_output=True, text=True)
+                               '--run', str(self.dir / 'run.json'), *args], capture_output=True, text=True)
+
+    def test_checkpoint_modes(self):
+        intent = dict(self.entry, checkpoint='intent')
+        intent_line = self.line.replace(' end ', ' intent ')
+        table = {'version': 1, 'entries': [self.entry, intent]}
+        def score(lines, guest, host):
+            start = 'SUITE gpu START cases=2' + (' screen_proof=on' if guest else '')
+            serial = '\n'.join([start, 'SUITE gpu CASE draw/one PASS ms=1'] + lines)
+            return scorer.score(self.manifest, serial, table, run={'screenProof': host})
+        for mode in (False, True):
+            with self.subTest(missing_end=mode), self.assertRaises(ValueError):
+                score([intent_line] if mode else [], mode, mode)
+        self.assertEqual(score([self.line], False, False)[0], 1)
+        with self.assertRaises(ValueError):
+            score([self.line], True, True)
+        with self.assertRaises(ValueError):
+            score([self.line, intent_line], False, False)
+        for guest, host in ((True, False), (False, True)):
+            with self.subTest(guest=guest, host=host), self.assertRaises(ValueError):
+                score([self.line, intent_line], guest, host)
+        self.assertEqual(score([self.line, intent_line], True, True)[0], 2)
+
+    def test_numbered_intents_are_proof_only_and_each_page_is_required(self):
+        pages=[dict(self.entry,checkpoint=f'intent-p{n}') for n in (1,2)]
+        lines=[self.line.replace(' end ',f' intent-p{n} ') for n in (1,2)]
+        result=self.run_score([self.line,*lines],entries=[self.entry,*pages])
+        self.assertNotEqual(result.returncode,0,result.stdout)
+        self.assertIn('intent checkpoint in production',result.stdout)
+        self.assertEqual(self.run_score([self.line,*lines],entries=[self.entry,*pages],proof=True).returncode,0)
+        self.assertNotEqual(self.run_score([self.line,lines[0]],entries=[self.entry,*pages],proof=True).returncode,0)
+        # A prior unpaged approval cannot approve either numbered checkpoint.
+        result=self.run_score([self.line,*lines],entries=[self.entry,dict(self.entry,checkpoint='intent')],proof=True)
+        self.assertNotEqual(result.returncode,0,result.stdout)
 
     def test_match_and_unapproved(self):
         extra = f'SUITE gpu SCREEN draw/two intent sha256={DIGEST} mode=1280x800 binding=1280x800'
-        result = self.run_score([self.line, extra])
+        result = self.run_score([self.line, extra], proof=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn('SCREENS PASS approved=1 matched=1 unapproved=1', result.stdout)
         self.assertIn('draw/two intent', result.stdout)

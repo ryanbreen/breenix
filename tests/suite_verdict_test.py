@@ -103,6 +103,19 @@ class GuiResultVerdictTests(unittest.TestCase):
 
 
 class SuiteVerdictTests(unittest.TestCase):
+    def test_screen_proof_start_only_for_pictured_suites(self):
+        original = (FIXTURES / 'all-pass.txt').read_text()
+        with tempfile.TemporaryDirectory() as directory:
+            serial = Path(directory) / 'serial.txt'
+            for suite in ('gpu', 'breengel', 'fixture'):
+                manifest = dict(MANIFEST, id=suite)
+                text = original.replace('SUITE fixture ', f'SUITE {suite} ')
+                text = text.replace(f'SUITE {suite} START cases=3',
+                                    f'SUITE {suite} START cases=3 screen_proof=on')
+                serial.write_text(text)
+                ok, detail = SCORER.verdict(manifest, serial, [serial])
+                self.assertEqual(ok, suite in ('gpu', 'breengel'), detail)
+
     def test_elapsed_follows_done_without_replacing_case_or_memory_evidence(self):
         original=(FIXTURES/'all-pass.txt').read_text()
         with tempfile.TemporaryDirectory() as tmp:
