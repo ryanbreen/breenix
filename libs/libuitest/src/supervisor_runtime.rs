@@ -1,11 +1,11 @@
-//! Process ownership for the shared session core. Evidence collection is layered
-//! onto the separate collector socket by the collection unit.
+//! Process ownership and local collector handshake for the shared session core.
 use libbreenix::{error::Error, errno::Errno, fs, io, process, signal, time, types::Fd};
 use breenix_suite::suite::{descendants::descendant_victims, spawn, Run};
 use super::devices::{runtime::Devices, RawInput};
 use super::{Message, SessionEnvironment, StderrRing};
 use super::ownership::{Custody, Event, Owner, Ownership};
 use crate::channel::{Channel, now};
+use breenix_suite::suite::{collection::Request, result::Accounting};
 use std::{collections::BTreeMap, path::Path};
 
 struct Display;
@@ -232,10 +232,27 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     ended.extend_from_slice(&bytes[..n]);
                     if ended.len() > 128 { return Err("invalid collector message".into()); }
                     if ended.ends_with(b"\n") {
-                        if ended != b"end discard\n" { return Err("unsupported collector request in session core".into()); }
+                        let request = Request::parse(std::str::from_utf8(&ended).map_err(|_| "invalid collector command UTF-8")?)?;
+                        // Arena and artifact producers are added by the local
+                        // evidence unit. Report absence rather than saved bytes.
+                        let record = if let Request::Collect(trigger) = request {
+                            let suite = std::env::var("BREENIX_COLLECT_SUITE").map_err(|e| e.to_string())?;
+                            let case = std::env::var("BREENIX_COLLECT_CASE").map_err(|e| e.to_string())?;
+                            Accounting::new(&suite, &case, &[], true)?;
+                            Some(format!("SUITE {suite} COLLECT {case} trigger={} screen=none:unavailable windows=0 remnants=0 artifacts=none:unavailable\n", trigger.name()))
+                        } else { None };
                         if !stopped { teardown(&mut channel, &mut output, false, compositor, &mut ownership, &mut devices)?; }
                         if let Some(config) = environment.take() { std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())?; }
-                        io::write(collector, b"done\n").map_err(|e| e.to_string())?;
+                        let reply = format!("{}done\n", record.unwrap_or_default());
+                        let mut left = reply.as_bytes();
+                        while !left.is_empty() {
+                            match io::write(collector, left) {
+                                Ok(0) => return Err("collector reply closed".into()),
+                                Ok(n) => left = &left[n..],
+                                Err(Error::Os(Errno::EINTR | Errno::EAGAIN)) => { time::sleep_ms(1).map_err(|e| e.to_string())?; }
+                                Err(error) => return Err(error.to_string()),
+                            }
+                        }
                         return Ok(());
                     }
                 }

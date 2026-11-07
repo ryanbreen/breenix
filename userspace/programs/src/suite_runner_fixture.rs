@@ -234,6 +234,16 @@ fn config_sequence(order: &str) -> ! {
 }
 
 
+fn collection_fault() -> CaseResult {
+    let mut session = libuitest::Session::connect()?;
+    let orphan = sessions::orphan(&mut session)?;
+    let supervisor = session.supervisor_pid();
+    suite::value("supervisor-pid", supervisor as i64, "pid", None);
+    suite::value("orphan-pid", orphan as i64, "pid", None);
+    signal::kill(supervisor as i32, if mode() == "silent-supervisor" { signal::SIGSTOP } else { signal::SIGKILL })?;
+    Err("planted collection failure".into())
+}
+
 fn supervisor_died() -> CaseResult {
     let mut session = libuitest::Session::connect()?;
     let orphan = sessions::orphan(&mut session)?;
@@ -363,6 +373,7 @@ fn main() {
         "subreaper" => (sessions::reaped_orphan, vec![]),
         "session-teardown" | "session-panel-pass" | "session-panel-fail" | "session-ownership" | "session-devices" => (session_display, vec![]),
         "supervisor-died" => (supervisor_died, vec![]),
+        "silent-supervisor" | "dead-supervisor" => (collection_fault, vec![]),
         "sweep-descendants" => (descendants, vec!["label"]),
         "outer-positive" | "transport-always" | "transport-exit-race" => (positive, vec!["label"]),
         _ => panic!("unknown fixture mode"),
@@ -371,6 +382,9 @@ fn main() {
     let checks = Box::leak(checks.into_boxed_slice());
     let entry = case(id, "Scoped runner control", body).checks(checks);
     let entry = if matches!(selected, "subreaper" | "supervisor-died" | "session-teardown" | "session-panel-pass" | "session-panel-fail" | "session-ownership" | "session-devices") { entry.session(libuitest::supervisor::serve) } else { entry };
+    let entry = if matches!(selected, "silent-supervisor" | "dead-supervisor") {
+        entry.session(libuitest::supervisor::serve).collects()
+    } else { entry };
     let cases = Box::leak(vec![entry].into_boxed_slice());
     let categories = Box::leak(vec![category("fixture", "Scoped runner", cases)].into_boxed_slice());
     suite::set_painter(Box::new(stage_painter::StagePainter::new()));

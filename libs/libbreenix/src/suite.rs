@@ -108,6 +108,8 @@ mod evidence;
 mod host_input;
 #[path = "suite_descendants.rs"]
 pub mod descendants;
+#[path = "suite_collection.rs"]
+pub mod collection;
 #[path = "suite_session.rs"]
 pub mod session_runner;
 #[path = "suite_config.rs"]
@@ -2057,12 +2059,15 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
 
 fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, screen: &mut Screen, feed: &mut Feed) -> Outcome {
     let mut session = if gui {
-        match case.supervisor.map(session_runner::RunnerSession::start).transpose() {
+        match case.supervisor.map(|serve| {
+            if case.collects { session_runner::RunnerSession::start_collecting(serve, suite, name) }
+            else { session_runner::RunnerSession::start(serve) }
+        }).transpose() {
             Ok(session) => session,
             Err(msg) => return Outcome::Fail { ms: 0, msg },
         }
     } else { None };
-    let logic_limit_ms = if session.is_some() { limit_ms.saturating_sub(1500) } else { limit_ms };
+    let logic_limit_ms = if session.is_some() && case.collects { limit_ms.saturating_sub(1500) } else { limit_ms };
     screen.judged = None;screen.timing=None;
     let mut results = if gui {
         match ResultPipe::new(suite, name, case.checks, case.collects) {
@@ -2208,18 +2213,24 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
                     screen.stage_result(crate::suite_stage::sample(p));
                 }
                 if let Some(fd) = answer { let _ = io::write(fd, &[1]); }
-                waited = match wait_exit(pid, monotonic_ns(), 5_000, &mut || {}, None, None, None, None, results.as_mut()) {
+                waited = match wait_exit(pid, monotonic_ns(), if session.is_some() && case.collects { logic_limit_ms.saturating_sub(ms_since(start)) } else { 5_000 }, &mut || {}, None, None, None, None, results.as_mut()) {
                     Waited::TimedOut(_) => Waited::TimedOut(ms),
                     other => other,
                 };
             }
             for fd in [tell, answer].into_iter().chain(stage.into_iter().flat_map(|(r, w)| [Some(r), Some(w)])).flatten() { let _ = io::close(fd); }
+            let trigger = match &waited {
+                Waited::TimedOut(_) => collection::Trigger::Timeout,
+                Waited::Exited(status) if process::wifsignaled(*status)
+                    || (process::wifexited(*status) && process::wexitstatus(*status) != 0) => collection::Trigger::Crash,
+                _ => collection::Trigger::Fail,
+            };
             let outcome = match waited {
                 Waited::Exited(status) => exited(status, reader, ms_since(start)),
                 Waited::Published(_) => Outcome::Fail { ms: ms_since(start), msg: String::from("the case published two pictures") },
                 Waited::TimedOut(ms) => {
                     let note = stop_child(pid);
-                    Outcome::Fail { ms, msg: plain(&std::format!("timed out after {limit_ms} ms{note}")) }
+                    Outcome::Fail { ms, msg: plain(&std::format!("timed out after {logic_limit_ms} ms{note}")) }
                 }
                 Waited::ClockStopped(ms) => {
                     let note = stop_child(pid);
@@ -2234,14 +2245,49 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
                 }
             };
             let outcome = if let Some(session) = session.as_mut() {
-                match session.finish(limit_ms.saturating_sub(ms_since(start))) {
-                    Ok(()) => outcome,
-                    Err(note) => {
-                        let reason = if note == "session supervisor died" { "supervisor-died" } else { "collector-timeout" };
-                        emit(&std::format!("SUITE {suite} COLLECT {name} trigger=fail screen=none:{reason} windows=0 remnants=0 artifacts=none:{reason}\n"));
-                        match outcome {
-                            Outcome::Pass { ms } => Outcome::Fail { ms, msg: note },
-                            other => other,
+                if case.collects {
+                    // Drain the dead case before choosing collect/discard: a final
+                    // mismatch or missing declared check converts Ok into FAIL.
+                    let outcome = if let Some(results) = results.as_mut() {
+                        results.drain();
+                        match results.accounting.problem() {
+                            Some(note) => with_note(outcome, &note),
+                            None => outcome,
+                        }
+                    } else { outcome };
+                    let request = if matches!(outcome, Outcome::Fail { .. }) {
+                        collection::Request::Collect(trigger)
+                    } else if std::fs::read_to_string("/etc/breenix/uitest-save").is_ok_and(|s| s.trim() == "all") {
+                        collection::Request::Collect(collection::Trigger::SaveAll)
+                    } else { collection::Request::Discard };
+                    let deadline = start.map(|t| t + i128::from(limit_ms) * 1_000_000);
+                    let collected = session.collect_until(deadline, request, suite, name, |line| {
+                        if let Some(results) = results.as_mut() { results.accounting.accept(line)?; }
+                        emit(line);
+                        Ok(())
+                    });
+                    match collected {
+                        Ok(()) => outcome,
+                        Err(note) => {
+                            let reason = if note == "session supervisor died" { "supervisor-died" } else { "collector-timeout" };
+                            let trigger = match request { collection::Request::Collect(t) => t, collection::Request::Discard => trigger };
+                            emit(&std::format!("SUITE {suite} COLLECT {name} trigger={} screen=none:{reason} windows=0 remnants=0 artifacts=none:{reason}\n", trigger.name()));
+                            match outcome {
+                                Outcome::Pass { ms } => Outcome::Fail { ms, msg: note },
+                                other => other,
+                            }
+                        }
+                    }
+                } else {
+                    match session.finish(limit_ms.saturating_sub(ms_since(start))) {
+                        Ok(()) => outcome,
+                        Err(note) => {
+                            let reason = if note == "session supervisor died" { "supervisor-died" } else { "collector-timeout" };
+                            emit(&std::format!("SUITE {suite} COLLECT {name} trigger=fail screen=none:{reason} windows=0 remnants=0 artifacts=none:{reason}\n"));
+                            match outcome {
+                                Outcome::Pass { ms } => Outcome::Fail { ms, msg: note },
+                                other => other,
+                            }
                         }
                     }
                 }
@@ -2256,6 +2302,7 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
                 feed.drain(fd);
                 let _ = io::close(fd);
             }
+            if case.collects { if let Some(session) = session.as_mut() { session.handoff_to_sweep(); } }
             let outcome = match sweep_for_role(gui) {
                 Some(note) => with_note(outcome, note),
                 None => outcome,
