@@ -13,6 +13,9 @@ class NativeQueue(unittest.TestCase):
     def test_receipt_channel_faults_and_wrapped_publication(self):
         source = (ROOT / 'kernel/src/gpu/gk208/gr/channel.rs').read_text()
         monitor = item(source, "    struct Monitor<'a>") + '\n' + item(source, "    impl Monitor<'_>") + '\n' + item(source, "    impl Poll for Monitor<'_>")
+        monitor = ('#[derive(Clone, Copy)]\n' + item(source, 'struct StreamSample') + '\n'
+                   + item(source, 'fn stream_get_progress(') + '\n'
+                   + item(source, 'fn stream_consumed(') + '\n' + monitor)
         monitor = monitor.replace('super::super::binding', 'binding').replace('crate::gk208::queue', 'queue').replace('super::super::error', 'hardware_error')
         publisher = item(source, '        fn publish_words(').replace('crate::gk208::queue', 'queue')
         traps = (ROOT / 'kernel/src/gpu/gk208/gr/binding.rs').read_text()
@@ -64,6 +67,7 @@ struct Pages(Vec<u32>);impl Pages {
  fn command(&self,at:u64)->u32{self.0[REPORT_PAGES*1024+at as usize/4]}
 }
 struct Range {start:u64}struct Allocation {range:Range}
+#[derive(Clone, Copy)]
 struct Identity {id:u32,instance:u64}struct Report {identity:Identity}struct Copy {base:usize}
 struct Session {pages:Pages,commands:Allocation,bar:usize,report:Report,pbdma:usize,userd:u64,copy:Option<Copy>,bound:bool,quiesced:bool}
 trait Poll {fn snapshot(&mut self)->Result<(u32,u64,bool),&'static str>;fn now_us(&mut self)->u64;fn relax(&mut self);}
