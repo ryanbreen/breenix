@@ -294,6 +294,38 @@ pub trait Poll {
     fn now_us(&mut self) -> u64;
     fn relax(&mut self);
 }
+#[derive(Clone, Copy)]
+struct StreamSample {
+    channel: u32,
+    get: u32,
+    reference: u32,
+    userd_get: u32,
+    bind: u32,
+}
+fn stream_get_progress(get: u32, sequence: u32, queued_put: Option<u32>) -> bool {
+    if let Some(put) = queued_put {
+        crate::gk208::queue::Queue::consumed(put, get).is_some_and(|n| n >= sequence)
+    } else {
+        get == sequence
+    }
+}
+fn stream_consumed(sample: StreamSample, id: Identity, sequence: u32, queued_put: Option<u32>) -> bool {
+    let current = sample.channel & 0x2fff == 0x2000 | id.id;
+    let get = if current { sample.get } else { sample.userd_get };
+    let progress = stream_get_progress(get, sequence, queued_put)
+        && if queued_put.is_some() { sample.reference >= sequence } else { sample.reference == sequence };
+    current && progress && sample.bind == 0x80000000 | (id.instance >> 12) as u32
+}
+fn await_consumed(io: &mut impl Poll) -> Result<(), &'static str> {
+    let start = io.now_us();
+    while !io.snapshot()?.2 {
+        if io.now_us().saturating_sub(start) >= BOUND_US {
+            return Err("GR control stream not consumed; backing retained");
+        }
+        io.relax();
+    }
+    Ok(())
+}
 pub fn wait(
     io: &mut impl Poll,
     epoch: u64,
@@ -891,13 +923,7 @@ mod native {
             if budget < BOUND_US {
                 // A cold context restore gets the normal engine bound before
                 // the negative-control observation window starts.
-                let start = monitor.now_us();
-                while !monitor.snapshot()?.2 {
-                    if monitor.now_us().saturating_sub(start) >= BOUND_US {
-                        return Err("GR control stream not consumed; backing retained");
-                    }
-                    monitor.relax();
-                }
+                await_consumed(&mut monitor)?;
             }
             let sample = wait(&mut monitor, self.report.identity.epoch, nonce, budget)?;
             if !sample.consumed {
@@ -2221,22 +2247,24 @@ mod native {
                 )
             };
             let b = s.pbdma * 0x2000;
-            let current = self.regs.read(0x40120 + b) & 0x2fff == 0x2000 | self.session.report.identity.id;
-            let get = if current {
-                self.regs.read(0x40014 + b)
+            let channel = self.regs.read(0x40120 + b);
+            let current = channel & 0x2fff == 0x2000 | s.report.identity.id;
+            let (get, userd_get) = if current {
+                (self.regs.read(0x40014 + b), 0)
             } else {
-                read(self.regs, self.total, s.userd + 0x88)?
+                (0, read(self.regs, self.total, s.userd + 0x88)?)
             };
-            let progress = if let Some(put) = self.queued_put {
-                crate::gk208::queue::Queue::consumed(put, get).is_some_and(|n| n >= self.sequence)
-                    && self.regs.read(0x40028 + b) >= self.sequence
-            } else {
-                get == self.sequence && self.regs.read(0x40028 + b) == self.sequence
-            };
-            let consumed = current
-                && progress
-                && self.regs.read(0x800000 + s.report.identity.id as usize * 8)
-                    == 0x80000000 | (s.report.identity.instance >> 12) as u32;
+            let selected_get = if current { get } else { userd_get };
+            let reference = if stream_get_progress(selected_get, self.sequence, self.queued_put) {
+                self.regs.read(0x40028 + b)
+            } else { 0 };
+            let mut sample = StreamSample { channel, get, userd_get, reference, bind: 0 };
+            // Preserve the original short-circuit order of register reads.
+            sample.bind = 0x80000000 | (s.report.identity.instance >> 12) as u32;
+            if stream_consumed(sample, s.report.identity, self.sequence, self.queued_put) {
+                sample.bind = self.regs.read(0x800000 + s.report.identity.id as usize * 8);
+            }
+            let consumed = stream_consumed(sample, s.report.identity, self.sequence, self.queued_put);
             Ok((value, u64::from(lo) | (u64::from(hi) << 32), consumed))
         }
         fn now_us(&mut self) -> u64 {

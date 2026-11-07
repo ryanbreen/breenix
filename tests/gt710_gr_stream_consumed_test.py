@@ -18,7 +18,7 @@ class StreamConsumed(unittest.TestCase):
         queue = (ROOT / 'kernel/src/gpu/gk208/queue.rs').read_text()
         poll = item(source, 'pub trait Poll')
         if 'fn stream_consumed(' in source:
-            predicate = item(source, 'struct StreamSample') + '\n' + item(source, 'fn stream_consumed(')
+            predicate = '#[derive(Clone, Copy)]\n' + item(source, 'struct StreamSample') + '\n' + item(source, 'fn stream_get_progress(') + '\n' + item(source, 'fn stream_consumed(')
             awaiter = item(source, 'fn await_consumed(')
         else:
             snapshot = item(source, '        fn snapshot(&mut self)')
