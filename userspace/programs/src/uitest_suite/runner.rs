@@ -15,7 +15,7 @@ impl Drop for Child {
     }
 }
 
-fn fixture(mode: &str) -> Result<(String, i32), breenix_suite::suite::CaseError> {
+pub(crate) fn fixture(mode: &str) -> Result<(String, i32), breenix_suite::suite::CaseError> {
     let (r, w) = io::pipe2(io::status_flags::O_CLOEXEC)?;
     let mut reader = unsafe { File::from_raw_fd(r.raw() as i32) };
     let writer = unsafe { File::from_raw_fd(w.raw() as i32) };

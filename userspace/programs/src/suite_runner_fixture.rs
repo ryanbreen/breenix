@@ -172,8 +172,55 @@ fn parent_pid_of(pid: u64) -> Result<u64, String> {
     text.rsplit_once(") ").and_then(|(_, r)| r.split_whitespace().nth(1)).and_then(|n| n.parse().ok()).ok_or("bad parent stat".into())
 }
 
+#[path = "uitest_suite/sessions.rs"]
+mod sessions;
+#[path = "uitest_suite/runner.rs"]
+mod runner;
+
+fn supervisor_died() -> CaseResult {
+    let mut session = libuitest::Session::connect()?;
+    let orphan = sessions::orphan(&mut session)?;
+    let supervisor = session.supervisor_pid();
+    signal::kill(supervisor as i32, signal::SIGKILL)?;
+    let start = time::now_monotonic()?.as_nanos();
+    while parent_pid_of(orphan)? != parent_pid() {
+        check(time::now_monotonic()?.as_nanos() - start < 500_000_000, "orphan did not reach runner after supervisor death")?;
+        time::sleep_ms(1)?;
+    }
+    suite::value("orphan-pid", orphan as i64, "pid", None);
+    // Return Ok: the real runner must convert it to FAIL for the dead supervisor.
+    Ok(())
+}
+
+fn orphan_helper(expected: u64) -> i32 {
+    let mut middle = || {
+        let mut leaf = || {
+            let pid = process::getpid().unwrap().raw();
+            let path = format!("/tmp/uitest-orphan-{pid}");
+            let start = time::now_monotonic().unwrap().as_nanos();
+            while parent_pid() != expected {
+                if time::now_monotonic().unwrap().as_nanos() - start > 1_000_000_000 { return 2; }
+                let _ = time::sleep_ms(1);
+            }
+            println!("ORPHAN {pid} {expected}");
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            while !std::path::Path::new(&path).exists() { let _ = time::sleep_ms(1); }
+            7
+        };
+        i32::from(spawn(&[], Run::Call(&mut leaf)).is_err())
+    };
+    match spawn(&[], Run::Call(&mut middle)) {
+        Ok(pid) => i32::from(wait(pid.raw()).is_err()),
+        Err(_) => 1,
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|s| s == "--orphan-helper") {
+        process::exit(orphan_helper(args[2].parse().expect("supervisor pid")));
+    }
     if args.get(1).is_some_and(|s| s == "--probe-exec") {
         let fds: Vec<u64> = args[2].split(',').filter_map(|s| s.parse().ok()).collect();
         let ok = probe(&fds).is_ok();
@@ -192,13 +239,17 @@ fn main() {
         "mismatch-is-fail" => (mismatch, vec!["label"]),
         "forgery-exec" => (forgery_exec, vec!["label"]),
         "forgery-fork" => (forgery_fork, vec!["label"]),
+        "subreaper" => (sessions::reaped_orphan, vec![]),
+        "supervisor-died" => (supervisor_died, vec![]),
         "sweep-descendants" => (descendants, vec!["label"]),
         "outer-positive" | "transport-always" | "transport-exit-race" => (positive, vec!["label"]),
         _ => panic!("unknown fixture mode"),
     };
     let id = Box::leak(selected.to_string().into_boxed_str());
     let checks = Box::leak(checks.into_boxed_slice());
-    let cases = Box::leak(vec![case(id, "Scoped runner control", body).checks(checks)].into_boxed_slice());
+    let entry = case(id, "Scoped runner control", body).checks(checks);
+    let entry = if matches!(selected, "subreaper" | "supervisor-died") { entry.session(libuitest::supervisor::serve) } else { entry };
+    let cases = Box::leak(vec![entry].into_boxed_slice());
     let categories = Box::leak(vec![category("fixture", "Scoped runner", cases)].into_boxed_slice());
     suite::set_painter(Box::new(stage_painter::StagePainter::new()));
     suite::suite("runner-fixture", "Runner fixture", categories).gui().defer_display().case_limit_ms(3000).run()
