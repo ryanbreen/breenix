@@ -140,9 +140,35 @@ def receive(handler):
                     out.write(chunk);digest.update(chunk);remaining-=len(chunk)
                 out.flush();os.fsync(out.fileno())
             if digest.hexdigest()!=expected:raise ValueError('display artifact digest differs')
+            payload_length, payload_digest = length, expected
+            reference = handler.headers.get('X-Breenix-Picture-Reference')
+            if reference is not None:
+                if reference != '1' or not is_picture or not proof or length > 200:
+                    raise ValueError('picture reference is not admitted')
+                match = re.fullmatch(rb'PICTURE_REF v=1 source=(0|[1-9][0-9]*) bytes=([1-9][0-9]*) sha256=([0-9a-f]{64})\n', temporary.read_bytes())
+                if not match:
+                    raise ValueError('invalid picture reference')
+                source_index, payload_length = int(match[1]), int(match[2])
+                payload_digest = match[3].decode('ascii')
+                source = directory / f'gt710-breengel-{source_index:04}.rle'
+                source_receipt = m.read_json(directory / f'native-picture-upload-{source_index:04}.json', {})
+                if (source_index >= picture_index or not 0 < payload_length <= MAX_BYTES
+                        or source.is_symlink() or not source.is_file()
+                        or source_receipt.get('id') != intent['id'] or source_receipt.get('complete') is not True
+                        or source_receipt.get('bytes') != payload_length or source_receipt.get('sha256') != payload_digest):
+                    raise ValueError('picture reference source is not verified in this boot')
+                body = source.read_bytes()
+                if len(body) != payload_length or hashlib.sha256(body).hexdigest() != payload_digest:
+                    raise ValueError('picture reference source digest differs')
+                with temporary.open('wb') as out:
+                    out.write(body);out.flush();os.fsync(out.fileno())
+            if is_picture and intent.get('picturePayloadBytes', intent.get('pictureBytes', 0)) + payload_length > MAX_TOTAL:
+                raise ValueError('native picture payload exceeds 64 MiB')
             temporary.replace(directory/filename)
-            receipt=dict(id=intent['id'],route=route,complete=True,bytes=length,
-                         sha256=expected,receivedAt=m.now())
+            receipt=dict(id=intent['id'],route=route,complete=True,bytes=payload_length,
+                         sha256=payload_digest,receivedAt=m.now())
+            if reference is not None:
+                receipt.update(wireBytes=length, wireSha256=expected, reference=source_index)
             if is_screen:
                 intent['screenUploads'] = screen_index + 1
                 intent['screenBytes'] = intent.get('screenBytes', 0) + length
@@ -151,6 +177,7 @@ def receive(handler):
                 intent['diagnosticBytes'] = intent.get('diagnosticBytes', 0) + length
             elif is_picture:
                 intent['pictureUploads'] = picture_index + 1
+                intent['picturePayloadBytes'] = intent.get('picturePayloadBytes', intent.get('pictureBytes', 0)) + payload_length
                 intent['pictureBytes'] = intent.get('pictureBytes', 0) + length
             elif final:
                 intent['finalComplete']=True

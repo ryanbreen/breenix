@@ -1402,6 +1402,9 @@ fn evidence_route(suite: &str, sequence: bool) -> Result<Option<evidence::Route>
     evidence::Route::parse(&text, suite, sequence).map(Some)
 }
 
+/// Read the suite's intent-picture configuration.
+pub fn screen_proof_enabled(suite: &str) -> bool { intent::configured(suite) }
+
 /// Upload a bounded diagnostic using the launcher's private evidence route.
 /// The host counts it in the existing per-boot budget and seals it before final.
 pub fn upload_diagnostic(suite: &str, label: &str, data: &[u8]) -> Result<String, String> {

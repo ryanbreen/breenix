@@ -42,6 +42,8 @@ pub mod audio;
 pub mod compositor;
 pub mod crypto;
 pub mod dns;
+#[cfg(feature = "std")]
+pub mod evidence_reference;
 pub mod errno;
 pub mod error;
 pub mod fs;

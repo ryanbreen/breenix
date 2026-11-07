@@ -2,9 +2,12 @@
 use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
 
 const MAX_UPLOAD: usize = 2 << 20;
-// R6 amended: transport total, including startup, pictures and final evidence.
+// Retained canonical payload total, including startup, pictures and final evidence.
 const MAX_TOTAL: usize = 64 << 20;
 static BYTES: AtomicUsize = AtomicUsize::new(0);
+static WIRE_BYTES: AtomicUsize = AtomicUsize::new(0);
+static PICTURE_PARTS: std::sync::Mutex<libbreenix::evidence_reference::Cache> =
+    std::sync::Mutex::new(libbreenix::evidence_reference::Cache::new());
 static UPLOADS: AtomicUsize = AtomicUsize::new(0);
 pub(super) fn totals() -> (usize, usize) { (BYTES.load(Relaxed), UPLOADS.load(Relaxed)) }
 
@@ -79,6 +82,16 @@ pub(super) fn transfer(data: &[u8], suffix: &str) -> Result<(), String> {
     if data.is_empty() || data.len() > MAX_UPLOAD || total.checked_add(data.len()).is_none_or(|n| n > MAX_TOTAL) {
         return Err(format!("native upload refused: slot bytes={} total={} bound={MAX_TOTAL}", data.len(), total));
     }
+    let data_digest=sha256(data);
+    let suite=std::env::args().next().and_then(|name|name.rsplit('/').next()?.strip_prefix("suite-").map(str::to_owned));
+    let part=suffix.strip_prefix("/pictures/").and_then(|n|n.parse::<usize>().ok());
+    let proof=suite.as_deref().is_some_and(breenix_suite::suite::screen_proof_enabled);
+    let mut parts=PICTURE_PARTS.lock().map_err(|_|"picture reference cache poisoned")?;
+    let reference=if proof { part.and_then(|index|parts.reference(index,data.len(),data_digest)) } else { None };
+    let body=reference.as_deref().map_or(data,str::as_bytes);
+    if WIRE_BYTES.load(Relaxed).checked_add(body.len()).is_none_or(|n|n>MAX_TOTAL) {
+        return Err("native wire evidence exceeds 64 MiB".into());
+    }
     let mut target=std::fs::read_to_string("/etc/breenix/gt710-upload").map_err(|_|"native upload route absent")?.trim().to_string();
     if std::fs::read_to_string("/etc/breenix/suite-sequence").is_ok_and(|s| s.trim().contains(',')) {
         let executable = std::env::args().next().ok_or("native suite executable absent")?;
@@ -105,11 +118,14 @@ pub(super) fn transfer(data: &[u8], suffix: &str) -> Result<(), String> {
         Err(_)=>dns::resolve_auto(host).map_err(|_|"native upload resolution")?.addr,
     };
     let fd=socket::socket(socket::AF_INET,socket::SOCK_STREAM,0).map_err(|_|"native upload socket")?;
-    let digest:String=sha256(data).iter().map(|b|format!("{b:02x}")).collect();
+    let wire_digest=if reference.is_some() { sha256(body) } else { data_digest };
+    let digest:String=wire_digest.iter().map(|b|format!("{b:02x}")).collect();
+    WIRE_BYTES.fetch_add(body.len(), Relaxed);
     let result=(|| {
         socket::connect_inet(fd,&socket::SockAddrIn::new(ip,port)).map_err(|_|"native upload connect")?;
-        let header=format!("PUT /{} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nX-Content-SHA256: {}\r\nConnection: close\r\n\r\n",path,authority,data.len(),digest);
-        for bytes in [header.as_bytes(),data] {
+        let reference_header=if reference.is_some() { "X-Breenix-Picture-Reference: 1\r\n" } else { "" };
+        let header=format!("PUT /{} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nX-Content-SHA256: {}\r\n{}Connection: close\r\n\r\n",path,authority,body.len(),digest,reference_header);
+        for bytes in [header.as_bytes(),body] {
             let mut offset=0;
             while offset<bytes.len() {
                 let n=socket::send(fd,&bytes[offset..(offset+65536).min(bytes.len())]).map_err(|_|"native artifact send")?;
@@ -131,6 +147,7 @@ pub(super) fn transfer(data: &[u8], suffix: &str) -> Result<(), String> {
     })();
     let _=io::close(fd);
     result.map_err(str::to_string)?;
+    if proof { if let Some(index)=part { parts.remember(index,data.len(),data_digest).map_err(str::to_string)?; } }
     BYTES.fetch_add(data.len(), Relaxed);
     UPLOADS.fetch_add(1, Relaxed);
     let end=time::now_monotonic().map_err(|_|"native upload clock")?;

@@ -171,3 +171,19 @@ On ARM64 QEMU, `scripts/boot-interactive.sh --mode suite --suite gpu|breengel
 rendering transports the verified snapshot unchanged to a separate GPU texture;
 GPU solid and nearest-scale draws compose it. Its context is released after the
 checkpoint and hold, before the next case starts.
+
+## Repeated native picture parts
+
+An intent-enabled boot can send `X-Breenix-Picture-Reference: 1` on the ordered
+native `/pictures/N` route. Its digest-checked body is
+`PICTURE_REF v=1 source=M bytes=B sha256=H` followed by a newline. M must be
+an earlier completed part in the same suite and boot. The receiver checks that
+part's receipt, size and SHA-256 again before publishing the identical payload
+at N. Raw and RLE image formats and the first pictured case per category stay
+unchanged. The normal picture anchors still bind the reconstructed full bytes.
+
+The 64 MiB upload budget counts literal request bodies and reference descriptors.
+Receipts retain canonical `bytes` and `sha256`; a reference additionally records
+`wireBytes`, `wireSha256` and `reference`. Reconstructed native picture payloads
+have their own unchanged 64 MiB ceiling. Missing, corrupt, foreign, forward,
+unsealed and mode-disabled references are refused; no retry accepts weaker evidence.
