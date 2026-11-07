@@ -230,6 +230,10 @@ fn crc_codec_and_request_roundtrip() {
     let mut bad = encoded.clone(); bad[46] = 1;
     assert!(screen::CrcRequest::decode(&bad).is_none());
     let pixel = screen::Request {pixels:1,len:2,record:3}.encode();
+    assert_eq!(screen::rectangle([2,1],[4,2],Some([0,0])),Some([0,0,2,1]));
+    assert_eq!(screen::NO_CASE,61);
+    let failure=screen::Failure{errno:5,reason:4,failed_submission:9,declared:1}.encode();
+    assert_eq!(screen::Failure::decode(&failure).unwrap().failed_submission,9);
     assert_eq!(pixel.len(), 32);
     assert_eq!(&pixel[..8], b"SCREENRB");
     let decoded = screen::Request::decode(&pixel).unwrap();

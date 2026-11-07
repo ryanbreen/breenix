@@ -3,8 +3,8 @@
 This is the backend-6 driver's binary checkpoint record for the native sidecar
 specified in `scripts/screens/README.md`, Native run evidence. It contains the
 per-checkpoint fields. The boot exporter supplies the enclosing `run`, `commit`
-and sidecar `version` from the retained boot. Transport and exporter wiring are
-subsequent E22 units.
+and sidecar `version` from the retained boot. The shared codec is
+`gpu_abi::screen_crc`; the exporter belongs to a subsequent E22 unit.
 
 The driver entry is `gk208::display_crc::observe`. Its caller must hold the shared
 display observation transition across the pixel observation and this call, using
@@ -89,3 +89,57 @@ Sources and MIT grants are listed in `THIRD_PARTY_NOTICES`. The source permits
 programming the secondary RG field; whether this card populates it remains a
 hardware acceptance question. A missing secondary refuses this producer rather
 than manufacturing an RG value.
+
+## Guest transport
+
+<!-- claim-lint:ok: Request layout in libs/gpu-abi/src/screen.rs; codec and boundary tests in tests/fixtures/gt710_display_crc.rs and tests/screen_crc_endpoint_test.py. -->
+The proof-only CRC variant uses the separate `SCRCRCRB` tag on
+`/dev/screen-evidence`. The pixel-only 32-byte `SCREENRB` form is unchanged.
+The CRC request has a 48-byte header followed by suite, case and checkpoint
+UTF-8 tokens without NULs. Header fields, little endian:
+
+| Offset | Field |
+|---|---|
+| 0 | Eight-byte `SCRCRCRB` tag |
+| 8 | u64 pixel destination |
+| 16 | u64 pixel buffer capacity |
+| 24 | u64 ordinary 1024-byte observation destination |
+| 32 | u64 CRC record destination, capacity 4096 bytes |
+| 40 | Three u16 identity byte lengths: suite, case, checkpoint |
+| 46 | u16 reserved, 0 |
+
+<!-- claim-lint:ok: Normative request contract implemented by CrcRequest and observe_screen_crc; tests/screen_crc_endpoint_test.py checks the access boundary. -->
+The record's own byte length delimits its output. Names are bounded to 255 bytes
+each; suite is gpu or breengel, case is category/name, and checkpoint is a
+lowercase alphanumeric hyphenated token. Partial, trailing and malformed requests
+are refused. The endpoint requires root, a suite boot, proof mode and backend 6.
+Both readback and CRC run before releasing the display transition and resource
+read pin. CRC failure uses the observation destination's SCREENER status;
+ordinary observation record fields are unchanged.
+
+<!-- claim-lint:ok: Guest handoff and corruption tests in tests/suite_screen_test.rs; pinned native capture is in kernel/src/gpu/mod.rs read_back_impl. -->
+The child writes the raw record to a per-case queue with a byte length and
+SHA-256. The parent validates the digest, suite, case, binding stability and
+collection status before its diagnostic PUT. Intent checkpoints use the same
+request and queue from the parent. Native proof observations bypass the cached
+pixel readback so the CRC and digest come from the same pinned observation.
+
+Labels are `crc-<suite>-<16 lowercase hex digits>`; the suffix is the first eight
+bytes of SHA-256 over `case`, one NUL byte, then `checkpoint`. The separator
+cannot occur in either identity token. Each record is one W3 diagnostic request.
+The serial anchor is:
+
+```text
+SCREEN_CRC_UPLOAD <suite> <case> <checkpoint> label=<label> bytes=<n> sha256=<64 hex> result=ok|failed:<reason>
+```
+
+The CRC SCREEN line uses the first stable sample (entry 1), raster and SOR index
+from that record. The proc summary describes the last completed checkpoint,
+including the first discarded entry in `entries`; before any completed capture
+it returns errno 61. Outside suite boots it returns ENOSYS, and virtual backends
+return ENODEV. The summary read clones the completed text without starting collection. ARM's boundary
+remains latched readback and host-renderer attestation.
+
+Host receiver admission, record export and perturbation scoring belong to later
+units of 22.2. Until receiver admission lands, a CRC diagnostic PUT is reported
+as failed; its failure does not change the shared case verdict.

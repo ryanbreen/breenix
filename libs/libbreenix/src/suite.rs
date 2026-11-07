@@ -1315,10 +1315,10 @@ impl Suite {
                 done += 1;
                 if let Some(slot) = panel_reasons.get_mut(c).and_then(|v| v.get_mut(k)) { retain_panel_reason(&mut states[c][k], slot); }
                 for checkpoint in screen::collect(self.id, &name) { screen::emit(&checkpoint); }
-                screen::upload_pending(self.id);
+                screen::upload_pending(self.id, &name);
                 if let Some(picture) = intent_picture.as_deref() {
                     intent::show(self.id, &name, picture, intent_pace_ms);
-                    screen::upload_pending(self.id);
+                    screen::upload_pending(self.id, &name);
                     if screen.gui { let _ = crate::suite_stage::redraw(); }
                 }
                 if let Some(observe) = self.case_observer { observe(done, total, &name); }

@@ -212,15 +212,21 @@ impl Frame {
         pixels.try_reserve_exact(len).map_err(|_| "intent-allocation")?;
         pixels.resize(len, 0);
         let mut record = [0; abi::record::SIZE];
-        if gpu::readback(0, [0, 0, mode.width, mode.height], &mut pixels, mode.width * 4, &mut record) != 0 {
-            return Err("intent-readback");
-        }
+        let crc = if gpu::caps().1.backend == abi::backend::GK208 {
+            super::screen::observe_checkpoint(suite,case,checkpoint,&mut pixels,&mut record).map_err(|_|"intent-readback")?
+        } else {
+            if gpu::readback(0, [0, 0, mode.width, mode.height], &mut pixels, mode.width * 4, &mut record) != 0 {
+                return Err("intent-readback");
+            }
+            None
+        };
         super::screen::validate(&record, mode, gpu::caps().1.backend, 0)?;
         for at in [abi::record::CONTEXT, abi::record::RESOURCE, abi::record::GENERATION] {
             if record[at..at+8] != expected[at..at+8] { return Err("intent-binding"); }
         }
         let hash = super::screen::canonical_hash(&mut pixels, mode)?;
         super::screen::capture(suite, case, checkpoint, mode, hash, &pixels)?;
+        if let Some(bytes) = crc { super::screen::intent_crc(bytes)?; }
         Ok((hash, mode, mode))
     }
 }
@@ -233,7 +239,7 @@ pub(super) fn show(suite: &str, case: &str, picture: &super::JudgedFrame, pace: 
             let checkpoint = if count == 1 { "intent".into() } else { std::format!("intent-p{}", i+1) };
             let mut frame = Frame { context: 0, texture: 0, target: 0, display: false };
             let captured = frame.present(picture, mode, plan).and_then(|()| frame.snapshot(suite, case, &checkpoint, mode));
-            super::screen::emit(&super::screen::format_record(suite, case, &checkpoint, captured));
+            super::screen::emit_intent(suite, case, &checkpoint, captured);
             if frame.display && time::sleep_ms(pace).is_err() {
                 super::emit(&std::format!("SUITE {suite} ERROR intent hold failed for {case} {checkpoint}"));
             }

@@ -51,7 +51,7 @@ suite = ["std"]
 input-abi = { path = "../input-abi" }
 breengel-abi = { path = "../breengel-abi" }
 # Syscall 416's layouts and the BGL command stream, shared with the kernel.
-gpu-abi = { path = "../gpu-abi" }
+gpu-abi = { path = "../gpu-abi", features = ["alloc"] }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))'] }

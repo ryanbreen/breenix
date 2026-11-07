@@ -5748,6 +5748,60 @@ pub fn observe_screen(request: abi::screen::Request) -> Result<(), i64> {
     Err(failure.errno)
 }
 
+/// Suite checkpoints use this separate request; ARM keeps its latched readback
+/// and host-renderer boundary and returns ENODEV for native CRC evidence.
+pub fn observe_screen_crc(request: abi::screen::CrcRequest<'_>) -> Result<(), i64> {
+    if !crate::test_control::enabled() { return Err(38); }
+    probe_writable(request.observation, 32)?;
+    let result = (|| -> Result<(), Refused> {
+        if dev::backend() != abi::backend::GK208 { return Err(ENODEV.into()); }
+        if !screen_proof_enabled() { return Err(38.into()); }
+        probe_writable(request.record, abi::screen_crc::MAX_RECORD)?;
+        crate::console::await_repaint();
+        let _path = GpuPath::enter();
+        if !matches!(with_core(|c| c.admission()), Some(Ok(()))) { return Err(ENODEV.into()); }
+        let mut a = abi::Readback::ZERO;
+        a.pixels = request.pixels;
+        a.pixels_len = request.len;
+        a.record = request.observation;
+        read_back_impl(caller()?, &mut a, Observer::Screen, None, Some(request))
+            .map(|_| ())
+    })();
+    let mut failure = match result {
+        Ok(()) => return Ok(()),
+        Err(Refused::Errno(errno)) => abi::screen::Failure {errno,reason:0,failed_submission:0,declared:0},
+        Err(Refused::Eio(reason,failed_submission)) => abi::screen::Failure {errno:EIO,reason,failed_submission,declared:0},
+    };
+    if failure.errno == EIO && failure.reason == readback_reason::TARGET_INVALID {
+        failure.declared = with_core(|c| c.display.binding.and_then(|b|c.resources.get(&b.id))
+            .is_some_and(|r|r.invalid && r.invalidated_by == failure.failed_submission
+                && r.deliberate_invalidation == failure.failed_submission && failure.failed_submission != 0))
+            .unwrap_or(false) as u32;
+    }
+    let bytes = failure.encode();
+    crate::syscall::userptr::write_user_bytes(request.observation,bytes.as_ptr(),bytes.len()).map_err(|_|EFAULT)?;
+    Err(failure.errno)
+}
+
+fn screen_proof_enabled() -> bool {
+    if crate::drivers::fw_cfg::read_string("opt/breenix/screen-proof").is_some_and(|s|s.trim()=="on") { return true; }
+    let Ok(guard) = crate::fs::ext2::root_fs_read() else { return false; };
+    let Some(fs) = guard.as_ref() else { return false; };
+    let Ok(number) = fs.resolve_path("/etc/breenix/screen-proof") else { return false; };
+    let Ok(inode) = fs.read_inode(number) else { return false; };
+    if inode.is_dir() || inode.size() > 16 { return false; }
+    fs.read_file_content_coherent(number, &inode).is_ok_and(|b|b.as_slice() == b"on\n" || b.as_slice() == b"on")
+}
+
+static DISPLAY_CRC_SUMMARY: spin::Mutex<Option<alloc::string::String>> = spin::Mutex::new(None);
+
+/// A human-readable summary of the last completed checkpoint.
+pub fn display_crc_summary() -> Result<alloc::string::String, i64> {
+    if !crate::test_control::enabled() { return Err(38); }
+    if dev::backend() != abi::backend::GK208 { return Err(ENODEV); }
+    DISPLAY_CRC_SUMMARY.lock().clone().ok_or(61)
+}
+
 /// Who observes target 0, the scanout.
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Observer {
@@ -5790,6 +5844,11 @@ impl From<i64> for Refused {
 /// the record, and return the observation serial. `arg`, when given, is READBACK's argument,
 /// checked writable before any device work.
 fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u64>) -> Result<u64, Refused> {
+    read_back_impl(tgid, a, observer, arg, None)
+}
+
+fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u64>,
+    crc: Option<abi::screen::CrcRequest<'_>>) -> Result<u64, Refused> {
     #[cfg(target_arch = "x86_64")]
     let trace = (dev::backend() == abi::backend::GK208)
         .then(|| crate::gk208::timing::Readback::begin(tgid)).flatten();
@@ -6131,6 +6190,30 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
         let _copy = trace.as_ref().map(|t| t.phase(true));
         #[cfg(target_arch = "x86_64")]
         let _cost = crate::gk208::cost::phase(crate::gk208::cost::Slot::CopyOut);
+        // Both the display transition and resource reading mark remain held.
+        // No submission can change the pixels between this readback and CRC.
+        if let Some(request) = crc {
+            if unwritten != 0 { return Err(EIO); }
+            #[cfg(target_arch = "x86_64")]
+            {
+                let present = binding.ok_or(EIO)?;
+                let captured = crate::gk208::display_crc::observe(
+                    crate::gk208::display_crc::Checkpoint {suite:request.suite,case:request.case,checkpoint:request.checkpoint},
+                    abi::screen_crc::Binding {resource:u64::from(device_resource),present_fence:present.fence},
+                    [a.width,a.height]).map_err(|_| EIO)?;
+                if !captured.eligible() { return Err(EIO); }
+                let bytes = captured.encode().map_err(|_| EIO)?;
+                crate::syscall::userptr::write_user_bytes(request.record, bytes.as_ptr(), bytes.len()).map_err(|_| EFAULT)?;
+                let sample = captured.samples[1];
+                let c = &captured.output_config;
+                *DISPLAY_CRC_SUMMARY.lock() = Some(alloc::format!(
+                    "backend=6 head={} out=sor{} raster={}x{} resource={} present_fence={} crc={:08x} crc2={:08x} entries={} status={}\n",
+                    c.rg,c.sor,c.raster[0],c.raster[1],device_resource,present.fence,
+                    sample.crc,sample.crc2,captured.samples.len(),captured.status));
+            }
+            #[cfg(not(target_arch = "x86_64"))]
+            { let _ = request; return Err(ENODEV); }
+        }
         if unwritten == 0 {
             let row = row as usize;
             for ry in 0..h as usize {

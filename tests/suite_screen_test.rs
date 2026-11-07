@@ -231,3 +231,38 @@ fn crc_screen_record_and_diagnostic_label() {
     let python = "import importlib.util,re,sys; s=importlib.util.spec_from_file_location('v',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); assert m.RECORD.fullmatch(sys.argv[2].strip()); assert re.fullmatch(r'[a-z][a-z0-9-]{0,63}',sys.argv[3])";
     assert!(std::process::Command::new("python3").args(["-c",python]).arg(script).arg(&line).arg(label).status().unwrap().success());
 }
+
+#[test]
+fn crc_handoff_preserves_bytes_digest_and_refuses_torn_or_foreign_records() {
+    use gpu_abi::screen_crc::{Binding,OutputConfig,Record,Sample};
+    let binding = Binding {resource:7,present_fence:9};
+    let mut record = Record {suite:"gpu".into(),case:"draw/one".into(),checkpoint:"end".into(),
+        binding_before:binding,binding_after:binding,elapsed_us:1000,disarmed:true,display_error:0,status:1,
+        output_config:OutputConfig {mode:[2,1],raster:[1280,1024],viewport:[0,112,1280,800],sor:0,rg:0,methods:vec![(0x200,1)]},
+        samples:vec![Sample {status:1,crc:0x1234,crc2:0xabcd};5]};
+    let path = std::env::temp_dir().join(format!("crc-handoff-{}",std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let bytes = record.encode().unwrap();
+    screen::queue_crc(&path,&bytes).unwrap();
+    let mut uploads = Vec::new();
+    let lines = screen::flush_crc(&path,"gpu","draw/one",|label,raw|{
+        uploads.push((label.to_string(),raw.to_vec())); Ok("sent".into())
+    });
+    assert_eq!(uploads,vec![(screen::crc_label("gpu","draw/one","end"),bytes.clone())]);
+    let hex: String = libpixcheck::sha256(&bytes).iter().map(|b|format!("{b:02x}")).collect();
+    assert!(lines[0].contains(&format!(" bytes={} sha256={hex} result=ok",bytes.len())));
+    assert!(!path.exists());
+    for kind in ["corrupt","partial","foreign","moved"] {
+        record.binding_after = binding;
+        record.case = if kind=="foreign" {"draw/two"} else {"draw/one"}.into();
+        if kind=="moved" { record.binding_after.present_fence += 1; }
+        screen::queue_crc(&path,&record.encode().unwrap()).unwrap();
+        let mut queued = std::fs::read(&path).unwrap();
+        if kind=="corrupt" { queued[0]^=1; }
+        if kind=="partial" { queued.pop(); }
+        std::fs::write(&path,queued).unwrap();
+        let lines = screen::flush_crc(&path,"gpu","draw/one",|_,_|panic!("invalid handoff reached uploader"));
+        assert_eq!(lines.len(),1);
+        assert!(lines[0].contains(" refused="),"{kind}: {lines:?}");
+    }
+}

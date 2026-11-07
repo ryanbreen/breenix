@@ -5,51 +5,18 @@
 //! ARM's counterpart is the latched-binding readback and host-renderer attestation
 //! described in docs/gui/screen-proof.md; virtual backends have no display CRC.
 use super::modeset;
-use alloc::{string::String, vec::Vec};
+use alloc::vec::Vec;
 
 pub const TIMEOUT_US: u64 = 250_000;
 pub const MAX_SAMPLES: usize = 255;
 const CLEANUP_US: u64 = 20_000;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Binding {
-    pub resource: u64,
-    pub present_fence: u64,
-}
+pub use gpu_abi::screen_crc::{Binding, OutputConfig, Record, Sample};
 #[derive(Clone, Copy)]
 pub struct Checkpoint<'a> {
     pub suite: &'a str,
     pub case: &'a str,
     pub checkpoint: &'a str,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Sample {
-    pub status: u32,
-    pub crc: u32,
-    pub crc2: u32,
-}
-#[derive(Debug)]
-pub struct OutputConfig {
-    pub mode: [u32; 2],
-    pub raster: [u32; 2],
-    pub viewport: [u32; 4],
-    pub sor: u32,
-    pub rg: u32,
-    pub methods: Vec<(u32, u32)>,
-}
-#[derive(Debug)]
-pub struct Record {
-    pub suite: String,
-    pub case: String,
-    pub checkpoint: String,
-    pub output_config: OutputConfig,
-    pub binding_before: Binding,
-    pub binding_after: Binding,
-    pub elapsed_us: u32,
-    pub disarmed: bool,
-    pub display_error: u32,
-    pub status: u32,
-    pub samples: Vec<Sample>,
 }
 
 /// The offsets/layout are crc907d_notifier: two header words and 255 16-byte
@@ -266,84 +233,6 @@ pub fn capture(
         status,
         samples,
     })
-}
-
-impl Record {
-    /// SCRCRC01 v1: explicit little endian fields, no Rust struct layout.
-    /// Header (116 bytes), UTF-8 suite/case/checkpoint, method pairs, then samples.
-    /// The source ids encode out=sorN and sources=[sorN,rgN] without inference
-    /// from methods; run/commit belong to the enclosing host boot, not the head.
-    pub fn encode(&self) -> Result<Vec<u8>, &'static str> {
-        let names = [&self.suite, &self.case, &self.checkpoint];
-        let methods = &self.output_config.methods;
-        if names.iter().any(|s| s.is_empty() || s.len() > 255)
-            || methods.len() > 64
-            || methods.iter().any(|p| p.0 & 3 != 0)
-            || !methods.windows(2).all(|w| w[0].0 < w[1].0)
-            || self.samples.len() > MAX_SAMPLES
-        {
-            return Err("CRC record extent or method order");
-        }
-        let size = 116
-            + names.iter().map(|s| s.len()).sum::<usize>()
-            + methods.len() * 8
-            + self.samples.len() * 12;
-        if size >= 4096 {
-            return Err("CRC record exceeds upload extent");
-        }
-        let mut bytes = Vec::new();
-        bytes
-            .try_reserve_exact(size)
-            .map_err(|_| "CRC record allocation")?;
-        bytes.extend_from_slice(b"SCRCRC01");
-        for v in [1, size as u32, 6] {
-            bytes.extend_from_slice(&v.to_le_bytes());
-        }
-        for v in [
-            names[0].len(),
-            names[1].len(),
-            names[2].len(),
-            methods.len(),
-            self.samples.len(),
-            usize::from(self.disarmed),
-        ] {
-            bytes.extend_from_slice(&(v as u16).to_le_bytes());
-        }
-        for v in [
-            self.binding_before.resource,
-            self.binding_before.present_fence,
-            self.binding_after.resource,
-            self.binding_after.present_fence,
-        ] {
-            bytes.extend_from_slice(&v.to_le_bytes());
-        }
-        for v in [self.elapsed_us, self.display_error, self.status] {
-            bytes.extend_from_slice(&v.to_le_bytes());
-        }
-        let c = &self.output_config;
-        for v in c
-            .mode
-            .into_iter()
-            .chain(c.raster)
-            .chain(c.viewport)
-            .chain([c.sor, c.rg])
-        {
-            bytes.extend_from_slice(&v.to_le_bytes());
-        }
-        for name in names {
-            bytes.extend_from_slice(name.as_bytes());
-        }
-        for &(method, value) in methods {
-            bytes.extend_from_slice(&method.to_le_bytes());
-            bytes.extend_from_slice(&value.to_le_bytes());
-        }
-        for sample in &self.samples {
-            for v in [sample.status, sample.crc, sample.crc2] {
-                bytes.extend_from_slice(&v.to_le_bytes());
-            }
-        }
-        Ok(bytes)
-    }
 }
 
 /// Driver boundary for a suite checkpoint whose binding is pinned by the shared
