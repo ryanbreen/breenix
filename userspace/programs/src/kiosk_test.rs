@@ -467,6 +467,26 @@ fn compose_damage(kiosk: &mut Kiosk) {
     }
 }
 
+/// Session kiosk consumes its restricted stream without routing to an app.
+/// These raw-session edges are WM-handled, with terminal ledger witnesses.
+fn drain_session_input(reader: &libbreenix::input::Reader) -> Result<(), libbreenix::error::Error> {
+    use libbreenix::{error::Error, errno::Errno, input::{Disposition, disposition}};
+    let mut buffer = [0; 32 * 1024];
+    for _ in 0..4 {
+        let records = match reader.read(&mut buffer) {
+            Ok(records) => records,
+            Err(Error::Os(Errno::EAGAIN)) => break,
+            Err(Error::Os(Errno::EINTR)) => continue,
+            Err(error) => return Err(error),
+        };
+        for record in records {
+            reader.dispose(&Disposition { serial: record?.event.serial,
+                disposition: disposition::WM_HANDLED, ..Default::default() })?;
+        }
+    }
+    Ok(())
+}
+
 fn main() {
     let epoch = match window::claim_compositor() {
         Ok(epoch) => epoch,
@@ -479,7 +499,7 @@ fn main() {
     let selection = libbreenix::input::input_device_selection(value.as_ref().map(|v| v.to_str().expect("input devices must be UTF-8")))
         .expect("invalid input device selection");
     let session = selection.is_some();
-    let _input_reader = selection.map(|devices| {
+    let input_reader = selection.map(|devices| {
         let reader = libbreenix::input::Reader::open(true).expect("open compositor input reader");
         reader.grab(&devices).expect("claim compositor input grab");
         reader
@@ -494,9 +514,15 @@ fn main() {
     let scene = scene.unwrap_or(-1);
     let mut pending = Vec::new();
     loop {
-        let mut fds = [PollFd { fd: 0, events: POLLIN, revents: 0 }, PollFd { fd: scene, events: POLLIN, revents: 0 }];
-        let watched = if kiosk.auto { 2 } else { 1 };
-        let ready = io::poll(&mut fds[..watched], -1).unwrap_or(0);
+        let mut fds = [PollFd { fd: 0, events: POLLIN, revents: 0 },
+            PollFd { fd: if kiosk.auto { scene } else { -1 }, events: POLLIN, revents: 0 },
+            PollFd { fd: input_reader.as_ref().map_or(-1, |reader| reader.fd().raw() as i32), events: POLLIN, revents: 0 }];
+        let ready = io::poll(&mut fds, -1).unwrap_or(0);
+        if fds[2].revents != 0 {
+            if let Some(reader) = &input_reader {
+                if drain_session_input(reader).is_err() { return; }
+            }
+        }
         if ready > 0 && fds[0].revents != 0 {
             let mut buf = [0u8; 4096];
             match io::read(Fd::STDIN, &mut buf) {

@@ -39,7 +39,7 @@ impl Channel {
         if let Some(message) = self.decoder.next()? { return Ok(Some(message)); }
         let mut bytes = [0; 8192];
         match io::read(self.fd, &mut bytes) {
-            Ok(0) => Err("session supervisor/control peer closed".into()),
+            Ok(0) | Err(Error::Os(Errno::ECONNRESET)) => Err("session supervisor/control peer closed".into()),
             Ok(n) => { self.decoder.push(&bytes[..n])?; self.decoder.next() }
             Err(Error::Os(Errno::EINTR | Errno::EAGAIN)) => Ok(None),
             Err(error) => Err(error.to_string()),

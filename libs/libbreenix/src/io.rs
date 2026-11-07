@@ -150,6 +150,12 @@ pub fn pipe2(flags: i32) -> Result<(Fd, Fd), Error> {
     })
 }
 
+/// Close the inclusive descriptor range, ignoring holes and individual close
+/// errors. Unsupported close-range flags are not exposed by this wrapper.
+pub fn close_range(first: u32, last: u32) -> Result<(), Error> {
+    Error::from_syscall(unsafe { raw::syscall3(nr::CLOSE_RANGE, u64::from(first), u64::from(last), 0) } as i64).map(|_| ())
+}
+
 /// Duplicate a file descriptor.
 ///
 /// Creates a copy of the file descriptor `old_fd`, using the lowest-numbered
