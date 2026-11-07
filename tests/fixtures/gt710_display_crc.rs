@@ -84,6 +84,10 @@ impl Io for Model {
         if self.phase<2 {self.now+=16000;}
         if self.fault==7 {return Err("notifier read failed")}
         let sample = self.available.get(index).copied();
+        // A pinned static head can snooze its RG while SOR keeps transmitting.
+        if self.fault == 9 && self.submitted.first().is_some_and(|m| m[1].1 & 0x20 == 0) {
+            return Ok(sample.map(|s| Sample { crc2: 0, ..s }));
+        }
         if self.fault == 8 && self.phase < 2 {
             return Ok(sample.map(|s| Sample { crc2: 0, ..s }));
         }
@@ -292,4 +296,13 @@ fn crc_codec_and_request_roundtrip() {
     m.disarmed();
     assert!(detail.contains("rg_secondary_sor=1"), "{detail}");
     assert!(detail.contains("rg_sample0=00000021:0000002c"), "{detail}");
+}
+
+#[test] fn pinned_static_checkpoint_requests_crc_during_snooze() {
+    let mut m = Model::new();
+    m.fault = 9;
+    let record = m.capture().expect("pinned checkpoint must measure snoozing RG");
+    m.disarmed();
+    assert_eq!(m.submitted[0][1], (0x430, 0xff8f0f60));
+    assert_eq!(record.samples, m.available);
 }
