@@ -41,6 +41,82 @@ pub trait Io: modeset::Io {
     fn recover_present(&mut self) -> Result<(), &'static str>;
 }
 
+/// The bounded core UPDATE operations shared by capture and explicit restoration.
+pub trait OutputIo: modeset::Io {
+    fn output_now_us(&self) -> u64;
+    fn output_update(&mut self, methods: &[(u32, u32)], deadline: u64)
+        -> Result<(), &'static str>;
+}
+impl<T: Io> OutputIo for T {
+    fn output_now_us(&self) -> u64 { self.now_us() }
+    fn output_update(&mut self, methods: &[(u32, u32)], deadline: u64)
+        -> Result<(), &'static str> { self.update(methods, deadline) }
+}
+
+/// Saved active output state, retained until a verified restoring UPDATE.
+/// The native session serializes checkpoints, disarm and its other core methods.
+#[derive(Default)]
+pub struct Perturbation {
+    saved: Option<(u32, u32, Vec<(u32, u32)>)>,
+}
+impl Perturbation {
+    pub const fn new() -> Self { Self { saved: None } }
+    pub fn active(&self) -> bool { self.saved.is_some() }
+    pub fn enable(&mut self, io: &mut impl OutputIo, head: u32, sor: u32)
+        -> Result<(), &'static str> {
+        if self.active() { return Err("output perturbation awaits disarm"); }
+        let before = modeset::crc_output_methods(io, head, sor)?;
+        let previous = before.iter().find(|p| p.0 == 0x4a0 + head * 0x300)
+            .ok_or("output dithering method absent")?.1;
+        let methods = modeset::output_dither_methods(head, previous, true)?;
+        // Save before publication: even a partially accepted UPDATE needs disarm.
+        self.saved = Some((head, sor, before));
+        io.output_update(&methods, io.output_now_us().saturating_add(CLEANUP_US))?;
+        let actual = modeset::crc_output_methods(io, head, sor)?;
+        let expected = &self.saved.as_ref().unwrap().2;
+        // Only the requested dithering value may differ from the active list.
+        if actual.len() != expected.len() || actual.iter().zip(expected).any(|(a, b)|
+            a.0 != b.0 || a.1 != if a.0 == methods[0].0 { methods[0].1 } else { b.1 }) {
+            return Err("output perturbation did not latch");
+        }
+        Ok(())
+    }
+    pub fn restore(&mut self, io: &mut impl OutputIo) -> Result<(), &'static str> {
+        let Some((head, sor, before)) = self.saved.as_ref() else { return Ok(()); };
+        let previous = before.iter().find(|p| p.0 == 0x4a0 + head * 0x300)
+            .ok_or("saved output dithering method absent")?.1;
+        let methods = modeset::output_dither_methods(*head, previous, false)?;
+        io.output_update(&methods, io.output_now_us().saturating_add(CLEANUP_US))?;
+        if modeset::crc_output_methods(io, *head, *sor)? != *before {
+            return Err("output perturbation restoration differs");
+        }
+        self.saved = None;
+        Ok(())
+    }
+}
+
+/// Consume the one-shot only at a matching, pinned native checkpoint, after the
+/// enabling method has latched. A failed publication remains restorable.
+#[cfg(target_os = "none")]
+pub fn perturb_checkpoint(io: &mut impl Io, state: &mut Perturbation,
+    expected: Binding, head: u32, sor: u32) -> Result<(), &'static str> {
+    if let Some(arm) = crate::test_control::reserve(
+        breengel_abi::tc_point::DISPLAY_OUTPUT_PERTURB, expected.resource) {
+        if expected.resource == 0 || expected.present_fence == 0 || io.binding()? != expected {
+            return Err("output perturbation binding differs");
+        }
+        state.enable(io, head, sor)?;
+        arm.fire();
+    }
+    Ok(())
+}
+
+/// DISARM_ALL's driver boundary; ARM has no equivalent display output CRC.
+#[cfg(target_os = "none")]
+pub fn restore_perturbation() -> Result<(), &'static str> {
+    super::ce::restore_output_perturbation()
+}
+
 fn output(
     io: &mut impl Io,
     mode: [u32; 2],

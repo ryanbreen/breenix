@@ -68,9 +68,9 @@ fn main() {
         fixture = fixture.replace('DEFINED', item(control, 'fn defined('))
         fixture = fixture.replace('SUPPORTED', item(dev, 'pub fn output_perturb_supported('))
         fixture = fixture.replace('DRIVER', str(ROOT / 'kernel/src/gpu/gk208'))
-        fixture = fixture.replace('POINT', str(ROOT / 'kernel/src/test_control/point.rs'))
+        fixture = fixture.replace('POINT"', str(ROOT / 'kernel/src/test_control/point.rs') + '"')
         fixture = fixture.replace('CHECKPOINT', item(crc, 'pub fn perturb_checkpoint('))
-        fixture = fixture.replace('ABI', str(ROOT / 'libs/gpu-abi/src'))
+        fixture = fixture.replace('ABI/', str(ROOT / 'libs/gpu-abi/src') + '/')
         for arch in ['x86_64', 'aarch64']:
             with self.subTest(arch=arch):
                 compile_run(fixture, arch)

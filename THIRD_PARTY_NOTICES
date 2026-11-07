@@ -2198,3 +2198,17 @@ The active/assembly register map and the existing physical DMA descriptor,
 RAMHT and scoped UPDATE publication paths retain the previously listed MIT
 sources and grants. The record format and bounded collection state machine are
 Breenix implementations. No DRM integration, GPL source or firmware was imported.
+
+E22 native output perturbation
+------------------------------
+The output_dither_methods encoder in kernel/src/gpu/gk208/modeset.rs uses
+NV917D_HEAD_SET_DITHER_CONTROL from nouveau include/nvhw/class/cl917d.h:73-87
+at Linux v6.8 e8f897f4afef0031fe618a8e94127a0934896aba (MIT, Copyright
+1993-2014 NVIDIA CORPORATION). Its original grant is already at the start of
+modeset.rs. The method is 0x4a0 + head*0x300, enable bit 0, depth bits 2:1,
+mode bits 6:3 and phase bits 8:7. The static 2x2/6-bit/phase-zero selection
+uses value 0x19 in those fields. dispnv50/head917d.c:28-41 (MIT, Copyright
+2018 Red Hat Inc.; grant already in modeset.rs) supplies the core-channel
+method usage. The save/restore state machine is Breenix code. ARM's virtual
+displays have no equivalent output control; their latched-binding readback
+and host-renderer attestation boundary is described in screen-proof.md.

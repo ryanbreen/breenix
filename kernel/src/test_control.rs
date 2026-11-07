@@ -9,7 +9,8 @@
 //!
 //! The points defined here are the GPU effort's, 19 to 31, and BreenGL's, 1 to 18
 //! (`breengel_abi::tc_point`); the GPU core builds BreenGL's 2 `irq-hold` and 3
-//! `emit-diagnostic` too (`docs/gui/gpu-abi.md`), plus users point 32 `cred-orphan`. Each is a branch in the real
+//! `emit-diagnostic` too (`docs/gui/gpu-abi.md`), plus users point 32 `cred-orphan`
+//! and window points 33-35 (including native `display-output-perturb`). Each is a branch in the real
 //! code path that asks `take` (or `take_if`) whether its point is armed; both read the
 //! latch first, so outside a suite boot a point costs one load and cannot fire while
 //! disabled. A point is one-shot: it affects the next occurrence of its event, counts one firing and
@@ -182,6 +183,11 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
             if a.reserved != 0 || !defined(a.point) {
                 return err(EINVAL);
             }
+            if a.point == breengel_abi::tc_point::DISPLAY_OUTPUT_PERTURB
+                && !crate::gpu::dev::output_perturb_supported()
+            {
+                return err(EINVAL);
+            }
             let p = &POINT_TABLE[a.point as usize];
             if a.point == breengel_abi::tc_point::INPUT_REPORT_SKIPPED {
                 crate::arch_without_interrupts(|| p.arm(a.target, a.param));
@@ -192,6 +198,9 @@ pub fn sys_test_control(op: u64, arg: u64, len: u64) -> SyscallResult {
             crate::arch_without_interrupts(|| {
                 for p in POINT_TABLE.iter() { p.disarm(); }
             });
+            if let Err(errno) = crate::gpu::dev::restore_output_perturbation() {
+                return err(errno);
+            }
             // A case's measurements start clean: the IRQ-masked gauges restart at 0.
             crate::tracing::providers::gpu::reset_irq_masked();
             crate::tracing::providers::window::reset_irq_masked();

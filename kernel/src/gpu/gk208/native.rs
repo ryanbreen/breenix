@@ -1928,12 +1928,72 @@ impl CoreProducer {
     }
 }
 
+#[cfg(target_os = "none")]
+fn crc_wait(regs: &mut Registers, register: usize, mask: u32, value: u32,
+    deadline: u64) -> Result<(), &'static str> {
+    loop {
+        if regs.read(register) & mask == value { return Ok(()); }
+        if crate::signal::monotonic_nanos()/1000 >= deadline {
+            return Err("CRC core channel deadline");
+        }
+        regs.delay_us(100);
+    }
+}
+#[cfg(target_os = "none")]
+fn crc_display_error(evo: &Evo, regs: &mut Registers) -> u32 {
+    regs.read(0x61009c) | (regs.read(0x616308+evo.head as usize*0x800)&0x110)
+}
+#[cfg(target_os = "none")]
+fn crc_update(evo: &mut Evo, regs: &mut Registers, methods: &[(u32,u32)], deadline: u64)
+    -> Result<(), &'static str> {
+    crc_wait(regs, 0x640004,u32::MAX,evo.put,deadline)?;
+    write_words(regs,evo.total,evo.notifier,&[0;4])?;
+    if evo.put as usize + (methods.len()+1)*8 > 2044 {
+        write_words(regs,evo.total,evo.push+u64::from(evo.put),&[0x20000000])?;
+        modeset::publish(regs,0)?;
+        crc_wait(regs, 0x640004,u32::MAX,0,deadline)?;
+        evo.put=0;
+    }
+    // Existing publication provides the BAR drain and NOTIFY=0 tail.
+    submit(regs,evo.total,evo.push,&mut evo.put,methods)?;
+    loop {
+        if crc_display_error(evo, regs)!=0 {return Err("CRC display method error");}
+        if regs.read(0x6100ac)&7!=0 {return Err("CRC unexpected display supervisor");}
+        if read_word(regs,evo.total,evo.notifier)?&1!=0 {
+            crc_wait(regs, 0x640004,u32::MAX,evo.put,deadline)?;
+            if crate::signal::monotonic_nanos()/1000>deadline {return Err("CRC UPDATE completion deadline");}
+            return Ok(());
+        }
+        if crate::signal::monotonic_nanos()/1000>=deadline {return Err("CRC UPDATE notifier deadline");}
+        regs.delay_us(100);
+    }
+}
+
+/// Restore only output state through the same bounded core-channel submitter.
+#[cfg(target_os = "none")]
+pub(super) fn restore_output_perturbation(evo: &mut Evo, regs: &mut Registers,
+    state: &mut super::display_crc::Perturbation) -> Result<(), &'static str> {
+    struct Output<'a> { evo: &'a mut Evo, regs: &'a mut Registers }
+    impl modeset::Io for Output<'_> {
+        fn read(&mut self, reg: usize) -> u32 { self.regs.read(reg) }
+        fn write(&mut self, reg: usize, value: u32) { self.regs.write(reg,value); }
+        fn delay_us(&mut self, us: u32) { self.regs.delay_us(us); }
+    }
+    impl super::display_crc::OutputIo for Output<'_> {
+        fn output_now_us(&self) -> u64 { crate::signal::monotonic_nanos()/1000 }
+        fn output_update(&mut self, methods: &[(u32,u32)], deadline: u64)
+            -> Result<(), &'static str> { crc_update(self.evo,self.regs,methods,deadline) }
+    }
+    state.restore(&mut Output{evo,regs})
+}
+
 /// CRC907D adapter to the retained core channel. The caller holds the shared
 /// observation transition and the native session/resource owner.
 #[cfg(target_os = "none")]
 pub(super) fn capture_crc(evo: &mut Evo, regs: &mut Registers, notifier: u64,
     surface: super::present::Surface, checkpoint: super::display_crc::Checkpoint<'_>,
-    binding: super::display_crc::Binding, mode: [u32;2])
+    binding: super::display_crc::Binding, mode: [u32;2],
+    state: &mut super::display_crc::Perturbation)
     -> Result<super::display_crc::Record, &'static str> {
     struct Crc<'a> {
         evo: &'a mut Evo, regs: &'a mut Registers, notifier: u64,
@@ -1941,15 +2001,7 @@ pub(super) fn capture_crc(evo: &mut Evo, regs: &mut Registers, notifier: u64,
     }
     impl Crc<'_> {
         fn wait(&mut self, register: usize, mask: u32, value: u32, deadline: u64)
-            -> Result<(), &'static str> {
-            loop {
-                if self.regs.read(register) & mask == value { return Ok(()); }
-                if crate::signal::monotonic_nanos()/1000 >= deadline {
-                    return Err("CRC core channel deadline");
-                }
-                self.regs.delay_us(100);
-            }
-        }
+            -> Result<(), &'static str> { crc_wait(self.regs,register,mask,value,deadline) }
     }
     impl modeset::Io for Crc<'_> {
         fn read(&mut self, reg: usize) -> u32 { self.regs.read(reg) }
@@ -1975,29 +2027,7 @@ pub(super) fn capture_crc(evo: &mut Evo, regs: &mut Registers, notifier: u64,
             Ok(())
         }
         fn update(&mut self, methods: &[(u32,u32)], deadline: u64)
-            -> Result<(), &'static str> {
-            self.wait(0x640004,u32::MAX,self.evo.put,deadline)?;
-            write_words(self.regs,self.evo.total,self.evo.notifier,&[0;4])?;
-            if self.evo.put as usize + (methods.len()+1)*8 > 2044 {
-                write_words(self.regs,self.evo.total,self.evo.push+u64::from(self.evo.put),&[0x20000000])?;
-                modeset::publish(self.regs,0)?;
-                self.wait(0x640004,u32::MAX,0,deadline)?;
-                self.evo.put=0;
-            }
-            // Existing publication provides the BAR drain and NOTIFY=0 tail.
-            submit(self.regs,self.evo.total,self.evo.push,&mut self.evo.put,methods)?;
-            loop {
-                if self.display_error()!=0 {return Err("CRC display method error");}
-                if self.regs.read(0x6100ac)&7!=0 {return Err("CRC unexpected display supervisor");}
-                if read_word(self.regs,self.evo.total,self.evo.notifier)?&1!=0 {
-                    self.wait(0x640004,u32::MAX,self.evo.put,deadline)?;
-                    if self.now_us()>deadline {return Err("CRC UPDATE completion deadline");}
-                    return Ok(());
-                }
-                if self.now_us()>=deadline {return Err("CRC UPDATE notifier deadline");}
-                self.regs.delay_us(100);
-            }
-        }
+            -> Result<(), &'static str> { crc_update(self.evo,self.regs,methods,deadline) }
         fn context_status(&mut self) -> Result<u32, &'static str> {
             read_word(self.regs,self.evo.total,self.notifier)
         }
@@ -2020,6 +2050,7 @@ pub(super) fn capture_crc(evo: &mut Evo, regs: &mut Registers, notifier: u64,
         }
     }
     let (head,sor)=(evo.head,evo.sor);
-    super::display_crc::capture(&mut Crc{evo,regs,notifier,surface,binding},
-        checkpoint,binding,mode,head,sor,4)
+    let mut io = Crc{evo,regs,notifier,surface,binding};
+    super::display_crc::perturb_checkpoint(&mut io,state,binding,head,sor)?;
+    super::display_crc::capture(&mut io,checkpoint,binding,mode,head,sor,4)
 }

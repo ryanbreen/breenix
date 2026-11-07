@@ -3,6 +3,7 @@ extern crate self as gpu_abi;
 extern crate self as spin;
 extern crate self as breengel_abi;
 TABLES
+pub mod backend { pub const GK208:u32=6; }
 #[path="ABI/screen_crc.rs"] pub mod screen_crc;
 #[allow(dead_code)] #[path="DRIVER/edid.rs"] mod edid;
 #[allow(dead_code)] #[path="DRIVER/modeset.rs"] mod modeset;
@@ -19,7 +20,7 @@ pub trait Plain:Copy {}
 impl Plain for TcArm {} impl Plain for TcFired {}
 mod syscall {
     #[derive(Debug,PartialEq)] pub enum SyscallResult { Ok(u64),Err(u64) }
-    pub mod errno { pub const EINVAL:i32=22; pub const EFAULT:i32=14; }
+    pub mod errno { pub const ENOSYS:i32=38; pub const EPERM:i32=1; pub const EINVAL:i32=22; pub const EFAULT:i32=14; }
     pub mod userptr {
         pub fn copy_to_user<T:Copy>(p:*mut T,v:&T)->Result<(),()> { unsafe{*p=*v;} Ok(()) }
     }
@@ -41,7 +42,7 @@ mod gpu { pub mod dev {
 } }
 mod test_control {
     use super::{tc_point,test_point,Plain,TcArm,TcFired,syscall::SyscallResult};
-    use super::syscall::errno::{EINVAL,EFAULT};
+    use super::syscall::errno::{EINVAL,EFAULT,ENOSYS,EPERM};
     use crate::test_control as tc_op;
     pub const STATE:u32=0; pub const ARM:u32=1; pub const DISARM_ALL:u32=2; pub const FIRED:u32=3;
     #[path="POINT"] mod point;
@@ -62,7 +63,7 @@ mod test_control {
     DISPATCH
 }
 CHECKPOINT
-use display_crc::{Binding,Io,Sample};
+use display_crc::{Binding,Io,Sample,Perturbation};
 use std::collections::BTreeMap;
 static OUTPUT:Mutex<display_crc::Perturbation>=Mutex::new(display_crc::Perturbation::new());
 static MODEL:Mutex<Model>=Mutex::new(Model {methods:BTreeMap::new(),writes:Vec::new(),fail:false});

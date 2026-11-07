@@ -1153,3 +1153,13 @@ pub fn crc_output_methods(io: &mut impl Io, head: u32, sor: u32)
     }
     Ok(methods)
 }
+
+/// NV917D_HEAD_SET_DITHER_CONTROL (MIT cl917d.h:73-87), inherited by NV927D.
+/// Six-bit static 2x2 dithering, phase 0: deterministic output perturbation.
+/// Preserve bits outside that method's enable/bits/mode/phase fields.
+pub fn output_dither_methods(head: u32, previous: u32, enable: bool)
+    -> Result<[(u32, u32); 3], &'static str> {
+    if head >= 4 { return Err("invalid output dithering head"); }
+    let value = if enable { (previous & !0x1ff) | 0x19 } else { previous };
+    Ok([(0x4a0 + head * 0x300, value), (0x84, 0x80000000), (0x80, 0)])
+}

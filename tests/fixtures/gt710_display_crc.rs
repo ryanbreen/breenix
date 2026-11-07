@@ -8,7 +8,7 @@ extern crate self as gpu_abi;
 #[path = "DRIVER/edid.rs"] mod edid;
 #[allow(dead_code)]
 #[path = "DRIVER/modeset.rs"] mod modeset;
-#[path = "DRIVER/display_crc.rs"] mod display_crc;
+#[path = "DRIVER/display_crc.rs"] pub mod display_crc;
 use display_crc::{Binding, Checkpoint, Io, Sample};
 use std::collections::BTreeMap;
 

@@ -22,7 +22,11 @@ use std::sync::atomic::{AtomicU64,AtomicBool,Ordering};
 struct Point(AtomicBool);
 impl Point { fn disarm(&self) { self.0.store(false,Ordering::Relaxed); } }
 static POINT_TABLE:[Point;2]=[Point(AtomicBool::new(true)),Point(AtomicBool::new(true))];
-#[derive(Debug,PartialEq)] enum SyscallResult { Ok(u64) }
+#[derive(Debug,PartialEq)] enum SyscallResult { Ok(u64), Err(u64) }
+fn err(errno:i32)->SyscallResult {SyscallResult::Err(errno as u64)}
+mod gpu {pub mod dev {
+ pub fn restore_output_perturbation()->Result<(),i32> {Ok(())}
+}}
 mod tracing { pub mod providers {
  pub mod gpu {
   use crate::{AtomicU64,Ordering};
