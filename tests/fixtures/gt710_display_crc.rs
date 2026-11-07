@@ -316,3 +316,12 @@ fn crc_codec_and_request_roundtrip() {
     assert!(detail.contains("rg_wide=0"), "{detail}");
     assert!(detail.contains("rg_sample0=00000021:0000002c"), "{detail}");
 }
+
+#[test] fn failed_rg_probe_retains_raw_entry_even_with_unwritten_primary() {
+    let mut m = Model::new();
+    m.available = vec![sample(0,44); 6];
+    let detail = display_crc::probe_primary_rg(&mut m, PIN, 0, 0, 4, false, false);
+    assert!(detail.contains("rg_probe_error=RG_probe_primary_deadline"), "{detail}");
+    assert!(detail.contains("rg_status=00000001"), "{detail}");
+    assert!(detail.contains("rg_raw0=00000001:00000000:00000000:0000002c"), "{detail}");
+}
