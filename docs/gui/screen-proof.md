@@ -203,13 +203,13 @@ The seven entries in `suite_breengel/console_picture.rs::FIXED_INPUT_CASES` keep
 all their live case comparisons. Only the successful case's approval picture uses
 fixed renderer inputs; no mask, tolerance or alternate digest is admitted.
 
-The five stage restoration pictures use the production GPU `StagePainter` and
+The five stage restoration pictures use the production GPU `libgfx::stage::Stage` renderer and
 its exact CPU reference: suite `breengel`, target `fixed inputs`, one passed tile
 named for the case, key 20 ms, elapsed 250 ms, 60 fps, selected tile 0, one matching
 category, no thumbnail, input trace, spotlight or finale. The actual scanout
 record supplies the shared backend observation boundary. Cursor restore adds the
 production arrow at (1200,40); trail detection also draws arrows at (200,300),
-(400,320), (640,400), (900,500), (1100,600), in that order. Every GPU pixel must
+(400,320), (640,400), (900,500), (1100,600), in that order. The full GPU frame must
 match the reference before handoff. Their live input is the stage clock in
 `suite_stage.rs::render_at_ui_time` and the case elapsed keys recorded by
 `suite_stage.rs::record`; cursor positions come from `panel.rs::move_pointer`.

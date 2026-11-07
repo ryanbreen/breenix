@@ -1149,7 +1149,7 @@ pub(crate) fn fixed_stage_picture(case: &str) -> CaseResult {
     let (_,rec)=screen()?;
     let word=|offset|u32::from_le_bytes(rec[offset..offset+4].try_into().unwrap());
     let boundary=libgfx_ref::stage::Observation {backend:word(record::BACKEND),flags:word(record::FLAGS),boundary:word(record::BOUNDARY)};
-    let (surface,actual,reference)=crate::stage_painter::fixed_picture(case,width,height,boundary).cite("23")?;
+    let (surface,actual,reference)=crate::fixed_stage_picture::render(case,width,height,boundary).cite("23")?;
     crate::remember_frame(&actual,width,height,Some(reference));
     crate::keep_judged_surface(surface);
     Ok(())

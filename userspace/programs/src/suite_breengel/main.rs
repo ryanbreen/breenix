@@ -135,6 +135,7 @@ mod gpu_checks;
 mod show;
 mod stage_fixtures;
 mod stage_painter;
+mod fixed_stage_picture;
 mod stage_serial;
 mod display_regressions;
 use libgfx_ref::stage;
