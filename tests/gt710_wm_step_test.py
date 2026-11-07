@@ -175,6 +175,7 @@ class WmStep(unittest.TestCase):
         mutations = [
             original.replace(f'CASE {SELECTED[0]} PASS ms=1', f'CASE {SELECTED[0]} FAIL ms=1 msg=bad'),
             original.replace('skipped=0', 'skipped=1'),
+            original.replace(f'CASE {SELECTED[0]} PASS', f'CASE {SELECTED[0]} SKIP'),
             original.replace(f'SUITE window-manager DONE passed={len(SELECTED)} failed={len(NAMES) - len(SELECTED)} skipped=0 total={len(NAMES)}\n', ''),
             original.replace('clocks=full', 'clocks=post'),
             original.replace('full=true', 'full=false'),
@@ -182,6 +183,7 @@ class WmStep(unittest.TestCase):
             original.replace(final, ''),
             original.replace(final, '').replace('SUITE window-manager MEMORY reclaimed=', final + 'SUITE window-manager MEMORY reclaimed='),
             original.replace('reclaimed=PASS', 'reclaimed=FAIL'),
+            original.replace('allowance=48', 'allowance=64'),
             original.replace(f'total={len(NAMES)}', f'total={len(NAMES) - 1}'),
             original.replace('ELAPSED ms=1000', 'ELAPSED ms=1800001'),
             original.replace(final, final.replace('suite-final-panel', 'case-desktop')),
