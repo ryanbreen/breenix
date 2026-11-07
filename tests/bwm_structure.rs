@@ -96,3 +96,17 @@ fn pointer_ranges_come_from_the_shared_input_descriptor() {
     assert!(reader.contains("abi::ioctl::CAPABILITIES"));
     assert!(producer.contains("ioctl::CAPABILITIES"));
 }
+
+#[test]
+fn restricted_grabs_follow_compositor_claims() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"));
+    let bwm = fs::read_to_string(root.join("userspace/programs/src/bwm.rs")).unwrap();
+    assert!(bwm.find("session::claim()").unwrap() < bwm.find("input::Stream::new()").unwrap());
+    let input = fs::read_to_string(root.join("userspace/programs/src/bwm/input.rs")).unwrap();
+    assert!(input.contains("input_device_selection"));
+    assert!(input.contains("BREENIX_INPUT_DEVICES"));
+    let kiosk = fs::read_to_string(root.join("userspace/programs/src/kiosk_test.rs")).unwrap();
+    assert!(kiosk.find("window::claim_compositor()").unwrap() < kiosk.find("input_device_selection").unwrap());
+    assert!(kiosk.contains("BREENIX_INPUT_DEVICES"));
+    assert!(kiosk.contains("reader.grab("));
+}

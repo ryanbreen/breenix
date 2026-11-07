@@ -55,3 +55,8 @@ gpu-abi = { path = "../gpu-abi" }
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))'] }
+
+[[test]]
+name = "input_device_selection"
+path = "../../tests/input_device_selection.rs"
+required-features = ["std"]
