@@ -148,3 +148,27 @@ pub fn sweep_descendants() -> CaseResult {
     }
     Ok(())
 }
+
+/// A silent fixture supervisor is swept at the case limit as collector-timeout;
+/// a dead one is recorded supervisor-died with its session orphans reaped.
+pub fn outer_collector_timeout() -> CaseResult {
+    for (mode, reason) in [("silent-supervisor", "collector-timeout"), ("dead-supervisor", "supervisor-died")] {
+        let start = time::now_monotonic()?.as_nanos();
+        let text = one(mode, Some("planted collection failure"))?;
+        let elapsed = time::now_monotonic()?.as_nanos() - start;
+        if mode == "silent-supervisor" {
+            check(elapsed >= 3_000_000_000 && elapsed < 6_000_000_000, "silent supervisor was not bounded by L")?;
+        }
+        let collect = format!("SUITE runner-fixture COLLECT fixture/{mode} trigger=fail screen=none:{reason} windows=0 remnants=0 artifacts=none:{reason}");
+        check(text.lines().filter(|l| l.contains(" COLLECT ")).count() == 1, "fallback COLLECT count differs")?;
+        let at = text.find(&collect).ok_or("fallback COLLECT differs")?;
+        check(at < text.find(" CASE ").ok_or("fixture CASE missing")?, "COLLECT followed CASE")?;
+        for key in ["supervisor-pid", "orphan-pid"] {
+            let prefix = format!("SUITE runner-fixture VALUE fixture/{mode} {key}=");
+            let pid: u64 = text.lines().find_map(|l| l.strip_prefix(&prefix))
+                .and_then(|s| s.strip_suffix("pid")).and_then(|s| s.parse().ok()).ok_or("missing collector process witness")?;
+            check(pid > 1 && !std::path::Path::new(&format!("/proc/{pid}/stat")).exists(), "collector process survived sweep")?;
+        }
+    }
+    Ok(())
+}
