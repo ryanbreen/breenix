@@ -28,10 +28,11 @@ fn first_window(session: &mut Session, title: &str, end: u64) -> Result<libuites
 fn start(kiosk: bool) -> CaseResult {
     let began = monotonic_ns()?;
     let mut session = if kiosk { Session::kiosk()? } else { Session::desktop()? };
+    let connected = monotonic_ns()? - began;
     let result = first_window(&mut session, "startup app", began + 300_000_000);
     let elapsed = monotonic_ns()? - began;
     // Preserve the stage evidence for diagnosing a miss; keep the 300 ms bound.
-    let result = result.map_err(|error| format!("{error:?}; startup_ns={elapsed}; stages={}",
+    let result = result.map_err(|error| format!("{error:?}; startup_ns={elapsed}; connected_ns={connected}; stages={}",
         std::fs::read_to_string("/proc/breenix/stage-composites").unwrap_or_else(|e| e.to_string())));
     result?;
     check(elapsed <= 300_000_000, &format!("first composited app took {elapsed} ns; bound=300000000"))?;
@@ -230,9 +231,17 @@ const PANEL_COLORS: [[u8; 3]; 6] = [
 pub(crate) fn screen_pixels() -> Result<Vec<u8>, String> {
     let mode = libbreenix::gpu::current_mode().map_err(|e| e.to_string())?;
     let mut pixels = vec![0; mode.width as usize * mode.height as usize * 4];
-    let mut record = [0; libbreenix::gpu::abi::record::SIZE];
-    let r = libbreenix::gpu::readback(0, [0, 0, mode.width, mode.height], &mut pixels, mode.width * 4, &mut record);
-    if r != 0 { return Err(format!("screen readback: {r}")); }
+    use libbreenix::window::{self, abi};
+    let mut record = [0; 1024];
+    let mut rb = abi::Readback { dst: pixels.as_mut_ptr() as u64, dst_len: pixels.len() as u64,
+        record: record.as_mut_ptr() as u64, record_len: record.len() as u32, ..Default::default() };
+    window::call(abi::op::SCANOUT_READBACK, &mut rb).map_err(|e| format!("screen readback: {e}"))?;
+    let kind = if u32::from_le_bytes(record[24..28].try_into().unwrap()) == 3 {
+        window::ObservationKind::Composed
+    } else { window::ObservationKind::Plain };
+    if !window::validate_scanout_observation(&record, mode.width, mode.height, kind) {
+        return Err("screen readback: invalid observation record".into());
+    }
     Ok(pixels)
 }
 pub fn panel_not_in_case() -> CaseResult {

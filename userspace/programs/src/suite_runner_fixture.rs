@@ -242,6 +242,13 @@ fn collection_case() -> CaseResult {
     session.hold_window(window.id)?;
     session.raw_press(libbreenix::input::key::A)?;
     session.raw_release(libbreenix::input::key::A)?;
+    let input_end = time::now_monotonic()?.as_nanos() + 500_000_000;
+    loop {
+        let ledger = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
+        if ledger.lines().any(|l| l.contains(" wm-handled ")) { break; }
+        check(time::now_monotonic()?.as_nanos() < input_end, "kiosk did not dispose the collection input")?;
+        time::sleep_ms(1)?;
+    }
     let stderr_end = time::now_monotonic()?.as_nanos() + 500_000_000;
     loop {
         let stderr = session.stderr(app)?;

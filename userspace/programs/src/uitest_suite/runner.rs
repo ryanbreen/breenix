@@ -190,7 +190,7 @@ pub(crate) fn collection_evidence(mode: &str, trigger: &str) -> CaseResult {
     check(manifest.contains(&format!("trigger={trigger}")) && manifest.contains("frame=partial:case-died"), "missing death/timeout or partial-slot evidence")?;
     check(std::fs::read(path.join("screen.png")).map_err(|e| e.to_string())?.starts_with(b"\x89PNG\r\n\x1a\n"), "screen is not a saved PNG")?;
     for name in ["screen.record", "input.log", "composites.log"] {
-        check(std::fs::metadata(path.join(name)).map_err(|e| e.to_string())?.len() != 0, "collection evidence is empty")?;
+        check(std::fs::metadata(path.join(name)).map_err(|e| e.to_string())?.len() != 0, &format!("collection evidence is empty: {name}"))?;
     }
     check(std::fs::read_dir(&path).map_err(|e| e.to_string())?.any(|p| p.is_ok_and(|p| p.file_name().to_string_lossy().starts_with("window-"))), "no live window capture saved")?;
     let stderr = std::fs::read_dir(&path).map_err(|e| e.to_string())?.filter_map(Result::ok)
