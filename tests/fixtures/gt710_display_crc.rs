@@ -83,7 +83,11 @@ impl Io for Model {
         self.reads.push(index);
         if self.phase<2 {self.now+=16000;}
         if self.fault==7 {return Err("notifier read failed")}
-        Ok(self.available.get(index).copied())
+        let sample = self.available.get(index).copied();
+        if self.fault == 8 && self.phase < 2 {
+            return Ok(sample.map(|s| Sample { crc2: 0, ..s }));
+        }
+        Ok(sample)
     }
     fn display_error(&mut self)->u32 {self.error}
     fn recover_present(&mut self)->Result<(),&'static str> {self.recovered+=1;Ok(())}
@@ -253,4 +257,14 @@ fn crc_codec_and_request_roundtrip() {
     assert!(detail.contains("active=00000000 assembly=00000001"), "{detail}");
     assert!(detail.contains("sample0=0000005b:0000005c"), "{detail}");
     assert!(detail.contains("status=00000000"), "{detail}");
+}
+
+#[test] fn secondary_words_are_judged_after_context_done() {
+    let mut m = Model::new();
+    m.fault = 8;
+    let record = m.capture().expect("secondary writes become valid at completion");
+    m.disarmed();
+    assert_eq!(record.samples, m.available);
+    assert!(record.samples.iter().all(|s| s.crc != 0 && s.crc2 != 0));
+    assert_eq!(record.status, 1);
 }
