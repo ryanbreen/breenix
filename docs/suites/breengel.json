@@ -1446,7 +1446,8 @@
         {
           "id": "compose-many",
           "title": "Sixteen windows in a fixed stack compose to the formula, exactly",
-          "expect": "Sixteen 160x120 mosaics descend diagonally from (40,30), each 60 pixels right and 40 down, earlier rectangles on top, against black (#000000); blue and green ramps with red flecks, starting dark blue (#0A2282)."
+          "expect": "Sixteen 160x120 mosaics descend diagonally from (40,30), each 60 pixels right and 40 down, earlier rectangles on top, against black (#000000); blue and green ramps with red flecks, starting dark blue (#0A2282).",
+          "expectEnd": "A black (#000000) 2560x1600 screen with seed mosaics (x,y,width,height,z,seed): (40,30,160,120,15,10); (100,70,160,120,14,11); (160,110,160,120,13,12); (220,150,160,120,12,13); (280,190,160,120,11,14); (340,230,160,120,10,15); (400,270,160,120,9,16); (460,310,160,120,8,17); (520,350,160,120,7,18); (580,390,160,120,6,19); (640,430,160,120,5,20); (700,470,160,120,4,21); (760,510,160,120,3,22); (820,550,160,120,2,23); (880,590,160,120,1,24); (940,630,160,120,0,25); (0,0,8,8,16,27). Sixteen 160x120 mosaics descend from (40,30), 60 right and 40 down, earlier windows on top; the seventeenth 8x8 seed-27 window is at (0,0). Each mosaic has B=(7*x+13*seed)%256, G=(5*y+29*seed)%256, R=(x XOR y XOR seed)%256 in local coordinates; no text."
         },
         {
           "id": "generation",
