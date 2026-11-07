@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 import io
 import json
 import os
+import re
 import subprocess
 from pathlib import Path
 import tempfile
@@ -129,6 +130,10 @@ class CacheTests(unittest.TestCase):
 
     def test_content_key_tracks_source_script_busybox_toolchain_and_external_library(self):
         names = ['Cargo.lock', 'userspace/programs/Cargo.lock', 'userspace/source.rs', 'scripts/create_ext2_disk.sh', 'scripts/install-libc-busybox.sh', 'scripts/libc-clean-archive.py', 'vendor/busybox/manifest.json', 'rust-toolchain.toml']
+        console = ROOT / 'userspace/programs/src/suite_breengel/console_picture.rs'
+        names += [str((console.parent / name).resolve().relative_to(ROOT))
+                  for name in re.findall(r'#\[path = "([^"]+)"\]', console.read_text())]
+
         for name in names:
             path = self.repo / name
             path.parent.mkdir(parents=True, exist_ok=True)
@@ -300,6 +305,34 @@ class CacheTests(unittest.TestCase):
             artifacts.metal_source_times(self.repo, targets)
         self.assertEqual(source.stat().st_mtime_ns, 30000000000)
         self.assertEqual(fork.stat().st_mtime_ns, 10000000000)
+
+    def test_console_renderer_inputs_keep_content_based_source_times(self):
+        subprocess.run(['git', 'init', '--quiet', str(self.repo)], check=True)
+        console = ROOT / 'userspace/programs/src/suite_breengel/console_picture.rs'
+        sources = []
+        for name in re.findall(r'#\[path = "([^"]+)"\]', console.read_text()):
+            relative = (console.parent / name).resolve().relative_to(ROOT)
+            source = self.repo / relative
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes((ROOT / relative).read_bytes())
+            sources.append(source)
+        subprocess.run(['git', '-C', str(self.repo), 'add', '.'], check=True)
+        targets = self.cache / 'metal-targets/compiler'
+        targets.mkdir(parents=True)
+        with patch.object(artifacts.time, 'time_ns', return_value=10000000000):
+            artifacts.metal_source_times(self.repo, targets)
+        for source in sources:
+            os.utime(source, ns=(1, 1))
+        with patch.object(artifacts.time, 'time_ns', return_value=20000000000):
+            artifacts.metal_source_times(self.repo, targets)
+        for source in sources:
+            self.assertEqual(source.stat().st_mtime_ns, 10000000000, source)
+        sources[0].write_bytes(sources[0].read_bytes() + b'\n')
+        with patch.object(artifacts.time, 'time_ns', return_value=30000000000):
+            artifacts.metal_source_times(self.repo, targets)
+        self.assertEqual(sources[0].stat().st_mtime_ns, 30000000000)
+        for source in sources[1:]:
+            self.assertEqual(source.stat().st_mtime_ns, 10000000000, source)
 
     def test_removed_cargo_target_cannot_survive_in_historical_installer_pool(self):
         targets = self.cache / 'metal-targets/compiler'

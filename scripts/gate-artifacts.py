@@ -22,6 +22,13 @@ tree_cache = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(tree_cache)
 
 
+# U14's userspace console picture includes these production renderer sources.
+CONSOLE_PICTURE_SOURCES = (
+    'kernel/src/console/boxdraw.rs', 'kernel/src/console/grid.rs',
+    'kernel/src/console/status.rs', 'kernel/src/console/raster.rs',
+)
+
+
 def digest(path):
     result = hashlib.sha256()
     with path.open('rb') as handle:
@@ -39,7 +46,7 @@ def key(repo):
         '.cargo', 'Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'x86_64-breenix.json',
         'x86_64-breenix-c.json', 'scripts/breenix-cc', 'scripts/libc-symbol-audit.py',
         'scripts/libc-clean-archive.py',
-        'scripts/build-libc-busybox.sh']).split(b'\0')
+        'scripts/build-libc-busybox.sh', *CONSOLE_PICTURE_SOURCES]).split(b'\0')
     for name in sorted(filter(None, paths)):
         path = repo / os.fsdecode(name)
         result.update(name + b'\0' + path.read_bytes() + b'\0')
@@ -284,7 +291,7 @@ def metal_source_times(repo, targets):
     names = subprocess.check_output(['git', '-C', str(repo), 'ls-files', '-z', '--',
                                     'userspace', 'libs', '.cargo', 'Cargo.toml', 'Cargo.lock',
                                     'rust-fork.toml', 'rust-toolchain.toml',
-                                    'x86_64-breenix.json', 'x86_64-breenix-c.json']).split(b'\0')
+                                    'x86_64-breenix.json', 'x86_64-breenix-c.json', *CONSOLE_PICTURE_SOURCES]).split(b'\0')
     inputs = {repo / os.fsdecode(name) for name in names if name}
     inputs.update(repo / name for name in ('userspace/programs/Cargo.lock', 'libs/libbreenix-libc/Cargo.lock'))
     fork = repo / 'rust-fork'
