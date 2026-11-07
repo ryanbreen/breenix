@@ -12,7 +12,12 @@ from gt710_gr_live_unwind_test import item
 class NativeQueue(unittest.TestCase):
     def test_receipt_channel_faults_and_wrapped_publication(self):
         source = (ROOT / 'kernel/src/gpu/gk208/gr/channel.rs').read_text()
-        monitor = item(source, "    struct Monitor<'a>") + '\n' + item(source, "    impl Monitor<'_>") + '\n' + item(source, "    impl Poll for Monitor<'_>")
+        monitor = (item(source, "    struct Monitor<'a>") + "\n    impl Monitor<'_> {\n"
+                   + item(source, '        fn check_health(') + '\n    }\n'
+                   + item(source, "    impl Poll for Monitor<'_>"))
+        monitor = ('#[derive(Clone, Copy)]\n' + item(source, 'struct StreamSample') + '\n'
+                   + item(source, 'fn stream_get_progress(') + '\n'
+                   + item(source, 'fn stream_consumed(') + '\n' + monitor)
         monitor = monitor.replace('super::super::binding', 'binding').replace('crate::gk208::queue', 'queue').replace('super::super::error', 'hardware_error')
         publisher = item(source, '        fn publish_words(').replace('crate::gk208::queue', 'queue')
         traps = (ROOT / 'kernel/src/gpu/gk208/gr/binding.rs').read_text()
@@ -64,6 +69,7 @@ struct Pages(Vec<u32>);impl Pages {
  fn command(&self,at:u64)->u32{self.0[REPORT_PAGES*1024+at as usize/4]}
 }
 struct Range {start:u64}struct Allocation {range:Range}
+#[derive(Clone, Copy)]
 struct Identity {id:u32,instance:u64}struct Report {identity:Identity}struct Copy {base:usize}
 struct Session {pages:Pages,commands:Allocation,bar:usize,report:Report,pbdma:usize,userd:u64,copy:Option<Copy>,bound:bool,quiesced:bool}
 trait Poll {fn snapshot(&mut self)->Result<(u32,u64,bool),&'static str>;fn now_us(&mut self)->u64;fn relax(&mut self);}
@@ -74,7 +80,7 @@ fn session(bar:usize)->Session {Session{pages:Pages(vec![0;(REPORT_PAGES+16)*102
 #[test]fn health_checks_faults_without_sampling_completion(){
  let s=session(0);let mut r=Registers::default();
  let health=|r:&mut Registers|Monitor{session:&s,regs:r,total:1<<24,sequence:1,
-  stop_on_trap:true,retry_traps:false,release_slot:0,queued_put:Some(4)}.check_health();
+  stop_on_trap:true,retry_traps:false,release_slot:0,queued_put:Some(4),resident_polls:0,nonresident_polls:0}.check_health();
  assert_eq!(health(&mut r),Ok(()));
  for a in binding::TRAP_REGISTERS.into_iter().chain([0x259c,0x40108,0x40148,0x106908]) {
   r.values.insert(a,1);assert!(health(&mut r).is_err(),"fault {a:x} accepted");r.values.insert(a,0);
@@ -85,16 +91,16 @@ fn session(bar:usize)->Session {Session{pages:Pages(vec![0;(REPORT_PAGES+16)*102
 #[test]fn receipt_requires_the_consuming_channel_and_zero_faults(){
  let mut s=session(0);s.pages.0[..3].copy_from_slice(&[1,17,0]);s.pages.0[4..7].copy_from_slice(&[2,16,0]);
  let mut r=Registers::default();r.values.extend([(0x40120,0x2000),(0x40014,4),(0x40028,4),(0x800000,0x80000123)]);
- let sample=|r:&mut Registers,slot|Monitor{session:&s,regs:r,total:1<<24,sequence:1,stop_on_trap:true,release_slot:slot,queued_put:Some(4)}.snapshot();
+ let sample=|r:&mut Registers,slot|Monitor{session:&s,regs:r,total:1<<24,sequence:1,stop_on_trap:true,release_slot:slot,queued_put:Some(4),resident_polls:0,nonresident_polls:0}.snapshot();
  assert_eq!(sample(&mut r,0),Ok((1,17,true)));assert_eq!(sample(&mut r,1),Ok((2,16,true)),"never replace an observed old epoch");
  r.values.insert(0x40120,0x2001);assert_eq!(sample(&mut r,0),Ok((1,17,false)),"a peer's GET/reference cannot complete this channel");
  r.values.insert(0x40120,0x2000);r.values.insert(0x40014,0);assert_eq!(sample(&mut r,0),Ok((1,17,false)));
  r.values.insert(0x40014,4);
  for a in binding::TRAP_REGISTERS.into_iter().chain([0x259c,0x40108,0x40148,0x106908]) {r.values.insert(a,1);assert!(sample(&mut r,0).is_err(),"fault {a:x} accepted");r.values.insert(a,0);}
- let mut m=Monitor{session:&s,regs:&mut r,total:1<<24,sequence:1,stop_on_trap:true,release_slot:0,queued_put:Some(4)};assert_eq!(m.now_us(),0);m.relax();
+ let mut m=Monitor{session:&s,regs:&mut r,total:1<<24,sequence:1,stop_on_trap:true,release_slot:0,queued_put:Some(4),resident_polls:0,nonresident_polls:0};assert_eq!(m.now_us(),0);m.relax();
 }
 fn sample(r:&mut Registers)->Result<(u32,u64,bool),&'static str>{
- let s=session(0);Monitor{session:&s,regs:r,total:1<<24,sequence:1,stop_on_trap:true,release_slot:0,queued_put:Some(4)}.snapshot()
+ let s=session(0);Monitor{session:&s,regs:r,total:1<<24,sequence:1,stop_on_trap:true,release_slot:0,queued_put:Some(4),resident_polls:0,nonresident_polls:0}.snapshot()
 }
 #[test]fn transient_pri_is_retried_without_refusal(){
  for address in binding::TRAP_REGISTERS {
