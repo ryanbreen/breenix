@@ -217,6 +217,12 @@ fn orphan_helper(expected: u64) -> i32 {
 }
 
 fn session_display() -> CaseResult {
+    if mode() == "session-ownership" {
+        let (supervisor, compositor) = sessions::device_death_round()?;
+        std::fs::write(format!("/tmp/ui-display-{}", parent_pid()),
+            format!("{supervisor} {compositor}\n")).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
     let mut session = libuitest::Session::kiosk()?;
     let app = session.launch_app(&[b"/usr/libexec/breenix/uitest-app_test", b"panel fixture"], 0)?;
     session.wait_window("panel fixture")?;
@@ -225,7 +231,12 @@ fn session_display() -> CaseResult {
         &mut status as *mut _ as *mut u8, core::mem::size_of_val(&status)) };
     check(result == 0 && status.owner != 0, "missing live session compositor")?;
     std::fs::write(format!("/tmp/ui-display-{}", parent_pid()),
-        format!("{} {} {}", session.supervisor_pid(), app, status.owner)).map_err(|e| e.to_string())?;
+        format!("{} {} {}\n{} {}", session.supervisor_pid(), app, status.owner, session.input_devices()[0], session.input_devices()[1])).map_err(|e| e.to_string())?;
+    if mode() == "session-devices" {
+        for code in [libbreenix::input::key::LEFT_SHIFT, libbreenix::input::key::BUTTON_LEFT] {
+            session.raw_press(code)?;
+        }
+    }
     // Leave compositor and app running: the real runner must end the session.
     if mode() == "session-panel-fail" { return Err("planted panel result".into()); }
     Ok(())
@@ -235,8 +246,15 @@ fn display_observer(done: usize, _: usize, name: &str) {
     let result = (|| -> CaseResult {
         let path = format!("/tmp/ui-display-{}", process::getpid()?.raw());
         let pids = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-        for pid in pids.split_whitespace() {
+        for pid in pids.lines().next().ok_or("missing session pids")?.split_whitespace() {
             check(!std::path::Path::new(&format!("/proc/{pid}/stat")).exists(), "session process survived case end")?;
+        }
+        if let Some(ids) = pids.lines().nth(1) {
+            let reader = libbreenix::input::Reader::open(true)?;
+            for id in ids.split_whitespace() {
+                let id: u32 = id.parse().map_err(|_| "invalid session device id")?;
+                check(matches!(reader.capabilities(id, &mut []), Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENODEV))), "fixture session device survived")?;
+            }
         }
         std::fs::remove_file(path).map_err(|e| e.to_string())?;
         let mut status = 0;
@@ -285,7 +303,7 @@ fn main() {
         "forgery-exec" => (forgery_exec, vec!["label"]),
         "forgery-fork" => (forgery_fork, vec!["label"]),
         "subreaper" => (sessions::reaped_orphan, vec![]),
-        "session-teardown" | "session-panel-pass" | "session-panel-fail" => (session_display, vec![]),
+        "session-teardown" | "session-panel-pass" | "session-panel-fail" | "session-ownership" | "session-devices" => (session_display, vec![]),
         "supervisor-died" => (supervisor_died, vec![]),
         "sweep-descendants" => (descendants, vec!["label"]),
         "outer-positive" | "transport-always" | "transport-exit-race" => (positive, vec!["label"]),
@@ -294,7 +312,7 @@ fn main() {
     let id = Box::leak(selected.to_string().into_boxed_str());
     let checks = Box::leak(checks.into_boxed_slice());
     let entry = case(id, "Scoped runner control", body).checks(checks);
-    let entry = if matches!(selected, "subreaper" | "supervisor-died" | "session-teardown" | "session-panel-pass" | "session-panel-fail") { entry.session(libuitest::supervisor::serve) } else { entry };
+    let entry = if matches!(selected, "subreaper" | "supervisor-died" | "session-teardown" | "session-panel-pass" | "session-panel-fail" | "session-ownership" | "session-devices") { entry.session(libuitest::supervisor::serve) } else { entry };
     let cases = Box::leak(vec![entry].into_boxed_slice());
     let categories = Box::leak(vec![category("fixture", "Scoped runner", cases)].into_boxed_slice());
     suite::set_painter(Box::new(stage_painter::StagePainter::new()));

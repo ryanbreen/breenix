@@ -257,3 +257,155 @@ pub fn panel_after_case() -> CaseResult {
     display_fixture("session-panel-pass")?;
     display_fixture("session-panel-fail")
 }
+
+use libbreenix::input::{abi::Event as InputEvent, key, kind, Batch, Capability, Injector, Reader};
+
+struct InputProbe { reader: Reader, pending: Vec<InputEvent> }
+impl InputProbe {
+    fn new() -> Result<Self, String> {
+        Ok(Self { reader: Reader::open(true).map_err(|e| e.to_string())?, pending: Vec::new() })
+    }
+    fn event(&mut self, device: u32, code: u16, value: i32) -> Result<InputEvent, String> {
+        let end = monotonic_ns()? + 2_000_000_000;
+        loop {
+            if let Some(at) = self.pending.iter().position(|e| e.device == device && e.kind == kind::KEY && e.code == code && e.value == value) {
+                return Ok(self.pending.remove(at));
+            }
+            let mut bytes = [0; 32 * 1024];
+            match self.reader.read(&mut bytes) {
+                Ok(records) => for record in records { self.pending.push(record.map_err(|e| e.to_string())?.event); },
+                Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN)) => {},
+                Err(e) => return Err(e.to_string()),
+            }
+            if monotonic_ns()? >= end { return Err(format!("input event timeout device={device} code={code} value={value}")); }
+            libbreenix::time::sleep_ms(1).map_err(|e| e.to_string())?;
+        }
+    }
+    fn gone(&self, ids: [u32; 2]) -> CaseResult {
+        let end = monotonic_ns()? + 2_000_000_000;
+        loop {
+            if ids.iter().all(|&id| matches!(self.reader.capabilities(id, &mut []),
+                Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENODEV)))) { return Ok(()); }
+            check(monotonic_ns()? < end, "session input device survived teardown")?;
+            libbreenix::time::sleep_ms(1)?;
+        }
+    }
+}
+fn ledger_event(serial: u64, outcome: &str, window: u64, reason: &str) -> CaseResult {
+    let expected = format!("{serial} {outcome} {window} {reason}");
+    let end = monotonic_ns()? + 2_000_000_000;
+    loop {
+        let ledger = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
+        if ledger.lines().any(|line| line == expected) { return Ok(()); }
+        check(monotonic_ns()? < end, &format!("input ledger lacks {expected}; {ledger}"))?;
+        libbreenix::time::sleep_ms(1)?;
+    }
+}
+fn compositor_owner() -> Result<u64, String> {
+    let mut status = libbreenix::window::abi::CompositorStatus::default();
+    let result = unsafe { libbreenix::window::raw_call(libbreenix::window::abi::op::COMPOSITOR_STATUS,
+        &mut status as *mut _ as *mut u8, core::mem::size_of_val(&status)) };
+    if result != 0 { return Err(format!("compositor status {result}")); }
+    Ok(status.owner as u64)
+}
+fn interfering_keyboard(probe: &mut InputProbe, keyboard: &Injector) -> CaseResult {
+    let mut storage = [0; 96];
+    let mut batch = Batch::new(&mut storage);
+    batch.event(kind::KEY, key::A, 1, 0)?.event(kind::KEY, key::A, 0, 0)?.finish(0)?;
+    keyboard.inject(&batch)?;
+    for value in [1, 0] {
+        let event = probe.event(keyboard.id(), key::A, value)?;
+        ledger_event(event.serial, "rejected", 0, "not-selected")?;
+    }
+    Ok(())
+}
+pub(crate) fn device_death_round() -> Result<(u64, u64), CaseError> {
+    let mut session = Session::desktop()?;
+    let ready = first_window(&mut session, "selected keyboard", monotonic_ns()? + 2_000_000_000)?;
+    let ids = session.input_devices();
+    check(ids[0] != 0 && ids[1] != 0 && ids[0] != ids[1], "invalid session device pair")?;
+    let mut probe = InputProbe::new()?;
+    let third = Injector::create(&[Capability { kind: kind::KEY, code: key::A, minimum: 0, maximum: 1 }], false)?;
+    interfering_keyboard(&mut probe, &third)?;
+    session.raw_press(key::A)?;
+    let before = probe.event(ids[0], key::A, 1)?;
+    ledger_event(before.serial, "delivered", ready.id, "none")?;
+    session.raw_release(key::A)?;
+    probe.event(ids[0], key::A, 0)?;
+    let compositor = compositor_owner()?;
+    check(compositor != session.supervisor_pid(), "supervisor holds a live compositor's grab")?;
+    signal::kill(compositor as i32, signal::SIGKILL)?;
+    // Do not wait for Exited first: input requested at death must wait for re-grab.
+    session.raw_press(key::B)?;
+    let after = probe.event(ids[0], key::B, 1)?;
+    let exit = session.wait_exit(compositor)?;
+    check(process::wifsignaled(exit.status) && process::wtermsig(exit.status) == signal::SIGKILL, "compositor death not reaped")?;
+    check(compositor_owner()? == session.supervisor_pid(), "display/compositor claim did not return to supervisor")?;
+    ledger_event(after.serial, "wm-handled", 0, "none")?;
+    interfering_keyboard(&mut probe, &third)?;
+    session.raw_release(key::B)?;
+    probe.event(ids[0], key::B, 0)?;
+    session.raw_press(key::LEFT_SHIFT)?;
+    session.raw_press(key::BUTTON_LEFT)?;
+    session.raw_motion(-40, 25)?;
+    session.raw_wheel(-1)?;
+    probe.event(ids[0], key::LEFT_SHIFT, 1)?;
+    probe.event(ids[1], key::BUTTON_LEFT, 1)?;
+    session.teardown()?;
+    probe.event(ids[0], key::LEFT_SHIFT, 0)?;
+    probe.event(ids[1], key::BUTTON_LEFT, 0)?;
+    probe.gone(ids)?;
+    Ok((session.supervisor_pid(), compositor))
+}
+pub fn devices_reset() -> CaseResult { device_death_round().map(|_| ()) }
+pub fn ownership_stack() -> CaseResult { display_fixture("session-ownership") }
+
+pub fn teardown_releases() -> CaseResult {
+    let mut session = Session::kiosk()?;
+    first_window(&mut session, "release held inputs", monotonic_ns()? + 2_000_000_000)?;
+    let ids = session.input_devices();
+    let mut probe = InputProbe::new()?;
+    let held = [key::LEFT_SHIFT, key::RIGHT_CTRL, key::A, key::BUTTON_LEFT, key::BUTTON_RIGHT, key::BUTTON_MIDDLE];
+    for code in held {
+        session.raw_press(code)?;
+        probe.event(ids[usize::from(code >= key::BUTTON_LEFT)], code, 1)?;
+    }
+    session.raw_press(key::B)?;
+    session.raw_release(key::B)?;
+    probe.event(ids[0], key::B, 1)?;
+    probe.event(ids[0], key::B, 0)?;
+    session.teardown()?;
+    for code in held { probe.event(ids[usize::from(code >= key::BUTTON_LEFT)], code, 0)?; }
+    probe.gone(ids)
+}
+
+fn process_baseline() -> Result<Vec<u64>, String> {
+    let mut pids = Vec::new();
+    for entry in std::fs::read_dir("/proc").map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<u64>().ok()) { pids.push(pid); }
+    }
+    pids.sort_unstable();
+    Ok(pids)
+}
+fn window_baseline() -> Result<Vec<u64>, String> {
+    let mut windows = vec![libbreenix::window::abi::WinInfo::default(); 64];
+    let n = libbreenix::window::list(&mut windows).map_err(|e| e.to_string())?;
+    if n > windows.len() { return Err("window baseline exceeds capacity".into()); }
+    let mut ids: Vec<_> = windows[..n].iter().map(|w| w.id).collect();
+    ids.sort_unstable(); Ok(ids)
+}
+pub fn twenty_sessions() -> CaseResult {
+    use breenix_suite::suite::memory_record;
+    let pids = process_baseline()?;
+    let windows = window_baseline()?;
+    let before = memory_record::settled()?;
+    for round in 0..20 {
+        display_fixture("session-devices")?;
+        check(process_baseline()? == pids, &format!("session {round} leaked processes"))?;
+        check(window_baseline()? == windows, &format!("session {round} leaked windows"))?;
+    }
+    let after = memory_record::settled()?;
+    let (record, passed) = memory_record::verdict("ui-testing", Some(&before), Some(&after));
+    check(passed, &record)
+}

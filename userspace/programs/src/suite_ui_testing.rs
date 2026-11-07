@@ -110,7 +110,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A non-root session cannot inject, after a root session has. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("nonroot-denied", "A non-root session cannot inject, after a root session has", || pending("input", 5)),
         // Ending a session releases every held key and button. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("teardown-releases", "Ending a session releases every held key and button", || pending("input", 3)),
+        case("teardown-releases", "Ending a session releases every held key and button", sessions::teardown_releases).session(libuitest::supervisor::serve),
         // Input arrives in order while the app animates. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("input-during-animation", "Input arrives in order while the app animates", || pending("input", 6)),
         // Input addressed to two windows of one app arrives at each. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -318,7 +318,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Two settings scenarios give the same results in either order. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("order-independent", "Two settings scenarios give the same results in either order", || pending("sessions", 3)),
         // After a case its virtual devices are gone and no key or button is held. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("devices-reset", "After a case its virtual devices are gone and no key or button is held", || pending("sessions", 3)),
+        case("devices-reset", "After a case its virtual devices are gone and no key or button is held", sessions::devices_reset).session(libuitest::supervisor::serve),
         // After a case, no session process remains and the runner owns the display. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("teardown", "After a case, no session process remains and the runner owns the display", sessions::teardown),
         // A hung app is killed and reaped at teardown. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -328,7 +328,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // The panel is redrawn after the case, with that case's result. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("panel-after-case", "The panel is redrawn after the case, with that case's result", sessions::panel_after_case),
         // When a session's compositor dies, the display goes to the session supervisor, then to the runner at case end. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("ownership-stack", "When a session's compositor dies, the display goes to the session supervisor, then to the runner at case end", || pending("sessions", 3)),
+        case("ownership-stack", "When a session's compositor dies, the display goes to the session supervisor, then to the runner at case end", sessions::ownership_stack),
         // A scenario that runs out of time fails, and its evidence is saved inside the reserve. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("case-timeout", "A scenario that runs out of time fails, and its evidence is saved inside the reserve", || pending("sessions", 3)),
         // An app crashing during a scenario fails it, naming the app and the signal. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -338,7 +338,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // An app launched as uid 1000 runs in the session while the harness keeps root observation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("unprivileged-app", "An app launched as uid 1000 runs in the session while the harness keeps root observation", sessions::unprivileged_app).session(libuitest::supervisor::serve),
         // Twenty sessions in a row leave windows, processes and memory at the baseline. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("twenty-sessions", "Twenty sessions in a row leave windows, processes and memory at the baseline", || pending("sessions", 3)),
+        case("twenty-sessions", "Twenty sessions in a row leave windows, processes and memory at the baseline", sessions::twenty_sessions),
         // wait_window(title) returns after that window's first composited commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("wait-window", "wait_window(title) returns after that window's first composited commit", sessions::wait_window).session(libuitest::supervisor::serve),
         // wait_window for a window that never appears fails, naming the title. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
