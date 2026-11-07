@@ -399,7 +399,43 @@ fn display_observer(done: usize, _: usize, name: &str) {
     let _ = io::write(Fd::from_raw(3), line.as_bytes());
 }
 
+// Leave a child and process-local poison after the per-case sweep, so the
+// next executable judges the real sequence handoff rather than case cleanup.
+fn sequence_poison() {
+    let own = process::getpid().expect("sequence runner pid").raw();
+    std::env::set_var("BREENIX_UI_SEQUENCE_RUNNER", own.to_string());
+    let mut hold_child = hold;
+    let child = spawn(&[], Run::Call(&mut hold_child)).expect("sequence descendant");
+    let line = format!("SEQUENCE-DESCENDANT pid={}\n", child.raw());
+    io::write(Fd::STDOUT, line.as_bytes()).expect("descendant witness");
+    signal::sigaction(signal::SIGUSR1, Some(&signal::Sigaction::ignore()), None).expect("poison disposition");
+    let mask = 1u64 << (signal::SIGUSR1 - 1);
+    signal::sigprocmask(signal::SIG_SETMASK, Some(&mask), None).expect("poison mask");
+    // Leak a non-CLOEXEC descriptor intentionally; hand_off must close it.
+    let fd = libbreenix::fs::open("/dev/null", libbreenix::fs::O_RDONLY).expect("poison descriptor");
+    assert!(fd.raw() > 2);
+}
+
+fn sequence_session() -> CaseResult {
+    let mut session = libuitest::Session::kiosk()?;
+    let title = b"sequence session";
+    session.launch_app(&[b"/usr/libexec/breenix/uitest-app_test", title], 0)?;
+    session.wait_window("sequence session")?;
+    // The runner and supervisor own teardown at the GUI case boundary.
+    Ok(())
+}
+
+fn scoped_sequence() -> ! {
+    let cases = Box::leak(vec![case("sequence-session", "Clean session before sequence handoff", sequence_session)
+        .session(libuitest::supervisor::serve)].into_boxed_slice());
+    let categories = Box::leak(vec![category("fixture", "Sequence GUI fixture", cases)].into_boxed_slice());
+    suite::set_painter(Box::new(stage_painter::StagePainter::new()));
+    suite::suite("runner-fixture", "Sequence GUI fixture", categories).gui().defer_display()
+        .with_finalizer(sequence_poison).case_limit_ms(3000).run()
+}
+
 fn main() {
+    if std::env::var_os("BREENIX_UI_SEQUENCE_FIXTURE").is_some() { scoped_sequence(); }
     if let Ok(order) = std::env::var("BREENIX_CONFIG_SCENARIOS") { config_sequence(&order); }
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).is_some_and(|s| s == "--orphan-helper") {

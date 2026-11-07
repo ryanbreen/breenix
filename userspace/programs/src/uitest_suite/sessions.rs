@@ -434,6 +434,7 @@ pub fn sequence_compatible() -> CaseResult {
     }
     struct Directory(std::path::PathBuf);
     impl Drop for Directory { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+    libbreenix::graphics::take_over_display()?;
     let own = process::getpid()?.raw();
     let directory = Directory(format!("/tmp/ui-sequence-{own}").into());
     std::fs::create_dir(&directory.0).map_err(|e| e.to_string())?;
@@ -517,6 +518,8 @@ pub fn sequence_compatible() -> CaseResult {
     libbreenix::graphics::take_over_display()?;
     check(signal::kill(helper.0.unwrap().raw() as i32, 0).is_ok(), "sequence killed outer helper")?;
     let stat = std::fs::read_to_string(format!("/proc/{}/stat", helper.0.unwrap().raw())).map_err(|e| e.to_string())?;
-    check(stat.rsplit_once(") ").and_then(|(_, s)| s.split_whitespace().nth(1)).and_then(|s| s.parse::<u64>().ok()) == Some(own),
+    let state = stat.rsplit_once(") ").ok_or("outer helper stat is malformed")?.1;
+    check(matches!(state.split_whitespace().next(), Some("R" | "S")), "outer helper is not alive")?;
+    check(state.split_whitespace().nth(1).and_then(|s| s.parse::<u64>().ok()) == Some(own),
         "outer case lost helper parentage")
 }

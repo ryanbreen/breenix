@@ -71,12 +71,14 @@ CHECKS = r'''
             assert!(skipped(root.join("suite-baseline").to_str().unwrap()));
             std::fs::write(root.join("suite-baseline"), "f 644 0 0 4 123 /test\n").unwrap();
             assert_eq!(load_baseline().unwrap().len(), 1);
-            // PID 1 ignores the same hostile environment, including the skip path.
-            crate::PID.store(1, crate::Ordering::Relaxed);
-            assert!(!skipped(root.join("suite-baseline").to_str().unwrap()));
-            crate::PID.store(40, crate::Ordering::Relaxed);
             std::env::remove_var("BREENIX_SUITE_SEQUENCE_DIR");
             std::fs::remove_dir_all(root).unwrap();
+        }
+        #[test] fn pid_one_ignores_the_private_directory() {
+            crate::PID.store(1, crate::Ordering::Relaxed);
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_DIR", "/private-sequence-must-not-be-read");
+            assert!(skipped(BASELINE));
+            assert!(!skipped("/private-sequence-must-not-be-read/suite-baseline"));
         }
         #[test] fn sequence_reap_uses_the_descendant_sweep() {
             assert!(reap_all());
@@ -155,8 +157,10 @@ impl Suite { fn complete(&self) {
             result = subprocess.run(['rustc', '--edition=2021', '-Dwarnings', '--test', str(source_path), '-o', str(binary)], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             # The host invokes read/load and reap entry points, without calling prepare or walking /.
-            result = subprocess.run([str(binary), '--test-threads=1'], capture_output=True, text=True)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for name in ['private_list_and_baseline', 'pid_one_ignores_the_private_directory',
+                         'sequence_reap_uses_the_descendant_sweep']:
+                result = subprocess.run([str(binary), '--exact', f'harness::sequence::{name}'], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
 if __name__ == '__main__':
     unittest.main()

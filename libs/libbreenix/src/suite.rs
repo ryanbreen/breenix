@@ -1383,7 +1383,13 @@ impl Suite {
         let ms = ms_since(suite_start);
         emit(&std::format!("SUITE {} ELAPSED ms={}", self.id, ms));
         finalize();
-        if scoped { process::exit(if counts.failed == 0 && reclaimed { 0 } else { 1 }); }
+        if scoped {
+            if place.is_some() {
+                emit(&std::format!("SUITE_SEQUENCE READY {}", self.id));
+                sequence::finish();
+            }
+            process::exit(if counts.failed == 0 && reclaimed { 0 } else { 1 });
+        }
         feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
         if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }
         if !screen.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }
@@ -1830,7 +1836,7 @@ fn start_scoped_runner() -> Result<(), String> {
             .ok_or("invalid suite transcript descriptor")?;
         let fd = Fd::from_raw(number as u64);
         let flags = io::fcntl(fd, io::fcntl_cmd::F_GETFD, 0).map_err(|e| e.to_string())?;
-        io::fcntl(fd, io::fcntl_cmd::F_SETFD, flags | i64::from(io::fd_flags::FD_CLOEXEC))
+        io::fcntl(fd, io::fcntl_cmd::F_SETFD, if number > 2 { flags | i64::from(io::fd_flags::FD_CLOEXEC) } else { flags & !i64::from(io::fd_flags::FD_CLOEXEC) })
             .map_err(|e| e.to_string())?;
         TRANSCRIPT_FD.store(number, Ordering::Relaxed);
     }

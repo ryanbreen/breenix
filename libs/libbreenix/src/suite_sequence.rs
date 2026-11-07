@@ -59,6 +59,31 @@ use crate::types::Fd;
 pub const LIST: &str = "/etc/breenix/suite-sequence";
 /// The root filesystem as the first suite found it.
 pub const BASELINE: &str = "/etc/breenix/suite-baseline";
+// Resolved once per process. PID 1 neither reads the private environment nor
+// changes its installed paths. A scoped sequence also owns its executable links.
+struct SequencePaths {
+    list: std::path::PathBuf,
+    baseline: std::path::PathBuf,
+    executables: std::path::PathBuf,
+}
+
+fn sequence_paths() -> &'static SequencePaths {
+    static PATHS: OnceLock<SequencePaths> = OnceLock::new();
+    PATHS.get_or_init(|| {
+        if process::getpid().is_ok_and(|pid| pid.raw() != 1) {
+            if let Some(directory) = std::env::var_os("BREENIX_SUITE_SEQUENCE_DIR") {
+                let directory = std::path::PathBuf::from(directory);
+                return SequencePaths {
+                    list: directory.join("suite-sequence"),
+                    baseline: directory.join("suite-baseline"),
+                    executables: directory,
+                };
+            }
+        }
+        SequencePaths { list: LIST.into(), baseline: BASELINE.into(), executables: "/sbin".into() }
+    })
+}
+
 /// How long a suite may go without starting or finishing a case. Below the launchers'
 /// 120-second stall watchdog, and above the longest case allowance (25 s) plus its kill
 /// and sweep.
@@ -93,7 +118,7 @@ static COUNT: AtomicU32 = AtomicU32::new(0);
 /// This suite's place in the sequence the launcher wrote, or no place when the boot runs
 /// it alone (no list, or a list without it).
 pub fn read(id: &str) -> Option<(Vec<String>, usize)> {
-    let text = std::fs::read_to_string(LIST).ok()?;
+    let text = std::fs::read_to_string(&sequence_paths().list).ok()?;
     let ids: Vec<String> = text.trim_end().split(',').map(String::from).collect();
     let index = ids.iter().position(|other| other == id)?;
     Some((ids, index))
@@ -109,7 +134,7 @@ pub fn prepare(ids: &[String], index: usize, total: usize) {
     }
     let _ = ID.set(ids[index].clone());
     let _ = AFTER.set(ids[index + 1..].iter()
-        .map(|id| (id.clone(), std::format!("/sbin/suite-{id}\0").into_bytes()))
+        .map(|id| (id.clone(), std::format!("{}/suite-{id}\0", sequence_paths().executables.display()).into_bytes()))
         .collect());
     COUNT.store(ids.len() as u32, Ordering::Relaxed);
     TOTAL.store(total as u32, Ordering::Relaxed);
@@ -267,6 +292,13 @@ fn hand_off() {
 
 /// Kill each process but PID 1 and reap them; false when some outlived SIGKILL.
 fn reap_all() -> bool {
+    if process::getpid().is_ok_and(|pid| pid.raw() != 1) {
+        return super::descendants::sweep_descendants().is_none();
+    }
+    reap_all_pid_one()
+}
+
+fn reap_all_pid_one() -> bool {
     let start = monotonic_ns();
     let mut killed_at = 0;
     loop {
@@ -388,7 +420,7 @@ fn fnv(bytes: &[u8]) -> u64 {
 /// Whether the walk leaves `path` out: the kernel's pseudo-filesystems (but for the
 /// IPC names, walked as roots of their own) and the baseline itself.
 fn skipped(path: &str) -> bool {
-    path == "/proc" || path == "/dev" || path == BASELINE
+    path == "/proc" || path == "/dev" || Path::new(path) == sequence_paths().baseline
 }
 
 /// Visit each path under `/`, `/dev/shm` and `/dev/mqueue`; `visit` returns whether to
@@ -433,14 +465,14 @@ fn record_baseline() -> usize {
         count += 1;
         true
     });
-    match std::fs::write(BASELINE, text) {
+    match std::fs::write(&sequence_paths().baseline, text) {
         Ok(()) => count,
         Err(_) => 0,
     }
 }
 
 fn load_baseline() -> Result<BTreeMap<String, Entry>, String> {
-    let text = std::fs::read_to_string(BASELINE).map_err(|error| std::format!("cannot read {BASELINE}: {error}"))?;
+    let text = std::fs::read_to_string(&sequence_paths().baseline).map_err(|error| std::format!("cannot read {}: {error}", sequence_paths().baseline.display()))?;
     let mut entries = BTreeMap::new();
     for line in text.lines() {
         let mut fields = line.splitn(7, ' ');
