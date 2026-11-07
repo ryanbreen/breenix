@@ -16,7 +16,7 @@ impl Registers {
 fn read(regs: &mut Registers, _: u64, address: u64) -> Result<u32, &'static str> {
     match address { 0x48 => Ok(regs.1), 0x88 => Ok(regs.0.userd_get), _ => panic!("unexpected USERD read {address:#x}") }
 }
-struct Monitor<'a> { session: &'a Session, regs: &'a mut Registers, total: u64, sequence: u32, queued_put: Option<u32> }
+struct Monitor<'a> { session: &'a Session, regs: &'a mut Registers, total: u64, sequence: u32, queued_put: Option<u32>, resident_polls: u64, nonresident_polls: u64 }
 // POLL
 // PREDICATE
 // AWAIT

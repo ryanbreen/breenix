@@ -923,14 +923,23 @@ mod native {
                 retry_traps: true,
                 release_slot: 0,
                 queued_put: None,
+                resident_polls: 0, nonresident_polls: 0,
             };
             if budget < BOUND_US {
                 // A cold context restore gets the normal engine bound before
                 // the negative-control observation window starts.
-                await_consumed(&mut monitor)?;
+                let start = monitor.now_us();
+                if let Err(error) = await_consumed(&mut monitor) {
+                    if error == "GR control stream not consumed; backing retained" {
+                        let elapsed_us = monitor.now_us().saturating_sub(start);
+                        monitor.stream_failure(elapsed_us);
+                    }
+                    return Err(error);
+                }
             }
             let sample = wait(&mut monitor, self.report.identity.epoch, nonce, budget)?;
             if !sample.consumed {
+                monitor.stream_failure(sample.elapsed_us);
                 return Err("GR stream not consumed; backing retained");
             }
             Ok(sample)
@@ -1622,7 +1631,7 @@ mod native {
             let mut monitor = Monitor { session: &self.session,
                 regs: &mut Registers(self.registers), total: self.total,
                 sequence: self.put.max(1), stop_on_trap: true, retry_traps, release_slot: 0,
-                queued_put: Some(self.put) };
+                queued_put: Some(self.put), resident_polls: 0, nonresident_polls: 0 };
             monitor.check_health()
         }
         pub(crate) fn error_trap(&self) -> Result<Option<super::super::error::Trap>, &'static str> {
@@ -1891,7 +1900,7 @@ mod native {
             let mut regs = Registers(self.registers);
             let mut monitor = Monitor { session: &self.session, regs: &mut regs, total: self.total,
                 sequence, stop_on_trap: true, retry_traps, release_slot: crate::gk208::queue::Queue::slot(sequence) as usize,
-                queued_put: Some(self.put) };
+                queued_put: Some(self.put), resident_polls: 0, nonresident_polls: 0 };
             let (value, epoch, consumed) = monitor.snapshot()?;
             let bound = regs.read(0x800000 + self.session.report.identity.id as usize * 8);
             if value == sequence && epoch == self.session.report.identity.epoch && consumed
@@ -2216,8 +2225,38 @@ mod native {
         retry_traps: bool,
         release_slot: usize,
         queued_put: Option<u32>,
+        resident_polls: u64,
+        nonresident_polls: u64,
     }
     impl Monitor<'_> {
+        // Capture before teardown, and only on the two stream refusal paths.
+        fn stream_failure(&mut self, elapsed_us: u64) {
+            let s = self.session;
+            let b = s.pbdma * 0x2000;
+            let c = s.report.identity;
+            let pbdma_40120 = self.regs.read(0x40120 + b);
+            let pbdma_40014 = self.regs.read(0x40014 + b);
+            let pbdma_40028 = self.regs.read(0x40028 + b);
+            let pbdma_3080 = self.regs.read(0x3080 + s.pbdma * 4);
+            // These addresses were validated when the retained channel was built.
+            // A failed read is represented by u32::MAX, without hiding refusal.
+            let userd_48 = read(self.regs, self.total, s.userd + 0x48).unwrap_or(u32::MAX);
+            let userd_88 = read(self.regs, self.total, s.userd + 0x88).unwrap_or(u32::MAX);
+            let userd_8c = read(self.regs, self.total, s.userd + 0x8c).unwrap_or(u32::MAX);
+            let ramfc_48 = read(self.regs, self.total, c.instance + 0x48).unwrap_or(u32::MAX);
+            let ch0_800000 = self.regs.read(0x800000);
+            let ch0_800004 = self.regs.read(0x800004);
+            let ch1_800000 = self.regs.read(0x800008);
+            let ch1_800004 = self.regs.read(0x80000c);
+            let runlist_2284 = self.regs.read(0x2284 + c.runlist as usize * 8);
+            let engine_2640 = self.regs.read(0x2640);
+            let engine_2644 = self.regs.read(0x2644);
+            crate::serial_println!("GT710_GR_STREAM_STATE pbdma_40120={:#x} pbdma_40014={:#x} pbdma_40028={:#x} pbdma_3080={:#x} userd_48={:#x} userd_88={:#x} userd_8c={:#x} ramfc_48={:#x} ch0_800000={:#x} ch0_800004={:#x} ch1_800000={:#x} ch1_800004={:#x} runlist_2284={:#x} engine_2640={:#x} engine_2644={:#x} elapsed_us={} resident_polls={} nonresident_polls={}",
+                pbdma_40120, pbdma_40014, pbdma_40028, pbdma_3080,
+                userd_48, userd_88, userd_8c, ramfc_48, ch0_800000,
+                ch0_800004, ch1_800000, ch1_800004, runlist_2284,
+                engine_2640, engine_2644, elapsed_us, self.resident_polls, self.nonresident_polls);
+        }
         fn check_health(&mut self) -> Result<(), &'static str> {
             if self.stop_on_trap {
                 let words = if self.retry_traps {
@@ -2253,6 +2292,7 @@ mod native {
             let b = s.pbdma * 0x2000;
             let channel = self.regs.read(0x40120 + b);
             let current = channel & 0x2fff == 0x2000 | s.report.identity.id;
+            if current { self.resident_polls += 1; } else { self.nonresident_polls += 1; }
             let (get, userd_get) = if current {
                 (self.regs.read(0x40014 + b), 0)
             } else {

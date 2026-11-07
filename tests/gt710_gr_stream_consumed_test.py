@@ -43,10 +43,16 @@ class StreamConsumed(unittest.TestCase):
             id: Identity, sequence: u32, queued_put: Option<u32>) -> bool {
             let session = Session { pbdma: 0, userd: 0, report: Report { identity: id } };
             let mut regs = Registers(sample, saved_reference);
-            let monitor = Monitor { session: &session, regs: &mut regs, total: 0, sequence, queued_put };
+            let mut monitor = Monitor { session: &session, regs: &mut regs, total: 0, sequence, queued_put, resident_polls: 0, nonresident_polls: 0 };
             let s = monitor.session;
             (|| -> Result<bool, &\'static str> {
-        ''' + sampling + 'Ok(consumed)\n})().unwrap()\n}'
+        ''' + sampling + '''
+            let resident = sample.channel & 0x2fff == 0x2000 | id.id;
+            assert_eq!(monitor.resident_polls, u64::from(resident));
+            assert_eq!(monitor.nonresident_polls, u64::from(!resident));
+            Ok(consumed)
+        })().unwrap()
+    }'''
         for key, value in [('POLL', poll), ('QUEUE', item(queue, 'pub fn consumed(')),
                            ('PREDICATE', predicate), ('AWAIT', awaiter), ('SNAPSHOT', snapshot_check)]:
             fixture = fixture.replace('// ' + key, value)
