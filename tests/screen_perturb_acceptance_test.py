@@ -131,12 +131,12 @@ class PerturbationAcceptance(unittest.TestCase):
                 API['r240_screens'](manifest, serial, bad, boot, baseline, rows)
 
     def test_native_health_requires_memory_and_full_clocks(self):
-        text = ('cmdline gt710.clocks=full\n'
+        text = ('GT710_CLOCK_STARTUP full=true status=ok\n'
                 'SUITE gpu MEMORY before free=1000 heap_free_kb=500 user_pages=100\n'
                 'SUITE gpu MEMORY after free=1000 heap_free_kb=500 user_pages=100\n'
                 'SUITE gpu MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=48\n')
         API['r240_health']('gpu', text)
-        for bad in (text.replace('full', 'post'), text.replace('gt710.clocks=full', ''),
+        for bad in (text.replace('full=true', 'full=false'), text.replace('GT710_CLOCK_STARTUP full=true status=ok', ''),
                     text.replace('reclaimed=PASS', 'reclaimed=FAIL'),
                     text.replace('allowance=48', 'allowance=64'),
                     text.replace('free_after=1000', 'free_after=900')):

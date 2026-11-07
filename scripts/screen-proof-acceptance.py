@@ -326,7 +326,12 @@ def r240_screens(manifest, serial, table, boot, checkpoints, perturbations):
 
 def r240_health(suite, serial):
     clocks = re.findall(r'\bgt710\.clocks=(\w+)', serial)
-    if not clocks or set(clocks) != {'full'}: raise ValueError('R240 requires full clocks')
+    startup = re.findall(r'^GT710_CLOCK_STARTUP (.+)$', serial, re.M)
+    fields = dict(re.findall(r'(\w+)=([^ ]+)', startup[0])) if len(startup) == 1 else {}
+    if (fields.get('full') != 'true' or fields.get('status') != 'ok'
+            or set(clocks) - {'full'}
+            or re.search(r'^GT710_CLOCK_(?:FALLBACK|GUARD|CRITICAL) ', serial, re.M)):
+        raise ValueError('R240 requires full clocks')
     pattern = rf'^SUITE {re.escape(suite)} MEMORY '
     before = re.findall(pattern + r'before free=([0-9]+) [^\n]+$', serial, re.M)
     after = re.findall(pattern + r'after free=([0-9]+) [^\n]+$', serial, re.M)
