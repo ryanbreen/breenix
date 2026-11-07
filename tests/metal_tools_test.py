@@ -25,6 +25,8 @@ import uuid
 
 TOOLS = Path(__file__).resolve().parents[1] / 'scripts' / 'metal'
 FIXTURES = TOOLS / 'fixtures'
+WM_MANIFEST = json.loads((TOOLS.parents[1] / 'docs/suites/window-manager.json').read_text())
+WM_CASES = sum(len(category['cases']) for category in WM_MANIFEST['categories'])
 sys.path.insert(0, str(TOOLS))
 import metal_lib as m  # noqa: E402
 import metal_image  # noqa: E402
@@ -1050,7 +1052,7 @@ class ModeApplicabilityTest(StateTest):
         stage = next(item for item in self.definition['milestones'] if item['id'] == 'suite-finished')
         marker = stage['stages']['suite'][0]['marker']
         self.assertTrue(boot.marker_matches((marker, 'contains'),
-            'SUITE window-manager DONE passed=9 failed=73 skipped=0 total=82'))
+            f'SUITE window-manager DONE passed=9 failed={WM_CASES - 9} skipped=0 total={WM_CASES}'))
 
     def test_definition_and_driver_measure_fbcon_only_when_console_keeps_screen(self):
         import metal_score
@@ -1674,7 +1676,7 @@ class DriverTest(StateTest):
         d.args.suite = 'window-manager'
         self.assertEqual(boot.mode_deadline_seconds(d.args), 1800)
         self.assertGreater(boot.ceiling_seconds(d.args), 1800)
-        d.on_line('SUITE window-manager START cases=82', observed_at=130)
+        d.on_line(f'SUITE window-manager START cases={WM_CASES}', observed_at=130)
         self.assertEqual(d.suite_started, 130)
         d.args.mode = 'default'
         self.assertEqual(boot.mode_deadline_seconds(d.args), 300)

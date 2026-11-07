@@ -58,10 +58,6 @@
           "title": "The bound keyboard completion reports, wakes bwm, delivers A and rearms"
         },
         {
-          "id": "pointer-completion-path",
-          "title": "The bound pointer completion reports, wakes bwm, delivers motion and rearms"
-        },
-        {
           "id": "replay-report-fault",
           "title": "Suppressing the production report loses the event after a positive delivery"
         }

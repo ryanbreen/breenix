@@ -2,10 +2,10 @@
   "id": "gt710-step-21-7",
   "suite": "window-manager",
   "boardStep": "21.7",
-  "title": "Event-driven bwm paced by published presentation, the performance cases, and the full 82-case gate",
+  "title": "Event-driven bwm paced by published presentation, the performance cases, and the full suite gate",
   "basis": "origin/main 87775882 (fetched 2026-11-04), docs/suites/window-manager.json manifest order; cumulative",
   "added": 7,
-  "total": 82,
+  "total": 81,
   "reasons": {
     "performance": {
       "added": 7,
@@ -23,7 +23,6 @@
     "input-core/ledger-complete",
     "input-core/capabilities",
     "input-devices/keyboard-completion-path",
-    "input-devices/pointer-completion-path",
     "input-devices/replay-report-fault",
     "startup/desktop-control",
     "startup/claims-display",

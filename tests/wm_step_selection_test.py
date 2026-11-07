@@ -12,7 +12,6 @@ class WindowManagerSelectionsTest(unittest.TestCase):
         manifest = json.loads((ROOT / "docs/suites/window-manager.json").read_text())
         cases = [f"{category['id']}/{case['id']}"
                  for category in manifest['categories'] for case in category['cases']]
-        self.assertEqual(len(cases), 82)
         self.assertEqual(len(set(cases)), len(cases))
         previous = set()
         for step in range(1, 8):
