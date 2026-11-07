@@ -178,6 +178,17 @@ def check_runtime_display(serial, native):
     return native['runtime_display'](serial, (preferred['width'], preferred['height']))
 
 
+def check_breengel_runtime_display(serial, native):
+    # G27(1): BreenGL runs in G20 logical mode 1. The GPU suite exercises both.
+    if 'GT710_DISPLAY_EVIDENCE_ERROR' in serial:
+        raise ValueError('runtime display evidence storage failed')
+    rows = [json.loads(m[1]) for m in re.finditer(r'^GT710_DISPLAY_V1 (.+)$', serial, re.M)]
+    if not rows or {r.get('mode') for r in rows} != {1}:
+        raise ValueError('BreenGL runtime display requires G27 logical mode 1')
+    preferred = native['native_raster'](native['board_inventory'](serial))
+    return native['display_snapshots'](rows, (preferred['width'], preferred['height']))
+
+
 def checkpoint_inventory(suite, serial, ends, phase, platform='qemu'):
     expected = list(ends)
     # Phase two's intent frames come from ARM proof captures; native proof mode is phase three (U19).
@@ -400,7 +411,7 @@ def accept(commit, captures, phase='checkpoints', candidates=None, profile='arm'
                 row['handoffToDoneMS'] = native['resources_console'](serial, boot, events)
             elif platform == 'metal' and suite == 'breengel':
                 native['breengel_fronts_suite'](serial, boot, 4)
-                check_runtime_display(serial, native)
+                check_breengel_runtime_display(serial, native)
             elif platform == 'metal':
                 native['resources_row'](serial)
                 with redirect_stdout(io.StringIO()):
