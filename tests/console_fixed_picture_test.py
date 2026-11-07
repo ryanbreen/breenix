@@ -51,3 +51,10 @@ for case in ['composition/takeover-giveback','panel/handoff','panel/between-case
     assert f'fixed_stage_picture("{case}")' in composition+panel_case
 assert 'left.is_empty()' in panel_case and '!left.is_empty()' in panel_case
 assert 'left.iter().all(near)' in panel_case
+
+if output := os.environ.get('E22_FIXED_PICTURE_OUT'):
+    import json
+    import runpy
+    directory=Path(output)
+    verifier=runpy.run_path(str(root/'scripts/screens/verify_expect.py'))
+    (directory/'manifest.json').write_text(json.dumps(verifier['fixed_renderer_manifest'](directory),indent=2)+'\n')

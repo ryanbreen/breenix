@@ -448,8 +448,86 @@ def dimension_claims(text):
     return found
 
 
-def verify_picture(image, expect, checkpoint='intent', *, case=None, suite=None, commit=None):
+FIXED_RENDERER_CASES = {
+    'composition/takeover-giveback', 'scanout/atomic-record', 'panel/handoff',
+    'panel/between-cases', 'panel/cursor-restore', 'panel/cursor-trail-detected',
+    'panel/kernel-screens',
+}
+FIXED_RENDERER_PATHS = (
+    'libs/libgfx-ref', 'libs/libfont', 'libs/libgfx-pixel', 'libs/breengel-abi',
+    'libs/libgfx/src/stage.rs', 'libs/libbreenix/src/compositor.rs',
+    'kernel/src/console', 'fonts/DejaVuSans.ttf', 'docs/suites/breengel.json',
+    'userspace/programs/src/suite_breengel/console_picture.rs',
+    'userspace/programs/src/suite_breengel/stage_painter.rs',
+    'userspace/programs/src/suite_breengel/fixed_stage_picture.rs',
+    'userspace/programs/src/suite_breengel/window_cases/kit.rs',
+)
+
+
+@lru_cache(maxsize=16)
+def fixed_renderer_sources(commit=None):
+    if commit is not None and not re.fullmatch(r'[0-9a-f]{40}', commit):
+        raise ValueError('invalid renderer source commit')
+    command = (['git', 'ls-files', '--', *FIXED_RENDERER_PATHS] if commit is None else
+               ['git', 'ls-tree', '-r', '--name-only', commit, '--', *FIXED_RENDERER_PATHS])
+    names = subprocess.check_output(command, cwd=ROOT, text=True).splitlines()
+    if not names: raise ValueError('missing renderer sources')
+    return {name: hashlib.sha256(source_bytes(name,commit)).hexdigest() for name in names}
+
+
+def fixed_renderer_manifest(directory):
+    """Bind the passing production-renderer host export to its exact code and claims."""
+    catalog = json.loads(source_bytes('docs/suites/breengel.json'))
+    frames = []
+    for group in catalog['categories']:
+        for row in group['cases']:
+            case = group['id']+'/'+row['id']
+            if case not in FIXED_RENDERER_CASES: continue
+            filename = case.replace('/','_')+'.bgra'
+            data = (directory/filename).read_bytes()
+            if len(data) != 2560*1600*4 or data[3::4] != b'\xff'*(2560*1600):
+                raise ValueError('invalid exported renderer frame')
+            frames.append(dict(case=case,file=filename,mode='2560x1600',expect=row['expect'],
+                               sha256=hashlib.sha256(data).hexdigest()))
+    if {f['case'] for f in frames} != FIXED_RENDERER_CASES:
+        raise ValueError('fixed renderer inventory mismatch')
+    return dict(version=1,sources=fixed_renderer_sources(),frames=frames)
+
+
+def verify_fixed_renderer(image, expect, case, commit, directory):
+    if case not in FIXED_RENDERER_CASES: raise ValueError('case has no fixed renderer policy')
+    doc = json.loads((directory/'manifest.json').read_text())
+    if set(doc) != {'version','sources','frames'} or type(doc['version']) is not int or doc['version'] != 1:
+        raise ValueError('invalid renderer reference manifest')
+    if doc['sources'] != fixed_renderer_sources(commit):
+        raise ValueError('renderer reference source mismatch')
+    frames = [f for f in doc['frames'] if f['case'] == case]
+    if len(frames) != 1: raise ValueError('missing or duplicate renderer reference')
+    frame = frames[0]
+    filename = case.replace('/','_')+'.bgra'
+    if set(frame) != {'case','file','mode','expect','sha256'} or frame['file'] != filename:
+        raise ValueError('invalid renderer reference identity')
+    catalog = json.loads(source_bytes('docs/suites/breengel.json',commit))
+    claims = [r['expect'] for g in catalog['categories'] for r in g['cases'] if g['id']+'/'+r['id']==case]
+    if claims != [expect] or frame['expect'] != expect:
+        raise ValueError('renderer reference Expect mismatch')
+    data = (directory/filename).read_bytes()
+    if (frame['mode'] != '2560x1600' or len(data) != 2560*1600*4 or
+            data[3::4] != b'\xff'*(2560*1600) or hashlib.sha256(data).hexdigest() != frame['sha256']):
+        raise ValueError('renderer reference extent or digest mismatch')
+    reference = Image.frombytes('RGB',(2560,1600),data,'raw','BGRX')
+    mismatch = 'dimensions' if image.size != reference.size else ImageChops.difference(image.convert('RGB'),reference).getbbox()
+    claim = dict(kind='production-fixed-renderer',claim=expect,verdict='fail' if mismatch else 'pass',
+                 expected=dict(mode=frame['mode'],sha256=frame['sha256'],source_hashes=doc['sources']),
+                 measured=dict(source_pixels=2560*1600,mismatch_box=mismatch))
+    return dict(verdict=claim['verdict'],checked_claims=[claim],
+                failed_claims=[claim] if mismatch else [],unparseable_claims=[])
+
+
+def verify_picture(image, expect, checkpoint='intent', *, case=None, suite=None, commit=None, renderer_frames=None):
     image = image.convert('RGB')
+    if renderer_frames and suite == 'breengel' and case in FIXED_RENDERER_CASES and checkpoint == 'intent':
+        return verify_fixed_renderer(image,expect,case,commit,renderer_frames)
     # Comparison panels describe interior fixture sizes, not the outer picture.
     # Check them before the generic prose grammar can mistake those dimensions.
     if suite == 'breengel' and case and case.split('/')[0] in ('bmp', 'png-decode', 'png-encode'):
@@ -744,7 +822,7 @@ def importer():
     return module
 
 
-def verify_set(manifest):
+def verify_set(manifest, renderer_frames=None):
     approval = importer()
     doc = approval.read_json(manifest)
     approval.fields(doc, {'version', 'candidates_id', 'rows'})
@@ -773,7 +851,7 @@ def verify_set(manifest):
                 measured = hashlib.sha256(canonical).hexdigest()
                 approval.require(measured == row['sha256'], f'PNG digest mismatch: measured {measured}')
                 verdict = verify_picture(image, row.get('expect'), row['checkpoint'],
-                                         case=row['case'], suite=row['suite'], commit=row['commit'])
+                                         case=row['case'], suite=row['suite'], commit=row['commit'], renderer_frames=renderer_frames)
         except (OSError, ValueError, KeyError, TypeError, Image.DecompressionBombError) as exc:
             failed = dict(kind='input', claim='verified candidate pixels', expected='valid candidate PNG',
                           measured=str(exc), verdict='fail')
@@ -787,10 +865,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('candidates', type=Path, help='candidates directory or manifest.json')
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--fixed-renderer-frames', type=Path, help='U14b full host renderer export with source-bound manifest')
     args = parser.parse_args()
     try:
         manifest = args.candidates / 'manifest.json' if args.candidates.is_dir() else args.candidates
-        report = verify_set(manifest)
+        report = verify_set(manifest, args.fixed_renderer_frames)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         importer().atomic_write(args.output, (json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False)+'\n').encode())
         print(json.dumps(report['summary'], sort_keys=True))

@@ -234,3 +234,13 @@ from the anchor. It checks a named `on navy (#0A141E) background` against more t
 half the judged picture's pixels. The string, font and glyph shape remain unresolved for independent vision review.
 Decimation leaves missing ink and source colour shares unresolved. A source colour
 omitted by antialiasing must not be asserted as an exact visible pixel.
+
+For the seven E22 U14b designed-live intent rows, the production-renderer host
+check can export full 2560x1600 BGRX references with
+`E22_FIXED_PICTURE_OUT=<directory> python3 tests/console_fixed_picture_test.py`.
+The directory includes a manifest binding the reference hashes, exact Expect
+sentences and production source hashes. Pass it to `verify_expect.py` with
+`--fixed-renderer-frames <directory>`: the verifier compares the full frame and
+requires those sources and claims to equal the captured commit. A changed pixel,
+stale source, changed claim or malformed reference fails. This supplies U16
+mechanical evidence; it does not make an approval decision or alter the table.
