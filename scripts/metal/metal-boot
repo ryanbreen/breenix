@@ -36,6 +36,7 @@ import time
 import zlib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import intent_manifest
 import metal_lib as m  # noqa: E402
 import metal_image  # noqa: E402
 import metal_census  # noqa: E402
@@ -183,7 +184,7 @@ def mode_deadline_seconds(args, suite=None):
     name = suite or (suites(args)[0] if args.mode == 'suite' else None)
     if args.mode == 'suite':
         base = {'breengel': 900, 'window-manager': 1800, 'ui-testing': 1800}.get(name, MODE_DEADLINE_SECONDS['suite'])
-        return base + ({'gpu': 121, 'breengel': 163}.get(name, 0) if getattr(args, 'screen_proof', False) else 0)
+        return base + (intent_manifest.counts().get(name, 0) if getattr(args, 'screen_proof', False) else 0)
     return MODE_DEADLINE_SECONDS[args.mode]
 
 # The testing kernel's last report line (kernel/src/syscall/handlers.rs), where a testing boot ends. x86-64 prints it

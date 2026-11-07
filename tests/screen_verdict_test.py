@@ -60,6 +60,18 @@ class ScreenVerdictTest(unittest.TestCase):
                 score([self.line, intent_line], guest, host)
         self.assertEqual(score([self.line, intent_line], True, True)[0], 2)
 
+    def test_numbered_intents_are_proof_only_and_each_page_is_required(self):
+        pages=[dict(self.entry,checkpoint=f'intent-p{n}') for n in (1,2)]
+        lines=[self.line.replace(' end ',f' intent-p{n} ') for n in (1,2)]
+        result=self.run_score([self.line,*lines],entries=[self.entry,*pages])
+        self.assertNotEqual(result.returncode,0,result.stdout)
+        self.assertIn('intent checkpoint in production',result.stdout)
+        self.assertEqual(self.run_score([self.line,*lines],entries=[self.entry,*pages],proof=True).returncode,0)
+        self.assertNotEqual(self.run_score([self.line,lines[0]],entries=[self.entry,*pages],proof=True).returncode,0)
+        # A prior unpaged approval cannot approve either numbered checkpoint.
+        result=self.run_score([self.line,*lines],entries=[self.entry,dict(self.entry,checkpoint='intent')],proof=True)
+        self.assertNotEqual(result.returncode,0,result.stdout)
+
     def test_match_and_unapproved(self):
         extra = f'SUITE gpu SCREEN draw/two intent sha256={DIGEST} mode=1280x800 binding=1280x800'
         result = self.run_score([self.line, extra], proof=True)

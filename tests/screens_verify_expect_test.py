@@ -122,7 +122,7 @@ class VerifyExpectTest(unittest.TestCase):
         self.assertEqual(result['verdict'], 'fail', result)
         self.assertTrue(result['unparseable_claims'])
 
-    def test_decimation_cannot_prove_unsampled_pixels(self):
+    def test_legacy_decimation_is_refused(self):
         # A 320x8 source decimates by 4 into an 80x2 picture, centred with a border.
         frame = Image.new('RGB', (160, 128), '#5A5A5A')
         draw = ImageDraw.Draw(frame)
@@ -133,8 +133,62 @@ class VerifyExpectTest(unittest.TestCase):
         draw.rectangle((38,61,121,66), fill='white')
         draw.rectangle((40,63,119,64), fill='#123456')
         result = self.verify(frame, 'An entirely blue (#123456) 320x8 rectangle.')
-        self.assertEqual(result['verdict'], 'unparseable', result)
-        self.assertTrue(any('decimat' in str(c) for c in result['unparseable_claims']))
+        self.assertEqual(result['verdict'], 'fail', result)
+        self.assertTrue(any(c['kind']=='layout' for c in result['failed_claims']))
+
+    def test_strip_folds_keep_both_rows_and_markers(self):
+        v = load_verifier()
+        picture = Image.new('RGB',(16384,2),'#D15311')
+        ImageDraw.Draw(picture).line((0,0,16383,0),fill='#3D07F1')
+        for x,c in [(0,'black'),(8191,'#345678'),(8192,'#345678'),(16383,'white')]:
+            picture.putpixel((x,1), Image.new('RGB',(1,1),c).getpixel((0,0)))
+        frame = v.checker((2560,1600))
+        draw=ImageDraw.Draw(frame)
+        draw.rectangle((0,791,2559,808),fill='white')
+        # Seven 2556-wide source bands, each retaining the two source rows.
+        for i,x in enumerate(range(0,16384,2556)):
+            frame.paste(picture.crop((x,0,min(x+2556,16384),2)),(2,793+2*i))
+        restored,page,n,bad,scale_bad = v.restore_intent(frame,picture.size,'intent')
+        self.assertEqual(n,1)
+        self.assertIsNone(bad)
+        self.assertIsNone(scale_bad)
+        self.assertEqual(restored.tobytes(),picture.tobytes())
+        frame.putpixel((2,794),(1,2,3))
+        self.assertNotEqual(v.restore_intent(frame,picture.size,'intent')[0].tobytes(),picture.tobytes())
+
+    def test_paged_panel_union_and_tile_scale(self):
+        v=load_verifier()
+        for case in ('png-decode/interlace-small','png-decode/ancillary-ignored','png-decode/independent-fixtures','png-encode/sizes'):
+            row=next(r for r in v.intent_manifest.inventory() if r['suite']=='breengel' and r['case']==case)
+            # The source encodes coordinates, including label and padding pixels.
+            w,h=row['size']
+            source=Image.frombytes('RGB',(w,h),bytes(c for y in range(h) for x in range(w) for c in (x%251,y%251,(x+y)%251)))
+            seen=bytearray(w*h)
+            pages=v.intent_manifest.row_plans(row)
+            self.assertEqual(len(pages),2 if case in ('png-decode/interlace-small','png-decode/ancillary-ignored') else 1)
+            for i,p in enumerate(pages):
+                self.assertEqual(p['scale'],1)
+                frame=v.checker(row['mode'])
+                x,y,r,b=p['border']
+                self.assertTrue(0<=x<r<=2560 and 0<=y<b<=1600)
+                ImageDraw.Draw(frame).rectangle((x,y,r-1,b-1),fill='white')
+                for (dx,dy,dw,dh),(sx,sy,sw,sh) in p['tiles']:
+                    self.assertEqual((dw,dh),(sw,sh))
+                    frame.paste(source.crop((sx,sy,sx+sw,sy+sh)),(dx,dy))
+                    for line in range(sy,sy+sh):
+                        for column in range(sx,sx+sw):
+                            seen[line*w+column]+=1
+                checkpoint='intent' if len(pages)==1 else f'intent-p{i+1}'
+                restored,_,_,bad,scale_bad=v.restore_intent(frame,(w,h),checkpoint,v.intent_manifest.cells(row))
+                self.assertIsNone(bad)
+                self.assertIsNone(scale_bad)
+                for _,(sx,sy,sw,sh) in p['tiles']:
+                    box=(sx,sy,sx+sw,sy+sh)
+                    self.assertEqual(restored.crop(box).tobytes(),source.crop(box).tobytes())
+            self.assertEqual(set(seen),{1})
+            if len(pages)>1:
+                with self.assertRaises(ValueError):
+                    v.restore_intent(frame,(w,h),'intent',v.intent_manifest.cells(row))
 
     def test_uniform_prose_does_not_hide_additional_claims(self):
         image = Image.new('RGB', (8, 6), '#000000')

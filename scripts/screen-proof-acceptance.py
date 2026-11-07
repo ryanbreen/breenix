@@ -17,8 +17,11 @@ from pathlib import Path
 import re
 import runpy
 import subprocess
+import sys
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0,str(ROOT/'scripts/metal'))
+import intent_manifest  # noqa: E402
 REQUIRED = ('console', 'gpu', 'arm-gpu', 'arm-breengel')
 RESET_SOURCES = {
     'submit/device-reset-recovers': 'userspace/programs/src/suite_gpu/submit.rs::device_reset_recovers',
@@ -172,9 +175,9 @@ def checkpoint_inventory(suite, serial, ends, phase, platform='qemu'):
     expected = list(ends)
     # Phase two's intent frames come from ARM proof captures; native proof mode is phase three (U19).
     if phase == 'gallery' and platform != 'metal':
-        expected += [[m[1], 'intent'] for m in re.finditer(
+        expected += [[m[1], checkpoint] for m in re.finditer(
             rf'^SUITE {re.escape(suite)} CASE (\S+) (?:PASS|FAIL) [^\n]*\bsha256=[0-9a-f]{{64}}(?: |$)',
-            serial, re.M)]
+            serial, re.M) for checkpoint in intent_manifest.checkpoint_names(suite,m[1])]
     return sorted(expected)
 
 

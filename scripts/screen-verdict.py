@@ -79,7 +79,7 @@ def score(manifest, serial, table, native=False, config=None, captures=None, ine
             if bw < w or bh < h:
                 raise ValueError('binding smaller than mode')
         key = (record['case'], record['checkpoint'])
-        if not proof and key[1] == 'intent':
+        if not proof and re.fullmatch(r'intent(?:-p[1-9][0-9]*)?',key[1]):
             raise ValueError('intent checkpoint in production capture')
         if key[0] not in cases:
             raise ValueError(f'SCREEN names unknown case {key[0]}')

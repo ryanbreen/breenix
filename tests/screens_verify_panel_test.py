@@ -85,6 +85,41 @@ class VerifyPanelTest(unittest.TestCase):
         self.assertEqual(self.verify(frame)['verdict'], 'fail')
         self.assertEqual(self.verify(picture)['picture']['box'], [0,0,538,361])
 
+    def test_folded_pngsuite_checks_visible_fixture_pixels(self):
+        case='png-decode/independent-fixtures'
+        fixtures,_=verifier.panel_fixtures(case)
+        size,tiles,_,_=verifier.panel_plan(fixtures)
+        source=Image.new('RGB',size,'#0C131F')
+        draw=ImageDraw.Draw(source)
+        for fixture,tile in zip(fixtures,tiles):
+            raw=fixture['pixels']
+            colour=Image.frombytes('RGB',(fixture['width'],fixture['height']),bytes(c for i in range(0,len(raw),4) for c in (raw[i+2],raw[i+1],raw[i])))
+            alpha=Image.frombytes('RGB',colour.size,bytes(c for i in range(3,len(raw),4) for c in (raw[i],)*3))
+            for row in range(3):
+                for column,plane in enumerate((colour,alpha)):
+                    x=tile['x']+8+column*(tile['picture_w']+10)
+                    y=tile['y']+8+tile['title_height']+row*(26+tile['picture_h'])+16
+                    w,h=tile['picture_w'],tile['picture_h']
+                    draw.rectangle((x,y,x+w+1,y+h+1),fill='white')
+                    pixels=plane.resize((w,h),Image.Resampling.NEAREST) if row<2 else Image.new('RGB',(w,h),'black')
+                    source.paste(pixels,(x+1,y+1))
+        inventory=next(r for r in verifier.intent_manifest.inventory() if r['case']==case)
+        page=verifier.intent_manifest.row_plans(inventory)[0]
+        frame=verifier.checker((2560,1600))
+        x,y,r,b=page['border']
+        ImageDraw.Draw(frame).rectangle((x,y,r-1,b-1),fill='white')
+        for (dx,dy,dw,dh),(sx,sy,sw,sh) in page['tiles']:
+            frame.paste(source.crop((sx,sy,sx+sw,sy+sh)),(dx,dy))
+        result=verifier.verify_picture(frame,'PngSuite fixture comparison','intent',case=case,suite='breengel')
+        self.assertFalse(result['failed_claims'],result)
+        self.assertEqual(len(result['panel']['tiles']),72)
+        self.assertEqual(result['picture']['scale'],1)
+        # First fixture's actual colour plane: one altered visible pixel must fail.
+        dx,dy,_,_=page['tiles'][0][0]
+        frame.putpixel((dx+9,dy+37),(1,2,3))
+        result=verifier.verify_picture(frame,'PngSuite fixture comparison','intent',case=case,suite='breengel')
+        self.assertEqual(result['verdict'],'fail',result)
+
     def test_missing_expect_and_unknown_panel_never_pass(self):
         self.assertNotEqual(self.verify(panel(), '')['verdict'], 'pass')
         result = verifier.verify_picture(panel(), EXPECT, 'intent', case='png-decode/new-case', suite='breengel')

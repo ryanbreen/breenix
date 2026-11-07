@@ -1241,7 +1241,8 @@ class DriverTest(StateTest):
     def test_screen_proof_deadline_and_record(self):
         d = self.driver
         d.args.mode, d.args.suite, d.args.screen_proof = 'suite', 'gpu,breengel', True
-        for name, production, holds in [('gpu', 420, 121), ('breengel', 900, 163), ('ui-testing', 1800, 0)]:
+        for name, production in [('gpu', 420), ('breengel', 900), ('ui-testing', 1800)]:
+            holds = boot.intent_manifest.counts().get(name, 0)
             self.assertEqual(boot.mode_deadline_seconds(d.args, name), production + holds * 1000 // 1000)
             d.args.screen_proof = False
             self.assertEqual(boot.mode_deadline_seconds(d.args, name), production)

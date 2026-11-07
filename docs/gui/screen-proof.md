@@ -116,15 +116,23 @@ from a completed or different case does not qualify.
 <!-- claim-lint:ok: Normative intent-frame requirements in docs/gui/screen-proof.md, not a measured result. -->
 Proof mode uses `opt/breenix/screen-proof`; it is opt-in. After a pictured case's verdict, timer and `end` checkpoint, the runner uses BGL `solid` and `nearest-scale` pipelines to present a text-free frame: a neutral checkerboard background of 16×16-pixel squares alternating #5A5A5A and #7A7A7A from the frame origin (operator, 2026-11-02 noon), the judged picture centered at the largest integer scale that fits with 64 pixels of margin in each dimension, and a two-pixel white border immediately outside it. Center coordinates use floor division. The runner takes an `intent` checkpoint and holds the frame for `pace_ms` (default 1,000 ms), outside measured windows. The next stage frame then follows. This adds a screen verdict without changing the case verdict, timing or VALUE records.
 
-The coordinator's 2026-11-02 5:30 AM EST large-picture ruling gives three layouts.
-When an integer scale of at least one fits within mode width minus 64 and mode
-height minus 64, use the largest such scale and the border described above.
-A picture equal to the mode in both dimensions fills the screen at 1:1, without
-a border. Otherwise choose the smallest integer divisor k whose k-spaced samples
-fit those inner bounds. Take source coordinates 0, k, 2k and so on on both axes,
-including a final partial row or column; center the resulting picture and add the
-border. The `intent` digest hashes the actual displayed screen. These layouts
-serve the viewer and do not change the picture judged by the case.
+Under coordinator ruling U11 (E22, #2678), oversized intent pictures are lossless.
+Keep the existing integer enlargement when it fits the 64-pixel margin. A picture
+equal to the mode fills it at scale 1 without a border. Otherwise preserve scale 1,
+using the space inside a complete two-pixel border and folding source cells into
+bands. Comparison panels fold on their fixture column and row boundaries, retaining
+labels and padding; wide strips retain both rows. Decimation is forbidden.
+
+<!-- claim-lint:ok: U11 normative layout and count contract; tests/intent_inventory_test.py checks inventory and page counts. -->
+If folding still cannot fit, use the fewest pages. Pages are consecutive checkpoints
+`intent-p1`, `intent-p2`, and so on, each held for `pace_ms` at scale 1 with its own
+border and digest. Page cuts preserve fixture cells where present, otherwise whole
+source rows. Their source union is the judged picture, with a hit count of one per
+pixel. Page approvals are separate; an unpaged approval does not approve a page.
+`scripts/metal/intent-pictures.tsv` lists the judged sizes, mode and fixture cuts;
+`scripts/metal/intent_manifest.py` derives host page inventories, intent counts and
+proof holds. The guest includes that same manifest. Layout changes do not change
+the judged bytes, case verdict, checks or thresholds.
 
 <!-- claim-lint:ok: Normative launch interface in scripts/boot-interactive.sh and renderer in libs/libbreenix/src/suite_intent.rs. -->
 On ARM64 QEMU, `scripts/boot-interactive.sh --mode suite --suite gpu|breengel
