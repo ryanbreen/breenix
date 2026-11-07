@@ -3,8 +3,17 @@
 use libbreenix::{error::Error, errno::Errno, fs, io, process, signal, time, types::Fd};
 use breenix_suite::suite::{descendants::descendant_victims, spawn, Run};
 use super::{Message, SessionEnvironment, StderrRing};
+use super::ownership::{Custody, Event, Owner, Ownership};
 use crate::channel::{Channel, now};
 use std::{collections::BTreeMap, path::Path};
+
+struct Display;
+impl Custody for Display {
+    fn take_display(&mut self) -> Result<(), String> { libbreenix::graphics::take_over_display().map_err(|e| e.to_string()) }
+    fn claim_compositor(&mut self) -> Result<(), String> { libbreenix::window::claim_compositor().map(|_| ()).map_err(|e| e.to_string()) }
+    fn release_compositor(&mut self) -> Result<(), String> { libbreenix::window::release_compositor().map(|_| ()).map_err(|e| e.to_string()) }
+    fn give_display(&mut self) -> Result<(), String> { libbreenix::graphics::give_back_display().map_err(|e| e.to_string()) }
+}
 
 struct Pipe(Fd);
 impl Drop for Pipe { fn drop(&mut self) { let _ = io::close(self.0); } }
@@ -102,12 +111,17 @@ fn outputs(outputs: &mut BTreeMap<u64, Output>, channel: &mut Channel, connected
     }
     Ok(())
 }
-fn reap(channel: &mut Channel, outputs: &mut BTreeMap<u64, Output>, connected: bool) -> Result<bool, String> {
+fn reap(channel: &mut Channel, outputs: &mut BTreeMap<u64, Output>, connected: bool, compositor: Option<u64>, ownership: &mut Ownership, recover: bool) -> Result<bool, String> {
     loop {
         let mut status = 0;
         match process::waitpid(-1, &mut status, process::WNOHANG) {
             Ok(pid) if pid.raw() != 0 => {
                 if let Some(output) = outputs.get_mut(&pid.raw()) { output.status = Some(status); output.stdin.take(); }
+                if compositor == Some(pid.raw()) {
+                    ownership.apply(Event::Died, &mut Display)?;
+                    if recover { ownership.apply(Event::Recover, &mut Display)?; }
+                }
+                // Exit is observable only after the supervisor has recovered custody.
                 if connected { channel.queue(&Message::Exited { pid: pid.raw(), status })?; }
             }
             Ok(_) => return Ok(false),
@@ -140,19 +154,19 @@ fn kill_descendants() -> Result<(), String> {
     }
     Ok(())
 }
-fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mut connected: bool) -> Result<(), String> {
+fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mut connected: bool, compositor: Option<u64>, ownership: &mut Ownership) -> Result<(), String> {
     let end = now()? + 1000;
     loop {
         kill_descendants()?;
         outputs(outputs_state, channel, connected)?;
-        let empty = reap(channel, outputs_state, connected)?;
+        let empty = reap(channel, outputs_state, connected, compositor, ownership, false)?;
         outputs(outputs_state, channel, connected)?;
         if connected && channel.flush().is_err() { connected = false; }
         if empty && outputs_state.values().all(|o| o.stdout.is_none() && o.stderr.is_none()) { break; }
         if now()? >= end { return Err("session descendants outlived SIGKILL".into()); }
         time::sleep_ms(1).map_err(|e| e.to_string())?;
     }
-    Ok(())
+    ownership.apply(Event::End, &mut Display)
 }
 
 /// Runner callback. Its first operation registers the subreaper; failure refuses
@@ -167,9 +181,11 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
     let mut output = BTreeMap::new();
     let mut environment: Option<SessionEnvironment> = None;
     let mut compositor = None;
+    let mut ownership = Ownership::default();
     let result = (|| -> Result<(), String> {
         signal::sigaction(signal::SIGPIPE, Some(&signal::Sigaction::ignore()), None).map_err(|e| e.to_string())?;
         io::fcntl_setfl(collector, io::status_flags::O_NONBLOCK).map_err(|e| e.to_string())?;
+        ownership.apply(Event::Begin, &mut Display)?;
         channel.send(&Message::Ready(process::getpid().map_err(|e| e.to_string())?.raw()))?;
         let mut ended = Vec::new();
         let mut stopped = false;
@@ -185,7 +201,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     if ended.len() > 128 { return Err("invalid collector message".into()); }
                     if ended.ends_with(b"\n") {
                         if ended != b"end discard\n" { return Err("unsupported collector request in session core".into()); }
-                        if !stopped { teardown(&mut channel, &mut output, false)?; }
+                        if !stopped { teardown(&mut channel, &mut output, false, compositor, &mut ownership)?; }
                         if let Some(config) = environment.take() { std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())?; }
                         io::write(collector, b"done\n").map_err(|e| e.to_string())?;
                         return Ok(());
@@ -236,6 +252,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                         let path = if kiosk { "/usr/libexec/breenix/kiosk_test" } else { "/usr/bin/bwm" };
                         let (pid, pipes) = launch(&[path.as_bytes().to_vec()], &env, 0, kiosk)?;
                         compositor = Some(pid);
+                        ownership.apply(Event::Started, &mut Display)?;
                         output.insert(pid, pipes);
                         channel.queue(&Message::Launched(pid))?;
                     }
@@ -243,7 +260,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                         if stderr_request.is_some() || !output.contains_key(&pid) { return Err("invalid app stderr request".into()); }
                         stderr_request = Some(pid);
                     }
-                    Ok(Some(Message::Teardown)) => { teardown(&mut channel, &mut output, true)?;
+                    Ok(Some(Message::Teardown)) => { teardown(&mut channel, &mut output, true, compositor, &mut ownership)?;
                         if let Some(config) = environment.take() { std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())?; }
                         stopped = true; channel.send(&Message::Stopped)?; }
                     Ok(Some(_)) => return Err("unexpected case control message".into()),
@@ -253,7 +270,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     Err(error) => return Err(error),
                 }
                 outputs(&mut output, &mut channel, connected)?;
-                reap(&mut channel, &mut output, connected)?;
+                reap(&mut channel, &mut output, connected, compositor, &mut ownership, true)?;
                 if let Some(pid) = stderr_request {
                     let app = output.get(&pid).ok_or("unknown app stderr pid")?;
                     // A live snapshot is the ring now. After exit, finish draining
@@ -276,7 +293,9 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
         }
     })();
     if let Err(error) = &result { let _ = channel.send(&Message::Error(error.clone())); }
-    let cleanup = if result.is_err() { teardown(&mut channel, &mut output, false) } else { Ok(()) };
+    let cleanup = if result.is_err() && !matches!(ownership.owner(), Owner::Initial | Owner::CaseEnd | Owner::RunnerHolds) {
+        teardown(&mut channel, &mut output, false, compositor, &mut ownership)
+    } else { Ok(()) };
     let root_cleanup = if let Some(config) = environment {
         std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())
     } else { Ok(()) };

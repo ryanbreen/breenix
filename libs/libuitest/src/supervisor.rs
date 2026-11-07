@@ -1,6 +1,9 @@
 //! Session control wire: u32 LE payload size, tag, then counted byte strings.
 //! No native layouts, shell parsing or inherited environment enters this channel.
 
+#[path = "ownership.rs"]
+pub mod ownership;
+
 pub const MAX_FRAME: usize = 64 * 1024;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -1187,6 +1187,12 @@ impl Suite {
         } else {
             Screen::open(self.gui, self.id == "gpu")
         };
+        if self.gui && self.defer_display && self.categories.iter().any(|c| c.cases.iter().any(|case| case.supervisor.is_some())) {
+            screen = Screen::open(false, self.id == "gpu");
+            // Deferred suites keep their existing quiet case execution, including
+            // inner scenarios that start a supervisor inside the case.
+            screen.live = false;
+        }
         // Final text-panel storage belongs in both memory samples. Each reason
         // already has the serial MSG_MAX bound; keep its slot for the panel's life.
         let textual = !screen.gui && (screen.fb.is_some() || self.defer_display);
@@ -1327,6 +1333,9 @@ impl Suite {
                     intent::show(self.id, &name, picture, intent_pace_ms);
                     screen::upload_pending(self.id, &name);
                     if screen.gui { let _ = crate::suite_stage::redraw(); }
+                }
+                if self.gui && case.supervisor.is_some() {
+                    screen.draw(self, &title, &subtitle, &states, Verdict::Running(&progress), &feed, only);
                 }
                 if let Some(observe) = self.case_observer { observe(done, total, &name); }
                 if place.is_some() { sequence::progress_after(done); }
@@ -2017,6 +2026,18 @@ impl Drop for ResultPipe<'_> {
 /// Run a case in a forked child, giving it `limit_ms`, and keep the live strip up to
 /// date while it runs.
 fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, screen: &mut Screen, feed: &mut Feed) -> Outcome {
+    let session = gui && case.supervisor.is_some();
+    if session {
+        if let Err(msg) = screen.release_for_session() { return Outcome::Fail { ms: 0, msg }; }
+    }
+    let outcome = run_case_body(case, limit_ms, suite, name, gui, screen, feed);
+    if session {
+        if let Err(note) = screen.reclaim_after_session() { return with_note(outcome, &note); }
+    }
+    outcome
+}
+
+fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, screen: &mut Screen, feed: &mut Feed) -> Outcome {
     let mut session = if gui {
         match case.supervisor.map(session_runner::RunnerSession::start).transpose() {
             Ok(session) => session,
@@ -2420,6 +2441,7 @@ struct Screen {
     gpu_failure: Option<String>,
     /// Whether the live strip is drawn (see `/etc/breenix/suite-live`).
     live: bool,
+    session_active: bool,
     /// Where the last full draw put the live strip.
     area: Option<LiveArea>,
 }
@@ -2455,7 +2477,7 @@ impl Screen {
 
     /// No display: no stage, framebuffer or GPU view, and no live strip.
     fn empty() -> Screen {
-        Screen { gui: false, stage_error: None, judged: None, timing: None, fb: None, gpu: None, gpu_failure: None, live: false, area: None }
+        Screen { gui: false, stage_error: None, judged: None, timing: None, fb: None, gpu: None, gpu_failure: None, live: false, session_active: false, area: None }
     }
 
     /// Before the memory record's first sample, create what the view keeps until its final
@@ -2481,7 +2503,20 @@ impl Screen {
             self.stage_error.get_or_insert(error);
         }
     }
-    fn live_on(&self) -> bool { self.live }
+    fn live_on(&self) -> bool { self.live && !self.session_active }
+
+    fn release_for_session(&mut self) -> Result<(), String> {
+        if self.gui || self.fb.is_some() || self.gpu.is_some() {
+            graphics::give_back_display().map_err(|e| std::format!("release runner display: {e}"))?;
+        }
+        self.session_active = true;
+        Ok(())
+    }
+    fn reclaim_after_session(&mut self) -> Result<(), String> {
+        graphics::take_over_display().map_err(|e| std::format!("reclaim runner display: {e}"))?;
+        self.session_active = false;
+        Ok(())
+    }
 
     /// The live strip's readings: the clocks now and the case's records.
     fn with_live<R>(feed: &Feed, f: impl FnOnce(&Live<'_>) -> R) -> R {
@@ -2505,6 +2540,7 @@ impl Screen {
 
     /// Redraw only the live strip and flush it.
     fn frame(&mut self, feed: &Feed) {
+        if self.session_active { return; }
         if self.gui {self.stage_result(crate::suite_stage::tick());return;}
         let (Some(fb), Some(area), true) = (self.fb.as_mut(), self.area, self.live) else { return };
         Self::with_live(feed, |live| diagnostics::draw_live(fb, area, live));
@@ -2513,6 +2549,7 @@ impl Screen {
 
     fn draw(&mut self, suite: &Suite, title: &str, subtitle: &str, states: &[Vec<State>], verdict: Verdict<'_>,
         feed: &Feed, only: Option<&str>) {
+        if self.session_active { return; }
         if self.gui {
             self.stage_result(crate::suite_stage::draw(states));
             return;
