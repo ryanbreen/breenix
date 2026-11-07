@@ -110,6 +110,8 @@ mod host_input;
 pub mod descendants;
 #[path = "suite_session.rs"]
 pub mod session_runner;
+#[path = "suite_config.rs"]
+pub mod config;
 pub use session_runner::take_session_control;
 
 
@@ -2026,15 +2028,31 @@ impl Drop for ResultPipe<'_> {
 /// Run a case in a forked child, giving it `limit_ms`, and keep the live strip up to
 /// date while it runs.
 fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, screen: &mut Screen, feed: &mut Feed) -> Outcome {
+    let snapshot = if gui {
+        match config::Snapshot::capture() {
+            Ok(snapshot) => Some(snapshot),
+            Err(msg) => return Outcome::Fail { ms: 0, msg },
+        }
+    } else { None };
     let session = gui && case.supervisor.is_some();
-    if session {
-        if let Err(msg) = screen.release_for_session() { return Outcome::Fail { ms: 0, msg }; }
+    let outcome = (|| {
+        if session {
+            if let Err(msg) = screen.release_for_session() { return Outcome::Fail { ms: 0, msg }; }
+        }
+        let outcome = run_case_body(case, limit_ms, suite, name, gui, screen, feed);
+        if session {
+            if let Err(note) = screen.reclaim_after_session() { return with_note(outcome, &note); }
+        }
+        outcome
+    })();
+    match snapshot.map(config::Snapshot::verify_restore).transpose() {
+        Err(note) => match outcome {
+            Outcome::Pass { ms } => Outcome::Fail { ms, msg: plain(&note) },
+            Outcome::Fail { ms, msg } => with_note(Outcome::Fail { ms, msg: note }, &msg),
+            Outcome::Skip { msg } => with_note(Outcome::Fail { ms: 0, msg: note }, &msg),
+        },
+        Ok(_) => outcome,
     }
-    let outcome = run_case_body(case, limit_ms, suite, name, gui, screen, feed);
-    if session {
-        if let Err(note) = screen.reclaim_after_session() { return with_note(outcome, &note); }
-    }
-    outcome
 }
 
 fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, screen: &mut Screen, feed: &mut Feed) -> Outcome {

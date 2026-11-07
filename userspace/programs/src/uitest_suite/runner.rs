@@ -16,6 +16,12 @@ impl Drop for Child {
 }
 
 pub(crate) fn fixture(mode: &str) -> Result<(String, i32), breenix_suite::suite::CaseError> {
+    capture(mode, false)
+}
+pub(crate) fn config_fixture(order: &str) -> Result<(String, i32), breenix_suite::suite::CaseError> {
+    capture(order, true)
+}
+fn capture(mode: &str, config_sequence: bool) -> Result<(String, i32), breenix_suite::suite::CaseError> {
     let (r, w) = io::pipe2(io::status_flags::O_CLOEXEC)?;
     let mut reader = unsafe { File::from_raw_fd(r.raw() as i32) };
     let writer = unsafe { File::from_raw_fd(w.raw() as i32) };
@@ -25,7 +31,9 @@ pub(crate) fn fixture(mode: &str) -> Result<(String, i32), breenix_suite::suite:
     // Environment is changed in the child only; the outer case keeps its own result pipe.
     let mut exec = || {
         std::env::set_var("BREENIX_SUITE_TRANSCRIPT_FD", "3");
-        let argv = [args[0].as_ptr(), args[1].as_ptr(), args[2].as_ptr(), core::ptr::null()];
+        if config_sequence { std::env::set_var("BREENIX_CONFIG_SCENARIOS", mode); }
+        let argv = if config_sequence { [args[0].as_ptr(), core::ptr::null(), core::ptr::null(), core::ptr::null()] }
+            else { [args[0].as_ptr(), args[1].as_ptr(), args[2].as_ptr(), core::ptr::null()] };
         let _ = process::execv(FIXTURE, argv.as_ptr());
         127
     };

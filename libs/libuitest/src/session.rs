@@ -34,6 +34,13 @@ impl Session {
     pub fn kiosk() -> Result<Self, String> { Self::start(true) }
     fn start(kiosk: bool) -> Result<Self, String> {
         let mut session = Self::connect()?;
+        session.start_compositor(kiosk)?;
+        Ok(session)
+    }
+    /// Start after editing the freshly prepared private configuration.
+    pub fn start_compositor(&mut self, kiosk: bool) -> Result<u64, String> {
+        if self.compositor.is_some() || self.stopped { return Err("session compositor already started or ended".into()); }
+        let session = self;
         session.control.send(&Message::StartCompositor { kiosk })?;
         let path: &[u8] = if kiosk { b"/usr/libexec/breenix/kiosk_test" } else { b"/usr/bin/bwm" };
         let pid = session.await_launch(&[path])?;
@@ -48,7 +55,7 @@ impl Session {
             let line = session.read_line(pid)?;
             if line != "ok" { return Err(format!("kiosk automatic composition: {line}")); }
         }
-        Ok(session)
+        Ok(pid)
     }
     pub fn connect() -> Result<Self, String> { Self::connect_with_seed(0) }
     pub fn connect_with_seed(seed: u64) -> Result<Self, String> {

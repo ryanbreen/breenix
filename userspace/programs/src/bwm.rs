@@ -96,6 +96,10 @@ mod shutdown;
 mod signal_wake;
 
 fn main() {
+    let paths = settings::Paths::environment();
+    let loaded = settings::Settings::load(&paths.bwm).unwrap_or_else(|e| { eprintln!("[bwm] config: {e}"); process::exit(1); });
+    let _ = SETTINGS.set(loaded);
+    print!("[bwm] settings font.size={} clock.visible={}\n", settings().font_size, settings().clock_visible);
     let signal_wake = initialize_shutdown();
     print!("[bwm] Breenix Window Manager starting... (v2-chromeless-skip)\n");
 
@@ -151,6 +155,7 @@ fn main() {
 
     let mut ui_font: Option<CachedFont> = {
         let config = FontConfig::load();
+        print!("[bwm] fonts {config:?}\n");
         let font = std::fs::read(&config.display_path).ok()
             .and_then(|data| Font::parse(&data).ok())
             .map(|f| CachedFont::new(f, 256));
@@ -195,9 +200,9 @@ fn main() {
     let mut taskbar_prepare_ns = None;
     format_clock(clock.wall_sec(), &mut clock_text);
     let mut next_creation_order: u32 = 0;
-    // Hotkey system: load config from /etc/hotkeys.conf
+    // Resolve hotkeys through the same root as bwm.conf.
     let mut hotkey_mgr = HotkeyManager::new();
-    hotkey_mgr.load_config("/etc/hotkeys.conf");
+    hotkey_mgr.load_config(paths.hotkeys.to_str().expect("UTF-8 hotkey path"));
 
     // Initial composite: the desktop alone (background, taskbar and app bar), before any
     // client window is discovered. It is read back from the scanout and compared with the

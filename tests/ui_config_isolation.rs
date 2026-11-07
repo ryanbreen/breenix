@@ -13,6 +13,23 @@ fn paths_and_settings_follow_the_root_without_falling_back_to_global_files() {
         assert_eq!(paths.hotkeys, base.join("etc/hotkeys.conf"));
         assert_eq!(paths.bwm, base.join("etc/bwm.conf"));
     }
+    let saved = std::env::var_os("BREENIX_CONFIG_ROOT");
+    std::env::remove_var("BREENIX_CONFIG_ROOT");
+    assert_eq!(settings::Paths::environment().hotkeys, Path::new("/etc/hotkeys.conf"));
+    std::env::set_var("BREENIX_CONFIG_ROOT", "/tmp/uitest/73/");
+    assert_eq!(settings::Paths::environment().bwm, Path::new("/tmp/uitest/73/etc/bwm.conf"));
+    match saved { Some(value) => std::env::set_var("BREENIX_CONFIG_ROOT", value), None => std::env::remove_var("BREENIX_CONFIG_ROOT") }
+    let root = std::env::temp_dir().join(format!("bwm-config-{}", std::process::id()));
+    fs::create_dir_all(root.join("etc")).unwrap();
+    let paths = settings::Paths::from_root(Some(&root));
+    assert_eq!(settings::Settings::load(&paths.bwm).unwrap(), settings::Settings::default());
+    fs::write(&paths.bwm, b"font.size=12\nclock.visible=false\n").unwrap();
+    let loaded = settings::Settings::load(&paths.bwm).unwrap();
+    assert_eq!(loaded.font_size, 12.0);
+    assert!(!loaded.clock_visible);
+    fs::write(&paths.bwm, b"font.size=NaN\n").unwrap();
+    assert!(settings::Settings::load(&paths.bwm).is_err());
+    fs::remove_dir_all(root).unwrap();
     assert_eq!(settings::Settings::default().font_size, 14.0);
     assert!(settings::Settings::default().clock_visible);
     let a = settings::Settings::parse("font.size=12\nclock.visible=false\n").unwrap();
@@ -54,6 +71,14 @@ fn planted_content_membership_type_and_mode_changes_are_restored_and_named() {
     fs::remove_file(root.join("etc/fonts.conf")).unwrap();
     fs::create_dir(root.join("etc/fonts.conf")).unwrap();
     assert!(baseline.verify_restore().unwrap_err().contains("/etc/fonts.conf"));
+    assert_eq!(fs::read(root.join("etc/fonts.conf")).unwrap(), b"fonts");
+    // Restoration unlinks the planted symlink without overwriting its target.
+    fs::write(root.join("outside"), b"unrelated").unwrap();
+    let baseline = config::Snapshot::capture_at(&root).unwrap();
+    fs::remove_file(root.join("etc/fonts.conf")).unwrap();
+    symlink(root.join("outside"), root.join("etc/fonts.conf")).unwrap();
+    assert!(baseline.verify_restore().unwrap_err().contains("/etc/fonts.conf"));
+    assert_eq!(fs::read(root.join("outside")).unwrap(), b"unrelated");
     assert_eq!(fs::read(root.join("etc/fonts.conf")).unwrap(), b"fonts");
     fs::remove_dir_all(root).unwrap();
 }

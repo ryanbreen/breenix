@@ -105,7 +105,7 @@ pub(super) fn draw_text_at(fb: &mut Surface, text: &[u8], x: i32, y: i32, color:
     if let Some(font) = ttf {
         // Use LCD subpixel rendering for crisp window chrome text
         let s = unsafe { core::str::from_utf8_unchecked(text) };
-        ttf_font::draw_text_subpixel(fb, font, s, x, y, TTF_FONT_SIZE * ui().scale as f32, color);
+        ttf_font::draw_text_subpixel(fb, font, s, x, y, ttf_font_size() * ui().scale as f32, color);
     } else {
         // Only the characters whose whole cell lies across the surface's width are drawn.
         let cell_w = ui().cell_w as i32;
@@ -266,6 +266,7 @@ pub(super) fn eastern_offset_secs(utc_secs: i64) -> i64 {
 }
 
 pub(super) fn format_clock(utc_secs: i64, buf: &mut [u8; 11]) {
+    if !settings().clock_visible { buf.fill(b' '); return; }
     let offset = eastern_offset_secs(utc_secs);
     let local = utc_secs + offset;
     // Handle day wrap
@@ -295,9 +296,9 @@ pub(super) fn draw_taskbar(fb: &mut Surface, clock_text: &[u8], ui_font: &mut Op
         let clip = fb.clip();
         let runs = [
             ttf_font::TextRun { bytes: b"Breenix", x: pxi(8), y: label_y,
-                size: TTF_FONT_SIZE * ui().scale as f32, fg: TASKBAR_TEXT, clip },
+                size: ttf_font_size() * ui().scale as f32, fg: TASKBAR_TEXT, clip },
             ttf_font::TextRun { bytes: clock_text, x: clock_x, y: label_y,
-                size: TTF_FONT_SIZE * ui().scale as f32, fg: TASKBAR_TEXT, clip },
+                size: ttf_font_size() * ui().scale as f32, fg: TASKBAR_TEXT, clip },
         ];
         ttf_font::draw_runs_subpixel(fb, font, &runs);
     } else {

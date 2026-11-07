@@ -8,9 +8,9 @@ pub fn settings_round(variant: u8) -> CaseResult {
     let mut session = Session::connect()?;
     let root = Path::new(session.config_root()).to_path_buf();
     let (size, visible, mono, display, ms, ds, theme, keys) = match variant {
-        0 => (14, true, "DejaVuSansMono.ttf", "DejaVuSans.ttf", 10, 14, "default", "Super+Return = exec bterm\n"),
-        1 => (12, false, "DejaVuSans.ttf", "DejaVuSansMono.ttf", 11, 13, "a", "Ctrl+a = focus-next\n"),
-        2 => (16, true, "DejaVuSans.ttf", "DejaVuSansMono.ttf", 12, 15, "b", "Ctrl+b = focus-prev\n"),
+        0 => (14, true, "DejaVuSansMono.ttf", "DejaVuSans.ttf", 10, 14, "default", "Super+Super = exec /usr/bin/blauncher\nSuper+Return = exec /usr/bin/bterm\nAlt+q = close\nAlt+Tab = focus_next\nAlt+Shift+Tab = focus_prev\n"),
+        1 => (12, false, "DejaVuSans.ttf", "DejaVuSansMono.ttf", 11, 13, "a", "Ctrl+a = focus_next\n"),
+        2 => (16, true, "DejaVuSans.ttf", "DejaVuSansMono.ttf", 12, 15, "b", "Ctrl+b = focus_prev\n"),
         _ => return Err("unknown config scenario".into()),
     };
     let fonts = format!("mono.font=/usr/share/fonts/{mono}\nmono.size={ms}\ndisplay.font=/usr/share/fonts/{display}\ndisplay.size={ds}\n");
@@ -28,7 +28,7 @@ pub fn settings_round(variant: u8) -> CaseResult {
     }
     let wm = session.start_compositor(false)?;
     let wanted_settings = format!("[bwm] settings font.size={size} clock.visible={visible}");
-    let wanted_keys = format!("[bwm] hotkeys: loaded {} sha256={}", root.join("etc/hotkeys.conf").display(), libuitest::fixtures::digest(keys.as_bytes()));
+    let wanted_keys = format!("[bwm] hotkeys: loaded {} sha256={} bindings={}", root.join("etc/hotkeys.conf").display(), libuitest::fixtures::digest(keys.as_bytes()), if variant == 0 { 5 } else { 1 });
     let wanted_fonts = format!("FontConfig {{ mono_path: \"/usr/share/fonts/{mono}\", mono_size: {ms}.0, display_path: \"/usr/share/fonts/{display}\", display_size: {ds}.0 }}");
     let mut settings_seen = false;
     let mut keys_seen = false;
@@ -79,6 +79,7 @@ pub fn order_independent() -> CaseResult {
 pub fn restore_after_crash() -> CaseResult {
     let (text, exit) = super::runner::config_fixture("crash")?;
     check(exit == 1, "planted crash fixture did not fail")?;
+    check(text.contains("the case crashed: killed by signal 9"), "fixture failed without the requested SIGKILL")?;
     let failed = text.find(" CASE fixture/settings-crash FAIL ").ok_or("missing crashed case verdict")?;
     let defaults = text.find(" CASE fixture/settings-defaults PASS ").ok_or("next case did not see defaults")?;
     check(failed < defaults && text.contains("/etc/fonts.conf") && text.contains("DONE passed=1 failed=1 skipped=0 total=2"), "crash was not restored and reported before the default case")

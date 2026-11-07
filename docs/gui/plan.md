@@ -963,6 +963,12 @@ running the real runner as a scoped fixture:
 - `BREENIX_CONFIG_ROOT` names it. Every participant resolves its configuration paths through it: bwm,
   Breengel's `FontConfig` and `FontWatcher`, bfontpicker's write target, blog, blauncher's catalog and Gus Kit's
   save directory. Production leaves it unset and uses `/`.
+- bwm's `etc/bwm.conf` has optional `font.size` (finite 6–72 logical pixels, default 14)
+  and `clock.visible` (`true` or `false`, default `true`). These control chrome text size
+  and taskbar clock text. Syntax is one `key=value` per line, a final newline, and `#`
+  comments at the start of a line. Unknown or duplicate keys and invalid values refuse
+  startup. A missing file uses the defaults; a set config root uses its own paths without a fallback to `/`.
+  Hotkeys keep their existing chord/action syntax in the rooted `etc/hotkeys.conf`.
 - The session environment fixes `TZ=UTC`, `LANG=C.UTF-8`, `BREENIX_UI_CLOCK`, `BREENIX_UI_SEED` and the mode.
   Apps sort directory listings and catalogs by name in byte order, which the contract states.
 - Variable system data (PIDs, `/proc` statistics, kernel messages) is never compared to a whole golden. Cases

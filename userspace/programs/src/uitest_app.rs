@@ -52,6 +52,14 @@ fn main() {
             unsafe { access(config_path.as_ptr().cast(), 2) } == 0);
         let _ = io::stdout().flush();
     }
+    if options.config_probe {
+        let root = std::env::var_os("BREENIX_CONFIG_ROOT").map(std::path::PathBuf::from).unwrap_or_else(|| "/".into());
+        let fonts = breengel::FontConfig::try_load().expect("rooted font config");
+        let theme = std::fs::read_to_string(root.join("etc/app.conf")).expect("rooted app config");
+        std::fs::write(root.join("var/log/uitest-app"), &theme).expect("rooted app log");
+        println!("UITEST-CONFIG {fonts:?} {}", theme.trim_end());
+        let _ = io::stdout().flush();
+    }
     let block = [b'x'; 4096];
     let mut remaining = options.stderr_flood;
     let mut stderr = io::stderr().lock();

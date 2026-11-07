@@ -176,6 +176,63 @@ fn parent_pid_of(pid: u64) -> Result<u64, String> {
 pub mod sessions;
 #[path = "uitest_suite/runner.rs"]
 pub mod runner;
+#[path = "uitest_suite/config.rs"]
+pub mod config_cases;
+fn settings_a() -> CaseResult { config_cases::settings_round(1) }
+fn settings_b() -> CaseResult { config_cases::settings_round(2) }
+fn config_baseline_path(pid: u64) -> String { format!("/tmp/ui-config-baseline-{pid}") }
+fn config_crash_marker() -> String { format!("/tmp/ui-config-crash-{}", parent_pid()) }
+fn settings_crash() -> CaseResult {
+    let session = libuitest::Session::connect()?;
+    let root = std::path::Path::new(session.config_root());
+    std::fs::write(config_crash_marker(), session.config_root()).map_err(|e| e.to_string())?;
+    for (name, data) in [("fonts.conf", "planted fonts"), ("bwm.conf", "font.size=12\nclock.visible=false\n"),
+        ("hotkeys.conf", "Ctrl+a = focus_next\n"), ("app.conf", "theme=crashed\n")] {
+        std::fs::write(root.join("etc").join(name), data).map_err(|e| e.to_string())?;
+    }
+    std::fs::write("/etc/fonts.conf", b"planted global config fault\n").map_err(|e| e.to_string())?;
+    signal::kill(process::getpid()?.raw() as i32, signal::SIGKILL)?;
+    Err("SIGKILL returned".into())
+}
+fn settings_defaults() -> CaseResult {
+    let marker = config_crash_marker();
+    let root = std::fs::read_to_string(&marker).map_err(|e| e.to_string())?;
+    check(!std::path::Path::new(&root).exists(), "crashed session root survived into next case")?;
+    std::fs::remove_file(marker).map_err(|e| e.to_string())?;
+    let baseline_path = config_baseline_path(parent_pid());
+    let before = std::fs::read(&baseline_path).map_err(|e| e.to_string())?;
+    let after = match std::fs::read("/etc/fonts.conf") {
+        Ok(bytes) => { let mut saved = vec![1]; saved.extend(bytes); saved },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![0],
+        Err(e) => return Err(e.to_string().into()),
+    };
+    check(before == after, "global fonts were not restored before the next case")?;
+    std::fs::remove_file(baseline_path).map_err(|e| e.to_string())?;
+    config_cases::settings_round(0)
+}
+fn config_sequence(order: &str) -> ! {
+    if order == "crash" {
+        let bytes = match std::fs::read("/etc/fonts.conf") {
+            Ok(bytes) => { let mut saved = vec![1]; saved.extend(bytes); saved },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![0],
+            Err(e) => panic!("global font baseline: {e}"),
+        };
+        std::fs::write(config_baseline_path(process::getpid().expect("fixture pid").raw()), bytes).expect("save global baseline");
+    }
+    let a = case("settings-a", "First settings scenario", settings_a).session(libuitest::supervisor::serve);
+    let b = case("settings-b", "Second settings scenario", settings_b).session(libuitest::supervisor::serve);
+    let entries = match order {
+        "ab" => vec![a, b], "ba" => vec![b, a],
+        "crash" => vec![case("settings-crash", "Crash during settings write", settings_crash).session(libuitest::supervisor::serve),
+            case("settings-defaults", "Read defaults after crash", settings_defaults).session(libuitest::supervisor::serve)],
+        _ => panic!("unknown config sequence"),
+    };
+    let cases = Box::leak(entries.into_boxed_slice());
+    let categories = Box::leak(vec![category("fixture", "Config isolation", cases)].into_boxed_slice());
+    suite::set_painter(Box::new(stage_painter::StagePainter::new()));
+    suite::suite("runner-fixture", "Runner config fixture", categories).gui().defer_display().case_limit_ms(6000).run()
+}
+
 
 fn supervisor_died() -> CaseResult {
     let mut session = libuitest::Session::connect()?;
@@ -280,6 +337,7 @@ fn display_observer(done: usize, _: usize, name: &str) {
 }
 
 fn main() {
+    if let Ok(order) = std::env::var("BREENIX_CONFIG_SCENARIOS") { config_sequence(&order); }
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).is_some_and(|s| s == "--orphan-helper") {
         process::exit(orphan_helper(args[2].parse().expect("supervisor pid")));

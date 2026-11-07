@@ -11,6 +11,7 @@ pub const MONO_FONT_SHA256: &str = "b4a6c3e4faab8773f4ff761d56451646409f29abedd6
 pub const DISPLAY_FONT_SHA256: &str = "7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954";
 
 pub const FONT_CONFIG: &[u8] = b"mono.font=/usr/share/fonts/DejaVuSansMono.ttf\nmono.size=10\ndisplay.font=/usr/share/fonts/DejaVuSans.ttf\ndisplay.size=14\n";
+pub const HOTKEY_CONFIG: &[u8] = b"Super+Super = exec /usr/bin/blauncher\nSuper+Return = exec /usr/bin/bterm\nAlt+q = close\nAlt+Tab = focus_next\nAlt+Shift+Tab = focus_prev\n";
 pub const LOCALE: &[u8] = b"LANG=C.UTF-8\nTZ=UTC\ncodeset=UTF-8\ncollation=byte\n";
 pub const FIXTURE_FILES: &[(&str, &[u8])] = &[
     ("names.txt", b"Alpha\nZebra\nalpha\n\xc3\xa9clair\n"),
@@ -40,7 +41,10 @@ pub fn prepare(root: &Path) -> Result<(), String> {
             fs::create_dir_all(&path)?;
             fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
         }
-        for (name, contents) in [("etc/fonts.conf", FONT_CONFIG), ("etc/locale.conf", LOCALE)] {
+        for (name, contents) in [("etc/fonts.conf", FONT_CONFIG), ("etc/locale.conf", LOCALE),
+            ("etc/hotkeys.conf", HOTKEY_CONFIG),
+            ("etc/bwm.conf", b"font.size=14\nclock.visible=true\n"),
+            ("etc/app.conf", b"theme=default\n")] {
             let path = root.join(name); fs::write(&path, contents)?;
             fs::set_permissions(path, fs::Permissions::from_mode(0o644))?;
         }

@@ -43,13 +43,16 @@ impl Screen{
     pub fn release_for_session(&mut self)->Result<(),String>{if self.refused{Err("display refused".into())}else{Ok(())}}
     pub fn reclaim_after_session(&mut self)->Result<(),String>{Ok(())}
 }
-#[derive(Debug)]pub enum Outcome{Pass{ms:u64},Fail{ms:u64,msg:String}}
-pub fn with_note(outcome:Outcome,note:&str)->Outcome{
-    match outcome {Outcome::Pass{ms}|Outcome::Fail{ms,..}=>Outcome::Fail{ms,msg:note.into()}}
-}
+#[derive(Debug)]pub enum Outcome{Pass{ms:u64},Fail{ms:u64,msg:String},Skip{msg:String}}
+NOTES
 pub fn run_case_body(case:&Case,_:u64,_:&str,_:&str,_:bool,_:&mut Screen,_:&mut Feed)->Outcome{
     fs::write(ROOT.lock().unwrap().as_ref().unwrap().join("etc/fonts.conf"), b"planted").unwrap();
-    if case.fail{Outcome::Fail{ms:3,msg:"crash or timeout".into()}}else{Outcome::Pass{ms:3}}
+    if case.fail{
+        let root=ROOT.lock().unwrap();let root=root.as_ref().unwrap();
+        for name in ["etc/hotkeys.conf","etc/bwm.conf"]{fs::write(root.join(name),b"planted").unwrap();}
+        for dir in ["usr/share/applications","var/log"]{fs::create_dir_all(root.join(dir)).unwrap();}
+        Outcome::Fail{ms:3,msg:"x".repeat(160)}
+    }else{Outcome::Pass{ms:3}}
 }
 CONFIG
 BOUNDARY
@@ -60,7 +63,8 @@ BOUNDARY
         fs::write(root.join("etc/fonts.conf"),b"default").unwrap();
         let outcome=run_case(&Case{supervisor:None,fail},3000,"test","planted",true,&mut Screen{refused:false},&mut Feed);
         assert_eq!(fs::read(root.join("etc/fonts.conf")).unwrap(),b"default","global mutation survived GUI case");
-        assert!(matches!(outcome,Outcome::Fail{msg,..} if msg.contains("/etc/fonts.conf")));
+        let Outcome::Fail{msg,..}=outcome else{panic!("global mutation passed")};
+        for name in if fail{vec!["/etc/fonts.conf","/etc/hotkeys.conf","/etc/bwm.conf","/usr/share/applications","/var/log"]}else{vec!["/etc/fonts.conf"]}{assert!(msg.contains(name),"{msg}");}
     }
     // Non-GUI cases retain their existing behavior.
     run_case(&Case{supervisor:None,fail:false},3000,"test","non-gui",false,&mut Screen{refused:false},&mut Feed);
@@ -83,6 +87,7 @@ pub mod config{
     }
 }
 '''.replace('SOURCE', str(ROOT / 'libs/libbreenix/src/suite_config.rs'))
-        self.compile_run(harness.replace('CONFIG', config).replace('BOUNDARY', boundary), False)
+        notes = 'const MSG_MAX:usize=160;\n' + item(source, 'fn plain(') + '\n' + item(source, 'fn with_note(')
+        self.compile_run(harness.replace('CONFIG', config).replace('BOUNDARY', boundary).replace('NOTES', notes), False)
 
 if __name__ == '__main__': unittest.main()

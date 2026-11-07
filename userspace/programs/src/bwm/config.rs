@@ -1,4 +1,10 @@
 use super::*;
+#[path = "settings.rs"]
+pub(super) mod settings;
+pub(super) static SETTINGS: std::sync::OnceLock<settings::Settings> = std::sync::OnceLock::new();
+pub(super) fn settings() -> &'static settings::Settings { SETTINGS.get().expect("bwm config loaded at start") }
+pub(super) fn ttf_font_size() -> f32 { settings().font_size }
+
 
 // ─── Constants ───────────────────────────────────────────────────────────────
 // Chrome sizes are logical units: `px` multiplies them by the UI scale. Client windows
@@ -12,9 +18,6 @@ pub(super) const BORDER_WIDTH: usize = 2;
 
 /// How far a window's drop shadow is offset right and down
 pub(super) const SHADOW_OFFSET: usize = 3;
-
-/// TrueType font size for UI text, in logical units.
-pub(super) const TTF_FONT_SIZE: f32 = 14.0;
 
 /// The console's size rule (`docs/console/contract.md`): the largest font whose text grid
 /// on the display is at least this many columns by rows.
