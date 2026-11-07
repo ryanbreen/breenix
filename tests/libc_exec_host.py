@@ -25,7 +25,7 @@ with tempfile.TemporaryDirectory(prefix='breenix-exec-host-') as tmp:
     path = Path(tmp) / 'tests.rs'
     path.write_text('#![feature(c_variadic)]\nuse core::ffi::VaList;\nuse core::ptr::null;\n'
                     + constants + functions + prctl + harness)
-    env = dict(os.environ, CARGO_BUILD_JOBS='6')
+    env = dict(os.environ, CARGO_BUILD_JOBS='4')
     subprocess.run(['rustc', '--edition=2021', '--test', str(path), '-o', str(Path(tmp) / 'tests')],
                    cwd=ROOT, env=env, check=True)
     subprocess.run([str(Path(tmp) / 'tests'), '--test-threads=1'], check=True)

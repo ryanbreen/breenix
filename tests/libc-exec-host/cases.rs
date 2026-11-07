@@ -2,6 +2,29 @@
 use std::cell::{Cell, RefCell};
 use std::ffi::{CStr, CString};
 
+extern crate self as libbreenix;
+pub mod process {
+    pub const PR_SET_CHILD_SUBREAPER: i32 = 0x42520007;
+    pub const PR_GET_CHILD_SUBREAPER: i32 = 0x42520008;
+}
+pub mod nr {
+    pub const PRCTL: u64 = 167;
+}
+pub mod raw {
+    pub unsafe fn syscall2(number: u64, option: u64, arg: u64) -> u64 {
+        assert_eq!(number, super::nr::PRCTL);
+        super::PRCTL_CALL.with(|call| call.set(Some((option, arg))));
+        super::PRCTL_RESULT.with(|result| result.get() as u64)
+    }
+}
+pub fn syscall_result_to_c_int(result: i64) -> i32 {
+    if result < 0 { pthread::set_errno(-result as i32); -1 } else { result as i32 }
+}
+thread_local! {
+    static PRCTL_CALL: Cell<Option<(u64, u64)>> = const { Cell::new(None) };
+    static PRCTL_RESULT: Cell<i64> = const { Cell::new(0) };
+}
+
 mod pthread {
     use super::Cell;
     thread_local!(static ERRNO: Cell<i32> = const { Cell::new(0) });
@@ -66,8 +89,23 @@ fn executable_format_error_runs_shell_and_preserves_shell_error() {
 }
 #[test]
 fn unsupported_prctl_reads_no_optional_arguments() {
+    PRCTL_CALL.with(|call| call.set(None));
     unsafe { assert_eq!(prctl(3), -1); }
     assert_eq!(pthread::errno(), 38);
+    assert_eq!(PRCTL_CALL.with(Cell::get), None);
     // Also type-check every exported exec wrapper without executing it.
     let _ = (execv, execvpe, execl, execle, execlp, c_len, with_arg_list);
+}
+
+#[test]
+fn subreaper_prctl_routes_only_its_typed_argument_and_translates_errno() {
+    PRCTL_RESULT.with(|result| result.set(0));
+    unsafe { assert_eq!(prctl(process::PR_SET_CHILD_SUBREAPER, 1i32), 0); }
+    assert_eq!(PRCTL_CALL.with(Cell::get), Some((0x42520007, 1)));
+    let mut flag = 0i32;
+    unsafe { assert_eq!(prctl(process::PR_GET_CHILD_SUBREAPER, &mut flag as *mut i32), 0); }
+    assert_eq!(PRCTL_CALL.with(Cell::get), Some((0x42520008, &mut flag as *mut i32 as u64)));
+    PRCTL_RESULT.with(|result| result.set(-14));
+    unsafe { assert_eq!(prctl(process::PR_GET_CHILD_SUBREAPER, core::ptr::null_mut::<i32>()), -1); }
+    assert_eq!(pthread::errno(), 14);
 }
