@@ -104,8 +104,18 @@ pub(super) fn unpack<'a>(bytes: &'a [u8], suite: &str, case: &str) -> Result<&'a
     if bytes.len() < 32 || libpixcheck::sha256(&bytes[32..]) != bytes[..32] { return Err("side-file-hash"); }
     let body = std::str::from_utf8(&bytes[32..]).map_err(|_| "side-file-text")?;
     let mut names = Vec::new();
+    let mut phase = 0;
     for line in body.lines() {
         let words: Vec<_> = line.split_whitespace().collect();
+        if words.get(2) == Some(&"SCREENPERTURB") {
+            if words.as_slice() == ["SUITE", suite, "SCREENPERTURB", case, "end", "error=sequence-failed"] {
+                continue;
+            }
+            let next = super::perturb::validate_line(line, suite, case)?;
+            if next != phase + 1 { return Err("perturb-phase-order"); }
+            phase = next;
+            continue;
+        }
         let ["SUITE", id, "SCREEN", owner, name, fields @ ..] = words.as_slice() else { return Err("side-file-record"); };
         if *id != suite || *owner != case || (!named(name) && *name != "end") || names.contains(name) {
             return Err("side-file-case");
@@ -161,10 +171,11 @@ pub(super) struct CheckpointClock {
     excluded: AtomicU64,
     active: AtomicU64,
     window_excluded: AtomicU64,
+    perturb_attempted: AtomicBool,
 }
 impl CheckpointClock {
     pub(super) const fn new() -> Self {
-        Self { sequence: AtomicU64::new(0), excluded: AtomicU64::new(0), active: AtomicU64::new(0), window_excluded: AtomicU64::new(0) }
+        Self { sequence: AtomicU64::new(0), excluded: AtomicU64::new(0), active: AtomicU64::new(0), window_excluded: AtomicU64::new(0), perturb_attempted: AtomicBool::new(false) }
     }
     pub(super) fn start(&self, now: u64) {
         self.sequence.fetch_add(1, Ordering::SeqCst);
@@ -206,7 +217,10 @@ pub(super) struct ClockMap(*mut CheckpointClock);
 impl Drop for ClockMap {
     fn drop(&mut self) {
         CLOCK.store(core::ptr::null_mut(), Ordering::Relaxed);
-        if !self.0.is_null() { let _ = libbreenix::memory::munmap(self.0.cast(), 4096); }
+        if !self.0.is_null() {
+            PERTURB_ATTEMPTED.store(unsafe { &*self.0 }.perturb_attempted.load(Ordering::SeqCst), Ordering::Relaxed);
+            let _ = libbreenix::memory::munmap(self.0.cast(), 4096);
+        }
     }
 }
 
@@ -220,6 +234,7 @@ impl EndCheckpoint {
         if !matches!(&result, Err(e) if e == "no-case-scanout") { self.result = Some(result); }
     }
 }
+static PERTURB_ATTEMPTED: AtomicBool = AtomicBool::new(false);
 static CRC: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 static END_CRC: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 static END: Mutex<EndCheckpoint> = Mutex::new(EndCheckpoint { result: None });
@@ -245,7 +260,10 @@ pub(super) fn begin(suite: &str) -> ClockMap {
         .map_or(core::ptr::null_mut(), |p| p.cast::<CheckpointClock>());
     if !ptr.is_null() {
         // A private mapping owned until the parent finishes this case; atomics are shared by fork.
-        unsafe { ptr.write(CheckpointClock::new()); }
+        unsafe {
+            ptr.write(CheckpointClock::new());
+            (*ptr).perturb_attempted.store(PERTURB_ATTEMPTED.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
     }
     CLOCK.store(ptr, Ordering::Relaxed);
     let mut pixel = [0; 4];
@@ -318,7 +336,7 @@ pub(super) fn before_helper_drop() {
     }
     timed(|| {
         END.lock().unwrap().before_drop(|| {
-            let result = snapshot("end");
+            let result = snapshot_end();
             if !matches!(&result,Err(e) if e == "no-case-scanout") {
                 *END_CRC.lock().unwrap() = CRC.lock().unwrap().take();
             }
@@ -437,6 +455,54 @@ fn snapshot(name: &str) -> Snapshot {
     Ok((hash, mode, binding))
 }
 
+// Take the first successful native end while its owner is still alive. The
+// shared case clock carries the claim back to the runner even on child death.
+fn snapshot_end() -> Snapshot {
+    let result = snapshot("end");
+    let clock = CLOCK.load(Ordering::Relaxed);
+    if !native_crc_enabled() || clock.is_null() { return result; }
+    // FIRED is boot-lifetime state, including across suite sequence exec.
+    if crate::test_control::fired(crate::window::abi::tc_point::DISPLAY_OUTPUT_PERTURB).is_ok_and(|n|n > 0) { return result; }
+    let baseline = CRC.lock().unwrap().take();
+    if let (Ok((hash, mode, binding)), Some(raw)) = (&result, baseline.as_ref()) {
+        if unsafe { &*clock }.perturb_attempted.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            let pixels = CAPTURE_PIXELS.lock().unwrap().take();
+            let observation = super::perturb::Observation {hash:*hash, mode:*mode, binding:*binding, raw:raw.clone()};
+            let suite = super::RECORD_NAMES.get().and_then(|(prefix,_)|prefix.strip_prefix("SUITE "))
+                .and_then(|s|s.strip_suffix(' ')).unwrap_or("");
+            let case = super::running_case().unwrap_or("");
+            struct Native;
+            impl super::perturb::Driver for Native {
+                fn fired(&mut self) -> Result<u64,String> {
+                    crate::test_control::fired(crate::window::abi::tc_point::DISPLAY_OUTPUT_PERTURB).map_err(|e|e.to_string())
+                }
+                fn arm(&mut self, resource:u64) -> Result<(),String> {
+                    crate::test_control::arm(crate::window::abi::tc_point::DISPLAY_OUTPUT_PERTURB, resource, 0).map(|_|()).map_err(|e|e.to_string())
+                }
+                fn disarm(&mut self) -> Result<(),String> { crate::test_control::disarm_all().map(|_|()).map_err(|e|e.to_string()) }
+                fn observe(&mut self, name:&str) -> Result<super::perturb::Observation,String> {
+                    let (hash,mode,binding) = snapshot(name)?;
+                    let raw = CRC.lock().unwrap().take().ok_or("perturb-crc-missing")?;
+                    Ok(super::perturb::Observation {hash,mode,binding,raw})
+                }
+            }
+            let sequence = super::perturb::run(suite, case, &observation, &mut Native);
+            let mut lines = LINES.lock().unwrap();
+            match sequence {
+                Ok((phases, records)) => {
+                    if records.iter().try_for_each(|raw|queue_crc(&crc_pending_path(), raw)).is_ok() {
+                        for line in phases { lines.push_str(&line); }
+                    } else { lines.push_str(&std::format!("SUITE {suite} SCREENPERTURB {case} end error=sequence-failed\n")); }
+                }
+                Err(_) => lines.push_str(&std::format!("SUITE {suite} SCREENPERTURB {case} end error=sequence-failed\n")),
+            }
+            *CAPTURE_PIXELS.lock().unwrap() = pixels;
+        }
+    }
+    *CRC.lock().unwrap() = baseline;
+    result
+}
+
 fn append(name: &str, end: bool) -> Result<(), &'static str> {
     let case = super::running_case().ok_or("outside-case")?;
     let (prefix, _) = super::RECORD_NAMES.get().ok_or("outside-case")?;
@@ -444,7 +510,7 @@ fn append(name: &str, end: bool) -> Result<(), &'static str> {
     let mut result = if CLOCK.load(Ordering::Relaxed).is_null() {
         Err("clock-allocation".into())
     } else if end {
-        match snapshot(name) {
+        match snapshot_end() {
             Err(e) if e == "no-case-scanout" => {
                 *CRC.lock().unwrap() = END_CRC.lock().unwrap().take();
                 END.lock().unwrap().result.take().unwrap_or(Err(e))
@@ -472,7 +538,8 @@ fn append(name: &str, end: bool) -> Result<(), &'static str> {
         _ => format_record(suite, case, name, result.as_ref().map(|v| *v).map_err(String::as_str)),
     };
     let mut lines = LINES.lock().unwrap();
-    if lines.lines().any(|line| line.split_whitespace().nth(4) == Some(name)) { return Err("duplicate-checkpoint"); }
+    if lines.lines().any(|line| line.split_whitespace().nth(2) == Some("SCREEN")
+        && line.split_whitespace().nth(4) == Some(name)) { return Err("duplicate-checkpoint"); }
     lines.push_str(&line);
     Ok(())
 }

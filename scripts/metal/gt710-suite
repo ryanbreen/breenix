@@ -2409,6 +2409,7 @@ def breengel_fronts_suite(serial, boot, step_number=1):
     screen = runpy.run_path(str(root / 'scripts/screen-verdict.py'))
     screen['score'](manifest, serial, json.loads((root / 'docs/suites/frames/screens.json').read_text()), run=boot)
     shapes['SCREEN'] = screen['RECORD'].pattern
+    shapes['SCREENPERTURB'] = screen['PERTURB_RECORD'].pattern
     parsed = []
     for line in serial.splitlines():
         if not line.startswith('SUITE breengel '):
@@ -2484,6 +2485,7 @@ def resources_suite(serial, boot, selection='gt710-step-8-2.json'):
     screen = runpy.run_path(str(root / 'scripts/screen-verdict.py'))
     screen['score'](manifest, serial, json.loads((root / 'docs/suites/frames/screens.json').read_text()), run=boot)
     shapes['SCREEN'] = screen['RECORD'].pattern
+    shapes['SCREENPERTURB'] = screen['PERTURB_RECORD'].pattern
     parsed = []
     for line in serial.splitlines():
         if 'SUITE gpu ' not in line:

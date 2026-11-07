@@ -140,6 +140,58 @@ it returns errno 61. Outside suite boots it returns ENOSYS, and virtual backends
 return ENODEV. The summary read clones the completed text without starting collection. ARM's boundary
 remains latched readback and host-renderer attestation.
 
-Host receiver admission, record export and perturbation scoring belong to later
-units of 22.2. Until receiver admission lands, a CRC diagnostic PUT is reported
-as failed; its failure does not change the shared case verdict.
+## Perturbation records
+
+The native runner selects its first successful `end` CRC capture with screen_proof=on. Selection happens while the case's display owner is still alive,
+including a helper's pre-drop observation. The host requires the sequence's
+baseline to equal the selected ordinary `end` SCREEN and its approved native
+row; the guest does not carry the approval table.
+
+The four extra requests use the binary checkpoint identities `perturb-one`,
+`perturb-two`, `perturb-three` and `perturb-four`. They use the same case and
+label derivation as ordinary CRCs, yielding four distinct diagnostic labels.
+The ordinary SCREEN inventory does not gain these private checkpoints.
+The serial form is:
+
+```text
+SUITE <suite> SCREENPERTURB <case> end phase=<1-4> sha256=<digest> mode=<WxH> binding=<WxH> crc=<hex8> crc2=<hex8> raster=<WxH> out=sor<N> resource=<R> present_fence=<F> fired=<count> disarmed=<0|1>
+```
+
+Here `disarmed` describes point 35, whereas SCRCRC01's `disarmed` field
+continues to describe the CRC collector. Phases 1 and 4 have point 35 disarmed;
+phases 2 and 3 have it armed/fired. Phase 2 observes after arming and witnesses
+one firing. Phase 3 re-observes the same binding. Phase 4 follows DISARM_ALL and
+checks both CRCs and the saved output method list against phase 1.
+
+The case clock's shared atomic claim survives fork and returns to the parent
+before the next case. Point 35's boot-lifetime fired counter also prevents a
+second successful sequence across suite-sequence exec. An unsuccessful
+sequence emits `error=sequence-failed`, is not retried in that runner and fails
+screen acceptance independently of CASE.
+
+The phase lines use the hashed case text handoff; raw records use the existing
+length/SHA-256 CRC queue. The parent validates their framing and identity before
+emission/upload. The host exporter verifies phase receipts and bytes, puts
+ordinary checkpoints in `screen-crc.json` and phases in `screen-perturb.json`.
+This keeps perturbation observations out of the native approval import.
+The receiver adds four diagnostic slots to the checkpoint inventory cap; the
+2 MiB request and 64 MiB boot limits retain their values.
+
+The U4 R240 acceptance entry point is:
+
+```sh
+python3 scripts/screen-proof-acceptance.py --profile r240 --commit <full-sha> \
+  --console <console-export> --gpu <gpu-proof-export> \
+  --breengel <breengel-proof-export> --output <report.json>
+```
+
+It requires distinct eligible boots at one kernel/build/tools commit, confirmed
+power-off, full suite verdicts, memory PASS and full clocks. GPU and BreenGL must
+agree with their host records on screen_proof=on, match the checkpoint inventory and
+approved digests, and carry native rows for the uploaded output configurations.
+The strict native comparison calls screen-verdict's native scorer per
+checkpoint with the digest of that checkpoint's verified configuration; logical
+mode changes can produce different configuration digests within a boot.
+Missing, extra, reordered or repeated phases, changed memory pixels, an
+unchanged phase-3 SOR CRC or an unrestored phase-4 CRC/configuration fail.
+The default `arm` profile retains its previous companion requirements.

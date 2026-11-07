@@ -28,6 +28,7 @@ fn format_crc_record(_: &str,_:&str,_:&str,_:[u8;32],_:(),_:(),_:&[u8])->Result<
 fn queue_crc(_: &std::path::Path,_:&[u8])->Result<(),&'static str>{panic!("CRC without clock")}
 fn crc_pending_path()->std::path::PathBuf{std::path::PathBuf::new()}
 fn snapshot(_: &str)->Snapshot{panic!("observation without clock")}
+fn snapshot_end()->Snapshot{snapshot("end")}
 fn capture_enabled()->bool{false}
 fn capture(_: &str,_:&str,_:&str,_:(),_:[u8;32],_:&[u8])->Result<(),&'static str>{Ok(())}
 fn format_record(_: &str,_:&str,_:&str,result:Result<([u8;32],(),()),&str>)->String{format!("error={}",result.unwrap_err())}

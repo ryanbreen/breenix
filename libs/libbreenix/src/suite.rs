@@ -2736,6 +2736,9 @@ mod screen_tests;
 #[path = "suite_screen.rs"]
 mod screen;
 
+#[path = "suite_perturb.rs"]
+mod perturb;
+
 #[path = "suite_intent.rs"]
 mod intent;
 

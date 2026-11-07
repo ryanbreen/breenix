@@ -19,7 +19,7 @@ def crc_checkpoint_cap(suite):
     path = root / 'docs/suites/frames/checkpoints.json'
     if not path.exists(): path = Path(__file__).with_name('checkpoints.json')
     checkpoints = json.loads(path.read_text())
-    return len(checkpoints[suite]) + intent_manifest.counts()[suite]
+    return len(checkpoints[suite]) + intent_manifest.counts()[suite] + 4
 
 def prepare(directory,boot_id,site,suite=None):
     route=PREFIX+secrets.token_hex(32)

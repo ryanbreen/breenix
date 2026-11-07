@@ -24,6 +24,14 @@ RECORD = re.compile(
     rf' raster=(?P<raster>{MODE}) out=(?P<out>sor[0-9]+))?)\Z')
 
 
+PERTURB_FIELDS = (
+    rf'(?:phase=(?P<phase>[1-4]) sha256=(?P<sha>{HEX64}) mode=(?P<mode>{MODE}) binding=(?P<binding>{MODE})'
+    rf' crc=(?P<crc>[0-9a-f]{{8}}) crc2=(?P<crc2>[0-9a-f]{{8}}) raster=(?P<raster>{MODE}) out=(?P<out>sor[0-9]+)'
+    r' resource=(?P<resource>[1-9][0-9]*) present_fence=(?P<present_fence>[1-9][0-9]*)'
+    r' fired=(?P<fired>[0-9]+) disarmed=(?P<disarmed>[01])|error=sequence-failed)')
+PERTURB_RECORD = re.compile(rf'SUITE (?P<suite>{NAME}) SCREENPERTURB (?P<case>{CASE}) end {PERTURB_FIELDS}\Z')
+
+
 def proof_mode(suite, serial, run):
     if type(run) is not dict:
         raise ValueError('invalid host run record')
@@ -64,6 +72,8 @@ def score(manifest, serial, table, native=False, config=None, captures=None, ine
     reported = set()
     seen = set()
     for line in serial.splitlines():
+        if line.startswith(f'SUITE {suite} SCREENPERTURB ') and not proof:
+            raise ValueError('perturbation in production capture')
         case = re.match(rf'^SUITE {re.escape(suite)} CASE ({CASE}) ', line)
         if case:
             reported.add(case[1])
