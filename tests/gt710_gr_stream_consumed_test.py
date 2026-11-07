@@ -8,8 +8,6 @@ import unittest
 from gt710_gr_live_unwind_test import item
 
 ROOT = Path(__file__).resolve().parents[1]
-EVIDENCE = Path.home() / 'fun/code/breenix.worktrees/fx/ledgers/evidence/gr-startup-2669'
-EVIDENCE.mkdir(parents=True, exist_ok=True)
 
 
 class StreamConsumed(unittest.TestCase):
@@ -94,10 +92,12 @@ fn descheduled_consumed_stream_completes() {
 }
 #[test]
 fn scheduler_negative_controls() {
-    for (get, reference, bind) in [(0, 1, 0x80000123), (1, 0, 0x80000123), (1, 1, 0)] {
-        let mut model = scheduler(get, reference, bind, true);
-        assert_eq!(await_consumed(&mut model), Err("GR control stream not consumed; backing retained"));
-        assert_eq!(model.now, BOUND_US);
+    for resident in [false, true] {
+        for (get, reference, bind) in [(0, 1, 0x80000123), (1, 0, 0x80000123), (1, 1, 0)] {
+            let mut model = scheduler(get, reference, bind, resident);
+            assert_eq!(await_consumed(&mut model), Err("GR control stream not consumed; backing retained"));
+            assert_eq!(model.now, BOUND_US);
+        }
     }
     let mut model = scheduler(1, 1, 0x80000123, true);
     assert_eq!(await_consumed(&mut model), Ok(()));
@@ -127,7 +127,7 @@ fn saved_channel_progress_and_reference() {
     assert!(!monitor_consumed(stale_live, 5, id, 5, None));
 }
 '''
-        with tempfile.TemporaryDirectory(dir=EVIDENCE) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             (path / 'stream.rs').write_text(fixture)
             priority = ['taskpolicy', '-b'] if sys.platform == 'darwin' else []

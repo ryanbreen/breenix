@@ -8,7 +8,6 @@ import unittest
 from gt710_gr_live_unwind_test import item
 
 ROOT = Path(__file__).resolve().parents[1]
-EVIDENCE = Path.home() / 'fun/code/breenix.worktrees/fx/ledgers/evidence/gr-startup-2669'
 
 class FailureSnapshot(unittest.TestCase):
     def test_refusal_and_accepted_paths(self):
@@ -85,7 +84,7 @@ fn refusal_records_all_fields_once_and_success_is_silent() {
         for key, value in [('POLL', poll), ('OBSERVATION', observation), ('AWAIT', awaiter),
                            ('WAIT', waiter), ('SNAPSHOT', snapshot), ('CONTROL', control)]:
             fixture = fixture.replace('// ' + key, value)
-        with tempfile.TemporaryDirectory(dir=EVIDENCE) as directory:
+        with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             (path / 'fixture.rs').write_text(fixture)
             subprocess.run((['taskpolicy', '-b'] if sys.platform == 'darwin' else []) +
