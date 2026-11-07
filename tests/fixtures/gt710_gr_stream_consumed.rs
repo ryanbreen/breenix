@@ -6,18 +6,21 @@ mod gk208 { pub mod queue { pub struct Queue; impl Queue { // QUEUE
 struct Identity { id: u32, instance: u64 }
 struct Report { identity: Identity }
 struct Session { pbdma: usize, userd: u64, report: Report }
-struct Registers(StreamSample);
+struct Registers(StreamSample, u32);
 impl Registers {
     fn read(&mut self, address: usize) -> u32 {
         match address { 0x40120 => self.0.channel, 0x40014 => self.0.get,
             0x40028 => self.0.reference, _ => self.0.bind }
     }
 }
-fn read(regs: &mut Registers, _: u64, _: u64) -> Result<u32, &'static str> { Ok(regs.0.userd_get) }
+fn read(regs: &mut Registers, _: u64, address: u64) -> Result<u32, &'static str> {
+    match address { 0x48 => Ok(regs.1), 0x88 => Ok(regs.0.userd_get), _ => panic!("unexpected USERD read {address:#x}") }
+}
 struct Monitor<'a> { session: &'a Session, regs: &'a mut Registers, total: u64, sequence: u32, queued_put: Option<u32> }
 // POLL
 // PREDICATE
 // AWAIT
+// SNAPSHOT
 struct Clock { now: u64, snapshots: u32 }
 impl Poll for Clock {
     fn snapshot(&mut self) -> Result<(u32, u64, bool), &'static str> { self.snapshots += 1; Ok((0, 0, false)) }

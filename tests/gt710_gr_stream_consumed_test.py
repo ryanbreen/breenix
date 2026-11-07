@@ -36,8 +36,19 @@ class StreamConsumed(unittest.TestCase):
             loop = block[block.index('                let start'):block.rindex('            }')]
             awaiter = "fn await_consumed(monitor: &mut impl Poll) -> Result<(), &'static str> {\n" + loop + '\nOk(())\n}'
         fixture = (ROOT / 'tests/fixtures/gt710_gr_stream_consumed.rs').read_text()
+        snapshot = item(source, '        fn snapshot(&mut self)')
+        sampling = snapshot[snapshot.index('            let b ='):snapshot.index('            Ok((value')]
+        sampling = sampling.replace('self.', 'monitor.')
+        snapshot_check = '''fn monitor_consumed(sample: StreamSample, saved_reference: u32,
+            id: Identity, sequence: u32, queued_put: Option<u32>) -> bool {
+            let session = Session { pbdma: 0, userd: 0, report: Report { identity: id } };
+            let mut regs = Registers(sample, saved_reference);
+            let monitor = Monitor { session: &session, regs: &mut regs, total: 0, sequence, queued_put };
+            let s = monitor.session;
+            (|| -> Result<bool, &\'static str> {
+        ''' + sampling + 'Ok(consumed)\n})().unwrap()\n}'
         for key, value in [('POLL', poll), ('QUEUE', item(queue, 'pub fn consumed(')),
-                           ('PREDICATE', predicate), ('AWAIT', awaiter)]:
+                           ('PREDICATE', predicate), ('AWAIT', awaiter), ('SNAPSHOT', snapshot_check)]:
             fixture = fixture.replace('// ' + key, value)
         fixture += r'''
 struct Scheduler {
@@ -61,7 +72,7 @@ impl Poll for Scheduler {
                 userd_get: 0, bind: self.bind }
         };
         let id = Identity { id: 0, instance: 0x123000 };
-        Ok((0, 0, stream_consumed(sample, id, 1, None)))
+        Ok((0, 0, monitor_consumed(sample, self.saved_reference, id, 1, None)))
     }
     fn now_us(&mut self) -> u64 { self.now }
     fn relax(&mut self) { self.now += 10; }
@@ -85,6 +96,29 @@ fn scheduler_negative_controls() {
     let mut model = scheduler(1, 1, 0x80000123, true);
     assert_eq!(await_consumed(&mut model), Ok(()));
     assert_eq!(model.now, 0);
+}
+#[test]
+fn saved_channel_progress_and_reference() {
+    let id = Identity { id: 0, instance: 0x123000 };
+    let sample = StreamSample { channel: 0x2001, get: 99, reference: 99,
+        userd_get: 5, bind: 0x80000123 };
+    assert!(monitor_consumed(sample, 5, id, 5, None));
+    assert!(monitor_consumed(sample, 5, id, 5, Some(5)));
+    assert!(!monitor_consumed(sample, 0, id, 5, None));
+    assert!(!monitor_consumed(sample, 4, id, 5, Some(5)));
+    assert!(!monitor_consumed(sample, 6, id, 5, None));
+    assert!(monitor_consumed(sample, 6, id, 5, Some(5)));
+    let mut partial = sample; partial.userd_get = 4;
+    assert!(!monitor_consumed(partial, 5, id, 5, None));
+    let mut unbound = sample; unbound.bind = 0;
+    assert!(!monitor_consumed(unbound, 5, id, 5, None));
+    let mut peer_instance = sample; peer_instance.bind = 0x80000456;
+    assert!(!monitor_consumed(peer_instance, 5, id, 5, None));
+    let resident = StreamSample { channel: 0x2000, get: 5, reference: 5,
+        userd_get: 0, bind: 0x80000123 };
+    assert!(monitor_consumed(resident, 0, id, 5, None));
+    let mut stale_live = resident; stale_live.reference = 4;
+    assert!(!monitor_consumed(stale_live, 5, id, 5, None));
 }
 '''
         with tempfile.TemporaryDirectory(dir=EVIDENCE) as directory:
