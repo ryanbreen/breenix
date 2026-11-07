@@ -204,3 +204,30 @@ fn unexpected_target_invalidation_cannot_be_declared() {
     let error = screen::endpoint_error(5, &failure.encode());
     assert!(error.starts_with("readback-failed "));
 }
+
+#[test]
+fn crc_screen_record_and_diagnostic_label() {
+    let binding = gpu_abi::screen_crc::Binding {resource: 7, present_fence: 9};
+    let record = gpu_abi::screen_crc::Record {
+        suite:"gpu".into(), case:"draw/one".into(), checkpoint:"end".into(),
+        binding_before:binding, binding_after:binding, elapsed_us:1000,
+        disarmed:true, display_error:0, status:1,
+        output_config:gpu_abi::screen_crc::OutputConfig {mode:[2,1],raster:[1280,1024],
+            viewport:[0,112,1280,800],sor:0,rg:0,methods:vec![(0x200,1)]},
+        samples:vec![gpu_abi::screen_crc::Sample {status:1,crc:0x1234,crc2:0xabcd};5],
+    };
+    let bytes = record.encode().unwrap();
+    let line = screen::format_crc_record("gpu", "draw/one", "end", [3;32], mode(), mode(), &bytes).unwrap();
+    assert_eq!(line, format!("SUITE gpu SCREEN draw/one end sha256={} mode=2x1 binding=2x1 crc=00001234 crc2=0000abcd raster=1280x1024 out=sor0\n", "03".repeat(32)));
+    assert!(screen::unpack(&screen::pack(&line),"gpu","draw/one").is_ok());
+    assert!(screen::format_crc_record("gpu", "draw/two", "end", [3;32], mode(), mode(), &bytes).is_err());
+    let label = screen::crc_label("gpu", "draw/one", "end");
+    let hash = libpixcheck::sha256(b"draw/one\0end");
+    let short: String = hash[..8].iter().map(|b|format!("{b:02x}")).collect();
+    assert_eq!(label, format!("crc-gpu-{short}"));
+    assert!(label.len() <= 64 && label.bytes().all(|b|b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'));
+    assert_ne!(label, screen::crc_label("gpu", "draw/one", "after-present"));
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../scripts/screen-verdict.py");
+    let python = "import importlib.util,re,sys; s=importlib.util.spec_from_file_location('v',sys.argv[1]); m=importlib.util.module_from_spec(s); s.loader.exec_module(m); assert m.RECORD.fullmatch(sys.argv[2].strip()); assert re.fullmatch(r'[a-z][a-z0-9-]{0,63}',sys.argv[3])";
+    assert!(std::process::Command::new("python3").args(["-c",python]).arg(script).arg(&line).arg(label).status().unwrap().success());
+}

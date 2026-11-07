@@ -1,4 +1,7 @@
 extern crate alloc;
+extern crate self as gpu_abi;
+#[path = "ABI/screen_crc.rs"] pub mod screen_crc;
+#[path = "ABI/screen.rs"] mod screen;
 // These complete production modules also supply existing timing helpers that
 // this focused fixture does not call.
 #[allow(dead_code)]
@@ -193,4 +196,45 @@ impl Io for Model {
         let mut m=Model::new();m.available.push(tail);
         assert!(m.capture().is_err());m.disarmed();
     }
+}
+
+#[test]
+fn crc_codec_and_request_roundtrip() {
+    let record = Model::new().capture().unwrap();
+    let bytes = record.encode().unwrap();
+    let decoded = screen_crc::Record::decode(&bytes).unwrap();
+    assert_eq!(decoded.encode().unwrap(), bytes);
+    assert_eq!(decoded.suite, "gpu");
+    assert_eq!(decoded.case, "present/example");
+    assert_eq!(decoded.checkpoint, "end");
+    assert_eq!(decoded.binding_before, PIN);
+    assert_eq!(decoded.binding_after, PIN);
+    assert_eq!(decoded.samples, record.samples);
+    assert_eq!(decoded.output_config.methods, record.output_config.methods);
+    for n in 0..bytes.len() { assert!(screen_crc::Record::decode(&bytes[..n]).is_err()); }
+    let mut bad = bytes.clone(); bad.push(0);
+    assert!(screen_crc::Record::decode(&bad).is_err());
+    for at in [0, 8, 12, 16, 26, 28, 30] {
+        let mut bad = bytes.clone(); bad[at] ^= 0x80;
+        assert!(screen_crc::Record::decode(&bad).is_err(), "accepted offset {at}");
+    }
+    let request = screen::CrcRequest { pixels: 0x1000, len: 4096, observation: 0x2000,
+        record: 0x3000, suite: "gpu", case: "present/example", checkpoint: "end" };
+    let encoded = request.encode().unwrap();
+    let decoded = screen::CrcRequest::decode(&encoded).unwrap();
+    assert_eq!(decoded, request);
+    assert!(screen::Request::decode(&encoded).is_none());
+    for n in 0..encoded.len() { assert!(screen::CrcRequest::decode(&encoded[..n]).is_none()); }
+    let mut bad = encoded.clone(); bad.push(0);
+    assert!(screen::CrcRequest::decode(&bad).is_none());
+    let mut bad = encoded.clone(); bad[46] = 1;
+    assert!(screen::CrcRequest::decode(&bad).is_none());
+    let pixel = screen::Request {pixels:1,len:2,record:3}.encode();
+    assert_eq!(pixel.len(), 32);
+    assert_eq!(&pixel[..8], b"SCREENRB");
+    let decoded = screen::Request::decode(&pixel).unwrap();
+    assert_eq!((decoded.pixels, decoded.len, decoded.record), (1,2,3));
+    let mut invalid = request;
+    invalid.case = "bad case";
+    assert!(invalid.encode().is_err());
 }

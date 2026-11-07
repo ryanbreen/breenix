@@ -14,7 +14,7 @@ class DisplayCrc(unittest.TestCase):
         self.assertTrue((driver / 'display_crc.rs').is_file(),
                         'the backend has no display CRC producer')
         fixture = (ROOT / 'tests/fixtures/gt710_display_crc.rs').read_text()
-        fixture = fixture.replace('DRIVER', str(driver))
+        fixture = fixture.replace('DRIVER', str(driver)).replace('ABI', str(ROOT / 'libs/gpu-abi/src'))
         with tempfile.TemporaryDirectory(prefix='display-crc-') as directory:
             source = Path(directory) / 'check.rs'
             binary = Path(directory) / 'check'
