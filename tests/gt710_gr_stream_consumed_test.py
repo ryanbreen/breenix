@@ -39,6 +39,54 @@ class StreamConsumed(unittest.TestCase):
         for key, value in [('POLL', poll), ('QUEUE', item(queue, 'pub fn consumed(')),
                            ('PREDICATE', predicate), ('AWAIT', awaiter)]:
             fixture = fixture.replace('// ' + key, value)
+        fixture += r'''
+struct Scheduler {
+    now: u64, polls: u32, switch_at: u32,
+    saved_get: u32, saved_reference: u32, bind: u32, resident: bool,
+}
+impl Poll for Scheduler {
+    fn snapshot(&mut self) -> Result<(u32, u64, bool), &'static str> {
+        self.polls += 1;
+        let switched = !self.resident && self.polls >= self.switch_at;
+        // Channel 0 drains before channel 1 takes the PBDMA. Live GET and
+        // reference then belong to the idle peer, not the saved channel.
+        let sample = if switched {
+            StreamSample { channel: 0x2001, get: 0, reference: 0,
+                userd_get: self.saved_get, bind: self.bind }
+        } else if self.resident {
+            StreamSample { channel: 0x2000, get: self.saved_get,
+                reference: self.saved_reference, userd_get: 0, bind: self.bind }
+        } else {
+            StreamSample { channel: 0x2000, get: 0, reference: 0,
+                userd_get: 0, bind: self.bind }
+        };
+        let id = Identity { id: 0, instance: 0x123000 };
+        Ok((0, 0, stream_consumed(sample, id, 1, None)))
+    }
+    fn now_us(&mut self) -> u64 { self.now }
+    fn relax(&mut self) { self.now += 10; }
+}
+fn scheduler(saved_get: u32, saved_reference: u32, bind: u32, resident: bool) -> Scheduler {
+    Scheduler { now: 0, polls: 0, switch_at: 4, saved_get, saved_reference, bind, resident }
+}
+#[test]
+fn descheduled_consumed_stream_completes() {
+    let mut model = scheduler(1, 1, 0x80000123, false);
+    assert_eq!(await_consumed(&mut model), Ok(()));
+    assert!(model.now < BOUND_US / 10);
+}
+#[test]
+fn scheduler_negative_controls() {
+    for (get, reference, bind) in [(0, 1, 0x80000123), (1, 0, 0x80000123), (1, 1, 0)] {
+        let mut model = scheduler(get, reference, bind, true);
+        assert_eq!(await_consumed(&mut model), Err("GR control stream not consumed; backing retained"));
+        assert_eq!(model.now, BOUND_US);
+    }
+    let mut model = scheduler(1, 1, 0x80000123, true);
+    assert_eq!(await_consumed(&mut model), Ok(()));
+    assert_eq!(model.now, 0);
+}
+'''
         with tempfile.TemporaryDirectory(dir=EVIDENCE) as directory:
             path = Path(directory)
             (path / 'stream.rs').write_text(fixture)
