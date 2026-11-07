@@ -15,7 +15,7 @@ import zlib
 
 ROOT = Path(__file__).resolve().parents[2]
 NAME = r'[a-z0-9]+(?:-[a-z0-9]+)*'
-SCREEN = re.compile(rf'SUITE ({NAME}) SCREEN ({NAME}/{NAME}) ({NAME}) sha256=([0-9a-f]{{64}}) mode=([1-9][0-9]*x[1-9][0-9]*) binding=([1-9][0-9]*x[1-9][0-9]*)(?: crc=[0-9a-f]{{8}} crc2=[0-9a-f]{{8}} raster=[1-9][0-9]*x[1-9][0-9]* out=sor[0-9]+)?')
+SCREEN = re.compile(rf'SUITE ({NAME}) SCREEN ({NAME}/{NAME}) ({NAME}) sha256=([0-9a-f]{{64}}) mode=([1-9][0-9]*x[1-9][0-9]*) binding=([1-9][0-9]*x[1-9][0-9]*)(?: crc=[0-9a-f]{{8}} crc2=(?:[0-9a-f]{{8}}|none) raster=[1-9][0-9]*x[1-9][0-9]* out=sor[0-9]+)?')
 MAX_PIXELS = 2560 * 1600 * 4
 
 
