@@ -85,7 +85,7 @@ It returns ENOSYS outside suite boots and ENODEV on backends 4 and 5. A checkpoi
 
 A native CRC row is derived only from a native run where the checkpoint digest matched an operator-approved entry, with stable entries and no overflow. It is keyed by that digest and output configuration, including raster, mode, viewport, scaler methods, output and source. It judges display output after memory: it cannot admit a picture or override a digest mismatch. Mode 0 covers the 1:1 raster; mode 1 covers the scaled output, with source-pixel sensitivity characterized separately. The CRC does not establish the behavior of the link after the SOR, cable or panel.
 
-One-shot test-control point 32, `display-output-perturb`, enables dithering for the next backend 6 checkpoint. Its native case requires the memory digest to stay unchanged while the CRC changes, then disarms and requires the approved CRC again. On ARM the point returns EINVAL.
+One-shot test-control point 35, `display-output-perturb`, enables dithering for the next backend 6 checkpoint. Its native case requires the memory digest to stay unchanged while the CRC changes, then disarms and requires the approved CRC again. On ARM the point returns EINVAL.
 
 <!-- claim-lint:ok: Proposed host-surface experiment and observation boundary in docs/gui/screen-proof.md, not an acceptance result. -->
 ARM64 QEMU has no equivalent display CRC. A proof-mode host-surface capture spike may compare QEMU's displayed surface with serial during the held intent frame. If it cannot produce a valid current surface, the stated ARM boundary is the latched-binding readback and host-renderer attestation, not proof of the host window.
