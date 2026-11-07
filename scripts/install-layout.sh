@@ -13,6 +13,23 @@ set_owner() {
         chown "$1" "$2"
     fi
 }
+# Retire legacy fixture locations before the table creates directories and
+# installs binaries that intentionally use those paths.
+mkdir -p "$root/usr/libexec/breenix"
+if [ -d "$root/usr/local/test/bin" ]; then
+    # Includes the Rust-std non-UTF-8 hard link, which is a fixture rather than an ELF.
+    for file in "$root/usr/local/test/bin"/*; do
+        [ -e "$file" ] || continue
+        mv "$file" "$root/usr/libexec/breenix/"
+    done
+    rmdir "$root/usr/local/test/bin"
+fi
+if [ -d "$root/usr/local/test/share" ]; then
+    mv "$root/usr/local/test/share" "$root/usr/libexec/breenix/share"
+fi
+if [ -d "$root/usr/local/test" ]; then
+    rmdir "$root/usr/local/test"
+fi
 while read -r kind path mode uid gid; do
     case "$kind" in
         dir) mkdir -p "$root/$path"; set_owner "$uid:$gid" "$root/$path"; chmod "$mode" "$root/$path" ;;
@@ -44,20 +61,6 @@ done
 if [ -d "$root/usr/local/libc" ]; then
     rmdir "$root/usr/libexec/breenix/libc/bin" "$root/usr/libexec/breenix/libc"
     mv "$root/usr/local/libc" "$root/usr/libexec/breenix/libc"
-fi
-if [ -d "$root/usr/local/test/bin" ]; then
-    # Includes the Rust-std non-UTF-8 hard link, which is a fixture rather than an ELF.
-    for file in "$root/usr/local/test/bin"/*; do
-        [ -e "$file" ] || continue
-        mv "$file" "$root/usr/libexec/breenix/"
-    done
-    rmdir "$root/usr/local/test/bin"
-fi
-if [ -d "$root/usr/local/test/share" ]; then
-    mv "$root/usr/local/test/share" "$root/usr/libexec/breenix/share"
-fi
-if [ -d "$root/usr/local/test" ]; then
-    rmdir "$root/usr/local/test"
 fi
 if [ -f "$root/usr/libexec/breenix/rust-std-child_test" ]; then
     if [ -n "${BREENIX_EXT2_OWNERS:-}" ]; then
