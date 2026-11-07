@@ -220,6 +220,7 @@ pub(super) fn begin(suite: &str) -> ClockMap {
     *REUSE.lock().unwrap() = None;
     *CAPTURE_PIXELS.lock().unwrap() = None;
     let _ = std::fs::remove_file(std::format!("{}.screen", super::judged_path()));
+    let _ = std::fs::remove_file(pending_path());
     ClockMap(ptr)
 }
 
@@ -460,20 +461,43 @@ pub(super) fn emit(line: &str) {
 
 fn capture_enabled() -> bool {
     static SETTING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *SETTING.get_or_init(|| std::fs::read_to_string("/etc/breenix/screen-capture")
-        .is_ok_and(|s| s.trim() == "on"))
+    *SETTING.get_or_init(|| (std::fs::metadata("/etc/breenix/evidence-route").is_ok()
+        && ["/proc/breenix/screen-proof", "/etc/breenix/screen-proof"].iter()
+            .any(|path| std::fs::read_to_string(path).is_ok_and(|s| s.trim() == "on")))
+        || std::fs::read_to_string("/etc/breenix/screen-capture").is_ok_and(|s| s.trim() == "on"))
 }
 
 pub(super) fn capture(suite: &str, case: &str, checkpoint: &str, mode: Mode,
     digest: [u8;32], pixels: &[u8]) -> Result<(), &'static str> {
     if !capture_enabled() { return Ok(()); }
     use std::io::Write;
-    let bytes = screen_capture::encode(&screen_capture::Record {
-        suite,case,checkpoint,width: mode.width,height: mode.height,digest,pixels })?;
+    let record = screen_capture::Record { suite,case,checkpoint,width: mode.width,height: mode.height,digest,pixels };
+    if std::fs::metadata("/etc/breenix/evidence-route").is_ok() {
+        let known = std::fs::read_to_string("/etc/breenix/screen-known").unwrap_or_default();
+        return super::screen_upload::queue(&pending_path(), &known, &record)
+            .map(|_| ()).map_err(|_| "capture-queue");
+    }
+    let bytes = screen_capture::encode(&record)?;
     let mut request = [0;24];
     request[..8].copy_from_slice(screen_capture::REQUEST_MAGIC);
     request[8..16].copy_from_slice(&(bytes.as_ptr() as u64).to_le_bytes());
     request[16..24].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
     std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence")
         .map_err(|_| "capture-open")?.write_all(&request).map_err(|_| "capture-write")
+}
+
+fn pending_path() -> std::path::PathBuf { std::format!("{}.screen-pixels", super::judged_path()).into() }
+
+pub(super) fn upload_pending(suite: &'static str) {
+    static UPLOAD: Mutex<Option<super::evidence::Upload>> = Mutex::new(None);
+    if !pending_path().exists() { return; }
+    let mut state = UPLOAD.lock().unwrap();
+    let upload = state.get_or_insert_with(|| {
+        let multiple = super::sequence::read(suite).is_some_and(|(ids, _)| ids.len() > 1);
+        let route = super::evidence_route(suite, multiple).map(|route| route.map(|mut route| {
+            route.path.push_str("/screens"); route
+        }));
+        super::evidence::Upload::new(suite, route)
+    });
+    for line in super::screen_upload::flush(&pending_path(), upload, super::evidence_transfer) { emit(&line); }
 }

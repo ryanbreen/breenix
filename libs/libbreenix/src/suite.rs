@@ -100,6 +100,8 @@ pub mod memory_record;
 pub mod prerequisites;
 #[path = "suite_sequence.rs"]
 pub mod sequence;
+#[path = "suite_screen_upload.rs"]
+mod screen_upload;
 #[path = "suite_evidence.rs"]
 mod evidence;
 #[path = "suite_host_input.rs"]
@@ -1313,8 +1315,10 @@ impl Suite {
                 done += 1;
                 if let Some(slot) = panel_reasons.get_mut(c).and_then(|v| v.get_mut(k)) { retain_panel_reason(&mut states[c][k], slot); }
                 for checkpoint in screen::collect(self.id, &name) { screen::emit(&checkpoint); }
+                screen::upload_pending(self.id);
                 if let Some(picture) = intent_picture.as_deref() {
                     intent::show(self.id, &name, picture, intent_pace_ms);
+                    screen::upload_pending(self.id);
                     if screen.gui { let _ = crate::suite_stage::redraw(); }
                 }
                 if let Some(observe) = self.case_observer { observe(done, total, &name); }

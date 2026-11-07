@@ -49,7 +49,7 @@ def config_2(action, size, partition, expected, root, url=''):
 
 
 def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite=None, idle_minutes=None, replug=False,
-          the_layout=None, operator=None, no_ssh=False, screen_proof=False):
+          the_layout=None, operator=None, no_ssh=False, screen_proof=False, screen_known=None):
     """Reset the writable root for each boot, including unchanged userspace builds. `the_layout` is the layout an
     install boot's request writes before the stub stages this root; otherwise the recorded one, if any."""
     the_layout = the_layout or metal_persist.layout()
@@ -70,7 +70,7 @@ def stage(directory, inputs, boot_id, commit, site, build, mode='console', suite
     upload = gt710_upload.prepare(directory, boot_id, site, suite=suite) if mode == 'probe' or native_suite else None
     staged = metal_root.stage_root(image, mode, suite, site, hasher=inputs / 'sha512-crypt', writer=writer,
                                    idle_minutes=idle_minutes, replug=replug, operator=operator, power_token=m.power_token(),gt710_upload=upload,
-                                   screen_proof=screen_proof)
+                                   screen_proof=screen_proof, screen_known=screen_known)
     if no_ssh:
         # Damage only the candidate's private userland before recording its digest.
         # Its kernel, init and console still boot; the previous generation is untouched.

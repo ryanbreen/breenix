@@ -6,6 +6,7 @@ pub(super) const MAX_ROUTE: usize = 2048;
 pub(super) const MAX_UPLOAD: usize = 2 << 20;
 pub(super) const MAX_TOTAL: usize = 64 << 20;
 
+#[derive(Clone)]
 pub(super) struct Route {
     pub host: String,
     pub port: u16,
@@ -109,6 +110,24 @@ impl Upload {
     pub fn new(suite: &'static str, route: Result<Option<Route>, String>) -> Self {
         Self { suite, route, bytes: 0, parts: 0, startup_failure: None }
     }
+    /// Send complete bodies as bounded ordered parts, accounting before any request.
+    pub fn send_parts(&mut self, data: &[u8],
+        mut send: impl FnMut(&Route, &str, &[u8], [u8; 32]) -> Result<(), String>) -> Result<(usize, usize, String), String> {
+        let route = self.route.as_ref().map_err(String::clone)?.as_ref().ok_or("no-route")?;
+        if data.is_empty() || self.bytes.checked_add(data.len()).is_none_or(|n| n > MAX_TOTAL) {
+            return Err("total-bound".into());
+        }
+        let first = self.parts;
+        let count = data.len().div_ceil(MAX_UPLOAD);
+        let hex: String = sha256(data).iter().map(|b| format!("{b:02x}")).collect();
+        self.bytes += data.len();
+        for part in data.chunks(MAX_UPLOAD) {
+            let path = format!("{}/pictures/{}", route.path, self.parts);
+            self.parts += 1;
+            send(route, &path, part, sha256(part))?;
+        }
+        Ok((first, count, hex))
+    }
     /// Picture buffers are local to this call and drop before it returns.
     pub fn capture(&mut self, label: &str,
         capture: impl FnOnce() -> Result<Observation, String>,
@@ -118,7 +137,7 @@ impl Upload {
             if let Some(error) = &self.startup_failure { return format!("{prefix} refused=startup-{error}"); }
         }
         let route = match &self.route {
-            Ok(Some(route)) => route,
+            Ok(Some(route)) => route.clone(),
             Ok(None) => return format!("{prefix} skipped=no-route"),
             Err(error) => {
                 if label == "startup" { self.startup_failure = Some(error.clone()); }
@@ -137,18 +156,17 @@ impl Upload {
                 if self.bytes + data.len() + manifest.len() > MAX_TOTAL { return Err("total-bound".into()); }
                 // Reuse the native ordered picture-chunk route. Startup opens
                 // the route first; final seals it only after its parts arrive.
-                self.bytes += data.len() + manifest.len();
-                if label == "startup" { send(route, &path, manifest.as_bytes(), sha256(manifest.as_bytes()))?; }
-                for part in data.chunks(MAX_UPLOAD) {
-                    let part_path = format!("{}/pictures/{}", route.path, self.parts);
-                    send(route, &part_path, part, sha256(part))?;
-                    self.parts += 1;
+                self.bytes += manifest.len();
+                if label == "startup" { send(&route, &path, manifest.as_bytes(), sha256(manifest.as_bytes()))?; }
+                self.send_parts(&data, &mut send)?;
+                if label == "suite-final-panel" {
+                    let route = self.route.as_ref().map_err(String::clone)?.as_ref().ok_or("no-route")?;
+                    send(route, &path, manifest.as_bytes(), sha256(manifest.as_bytes()))?;
                 }
-                if label == "suite-final-panel" { send(route, &path, manifest.as_bytes(), sha256(manifest.as_bytes()))?; }
             } else {
                 // Ambiguous HTTP failures still consume the attempted budget.
                 self.bytes += data.len();
-                send(route, &path, &data, digest)?;
+                send(&route, &path, &data, digest)?;
             }
             Ok::<_, String>(format!("{prefix} bytes={} sha256={hex}", data.len()))
         })();

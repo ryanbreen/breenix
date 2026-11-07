@@ -379,6 +379,8 @@ class Driver:
             run['onlyCase'] = self.args.case
         if getattr(self.args, 'screen_proof', False):
             run['screenProof'] = True
+        if getattr(self.args, 'screen_known_json', None) is not None:
+            run['screenKnown'] = self.args.screen_known_json
         if getattr(self.args, 'build_choice', None) is not None:
             run['buildChoice'] = self.args.build_choice
             m.write_json(self.dir / 'metal-run.json', run)
@@ -587,6 +589,8 @@ class Driver:
         the_layout = metal_persist.layout()
         disk = getattr(self.args, 'disk', None)
         if disk != 'root':
+            screen_route = metal_disk.gt710_upload.prepare(self.dir, self.id, self.site,
+                suite=getattr(self.args, 'suite', None)) if getattr(self.args, 'screen_proof', False) else None
             self.delivery['root'] = metal_root.stage_root(inputs / 'ext2.img', self.args.mode,
                 getattr(self.args, 'suite', None), self.site,
                 install=self.id if disk == 'install' else None, hasher=inputs / 'sha512-crypt',
@@ -595,7 +599,8 @@ class Driver:
                 replug=self.args.mode == 'console' and not session(self.args) and not xhci_fault(self.args),
                 xhci_fault=xhci_fault(self.args), power_token=self.shutdown_token,
                 watchdog_fault=self.args.inject.removeprefix('watchdog-') if self.args.inject in WATCHDOG_FAULTS else None,
-                screen_proof=getattr(self.args, 'screen_proof', False))
+                screen_proof=getattr(self.args, 'screen_proof', False),
+                screen_known=getattr(self.args, 'screen_known_json', None), gt710_upload=screen_route)
             if disk == 'install':
                 write = self.delivery['root']['diskWrite']
                 m.write_json(self.dir / 'disk-write.json', write)
@@ -608,7 +613,8 @@ class Driver:
                 mode=self.args.mode, suite=getattr(self.args, 'suite', None),
                 idle_minutes=self.args.idle_minutes if session(self.args) else None,
                 replug=self.args.mode == 'console' and not session(self.args),
-                screen_proof=getattr(self.args, 'screen_proof', False))
+                screen_proof=getattr(self.args, 'screen_proof', False),
+                screen_known=getattr(self.args, 'screen_known_json', None))
             self.delivery['diskRoot'] = facts
             files.update(suite_files)
             if self.args.mode == 'suite' and m.read_json(manifest).get('diskChecks'):
@@ -2384,6 +2390,7 @@ def main():
         p.add_argument('--input', choices=('sol',))
         p.add_argument('--wait', type=float, default=None, metavar='MIN', help='queue wait (default 240 minutes)')
         p.add_argument('--session', action='store_true', help='hold the console for operator input, without scoring')
+        p.add_argument('--screen-known-json', type=json.loads, help=argparse.SUPPRESS)
         p.add_argument('--screen-proof', action='store_true', help='enable screen proof checkpoints')
         p.add_argument('--idle-minutes', type=int, default=30, help='session input idle limit (1 through 240; default 30)')
         p.add_argument('--suite')

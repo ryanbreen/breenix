@@ -88,7 +88,11 @@ class ScreenPictureUploadTest(StateTest):
             return handler.code
         with patch.object(m, 'read_lease', return_value=dict(id='sample', state='powered')):
             self.assertEqual(send(0, b'production'), 404)
+            ordinary = Handler(route + '/pictures/0', b'gpu-production')
+            upload.receive(ordinary); self.assertEqual(ordinary.code, 404)
             m.write_json(directory / 'run.json', dict(screenProof=True))
+            ordinary = Handler(route + '/pictures/0', b'gpu-proof')
+            upload.receive(ordinary); self.assertEqual(ordinary.code, 200)
             # A full SCR1 record is reconstructed under one wire digest from ordered requests.
             body = b'SCR1' + b'x' * (2 * 1024 * 1024 + 37)
             self.assertEqual(send(1, b'reordered'), 404)
@@ -105,6 +109,16 @@ class ScreenPictureUploadTest(StateTest):
             self.assertFalse((directory / 'screen-part-0002.bin.partial').exists())
             self.assertIn('64 MiB', m.read_json(directory / 'native-upload-refused.json')['reason'])
             self.assertEqual((directory / 'screen-part-0000.bin').read_bytes(), body[:2<<20])
+            # A sequence shares the root budget with earlier suites, rather than resetting it.
+            m.write_json(m.STATE / 'gt710-upload.json', dict(id='sample', route=route,
+                suite='console,gpu', aggregateBytes=upload.MAX_TOTAL-1,
+                suiteSlots=dict(gpu=dict(id='sample', route=route+'/suites/gpu', suite='gpu', complete=True))))
+            handler = Handler(route+'/suites/gpu/screens/pictures/0', b'over-cap')
+            upload.receive(handler); self.assertEqual(handler.code, 400)
+            scoped = directory/'native-suites/gpu'
+            self.assertIn('64 MiB', m.read_json(scoped/'native-upload-refused.json')['reason'])
+            self.assertFalse((scoped/'screen-part-0000.bin').exists())
+
 
 
 class SerialCleanerTest(unittest.TestCase):
@@ -870,6 +884,24 @@ class RootStagingTest(unittest.TestCase):
             metal_root.stage_root(image, 'suite', 'gpu', {})
             self.assertEqual(read(), b'')
 
+    def test_screen_known_stages_named_digests_and_clears_reused_root(self):
+        import metal_root
+        with tempfile.TemporaryDirectory() as scratch:
+            root = Path(scratch); tree = root / 'tree'
+            (tree/'etc/breenix').mkdir(parents=True); (tree/'sbin').mkdir()
+            (tree/'sbin/suite-gpu').write_bytes(b'\x7fELFfixture')
+            image = root/'root.img'
+            subprocess.run([self.mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'], check=True, capture_output=True)
+            def read(name):
+                return subprocess.run([self.debugfs, '-R', 'cat /etc/breenix/'+name, str(image)], capture_output=True).stdout
+            metal_root.stage_root(image, 'suite', 'gpu', {}, screen_proof=True,
+                gt710_upload='http://fixture.invalid/upload', screen_known=dict(manifest='fixture/manifest.json', digests=['a'*64, 'b'*64]))
+            self.assertEqual(read('screen-known'), ('a'*64+'\n'+'b'*64+'\n').encode())
+            self.assertEqual(read('evidence-route'), b'http://fixture.invalid/upload\n')
+            metal_root.stage_root(image, 'suite', 'gpu', {})
+            self.assertEqual(read('screen-known'), b'')
+            self.assertEqual(read('evidence-route'), b'')
+
     def test_numbered_operator_keys_are_validated_and_staged_in_order(self):
         import base64
         import metal_root
@@ -1239,6 +1271,25 @@ class DriverTest(StateTest):
              patch.object(run, 'in_metal', return_value=SimpleNamespace(returncode=1, stdout='', stderr='fixture')) as remote:
             self.assertEqual(run.boot(args), 1)
         self.assertIn('--screen-proof', remote.call_args.args)
+
+    def test_screen_known_manifest_reaches_driver_and_run_record(self):
+        run = load_script('metal-run')
+        manifest = self.driver.dir/'candidates.json'
+        manifest.write_text(json.dumps(dict(version=1, rows=[dict(sha256='a'*64)])))
+        args = run.argument_parser().parse_args(['boot', '--suite', 'gpu', '--screen-proof', '--screen-known', str(manifest)])
+        with patch.object(run, 'host_env', return_value={}), \
+             patch.object(run, 'resolve', return_value='a'*40), \
+             patch.object(run, 'resolve_suites', return_value='gpu'), \
+             patch.object(run, 'in_metal', return_value=SimpleNamespace(returncode=1, stdout='', stderr='fixture')) as remote:
+            self.assertEqual(run.boot(args), 1)
+        command = remote.call_args.args
+        known = json.loads(command[command.index('--screen-known-json') + 1])
+        self.assertEqual(known, dict(manifest=str(manifest.resolve()), sha256=hashlib.sha256(manifest.read_bytes()).hexdigest(), digests=['a'*64]))
+        self.driver.args.screen_known_json = known
+        self.driver.args.screen_proof = True
+        self.driver.args.target, self.driver.args.commit, self.driver.args.task = 'main', '', ''
+        manifest.unlink(); self.driver.dir.rmdir(); self.driver.create_record()
+        self.assertEqual(m.read_json(self.driver.dir/'run.json')['screenKnown'], known)
 
     def test_screen_proof_start_sets_breengel_deadline_origin(self):
         d = self.driver

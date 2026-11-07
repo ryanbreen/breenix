@@ -41,13 +41,34 @@ class ExportTest(unittest.TestCase):
             Image.new('RGB', (1, 1), (9, 9, 9)).save(known / 'one.png')
             with self.assertRaisesRegex(ValueError, 'pixel digest'):
                 gallery.metal_records(boot, manifest)
-            # Uploaded bytes are bound to the wire anchor, identity and canonical digest.
-            (boot / 'screen-part-0000.bin').write_bytes(record)
-            (boot / 'screen-part-upload-0000.json').write_text(json.dumps(dict(
-                id='metal-fixture', complete=True, bytes=len(record), sha256=wire)))
-            anchor = f'SCREEN_UPLOAD gpu draw/one end first=0 parts=1 bytes=512 sha256={wire}\n'
+            # Reassemble a >2 MiB SCR1 body under its aggregate wire digest.
+            pixels = b''.join(n.to_bytes(3, 'little') + b'\xff' for n in range(600_000))
+            digest = hashlib.sha256(pixels).hexdigest()
+            payload = b''.join(names) + pixels
+            record = bytearray((80 + len(payload) + 511) // 512 * 512); record[:4] = b'SCR1'
+            struct.pack_into('<IIIIIHHH', record, 4, len(record), 0, len(pixels), 1000, 600, *map(len, names))
+            record[32:64] = bytes.fromhex(digest); struct.pack_into('<I', record, 64, len(pixels))
+            record[80:80+len(payload)] = payload
+            wire = hashlib.sha256(record).hexdigest()
+            for index, at in enumerate(range(0, len(record), 2<<20)):
+                part = record[at:at+(2<<20)]
+                (boot / f'screen-part-{index:04}.bin').write_bytes(part)
+                (boot / f'screen-part-upload-{index:04}.json').write_text(json.dumps(dict(
+                    id='metal-fixture', complete=True, bytes=len(part), sha256=hashlib.sha256(part).hexdigest())))
+            serial = f'SUITE gpu SCREEN draw/one end sha256={digest} mode=1000x600 binding=1000x600\n'
+            anchor = f'SCREEN_UPLOAD gpu draw/one end first=0 parts=2 bytes={len(record)} sha256={wire}\n'
             (boot / 'serial.txt').write_text(serial + anchor)
             self.assertEqual(gallery.metal_records(boot, None)[1][digest][2], pixels)
+            repo = root / 'repo'; script = repo / 'tools/screen-gallery/export.py'
+            script.parent.mkdir(parents=True); shutil.copyfile(EXPORT, script)
+            manifests = repo / 'docs/suites'; manifests.mkdir(parents=True)
+            (manifests / 'gpu.json').write_text(json.dumps(dict(id='gpu', categories=[dict(id='draw', cases=[dict(id='one', title='One pixel')])])))
+            for command in (['init', '-q'], ['add', '.'], ['-c', 'user.name=Fixture', '-c', 'user.email=fixture@example.com', 'commit', '-qm', 'Fixture']):
+                subprocess.run(['git', '-C', str(repo), *command], check=True, capture_output=True)
+            result = subprocess.run([sys.executable, str(script), '--metal-boot', str(boot), '--output', str(root/'out')], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            rows = json.loads((Path(result.stdout.strip())/'manifest.json').read_text())['rows']
+            self.assertEqual([(r['boot_id'], r['commit'], r['sha256']) for r in rows], [('metal-fixture', 'a'*40, digest)])
             (boot / 'serial.txt').write_text(serial + anchor.replace(wire, '0'*64))
             with self.assertRaisesRegex(ValueError, 'digest'):
                 gallery.metal_records(boot, None)

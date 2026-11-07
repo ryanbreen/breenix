@@ -25,6 +25,7 @@ userspace test report; it is scored against the commit's docs/boot-path.json (do
 userland as the persistent install, or upgrades it, and verifies the new slot; `--rollback` swaps the current and
 previous kernels (docs/metal/README.md, "Boot manager and persistent install").
 """
+import hashlib
 import argparse
 import json
 import os
@@ -238,6 +239,20 @@ def boot(args):
     is_session = bool(getattr(args, 'session', False))
     if getattr(args, 'screen_proof', False) and (is_session or args.payload != 'image' or args.mode != 'suite'):
         raise SystemExit('--screen-proof needs an automated image suite boot, without --session')
+    known_path = getattr(args, 'screen_known', None)
+    known = None
+    if known_path:
+        if not getattr(args, 'screen_proof', False):
+            raise SystemExit('--screen-known needs --screen-proof')
+        manifest = Path(known_path).resolve()
+        data = manifest.read_bytes()
+        doc = json.loads(data)
+        if doc.get('version') != 1 or not isinstance(doc.get('rows'), list):
+            raise SystemExit('invalid screen candidates manifest')
+        digests = sorted({row['sha256'] for row in doc['rows']})
+        if len(digests) > 4096 or any(not re.fullmatch('[0-9a-f]{64}', value) for value in digests):
+            raise SystemExit('invalid screen candidates digests')
+        known = dict(manifest=str(manifest), sha256=hashlib.sha256(data).hexdigest(), digests=digests)
     wait = getattr(args, 'wait', None)
     if wait is None:
         wait = 240
@@ -293,6 +308,8 @@ def boot(args):
         command.append('--catchup')
     if getattr(args, 'screen_proof', False):
         command.append('--screen-proof')
+    if known is not None:
+        command += ['--screen-known-json', json.dumps(known)]
     if is_session:
         command += ['--session', '--idle-minutes', str(idle)]
     elif args.mode == 'console':
@@ -587,6 +604,7 @@ def argument_parser(automatic=False):
     p.add_argument('--input', choices=('sol',))
     p.add_argument('--wait', type=float, default=None, metavar='MIN', help='queue wait (default 240 minutes)')
     p.add_argument('--session', action='store_true', help='hold console input for the operator without scoring')
+    p.add_argument('--screen-known', type=Path, help='suppress checkpoint uploads named by this candidates manifest')
     p.add_argument('--screen-proof', action='store_true', help='enable screen proof checkpoints')
     p.add_argument('--idle-minutes', type=int, default=30, help='console session input idle limit; default 30')
     p.add_argument('--disk', choices=('install', 'root'),

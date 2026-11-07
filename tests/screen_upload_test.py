@@ -31,10 +31,14 @@ pub mod crypto { #[path="SHA"] pub mod sha256; }
     queue::queue(&path, "", &second).unwrap();
     let route = evidence::Route::parse("http://fixture.invalid/upload/screens", "gpu", false).unwrap();
     let mut upload = evidence::Upload::new("gpu", Ok(Some(route)));
+    let mut sent = 0usize;
+    let panel = || Ok(evidence::Observation {width:1,height:1,record:[0;1024],pixels:vec![1,2,3,255]});
+    assert!(upload.capture("startup", panel, |_,_,body,_| {sent+=body.len(); Ok(())}).contains(" sha256="));
     let mut requests = Vec::new();
     let lines = queue::flush(&path, &mut upload, |_,path,body,digest| {
         assert!(body.len() <= evidence::MAX_UPLOAD);
         assert_eq!(digest, crypto::sha256::sha256(body));
+        sent += body.len();
         requests.push((path.to_string(),body.to_vec())); Ok(())
     });
     assert_eq!(lines.len(), 2);
@@ -47,13 +51,17 @@ pub mod crypto { #[path="SHA"] pub mod sha256; }
     assert_eq!(decoded.pixels,noise);
     assert!(!path.exists());
     // The budget includes startup/final panel bodies and checkpoint records.
+    assert!(upload.capture("suite-final-panel", panel, |_,_,body,_| {sent+=body.len(); Ok(())}).contains(" sha256="));
     let raw = vec![7;2<<20];
     let mut refused = false;
     for _ in 0..40 {
-        let line = upload.picture("gpu draw/three end", &raw, |_,_,_,_|Ok(()));
+        let line = queue::picture(&mut upload, "gpu draw/three end", &raw, |_,_,body,_| {sent+=body.len(); Ok(())});
         if line.contains("refused=") { assert!(line.ends_with("refused=total-bound")); refused=true; break; }
     }
     assert!(refused);
+    let over = vec![0; evidence::MAX_TOTAL - sent + 1];
+    assert!(queue::picture(&mut upload, "gpu draw/three end", &over,
+        |_,_,_,_|panic!("panel and checkpoint bytes must share the budget")).ends_with("refused=total-bound"));
 }
 '''
         with tempfile.TemporaryDirectory() as tmp:

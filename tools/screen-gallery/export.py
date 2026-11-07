@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Export a stopped VM's SCR1 disk and serial inventory to Vigil candidates."""
+"""Export SCR1 disk or metal-boot evidence and serial inventory to Vigil candidates."""
 import argparse
 from fnmatch import fnmatchcase
 import hashlib
@@ -51,7 +51,7 @@ def serial_records(path):
 
 def disk_records(path):
     pictures = {}
-    with path.open('rb') as f:
+    with (path if hasattr(path, 'read') else path.open('rb')) as f:
         if f.read(512) != b'SCRDISK1' + bytes(504):
             raise ValueError('invalid disk marker')
         while True:
@@ -107,6 +107,110 @@ def disk_records(path):
     return pictures
 
 
+UPLOAD = re.compile(rf'SCREEN_UPLOAD ({NAME}) ({NAME}/{NAME}) ({NAME}) first=(0|[1-9][0-9]*) parts=([1-9][0-9]*) bytes=([1-9][0-9]*) sha256=([0-9a-f]{{64}})')
+
+
+def known_pictures(manifest):
+    if manifest is None:
+        return {}
+    from PIL import Image
+    manifest = Path(manifest)
+    doc = json.loads(manifest.read_text(encoding='utf-8'))
+    if doc.get('version') != 1 or not isinstance(doc.get('rows'), list):
+        raise ValueError('invalid known candidates manifest')
+    pictures = {}
+    for row in doc['rows']:
+        digest, mode, name = row['sha256'], row['mode'], row['png']
+        if not re.fullmatch('[0-9a-f]{64}', digest) or not re.fullmatch('[1-9][0-9]*x[1-9][0-9]*', mode):
+            raise ValueError('invalid known picture identity')
+        path = manifest.parent / name
+        if path.resolve().parent != manifest.parent.resolve():
+            raise ValueError('known PNG escapes candidates directory')
+        width, height = map(int, mode.split('x'))
+        if width * height * 4 > MAX_PIXELS:
+            raise ValueError('known picture size exceeds bound')
+        with Image.open(path) as image:
+            if image.format != 'PNG' or image.size != (width, height):
+                raise ValueError('known PNG mode mismatch')
+            pixels = bytearray(image.convert('RGBA').tobytes('raw', 'BGRA'))
+        pixels[3::4] = b'\xff' * (width * height)
+        if hashlib.sha256(pixels).hexdigest() != digest:
+            raise ValueError('known PNG pixel digest mismatch')
+        pictures[digest] = (None, mode, bytes(pixels))
+    return pictures
+
+
+def metal_records(directory, known_manifest):
+    import io
+    directory = Path(directory)
+    run = json.loads((directory / 'run.json').read_text())
+    boot_id, commit = run['id'], run['commit']
+    if not boot_id or not re.fullmatch('[0-9a-f]{40}', commit) or run.get('screenProof') is not True:
+        raise ValueError('metal capture needs a proof run and commit')
+    serial_path = directory / 'serial.txt'
+    if not serial_path.exists():
+        serial_path = directory / 'console.log'
+    records = serial_records(serial_path)
+    serial = serial_path.read_text()
+    if re.search(r'^SCREEN_UPLOAD .*refused=', serial, re.M):
+        raise ValueError('checkpoint picture upload refused')
+    lookup = {(r[0], r[1], r[2]): r for r in records}
+    order = {key: n for n, key in enumerate(lookup)}
+    pictures, used, checkpoint_keys = {}, set(), set()
+    next_part, last_checkpoint, total = {}, -1, 0
+    for line in serial.splitlines():
+        if not line.startswith('SCREEN_UPLOAD '):
+            continue
+        match = UPLOAD.fullmatch(line)
+        if not match:
+            raise ValueError('invalid checkpoint upload anchor')
+        suite, case, checkpoint, first, parts, size, digest = match.groups()
+        key = (suite, case, checkpoint)
+        if key not in lookup or key in checkpoint_keys or order[key] <= last_checkpoint:
+            raise ValueError('checkpoint upload order or identity differs')
+        first, parts, size = map(int, (first, parts, size))
+        if first != next_part.get(suite, 0) or size > MAX_PIXELS + 4096 or parts != (size + (2<<20) - 1) // (2<<20):
+            raise ValueError('checkpoint upload parts differ')
+        scope = directory / 'native-suites' / suite if (directory / 'native-suites').is_dir() else directory
+        data = bytearray()
+        for index in range(first, first + parts):
+            path = scope / f'screen-part-{index:04}.bin'
+            receipt = json.loads((scope / f'screen-part-upload-{index:04}.json').read_text())
+            body = path.read_bytes()
+            if (receipt.get('id') != boot_id or receipt.get('complete') is not True
+                    or not 0 < len(body) <= 2<<20 or receipt.get('bytes') != len(body)
+                    or receipt.get('sha256') != hashlib.sha256(body).hexdigest()):
+                raise ValueError('checkpoint part receipt or digest differs')
+            data.extend(body); used.add(path)
+        total += len(data)
+        if total > 64<<20 or len(data) != size or hashlib.sha256(data).hexdigest() != digest:
+            raise ValueError('checkpoint upload aggregate digest differs')
+        decoded = disk_records(io.BytesIO(b'SCRDISK1' + bytes(504) + data + bytes(512)))
+        if len(decoded) != 1:
+            raise ValueError('checkpoint upload record count differs')
+        pixel_digest, picture = next(iter(decoded.items()))
+        expected = lookup[key]
+        if pixel_digest != expected[3] or picture[:2] != (key, expected[4]):
+            raise ValueError('uploaded picture differs from serial digest or identity')
+        pictures.setdefault(pixel_digest, picture)
+        checkpoint_keys.add(key); last_checkpoint = order[key]; next_part[suite] = first + parts
+    present = set(directory.glob('screen-part-*.bin')) | set(directory.glob('native-suites/*/screen-part-*.bin'))
+    if present != used:
+        raise ValueError('unanchored checkpoint part')
+    # Uploaded observations take precedence; no known PNG can hide a bad upload.
+    needed = {row[3] for row in records} - pictures.keys()
+    if needed:
+        known = known_pictures(known_manifest)
+        for digest in needed:
+            if digest not in known:
+                raise ValueError('serial digest has no uploaded or known picture')
+            pictures[digest] = known[digest]
+    for suite, case, checkpoint, digest, mode, _ in records:
+        if pictures[digest][1] != mode:
+            raise ValueError('serial picture mode differs')
+    return records, pictures, (boot_id, commit)
+
+
 def png(width, height, pixels):
     def chunk(kind, data):
         return struct.pack('>I', len(data)) + kind + data + struct.pack('>I', zlib.crc32(kind + data))
@@ -122,8 +226,14 @@ def png(width, height, pixels):
 
 
 def export(args):
-    records = serial_records(args.serial)
-    pictures = disk_records(args.disk)
+    if args.metal_boot:
+        records, pictures, identity = metal_records(args.metal_boot, args.known_candidates)
+        if (args.boot_id and args.boot_id != identity[0]) or (args.commit and args.commit != identity[1]):
+            raise ValueError('metal run identity differs from arguments')
+        args.boot_id, args.commit = identity
+    else:
+        records = serial_records(args.serial)
+        pictures = disk_records(args.disk)
     first = {}
     for suite, case, checkpoint, digest, mode, binding in records:
         first.setdefault(digest, ((suite, case, checkpoint), mode))
@@ -133,7 +243,7 @@ def export(args):
         if pictures[digest][1] != mode:
             raise ValueError(f'mode mismatch: {suite} {case} {checkpoint}')
     for digest, (identity, mode) in first.items():
-        if pictures[digest][:2] != (identity, mode):
+        if not args.metal_boot and pictures[digest][:2] != (identity, mode):
             raise ValueError(f'first occurrence mismatch: {identity}')
     if args.cases:
         patterns = args.cases.split(',')
@@ -207,15 +317,19 @@ def export(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('disk', type=Path); parser.add_argument('serial', type=Path)
-    parser.add_argument('--boot-id', required=True); parser.add_argument('--commit', required=True)
+    parser.add_argument('disk', type=Path, nargs='?'); parser.add_argument('serial', type=Path, nargs='?')
+    parser.add_argument('--metal-boot', type=Path, help='read SCR1 uploads from a metal boot directory')
+    parser.add_argument('--known-candidates', type=Path, help='reuse verified PNGs from this named candidates manifest')
+    parser.add_argument('--boot-id'); parser.add_argument('--commit')
     parser.add_argument('--manifests', type=Path, default=ROOT / 'docs/suites')
     parser.add_argument('--cases', help='comma-separated suite:category/case[:checkpoint] patterns; validate the full capture before selecting rows')
     parser.add_argument('--refresh', action='store_true', help='update documentation in place, requiring unchanged evidence and PNGs')
     parser.add_argument('--output', type=Path, default=Path.home() / 'Library/Application Support/Vigil/breenix/screens/candidates')
     args = parser.parse_args()
     try:
-        if not args.boot_id or not re.fullmatch(r'[0-9a-f]{40}', args.commit):
+        if args.metal_boot and (args.disk or args.serial):
+            raise ValueError('--metal-boot replaces the disk and serial arguments')
+        if not args.metal_boot and (not args.disk or not args.serial or not args.boot_id or not args.commit or not re.fullmatch(r'[0-9a-f]{40}', args.commit)):
             raise ValueError('boot id and 40-hex commit required')
         export(args)
     except (OSError, UnicodeError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
