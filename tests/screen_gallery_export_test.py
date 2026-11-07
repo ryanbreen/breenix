@@ -12,6 +12,21 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPORT = ROOT / 'tools/screen-gallery/export.py'
 
 class ExportTest(unittest.TestCase):
+    def test_u13_sor_only_screen_parses_without_losing_picture_identity(self):
+        import runpy
+        gallery = runpy.run_path(str(EXPORT))
+        digest = 'a' * 64
+        line = (f'SUITE gpu SCREEN draw/one end sha256={digest} mode=1x1 '
+                'binding=2x2 crc=12345678 crc2=none raster=1280x1024 out=sor0\n')
+        with tempfile.TemporaryDirectory() as tmp:
+            serial = Path(tmp) / 'serial.txt'
+            serial.write_text(line)
+            self.assertEqual(gallery['serial_records'](serial),
+                             [('gpu', 'draw/one', 'end', digest, '1x1', '2x2')])
+            serial.write_text(line.replace('crc2=none', 'crc2=garbage'))
+            with self.assertRaisesRegex(ValueError, 'invalid SCREEN'):
+                gallery['serial_records'](serial)
+
     def test_metal_export_binds_uploads_and_known_png_to_serial(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location('gallery', EXPORT)
