@@ -266,3 +266,54 @@ fn crc_handoff_preserves_bytes_digest_and_refuses_torn_or_foreign_records() {
         assert!(lines[0].contains(" refused="),"{kind}: {lines:?}");
     }
 }
+
+#[test]
+fn perturbation_orders_control_and_observations_and_restores_on_error() {
+    use super::perturb::{self, Driver, Observation};
+    use gpu_abi::screen_crc::{Binding, OutputConfig, Record, Sample};
+    struct Model { calls: Vec<String>, armed: bool, count: u64, fail: bool }
+    impl Driver for Model {
+        fn fired(&mut self) -> Result<u64, String> { self.calls.push("fired".into()); Ok(self.count) }
+        fn arm(&mut self, resource: u64) -> Result<(), String> {
+            assert_eq!(resource, 7); self.calls.push("arm".into()); self.armed = true; Ok(())
+        }
+        fn disarm(&mut self) -> Result<(), String> { self.calls.push("disarm".into()); self.armed = false; Ok(()) }
+        fn observe(&mut self, name: &str) -> Result<Observation, String> {
+            self.calls.push(name.into());
+            if self.fail && name == "perturb-three" { return Err("forced-readback".into()); }
+            if self.armed { self.count = 11; }
+            let b = Binding { resource: 7, present_fence: 9 };
+            let rec = Record { suite:"gpu".into(), case:"draw/one".into(), checkpoint:name.into(),
+                binding_before:b, binding_after:b, elapsed_us:1000, disarmed:true, display_error:0, status:1,
+                output_config:OutputConfig { mode:[2,1], raster:[1280,1024], viewport:[0,112,1280,800],
+                    sor:0, rg:0, methods:vec![(0x4a0,u32::from(self.armed))] },
+                samples:vec![Sample {status:1,crc:if self.armed {0x5678} else {0x1234},crc2:0xabcd};5] };
+            Ok(Observation { hash:[3;32], mode:mode(), binding:mode(), raw:rec.encode().unwrap() })
+        }
+    }
+    for fail in [false, true] {
+        let mut model = Model { calls:Vec::new(), armed:false, count:10, fail };
+        let baseline = model.observe("end").unwrap(); model.calls.clear();
+        let result = perturb::run("gpu", "draw/one", &baseline, &mut model);
+        assert!(!model.armed, "a failed observation must still disarm");
+        if fail {
+            assert!(result.is_err());
+            assert_eq!(model.calls.last().unwrap(), "disarm");
+        } else {
+            let (lines, records) = result.unwrap();
+            assert_eq!(model.calls, ["fired", "perturb-one", "arm", "perturb-two", "fired",
+                "perturb-three", "fired", "disarm", "perturb-four", "fired"]);
+            assert_eq!(lines.len(), 4); assert_eq!(records.len(), 4);
+            let body = lines.join("");
+            assert_eq!(screen::unpack(&screen::pack(&body), "gpu", "draw/one").unwrap(), body);
+            for (i, bytes) in records.iter().enumerate() {
+                let record = Record::decode(bytes).unwrap();
+                let checkpoint = ["perturb-one", "perturb-two", "perturb-three", "perturb-four"][i];
+                assert_eq!(record.checkpoint, checkpoint);
+                assert!(lines[i].contains(&format!(" phase={} ", i+1)));
+                assert_ne!(screen::crc_label("gpu", "draw/one", checkpoint), screen::crc_label("gpu", "draw/one", "end"));
+            }
+            assert!(screen::unpack(&screen::pack(&body.replace("phase=3 ", "phase=2 ")), "gpu", "draw/one").is_err());
+        }
+    }
+}
