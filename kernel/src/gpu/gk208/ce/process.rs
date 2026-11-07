@@ -302,19 +302,19 @@ pub(in crate::gk208) fn present(surface:super::super::present::Surface)
     // GR recovery can retire the request without stopping EVO. Drain its
     // retained flip before reusing the notifier; retain storage pins until the new
     // binding latches. Normal admission has already waited in the shared core.
-    if let Some(pending) = s.pending_present {
+    if let Some(pending) = s.pending_present.take() {
         if s.ready_present.take().is_none() {
             super::super::native::wait_present(&mut s.evo,&mut Registers(s.registers),pending)?;
         }
-        s.pending_present=None;
     }
     let hold=s.resources.hold(surface.resource)?;
     // An error can follow an actual latch. Keep possible display readers
     // pinned through GR reset; only a confirmed later update can release it.
     s.scanout.push(hold);
-    // Retain uncertainty even if publication or GET acceptance fails.
-    s.pending_present=Some(surface);
+    // EVO retires its slot on failure. Keep uncertain scanout pins, but only
+    // retain session work after acceptance has established the EVO record.
     s.ready_present=super::super::native::present_accepted(&mut s.evo,&mut Registers(s.registers),surface)?;
+    s.pending_present=Some(surface);
     Ok(())
 }
 
@@ -323,13 +323,16 @@ pub(in crate::gk208) fn present_complete(surface:super::super::present::Surface)
     let mut owner=SESSION.lock();
     let s=owner.as_mut().ok_or("native display owner absent")?;
     if s.pending_present != Some(surface) { return Err("native pending flip identity mismatch"); }
+    // Consume this session slot before fallible completion/evidence work.
+    // Only an incomplete poll restores it; an error must allow a replacement.
+    s.pending_present=None;
     // A retained refresh carries its own fresh report; it must not poll the
     // ordinary flip notifier, which may still contain an older completion.
     let receipt=match s.ready_present.take() {
         Some(receipt)=>receipt,
         None=>match super::super::native::present_latched(&mut s.evo,&mut Registers(s.registers),surface)? {
             Some(receipt)=>receipt,
-            None=>return Ok(false),
+            None=>{s.pending_present=Some(surface);return Ok(false);},
         },
     };
     let allocation=s.resources.scanout_allocation(surface.resource).ok_or("scanout allocation absent")?;
@@ -364,11 +367,10 @@ pub(crate) fn set_mode(index:u32)->Result<(), &'static str> {
     if index>1 {return Err("invalid native logical mode");}
     let mut owner=SESSION.lock();
     let s=owner.as_mut().ok_or("native display owner absent")?;
-    if let Some(pending) = s.pending_present {
+    if let Some(pending) = s.pending_present.take() {
         if s.ready_present.take().is_none() {
             super::super::native::wait_present(&mut s.evo,&mut Registers(s.registers),pending)?;
         }
-        s.pending_present=None;
     }
     let surface=if index==1 {
         let c=s.console;

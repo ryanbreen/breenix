@@ -385,6 +385,7 @@ pub struct Admission {
     reservation: Reservation,
     pub sources: Vec<AdmittedSource>,
     pub serial: u64,
+    pub began_ns: u64,
     entries: Vec<CompositeEntry>,
 }
 impl Admission {
@@ -414,6 +415,9 @@ impl Admission {
         }
         reg.present.serial += 1;
         self.serial = reg.present.serial;
+        for entry in &self.entries {
+            super::pipeline::record(9, entry.id, entry.commit_id, self.serial);
+        }
         Ok(())
     }
 }
@@ -428,6 +432,7 @@ impl Drop for Admission {
 }
 
 pub fn submit(caller: &Caller, a: &mut Composite, out: u64) -> Result<u64, i32> {
+    let began_ns=super::events::now_ns();
     let claim = authority(caller)?;
     if a.reserved != 0
         || a.flags > 1
@@ -559,6 +564,7 @@ pub fn submit(caller: &Caller, a: &mut Composite, out: u64) -> Result<u64, i32> 
         reservation,
         sources,
         serial: 0,
+        began_ns,
         entries,
     };
     // Test point 16, `composite-stall`: a composite that includes the armed window pauses
@@ -612,6 +618,7 @@ fn finish(frame: &mut Admission, result: Result<Composed, i32>, reason: u32) -> 
                 reg.present.force_full = false;
             }
             for e in &frame.entries {
+                super::pipeline::record(13, e.id, e.commit_id, frame.serial);
                 HISTORY.push(super::status_pages::HistoryEntry {
                     composite_serial: frame.serial, presented_ns: c.presented_ns,
                     window_id: e.id, commit_id: e.commit_id, pixel_generation: e.pixel_gen,

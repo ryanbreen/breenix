@@ -14,6 +14,8 @@ pub mod events;
 pub mod mem;
 pub mod ops;
 pub mod policy;
+pub mod pipeline;
+pub mod pacing;
 pub mod present;
 pub mod scene;
 pub mod status;

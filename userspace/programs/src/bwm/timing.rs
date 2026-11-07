@@ -1,6 +1,6 @@
 //! Repeat and multi-press policy, adapted from #2476 dfc2e318.
 use libbreenix::input::{kind, syn, Event};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) fn within(first: u64, second: u64) -> bool {
     second.checked_sub(first).is_some_and(|d| d <= 400_000_000)
@@ -65,4 +65,16 @@ impl Clicks {
         self.active.retain(|slot, _| registered(slot.0));
     }
     pub(super) fn release(&mut self, device: u32, button: u16) -> u32 { self.active.remove(&(device, button)).unwrap_or(1) }
+}
+
+/// Retire device state using one registration result per device in this batch.
+pub(super) fn retire_unregistered(
+    clicks: &mut Clicks,
+    consumed_keys: &mut BTreeSet<(u32, u16)>,
+    mut registered: impl FnMut(u32) -> bool,
+) {
+    let mut results = BTreeMap::new();
+    let mut live = |device| *results.entry(device).or_insert_with(|| registered(device));
+    clicks.retain_devices(&mut live);
+    consumed_keys.retain(|(device, _)| live(*device));
 }

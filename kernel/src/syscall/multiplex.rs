@@ -162,6 +162,11 @@ impl WaitSet {
         let registered = self.register() && registered;
         // A source that could not take the waiter is rescanned at once.
         let already_ready = !registered || ready();
+        // A descriptor deadline must not wait for the regular scheduler tick.
+        // Preemption is disabled until the blocked state and one-shot are armed.
+        if !already_ready && wake != u64::MAX {
+            crate::time::wakeup::arm(wake);
+        }
         let mut interrupted = false;
         while !already_ready {
             if super::check_signals_for_wait().is_some() {

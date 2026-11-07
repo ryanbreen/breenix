@@ -77,6 +77,7 @@ use std::cell::Cell;
 thread_local! { static NOW: Cell<u64> = const { Cell::new(0) }; }
 fn now() -> u64 { NOW.with(Cell::get) }
 mod protocol { pub const STEP: u32 = 7; }
+mod cases { pub fn failure_pipeline() {} }
 mod measure {
     use super::now;
     pub struct Clock { costs: [u64; 3], receipt_reads: u64, receipt_rows: u64 }

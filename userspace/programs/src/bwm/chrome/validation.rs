@@ -42,6 +42,10 @@ impl<S> ValidationQueue<S> {
         self.first_frames.retain(|client| live(client.id));
     }
 
+    pub fn pending(&self, id: u64) -> bool {
+        self.scene.is_some() && self.first_frames.iter().any(|c| c.id == id && !c.attempted)
+    }
+
     pub fn complete(&mut self, id: u64) {
         self.first_frames.retain(|client| client.id != id);
     }

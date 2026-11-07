@@ -620,6 +620,7 @@ pub mod resource;
 #[cfg(feature = "gt710_core_probe")]
 mod spans_diagnostic;
 mod vblank_clock;
+mod presentation_trace;
 pub mod adapter;
 pub mod caps;
 
@@ -679,10 +680,23 @@ pub(crate) fn heap_footprint() -> [usize; 8] {
     values
 }
 
+/// Physical scheduling hints. ARM's virtual counterpart completes its present
+/// through the completion-driven branch of gpu::dev::presentation_schedule.
+pub(crate) fn presentation_schedule() -> Result<(u64,u64), &'static str> {
+    ce::with_clock_owner(|regs,evo,_| evo.presentation_schedule(regs))
+}
+
+/// Wake hint only; the raster/notifier still decides completion.
+pub(crate) fn presentation_probe(include_acknowledged: bool) -> Option<u64> {
+    ce::with_clock_owner(|_, evo, _| Ok(evo.presentation_probe(include_acknowledged))).ok().flatten()
+}
+
 /// G33a: the completed native binding, in the scanout clock domain.
-pub(crate) fn completed_present_time(resource: u32) -> Option<u64> {
-    ce::with_clock_owner(|_, evo, _| {
-        evo.last_presentation.filter(|(id, _)| *id == resource)
-            .map(|(_, at)| at).ok_or("native presentation clock identity mismatch")
-    }).ok()
+pub(crate) fn completed_present_time(resource: u32, not_before: u64) -> Result<Option<u64>, &'static str> {
+    ce::with_clock_owner(|regs, evo, _| {
+        // A retained surface's capabilities acknowledgement consumes no latch.
+        // COMPOSITE must observe an edge after its render release, while ordinary
+        // PRESENT keeps its GET-acceptance semantics (G26 amendment 2).
+        evo.content_presentation(regs, resource, not_before)
+    })
 }

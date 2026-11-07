@@ -159,3 +159,10 @@ pub fn event(input: Input) -> abi::WindowEvent {
 pub fn send(id: u64, event: abi::WindowEvent) -> Result<usize, Error> {
     window::write_events(id, &[event])
 }
+
+/// Scheduling data for the COMPOSITE just completed; periodic and completion-driven devices
+/// publish through the same status file.
+pub(super) fn timing(serial: u64) -> Result<super::pace::Timing, String> {
+    let text=std::fs::read_to_string("/proc/breenix/compositor").map_err(|e| e.to_string())?;
+    super::pace::Timing::parse(serial,&text).map_err(str::to_string)
+}

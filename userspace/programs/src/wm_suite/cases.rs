@@ -1334,17 +1334,23 @@ pub fn present_latency() -> CaseResult {
         c.command(PAINT, n, 0)?;
         let r = measure::completed_commit(&c, c.commit)?;
         receipt_serial = receipt_serial.max(r.serial);
+        if r.ns < c.commit_ns {
+            value("commit-time", c.commit_ns as i64, "ns", None);
+            value("receipt-time", r.ns as i64, "ns", None);
+        }
         check(r.ns >= c.commit_ns, "composite receipt predates the commit")?;
         if n >= 30 {
             samples.push((r.ns - c.commit_ns) / 1000);
         }
     }
+    value("pipeline-window", c.id as i64, "", None);
     measure::observed(&mut d, &[&c], receipt_serial)?;
     samples.sort_unstable();
     let median = samples[samples.len() / 2];
     let max = *samples.last().unwrap();
     value("present-median", median as i64, "us", Some((0, 16000)));
     value("present-max", max as i64, "us", Some((0, 33000)));
+    if median > 16000 || max > 33000 { failure_pipeline(); }
     check(
         median <= 16000 && max <= 33000,
         "commit-to-observed-composite latency exceeds median 16 ms or max 33 ms",
@@ -1360,27 +1366,82 @@ pub fn frame_floor() -> CaseResult {
     let end = now();
     c.command(ANIMATE, 0, 0)?;
     let receipts = measure::receipts()?;
-    let mut generations = std::collections::BTreeSet::new();
+    let mut generations = std::collections::BTreeMap::new();
     for r in receipts
         .into_iter()
         .filter(|r| r.window == c.id && r.ns >= begin && r.ns < end)
     {
-        generations.insert(r.generation);
+        generations.entry(r.generation).or_insert(r.ns);
     }
-    let frames = generations.len();
-    let elapsed = end - begin;
+    let times: Vec<_> = generations.into_values().collect();
+    let rate = crate::rate::measure(&times, begin, end);
+    value("pipeline-window", c.id as i64, "", None);
+    value("measurement-begin", begin as i64, "ns", None);
+    value("measurement-end", end as i64, "ns", None);
     d.shown(&c)?;
-    value(
-        "composites-per-second",
-        (frames as u64 * 1_000_000_000 / elapsed) as i64,
-        "hz",
-        Some((60, i64::MAX)),
-    );
+    let hz = rate.as_ref().map_or(0, |r| {
+        (u128::from(r.intervals) * 1_000_000_000 / u128::from(r.span_ns)) as i64
+    });
+    value("presentation-intervals", rate.as_ref().map_or(0, |r| r.intervals) as i64, "intervals", None);
+    value("presentation-span", rate.as_ref().map_or(0, |r| r.span_ns) as i64, "ns", None);
+    value("composites-per-second", hz, "hz", Some((60, i64::MAX)));
+    if !rate.as_ref().is_some_and(|r| r.passes) {
+        failure_pipeline();
+        let gap = times.windows(2).map(|w| w[1].saturating_sub(w[0])).max().unwrap_or(0);
+        value("presentation-gap-max", gap as i64, "ns", None);
+    }
     check(
-        frames as u64 * 1_000_000_000 >= 60 * elapsed,
+        rate.is_some_and(|r| r.passes),
         "one client did not receive 60 completed composites per second",
     )
 }
+pub(super) fn failure_pipeline() {
+    full_pipeline("window-pipeline-failure");
+    export_pipeline("/proc/breenix/window-pipeline");
+}
+fn pipeline_blob(trace: &str) -> Result<Vec<u8>, String> {
+    let mut blob = b"WMPIPE01".to_vec();
+    blob.extend_from_slice(&0u32.to_le_bytes());
+    let mut count = 0u32;
+    for row in trace.lines() {
+        if count == 32768 { return Err("pipeline-row-bound".into()); }
+        let mut fields = row.split_whitespace();
+        for _ in 0..5 {
+            let n = fields.next().ok_or("pipeline-fields")?.parse::<u64>().map_err(|e| e.to_string())?;
+            blob.extend_from_slice(&n.to_le_bytes());
+        }
+        if fields.next().is_some() { return Err("pipeline-fields".into()); }
+        count += 1;
+    }
+    if count == 0 { return Err("pipeline-empty".into()); }
+    blob[8..12].copy_from_slice(&count.to_le_bytes());
+    Ok(blob)
+}
+fn full_pipeline(label: &str) {
+    use std::io::Write;
+    let result = (|| -> Result<(), String> {
+        let trace = std::fs::read_to_string("/proc/breenix/window-pipeline-full").map_err(|e| e.to_string())?;
+        let blob = pipeline_blob(&trace)?;
+        let receipt = breenix_suite::suite::upload_diagnostic("window-manager", label, &blob)?;
+        let mut evidence = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence").map_err(|e| e.to_string())?;
+        evidence.write_all(format!("VALUE window-pipeline-bulk {label} {receipt}\n").as_bytes()).map_err(|e| e.to_string())
+    })();
+    if let Err(error) = result { value("pipeline-bulk-export-errno", 5, &error, None); }
+}
+fn export_pipeline(path: &str) {
+    use std::io::Write;
+    let result = (|| -> std::io::Result<()> {
+        let trace = std::fs::read_to_string(path)?;
+        let mut evidence = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence")?;
+        for row in trace.lines() {
+            let name = if row.starts_with("fine_wake_requests=") { "timer-wake" } else { "window-pipeline" };
+            evidence.write_all(format!("VALUE {name} {row}\n").as_bytes())?;
+        }
+        Ok(())
+    })();
+    if let Err(error) = result { value("pipeline-export-errno", error.raw_os_error().unwrap_or(5) as i64, "", None); }
+}
+
 fn input_latency(pointer: bool, animation: bool) -> CaseResult {
     measure::receipts()?;
     let mut device = Virtual::create()?;
@@ -1427,6 +1488,10 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
         })?;
         let r = measure::completed_commit(&c, c.handling_commit)?;
         receipt_serial = receipt_serial.max(r.serial);
+        if r.ns < begin {
+            value("input-time", begin as i64, "ns", None);
+            value("receipt-time", r.ns as i64, "ns", None);
+        }
         check(r.ns >= begin, "completion predates injected input")?;
         if n >= 10 {
             samples.push((r.ns - begin) / 1000);
@@ -1452,6 +1517,7 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
         Some((0, median_bound)),
     );
     value("latency-max", max as i64, "us", Some((0, max_bound)));
+    if median > median_bound as u64 || max > max_bound as u64 { failure_pipeline(); }
     check(
         median <= median_bound as u64 && max <= max_bound as u64,
         "input-to-composited-ack latency exceeds the GUI plan bound",

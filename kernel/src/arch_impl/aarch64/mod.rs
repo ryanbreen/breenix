@@ -61,6 +61,7 @@ pub use privilege::Aarch64PrivilegeLevel;
 pub use syscall_entry::is_el0_confirmed;
 #[allow(unused_imports)]
 pub use timer::Aarch64Timer;
+pub type Timer = timer::Aarch64Timer;
 pub use ttbr0::{
     is_ttbr0_root_live, kernel_ttbr0, quiesce_ttbr0_for_exit, switch_ttbr0_to_kernel,
 };

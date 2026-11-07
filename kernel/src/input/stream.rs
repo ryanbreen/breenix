@@ -302,6 +302,7 @@ impl State {
             } else {
                 None
             };
+            crate::window::pipeline::record(1, device as u64, e.time_ns, e.serial);
             self.ledger.push_back(Row {
                 event: *e,
                 reader: holder,
@@ -939,6 +940,11 @@ impl IpcFile for InputFile {
                 let r = s.readers.get_mut(&id).ok_or(EBADF as u64)?;
                 if result.is_ok() {
                     r.events -= batches.iter().map(|b| b.records.len()).sum::<usize>();
+                    for batch in &batches {
+                        for record in &batch.records {
+                            crate::window::pipeline::record(2, record.event.device as u64, id, record.event.serial);
+                        }
+                    }
                 } else {
                     for b in batches.into_iter().rev() {
                         r.batches.push_front(b);

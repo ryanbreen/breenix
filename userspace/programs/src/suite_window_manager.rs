@@ -7,6 +7,8 @@ mod desktop;
 mod input;
 #[path = "wm_suite/measure.rs"]
 mod measure;
+#[path = "wm_suite/rate.rs"]
+mod rate;
 #[path = "wm_suite/protocol.rs"]
 mod protocol;
 use breenix_suite::suite::{case, category, suite, Suite};

@@ -35,6 +35,20 @@ struct Queued {
 static QUEUES: std::sync::Mutex<input_backlog::Backlog<Queued>> =
     std::sync::Mutex::new(input_backlog::Backlog::new());
 
+pub(super) fn serial_key(serial: u64) -> super::pace::Serial {
+    core_input::abi::source_order(serial).unwrap_or((0, 0))
+}
+static DELIVERED: std::sync::Mutex<BTreeMap<u64,u64>> = std::sync::Mutex::new(BTreeMap::new());
+pub(super) fn take_delivered() -> BTreeMap<u64,u64> {
+    std::mem::take(&mut *DELIVERED.lock().unwrap())
+}
+fn delivered(window: u64, serial: u64) {
+    if serial == 0 { return; }
+    DELIVERED.lock().unwrap().entry(window).and_modify(|old| {
+        if serial_key(serial) > serial_key(*old) { *old=serial; }
+    }).or_insert(serial);
+}
+
 fn dispose(serial: u64, derived: u32, window: u64, disposition: u32, reason: u32) {
     if serial == 0 {
         return;
@@ -98,6 +112,7 @@ pub(super) fn flush_input() {
         |id, q| match session::send(id, q.event) {
             Ok(1) => {
                 dispose(q.source, q.derived, id, outcome::DELIVERED, reason::NONE);
+                delivered(id, q.event.serial);
                 Delivery::Accepted
             }
             Ok(_) | Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN)) => {
@@ -204,6 +219,7 @@ pub(super) fn send_keys(windows: &[Window], stack: &super::Stack, source: Event,
 
 pub(super) struct Stream {
     capabilities: BTreeMap<u32, Vec<core_input::Capability>>,
+    read_buffer: Vec<u8>,
     x: i32,
     y: i32,
     pub(super) modifiers: u8,
@@ -215,6 +231,7 @@ impl Stream {
         assert!(READER.set(reader).is_ok(), "one input reader");
         Self {
             capabilities: BTreeMap::new(),
+            read_buffer: vec![0; core_input::abi::READER_EVENTS * (32 + 256)],
             x: 0,
             y: 0,
             modifiers: 0,
@@ -229,9 +246,8 @@ impl Stream {
         !matches!(READER.get().unwrap().capabilities(device, &mut []),
             Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENODEV)))
     }
-    pub(super) fn read(&self) -> Vec<(Event, Vec<u8>)> {
-        let mut bytes = vec![0; core_input::abi::READER_EVENTS * (32 + 256)];
-        match READER.get().unwrap().read(&mut bytes) {
+    pub(super) fn read(&mut self) -> Vec<(Event, Vec<u8>)> {
+        match READER.get().unwrap().read(&mut self.read_buffer) {
             Ok(records) => records
                 .map(|r| r.map(|r| (r.event, r.payload.to_vec())))
                 .collect::<Result<Vec<_>, _>>()

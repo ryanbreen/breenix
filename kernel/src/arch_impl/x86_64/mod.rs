@@ -59,3 +59,4 @@ pub use pic::X86Pic;
 pub use privilege::X86PrivilegeLevel;
 #[allow(unused_imports)]
 pub use timer::X86Timer;
+pub type Timer = timer::X86Timer;

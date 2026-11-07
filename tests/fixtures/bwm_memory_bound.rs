@@ -3,6 +3,15 @@ include!("bwm_memory_runtime.rs");
 #[allow(dead_code)] // The path-included modules also implement rendering and input policy outside this workload.
 #[path = "../../userspace/programs/src/bwm/compositor.rs"]
 mod compositor;
+#[allow(dead_code)] // The complete pacing policy is exercised in bwm_latency_pacing.rs.
+#[path = "../../userspace/programs/src/bwm/pace.rs"]
+mod pace;
+mod session {
+    pub fn timing(serial: u64) -> Result<super::pace::Timing,String> {
+        Ok(super::pace::Timing {presented_ns:serial,period_ns:0,prepare_ns:1,lead_ns:0})
+    }
+}
+
 #[allow(dead_code)] // Other queue operations are exercised in bwm_validation.rs.
 #[path = "../../userspace/programs/src/bwm/chrome/validation.rs"]
 mod validation;

@@ -110,3 +110,51 @@ fn hotkey_spawn_delivers_term_with_default_action_on_both_spawn_paths() {
     assert!(run.status.success(), "{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn child_signal_interrupts_wait_without_shutdown() {
+    struct ChildWait { interrupted: bool, terminated: bool }
+    impl Runtime for ChildWait {
+        type Ready = bool;
+        fn unblock(&mut self) {}
+        fn wait(&mut self) -> bool { self.interrupted = true; true }
+        fn block(&mut self) {}
+        fn terminated(&self) -> bool { self.terminated }
+        fn release(&mut self) { panic!("child exit must not release display"); }
+        fn restore(&mut self) { panic!("child exit must not restore display"); }
+        fn exit(&mut self, _: i32) { panic!("child exit must not terminate bwm"); }
+    }
+    let mut wait = ChildWait { interrupted: false, terminated: false };
+    assert_eq!(boundary(&mut wait), Some(true));
+    assert!(wait.interrupted);
+    let source = include_str!("../userspace/programs/src/bwm.rs");
+    assert!(source.contains("signal::sigaction(signal::SIGCHLD"));
+    assert!(source.contains("signal::SIGCHLD - 1"));
+}
+
+#[test]
+fn child_exit_before_poll_leaves_a_readable_wakeup() {
+    use std::{fs, process::Command};
+    let main = include_str!("../userspace/programs/src/bwm.rs");
+    let start = main.find("extern \"C\" fn child_exited(").unwrap();
+    let open = start + main[start..].find('{').unwrap();
+    let mut depth = 1;
+    let mut end = open + 1;
+    while depth != 0 {
+        match main.as_bytes()[end] { b'{' => depth += 1, b'}' => depth -= 1, _ => {} }
+        end += 1;
+    }
+    let fixture = include_str!("fixtures/bwm_signal_wait.rs")
+        .replace("@HANDLER@", &main[start..end]);
+    let dir = std::env::temp_dir().join(format!("bwm-signal-wait-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let source = dir.join("wait.rs");
+    let binary = dir.join("wait-check");
+    fs::write(&source, fixture).unwrap();
+    let build = Command::new("rustc").args(["--edition=2021", "--test", "-Dwarnings"])
+        .arg(&source).arg("-o").arg(&binary).output().unwrap();
+    assert!(build.status.success(), "{}", String::from_utf8_lossy(&build.stderr));
+    let run = Command::new(&binary).output().unwrap();
+    fs::remove_dir_all(dir).unwrap();
+    assert!(run.status.success(), "{}{}", String::from_utf8_lossy(&run.stdout), String::from_utf8_lossy(&run.stderr));
+}

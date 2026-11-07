@@ -27,6 +27,7 @@ use std::cell::Cell;
 thread_local! { static NOW: Cell<u64> = const { Cell::new(10_000_000_000) }; }
 fn now() -> u64 { NOW.with(Cell::get) }
 mod protocol { pub const STEP: u32 = 7; }
+mod cases { pub fn failure_pipeline() {} }
 mod measure {
 use super::now;
 use std::cell::{Cell, RefCell};

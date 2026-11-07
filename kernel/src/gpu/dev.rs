@@ -21,6 +21,28 @@ pub fn backend() -> u32 {
     BACKEND.load(Ordering::Acquire)
 }
 
+/// Period and advance deadline for physical presentation. VirGL and SVGA's
+/// ARM-capable counterpart uses completion-driven presents, with no periodic deadline.
+pub fn presentation_schedule() -> Option<(u64,u64)> {
+    match backend() {
+        #[cfg(target_arch = "x86_64")]
+        backend::GK208 => crate::gk208::presentation_schedule().ok(),
+        backend::VIRGL | backend::SVGA3D_DX => Some((0,0)),
+        _ => None,
+    }
+}
+
+/// Physical-latch wake hint. VirGL/SVGA on ARM publish on completion and
+/// have no periodic latch; their existing completion events wake the worker.
+pub fn presentation_probe(include_acknowledged: bool) -> Option<u64> {
+    #[cfg(target_arch = "x86_64")]
+    if backend() == backend::GK208 {
+        return crate::gk208::presentation_probe(include_acknowledged);
+    }
+    let _ = include_acknowledged;
+    None
+}
+
 pub fn is_svga() -> bool {
     backend() == backend::SVGA3D_DX
 }

@@ -225,9 +225,11 @@ pub fn epoch(
         }
         Ok(serial)
     })();
-    result.map_err(|error: String| format!(
+    result.map_err(|error: String| {
+        super::cases::failure_pipeline();
+        format!(
         "epoch={n} stage={stage} client={client} commands_ms={} ack_ms={} receipts_ms={} receipt_reads={} receipt_rows={}: {error}",
         clock.costs[0] / 1_000_000, clock.costs[1] / 1_000_000, clock.costs[2] / 1_000_000,
         clock.receipt_reads, clock.receipt_rows,
-    ))
+    )})
 }

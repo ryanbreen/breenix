@@ -118,13 +118,6 @@ pub(super) fn monotonic_ms() -> Option<u64> {
 
 // ─── Main ────────────────────────────────────────────────────────────────────
 
-/// How long bwm sleeps for input or a scene change before it reads the pointer again: the
-/// pointer has no descriptor of its own.
-pub(super) const POINTER_POLL_MS: i32 = 10;
-
-/// How long bwm sleeps between attempts to compose while another process holds the display.
-pub(super) const DISPLAY_WAIT_MS: i32 = 100;
-
 /// How many composed frames a client's first-frame check may find it had committed again
 /// before that check is reported failed.
 pub(super) const CHECK_MOVED_LIMIT: u32 = 200;

@@ -234,6 +234,7 @@ fn reason(status: u32) -> u32 {
 }
 
 fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Composed, i64> {
+    let began_ns=frame.began_ns;
     if !matches!(with_core(|c| c.admission()), Some(Ok(()))) {
         return Err(ENODEV);
     }
@@ -388,15 +389,24 @@ fn compose(tgid: u64, frame: &mut Admission, a: &mut Composite) -> Result<Compos
         }
     });
     a.phase = 2;
+    let content_ready_ns = now_ns();
+    crate::window::pipeline::at(10, frame.serial, target_id as u64, 0, content_ready_ns);
     let (fence, status, answer) = display::present_as(tgid, context, target, &|_| Ok(()))?;
+    let accepted_ns=now_ns();
     a.present_fence = fence;
+    crate::window::pipeline::record(11, frame.serial, target_id as u64, fence);
     if status != fence_status::OK {
         a.fence_status = status;
         a.answer = answer;
         a.reason = reason(status);
         return Err(EIO);
     }
-    let presented_ns = display::composite_present_time(fence)?;
+    let presented_ns = display::composite_present_time(fence, content_ready_ns)?;
+    crate::window::pipeline::at(12, frame.serial, target_id as u64, fence, presented_ns);
+    // The physical presentation succeeded; an unavailable scheduling hint
+    // uses the existing completion-driven timing representation.
+    let (period,lead)=dev::presentation_schedule().unwrap_or((0,0));
+    crate::window::pacing::publish(frame.serial,presented_ns,period,accepted_ns.saturating_sub(began_ns),lead);
     a.answer = answer;
     let (pixels, per_window) = scene_work;
     a.pixels = pixels;

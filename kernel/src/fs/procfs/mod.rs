@@ -109,6 +109,8 @@ pub enum ProcEntryType {
     Ext2,
     /// /proc/breenix/frames - allocated physical frames by allocation site
     Frames,
+    WindowPipeline,
+    WindowPipelineFull,
     InputLedger,
     InputReplay,
     /// /proc/pids - list of all process IDs
@@ -219,6 +221,8 @@ impl ProcEntryType {
             ProcEntryType::Ext2 => "ext2",
             ProcEntryType::Filesystems => "filesystems",
             ProcEntryType::Frames => "frames",
+            ProcEntryType::WindowPipeline => "window-pipeline",
+            ProcEntryType::WindowPipelineFull => "window-pipeline-full",
             ProcEntryType::InputLedger => "input-ledger",
             ProcEntryType::InputReplay => "input-replay",
             ProcEntryType::Pids => "pids",
@@ -302,6 +306,8 @@ impl ProcEntryType {
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
             ProcEntryType::Filesystems => "/proc/breenix/filesystems",
             ProcEntryType::Frames => "/proc/breenix/frames",
+            ProcEntryType::WindowPipeline => "/proc/breenix/window-pipeline",
+            ProcEntryType::WindowPipelineFull => "/proc/breenix/window-pipeline-full",
             ProcEntryType::InputLedger => "/proc/breenix/input-ledger",
             ProcEntryType::InputReplay => "/proc/breenix/input-replay",
             ProcEntryType::Pids => "/proc/pids",
@@ -386,6 +392,8 @@ impl ProcEntryType {
             ProcEntryType::Ext2 => 202,
             ProcEntryType::Filesystems => 209,
             ProcEntryType::Frames => 203,
+            ProcEntryType::WindowPipeline => 220,
+            ProcEntryType::WindowPipelineFull => 221,
             ProcEntryType::InputLedger => 218,
             ProcEntryType::InputReplay => 219,
             ProcEntryType::Pids => 9,
@@ -547,6 +555,8 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Filesystems));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::WindowPipeline));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::WindowPipelineFull));
     procfs.entries.push(ProcEntry::new(ProcEntryType::InputLedger));
     procfs.entries.push(ProcEntry::new(ProcEntryType::InputReplay));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
@@ -703,6 +713,8 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::BreenixTesting
                     | ProcEntryType::CompositorStatus
                     | ProcEntryType::Composites
+                    | ProcEntryType::WindowPipeline
+                    | ProcEntryType::WindowPipelineFull
                     | ProcEntryType::InputLedger
                     | ProcEntryType::InputReplay
                     | ProcEntryType::Filesystems
@@ -859,7 +871,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::BootSerialTimed|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::Composites|ProcEntryType::InputLedger|ProcEntryType::InputReplay))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::BootSerialTimed|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::Composites|ProcEntryType::WindowPipeline|ProcEntryType::WindowPipelineFull|ProcEntryType::InputLedger|ProcEntryType::InputReplay))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -881,6 +893,16 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::CompositorStatus => {
             let caller = crate::window::Caller::current().map_err(|e| -e)?;
             crate::window::status::text(&caller).map(|s| s.into_bytes()).map_err(|e| -e)
+        }
+        ProcEntryType::WindowPipelineFull => {
+            let caller = crate::window::Caller::current().map_err(|e| -e)?;
+            if !caller.is_root() { return Err(-1); }
+            text(crate::window::pipeline::full_text())
+        }
+        ProcEntryType::WindowPipeline => {
+            let caller = crate::window::Caller::current().map_err(|e| -e)?;
+            if !caller.is_root() { return Err(-1); }
+            text(crate::window::pipeline::text())
         }
         ProcEntryType::Composites => {
             let caller = crate::window::Caller::current().map_err(|e| -e)?;

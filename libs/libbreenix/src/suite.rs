@@ -1302,6 +1302,22 @@ fn evidence_route(suite: &str, sequence: bool) -> Result<Option<evidence::Route>
     evidence::Route::parse(&text, suite, sequence).map(Some)
 }
 
+/// Upload a bounded diagnostic using the launcher's private evidence route.
+/// The host counts it in the existing per-boot budget and seals it before final.
+pub fn upload_diagnostic(suite: &str, label: &str, data: &[u8]) -> Result<String, String> {
+    if label.is_empty() || label.len() > 64 || !label.as_bytes()[0].is_ascii_lowercase()
+        || !label.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-') {
+        return Err("diagnostic-label".into());
+    }
+    if data.is_empty() || data.len() > evidence::MAX_UPLOAD { return Err("upload-bound".into()); }
+    let multiple = sequence::read(suite).is_some_and(|(ids, _)| ids.len() > 1);
+    let route = evidence_route(suite, multiple)?.ok_or("diagnostic-route-absent")?;
+    let digest = libbreenix::crypto::sha256::sha256(data);
+    evidence_transfer(&route, &std::format!("{}/diagnostics/{label}", route.path), data, digest)?;
+    let hex: String = digest.iter().map(|b| std::format!("{b:02x}")).collect();
+    Ok(std::format!("bytes={} sha256={hex}", data.len()))
+}
+
 fn evidence_scanout() -> Result<evidence::Observation, String> {
     use crate::window::abi::Plain;
     // CAPS initializes a lazily started GPU before CURRENT_MODE is available.

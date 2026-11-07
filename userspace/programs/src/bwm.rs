@@ -20,6 +20,8 @@ mod input_backlog;
 mod input;
 #[path = "bwm/timing.rs"]
 mod timing;
+#[path = "bwm/pace.rs"]
+mod pace;
 #[path = "bwm/input_keys.rs"]
 mod input_keys;
 #[path = "bwm/pointer_route.rs"]
@@ -82,13 +84,19 @@ mod clipboard_socket;
 
 #[path = "bwm/clock.rs"]
 mod clock;
+#[path = "bwm/clock_wake.rs"]
+mod clock_wake;
 #[path = "bwm/close.rs"]
 mod close;
+#[path = "bwm/wake.rs"]
+mod wake;
 #[path = "bwm/shutdown.rs"]
 mod shutdown;
+#[path = "bwm/signal_wake.rs"]
+mod signal_wake;
 
 fn main() {
-    initialize_shutdown();
+    let signal_wake = initialize_shutdown();
     print!("[bwm] Breenix Window Manager starting... (v2-chromeless-skip)\n");
 
     if let Err(e) = libbreenix::graphics::take_over_display() {
@@ -175,13 +183,16 @@ fn main() {
     // Raw startup PRESENT has no window receipt. Schedule the initial window
     // composite even when there is no client, clock tick or later scene change.
     let mut windows_dirty = true;
+    let mut pacing = pace::Pacer::default();
     let mut win_defaults: [WindowDefaults; MAX_DEFAULTS] = core::array::from_fn(|_| WindowDefaults {
         title: [0; 32], title_len: 0, x: 0, y: 0, width: 0, height: 0, valid: false,
     });
 
     // Clock state
     let mut clock = clock::Clock::new(std::env::var_os("BREENIX_UI_CLOCK").is_some());
+    let mut clock_wake = clock_wake::open().expect("UI clock wake setup failed");
     let mut clock_text = [0u8; 11];
+    let mut taskbar_prepare_ns = None;
     format_clock(clock.wall_sec(), &mut clock_text);
     let mut next_creation_order: u32 = 0;
     // Hotkey system: load config from /etc/hotkeys.conf
@@ -213,7 +224,7 @@ fn main() {
     // The pointer the last composed frame drew, so a move repaints where it was.
     let mut drawn_pointer = first_presented.then_some(first_pointer);
     let mut full_redraw = !first_presented;
-    let mut validation = ValidationQueue::new();
+    let mut validation: ValidationQueue<PresentedScene> = ValidationQueue::new();
     let mut working_scene = PresentedScene { layers: Vec::new(), pointer: first_pointer };
 
     // The desktop outlives a clipboard that cannot open; clipboard clients then see ENOENT.
@@ -233,25 +244,56 @@ fn main() {
     loop {
         flush_input();
         // ── 0. Sleep until input or a scene change ──
-        // Input and scene changes both wake the loop. Keep the existing bounded
-        // sleep until descriptor-only pacing lands in 21.7.
-        let timeout = if display_lost {
-            DISPLAY_WAIT_MS
-        } else if full_redraw || content_dirty || windows_dirty {
-            0
-        } else {
-            POINTER_POLL_MS
+        clock.begin_epoch();
+        let now = libbreenix::ui_clock::now_ns();
+        let monotonic_ns = pacing_ns();
+        let wall = clock.acknowledgment(claim_epoch).next_deadline_ns;
+        let shown = validation.scene().map(|scene| gpu.shown_clients(&scene.layers, Some(scene.pointer)))
+            .unwrap_or_default();
+        refresh_pacing(&mut pacing);
+        let hold = match pacing.decision(pacing_ns()) {
+            pace::Decision::WaitUntil(deadline) => Some(deadline),
+            pace::Decision::Compose => None,
         };
-        let timeout = closing.timeout_ms(libbreenix::ui_clock::now_ns(), timeout);
-        let timeout = clipboard.as_ref().map_or(timeout, |c| c.timeout_ms(libbreenix::ui_clock::now_ns(), timeout));
+        let timeout = wake::timeout(
+            (full_redraw || content_dirty || windows_dirty) && hold.is_none(), display_lost, now, monotonic_ns,
+            wake::Deadlines {
+                presentation: hold,
+                closing: closing.deadline(),
+                clipboard: clipboard.as_ref().and_then(|c| c.deadline()),
+                repeat: timing.deadline(),
+                launch: children.deadline(),
+                check_after_ms: if resizing.is_none() {
+                    windows.iter().filter(|w| validation.pending(w.window_id)
+                        && shown.iter().any(|(id, _)| *id == w.window_id))
+                        .map(|w| w.check_after_ms).min()
+                } else { None },
+                wall: (wall != 0).then_some(wall),
+            });
+        let timeout = closing.timeout_ms(now, timeout);
+        let hold = if display_lost { None } else { hold };
+        let timeout = wake::wait_ns(timeout, pacing_ns(), hold);
         poll_fds.truncate(2);
+        if let Some(wake) = &clock_wake {
+            poll_fds.push(io::PollFd { fd: wake.fd(), events: io::poll_events::POLLIN as i16, revents: 0 });
+        }
+        poll_fds.push(io::PollFd { fd: signal_wake.fd(), events: io::poll_events::POLLIN as i16, revents: 0 });
         if let Some(clipboard) = &clipboard { clipboard.append_poll(&mut poll_fds); }
         for fd in poll_fds.iter_mut() {
             fd.revents = 0;
         }
         let mut wait = ShutdownWait { fds: &mut poll_fds, timeout, failed: false };
         if shutdown::boundary(&mut wait).is_none() { return; }
+        signal_wake.drain();
         if let Some(clipboard) = &mut clipboard { clipboard.service(&poll_fds, libbreenix::ui_clock::now_ns()); }
+        if let Some(wake) = &clock_wake {
+            if poll_fds[2].revents != 0 {
+                if let Err(error) = wake.drain() {
+                    eprintln!("[bwm] UI clock wake stopped: {error}");
+                    clock_wake = None;
+                }
+            }
+        }
         clock.begin_epoch();
         launch::reap(&mut children);
         launch::poll_errors(&mut children);
@@ -573,8 +615,7 @@ fn main() {
         // Device retirement may follow a release evicted by reader pressure.
         // Run after the batch so queued clicks keep their source-time ordering.
         if input_ready {
-            clicks.retain_devices(|device| stream.registered(device));
-            consumed_keys.retain(|(device, _)| stream.registered(*device));
+            timing::retire_unregistered(&mut clicks, &mut consumed_keys, |device| stream.registered(device));
         }
 
         for repeat in timing.due(libbreenix::ui_clock::now_ns(), stack.focus()) {
@@ -607,7 +648,9 @@ fn main() {
         // ── 4. Update chrome on real UI-clock seconds ──
         if let Some(sec) = clock.update_clock() {
             format_clock(sec, &mut clock_text);
+            let began = pacing_ns();
             draw_taskbar(&mut gpu.desktop, &clock_text, &mut ui_font);
+            taskbar_prepare_ns = Some(pacing_ns().saturating_sub(began));
             dirty_x0 = 0;
             dirty_y0 = 0;
             dirty_x1 = dirty_x1.max(screen_w as i32);
@@ -622,63 +665,81 @@ fn main() {
 
         // ── 5. Composite on the GPU (only when something changed) ──
         if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
-            let pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
-            let mut damage = Vec::new();
-            if full_redraw {
-                damage.push([0, 0, screen_w as i32, screen_h as i32]);
-            } else if content_dirty {
-                damage.push([dirty_x0.max(0), dirty_y0.max(0), dirty_x1.min(screen_w as i32), dirty_y1.min(screen_h as i32)]);
-            }
-            // The pointer where the last frame drew it and where this one draws it.
-            if drawn_pointer.is_none_or(|p| (p.x, p.y, p.shape) != (pointer.x, pointer.y, pointer.shape)) {
-                damage.extend(drawn_pointer.map(|p| compositor::pointer_footprint(p, ui().scale as i32)));
-                damage.push(compositor::pointer_footprint(pointer, ui().scale as i32));
-            }
-            frame_layers(&windows, &stack, &mut working_scene.layers);
-            working_scene.pointer = pointer;
-            let frame = gpu.compose(&working_scene.layers, Some(pointer), &damage);
-            full_redraw = false;
-            content_dirty = false;
-            windows_dirty = false;
-            match frame {
-                Ok(()) => {
-                    frame_failed = false;
-                    if display_lost {
-                        display_lost = false;
-                        print!("[bwm] display back: composing again\n");
-                    }
-                    drawn_pointer = Some(pointer);
-                    launch::acknowledge(&mut children, gpu.last_serial);
-                    clock.presented(gpu.last_serial);
-                    working_scene = validation.presented(working_scene);
+            refresh_pacing(&mut pacing);
+            if matches!(pacing.decision(pacing_ns()), pace::Decision::WaitUntil(_)) {
+                // Carry cursor/window dirt through descriptor wakes while the client handles input.
+                windows_dirty = true;
+                if content_dirty { full_redraw = true; }
+            } else {
+                let pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
+                let mut damage = Vec::new();
+                if full_redraw {
+                    damage.push([0, 0, screen_w as i32, screen_h as i32]);
+                } else if content_dirty {
+                    damage.push([dirty_x0.max(0), dirty_y0.max(0), dirty_x1.min(screen_w as i32), dirty_y1.min(screen_h as i32)]);
                 }
-                Err(FrameError::NotOwner) => {
-                    validation.invalidate_scene();
-                    // Another process took the display (probe, say): wait for it to give the
-                    // display back, or exit, and then repaint everything.
-                    if !display_lost {
-                        print!("[bwm] display held by another process: waiting for it\n");
-                    }
-                    display_lost = true;
-                    drawn_pointer = None;
-                    full_redraw = true;
+                // The pointer where the last frame drew it and where this one draws it.
+                if drawn_pointer.is_none_or(|p| (p.x, p.y, p.shape) != (pointer.x, pointer.y, pointer.shape)) {
+                    damage.extend(drawn_pointer.map(|p| compositor::pointer_footprint(p, ui().scale as i32)));
+                    damage.push(compositor::pointer_footprint(pointer, ui().scale as i32));
                 }
-                Err(FrameError::Failed(e)) => {
-                    validation.invalidate_scene();
-                    // Start again with a fresh context and targets; the next frame
-                    // repaints everything.
-                    if !frame_failed {
-                        print!("[bwm] GPU frame failed: {}\n", e);
+                frame_layers(&windows, &stack, &mut working_scene.layers);
+                working_scene.pointer = pointer;
+                let frame = gpu.compose(&working_scene.layers, Some(pointer), &damage);
+                full_redraw = false;
+                content_dirty = false;
+                windows_dirty = false;
+                match frame {
+                    Ok(()) => {
+                        if let Some(draw_ns) = taskbar_prepare_ns.take() {
+                            let prepare_ns = gpu.last_timing.prepare_ns;
+                            let period_ns = gpu.last_timing.period_ns;
+                            if period_ns != 0 && draw_ns.saturating_add(prepare_ns) >= period_ns {
+                                use std::io::Write;
+                                if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
+                                    let _ = writeln!(evidence, "VALUE bwm-taskbar-overrun draw_ns={} prepare_ns={} period_ns={} serial={}", draw_ns, prepare_ns, period_ns, gpu.last_serial);
+                                }
+                            }
+                        }
+                        pacing.presented(gpu.last_timing);
+                        frame_failed = false;
+                        if display_lost {
+                            display_lost = false;
+                            print!("[bwm] display back: composing again\n");
+                        }
+                        drawn_pointer = Some(pointer);
+                        launch::acknowledge(&mut children, gpu.last_serial);
+                        clock.presented(gpu.last_serial);
+                        working_scene = validation.presented(working_scene);
                     }
-                    frame_failed = true;
-                    if let Err(e) = gpu.reopen() {
-                        print!("[bwm] ERROR: GPU compositor could not be reopened: {}\n", e);
-                        process::exit(1);
+                    Err(FrameError::NotOwner) => {
+                        validation.invalidate_scene();
+                        // Another process took the display (probe, say): wait for it to give the
+                        // display back, or exit, and then repaint everything.
+                        if !display_lost {
+                            print!("[bwm] display held by another process: waiting for it\n");
+                        }
+                        display_lost = true;
+                        drawn_pointer = None;
+                        full_redraw = true;
                     }
-                    paint_background(&mut gpu.background);
-                    compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
-                    drawn_pointer = None;
-                    full_redraw = true;
+                    Err(FrameError::Failed(e)) => {
+                        validation.invalidate_scene();
+                        // Start again with a fresh context and targets; the next frame
+                        // repaints everything.
+                        if !frame_failed {
+                            print!("[bwm] GPU frame failed: {}\n", e);
+                        }
+                        frame_failed = true;
+                        if let Err(e) = gpu.reopen() {
+                            print!("[bwm] ERROR: GPU compositor could not be reopened: {}\n", e);
+                            process::exit(1);
+                        }
+                        paint_background(&mut gpu.background);
+                        compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
+                        drawn_pointer = None;
+                        full_redraw = true;
+                    }
                 }
             }
         }
@@ -698,6 +759,18 @@ fn main() {
     }
 }
 
+
+fn pacing_ns() -> u64 {
+    libbreenix::time::now_monotonic().map_or(0, |time| time.as_nanos() as u64)
+}
+fn refresh_pacing(pacing: &mut pace::Pacer) {
+    for (id, serial) in input::take_delivered() { pacing.delivered(id,input::serial_key(serial)); }
+    pacing.refresh(|id, wanted| match libbreenix::window::read_meta(id) {
+        Ok((_, meta)) => Some(input::serial_key(meta.processed_serial)),
+        Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENOENT)) => Some(wanted),
+        Err(_) => None,
+    });
+}
 
 /// Publish focus notices around the kernel stack update.
 fn publish_transition(windows: &[Window], stack: &Stack, transition: (Option<u64>, Option<u64>)) {
@@ -792,34 +865,46 @@ static TERMINATE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool:
 
 extern "C" fn terminate(_: i32) {
     TERMINATE.store(true, std::sync::atomic::Ordering::Relaxed);
+    signal_wake::notify();
 }
 
 fn term_mask(how: i32) {
-    let mask = 1u64 << (signal::SIGTERM - 1);
+    let mask = (1u64 << (signal::SIGTERM - 1)) | (1u64 << (signal::SIGCHLD - 1));
     if let Err(error) = signal::sigprocmask(how, Some(&mask), None) {
         eprintln!("[bwm] cannot set shutdown signal mask: {error}");
         process::exit(1);
     }
 }
 
-fn initialize_shutdown() {
+extern "C" fn child_exited(_: i32) { signal_wake::notify(); }
+
+fn initialize_shutdown() -> signal_wake::SignalWake {
     term_mask(signal::SIG_BLOCK);
+    let wake = signal_wake::SignalWake::open().unwrap_or_else(|error| {
+        eprintln!("[bwm] cannot create signal wake pipe: {error}");
+        process::exit(1);
+    });
+    if let Err(error) = signal::sigaction(signal::SIGCHLD, Some(&signal::Sigaction::new(child_exited)), None) {
+        eprintln!("[bwm] cannot install child handler: {error}");
+        process::exit(1);
+    }
     if let Err(error) = signal::sigaction(signal::SIGTERM, Some(&signal::Sigaction::new(terminate)), None) {
         eprintln!("[bwm] cannot install shutdown handler: {error}");
         process::exit(1);
     }
+    wake
 }
 
 struct ShutdownWait<'a> {
     fds: &'a mut [io::PollFd],
-    timeout: i32,
+    timeout: Option<u64>,
     failed: bool,
 }
 
 impl shutdown::Runtime for ShutdownWait<'_> {
     type Ready = ();
     fn unblock(&mut self) { term_mask(signal::SIG_UNBLOCK); }
-    fn wait(&mut self) { let _ = io::poll(self.fds, self.timeout); }
+    fn wait(&mut self) { let _ = io::poll_ns(self.fds, self.timeout); }
     fn block(&mut self) { term_mask(signal::SIG_BLOCK); }
     fn terminated(&self) -> bool { TERMINATE.load(std::sync::atomic::Ordering::Relaxed) }
     fn release(&mut self) {

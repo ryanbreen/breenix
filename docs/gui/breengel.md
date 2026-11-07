@@ -889,6 +889,7 @@ Argument structures (offsets in bytes):
 
 - `HitTest`: `x: i32 @0`, `y: i32 @4`, *out* `id: u64 @8`, *out* `scene_version: u64 @16`, `flags: u32 @24` and reserved `@28` (both must be 0). Root or the compositor may query. The result is the registered, visible, non-minimized window with greatest `(z, id)` containing the point; right and bottom edges are exclusive. An id of 0 means no hit. The version changes when a registered window appears, leaves, or changes x, y, z, VISIBLE or MINIMIZED, and is also returned by compositor status.
 - `CompositorStatus.scene_version` now reports that same geometry version, rather than the present-change counter. Present-only updates do not advance it; presentation progress remains available in `presented` and `composites`.
+
 - `WinId`: `id: u64 @0`.
 - `Create`: `width: u32 @0`, `height: u32 @4`, `buffers: u32 @8` (2 or 3), `tree_kib: u32 @12` (0 means 64;
   at most 1,024; the kernel rounds it up to whole 4 KiB pages, so no two buffers share a tree page, and writes
@@ -950,6 +951,16 @@ Argument structures (offsets in bytes):
 - `Give`: `pid: u32 @0`, reserved `@4`.
 - `MetaQuery`: `id: u64 @0`, `meta: u64 @8` (pointer to a `Meta` the kernel fills), *out* `commit_id: u64 @16` (the
   newest commit, `COMMIT` or `COMMIT_NO_CHANGE`, whose metadata it is; 0 before the first).
+
+The compositor status text also appends a scheduling record for the latest GPU composite:
+`pacing_serial`, `presentation_ns`, `period_ns`, `prepare_ns`, and `accept_lead_ns`.
+The serial associates the record with the completed COMPOSITE. Times use monotonic nanoseconds;
+`prepare_ns` runs from shared COMPOSITE entry through presentation acceptance. A periodic device
+reports its programmed period and the conservative lead from its measured acceptance boundary to
+presentation. Completion-driven VirGL and SVGA report period and lead as 0. These are scheduling
+inputs, separate from progress acknowledgment; the binary `CompositorStatus` layout is unchanged.
+Bwm adds userspace preparation and uses a recent maximum cost when bounding an input-response hold.
+Application-frame gaps do not define the device period.
 
 ### 17.2 Ids, limits and lifetime
 

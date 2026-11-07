@@ -434,6 +434,7 @@ fn replay(window: u64, src: &Target, dst: &Target, rects: &[Rect]) -> Result<(),
 /// is taken as replaying, which no other ACQUIRE or COMMIT can use; it is made writable (its
 /// pixels and its tree page) once the replay is copied, and only then handed out.
 pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
+    super::pipeline::record(5, a.id, 0, 0);
     if a.reserved != 0 {
         return Err(EINVAL);
     }
@@ -526,6 +527,7 @@ pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
     a.replay_full = matches!(set, Damage::Full) as u32;
     a.base = base;
     a.replay_count = rects.len().min(limits::MAX_DAMAGE) as u32;
+    super::pipeline::record(6, a.id, base, 0);
     a.replay = [Rect::default(); 16];
     for (i, r) in rects.iter().take(limits::MAX_DAMAGE).enumerate() {
         a.replay[i] = *r;
@@ -623,6 +625,7 @@ fn rect_in(r: &Rect, width: u32, height: u32) -> bool {
 /// commit gate the commit's id, damage and pixel generation are settled first and copied out
 /// to `out`; only then is the buffer sealed and published.
 pub fn commit(caller: &Caller, c: &mut Commit, meta: Meta, out: u64) -> Result<u64, i32> {
+    super::pipeline::record(7, c.id, c.buffer as u64, meta.processed_serial);
     if c.reserved != 0 || c.damage_count as usize > limits::MAX_DAMAGE {
         return Err(EINVAL);
     }
@@ -699,6 +702,7 @@ pub fn commit(caller: &Caller, c: &mut Commit, meta: Meta, out: u64) -> Result<u
     }
     drop(gate);
     publish_ready();
+    super::pipeline::record(8, c.id, c.commit_id, meta.processed_serial);
     Ok(0)
 }
 
@@ -744,6 +748,7 @@ pub fn publish_ready() {
                 w.commit_id = pending.commit_id;
                 w.pixel_gen = pending.pixel_gen;
                 w.meta = pending.meta;
+                super::pipeline::record(14, w.id, w.commit_id, w.meta.processed_serial);
                 if w.log.len() == limits::DAMAGE_LOG {
                     if let Some((evicted, _)) = w.log.pop_front() { w.log_floor = evicted; }
                 }
@@ -1086,6 +1091,7 @@ pub fn read_events(caller: &Caller, r: &mut ReadEvents, out_arg: u64) -> Result<
                 }
                 return Err(e);
             }
+            for event in &out { super::pipeline::record(4, r.id, 0, event.serial); }
             return Ok(out.len() as u64);
         }
         if r.flags & READ_EVENTS_BLOCK == 0 {
@@ -1179,7 +1185,11 @@ pub fn write_events(caller: &Caller, wr: &WriteEvents) -> Result<u64, i32> {
     let (queued, waits) = {
         let mut reg = REGISTRY.lock();
         let w = reg.window(wr.id, caller, who::compositor)?;
-        let queued = events.into_iter().take_while(|e| w.ring.try_push(*e)).count();
+        let queued = events.into_iter().take_while(|e| {
+            let accepted = w.ring.try_push(*e);
+            if accepted { super::pipeline::record(3, wr.id, 0, e.serial); }
+            accepted
+        }).count();
         (queued, w.waits.clone())
     };
     waits.events.wake_up();
