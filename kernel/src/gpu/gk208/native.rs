@@ -1998,6 +1998,7 @@ pub(super) fn capture_crc(evo: &mut Evo, regs: &mut Registers, notifier: u64,
     struct Crc<'a> {
         evo: &'a mut Evo, regs: &'a mut Registers, notifier: u64,
         surface: super::present::Surface, binding: super::display_crc::Binding,
+        armed: [u32; 4],
     }
     impl Crc<'_> {
         fn wait(&mut self, register: usize, mask: u32, value: u32, deadline: u64)
@@ -2027,7 +2028,15 @@ pub(super) fn capture_crc(evo: &mut Evo, regs: &mut Registers, notifier: u64,
             Ok(())
         }
         fn update(&mut self, methods: &[(u32,u32)], deadline: u64)
-            -> Result<(), &'static str> { crc_update(self.evo,self.regs,methods,deadline) }
+            -> Result<(), &'static str> {
+            crc_update(self.evo,self.regs,methods,deadline)?;
+            let head = self.evo.head as usize * 0x300;
+            if methods.first().is_some_and(|m| m.0 as usize == 0x438 + head && m.1 != 0) {
+                self.armed = [self.regs.read(0x640430 + head), self.regs.read(0x660430 + head),
+                    self.regs.read(0x640438 + head), self.regs.read(0x660438 + head)];
+            }
+            Ok(())
+        }
         fn context_status(&mut self) -> Result<u32, &'static str> {
             read_word(self.regs,self.evo.total,self.notifier)
         }
@@ -2050,12 +2059,17 @@ pub(super) fn capture_crc(evo: &mut Evo, regs: &mut Registers, notifier: u64,
         }
     }
     let (head,sor)=(evo.head,evo.sor);
-    let mut io = Crc{evo,regs,notifier,surface,binding};
+    let mut io = Crc{evo,regs,notifier,surface,binding,armed:[0;4]};
     let result = super::display_crc::perturb_checkpoint(&mut io,state,binding,head,sor)
         .and_then(|()| super::display_crc::capture(&mut io,checkpoint,binding,mode,head,sor,4));
     if let Err(error) = result.as_ref() {
         let detail = super::display_crc::failure_snapshot(&mut io, error, head, sor);
-        crate::gpu::record_display_crc_failure(detail);
+        let selected = io.armed;
+        let probe = super::display_crc::probe_primary_rg(&mut io, binding, head, sor, 4, false);
+        let reversed = super::display_crc::probe_primary_rg(&mut io, binding, head, sor, 4, true);
+        crate::gpu::record_display_crc_failure(alloc::format!(
+            "{detail} source_active={:08x} source_assembly={:08x} context_active={:08x} context_assembly={:08x} {probe} {reversed}",
+            selected[0], selected[1], selected[2], selected[3]));
     }
     result
 }

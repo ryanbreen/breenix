@@ -365,6 +365,61 @@ pub fn failure_snapshot(io: &mut impl Io, error: &str, head: u32, sor: u32) -> a
     text
 }
 
+/// Failure-only diagnostic: ask the documented primary selector for RG data.
+/// This returns text, not an eligible checkpoint or a substitute CRC pair.
+pub fn probe_primary_rg(io: &mut impl Io, expected: Binding, head: u32, sor: u32,
+    handle: u32, secondary_sor: bool) -> alloc::string::String {
+    use core::fmt::Write;
+    let result = (|| -> Result<alloc::string::String, &'static str> {
+        let mut arm = modeset::crc_methods(head, sor, handle, true)?;
+        // NVIDIA Display-CRC: primary RG(i)=0xff8+i; secondary can name SOR.
+        let secondary = if secondary_sor { 0xf0f + sor * 16 } else { 0xfff };
+        arm[1].1 = (secondary << 20) | ((0xff8 + head) << 8) | 0x40;
+        let disarm = modeset::crc_methods(head, sor, handle, false)?;
+        let deadline = io.now_us().saturating_add(150_000);
+        let mut armed = false;
+        let acquired = (|| -> Result<(), &'static str> {
+            if io.binding()? != expected { return Err("RG probe binding changed"); }
+            io.clear()?;
+            armed = true;
+            io.update(&arm, deadline)?;
+            let mut count = 0;
+            while count < 5 {
+                if io.now_us() >= deadline.saturating_sub(CLEANUP_US) {
+                    return Err("RG probe primary deadline");
+                }
+                if io.binding()? != expected || io.display_error() != 0 {
+                    return Err("RG probe binding or display error");
+                }
+                if io.context_status()? & 0x3e != 0 { return Err("RG probe overflow"); }
+                if io.sample(count)?.is_some_and(|s| s.crc != 0) { count += 1; }
+                else { io.delay_us(100); }
+            }
+            Ok(())
+        })();
+        let cleanup = io.update(&disarm, deadline.max(io.now_us().saturating_add(CLEANUP_US)));
+        if (armed && acquired.is_err()) || cleanup.is_err() { io.recover_present()?; }
+        cleanup?;
+        acquired?;
+        let status = loop {
+            let status = io.context_status()?;
+            if status & 0x3e != 0 { return Err("RG probe completed overflow"); }
+            if status & 1 != 0 { break status; }
+            if io.now_us() >= deadline { return Err("RG probe completion deadline"); }
+            io.delay_us(100);
+        };
+        if io.binding()? != expected { return Err("RG probe final binding changed"); }
+        let mut text = alloc::format!("rg_secondary_sor={} rg_status={status:08x}", u8::from(secondary_sor));
+        for i in 0..5 {
+            let sample = io.sample(i)?.ok_or("RG probe completed entry absent")?;
+            if i == 0 { let _ = write!(text, " rg_primary={:08x}", sample.crc); }
+            let _ = write!(text, " rg_sample{i}={:08x}:{:08x}", sample.crc, sample.crc2);
+        }
+        Ok(text)
+    })();
+    result.unwrap_or_else(|error| alloc::format!("rg_probe_error={}", error.replace(' ', "_")))
+}
+
 /// Driver boundary for a suite checkpoint whose binding is pinned by the shared
 /// display observation transition. It must remain held through this call.
 /// The physical head is checked against that resource during collection; the

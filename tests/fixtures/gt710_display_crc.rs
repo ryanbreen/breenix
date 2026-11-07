@@ -273,7 +273,7 @@ fn crc_codec_and_request_roundtrip() {
 #[test] fn missing_secondary_probe_selects_rg_as_primary_without_approval() {
     let mut m = Model::new();
     m.available = vec![sample(33,0); 6];
-    let detail = display_crc::probe_primary_rg(&mut m, PIN, 0, 0, 4);
+    let detail = display_crc::probe_primary_rg(&mut m, PIN, 0, 0, 4, false);
     assert_eq!(m.submitted[0], [(0x438,4),(0x430,0xfffff840),(0x84,0x80000000),(0x80,0)]);
     m.disarmed();
     assert!(detail.contains("rg_primary=00000021"), "{detail}");
@@ -282,4 +282,14 @@ fn crc_codec_and_request_roundtrip() {
     let mut m = Model::new();
     m.available = vec![sample(33,0); 6];
     assert!(m.capture().is_err());
+}
+
+#[test] fn rg_probe_can_discriminate_reversed_source_routing() {
+    let mut m = Model::new();
+    m.available = vec![sample(33,44); 6];
+    let detail = display_crc::probe_primary_rg(&mut m, PIN, 0, 0, 4, true);
+    assert_eq!(m.submitted[0], [(0x438,4),(0x430,0xf0fff840),(0x84,0x80000000),(0x80,0)]);
+    m.disarmed();
+    assert!(detail.contains("rg_secondary_sor=1"), "{detail}");
+    assert!(detail.contains("rg_sample0=00000021:0000002c"), "{detail}");
 }
