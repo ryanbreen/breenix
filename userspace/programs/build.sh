@@ -445,6 +445,7 @@ STD_BINARIES=(
     "suite-sdk"
     "suite-breengel"
     "kiosk_test"
+    "uitest-app_test"
     "raw-window_test"
     # Native x86-metal uses this producer too; layout.tsv places it in /sbin.
     "suite-gpu"
