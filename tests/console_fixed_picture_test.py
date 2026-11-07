@@ -1,6 +1,7 @@
 """U14: fixed-input picture uses the production renderer; live oracle stays exact."""
 from pathlib import Path
 import os
+import re
 import subprocess
 import tempfile
 
@@ -20,7 +21,12 @@ noto-sans-mono-bitmap={version="0.3",default-features=false,features=["size_16",
     for name in ['boxdraw', 'grid', 'status', 'raster', 'ribbon', 'panel']:
         modules += f'#[path="{root}/kernel/src/console/{name}.rs"] pub mod {name};\n'
     modules += f'#[path="{root}/userspace/programs/src/suite_breengel/window_cases/kernel_restore.rs"] pub mod oracle;\n'
-    (path / 'src/lib.rs').write_text(modules + (root / 'tests/console_fixed_picture_test.rs').read_text())
+    kit=(root/'userspace/programs/src/suite_breengel/window_cases/kit.rs').read_text()
+    pattern=re.search(r'pub\(crate\) fn pattern\([^\n]+\{\n.*?\n\}',kit,re.S)[0]
+    pattern=pattern.replace('pub(crate) fn pattern','fn production_pattern')
+    (path / 'src/lib.rs').write_text(modules + pattern + '\n' +
+        (root / 'tests/console_fixed_picture_test.rs').read_text() + '\n' +
+        (root / 'tests/atomic_fixed_picture_test.rs').read_text())
     subprocess.run(['taskpolicy', '-b', 'cargo', 'test', '--manifest-path', str(path / 'Cargo.toml'), '--lib'],
                    check=True, env=dict(os.environ, CARGO_BUILD_JOBS='4', RUSTFLAGS='-Dwarnings'))
 

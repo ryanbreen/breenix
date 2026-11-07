@@ -1,6 +1,6 @@
 #[test]
 fn fixed_picture_and_live_frame_use_their_respective_inputs() {
-    assert_eq!(subject::FIXED_INPUT_CASES, ["panel/kernel-screens"]);
+    assert_eq!(subject::FIXED_INPUT_CASES, ["panel/kernel-screens", "scanout/atomic-record"]);
     assert_eq!(subject::FIXED_ELAPSED_SECONDS, 679);
     let serial = "1000|SUITE breengel START cases=401 screen_proof=on\n2000|SUITE breengel CASE panel/cursor-trail-detected PASS ms=1\n";
     let heading = oracle::Heading::read(serial).unwrap();
