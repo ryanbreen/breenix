@@ -1321,7 +1321,8 @@
         {
           "id": "compositor-authorized",
           "title": "The compositor's position, inject, capture and composite calls succeed on every window",
-          "expect": "A 12x8 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is teal (#0E96B6), with no text."
+          "expect": "A 12x8 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is teal (#0E96B6), with no text.",
+          "expectEnd": "A black (#000000) 2560x1600 screen with seed mosaics (x,y,width,height,z,seed): (100,40,20,10,0,13); (150,40,12,8,1,14). Each mosaic has blue column ramps, green row ramps and red diagonal flecks: B=(7*x+13*seed)%256, G=(5*y+29*seed)%256, R=(x XOR y XOR seed)%256 in local coordinates; no text."
         },
         {
           "id": "pid-reuse",

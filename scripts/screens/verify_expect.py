@@ -453,6 +453,29 @@ def verify_picture(image, expect, checkpoint='intent', *, case=None, suite=None,
     # Check them before the generic prose grammar can mistake those dimensions.
     if suite == 'breengel' and case and case.split('/')[0] in ('bmp', 'png-decode', 'png-encode'):
         return verify_panel(image, expect, case, checkpoint, commit)
+    # Literal scene declarations describe the retained composed end surface.
+    scene = re.search(r'seed mosaics \(x,y,width,height,z,seed\): ([0-9(),; ]+)\.', expect)
+    if scene:
+        windows = [tuple(map(int, values.split(','))) for values in re.findall(r'\(([0-9,]+)\)', scene[1])]
+        size = re.search(r'(\d+)x(\d+) screen', expect)
+        if not size or not windows or any(len(w) != 6 for w in windows):
+            return dict(verdict='unparseable', checked_claims=[], failed_claims=[],
+                        unparseable_claims=[dict(claim=expect, reason='invalid seed scene')])
+        width,height = map(int,size.groups())
+        reference = Image.new('RGB',(width,height),'black')
+        for x,y,w,h,z,seed in sorted(windows,key=lambda w:w[4]):
+            tile = Image.new('RGB',(w,h))
+            tile.putdata([((px ^ py ^ seed)&255,(5*py+29*seed)&255,(7*px+13*seed)&255)
+                          for py in range(h) for px in range(w)])
+            reference.paste(tile,(x,y))
+        mismatch = None if image.size == reference.size else 'dimensions'
+        if mismatch is None:
+            mismatch = ImageChops.difference(image,reference).getbbox()
+        claim = dict(kind='seed-scene',claim=expect,expected=dict(size=[width,height],windows=windows),
+                     measured=dict(size=list(image.size),mismatch_box=mismatch),
+                     verdict='fail' if mismatch else 'pass')
+        return dict(verdict=claim['verdict'],checked_claims=[claim],
+                    failed_claims=[claim] if mismatch else [],unparseable_claims=[])
     result = dict(verdict='unparseable', picture=dict(size=list(image.size),
                   box=[0, 0, *image.size], scale=1, divisor=1),
                   checked_claims=[], failed_claims=[], unparseable_claims=[])
