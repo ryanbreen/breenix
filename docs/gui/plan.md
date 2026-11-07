@@ -2320,7 +2320,7 @@ bwm built with one named fault per run (`misroute-focus`, `chrome-offset`, `keym
 - `input-during-animation` — Input arrives in order while the app animates.
 - `two-windows` — Input addressed to two windows of one app arrives at each.
 - `wm-hotkey-scripted` — A scripted Super double tap opens the launcher through bwm's real hotkey path.
-- `real-input-excluded` — Events from a device outside the session's selection, modifier keys included, change nothing in the session.
+- `real-input-excluded` — Events from a device outside the session's selection, modifier keys included, change nothing in the session. <!-- claim-lint:ok: docs/gui/plan.md section 17 specifies a future case, not a completed result. -->
 
 #### `tree` — semantic trees of windows & widgets (23)
 - `roles-keys` — The test app's tree lists every widget with its expected role and key.
@@ -2351,7 +2351,7 @@ bwm built with one named fault per run (`misroute-focus`, `chrome-offset`, `keym
 - `window-capture` — A window capture equals the committed buffer of that commit.
 - `capture-while-drawing` — Capturing commit N while the app draws N+1 returns N whole.
 - `capture-two-readers` — Two readers capturing the same window each get whole commits.
-- `capture-resize-race` — A resize during a capture gives the whole old commit, pixels and tree, never ENOENT or a mixture.
+- `capture-resize-race` — A resize during a capture gives the whole old commit, pixels and tree, never ENOENT or a mixture. <!-- claim-lint:ok: docs/gui/plan.md section 3.1 specifies the capture contract this future case checks. -->
 - `capture-destroy-race` — A destroy during a capture gives the whole commit and frees the buffer afterwards; a destroy before the copy begins gives ENOENT.
 - `capture-threads` — Commits from two producer threads are each captured whole.
 - `screen-capture` — A screen capture shows the window at its position, with its observation record.

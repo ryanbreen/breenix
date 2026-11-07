@@ -783,6 +783,10 @@ name = "suite-gpu"
 path = "src/suite_gpu.rs"
 
 [[bin]]
+name = "suite-ui-testing"
+path = "src/suite_ui_testing.rs"
+
+[[bin]]
 name = "suite-window-manager"
 path = "src/suite_window_manager.rs"
 

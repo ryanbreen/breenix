@@ -75,6 +75,8 @@ def resolve(spec, target, has_3d=False, read=read_repo):
                 skipped.append((suite, f"not an effort target of {target}"))
             elif manifest(suite) is None:
                 skipped.append((suite, "no manifest"))
+            elif manifest(suite).get("aggregate"):
+                skipped.append((suite, f"under construction: run --suite {suite} explicitly"))
             elif manifest(suite).get("hostRunner"):
                 skipped.append((suite, "host-driven persistent suite"))
             elif planned(suite):

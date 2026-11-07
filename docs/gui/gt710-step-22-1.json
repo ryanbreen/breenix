@@ -1,0 +1,33 @@
+{
+  "id": "gt710-step-22-1",
+  "suite": "ui-testing",
+  "boardStep": "22.1",
+  "title": "The ui-testing suite and manifest, the runner's result transport, the scoped runner fixture, the inner executor, the kernel subreaper and the R240 route",
+  "basis": "origin/main 242f37ad (fetched 2026-11-06); docs/gui/plan.md section 17 case catalog; manifest order; cumulative",
+  "milestonesCompleted": [],
+  "added": 18,
+  "addedByCategory": {
+    "runner": 18
+  },
+  "total": 18,
+  "cases": [
+    "runner/transport-always",
+    "runner/transport-blocking",
+    "runner/transport-exit-race",
+    "runner/transport-capacity",
+    "runner/record-binding",
+    "runner/record-malformed",
+    "runner/record-duplicate",
+    "runner/forgery-exec",
+    "runner/forgery-fork",
+    "runner/never-ran",
+    "runner/mismatch-is-fail",
+    "runner/outer-positive",
+    "runner/sweep-descendants",
+    "runner/inner-pass",
+    "runner/inner-wrong-class",
+    "runner/inner-crash-not-detection",
+    "runner/inner-teardown-scoped",
+    "runner/inner-records-contained"
+  ]
+}
