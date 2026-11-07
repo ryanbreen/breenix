@@ -3978,7 +3978,7 @@ def completed_suite_capture(directory, sha, suite=None):
             or not any(e.get('event') == 'power-off' and e.get('off') is True for e in events)
             or not driver_closed):
         raise ValueError('native suite requires a complete clean driver-closed capture')
-    serial = ((directory / 'serial.txt').read_text() if suite == 'window-manager'
+    serial = ((directory / 'serial.txt').read_text() if suite in ('window-manager', 'ui-testing')
               else capture_serial(directory, suite))
     return dict(boot=dict(boot, bootedCommit=sha), serial=serial, events=events, exit_status=status)
 
@@ -4023,21 +4023,21 @@ def wm_panel_observation(body):
             raise ValueError('WM panel RLE differs from geometry')
 
 
-def wm_step_capture(directory, sha, step_number):
-    """Judge one cumulative WM selection without changing the shared suite verdict."""
+def step_capture(directory, sha, step_number, suite, prefix, max_step):
+    """Judge a cumulative selection without changing the shared suite verdict."""
     directory = Path(directory)
-    capture = completed_suite_capture(directory, sha, 'window-manager')
+    capture = completed_suite_capture(directory, sha, suite)
     boot, serial = capture['boot'], capture['serial']
     root = Path(__file__).resolve().parents[2]
-    if type(step_number) is not int or not 1 <= step_number <= 7:
-        raise ValueError('WM step must be 1 through 7')
-    selection = f'gt710-step-21-{step_number}.json'
+    if type(step_number) is not int or not 1 <= step_number <= max_step:
+        raise ValueError(f'{suite} step must be 1 through {max_step}')
+    selection = f'{prefix}{step_number}.json'
     step = json.loads((root / 'docs/gui' / selection).read_text())
-    manifest = json.loads((root / 'docs/suites/window-manager.json').read_text())
+    manifest = json.loads((root / 'docs/suites' / (suite + '.json')).read_text())
     names = [c['id'] + '/' + t['id'] for c in manifest['categories'] for t in c['cases']]
     required = step['cases']
     case_count = len(names)
-    if (not case_count or step.get('suite') != 'window-manager'
+    if (not case_count or step.get('suite') != suite
             or not required or step.get('total') != len(required)
             or required != [name for name in names if name in required]):
         raise ValueError('invalid WM selection or manifest order')
@@ -4051,29 +4051,29 @@ def wm_step_capture(directory, sha, step_number):
             or set(re.findall(r'\bgt710\.clocks=(\w+)', serial)) - {'full'}):
         raise ValueError('WM requires gt710.clocks=full')
     lines = serial.splitlines()
-    starts = [i for i, line in enumerate(lines) if line.startswith('SUITE window-manager START ')]
-    ready = [i for i, line in enumerate(lines) if line == 'SUITE_SEQUENCE READY window-manager']
+    starts = [i for i, line in enumerate(lines) if line.startswith(f'SUITE {suite} START ')]
+    ready = [i for i, line in enumerate(lines) if line == f'SUITE_SEQUENCE READY {suite}']
     if len(starts) != 1 or len(ready) != 1 or starts[0] >= ready[0]:
         raise ValueError('WM suite boundaries missing or duplicated')
     preceding = [i for i, line in enumerate(lines[:starts[0]]) if line.startswith('SUITE_SEQUENCE READY ')]
     begin = preceding[-1] + 1 if preceding else 0
     text = '\n'.join(lines[begin:ready[0]+1]) + '\n'
-    if any('SUITE window-manager ' in line or 'SUITE_EVIDENCE window-manager ' in line
+    if any(f'SUITE {suite} ' in line or f'SUITE_EVIDENCE {suite} ' in line
            for line in lines[:begin] + lines[ready[0]+1:]):
         raise ValueError('WM records outside the suite boundary')
     shapes = {
-        'START': r'SUITE window-manager START cases=(\d+)',
-        'PASS': r'SUITE window-manager CASE ([a-z0-9/-]+) PASS ms=\d+(?: sha256=[a-f0-9]{64})?',
-        'FAIL': r'SUITE window-manager CASE ([a-z0-9/-]+) FAIL ms=\d+(?: sha256=[a-f0-9]{64})? msg=\S.*',
-        'DONE': r'SUITE window-manager DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)',
-        'ELAPSED': r'SUITE window-manager ELAPSED ms=(\d+)',
-        'MEMORY': r'SUITE window-manager MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+',
-        'RECLAIMED': r'SUITE window-manager MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)',
-        'LIVE': r'SUITE window-manager (?:VALUE|WAIT|PULSES|HOSTKEY|HOSTPOINTER|SCREEN) ([a-z0-9/-]+) \S.*',
+        'START': fr'SUITE {suite} START cases=(\d+)',
+        'PASS': fr'SUITE {suite} CASE ([a-z0-9/-]+) PASS ms=\d+(?: sha256=[a-f0-9]{{64}})?',
+        'FAIL': fr'SUITE {suite} CASE ([a-z0-9/-]+) FAIL ms=\d+(?: sha256=[a-f0-9]{{64}})? msg=\S.*',
+        'DONE': fr'SUITE {suite} DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)',
+        'ELAPSED': fr'SUITE {suite} ELAPSED ms=(\d+)',
+        'MEMORY': fr'SUITE {suite} MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+',
+        'RECLAIMED': fr'SUITE {suite} MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)',
+        'LIVE': fr'SUITE {suite} (?:VALUE|WAIT|PULSES|HOSTKEY|HOSTPOINTER|SCREEN) ([a-z0-9/-]+) \S.*',
     }
     parsed = []
     for line in text.splitlines():
-        if not line.startswith('SUITE window-manager '):
+        if not line.startswith(f'SUITE {suite} '):
             continue
         for kind, shape in shapes.items():
             match = re.fullmatch(shape, line)
@@ -4094,7 +4094,7 @@ def wm_step_capture(directory, sha, step_number):
         raise ValueError('WM DONE disagrees with cases or contains skips')
     failed = [m[1] for k, m, _ in cases if m[1] in required and k != 'PASS']
     if failed:
-        raise ValueError(f'selected WM cases failed: {len(required) - len(failed)}/{len(required)} '
+        raise ValueError(f'selected {"WM" if suite == "window-manager" else suite} cases failed: {len(required) - len(failed)}/{len(required)} '
                          f'passed in {selection}; failed: {", ".join(failed)}; '
                          f'full suite: {tally[0]}/{case_count} passed, {tally[1]} failed')
     if not 0 < int(records[case_count + 2][1][1]) <= 1800000:
@@ -4109,14 +4109,14 @@ def wm_step_capture(directory, sha, step_number):
             raise ValueError('WM live record outside its manifest run')
     memory_line = next(line for k, _, line in parsed if k == 'RECLAIMED')
     before_line = next(line for k, m, line in parsed if k == 'MEMORY' and m[1] == 'before')
-    slots = directory / 'native-suites/window-manager' if len(boot.get('suites') or []) > 1 else directory
+    slots = directory / f'native-suites/{suite}' if len(boot.get('suites') or []) > 1 else directory
     receipts = []
     part_index = 0
     transport_bytes = 0
     for label, filename, receipt_name, suffix in (
             ('startup', 'gt710-pixels.rle', 'native-upload.json', ''),
             ('suite-final-panel', 'gt710-final.rle', 'native-final-upload.json', '/final')):
-        matches = list(re.finditer(r'^SUITE_EVIDENCE window-manager ' + label
+        matches = list(re.finditer(fr'^SUITE_EVIDENCE {suite} ' + label
             + r' bytes=(\d+) sha256=([a-f0-9]{64})$', text, re.M))
         if len(matches) != 1:
             raise ValueError('WM requires one ' + label + ' upload anchor')
@@ -4126,7 +4126,7 @@ def wm_step_capture(directory, sha, step_number):
             raise ValueError('WM upload outside its startup or post-memory final slot')
         body = (slots / filename).read_bytes()
         receipt = json.loads((slots / receipt_name).read_text())
-        scoped = '/suites/window-manager' if slots != directory else ''
+        scoped = f'/suites/{suite}' if slots != directory else ''
         if (not 0 < len(body) <= 2 << 20
                 or receipt.get('id') != boot['id'] or receipt.get('complete') is not True
                 or receipt.get('bytes') != len(body) or receipt.get('sha256') != hashlib.sha256(body).hexdigest()
@@ -4167,25 +4167,43 @@ def wm_step_capture(directory, sha, step_number):
         raise ValueError('WM uploads exceed the per-boot evidence bound')
     if receipts[1]['route'] != receipts[0]['route'] + '/final':
         raise ValueError('WM uploads belong to different routes')
-    report = dict(boot=boot['id'], commit=sha, milestone='metal-gt710/wm-step',
-                  selection=selection, cases=[dict(id='wm-step/suite', result='PASS',
-                    reason=f'{len(required) - len(failed)}/{len(required)} selected WM cases passed; '
+    kind = 'wm' if suite == 'window-manager' else 'ui'
+    report = dict(boot=boot['id'], commit=sha, milestone=f'metal-gt710/{kind}-step',
+                  selection=selection, cases=[dict(id=f'{kind}-step/suite', result='PASS',
+                    reason=f'{len(required) - len(failed)}/{len(required)} selected {"WM" if suite == "window-manager" else suite} cases passed; '
                            f'{case_count} cases, memory and uploads verified')])
     return report
 
 
-def record_wm_capture(directory, sha, step_number):
+def wm_step_capture(directory, sha, step_number):
+    return step_capture(directory, sha, step_number, 'window-manager', 'gt710-step-21-', 7)
+
+
+def ui_step_capture(directory, sha, step_number):
+    return step_capture(directory, sha, step_number, 'ui-testing', 'gt710-step-22-', 8)
+
+
+def record_step_capture(directory, sha, step_number, suite, prefix, max_step):
     directory = Path(directory)
+    kind = 'wm' if suite == 'window-manager' else 'ui'
     try:
-        report = wm_step_capture(directory, sha, step_number)
+        report = step_capture(directory, sha, step_number, suite, prefix, max_step)
     except (OSError, ValueError, KeyError, TypeError) as error:
         report = dict(boot=capture_boot(directory).get('id'), commit=sha,
-                      milestone='metal-gt710/wm-step', selection=f'gt710-step-21-{step_number}.json',
-                      cases=[dict(id='wm-step/suite', result='FAIL', reason=str(error))])
-    (directory / 'gt710-wm-step.json').write_text(json.dumps(report, indent=2) + '\n')
+                      milestone=f'metal-gt710/{kind}-step', selection=f'{prefix}{step_number}.json',
+                      cases=[dict(id=f'{kind}-step/suite', result='FAIL', reason=str(error))])
+    (directory / f'gt710-{kind}-step.json').write_text(json.dumps(report, indent=2) + '\n')
     row = report['cases'][0]
     print('SUITE gt710 CASE ' + row['id'] + ' ' + row['result'] + ' ms=0 msg=' + row['reason'], flush=True)
     return 0 if row['result'] == 'PASS' else 1
+
+
+def record_wm_capture(directory, sha, step_number):
+    return record_step_capture(directory, sha, step_number, 'window-manager', 'gt710-step-21-', 7)
+
+
+def record_ui_capture(directory, sha, step_number):
+    return record_step_capture(directory, sha, step_number, 'ui-testing', 'gt710-step-22-', 8)
 
 
 def record_breengel_capture(directory, sha, category):
@@ -4567,6 +4585,7 @@ def main():
     breengel.add_argument('--breengel-stage', action='store_true', help='score a completed BreenGL boot against step 9.3')
     breengel.add_argument('--breengel-full', action='store_true', help='score full 401-case acceptance against step 9.4')
     breengel.add_argument('--wm-step', type=int, choices=range(1, 8), help='score a cumulative window-manager step (21.1 through 21.7)')
+    breengel.add_argument('--ui-step', type=int, choices=range(1, 9), help='score a cumulative ui-testing step (22.1 through 22.8)')
     parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
     parser.add_argument('--isolation', action='store_true', help='score PR 8.5 isolation and preceding selections from the same captures')
     parser.add_argument('--shapes', action='store_true', help='score PR 8.4 shapes and preceding selections from the same captures')
@@ -4581,7 +4600,7 @@ def main():
         parser.error('--watch-acceptance requires --capture-directory CONSOLE')
     if args.gpu_capture_directory and not args.watch_acceptance:
         parser.error('--gpu-capture-directory requires --watch-acceptance')
-    if args.wm_step is not None:
+    if args.wm_step is not None or args.ui_step is not None:
         if any((args.check_manifest, args.watch_acceptance, args.gpu_boot, args.core_boot,
                 args.acceptance_directory, args.pr, args.resources, args.alpha, args.shapes,
                 args.isolation, args.presentation, args.performance)):
@@ -4589,7 +4608,8 @@ def main():
         if args.capture_directory:
             if args.boot:
                 parser.error('--wm-step needs either --capture-directory or --boot')
-            return record_wm_capture(args.capture_directory, args.sha, args.wm_step)
+            return (record_wm_capture(args.capture_directory, args.sha, args.wm_step) if args.wm_step is not None
+                    else record_ui_capture(args.capture_directory, args.sha, args.ui_step))
     if args.capture_directory and any((args.check_manifest, args.boot, args.gpu_boot, args.core_boot,
             args.acceptance_directory, args.pr, args.breengel_fronts, args.breengel_composition,
             args.breengel_stage, args.breengel_full, args.resources, args.alpha, args.shapes,
@@ -4656,12 +4676,13 @@ def main():
         return result.stdout
 
     boot = json.loads(read('run.json'))
-    if args.wm_step is not None:
+    if args.wm_step is not None or args.ui_step is not None:
         result = runner['in_metal'](env, 'python3', '-c',
             'import runpy,sys;from pathlib import Path;'
             'p=Path(sys.argv[1]);a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
-            'sys.exit(a["record_wm_capture"](p,sys.argv[2],int(sys.argv[3])))',
-            directory, args.sha, str(args.wm_step))
+            'sys.exit(a[sys.argv[4]](p,sys.argv[2],int(sys.argv[3])))',
+            directory, args.sha, str(args.wm_step if args.wm_step is not None else args.ui_step),
+            'record_wm_capture' if args.wm_step is not None else 'record_ui_capture')
         return result.returncode
     if args.breengel_fronts or args.breengel_composition or args.breengel_stage or args.breengel_full:
         if (not read('ended').strip() or read('exit-status').strip() not in ('0', '1')

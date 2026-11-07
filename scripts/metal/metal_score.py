@@ -119,6 +119,12 @@ def score(directory):
             and not (directory / 'gt710-wm-step.json').exists()):
         results['metal-gt710/wm-step'] = dict(reached=0, total=1, passed=False,
                                              reason='missing gt710-wm-step.json')
+    if ('ui-testing' in (run.get('suites') or (run.get('suite') or '').split(','))
+            and run.get('platform') == 'metal' and run.get('evidenceEligible') is True
+            and not run.get('watch') and (directory / 'ended').exists()
+            and not (directory / 'gt710-ui-step.json').exists()):
+        results['metal-gt710/ui-step'] = dict(reached=0, total=1, passed=False,
+                                             reason='missing gt710-ui-step.json')
     for host_records in found:
         suite, category = host_records.name[:-len('.json')].split('-', 1)
         if category.endswith('-transcript'):
@@ -130,12 +136,12 @@ def score(directory):
             records = read(host_records.name)
             if records.get('milestone') != milestone:
                 raise ValueError(host_records.name + ' records another milestone')
-            if suite == 'gt710' and category == 'wm-step':
-                selection = re.fullmatch(r'gt710-step-21-([1-7])\.json', records.get('selection', ''))
+            if suite == 'gt710' and category in ('wm-step', 'ui-step'):
+                selection = re.fullmatch(r'gt710-step-21-([1-7])\.json' if category == 'wm-step' else r'gt710-step-22-([1-8])\.json', records.get('selection', ''))
                 if not selection:
                     raise ValueError('invalid WM step selection')
                 sha = (directory / 'commit').read_text().strip()
-                actual = host['wm_step_capture'](directory, sha, int(selection[1]))
+                actual = host['wm_step_capture' if category == 'wm-step' else 'ui_step_capture'](directory, sha, int(selection[1]))
                 if records != actual:
                     raise ValueError('WM results differ from retained evidence')
                 results[milestone] = dict(reached=1, total=1, passed=True,

@@ -182,7 +182,7 @@ def mode_deadline_seconds(args, suite=None):
     """Give long-running suites their own DONE deadlines."""
     name = suite or (suites(args)[0] if args.mode == 'suite' else None)
     if args.mode == 'suite':
-        return {'breengel': 900, 'window-manager': 1800}.get(name, MODE_DEADLINE_SECONDS['suite'])
+        return {'breengel': 900, 'window-manager': 1800, 'ui-testing': 1800}.get(name, MODE_DEADLINE_SECONDS['suite'])
     return MODE_DEADLINE_SECONDS[args.mode]
 
 # The testing kernel's last report line (kernel/src/syscall/handlers.rs), where a testing boot ends. x86-64 prints it
@@ -1252,7 +1252,7 @@ class Driver:
             self.event('fatal', observed_at=observed_at, seconds=seconds)
         if self.args.mode == 'suite' and re.fullmatch(r'SUITE \S+ START cases=\d+|SUITE_SEQUENCE STALLED \S+ cases=\d+/\d+', line):
             self.suite_name = line.split()[1 if line.startswith('SUITE ') else 2]
-            if len(suites(self.args)) > 1 or self.suite_name in ('breengel', 'window-manager'):
+            if len(suites(self.args)) > 1 or self.suite_name in ('breengel', 'window-manager', 'ui-testing'):
                 self.suite_started = observed_at
         if self.args.mode == 'probe' and re.fullmatch(r'PROBE DONE passed=\d+ failed=[1-9]\d*', line):
             self.probe_failed = True
