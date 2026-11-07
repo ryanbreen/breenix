@@ -169,3 +169,55 @@ fn downscale_samples_every_kth_pixel_including_partial_edge_tiles() {
         }
     }
 }
+
+// U11 / #2678: inspect the submitted mapping, independently of layout metadata.
+// Assert integer destination blocks and a source hit count of one per texel.
+#[test]
+fn oversized_intents_preserve_every_source_pixel_without_overprinting() {
+    for picture in [[16384, 2], [1872, 1788], [1322, 1460], [2022, 2083], [2048, 2048]] {
+        let mode = [2560, 1600];
+        let mut source_hits = vec![0u8; (picture[0] * picture[1]) as usize];
+        let mut occupied = vec![false; (mode[0] * mode[1]) as usize];
+        let mut pages = 0;
+        for words in super::intent::streams(picture, mode, 1, 2).unwrap() {
+            stream::validate(&words[..], &IntentResources { picture, mode }).unwrap();
+            let mut at = 0;
+            while at < words.len() {
+                let command = &words[at..at + words[at + 1] as usize];
+                if command[0] == stream::cmd::CLEAR {
+                    occupied.fill(false);
+                    pages += 1;
+                }
+                if command[0] == abi::draw::COMMAND {
+                    for instance in command[abi::draw::HEADER..].chunks_exact(abi::draw::INSTANCE) {
+                        let p = &instance[4..];
+                        let (dw, dh, sw, sh) = (p[2], p[3], p[6], p[7]);
+                        assert!(dw >= sw && dh >= sh && dw % sw == 0 && dh % sh == 0,
+                            "{picture:?}: source pixels must have integer scale >= 1");
+                        assert_eq!(dw / sw, dh / sh);
+                        let scale = dw / sw;
+                        if picture == [2022, 2083] || picture == [2048, 2048] {
+                            assert_eq!(scale, 1, "paged pictures stay at scale 1");
+                        }
+                        for y in instance[1]..instance[3] {
+                            for x in instance[0]..instance[2] {
+                                assert!(x >= 2 && y >= 2 && x < mode[0]-2 && y < mode[1]-2);
+                                let dst = (y * mode[0] + x) as usize;
+                                assert!(!occupied[dst], "{picture:?}: destination overprint");
+                                occupied[dst] = true;
+                                if (x-p[0]) % scale == 0 && (y-p[1]) % scale == 0 {
+                                    let sx = p[4] + (x-p[0]) / scale;
+                                    let sy = p[5] + (y-p[1]) / scale;
+                                    source_hits[(sy * picture[0] + sx) as usize] += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                at += command.len();
+            }
+        }
+        assert!(source_hits.iter().all(|&n| n == 1), "{picture:?}: page union differs from judged picture");
+        assert_eq!(pages, if picture[0]*picture[1] > (mode[0]-4)*(mode[1]-4) { 2 } else { 1 });
+    }
+}
