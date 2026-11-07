@@ -901,7 +901,7 @@ fn composition_takeover_giveback() -> CaseResult {
     let (after, _) = screen()?;
     crate::remember_frame(&after,width,height,Some(before.clone()));
     match (0..width * height).find(|&i| before[i * 4..i * 4 + 4] != after[i * 4..i * 4 + 4]) {
-        None => Ok(()),
+        None => fixed_stage_picture("composition/takeover-giveback"),
         Some(i) => at("18", format!("after giveback the screen differs from the previous owner's frame at ({}, {}): {:02x?} against {:02x?}",
             i % width, i / width, &after[i * 4..i * 4 + 4], &before[i * 4..i * 4 + 4])),
     }
@@ -1140,4 +1140,17 @@ pub(crate) fn gpu_snapshot(k:&mut Helper)->Result<GpuSnapshot,breenix_suite::sui
     let (status,reason,s)=gpu_observe(k)?;
     ensure(status==0,"20",format!("gpu-display: GPU readback {} reason {reason}",outcome(status)))?;
     ensure(s.word(0)==2 && s.word(4)==1024,"20","gpu-display: scanout did not return record v2")?;Ok(s)
+}
+
+/// U14b: only after the case's exact live check succeeds, replace its approval input.
+pub(crate) fn fixed_stage_picture(case: &str) -> CaseResult {
+    use libbreenix::gpu::abi::record;
+    let (width,height)=screen_size()?;
+    let (_,rec)=screen()?;
+    let word=|offset|u32::from_le_bytes(rec[offset..offset+4].try_into().unwrap());
+    let boundary=libgfx_ref::stage::Observation {backend:word(record::BACKEND),flags:word(record::FLAGS),boundary:word(record::BOUNDARY)};
+    let (surface,actual,reference)=crate::stage_painter::fixed_picture(case,width,height,boundary).cite("23")?;
+    crate::remember_frame(&actual,width,height,Some(reference));
+    crate::keep_judged_surface(surface);
+    Ok(())
 }

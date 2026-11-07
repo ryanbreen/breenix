@@ -1533,7 +1533,7 @@
         {
           "id": "takeover-giveback",
           "title": "Display takeover and giveback restore the previous owner's frame exactly",
-          "expect": "The previous owner's navy (#0C131F) stage, with its matrix of case tiles on the left and selected-case panel on the right, restored exactly."
+          "expect": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed composition/takeover-giveback tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record."
         },
         {
           "id": "ownership-stack",
@@ -1867,27 +1867,27 @@
         {
           "id": "handoff",
           "title": "A display-taking child under probe takes the display, gives it back, and the panel is restored exactly",
-          "expect": "The navy (#0C131F) live suite stage is restored: case tiles on the left, selected-case panel on the right, white (#FFFFFF) labels and coloured verdict stamps; counts and names reflect the preceding cases."
+          "expect": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed panel/handoff tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record."
         },
         {
           "id": "between-cases",
           "title": "In a GUI suite the panel is drawn only between cases and restored exactly after each",
-          "expect": "The navy (#0C131F) live suite stage stays still, with case tiles on the left, selected-case panel on the right, white (#FFFFFF) labels and coloured verdict stamps; counts and names reflect the preceding cases."
+          "expect": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed panel/between-cases tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record."
         },
         {
           "id": "cursor-restore",
           "title": "Moving the pointer over the panel leaves no cursor trail",
-          "expect": "The navy (#0C131F) live suite stage has white (#FFFFFF) labels, coloured case tiles and a pointer at (1200,40); the five positions crossed by the pointer have their original pixels restored."
+          "expect": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed panel/cursor-restore tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record. Arrow at (1200,40), no trail."
         },
         {
           "id": "cursor-trail-detected",
           "title": "With the panel cursor's save and restore disabled by a test control, the trail is detected",
-          "expect": "The navy (#0C131F) live suite stage has white (#FFFFFF) labels and extra pointer marks near (200,300), (400,320), (640,400), (900,500), (1100,600); the pointer also sits at (1200,40)."
+          "expect": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed panel/cursor-trail-detected tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record. Arrows at (200,300),(400,320),(640,400),(900,500),(1100,600),(1200,40)."
         },
         {
           "id": "kernel-screens",
           "title": "The kernel's console screen redraws exactly after the display is given back",
-          "expect": "Kernel console text in pale grey (#CDD7EB) on midnight blue (#0F1423), with its boot-stage ribbon; production rendering uses elapsed 679 s (11:19), with other inputs from the live restoration case. The exact live check uses captured serial."
+          "expect": "Fixed production console renderer: body lines \"Breenix console: fixed approval input\" and \"SUITE breengel CASE panel/cursor-trail-detected PASS ms=20\"; 1 passed of 401, elapsed 679 s, four reached boot stages, no cursor. The live restoration check stays exact."
         }
       ]
     }

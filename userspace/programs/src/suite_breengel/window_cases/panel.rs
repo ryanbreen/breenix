@@ -49,7 +49,7 @@ fn panel_handoff() -> CaseResult {
     // The judged frame is the stage's own, which it samples itself (ruling B36).
     breenix_suite::suite::judged_picture_stage();
     match first_difference(&before, &after)? {
-        None => Ok(()),
+        None => super::composition::fixed_stage_picture("panel/handoff"),
         Some((x, y)) => at("23", format!("after the child gave the display back, the panel differs at ({x}, {y})")),
     }
 }
@@ -61,7 +61,7 @@ fn panel_between_cases() -> CaseResult {
     let (b, _) = screen()?;
     breenix_suite::suite::judged_picture_stage();
     match first_difference(&a, &b)? {
-        None => Ok(()),
+        None => super::composition::fixed_stage_picture("panel/between-cases"),
         Some((x, y)) => at("23", format!("the screen changed at ({x}, {y}) while this case ran; the panel is drawn only between cases")),
     }
 }
@@ -116,7 +116,8 @@ fn panel_cursor_restore() -> CaseResult {
     let left = trail(false)?;
     ensure(left.is_empty(), "23", format!(
         "after the pointer crossed the panel and came back, {} pixels differ from the panel it left, the first at {:?}: a cursor trail",
-        left.len(), left.first()))
+        left.len(), left.first()))?;
+    super::composition::fixed_stage_picture("panel/cursor-restore")
 }
 
 fn panel_cursor_trail_detected() -> CaseResult {
@@ -126,7 +127,8 @@ fn panel_cursor_trail_detected() -> CaseResult {
     let near = |&(x, y): &(u32, u32)| PATH.iter().any(|&(px, py)| x.abs_diff(px) < 32 && y.abs_diff(py) < 32);
     ensure(left.iter().all(near), "21, 23", format!(
         "the trail left with panel-cursor-no-restore armed has pixels away from every place the pointer stopped, the first at {:?}",
-        left.iter().find(|p| !near(p))))
+        left.iter().find(|p| !near(p))))?;
+    super::composition::fixed_stage_picture("panel/cursor-trail-detected")
 }
 
 // Keep static pixels exact and check the full live heading against captured serial.
@@ -167,7 +169,7 @@ fn panel_kernel_screens() -> CaseResult {
     let (width,height) = screen_size()?;
     crate::remember_frame(&redrawn,width,height,Some(console.clone()));
     kernel_restore::compare(&console,&redrawn,width,height,&heading,[(shown_start,shown_end),(again_start,again_end)]).cite("23.7")?;
-    let fixed = crate::console_picture::picture("panel/kernel-screens", &redrawn, width, height, &serial).cite("23.7")?;
+    let fixed = crate::console_picture::picture("panel/kernel-screens", &redrawn, width, height).cite("23.7")?;
     crate::remember_frame(&fixed,width,height,Some(fixed.clone()));
     Ok(())
 }

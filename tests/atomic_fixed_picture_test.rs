@@ -1,6 +1,5 @@
 #[test]
 fn fixed_atomic_handoff_keeps_the_live_oracle_exact() {
-    assert_eq!(subject::FIXED_INPUT_CASES, ["panel/kernel-screens", "scanout/atomic-record"]);
     assert_eq!(subject::FIXED_ATOMIC_COMMIT, 20);
     for (width,height) in [(1280,800),(2560,1600)] {
         let render = |commit| {
@@ -13,6 +12,7 @@ fn fixed_atomic_handoff_keeps_the_live_oracle_exact() {
             pixels
         };
         let fixed=render(20);
+        if width==2560 {export_fixed("scanout/atomic-record",&fixed);}
         let mut live_frames=Vec::new();
         for commit in [20,40,256,300] {
             let live=render(commit);

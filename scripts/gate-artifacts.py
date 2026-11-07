@@ -26,6 +26,7 @@ spec.loader.exec_module(tree_cache)
 CONSOLE_PICTURE_SOURCES = (
     'kernel/src/console/boxdraw.rs', 'kernel/src/console/grid.rs',
     'kernel/src/console/status.rs', 'kernel/src/console/raster.rs',
+    'kernel/src/console/ribbon.rs', 'kernel/src/console/panel.rs',
 )
 
 

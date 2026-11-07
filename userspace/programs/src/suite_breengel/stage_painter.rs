@@ -190,3 +190,40 @@ impl breenix_suite::suite::Painter for StagePainter {
         painted
     }
 }
+
+/// U14b approval rendering. The live case has already compared its own frame exactly.
+/// Draw the documented fixed run with the same GPU painter, and compare its full readback
+/// against the shared stage reference before handing either picture to the runner.
+pub(crate) fn fixed_picture(case: &str, width: usize, height: usize, boundary: oracle::Observation)
+    -> Result<(Surface, Vec<u8>, Vec<u8>), String>
+{
+    use breenix_suite::suite::Painter;
+    use crate::console_picture as fixed;
+    fixed::with_stage(case,boundary,fixed::FIXED_STAGE_MS,fixed::FIXED_STAGE_KEY,|run| {
+        let mut reference=libgfx_ref::framebuf::FrameBuf::new(width,height,libgfx_ref::framebuf::Format::BGRX)
+            .map_err(|e|format!("fixed stage reference: {e:?}"))?;
+        oracle::draw(&mut reference,run).map_err(|e|format!("fixed stage reference: {e:?}"))?;
+        let mut painter=StagePainter::new();
+        painter.paint(&StageFrame{width:width as u32,height:height as u32,run,thumbs:&[None],spot:&SpotRef::None})?;
+        let mut canvas=painter.canvas.take().ok_or("fixed stage canvas absent")?;
+        for (x,y) in fixed::cursor_positions(case) {
+            let (outline,fill)=libbreenix::compositor::sprite(libbreenix::window::abi::cursor_shape::ARROW,x,y);
+            for (rectangles,c) in [(outline,[0,0,0]),(fill,[255,255,255])] {
+                for [x0,y0,x1,y1] in rectangles {
+                    libgfx::shapes::fill_rect(&mut canvas,x0,y0,x1-x0,y1-y0,Color::rgb(c[0],c[1],c[2]));
+                    libgfx_ref::shapes::fill_rect(&mut reference,x0,y0,x1-x0,y1-y0,libgfx_ref::color::Color::rgb(c[0],c[1],c[2]));
+                }
+            }
+        }
+        canvas.wait().map_err(|e|format!("fixed stage render: {e}"))?;
+        let mut actual=vec![0;width*height*4];
+        canvas.read(&mut actual,width*4).map_err(|e|format!("fixed stage readback: {e}"))?;
+        let mut expected=Vec::with_capacity(actual.len());
+        for y in 0..height {for x in 0..width {expected.extend_from_slice(&reference.get_bgra(x,y));}}
+        for p in actual.chunks_exact_mut(4) {p[3]=255;}
+        if let Some(i)=actual.iter().zip(&expected).position(|(a,b)|a!=b) {
+            return Err(format!("fixed stage differs from renderer inputs at pixel {},{} channel {}",(i/4)%width,(i/4)/width,i%4));
+        }
+        Ok((canvas,actual,expected))
+    })?
+}

@@ -10,42 +10,78 @@ pub mod status;
 #[path = "../../../../kernel/src/console/raster.rs"]
 pub mod raster;
 
-pub const FIXED_INPUT_CASES: &[&str] = &["panel/kernel-screens", "scanout/atomic-record"];
-/// U14a: shortest valid atomic-record observation schedule.
-pub const FIXED_ATOMIC_COMMIT: u32 = 20;
-/// The elapsed input of the #2779 sample, per coordinator ruling U14.
-pub const FIXED_ELAPSED_SECONDS: u64 = 679;
+#[path = "../../../../kernel/src/console/ribbon.rs"]
+pub mod ribbon;
+#[path = "../../../../kernel/src/console/panel.rs"]
+pub mod panel;
 
-/// Retain live pixels outside the heading and render its fixed elapsed input with
-/// the production serial-state model, geometry, font and painter. This changes no
-/// live check and applies only to the explicitly listed case.
-pub fn picture(case: &str, live: &[u8], width: usize, height: usize, serial: &str) -> Result<Vec<u8>, String> {
-    let mut pixels = live.to_vec();
-    if case != "panel/kernel-screens" || !FIXED_INPUT_CASES.contains(&case) { return Ok(pixels); }
-    if live.len() != width * height * 4 { return Err("fixed-input console picture has the wrong extent".into()); }
-    let mut suite = status::SuiteStatus::new();
-    let mut started = None;
-    for line in serial.lines() {
-        let (stamp, record) = line.split_once('|').ok_or("missing serial timestamp")?;
-        let ms = stamp.parse::<u64>().map_err(|e| e.to_string())?;
-        if suite.observe(record.as_bytes(), ms) && record.starts_with("SUITE breengel START ") {
-            started = Some(ms);
-        }
-    }
-    let now = started.ok_or("fixed-input console picture lacks START")?
-        .checked_add(FIXED_ELAPSED_SECONDS * 1000).ok_or("fixed-input clock overflow")?;
-    let text: Vec<char> = suite.heading(now).ok_or("fixed-input console heading is absent")?.chars().collect();
+/// U14b: only these cases substitute documented renderer inputs after their live check.
+pub const FIXED_INPUT_CASES: &[&str] = &[
+    "composition/takeover-giveback", "scanout/atomic-record", "panel/handoff",
+    "panel/between-cases", "panel/cursor-restore", "panel/cursor-trail-detected",
+    "panel/kernel-screens",
+];
+pub const FIXED_ATOMIC_COMMIT: u32 = 20;
+pub const FIXED_ELAPSED_SECONDS: u64 = 679;
+pub const FIXED_STAGE_MS: u64 = 250;
+pub const FIXED_STAGE_KEY: u64 = 20;
+pub const FIXED_CONSOLE_BODY: &[&str] = &[
+    "Breenix console: fixed approval input",
+    "SUITE breengel CASE panel/cursor-trail-detected PASS ms=20",
+];
+
+/// Complete console input, including the serial body that U14 had left live.
+/// The actual kernel renderer paints cells, retained status and four reached stages.
+pub fn render_console(width: usize, height: usize, body: &[&str], seconds: u64) -> Result<Vec<u8>, String> {
     let layout = raster::Layout { width, height, bytes_per_pixel: 4, stride_bytes: width * 4,
         reserved: 255, bgr: true, font: raster::Font::for_display(width, height) };
-    let g = layout.panel().ok_or("fixed-input mode cannot hold console panel")?;
-    for y in g.heading.y..g.heading.y + g.heading.height {
-        let start = (y * width + g.heading.x) * 4;
-        layout.fill(&mut pixels[start..start + g.heading.width * 4], status::BACKGROUND);
+    let mut pixels = vec![0; layout.bytes()];
+    raster::clear(&mut pixels, &layout);
+    for (row, line) in body.iter().enumerate() {
+        if row >= layout.rows() { return Err("fixed console body exceeds its rows".into()); }
+        let cells: Vec<grid::Cell> = line.chars().map(|c| grid::Cell { glyph:c as u16, ..grid::BLANK }).collect();
+        raster::draw_row(&mut pixels, &layout, row, &cells, None);
     }
-    let (font, scale) = if g.stage_scale == 0 { (layout.font, 1) }
-        else { (raster::Font::new(noto_sans_mono_bitmap::RasterHeight::Size20), g.stage_scale) };
-    raster::panel_text(&mut pixels, &layout, g.heading, font, scale, &text);
+    let mut suite = status::SuiteStatus::new();
+    suite.observe(b"SUITE breengel START cases=401", 0);
+    suite.observe(b"SUITE breengel CASE panel/cursor-trail-detected PASS ms=20", 20);
+    panel::Panel::new(&layout, suite, vec![true;4], false, seconds*1000)
+        .ok_or("fixed console cannot hold a panel")?.paint(&mut pixels, &layout);
     Ok(pixels)
+}
+
+pub fn picture(case: &str, live: &[u8], width: usize, height: usize) -> Result<Vec<u8>, String> {
+    if case != "panel/kernel-screens" || !FIXED_INPUT_CASES.contains(&case) { return Ok(live.to_vec()); }
+    if live.len() != width * height * 4 { return Err("fixed-input console picture has the wrong extent".into()); }
+    render_console(width,height,FIXED_CONSOLE_BODY,FIXED_ELAPSED_SECONDS)
+}
+
+/// The stage's complete fixed run: one passed tile for this case, no live thumbnails,
+/// spotlight or measurements. Boundary metadata remains the actual shared GPU interface.
+/// `elapsed` and `key` are explicit so host tests also exercise genuinely live inputs.
+pub fn with_stage<R>(case: &str, boundary: libgfx_ref::stage::Observation, elapsed: u64, key: u64,
+    render: impl FnOnce(&libgfx_ref::stage::Run<'_>) -> R) -> Result<R,String>
+{
+    use libgfx_ref::stage::{Run,Tile,Stamp,Milestone,Spotlight};
+    if !FIXED_INPUT_CASES.contains(&case) || matches!(case,"panel/kernel-screens"|"scanout/atomic-record") {
+        return Err("case has no fixed stage input".into());
+    }
+    let group=case.split_once('/').ok_or("stage case has no category")?.0;
+    let tiles=[Tile{id:case,stamp:Stamp::Pass,key,thumbnail:None}];
+    let milestones=[Milestone{id:group,first:0,end:1}];
+    let run=Run{suite:"breengel",target:"fixed inputs",case_number:1,ui_time_ms:elapsed,fps:60,
+        tiles:&tiles,milestones:&milestones,selected:0,input:None,spotlight:Spotlight::None,
+        finale:None,boundary};
+    Ok(render(&run))
+}
+
+/// Cursor inputs match the case's production sprite and its documented path.
+pub fn cursor_positions(case: &str) -> Vec<(i32,i32)> {
+    let mut positions=if case=="panel/cursor-trail-detected" {
+        vec![(200,300),(400,320),(640,400),(900,500),(1100,600)]
+    } else { Vec::new() };
+    if matches!(case,"panel/cursor-restore"|"panel/cursor-trail-detected") { positions.push((1200,40)); }
+    positions
 }
 
 /// U14a fixed approval input; the case judges its continuously committed frame first.

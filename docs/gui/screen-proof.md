@@ -196,3 +196,39 @@ An intent-enabled boot refuses a receiver without that capability before power-o
 After changing the HTTP upload module, deploy with `metal-deploy --restart`
 while the boot lease is absent; replacing files alone does not reload the running
 HTTP child. The restart path refuses an active lease.
+
+### Fixed inputs for designed-live intent pictures (E22 U14, U14a, U14b)
+
+The seven entries in `suite_breengel/console_picture.rs::FIXED_INPUT_CASES` keep
+all their live case comparisons. Only the successful case's approval picture uses
+fixed renderer inputs; no mask, tolerance or alternate digest is admitted.
+
+The five stage restoration pictures use the production GPU `StagePainter` and
+its exact CPU reference: suite `breengel`, target `fixed inputs`, one passed tile
+named for the case, key 20 ms, elapsed 250 ms, 60 fps, selected tile 0, one matching
+category, no thumbnail, input trace, spotlight or finale. The actual scanout
+record supplies the shared backend observation boundary. Cursor restore adds the
+production arrow at (1200,40); trail detection also draws arrows at (200,300),
+(400,320), (640,400), (900,500), (1100,600), in that order. Every GPU pixel must
+match the reference before handoff. Their live input is the stage clock in
+`suite_stage.rs::render_at_ui_time` and the case elapsed keys recorded by
+`suite_stage.rs::record`; cursor positions come from `panel.rs::move_pointer`.
+
+Atomic record uses the window's production pattern at commit 20, at (600,400),
+64 by 64 on black. Its live check still compares each readback to the actual
+commit named by the observation record (`scanout.rs::scanout_atomic_record`).
+
+The console uses the production cell rasterizer and retained panel renderer.
+Its two body lines are `Breenix console: fixed approval input` and
+`SUITE breengel CASE panel/cursor-trail-detected PASS ms=20`. Status starts at
+0 ms with 401 cases, that one case passes at 20 ms, the rendering time is
+679000 ms, four boot stages are reached, and there is no cursor. The live console
+body comes from serial output, and its heading from the clock and status model;
+`panel_kernel_screens` still checks the captured live frame with
+`kernel_restore::compare` before rendering this complete fixed input.
+
+Host tests pin all seven entries, vary the live clock, serial body and commit
+inputs, retain the live comparison negatives, and export full fixed reference
+frames for candidate verification. E22 U16 permits approval on an exact
+mechanical match covering every Expect claim; vision is reserved for claims
+that such a comparison cannot settle.
