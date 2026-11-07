@@ -1740,7 +1740,8 @@
         {
           "id": "atomic-record",
           "title": "The pixels and the record always belong to the same composite serial under continuous commits",
-          "expect": "A 64x64 mosaic at (600,400) on black (#000000), with blue column ramps, green row ramps and red diagonal flecks; its changing colours identify the observed commit, with no text."
+          "expect": "A 64x64 mosaic at (600,400) on black (#000000), with blue column ramps, green row ramps and red diagonal flecks; its changing colours identify the observed commit, with no text.",
+          "expectEnd": "An entirely black (#000000) full screen; no text or shapes."
         },
         {
           "id": "window-commits",
