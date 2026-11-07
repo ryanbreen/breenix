@@ -79,7 +79,7 @@ pub fn subreaper() -> CaseResult {
     reaped_orphan()?;
     let mut scenario = |_: &mut libuitest::RecordClient<'_>| match reaped_orphan() {
         Ok(()) => ScenarioOutcome::pass(),
-        Err(error) => ScenarioOutcome::fail(FailureClass::Infrastructure, "orphan", &error.to_string()),
+        Err(error) => ScenarioOutcome::fail(FailureClass::Infrastructure, "orphan", &format!("{error:?}")),
     };
     let result = run_scenario(ScenarioSpec { suite: "ui-testing", case: "runner/subreaper", checks: &[], limit_ms: 3000, run: &mut scenario });
     check(result == ScenarioOutcome::pass(), &format!("inner orphan: {result:?}"))?;

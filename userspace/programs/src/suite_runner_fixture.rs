@@ -173,9 +173,9 @@ fn parent_pid_of(pid: u64) -> Result<u64, String> {
 }
 
 #[path = "uitest_suite/sessions.rs"]
-mod sessions;
+pub mod sessions;
 #[path = "uitest_suite/runner.rs"]
-mod runner;
+pub mod runner;
 
 fn supervisor_died() -> CaseResult {
     let mut session = libuitest::Session::connect()?;

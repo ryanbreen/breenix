@@ -496,6 +496,21 @@ fn source_suite_files(files: &[(String, String)]) -> Result<(Entry, Vec<Category
 /// `pictured!("id", "Title", f)`, which expands to a `case` with the same id and title whose
 /// body hands the case's judged frame to the runner.
 fn case_entry(expr: &syn::Expr) -> Result<Entry, String> {
+    // E22 section 10.1: this declaration adds a sibling supervisor, without
+    // changing which case the runner executes. Admit only the shared callback.
+    let expr = if let syn::Expr::MethodCall(method) = expr {
+        if method.method != "session" || method.args.len() != 1 || !method.attrs.is_empty() {
+            return Err(table_error("unexpected case method"));
+        }
+        let syn::Expr::Path(callback) = &method.args[0] else { return Err(table_error("session callback is not a path")); };
+        let path: Vec<_> = callback.path.segments.iter().map(|s| s.ident.to_string()).collect();
+        if !callback.attrs.is_empty() || callback.qself.is_some() || callback.path.leading_colon.is_some()
+            || path != ["libuitest", "supervisor", "serve"]
+            || callback.path.segments.iter().any(|s| !matches!(s.arguments, syn::PathArguments::None)) {
+            return Err(table_error("session callback must be libuitest::supervisor::serve"));
+        }
+        &*method.receiver
+    } else { expr };
     if let syn::Expr::Macro(mac) = expr {
         if mac.attrs.is_empty() && mac.mac.path.is_ident("pictured") {
             let args = mac
@@ -1629,4 +1644,22 @@ fn evidence_upload_runs_the_table_and_cannot_bypass_it() {
     ] {
         assert!(source_suite(&format!("{table} fn main() {{ {body} }}")).is_err(), "{body}");
     }
+}
+
+#[test]
+fn session_case_declarations_preserve_the_case_table() {
+    let source = r#"static S: Suite = suite("demo", "Demo", &[category("c", "C", &[
+        case("a", "A", a).session(libuitest::supervisor::serve),
+        case("b", "B", b),
+    ])]).gui(); fn main() { S.run() }"#;
+    let (_, categories) = source_suite(source).unwrap();
+    assert_eq!(categories[0].cases.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    for bad in ["session()", "session(a, b)", "session(|| hidden())", "session(other::serve)", "unknown(libuitest::supervisor::serve)"] {
+        assert!(source_suite(&source.replace("session(libuitest::supervisor::serve)", bad)).is_err(), "{bad}");
+    }
+    let root = repo_root();
+    let (_, files) = suite_files(&root, "ui_testing").unwrap();
+    let (_, categories) = source_suite_files(&files).unwrap();
+    let count: usize = categories.iter().map(|c| c.cases.len()).sum();
+    assert_eq!(count, 206);
 }

@@ -6,3 +6,8 @@ pub mod outcome;
 pub use client::RecordClient;
 pub use executor::{run_scenario, ScenarioSpec};
 pub use outcome::{classify, Classification, Expected, FailureClass, ScenarioOutcome};
+
+pub mod supervisor;
+mod channel;
+mod session;
+pub use session::{Session, ProcessExit};

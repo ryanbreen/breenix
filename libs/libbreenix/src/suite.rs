@@ -108,6 +108,10 @@ mod evidence;
 mod host_input;
 #[path = "suite_descendants.rs"]
 pub mod descendants;
+#[path = "suite_session.rs"]
+pub mod session_runner;
+pub use session_runner::take_session_control;
+
 
 #[path = "suite_result.rs"]
 pub mod result;
@@ -467,6 +471,7 @@ fn frame_hash(frame: Option<&JudgedFrame>) -> String {
 /// One case: its id (lowercase words joined by '-'), the title the manifest gives it,
 /// and the function that runs it.
 pub struct Case {
+    pub supervisor: Option<fn(Fd, Fd) -> i32>,
     pub id: &'static str,
     pub title: &'static str,
     pub run: fn() -> CaseResult,
@@ -477,10 +482,11 @@ pub struct Case {
 }
 
 pub const fn case(id: &'static str, title: &'static str, run: fn() -> CaseResult) -> Case {
-    Case { id, title, run, checks: &[], collects: false }
+    Case { id, title, run, checks: &[], collects: false, supervisor: None }
 }
 
 impl Case {
+    pub const fn session(self, serve: fn(Fd, Fd) -> i32) -> Self { Self { supervisor: Some(serve), ..self } }
     pub const fn checks(self, checks: &'static [&'static str]) -> Self { Self { checks, ..self } }
     pub const fn collects(self) -> Self { Self { collects: true, ..self } }
 }
@@ -785,6 +791,7 @@ pub fn result_record(line: &str) -> CaseResult {
 
 /// A helper must not retain or explicitly keep the case's result authority.
 pub(crate) fn close_result_output() {
+    session_runner::clear_session_control();
     let fd = RESULT_FD.swap(-1, Ordering::Relaxed);
     if fd >= 0 { let _ = io::close(Fd::from_raw(fd as u64)); }
 }
@@ -2010,6 +2017,13 @@ impl Drop for ResultPipe<'_> {
 /// Run a case in a forked child, giving it `limit_ms`, and keep the live strip up to
 /// date while it runs.
 fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, screen: &mut Screen, feed: &mut Feed) -> Outcome {
+    let mut session = if gui {
+        match case.supervisor.map(session_runner::RunnerSession::start).transpose() {
+            Ok(session) => session,
+            Err(msg) => return Outcome::Fail { ms: 0, msg },
+        }
+    } else { None };
+    let logic_limit_ms = if session.is_some() { limit_ms.saturating_sub(1500) } else { limit_ms };
     screen.judged = None;screen.timing=None;
     let mut results = if gui {
         match ResultPipe::new(suite, name, case.checks, case.collects) {
@@ -2084,6 +2098,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
     HOSTKEY_SEQ.fetch_add(RECORDS_PER_CASE as u64, Ordering::Relaxed);
     match process::fork() {
         Ok(ForkResult::Child) => {
+            if let Some(session) = session.as_mut() { session.in_child(); }
             sequence::in_child();
             if let Some(results) = &results { results.in_child(); }
             let _ = io::close(reader);
@@ -2102,7 +2117,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
                 STAGE_REQUEST_FD.store(request_w.raw() as i32, Ordering::Relaxed);
                 STAGE_ANSWER_FD.store(drawn_r.raw() as i32, Ordering::Relaxed);
             }
-            let initial_limit = if window.is_some() { 120_000 } else { limit_ms };
+            let initial_limit = if window.is_some() { 120_000 } else { logic_limit_ms };
             let deadline = start.map_or(0, |start| (start + initial_limit as i128 * 1_000_000) as u64);
             CASE_DEADLINE_NS.store(deadline, Ordering::Relaxed);
             let _ = CASE_NAME.set(String::from(name));
@@ -2124,6 +2139,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
         }
         Ok(ForkResult::Parent(pid)) => {
             let pid = pid.raw() as i32;
+            if let Some(session) = session.as_mut() { session.in_parent(); }
             if let Some(results) = results.as_mut() { results.in_parent(); }
             let _ = io::close(writer);
             if let Some((_, w)) = window { let _ = io::close(w); }
@@ -2143,7 +2159,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
                     if let Some(fd) = live_reader { feed.drain(fd); }
                     screen.frame(feed);
                 };
-                wait_exit(pid, start, limit_ms, &mut frame, window.map(|(r, _)| r), tell, Some(reader), stage, results.as_mut())
+                wait_exit(pid, start, logic_limit_ms, &mut frame, window.map(|(r, _)| r), tell, Some(reader), stage, results.as_mut())
             };
             if let Waited::Published(message) = waited {
                 // The case has reported: its measured window ends before the stage composes.
@@ -2178,6 +2194,19 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
                     Outcome::Fail { ms: ms_since(start), msg: plain(&std::format!("waitpid failed: {error}{note}")) }
                 }
             };
+            let outcome = if let Some(session) = session.as_mut() {
+                match session.finish(limit_ms.saturating_sub(ms_since(start))) {
+                    Ok(()) => outcome,
+                    Err(note) => {
+                        let reason = if note == "session supervisor died" { "supervisor-died" } else { "collector-timeout" };
+                        emit(&std::format!("SUITE {suite} COLLECT {name} trigger=fail screen=none:{reason} windows=0 remnants=0 artifacts=none:{reason}\n"));
+                        match outcome {
+                            Outcome::Pass { ms } => Outcome::Fail { ms, msg: note },
+                            other => other,
+                        }
+                    }
+                }
+            } else { outcome };
             if screen.gui {
                 screen.stage_result(crate::suite_stage::end());
                 screen.stage_result(crate::suite_stage::restore_after(name));

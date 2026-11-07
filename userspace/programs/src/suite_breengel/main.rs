@@ -167,7 +167,7 @@ const fn join<const N: usize>(parts: &[&[Case]]) -> [Case; N] {
         let mut j = 0;
         while j < parts[i].len() {
             let c = &parts[i][j];
-            out[k] = Case { id: c.id, title: c.title, run: c.run, checks: c.checks, collects: c.collects };
+            out[k] = Case { id: c.id, title: c.title, run: c.run, checks: c.checks, collects: c.collects, supervisor: c.supervisor };
             k += 1;
             j += 1;
         }
