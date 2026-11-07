@@ -16,6 +16,23 @@ pub use input_abi::{
 fn invalid() -> Error {
     Errno::EINVAL.into()
 }
+/// Parse a session device selection; absence requests the unrestricted grab.
+#[cfg(feature = "std")]
+pub fn input_device_selection(value: Option<&str>) -> Result<Option<Vec<u32>>, Error> {
+    let Some(value) = value else { return Ok(None) };
+    let mut devices = Vec::new();
+    for part in value.split(',') {
+        if part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit()) {
+            return Err(invalid());
+        }
+        let id: u32 = part.parse().map_err(|_| invalid())?;
+        if id == 0 || devices.contains(&id) || devices.len() == 512 {
+            return Err(invalid());
+        }
+        devices.push(id);
+    }
+    Ok(Some(devices))
+}
 fn control(fd: Fd, op: u64, arg: u64) -> Result<(), Error> {
     Error::from_syscall(unsafe { raw::syscall3(nr::IOCTL, fd.raw(), op, arg) } as i64).map(|_| ())
 }

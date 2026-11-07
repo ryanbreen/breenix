@@ -445,13 +445,22 @@ fn compose_damage(kiosk: &mut Kiosk) {
 }
 
 fn main() {
-    match window::claim_compositor() {
-        Ok(epoch) => say(&format!("ready {epoch}")),
+    let epoch = match window::claim_compositor() {
+        Ok(epoch) => epoch,
         Err(e) => {
             say(&format!("claim-failed {}", errno(e)));
             std::process::exit(1);
         }
-    }
+    };
+    let value = std::env::var_os("BREENIX_INPUT_DEVICES");
+    let selection = libbreenix::input::input_device_selection(value.as_ref().map(|v| v.to_str().expect("input devices must be UTF-8")))
+        .expect("invalid input device selection");
+    let _input_reader = selection.map(|devices| {
+        let reader = libbreenix::input::Reader::open(true).expect("open compositor input reader");
+        reader.grab(&devices).expect("claim compositor input grab");
+        reader
+    });
+    say(&format!("ready {epoch}"));
     let mut kiosk = Kiosk { auto: true, serial: 1, gpu_fixtures:Vec::new(), compositor: None, last: 0 };
     let scene = window::call(op::EVENT_FD, &mut abi::WinId { id: 0 }).map(|fd| fd as i32);
     if let Err(e) = scene {
