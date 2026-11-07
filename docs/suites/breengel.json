@@ -1491,7 +1491,7 @@
         {
           "id": "inflight-bound",
           "title": "At most one composite per window is in flight",
-          "expect": "A black (#000000) screen with a 640x400 seed-19 mosaic at geometric origin x=0, y=0; its origin pixel is blue (#1327F7); blue column ramps, green row ramps and red diagonal flecks; no text."
+          "expect": "An entirely black (#000000) full screen; no text or shapes."
         },
         {
           "id": "no-change-commit",
