@@ -63,6 +63,50 @@ class StateTest(unittest.TestCase):
         m.write_json(m.RUN / 'ready.json', {'pid': os.getpid(), 'ready': m.now()})
 
 
+class ScreenPictureUploadTest(StateTest):
+    def test_proof_gpu_ordered_parts_and_shared_cap(self):
+        import gt710_upload as upload
+        import io
+        class Handler:
+            def __init__(self, path, body):
+                self.path, self.rfile, self.connection = path, io.BytesIO(body), self
+                self.headers = {'Content-Length': str(len(body)), 'X-Content-SHA256': hashlib.sha256(body).hexdigest()}
+                self.code = None
+            def settimeout(self, value): pass
+            def send_error(self, code, *args): self.code = code
+            def send_response(self, code): self.code = code
+            def send_header(self, *args): pass
+            def end_headers(self): pass
+        directory = m.STATE / 'boots/sample'; directory.mkdir(parents=True)
+        route = '/gt710-upload/' + 'a' * 64
+        intent = dict(id='sample', route=route, suite='gpu', complete=True, bytes=123)
+        m.write_json(m.STATE / 'gt710-upload.json', intent)
+        m.write_json(directory / 'run.json', dict(screenProof=False))
+        def send(index, body):
+            handler = Handler(route + f'/screens/pictures/{index}', body)
+            upload.receive(handler)
+            return handler.code
+        with patch.object(m, 'read_lease', return_value=dict(id='sample', state='powered')):
+            self.assertEqual(send(0, b'production'), 404)
+            m.write_json(directory / 'run.json', dict(screenProof=True))
+            # A full SCR1 record is reconstructed under one wire digest from ordered requests.
+            body = b'SCR1' + b'x' * (2 * 1024 * 1024 + 37)
+            self.assertEqual(send(1, b'reordered'), 404)
+            for index, part in enumerate((body[:2<<20], body[2<<20:])):
+                self.assertEqual(send(index, part), 200)
+            whole = b''.join((directory / f'screen-part-{i:04}.bin').read_bytes() for i in range(2))
+            self.assertEqual(hashlib.sha256(whole).digest(), hashlib.sha256(body).digest())
+            self.assertEqual(send(0, b'duplicate'), 404)
+            current = m.read_json(m.STATE / 'gt710-upload.json')
+            current['bytes'] = upload.MAX_TOTAL - len(body) - 1
+            m.write_json(m.STATE / 'gt710-upload.json', current)
+            self.assertEqual(send(2, b'over-cap'), 400)
+            self.assertFalse((directory / 'screen-part-0002.bin').exists())
+            self.assertFalse((directory / 'screen-part-0002.bin.partial').exists())
+            self.assertIn('64 MiB', m.read_json(directory / 'native-upload-refused.json')['reason'])
+            self.assertEqual((directory / 'screen-part-0000.bin').read_bytes(), body[:2<<20])
+
+
 class SerialCleanerTest(unittest.TestCase):
     def clean(self, *chunks):
         cleaner = m.SerialCleaner()

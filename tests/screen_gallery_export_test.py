@@ -12,6 +12,46 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPORT = ROOT / 'tools/screen-gallery/export.py'
 
 class ExportTest(unittest.TestCase):
+    def test_metal_export_binds_uploads_and_known_png_to_serial(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location('gallery', EXPORT)
+        gallery = importlib.util.module_from_spec(spec); spec.loader.exec_module(gallery)
+        from PIL import Image
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp); boot = root / 'boot'; boot.mkdir()
+            known = root / 'known'; known.mkdir()
+            pixels = bytes([3, 2, 1, 255]); digest = hashlib.sha256(pixels).hexdigest()
+            (known / 'one.png').write_bytes(gallery.png(1, 1, pixels))
+            manifest = known / 'manifest.json'
+            manifest.write_text(json.dumps(dict(version=1, rows=[dict(sha256=digest, mode='1x1', png='one.png')])))
+            names = [b'gpu', b'draw/one', b'end']
+            record = bytearray(512); record[:4] = b'SCR1'
+            struct.pack_into('<IIIIIHHH', record, 4, 512, 0, 4, 1, 1, *map(len, names))
+            record[32:64] = bytes.fromhex(digest); struct.pack_into('<I', record, 64, 4)
+            payload = b''.join(names) + pixels; record[80:80+len(payload)] = payload
+            wire = hashlib.sha256(record).hexdigest()
+            run = dict(id='metal-fixture', commit='a'*40, screenProof=True)
+            (boot / 'run.json').write_text(json.dumps(run))
+            serial = f'SUITE gpu SCREEN draw/one end sha256={digest} mode=1x1 binding=2x2\n'
+            # No upload: reuse only pixels that independently equal the serial digest.
+            (boot / 'serial.txt').write_text(serial)
+            records, pictures, identity = gallery.metal_records(boot, manifest)
+            self.assertEqual(identity, ('metal-fixture', 'a'*40))
+            self.assertEqual(pictures[digest][2], pixels)
+            Image.new('RGB', (1, 1), (9, 9, 9)).save(known / 'one.png')
+            with self.assertRaisesRegex(ValueError, 'pixel digest'):
+                gallery.metal_records(boot, manifest)
+            # Uploaded bytes are bound to the wire anchor, identity and canonical digest.
+            (boot / 'screen-part-0000.bin').write_bytes(record)
+            (boot / 'screen-part-upload-0000.json').write_text(json.dumps(dict(
+                id='metal-fixture', complete=True, bytes=len(record), sha256=wire)))
+            anchor = f'SCREEN_UPLOAD gpu draw/one end first=0 parts=1 bytes=512 sha256={wire}\n'
+            (boot / 'serial.txt').write_text(serial + anchor)
+            self.assertEqual(gallery.metal_records(boot, None)[1][digest][2], pixels)
+            (boot / 'serial.txt').write_text(serial + anchor.replace(wire, '0'*64))
+            with self.assertRaisesRegex(ValueError, 'digest'):
+                gallery.metal_records(boot, None)
+
     def test_case_filter_keeps_selected_aliases_and_validates_unselected_evidence(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
