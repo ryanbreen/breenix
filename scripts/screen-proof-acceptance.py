@@ -189,6 +189,17 @@ def check_breengel_runtime_display(serial, native):
     return native['display_snapshots'](rows, (preferred['width'], preferred['height']))
 
 
+def startup_categories(boot, native):
+    # gk208/native.rs::suite_requested selects legacy probes for console/GPU;
+    # BreenGL uses normal core initialization and its shared 401-case route.
+    suite = boot.get('suite')
+    if suite == 'breengel':
+        return []
+    if suite not in ('console', 'gpu'):
+        raise ValueError('unknown native startup producer')
+    return native['capture_categories'](boot)
+
+
 def checkpoint_inventory(suite, serial, ends, phase, platform='qemu'):
     expected = list(ends)
     # Phase two's intent frames come from ARM proof captures; native proof mode is phase three (U19).
@@ -454,7 +465,7 @@ def accept(commit, captures, phase='checkpoints', candidates=None, profile='arm'
                         candidates[suite], suite, boot['id'], commit, serial)
             if platform == 'metal':
                 checked = []
-                for category in native['capture_categories'](boot):
+                for category in startup_categories(boot, native):
                     if category == 'core':
                         continue  # Separate diagnostic companion; not a startup check.
                     rows = native['cases'](category, serial)
