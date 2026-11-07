@@ -41,6 +41,34 @@ class VerifyExpectTest(unittest.TestCase):
     def setUp(self):
         self.verify = load_verifier().verify_picture
 
+    def test_claim_parser_distinguishes_full_end_screen_from_top_left_strip(self):
+        image = Image.new('RGB', (64, 32), '#181512')
+        image.paste(Image.new('RGB', (20, 1), '#800000'), (0, 0))
+        expect = ('The end screen fills 64x32 with charcoal (#181512); '
+                  'top left is a 20x1 strip in dark red (#800000); no text.')
+        self.assertFalse(self.verify(image, expect, 'end')['failed_claims'])
+        self.assertTrue(self.verify(image, expect.replace('64x32', '65x32'), 'end')['failed_claims'])
+
+    def test_claim_parser_checks_lcd_blend_output_instead_of_endpoint_presence(self):
+        image = Image.new('RGB', (256, 4))
+        back, front = (0x31, 0x27, 0x19), (0xb7, 0x63, 0x21)
+        for x in range(256):
+            alpha = ((37*x)%256, 255-x, x)
+            pixel = tuple((front[c]*alpha[c]+back[c]*(255-alpha[c])+127)//255 for c in range(3))
+            for y in range(4): image.putpixel((x, y), pixel)
+        expect = ('A 256x4 picture; B,G,R coverage is x, 255-x and (37*x modulo 256), '
+                  'blended between dark brown (#312719) and rust (#B76321); rows are identical.')
+        for checkpoint, frame, sentence in (
+                ('intent', image.copy(), expect),
+                ('end', Image.new('RGB', (320, 32), '#181512'),
+                 'The end screen fills 320x32 with charcoal (#181512); top left is a 256x4 picture; '+expect.split('; ', 1)[1])):
+            if checkpoint == 'end': frame.paste(image, (0, 0))
+            self.assertFalse(self.verify(frame, sentence, checkpoint)['failed_claims'])
+            frame.putpixel((123, 2), (1, 2, 3))
+            self.assertTrue(self.verify(frame, sentence, checkpoint)['failed_claims'])
+        extra = self.verify(image, expect+' #312719 is present.', 'intent')['failed_claims']
+        self.assertTrue(any(c['kind'] == 'colour' and c['claim'] == '#312719 present' for c in extra))
+
     def test_crop_and_entire_colour_share(self):
         picture = Image.new('RGB', (8, 6), '#123456')
         frame = intent(picture)
