@@ -242,3 +242,15 @@ fn crc_codec_and_request_roundtrip() {
     invalid.case = "bad case";
     assert!(invalid.encode().is_err());
 }
+
+#[test] fn failed_observation_preserves_driver_reason_and_raw_state() {
+    let mut m = Model::new();
+    m.fault = 1;
+    let error = m.capture().unwrap_err();
+    let detail = display_crc::failure_snapshot(&mut m, error, 0, 0);
+    assert!(detail.contains("error=CRC_output_is_not_latched"), "{detail}");
+    assert!(detail.contains("method=000004a0"), "{detail}");
+    assert!(detail.contains("active=00000000 assembly=00000001"), "{detail}");
+    assert!(detail.contains("sample0=0000005b:0000005c"), "{detail}");
+    assert!(detail.contains("status=00000001"), "{detail}");
+}
