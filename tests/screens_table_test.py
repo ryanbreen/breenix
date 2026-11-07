@@ -87,17 +87,24 @@ def validate(table_path):
         if approval['by'] == 'agent':
             require(nonempty(approval['evidence']) and approval['delegation'] == DELEGATION,
                     'agent requires evidence and G29 delegation')
-            require(evidence.get('by') == 'agent', 'agent attribution mismatch')
+            require(evidence.get('by') in ('agent', 'operator'), 'agent attribution mismatch')
             for decision in evidence['entries']:
-                require(type(decision) is dict and decision.get('verdict') == 'approve' and
-                        nonempty(decision.get('evidence')) and decision.get('delegation') == DELEGATION,
-                        'agent decision must approve with evidence and delegation')
+                require(type(decision) is dict, 'invalid decision')
+                author = decision.get('by', evidence['by'])
+                require(author in ('agent', 'operator'), 'invalid decision author')
+                if author == 'agent':
+                    require(decision.get('verdict') == 'approve' and
+                            nonempty(decision.get('evidence')) and decision.get('delegation') == DELEGATION,
+                            'agent decision must approve with evidence and delegation')
             require(any(all(item.get(k) == row[k] for k in
                         ('suite', 'case', 'checkpoint', 'mode', 'sha256')) and
+                        item.get('by', evidence['by']) == 'agent' and
                         all(item.get(k) == approval[k] for k in ('evidence', 'delegation'))
                         for item in evidence['entries']), 'agent evidence mismatch')
         else:
-            require(evidence.get('by', 'operator') == 'operator', 'operator attribution mismatch')
+            require(any(type(item) is dict and item.get('by', evidence.get('by', 'operator')) == 'operator' and
+                        all(item.get(k) == row[k] for k in ('suite', 'case', 'checkpoint', 'sha256'))
+                        for item in evidence['entries']), 'operator attribution mismatch')
         require(any(type(item) is dict and all(item.get(k) == row[k] for k in
                     ('suite', 'case', 'checkpoint', 'sha256')) and item.get('verdict') == 'approve'
                     for item in evidence['entries']), 'digest not approved')
@@ -105,10 +112,16 @@ def validate(table_path):
         require(type(native) is list, 'native must be an array')
         native_keys = set()
         for item in native:
-            fields(item, {'out', 'raster', 'config', 'crc', 'derived_from_run', 'commit'}, {'crc2'})
+            fields(item, {'out', 'raster', 'config', 'crc', 'derived_from_run', 'commit'}, {'crc2', 'backend', 'secondary_absent'})
+            absent = item.get('crc2') == 'none'
+            require((type(item.get('backend')) is int and item['backend'] == 6 and
+                     item.get('secondary_absent') == 'gk208-rg-no-words-u13') if absent else
+                    'secondary_absent' not in item and ('backend' not in item or
+                    (type(item['backend']) is int and item['backend'] == 6)), 'invalid secondary absence')
             require(type(item['out']) is str and re.fullmatch(r'sor[0-9]+', item['out']) is not None and
                     matches(MODE, item['raster']) and matches(HEX64, item['config']) and
-                    matches(HEX8, item['crc']) and ('crc2' not in item or matches(HEX8, item['crc2'])) and
+                    matches(HEX8, item['crc']) and item['crc'] != '00000000' and
+                    ('crc2' not in item or absent or (matches(HEX8, item['crc2']) and item['crc2'] != '00000000')) and
                     nonempty(item['derived_from_run']) and matches(HEX40, item['commit']), 'invalid native row')
             native_key = (item['out'], item['raster'], item['config'])
             require(native_key not in native_keys, 'duplicate native configuration')

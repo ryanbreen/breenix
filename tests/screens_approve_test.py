@@ -28,6 +28,25 @@ def canonical_id(rows):
 
 
 class ApproveTest(unittest.TestCase):
+    def test_vigil_entry_authors_and_marked_nondecisions(self):
+        decision=self.decisions['entries'][0]
+        decision.update(by='agent',evidence='Exact pixel check and independent Opus review match.',delegation=approve.DELEGATION)
+        mark={k:self.rows[1][k] for k in approve.PICTURE}
+        mark.update(state='investigating',issue='#2678',reason='Operator decision pending',marked_at='2026-11-07T14:00:00Z')
+        self.decisions['entries']=[decision]
+        self.decisions['non_decisions']=[mark]
+        self.save_decisions()
+        rows=self.run_import()
+        self.assertEqual(len(rows),1)
+        self.assertEqual(rows[0]['approval']['by'],'agent')
+        self.assertEqual(rows[0]['approval']['evidence'],decision['evidence'])
+        for bad in [dict(mark,state='approve'),dict(mark,sha256='invalid'),
+                    dict(mark,sha256='e'*64),dict(mark,unexpected=1)]:
+            self.decisions['non_decisions']=[bad];self.save_decisions();self.run_import(good=False)
+        self.decisions['non_decisions']=[mark]
+        decision['verdict']='reject';decision['reason']='Agent cannot reject'
+        self.save_decisions();self.run_import(good=False)
+
     def test_utc_decision_works_with_python39_timestamp_parser(self):
         parser = approve.datetime
 
@@ -265,6 +284,7 @@ class ApproveTest(unittest.TestCase):
         (directory / 'run.json').write_text(json.dumps(run))
         row = self.rows[0]
         (directory / 'serial.txt').write_text(
+            'SUITE gpu START cases=1\n'
             'SUITE gpu CASE draw/picture-0 PASS ms=1\n'
             f'SUITE gpu SCREEN draw/picture-0 end sha256={row["sha256"]} mode=2x1 binding=2x1 '
             'crc=12345678 crc2=abcdef12 raster=1280x1024 out=sor0\n')
@@ -278,6 +298,20 @@ class ApproveTest(unittest.TestCase):
         evidence = {'version': 1, 'run': run['id'], 'commit': run['commit'], 'checkpoints': [capture]}
         (directory / 'screen-crc.json').write_text(json.dumps(evidence))
         return directory, evidence
+
+    def test_native_rejects_disagreeing_proof_modes(self):
+        self.run_import()
+        directory, _ = self.native_fixture()
+        run_path = directory / 'run.json'
+        run = json.loads(run_path.read_text())
+        run['screenProof'] = True
+        run_path.write_text(json.dumps(run))
+        self.run_import(native=directory, good=False)
+        run['screenProof'] = False
+        run_path.write_text(json.dumps(run))
+        serial = directory / 'serial.txt'
+        serial.write_text(serial.read_text().replace('START cases=1', 'START cases=1 screen_proof=on'))
+        self.run_import(native=directory, good=False)
 
     def test_native_refuses_unwritten_zero_crc_entries(self):
         self.run_import()

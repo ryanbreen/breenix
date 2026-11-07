@@ -14,7 +14,7 @@ framebuffer-v1 = []
 [dependencies]
 libuitest = { path = "../../libs/libuitest" }
 # The 16 px bitmap font libgfx draws; suite-breengel reads its rasters as the reference cells.
-noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "size_20", "size_24", "size_32", "regular", "unicode-basic-latin", "unicode-latin-1-supplement", "unicode-specials"] }
+noto-sans-mono-bitmap = { version = "0.3", default-features = false, features = ["size_16", "size_20", "size_24", "size_32", "regular", "bold", "unicode-basic-latin", "unicode-latin-1-supplement", "unicode-specials"] }
 bgl = { path = "../../libs/bgl" }
 libbreenix = { path = "../../libs/libbreenix", features = ["std"] }
 breenix-suite = { path = "../../libs/libbreenix/suite" }

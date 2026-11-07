@@ -719,6 +719,8 @@ mod process;
 pub(super) use process::{retain,proc_read,initialize_core,test_ownership,with_resources};
 pub(crate) use process::{console_receipt,console_state,set_mode,observed_scanout};
 pub(in crate::gk208) use process::{present, present_complete};
+#[cfg(target_os = "none")]
+pub(in crate::gk208) use process::{capture_crc, restore_output_perturbation};
 pub(in crate::gk208) use process::{console_allocation,terminal_display};
 
 pub(crate) mod readback;

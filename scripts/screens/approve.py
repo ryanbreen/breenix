@@ -102,30 +102,53 @@ def indexed(rows, check):
     return result
 
 
+def approval_author(doc, row):
+    author = row.get('by', doc['by'])
+    require(author in ('operator', 'agent') and (doc['by'] != 'agent' or author == 'agent'),
+            'invalid decision author')
+    return author
+
+
+def decision_time(stamp):
+    require(matches(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})', stamp),
+            'decision time must be timezone-qualified ISO 8601')
+    require(datetime.fromisoformat(stamp.replace('Z', '+00:00')).utcoffset() is not None,
+            'missing decision timezone')
+
+
 def approval_export(doc):
-    fields(doc, {'candidates', 'by', 'entries'})
+    fields(doc, {'candidates', 'by', 'entries'}, {'non_decisions'})
     require(matches(HEX64, doc['candidates']) and doc['by'] in ('operator', 'agent'),
             'approval must name candidates and be by operator or agent')
 
     def decision(row):
+        author = approval_author(doc, row)
         required = PICTURE | {'verdict', 'decided_at'}
-        if doc['by'] == 'agent':
+        if author == 'agent':
             required |= {'evidence', 'delegation'}
-        fields(row, required, {'reason'})
-        if doc['by'] == 'agent':
+        fields(row, required, {'reason', 'by'})
+        if author == 'agent':
             agent_evidence(row)
             require(row['verdict'] == 'approve', 'agent may only approve')
         key = picture(row)
         require(row['verdict'] in ('approve', 'reject'), 'invalid verdict')
         require('reason' not in row or type(row['reason']) is str, 'invalid reason')
         require(row['verdict'] != 'reject' or nonempty(row.get('reason')), 'reject requires reason')
-        stamp = row['decided_at']
-        require(matches(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})', stamp),
-                'decision time must be timezone-qualified ISO 8601')
-        require(datetime.fromisoformat(stamp.replace('Z', '+00:00')).utcoffset() is not None,
-                'missing decision timezone')
+        decision_time(row['decided_at'])
         return key
-    return indexed(doc['entries'], decision)
+
+    def non_decision(row):
+        fields(row, PICTURE | {'state', 'issue', 'reason', 'marked_at'})
+        key = picture(row)
+        require(row['state'] == 'investigating' and nonempty(row['issue']) and nonempty(row['reason']),
+                'invalid non-decision')
+        decision_time(row['marked_at'])
+        return key
+
+    decisions = indexed(doc['entries'], decision)
+    marks = indexed(doc.get('non_decisions', []), non_decision)
+    require(not decisions.keys() & marks.keys(), 'checkpoint both decided and marked')
+    return decisions
 
 
 def candidates(path):
@@ -166,10 +189,16 @@ def candidates(path):
 
 
 def native_row(row):
-    fields(row, {'out', 'raster', 'config', 'crc', 'derived_from_run', 'commit'}, {'crc2'})
+    fields(row, {'out', 'raster', 'config', 'crc', 'derived_from_run', 'commit'},
+           {'crc2', 'backend', 'secondary_absent'})
+    absent = row.get('crc2') == 'none'
+    require((row.get('backend') == 6 and type(row['backend']) is int and
+             row.get('secondary_absent') == 'gk208-rg-no-words-u13') if absent else
+            'secondary_absent' not in row and ('backend' not in row or
+             (type(row['backend']) is int and row['backend'] == 6)), 'invalid native secondary absence')
     require(matches(r'sor[0-9]+', row['out']) and matches(MODE, row['raster']) and
-            matches(HEX64, row['config']) and matches(HEX8, row['crc']) and
-            ('crc2' not in row or matches(HEX8, row['crc2'])) and
+            matches(HEX64, row['config']) and matches(HEX8, row['crc']) and row['crc'] != '00000000' and
+            ('crc2' not in row or absent or (matches(HEX8, row['crc2']) and row['crc2'] != '00000000')) and
             nonempty(row['derived_from_run']) and matches(HEX40, row['commit']), 'invalid native row')
     return row['out'], row['raster'], row['config']
 
@@ -200,14 +229,13 @@ def validate_table(table, path, pending=None):
         evidence = pending[a['file']] if pending and a['file'] in pending else read_json(evidence_path)
         require(type(evidence) is dict and evidence.get('candidates') == a['candidates'] and
                 type(evidence.get('entries')) is list, 'approval candidates mismatch')
+        approved = approval_export(evidence).get(key)
+        require(approved is not None and approval_author(evidence, approved) == a['by'],
+                'approval attribution mismatch')
         if a['by'] == 'agent':
-            require(evidence.get('by') == 'agent', 'agent attribution mismatch')
-            approved = approval_export(evidence).get(key)
-            require(approved is not None and all(approved[k] == row[k] for k in PICTURE) and
+            require(all(approved[k] == row[k] for k in PICTURE) and
                     all(approved[k] == a[k] for k in ('evidence', 'delegation')),
                     'agent verification evidence mismatch')
-        else:
-            require(evidence.get('by', 'operator') == 'operator', 'operator attribution mismatch')
         require(any(type(item) is dict and all(item.get(k) == row[k] for k in
                     (*IDENTITY, 'sha256')) and item.get('verdict') == 'approve'
                     for item in evidence['entries']), 'digest not approved')
@@ -226,6 +254,9 @@ def import_decisions(table, path, manifest, approval):
     decisions = approval_export(doc)
     require(doc['candidates'] == candidate_id, 'approval candidates mismatch')
     entries = validate_table(table, path)
+    for mark in doc.get('non_decisions', []):
+        require(identity(mark) in rows and all(mark[k] == rows[identity(mark)][k] for k in PICTURE),
+                'non-decision is not in candidates')
     for key, decision in decisions.items():
         require(key in rows and all(decision[k] == rows[key][k] for k in PICTURE),
                 'decision is not in candidates')
@@ -238,9 +269,10 @@ def import_decisions(table, path, manifest, approval):
             continue
         row = rows[key]
         entry = {k: row[k] for k in PICTURE | {'intent'}}
-        entry['approval'] = dict(by=doc['by'], file=filename, candidates=candidate_id,
+        author = approval_author(doc, decision)
+        entry['approval'] = dict(by=author, file=filename, candidates=candidate_id,
                                  capture_run=row['boot_id'], capture_commit=row['commit'])
-        if doc['by'] == 'agent':
+        if author == 'agent':
             entry['approval'].update({k: decision[k] for k in ('evidence', 'delegation')})
         previous = entries.get(key)
         if previous and previous['sha256'] == row['sha256'] and previous['mode'] == row['mode'] and 'native' in previous:
@@ -265,9 +297,16 @@ def derive_native(table, path, directory):
     spec = importlib.util.spec_from_file_location('screen_verdict', ROOT / 'scripts/screen-verdict.py')
     scorer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(scorer)
+    spec = importlib.util.spec_from_file_location('screen_crc_export', ROOT / 'scripts/metal/screen-crc-export.py')
+    codec = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(codec)
+    serial = (directory / 'serial.txt').read_text(encoding='utf-8')
+    suites = {capture['suite'] for capture in evidence.get('checkpoints', [])}
+    for suite in suites:
+        scorer.proof_mode(suite, serial, run)
     records = {}
     reported = set()
-    for line in (directory / 'serial.txt').read_text(encoding='utf-8').splitlines():
+    for line in serial.splitlines():
         case = re.match(rf'^SUITE ({NAME}) CASE ({NAME}/{NAME}) ', line)
         if case:
             reported.add((case[1], case[2]))
@@ -283,7 +322,8 @@ def derive_native(table, path, directory):
     seen = set()
     for capture in evidence['checkpoints']:
         fields(capture, IDENTITY | {'backend', 'output_config', 'binding_before', 'binding_after',
-                                    'elapsed_us', 'disarmed', 'display_error', 'status', 'samples'})
+                                    'elapsed_us', 'disarmed', 'display_error', 'status', 'samples'},
+               {'secondary_absent'})
         key = identity(capture)
         require(key not in seen, 'duplicate native checkpoint')
         seen.add(key)
@@ -325,17 +365,12 @@ def derive_native(table, path, directory):
         require(type(methods) is list and bool(methods) and all(type(m) is list and len(m) == 2 and
                 all(uint(v) for v in m) and m[0] % 4 == 0 for m in methods), 'invalid output methods')
         require([m[0] for m in methods] == sorted({m[0] for m in methods}), 'output methods must be unique and sorted')
-        samples = capture['samples']
-        require(type(samples) is list and 5 <= len(samples) <= 255, 'requires first written entry plus K=4 samples')
-        for sample in samples:
-            fields(sample, {'status', 'crc', 'crc2'})
-            require(type(sample['status']) is int and sample['status'] == 1 and
-                    matches(HEX8, sample['crc']) and sample['crc'] != '00000000' and
-                    matches(HEX8, sample['crc2']), 'unwritten or invalid CRC entry')
-        require(all(sample['crc'] == record['crc'] and sample['crc2'] == record['crc2']
-                    for sample in samples[1:]), 'unstable CRC or serial CRC mismatch')
+        crc, crc2 = codec.validate_record(capture)
+        require((crc, crc2) == (record['crc'], record['crc2']), 'unstable CRC or serial CRC mismatch')
         native = dict(out=config['out'], raster=config['raster'], config=digest(config),
                       crc=record['crc'], crc2=record['crc2'], derived_from_run=run['id'], commit=run['commit'])
+        if crc2 == 'none':
+            native.update(backend=6, secondary_absent=capture['secondary_absent'])
         native_key = native_row(native)
         parent['native'] = [row for row in parent.get('native', []) if native_row(row) != native_key] + [native]
     validate_table(table, path)

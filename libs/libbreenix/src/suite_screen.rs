@@ -67,6 +67,28 @@ pub(super) fn format_record(suite: &str, case: &str, name: &str, result: Result<
     line
 }
 
+pub(super) fn crc_label(suite: &str, case: &str, checkpoint: &str) -> String {
+    // NUL separates two grammar tokens unambiguously.
+    let hash = libpixcheck::sha256(std::format!("{case}\0{checkpoint}").as_bytes());
+    let short: String = hash[..8].iter().map(|b| std::format!("{b:02x}")).collect();
+    std::format!("crc-{suite}-{short}")
+}
+
+pub(super) fn format_crc_record(suite: &str, case: &str, name: &str, hash: [u8;32],
+    mode: Mode, binding: Mode, bytes: &[u8]) -> Result<String, &'static str> {
+    let record = gpu::abi::screen_crc::Record::decode(bytes)?;
+    if !record.eligible() || record.suite != suite || record.case != case || record.checkpoint != name
+        || record.output_config.mode != [mode.width, mode.height] { return Err("crc-record-binding"); }
+    let mut line = format_record(suite, case, name, Ok((hash, mode, binding)));
+    line.pop();
+    let sample = record.samples[1];
+    let c = record.output_config;
+    let secondary = if record.secondary_absent { "none".into() } else { std::format!("{:08x}", sample.crc2) };
+    let _ = writeln!(line, " crc={:08x} crc2={} raster={}x{} out=sor{}",
+        sample.crc,secondary,c.raster[0],c.raster[1],c.sor);
+    Ok(line)
+}
+
 pub(super) fn pack(body: &str) -> Vec<u8> {
     let mut bytes = libpixcheck::sha256(body.as_bytes()).to_vec();
     bytes.extend_from_slice(body.as_bytes());
@@ -83,12 +105,37 @@ pub(super) fn unpack<'a>(bytes: &'a [u8], suite: &str, case: &str) -> Result<&'a
     if bytes.len() < 32 || libpixcheck::sha256(&bytes[32..]) != bytes[..32] { return Err("side-file-hash"); }
     let body = std::str::from_utf8(&bytes[32..]).map_err(|_| "side-file-text")?;
     let mut names = Vec::new();
+    let mut phase = 0;
     for line in body.lines() {
         let words: Vec<_> = line.split_whitespace().collect();
+        if words.get(2) == Some(&"SCREENPERTURB") {
+            if words.as_slice() == ["SUITE", suite, "SCREENPERTURB", case, "end", "error=sequence-failed"] {
+                continue;
+            }
+            let next = super::perturb::validate_line(line, suite, case)?;
+            if next != phase + 1 { return Err("perturb-phase-order"); }
+            phase = next;
+            continue;
+        }
         let ["SUITE", id, "SCREEN", owner, name, fields @ ..] = words.as_slice() else { return Err("side-file-record"); };
         if *id != suite || *owner != case || (!named(name) && *name != "end") || names.contains(name) {
             return Err("side-file-case");
         }
+        let fields = match fields {
+            [hash, mode, binding, crc, crc2, raster, out] => {
+                let hex = |field: &str, prefix: &str| field.strip_prefix(prefix).is_some_and(|s|
+                    s.len()==8 && s.bytes().all(|b|b.is_ascii_digit() || (b'a'..=b'f').contains(&b)));
+                let raster = raster.strip_prefix("raster=").and_then(|s|s.split_once('x')).is_some_and(|(w,h)|
+                    w.parse::<u32>().is_ok_and(|n|n>0) && h.parse::<u32>().is_ok_and(|n|n>0));
+                if !hex(crc,"crc=") || (!hex(crc2,"crc2=") && *crc2 != "crc2=none") || !raster
+                    || !out.strip_prefix("out=sor").is_some_and(|s|!s.is_empty() && s.bytes().all(|b|b.is_ascii_digit())) {
+                    return Err("side-file-crc");
+                }
+                let _ = (hash, mode, binding);
+                &fields[..3]
+            }
+            fields => fields,
+        };
         match fields {
             [hash, mode, binding] => {
                 let hash = hash.strip_prefix("sha256=").ok_or("side-file-digest")?;
@@ -125,10 +172,11 @@ pub(super) struct CheckpointClock {
     excluded: AtomicU64,
     active: AtomicU64,
     window_excluded: AtomicU64,
+    perturb_attempted: AtomicBool,
 }
 impl CheckpointClock {
     pub(super) const fn new() -> Self {
-        Self { sequence: AtomicU64::new(0), excluded: AtomicU64::new(0), active: AtomicU64::new(0), window_excluded: AtomicU64::new(0) }
+        Self { sequence: AtomicU64::new(0), excluded: AtomicU64::new(0), active: AtomicU64::new(0), window_excluded: AtomicU64::new(0), perturb_attempted: AtomicBool::new(false) }
     }
     pub(super) fn start(&self, now: u64) {
         self.sequence.fetch_add(1, Ordering::SeqCst);
@@ -170,7 +218,10 @@ pub(super) struct ClockMap(*mut CheckpointClock);
 impl Drop for ClockMap {
     fn drop(&mut self) {
         CLOCK.store(core::ptr::null_mut(), Ordering::Relaxed);
-        if !self.0.is_null() { let _ = libbreenix::memory::munmap(self.0.cast(), 4096); }
+        if !self.0.is_null() {
+            PERTURB_ATTEMPTED.store(unsafe { &*self.0 }.perturb_attempted.load(Ordering::SeqCst), Ordering::Relaxed);
+            let _ = libbreenix::memory::munmap(self.0.cast(), 4096);
+        }
     }
 }
 
@@ -184,6 +235,9 @@ impl EndCheckpoint {
         if !matches!(&result, Err(e) if e == "no-case-scanout") { self.result = Some(result); }
     }
 }
+static PERTURB_ATTEMPTED: AtomicBool = AtomicBool::new(false);
+static CRC: Mutex<Option<Vec<u8>>> = Mutex::new(None);
+static END_CRC: Mutex<Option<Vec<u8>>> = Mutex::new(None);
 static END: Mutex<EndCheckpoint> = Mutex::new(EndCheckpoint { result: None });
 static CLOCK: AtomicPtr<CheckpointClock> = AtomicPtr::new(core::ptr::null_mut());
 static CASE_PID: AtomicU64 = AtomicU64::new(0);
@@ -207,7 +261,10 @@ pub(super) fn begin(suite: &str) -> ClockMap {
         .map_or(core::ptr::null_mut(), |p| p.cast::<CheckpointClock>());
     if !ptr.is_null() {
         // A private mapping owned until the parent finishes this case; atomics are shared by fork.
-        unsafe { ptr.write(CheckpointClock::new()); }
+        unsafe {
+            ptr.write(CheckpointClock::new());
+            (*ptr).perturb_attempted.store(PERTURB_ATTEMPTED.load(Ordering::Relaxed), Ordering::Relaxed);
+        }
     }
     CLOCK.store(ptr, Ordering::Relaxed);
     let mut pixel = [0; 4];
@@ -217,9 +274,13 @@ pub(super) fn begin(suite: &str) -> ClockMap {
     RUNNER_RESOURCE.store(if status == 0 { quad(&rec, r::RESOURCE) } else { 0 }, Ordering::Relaxed);
     LINES.lock().unwrap().clear();
     END.lock().unwrap().result = None;
+    *CRC.lock().unwrap() = None;
+    *END_CRC.lock().unwrap() = None;
+    let _ = std::fs::remove_file(crc_pending_path());
     *REUSE.lock().unwrap() = None;
     *CAPTURE_PIXELS.lock().unwrap() = None;
     let _ = std::fs::remove_file(std::format!("{}.screen", super::judged_path()));
+    let _ = std::fs::remove_file(pending_path());
     ClockMap(ptr)
 }
 
@@ -274,7 +335,15 @@ pub(super) fn before_helper_drop() {
         END.lock().unwrap().result = Some(Err("clock-allocation".into()));
         return;
     }
-    timed(|| END.lock().unwrap().before_drop(snapshot));
+    timed(|| {
+        END.lock().unwrap().before_drop(|| {
+            let result = snapshot_end();
+            if !matches!(&result,Err(e) if e == "no-case-scanout") {
+                *END_CRC.lock().unwrap() = CRC.lock().unwrap().take();
+            }
+            result
+        });
+    });
 }
 
 /// An exact whole-mode judged readback; only binding metadata may be refreshed.
@@ -352,7 +421,8 @@ pub(super) fn endpoint_error(errno: i32, record: &[u8]) -> String {
     std::format!("{state} errno={errno} eio_reason={reason} failed_submission={failed}")
 }
 
-fn snapshot() -> Snapshot {
+fn snapshot(name: &str) -> Snapshot {
+    *CRC.lock().unwrap() = None;
     let (status, modes) = gpu::modes();
     if status != 0 { return Err("mode-failed".into()); }
     // An in-flight PRESENT may make MODES transiently unknown. Only the pinned
@@ -361,7 +431,7 @@ fn snapshot() -> Snapshot {
         RUNNER_RESOURCE.load(Ordering::Relaxed)) {
         return Err("no-case-scanout".into());
     }
-    if let Some(saved) = reuse_snapshot() { return saved; }
+    if !native_crc_enabled() { if let Some(saved) = reuse_snapshot() { return saved; } }
     if RUNNER.load(Ordering::Relaxed) == 0 { return Err("runner-unknown".into()); }
     let (status, caps) = gpu::caps();
     if status != 0 { return Err("caps-failed".into()); }
@@ -372,11 +442,10 @@ fn snapshot() -> Snapshot {
     pixels.try_reserve_exact(len).map_err(|_| "allocation-failed")?;
     pixels.resize(len, 0);
     let mut rec = [0u8; r::SIZE];
-    use std::io::Write;
-    let request = gpu::abi::screen::Request { pixels: pixels.as_mut_ptr() as u64, len: pixels.len() as u64,
-        record: rec.as_mut_ptr() as u64 }.encode();
-    let mut device = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence").map_err(|_| "readback-open")?;
-    device.write_all(&request).map_err(|error| endpoint_error(error.raw_os_error().unwrap_or(0), &rec))?;
+    let (prefix, _) = super::RECORD_NAMES.get().ok_or("outside-case")?;
+    let suite = prefix.strip_prefix("SUITE ").and_then(|s| s.strip_suffix(' ')).ok_or("outside-case")?;
+    let case = super::running_case().ok_or("outside-case")?;
+    *CRC.lock().unwrap() = observe_checkpoint(suite, case, name, &mut pixels, &mut rec)?;
     if (caps.backend != gpu::abi::backend::GK208 && quad(&rec, r::CONTEXT) == RUNNER.load(Ordering::Relaxed))
         || non_case_binding(true, quad(&rec, r::RESOURCE), modes.console_resource,
             RUNNER_RESOURCE.load(Ordering::Relaxed)) { return Err("no-case-scanout".into()); }
@@ -387,6 +456,58 @@ fn snapshot() -> Snapshot {
     Ok((hash, mode, binding))
 }
 
+// Take the first successful native end while its owner is still alive. The
+// shared case clock carries the claim back to the runner even on child death.
+fn snapshot_end() -> Snapshot {
+    // Stage checks leave custody with the runner, even when its GPU buffer is replaced.
+    if super::running_case().is_some_and(|case| !crate::suite_stage::case_takes_display(case)) {
+        return Err("no-case-scanout".into());
+    }
+    let result = snapshot("end");
+    let clock = CLOCK.load(Ordering::Relaxed);
+    if !native_crc_enabled() || clock.is_null() { return result; }
+    // FIRED is boot-lifetime state, including across suite sequence exec.
+    if crate::test_control::fired(crate::window::abi::tc_point::DISPLAY_OUTPUT_PERTURB).is_ok_and(|n|n > 0) { return result; }
+    let baseline = CRC.lock().unwrap().take();
+    if let (Ok((hash, mode, binding)), Some(raw)) = (&result, baseline.as_ref()) {
+        if unsafe { &*clock }.perturb_attempted.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() {
+            let pixels = CAPTURE_PIXELS.lock().unwrap().take();
+            let observation = super::perturb::Observation {hash:*hash, mode:*mode, binding:*binding, raw:raw.clone()};
+            let suite = super::RECORD_NAMES.get().and_then(|(prefix,_)|prefix.strip_prefix("SUITE "))
+                .and_then(|s|s.strip_suffix(' ')).unwrap_or("");
+            let case = super::running_case().unwrap_or("");
+            struct Native;
+            impl super::perturb::Driver for Native {
+                fn fired(&mut self) -> Result<u64,String> {
+                    crate::test_control::fired(crate::window::abi::tc_point::DISPLAY_OUTPUT_PERTURB).map_err(|e|e.to_string())
+                }
+                fn arm(&mut self, resource:u64) -> Result<(),String> {
+                    crate::test_control::arm(crate::window::abi::tc_point::DISPLAY_OUTPUT_PERTURB, resource, 0).map(|_|()).map_err(|e|e.to_string())
+                }
+                fn disarm(&mut self) -> Result<(),String> { crate::test_control::disarm_all().map(|_|()).map_err(|e|e.to_string()) }
+                fn observe(&mut self, name:&str) -> Result<super::perturb::Observation,String> {
+                    let (hash,mode,binding) = snapshot(name)?;
+                    let raw = CRC.lock().unwrap().take().ok_or("perturb-crc-missing")?;
+                    Ok(super::perturb::Observation {hash,mode,binding,raw})
+                }
+            }
+            let sequence = super::perturb::run(suite, case, &observation, &mut Native);
+            let mut lines = LINES.lock().unwrap();
+            match sequence {
+                Ok((phases, records)) => {
+                    if records.iter().try_for_each(|raw|queue_crc(&crc_pending_path(), raw)).is_ok() {
+                        for line in phases { lines.push_str(&line); }
+                    } else { lines.push_str(&std::format!("SUITE {suite} SCREENPERTURB {case} end error=sequence-failed\n")); }
+                }
+                Err(_) => lines.push_str(&std::format!("SUITE {suite} SCREENPERTURB {case} end error=sequence-failed\n")),
+            }
+            *CAPTURE_PIXELS.lock().unwrap() = pixels;
+        }
+    }
+    *CRC.lock().unwrap() = baseline;
+    result
+}
+
 fn append(name: &str, end: bool) -> Result<(), &'static str> {
     let case = super::running_case().ok_or("outside-case")?;
     let (prefix, _) = super::RECORD_NAMES.get().ok_or("outside-case")?;
@@ -394,11 +515,14 @@ fn append(name: &str, end: bool) -> Result<(), &'static str> {
     let mut result = if CLOCK.load(Ordering::Relaxed).is_null() {
         Err("clock-allocation".into())
     } else if end {
-        match snapshot() {
-            Err(e) if e == "no-case-scanout" => END.lock().unwrap().result.take().unwrap_or(Err(e)),
+        match snapshot_end() {
+            Err(e) if e == "no-case-scanout" => {
+                *CRC.lock().unwrap() = END_CRC.lock().unwrap().take();
+                END.lock().unwrap().result.take().unwrap_or(Err(e))
+            },
             result => result,
         }
-    } else { timed(snapshot) };
+    } else { timed(|| snapshot(name)) };
     if end && matches!(&result, Err(e) if e == "no-case-scanout") { return Ok(()); }
     if let Ok((hash, mode, _)) = &result {
         if capture_enabled() {
@@ -407,9 +531,20 @@ fn append(name: &str, end: bool) -> Result<(), &'static str> {
                 capture(suite, case, name, *mode, *hash, &pixels)) { result = Err(e.into()); }
         }
     }
-    let line = format_record(suite, case, name, result.as_ref().map(|v| *v).map_err(String::as_str));
+    let crc = CRC.lock().unwrap().take();
+    let line = match (&result, crc.as_deref()) {
+        (Ok((hash,mode,binding)), Some(bytes)) => {
+            match format_crc_record(suite,case,name,*hash,*mode,*binding,bytes)
+                .and_then(|line| queue_crc(&crc_pending_path(),bytes).map(|()|line)) {
+                Ok(line) => line,
+                Err(error) => format_record(suite,case,name,Err(error)),
+            }
+        }
+        _ => format_record(suite, case, name, result.as_ref().map(|v| *v).map_err(String::as_str)),
+    };
     let mut lines = LINES.lock().unwrap();
-    if lines.lines().any(|line| line.split_whitespace().nth(4) == Some(name)) { return Err("duplicate-checkpoint"); }
+    if lines.lines().any(|line| line.split_whitespace().nth(2) == Some("SCREEN")
+        && line.split_whitespace().nth(4) == Some(name)) { return Err("duplicate-checkpoint"); }
     lines.push_str(&line);
     Ok(())
 }
@@ -460,20 +595,152 @@ pub(super) fn emit(line: &str) {
 
 fn capture_enabled() -> bool {
     static SETTING: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *SETTING.get_or_init(|| std::fs::read_to_string("/etc/breenix/screen-capture")
-        .is_ok_and(|s| s.trim() == "on"))
+    *SETTING.get_or_init(|| (std::fs::metadata("/etc/breenix/evidence-route").is_ok()
+        && ["/proc/breenix/screen-proof", "/etc/breenix/screen-proof"].iter()
+            .any(|path| std::fs::read_to_string(path).is_ok_and(|s| s.trim() == "on")))
+        || std::fs::read_to_string("/etc/breenix/screen-capture").is_ok_and(|s| s.trim() == "on"))
 }
 
 pub(super) fn capture(suite: &str, case: &str, checkpoint: &str, mode: Mode,
     digest: [u8;32], pixels: &[u8]) -> Result<(), &'static str> {
     if !capture_enabled() { return Ok(()); }
     use std::io::Write;
-    let bytes = screen_capture::encode(&screen_capture::Record {
-        suite,case,checkpoint,width: mode.width,height: mode.height,digest,pixels })?;
+    let record = screen_capture::Record { suite,case,checkpoint,width: mode.width,height: mode.height,digest,pixels };
+    if std::fs::metadata("/etc/breenix/evidence-route").is_ok() {
+        let known = std::fs::read_to_string("/etc/breenix/screen-known").unwrap_or_default();
+        return super::screen_upload::queue(&pending_path(), &known, &record)
+            .map(|_| ()).map_err(|_| "capture-queue");
+    }
+    let bytes = screen_capture::encode(&record)?;
     let mut request = [0;24];
     request[..8].copy_from_slice(screen_capture::REQUEST_MAGIC);
     request[8..16].copy_from_slice(&(bytes.as_ptr() as u64).to_le_bytes());
     request[16..24].copy_from_slice(&(bytes.len() as u64).to_le_bytes());
     std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence")
         .map_err(|_| "capture-open")?.write_all(&request).map_err(|_| "capture-write")
+}
+
+fn pending_path() -> std::path::PathBuf { std::format!("{}.screen-pixels", super::judged_path()).into() }
+
+pub(super) fn upload_pending(suite: &'static str, case: &str) {
+    for line in flush_crc(&crc_pending_path(), suite, case, |label, bytes| super::upload_diagnostic(suite,label,bytes)) { emit(&line); }
+    static UPLOAD: Mutex<Option<super::evidence::Upload>> = Mutex::new(None);
+    if !pending_path().exists() { return; }
+    let mut state = UPLOAD.lock().unwrap();
+    let upload = state.get_or_insert_with(|| {
+        let multiple = super::sequence::read(suite).is_some_and(|(ids, _)| ids.len() > 1);
+        let route = super::evidence_route(suite, multiple).map(|route| route.map(|mut route| {
+            route.path.push_str("/screens"); route
+        }));
+        super::evidence::Upload::new(suite, route)
+    });
+    for line in super::screen_upload::flush(&pending_path(), upload, super::evidence_transfer) { emit(&line); }
+}
+
+fn crc_pending_path() -> std::path::PathBuf { std::format!("{}.screen-crc", super::judged_path()).into() }
+
+fn native_crc_enabled() -> bool {
+    gpu::caps().1.backend == gpu::abi::backend::GK208
+        && ["/proc/breenix/screen-proof", "/etc/breenix/screen-proof"].iter()
+            .any(|path| std::fs::read_to_string(path).is_ok_and(|s|s.trim()=="on"))
+}
+
+/// Pixels and CRC come from one request holding the same observation transition.
+pub(super) fn observe_checkpoint(suite: &str, case: &str, name: &str, pixels: &mut [u8],
+    observation: &mut [u8; r::SIZE]) -> Result<Option<Vec<u8>>, String> {
+    use std::io::Write;
+    let mut crc = vec![0; gpu::abi::screen_crc::MAX_RECORD];
+    let request = if native_crc_enabled() {
+        gpu::abi::screen::CrcRequest {pixels:pixels.as_mut_ptr() as u64,len:pixels.len() as u64,
+            observation:observation.as_mut_ptr() as u64,record:crc.as_mut_ptr() as u64,
+            suite,case,checkpoint:name}.encode().map_err(String::from)?
+    } else {
+        crc.clear();
+        gpu::abi::screen::Request {pixels:pixels.as_mut_ptr() as u64,len:pixels.len() as u64,
+            record:observation.as_mut_ptr() as u64}.encode().to_vec()
+    };
+    let mut device = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence").map_err(|_| "readback-open")?;
+    device.write_all(&request).map_err(|error| {
+        if !crc.is_empty() {
+            if let Ok(detail) = std::fs::read_to_string("/proc/breenix/display-crc") {
+                // Each device text write is bounded to 512 bytes.
+                let fields: Vec<_> = detail.split_whitespace().collect();
+                for (part, fields) in fields.chunks(4).enumerate() {
+                    emit(&std::format!("SCREEN_CRC_FAILURE {suite} {case} {name} part={part} {}\n", fields.join(" ")));
+                }
+            }
+        }
+        endpoint_error(error.raw_os_error().unwrap_or(0), observation)
+    })?;
+    if crc.is_empty() { return Ok(None); }
+    let length = word(&crc,12) as usize;
+    if !(116..gpu::abi::screen_crc::MAX_RECORD).contains(&length) { return Err("crc-record-length".into()); }
+    crc.truncate(length);
+    let record = gpu::abi::screen_crc::Record::decode(&crc)?;
+    if !record.eligible() || record.suite != suite || record.case != case || record.checkpoint != name
+        || record.binding_before.resource != quad(observation,r::RESOURCE)
+        || record.binding_before.present_fence != quad(observation,r::PRESENT_FENCE)
+        || record.output_config.mode != [word(observation,r::WIDTH),word(observation,r::HEIGHT)] {
+        return Err("crc-record-binding".into());
+    }
+    Ok(Some(crc))
+}
+
+pub(super) fn queue_crc(path: &std::path::Path, bytes: &[u8]) -> Result<(), &'static str> {
+    use std::io::Write;
+    gpu::abi::screen_crc::Record::decode(bytes)?;
+    let mut file = std::fs::OpenOptions::new().append(true).create(true).open(path).map_err(|_|"crc-queue-open")?;
+    if file.metadata().map_err(|_|"crc-queue-size")?.len() + bytes.len() as u64 + 36 > super::evidence::MAX_TOTAL as u64 {
+        return Err("crc-queue-bound");
+    }
+    file.write_all(&libpixcheck::sha256(bytes)).and_then(|()|file.write_all(&(bytes.len() as u32).to_le_bytes()))
+        .and_then(|()|file.write_all(bytes)).map_err(|_|"crc-queue-write")
+}
+
+pub(super) fn flush_crc(path: &std::path::Path, suite: &str, case: &str,
+    mut send: impl FnMut(&str,&[u8]) -> Result<String,String>) -> Vec<String> {
+    use std::io::Read;
+    let mut file = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(_) => return vec![std::format!("SCREEN_CRC_UPLOAD {suite} {case} refused=queue-open")],
+    };
+    let mut lines = Vec::new();
+    let result = (|| -> Result<(), &'static str> {
+        if file.metadata().map_err(|_|"queue-size")?.len() > super::evidence::MAX_TOTAL as u64 { return Err("queue-bound"); }
+        loop {
+            let mut header = [0;36];
+            if file.read(&mut header[..1]).map_err(|_|"queue-read")? == 0 { return Ok(()); }
+            file.read_exact(&mut header[1..]).map_err(|_|"queue-partial")?;
+            let length = word(&header,32) as usize;
+            if !(116..gpu::abi::screen_crc::MAX_RECORD).contains(&length) { return Err("queue-length"); }
+            let mut bytes = vec![0;length];
+            file.read_exact(&mut bytes).map_err(|_|"queue-partial")?;
+            if libpixcheck::sha256(&bytes) != header[..32] { return Err("queue-hash"); }
+            let record = gpu::abi::screen_crc::Record::decode(&bytes)?;
+            if !record.eligible() || record.suite != suite || record.case != case { return Err("queue-binding"); }
+            let label = crc_label(suite,case,&record.checkpoint);
+            let digest: String = header[..32].iter().map(|b|std::format!("{b:02x}")).collect();
+            let result = match send(&label,&bytes) { Ok(_) => "ok".into(), Err(error) => std::format!("failed:{error}") };
+            lines.push(std::format!("SCREEN_CRC_UPLOAD {suite} {case} {} label={label} bytes={length} sha256={digest} result={result}", record.checkpoint));
+        }
+    })();
+    if let Err(error) = result { lines.push(std::format!("SCREEN_CRC_UPLOAD {suite} {case} refused={error}")); }
+    let _ = std::fs::remove_file(path);
+    lines
+}
+
+pub(super) fn intent_crc(bytes: Vec<u8>) -> Result<(), &'static str> {
+    queue_crc(&crc_pending_path(), &bytes)?;
+    *CRC.lock().unwrap() = Some(bytes);
+    Ok(())
+}
+pub(super) fn emit_intent(suite: &str, case: &str, name: &str, captured: Result<([u8;32],Mode,Mode), &'static str>) {
+    let bytes = CRC.lock().unwrap().take();
+    let line = match (captured,bytes) {
+        (Ok((hash,mode,binding)),Some(bytes)) => format_crc_record(suite,case,name,hash,mode,binding,&bytes)
+            .unwrap_or_else(|e|format_record(suite,case,name,Err(e))),
+        (result,_) => format_record(suite,case,name,result),
+    };
+    emit(&line);
 }

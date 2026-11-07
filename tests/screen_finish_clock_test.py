@@ -22,7 +22,13 @@ type Snapshot=Result<([u8;32],(),()),String>;
 static END:Mutex<End>=Mutex::new(End{result:None});
 struct End{result:Option<Snapshot>}
 static CAPTURE_PIXELS:Mutex<Option<Vec<u8>>>=Mutex::new(None);
-fn snapshot()->Snapshot{panic!("observation without clock")}
+static CRC:Mutex<Option<Vec<u8>>>=Mutex::new(None);
+static END_CRC:Mutex<Option<Vec<u8>>>=Mutex::new(None);
+fn format_crc_record(_: &str,_:&str,_:&str,_:[u8;32],_:(),_:(),_:&[u8])->Result<String,&'static str>{panic!("CRC without clock")}
+fn queue_crc(_: &std::path::Path,_:&[u8])->Result<(),&'static str>{panic!("CRC without clock")}
+fn crc_pending_path()->std::path::PathBuf{std::path::PathBuf::new()}
+fn snapshot(_: &str)->Snapshot{panic!("observation without clock")}
+fn snapshot_end()->Snapshot{snapshot("end")}
 fn capture_enabled()->bool{false}
 fn capture(_: &str,_:&str,_:&str,_:(),_:[u8;32],_:&[u8])->Result<(),&'static str>{Ok(())}
 fn format_record(_: &str,_:&str,_:&str,result:Result<([u8;32],(),()),&str>)->String{format!("error={}",result.unwrap_err())}

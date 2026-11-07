@@ -254,7 +254,11 @@ fn scanout_atomic_record() -> CaseResult {
     value("distinct-commits", seen.len() as i64, "", Some((5, 20)));
     ensure(checked >= 10, "20.1", format!("only {checked} of 20 readbacks under continuous commits returned pixels"))?;
     ensure(seen.len() >= 5, "20.1", format!(
-        "{checked} readbacks named only {} distinct commits ({seen:?}) while the client made {made}; under continuous commits the scanout moves on", seen.len()))
+        "{checked} readbacks named only {} distinct commits ({seen:?}) while the client made {made}; under continuous commits the scanout moves on", seen.len()))?;
+    // U14a changes only the approval picture after the exact live checks above.
+    let fixed = crate::console_picture::atomic_picture(width, height, pattern).cite("20.1")?;
+    crate::remember_frame(&fixed,width,height,Some(fixed.clone()));
+    Ok(())
 }
 
 fn scanout_window_commits() -> CaseResult {

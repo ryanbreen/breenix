@@ -100,6 +100,8 @@ pub mod memory_record;
 pub mod prerequisites;
 #[path = "suite_sequence.rs"]
 pub mod sequence;
+#[path = "suite_screen_upload.rs"]
+mod screen_upload;
 #[path = "suite_evidence.rs"]
 mod evidence;
 #[path = "suite_host_input.rs"]
@@ -1200,7 +1202,7 @@ impl Suite {
         let suite_start = monotonic_ns();
 
         let pace_suffix = if pace_ms > 0 { std::format!(" pace_ms={pace_ms}") } else { String::new() };
-        emit(&std::format!("SUITE {} START cases={}{}{}", self.id, total, suffix, pace_suffix));
+        emit(&start_record(self.id, total, &suffix, &pace_suffix, proof));
         if let Some(message) = &error {
             emit(&std::format!("SUITE {} ERROR {}", self.id, message));
             emit(&std::format!("SUITE {} DONE passed=0 failed=1 skipped=0 total={}{}", self.id, total, suffix));
@@ -1313,8 +1315,10 @@ impl Suite {
                 done += 1;
                 if let Some(slot) = panel_reasons.get_mut(c).and_then(|v| v.get_mut(k)) { retain_panel_reason(&mut states[c][k], slot); }
                 for checkpoint in screen::collect(self.id, &name) { screen::emit(&checkpoint); }
+                screen::upload_pending(self.id, &name);
                 if let Some(picture) = intent_picture.as_deref() {
                     intent::show(self.id, &name, picture, intent_pace_ms);
+                    screen::upload_pending(self.id, &name);
                     if screen.gui { let _ = crate::suite_stage::redraw(); }
                 }
                 if let Some(observe) = self.case_observer { observe(done, total, &name); }
@@ -1380,6 +1384,11 @@ impl Suite {
     }
 }
 
+fn start_record(id: &str, total: usize, suffix: &str, pace_suffix: &str, proof: bool) -> String {
+    let proof_suffix = if proof && matches!(id, "gpu" | "breengel") { " screen_proof=on" } else { "" };
+    std::format!("SUITE {id} START cases={total}{suffix}{pace_suffix}{proof_suffix}")
+}
+
 // Launcher-supplied HTTP route.
 fn evidence_route(suite: &str, sequence: bool) -> Result<Option<evidence::Route>, String> {
     use std::io::Read;
@@ -1392,6 +1401,9 @@ fn evidence_route(suite: &str, sequence: bool) -> Result<Option<evidence::Route>
     file.take((evidence::MAX_ROUTE + 1) as u64).read_to_string(&mut text).map_err(|_| "route-read")?;
     evidence::Route::parse(&text, suite, sequence).map(Some)
 }
+
+/// Read the suite's intent-picture configuration.
+pub fn screen_proof_enabled(suite: &str) -> bool { intent::configured(suite) }
 
 /// Upload a bounded diagnostic using the launcher's private evidence route.
 /// The host counts it in the existing per-boot budget and seals it before final.
@@ -2726,6 +2738,9 @@ mod screen_tests;
 
 #[path = "suite_screen.rs"]
 mod screen;
+
+#[path = "suite_perturb.rs"]
+mod perturb;
 
 #[path = "suite_intent.rs"]
 mod intent;

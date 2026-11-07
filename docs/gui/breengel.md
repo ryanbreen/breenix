@@ -1688,6 +1688,15 @@ The sample interval permits the 250 ms panel refresh interval plus 50 ms for clo
 resolution and sampling. The check must reject a stale elapsed field outside that
 interval, including after a display owner has held the screen.
 
+U14 (E22 coordinator, 2026-11-07, #2779): after the unchanged live restoration
+check passes, the screen picture for `panel/kernel-screens` uses the production
+console renderer with elapsed fixed at 679 s (11:19). Counts, case, text grid,
+progress and ribbon retain the live case's inputs. Only that case is on the
+explicit fixed-input list in `console_picture.rs`; other pictured cases retain
+their live judged bytes. The fixed picture is handed through `remember_frame`
+for intent presentation and exact digest/CRC approval. No end checkpoint is
+declared for the console-owned frame.
+
 ### 23.8 Agreement
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->

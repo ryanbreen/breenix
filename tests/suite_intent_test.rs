@@ -1,6 +1,22 @@
 use super::intent::{layout, samples};
 use crate::gpu::abi::{self, stream::{self, Resolver, SourceInfo, TargetInfo}};
 
+#[test]
+fn start_record_marks_only_configured_screen_suites() {
+    for id in ["gpu", "breengel", "console", "crypto", "directories", "files-io", "filesystem", "gt710",
+        "ipc", "libc", "memory", "networking", "processes", "rust-std", "sdk", "server", "signals",
+        "smoke", "terminals", "threads", "time", "toolchain", "ui-testing", "users", "utilities",
+        "window-manager", "other"] {
+        for configured in [false, true] {
+            let old = format!("SUITE {id} START cases=12 only=case pace_ms=50");
+            let expected = if configured && matches!(id, "gpu" | "breengel") {
+                format!("{old} screen_proof=on")
+            } else { old };
+            assert_eq!(super::start_record(id, 12, " only=case", " pace_ms=50", configured), expected);
+        }
+    }
+}
+
 struct IntentResources { picture: [u32; 2], mode: [u32; 2] }
 impl Resolver for IntentResources {
     fn target(&self, handle: u64) -> Option<TargetInfo> {
@@ -21,13 +37,16 @@ fn intent_commands_fit_the_existing_gpu_work_budget() {
         for picture in [[1, 1], [17, 9], [1216, 736], [1217, 737], [1280, 800], [2560, 1600]] {
             let resources = IntentResources { picture, mode };
             let mut area = 0;
-            for words in super::intent::streams(picture, mode, 1, 2).unwrap() {
+            for page in layout(picture, mode, &[]).unwrap() {
+            for words in super::intent::streams(picture, mode, 1, 2, page).unwrap() {
                 let plan = stream::validate(&words[..], &resources)
                     .unwrap_or_else(|e| panic!("picture {picture:?} mode {mode:?}: {e:?}"));
                 area += plan.area;
             }
-            let l = layout(picture, mode).unwrap();
-            let border = l.border.map_or(0, |r| r[2] as u64 * r[3] as u64);
+            }
+            let plans = super::intent::layout(picture, mode, &[]).unwrap();
+            let border: u64 = plans.iter().map(|l| l.border.map_or(0, |r| r[2] as u64 * r[3] as u64)).sum();
+            let picture_area: u64 = plans.iter().flat_map(|l| samples(picture,l.clone())).map(|(r,_)| r[2] as u64*r[3] as u64).sum();
             let mut light_area = 0;
             for y in (0..mode[1]).step_by(16) {
                 for x in (0..mode[0]).step_by(16) {
@@ -37,8 +56,7 @@ fn intent_commands_fit_the_existing_gpu_work_budget() {
                     }
                 }
             }
-            assert_eq!(area, mode[0] as u64 * mode[1] as u64 + light_area + border
-                + l.picture[2] as u64 * l.picture[3] as u64);
+            assert_eq!(area, plans.len() as u64 * (mode[0] as u64 * mode[1] as u64 + light_area) + border + picture_area);
         }
     }
 }
@@ -47,6 +65,7 @@ fn intent_commands_fit_the_existing_gpu_work_budget() {
 fn intent_background_alternates_at_frame_origin_behind_border_and_picture() {
     const PICTURE: u32 = 0xFF12_3456;
     for (picture, mode) in [
+        ([1872, 1788], [2560, 1600]),
         ([17, 9], [1280, 800]),
         ([1, 1], [1301, 815]),
         ([2560, 1600], [1280, 800]),
@@ -54,7 +73,10 @@ fn intent_background_alternates_at_frame_origin_behind_border_and_picture() {
         ([17, 9], [2560, 1600]),
     ] {
         let mut pixels = vec![0; (mode[0] * mode[1]) as usize];
-        for words in super::intent::streams(picture, mode, 1, 2).unwrap() {
+        for l in if picture == [1872,1788] {
+            super::intent::picture_pages("breengel","png-decode/independent-fixtures",picture,mode).unwrap()
+        } else { super::intent::layout(picture, mode, &[]).unwrap() } {
+        for words in super::intent::streams(picture, mode, 1, 2, l.clone()).unwrap() {
             stream::validate(&words[..], &IntentResources { picture, mode }).unwrap();
             let mut at = 0;
             while at < words.len() {
@@ -84,12 +106,18 @@ fn intent_background_alternates_at_frame_origin_behind_border_and_picture() {
                 at += command.len();
             }
         }
-        let l = layout(picture, mode).unwrap();
+        let mut picture_pixels=vec![false;(mode[0]*mode[1]) as usize];
+        for (dst,_) in samples(picture,l.clone()) {
+            for y in dst[1]..dst[1]+dst[3] { for x in dst[0]..dst[0]+dst[2] {
+                picture_pixels[(y*mode[0]+x) as usize]=true;
+            } }
+        }
         let contains = |[left, top, width, height]: [u32; 4], x, y|
             x >= left && x < left + width && y >= top && y < top + height;
         for y in 0..mode[1] {
             for x in 0..mode[0] {
-                let expected = if contains(l.picture, x, y) { PICTURE }
+                let expected = if picture_pixels[(y*mode[0]+x) as usize] { PICTURE }
+                    else if contains(l.picture, x, y) { 0xFF0C_131F }
                     else if l.border.is_some_and(|b| contains(b, x, y)) { 0xFFFF_FFFF }
                     else if (x / 16 + y / 16) % 2 == 0 { 0xFF5A_5A5A }
                     else { 0xFF7A_7A7A };
@@ -97,59 +125,115 @@ fn intent_background_alternates_at_frame_origin_behind_border_and_picture() {
                     "picture {picture:?} mode {mode:?} pixel ({x},{y})");
             }
         }
+        }
     }
 }
 
 #[test]
-fn intent_layout_covers_scale_full_screen_and_integer_decimation() {
-    // Mode 1280x800 has a 1216x736 inner bound. Rectangles are x,y,width,height.
-    let cases = [
-        ([1u32, 1], 736u32, 1u32, [272, 32, 736, 736], Some([270, 30, 740, 740])),
-        ([17, 9], 71, 1, [36, 80, 1207, 639], Some([34, 78, 1211, 643])),
-        ([1216, 736], 1, 1, [32, 32, 1216, 736], Some([30, 30, 1220, 740])),
-        ([1217, 736], 1, 2, [335, 216, 609, 368], Some([333, 214, 613, 372])),
-        ([1216, 737], 1, 2, [336, 215, 608, 369], Some([334, 213, 612, 373])),
-        ([1280, 800], 1, 1, [0, 0, 1280, 800], None),
-        ([2560, 1600], 1, 3, [213, 133, 854, 534], Some([211, 131, 858, 538])),
-    ];
-    for (picture, scale, divisor, rect, border) in cases {
-        let got = layout(picture, [1280, 800]).unwrap();
-        assert_eq!((got.scale, got.divisor, got.picture, got.border),
-            (scale, divisor, rect, border), "picture {picture:?}");
-        if border.is_some() {
-            assert!(rect[2] <= 1216 && rect[3] <= 736);
-            if divisor > 1 {
-                assert!(picture[0].div_ceil(divisor - 1) > 1216
-                    || picture[1].div_ceil(divisor - 1) > 736);
+fn intent_layout_preserves_enlargement_and_full_screen() {
+    for (picture, scale, rect, border) in [
+        ([1u32, 1], 736u32, [272, 32, 736, 736], Some([270, 30, 740, 740])),
+        ([17, 9], 71, [36, 80, 1207, 639], Some([34, 78, 1211, 643])),
+        ([1216, 736], 1, [32, 32, 1216, 736], Some([30, 30, 1220, 740])),
+        ([1217, 736], 1, [31, 32, 1217, 736], Some([29, 30, 1221, 740])),
+        ([1216, 737], 1, [32, 31, 1216, 737], Some([30, 29, 1220, 741])),
+        ([1280, 800], 1, [0, 0, 1280, 800], None),
+    ] {
+        let got = layout(picture, [1280, 800], &[]).unwrap().remove(0);
+        assert_eq!((got.scale, got.picture, got.border), (scale, rect, border));
+    }
+    assert!(layout([0, 1], [1280, 800], &[]).is_err());
+    assert!(layout([1, 1], [64, 800], &[]).is_err());
+}
+
+#[test]
+fn panel_pages_keep_tile_boundaries_and_exact_source_union() {
+    for (case, size, page_sizes) in [
+        ("png-decode/interlace-small", [2022,2083], vec![[2490,1490], [1710,295]]),
+        ("png-decode/ancillary-ignored", [2160,1748], vec![[2160,874], [2160,874]]),
+        ("png-decode/independent-fixtures", [1872,1788], vec![[2496,1490]]),
+        ("png-encode/sizes", [1322,1460], vec![[1322,1460]]),
+    ] {
+        let plans = super::intent::picture_pages("breengel", case, size, [2560,1600]).unwrap();
+        assert_eq!(plans.iter().map(|p| [p.picture[2],p.picture[3]]).collect::<Vec<_>>(),page_sizes);
+        let mut hits = vec![0u8;(size[0]*size[1]) as usize];
+        for p in plans {
+            assert_eq!(p.scale,1);
+            let b = p.border.unwrap();
+            assert!(b[0]+b[2]<=2560 && b[1]+b[3]<=1600);
+            for (dst,src) in samples(size,p) {
+                assert_eq!(dst[2..],src[2..]);
+                for y in src[1]..src[1]+src[3] { for x in src[0]..src[0]+src[2] {
+                    hits[(y*size[0]+x) as usize]+=1;
+                } }
+                if case == "png-decode/independent-fixtures" {
+                    assert_eq!(src[2..],[156,298]); // Whole 32 px fixture pairs, labels and padding.
+                }
             }
         }
+        assert!(hits.iter().all(|&n| n==1),"{case}: source union");
     }
-    let full = layout([2560, 1600], [2560, 1600]).unwrap();
-    assert_eq!((full.picture, full.border), ([0, 0, 2560, 1600], None));
-    assert!(layout([0, 1], [1280, 800]).is_err());
-    assert!(layout([1, 1], [64, 800]).is_err());
 }
 
+// U11 / #2678: inspect the submitted mapping, independently of layout metadata.
+// Assert integer destination blocks and a source hit count of one per texel.
 #[test]
-fn downscale_samples_every_kth_pixel_including_partial_edge_tiles() {
-    let picture = [2560, 1600];
-    let layout = layout(picture, [1280, 800]).unwrap();
-    let tiles = samples(picture, layout);
-    // Check the source-coordinate formula used by NEAREST_SCALED for this 854x534 output,
-    // including odd dimensions: proportional scaling of the whole source is wrong.
-    for y in 0..layout.picture[3] {
-        for x in 0..layout.picture[2] {
-            let px = x + layout.picture[0];
-            let py = y + layout.picture[1];
-            let hits: Vec<_> = tiles.iter().filter(|(dst, _)|
-                px >= dst[0] && px < dst[0] + dst[2]
-                && py >= dst[1] && py < dst[1] + dst[3]).collect();
-            assert_eq!(hits.len(), 1);
-            let (dst, src) = hits[0];
-            let sx = src[0] + (px - dst[0]) * src[2] / dst[2];
-            let sy = src[1] + (py - dst[1]) * src[3] / dst[3];
-            assert_eq!([sx, sy], [x * 3, y * 3]);
-            assert!(src[0] + src[2] <= picture[0] && src[1] + src[3] <= picture[1]);
+fn oversized_intents_preserve_every_source_pixel_without_overprinting() {
+    for (suite,case,picture,expected_pages) in [
+        ("gpu","profile/int-float-exact",[16384,2],1),
+        ("gpu","performance/upload-bandwidth",[2048,2048],2),
+        ("breengel","bmp/padding",[1446,1553],1),
+        ("breengel","png-decode/interlace-small",[2022,2083],2),
+        ("breengel","png-decode/ancillary-ignored",[2160,1748],2),
+        ("breengel","png-decode/independent-fixtures",[1872,1788],1),
+        ("breengel","png-encode/sizes",[1322,1460],1),
+    ] {
+        let mode = [2560, 1600];
+        let mut source_hits = vec![0u8; (picture[0] * picture[1]) as usize];
+        let mut occupied = vec![false; (mode[0] * mode[1]) as usize];
+        let mut pages = 0;
+        let plans=super::intent::picture_pages(suite,case,picture,mode).unwrap();
+        for plan in plans {
+        for words in super::intent::streams(picture,mode,1,2,plan).unwrap() {
+            stream::validate(&words[..], &IntentResources { picture, mode }).unwrap();
+            let mut at = 0;
+            while at < words.len() {
+                let command = &words[at..at + words[at + 1] as usize];
+                if command[0] == stream::cmd::CLEAR {
+                    occupied.fill(false);
+                    pages += 1;
+                }
+                if command[0] == abi::draw::COMMAND {
+                    for instance in command[abi::draw::HEADER..].chunks_exact(abi::draw::INSTANCE) {
+                        let p = &instance[4..];
+                        let (dw, dh, sw, sh) = (p[2], p[3], p[6], p[7]);
+                        assert!(dw >= sw && dh >= sh && dw % sw == 0 && dh % sh == 0,
+                            "{picture:?}: source pixels must have integer scale >= 1");
+                        assert_eq!(dw / sw, dh / sh);
+                        let scale = dw / sw;
+                        if picture == [2022, 2083] || picture == [2048, 2048] {
+                            assert_eq!(scale, 1, "paged pictures stay at scale 1");
+                        }
+                        for y in instance[1]..instance[3] {
+                            for x in instance[0]..instance[2] {
+                                assert!(x >= 2 && y >= 2 && x < mode[0]-2 && y < mode[1]-2);
+                                let dst = (y * mode[0] + x) as usize;
+                                assert!(!occupied[dst], "{picture:?}: destination overprint");
+                                occupied[dst] = true;
+                                if (x-p[0]) % scale == 0 && (y-p[1]) % scale == 0 {
+                                    let sx = p[4] + (x-p[0]) / scale;
+                                    let sy = p[5] + (y-p[1]) / scale;
+                                    source_hits[(sy * picture[0] + sx) as usize] += 1;
+                                }
+                            }
+                        }
+                    }
+                }
+                at += command.len();
+            }
         }
+        }
+        assert!(source_hits.iter().all(|&n| n == 1), "{picture:?}: page union differs from judged picture");
+        assert_eq!(pages,expected_pages);
     }
 }

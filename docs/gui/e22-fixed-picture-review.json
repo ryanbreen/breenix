@@ -1,0 +1,253 @@
+{
+  "version": 1,
+  "pr": 2780,
+  "verifier_commit": "a0c736a28325e8259f742e67a9bee79773910f4a",
+  "scope": "Supplementary U16 evidence for the seven fixed-picture intents; existing Vigil decisions and approved pixel/native identities are unchanged. The historical no-unknown-claims rationale is superseded by this independent review.",
+  "candidates_id": "1a611b9136e33426f6ffa35209f2dfbce2b8130226ac325f1f0fbbd79b1bb77b",
+  "picture_capture": "20261107T152251Z-metal",
+  "acceptance_capture": "20261107T161557Z-metal",
+  "acceptance_commit": "be9c246f413ade96b3ae453ca023cde11dc423b7",
+  "crop_method": "Four non-overlapping 1280x800 native-pixel quadrants cover each 2560x1600 frame; atomic-record also has an 8x nearest-neighbour crop of (600,400)-(664,464). No downscaled full-frame inference.",
+  "mechanical_report_sha256": "bc2fadf0d31ee76da85384b710c61fe996470d63f73de050f0ec196ed5639e97",
+  "vision_report_sha256": "3bbc9e56ce2630af09b3bf3b008223df91edfeb6f3e7c0ec5c1f04478a49f432",
+  "vision_inference": "Opus image inference with tools disabled, no subagents or coding task.",
+  "rows": [
+    {
+      "index": 155,
+      "case": "composition/takeover-giveback",
+      "checkpoint": "intent",
+      "sha256": "26898ebf24fb2da7356731b50afada38867aef4218135d8776d438043a2c36bc",
+      "expect": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed composition/takeover-giveback tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record.",
+      "mechanical": {
+        "verdict": "unparseable",
+        "matched_pixels": 4096000,
+        "failed_claims": [],
+        "unresolved_claims": [
+          {
+            "claim": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed composition/takeover-giveback tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record.",
+            "reason": "shared renderer equality leaves Expect claims for independent vision review"
+          }
+        ],
+        "independent_seed_scene": false
+      },
+      "acceptance_case": "SUITE breengel CASE composition/takeover-giveback PASS ms=1068 sha256=26898ebf24fb2da7356731b50afada38867aef4218135d8776d438043a2c36bc",
+      "acceptance_screen": "SUITE breengel SCREEN composition/takeover-giveback intent sha256=26898ebf24fb2da7356731b50afada38867aef4218135d8776d438043a2c36bc mode=2560x1600 binding=2560x1600 crc=6d6828da crc2=none raster=1280x1024 out=sor0"
+    },
+    {
+      "index": 176,
+      "case": "scanout/atomic-record",
+      "checkpoint": "intent",
+      "sha256": "1d70845e49a36cb3a18c375969f83debab8548757dd233b118676a5229625fa7",
+      "expect": "A black (#000000) 2560x1600 screen with seed mosaics (x,y,width,height,z,seed): (600,400,64,64,0,20). The handed picture uses fixed commit index 20 (U14a); the live case checks each actual commit. Blue and green ramps with red diagonal flecks; no text.",
+      "mechanical": {
+        "verdict": "unparseable",
+        "matched_pixels": 4096000,
+        "failed_claims": [],
+        "unresolved_claims": [
+          {
+            "claim": "A black (#000000) 2560x1600 screen with seed mosaics (x,y,width,height,z,seed): (600,400,64,64,0,20). The handed picture uses fixed commit index 20 (U14a); the live case checks each actual commit. Blue and green ramps with red diagonal flecks; no text.",
+            "reason": "shared renderer equality leaves Expect claims for independent vision review"
+          }
+        ],
+        "independent_seed_scene": true
+      },
+      "acceptance_case": "SUITE breengel CASE scanout/atomic-record PASS ms=3113 sha256=1d70845e49a36cb3a18c375969f83debab8548757dd233b118676a5229625fa7",
+      "acceptance_screen": "SUITE breengel SCREEN scanout/atomic-record intent sha256=1d70845e49a36cb3a18c375969f83debab8548757dd233b118676a5229625fa7 mode=2560x1600 binding=2560x1600 crc=8b0089a9 crc2=none raster=1280x1024 out=sor0"
+    },
+    {
+      "index": 203,
+      "case": "panel/handoff",
+      "checkpoint": "intent",
+      "sha256": "e363a5d16257437fb6859013789e77357ac738ce0893b0d3da7c3183c07cb079",
+      "expect": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed panel/handoff tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record.",
+      "mechanical": {
+        "verdict": "unparseable",
+        "matched_pixels": 4096000,
+        "failed_claims": [],
+        "unresolved_claims": [
+          {
+            "claim": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed panel/handoff tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record.",
+            "reason": "shared renderer equality leaves Expect claims for independent vision review"
+          }
+        ],
+        "independent_seed_scene": false
+      },
+      "acceptance_case": "SUITE breengel CASE panel/handoff PASS ms=1074 sha256=e363a5d16257437fb6859013789e77357ac738ce0893b0d3da7c3183c07cb079",
+      "acceptance_screen": "SUITE breengel SCREEN panel/handoff intent sha256=e363a5d16257437fb6859013789e77357ac738ce0893b0d3da7c3183c07cb079 mode=2560x1600 binding=2560x1600 crc=2983eee7 crc2=none raster=1280x1024 out=sor0"
+    },
+    {
+      "index": 204,
+      "case": "panel/between-cases",
+      "checkpoint": "intent",
+      "sha256": "db679a5f4718dda2dc5617941fa8d878c3511905e058a2e3e298d727e30b7564",
+      "expect": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed panel/between-cases tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record.",
+      "mechanical": {
+        "verdict": "unparseable",
+        "matched_pixels": 4096000,
+        "failed_claims": [],
+        "unresolved_claims": [
+          {
+            "claim": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed panel/between-cases tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record.",
+            "reason": "shared renderer equality leaves Expect claims for independent vision review"
+          }
+        ],
+        "independent_seed_scene": false
+      },
+      "acceptance_case": "SUITE breengel CASE panel/between-cases PASS ms=1283 sha256=db679a5f4718dda2dc5617941fa8d878c3511905e058a2e3e298d727e30b7564",
+      "acceptance_screen": "SUITE breengel SCREEN panel/between-cases intent sha256=db679a5f4718dda2dc5617941fa8d878c3511905e058a2e3e298d727e30b7564 mode=2560x1600 binding=2560x1600 crc=ed598ed7 crc2=none raster=1280x1024 out=sor0"
+    },
+    {
+      "index": 205,
+      "case": "panel/cursor-restore",
+      "checkpoint": "intent",
+      "sha256": "4228ed5ddb48d75ee0defb08116bcc728725007f92ffb34667ccae7c349fc8f7",
+      "expect": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed panel/cursor-restore tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record. Arrow at (1200,40), no trail.",
+      "mechanical": {
+        "verdict": "unparseable",
+        "matched_pixels": 4096000,
+        "failed_claims": [],
+        "unresolved_claims": [
+          {
+            "claim": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed panel/cursor-restore tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record. Arrow at (1200,40), no trail.",
+            "reason": "shared renderer equality leaves Expect claims for independent vision review"
+          }
+        ],
+        "independent_seed_scene": false
+      },
+      "acceptance_case": "SUITE breengel CASE panel/cursor-restore PASS ms=1529 sha256=4228ed5ddb48d75ee0defb08116bcc728725007f92ffb34667ccae7c349fc8f7",
+      "acceptance_screen": "SUITE breengel SCREEN panel/cursor-restore intent sha256=4228ed5ddb48d75ee0defb08116bcc728725007f92ffb34667ccae7c349fc8f7 mode=2560x1600 binding=2560x1600 crc=924b90b1 crc2=none raster=1280x1024 out=sor0"
+    },
+    {
+      "index": 206,
+      "case": "panel/cursor-trail-detected",
+      "checkpoint": "intent",
+      "sha256": "4c64d94bdf061ce14e599781da7777cb926411f40d11097c13b7fdcc15e3a304",
+      "expect": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed panel/cursor-trail-detected tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record. Arrows at (200,300),(400,320),(640,400),(900,500),(1100,600),(1200,40).",
+      "mechanical": {
+        "verdict": "unparseable",
+        "matched_pixels": 4096000,
+        "failed_claims": [],
+        "unresolved_claims": [
+          {
+            "claim": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed panel/cursor-trail-detected tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record. Arrows at (200,300),(400,320),(640,400),(900,500),(1100,600),(1200,40).",
+            "reason": "shared renderer equality leaves Expect claims for independent vision review"
+          }
+        ],
+        "independent_seed_scene": false
+      },
+      "acceptance_case": "SUITE breengel CASE panel/cursor-trail-detected PASS ms=1522 sha256=4c64d94bdf061ce14e599781da7777cb926411f40d11097c13b7fdcc15e3a304",
+      "acceptance_screen": "SUITE breengel SCREEN panel/cursor-trail-detected intent sha256=4c64d94bdf061ce14e599781da7777cb926411f40d11097c13b7fdcc15e3a304 mode=2560x1600 binding=2560x1600 crc=bd767959 crc2=none raster=1280x1024 out=sor0"
+    },
+    {
+      "index": 207,
+      "case": "panel/kernel-screens",
+      "checkpoint": "intent",
+      "sha256": "5a896af71457daf9b464004e5ade75c239713374515eec0d244ebbf5081854c8",
+      "expect": "Fixed production console renderer: body lines \"Breenix console: fixed approval input\" and \"SUITE breengel CASE panel/cursor-trail-detected PASS ms=20\"; 1 passed of 401, elapsed 679 s, four reached boot stages, no cursor. The live restoration check stays exact.",
+      "mechanical": {
+        "verdict": "unparseable",
+        "matched_pixels": 4096000,
+        "failed_claims": [],
+        "unresolved_claims": [
+          {
+            "claim": "Fixed production console renderer: body lines \"Breenix console: fixed approval input\" and \"SUITE breengel CASE panel/cursor-trail-detected PASS ms=20\"; 1 passed of 401, elapsed 679 s, four reached boot stages, no cursor. The live restoration check stays exact.",
+            "reason": "shared renderer equality leaves Expect claims for independent vision review"
+          }
+        ],
+        "independent_seed_scene": false
+      },
+      "acceptance_case": "SUITE breengel CASE panel/kernel-screens PASS ms=3565 sha256=5a896af71457daf9b464004e5ade75c239713374515eec0d244ebbf5081854c8",
+      "acceptance_screen": "SUITE breengel SCREEN panel/kernel-screens intent sha256=5a896af71457daf9b464004e5ade75c239713374515eec0d244ebbf5081854c8 mode=2560x1600 binding=2560x1600 crc=e4684c56 crc2=none raster=1280x1024 out=sor0"
+    }
+  ],
+  "vision_report": {
+    "rows": [
+      {
+        "index": 155,
+        "case": "composition/takeover-giveback",
+        "verdict": "match",
+        "reason": "Renderer equality was not used as proof of the prose. Each claim was checked against the pixels. (1) 'breengel': the header at (48..458, 36..78) reads 'BREENIX / breengel'. (2) Target 'fixed inputs': the subline at (48..388, 96..112) reads 'fixed inputs  case 1 of 1  elapsed 250 ms  fps 60'. (3) Elapsed 250 ms and fps 60: both appear in that subline. (4) One passed tile: the summary reads '1 passed  0 failed  0 not reached'. The group block at (32..656, 224..416) reads 'composition' and '1/1 pass'. There is exactly one case tile at (672..976, 224..416) labelled '1', with a green (#1c7350-like) band containing '20'. The detail panel at (1664..2528, 224..1400) reads 'CASE 1 / composition', 'takeover-giveback', 'key 20', with green 'PASS' at (1696..1800, 1282..1322). (5) Key 20 ms: the value 20 appears in the tile band and as 'key 20'; no 'ms' unit is drawn. (6) No thumbnails or spotlight: the tile's inner slot at (688..816, 240..336) is a flat dark empty rectangle with no image content. No enlarged or highlighted case image appears anywhere, and the detail panel contains only text. Both bottom quadrants are flat background apart from the panel. Observation only, not an objection: the panel shows grey 'Awaiting case result' at (1696..1978, 720..752) and 'PASS' together. The Expect says nothing about this text, so I raise no objection.",
+        "nonvisual_claims": [
+          "boundary from the scanout record (scanout-boundary provenance)"
+        ]
+      },
+      {
+        "index": 176,
+        "case": "scanout/atomic-record",
+        "verdict": "cannot-tell",
+        "reason": "(1) Black #000000 2560x1600 screen: all four quadrants are uniform black apart from the mosaic. The independent seed-scene formula also passed. (2) Mosaic (600,400,64,64,z0,seed20): the only non-black content is at (600..664, 400..464), confirmed by the native 8x crop. Seed 20 is confirmed by the independent formula, not visually. (3) Blue and green ramps: visible. The 8x crop shows four sub-tiles with blocky gradients from green (top-left area around (600..636, 420..438)) to cyan/blue (right edges around (632..636, 400..438) and (656..664, 400..438)). The lower sub-tiles at (600..664, 438..464) are blue/dark green ramps. (4) No text: none is visible anywhere. (5) Red diagonal flecks: I cannot confirm this visually. The only red-dominant pixels are dark maroon/brown blocks at about (600..616, 438..450) and olive-brown blocks at about (636..648, 400..412). They read as dim corner tint in a blocky gradient, not as distinct red flecks in a diagonal arrangement. I raise no objection because the seed formula passed and I cannot name a contradicting pixel. Suggested pixel test for the operator: in (600..664, 400..464), count pixels with R > G and R > B, and test whether they lie along a diagonal.",
+        "nonvisual_claims": [
+          "The handed picture uses fixed commit index 20 (U14a)",
+          "the live case checks each actual commit (temporal live-check)"
+        ]
+      },
+      {
+        "index": 203,
+        "case": "panel/handoff",
+        "verdict": "match",
+        "reason": "(1) Header 'BREENIX / breengel' at (48..458, 36..78). (2) Subline 'fixed inputs  case 1 of 1  elapsed 250 ms  fps 60' at (48..388, 96..112), covering target, elapsed and fps. (3) Summary reads '1 passed  0 failed  0 not reached'. (4) Group block (32..656, 224..416) reads 'panel' and '1/1 pass'. (5) Exactly one tile at (672..976, 224..416), labelled '1', with a green band containing '20'. (6) Detail panel reads 'CASE 1 / panel', 'handoff', 'key 20', with green 'PASS' at (1696..1800, 1282..1322). (7) Key 20: shown as a value; no 'ms' unit is drawn. (8) No thumbnails or spotlight: the tile slot (688..816, 240..336) is flat and empty, and no enlarged or highlighted image appears. (9) No arrows or other stray content in any quadrant.",
+        "nonvisual_claims": [
+          "boundary from the scanout record (scanout-boundary provenance)"
+        ]
+      },
+      {
+        "index": 204,
+        "case": "panel/between-cases",
+        "verdict": "match",
+        "reason": "(1) Header 'BREENIX / breengel'. (2) Subline 'fixed inputs  case 1 of 1  elapsed 250 ms  fps 60'. (3) Summary reads '1 passed  0 failed  0 not reached'. (4) Group block reads 'panel' and '1/1 pass'. (5) Exactly one tile at (672..976, 224..416), labelled '1', with a green band containing '20'. (6) Detail panel reads 'CASE 1 / panel', 'between-cases', 'key 20', with green 'PASS' at (1696..1800, 1282..1322). (7) No thumbnails or spotlight: the tile slot (688..816, 240..336) is flat and empty, and no enlarged image appears. (8) No arrows or other stray content in any quadrant.",
+        "nonvisual_claims": [
+          "boundary from the scanout record (scanout-boundary provenance)"
+        ]
+      },
+      {
+        "index": 205,
+        "case": "panel/cursor-restore",
+        "verdict": "match",
+        "reason": "(1) All stage claims match as in rows 203 and 204: the header, 'fixed inputs ... elapsed 250 ms  fps 60', '1 passed  0 failed  0 not reached', the group block 'panel / 1/1 pass', and one green-banded tile '1' with '20'. (2) The detail panel reads 'CASE 1 / panel', 'cursor-restore', 'key 20', with green 'PASS'. (3) No thumbnails or spotlight: the tile slot is empty and flat. (4) Arrow at (1200,40): a single white arrow with a black outline, tip at about (1201,41), spanning about (1200..1214, 40..59) in the header band. (5) No trail: no other arrow appears in any of the four quadrants.",
+        "nonvisual_claims": [
+          "boundary from the scanout record (scanout-boundary provenance)"
+        ]
+      },
+      {
+        "index": 206,
+        "case": "panel/cursor-trail-detected",
+        "verdict": "match",
+        "reason": "(1) All stage claims match as in rows 203 and 204: the header, 'fixed inputs  case 1 of 1  elapsed 250 ms  fps 60', '1 passed  0 failed  0 not reached', the group block 'panel / 1/1 pass', and one green-banded tile '1' with '20'. (2) The detail panel reads 'CASE 1 / panel', 'cursor-trail-detected', 'key 20', with green 'PASS'. (3) No thumbnails or spotlight: the tile slot (688..816, 240..336) is empty. (4) Arrows: exactly six white arrows are visible. Their tips are at about (200,300) over the group block, (400,320) over the group block, (640,400) at the group block's lower-right edge, (900,500), (1100,600), and (1200,40) in the header. No other arrows appear in the remaining quadrants.",
+        "nonvisual_claims": [
+          "boundary from the scanout record (scanout-boundary provenance)"
+        ]
+      },
+      {
+        "index": 207,
+        "case": "panel/kernel-screens",
+        "verdict": "match",
+        "reason": "(1) Body lines at top-left: 'Breenix console: fixed approval input' at (0..518, 4..28) and 'SUITE breengel CASE panel/cursor-trail-detected PASS ms=20' at (0..812, 38..62). Both are legible and exact. (2) Status line at y≈830..855 spans the quadrant boundary and reads 'breengel: 1 passed · 0 failed · 400 pending of 401 · 11:19 · case: panel/cursor-trail-detected'. This gives 1 passed of 401, and 11:19 = 679 s. (3) The progress bar at (32..2528, 1488..1512) has a green fill sliver at x≈32..38, consistent with 1 of 401. (4) Boot stages: there are exactly four green segments at y≈1544..1556: x≈224..796, 800..1372, 1376..1948 and 1952..2524. All are green, consistent with all four reached. (5) No cursor: there is no text-cursor block after either body line and no pointer arrow anywhere. The remaining area is flat background.",
+        "nonvisual_claims": [
+          "The live restoration check stays exact (temporal live-check)"
+        ]
+      }
+    ]
+  },
+  "atomic_adjudication": {
+    "region": [
+      600,
+      400,
+      664,
+      464
+    ],
+    "compared_pixels": 4096,
+    "matched": 4096,
+    "red_max": 63,
+    "red_dominant_count": 96,
+    "adjudication": "The independent formula, not the shared renderer, checks every mosaic and background pixel. Red is XOR(x,y,20), with 64 maximum-red pixels at x XOR y = 43, a diagonal XOR band. Expect does not require red-dominant flecks. Opus raised no contradicting pixel, and its suggested R>G,R>B test adds an unstated predicate. Under U16 the independent exact formula settles the dim red variation; vision separately confirmed geometry, black surround, ramps and no text."
+  },
+  "nonvisual_evidence": [
+    "fixed_stage_picture.rs:render reads the actual GPU canvas, compares it to the reference, and returns an error before handoff on any differing byte.",
+    "window_cases/composition.rs:fixed_stage_picture builds Observation from BACKEND, FLAGS and BOUNDARY in the actual scanout record.",
+    "console_picture.rs fixes key=20 ms, elapsed=250 ms and atomic commit=20; those inputs retain their existing host checks.",
+    "window_cases/scanout.rs:scanout_atomic_record checks each live window pixel against pattern(actual commit) before handing the fixed picture.",
+    "window_cases/panel.rs:panel_kernel_screens runs kernel_restore::compare on both live frames before handing the fixed picture.",
+    "The seven unchanged live CASE records and exact native intent digests are reproduced above from the retained acceptance serial."
+  ],
+  "verdict": "Supplementary independent review closes the shared-renderer Expect gap: six vision matches; atomic geometry/ramps/no-text match with dim red variation settled by the independent exact formula under U16. No supported objection remains."
+}

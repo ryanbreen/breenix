@@ -23,7 +23,7 @@ The runner emits each record through the root-only, suite-only `/dev/screen-evid
 
 ```text
 SUITE <id> SCREEN <category>/<case> <checkpoint> sha256=<64 hex> mode=<W>x<H> binding=<BW>x<BH>
-SUITE <id> SCREEN <category>/<case> <checkpoint> sha256=<64 hex> mode=<W>x<H> binding=<BW>x<BH> crc=<8 hex> crc2=<8 hex> raster=<W>x<H> out=sor<N>
+SUITE <id> SCREEN <category>/<case> <checkpoint> sha256=<64 hex> mode=<W>x<H> binding=<BW>x<BH> crc=<8 hex> crc2=<8 hex|none> raster=<W>x<H> out=sor<N>
 SUITE <id> SCREEN <category>/<case> <checkpoint> error=<reason-word> errno=<n> eio_reason=<n> failed_submission=<n>
 SUITE <id> SCREEN <category>/<case> end unobservable reason=<device-reset|target-invalidated> errno=<n> eio_reason=<n> failed_submission=<n>
 ```
@@ -73,19 +73,50 @@ Vigil's Breenix screen gallery presents verified captured pictures and their cas
 
 ## Native display output
 
-On backend 6 a checkpoint also captures the SOR and raster-generator (RG) CRCs of the active raster. Pin the latched resource and present fence, clear the notifier, arm SOR and RG through the core channel, and wait for four stable nonzero entries after the first written entry, within 250 ms. Require no overflow or display error and an unchanged binding, then disarm. The compositor CRC is retained as evidence but is not judged until characterized. If hardware does not populate the secondary output, capture RG separately and omit `crc2`.
+On backend 6 a native row judges the SOR output CRC alone (coordinator ruling U13,
+E22 `rulings.md`, 2026-11-07). The SOR is the output resource closest to the
+connector. Captures 20261107T082545Z, 20261107T084839Z, 20261107T090458Z and
+20261107T092218Z supplied SOR words but no RG words, including primary-RG,
+reversed-pair, wide/narrow and snooze-enabled observations. No RG probe runs in
+the production checkpoint path.
+
+Pin the latched resource and present fence, clear the notifier and arm the
+core-channel CRC context. Acquire at least five written primary entries, disarm,
+wait for DONE, then re-read the completed notifier. Discard its first entry;
+require K=4 or more consecutive stable nonzero SOR entries within 250 ms.
+Overflow, display errors, an unstable completed tail, a deadline, a moved binding
+or changed output methods refuse the observation.
+
+<!-- claim-lint:ok: U13 contract, exercised by tests/screen_sor_crc_test.py and tests/fixtures/gt710_display_crc.rs. -->
+The SCREEN record explicitly says `crc2=none`. `SCRCRC01` v2 adds a little-endian
+u32 reason tag at byte 116 (1 = `gk208-rg-no-words-u13`), extending the fixed
+header from 116 to 120 bytes. The unchanged three-word sample layout retains a
+reserved secondary word that must be 0; it is not a numeric CRC. The exporter
+writes `secondary_absent: "gk208-rg-no-words-u13"` and sample `crc2: null`.
+Unknown reasons and contradictory secondary words fail. Legacy v1 records
+remain dual-source records and must supply nonzero, stable secondary CRCs.
+Only backend 6 admits the explicit absence; backends 4 and 5 retain their
+readback/host-renderer contract. Native approved rows carry `backend: 6`,
+`crc2: "none"` and the same `secondary_absent` reason. Numeric zero, garbage,
+a serial/sample mismatch or an unmarked absence is refused.
+
+The completion sequence follows NVIDIA's MIT
+[Display-CRC notes](https://github.com/NVIDIA/open-gpu-doc/blob/9fdf5c4062007929d9f4e6cbad9c9771fe61b880/Display-CRC/display-crc.txt#L69-L78).
+For a static pinned frame, CRC reporting during snooze is enabled using the
+same document's NV907D `CRC_DURING_SNOOZE` bit 5 (lines 314-319).
 
 The root-only, suite-boot-only `/proc/breenix/display-crc` read returns:
 
 ```text
-backend=6 head=H out=sorN raster=WxH resource=R present_fence=F crc=XXXXXXXX crc2=XXXXXXXX entries=K status=S
+backend=6 head=H out=sorN raster=WxH resource=R present_fence=F crc=XXXXXXXX crc2=none entries=K status=S
 ```
 
 It returns ENOSYS outside suite boots and ENODEV on backends 4 and 5. A checkpoint emits CRCs only when the read's resource and present fence match the scanout record. This interface does not add a syscall 416 operation or consume reserved record bytes.
 
 A native CRC row is derived only from a native run where the checkpoint digest matched an operator-approved entry, with stable entries and no overflow. It is keyed by that digest and output configuration, including raster, mode, viewport, scaler methods, output and source. It judges display output after memory: it cannot admit a picture or override a digest mismatch. Mode 0 covers the 1:1 raster; mode 1 covers the scaled output, with source-pixel sensitivity characterized separately. The CRC does not establish the behavior of the link after the SOR, cable or panel.
 
-One-shot test-control point 32, `display-output-perturb`, enables dithering for the next backend 6 checkpoint. Its native case requires the memory digest to stay unchanged while the CRC changes, then disarms and requires the approved CRC again. On ARM the point returns EINVAL.
+One-shot test-control point 35, `display-output-perturb`, enables dithering for the next backend 6 checkpoint. Its native case requires the memory digest to stay unchanged while the SOR CRC changes in phase 3, then disarms and requires the approved
+SOR CRC again in phase 4. A secondary-only change cannot satisfy phase 3. On ARM the point returns EINVAL.
 
 <!-- claim-lint:ok: Proposed host-surface experiment and observation boundary in docs/gui/screen-proof.md, not an acceptance result. -->
 ARM64 QEMU has no equivalent display CRC. A proof-mode host-surface capture spike may compare QEMU's displayed surface with serial during the held intent frame. If it cannot produce a valid current surface, the stated ARM boundary is the latched-binding readback and host-renderer attestation, not proof of the host window.
@@ -116,15 +147,23 @@ from a completed or different case does not qualify.
 <!-- claim-lint:ok: Normative intent-frame requirements in docs/gui/screen-proof.md, not a measured result. -->
 Proof mode uses `opt/breenix/screen-proof`; it is opt-in. After a pictured case's verdict, timer and `end` checkpoint, the runner uses BGL `solid` and `nearest-scale` pipelines to present a text-free frame: a neutral checkerboard background of 16×16-pixel squares alternating #5A5A5A and #7A7A7A from the frame origin (operator, 2026-11-02 noon), the judged picture centered at the largest integer scale that fits with 64 pixels of margin in each dimension, and a two-pixel white border immediately outside it. Center coordinates use floor division. The runner takes an `intent` checkpoint and holds the frame for `pace_ms` (default 1,000 ms), outside measured windows. The next stage frame then follows. This adds a screen verdict without changing the case verdict, timing or VALUE records.
 
-The coordinator's 2026-11-02 5:30 AM EST large-picture ruling gives three layouts.
-When an integer scale of at least one fits within mode width minus 64 and mode
-height minus 64, use the largest such scale and the border described above.
-A picture equal to the mode in both dimensions fills the screen at 1:1, without
-a border. Otherwise choose the smallest integer divisor k whose k-spaced samples
-fit those inner bounds. Take source coordinates 0, k, 2k and so on on both axes,
-including a final partial row or column; center the resulting picture and add the
-border. The `intent` digest hashes the actual displayed screen. These layouts
-serve the viewer and do not change the picture judged by the case.
+Under coordinator ruling U11 (E22, #2678), oversized intent pictures are lossless.
+Keep the existing integer enlargement when it fits the 64-pixel margin. A picture
+equal to the mode fills it at scale 1 without a border. Otherwise preserve scale 1,
+using the space inside a complete two-pixel border and folding source cells into
+bands. Comparison panels fold on their fixture column and row boundaries, retaining
+labels and padding; wide strips retain both rows. Decimation is forbidden.
+
+<!-- claim-lint:ok: U11 normative layout and count contract; tests/intent_inventory_test.py checks inventory and page counts. -->
+If folding still cannot fit, use the fewest pages. Pages are consecutive checkpoints
+`intent-p1`, `intent-p2`, and so on, each held for `pace_ms` at scale 1 with its own
+border and digest. Page cuts preserve fixture cells where present, otherwise whole
+source rows. Their source union is the judged picture, with a hit count of one per
+pixel. Page approvals are separate; an unpaged approval does not approve a page.
+`scripts/metal/intent-pictures.tsv` lists the judged sizes, mode and fixture cuts;
+`scripts/metal/intent_manifest.py` derives host page inventories, intent counts and
+proof holds. The guest includes that same manifest. Layout changes do not change
+the judged bytes, case verdict, checks or thresholds.
 
 <!-- claim-lint:ok: Normative launch interface in scripts/boot-interactive.sh and renderer in libs/libbreenix/src/suite_intent.rs. -->
 On ARM64 QEMU, `scripts/boot-interactive.sh --mode suite --suite gpu|breengel
@@ -132,3 +171,64 @@ On ARM64 QEMU, `scripts/boot-interactive.sh --mode suite --suite gpu|breengel
 rendering transports the verified snapshot unchanged to a separate GPU texture;
 GPU solid and nearest-scale draws compose it. Its context is released after the
 checkpoint and hold, before the next case starts.
+
+## Repeated native picture parts
+
+An intent-enabled boot can send `X-Breenix-Picture-Reference: 1` on the ordered
+native `/pictures/N` route. Its digest-checked body is
+`PICTURE_REF v=1 source=M bytes=B sha256=H` followed by a newline. M must be
+an earlier completed part in the same suite and boot. The receiver checks that
+part's receipt, size and SHA-256 again before publishing the identical payload
+at N. Only after publishing that payload does it send
+`X-Breenix-Picture-Reference-Accepted: 1`; the sender refuses a missing or
+duplicate acknowledgement, including an older receiver's ordinary HTTP 200.
+Raw and RLE image formats and the first pictured case per category stay
+unchanged. The normal picture anchors still bind the reconstructed full bytes.
+
+The 64 MiB upload budget counts literal request bodies and reference descriptors.
+Receipts retain canonical `bytes` and `sha256`; a reference additionally records
+`wireBytes`, `wireSha256` and `reference`. Reconstructed native picture payloads
+have their own unchanged 64 MiB ceiling. Missing, corrupt, foreign, forward,
+unsealed and mode-disabled references are refused; no retry accepts weaker evidence.
+
+The pre-power readiness response advertises `X-Breenix-Picture-References: 1`.
+An intent-enabled boot refuses a receiver without that capability before power-on.
+After changing the HTTP upload module, deploy with `metal-deploy --restart`
+while the boot lease is absent; replacing files alone does not reload the running
+HTTP child. The restart path refuses an active lease.
+
+### Fixed inputs for designed-live intent pictures (E22 U14, U14a, U14b)
+
+The seven entries in `suite_breengel/console_picture.rs::FIXED_INPUT_CASES` keep
+all their live case comparisons. Only the successful case's approval picture uses
+fixed renderer inputs; no mask, tolerance or alternate digest is admitted.
+
+The five stage restoration pictures use the production GPU `libgfx::stage::Stage` renderer and
+its exact CPU reference: suite `breengel`, target `fixed inputs`, one passed tile
+named for the case, key 20 ms, elapsed 250 ms, 60 fps, selected tile 0, one matching
+category, no thumbnail, input trace, spotlight or finale. The actual scanout
+record supplies the shared backend observation boundary. Cursor restore adds the
+production arrow at (1200,40); trail detection also draws arrows at (200,300),
+(400,320), (640,400), (900,500), (1100,600), in that order. The full GPU frame must
+match the reference before handoff. Their live input is the stage clock in
+`suite_stage.rs::render_at_ui_time` and the case elapsed keys recorded by
+`suite_stage.rs::record`; cursor positions come from `panel.rs::move_pointer`.
+
+Atomic record uses the window's production pattern at commit 20, at (600,400),
+64 by 64 on black. Its live check still compares each readback to the actual
+commit named by the observation record (`scanout.rs::scanout_atomic_record`).
+
+The console uses the production cell rasterizer and retained panel renderer.
+Its two body lines are `Breenix console: fixed approval input` and
+`SUITE breengel CASE panel/cursor-trail-detected PASS ms=20`. Status starts at
+0 ms with 401 cases, that one case passes at 20 ms, the rendering time is
+679000 ms, four boot stages are reached, and there is no cursor. The live console
+body comes from serial output, and its heading from the clock and status model;
+`panel_kernel_screens` still checks the captured live frame with
+`kernel_restore::compare` before rendering this complete fixed input.
+
+Host tests pin all seven entries, vary the live clock, serial body and commit
+inputs, retain the live comparison negatives, and export full fixed reference
+frames for candidate verification. E22 U16 permits approval on an exact
+mechanical match covering every Expect claim; vision is reserved for claims
+that such a comparison cannot settle.

@@ -47,6 +47,16 @@ operator quote in [the approval contract](../../docs/suites/frames/approvals/REA
 These fields are copied into the table's approval metadata and checked against
 the retained decision. The operator format above is unchanged.
 
+Vigil also exports files with a file-level `by: "operator"` and each decided
+entry's explicit `by: "agent"` or `by: "operator"`. The importer uses that entry's
+author, requires the agent evidence and delegation for agent entries, and still
+refuses agent rejection. Legacy files without per-entry authors keep their
+file-level author. Marked rows are retained in `non_decisions`, with their exact
+picture identity, `state: "investigating"`, issue, reason and timezone-qualified
+`marked_at`. They must match a candidate, cannot duplicate a decision, and grant
+no approval. The exported file is retained byte for byte, including these marks.
+Unknown fields remain errors.
+
 ## Mechanical Expect report
 
 ```sh
@@ -159,30 +169,47 @@ the output configuration. A directory passed to `--native` must contain:
       "disarmed": true,
       "display_error": 0,
       "status": 1,
+      "secondary_absent": "gk208-rg-no-words-u13",
       "samples": [
-        {"status": 1, "crc": "12345678", "crc2": "abcdef12"},
-        {"status": 1, "crc": "12345678", "crc2": "abcdef12"},
-        {"status": 1, "crc": "12345678", "crc2": "abcdef12"},
-        {"status": 1, "crc": "12345678", "crc2": "abcdef12"},
-        {"status": 1, "crc": "12345678", "crc2": "abcdef12"}
+        {"status": 1, "crc": "12345678", "crc2": null},
+        {"status": 1, "crc": "12345678", "crc2": null},
+        {"status": 1, "crc": "12345678", "crc2": null},
+        {"status": 1, "crc": "12345678", "crc2": null},
+        {"status": 1, "crc": "12345678", "crc2": null}
       ]
     }
   ]
 }
 ```
 
+<!-- claim-lint:ok: U13 sidecar contract, exercised by tests/screen_sor_crc_test.py. -->
 `methods` contains the latched viewport, scaler and output configuration's
 method/value pairs as unsigned 32-bit integers, ordered by unique, aligned
 method address. The illustrated values are placeholders, not a hardware
 configuration. The producer must supply the values actually used by the head.
 `viewport` is `[x, y, width, height]` in the raster. Sources are primary SOR and
-secondary RG. The configuration digest is SHA-256 of `output_config` with the
+secondary RG selectors as programmed; the RG result is explicitly absent under
+coordinator ruling U13 (E22 rulings, 2026-11-07). Captures
+20261107T082545Z, 20261107T084839Z, 20261107T090458Z and 20261107T092218Z
+recorded SOR words and no RG words. `secondary_absent` must equal
+`gk208-rg-no-words-u13`, backend must be 6 and each sample must have `crc2: null`;
+serial must say `crc2=none`. An absent secondary on backend 4 or 5 is refused.
+Numeric zero, garbage, a missing reason and a mismatched secondary are refused.
+Legacy dual-source records omit `secondary_absent` and require nonzero CRCs
+in both fields. `SCRCRC01` v2 carries reason tag 1 at byte 116, followed by the
+names at byte 120; each raw secondary word must be 0 as a reserved absence
+word. A v1 numeric zero never becomes an absence.
+The configuration digest is SHA-256 of `output_config` with the
 same canonical JSON encoding described above; this is also the digest to pass
-to `screen-verdict.py --native --config` for that configuration.
+to `screen-verdict.py --native --config` for that configuration. The metal tools
+pass `backend=6` for picture-only scoring; the CLI equivalent is `--backend 6`.
+That admits the U13 record grammar and still checks approved pictures;
+`--native --config` additionally matches the approved output CRC row.
+An explicit run backend must agree with the caller.
 
 <!-- claim-lint:ok: Input requirements from docs/gui/screen-proof.md and the pinned MIT crc.c and crc907d.c; not a hardware measurement. -->
 `samples` contains consecutive written notifier entries: the first is discarded,
-then at least K=4 (at most 254) must agree with the serial CRC pair. Sample `status: 1` is the producer's normalized written marker, not the
+then at least K=4 (at most 254) must agree with the serial SOR CRC. Sample `status: 1` is the producer's normalized written marker, not the
 undocumented hardware entry-status word. A primary CRC of `00000000` is unwritten,
 following the pinned MIT `crc.c` reader. Context `status` must have bit 0 set and no bits in mask 0x3e.
 These status meanings follow the pinned MIT
@@ -195,7 +222,7 @@ no copied driver code.
 The binding must remain pinned with nonzero resource and present fence, capture
 must finish within 250000 microseconds, disarm must complete and display error
 must be zero. The named SCREEN must match an approved table digest and mode in
-this run, and its CRC pair, output and raster must match the capture evidence.
+this run, and its SOR CRC, explicit secondary state, output and raster must match the capture evidence.
 A missing or inconsistent parent refuses the import. Native rows record the
 run and commit; they cannot add a picture expectation. This sidecar contract is
 an input for U14/U18; U12 does not claim hardware acceptance or produce captures.
@@ -207,3 +234,16 @@ from the anchor. It checks a named `on navy (#0A141E) background` against more t
 half the judged picture's pixels. The string, font and glyph shape remain unresolved for independent vision review.
 Decimation leaves missing ink and source colour shares unresolved. A source colour
 omitted by antialiasing must not be asserted as an exact visible pixel.
+
+For the seven E22 U14b designed-live intent rows, the production-renderer host
+check can export full 2560x1600 BGRX references with
+`E22_FIXED_PICTURE_OUT=<directory> python3 tests/console_fixed_picture_test.py`.
+The directory includes a manifest binding the reference hashes, exact Expect
+sentences and production source hashes. Pass it to `verify_expect.py` with
+`--fixed-renderer-frames <directory>`: the verifier compares the full frame and
+requires those sources and claims to equal the captured commit. A changed pixel,
+stale source, changed claim or malformed reference fails. Because guest and host
+share the renderer, equality leaves the Expect claims unresolved for independent
+vision review under U16. Atomic-record also runs the independent seed-scene
+formula check. This supplies mechanical evidence; it does not make an approval
+decision or alter the table.

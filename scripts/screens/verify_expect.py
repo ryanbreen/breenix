@@ -2,8 +2,8 @@
 """Check Expect claims against candidate pixels without making approval decisions.
 
 Coordinates are zero-based, top-left; (x,y)-(right,bottom) is half-open.
-Unknown prose is reported, never treated as proof. Decimation cannot prove the
-unsampled source pixels. Requires Pillow, as does approve.py.
+Unknown prose is reported, never treated as proof. Intent bands preserve source pixels;
+paged captures judge only the fixtures present on that page. Requires Pillow, as does approve.py.
 """
 import argparse
 import ast
@@ -19,6 +19,9 @@ import sys
 import subprocess
 
 from PIL import Image, ImageChops, ImageDraw
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'metal'))
+import intent_manifest  # noqa: E402
 
 HEX = re.compile(r'#[0-9A-Fa-f]{6}\b')
 SIZE = re.compile(r'\b(\d+)x(\d+)\b')
@@ -273,34 +276,37 @@ def verify_panel(image, expect, case, checkpoint, commit=None):
     try:
         fixtures,sources = panel_fixtures(case,commit)
         size,tiles,shown,pages = panel_plan(fixtures)
-        box,outer_scale,outer_divisor = layout(size,image.size) if checkpoint == 'intent' else ((0,0,*size),1,1)
-        result['picture'] = dict(size=list(size),source_size=list(size),box=list(box),scale=outer_scale,divisor=outer_divisor,
-                                 source_dimensions='fixture inventory and images.rs panel layout')
-        result['panel'].update(source_commit=commit,source_sha256=sources,fixtures=len(fixtures),visible_tiles=shown,pages=pages,tiles=[])
-        if shown < len(fixtures):
-            unknown('all fixtures','only the first panel page is captured')
-        if outer_divisor > 1:
-            unknown('source pixels',f'intent decimation by {outer_divisor} omits panel pixels')
-        if checkpoint == 'intent' and size != image.size:
-            template = checker(image.size)
-            x,y,r,b = box
-            ImageDraw.Draw(template).rectangle((x-2,y-2,r+1,b+1),fill='white')
-            template.paste(image.crop(box),(x,y))
-            mismatch = ImageChops.difference(image,template).getbbox()
-            check('layout','intent checkerboard and 2 px white border',list(box),dict(mismatch_box=mismatch),mismatch is None)
+        is_intent = checkpoint.startswith('intent')
+        if is_intent:
+            row = next(r for r in intent_manifest.inventory() if r['suite']=='breengel' and r['case']==case)
+            if tuple(row['size']) != tuple(size):
+                raise ValueError('intent inventory differs from production panel dimensions')
+            restored,page,page_count,mismatch,scale_bad = restore_intent(image,size,checkpoint,intent_manifest.cells(row))
+            check('layout','intent checkerboard and 2 px white border',list(page['box']),dict(mismatch_box=mismatch),mismatch is None)
+            check('scale','integer enlargement blocks',page['scale'],dict(mismatch_box=scale_bad),scale_bad is None)
         else:
-            check('layout','mode-sized panel dimensions',list(size),list(image.size),size == image.size)
-        # A panel rectangle contains exactly the samples at multiples of outer_divisor.
+            restored=image
+            page=dict(box=(0,0,*size),scale=1,tiles=[((0,0,*size),(0,0,*size))])
+            page_count=1
+            check('layout','panel dimensions',list(size),list(image.size),size == image.size)
+        result['picture'] = dict(size=list(size),source_size=list(size),box=list(page['box']),scale=page['scale'],divisor=1)
+        result['panel'].update(source_commit=commit,source_sha256=sources,fixtures=len(fixtures),pages=page_count,tiles=[])
+        if page_count > 1:
+            unknown('page scope','this checkpoint proves only its whole fixture tiles; companion pages are separate approvals')
         def screen_box(rect):
-            return tuple(box[i%2]+((n+outer_divisor-1)//outer_divisor)*outer_scale for i,n in enumerate(rect))
+            x,y,r,b = rect
+            for (dx,dy,dw,dh),(sx,sy,sw,sh) in page['tiles']:
+                if sx <= x and sy <= y and r <= sx+sw and b <= sy+sh:
+                    scale=dw//sw
+                    return (dx+(x-sx)*scale,dy+(y-sy)*scale,dx+(r-sx)*scale,dy+(b-sy)*scale)
+            raise ValueError('panel rectangle crosses an intent tile')
         def crop(rect):
-            mapped = screen_box(rect)
-            if mapped[0] >= mapped[2] or mapped[1] >= mapped[3]:
-                return None
-            if mapped[0] < 0 or mapped[1] < 0 or mapped[2] > image.width or mapped[3] > image.height:
-                raise ValueError('panel rectangle outside capture')
-            return image.crop(mapped)
+            screen_box(rect)
+            return restored.crop(rect)
         for index,(f,t) in enumerate(zip(fixtures,tiles)):
+            if not any(sx <= t['x'] < sx+sw and sy <= t['y'] < sy+sh
+                       for _,(sx,sy,sw,sh) in page['tiles']):
+                continue
             label = f'tile {index}: {f["label"]}'
             td,ts = t['divisor'],t['scale']
             w,h = (f['width']+td-1)//td,(f['height']+td-1)//td
@@ -380,22 +386,39 @@ def colour_name(value):
 
 
 def layout(size, mode):
-    w, h = size
-    mw, mh = mode
-    if min(w, h) <= 0 or max(w, h, mw, mh) > 16384:
-        raise ValueError('dimensions outside intent layout')
-    if size == mode:
-        return (0, 0, w, h), 1, 1
-    if min(mw, mh) <= 64:
-        raise ValueError('intent mode too small for border')
-    scale = min((mw - 64) // w, (mh - 64) // h)
-    divisor = 1
-    if scale == 0:
-        scale = 1
-        divisor = max((w + mw - 65) // (mw - 64), (h + mh - 65) // (mh - 64))
-    width, height = (w + divisor - 1) // divisor * scale, (h + divisor - 1) // divisor * scale
-    x, y = (mw - width) // 2, (mh - height) // 2
-    return (x, y, x + width, y + height), scale, divisor
+    pages = intent_manifest.plans(size,mode)
+    if len(pages) != 1:
+        raise ValueError('intent requires numbered pages')
+    return pages[0]['box'], pages[0]['scale'], 1
+
+
+def restore_intent(image, size, checkpoint, source_cells=()):
+    pages = intent_manifest.plans(size,image.size,source_cells)
+    if len(pages) == 1:
+        if checkpoint != 'intent':
+            raise ValueError('unpaged intent has a page suffix')
+        page = pages[0]
+    else:
+        match = re.fullmatch(r'intent-p([1-9][0-9]*)',checkpoint)
+        if not match or int(match[1]) > len(pages):
+            raise ValueError('intent requires a valid numbered page')
+        page = pages[int(match[1])-1]
+    template = checker(image.size)
+    if page['border']:
+        x,y,r,b = page['border']
+        ImageDraw.Draw(template).rectangle((x,y,r-1,b-1),fill='white')
+        ImageDraw.Draw(template).rectangle((x+2,y+2,r-3,b-3),fill='#0C131F')
+    picture = Image.new('RGB',size)
+    scale_mismatch = None
+    for (dx,dy,dw,dh),(sx,sy,sw,sh) in page['tiles']:
+        block = image.crop((dx,dy,dx+dw,dy+dh))
+        template.paste(block,(dx,dy))
+        original = block.resize((sw,sh),Image.Resampling.NEAREST)
+        mismatch = ImageChops.difference(block,original.resize(block.size,Image.Resampling.NEAREST)).getbbox()
+        if mismatch:
+            scale_mismatch = mismatch
+        picture.paste(original,(sx,sy))
+    return picture, page, len(pages), ImageChops.difference(image,template).getbbox(), scale_mismatch
 
 
 def checker(mode):
@@ -425,12 +448,127 @@ def dimension_claims(text):
     return found
 
 
-def verify_picture(image, expect, checkpoint='intent', *, case=None, suite=None, commit=None):
+FIXED_RENDERER_CASES = {
+    'composition/takeover-giveback', 'scanout/atomic-record', 'panel/handoff',
+    'panel/between-cases', 'panel/cursor-restore', 'panel/cursor-trail-detected',
+    'panel/kernel-screens',
+}
+FIXED_RENDERER_PATHS = (
+    'libs/libgfx-ref', 'libs/libfont', 'libs/libgfx-pixel', 'libs/breengel-abi',
+    'libs/libgfx/src/stage.rs', 'libs/libbreenix/src/compositor.rs',
+    'kernel/src/console', 'fonts/DejaVuSans.ttf', 'docs/suites/breengel.json',
+    'userspace/programs/src/suite_breengel/console_picture.rs',
+    'userspace/programs/src/suite_breengel/stage_painter.rs',
+    'userspace/programs/src/suite_breengel/fixed_stage_picture.rs',
+    'userspace/programs/src/suite_breengel/window_cases/kit.rs',
+)
+
+
+@lru_cache(maxsize=16)
+def fixed_renderer_sources(commit=None):
+    if commit is not None and not re.fullmatch(r'[0-9a-f]{40}', commit):
+        raise ValueError('invalid renderer source commit')
+    command = (['git', 'ls-files', '--', *FIXED_RENDERER_PATHS] if commit is None else
+               ['git', 'ls-tree', '-r', '--name-only', commit, '--', *FIXED_RENDERER_PATHS])
+    names = subprocess.check_output(command, cwd=ROOT, text=True).splitlines()
+    if not names: raise ValueError('missing renderer sources')
+    return {name: hashlib.sha256(source_bytes(name,commit)).hexdigest() for name in names}
+
+
+def fixed_renderer_manifest(directory):
+    """Bind the passing production-renderer host export to its exact code and claims."""
+    catalog = json.loads(source_bytes('docs/suites/breengel.json'))
+    frames = []
+    for group in catalog['categories']:
+        for row in group['cases']:
+            case = group['id']+'/'+row['id']
+            if case not in FIXED_RENDERER_CASES: continue
+            filename = case.replace('/','_')+'.bgra'
+            data = (directory/filename).read_bytes()
+            if len(data) != 2560*1600*4 or data[3::4] != b'\xff'*(2560*1600):
+                raise ValueError('invalid exported renderer frame')
+            frames.append(dict(case=case,file=filename,mode='2560x1600',expect=row['expect'],
+                               sha256=hashlib.sha256(data).hexdigest()))
+    if {f['case'] for f in frames} != FIXED_RENDERER_CASES:
+        raise ValueError('fixed renderer inventory mismatch')
+    return dict(version=1,sources=fixed_renderer_sources(),frames=frames)
+
+
+def verify_fixed_renderer(image, expect, case, commit, directory):
+    if case not in FIXED_RENDERER_CASES: raise ValueError('case has no fixed renderer policy')
+    doc = json.loads((directory/'manifest.json').read_text())
+    if set(doc) != {'version','sources','frames'} or type(doc['version']) is not int or doc['version'] != 1:
+        raise ValueError('invalid renderer reference manifest')
+    if doc['sources'] != fixed_renderer_sources(commit):
+        raise ValueError('renderer reference source mismatch')
+    frames = [f for f in doc['frames'] if f['case'] == case]
+    if len(frames) != 1: raise ValueError('missing or duplicate renderer reference')
+    frame = frames[0]
+    filename = case.replace('/','_')+'.bgra'
+    if set(frame) != {'case','file','mode','expect','sha256'} or frame['file'] != filename:
+        raise ValueError('invalid renderer reference identity')
+    catalog = json.loads(source_bytes('docs/suites/breengel.json',commit))
+    claims = [r['expect'] for g in catalog['categories'] for r in g['cases'] if g['id']+'/'+r['id']==case]
+    if claims != [expect] or frame['expect'] != expect:
+        raise ValueError('renderer reference Expect mismatch')
+    data = (directory/filename).read_bytes()
+    if (frame['mode'] != '2560x1600' or len(data) != 2560*1600*4 or
+            data[3::4] != b'\xff'*(2560*1600) or hashlib.sha256(data).hexdigest() != frame['sha256']):
+        raise ValueError('renderer reference extent or digest mismatch')
+    reference = Image.frombytes('RGB',(2560,1600),data,'raw','BGRX')
+    mismatch = 'dimensions' if image.size != reference.size else ImageChops.difference(image.convert('RGB'),reference).getbbox()
+    claim = dict(kind='production-fixed-renderer',claim='candidate equals source-bound renderer frame',verdict='fail' if mismatch else 'pass',
+                 expected=dict(mode=frame['mode'],sha256=frame['sha256'],source_hashes=doc['sources']),
+                 measured=dict(source_pixels=2560*1600,mismatch_box=mismatch))
+    # Guest and reference share the renderer. Equality cannot independently check
+    # its text, stage counts, layout or other Expect claims under U16.
+    return dict(verdict='fail' if mismatch else 'unparseable',checked_claims=[claim],
+                failed_claims=[claim] if mismatch else [],unparseable_claims=[dict(
+                    claim=expect,reason='shared renderer equality leaves Expect claims for independent vision review')])
+
+
+def verify_picture(image, expect, checkpoint='intent', *, case=None, suite=None, commit=None, renderer_frames=None):
     image = image.convert('RGB')
+    if renderer_frames and suite == 'breengel' and case in FIXED_RENDERER_CASES and checkpoint == 'intent':
+        result = verify_fixed_renderer(image,expect,case,commit,renderer_frames)
+        if case == 'scanout/atomic-record':
+            # Also run the independent literal seed-scene oracle below, without
+            # the shared renderer route, so a common mutation still fails.
+            independent = verify_picture(image,expect,checkpoint,case=case,suite=suite,commit=commit)
+            result['checked_claims'] += independent['checked_claims']
+            result['failed_claims'] += independent['failed_claims']
+            if result['failed_claims']: result['verdict'] = 'fail'
+        return result
     # Comparison panels describe interior fixture sizes, not the outer picture.
     # Check them before the generic prose grammar can mistake those dimensions.
     if suite == 'breengel' and case and case.split('/')[0] in ('bmp', 'png-decode', 'png-encode'):
         return verify_panel(image, expect, case, checkpoint, commit)
+    # Literal scene declarations describe the retained composed end surface.
+    scene = re.search(r'seed mosaics \(x,y,width,height,z,seed\): '
+                      r'(for i=0\.\.15, \(40\+60\*i,30\+40\*i,160,120,15-i,10\+i\); )?'
+                      r'([0-9(),; ]+)\.', expect)
+    if scene:
+        windows = [(40+60*i,30+40*i,160,120,15-i,10+i) for i in range(16)] if scene[1] else []
+        windows += [tuple(map(int, values.split(','))) for values in re.findall(r'\(([0-9,]+)\)', scene[2])]
+        size = re.search(r'(\d+)x(\d+) screen', expect)
+        if not size or not windows or any(len(w) != 6 for w in windows):
+            return dict(verdict='unparseable', checked_claims=[], failed_claims=[],
+                        unparseable_claims=[dict(claim=expect, reason='invalid seed scene')])
+        width,height = map(int,size.groups())
+        reference = Image.new('RGB',(width,height),'black')
+        for x,y,w,h,z,seed in sorted(windows,key=lambda w:w[4]):
+            tile = Image.new('RGB',(w,h))
+            tile.putdata([((px ^ py ^ seed)&255,(5*py+29*seed)&255,(7*px+13*seed)&255)
+                          for py in range(h) for px in range(w)])
+            reference.paste(tile,(x,y))
+        mismatch = None if image.size == reference.size else 'dimensions'
+        if mismatch is None:
+            mismatch = ImageChops.difference(image,reference).getbbox()
+        claim = dict(kind='seed-scene',claim=expect,expected=dict(size=[width,height],windows=windows),
+                     measured=dict(size=list(image.size),mismatch_box=mismatch),
+                     verdict='fail' if mismatch else 'pass')
+        return dict(verdict=claim['verdict'],checked_claims=[claim],
+                    failed_claims=[claim] if mismatch else [],unparseable_claims=[])
     result = dict(verdict='unparseable', picture=dict(size=list(image.size),
                   box=[0, 0, *image.size], scale=1, divisor=1),
                   checked_claims=[], failed_claims=[], unparseable_claims=[])
@@ -451,41 +589,31 @@ def verify_picture(image, expect, checkpoint='intent', *, case=None, suite=None,
         return result
     dimensions = dimension_claims(expect)
     # Largest surface is the picture, while smaller stated sizes can be objects.
-    end_size = re.search(r'end screen.*?across (\d+)x(\d+)', expect)
+    end_size = re.search(r'end screen.*?(?:across|fills) (\d+)x(\d+)', expect)
     judged_size = re.search(r'judged crop is (\d+)x(\d+)', expect)
     if checkpoint == 'end' and end_size:
         source = tuple(map(int, end_size.groups()))
-    elif checkpoint == 'intent' and judged_size:
+    elif checkpoint.startswith('intent') and judged_size:
         source = tuple(map(int, judged_size.groups()))
     else:
         source = max((item[0] for item in dimensions), key=lambda s: s[0]*s[1], default=None)
     picture = image
-    if checkpoint == 'intent' and source and source != image.size:
+    row = next((r for r in intent_manifest.inventory() if r['suite']==suite and r['case']==case),None)
+    if checkpoint.startswith('intent') and row:
+        source = row['size']
+    if checkpoint.startswith('intent') and source and source != image.size:
         try:
-            box, scale, divisor = layout(source, image.size)
-            template = checker(image.size)
-            x, y, right, bottom = box
-            ImageDraw.Draw(template).rectangle((x-2, y-2, right+1, bottom+1), fill='white')
-            template.paste(image.crop(box), (x, y))
-            mismatch = ImageChops.difference(image, template).getbbox()
-            check('layout', 'intent checkerboard and 2 px white border', list(box),
-                  dict(mismatch_box=list(mismatch) if mismatch else None), mismatch is None)
-            crop = image.crop(box)
-            if divisor == 1:
-                picture = crop.resize(source, Image.Resampling.NEAREST)
-                restored = picture.resize(crop.size, Image.Resampling.NEAREST)
-                mismatch = ImageChops.difference(crop, restored).getbbox()
-                check('scale', 'integer nearest-neighbour picture blocks', scale,
-                      dict(mismatch_box=list(mismatch) if mismatch else None), mismatch is None)
-            else:
-                picture = crop
-                unresolved('source pixels', f'intent decimation by {divisor} omits source pixels; '
-                           'dimensions, colour shares and unsampled coordinates cannot be proved')
-            result['picture'] = dict(size=list(picture.size), source_size=list(source),
-                                     box=list(box), scale=scale, divisor=divisor,
-                                     source_dimensions='Expect-derived; checked for layout compatibility')
+            picture,page,page_count,mismatch,scale_bad = restore_intent(image,source,checkpoint,intent_manifest.cells(row) if row else ())
+            check('layout','intent checkerboard and 2 px white border',list(page['box']),dict(mismatch_box=mismatch),mismatch is None)
+            check('scale','integer nearest-neighbour picture blocks',page['scale'],dict(mismatch_box=scale_bad),scale_bad is None)
+            result['picture'] = dict(size=list(picture.size),source_size=list(source),box=list(page['box']),scale=page['scale'],divisor=1)
+            if page_count > 1:
+                unresolved('page scope','whole-picture prose needs companion pages; this checkpoint is a separate approval')
+                # Do not run whole-picture colour or geometry claims on absent pixels.
+                result['verdict'] = 'fail' if result['failed_claims'] else 'unparseable'
+                return result
         except ValueError as exc:
-            check('layout', 'intent dimensions', list(source), str(exc), False)
+            check('layout','intent dimensions',list(source),str(exc),False)
     elif checkpoint == 'intent' and not source:
         # A border may surround a picture whose source dimensions the prose omits.
         # Do not count the border/checker colours as picture colours.
@@ -506,26 +634,69 @@ def verify_picture(image, expect, checkpoint='intent', *, case=None, suite=None,
                                             source_dimensions='not specified; displayed crop only')
                     unresolved('picture dimensions', 'verified border but source dimensions and integer scale are not specified')
 
-    decimated = result['picture']['divisor'] > 1
     if source:
         if checkpoint == 'end' and source != image.size and re.search(r'(?:top left|top-left|screen origin).*charcoal|charcoal.*screen', expect, re.I):
             # The sentence explicitly describes a patch in a larger end frame.
             check('dimensions', 'top-left patch fits end frame', list(source), list(image.size),
                   source[0] <= image.width and source[1] <= image.height)
             unresolved('patch dimensions', 'end frame has no intent border; patch extent requires its shape or background claims')
-        elif not decimated:
+        else:
             check('dimensions', 'picture dimensions', list(source), list(picture.size), source == picture.size)
     elif not re.search(r'full screen|stage|screen', expect, re.I):
         unresolved('picture dimensions', 'no unambiguous picture dimensions in Expect')
 
     counts = Counter(dict((colour, count) for count, colour in picture.getcolors(picture.width * picture.height)))
     total = picture.width * picture.height
-    colours = list(dict.fromkeys(m[0].upper() for m in HEX.finditer(expect)))
+    # Source blend endpoints describe the formula inputs, not colors that must
+    # appear in its output. Validate the stated B,G,R blend output pixels instead.
+    presence_text = expect
+    blend = re.search(r'B,G,R coverage is x, 255-x and \(([0-9]+)\*x modulo 256\), '
+                      r'blended between [^;]+', expect)
+    if blend:
+        endpoints = list(HEX.finditer(blend[0]))
+        patch = re.search(r'(\d+)x(\d+) (?:picture|strip)', expect)
+        if len(endpoints) == 2 and patch:
+            width, height = map(int, patch.groups())
+            back, front = (rgb(v[0]) for v in endpoints)
+            extent = width == 256 and 0 < height <= image.height
+            expected = Image.new('RGB', (256, height)) if extent else None
+            if expected is not None:
+                for x in range(256):
+                    alpha = ((int(blend[1])*x)%256, 255-x, x)
+                    pixel = tuple((front[c]*alpha[c]+back[c]*(255-alpha[c])+127)//255
+                                  for c in range(3))
+                    for y in range(height): expected.putpixel((x,y), pixel)
+            area = picture.crop((0,0,width,height)) if extent and picture.width >= width else None
+            mismatch = ImageChops.difference(area, expected).getbbox() if area is not None else 'extent'
+            check('blend', blend[0], dict(size=[width,height], rounding='nearest /255'),
+                  dict(mismatch_box=mismatch), mismatch is None)
+            presence_text = expect[:blend.start()]+expect[blend.end():]
+    mosaic = re.search(
+        r'seed k is the captured nonzero commit id '
+        r'\(for k=1 the upper-left pixel is dark green \((#[0-9A-Fa-f]{6})\)\), '
+        r'with B=\(7\*x\+13\*k\)%256, G=\(5\*y\+29\*k\)%256, '
+        r'R=\(x XOR y XOR k\)%256', expect)
+    if mosaic:
+        # The example describes k=1. The blue origin gives
+        # k modulo 256 because 197 is the inverse of 13 modulo 256. Check
+        # the picture's B,G,R channels against that one common residue.
+        seed = (picture.getpixel((0, 0))[2] * 197) % 256
+        expected = Image.new('RGB', picture.size)
+        expected.putdata([((x ^ y ^ seed) % 256, (5*y+29*seed) % 256,
+                           (7*x+13*seed) % 256)
+                          for y in range(picture.height) for x in range(picture.width)])
+        mismatch = ImageChops.difference(picture, expected).getbbox()
+        check('mosaic', 'one common commit residue satisfies all B,G,R formulas',
+              dict(formula=mosaic[0]),
+              dict(seed_modulo_256=seed, compared_pixels=total, mismatch_box=mismatch),
+              mismatch is None)
+        check('mosaic-example', 'k=1 upper-left example', '#011D0D', mosaic[1].upper(),
+              rgb(mosaic[1]) == (1, 29, 13))
+        unresolved('captured commit id', 'pixel formula identifies its residue only; the live case checks commit identity')
+        presence_text = presence_text.replace(mosaic[0], '', 1)
+    colours = list(dict.fromkeys(m[0].upper() for m in HEX.finditer(presence_text)))
     for colour in colours:
         count = counts[rgb(colour)]
-        if decimated and count == 0:
-            unresolved(f'{colour} present', 'colour absent in decimated samples; unsampled source pixels unknown')
-            continue
         check('colour', f'{colour} present', dict(minimum_pixels=1),
               dict(pixels=count, total=total, share=count/total), count > 0)
 
@@ -540,9 +711,6 @@ def verify_picture(image, expect, checkpoint='intent', *, case=None, suite=None,
         if size <= 0 or size > 16384:
             check('text-colour', claim[0], 'positive bounded font size', size, False)
             continue
-        if decimated:
-            unresolved(claim[0], 'decimated source omits glyph pixels near the text anchor')
-            continue
         # Allow bearings around the anchor and up to 1.5 em advance per codepoint.
         # Bounds are computed from the stated text/size before measuring the ink.
         pad = math.ceil(size / 4)
@@ -556,9 +724,6 @@ def verify_picture(image, expect, checkpoint='intent', *, case=None, suite=None,
               dict(box=box, pixels=count), count > 0)
     for background in re.finditer(r'on [a-z -]+ \(?(#[0-9a-fA-F]{6})\)? background', expect, re.I):
         colour = background[1].upper()
-        if decimated:
-            unresolved(background[0], 'decimated colour shares cannot prove source majority')
-            continue
         count = counts[rgb(colour)]
         check('background', background[0], dict(colour=colour, share_greater_than=0.5),
               dict(pixels=count, total=total, share=count/total), count*2 > total)
@@ -614,9 +779,6 @@ def verify_picture(image, expect, checkpoint='intent', *, case=None, suite=None,
             right, bottom = x+w, y+h
         region = [x, y, right, bottom]
         colour = nearest[0].upper()
-        if decimated:
-            unresolved(point[0], 'decimated source coordinates cannot all be observed')
-            continue
         regions.append((region, colour, expect[nearest.start():point.end()]))
 
     for index, (region, colour, claim) in enumerate(regions):
@@ -671,7 +833,7 @@ def importer():
     return module
 
 
-def verify_set(manifest):
+def verify_set(manifest, renderer_frames=None):
     approval = importer()
     doc = approval.read_json(manifest)
     approval.fields(doc, {'version', 'candidates_id', 'rows'})
@@ -700,7 +862,7 @@ def verify_set(manifest):
                 measured = hashlib.sha256(canonical).hexdigest()
                 approval.require(measured == row['sha256'], f'PNG digest mismatch: measured {measured}')
                 verdict = verify_picture(image, row.get('expect'), row['checkpoint'],
-                                         case=row['case'], suite=row['suite'], commit=row['commit'])
+                                         case=row['case'], suite=row['suite'], commit=row['commit'], renderer_frames=renderer_frames)
         except (OSError, ValueError, KeyError, TypeError, Image.DecompressionBombError) as exc:
             failed = dict(kind='input', claim='verified candidate pixels', expected='valid candidate PNG',
                           measured=str(exc), verdict='fail')
@@ -714,10 +876,11 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('candidates', type=Path, help='candidates directory or manifest.json')
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--fixed-renderer-frames', type=Path, help='U14b full host renderer export with source-bound manifest')
     args = parser.parse_args()
     try:
         manifest = args.candidates / 'manifest.json' if args.candidates.is_dir() else args.candidates
-        report = verify_set(manifest)
+        report = verify_set(manifest, args.fixed_renderer_frames)
         args.output.parent.mkdir(parents=True, exist_ok=True)
         importer().atomic_write(args.output, (json.dumps(report, indent=2, ensure_ascii=False, allow_nan=False)+'\n').encode())
         print(json.dumps(report['summary'], sort_keys=True))

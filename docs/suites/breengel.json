@@ -1321,7 +1321,8 @@
         {
           "id": "compositor-authorized",
           "title": "The compositor's position, inject, capture and composite calls succeed on every window",
-          "expect": "A 12x8 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is teal (#0E96B6), with no text."
+          "expect": "A 12x8 pixel mosaic filling the picture, with blue varying across columns, green down rows and fine red diagonal flecks; its upper-left pixel is teal (#0E96B6), with no text.",
+          "expectEnd": "A black (#000000) 2560x1600 screen with seed mosaics (x,y,width,height,z,seed): (100,40,20,10,0,13); (150,40,12,8,1,14). Blue column ramps, green row ramps and red diagonal flecks use local window coordinates; no text."
         },
         {
           "id": "pid-reuse",
@@ -1445,7 +1446,8 @@
         {
           "id": "compose-many",
           "title": "Sixteen windows in a fixed stack compose to the formula, exactly",
-          "expect": "Sixteen 160x120 mosaics descend diagonally from (40,30), each 60 pixels right and 40 down, earlier rectangles on top, against black (#000000); blue and green ramps with red flecks, starting dark blue (#0A2282)."
+          "expect": "Sixteen 160x120 mosaics descend diagonally from (40,30), each 60 pixels right and 40 down, earlier rectangles on top, against black (#000000); blue and green ramps with red flecks, starting dark blue (#0A2282).",
+          "expectEnd": "A black (#000000) 2560x1600 screen with seed mosaics (x,y,width,height,z,seed): for i=0..15, (40+60*i,30+40*i,160,120,15-i,10+i); (0,0,8,8,16,27). Earlier windows overlap later ones; blue and green ramps with red flecks; no text."
         },
         {
           "id": "generation",
@@ -1491,7 +1493,7 @@
         {
           "id": "inflight-bound",
           "title": "At most one composite per window is in flight",
-          "expect": "A black (#000000) screen with a 640x400 seed-19 mosaic at geometric origin x=0, y=0; its origin pixel is blue (#1327F7); blue column ramps, green row ramps and red diagonal flecks; no text."
+          "expect": "An entirely black (#000000) full screen; no text or shapes."
         },
         {
           "id": "no-change-commit",
@@ -1526,12 +1528,12 @@
         {
           "id": "present-rate",
           "title": "One 256x256 window composes at least 60 commits a second",
-          "expect": "A black (#000000) screen with a 256x256 mosaic at geometric origin x=100, y=100; blue column ramps, green row ramps and red diagonal flecks from the last composed commit among seeds 0..299; no text."
+          "expect": "An entirely black (#000000) full screen; no text or shapes."
         },
         {
           "id": "takeover-giveback",
           "title": "Display takeover and giveback restore the previous owner's frame exactly",
-          "expect": "The previous owner's navy (#0C131F) stage, with its matrix of case tiles on the left and selected-case panel on the right, restored exactly."
+          "expect": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed composition/takeover-giveback tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record."
         },
         {
           "id": "ownership-stack",
@@ -1738,7 +1740,8 @@
         {
           "id": "atomic-record",
           "title": "The pixels and the record always belong to the same composite serial under continuous commits",
-          "expect": "A 64x64 mosaic at (600,400) on black (#000000), with blue column ramps, green row ramps and red diagonal flecks; its changing colours identify the observed commit, with no text."
+          "expect": "A black (#000000) 2560x1600 screen with seed mosaics (x,y,width,height,z,seed): (600,400,64,64,0,20). The handed picture uses fixed commit index 20 (U14a); the live case checks each actual commit. Blue and green ramps with red diagonal flecks; no text.",
+          "expectEnd": "An entirely black (#000000) full screen; no text or shapes."
         },
         {
           "id": "window-commits",
@@ -1864,27 +1867,27 @@
         {
           "id": "handoff",
           "title": "A display-taking child under probe takes the display, gives it back, and the panel is restored exactly",
-          "expect": "The navy (#0C131F) live suite stage is restored: case tiles on the left, selected-case panel on the right, white (#FFFFFF) labels and coloured verdict stamps; counts and names reflect the preceding cases."
+          "expect": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed panel/handoff tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record."
         },
         {
           "id": "between-cases",
           "title": "In a GUI suite the panel is drawn only between cases and restored exactly after each",
-          "expect": "The navy (#0C131F) live suite stage stays still, with case tiles on the left, selected-case panel on the right, white (#FFFFFF) labels and coloured verdict stamps; counts and names reflect the preceding cases."
+          "expect": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed panel/between-cases tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record."
         },
         {
           "id": "cursor-restore",
           "title": "Moving the pointer over the panel leaves no cursor trail",
-          "expect": "The navy (#0C131F) live suite stage has white (#FFFFFF) labels, coloured case tiles and a pointer at (1200,40); the five positions crossed by the pointer have their original pixels restored."
+          "expect": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed panel/cursor-restore tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record. Arrow at (1200,40), no trail."
         },
         {
           "id": "cursor-trail-detected",
           "title": "With the panel cursor's save and restore disabled by a test control, the trail is detected",
-          "expect": "The navy (#0C131F) live suite stage has white (#FFFFFF) labels and extra pointer marks near (200,300), (400,320), (640,400), (900,500), (1100,600); the pointer also sits at (1200,40)."
+          "expect": "Fixed stage renderer: breengel, target \"fixed inputs\", one passed panel/cursor-trail-detected tile, key 20 ms, elapsed 250 ms, fps 60, no thumbnails or spotlight; boundary from the scanout record. Arrows at (200,300),(400,320),(640,400),(900,500),(1100,600),(1200,40)."
         },
         {
           "id": "kernel-screens",
           "title": "The kernel's console screen redraws exactly after the display is given back",
-          "expect": "The kernel console's saved text returns in pale grey (#CDD7EB) on midnight blue (#0F1423), with its boot-stage ribbon at the bottom; the text is the existing console contents, not a fixed test string."
+          "expect": "Fixed production console renderer: body lines \"Breenix console: fixed approval input\" and \"SUITE breengel CASE panel/cursor-trail-detected PASS ms=20\"; 1 passed of 401, elapsed 679 s, four reached boot stages, no cursor. The live restoration check stays exact."
         }
       ]
     }

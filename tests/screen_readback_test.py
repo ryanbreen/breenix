@@ -52,6 +52,12 @@ POLICY
  assert!(screen::Request::decode(&bytes[..31]).is_none());
  let mut bad=bytes;bad[0]^=1;assert!(screen::Request::decode(&bad).is_none());
 }
+#[test] fn crc_request(){
+ let request=screen::CrcRequest{pixels:1,len:2,observation:3,record:4,suite:"gpu",case:"draw/one",checkpoint:"end"};
+ let bytes=request.encode().unwrap();
+ assert_eq!(screen::CrcRequest::decode(&bytes),Some(request));
+ assert!(screen::Request::decode(&bytes).is_none());
+}
 #[test] fn failure_status(){
  let bytes=screen::Failure{errno:5,reason:10,failed_submission:42,declared:1}.encode();
  assert_eq!(&bytes[..8],b"SCREENER");

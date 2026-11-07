@@ -784,12 +784,15 @@ pub mod tc_point {
     pub const CAPTURE_STALL: u32 = 18;
     pub const INPUT_REPORT_SKIPPED: u32 = 33;
     pub const LAUNCH_FORK_FAIL: u32 = 34;
+    /// One-shot native output dithering at the next matching screen checkpoint.
+    /// Arming on backends 4 and 5 and ARM returns EINVAL (U12).
+    pub const DISPLAY_OUTPUT_PERTURB: u32 = 35;
     /// The highest point number section 21 defines.
-    pub const LAST: u32 = LAUNCH_FORK_FAIL;
+    pub const LAST: u32 = DISPLAY_OUTPUT_PERTURB;
 
     /// Whether section 21 defines `point`.
     pub const fn defined(point: u32) -> bool {
-        matches!(point, IGNORE_DAMAGE..=CAPTURE_STALL | INPUT_REPORT_SKIPPED | LAUNCH_FORK_FAIL)
+        matches!(point, IGNORE_DAMAGE..=CAPTURE_STALL | INPUT_REPORT_SKIPPED | LAUNCH_FORK_FAIL | DISPLAY_OUTPUT_PERTURB)
     }
 }
 
