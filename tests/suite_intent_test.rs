@@ -3,7 +3,10 @@ use crate::gpu::abi::{self, stream::{self, Resolver, SourceInfo, TargetInfo}};
 
 #[test]
 fn start_record_marks_only_configured_screen_suites() {
-    for id in ["gpu", "breengel", "ui-testing", "console", "window-manager", "other"] {
+    for id in ["gpu", "breengel", "console", "crypto", "directories", "files-io", "filesystem", "gt710",
+        "ipc", "libc", "memory", "networking", "processes", "rust-std", "sdk", "server", "signals",
+        "smoke", "terminals", "threads", "time", "toolchain", "ui-testing", "users", "utilities",
+        "window-manager", "other"] {
         for configured in [false, true] {
             let old = format!("SUITE {id} START cases=12 only=case pace_ms=50");
             let expected = if configured && matches!(id, "gpu" | "breengel") {

@@ -1186,6 +1186,23 @@ class DriverTest(StateTest):
         with self.assertRaisesRegex(SystemExit, 'screen-proof'):
             run.boot(args)
 
+    def test_screen_proof_cli_reaches_driver(self):
+        run = load_script('metal-run')
+        args = run.argument_parser().parse_args(['boot', '--suite', 'gpu', '--screen-proof'])
+        with patch.object(run, 'host_env', return_value={}), \
+             patch.object(run, 'resolve', return_value='a' * 40), \
+             patch.object(run, 'resolve_suites', return_value='gpu'), \
+             patch.object(run, 'in_metal', return_value=SimpleNamespace(returncode=1, stdout='', stderr='fixture')) as remote:
+            self.assertEqual(run.boot(args), 1)
+        self.assertIn('--screen-proof', remote.call_args.args)
+
+    def test_screen_proof_start_sets_breengel_deadline_origin(self):
+        d = self.driver
+        d.args.mode, d.args.suite, d.args.screen_proof = 'suite', 'breengel', True
+        d.on_line('SUITE breengel START cases=401 pace_ms=50 screen_proof=on', observed_at=130)
+        self.assertEqual(d.suite_name, 'breengel')
+        self.assertEqual(d.suite_started, 130)
+
     def setUp(self):
         super().setUp()
         self.args = SimpleNamespace(id='20261017T000009Z-metal', mode='default', payload='image',
