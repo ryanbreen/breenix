@@ -42,6 +42,7 @@ def ready(handler):
             return
         handler.send_response(204)
         handler.send_header('X-Breenix-Boot', intent['id'])
+        handler.send_header('X-Breenix-Picture-References', '1')
         handler.send_header('Content-Length', '0')
         handler.end_headers()
 
@@ -62,6 +63,9 @@ def check_ready(directory, boot_id, site):
             response = connection.getresponse()
             if response.status != 204 or response.getheader('X-Breenix-Boot') != boot_id:
                 raise ValueError('native upload route unavailable; deploy tools with --restart')
+            if (m.read_json(Path(directory) / 'run.json', {}).get('screenProof') is True
+                    and response.getheader('X-Breenix-Picture-References') != '1'):
+                raise ValueError('native picture reference receiver unavailable; deploy tools with --restart')
             return
         except (OSError, http.client.HTTPException) as error:
             if time.monotonic() >= deadline:
@@ -184,7 +188,10 @@ def receive(handler):
                 intent['finalBytes']=length
             else:
                 intent.update(receipt)
-            handler.send_response(200);handler.send_header('Content-Length','0')
+            handler.send_response(200)
+            if reference is not None:
+                handler.send_header('X-Breenix-Picture-Reference-Accepted', '1')
+            handler.send_header('Content-Length','0')
             handler.send_header('Connection','close');handler.end_headers();handler.close_connection=True
         except (OSError,ValueError) as error:
             temporary.unlink(missing_ok=True);handler.close_connection=True

@@ -140,8 +140,8 @@ pub(super) fn transfer(data: &[u8], suffix: &str) -> Result<(), String> {
             let mut bytes=[0u8;512];let n=socket::recv(fd,&mut bytes).map_err(|_|"native upload response")?;
             if n==0 {break;}response.extend_from_slice(&bytes[..n]);
         }
-        if !response.starts_with(b"HTTP/1.1 200 ") || !response.windows(4).any(|w|w==b"\r\n\r\n") {
-            return Err("native artifact not accepted");
+        if !libbreenix::evidence_reference::accepted(&response, reference.is_some()) {
+            return Err(if reference.is_some() { "native picture reference not acknowledged" } else { "native artifact not accepted" });
         }
         Ok(())
     })();

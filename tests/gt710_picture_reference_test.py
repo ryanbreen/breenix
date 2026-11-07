@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 from gt710_final_upload_test import Handler, upload
 
 
@@ -23,12 +23,15 @@ class PictureReferences(unittest.TestCase):
                 if mutation:reference=mutation(boot,reference)
                 second=Handler(route+'/pictures/1',reference)
                 second.headers['X-Breenix-Picture-Reference']='1'
+                response_headers={}
+                second.send_header=lambda name,value:response_headers.__setitem__(name,value)
                 upload.receive(second)
                 if mutation:
                     self.assertEqual(second.code,400)
                     self.assertFalse((boot/'gt710-breengel-0001.rle').exists())
                 else:
                     self.assertEqual(second.code,200)
+                    self.assertEqual(response_headers.get('X-Breenix-Picture-Reference-Accepted'),'1')
                     self.assertEqual((boot/'gt710-breengel-0001.rle').read_bytes(),body)
                     receipt=upload.m.read_json(boot/'native-picture-upload-0001.json')
                     self.assertEqual((receipt['bytes'],receipt['sha256']),(len(body),digest))
@@ -89,6 +92,24 @@ class PictureReferences(unittest.TestCase):
                     self.assertLess(intent['pictureBytes'],(12<<20)+300)
         run(False)
         run(True)
+
+    def test_pre_power_readiness_requires_loaded_reference_receiver(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            boot=Path(tmp)
+            (boot/'native-upload-intent.json').write_text(json.dumps(dict(id='sample',route='/gt710-upload/'+'a'*64)))
+            (boot/'run.json').write_text(json.dumps(dict(screenProof=True)))
+            response=Mock(status=204)
+            headers={'X-Breenix-Boot':'sample'}
+            response.getheader.side_effect=lambda name:headers.get(name)
+            connection=Mock();connection.getresponse.return_value=response
+            with patch.object(upload.http.client,'HTTPConnection',return_value=connection):
+                with self.assertRaisesRegex(ValueError,'reference'):
+                    upload.check_ready(boot,'sample',{'BOOT_URL':'http://fixture.invalid/boot'})
+                headers['X-Breenix-Picture-References']='1'
+                upload.check_ready(boot,'sample',{'BOOT_URL':'http://fixture.invalid/boot'})
+                (boot/'run.json').write_text(json.dumps(dict(screenProof=False)))
+                del headers['X-Breenix-Picture-References']
+                upload.check_ready(boot,'sample',{'BOOT_URL':'http://fixture.invalid/boot'})
 
     def test_reference_does_not_bypass_wire_or_materialized_payload_limits(self):
         def full(boot,body):

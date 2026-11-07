@@ -18,3 +18,15 @@ fn only_completed_earlier_identical_parts_can_be_referenced() {
     cache.remember(1,2<<20,hash).unwrap();
     assert!(cache.remember(1,2<<20,hash).is_err());
 }
+
+#[test]
+fn references_require_explicit_receiver_acknowledgement() {
+    let old=b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+    assert!(subject::accepted(old,false));
+    assert!(!subject::accepted(old,true));
+    let acknowledged=b"HTTP/1.1 200 OK\r\nX-Breenix-Picture-Reference-Accepted: 1\r\nContent-Length: 0\r\n\r\n";
+    assert!(subject::accepted(acknowledged,true));
+    assert!(!subject::accepted(b"HTTP/1.1 400 bad\r\nX-Breenix-Picture-Reference-Accepted: 1\r\n\r\n",true));
+    assert!(!subject::accepted(b"HTTP/1.1 200 OK\r\n\r\nX-Breenix-Picture-Reference-Accepted: 1\r\n",true));
+    assert!(!subject::accepted(b"HTTP/1.1 200 OK\r\nX-Breenix-Picture-Reference-Accepted: 1\r\nX-Breenix-Picture-Reference-Accepted: 1\r\n\r\n",true));
+}

@@ -179,7 +179,10 @@ native `/pictures/N` route. Its digest-checked body is
 `PICTURE_REF v=1 source=M bytes=B sha256=H` followed by a newline. M must be
 an earlier completed part in the same suite and boot. The receiver checks that
 part's receipt, size and SHA-256 again before publishing the identical payload
-at N. Raw and RLE image formats and the first pictured case per category stay
+at N. Only after publishing that payload does it send
+`X-Breenix-Picture-Reference-Accepted: 1`; the sender refuses a missing or
+duplicate acknowledgement, including an older receiver's ordinary HTTP 200.
+Raw and RLE image formats and the first pictured case per category stay
 unchanged. The normal picture anchors still bind the reconstructed full bytes.
 
 The 64 MiB upload budget counts literal request bodies and reference descriptors.
@@ -187,3 +190,9 @@ Receipts retain canonical `bytes` and `sha256`; a reference additionally records
 `wireBytes`, `wireSha256` and `reference`. Reconstructed native picture payloads
 have their own unchanged 64 MiB ceiling. Missing, corrupt, foreign, forward,
 unsealed and mode-disabled references are refused; no retry accepts weaker evidence.
+
+The pre-power readiness response advertises `X-Breenix-Picture-References: 1`.
+An intent-enabled boot refuses a receiver without that capability before power-on.
+After changing the HTTP upload module, deploy with `metal-deploy --restart`
+while the boot lease is absent; replacing files alone does not reload the running
+HTTP child. The restart path refuses an active lease.

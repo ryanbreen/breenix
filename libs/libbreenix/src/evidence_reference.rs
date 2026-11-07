@@ -21,3 +21,21 @@ impl Cache {
     }
 }
 impl Default for Cache { fn default() -> Self { Self::new() } }
+
+/// Preserve literal HTTP acceptance and require one explicit acknowledgement for a reference.
+pub fn accepted(response: &[u8], reference: bool) -> bool {
+    if !response.starts_with(b"HTTP/1.1 200 ") { return false; }
+    let Some(end)=response.windows(4).position(|w|w==b"\r\n\r\n") else { return false; };
+    if !reference { return true; }
+    let Ok(headers)=std::str::from_utf8(&response[..end]) else { return false; };
+    let mut count=0;
+    for line in headers.lines() {
+        if let Some((name,value))=line.split_once(':') {
+            if name.eq_ignore_ascii_case("X-Breenix-Picture-Reference-Accepted") {
+                if value.trim()!="1" { return false; }
+                count+=1;
+            }
+        }
+    }
+    count==1
+}
