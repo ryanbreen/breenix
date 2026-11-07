@@ -3356,7 +3356,7 @@ def breengel_picture_evidence(directory, serial, records, startup_bytes, final_b
         raise ValueError('picture bytes on serial or evidence refused')
     root = Path(directory)
     anchors = list(re.finditer(r'^GT710_BREENGL_CHUNK (0|[1-9]\d*) ([1-9]\d*) ([a-f0-9]{64})$', serial, re.M))
-    starts = list(re.finditer(r'^SUITE breengel START cases=(\d+)$', serial, re.M))
+    starts = list(re.finditer(r'^SUITE breengel START cases=(\d+)(?: pace_ms=[1-9][0-9]*)?(?: screen_proof=on)?$', serial, re.M))
     final = one(r'^GT710_FINAL_BULK \d+ [a-f0-9]{64}$', serial, 'BreenGL final upload missing')
     if len(starts) != 1 or len(anchors) > 401 * 32:
         raise ValueError('invalid picture upload sequence')
