@@ -78,7 +78,7 @@ impl Io for Model {
     }
     fn sample(&mut self, index:usize)->Result<Option<Sample>,&'static str> {
         self.reads.push(index);
-        self.now+=16000;
+        if self.phase<2 {self.now+=16000;}
         if self.fault==7 {return Err("notifier read failed")}
         Ok(self.available.get(index).copied())
     }
@@ -102,7 +102,7 @@ impl Io for Model {
 #[test] fn discard_first_and_capture_four_consecutive_nonzero_entries() {
     let mut m=Model::new();let r=m.capture().unwrap();m.disarmed();
     assert_eq!(m.submitted[0],[(0x438,4),(0x430,0xff8f0f40),(0x84,0x80000000),(0x80,0)]);
-    assert_eq!(r.samples,m.available);assert_eq!(m.reads,[0,1,2,3,4]);
+    assert_eq!(r.samples,m.available);assert_eq!(m.reads,[0,1,2,3,4,5]);
     assert_eq!(r.binding_before,PIN);assert_eq!(r.binding_after,PIN);
     assert!(r.disarmed);assert_eq!(r.status,1);assert_eq!(r.display_error,0);
     assert!(r.elapsed_us<=250000);assert_eq!(m.recovered,0);
@@ -152,8 +152,8 @@ impl Io for Model {
     let mut m=Model::new();m.now=1_000_000;
     let r=m.capture().unwrap();assert!(r.elapsed_us<=250000);
     let mut m=Model::new();m.available=vec![sample(11,12);255];
-    // Production stops at K=4; the storage limit is 255 total / 254 after discard.
-    let r=m.capture().unwrap();assert_eq!(r.samples.len(),5);
+    // Collection stops at K=4, then drains the completed notifier extent.
+    let r=m.capture().unwrap();assert_eq!(r.samples.len(),255);
     assert_eq!(display_crc::MAX_SAMPLES,255);
     assert_eq!(display_crc::TIMEOUT_US,250000);
     assert_eq!(display_crc::notifier_offset(254).unwrap(),4072);
@@ -184,4 +184,13 @@ impl Io for Model {
     for _ in 0..255 {assert_eq!([u32at(at),u32at(at+4),u32at(at+8)],[1,0x12345678,0xabcdef12]);at+=12;}
     assert_eq!(at,bytes.len());
     r.samples.push(sample(1,2));assert!(r.encode().is_err());
+}
+
+#[test] fn entries_written_before_disarm_are_retained_and_validated() {
+    let mut m=Model::new();m.available.push(sample(11,12));
+    let r=m.capture().unwrap();assert_eq!(r.samples,m.available);m.disarmed();
+    for tail in [sample(13,12),sample(11,13),sample(11,0)] {
+        let mut m=Model::new();m.available.push(tail);
+        assert!(m.capture().is_err());m.disarmed();
+    }
 }
