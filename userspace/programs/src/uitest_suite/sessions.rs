@@ -414,3 +414,6 @@ pub fn twenty_sessions() -> CaseResult {
     let (record, passed) = memory_record::verdict("ui-testing", Some(&before), Some(&after));
     check(passed, &record)
 }
+
+/// A real-runner logic timeout keeps evidence inside its original limit.
+pub fn case_timeout() -> CaseResult { super::runner::collection_evidence("collection-timeout", "timeout") }

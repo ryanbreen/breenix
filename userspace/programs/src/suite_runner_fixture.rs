@@ -234,6 +234,58 @@ fn config_sequence(order: &str) -> ! {
 }
 
 
+fn collection_case() -> CaseResult {
+    let mut session = libuitest::Session::kiosk()?;
+    let app = session.launch_app(&[b"/usr/libexec/breenix/uitest-app_test", b"collection witness", b"--stderr-flood=4096"], 0)?;
+    session.read_line(app)?;
+    let window = session.wait_window("collection witness")?;
+    session.hold_window(window.id)?;
+    session.raw_press(libbreenix::input::key::A)?;
+    session.raw_release(libbreenix::input::key::A)?;
+    let stderr_end = time::now_monotonic()?.as_nanos() + 500_000_000;
+    loop {
+        let stderr = session.stderr(app)?;
+        if stderr.bytes.len() == 4096 {
+            check(stderr.bytes == vec![b'x'; 4096], "stderr precondition differs")?; break;
+        }
+        check(time::now_monotonic()?.as_nanos() < stderr_end, "stderr flood did not finish before the case fault")?;
+        time::sleep_ms(1)?;
+    }
+    let pid = process::getpid()?.raw();
+    suite::value("supervisor-pid", session.supervisor_pid() as i64, "pid", None);
+    let marker = format!("/tmp/ui-collection-{}", parent_pid());
+    std::fs::write(marker, format!("{} {} {}", session.supervisor_pid(), app, time::now_monotonic()?.as_nanos())).map_err(|e| e.to_string())?;
+    // Deliberately leave a slot writing: no incomplete pixels may be exported.
+    let mut slot = session.arena_mut().begin(libuitest::arena::Slot::Frame)?;
+    slot.bytes_mut()[..4].copy_from_slice(&[1, 2, 3, 255]);
+    drop(slot);
+    if mode() == "collection-death" {
+        signal::kill(pid as i32, signal::SIGKILL)?;
+        return Err("SIGKILL returned".into());
+    }
+    loop { time::sleep_ms(10)?; }
+}
+fn collection_observer(name: &str) {
+    let result = (|| -> CaseResult {
+        let marker = format!("/tmp/ui-collection-{}", process::getpid()?.raw());
+        let content = std::fs::read_to_string(&marker).map_err(|e| e.to_string())?;
+        let fields: Vec<_> = content.split_whitespace().collect();
+        for pid in &fields[..2] {
+            check(!std::path::Path::new(&format!("/proc/{pid}/stat")).exists(), "collection sweep left a process")?;
+        }
+        let began: u64 = fields[2].parse().map_err(|_| "invalid fixture start")?;
+        let elapsed = (time::now_monotonic()?.as_nanos() as u64 - began) / 1_000_000;
+        let path = std::path::Path::new("/var/uitest/runner-fixture").join(name);
+        check(path.join("collection.txt").is_file() && path.join("screen.png").is_file(), "sweep preceded disk evidence")?;
+        let mut status = 0;
+        check(matches!(process::waitpid(-1, &mut status, process::WNOHANG), Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ECHILD))), "collection left descendants")?;
+        std::fs::remove_file(marker).map_err(|e| e.to_string())?;
+        let _ = io::write(Fd::from_raw(3), format!("COLLECTION-SWEEP reaped=true evidence=true elapsed_ms={elapsed}\n").as_bytes());
+        Ok(())
+    })();
+    if let Err(e) = result { let _ = io::write(Fd::from_raw(3), format!("COLLECTION-SWEEP failed {e:?}\n").as_bytes()); }
+}
+
 fn collection_fault() -> CaseResult {
     let mut session = libuitest::Session::connect()?;
     let orphan = sessions::orphan(&mut session)?;
@@ -309,6 +361,7 @@ fn session_display() -> CaseResult {
     Ok(())
 }
 fn display_observer(done: usize, _: usize, name: &str) {
+    if done != 0 && name.starts_with("fixture/collection-") { collection_observer(name); return; }
     if done == 0 || !name.starts_with("fixture/session-") { return; }
     let result = (|| -> CaseResult {
         let path = format!("/tmp/ui-display-{}", process::getpid()?.raw());
@@ -374,6 +427,7 @@ fn main() {
         "session-teardown" | "session-panel-pass" | "session-panel-fail" | "session-ownership" | "session-devices" => (session_display, vec![]),
         "supervisor-died" => (supervisor_died, vec![]),
         "silent-supervisor" | "dead-supervisor" => (collection_fault, vec![]),
+        "collection-death" | "collection-timeout" => (collection_case, vec![]),
         "sweep-descendants" => (descendants, vec!["label"]),
         "outer-positive" | "transport-always" | "transport-exit-race" => (positive, vec!["label"]),
         _ => panic!("unknown fixture mode"),
@@ -382,7 +436,7 @@ fn main() {
     let checks = Box::leak(checks.into_boxed_slice());
     let entry = case(id, "Scoped runner control", body).checks(checks);
     let entry = if matches!(selected, "subreaper" | "supervisor-died" | "session-teardown" | "session-panel-pass" | "session-panel-fail" | "session-ownership" | "session-devices") { entry.session(libuitest::supervisor::serve) } else { entry };
-    let entry = if matches!(selected, "silent-supervisor" | "dead-supervisor") {
+    let entry = if matches!(selected, "silent-supervisor" | "dead-supervisor" | "collection-death" | "collection-timeout") {
         entry.session(libuitest::supervisor::serve).collects()
     } else { entry };
     let cases = Box::leak(vec![entry].into_boxed_slice());

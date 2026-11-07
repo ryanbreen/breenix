@@ -172,3 +172,37 @@ pub fn outer_collector_timeout() -> CaseResult {
     }
     Ok(())
 }
+
+/// A real fixture death must finish local collection before the runner sweeps.
+pub fn outer_case_death() -> CaseResult { collection_evidence("collection-death", "crash") }
+pub(crate) fn collection_evidence(mode: &str, trigger: &str) -> CaseResult {
+    let (text, exit) = fixture(mode)?;
+    check(exit == 1, "killed fixture did not fail")?;
+    let collect = format!("SUITE runner-fixture COLLECT fixture/{mode} trigger={trigger} screen=at-collection");
+    let at = text.find(&collect).ok_or("collection did not save a screen")?;
+    let done = text.find(" collection-done=1bool").ok_or("runner never received done")?;
+    let swept = text.find("COLLECTION-SWEEP reaped=true evidence=true").ok_or("evidence or sweep witness missing")?;
+    check(at < done && done < swept, "COLLECT/done did not arrive before sweep")?;
+    let case = text.find(&format!("CASE fixture/{mode} FAIL")).ok_or("fixture case did not fail")?;
+    check(done < case && text.contains("DONE passed=0 failed=1 skipped=0 total=1"), "fixture result ordering differs")?;
+    let path = std::path::Path::new("/var/uitest/runner-fixture/fixture").join(mode);
+    let manifest = std::fs::read_to_string(path.join("collection.txt")).map_err(|e| e.to_string())?;
+    check(manifest.contains(&format!("trigger={trigger}")) && manifest.contains("frame=partial:case-died"), "missing death/timeout or partial-slot evidence")?;
+    check(std::fs::read(path.join("screen.png")).map_err(|e| e.to_string())?.starts_with(b"\x89PNG\r\n\x1a\n"), "screen is not a saved PNG")?;
+    for name in ["screen.record", "input.log", "composites.log"] {
+        check(std::fs::metadata(path.join(name)).map_err(|e| e.to_string())?.len() != 0, "collection evidence is empty")?;
+    }
+    check(std::fs::read_dir(&path).map_err(|e| e.to_string())?.any(|p| p.is_ok_and(|p| p.file_name().to_string_lossy().starts_with("window-"))), "no live window capture saved")?;
+    let stderr = std::fs::read_dir(&path).map_err(|e| e.to_string())?.filter_map(Result::ok)
+        .filter(|p| p.file_name().to_string_lossy().starts_with("stderr-"))
+        .map(|p| std::fs::read(p.path()).unwrap_or_default()).collect::<Vec<_>>();
+    check(stderr.iter().any(|b| b.len() == 4096 && b.iter().all(|&v| v == b'x')), "app stderr was not saved")?;
+    if trigger == "timeout" {
+        check(text.contains("timed out after 1500 ms"), "timeout did not use the logic bound")?;
+        let elapsed: u64 = text.split(" collection-ms=").nth(1).ok_or("collection elapsed missing")?
+            .split("ms").next().unwrap().parse().map_err(|_| "invalid collection elapsed")?;
+        check(elapsed < 3000, "evidence missed the reserve")?;
+    }
+    std::fs::remove_dir_all(path).map_err(|e| e.to_string())?;
+    Ok(())
+}

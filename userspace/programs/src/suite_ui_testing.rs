@@ -42,7 +42,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // The fixture's clean case passes under the real runner, and the fixture's transcript ends in a consistent DONE. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("outer-positive", "The fixture's clean case passes under the real runner and its transcript ends in a consistent DONE", runner::outer_positive),
         // A fixture case killed mid-scenario is reported FAIL by the real runner, its supervisor's COLLECT and `done` arrive before the sweep, and the evidence it names is on disk. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("outer-case-death", "A fixture case killed mid-scenario fails, its COLLECT and done arrive before the sweep, and its evidence is on disk", || pending("runner", 3)),
+        case("outer-case-death", "A fixture case killed mid-scenario fails, its COLLECT and done arrive before the sweep, and its evidence is on disk", runner::outer_case_death),
         // A fixture supervisor that never answers is swept at the case limit, the runner writes `artifacts=none:collector-timeout`, and the case's primary failure stands; a fixture supervisor that dies instead makes the runner write `artifacts=none:supervisor-died` and reap the session's orphans. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("outer-collector-timeout", "A silent fixture supervisor is swept at the limit as collector-timeout, and a dead one is recorded supervisor-died with its orphans reaped", runner::outer_collector_timeout),
         // The real runner, run as a subreaper, kills and reaps every descendant of the fixture, a double-forked helper included, and nothing outside it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -332,7 +332,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // When a session's compositor dies, the display goes to the session supervisor, then to the runner at case end. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("ownership-stack", "When a session's compositor dies, the display goes to the session supervisor, then to the runner at case end", sessions::ownership_stack),
         // A scenario that runs out of time fails, and its evidence is saved inside the reserve. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("case-timeout", "A scenario that runs out of time fails, and its evidence is saved inside the reserve", || pending("sessions", 3)),
+        case("case-timeout", "A scenario that runs out of time fails, and its evidence is saved inside the reserve", sessions::case_timeout),
         // An app crashing during a scenario fails it, naming the app and the signal. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("app-crash", "An app crashing during a scenario fails it, naming the app and the signal", sessions::app_crash),
         // An app's stderr is saved, capped at 64 KiB. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
