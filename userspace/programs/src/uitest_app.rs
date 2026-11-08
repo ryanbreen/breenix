@@ -1,6 +1,7 @@
 //! Small application used by UI session tests.
 mod uitest_app_support;
 mod uitest_canonical;
+mod uitest_capture_app;
 
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -27,6 +28,12 @@ fn main() {
         Ok(options) => options,
         Err(error) => { eprintln!("{error}"); std::process::exit(2); }
     };
+    if options.capture_control {
+        if let Err(error) = uitest_capture_app::serve(options.title) {
+            eprintln!("capture control: {error}"); std::process::exit(1);
+        }
+        return;
+    }
     let mut win = Window::new_without_fonts(options.title.as_bytes(), 320, 200)
         .unwrap_or_else(|error| { eprintln!("window: {error}"); std::process::exit(1); });
     if options.canonical {

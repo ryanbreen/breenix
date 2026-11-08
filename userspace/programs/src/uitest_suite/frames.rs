@@ -355,7 +355,7 @@ mod races {
         }
     }
     fn run(kind: u8) -> Result<(), String> {
-        let mut session = Session::kiosk()?;
+        let mut session = Session::connect()?;
         let root = PathBuf::from(session.config_root());
         let mut app = App::launch(&mut session)?;
         let reader = Reader::new();
@@ -370,17 +370,17 @@ mod races {
                     }
                 }
                 3 => {
-                    let mut round = |old| -> Result<(), String> {
-                        overlap(&mut app, &reader, &root, old, "destroy", false)?;
+                    let round = |app: &mut App, old| -> Result<(), String> {
+                        overlap(app, &reader, &root, old, "destroy", false)?;
                         destroyed_before_copy(&root, &reader, old)
                     };
-                    round(first)?;
+                    round(&mut app, first)?;
                     // Match windows_capture_across_destroy's three warm-up and
                     // twenty measured rounds, with its 64 KiB free-memory bound.
-                    for _ in 1..3 { let old = app.command("create")?; round(old)?; }
+                    for _ in 1..3 { let old = app.command("create")?; round(&mut app, old)?; }
                     let _ = free_kb()?;
                     let before = free_kb()?;
-                    for _ in 0..20 { let old = app.command("create")?; round(old)?; }
+                    for _ in 0..20 { let old = app.command("create")?; round(&mut app, old)?; }
                     let after = free_kb()?;
                     breenix_suite::suite::value("capture-free-change", after as i64 - before as i64, "kb", None);
                     if after + 64 < before { return Err(format!("capture retained {} KiB across destroy rounds", before - after)); }

@@ -32,3 +32,5 @@ pub mod frames;
 
 pub mod capture_marker;
 pub mod capture;
+
+pub mod capture_race;

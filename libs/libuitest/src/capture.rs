@@ -10,13 +10,31 @@ fn byte_len(width: u32, height: u32) -> Result<usize, String> {
 /// One CAPTURE call asks for both destinations; the kernel holds its front's
 /// pixel and tree pins through both copies. Do not fetch MAP_TREE afterwards.
 pub fn window(arena: &mut Arena, check: &str, id: u64) -> Result<Record, String> {
-    arena.write_frame_tree(|pixels, tree| {
-        let captured = window::capture(id, pixels, Some(tree)).map_err(|e| format!("window capture {id}: {e}"))?;
+    window_result(arena, check, id).map_err(|e| e.to_string())
+}
+/// Keep a device refusal typed so cases can distinguish ENOENT from other errors.
+#[derive(Debug)]
+pub struct WindowError { pub syscall: Option<libbreenix::error::Error>, pub detail: String }
+impl WindowError {
+    pub fn arena(detail: String) -> Self { Self { syscall: None, detail } }
+}
+impl core::fmt::Display for WindowError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result { f.write_str(&self.detail) }
+}
+pub fn window_result(arena: &mut Arena, check: &str, id: u64) -> Result<Record, WindowError> {
+    let mut syscall = None;
+    let result = arena.write_frame_tree(|pixels, tree| {
+        let captured = window::capture(id, pixels, Some(tree)).map_err(|e| {
+            let detail = format!("window capture {id}: {e}");
+            syscall = Some(e);
+            detail
+        })?;
         let len = byte_len(captured.width, captured.height)?;
         if len > pixels.len() { return Err("captured extent exceeds arena".into()); }
         Ok((Record { check: check.into(), window: id, commit: captured.commit_id,
             width: captured.width, height: captured.height, ..Default::default() }, len))
-    })
+    });
+    result.map_err(|detail| WindowError { syscall, detail })
 }
 /// Require the caller's observation kind, rather than accepting whatever kind
 /// the device returned. The shared E21 validator judges backend completions.

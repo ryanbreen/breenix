@@ -8,15 +8,18 @@ pub struct Options<'a> {
     pub session_probe: bool,
     pub config_probe: bool,
     pub canonical: bool,
+    pub capture_control: bool,
 }
 
 pub fn parse<'a>(args: &[&'a str]) -> Result<Options<'a>, &'static str> {
     let title = *args.first().ok_or("missing window title")?;
     if title.is_empty() || title.starts_with("--") { return Err("invalid window title"); }
-    let mut options = Options { title, crash: None, hang: false, stderr_flood: 0, session_probe: false, config_probe: false, canonical: false };
+    let mut options = Options { title, crash: None, hang: false, stderr_flood: 0, session_probe: false, config_probe: false, canonical: false, capture_control: false };
     let mut flood_seen = false;
     for arg in &args[1..] {
-        if *arg == "--canonical" && !options.canonical {
+        if *arg == "--capture-control" && !options.capture_control {
+            options.capture_control = true;
+        } else if *arg == "--canonical" && !options.canonical {
             options.canonical = true;
         } else if *arg == "--hang" && !options.hang {
             options.hang = true;
@@ -34,6 +37,9 @@ pub fn parse<'a>(args: &[&'a str]) -> Result<Options<'a>, &'static str> {
             options.stderr_flood = value.parse().map_err(|_| "invalid flood size")?;
             flood_seen = true;
         } else { return Err("unknown or duplicate flag"); }
+    }
+    if options.capture_control && (options.canonical || options.hang || options.crash.is_some() || options.session_probe || options.config_probe || flood_seen) {
+        return Err("capture control cannot be combined with other modes");
     }
     Ok(options)
 }
