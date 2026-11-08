@@ -129,3 +129,17 @@ fn race_judge_requires_fired_rise_and_one_generation() {
     let mut stray = pixels.clone(); stray[60] ^= 1;
     assert!(judge(40, 41, &stray, &tree, 7, None).is_err());
 }
+
+#[test]
+fn typed_capture_error_distinguishes_device_from_arena_refusal() {
+    let _guard = SERIAL.lock().unwrap();
+    *DEVICE.lock().unwrap() = State { refuse: true, ..Default::default() };
+    let (path, mut arena) = arena("typed-error");
+    let device = capture::window_result(&mut arena, "race", 11).unwrap_err();
+    assert!(device.syscall.is_some());
+    assert!(device.detail.contains("window capture 11:"));
+    let slot = capture::window_result(&mut arena, "race", 11).unwrap_err();
+    assert!(slot.syscall.is_none());
+    assert_eq!(slot.detail, "arena slot already used");
+    drop(arena); std::fs::remove_file(path).unwrap();
+}
