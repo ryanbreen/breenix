@@ -148,6 +148,34 @@ class UiStep(unittest.TestCase):
         (self.path / 'serial.txt').write_text(original.replace(at, '') + record)
         self.assertEqual(self.record(), 1)
 
+    def test_step_four_requires_each_forced_overlap_witness(self):
+        selected = json.loads((ROOT / 'docs/gui/gt710-step-22-4.json').read_text())['cases']
+        text = serial()
+        for name in selected:
+            text = text.replace(f'CASE {name} FAIL ms=1 msg=pending', f'CASE {name} PASS ms=1')
+        text = text.replace(f'DONE passed={len(SELECTED)} failed={len(NAMES)-len(SELECTED)}',
+                            f'DONE passed={len(selected)} failed={len(NAMES)-len(selected)}')
+        frame = ('SUITE ui-testing FRAME frames/frame-record pattern def=0123abcd ref=formula '
+                 'source=surface commit=0 epoch=0 w=4 h=4 sha256=' + 'a' * 64 + ' result=match\n')
+        text = text.replace('SUITE ui-testing CASE frames/frame-record ', frame + 'SUITE ui-testing CASE frames/frame-record ')
+        witnesses = []
+        for name, rounds in [('capture-while-drawing', 1), ('capture-two-readers', 1),
+                             ('capture-resize-race', 1), ('capture-destroy-race', 23), ('capture-threads', 3)]:
+            case = 'frames/' + name
+            values = ''.join(f'SUITE ui-testing VALUE {case} {label}=1count\n'
+                             for _ in range(rounds) for label in ['capture-stall-fired', 'capture-release-fired'])
+            text = text.replace(f'SUITE ui-testing CASE {case} ', values + f'SUITE ui-testing CASE {case} ')
+            witnesses.append(values)
+        def score(body):
+            (self.path / 'serial.txt').write_text(body)
+            return API['record_ui_capture'](self.path, SHA, 4)
+        self.assertEqual(score(text), 0)
+        for values in witnesses:
+            line = values.splitlines(keepends=True)[0]
+            for bad in [text.replace(line, '', 1), text.replace(line, line.replace('=1count', '=0count'), 1),
+                        text.replace(line, line + line, 1), text.replace(line, '', 1) + line]:
+                self.assertEqual(score(bad), 1)
+
     def test_cli(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/metal/gt710-suite'),
                                  '--ui-step', '1', '--capture-directory', str(self.path), '--sha', SHA],

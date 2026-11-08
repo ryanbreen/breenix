@@ -22,6 +22,7 @@ struct Gpu{fail_present:bool,fail_pixels:bool}impl Gpu{
  fn check(&mut self,_id:u64,_layers:&[()],_p:Option<()>)->Result<u64,CheckError>{if self.fail_pixels{Err(CheckError::Failed("wrong pixel".into()))}else{Ok(4096000)}}
 }
 mod libuitest{pub mod startup{pub fn mark(_name:&str){}}}
+fn cursor_pointer(p:())->Option<()>{Some(p)}
 fn measure_check<T>(f:impl FnOnce()->T)->T{f()}
 fn attempt(gpu:&mut Gpu)->Outcome{let first_pointer=();let first=(||{@BODY@})();first.classified()}
 #[test]fn failure_classes(){assert_eq!(attempt(&mut Gpu{fail_present:true,fail_pixels:false}),Outcome::Presentation);assert_eq!(attempt(&mut Gpu{fail_present:false,fail_pixels:true}),Outcome::Mismatch);assert_eq!(attempt(&mut Gpu{fail_present:false,fail_pixels:false}),Outcome::Pixels(4096000));}

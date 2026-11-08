@@ -166,3 +166,16 @@ fn typed_capture_error_distinguishes_device_from_arena_refusal() {
     assert_eq!(capture::screen(&mut arena,"cursor-screen",window::ObservationKind::Composed).unwrap_err(),"arena slot already used");
     drop(arena);std::fs::remove_file(path).unwrap();
 }
+
+#[test]
+fn overlap_witness_records_preserve_control_deltas() {
+    let mut records = Vec::new();
+    capture_race::record_witness(40, 41, 70, 71, |label, value| records.push((label, value))).unwrap();
+    assert_eq!(records, vec![("capture-stall-fired", 1), ("capture-release-fired", 1)]);
+    for (before, fired, release_before, released) in [(40,40,70,71),(40,39,70,71),(40,41,70,70),(40,41,70,69)] {
+        let mut records = Vec::new();
+        assert!(capture_race::record_witness(before, fired, release_before, released,
+            |label, value| records.push((label, value))).is_err());
+        assert!(records.is_empty());
+    }
+}
