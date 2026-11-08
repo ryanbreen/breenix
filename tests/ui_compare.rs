@@ -9,3 +9,5 @@ mod cases;
 #[test] fn cap() { cases::max_differing().unwrap(); }
 #[test] fn regions() { cases::regions_same_frame().unwrap(); }
 #[test] fn sizes() { cases::size_mismatch().unwrap(); }
+
+#[test] fn timing_case_is_linked() { let _ = cases::compare_cost as fn() -> Result<(), String>; }
