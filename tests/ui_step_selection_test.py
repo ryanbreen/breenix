@@ -27,6 +27,8 @@ class UiSelectionsTest(unittest.TestCase):
                 previous = set(selected)
         self.assertEqual(len(cases), 108)
         self.assertEqual(previous, set(cases))
+        self.assertEqual(selected, cases)
+        self.assertFalse((ROOT / "docs/gui/gt710-step-22-8.json").exists())
 
 
 if __name__ == '__main__':

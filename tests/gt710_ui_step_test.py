@@ -78,7 +78,7 @@ class UiStep(unittest.TestCase):
             target = self.definition / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
-        for n in range(1, 9):
+        for n in range(1, 8):
             target = self.definition / f'docs/gui/gt710-step-22-{n}.json'
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / f'docs/gui/gt710-step-22-{n}.json', target)
@@ -191,12 +191,18 @@ class UiStep(unittest.TestCase):
         path.write_text(original + 'DISPATCH_STRAND_CENSUS save_no_t')
         with patch.dict(API['step_capture'].__globals__, {'completed_suite_capture': lambda *args: {'boot': self.boot, 'serial': path.read_text()}}):
             with self.assertRaisesRegex(ValueError, 'incomplete or fatal WM capture'):
-                API['step_capture'](self.path, SHA, 1, 'ui-testing', 'gt710-step-22-', 8)
+                API['step_capture'](self.path, SHA, 1, 'ui-testing', 'gt710-step-22-', 7)
         self.boot['suites'] = ['ui-testing']
         self.boot['suite'] = 'ui-testing'
         (self.path / 'run.json').write_text(json.dumps(self.boot))
         path.write_text(original + 'SUITE ui-testing CASE')
         self.assertEqual(self.record(), 1)
+
+    def test_step_eight_is_refused(self):
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/metal/gt710-suite'),
+                                 '--ui-step', '8'], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('invalid choice', result.stderr)
 
     def test_cli(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/metal/gt710-suite'),
