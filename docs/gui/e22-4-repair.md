@@ -157,7 +157,7 @@ change those messages.
 ## Continuation after the coordinator released the hold
 
 Coordinator ledger line 335 (2026-11-08 08:37 ET) accepts the missing historical
-phase-line explanation and authorizes one UI proof at the existing runtime,
+phase-line explanation and authorizes one UI acceptance attempt at the existing runtime,
 then window-manager, production BreenGL and the default desktop. It explicitly
 preserves console `130827` and separates the broad core evidence gaps from
 22.4. Those gaps are tracked in #2802. The hold described above is historical.
@@ -210,6 +210,9 @@ compiler warnings and errors. Logs are `/tmp/e22-proof/build-x86.log` and
 stands. ARM runtime and its canonical-scene pin remain #2770.
 
 Claim-lint: the corrected #2802 issue body, the lifecycle check and its commit
-message, changed prose and this repair's commit message exit 0. The first #2802
+message, changed prose and the follow-up report message exit 0. The first #2802
 body invocation flagged wording in an instruction; the posted body was corrected.
+The initial report lint finding was corrected. The pushed repair message in
+`5a7ff2a6` retains a wording-only lint finding about compiler warning counts;
+the logs above give the numeric counts. History was not rewritten.
 `git diff --check` exits 0 after removing a trailing blank in the check commit.
