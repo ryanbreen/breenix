@@ -232,7 +232,7 @@ pub fn exposed_region(content: [i64; 4], screen: [i64; 4], covers: &[[i64; 4]]) 
 #[path = "pointer_live.rs"]
 mod live;
 #[cfg(target_os = "breenix")]
-pub use live::{wait_pointer_idle, LivePointer};
+pub use live::{delivered, dispositions, wait_pointer_idle, LivePointer};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyStroke {
@@ -377,6 +377,7 @@ impl<B: KeyboardBackend> Keyboard<B> {
     pub fn backend_mut(&mut self) -> &mut B {
         &mut self.backend
     }
+    pub fn into_backend(self) -> B { self.backend }
     /// Release attempted presses in reverse order, including after delivery failure.
     pub fn chord(
         &mut self,
@@ -451,4 +452,46 @@ impl<B: KeyboardBackend> Keyboard<B> {
 pub fn client_processed(processed: u64, source: u64) -> bool {
     let wanted = libbreenix::input::abi::source_order(source);
     wanted.is_some() && libbreenix::input::abi::source_order(processed) >= wanted
+}
+
+/// A read or event dequeue alone cannot satisfy delivery: require a commit too.
+pub fn delivery_ready(commit: u64, processed: u64, source: u64) -> bool {
+    commit != 0 && client_processed(processed, source)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LedgerEntry<'a> {
+    pub serial: u64,
+    pub disposition: &'a str,
+    pub window: u64,
+    pub reason: &'a str,
+}
+fn parse_ledger(ledger: &str) -> Result<std::collections::BTreeMap<u64, LedgerEntry<'_>>, String> {
+    let mut rows = std::collections::BTreeMap::new();
+    for line in ledger.lines() {
+        let mut fields = line.split_whitespace();
+        let invalid = || format!("invalid input ledger row {line:?}");
+        let serial = fields.next().and_then(|s| s.parse::<u64>().ok())
+            .filter(|&s| s != 0).ok_or_else(invalid)?;
+        let disposition = fields.next().ok_or_else(invalid)?;
+        if !matches!(disposition, "delivered" | "wm-handled" | "rejected" | "client-rejected" | "lost") {
+            return Err(invalid());
+        }
+        let window = fields.next().and_then(|s|s.parse().ok()).ok_or_else(invalid)?;
+        let reason = fields.next().ok_or_else(invalid)?;
+        if fields.next().is_some() || rows.insert(serial, LedgerEntry {serial,disposition,window,reason}).is_some() {
+            return Err(invalid());
+        }
+    }
+    Ok(rows)
+}
+pub fn ledger_entry(ledger: &str, serial: u64) -> Result<Option<LedgerEntry<'_>>, String> {
+    Ok(parse_ledger(ledger)?.get(&serial).copied())
+}
+
+/// Return the first requested source serial absent from a terminal ledger snapshot.
+/// Requested serials come from the script, since unrelated devices can interleave.
+pub fn first_missing_disposition(ledger: &str, serials: &[u64]) -> Result<Option<u64>, String> {
+    let finished = parse_ledger(ledger)?;
+    Ok(serials.iter().copied().find(|serial| !finished.contains_key(serial)))
 }

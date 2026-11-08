@@ -994,6 +994,10 @@ impl IpcFile for InputFile {
         if self.reader.is_some() {
             return Err(EBADF as u64);
         }
+        let caller = crate::window::Caller::current().map_err(|e| e as u64)?;
+        if !caller.is_root() {
+            return Err(EPERM as u64);
+        }
         let mut slot = self.device.lock();
         match *slot {
             None => *slot = Some(self.create(bytes)?),

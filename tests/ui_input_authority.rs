@@ -64,7 +64,7 @@ fn main() {{
     );
     let send = function(source, "fn sendmsg(");
     assert!(
-        send.find("authorize_sender(state.root_only, msg.cred.uid)?")
+        send.find("authorize_sender(peer.common.root_only(), msg.cred.uid)?")
             .unwrap()
             < send.find("state.rx.push").unwrap()
     );

@@ -33,7 +33,9 @@ fn main() {
         Err(error) => { eprintln!("{error}"); std::process::exit(2); }
     };
     if options.widgets {
-        if let Err(error) = uitest_widget_app::run(options.title, options.pointer_probe) {
+        let result = if options.two_windows { uitest_widget_app::run_pair(options.title) }
+            else { uitest_widget_app::run(options.title, options.pointer_probe) };
+        if let Err(error) = result {
             eprintln!("widget mode: {error}"); std::process::exit(1);
         }
         return;

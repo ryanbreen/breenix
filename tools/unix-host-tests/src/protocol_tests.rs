@@ -41,6 +41,9 @@ fn root_only_endpoint_checks_each_send_after_uid_drop() {
         assert_eq!(send(&a,b"ordinary"),Ok(8));
         assert_eq!(receive(&b,64,0).unwrap().data,b"ordinary");
         set_effective_uid(0);
+        for size in 0..4 {
+            assert_eq!(b.ops().setsockopt(&b,1,OPTION,&[1,0,0,0][..size]),Err(22));
+        }
         assert_eq!(b.ops().setsockopt(&b,1,OPTION,&1i32.to_ne_bytes()),Ok(()));
         assert_eq!(send(&a,b"root"),Ok(4));
         assert_eq!(receive(&b,64,0).unwrap().data,b"root");

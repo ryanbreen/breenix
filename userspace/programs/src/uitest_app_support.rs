@@ -11,15 +11,18 @@ pub struct Options<'a> {
     pub capture_control: bool,
     pub widgets: bool,
     pub pointer_probe: bool,
+    pub two_windows: bool,
 }
 
 pub fn parse<'a>(args: &[&'a str]) -> Result<Options<'a>, &'static str> {
     let title = *args.first().ok_or("missing window title")?;
     if title.is_empty() || title.starts_with("--") { return Err("invalid window title"); }
-    let mut options = Options { title, crash: None, hang: false, stderr_flood: 0, session_probe: false, config_probe: false, canonical: false, capture_control: false, widgets: false, pointer_probe: false };
+    let mut options = Options { title, crash: None, hang: false, stderr_flood: 0, session_probe: false, config_probe: false, canonical: false, capture_control: false, widgets: false, pointer_probe: false, two_windows: false };
     let mut flood_seen = false;
     for arg in &args[1..] {
-        if *arg == "--pointer-probe" && !options.widgets {
+        if *arg == "--two-windows" && !options.two_windows {
+            options.two_windows = true;
+        } else if *arg == "--pointer-probe" && !options.widgets {
             options.widgets=true;options.pointer_probe=true;
         } else if *arg == "--widgets" && !options.widgets {
             options.widgets = true;
@@ -49,6 +52,9 @@ pub fn parse<'a>(args: &[&'a str]) -> Result<Options<'a>, &'static str> {
     }
     if options.widgets && (options.canonical || options.hang || options.crash.is_some() || options.session_probe || options.config_probe || flood_seen) {
         return Err("widgets cannot be combined with other modes");
+    }
+    if options.two_windows && (!options.widgets || options.pointer_probe) {
+        return Err("two windows requires plain widget mode");
     }
     Ok(options)
 }

@@ -17,6 +17,14 @@ impl Channel {
         io::fcntl_setfl(fd, io::status_flags::O_NONBLOCK).map_err(|e| e.to_string())?;
         Ok(Self { fd, decoder: Decoder::default(), pending: Vec::new(), sent: 0 })
     }
+    /// Gate bytes at enqueue, before a partial frame can enter the decoder.
+    pub fn require_root_sender(&self) -> Result<(), String> {
+        use libbreenix::{socket::SO_BREENIX_ROOT_ONLY, syscall::{nr, raw}};
+        let on = 1i32;
+        let result = unsafe { raw::syscall5(nr::SETSOCKOPT, self.fd.raw(), 1,
+            SO_BREENIX_ROOT_ONLY as u64, &on as *const i32 as u64, 4) };
+        Error::from_syscall(result as i64).map(|_| ()).map_err(|e|e.to_string())
+    }
     pub fn queue(&mut self, message: &Message) -> Result<(), String> {
         let bytes = encode(message)?;
         if self.pending.len() - self.sent + bytes.len() > 256 * 1024 { return Err("control backpressure exceeds limit".into()); }

@@ -232,6 +232,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
     let mut devices = None;
     let mut ownership = Ownership::default();
     let result = (|| -> Result<(), String> {
+        channel.require_root_sender()?;
         signal::sigaction(signal::SIGPIPE, Some(&signal::Sigaction::ignore()), None).map_err(|e| e.to_string())?;
         io::fcntl_setfl(collector, io::status_flags::O_NONBLOCK).map_err(|e| e.to_string())?;
         let own = process::getpid().map_err(|e| e.to_string())?.raw();

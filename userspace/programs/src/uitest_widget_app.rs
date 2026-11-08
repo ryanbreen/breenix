@@ -3,7 +3,25 @@ use crate::{uitest_widget_layout as layout, uitest_widgets::Widgets};
 use breengel::{Event, Handled, Window};
 use libbui::InputState;
 
+/// Independent event loops in one process, sharing neither widget state nor focus.
+pub fn run_pair(title: &str) -> Result<(), String> {
+    // Create the first window before the thread's second one so cascade order is stable.
+    let (ready, created) = std::sync::mpsc::channel();
+    std::thread::scope(|scope| {
+        let other = scope.spawn(move || {
+            created.recv().map_err(|e|e.to_string())?;
+            run(&format!("{title} second"), false)
+        });
+        let first = run_ready(title, false, Some(ready));
+        let second = other.join().map_err(|_| "second widget thread panicked")?;
+        first.and(second)
+    })
+}
+
 pub fn run(title: &str, pointer_probe: bool) -> Result<(), String> {
+    run_ready(title, pointer_probe, None)
+}
+fn run_ready(title: &str, pointer_probe: bool, ready: Option<std::sync::mpsc::Sender<()>>) -> Result<(), String> {
     let scale = libbreenix::gpu::current_mode()
         .map_err(|e| e.to_string())?
         .scale;
@@ -18,6 +36,7 @@ pub fn run(title: &str, pointer_probe: bool) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     let mut scene = if pointer_probe {Widgets::pointer_probe()} else {Widgets::new()};
     paint(&mut window, &scene)?;
+    if let Some(ready) = ready { ready.send(()).map_err(|e|e.to_string())?; }
     libuitest::startup::mark("app-commit");
     let mut buttons = 0;
     let mut closed = false;

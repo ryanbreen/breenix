@@ -28,23 +28,49 @@ fn pause() -> Result<(), String> {
 fn outcome(serial: u64) -> Result<Option<(String, u64, String)>, String> {
     let ledger =
         std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
-    for line in ledger.lines() {
-        let words: Vec<_> = line.split_whitespace().collect();
-        if words.len() != 4 {
-            return Err(format!("invalid input ledger row {line:?}"));
+    Ok(super::ledger_entry(&ledger, serial)?.map(|row|
+        (row.disposition.into(), row.window, row.reason.into())))
+}
+
+/// Wait for the addressed client's commit, including commit_no_change.
+pub fn delivered(serial: u64) -> Result<Delivery, String> {
+    wait_delivery(serial, None, false)
+}
+
+fn wait_delivery(serial: u64, wanted: Option<u64>, allow_wm: bool) -> Result<Delivery, String> {
+    let end = Instant::now() + Duration::from_secs(2);
+    let mut target = wanted;
+    loop {
+        if let Some((name, window, reason)) = outcome(serial)? {
+            if name == "delivered" && window != 0 && wanted.is_none_or(|id| id == window) {
+                target = Some(window);
+                let (commit, meta) = window::read_meta(window)
+                    .map_err(|e| format!("input serial={serial} window={window} metadata: {e}"))?;
+                if commit != 0 && super::client_processed(meta.processed_serial, serial) {
+                    return Ok(Delivery {serial, window});
+                }
+            } else if allow_wm && wanted.is_none() && name == "wm-handled" {
+                return Ok(Delivery {serial, window: 0});
+            } else {
+                return Err(format!("input serial={serial} disposition={name} window={window} expected={wanted:?} reason={reason}"));
+            }
         }
-        let source = words[0]
-            .parse::<u64>()
-            .map_err(|_| "invalid ledger serial")?;
-        if source == serial {
-            return Ok(Some((
-                words[1].into(),
-                words[2].parse().map_err(|_| "invalid ledger window")?,
-                words[3].into(),
-            )));
+        if Instant::now() >= end {
+            return Err(format!("input unprocessed serial={serial} window={target:?}"));
         }
+        pause()?;
     }
-    Ok(None)
+}
+
+/// Check the requested source set, including gaps hidden by later terminal rows.
+pub fn dispositions(serials: &[u64]) -> Result<(), String> {
+    let end = Instant::now() + Duration::from_secs(2);
+    loop {
+        let ledger = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
+        let Some(serial) = super::first_missing_disposition(&ledger, serials)? else { return Ok(()); };
+        if Instant::now() >= end { return Err(format!("missing-disposition serial={serial}")); }
+        pause()?;
+    }
 }
 /// Wait for a known source serial's terminal disposition. Client delivery also
 /// needs its processed commit watermark, checked separately below.
@@ -89,6 +115,7 @@ pub struct LivePointer<'a> {
     desktop: Mapping,
     watched: BTreeMap<u64, Mapping>,
     last: Option<Target>,
+    serials: Vec<u64>,
 }
 impl<'a> LivePointer<'a> {
     pub fn new(session: &'a mut Session) -> Result<Self, String> {
@@ -101,10 +128,40 @@ impl<'a> LivePointer<'a> {
             desktop,
             watched: BTreeMap::new(),
             last: None,
+            serials: Vec::new(),
         })
     }
     pub fn session(&mut self) -> &mut Session {
         self.session
+    }
+    pub fn serials(&self) -> &[u64] { &self.serials }
+    /// Snapshot the compositor's committed desktop projection at one scene.
+    pub fn desktop_tree(&self) -> Result<Tree, String> {
+        let end = Instant::now() + Duration::from_secs(2);
+        loop {
+            let before = status()?;
+            let tree = unsafe { breengel::tree_page::Page::from_mapping(
+                self.desktop.0.addr as *mut u8, self.desktop.0.len as usize)? }.snapshot()?;
+            let after = status()?;
+            if before.claim_epoch == after.claim_epoch && before.scene_version == after.scene_version {
+                if let Some(tree) = tree {
+                    if tree.root.value["scene_version"].as_u64() == Some(after.scene_version) { return Ok(tree); }
+                }
+            }
+            if Instant::now() >= end { return Err("input waiting=desktop-tree-and-scene".into()); }
+            pause()?;
+        }
+    }
+    /// Queue a physical key and return its kernel-authored source event.
+    /// The caller chooses when to wait for delivered() or a WM disposition.
+    pub fn send_key(&mut self, code: u16, pressed: bool) -> Result<Event, String> {
+        if pressed { self.session.raw_press(code)?; } else { self.session.raw_release(code)?; }
+        self.source_event(self.session.input_devices()[0], kind::KEY, code, i32::from(pressed))
+    }
+    pub fn wm_key(&mut self, code: u16, pressed: bool) -> Result<u64, String> {
+        let event = self.send_key(code, pressed)?;
+        wait_pointer_idle(event.serial)?;
+        Ok(event.serial)
     }
     pub fn info(&self, id: u64) -> Result<abi::WinInfo, String> {
         let mut infos = vec![abi::WinInfo::default(); 64];
@@ -157,22 +214,24 @@ impl<'a> LivePointer<'a> {
         self.capture(id).map(|(tree, _)| tree)
     }
     fn source(&mut self, device: u32, kind: u16, code: u16, value: i32) -> Result<u64, String> {
+        self.source_event(device,kind,code,value).map(|e|e.serial)
+    }
+    fn source_event(&mut self, device: u32, kind: u16, code: u16, value: i32) -> Result<Event, String> {
         let end = Instant::now() + Duration::from_secs(2);
         loop {
             if let Some(index) = self.pending.iter().position(|e| {
                 e.device == device && e.kind == kind && e.code == code && e.value == value
             }) {
-                return Ok(self.pending.remove(index).serial);
+                return Ok(self.pending.remove(index));
             }
             let mut bytes = [0; 32768];
             match self.reader.read(&mut bytes) {
                 Ok(records) => {
                     for record in records {
                         let e = record.map_err(|e| e.to_string())?.event;
-                        if self.session.input_devices().contains(&e.device)
-                            && e.kind != input::kind::SYN
-                        {
-                            self.pending.push(e);
+                        if self.session.input_devices().contains(&e.device) {
+                            self.serials.push(e.serial);
+                            if e.kind != input::kind::SYN { self.pending.push(e); }
                         }
                     }
                 }
@@ -188,33 +247,8 @@ impl<'a> LivePointer<'a> {
         }
     }
     fn processed(&self, serial: u64, wanted: Option<u64>) -> Result<Option<Delivery>, String> {
-        let end = Instant::now() + Duration::from_secs(2);
-        loop {
-            if let Some((name, window, reason)) = outcome(serial)? {
-                if name == "delivered" && wanted.is_none_or(|id| id == window) {
-                    if super::client_processed(
-                        window::read_meta(window)
-                            .map_err(|e| e.to_string())?
-                            .1
-                            .processed_serial,
-                        serial,
-                    ) {
-                        return Ok(Some(Delivery { serial, window }));
-                    }
-                } else if wanted.is_none() && name == "wm-handled" {
-                    wait_pointer_idle(serial)?;
-                    return Ok(None);
-                } else {
-                    return Err(format!("input serial={serial} disposition={name} window={window} expected={wanted:?} reason={reason}"));
-                }
-            }
-            if Instant::now() >= end {
-                return Err(format!(
-                    "input unprocessed serial={serial} window={wanted:?}"
-                ));
-            }
-            pause()?;
-        }
+        let done = wait_delivery(serial, wanted, true)?;
+        Ok((done.window != 0).then_some(done))
     }
     fn move_batch(
         &mut self,

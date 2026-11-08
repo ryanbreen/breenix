@@ -88,6 +88,11 @@ pub mod object {
         pub fn shut_wr(&self) -> bool {
             self.shut.load(Ordering::Acquire) & 2 != 0
         }
+        pub fn root_only(&self) -> bool { self.shut.load(Ordering::Acquire) & 4 != 0 }
+        pub fn set_root_only(&self, on: bool) {
+            if on { self.shut.fetch_or(4, Ordering::AcqRel); }
+            else { self.shut.fetch_and(!4, Ordering::AcqRel); }
+        }
         pub fn set_shut(&self, how: u8) {
             self.shut.fetch_or(
                 match how {

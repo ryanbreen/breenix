@@ -28,6 +28,13 @@ const MAX_QUEUE_BYTES: usize = super::unix_msg::MAX_DATA;
 static CONNECT_LOCK: IrqSafeMutex<()> = IrqSafeMutex::new(());
 static NEXT_AUTOBIND: AtomicU32 = AtomicU32::new(0);
 
+/// Breenix SOL_SOCKET boolean: refuse non-root writers to this endpoint.
+/// Credentials come from the current send, including an inherited descriptor.
+const SO_BREENIX_ROOT_ONLY: i32 = 0x4252_0001;
+fn authorize_sender(root_only: bool, sender_euid: u32) -> Result<(), i32> {
+    if root_only && sender_euid != 0 { Err(EPERM) } else { Ok(()) }
+}
+
 struct Pending {
     socket: Arc<Socket>,
     _link: PendingLink,
@@ -625,6 +632,7 @@ impl ProtoOps for UnixSock {
         if peer.kind != self.kind {
             return Err(EPROTOTYPE);
         }
+        authorize_sender(peer.common.root_only(), msg.cred.uid)?;
         if self.kind == STREAM && msg.data.is_empty() {
             return if peer.common.shut_rd() {
                 Err(EPIPE)
@@ -675,6 +683,9 @@ impl ProtoOps for UnixSock {
                     } else {
                         EPIPE
                     }));
+                }
+                if let Err(error) = authorize_sender(peer.common.root_only(), msg.cred.uid) {
+                    return Some(Err(error));
                 }
                 if self.kind == DGRAM {
                     if let Some(connected) = &state.peer {
@@ -864,7 +875,11 @@ impl ProtoOps for UnixSock {
     fn is_listening(&self, _sk: &Socket) -> bool {
         self.inner.lock().listening
     }
-    fn getsockopt(&self, _sk: &Socket, level: i32, name: i32, out: &mut OptBuf) -> Result<(), i32> {
+    fn getsockopt(&self, sk: &Socket, level: i32, name: i32, out: &mut OptBuf) -> Result<(), i32> {
+        if level == 1 && name == SO_BREENIX_ROOT_ONLY {
+            out.put_int(i32::from(sk.common.root_only()));
+            return Ok(());
+        }
         if level != 1 || name != 17 {
             return Err(ENOPROTOOPT);
         }
@@ -873,6 +888,16 @@ impl ProtoOps for UnixSock {
         out.bytes[4..8].copy_from_slice(&s.peer_cred.uid.to_ne_bytes());
         out.bytes[8..12].copy_from_slice(&s.peer_cred.gid.to_ne_bytes());
         out.len = 12;
+        Ok(())
+    }
+    fn setsockopt(&self, sk: &Socket, level: i32, name: i32, val: &[u8]) -> Result<(), i32> {
+        if level != 1 || name != SO_BREENIX_ROOT_ONLY { return Err(ENOPROTOOPT); }
+        if val.len() < 4 { return Err(EINVAL); }
+        let bytes = [val[0], val[1], val[2], val[3]];
+        if super::object::caller_ucred().uid != 0 { return Err(EPERM); }
+        let guard = self.inner.lock();
+        sk.common.set_root_only(i32::from_ne_bytes(bytes) != 0);
+        drop(guard);
         Ok(())
     }
     fn release(&self, _sk: &Socket) {
