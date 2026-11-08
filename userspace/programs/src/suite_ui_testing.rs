@@ -21,6 +21,8 @@ mod formula_pattern;
 mod reference_cases;
 #[path = "uitest_suite/frames.rs"]
 mod frames;
+#[path = "uitest_suite/capture_cases.rs"]
+mod capture_cases;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
 
 fn pending(layer: &str, step: u8) -> CaseResult {
@@ -62,7 +64,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A clean scenario run in the inner executor returns Pass. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("inner-pass", "A clean scenario run in the inner executor returns Pass", inner::inner_pass),
         // A scenario with a planted pixel fault returns pixel-mismatch with its check and first pixel. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("inner-expected-failure", "A scenario with a planted pixel fault returns pixel-mismatch with its check and first pixel", || pending("runner", 4)),
+        case("inner-expected-failure", "A scenario with a planted pixel fault returns pixel-mismatch with its check and first pixel", capture_cases::inner_expected_failure),
         // An outer case expecting pixel-mismatch fails when the scenario fails another way. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("inner-wrong-class", "An outer case expecting pixel-mismatch fails when the scenario fails another way", inner::inner_wrong_class),
         // A scenario whose app crashes is not accepted as detecting a pixel fault. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -184,7 +186,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     ]),
     category("frames", "Frame capture & comparison", &[
         // A window capture equals the committed buffer of that commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("window-capture", "A window capture equals the committed buffer of that commit", || pending("frames", 4)),
+        case("window-capture", "A window capture equals the committed buffer of that commit", capture_cases::window_capture).session(libuitest::supervisor::serve),
         // Capturing commit N while the app draws N+1 returns N whole. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("capture-while-drawing", "Capturing commit N while the app draws N+1 returns N whole", || pending("frames", 4)),
         // Two readers capturing the same window each get whole commits. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -196,9 +198,9 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Commits from two producer threads are each captured whole. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("capture-threads", "Commits from two producer threads are each captured whole", || pending("frames", 4)),
         // A screen capture shows the window at its position, with its observation record. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("screen-capture", "A screen capture shows the window at its position, with its observation record", || pending("frames", 4)),
+        case("screen-capture", "A screen capture shows the window at its position, with its observation record", capture_cases::screen_capture).session(libuitest::supervisor::serve),
         // A screen capture lists the commit of each window it contains. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("capture-commits", "A screen capture lists the commit of each window it contains", || pending("frames", 4)),
+        case("capture-commits", "A screen capture lists the commit of each window it contains", capture_cases::capture_commits).session(libuitest::supervisor::serve),
         // An identical frame matches with zero differing pixels. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("exact-match", "An identical frame matches with zero differing pixels", || comparison_cases::exact_match().map_err(Into::into)),
         // A frame with one changed pixel fails as pixel-mismatch, naming that pixel and both colours. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
