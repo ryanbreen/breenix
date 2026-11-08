@@ -130,11 +130,8 @@ class UiStep(unittest.TestCase):
         self.assertEqual(self.record(), 1)
 
     def test_collection_uses_shared_strict_result_contract(self):
-        # Declare exactly the producer's collection obligation, even on a failed case.
-        manifest = json.loads((self.definition / 'docs/suites/ui-testing.json').read_text())
-        manifest['categories'][0]['cases'][0]['collects'] = True
-        (self.definition / 'docs/suites/ui-testing.json').write_text(json.dumps(manifest))
-        case = NAMES[0]
+        # The startup producer declares local failure collection in the manifest.
+        case = 'sessions/start-desktop'
         record = f'SUITE ui-testing COLLECT {case} trigger=fail screen=at-collection windows=1 remnants=0 artifacts=complete\n'
         original = serial()
         at = f'SUITE ui-testing CASE {case} '

@@ -4073,6 +4073,9 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
         'RECLAIMED': fr'SUITE {suite} MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)',
         'LIVE': fr'SUITE {suite} (?:VALUE|WAIT|PULSES|HOSTKEY|HOSTPOINTER|SCREEN) ([a-z0-9/-]+) \S.*',
     }
+    verdict_api = runpy.run_path(str(root / 'scripts/suite-verdict.py'))
+    shapes.update({kind: fr'SUITE {suite} {kind} ([a-z0-9/-]+) .+'
+                   for kind in verdict_api['RESULT']})
     parsed = []
     for line in text.splitlines():
         if not line.startswith(f'SUITE {suite} '):
@@ -4101,7 +4104,10 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
                          f'full suite: {tally[0]}/{case_count} passed, {tally[1]} failed')
     if not 0 < int(records[case_count + 2][1][1]) <= 1800000:
         raise ValueError('WM elapsed time exceeds 1800 seconds')
-    memory = runpy.run_path(str(root / 'scripts/suite-verdict.py'))['memory_problem'](parsed)
+    problem = verdict_api['result_problem'](manifest, parsed, names)
+    if problem:
+        raise ValueError(problem)
+    memory = verdict_api['memory_problem'](parsed)
     if not memory[0]:
         raise ValueError(memory[1])
     start_at = text.index(records[0][2])

@@ -2583,8 +2583,14 @@ impl Screen {
     fn live_on(&self) -> bool { self.live && !self.session_active }
 
     fn release_for_session(&mut self) -> Result<(), String> {
-        // The supervisor nests above this retained owner. Giving it back here
-        // needlessly restores the console between two graphical owners.
+        // Retain the root owner so startup cannot expose the console. A nested
+        // runner already has a graphical owner below it: release that redundant
+        // entry to leave room for its supervisor and compositor on the shared stack.
+        let (result, modes) = crate::gpu::modes();
+        if result != 0 { return Err(std::format!("session display depth: errno {}", -result)); }
+        if modes.owner_depth > 1 {
+            graphics::give_back_display().map_err(|e| std::format!("release nested runner display: {e}"))?;
+        }
         self.session_active = true;
         Ok(())
     }

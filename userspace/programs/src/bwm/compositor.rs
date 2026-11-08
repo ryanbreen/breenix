@@ -27,8 +27,9 @@ use libbreenix::window::abi::cursor_shape;
 /// How long bwm waits for the GPU core to admit its device before giving up.
 const ADMISSION_WAIT_MS: u32 = 5000;
 
-/// Rows per readback call when a frame is checked.
-const CHECK_BAND_ROWS: u32 = 32;
+/// Bound each of the two independent readback buffers, while amortizing transfer
+/// setup over larger rectangles than the former 32-row calls.
+const CHECK_BAND_BYTES: u32 = 4 * 1024 * 1024;
 
 /// How long one composite retries a snapshot that went stale or busy.
 const RETRY_MS: u64 = 2000;
@@ -500,8 +501,9 @@ impl Compositor {
             }
             clients.push((id, r, s.width, px));
         }
-        let mut band = prefaulted_bytes((w * CHECK_BAND_ROWS * 4) as usize);
-        let mut desk = prefaulted_bytes((w * CHECK_BAND_ROWS * 4) as usize);
+        let band_rows = (CHECK_BAND_BYTES / (w * 4)).max(1).min(y1 - y_top);
+        let mut band = prefaulted_bytes((w * band_rows * 4) as usize);
+        let mut desk = prefaulted_bytes((w * band_rows * 4) as usize);
         let mut record = Box::new([0u8; abi::record::SIZE]);
         // SAFETY: the record is one live allocation.
         unsafe { core::ptr::write_volatile(record.as_mut_ptr(), 0) };
@@ -509,7 +511,7 @@ impl Compositor {
         let mut compared = 0u64;
         let mut y0 = y_top;
         while y0 < y1 {
-            let rows = CHECK_BAND_ROWS.min(y1 - y0);
+            let rows = band_rows.min(y1 - y0);
             let len = (w * rows * 4) as usize;
             let (r, a) = gpu::readback_why(0, [x0, y0, w, rows], &mut band[..len], w * 4, &mut *record);
             if r != 0 {

@@ -8,6 +8,7 @@ pub const PHASES: &[&str] = &[
     "configure-begin", "fixtures-ready", "pins-ready", "arena-ready", "case-connected",
     "compositor-request", "compositor-forked", "compositor-exec", "config-ready",
     "context-begin", "context-ready", "targets-ready", "fonts-ready", "scene-ready",
+    "background-ready", "chrome-ready", "fills-ready", "pointer-presented", "checks-ready",
     "desktop-ready", "app-request", "app-forked", "app-exec", "app-commit", "first-composite",
 ];
 extern "C" {

@@ -174,6 +174,7 @@ fn main() {
     libuitest::startup::mark("fonts-ready");
     // Paint the decorative background once; each desktop repaint copies it.
     paint_background(&mut gpu.background);
+    libuitest::startup::mark("background-ready");
 
     let mut windows: Vec<Window> = Vec::new();
     let mut stack = Stack::new();
@@ -213,12 +214,18 @@ fn main() {
     // client window is discovered. It is read back from the scanout and compared with the
     // desktop target and the pointer's bitmap (`compositor`).
     compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
+    libuitest::startup::mark("chrome-ready");
     let fills = check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index);
+    libuitest::startup::mark("fills-ready");
     let first_pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
     let first = gpu
         .present_startup_desktop(Some(first_pointer))
         .map_err(|e| CheckError::Failed(e.to_string()))
-        .and_then(|()| measure_check(|| gpu.check(0, &[], Some(first_pointer))));
+        .and_then(|()| {
+            libuitest::startup::mark("pointer-presented");
+            measure_check(|| gpu.check(0, &[], Some(first_pointer)))
+        });
+    libuitest::startup::mark("checks-ready");
     let first_presented = first.is_ok();
     match first {
         Ok(pixels) => print!("[bwm] first frame read back: {} pixels exact\n", pixels),

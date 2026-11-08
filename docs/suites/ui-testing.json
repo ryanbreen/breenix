@@ -601,11 +601,13 @@
       "cases": [
         {
           "id": "start-desktop",
-          "title": "A desktop session with one app reaches its first composited commit within 300 ms"
+          "title": "A desktop session with one app reaches its first composited commit within 300 ms",
+          "collects": true
         },
         {
           "id": "start-kiosk",
-          "title": "A kiosk session with one app reaches its first composited commit within 300 ms"
+          "title": "A kiosk session with one app reaches its first composited commit within 300 ms",
+          "collects": true
         },
         {
           "id": "environment",
