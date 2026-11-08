@@ -216,3 +216,48 @@ The initial report lint finding was corrected. The pushed repair message in
 `5a7ff2a6` retains a wording-only lint finding about compiler warning counts;
 the logs above give the numeric counts. History was not rewritten.
 `git diff --check` exits 0 after removing a trailing blank in the check commit.
+
+## Repaired runtime: cases pass, capture completeness fails
+
+The single acceptance at runtime/tools head `2d890171` is
+`20261108T135457Z-metal`. Its production builder exits 0 under the warning gate.
+The full serial reports 78 passed, 128 later-step pending failures, 0 skipped,
+total 206. The cumulative selected cases are 78/78. Memory passes with 12
+retained pages, clocks are full and no GR refusal appears. The five stall and
+release totals are respectively 1, 1, 1, 23 and 3. Compare-cost passes at 30 ms.
+
+The success phase records are now retained. Desktop's first composite is
+264.492731 ms after connect; its startup VALUE is 265.881884 ms. Kiosk's startup
+VALUE is 140.878569 ms. These measurements meet the 270 ms headroom and 300 ms
+case bounds. They do not establish that each forecast phase met its budget:
+font/targets spans about 76.43 ms against the 65 ms forecast; connection/setup
+is about 52.24 ms against 80 ms. Initial client chrome is about 7.00 ms, down
+from the failed capture's 22.57 ms. The phase record, rather than an inferred
+historical success record, supplies those values.
+
+**Strict acceptance still fails.** The canonical step scorer was run once and
+returns `incomplete or fatal WM capture`. The serial ends in a truncated
+`DISPATCH_STRAND_CENSUS` diagnostic ending `save_no_t`, after the complete
+`SUITE_SEQUENCE READY ui-testing` line. There is no `SUITE_SEQUENCE DONE`.
+The retained text is 380,453 bytes, SHA-256
+`4c3b7ffbdcde509fe74de2bb94088fc95f16581ae4515f1536dd0c34940a69d4`.
+The driver records exit 1, closure and power-off. No fatal pattern is found.
+The capture has not been edited or scored after trimming its tail.
+
+The source explains the missing marker: `libs/libbreenix/src/suite.rs:1408`
+calls `sequence::finish()` only when a sequence is configured, while standalone
+staging in `scripts/metal/metal_root.py:278` requires a comma to configure one.
+Coordinator ruling 291 permits an unterminated diagnostic only after the final
+sequence DONE, and explicitly leaves a missing marker fatal. This is main's
+check, and it remains unchanged. #2803 and the ledger blocker retain the
+completion-contract issue. No sampling boot is run to obtain a newline by
+chance, and no host-only scorer repair is invented.
+
+The supervisor defects have deterministic red/green coverage and the selected
+runtime cases now pass, but **step 22.4 remains unproven under the scorer**.
+Window-manager, production BreenGL and default-desktop acceptance remain unrun
+at this runtime. Console `130827` stands under coordinator line 335. #2791
+remains open with the new timing measurements and the strict acceptance blocker.
+PR #2801 remains open and unmerged. Claim-lint on the final report, PR body and
+completion issue exits 0; `git diff --check` exits 0. No code or test is changed
+after the acceptance.
