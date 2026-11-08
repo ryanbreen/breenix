@@ -1,7 +1,7 @@
 //! BreenGL event adapter for the fixed libbui scene.
 use crate::{uitest_widget_layout as layout, uitest_widgets::Widgets};
 use breengel::{Event, Handled, Window};
-use libbui::{InputState, Key, KeyInput};
+use libbui::InputState;
 
 pub fn run(title: &str, pointer_probe: bool) -> Result<(), String> {
     let scale = libbreenix::gpu::current_mode()
@@ -76,19 +76,11 @@ pub fn run(title: &str, pointer_probe: bool) -> Result<(), String> {
                         text,
                         ..
                     } => {
-                        if let Some(key) = logical_key(*keycode, text) {
-                            scene.key(&KeyInput {
-                                key,
-                                shift: modifiers.shift,
-                                ctrl: modifiers.ctrl,
-                                alt: modifiers.alt,
-                                text,
-                            });
-                        }
+                        crate::uitest_keyboard::press(&mut scene, *keycode, modifiers.shift, modifiers.ctrl, modifiers.alt, text);
                         dirty = true;
                     }
                     Event::Text { text } => {
-                        scene.key(&KeyInput::text(text));
+                        crate::uitest_keyboard::text(&mut scene, text);
                         dirty = true;
                     }
                     Event::ResizeRequested { width, height } => {
@@ -120,27 +112,6 @@ pub fn run(title: &str, pointer_probe: bool) -> Result<(), String> {
         }
     }
     Ok(())
-}
-fn logical_key(code: u32, text: &str) -> Option<Key> {
-    use breengel::keys;
-    Some(match code {
-        keys::TAB => Key::Tab,
-        keys::ENTER => Key::Enter,
-        keys::ESC => Key::Escape,
-        keys::BACKSPACE => Key::Backspace,
-        keys::LEFT => Key::Left,
-        keys::RIGHT => Key::Right,
-        keys::UP => Key::Up,
-        keys::DOWN => Key::Down,
-        keys::HOME => Key::Home,
-        keys::END => Key::End,
-        keys::DELETE => Key::Delete,
-        keys::PAGE_UP => Key::PageUp,
-        keys::PAGE_DOWN => Key::PageDown,
-        57 => Key::Space,
-        _ if !text.is_empty() => Key::Char,
-        _ => return None,
-    })
 }
 fn paint(window: &mut Window, scene: &Widgets) -> Result<(), String> {
     window.acquire(500_000_000).map_err(|e| e.to_string())?;

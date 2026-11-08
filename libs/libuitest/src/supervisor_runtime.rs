@@ -388,7 +388,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                         if !evidence.holds(id) { channel.queue(&Message::Error(format!("window {id} is not a held session window")))?; }
                         else { channel.queue(&Message::WindowHeld(id))?; }
                     }
-                    Ok(Some(message @ (Message::Input(_) | Message::Motion {..}))) => {
+                    Ok(Some(message @ (Message::Input(_) | Message::Motion {..} | Message::Text(_)))) => {
                         if pending_input.is_some() { return Err("input request already pending".into()); }
                         if let Message::Input(event)=&message {event.validate()?;}
                         pending_input = Some((message, now()? + 2000));
@@ -412,6 +412,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     if stopped { pending_input = None; }
                     else if match event {
                             Message::Input(event)=>devices.as_mut().ok_or("session devices missing")?.inject(event)?,
+                            Message::Text(text)=>devices.as_mut().ok_or("session devices missing")?.text(&text)?,
                             Message::Motion {x,y}=>devices.as_mut().ok_or("session devices missing")?.motion(x,y)?,
                             _=>unreachable!(),
                         } {

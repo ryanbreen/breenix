@@ -59,18 +59,19 @@ pub mod window {
 pub mod input {
     use super::{STATE,error::Error,errno::Errno};
     pub mod key {pub const BUTTON_LEFT:u16=272;pub const BUTTON_RIGHT:u16=273;pub const BUTTON_MIDDLE:u16=274;}
-    pub mod kind {pub const KEY:u16=1;pub const REL:u16=2;}
+    pub mod kind {pub const KEY:u16=1;pub const REL:u16=2;pub const TEXT:u16=6;}
     pub mod axis {pub const X:u16=0;pub const Y:u16=1;pub const WHEEL:u16=8;pub const HWHEEL:u16=6;}
     pub mod disposition {pub const WM_HANDLED:u32=1;}
     #[derive(Clone,Debug)] pub struct Capability {pub kind:u16,pub code:u16,pub minimum:i32,pub maximum:i32}
     #[derive(Default)] pub struct Disposition {pub serial:u64,pub disposition:u32,pub window:u64}
     pub struct InputEvent {pub serial:u64}
     pub struct Record {pub event:InputEvent}
-    pub struct Batch<'a> {pub events:Vec<(u16,u16,i32)>, storage:&'a mut [u8]}
+    pub struct Batch<'a> {pub events:Vec<(u16,u16,i32)>, storage:&'a mut [u8],payload:usize}
     impl<'a> Batch<'a> {
-        pub fn new(storage:&'a mut [u8])->Self{Self{events:Vec::new(),storage}}
+        pub fn new(storage:&'a mut [u8])->Self{Self{events:Vec::new(),storage,payload:0}}
         pub fn event(&mut self,k:u16,c:u16,v:i32,_:u64)->Result<&mut Self,Error>{self.events.push((k,c,v));Ok(self)}
-        pub fn finish(&mut self,_:u64)->Result<&mut Self,Error>{assert_eq!(self.storage.len(),(self.events.len()+1)*32);Ok(self)}
+        pub fn text(&mut self,text:&str,_:u64)->Result<&mut Self,Error>{self.payload+=text.len();self.events.push((6,0,text.len() as i32));Ok(self)}
+        pub fn finish(&mut self,_:u64)->Result<&mut Self,Error>{assert_eq!(self.storage.len(),(self.events.len()+1)*32+self.payload);Ok(self)}
     }
     pub struct Injector(u32);
     impl Injector {
@@ -102,16 +103,17 @@ fn owner(owner:u32,composites:u64){let mut s=STATE.lock().unwrap();s.owner=owner
 #[test] fn production_backend() {
     use devices::{runtime::Devices,RawInput};
     let mut pair=Devices::create().unwrap();
+    assert!(!pair.text("λ🙂").unwrap());
     assert_eq!(pair.ids(),[1,2]);
     assert_eq!(pair.environment(),b"BREENIX_INPUT_DEVICES=1,2");
     {
         let s=STATE.lock().unwrap();assert_eq!(s.caps.len(),2);
-        assert_eq!(s.caps[0].iter().map(|c|(c.kind,c.code)).collect::<Vec<_>>(),(1..=255).map(|c|(1,c)).collect::<Vec<_>>());
+        assert_eq!(s.caps[0].iter().map(|c|(c.kind,c.code)).collect::<Vec<_>>(),(1..=255).map(|c|(1,c)).chain([(6,0)]).collect::<Vec<_>>());
         assert_eq!(s.caps[1].iter().map(|c|(c.kind,c.code)).collect::<Vec<_>>(),[(1,272),(1,273),(1,274),(2,0),(2,1),(2,8),(2,6)]);
     }
     let key=RawInput{kind:1,code:42,value:1};
     owner(7,0);pair.observe(Some(7),false).unwrap();assert!(!pair.inject(key).unwrap());assert!(!pair.motion(7,-9).unwrap());
-    owner(7,1);pair.observe(Some(7),false).unwrap();assert!(pair.inject(key).unwrap());assert!(pair.motion(7,-9).unwrap());
+    owner(7,1);pair.observe(Some(7),false).unwrap();assert!(pair.inject(key).unwrap());assert!(pair.motion(7,-9).unwrap());assert!(pair.text("λ🙂").unwrap());
     owner(0,0);assert!(!pair.inject(key).unwrap());
     owner(8,0);pair.observe(Some(7),true).unwrap();assert!(!pair.inject(key).unwrap());
     STATE.lock().unwrap().fail_grab=true;assert!(pair.recover(8).is_err());assert!(!pair.inject(key).unwrap());
@@ -120,7 +122,7 @@ fn owner(owner:u32,composites:u64){let mut s=STATE.lock().unwrap();s.owner=owner
     assert!(pair.inject(RawInput{kind:2,code:8,value:-2}).unwrap());
     pair.destroy().unwrap();
     let s=STATE.lock().unwrap();
-    assert_eq!(s.effects, ["write 1 1 42 1","write 2 2 0 7","write 2 2 1 -9","grab [1, 2]","ungrab","grab [1, 2]",
+    assert_eq!(s.effects, ["write 1 1 42 1","write 2 2 0 7","write 2 2 1 -9","write 1 6 0 6","grab [1, 2]","ungrab","grab [1, 2]",
         "write 2 1 272 1","write 2 2 8 -2","write 1 1 42 0","write 2 1 272 0","close 1","close 2","ungrab"]);
 }
 '''.replace('SOURCE', source)

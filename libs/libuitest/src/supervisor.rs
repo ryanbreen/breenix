@@ -21,6 +21,7 @@ pub enum Message {
     Stderr { pid: u64, dropped: u64, bytes: Vec<u8>, done: bool },
     Devices([u32; 2]),
     Input(RawInput),
+    Text(String),
     Motion { x: i32, y: i32 },
     InputDone,
     HoldWindow(u64),
@@ -92,6 +93,10 @@ pub fn encode(message: &Message) -> Result<Vec<u8>, String> {
             out.extend_from_slice(&event.code.to_le_bytes()); out.extend_from_slice(&event.value.to_le_bytes());
         }
         Message::Motion {x,y} => {out.push(21);out.extend_from_slice(&x.to_le_bytes());out.extend_from_slice(&y.to_le_bytes());}
+        Message::Text(text) => {
+            if text.is_empty() || text.len() > 256 { return Err("invalid session text length".into()); }
+            out.push(22); bytes(&mut out, text.as_bytes());
+        }
         Message::InputDone => out.push(17),
         Message::HoldWindow(id) => { out.push(18); out.extend_from_slice(&id.to_le_bytes()); }
         Message::WindowHeld(id) => { out.push(19); out.extend_from_slice(&id.to_le_bytes()); }
@@ -151,6 +156,11 @@ pub fn decode(payload: &[u8]) -> Result<Message, String> {
             let uid = cur.word()?; let argv = cur.strings()?;
             if !valid_launch(&argv, &[]) || !matches!(uid, 0 | 1000) { return Err("invalid app launch".into()); }
             Message::LaunchApp { argv, uid }
+        }
+        22 => {
+            let text = String::from_utf8(cur.bytes()?).map_err(|_| "invalid session UTF-8")?;
+            if text.is_empty() || text.len() > 256 { return Err("invalid session text length".into()); }
+            Message::Text(text)
         }
         21 => Message::Motion {x:cur.word()? as i32,y:cur.word()? as i32},
         20 => { let id=cur.word()?; if id==0 {return Err("invalid auxiliary pointer".into());} Message::StartCompositorWithPointer(id) },

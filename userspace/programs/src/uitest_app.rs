@@ -5,6 +5,7 @@ mod uitest_capture_app;
 mod uitest_widget_layout;
 mod uitest_widgets;
 mod uitest_widget_app;
+mod uitest_keyboard;
 
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;

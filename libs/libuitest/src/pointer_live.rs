@@ -58,7 +58,9 @@ pub fn wait_pointer_idle(serial: u64) -> Result<(), String> {
             return Ok(());
         }
         if Instant::now() >= end {
-            return Err(format!("input timeout serial={serial} waiting=source-disposition"));
+            return Err(format!(
+                "input timeout serial={serial} waiting=source-disposition"
+            ));
         }
         pause()?;
     }
@@ -154,9 +156,8 @@ impl<'a> LivePointer<'a> {
     pub fn tree(&self, id: u64) -> Result<Tree, String> {
         self.capture(id).map(|(tree, _)| tree)
     }
-    fn source(&mut self, kind: u16, code: u16, value: i32) -> Result<u64, String> {
+    fn source(&mut self, device: u32, kind: u16, code: u16, value: i32) -> Result<u64, String> {
         let end = Instant::now() + Duration::from_secs(2);
-        let device = self.session.input_devices()[1];
         loop {
             if let Some(index) = self.pending.iter().position(|e| {
                 e.device == device && e.kind == kind && e.code == code && e.value == value
@@ -168,7 +169,9 @@ impl<'a> LivePointer<'a> {
                 Ok(records) => {
                     for record in records {
                         let e = record.map_err(|e| e.to_string())?.event;
-                        if e.device == device && e.kind != input::kind::SYN {
+                        if self.session.input_devices().contains(&e.device)
+                            && e.kind != input::kind::SYN
+                        {
                             self.pending.push(e);
                         }
                     }
@@ -189,12 +192,13 @@ impl<'a> LivePointer<'a> {
         loop {
             if let Some((name, window, reason)) = outcome(serial)? {
                 if name == "delivered" && wanted.is_none_or(|id| id == window) {
-                    if window::read_meta(window)
-                        .map_err(|e| e.to_string())?
-                        .1
-                        .processed_serial
-                        >= serial
-                    {
+                    if super::client_processed(
+                        window::read_meta(window)
+                            .map_err(|e| e.to_string())?
+                            .1
+                            .processed_serial,
+                        serial,
+                    ) {
                         return Ok(Some(Delivery { serial, window }));
                     }
                 } else if wanted.is_none() && name == "wm-handled" {
@@ -218,8 +222,8 @@ impl<'a> LivePointer<'a> {
         wanted: Option<u64>,
     ) -> Result<Option<Delivery>, String> {
         self.session.raw_motion(x, y)?;
-        let sx = self.source(kind::REL, axis::X, x)?;
-        let sy = self.source(kind::REL, axis::Y, y)?;
+        let sx = self.source(self.session.input_devices()[1], kind::REL, axis::X, x)?;
+        let sy = self.source(self.session.input_devices()[1], kind::REL, axis::Y, y)?;
         // bwm normalizes contiguous X/Y to one position. One source moves it;
         // the stationary companion receives WM_HANDLED rather than a second move.
         let dx = self.processed(sx, None)?;
@@ -350,7 +354,12 @@ impl Backend for LivePointer<'_> {
         } else {
             self.session.raw_release(key::BUTTON_LEFT)?;
         }
-        let serial = self.source(kind::KEY, key::BUTTON_LEFT, i32::from(pressed))?;
+        let serial = self.source(
+            self.session.input_devices()[1],
+            kind::KEY,
+            key::BUTTON_LEFT,
+            i32::from(pressed),
+        )?;
         self.processed(serial, Some(window))?
             .ok_or("button not delivered".into())
     }
@@ -360,8 +369,64 @@ impl Backend for LivePointer<'_> {
     }
     fn wheel(&mut self, dy: i32, window: u64) -> Result<Delivery, String> {
         self.session.raw_wheel(dy)?;
-        let serial = self.source(kind::REL, axis::WHEEL, dy)?;
+        let serial = self.source(self.session.input_devices()[1], kind::REL, axis::WHEEL, dy)?;
         self.processed(serial, Some(window))?
             .ok_or("wheel not delivered".into())
+    }
+}
+
+impl super::KeyboardBackend for LivePointer<'_> {
+    fn key(&mut self, code: u16, pressed: bool, window: u64) -> Result<Delivery, String> {
+        if pressed {
+            self.session.raw_press(code)?;
+        } else {
+            self.session.raw_release(code)?;
+        }
+        let serial = self.source(
+            self.session.input_devices()[0],
+            kind::KEY,
+            code,
+            i32::from(pressed),
+        )?;
+        self.processed(serial, Some(window))?
+            .ok_or("key not delivered".into())
+    }
+    fn text(&mut self, text: &str, window: u64) -> Result<Delivery, String> {
+        self.session.raw_text(text)?;
+        let serial = self.source(
+            self.session.input_devices()[0],
+            kind::TEXT,
+            0,
+            text.len() as i32,
+        )?;
+        self.processed(serial, Some(window))?
+            .ok_or("text not delivered".into())
+    }
+    fn focus(&mut self, target: &Target) -> Result<(), String> {
+        let resolved = self.resolve(target)?;
+        let tree = self.tree(target.window)?;
+        let query = Query {
+            key: Some(&target.key),
+            ..Default::default()
+        };
+        if !find(&tree, &query)?.flags.contains(&Flag::Enabled) {
+            return Err(format!(
+                "input-focus: {} cannot take focus (disabled)",
+                target.key
+            ));
+        }
+        self.move_to(resolved.point)?;
+        self.confirm(&resolved)?;
+        let press = self.button(true, target.window);
+        let release = self.button(false, target.window);
+        press?;
+        release?;
+        if !find(&self.tree(target.window)?, &query)?
+            .flags
+            .contains(&Flag::Focused)
+        {
+            return Err(format!("input-focus: {} cannot take focus", target.key));
+        }
+        Ok(())
     }
 }

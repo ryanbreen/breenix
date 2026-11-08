@@ -190,3 +190,12 @@ or detached device returns ENODEV. bwm uses these advertised ranges to normalize
 absolute axes; relative motion keeps the existing focused-window/chrome policy.
 This query reads the same core device descriptions for xHCI HID and ARM's
 virtio-input counterpart. Policy, capture and repeat work belongs to 21.4.
+
+## Scripted input origin
+
+The pipeline trace's stage 16 records the device, trace flags and source serial.
+Its trace flags contain derived modifier bits and `input_abi::SYNTHETIC` (bit 4)
+for `/dev/uinput` records. The kernel assigns the origin after validating the
+injection; callers still submit `flags=0`. The raw event stream continues to
+publish modifier bits only, preserving its reserved-flags contract. Stage 1's
+publication timestamp and the five-column pipeline layout retain their meanings.

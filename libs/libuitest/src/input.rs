@@ -1,4 +1,4 @@
-//! Pure pointer resolution; session code supplies the current window visibility.
+//! Shared keyboard scripts and pointer resolution over session input.
 use libbui::tree::{Flag, Node};
 
 // Widen before forming half-open endpoints: tree rectangles carry signed i64s.
@@ -233,3 +233,222 @@ pub fn exposed_region(content: [i64; 4], screen: [i64; 4], covers: &[[i64; 4]]) 
 mod live;
 #[cfg(target_os = "breenix")]
 pub use live::{wait_pointer_idle, LivePointer};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyStroke {
+    pub code: u16,
+    pub shift: bool,
+}
+/// Literal US physical-key table, independent of the compositor translator.
+/// Newline and Tab use physical key actions.
+pub fn key_stroke(ch: char) -> Option<KeyStroke> {
+    let (code, shift) = match ch {
+        ' ' => (57, false),
+        '!' => (2, true),
+        '"' => (40, true),
+        '#' => (4, true),
+        '$' => (5, true),
+        '%' => (6, true),
+        '&' => (8, true),
+        '\'' => (40, false),
+        '(' => (10, true),
+        ')' => (11, true),
+        '*' => (9, true),
+        '+' => (13, true),
+        ',' => (51, false),
+        '-' => (12, false),
+        '.' => (52, false),
+        '/' => (53, false),
+        '0' => (11, false),
+        '1' => (2, false),
+        '2' => (3, false),
+        '3' => (4, false),
+        '4' => (5, false),
+        '5' => (6, false),
+        '6' => (7, false),
+        '7' => (8, false),
+        '8' => (9, false),
+        '9' => (10, false),
+        ':' => (39, true),
+        ';' => (39, false),
+        '<' => (51, true),
+        '=' => (13, false),
+        '>' => (52, true),
+        '?' => (53, true),
+        '@' => (3, true),
+        'A' => (30, true),
+        'B' => (48, true),
+        'C' => (46, true),
+        'D' => (32, true),
+        'E' => (18, true),
+        'F' => (33, true),
+        'G' => (34, true),
+        'H' => (35, true),
+        'I' => (23, true),
+        'J' => (36, true),
+        'K' => (37, true),
+        'L' => (38, true),
+        'M' => (50, true),
+        'N' => (49, true),
+        'O' => (24, true),
+        'P' => (25, true),
+        'Q' => (16, true),
+        'R' => (19, true),
+        'S' => (31, true),
+        'T' => (20, true),
+        'U' => (22, true),
+        'V' => (47, true),
+        'W' => (17, true),
+        'X' => (45, true),
+        'Y' => (21, true),
+        'Z' => (44, true),
+        '[' => (26, false),
+        '\\' => (43, false),
+        ']' => (27, false),
+        '^' => (7, true),
+        '_' => (12, true),
+        '`' => (41, false),
+        'a' => (30, false),
+        'b' => (48, false),
+        'c' => (46, false),
+        'd' => (32, false),
+        'e' => (18, false),
+        'f' => (33, false),
+        'g' => (34, false),
+        'h' => (35, false),
+        'i' => (23, false),
+        'j' => (36, false),
+        'k' => (37, false),
+        'l' => (38, false),
+        'm' => (50, false),
+        'n' => (49, false),
+        'o' => (24, false),
+        'p' => (25, false),
+        'q' => (16, false),
+        'r' => (19, false),
+        's' => (31, false),
+        't' => (20, false),
+        'u' => (22, false),
+        'v' => (47, false),
+        'w' => (17, false),
+        'x' => (45, false),
+        'y' => (21, false),
+        'z' => (44, false),
+        '{' => (26, true),
+        '|' => (43, true),
+        '}' => (27, true),
+        '~' => (41, true),
+        '\n' => (28, false),
+        '\t' => (15, false),
+        _ => return None,
+    };
+    Some(KeyStroke { code, shift })
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Modifier {
+    Shift,
+    Ctrl,
+    Alt,
+    Super,
+}
+impl Modifier {
+    fn code(self) -> u16 {
+        match self {
+            Self::Shift => 42,
+            Self::Ctrl => 29,
+            Self::Alt => 56,
+            Self::Super => 125,
+        }
+    }
+}
+pub trait KeyboardBackend {
+    fn key(&mut self, code: u16, pressed: bool, window: u64) -> Result<Delivery, String>;
+    fn text(&mut self, text: &str, window: u64) -> Result<Delivery, String>;
+    fn focus(&mut self, target: &Target) -> Result<(), String>;
+}
+pub struct Keyboard<B: KeyboardBackend> {
+    backend: B,
+}
+impl<B: KeyboardBackend> Keyboard<B> {
+    pub fn new(backend: B) -> Self {
+        Self { backend }
+    }
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+    /// Release attempted presses in reverse order, including after delivery failure.
+    pub fn chord(
+        &mut self,
+        window: u64,
+        modifiers: &[Modifier],
+        code: u16,
+    ) -> Result<Vec<Delivery>, String> {
+        if !(1..=255).contains(&code)
+            || modifiers
+                .iter()
+                .enumerate()
+                .any(|(i, m)| m.code() == code || modifiers[..i].contains(m))
+        {
+            return Err("input chord has invalid or duplicate keys".into());
+        }
+        let mut held = Vec::new();
+        let mut deliveries = Vec::new();
+        let result: Result<(), String> = (|| {
+            for code in modifiers.iter().map(|m| m.code()).chain([code]) {
+                held.push(code);
+                deliveries.push(self.backend.key(code, true, window)?);
+            }
+            Ok(())
+        })();
+        let mut release_error = None;
+        for code in held.into_iter().rev() {
+            match self.backend.key(code, false, window) {
+                Ok(d) => deliveries.push(d),
+                Err(e) => {
+                    if release_error.is_none() {
+                        release_error = Some(e);
+                    }
+                }
+            }
+        }
+        result?;
+        if let Some(error) = release_error {
+            return Err(error);
+        }
+        Ok(deliveries)
+    }
+    pub fn type_text(&mut self, window: u64, text: &str) -> Result<Vec<Delivery>, String> {
+        let mut deliveries = Vec::new();
+        for ch in text.chars() {
+            if let Some(stroke) = key_stroke(ch) {
+                deliveries.extend(self.chord(
+                    window,
+                    if stroke.shift {
+                        &[Modifier::Shift]
+                    } else {
+                        &[]
+                    },
+                    stroke.code,
+                )?);
+            } else {
+                let mut bytes = [0; 4];
+                deliveries.push(self.backend.text(ch.encode_utf8(&mut bytes), window)?);
+            }
+        }
+        Ok(deliveries)
+    }
+    pub fn focus_then_type(
+        &mut self,
+        target: &Target,
+        text: &str,
+    ) -> Result<Vec<Delivery>, String> {
+        self.backend.focus(target)?;
+        self.type_text(target.window, text)
+    }
+}
+/// Derived events sort by their source and derivation index, not their wire bits.
+pub fn client_processed(processed: u64, source: u64) -> bool {
+    let wanted = libbreenix::input::abi::source_order(source);
+    wanted.is_some() && libbreenix::input::abi::source_order(processed) >= wanted
+}

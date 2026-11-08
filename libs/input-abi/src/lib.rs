@@ -7,6 +7,8 @@ pub const TEXT_LIMIT: usize = 256;
 pub const READER_EVENTS: usize = 1024;
 pub const CREATE_MAGIC: [u8; 8] = *b"BINPUT01";
 pub const TIME_INJECTOR: u32 = 1;
+/// Kernel-authored pipeline trace origin bit; raw Event.flags stay modifiers.
+pub const SYNTHETIC: u32 = 1 << 4;
 
 pub mod kind {
     pub const SYN: u16 = 0;

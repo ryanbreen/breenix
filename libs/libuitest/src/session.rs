@@ -124,6 +124,14 @@ impl Session {
         while !self.input_done {self.poll(end)?;}
         Ok(())
     }
+    pub fn raw_text(&mut self, text: &str) -> Result<(), String> {
+        if self.stopped { return Err("session has ended".into()); }
+        self.input_done = false;
+        self.control.send(&Message::Text(text.into()))?;
+        let end = now()? + 2000;
+        while !self.input_done { self.poll(end)?; }
+        Ok(())
+    }
     pub fn raw_wheel(&mut self, delta: i32) -> Result<(), String> { self.raw_input(RawInput { kind: 2, code: 8, value: delta }) }
     pub fn config_root(&self) -> &str { self.environment.config_root() }
     /// Exclude a window from required clock/settle participation (plan 6.3).

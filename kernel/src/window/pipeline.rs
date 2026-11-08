@@ -4,6 +4,7 @@
 //! commit begin/end, scene admission, render completion, PRESENT return,
 //! physical/virtual presentation, and receipt publication (1 through 13), front publication (14), and driver
 //! acceptance raster samples (15: native resource, packed counter/line, pixel).
+//! Input trace flags (16): device, derived modifier bits plus SYNTHETIC, source serial.
 use alloc::{string::String, vec::Vec};
 use core::fmt::Write;
 const CAPACITY: usize = 32768;
