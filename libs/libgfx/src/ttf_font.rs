@@ -72,8 +72,8 @@ impl Font {
     }
 }
 
-/// Uncached glyphs: rows of the process's scratch targets, each handed out once, so a
-/// glyph's region is as the core zeroed it and its draws and work are a new target's.
+/// Uncached glyphs occupy disjoint rectangles of the process's scratch targets.
+/// Fresh rectangles retain the core's zeroed coverage, including LCD padding.
 struct ScratchSlot { owner: AtomicU64, targets: UnsafeCell<[Option<Scratch>; 2]>, geometry: UnsafeCell<Option<Geometry>> }
 // SAFETY: the targets and geometry are only reached with the PID-tagged owner lock held.
 unsafe impl Sync for ScratchSlot {}
@@ -101,21 +101,31 @@ pub(crate) fn retire_scratch() -> Result<(), Error> {
     Ok(())
 }
 
-/// A `width × height` region of scratch target `which`, its rows handed out once each.
+/// A fresh `width × height` rectangle of scratch target `which`. Pack short
+/// glyphs across a shelf before starting another shelf or allocating a target.
 fn region(which: usize, width: usize, height: usize) -> Result<Region, Error> {
     let _held = scratch_lock()?;
     // SAFETY: the PID-tagged lock is held for the rest of this call.
     let slot = unsafe { &mut (*SCRATCH.targets.get())[which] };
     let context = device::with(|d| Ok(d.context.handle())).map_err(Error::Device)?;
-    let fits = slot.as_ref().is_some_and(|s| s.context == context && s.target.owned_here() && width <= s.target.width()
-        && s.next_row + height <= s.target.height());
+    let fits = slot.as_mut().is_some_and(|s| {
+        if s.context != context || !s.target.owned_here() || width > s.target.width() { return false; }
+        if s.next_x + width > s.target.width() {
+            s.next_y += s.shelf_height;
+            s.next_x = 0;
+            s.shelf_height = 0;
+        }
+        s.next_y + height <= s.target.height()
+    });
     if !fits {
-        *slot = Some(Scratch { target: Arc::new(target(width.max(SCRATCH_SIDE), height.max(SCRATCH_SIDE))?), context, next_row: 0 });
+        *slot = Some(Scratch { target: Arc::new(target(width.max(SCRATCH_SIDE), height.max(SCRATCH_SIDE))?),
+            context, next_x: 0, next_y: 0, shelf_height: 0 });
     }
     let s = slot.as_mut().expect("scratch made above");
-    let y = s.next_row;
-    s.next_row += height;
-    Ok(Region { target: s.target.clone(), x: 0, y })
+    let (x, y) = (s.next_x, s.next_y);
+    s.next_x += width;
+    s.shelf_height = s.shelf_height.max(height);
+    Ok(Region { target: s.target.clone(), x, y })
 }
 
 /// The crossing wire layout, useful for independent host inspection.
@@ -123,10 +133,10 @@ pub fn crossing_table(segments: &[LineSegment], first_row: usize, rows: usize) -
     CrossingTable::new(segments, first_row, rows).bytes().to_vec()
 }
 
-/// A scratch target's side when no glyph needs more; its rows are handed out once each.
+/// A scratch target's side when no glyph needs more.
 const SCRATCH_SIDE: usize = 256;
 // Context handles change when device::with replaces a reset context after EIO.
-struct Scratch { target: Arc<Surface>, context: u64, next_row: usize }
+struct Scratch { target: Arc<Surface>, context: u64, next_x: usize, next_y: usize, shelf_height: usize }
 
 /// A glyph-sized rectangle of a target, at (x, y).
 struct Region { target: Arc<Surface>, x: usize, y: usize }

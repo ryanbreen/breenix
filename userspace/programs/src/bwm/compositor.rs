@@ -521,6 +521,19 @@ impl Compositor {
                 .map_err(|e| CheckError::Failed(format!("desktop readback of rows {}..{}: errno {}", y0, y0 + rows, -e)))?;
             for row in 0..rows {
                 let y = (y0 + row) as i32;
+                let desktop_row = layers.is_empty() && pointer.is_none_or(|(p, bitmap)| {
+                    let top = p.y - hotspot(p.shape).1 * self.scale;
+                    y < top || y >= top + bitmap.len() as i32 * self.scale
+                });
+                let start = (row * w * 4) as usize;
+                let end = start + (w * 4) as usize;
+                // Equal bytes satisfy the RGB comparison for this whole desktop-only
+                // row. A difference still takes the pixel path, including X masking
+                // and the exact first-mismatch diagnostic.
+                if desktop_row && band[start..end] == desk[start..end] {
+                    compared += u64::from(w);
+                    continue;
+                }
                 for x in x0 as i32..x1 as i32 {
                     let o = ((row * w) as usize + (x as u32 - x0) as usize) * 4;
                     let got = u32::from_le_bytes([band[o], band[o + 1], band[o + 2], band[o + 3]]);

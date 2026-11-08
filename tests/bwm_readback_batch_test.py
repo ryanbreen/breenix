@@ -18,6 +18,7 @@ use std::sync::Mutex;
 static CALLS:Mutex<Vec<[u32;4]>>=Mutex::new(Vec::new());
 static HOTSPOTS:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
 static POINTER:Mutex<bool>=Mutex::new(false);
+static HIGH_X:Mutex<bool>=Mutex::new(false);
 static BAD:Mutex<Option<(u32,u32)>>=Mutex::new(None);
 CONSTANTS
 mod abi {pub mod record{pub const SIZE:usize=1024;}}
@@ -32,7 +33,7 @@ mod window {
  pub fn list(_:&mut[super::wabi::WinInfo])->Result<usize,()>{Ok(0)}
 }
 fn pixel(x:u32,y:u32)->u32{0xff000000|((y*257+x*3)&0xffffff)}
-fn fill(rect:[u32;4],out:&mut[u8],bad:bool){let[x,y,w,h]=rect;for row in 0..h{for col in 0..w{let mut p=pixel(x+col,y+row);if bad&&*POINTER.lock().unwrap() && (3..7).contains(&(x+col)) && (3..7).contains(&(y+row)) {p=if ((x+col-3)/2+(y+row-3)/2)%2==0{0xff000000}else{0xffffffff};}if bad&&*BAD.lock().unwrap()==Some((x+col,y+row)){p^=1;}let at=((row*w+col)*4)as usize;out[at..at+4].copy_from_slice(&p.to_le_bytes());}}}
+fn fill(rect:[u32;4],out:&mut[u8],bad:bool){let[x,y,w,h]=rect;for row in 0..h{for col in 0..w{let mut p=pixel(x+col,y+row);if bad&&*POINTER.lock().unwrap() && (3..7).contains(&(x+col)) && (3..7).contains(&(y+row)) {p=if ((x+col-3)/2+(y+row-3)/2)%2==0{0xff000000}else{0xffffffff};}if bad&&*HIGH_X.lock().unwrap(){p^=0xff000000;}if bad&&*BAD.lock().unwrap()==Some((x+col,y+row)){p^=1;}let at=((row*w+col)*4)as usize;out[at..at+4].copy_from_slice(&p.to_le_bytes());}}}
 mod gpu {
  pub struct Answer{pub reason:u32}
  pub fn readback_why(_:u64,r:[u32;4],out:&mut[u8],stride:u32,_:&mut[u8;1024])->(i64,Answer){assert_eq!(stride,r[2]*4);super::CALLS.lock().unwrap().push(r);super::fill(r,out,true);(0,Answer{reason:0})}
@@ -69,6 +70,8 @@ impl Compositor {
  let calls=CALLS.lock().unwrap();let mut y=7;for r in calls.iter(){assert_eq!((r[0],r[1],r[2]),(13,y,2546));y+=r[3];}assert_eq!(y,1599);drop(calls);
  *BAD.lock().unwrap()=Some((2558,1598));
  match c.check_area(0,&[],None,[13,7,2559,1599]){Err(CheckError::Failed(s))=>assert!(s.contains("pixel (2558, 1598)"),"{s}"),Err(CheckError::Moved(s))=>panic!("{s}"),Ok(n)=>panic!("missed late mismatch after {n}")}
+ *BAD.lock().unwrap()=None;*HIGH_X.lock().unwrap()=true;
+ assert_eq!(c.check_area(0,&[],None,[13,7,2559,1599]).unwrap(),2546*1592);
 }
 '''.replace('CONSTANTS',constants).replace('@CHECK@',item(source,'pub fn check_area(')).replace('@EXPECTED@',item(source,'fn expected(')))
 if __name__=='__main__':unittest.main()
