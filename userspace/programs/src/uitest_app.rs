@@ -28,8 +28,19 @@ fn main() {
     };
     let mut win = Window::new_without_fonts(options.title.as_bytes(), 320, 200)
         .unwrap_or_else(|error| { eprintln!("window: {error}"); std::process::exit(1); });
-    win.surface().unwrap_or_else(|error| { eprintln!("surface: {error}"); std::process::exit(1); });
-    win.present().unwrap_or_else(|error| { eprintln!("present: {error}"); std::process::exit(1); });
+    let generation = libuitest::capture_marker::Generation { commit: 1,
+        producer: u32::try_from(libbreenix::process::gettid().expect("producer tid").raw()).expect("producer tid fits marker") };
+    let marker = libuitest::capture_marker::encode(generation);
+    let surface = win.surface().unwrap_or_else(|error| { eprintln!("surface: {error}"); std::process::exit(1); });
+    surface.batch(|surface| {
+        surface.clear(libgfx::color::Color::rgb(0x18,0x20,0x30));
+        for (x, pixel) in marker.chunks_exact(4).enumerate() {
+            libgfx::shapes::fill_rect(surface, x as i32, 0, 1, 200, libgfx::color::Color::rgb(pixel[2],pixel[1],pixel[0]));
+        }
+    });
+    win.write_tree(&libuitest::capture::root(generation, 320, 200)).expect("generation tree");
+    let committed = win.commit(&[libbreenix::window::abi::Rect::new(0,0,320,200)]).expect("generation commit");
+    assert_eq!(committed.commit_id, generation.commit, "producer ordinal differs from commit id");
     libuitest::startup::mark("app-commit");
     if options.session_probe {
         extern "C" {

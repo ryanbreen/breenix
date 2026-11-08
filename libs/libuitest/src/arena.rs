@@ -95,6 +95,21 @@ impl Arena {
         self.payloads[slot.index()] = Some(Mapping::new(&self.file, self.layout.data_offset(slot), self.layout.capacity(slot))?);
         Ok(Writer { arena: self, slot })
     }
+    /// Fill the frame and its tree directly, keeping both WRITING on any refusal.
+    pub fn write_frame_tree(&mut self, fill: impl FnOnce(&mut [u8], &mut [u8]) -> Result<(Record, usize), String>) -> Result<Record, String> {
+        for slot in [Slot::Frame, Slot::Tree] {
+            self.state(slot).compare_exchange(FREE, WRITING, Ordering::AcqRel, Ordering::Acquire).map_err(|_| "arena slot already used")?;
+            self.payloads[slot.index()] = Some(Mapping::new(&self.file, self.layout.data_offset(slot), self.layout.capacity(slot))?);
+        }
+        // The layout reserves disjoint payload ranges for the two slots. Both are
+        // mutably borrowed for this call and neither is published yet.
+        let pixels = unsafe { std::slice::from_raw_parts_mut(self.payloads[1].as_ref().unwrap().ptr, self.layout.capacity(Slot::Frame)) };
+        let tree = unsafe { std::slice::from_raw_parts_mut(self.payloads[2].as_ref().unwrap().ptr, TREE_BYTES) };
+        let (record, len) = fill(pixels, tree)?;
+        Writer { arena: self, slot: Slot::Tree }.publish(record.clone(), TREE_BYTES)?;
+        Writer { arena: self, slot: Slot::Frame }.publish(record.clone(), len)?;
+        Ok(record)
+    }
     pub fn read(&self, slot: Slot) -> Result<SlotRead, String> {
         match self.state(slot).load(Ordering::Acquire) {
             FREE => return Ok(SlotRead::Free), WRITING => return Ok(SlotRead::Partial("case-died")),
