@@ -13,6 +13,10 @@ use libuitest::schema as frame_schema;
 use breenix_suite::suite as frame_case;
 #[path = "uitest_suite/comparison_cases.rs"]
 mod comparison_cases;
+#[path = "uitest_suite/structural_cases.rs"]
+mod structural_cases;
+#[path = "uitest_suite/formula_pattern.rs"]
+mod formula_pattern;
 #[path = "uitest_suite/frames.rs"]
 mod frames;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
@@ -216,13 +220,13 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A missing reference fails, naming the path. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("reference-missing", "A missing reference fails, naming the path", || pending("frames", 4)),
         // A formula check compares like a stored one. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("formula", "A formula check compares like a stored one", || pending("frames", 4)),
+        case("formula", "A formula check compares like a stored one", || structural_cases::formula().map_err(Into::into)),
         // A uniform-region check passes on a flat fill and fails on one stray pixel. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("structural-uniform", "A uniform-region check passes on a flat fill and fails on one stray pixel", || pending("frames", 4)),
+        case("structural-uniform", "A uniform-region check passes on a flat fill and fails on one stray pixel", || structural_cases::uniform().map_err(Into::into)),
         // A no-colour-outside check catches a pixel leaking past its rectangle. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("structural-outside", "A no-color-outside check catches a pixel leaking past its rectangle", || pending("frames", 4)),
+        case("structural-outside", "A no-color-outside check catches a pixel leaking past its rectangle", || structural_cases::outside().map_err(Into::into)),
         // A colour-count check catches a blank frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("structural-count", "A color-count check catches a blank frame", || pending("frames", 4)),
+        case("structural-count", "A color-count check catches a blank frame", || structural_cases::count().map_err(Into::into)),
         // Each predicate's effective-domain rule is enforced after masks, before any comparison: a uniform check without a colour, a colour count below 2 or above the compared pixels, overlapping equal regions, equal regions with fewer than 2 compared pairs, `minDiffering` above the domain, an operand that names no declared region, and a region of one pixel each fail validation; and an `outside` check on a 100x100 region with a strictly interior 98x98 `rect` and its four border strips masked fails validation for an empty outside domain, while the same check unmasked catches one forbidden-colour pixel planted in the border. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("structural-vacuous", "Every structural predicate's effective-domain rule is enforced after masks, before any comparison", frames::structural_vacuous),
         // A formula check with a missing, extra, mistyped or out-of-range parameter fails validation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
