@@ -21,6 +21,8 @@ mod tree_cases;
 mod canonical_cases;
 #[path = "uitest_suite/capture_cases.rs"]
 mod capture_cases;
+#[path = "uitest_suite/tree.rs"]
+mod tree;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
 
 fn pending(layer: &str, step: u8) -> CaseResult {
@@ -84,27 +86,27 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     ]),
     category("tree", "Semantic trees of windows & widgets", &[
         // The test app's tree lists every widget with its expected role and key. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("roles-keys", "The test app's tree lists every widget with its expected role and key", || pending("tree", 6)),
+        case("roles-keys", "The test app's tree lists every widget with its expected role and key", tree::roles_keys).session(libuitest::supervisor::serve),
         // Names and values match the widgets' states set by the script. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("names-values", "Names and values match the widgets' states set by the script", || pending("tree", 6)),
+        case("names-values", "Names and values match the widgets' states set by the script", tree::names_values).session(libuitest::supervisor::serve),
         // The focused flag moves with Tab. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("focus-flag", "The focused flag moves with Tab", || pending("tree", 6)),
         // The focused widget draws the theme's focus ring at its bounds. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("focus-ring-pixels", "The focused widget draws the theme's focus ring at its bounds", || pending("tree", 6)),
         // A disabled button is flagged not enabled. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("enabled-flag", "A disabled button is flagged not enabled", || pending("tree", 6)),
+        case("enabled-flag", "A disabled button is flagged not enabled", tree::enabled_flag).session(libuitest::supervisor::serve),
         // Checked, selected and pressed flags follow interaction. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("state-flags", "Checked, selected and pressed flags follow interaction", || pending("tree", 6)),
         // A text field's value equals the typed text. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("textfield-value", "A text field's value equals the typed text", || pending("tree", 6)),
         // A terminal node's rows, cell attributes and cursor equal what its grid holds. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("terminal-grid", "A terminal node's rows, cell attributes and cursor equal what its grid holds", || pending("tree", 6)),
+        case("terminal-grid", "A terminal node's rows, cell attributes and cursor equal what its grid holds", tree::terminal_grid).session(libuitest::supervisor::serve),
         // A tree and its pixels always come from the same commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("commit-coupled", "A tree and its pixels always come from the same commit", frames::commit_coupled).session(libuitest::supervisor::serve),
         // bwm's tree lists each window's title, bounds, z order, focus and minimized state. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("wm-tree", "bwm's tree lists each window's title, bounds, z order, focus and minimized state", || pending("tree", 6)),
         // Nodes scrolled out or covered are flagged not visible, with their clip. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("hidden-nodes", "Nodes scrolled out or covered are flagged not visible, with their clip", || pending("tree", 6)),
+        case("hidden-nodes", "Nodes scrolled out or covered are flagged not visible, with their clip", tree::hidden_nodes).session(libuitest::supervisor::serve),
         // Scrolling a list changes which items are flagged visible. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("list-scroll", "Scrolling a list changes which items are flagged visible", || pending("tree", 6)),
         // An unrelated non-root process cannot map another app's tree. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
