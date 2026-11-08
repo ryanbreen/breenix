@@ -201,6 +201,38 @@ class UiStep(unittest.TestCase):
         path.write_text(original + 'SUITE ui-testing CASE')
         self.assertEqual(self.record(), 1)
 
+    def test_step_five_requires_bounded_case_bound_measurements(self):
+        selected = json.loads((ROOT / 'docs/gui/gt710-step-22-5.json').read_text())['cases']
+        text = serial()
+        for name in selected:
+            text = text.replace(f'CASE {name} FAIL ms=1 msg=pending', f'CASE {name} PASS ms=1')
+        text = text.replace(f'DONE passed={len(SELECTED)} failed={len(NAMES)-len(SELECTED)}',
+                            f'DONE passed={len(selected)} failed={len(NAMES)-len(selected)}')
+        for mode in ('desktop', 'kiosk'):
+            phase = f'UI_STARTUP ui-testing sessions/start-{mode} connect-begin=100 first-composite=200\n'
+            text = text.replace(f'SUITE ui-testing CASE sessions/start-{mode} ', phase + f'SUITE ui-testing CASE sessions/start-{mode} ')
+        for name in ('capture-while-drawing', 'capture-resize-race'):
+            case = 'frames/' + name
+            values = ''.join(f'SUITE ui-testing VALUE {case} {label}=1count\n'
+                             for label in ('capture-stall-fired', 'capture-release-fired'))
+            text = text.replace(f'SUITE ui-testing CASE {case} ', values + f'SUITE ui-testing CASE {case} ')
+        readings = []
+        for case, metric, cap in [('sessions/start-desktop', 'startup', 2000000000),
+                                  ('sessions/start-kiosk', 'startup', 2000000000),
+                                  ('frames/compare-cost', 'compare-ns', 500000000)]:
+            line = f'SUITE ui-testing VALUE {case} {metric}=123ns expect=0..{cap}ns\n'
+            text = text.replace(f'SUITE ui-testing CASE {case} ', line + f'SUITE ui-testing CASE {case} ')
+            readings.append((line, cap))
+        def score(body):
+            (self.path / 'serial.txt').write_text(body)
+            return API['record_ui_capture'](self.path, SHA, 5)
+        self.assertEqual(score(text), 0)
+        for line, cap in readings:
+            for bad in [text.replace(line, ''), text.replace(line, line + line),
+                        text.replace(line, line.replace('=123ns', f'={cap+1}ns')),
+                        text.replace(line, '', 1) + line]:
+                self.assertEqual(score(bad), 1)
+
     def test_step_eight_is_refused(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/metal/gt710-suite'),
                                  '--ui-step', '8'], capture_output=True, text=True)

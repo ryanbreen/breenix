@@ -12,6 +12,25 @@ def source(path):
     return subprocess.check_output(['git', 'show', f'{old}:{path}'], cwd=ROOT, text=True) if old else (ROOT/path).read_text()
 
 class StartupSuccess(unittest.TestCase):
+    def test_comparison_measurement_survives_the_shared_name_validator(self):
+        runner = source('libs/libbreenix/src/suite.rs')
+        caller = source('userspace/programs/src/uitest_suite/comparison_cases.rs')
+        call = next(line.strip() for line in caller.splitlines() if 'breenix_suite::suite::value(' in line)
+        run_rust(self, r'''
+use std::{fmt::Write, sync::Mutex};
+static OUTPUT: Mutex<String> = Mutex::new(String::new());
+fn record(kind: &str, rest: &str) { *OUTPUT.lock().unwrap() = format!("{kind} {rest}"); }
+@WORD@
+@VALUE@
+#[test] fn emitted_comparison_measurement() {
+    let elapsed = 123u64;
+    @CALL@
+    assert_eq!(&*OUTPUT.lock().unwrap(), "VALUE compare-ns=123ns expect=0..500000000ns");
+}
+'''.replace('@WORD@', item(runner, 'fn is_word('))
+           .replace('@VALUE@', item(runner, 'pub fn value('))
+           .replace('@CALL@', call.replace('breenix_suite::suite::', '')))
+
     def test_startup_verdict_measurement_boundaries(self):
         trace = source('libs/libuitest/src/startup.rs').replace('//!', '//')
         run_rust(self, r'''
