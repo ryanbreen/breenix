@@ -314,7 +314,7 @@ mod races {
         fn drop(&mut self) { let _ = tc::arm(tc_point::RELEASE_STALL, 0, 0); let _ = tc::disarm_all(); }
     }
 
-    fn overlap(app: &mut App, reader: &Reader, root: &Path, old: Commit, action: &str, second_reader: bool) -> Result<Commit, String> {
+    fn overlap(app: &mut App, reader: &Reader, root: &Path, old: Commit, action: &str, second_reader: bool, witnessed: &mut [i64; 2]) -> Result<Commit, String> {
         let path = destination(root, "race-a.arena")?;
         let other_path = if second_reader { Some(destination(root, "race-b.arena")?) } else { None };
         let mut stall = Stall::arm(old.id)?;
@@ -339,6 +339,9 @@ mod races {
             let generation = stall.judge(&other, None)?;
             if generation != old.generation && generation != next.generation { return Err("reader B returned an unproduced generation".into()); }
         }
+        capture_race::record_witness(stall.before, stall.fired, stall.release_before,
+            tc::fired(tc_point::RELEASE_STALL).map_err(|e| e.to_string())?,
+            |label, value| witnessed[usize::from(label == "capture-release-fired")] += value)?;
         Ok(next)
     }
     fn free_kb() -> Result<u64, String> {
@@ -359,19 +362,20 @@ mod races {
         let root = PathBuf::from(session.config_root());
         let mut app = App::launch(&mut session)?;
         let reader = Reader::new();
+        let mut witnessed = [0; 2];
         let result = (|| {
             let first = app.command("create")?;
             match kind {
-                0 | 1 => { overlap(&mut app, &reader, &root, first, "commit 0", kind == 1)?; }
+                0 | 1 => { overlap(&mut app, &reader, &root, first, "commit 0", kind == 1, &mut witnessed)?; }
                 2 => {
-                    let next = overlap(&mut app, &reader, &root, first, "resize", false)?;
+                    let next = overlap(&mut app, &reader, &root, first, "resize", false, &mut witnessed)?;
                     if (next.width, next.height, next.generation.commit) != (160, 100, first.generation.commit + 1) {
                         return Err("resize did not commit the new extent".into());
                     }
                 }
                 3 => {
-                    let round = |app: &mut App, old| -> Result<(), String> {
-                        overlap(app, &reader, &root, old, "destroy", false)?;
+                    let mut round = |app: &mut App, old| -> Result<(), String> {
+                        overlap(app, &reader, &root, old, "destroy", false, &mut witnessed)?;
                         destroyed_before_copy(&root, &reader, old)
                     };
                     round(&mut app, first)?;
@@ -386,8 +390,8 @@ mod races {
                     if after + 64 < before { return Err(format!("capture retained {} KiB across destroy rounds", before - after)); }
                 }
                 4 => {
-                    let second = overlap(&mut app, &reader, &root, first, "commit 1", false)?;
-                    let third = overlap(&mut app, &reader, &root, second, "commit 0", false)?;
+                    let second = overlap(&mut app, &reader, &root, first, "commit 1", false, &mut witnessed)?;
+                    let third = overlap(&mut app, &reader, &root, second, "commit 0", false, &mut witnessed)?;
                     if first.generation.producer == 0 || second.generation.producer == 0
                         || first.generation.producer == second.generation.producer
                         || third.generation.producer != first.generation.producer
@@ -396,7 +400,7 @@ mod races {
                         return Err("two producers did not alternate thread/ordinal pairs".into());
                     }
                     // Capture the final producer too, pinned across thread 1's commit.
-                    overlap(&mut app, &reader, &root, third, "commit 1", false)?;
+                    overlap(&mut app, &reader, &root, third, "commit 1", false, &mut witnessed)?;
                 }
                 _ => unreachable!(),
             }
@@ -408,6 +412,9 @@ mod races {
         drop(app); drop(reader);
         let teardown = session.teardown();
         result?; teardown?;
+        for (label, value) in ["capture-stall-fired", "capture-release-fired"].into_iter().zip(witnessed) {
+            breenix_suite::suite::value(label, value, "count", None);
+        }
         Ok(())
     }
     pub fn capture_while_drawing() -> crate::frame_case::CaseResult { run(0).map_err(Into::into) }

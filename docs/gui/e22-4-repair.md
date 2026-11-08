@@ -1,0 +1,98 @@
+# E22 22.4 acceptance repair
+
+The retained head boot `20261108T122858Z-metal` at `10351004` did not pass
+22.4: 77/78 selected cases passed. `sessions/start-desktop` exhausted its
+300 ms deadline; its actual first composite was 301.746 ms after connect.
+Memory passed. There was no GR refusal. `20261108T120415Z-metal` ran at
+`db222c5e`; it is not evidence for the later runtime tree.
+
+The failed head capture attributes 76.26 ms to connection/setup, 12.3 ms to
+launch, 81.42 ms to overlapped font/target preparation, 10.58 ms to background,
+4.92 ms to initial chrome, 9.84 ms to fill checks, 7.69 ms to another presentation,
+61.8 ms to full-frame validation, 22.57 ms to initial client chrome and about
+12.3 ms to the first client composite. The trace stores the first occurrence of
+each stamp; `frame-pixels-ready` describes the first band, not the end of the
+full comparison.
+
+Code reading found these mechanisms:
+
+- `libgfx::device::acquire` spun while its holder could be preempted or waiting
+  in a GPU syscall. The new concurrent font worker and target creation contend
+  for this lock. Contention now yields through the shared process interface.
+- The hidden-cursor path presented the identical bare desktop twice. The fill
+  check's presentation now also serves the full-frame check when the cursor is
+  absent. Visible cursors still present before comparison. Recovery still
+  presents its rebuilt desktop. The full comparison and six fill samples stay.
+- Chrome used the per-glyph LCD draw path, and coverage warm-up omitted the
+  minimize glyph. Chrome now uses the existing batched LCD renderer; preparation
+  includes both button glyphs beside the window titles.
+- The case's successful phase line went into its silent output pipe. The
+  supervisor now retains desktop/kiosk phase records on successful discard as
+  well as failure collection, before removing the trace.
+- Forced races validated controls but retained no VALUE witnesses. Their
+  independently checked overlap deltas now accumulate into two totals per case,
+  respecting the existing 12-record cap. The scorer requires exact totals:
+  drawing/readers/resize 1, destroy 23, threads 3, for both stall and release,
+  before the corresponding CASE. The negative fixtures in `tests/gt710_ui_step_test.py` refuse missing, nonpositive, duplicate or late totals.
+  It also requires the retained desktop phase record to meet U17's 270 ms target.
+  The shared 300 ms case limit is unchanged.
+
+## Deterministic checks
+
+Check commits precede implementation. Production-source host checks reproduce
+busy waiting without scheduler progress, the redundant hidden-pointer present,
+the omitted chrome glyph and per-glyph submissions. The supervisor discard
+fixture reproduces absent retained phases. Scorer negatives reproduce acceptance
+without witnesses or headroom. The repaired paths pass these checks. The initial
+LCD mock needed an explicit unused-method reference before reaching its runtime
+assertion; that check-only correction is recorded separately. G2's aggregate
+witness correction follows `suite.rs::RECORDS_PER_CASE`, with the existing
+missing/nonpositive/duplicate/late refusal checks retained.
+
+The existing fork-ownership check passes, as do the startup preparation,
+presentation/mismatch-policy and local-collection ordering checks. The frame
+capture harness passes 9/9, including fired controls, coupled pixels/tree/id,
+partial refusals and fresh one-shot screen arenas. Unchanged suites are not
+rerun on the host for these repairs.
+
+## Pre-boot budget and remaining question
+
+This is a code-derived forecast, not a measured timing result or a worst-case
+bound. The phase records on the acceptance boot decide it.
+
+| Critical-path phase | Budget ms | Source/change |
+|---|---:|---|
+| Connect, fixtures, pins, arena | 80 | Retained 76.26; unchanged |
+| Launch and config | 15 | Retained 12.3; unchanged |
+| Font coverage plus targets | 65 | Yielding removes holder starvation from the concurrent startup; retained contended interval 81.42 |
+| Background | 11 | Retained 10.58; unchanged |
+| Bare desktop chrome | 5 | Retained 4.92; unchanged |
+| Fill presentation and six checks | 10 | Retained 9.84; unchanged |
+| Metadata and warm-up dispatch | 1 | Title and button preparation overlaps the following check |
+| Full-frame comparison | 62 | Retained 61.8; duplicate hidden-pointer presentation removed |
+| Client chrome | 6 | Batched LCD draws and prepared button coverage replace the retained 22.57 ms path |
+| First composite and observation | 14 | Retained about 12.3 |
+| **Total** | **269** | **31 ms inside the unchanged 300 ms case deadline** |
+
+The hardware question is whether removal of busy-wait starvation and redundant
+presentation/draw work realizes these phase budgets on the shared GPU path.
+Prediction: first desktop composite at or below 270 ms, retained success phases,
+78/78 selected cases, exact overlap totals and compare-cost at or below 50 ms.
+A miss is a failure to report from that capture, not permission for a sample boot.
+
+Acceptance also owes console alone (88/88 within 330 s handoff-to-done),
+window-manager (81/81), production BreenGL (401/401) and the default desktop.
+No kernel or driver code changed, so GPU, files-io and directories are outside
+this repair's reach. ARM uses the same renderer, sessions and yielding interface;
+its runtime and canonical-scene pin remain unmeasured in #2770. The step's
+unchanged ARM kernel build evidence remains in the u1 report.
+
+## Build and lint results before acceptance
+
+Seven affected userspace binaries built in release mode for x86 and ARM64 with
+`CARGO_BUILD_JOBS=4` under `taskpolicy -b`. Both final builds exit 0, with
+0 compiler warnings and 0 errors. After the transport aggregation and supervisor
+change, those affected binaries were rebuilt once; unchanged code is not
+retested after push. Claim-lint on changed prose and `git diff --check` exit 0.
+The standalone libgfx host check refreshed its lockfile to include the existing
+libbreenix input-abi dependency.

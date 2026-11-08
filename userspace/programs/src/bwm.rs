@@ -273,16 +273,22 @@ fn main() {
     let (prepared, presented) = startup_prepare::during(|| {
         libuitest::startup::mark("title-plan-begin");
         let result = if let Some(font) = ui_font.as_mut() {
-            let titles: Vec<&[u8]> = ordered_windows(&windows, &stack)
+            let mut titles: Vec<&[u8]> = ordered_windows(&windows, &stack)
                 .filter(|win| !stack.minimized(win.window_id) && !win.chromeless)
                 .map(|win| &win.title[..win.title_len]).collect();
+            titles.push(b"x-");
             font.prepare_subpixel(&titles, ttf_font_size() * ui().scale as f32)
                 .map_err(|error| format!("initial title coverage: {error:?}"))
         } else { Ok(()) };
         libuitest::startup::mark("title-plan-return");
         result
     }, || {
-        gpu.present_startup_desktop(cursor_pointer(first_pointer))
+        // The fill check already presented this exact bare desktop. With no
+        // cursor there are no new pixels to present; retain the full pixel comparison.
+        let presented = if cursor_pointer(first_pointer).is_some() {
+            gpu.present_startup_desktop(cursor_pointer(first_pointer))
+        } else { Ok(()) };
+        presented
             .map(|()| {
                 libuitest::startup::mark("pointer-presented");
                 measure_check(|| gpu.check(0, &[], cursor_pointer(first_pointer)))

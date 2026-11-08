@@ -253,8 +253,13 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                             Accounting::new(&suite, &case, &[], true)?;
                             let stderr = output.iter().map(|(&pid, app)| (pid, app.ring.dropped(), app.ring.bytes())).collect::<Vec<_>>();
                             let record = evidence.collect(&suite, &case, trigger, &stderr);
-                            // The supervisor retains the runner's transcript, unlike the
-                            // silent case. Emit bounded diagnostics on collection only.
+                            Some(record)
+                        } else { None };
+                        let suite = std::env::var("BREENIX_COLLECT_SUITE").map_err(|e| e.to_string())?;
+                        let case = std::env::var("BREENIX_COLLECT_CASE").map_err(|e| e.to_string())?;
+                        // The supervisor owns an independent transcript. Successful
+                        // startup cases discard artifacts, but retain their phase record.
+                        if record.is_some() || matches!(case.as_str(), "sessions/start-desktop" | "sessions/start-kiosk") {
                             if let Some(config) = &environment {
                                 if let Ok(trace) = crate::startup::Trace::open(Path::new(config.config_root())) {
                                     let mut line = format!("UI_STARTUP {suite} {case}");
@@ -263,8 +268,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                                     let _ = io::write(Fd::STDOUT, line.as_bytes());
                                 }
                             }
-                            Some(record)
-                        } else { None };
+                        }
                         if !stopped { teardown(&mut channel, &mut output, false, compositor, &mut ownership, &mut devices)?; }
                         if let Some(config) = environment.take() { std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())?; }
                         evidence.release_remnants();

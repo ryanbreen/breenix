@@ -4163,6 +4163,24 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
         raise ValueError(f'selected {"WM" if suite == "window-manager" else suite} cases failed: {len(required) - len(failed)}/{len(required)} '
                          f'passed in {selection}; failed: {", ".join(failed)}; '
                          f'full suite: {tally[0]}/{case_count} passed, {tally[1]} failed')
+    if suite == 'ui-testing' and step_number >= 4:
+        startup = one(r'^UI_STARTUP ui-testing sessions/start-desktop ((?:[a-z-]+=[0-9]+ ?)+)$', text, 'desktop startup phases')
+        phases = [field.split('=') for field in startup[1].split()]
+        times = {name: int(value) for name, value in phases}
+        if (len(times) != len(phases) or 'connect-begin' not in times or 'first-composite' not in times
+                or not 0 < times['first-composite'] - times['connect-begin'] <= 270_000_000):
+            raise ValueError('desktop first composite exceeds U17 270 ms headroom or phases are incomplete')
+        for name, rounds in (('capture-while-drawing', 1), ('capture-two-readers', 1),
+                             ('capture-resize-race', 1), ('capture-destroy-race', 23), ('capture-threads', 3)):
+            case = 'frames/' + name
+            index = names.index(case)
+            begin_case = text.index(cases[index - 1][2]) + len(cases[index - 1][2]) if index else text.index(records[0][2])
+            end_case = text.index(cases[index][2])
+            for label in ('capture-stall-fired', 'capture-release-fired'):
+                witnesses = list(re.finditer(fr'^SUITE ui-testing VALUE {re.escape(case)} {label}=(\d+)count$', text, re.M))
+                if (len(witnesses) != 1 or any(int(m[1]) != rounds
+                        or not begin_case < m.start() < end_case for m in witnesses)):
+                    raise ValueError(f'{case} requires one {label} total of {rounds} before its CASE')
     if not 0 < int(records[case_count + 2][1][1]) <= 1800000:
         raise ValueError('WM elapsed time exceeds 1800 seconds')
     problem = verdict_api['result_problem'](manifest, parsed, names)
