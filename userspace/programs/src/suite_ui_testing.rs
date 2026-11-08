@@ -12,6 +12,8 @@ mod stage_painter;
 use libuitest::schema as frame_schema;
 use breenix_suite::suite as frame_case;
 #[path = "uitest_suite/frames.rs"]
+#[path = "uitest_suite/comparison_cases.rs"]
+mod comparison_cases;
 mod frames;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
 
@@ -192,15 +194,15 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A screen capture lists the commit of each window it contains. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("capture-commits", "A screen capture lists the commit of each window it contains", || pending("frames", 4)),
         // An identical frame matches with zero differing pixels. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("exact-match", "An identical frame matches with zero differing pixels", || pending("frames", 4)),
+        case("exact-match", "An identical frame matches with zero differing pixels", comparison_cases::exact_match),
         // A frame with one changed pixel fails as pixel-mismatch, naming that pixel and both colours. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("one-pixel-fails", "A frame with one changed pixel fails as pixel-mismatch, naming that pixel and both colors", || pending("frames", 4)),
+        case("one-pixel-fails", "A frame with one changed pixel fails as pixel-mismatch, naming that pixel and both colors", comparison_cases::one_pixel_fails),
         // A difference of 2 passes at tolerance 2 and fails at tolerance 1. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("channel-tolerance", "A difference of 2 passes at tolerance 2 and fails at tolerance 1", || pending("frames", 4)),
+        case("channel-tolerance", "A difference of 2 passes at tolerance 2 and fails at tolerance 1", comparison_cases::channel_tolerance),
         // The differing-pixel cap passes at its limit and fails one pixel past it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("max-differing", "The differing-pixel cap passes at its limit and fails one pixel past it", || pending("frames", 4)),
+        case("max-differing", "The differing-pixel cap passes at its limit and fails one pixel past it", comparison_cases::max_differing),
         // All regions of a check must pass in the same frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("regions-same-frame", "All regions of a check must pass in the same frame", || pending("frames", 4)),
+        case("regions-same-frame", "All regions of a check must pass in the same frame", comparison_cases::regions_same_frame),
         // A masked region is excluded, and a mask without a reason fails validation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("mask", "A masked region is excluded, and a mask without a reason fails validation", frames::mask),
         // Masks that leave less than 75% of a region fail validation; the 100x100 region whose four one-pixel border strips are masked (396 pixels, 96.04% still compared) passes this region rule, so `structural-vacuous` must be what rejects it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -208,7 +210,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A check carrying a field schema version 1 does not define, `edgeRadius` included, fails validation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("unknown-field", "A check carrying a field schema version 1 does not define, edgeRadius included, fails validation", frames::unknown_field),
         // Frames of different sizes fail without comparing. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("size-mismatch", "Frames of different sizes fail without comparing", || pending("frames", 4)),
+        case("size-mismatch", "Frames of different sizes fail without comparing", comparison_cases::size_mismatch),
         // A reference whose SHA-256 differs from its pin fails before comparing. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("reference-pin", "A reference whose SHA-256 differs from its pin fails before comparing", || pending("frames", 4)),
         // A missing reference fails, naming the path. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -238,7 +240,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Every check writes one well-formed FRAME record with its definition hash. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("frame-record", "Every check writes one well-formed FRAME record with its definition hash", || pending("frames", 4)),
         // Comparing two 1280x800 frames takes at most 50 ms. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("compare-cost", "Comparing two 1280x800 frames takes at most 50 ms", || pending("frames", 4)),
+        case("compare-cost", "Comparing two 1280x800 frames takes at most 50 ms", comparison_cases::compare_cost),
     ]),
     category("clock", "UI time & stepping", &[
         // An app reading the UI clock sees it stand still between steps. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
