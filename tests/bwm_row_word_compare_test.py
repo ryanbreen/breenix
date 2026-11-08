@@ -13,8 +13,7 @@ use std::sync::atomic::{AtomicUsize,Ordering};
 static BYTE_WORK:AtomicUsize=AtomicUsize::new(0);
 #[no_mangle]pub unsafe extern "C" fn bcmp(a:*const u8,b:*const u8,n:usize)->i32{BYTE_WORK.fetch_add(n,Ordering::Relaxed);for i in 0..n{if a.add(i).read_volatile()!=b.add(i).read_volatile(){return a.add(i).read_volatile() as i32-b.add(i).read_volatile() as i32;}}0}
 #[no_mangle]pub unsafe extern "C" fn memcmp(a:*const u8,b:*const u8,n:usize)->i32{bcmp(a,b,n)}
-// claim-lint:ok: tests/bwm_row_word_compare_test.py uses this Rust compiler attribute to observe scalar-call work.
-#[inline(never)]
+#[inline(never)] // claim-lint:ok: tests/bwm_row_word_compare_test.py uses this Rust compiler attribute to observe scalar-call work.
 @BODY@
 #[test]fn exact_rows_and_cost(){
  for offset in 0..8{for n in 0..65{let a=vec![0xa5;n+offset];let mut b=a.clone();assert!(equal_row(&a[offset..],&b[offset..]));for i in offset..n+offset{b[i]^=1;assert!(!equal_row(&a[offset..],&b[offset..]),"missed byte {i} of {n}");b[i]^=1;}}}
