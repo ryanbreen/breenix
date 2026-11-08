@@ -98,6 +98,11 @@ pub fn tree_probe_point(
     Ok((x, y))
 }
 
+/// Metadata-only acknowledgments keep the current pixel/tree publication.
+pub fn tree_capture_current(captured: u64, latest: u64, before: u64, after: u64) -> bool {
+    captured != 0 && captured <= latest && before != 0 && before == after
+}
+
 /// A stable widget address, resolved afresh for each new operation.
 #[derive(Clone, Debug)]
 pub struct Target {

@@ -324,15 +324,15 @@ impl Backend for LivePointer<'_> {
             .snapshot()?;
             if let Some(desktop) = desktop {
                 let info = self.info(target.window)?;
+                let (_, meta_before) = window::read_meta(target.window).map_err(|e| e.to_string())?;
                 let (tree, commit) = self.capture(target.window)?;
-                let newest = window::read_meta(target.window)
-                    .map_err(|e| e.to_string())?
-                    .0;
+                let (newest, meta_after) = window::read_meta(target.window).map_err(|e| e.to_string())?;
                 let after = status()?;
                 if before.claim_epoch == after.claim_epoch
                     && before.scene_version == after.scene_version
                     && desktop.root.value["scene_version"].as_u64() == Some(after.scene_version)
-                    && newest == commit
+                    && super::tree_capture_current(commit, newest,
+                        meta_before.tree_serializations, meta_after.tree_serializations)
                 {
                     let win = desktop
                         .children

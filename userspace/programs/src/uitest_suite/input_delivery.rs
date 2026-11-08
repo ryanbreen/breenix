@@ -261,8 +261,10 @@ fn outside(device: &Injector, code: u16, pressed: bool) -> Result<input::Event, 
                             row.disposition == "rejected" && row.reason == "not-selected",
                             format!("unselected source {row:?}"),
                         )?;
-                        println!("UI_INPUT_EXCLUDED serial={} key={} pressed={} disposition={} reason={}",
-                            e.serial, code, pressed, row.disposition, row.reason);
+                        let label = format!("q-device-{}-key-{code}-{}-{}-{}", e.device,
+                            if pressed { "down" } else { "up" }, row.disposition, row.reason);
+                        breenix_suite::suite::value(&label,
+                            i64::try_from(e.serial).map_err(|_| "input serial exceeds evidence range")?, "serial", None);
                         return Ok(e);
                     }
                 }
@@ -294,6 +296,7 @@ fn excluded(live: &mut LivePointer<'_>, id: u64) -> Result<(), String> {
         a.flags & u32::from(input::modifier::SHIFT) == 0,
         "unselected Shift leaked into selected a flags",
     )?;
+    breenix_suite::suite::value("selected-a-modifiers", i64::from(a.flags), "flags", None);
     script::delivered(a.serial)?;
     let release = live.send_key(key::A, false)?;
     script::delivered(release.serial)?;
@@ -310,11 +313,15 @@ fn excluded(live: &mut LivePointer<'_>, id: u64) -> Result<(), String> {
     let release = live.send_key(key::B, false)?;
     script::delivered(release.serial)?;
     let field = entry(live, id)?;
-    println!("UI_INPUT_EXCLUDED field={field}");
     require(
         field == "ab",
         "K did not type ab after excluded Q events",
-    )
+    )?;
+    let bytes = field.as_str().ok_or("entry value is not text")?.as_bytes();
+    breenix_suite::suite::value("field-length", bytes.len() as i64, "bytes", Some((2, 2)));
+    breenix_suite::suite::value("field-byte-a", i64::from(bytes[0]), "byte", Some((97, 97)));
+    breenix_suite::suite::value("field-byte-b", i64::from(bytes[1]), "byte", Some((98, 98)));
+    Ok(())
 }
 
 pub fn delivered() -> CaseResult {
