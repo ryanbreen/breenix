@@ -47,14 +47,14 @@ static CORE:RefCell<Core>=RefCell::new(Core::new());}
 fn now_ns()->u64{CLOCK.with(Cell::get)}
 fn advance(ns:u64){CLOCK.with(|c|c.set(c.get()+ns));}
 fn charge(ns:u64){CPU.with(|c|c.set(c.get()+ns));advance(ns);}
-struct Req{published:bool,failed:bool,sent_ns:Option<u64>}
+struct Req{published:bool,failed:bool,sent_ns:Option<u64>,progress_ns:Option<u64>}
 struct Context{warm_catalogue:bool,state:CtxState,dropped:bool,warm:u64,warm_after:u64}
 #[derive(PartialEq)]enum CtxState{Live}
 fn catalogue_mask()->u64{0}
 struct Device;impl Device{fn outstanding(&self)->usize{usize::from(!DONE.with(Cell::get))}}
 struct Core{subs:BTreeMap<u64,Req>,syncs:BTreeMap<u64,Req>,contexts:BTreeMap<u64,Context>,quarantined_at:Option<u64>,last_progress:u64,dev:Option<Device>,stalled:bool}
 impl Core{
- fn new()->Self{Self{subs:BTreeMap::from([(1,Req{published:false,failed:false,sent_ns:Some(0)})]),syncs:BTreeMap::new(),contexts:BTreeMap::new(),quarantined_at:None,last_progress:0,dev:Some(Device),stalled:false}}
+ fn new()->Self{Self{subs:BTreeMap::from([(1,Req{published:false,failed:false,sent_ns:Some(0),progress_ns:None})]),syncs:BTreeMap::new(),contexts:BTreeMap::new(),quarantined_at:None,last_progress:0,dev:Some(Device),stalled:false}}
  DEADLINE
  fn progress_readback(&mut self){if VIRTUAL.with(Cell::get){DONE.with(|c|c.set(true));}}
  fn poll_traced(&mut self, #[cfg(target_arch = "x86_64")] _:Option<()>){charge(50_000);self.observe();}
