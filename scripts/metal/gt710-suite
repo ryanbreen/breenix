@@ -4186,6 +4186,16 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
                 if (len(witnesses) != 1 or any(int(m[1]) != rounds
                         or not begin_case < m.start() < end_case for m in witnesses)):
                     raise ValueError(f'{case} requires one {label} total of {rounds} before its CASE')
+    if suite == 'ui-testing' and step_number >= 5:
+        for case, metric, cap in (('sessions/start-desktop', 'startup', 2_000_000_000),
+                                  ('sessions/start-kiosk', 'startup', 2_000_000_000),
+                                  ('frames/compare-cost', 'compare-ns', 500_000_000)):
+            reading = one(fr'^SUITE ui-testing VALUE {re.escape(case)} {metric}=(\d+)ns expect=0\.\.{cap}ns$',
+                          text, f'{case} {metric} measurement')
+            index = names.index(case)
+            begin_case = text.index(cases[index - 1][2]) + len(cases[index - 1][2]) if index else text.index(records[0][2])
+            if int(reading[1]) > cap or not begin_case < reading.start() < text.index(cases[index][2]):
+                raise ValueError(f'{case} {metric} exceeds its cap or is outside its case')
     if not 0 < int(records[case_count + 2][1][1]) <= 1800000:
         raise ValueError('WM elapsed time exceeds 1800 seconds')
     problem = verdict_api['result_problem'](manifest, parsed, names)
