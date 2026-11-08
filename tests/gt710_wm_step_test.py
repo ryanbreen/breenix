@@ -117,6 +117,25 @@ class WmStep(unittest.TestCase):
         result = metal_score.score(self.path)['milestones']['metal-gt710/wm-step']
         self.assertTrue(result['passed'], result)
 
+    def test_post_sequence_partial_diagnostic_preserves_complete_evidence(self):
+        # Exact diagnostic fragment from the retained capture; no site values.
+        tail = '[DISPATCH_STRAND_CENSUS:seq=694:tick=139251:ms=697713:saved=837:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=0:idle_no_stack=0:kthread_no_info=0:user_no_kstack=0:sig_deliverable_us'
+        complete = serial() + 'SUITE_SEQUENCE DONE suites=1\n'
+        cases = [(complete + tail, 0),
+                 (complete.replace(f'CASE {SELECTED[0]} PASS ms=1\n',
+                                   f'CASE {SELECTED[0]} PA'), 1),
+                 (complete + 'SUITE window-manager CASE cut', 1),
+                 (serial() + tail, 1)]
+        for text, expected in cases:
+            with self.subTest(tail=text[-220:]):
+                (self.path / 'serial.txt').write_text(text)
+                self.assertEqual(self.record(), expected)
+        for prefix in ('CASE ', 'MEMORY ', 'SCREEN ', 'upload ', 'SUITE_EVIDENCE ',
+                       'HTTP_UPLOAD ', 'gt710-upload'):
+            with self.subTest(prefix=prefix):
+                (self.path / 'serial.txt').write_text(complete + tail + prefix + 'cut')
+                self.assertEqual(self.record(), 1)
+
     def test_failed_selection_reports_its_scope_and_case_ids(self):
         step4 = json.loads((ROOT / 'docs/gui/gt710-step-21-4.json').read_text())['cases']
         passed = set(step4) - {'focus/initial-focus'}

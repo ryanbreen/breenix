@@ -4098,7 +4098,14 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
             or required != [name for name in names if name in required]):
         raise ValueError('invalid WM selection or manifest order')
     fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal']
-    if (not serial.endswith('\n') or any(re.search(p, serial) for p in
+    complete_serial = serial.endswith('\n')
+    if not complete_serial:
+        # Coordinator ruling 291: power-off may cut a diagnostic after the
+        # final sequence record, never suite evidence or an upload record.
+        tail = serial.rsplit('\n', 1)[-1]
+        complete_serial = (re.search(r'^SUITE_SEQUENCE DONE suites=\d+\n', serial, re.M) is not None
+                           and re.search(r'SUITE|CASE|MEMORY|SCREEN|upload', tail, re.I) is None)
+    if (not complete_serial or any(re.search(p, serial) for p in
             fatal + [r'KERNEL PANIC[:!]', r'SUITE_SEQUENCE (?:STALLED|FAIL)'])):
         raise ValueError('incomplete or fatal WM capture')
     startup = one(r'^GT710_CLOCK_STARTUP (.+)$', serial, 'WM full-clock startup')
