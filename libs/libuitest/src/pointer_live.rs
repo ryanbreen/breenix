@@ -121,7 +121,7 @@ impl<'a> LivePointer<'a> {
     pub fn new(session: &'a mut Session) -> Result<Self, String> {
         let desktop = Mapping::new(0)?;
         let reader = Reader::open(true).map_err(|e| e.to_string())?;
-        Ok(Self {
+        let mut live = Self {
             session,
             reader,
             pending: Vec::new(),
@@ -129,7 +129,11 @@ impl<'a> LivePointer<'a> {
             watched: BTreeMap::new(),
             last: None,
             serials: Vec::new(),
-        })
+        };
+        // Reader mappings are passive; an idle compositor needs a poll wake
+        // before a consumer can wait for its first desktop publication.
+        live.move_batch((0, 0), None)?;
+        Ok(live)
     }
     pub fn session(&mut self) -> &mut Session {
         self.session
@@ -173,6 +177,26 @@ impl<'a> LivePointer<'a> {
             .find(|w| w.id == id)
             .copied()
             .ok_or_else(|| format!("input target window={id} missing"))
+    }
+    fn activate(&mut self, id: u64) -> Result<(), String> {
+        let end = Instant::now() + Duration::from_secs(2);
+        loop {
+            if self.info(id)?.flags & abi::win_flags::FOCUSED != 0 { return Ok(()); }
+            // The session fixture pins Alt-Tab to focus_next. Go through bwm's
+            // real policy so an obscured widget can be resolved after raising.
+            let alt = self.wm_key(key::LEFT_ALT, true);
+            let tab = match &alt {
+                Ok(_) => self.wm_key(key::TAB, true),
+                Err(error) => Err(error.clone()),
+            };
+            let tab_up = self.wm_key(key::TAB, false);
+            let alt_up = self.wm_key(key::LEFT_ALT, false);
+            alt?;
+            tab?;
+            tab_up?;
+            alt_up?;
+            if Instant::now() >= end { return Err(format!("input-focus window={id} activation timeout")); }
+        }
     }
     /// Attach before requesting a later app commit; attachment alone is passive.
     pub fn watch(&mut self, id: u64) -> Result<(), String> {
@@ -449,6 +473,7 @@ impl super::KeyboardBackend for LivePointer<'_> {
             .ok_or("text not delivered".into())
     }
     fn focus(&mut self, target: &Target) -> Result<(), String> {
+        self.activate(target.window)?;
         let resolved = self.resolve(target)?;
         let tree = self.tree(target.window)?;
         let query = Query {
