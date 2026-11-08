@@ -3977,6 +3977,11 @@ def completed_suite_capture(directory, sha, suite=None):
         resources_identity(boot, suite or boot.get('suite'), sha)
     events = [json.loads(line) for line in read('events.jsonl').splitlines()]
     status = int(read('exit-status'))
+    handoffs = [i for i, event in enumerate(events) if event.get('event') == 'cold-readback-next']
+    if handoffs:
+        boundaries = [i for i, event in enumerate(events) if event.get('event') == 'closed']
+        if len(boundaries) != 1 or handoffs != [boundaries[0] + 1]:
+            raise ValueError('cold disk handoff is outside its post-closure position')
     if len(boot.get('suites') or []) > 1:
         serial = read('serial.txt')
         bad = re.search(r'^SUITE \S+ CASE \S+ (?:FAIL|SKIP)\b.*$', serial, re.M)
@@ -4003,8 +4008,10 @@ def completed_suite_capture(directory, sha, suite=None):
                 tail = tail[1:]
             receipt = json.loads(read('suite-readback.json'))
             child = receipt.get('id', '')
-            non_disk = bool(suite) and not json.loads((Path(__file__).resolve().parents[2]
-                / 'docs/suites' / (suite + '.json')).read_text()).get('diskChecks')
+            if receipt.get('passed') is not (status == 0):
+                raise ValueError('cold disk receipt differs from the aggregate verdict')
+            non_disk = bool(suite) and (receipt.get('passed') is True or not json.loads((directory
+                / 'definition/docs/suites' / (suite + '.json')).read_text()).get('diskChecks'))
             disk_handoff = not handoff or any(json.loads((directory / 'definition/docs/suites'
                 / (name + '.json')).read_text()).get('diskChecks') for name in boot['suites'])
             driver_closed = (boundary.get('status') == 1 and boundary.get('endedBy') == 'driver'
