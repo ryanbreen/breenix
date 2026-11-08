@@ -7,8 +7,9 @@ pub const PHASES: &[&str] = &[
     "supervisor-display", "supervisor-devices", "supervisor-ready",
     "configure-begin", "fixtures-ready", "pins-ready", "arena-ready", "case-connected",
     "compositor-request", "compositor-forked", "compositor-exec", "config-ready",
-    "context-begin", "context-ready", "targets-ready", "fonts-ready", "scene-ready",
-    "background-ready", "chrome-ready", "fills-ready", "pointer-presented", "checks-ready",
+    "context-begin", "context-ready", "desktop-target-ready", "background-target-ready",
+    "scanout-a-ready", "scanout-b-ready", "scene-target-ready", "targets-ready", "fonts-ready", "scene-ready",
+    "background-ready", "chrome-blit-ready", "chrome-taskbar-ready", "chrome-appbar-ready", "chrome-ready", "fills-ready", "pointer-presented", "checks-ready",
     "desktop-ready", "app-request", "app-forked", "app-exec", "app-commit", "first-composite",
 ];
 extern "C" {
@@ -50,8 +51,14 @@ impl Trace {
 impl Drop for Trace { fn drop(&mut self) { unsafe { munmap(self.0.cast(), 4096); } } }
 pub fn now() -> u64 { libbreenix::time::now_monotonic().map_or(0, |t| t.as_nanos() as u64) }
 /// Process-local handle; no path lookup or allocation at subsequent stamps.
-pub fn mark(name: &str) {
+fn configured_trace() -> Option<&'static Trace> {
     static TRACE: OnceLock<Option<Trace>> = OnceLock::new();
-    if let Some(trace) = TRACE.get_or_init(|| std::env::var_os("BREENIX_CONFIG_ROOT")
-        .and_then(|root| Trace::open(Path::new(&root)).ok())) { trace.mark(name); }
+    TRACE.get_or_init(|| std::env::var_os("BREENIX_CONFIG_ROOT")
+        .and_then(|root| Trace::open(Path::new(&root)).ok())).as_ref()
+}
+pub fn mark(name: &str) {
+    if let Some(trace) = configured_trace() { trace.mark(name); }
+}
+pub fn at(name: &str, ns: u64) {
+    if let Some(trace) = configured_trace() { trace.at(name, ns); }
 }

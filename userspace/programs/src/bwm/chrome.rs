@@ -401,11 +401,13 @@ pub(super) fn appbar_hit_test(windows: &[Window], screen_w: usize, screen_h: usi
 pub(super) fn redraw_all_windows(fb: &mut Surface, windows: &[Window], stack: &Stack,
                       clock_text: &[u8], ui_font: &mut Option<CachedFont>) {
     draw_taskbar(fb, clock_text, ui_font);
+    libuitest::startup::mark("chrome-taskbar-ready");
     for win in ordered_windows(windows, stack) {
         if stack.minimized(win.window_id) || win.chromeless { continue; }
         draw_window_frame(fb, win, stack.focus() == Some(win.window_id), ui_font);
     }
     draw_appbar(fb, windows, stack, ui_font);
+    libuitest::startup::mark("chrome-appbar-ready");
 }
 
 /// Repaint the whole desktop target: the background, then the chrome.
@@ -413,6 +415,7 @@ pub(super) fn compose_full_redraw(gpu: &mut Compositor, windows: &[Window], stac
                        ui_font: &mut Option<CachedFont>) {
     let Compositor { desktop, background, .. } = gpu;
     libgfx::blit::blit(desktop, background, 0, 0);
+    libuitest::startup::mark("chrome-blit-ready");
     redraw_all_windows(desktop, windows, stack, clock, ui_font);
 }
 

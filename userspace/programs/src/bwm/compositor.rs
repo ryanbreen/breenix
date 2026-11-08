@@ -141,8 +141,11 @@ impl Compositor {
         libuitest::startup::mark("context-begin");
         let context = gpu::context_create().map_err(|e| format!("context: errno {}", -e))?;
         libuitest::startup::mark("context-ready");
-        let (desktop, background) = match (Surface::new(width as usize, height as usize, Format::BGRX),
-            Surface::new(width as usize, height as usize, Format::BGRX)) {
+        let desktop = Surface::new(width as usize, height as usize, Format::BGRX);
+        libuitest::startup::mark("desktop-target-ready");
+        let background = Surface::new(width as usize, height as usize, Format::BGRX);
+        libuitest::startup::mark("background-target-ready");
+        let (desktop, background) = match (desktop, background) {
             (Ok(d), Ok(b)) => (d, b),
             (d, b) => {
                 gpu::context_destroy(context);
@@ -185,9 +188,11 @@ impl Compositor {
         for slot in 0..2 {
             self.scanout[slot] = gpu::scanout_target_create(abi::format::B8G8R8A8, self.width, self.height)
                 .map_err(|e| format!("scanout target: errno {}", -e))?;
+            libuitest::startup::mark(if slot == 0 { "scanout-a-ready" } else { "scanout-b-ready" });
         }
         self.scene = gpu::target_create(abi::format::B8G8R8A8, self.width, self.height)
             .map_err(|e| format!("scene target: errno {}", -e))?;
+        libuitest::startup::mark("scene-target-ready");
         self.next = 0;
         self.full = true;
         let mut words = Vec::new();
@@ -308,6 +313,9 @@ impl Compositor {
                 0 => {
                     // Scheduling hints cannot undo an already completed COMPOSITE.
                     self.last_timing=super::session::timing(c.serial).unwrap_or_default();
+                    if self.last_timing.presented_ns != 0 && windows.iter().any(|w| w.sample != 0 && w.commit_id != 0) {
+                        libuitest::startup::at("first-composite", self.last_timing.presented_ns);
+                    }
                     self.last_timing.prepare_ns=self.last_timing.prepare_ns.saturating_add(userspace_prepare);
                     self.next ^= 1;
                     self.last_serial = c.serial;
