@@ -1848,7 +1848,7 @@
       "milestones": [
         {
           "id": "runner",
-          "title": "result transport & proof executor",
+          "title": "Proof executor & subreaper",
           "measure": {
             "suite": "ui-testing",
             "categories": [
@@ -1928,7 +1928,7 @@
         },
         {
           "id": "proof",
-          "title": "proven on bwm & a test app",
+          "title": "End-to-end scenarios & planted faults",
           "measure": {
             "suite": "ui-testing",
             "categories": [

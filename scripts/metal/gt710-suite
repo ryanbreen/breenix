@@ -4271,7 +4271,7 @@ def wm_step_capture(directory, sha, step_number):
 
 
 def ui_step_capture(directory, sha, step_number):
-    return step_capture(directory, sha, step_number, 'ui-testing', 'gt710-step-22-', 8)
+    return step_capture(directory, sha, step_number, 'ui-testing', 'gt710-step-22-', 7)
 
 
 def record_step_capture(directory, sha, step_number, suite, prefix, max_step):
@@ -4294,7 +4294,7 @@ def record_wm_capture(directory, sha, step_number):
 
 
 def record_ui_capture(directory, sha, step_number):
-    return record_step_capture(directory, sha, step_number, 'ui-testing', 'gt710-step-22-', 8)
+    return record_step_capture(directory, sha, step_number, 'ui-testing', 'gt710-step-22-', 7)
 
 
 def record_breengel_capture(directory, sha, category):
@@ -4676,7 +4676,7 @@ def main():
     breengel.add_argument('--breengel-stage', action='store_true', help='score a completed BreenGL boot against step 9.3')
     breengel.add_argument('--breengel-full', action='store_true', help='score full 401-case acceptance against step 9.4')
     breengel.add_argument('--wm-step', type=int, choices=range(1, 8), help='score a cumulative window-manager step (21.1 through 21.7)')
-    breengel.add_argument('--ui-step', type=int, choices=range(1, 9), help='score a cumulative ui-testing step (22.1 through 22.8)')
+    breengel.add_argument('--ui-step', type=int, choices=range(1, 8), help='score a cumulative ui-testing step (22.1 through 22.7)')
     parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
     parser.add_argument('--isolation', action='store_true', help='score PR 8.5 isolation and preceding selections from the same captures')
     parser.add_argument('--shapes', action='store_true', help='score PR 8.4 shapes and preceding selections from the same captures')

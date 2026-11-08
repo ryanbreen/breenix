@@ -2,14 +2,14 @@
   "id": "ui-testing",
   "title": "UI test framework",
   "area": "UI test framework",
-  "summary": "Scripted keyboard, pointer and text input reaches GUI programs through the window manager with a recorded outcome for every event; their trees and committed frames are captured whole and compared to independent expectations at acknowledged clock epochs and causal barriers; every planted defect is caught for its own reason; and every failure leaves its evidence, on every target.",
+  "summary": "Exercises scripted input, UI trees and committed frames, clock and settle behavior, failure evidence, and end-to-end scenarios with planted faults in GUI sessions.",
   "binary": "/sbin/suite-ui-testing",
   "timingSensitive": true,
   "needs3dGpu": true,
   "categories": [
     {
       "id": "runner",
-      "title": "Result transport & proof executor",
+      "title": "Proof executor & subreaper",
       "cases": [
         {
           "id": "inner-pass",
@@ -455,7 +455,7 @@
     },
     {
       "id": "proof",
-      "title": "Proven on bwm & a test app",
+      "title": "End-to-end scenarios & planted faults",
       "cases": [
         {
           "id": "fault-wrong-color",
@@ -496,6 +496,6 @@
       ]
     }
   ],
-  "aggregate": "after E22 22.8",
+  "aggregate": "after E22 22.7",
   "frameChecks": []
 }
