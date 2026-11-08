@@ -34,6 +34,33 @@ fn pair(kind: u16) -> (std::sync::Arc<Socket>, std::sync::Arc<Socket>) {
     UnixSock::new_pair(kind, caller_ucred()).unwrap()
 }
 #[test]
+fn root_only_endpoint_checks_each_send_after_uid_drop() {
+    const OPTION: i32=0x4252_0001;
+    for kind in [1,2,5] {
+        let (a,b)=pair(kind);
+        assert_eq!(send(&a,b"ordinary"),Ok(8));
+        assert_eq!(receive(&b,64,0).unwrap().data,b"ordinary");
+        set_effective_uid(0);
+        assert_eq!(b.ops().setsockopt(&b,1,OPTION,&1i32.to_ne_bytes()),Ok(()));
+        assert_eq!(send(&a,b"root"),Ok(4));
+        assert_eq!(receive(&b,64,0).unwrap().data,b"root");
+        set_effective_uid(1000);
+        assert_eq!(send(&a,b"BAD"),Err(1));
+        assert!(matches!(receive(&b,64,0),Err(11)),"denied bytes reached queue");
+        assert_eq!(b.ops().setsockopt(&b,1,OPTION,&0i32.to_ne_bytes()),Err(1));
+        assert_eq!(send(&b,b"reply"),Ok(5));
+        assert_eq!(receive(&a,64,0).unwrap().data,b"reply");
+        set_effective_uid(0);
+        let mut option=OptBuf {bytes:[0;16],len:0};
+        b.ops().getsockopt(&b,1,OPTION,&mut option).unwrap();
+        assert_eq!(option.len,4);
+        assert_eq!(&option.bytes[..4],&1i32.to_ne_bytes());
+        assert_eq!(send(&a,b"recovery"),Ok(8));
+        assert_eq!(receive(&b,64,0).unwrap().data,b"recovery");
+        set_effective_uid(2);
+    }
+}
+#[test]
 fn bidirectional_stream_and_record_socketpairs() {
     for kind in [1, 2, 5] {
         let (a, b) = pair(kind);

@@ -10,10 +10,12 @@ pub mod object {
         pub uid: u32,
         pub gid: u32,
     }
+    std::thread_local! { static EFFECTIVE_UID: std::cell::Cell<u32> = const { std::cell::Cell::new(2) }; }
+    pub fn set_effective_uid(uid: u32) { EFFECTIVE_UID.with(|current|current.set(uid)); }
     pub fn caller_ucred() -> UCred {
         UCred {
             pid: 1,
-            uid: 2,
+            uid: EFFECTIVE_UID.with(|current|current.get()),
             gid: 3,
         }
     }
@@ -132,6 +134,11 @@ pub mod object {
         pub bytes: [u8; 16],
         pub len: usize,
     }
+    impl OptBuf {
+        pub fn put_int(&mut self, value: i32) {
+            self.bytes[..4].copy_from_slice(&value.to_ne_bytes()); self.len=4;
+        }
+    }
     pub trait ProtoOps: Send + Sync {
         fn bind(&self, sk: &Arc<Socket>, addr: &SockAddr) -> Result<(), i32>;
         fn listen(&self, sk: &Arc<Socket>, backlog: i32) -> Result<(), i32>;
@@ -161,6 +168,9 @@ pub mod object {
             name: i32,
             out: &mut OptBuf,
         ) -> Result<(), i32>;
+        fn setsockopt(&self, _sk: &Socket, _level: i32, _name: i32, _val: &[u8]) -> Result<(), i32> {
+            Err(92)
+        }
         fn release(&self, sk: &Socket);
     }
 }
