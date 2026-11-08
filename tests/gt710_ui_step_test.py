@@ -158,6 +158,8 @@ class UiStep(unittest.TestCase):
         frame = ('SUITE ui-testing FRAME frames/frame-record pattern def=0123abcd ref=formula '
                  'source=surface commit=0 epoch=0 w=4 h=4 sha256=' + 'a' * 64 + ' result=match\n')
         text = text.replace('SUITE ui-testing CASE frames/frame-record ', frame + 'SUITE ui-testing CASE frames/frame-record ')
+        phase = 'UI_STARTUP ui-testing sessions/start-desktop connect-begin=100 first-composite=270000100\n'
+        text = text.replace('SUITE ui-testing CASE sessions/start-desktop ', phase + 'SUITE ui-testing CASE sessions/start-desktop ')
         witnesses = []
         for name, rounds in [('capture-while-drawing', 1), ('capture-two-readers', 1),
                              ('capture-resize-race', 1), ('capture-destroy-race', 23), ('capture-threads', 3)]:
@@ -170,6 +172,9 @@ class UiStep(unittest.TestCase):
             (self.path / 'serial.txt').write_text(body)
             return API['record_ui_capture'](self.path, SHA, 4)
         self.assertEqual(score(text), 0)
+        for bad in [text.replace(phase, ''), text.replace(phase, phase + phase),
+                    text.replace('first-composite=270000100', 'first-composite=270000101')]:
+            self.assertEqual(score(bad), 1)
         for values in witnesses:
             line = values.splitlines(keepends=True)[0]
             for bad in [text.replace(line, '', 1), text.replace(line, line.replace(line.split('=')[1].strip(), '0count'), 1),
