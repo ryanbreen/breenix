@@ -37,3 +37,43 @@ pub fn compare(expected: Frame<'_>, actual: Frame<'_>, options: Options<'_>) -> 
     });
     Ok(Verdict { comparison, closest_region })
 }
+
+/// Evaluate the validated structural definition over its post-mask domain.
+pub fn structural(frame: Frame<'_>, check: &crate::schema::Check) -> Result<bool, Error> {
+    let invalid = || Error::Invalid(libpixcheck::Error::Predicate);
+    let definition = &check.definition;
+    let kind = definition["predicate"].as_str().ok_or_else(invalid)?;
+    let params = &definition["params"];
+    let colour = if kind == "uniform" || kind == "outside" {
+        let text = params["colour"].as_str().ok_or_else(invalid)?;
+        let value = u32::from_str_radix(text.strip_prefix('#').ok_or_else(invalid)?, 16).map_err(|_| invalid())?;
+        Some([(value >> 16) as u8, (value >> 8) as u8, value as u8])
+    } else { None };
+    if !matches!(kind, "uniform" | "outside" | "count") { return Err(invalid()); }
+    let mut colours = Vec::new();
+    let mut visited = 0u64;
+    let mut matches = true;
+    for y in 0..frame.height {
+        for x in 0..frame.width {
+            if !check.in_effective_domain(x as u32, y as u32) { continue; }
+            visited += 1;
+            let p = frame.pixel(x, y).expect("coordinates lie inside frame");
+            let rgb = [p[2], p[1], p[0]];
+            match kind {
+                "uniform" => matches &= Some(rgb) == colour,
+                "outside" => matches &= Some(rgb) != colour,
+                "count" => colours.push(rgb),
+                _ => unreachable!(),
+            }
+        }
+    }
+    if visited == 0 || visited != check.effective_area { return Err(invalid()); }
+    if kind == "count" {
+        let min = params["min"].as_u64().ok_or_else(invalid)?;
+        let max = params.get("max").and_then(|v| v.as_u64());
+        colours.sort_unstable();
+        colours.dedup();
+        matches = colours.len() as u64 >= min && max.is_none_or(|m| colours.len() as u64 <= m);
+    }
+    Ok(matches)
+}

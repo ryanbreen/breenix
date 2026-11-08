@@ -80,6 +80,7 @@ pub struct Check {
     pub source: Value,
     pub compared_area: u64,
     pub effective_area: u64,
+    pub(crate) definition: Value,
     compared: Vec<Rect>,
     effective: Vec<Rect>,
 }
@@ -512,6 +513,7 @@ pub fn validate(value: &Value, ctx: &Context<'_>) -> Result<Check, String> {
         source: source.clone(),
         compared_area,
         effective_area,
+        definition: value.clone(),
         compared,
         effective,
     })
