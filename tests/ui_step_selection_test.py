@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify the cumulative UI testing step selections against the suite manifest."""
 import json
+import re
 from pathlib import Path
 import unittest
 
@@ -29,6 +30,30 @@ class UiSelectionsTest(unittest.TestCase):
         self.assertEqual(previous, set(cases))
         self.assertEqual(selected, cases)
         self.assertFalse((ROOT / "docs/gui/gt710-step-22-8.json").exists())
+
+    def test_step_six_bodies_and_pending_assignments(self):
+        source = (ROOT / "userspace/programs/src/suite_ui_testing.rs").read_text()
+        category = None
+        bodies = {}
+        for line in source.splitlines():
+            match = re.search(r'category\("([^"]+)"', line)
+            if match:
+                category = match.group(1)
+            match = re.search(r'case\("([^"]+)".*', line)
+            if match:
+                self.assertIsNotNone(category)
+                bodies[f"{category}/{match.group(1)}"] = line
+        manifest = json.loads((ROOT / "docs/suites/ui-testing.json").read_text())
+        ids = {f"{cat['id']}/{case['id']}" for cat in manifest['categories'] for case in cat['cases']}
+        self.assertEqual(set(bodies), ids)
+        selected = json.loads((ROOT / "docs/gui/gt710-step-22-6.json").read_text())['cases']
+        for case in selected:
+            with self.subTest(case=case):
+                self.assertNotIn('pending(', bodies[case])
+        for case, body in bodies.items():
+            if 'pending(' in body:
+                with self.subTest(pending=case):
+                    self.assertRegex(body, r'pending\("[^" ]+", 7\)')
 
 
 if __name__ == '__main__':
