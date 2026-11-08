@@ -1,6 +1,8 @@
 """A closed non-disk selection keeps its own verdict after a cold-disk tail."""
 import json
 import unittest
+import shutil
+from pathlib import Path
 from gt710_wm_step_test import WmStep, API, SHA, NAMES, SELECTED, serial
 
 CHILD = '20261104T000001Z-metal'
@@ -18,6 +20,13 @@ class ColdSelection(unittest.TestCase):
         for name in NAMES:
             if name not in SELECTED:
                 text = text.replace(f'CASE {name} FAIL ms=1 msg=pending', f'CASE {name} PASS ms=1')
+        root = Path(__file__).resolve().parents[1]
+        shutil.copyfile(root/'docs/suites/files-io.json', self.path/'definition/docs/suites/files-io.json')
+        empty = [c['id'] for c in json.loads((root/'docs/suites/window-manager.json').read_text())['categories'] if not c['cases']]
+        self.verdict = ('FAIL window-manager: planned categories have no cases: '+', '.join(empty)+'; acceptance is blocked\n'
+            'PASS files-io: SUITE files-io DONE passed=219 failed=0 skipped=0 total=219; files-io MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=48; raw disk checks passed=5\n'
+            'FAIL: 1 of 2 suites passed\n')
+        (self.path/'suite-verdict.txt').write_text(self.verdict)
         self.text = text.replace(f'DONE passed={len(SELECTED)} failed={len(NAMES)-len(SELECTED)}',
                                  f'DONE passed={len(NAMES)} failed=0')
         (self.path / 'serial.txt').write_text(self.text)
@@ -44,10 +53,25 @@ class ColdSelection(unittest.TestCase):
         (self.path/'serial.txt').write_text(bad)
         self.assertEqual(API['record_wm_capture'](self.path, SHA, 7), 1)
         report = json.loads((self.path/'gt710-wm-step.json').read_text())
-        self.assertIn('selected WM cases failed',report['cases'][0]['reason'])
+        self.assertIn('case failure',report['cases'][0]['reason'])
         (self.path/'serial.txt').write_text(self.text)
         (self.path/'native-suites/window-manager/gt710-pixels.rle').write_bytes(b'corrupt')
         self.assertEqual(API['record_wm_capture'](self.path, SHA, 7), 1)
+
+    def test_aggregate_failure_must_only_name_planned_empty_categories(self):
+        for text in [self.text+'SUITE files-io CASE io/write FAIL ms=1 msg=planted\n',
+                     self.text+'SUITE files-io CASE io/write SKIP ms=1\n']:
+            (self.path/'serial.txt').write_text(text)
+            with self.assertRaises(ValueError):
+                API['completed_suite_capture'](self.path,SHA,'window-manager')
+        (self.path/'serial.txt').write_text(self.text)
+        (self.path/'suite-verdict.txt').write_text(self.verdict.replace('planned categories have no cases:','unknown refusal:'))
+        with self.assertRaises(ValueError):
+            API['completed_suite_capture'](self.path,SHA,'window-manager')
+        (self.path/'suite-verdict.txt').write_text(self.verdict)
+        self.events[3],self.events[4]=self.events[4],self.events[3];self.save()
+        with self.assertRaises(ValueError):
+            API['completed_suite_capture'](self.path,SHA,'window-manager')
 
     def test_tail_is_bound_and_disk_failure_stays_a_failure(self):
         with self.assertRaises(ValueError):
