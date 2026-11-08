@@ -21,6 +21,8 @@ mod formula_pattern;
 mod reference_cases;
 #[path = "uitest_suite/frames.rs"]
 mod frames;
+#[path = "uitest_suite/canonical_cases.rs"]
+mod canonical_cases;
 #[path = "uitest_suite/capture_cases.rs"]
 mod capture_cases;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
@@ -242,9 +244,9 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A reference PNG decodes to the pixels that were encoded. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("png-reference", "A reference PNG decodes to the pixels that were encoded", || reference_cases::png_reference_at(std::path::Path::new(reference_cases::ROOT)).map_err(Into::into)),
         // Captures taken with the cursor hidden contain no cursor pixels. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("cursor-excluded", "Captures taken with the cursor hidden contain no cursor pixels", || pending("frames", 4)),
+        case("cursor-excluded", "Captures taken with the cursor hidden contain no cursor pixels", canonical_cases::cursor_excluded).session(libuitest::supervisor::serve),
         // The test app's canonical scene hashes to the pinned value on this target. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("cross-target", "The test app's canonical scene hashes to the pinned value on this target", || pending("frames", 4)),
+        case("cross-target", "The test app's canonical scene hashes to the pinned value on this target", canonical_cases::cross_target).session(libuitest::supervisor::serve),
         // Every check writes one well-formed FRAME record with its definition hash. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("frame-record", "Every check writes one well-formed FRAME record with its definition hash", || reference_cases::frame_record_at(std::path::Path::new(reference_cases::ROOT)).map_err(Into::into)).checks(&["pattern"]),
         // Comparing two 1280x800 frames takes at most 50 ms. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
