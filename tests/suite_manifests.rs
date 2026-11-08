@@ -1634,6 +1634,34 @@ fn setup_is_silent_and_cannot_bypass_the_table() {
 }
 
 #[test]
+fn collection_metadata_is_optional_and_strict() {
+    let mut manifest = serde_json::json!({"id":"demo", "title":"Demo", "area":"gui",
+        "summary":"Collection fixture", "binary":"/sbin/suite-demo",
+        "categories":[{"id":"c","title":"C","cases":[{"id":"a","title":"A"}]}]});
+    let dir = std::env::temp_dir().join(format!("suite-collects-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("demo.json");
+    let validate = |value: &Value| {
+        fs::write(&path, value.to_string()).unwrap();
+        let mut errors = Vec::new();
+        read_manifest(&path, &mut errors);
+        errors
+    };
+    assert!(validate(&manifest).is_empty());
+    manifest["categories"][0]["cases"][0]["collects"] = serde_json::json!(true);
+    assert!(validate(&manifest).is_empty());
+    for invalid in [serde_json::json!(false), serde_json::json!(null),
+        serde_json::json!("true"), serde_json::json!(1)] {
+        manifest["categories"][0]["cases"][0]["collects"] = invalid;
+        assert!(validate(&manifest).iter().any(|error| error.contains("collects")));
+    }
+    manifest["categories"][0]["cases"][0].as_object_mut().unwrap().remove("collects");
+    manifest["categories"][0]["cases"][0]["unknown"] = serde_json::json!(true);
+    assert!(validate(&manifest).iter().any(|error| error.contains("unexpected key \"unknown\"")));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn aggregate_is_optional_and_strict_and_unknown_keys_stay_rejected() {
     let root = repo_root();
     let manifest: Value = serde_json::from_str(&fs::read_to_string(root.join("docs/suites/ui-testing.json")).unwrap()).unwrap();
@@ -1720,6 +1748,8 @@ fn frame_checks_are_optional_and_strict() {
     let baseline_errors = validate(&manifest);
     assert!(baseline_errors.is_empty(), "{baseline_errors:?}");
     manifest["frameChecks"] = serde_json::json!([rows[0]["check"]]);
+    let checked = validate_frame_checks(&manifest["frameChecks"], None, frame_cases::FORMULAS).unwrap();
+    assert_eq!(checked[0].definition, rows[0]["check"]);
     assert!(validate(&manifest).is_empty(), "a valid frameChecks entry must be admitted: {:?}", validate(&manifest));
     for invalid in [serde_json::json!({}), serde_json::json!([{"version":2}])] {
         manifest["frameChecks"] = invalid;
