@@ -143,3 +143,17 @@ fn typed_capture_error_distinguishes_device_from_arena_refusal() {
     assert_eq!(slot.detail, "arena slot already used");
     drop(arena); std::fs::remove_file(path).unwrap();
 }
+
+#[test] fn repeated_screen_observations_use_fresh_one_shot_arenas() {
+    let _guard=SERIAL.lock().unwrap();
+    *DEVICE.lock().unwrap()=State::default();
+    let path=std::env::temp_dir().join(format!("ui-screen-scratch-{}",std::process::id()));
+    let layout=arena::Layout::for_mode(16,4).unwrap();
+    for _ in 0..3 {
+        let (record,bytes)=capture::screen_fresh(&path,layout,"cursor",window::ObservationKind::Composed).unwrap();
+        assert_eq!(record.composite,90);
+        assert_eq!(bytes,vec![0x42;256]);
+        assert!(!path.exists());
+    }
+    assert_eq!(DEVICE.lock().unwrap().calls,3);
+}
