@@ -321,6 +321,13 @@ def session_wiring(test, expected):
 
 
 class RunnerRoles(unittest.TestCase):
+    def test_case_death_uses_collection_death_fixture(self):
+        suite = (ROOT / 'userspace/programs/src/suite_ui_testing.rs').read_text()
+        diagnosis = suite.split('category("diagnosis",', 1)[1].split('    ]),', 1)[0]
+        self.assertRegex(diagnosis, r'case\("case-death",[^\n]*diagnosis::case_death\)')
+        source = (ROOT / 'userspace/programs/src/uitest_suite/diagnosis.rs').read_text()
+        self.assertIn('collection_evidence("collection-death", "crash")', item(source, 'pub fn case_death('))
+
     def test_result_transport_opens_independently_of_the_live_strip(self):
         source = (ROOT / PATH).read_text()
         body = item(source, 'fn run_case_body(')
