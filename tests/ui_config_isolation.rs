@@ -61,11 +61,11 @@ fn planted_content_membership_type_and_mode_changes_are_restored_and_named() {
     fs::remove_dir_all(root.join("usr/share/applications/nested")).unwrap();
     fs::write(root.join("var/log/extra"), b"log").unwrap();
     let error = baseline.verify_restore().unwrap_err();
-    for path in ["/etc/fonts.conf", "/etc/hotkeys.conf", "/etc/bwm.conf", "/usr/share/applications", "/var/log"] { assert!(error.contains(path), "{error}"); }
+    for path in ["/etc/fonts.conf", "/etc/hotkeys.conf", "/etc/bwm.conf", "/usr/share/applications"] { assert!(error.contains(path), "{error}"); }
     assert_eq!(fs::read(root.join("etc/fonts.conf")).unwrap(), b"fonts");
     assert!(!root.join("etc/bwm.conf").exists());
     assert_eq!(fs::read(root.join("usr/share/applications/link")).unwrap(), b"catalog");
-    assert!(fs::read_dir(root.join("var/log")).unwrap().next().is_none());
+    assert_eq!(fs::read(root.join("var/log/extra")).unwrap(), b"log");
     assert_ne!(fs::metadata(root.join("etc/hotkeys.conf")).unwrap().permissions().mode() & 0o777, 0o600);
     let baseline = config::Snapshot::capture_at(&root).unwrap();
     fs::remove_file(root.join("etc/fonts.conf")).unwrap();
@@ -80,5 +80,26 @@ fn planted_content_membership_type_and_mode_changes_are_restored_and_named() {
     assert!(baseline.verify_restore().unwrap_err().contains("/etc/fonts.conf"));
     assert_eq!(fs::read(root.join("outside")).unwrap(), b"unrelated");
     assert_eq!(fs::read(root.join("etc/fonts.conf")).unwrap(), b"fonts");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn live_service_log_appends_survive_custody_with_the_same_open_inode() {
+    use std::{io::Write, os::unix::fs::MetadataExt};
+    assert_eq!(config::GLOBAL_PATHS.as_slice(), ["/etc/fonts.conf", "/etc/hotkeys.conf", "/etc/bwm.conf", "/usr/share/applications"]);
+    let root = std::env::temp_dir().join(format!("service-log-custody-{}", std::process::id()));
+    fs::create_dir_all(root.join("var/log")).unwrap();
+    let path = root.join("var/log/service.log");
+    fs::write(&path, b"before\n").unwrap();
+    let mut service = fs::OpenOptions::new().append(true).open(&path).unwrap();
+    let before = service.metadata().unwrap();
+    let snapshot = config::Snapshot::capture_at(&root).unwrap();
+    service.write_all(b"during-case\n").unwrap();
+    snapshot.verify_restore().unwrap();
+    let after = fs::metadata(&path).unwrap();
+    assert_eq!((before.dev(), before.ino()), (after.dev(), after.ino()));
+    assert_eq!(service.metadata().unwrap().nlink(), 1);
+    service.write_all(b"after-case\n").unwrap();
+    assert_eq!(fs::read(&path).unwrap(), b"before\nduring-case\nafter-case\n");
     fs::remove_dir_all(root).unwrap();
 }

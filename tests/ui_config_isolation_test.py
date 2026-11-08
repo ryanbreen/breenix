@@ -36,7 +36,7 @@ class ConfigIsolation(unittest.TestCase):
         harness = r'''
 use std::{fs, path::PathBuf, sync::Mutex};
 static ROOT:Mutex<Option<PathBuf>>=Mutex::new(None);
-pub struct Case{pub supervisor:Option<()>,pub fail:bool}
+pub struct Case{pub supervisor:Option<()>,pub fail:bool,pub log_only:bool}
 pub struct Feed;
 pub struct Screen{pub refused:bool}
 impl Screen{
@@ -46,6 +46,12 @@ impl Screen{
 #[derive(Debug)]pub enum Outcome{Pass{ms:u64},Fail{ms:u64,msg:String},Skip{msg:String}}
 NOTES
 pub fn run_case_body(case:&Case,_:u64,_:&str,_:&str,_:bool,_:&mut Screen,_:&mut Feed)->Outcome{
+    if case.log_only {
+        use std::io::Write;
+        let path=ROOT.lock().unwrap().as_ref().unwrap().join("var/log/service.log");
+        fs::OpenOptions::new().append(true).open(path).unwrap().write_all(b"during-case\n").unwrap();
+        return Outcome::Pass{ms:3};
+    }
     fs::write(ROOT.lock().unwrap().as_ref().unwrap().join("etc/fonts.conf"), b"planted").unwrap();
     if case.fail{
         let root=ROOT.lock().unwrap();let root=root.as_ref().unwrap();
@@ -59,18 +65,28 @@ BOUNDARY
 #[test]fn runner_restores_before_returning_a_verdict(){
     let root=std::env::temp_dir().join(format!("runner-config-{}",std::process::id()));
     fs::create_dir_all(root.join("etc")).unwrap();*ROOT.lock().unwrap()=Some(root.clone());
+    use std::{io::Write,os::unix::fs::MetadataExt};
+    fs::create_dir_all(root.join("var/log")).unwrap();
+    let path=root.join("var/log/service.log");fs::write(&path,b"before\n").unwrap();
+    let mut service=fs::OpenOptions::new().append(true).open(&path).unwrap();
+    let inode=service.metadata().unwrap().ino();
+    let outcome=run_case(&Case{supervisor:None,fail:false,log_only:true},3000,"test","log",true,&mut Screen{refused:false},&mut Feed);
+    assert!(matches!(outcome,Outcome::Pass{..}),"legitimate log append failed: {outcome:?}");
+    assert_eq!(fs::metadata(&path).unwrap().ino(),inode);
+    service.write_all(b"after-case\n").unwrap();
+    assert_eq!(fs::read(&path).unwrap(),b"before\nduring-case\nafter-case\n");
     for fail in [false,true]{
         fs::write(root.join("etc/fonts.conf"),b"default").unwrap();
-        let outcome=run_case(&Case{supervisor:None,fail},3000,"test","planted",true,&mut Screen{refused:false},&mut Feed);
+        let outcome=run_case(&Case{supervisor:None,fail,log_only:false},3000,"test","planted",true,&mut Screen{refused:false},&mut Feed);
         assert_eq!(fs::read(root.join("etc/fonts.conf")).unwrap(),b"default","global mutation survived GUI case");
         let Outcome::Fail{msg,..}=outcome else{panic!("global mutation passed")};
-        for name in if fail{vec!["/etc/fonts.conf","/etc/hotkeys.conf","/etc/bwm.conf","/usr/share/applications","/var/log"]}else{vec!["/etc/fonts.conf"]}{assert!(msg.contains(name),"{msg}");}
+        for name in if fail{vec!["/etc/fonts.conf","/etc/hotkeys.conf","/etc/bwm.conf","/usr/share/applications"]}else{vec!["/etc/fonts.conf"]}{assert!(msg.contains(name),"{msg}");}
     }
     // Non-GUI cases retain their existing behavior.
-    run_case(&Case{supervisor:None,fail:false},3000,"test","non-gui",false,&mut Screen{refused:false},&mut Feed);
+    run_case(&Case{supervisor:None,fail:false,log_only:false},3000,"test","non-gui",false,&mut Screen{refused:false},&mut Feed);
     assert_eq!(fs::read(root.join("etc/fonts.conf")).unwrap(),b"planted");
     fs::write(root.join("etc/fonts.conf"),b"default").unwrap();
-    assert!(matches!(run_case(&Case{supervisor:Some(()),fail:false},3000,"test","early",true,&mut Screen{refused:true},&mut Feed),Outcome::Fail{..}));
+    assert!(matches!(run_case(&Case{supervisor:Some(()),fail:false,log_only:false},3000,"test","early",true,&mut Screen{refused:true},&mut Feed),Outcome::Fail{..}));
     assert_eq!(fs::read(root.join("etc/fonts.conf")).unwrap(),b"default");
     fs::remove_dir_all(root).unwrap();
 }

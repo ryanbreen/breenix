@@ -976,11 +976,14 @@ running the real runner as a scoped fixture:
 - **Credentials.** The harness runs as root and keeps observation authority. A case that needs a permission
   failure launches the app as uid 1000 with a config root that uid cannot write. It asserts the precondition
   (root's write of the same path succeeds; uid 1000's `access(W_OK)` fails) before it relies on the failure.
+<!-- claim-lint:ok: #2798, coordinator U18: four exact configuration roots; runtime logs excluded. -->
 - **Cleanup.** The supervisor destroys the session's uinput devices (the core releases held keys) and removes
   the config root. Before and after every GUI case, the runner hashes the global files a GUI program could touch
-  (`/etc/fonts.conf`, `/etc/hotkeys.conf`, `/etc/bwm.conf`, `/usr/share/applications/`, `/var/log/`). A
+  (`/etc/fonts.conf`, `/etc/hotkeys.conf`, `/etc/bwm.conf`, `/usr/share/applications/`). A
   difference fails that case and restores the file from the runner's copy, so the next case starts from defaults
   whether the previous case passed, failed, crashed or timed out.
+  Runtime logs under `/var/log/` are outside configuration custody (coordinator U18): services append
+  there during cases, and the runner never restores or rewrites their open files.
 
 ## 10. Failure collection and diagnosis
 

@@ -3,9 +3,9 @@ use std::{ffi::OsString, fs, io, path::{Path, PathBuf}};
 use std::os::unix::{ffi::OsStrExt, fs::{MetadataExt, PermissionsExt, symlink}};
 use libpixcheck::Sha256;
 
-pub const GLOBAL_PATHS: [&str; 5] = [
+pub const GLOBAL_PATHS: [&str; 4] = [
     "/etc/fonts.conf", "/etc/hotkeys.conf", "/etc/bwm.conf",
-    "/usr/share/applications", "/var/log",
+    "/usr/share/applications",
 ];
 #[derive(Clone)]
 struct Attributes { mode: u32, uid: u32, gid: u32 }
