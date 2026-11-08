@@ -64,7 +64,7 @@ mod ttf_font{use super::*;
 mod bitmap_font{use super::*;pub fn draw_text_at(f:&mut Surface,t:&[u8],x:usize,y:usize,c:Color,_:u32){for(i,b)in t.iter().enumerate(){f.pixels.push((*b,x as i32+8*i as i32,y as i32,c));}}}
 @BODY@
 #[test]fn chrome_lcd_pixels_and_draw_count(){
- let _=ttf_font::draw_text_subpixel;let _=ttf_font::draw_runs_subpixel;
+ let _=ttf_font::draw_text_subpixel;let _=ttf_font::draw_runs_subpixel;let _=Surface::clip;
  for text in [b"startup app".as_slice(),b"x",b"-"]{let mut f=Surface{pixels:vec![],submits:0};draw_text_at(&mut f,text,13,27,9,Some(&mut CachedFont));
  assert_eq!(f.pixels,text.iter().enumerate().map(|(i,b)|(*b,13+8*i as i32,27,9)).collect::<Vec<_>>());assert_eq!(f.submits,1,"chrome submitted once per glyph");}
  let mut f=Surface{pixels:vec![],submits:0};draw_text_at(&mut f,b"xy",-8,27,9,None);assert_eq!(f.pixels,vec![(b'y',0,27,9)]);
