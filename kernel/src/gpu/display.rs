@@ -429,6 +429,7 @@ pub(super) fn present_as(tgid: u64, context: u64, target: u64, on_sent: &dyn Fn(
                 fence,
                 native_fence: 0,
                 sent_ns: None,
+                progress_ns: None,
                 error: None,
                 mismatch: None,
                 requests: 2,

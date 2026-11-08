@@ -30,7 +30,6 @@ mod memx_display {
  impl Health {pub fn read(_: &mut super::Registers,_:u32,_:u32)->Self{Self}pub fn check(&self)->Result<(),&'static str>{Ok(())}}
 }
 mod display_evidence {pub fn record(_: &mut super::Registers,_:u32,_:super::present::Surface,_:&super::present::Receipt){}}
-mod presentation_trace {pub fn dump(){}}
 mod native {
  use super::*;
  static MEMX_PRESENT_PHASE:core::sync::atomic::AtomicU32=core::sync::atomic::AtomicU32::new(0);

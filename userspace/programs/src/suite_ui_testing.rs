@@ -3,6 +3,10 @@
 mod runner;
 #[path = "uitest_suite/inner.rs"]
 mod inner;
+#[path = "uitest_suite/sessions.rs"]
+mod sessions;
+#[path = "uitest_suite/config.rs"]
+mod config;
 #[path = "suite_breengel/stage_painter.rs"]
 mod stage_painter;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
@@ -38,9 +42,9 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // The fixture's clean case passes under the real runner, and the fixture's transcript ends in a consistent DONE. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("outer-positive", "The fixture's clean case passes under the real runner and its transcript ends in a consistent DONE", runner::outer_positive),
         // A fixture case killed mid-scenario is reported FAIL by the real runner, its supervisor's COLLECT and `done` arrive before the sweep, and the evidence it names is on disk. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("outer-case-death", "A fixture case killed mid-scenario fails, its COLLECT and done arrive before the sweep, and its evidence is on disk", || pending("runner", 3)),
+        case("outer-case-death", "A fixture case killed mid-scenario fails, its COLLECT and done arrive before the sweep, and its evidence is on disk", runner::outer_case_death),
         // A fixture supervisor that never answers is swept at the case limit, the runner writes `artifacts=none:collector-timeout`, and the case's primary failure stands; a fixture supervisor that dies instead makes the runner write `artifacts=none:supervisor-died` and reap the session's orphans. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("outer-collector-timeout", "A silent fixture supervisor is swept at the limit as collector-timeout, and a dead one is recorded supervisor-died with its orphans reaped", || pending("runner", 3)),
+        case("outer-collector-timeout", "A silent fixture supervisor is swept at the limit as collector-timeout, and a dead one is recorded supervisor-died with its orphans reaped", runner::outer_collector_timeout),
         // The real runner, run as a subreaper, kills and reaps every descendant of the fixture, a double-forked helper included, and nothing outside it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("sweep-descendants", "The real runner as a subreaper kills and reaps every descendant of the fixture and nothing outside it", runner::sweep_descendants),
         // A clean scenario run in the inner executor returns Pass. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -56,7 +60,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // An inner scenario's records never appear in the outer suite's records. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("inner-records-contained", "An inner scenario's records never appear in the outer suite's records", inner::inner_records_contained),
         // In a boot session, an inner scenario and the real-runner fixture alike, a double-forked descendant that exits with status 7 after its parent has died is reparented to that session's supervisor (its parent pid read from `/proc/<pid>/stat` is the supervisor's) and reaped there, and the supervisor reports its pid and status 7 to the case; when the supervisor is killed first, the orphan goes to the runner, the runner writes `artifacts=none:supervisor-died`, and the case fails naming the dead supervisor. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("subreaper", "A double-forked orphan is reparented to and reaped by its session supervisor, or by the runner when the supervisor died first", || pending("runner", 3)),
+        case("subreaper", "A double-forked orphan is reparented to and reaped by its session supervisor, or by the runner when the supervisor died first", sessions::subreaper).session(libuitest::supervisor::serve),
     ]),
     category("input", "Scripted keyboard, pointer & text input", &[
         // type_text("hello world") puts exactly that text in the focused text field. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -108,7 +112,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A non-root session cannot inject, after a root session has. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("nonroot-denied", "A non-root session cannot inject, after a root session has", || pending("input", 5)),
         // Ending a session releases every held key and button. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("teardown-releases", "Ending a session releases every held key and button", || pending("input", 3)),
+        case("teardown-releases", "Ending a session releases every held key and button", sessions::teardown_releases).session(libuitest::supervisor::serve),
         // Input arrives in order while the app animates. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("input-during-animation", "Input arrives in order while the app animates", || pending("input", 6)),
         // Input addressed to two windows of one app arrives at each. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -302,51 +306,51 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     ]),
     category("sessions", "Sessions, state isolation & cleanup", &[
         // A desktop session with one app reaches its first composited commit within 300 ms. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("start-desktop", "A desktop session with one app reaches its first composited commit within 300 ms", || pending("sessions", 3)),
+        case("start-desktop", "A desktop session with one app reaches its first composited commit within 300 ms", sessions::start_desktop).session(libuitest::supervisor::serve).collects(),
         // A kiosk session with one app reaches its first composited commit within 300 ms. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("start-kiosk", "A kiosk session with one app reaches its first composited commit within 300 ms", || pending("sessions", 3)),
+        case("start-kiosk", "A kiosk session with one app reaches its first composited commit within 300 ms", sessions::start_kiosk).session(libuitest::supervisor::serve).collects(),
         // Apps in a session receive its fonts, clock, seed, mode, time zone, locale and config root. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("environment", "Apps in a session receive its fonts, clock, seed, mode, time zone, locale and config root", || pending("sessions", 3)),
+        case("environment", "Apps in a session receive its fonts, clock, seed, mode, time zone, locale and config root", sessions::environment).session(libuitest::supervisor::serve),
         // bwm, Breengel's font configuration and every app read and write under the session's config root. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("config-root", "bwm, Breengel's font configuration and every app read and write under the session's config root", || pending("sessions", 3)),
+        case("config-root", "bwm, Breengel's font configuration and every app read and write under the session's config root", config::config_root).session(libuitest::supervisor::serve),
         // A session that changes every setting leaves the global configuration files unchanged. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("global-untouched", "A session that changes every setting leaves the global configuration files unchanged", || pending("sessions", 3)),
+        case("global-untouched", "A session that changes every setting leaves the global configuration files unchanged", config::global_untouched).session(libuitest::supervisor::serve),
         // A case killed while changing settings is followed by a case that sees the defaults. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("restore-after-crash", "A case killed while changing settings is followed by a case that sees the defaults", || pending("sessions", 3)),
+        case("restore-after-crash", "A case killed while changing settings is followed by a case that sees the defaults", config::restore_after_crash),
         // Two settings scenarios give the same results in either order. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("order-independent", "Two settings scenarios give the same results in either order", || pending("sessions", 3)),
+        case("order-independent", "Two settings scenarios give the same results in either order", config::order_independent),
         // After a case its virtual devices are gone and no key or button is held. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("devices-reset", "After a case its virtual devices are gone and no key or button is held", || pending("sessions", 3)),
+        case("devices-reset", "After a case its virtual devices are gone and no key or button is held", sessions::devices_reset).session(libuitest::supervisor::serve),
         // After a case, no session process remains and the runner owns the display. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("teardown", "After a case, no session process remains and the runner owns the display", || pending("sessions", 3)),
+        case("teardown", "After a case, no session process remains and the runner owns the display", sessions::teardown),
         // A hung app is killed and reaped at teardown. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("teardown-hung", "A hung app is killed and reaped at teardown", || pending("sessions", 3)),
+        case("teardown-hung", "A hung app is killed and reaped at teardown", sessions::teardown_hung).session(libuitest::supervisor::serve),
         // A screen capture during a case contains no panel pixels. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("panel-not-in-case", "A screen capture during a case contains no panel pixels", || pending("sessions", 3)),
+        case("panel-not-in-case", "A screen capture during a case contains no panel pixels", sessions::panel_not_in_case).session(libuitest::supervisor::serve),
         // The panel is redrawn after the case, with that case's result. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("panel-after-case", "The panel is redrawn after the case, with that case's result", || pending("sessions", 3)),
+        case("panel-after-case", "The panel is redrawn after the case, with that case's result", sessions::panel_after_case),
         // When a session's compositor dies, the display goes to the session supervisor, then to the runner at case end. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("ownership-stack", "When a session's compositor dies, the display goes to the session supervisor, then to the runner at case end", || pending("sessions", 3)),
+        case("ownership-stack", "When a session's compositor dies, the display goes to the session supervisor, then to the runner at case end", sessions::ownership_stack),
         // A scenario that runs out of time fails, and its evidence is saved inside the reserve. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("case-timeout", "A scenario that runs out of time fails, and its evidence is saved inside the reserve", || pending("sessions", 3)),
+        case("case-timeout", "A scenario that runs out of time fails, and its evidence is saved inside the reserve", sessions::case_timeout),
         // An app crashing during a scenario fails it, naming the app and the signal. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("app-crash", "An app crashing during a scenario fails it, naming the app and the signal", || pending("sessions", 3)),
+        case("app-crash", "An app crashing during a scenario fails it, naming the app and the signal", sessions::app_crash),
         // An app's stderr is saved, capped at 64 KiB. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("app-stderr-capped", "An app's stderr is saved, capped at 64 KiB", || pending("sessions", 3)),
+        case("app-stderr-capped", "An app's stderr is saved, capped at 64 KiB", sessions::app_stderr_capped).session(libuitest::supervisor::serve),
         // An app launched as uid 1000 runs in the session while the harness keeps root observation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("unprivileged-app", "An app launched as uid 1000 runs in the session while the harness keeps root observation", || pending("sessions", 3)),
+        case("unprivileged-app", "An app launched as uid 1000 runs in the session while the harness keeps root observation", sessions::unprivileged_app).session(libuitest::supervisor::serve),
         // Twenty sessions in a row leave windows, processes and memory at the baseline. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("twenty-sessions", "Twenty sessions in a row leave windows, processes and memory at the baseline", || pending("sessions", 3)),
+        case("twenty-sessions", "Twenty sessions in a row leave windows, processes and memory at the baseline", sessions::twenty_sessions),
         // wait_window(title) returns after that window's first composited commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wait-window", "wait_window(title) returns after that window's first composited commit", || pending("sessions", 3)),
+        case("wait-window", "wait_window(title) returns after that window's first composited commit", sessions::wait_window).session(libuitest::supervisor::serve),
         // wait_window for a window that never appears fails, naming the title. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wait-window-timeout", "wait_window for a window that never appears fails, naming the title", || pending("sessions", 3)),
+        case("wait-window-timeout", "wait_window for a window that never appears fails, naming the title", sessions::wait_window_timeout).session(libuitest::supervisor::serve),
         // launch passes argv and the environment exactly. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("launch-argv", "launch passes argv and the environment exactly", || pending("sessions", 3)),
+        case("launch-argv", "launch passes argv and the environment exactly", sessions::launch_argv).session(libuitest::supervisor::serve),
         // A GUI suite runs inside a suite sequence and hands off at READY. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("sequence-compatible", "A GUI suite runs inside a suite sequence and hands off at READY", || pending("sessions", 3)),
+        case("sequence-compatible", "A GUI suite runs inside a suite sequence and hands off at READY", sessions::sequence_compatible),
         // The session's fixture tree, fonts and locale match their pinned hashes. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("fixtures-pinned", "The session's fixture tree, fonts and locale match their pinned hashes", || pending("sessions", 3)),
+        case("fixtures-pinned", "The session's fixture tree, fonts and locale match their pinned hashes", sessions::fixtures_pinned).session(libuitest::supervisor::serve),
     ]),
     category("diagnosis", "Saved evidence & failure messages", &[
         // A mismatch saves the got image, diff image, tree, input log and screen. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -445,6 +449,10 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
 ]).gui().defer_display();
 
 fn main() {
+    if let Err(error) = libuitest::fixtures::verify_fonts(std::path::Path::new("/usr/share/fonts")) {
+        eprintln!("ui-testing fixture verification: {error}");
+        std::process::exit(1);
+    }
     breenix_suite::suite::set_painter(Box::new(stage_painter::StagePainter::new()));
     SUITE.with_evidence_upload().run()
 }

@@ -62,6 +62,10 @@ mod native {
   present_accepted(e,r,s)?;wait_present(e,r,s)
  }
 }
+mod presentation_trace {
+ pub fn snapshot() {}
+ pub fn export(_:()) {}
+}
 mod display_evidence {
  pub fn transition(_: &mut super::Registers,_:u32,_:super::present::Surface,_:&super::present::Receipt,_:[u64;2],_:[u64;2],_:&str)->Result<(),&'static str>{
   if super::fail(4){Err("evidence failed")}else{Ok(())}

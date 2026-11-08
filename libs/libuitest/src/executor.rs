@@ -117,9 +117,15 @@ fn receive(reader: &mut File, child: &mut Child, limit_ms: u64, role: WriterRole
 
 fn controller(spec: &mut ScenarioSpec<'_>) -> ScenarioOutcome {
     if let Err(error) = process::set_child_subreaper(true) { return infrastructure("set-subreaper", error); }
+    let mut session = match breenix_suite::suite::session_runner::RunnerSession::start(crate::supervisor::serve) {
+        Ok(session) => session,
+        Err(error) => return infrastructure("session-start", error),
+    };
     let result = (|| {
         let (mut reader, writer) = match pipe() { Ok(pair) => pair, Err(e) => return infrastructure("logic-pipe", e) };
+        let control = session.case_fd();
         let mut logic = || {
+            breenix_suite::suite::session_runner::install_session_control(Fd::from_raw(4));
             let outcome = match process::set_child_subreaper(true) {
                 Err(error) => infrastructure("set-subreaper", error),
                 Ok(()) => match RecordClient::contained(spec.suite, spec.case, spec.checks) {
@@ -132,15 +138,23 @@ fn controller(spec: &mut ScenarioSpec<'_>) -> ScenarioOutcome {
             };
             send(&outcome)
         };
-        let pid = match spawn(&[(Fd::from_raw(writer.as_raw_fd() as u64), Fd::from_raw(3))], Run::Call(&mut logic)) {
+        let pid = match spawn(&[(Fd::from_raw(writer.as_raw_fd() as u64), Fd::from_raw(3)), (control, Fd::from_raw(4))], Run::Call(&mut logic)) {
             Ok(pid) => pid,
             Err(error) => return infrastructure("spawn-logic", error),
         };
+        session.in_parent();
         drop(writer);
         let mut child = Child(Some(pid));
         // Child's guard stops an unfinished logic process before the controller sweep.
         receive(&mut reader, &mut child, spec.limit_ms, WriterRole::Logic)
     })();
+    let result = match session.finish(1500) {
+        Ok(()) => result,
+        Err(error) => match result {
+            ScenarioOutcome::Pass { .. } => infrastructure("session-teardown", error),
+            failure => failure,
+        },
+    };
     if let Some(error) = sweep_descendants() {
         return infrastructure("scenario-teardown", format!("{error}; primary={result:?}"));
     }

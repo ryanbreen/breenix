@@ -10,6 +10,8 @@
 
 #[path = "bwm/compositor.rs"]
 mod compositor;
+#[path = "bwm/startup_prepare.rs"]
+mod startup_prepare;
 #[path = "bwm/placement.rs"]
 mod placement;
 #[path = "bwm/session.rs"]
@@ -96,6 +98,12 @@ mod shutdown;
 mod signal_wake;
 
 fn main() {
+    libuitest::startup::mark("compositor-exec");
+    let paths = settings::Paths::environment();
+    let loaded = settings::Settings::load(&paths.bwm).unwrap_or_else(|e| { eprintln!("[bwm] config: {e}"); process::exit(1); });
+    let _ = SETTINGS.set(loaded);
+    libuitest::startup::mark("config-ready");
+    print!("[bwm] settings font.size={} clock.visible={}\n", settings().font_size, settings().clock_visible);
     let signal_wake = initialize_shutdown();
     print!("[bwm] Breenix Window Manager starting... (v2-chromeless-skip)\n");
 
@@ -139,6 +147,7 @@ fn main() {
         }
     };
 
+    libuitest::startup::mark("scene-ready");
     // The GPU core composes the desktop (`compositor`); there is no CPU-only fallback.
     let mut gpu = match Compositor::open(screen_w as u32, screen_h as u32, px(APPBAR_HEIGHT) as u32, ui().scale as u32) {
         Ok(c) => c,
@@ -149,11 +158,17 @@ fn main() {
     };
     print!("[bwm] GPU compositing mode (GPU core), display: {}x{}\n", screen_w, screen_h);
 
+    libuitest::startup::mark("targets-ready");
     let mut ui_font: Option<CachedFont> = {
         let config = FontConfig::load();
+        print!("[bwm] fonts {config:?}\n");
         let font = std::fs::read(&config.display_path).ok()
             .and_then(|data| Font::parse(&data).ok())
-            .map(|f| CachedFont::new(f, 256));
+            .map(|f| {
+                let mut font = CachedFont::new(f, 256);
+                font.observe_phases(libuitest::startup::mark);
+                font
+            });
         if font.is_some() {
             print!("[bwm] display font loaded: {}\n", config.display_path);
         } else {
@@ -162,8 +177,10 @@ fn main() {
         font
     };
 
+    libuitest::startup::mark("fonts-ready");
     // Paint the decorative background once; each desktop repaint copies it.
     paint_background(&mut gpu.background);
+    libuitest::startup::mark("background-ready");
 
     let mut windows: Vec<Window> = Vec::new();
     let mut stack = Stack::new();
@@ -193,37 +210,123 @@ fn main() {
     let mut clock_wake = clock_wake::open().expect("UI clock wake setup failed");
     let mut clock_text = [0u8; 11];
     let mut taskbar_prepare_ns = None;
+    let mut clock_pace = pace::Maintenance::default();
+    let mut clock_dirty = false;
     format_clock(clock.wall_sec(), &mut clock_text);
     let mut next_creation_order: u32 = 0;
-    // Hotkey system: load config from /etc/hotkeys.conf
+    // Resolve hotkeys through the same root as bwm.conf.
     let mut hotkey_mgr = HotkeyManager::new();
-    hotkey_mgr.load_config("/etc/hotkeys.conf");
+    hotkey_mgr.load_config(paths.hotkeys.to_str().expect("UTF-8 hotkey path"));
 
     // Initial composite: the desktop alone (background, taskbar and app bar), before any
     // client window is discovered. It is read back from the scanout and compared with the
     // desktop target and the pointer's bitmap (`compositor`).
     compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
-    let fills = check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index);
+    libuitest::startup::mark("chrome-ready");
+    let strict_startup = std::env::var_os("BREENIX_INPUT_DEVICES").is_some()
+        || std::env::var_os("BREENIX_CONFIG_ROOT").is_some();
+    let mut reported_startup_error = false;
+    let mut fills = startup_prepare::recover(
+        check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index), strict_startup, |error| {
+            if !reported_startup_error {
+                eprintln!("[bwm] initial presentation unavailable: {error}; recovering");
+                reported_startup_error = true;
+            }
+            startup_retry_wait();
+            if let Err(error) = gpu.reopen() {
+                eprintln!("[bwm] ERROR: GPU compositor could not be reopened: {error}");
+                process::exit(1);
+            }
+            paint_background(&mut gpu.background);
+            compose_full_redraw(&mut gpu, &[], &stack, &clock_text, &mut ui_font);
+            check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index)
+        }).unwrap_or_else(|error| {
+            eprintln!("[bwm] initial presentation FAILED: {error}");
+            process::exit(1);
+        });
+    if let Err(error) = &fills {
+        eprintln!("[bwm] desktop fill check FAILED: {error}");
+        if strict_startup { process::exit(1); }
+    }
+    libuitest::startup::mark("fills-ready");
+    // Discover metadata while the bare desktop remains unchanged. Coverage
+    // preparation writes only the font atlas, independently of the pixel check.
+    let initial_windows = discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults);
+    if initial_windows { reconcile_stack(&windows, &mut stack, true); }
+    libuitest::startup::mark("initial-windows-ready");
     let first_pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
-    let first = gpu
-        .present_startup_desktop(Some(first_pointer))
-        .map_err(|e| CheckError::Failed(e.to_string()))
-        .and_then(|()| measure_check(|| gpu.check(0, &[], Some(first_pointer))));
-    let first_presented = first.is_ok();
+    let (prepared, presented) = startup_prepare::during(|| {
+        libuitest::startup::mark("title-plan-begin");
+        let result = if let Some(font) = ui_font.as_mut() {
+            let titles: Vec<&[u8]> = ordered_windows(&windows, &stack)
+                .filter(|win| !stack.minimized(win.window_id) && !win.chromeless)
+                .map(|win| &win.title[..win.title_len]).collect();
+            font.prepare_subpixel(&titles, ttf_font_size() * ui().scale as f32)
+                .map_err(|error| format!("initial title coverage: {error:?}"))
+        } else { Ok(()) };
+        libuitest::startup::mark("title-plan-return");
+        result
+    }, || {
+        gpu.present_startup_desktop(Some(first_pointer))
+            .map(|()| {
+                libuitest::startup::mark("pointer-presented");
+                measure_check(|| gpu.check(0, &[], Some(first_pointer)))
+            })
+    });
+    if let Err(error) = prepared {
+        eprintln!("[bwm] title coverage warm-up unavailable: {error}");
+    }
+    // Use the normal fresh-context recovery before composing clients, then
+    // perform the same whole-frame and fill checks on the recovered desktop.
+    let first = startup_prepare::recover(presented, strict_startup, |error| {
+        if !reported_startup_error {
+            eprintln!("[bwm] initial presentation unavailable: {error}; recovering");
+            reported_startup_error = true;
+        }
+        startup_retry_wait();
+        if let Err(error) = gpu.reopen() {
+            eprintln!("[bwm] ERROR: GPU compositor could not be reopened: {error}");
+            process::exit(1);
+        }
+        paint_background(&mut gpu.background);
+        compose_full_redraw(&mut gpu, &[], &stack, &clock_text, &mut ui_font);
+        fills = match check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index) {
+            Ok(checked) => checked,
+            Err(error) => return Err(error),
+        };
+        if let Err(error) = &fills {
+            eprintln!("[bwm] desktop fill check FAILED: {error}");
+            if strict_startup { process::exit(1); }
+        }
+        gpu.present_startup_desktop(Some(first_pointer)).map(|()| {
+            measure_check(|| gpu.check(0, &[], Some(first_pointer)))
+        })
+    }).unwrap_or_else(|error| {
+        eprintln!("[bwm] initial presentation FAILED: {error}");
+        process::exit(1);
+    });
+    libuitest::startup::mark("checks-ready");
     match first {
         Ok(pixels) => print!("[bwm] first frame read back: {} pixels exact\n", pixels),
-        Err(CheckError::Moved(e)) | Err(CheckError::Failed(e)) => print!("[bwm] first frame check FAILED: {}\n", e),
+        Err(CheckError::Moved(e)) | Err(CheckError::Failed(e)) => {
+            print!("[bwm] first frame check FAILED: {}\n", e);
+            if strict_startup { process::exit(1); }
+        },
     }
     match fills {
         Ok(line) => print!("[bwm] desktop fills the scanout: {}\n", line),
-        Err(e) => print!("[bwm] desktop fill check FAILED: {}\n", e),
+        Err(e) => {
+            print!("[bwm] desktop fill check FAILED: {}\n", e);
+            if strict_startup { process::exit(1); }
+        },
     }
+    libuitest::startup::mark("desktop-ready");
     let mut frame_failed = false;
     // Another process holds the display: bwm composes again when it has it back.
     let mut display_lost = false;
     // The pointer the last composed frame drew, so a move repaints where it was.
-    let mut drawn_pointer = first_presented.then_some(first_pointer);
-    let mut full_redraw = !first_presented;
+    let mut drawn_pointer = Some(first_pointer);
+    let mut full_redraw = false;
     let mut validation: ValidationQueue<PresentedScene> = ValidationQueue::new();
     let mut working_scene = PresentedScene { layers: Vec::new(), pointer: first_pointer };
 
@@ -234,12 +337,13 @@ fn main() {
         io::PollFd { fd: scene_fd, events: io::poll_events::POLLIN as i16, revents: 0 },
     ];
 
-    // Initial window discovery (before entering event loop)
-    if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
-        reconcile_stack(&windows, &mut stack, true);
-        compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
+    // The complete bare-desktop comparison and title preparation have both
+    // finished before a client can receive its first COMPOSITE receipt.
+    if initial_windows {
+        compose_initial_windows(&mut gpu, &windows, &stack, &mut ui_font);
         full_redraw = true;
     }
+    libuitest::startup::mark("client-chrome-ready");
 
     loop {
         flush_input();
@@ -272,7 +376,8 @@ fn main() {
             });
         let timeout = closing.timeout_ms(now, timeout);
         let hold = if display_lost { None } else { hold };
-        let timeout = wake::wait_ns(timeout, pacing_ns(), hold);
+        let clock_hold = hold.into_iter().chain(clock_pace.deadline()).min();
+        let timeout = wake::wait_ns(timeout, pacing_ns(), clock_hold);
         poll_fds.truncate(2);
         if let Some(wake) = &clock_wake {
             poll_fds.push(io::PollFd { fd: wake.fd(), events: io::poll_events::POLLIN as i16, revents: 0 });
@@ -646,16 +751,16 @@ fn main() {
         }
 
         // ── 4. Update chrome on real UI-clock seconds ──
-        if let Some(sec) = clock.update_clock() {
+        if clock.due() && clock_pace.ready(pacing_ns(),
+            full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty, &pacing) {
+            let sec = clock.update_clock().expect("due wall-clock update");
             format_clock(sec, &mut clock_text);
             let began = pacing_ns();
             draw_taskbar(&mut gpu.desktop, &clock_text, &mut ui_font);
-            taskbar_prepare_ns = Some(pacing_ns().saturating_sub(began));
-            dirty_x0 = 0;
-            dirty_y0 = 0;
-            dirty_x1 = dirty_x1.max(screen_w as i32);
-            dirty_y1 = dirty_y1.max(px(TASKBAR_HEIGHT) as i32);
-            content_dirty = true;
+            let draw_ns = pacing_ns().saturating_sub(began);
+            taskbar_prepare_ns = Some(draw_ns);
+            clock_pace.reset();
+            clock_dirty = true;
         }
 
         validation.retain_clients(|id| windows.iter().any(|w| w.window_id == id && !w.frame_checked));
@@ -664,19 +769,25 @@ fn main() {
         }
 
         // ── 5. Composite on the GPU (only when something changed) ──
-        if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
+        let urgent_frame = full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty;
+        if urgent_frame || clock_dirty {
             refresh_pacing(&mut pacing);
-            if matches!(pacing.decision(pacing_ns()), pace::Decision::WaitUntil(_)) {
+            let clock_ready = !clock_dirty || clock_pace.ready(pacing_ns(), urgent_frame, &pacing);
+            if clock_ready && matches!(pacing.decision(pacing_ns()), pace::Decision::WaitUntil(_)) {
                 // Carry cursor/window dirt through descriptor wakes while the client handles input.
                 windows_dirty = true;
+                clock_pace.reset();
                 if content_dirty { full_redraw = true; }
-            } else {
+            } else if clock_ready {
                 let pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
                 let mut damage = Vec::new();
                 if full_redraw {
                     damage.push([0, 0, screen_w as i32, screen_h as i32]);
                 } else if content_dirty {
                     damage.push([dirty_x0.max(0), dirty_y0.max(0), dirty_x1.min(screen_w as i32), dirty_y1.min(screen_h as i32)]);
+                }
+                if clock_dirty {
+                    damage.push([0, 0, screen_w as i32, px(TASKBAR_HEIGHT) as i32]);
                 }
                 // The pointer where the last frame drew it and where this one draws it.
                 if drawn_pointer.is_none_or(|p| (p.x, p.y, p.shape) != (pointer.x, pointer.y, pointer.shape)) {
@@ -689,6 +800,8 @@ fn main() {
                 full_redraw = false;
                 content_dirty = false;
                 windows_dirty = false;
+                clock_dirty = false;
+                clock_pace.reset();
                 match frame {
                     Ok(()) => {
                         if let Some(draw_ns) = taskbar_prepare_ns.take() {
@@ -743,7 +856,7 @@ fn main() {
                 }
             }
         }
-        if !full_redraw && !content_dirty && !windows_dirty && !display_lost && !frame_failed {
+        if !full_redraw && !content_dirty && !windows_dirty && !clock_dirty && !display_lost && !frame_failed {
             let mut ack = clock.acknowledgment(claim_epoch);
             if let Some(deadline) = timing.deadline() {
                 if ack.next_deadline_ns == 0 || deadline < ack.next_deadline_ns { ack.next_deadline_ns = deadline; }
@@ -873,6 +986,17 @@ fn term_mask(how: i32) {
     if let Err(error) = signal::sigprocmask(how, Some(&mask), None) {
         eprintln!("[bwm] cannot set shutdown signal mask: {error}");
         process::exit(1);
+    }
+}
+
+// Startup has not reached the poll loop that normally delivers blocked signals.
+// Deliver a pending SIGTERM during the retry delay, before allocating targets.
+fn startup_retry_wait() {
+    term_mask(signal::SIG_UNBLOCK);
+    let _ = libbreenix::time::sleep_ms(16);
+    term_mask(signal::SIG_BLOCK);
+    if TERMINATE.load(std::sync::atomic::Ordering::Relaxed) {
+        process::exit(0);
     }
 }
 

@@ -37,7 +37,7 @@ struct Done{answer:u32,fence:u64}impl Done{fn matches_fence(&self,f:u64)->bool{s
 thread_local!{static VRAM:RefCell<Vec<u8>>=RefCell::new(vec![0x55;64]);static RESPONSE:Cell<(u32,u64)>=const{Cell::new((0x60000000,107))};}
 mod dev{use super::*;
 pub fn ok(a:u32)->bool{a==0x60000000}
-pub fn transfer_to_host(tag:Tag,ctx:u32,fence:u64,id:u32,backing:Arc<Pages>,x:u32,y:u32,w:u32,h:u32,offset:u64,stride:u32)->Option<Request>{
+pub fn initialize_image(tag:Tag,ctx:u32,fence:u64,id:u32,backing:Arc<Pages>,x:u32,y:u32,w:u32,h:u32,offset:u64,stride:u32)->Option<Request>{
 let Tag::Sync(serial)=tag;assert_eq!((serial,ctx,fence,offset),(7,0,107,0));
 Some(Request{backing,id,rect:[x,y,w,h],stride,fence})}}
 fn exec_req(serial:u64,r:Request,ctx:u32,holds:&[u32],reading:&[u32])->Result<Done,i64>{

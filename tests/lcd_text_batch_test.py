@@ -10,7 +10,7 @@ ROOT=Path(__file__).resolve().parents[1]
 class LcdBatch(unittest.TestCase):
     def test_lcd_instances_overlap_order_and_eviction(self):
         source=(ROOT/'libs/libgfx/src/ttf_font.rs').read_text()
-        code='\n'.join(item(source,n) for n in ['pub struct TextRun', 'pub fn draw_runs_subpixel(', 'fn draw_runs_mode('])
+        code='\n'.join(item(source,n) for n in ['pub struct TextRun', 'pub fn draw_runs_subpixel(', 'fn rasterize_text_runs(', 'fn draw_runs_mode('])
         fixture=r'''
 use std::sync::Arc;
 use std::collections::BTreeMap;
@@ -37,7 +37,7 @@ pub struct CachedFont{calls:usize,evict:bool}
 struct Font;impl Font{fn size26(_:f32)->Result<i32,()>{Ok(1024)}}
 enum Error{Device(i64),Other}
 fn image(g:u16)->Arc<AtlasGlyph>{Arc::new(AtlasGlyph{x_offset:0,y_offset:0,width:if g==b'W' as u16{12}else{6},height:8,region:Some(Region{x:g as usize*16,y:0,target:Target(if g==b'X' as u16{2}else{1})})})}
-impl CachedFont{fn cache_stats(&self)->Stats{Stats{entries:if self.evict&&self.calls>0{0}else{100},misses:0}}fn run_mode(&mut self,p:&[(u16,i64)],_:i32,lcd:bool,mut out:impl FnMut(Result<(Arc<AtlasGlyph>,i64),Error>)){assert!(lcd,"LCD caller used grayscale coverage");self.calls+=1;for(g,x)in p{out(Ok((image(*g),*x)));}}}
+impl CachedFont{fn phase(&self,_:&'static str){}fn cache_stats(&self)->Stats{Stats{entries:if self.evict&&self.calls>0{0}else{100},misses:0}}fn run_mode(&mut self,p:&[(u16,i64)],_:i32,lcd:bool,mut out:impl FnMut(Result<(Arc<AtlasGlyph>,i64),Error>)){assert!(lcd,"LCD caller used grayscale coverage");self.calls+=1;for(g,x)in p{out(Ok((image(*g),*x)));}}}
 fn decode_utf8(t:&[u8])->impl Iterator<Item=u32>+'_ {t.iter().map(|b|*b as u32)}
 fn glyphs_of(_: &CachedFont,c:impl Iterator<Item=u32>)->impl Iterator<Item=u16>{c.map(|v|v as u16)}
 fn visible(_: &Surface,_:&mut CachedFont,g:Vec<u16>,_:i32,_:i32,_:f32)->(Vec<(u16,i64)>,i32){(g.into_iter().enumerate().map(|(i,g)|(g,i as i64*8)).collect(),0)}

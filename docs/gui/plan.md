@@ -963,6 +963,12 @@ running the real runner as a scoped fixture:
 - `BREENIX_CONFIG_ROOT` names it. Every participant resolves its configuration paths through it: bwm,
   Breengel's `FontConfig` and `FontWatcher`, bfontpicker's write target, blog, blauncher's catalog and Gus Kit's
   save directory. Production leaves it unset and uses `/`.
+- bwm's `etc/bwm.conf` has optional `font.size` (finite 6–72 logical pixels, default 14)
+  and `clock.visible` (`true` or `false`, default `true`). These control chrome text size
+  and taskbar clock text. Syntax is one `key=value` per line, a final newline, and `#`
+  comments at the start of a line. Unknown or duplicate keys and invalid values refuse
+  startup. A missing file uses the defaults; a set config root uses its own paths without a fallback to `/`.
+  Hotkeys keep their existing chord/action syntax in the rooted `etc/hotkeys.conf`.
 - The session environment fixes `TZ=UTC`, `LANG=C.UTF-8`, `BREENIX_UI_CLOCK`, `BREENIX_UI_SEED` and the mode.
   Apps sort directory listings and catalogs by name in byte order, which the contract states.
 - Variable system data (PIDs, `/proc` statistics, kernel messages) is never compared to a whole golden. Cases
@@ -970,11 +976,14 @@ running the real runner as a scoped fixture:
 - **Credentials.** The harness runs as root and keeps observation authority. A case that needs a permission
   failure launches the app as uid 1000 with a config root that uid cannot write. It asserts the precondition
   (root's write of the same path succeeds; uid 1000's `access(W_OK)` fails) before it relies on the failure.
+<!-- claim-lint:ok: #2798, coordinator U18: four exact configuration roots; runtime logs excluded. -->
 - **Cleanup.** The supervisor destroys the session's uinput devices (the core releases held keys) and removes
   the config root. Before and after every GUI case, the runner hashes the global files a GUI program could touch
-  (`/etc/fonts.conf`, `/etc/hotkeys.conf`, `/etc/bwm.conf`, `/usr/share/applications/`, `/var/log/`). A
+  (`/etc/fonts.conf`, `/etc/hotkeys.conf`, `/etc/bwm.conf`, `/usr/share/applications/`). A
   difference fails that case and restores the file from the runner's copy, so the next case starts from defaults
   whether the previous case passed, failed, crashed or timed out.
+  Runtime logs under `/var/log/` are outside configuration custody (coordinator U18): services append
+  there during cases, and the runner never restores or rewrites their open files.
 
 ## 10. Failure collection and diagnosis
 

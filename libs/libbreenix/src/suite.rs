@@ -108,6 +108,14 @@ mod evidence;
 mod host_input;
 #[path = "suite_descendants.rs"]
 pub mod descendants;
+#[path = "suite_collection.rs"]
+pub mod collection;
+#[path = "suite_session.rs"]
+pub mod session_runner;
+#[path = "suite_config.rs"]
+pub mod config;
+pub use session_runner::take_session_control;
+
 
 #[path = "suite_result.rs"]
 pub mod result;
@@ -467,6 +475,7 @@ fn frame_hash(frame: Option<&JudgedFrame>) -> String {
 /// One case: its id (lowercase words joined by '-'), the title the manifest gives it,
 /// and the function that runs it.
 pub struct Case {
+    pub supervisor: Option<fn(Fd, Fd) -> i32>,
     pub id: &'static str,
     pub title: &'static str,
     pub run: fn() -> CaseResult,
@@ -477,10 +486,11 @@ pub struct Case {
 }
 
 pub const fn case(id: &'static str, title: &'static str, run: fn() -> CaseResult) -> Case {
-    Case { id, title, run, checks: &[], collects: false }
+    Case { id, title, run, checks: &[], collects: false, supervisor: None }
 }
 
 impl Case {
+    pub const fn session(self, serve: fn(Fd, Fd) -> i32) -> Self { Self { supervisor: Some(serve), ..self } }
     pub const fn checks(self, checks: &'static [&'static str]) -> Self { Self { checks, ..self } }
     pub const fn collects(self) -> Self { Self { collects: true, ..self } }
 }
@@ -785,6 +795,7 @@ pub fn result_record(line: &str) -> CaseResult {
 
 /// A helper must not retain or explicitly keep the case's result authority.
 pub(crate) fn close_result_output() {
+    session_runner::clear_session_control();
     let fd = RESULT_FD.swap(-1, Ordering::Relaxed);
     if fd >= 0 { let _ = io::close(Fd::from_raw(fd as u64)); }
 }
@@ -1180,6 +1191,12 @@ impl Suite {
         } else {
             Screen::open(self.gui, self.id == "gpu")
         };
+        if self.gui && self.defer_display && self.categories.iter().any(|c| c.cases.iter().any(|case| case.supervisor.is_some())) {
+            screen = Screen::open(false, self.id == "gpu");
+            // Deferred suites keep their existing quiet case execution, including
+            // inner scenarios that start a supervisor inside the case.
+            screen.live = false;
+        }
         // Final text-panel storage belongs in both memory samples. Each reason
         // already has the serial MSG_MAX bound; keep its slot for the panel's life.
         let textual = !screen.gui && (screen.fb.is_some() || self.defer_display);
@@ -1321,6 +1338,9 @@ impl Suite {
                     screen::upload_pending(self.id, &name);
                     if screen.gui { let _ = crate::suite_stage::redraw(); }
                 }
+                if self.gui && case.supervisor.is_some() {
+                    screen.draw(self, &title, &subtitle, &states, Verdict::Running(&progress), &feed, only);
+                }
                 if let Some(observe) = self.case_observer { observe(done, total, &name); }
                 if place.is_some() { sequence::progress_after(done); }
             }
@@ -1363,7 +1383,13 @@ impl Suite {
         let ms = ms_since(suite_start);
         emit(&std::format!("SUITE {} ELAPSED ms={}", self.id, ms));
         finalize();
-        if scoped { process::exit(if counts.failed == 0 && reclaimed { 0 } else { 1 }); }
+        if scoped {
+            if place.is_some() {
+                emit(&std::format!("SUITE_SEQUENCE READY {}", self.id));
+                sequence::finish();
+            }
+            process::exit(if counts.failed == 0 && reclaimed { 0 } else { 1 });
+        }
         feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
         if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }
         if !screen.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }
@@ -1810,7 +1836,7 @@ fn start_scoped_runner() -> Result<(), String> {
             .ok_or("invalid suite transcript descriptor")?;
         let fd = Fd::from_raw(number as u64);
         let flags = io::fcntl(fd, io::fcntl_cmd::F_GETFD, 0).map_err(|e| e.to_string())?;
-        io::fcntl(fd, io::fcntl_cmd::F_SETFD, flags | i64::from(io::fd_flags::FD_CLOEXEC))
+        io::fcntl(fd, io::fcntl_cmd::F_SETFD, if number > 2 { flags | i64::from(io::fd_flags::FD_CLOEXEC) } else { flags & !i64::from(io::fd_flags::FD_CLOEXEC) })
             .map_err(|e| e.to_string())?;
         TRANSCRIPT_FD.store(number, Ordering::Relaxed);
     }
@@ -2010,6 +2036,44 @@ impl Drop for ResultPipe<'_> {
 /// Run a case in a forked child, giving it `limit_ms`, and keep the live strip up to
 /// date while it runs.
 fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, screen: &mut Screen, feed: &mut Feed) -> Outcome {
+    let snapshot = if gui {
+        match config::Snapshot::capture() {
+            Ok(snapshot) => Some(snapshot),
+            Err(msg) => return Outcome::Fail { ms: 0, msg },
+        }
+    } else { None };
+    let session = gui && case.supervisor.is_some();
+    let outcome = (|| {
+        if session {
+            if let Err(msg) = screen.release_for_session() { return Outcome::Fail { ms: 0, msg }; }
+        }
+        let outcome = run_case_body(case, limit_ms, suite, name, gui, screen, feed);
+        if session {
+            if let Err(note) = screen.reclaim_after_session() { return with_note(outcome, &note); }
+        }
+        outcome
+    })();
+    match snapshot.map(config::Snapshot::verify_restore).transpose() {
+        Err(note) => match outcome {
+            Outcome::Pass { ms } => Outcome::Fail { ms, msg: plain(&note) },
+            Outcome::Fail { ms, msg } => with_note(Outcome::Fail { ms, msg: note }, &msg),
+            Outcome::Skip { msg } => with_note(Outcome::Fail { ms: 0, msg: note }, &msg),
+        },
+        Ok(_) => outcome,
+    }
+}
+
+fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, screen: &mut Screen, feed: &mut Feed) -> Outcome {
+    let mut session = if gui {
+        match case.supervisor.map(|serve| {
+            if case.collects { session_runner::RunnerSession::start_collecting(serve, suite, name) }
+            else { session_runner::RunnerSession::start(serve) }
+        }).transpose() {
+            Ok(session) => session,
+            Err(msg) => return Outcome::Fail { ms: 0, msg },
+        }
+    } else { None };
+    let logic_limit_ms = if session.is_some() && case.collects { limit_ms.saturating_sub(1500) } else { limit_ms };
     screen.judged = None;screen.timing=None;
     let mut results = if gui {
         match ResultPipe::new(suite, name, case.checks, case.collects) {
@@ -2084,6 +2148,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
     HOSTKEY_SEQ.fetch_add(RECORDS_PER_CASE as u64, Ordering::Relaxed);
     match process::fork() {
         Ok(ForkResult::Child) => {
+            if let Some(session) = session.as_mut() { session.in_child(); }
             sequence::in_child();
             if let Some(results) = &results { results.in_child(); }
             let _ = io::close(reader);
@@ -2102,7 +2167,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
                 STAGE_REQUEST_FD.store(request_w.raw() as i32, Ordering::Relaxed);
                 STAGE_ANSWER_FD.store(drawn_r.raw() as i32, Ordering::Relaxed);
             }
-            let initial_limit = if window.is_some() { 120_000 } else { limit_ms };
+            let initial_limit = if window.is_some() { 120_000 } else { logic_limit_ms };
             let deadline = start.map_or(0, |start| (start + initial_limit as i128 * 1_000_000) as u64);
             CASE_DEADLINE_NS.store(deadline, Ordering::Relaxed);
             let _ = CASE_NAME.set(String::from(name));
@@ -2124,6 +2189,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
         }
         Ok(ForkResult::Parent(pid)) => {
             let pid = pid.raw() as i32;
+            if let Some(session) = session.as_mut() { session.in_parent(); }
             if let Some(results) = results.as_mut() { results.in_parent(); }
             let _ = io::close(writer);
             if let Some((_, w)) = window { let _ = io::close(w); }
@@ -2143,7 +2209,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
                     if let Some(fd) = live_reader { feed.drain(fd); }
                     screen.frame(feed);
                 };
-                wait_exit(pid, start, limit_ms, &mut frame, window.map(|(r, _)| r), tell, Some(reader), stage, results.as_mut())
+                wait_exit(pid, start, logic_limit_ms, &mut frame, window.map(|(r, _)| r), tell, Some(reader), stage, results.as_mut())
             };
             if let Waited::Published(message) = waited {
                 // The case has reported: its measured window ends before the stage composes.
@@ -2153,18 +2219,24 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
                     screen.stage_result(crate::suite_stage::sample(p));
                 }
                 if let Some(fd) = answer { let _ = io::write(fd, &[1]); }
-                waited = match wait_exit(pid, monotonic_ns(), 5_000, &mut || {}, None, None, None, None, results.as_mut()) {
+                waited = match wait_exit(pid, monotonic_ns(), if session.is_some() && case.collects { logic_limit_ms.saturating_sub(ms_since(start)) } else { 5_000 }, &mut || {}, None, None, None, None, results.as_mut()) {
                     Waited::TimedOut(_) => Waited::TimedOut(ms),
                     other => other,
                 };
             }
             for fd in [tell, answer].into_iter().chain(stage.into_iter().flat_map(|(r, w)| [Some(r), Some(w)])).flatten() { let _ = io::close(fd); }
+            let trigger = match &waited {
+                Waited::TimedOut(_) => collection::Trigger::Timeout,
+                Waited::Exited(status) if process::wifsignaled(*status)
+                    || (process::wifexited(*status) && process::wexitstatus(*status) != 0) => collection::Trigger::Crash,
+                _ => collection::Trigger::Fail,
+            };
             let outcome = match waited {
                 Waited::Exited(status) => exited(status, reader, ms_since(start)),
                 Waited::Published(_) => Outcome::Fail { ms: ms_since(start), msg: String::from("the case published two pictures") },
                 Waited::TimedOut(ms) => {
                     let note = stop_child(pid);
-                    Outcome::Fail { ms, msg: plain(&std::format!("timed out after {limit_ms} ms{note}")) }
+                    Outcome::Fail { ms, msg: plain(&std::format!("timed out after {logic_limit_ms} ms{note}")) }
                 }
                 Waited::ClockStopped(ms) => {
                     let note = stop_child(pid);
@@ -2178,6 +2250,60 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
                     Outcome::Fail { ms: ms_since(start), msg: plain(&std::format!("waitpid failed: {error}{note}")) }
                 }
             };
+            let outcome = if let Some(session) = session.as_mut() {
+                if case.collects {
+                    // Drain the dead case before choosing collect/discard: a final
+                    // mismatch or missing declared check converts Ok into FAIL.
+                    let outcome = if let Some(results) = results.as_mut() {
+                        results.drain();
+                        match results.accounting.problem() {
+                            Some(note) => with_note(outcome, &note),
+                            None => outcome,
+                        }
+                    } else { outcome };
+                    let request = if matches!(outcome, Outcome::Fail { .. }) {
+                        collection::Request::Collect(trigger)
+                    } else if std::fs::read_to_string("/etc/breenix/uitest-save").is_ok_and(|s| s.trim() == "all") {
+                        collection::Request::Collect(collection::Trigger::SaveAll)
+                    } else { collection::Request::Discard };
+                    let deadline = start.map(|t| t + i128::from(limit_ms) * 1_000_000);
+                    let collected = session.collect_until(deadline, request, suite, name, |line| {
+                        if let Some(results) = results.as_mut() { results.accounting.accept(line)?; }
+                        emit(line);
+                        Ok(())
+                    });
+                    match collected {
+                        Ok(()) => {
+                            if matches!(request, collection::Request::Collect(_)) {
+                                emit(&std::format!("SUITE {suite} VALUE {name} collection-done=1bool\n"));
+                                emit(&std::format!("SUITE {suite} VALUE {name} collection-ms={}ms\n", ms_since(start)));
+                            }
+                            outcome
+                        },
+                        Err(note) => {
+                            let reason = if note == "session supervisor died" { "supervisor-died" } else { "collector-timeout" };
+                            let trigger = match request { collection::Request::Collect(t) => t, collection::Request::Discard => trigger };
+                            emit(&std::format!("SUITE {suite} COLLECT {name} trigger={} screen=none:{reason} windows=0 remnants=0 artifacts=none:{reason}\n", trigger.name()));
+                            match outcome {
+                                Outcome::Pass { ms } => Outcome::Fail { ms, msg: note },
+                                other => other,
+                            }
+                        }
+                    }
+                } else {
+                    match session.finish(limit_ms.saturating_sub(ms_since(start))) {
+                        Ok(()) => outcome,
+                        Err(note) => {
+                            let reason = if note == "session supervisor died" { "supervisor-died" } else { "collector-timeout" };
+                            emit(&std::format!("SUITE {suite} COLLECT {name} trigger=fail screen=none:{reason} windows=0 remnants=0 artifacts=none:{reason}\n"));
+                            match outcome {
+                                Outcome::Pass { ms } => Outcome::Fail { ms, msg: note },
+                                other => other,
+                            }
+                        }
+                    }
+                }
+            } else { outcome };
             if screen.gui {
                 screen.stage_result(crate::suite_stage::end());
                 screen.stage_result(crate::suite_stage::restore_after(name));
@@ -2188,6 +2314,7 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
                 feed.drain(fd);
                 let _ = io::close(fd);
             }
+            if let Some(session) = session.as_mut() { session.handoff_to_sweep(); }
             let outcome = match sweep_for_role(gui) {
                 Some(note) => with_note(outcome, note),
                 None => outcome,
@@ -2391,6 +2518,7 @@ struct Screen {
     gpu_failure: Option<String>,
     /// Whether the live strip is drawn (see `/etc/breenix/suite-live`).
     live: bool,
+    session_active: bool,
     /// Where the last full draw put the live strip.
     area: Option<LiveArea>,
 }
@@ -2426,7 +2554,7 @@ impl Screen {
 
     /// No display: no stage, framebuffer or GPU view, and no live strip.
     fn empty() -> Screen {
-        Screen { gui: false, stage_error: None, judged: None, timing: None, fb: None, gpu: None, gpu_failure: None, live: false, area: None }
+        Screen { gui: false, stage_error: None, judged: None, timing: None, fb: None, gpu: None, gpu_failure: None, live: false, session_active: false, area: None }
     }
 
     /// Before the memory record's first sample, create what the view keeps until its final
@@ -2452,7 +2580,25 @@ impl Screen {
             self.stage_error.get_or_insert(error);
         }
     }
-    fn live_on(&self) -> bool { self.live }
+    fn live_on(&self) -> bool { self.live && !self.session_active }
+
+    fn release_for_session(&mut self) -> Result<(), String> {
+        // Retain the root owner so startup cannot expose the console. A nested
+        // runner already has a graphical owner below it: release that redundant
+        // entry to leave room for its supervisor and compositor on the shared stack.
+        let (result, modes) = crate::gpu::modes();
+        if result != 0 { return Err(std::format!("session display depth: errno {}", -result)); }
+        if modes.owner_depth > 1 {
+            graphics::give_back_display().map_err(|e| std::format!("release nested runner display: {e}"))?;
+        }
+        self.session_active = true;
+        Ok(())
+    }
+    fn reclaim_after_session(&mut self) -> Result<(), String> {
+        graphics::take_over_display().map_err(|e| std::format!("reclaim runner display: {e}"))?;
+        self.session_active = false;
+        Ok(())
+    }
 
     /// The live strip's readings: the clocks now and the case's records.
     fn with_live<R>(feed: &Feed, f: impl FnOnce(&Live<'_>) -> R) -> R {
@@ -2476,6 +2622,7 @@ impl Screen {
 
     /// Redraw only the live strip and flush it.
     fn frame(&mut self, feed: &Feed) {
+        if self.session_active { return; }
         if self.gui {self.stage_result(crate::suite_stage::tick());return;}
         let (Some(fb), Some(area), true) = (self.fb.as_mut(), self.area, self.live) else { return };
         Self::with_live(feed, |live| diagnostics::draw_live(fb, area, live));
@@ -2484,6 +2631,7 @@ impl Screen {
 
     fn draw(&mut self, suite: &Suite, title: &str, subtitle: &str, states: &[Vec<State>], verdict: Verdict<'_>,
         feed: &Feed, only: Option<&str>) {
+        if self.session_active { return; }
         if self.gui {
             self.stage_result(crate::suite_stage::draw(states));
             return;

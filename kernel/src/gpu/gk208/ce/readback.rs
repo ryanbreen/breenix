@@ -492,6 +492,21 @@ pub(crate) fn transfer(tag: crate::gpu::dev::Tag, fence: u64, id: u32,
     Some(super::super::adapter::Request::transfer(tag,fence,resource,plan,upload,
         TransferHold { resources:holds },Some(backing)))
 }
+/// Fresh images use a constant CE fill; no guest backing PTEs or zero upload.
+/// Retain both storage and backing until the engine release, as transfers do.
+/// The ARM VirGL counterpart initializes through its attached zero backing.
+/// claim-lint:ok: tests/gt710_zero_plan_test.py and tests/gt710_image_initialization_test.py check the operation and publication boundary.
+pub(crate) fn initialize_image(tag: crate::gpu::dev::Tag, fence: u64, id: u32,
+    backing: alloc::sync::Arc<crate::gpu::dma::Pages>,
+) -> Option<super::super::adapter::Request> {
+    let (plan, resource, hold) = super::with_resources(|r, _, _| {
+        Ok((super::super::copy::zero(image(r, id)?)?,
+            r.identity(id).ok_or("native initialization identity absent")?, r.hold(id)?))
+    }).ok()?;
+    let mut holds = Vec::new(); holds.try_reserve_exact(1).ok()?; holds.push(hold);
+    Some(super::super::adapter::Request::transfer(tag, fence, resource, plan, true,
+        TransferHold { resources: holds }, Some(backing)))
+}
 /// The resource owner has mapped this source and built the upload plan. Retain
 /// both image and backing through the CE release, including uncertain requests.
 pub(crate) fn span_upload(tag: crate::gpu::dev::Tag, fence: u64, id: u32,

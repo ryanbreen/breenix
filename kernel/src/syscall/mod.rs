@@ -56,6 +56,7 @@ pub mod metadata;
 pub(crate) mod at_path;
 mod multiplex;
 pub mod pipe;
+mod close_range;
 pub mod priority;
 pub mod prctl;
 pub mod pty;
@@ -952,6 +953,7 @@ pub fn dispatch_numbered(number: u64, a: [u64; 6]) -> Option<SyscallResult> {
         return Some(crate::gpu_fault_acceptance::dispatch(a[0]));
     }
     Some(match number {
+        436 => close_range::sys_close_range(a[0] as u32, a[1] as u32, a[2] as u32),
         PRCTL_SYSCALL_NUMBER => prctl::sys_prctl(a[0], a[1]),
         REBOOT_SYSCALL_NUMBER => reboot::sys_reboot(a[0], a[1], a[2]),
         ADJTIMEX_SYSCALL_NUMBER => clocks::sys_adjtimex(a[0]),

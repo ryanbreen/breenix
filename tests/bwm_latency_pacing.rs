@@ -147,3 +147,69 @@ fn timing_is_bound_to_the_completed_composite_and_supports_virtual_completion() 
     let mut pacing=pace::Pacer::default();pacing.presented(virtual_timing);pacing.delivered(1,(10,0));
     assert_eq!(pacing.decision(101),Decision::Compose);
 }
+
+mod clock_maintenance {
+
+use super::pace;
+const P:u64=16_661_186;
+const LEAD:u64=1_812_000;
+const RENDER:u64=3_650_000;
+// 065239's frame3346: clock-only work accepted at 666005995560,
+// then commit170 at 666002362359 waited for frame3347's physical edge.
+const EDGE:u64=665_990_994_601;
+fn flip(accepted:u64)->u64 {
+ let next=EDGE+((accepted-EDGE)/P+1)*P;
+ if accepted+LEAD>=next {next+P}else{next}
+}
+fn pacer()->pace::Pacer {
+ let mut p=pace::Pacer::default();
+ p.presented(pace::Timing{presented_ns:EDGE,period_ns:P,prepare_ns:RENDER,lead_ns:LEAD});
+ // Exercise the same independent response state without pending input.
+ p.delivered(1,(1,0));p.refresh(|_,_|Some((1,0)));
+ assert_eq!(p.decision(EDGE),pace::Decision::Compose);
+ let parsed=pace::Timing::parse(1,&format!("pacing_serial=1 presentation_ns={EDGE} period_ns={P} prepare_ns={RENDER} accept_lead_ns={LEAD}")).unwrap();
+ assert_eq!(parsed.presented_ns,EDGE);p
+}
+#[test]fn retained_race(){
+ let commit=666_002_362_359;
+ let old_clock=flip(666_005_995_560);
+ let old_client=flip(old_clock+RENDER)-commit;
+ assert!(old_client>33_000_000,"fixture no longer reproduces the real failure");
+ let p=pacer();let mut clock=pace::Maintenance::default();
+ assert!(!clock.ready(666_000_000_000,false,&p));
+ assert!(clock.ready(commit,true,&p),"client commit must absorb deferred chrome");
+ let new_client=flip(commit+2_315_000+RENDER)-commit;
+ println!("retained old_ns={old_client} coalesced_ns={new_client}");
+ assert!(new_client<=33_000_000);
+}
+#[test]fn clock_submission_does_not_occupy_two_edges(){
+ let p=pacer();let mut worst=0;
+ for phase in 0..1066 {
+  let now=EDGE+P*phase/1066;
+  let mut clock=pace::Maintenance::default();
+  let start=if clock.ready(now,false,&p){now}else{clock.deadline().unwrap()};
+  assert!(clock.ready(start,false,&p));
+  let end=flip(start+RENDER);
+  // A commit can arrive anywhere after admission of the old chrome frame.
+  for offset in 0..=100 {
+   let commit=start+(end-start)*offset/100;
+   let response=flip(end+RENDER)-commit;
+   worst=worst.max(response);
+   assert!(response<=33_000_000,"phase={phase} offset={offset} ns={response}");
+  }
+  // Preparing the taskbar invalidates the old slot: align submission using
+  // its actual completion time, not the assumed cost of font work.
+  clock.reset();assert!(clock.deadline().is_none());
+ }
+ println!("all-phase worst_ns={worst}");
+}
+#[test]fn bounded_late_wake_urgent_and_virtual(){
+ let p=pacer();let mut clock=pace::Maintenance::default();
+ assert!(!clock.ready(EDGE+1,false,&p));let deadline=clock.deadline().unwrap();
+ assert!(clock.ready(deadline+3*P,false,&p));assert_eq!(clock.deadline(),Some(deadline));
+ assert!(clock.ready(EDGE+2,true,&p));assert!(clock.deadline().is_none());
+ let virtual_p=pace::Pacer::default();assert!(clock.ready(0,false,&virtual_p));
+ let _=pace::Decision::WaitUntil(0);
+}
+
+}

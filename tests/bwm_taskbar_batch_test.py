@@ -19,6 +19,7 @@ const TASKBAR_HEIGHT:usize=24;
 const TASKBAR_BG:Color=1;
 const TASKBAR_TEXT:Color=2;
 const TTF_FONT_SIZE:f32=16.;
+fn ttf_font_size()->f32{TTF_FONT_SIZE}
 struct Ui{cell_h:usize,cell_w:usize,scale:usize}
 fn ui()->Ui{Ui{cell_h:16,cell_w:8,scale:1}}
 fn px(n:usize)->usize{n} fn pxi(n:usize)->i32{n as i32}

@@ -27,8 +27,9 @@ use libbreenix::window::abi::cursor_shape;
 /// How long bwm waits for the GPU core to admit its device before giving up.
 const ADMISSION_WAIT_MS: u32 = 5000;
 
-/// Rows per readback call when a frame is checked.
-const CHECK_BAND_ROWS: u32 = 32;
+/// Bound each of the two independent readback buffers, while amortizing transfer
+/// setup over larger rectangles than the former 32-row calls.
+const CHECK_BAND_BYTES: u32 = 4 * 1024 * 1024;
 
 /// How long one composite retries a snapshot that went stale or busy.
 const RETRY_MS: u64 = 2000;
@@ -36,6 +37,26 @@ const RETRY_MS: u64 = 2000;
 const CURSOR_WHITE: u32 = 0xFFFF_FFFF;
 const CURSOR_BLACK: u32 = 0xFF00_0000;
 const BLACK: u32 = 0xFF00_0000;
+
+/// Exact byte equality for a desktop-only row. Use bounded word loads rather
+/// than routing megabytes through the process C library's scalar comparator.
+fn equal_row(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() { return false; }
+    let mut at = 0;
+    while left.len() - at >= 8 {
+        // SAFETY: both eight-byte words are inside their slices; neither needs
+        // alignment, including a clipped row beginning between pixel pairs.
+        let a = unsafe { core::ptr::read_unaligned(left.as_ptr().add(at).cast::<u64>()) };
+        let b = unsafe { core::ptr::read_unaligned(right.as_ptr().add(at).cast::<u64>()) };
+        if a != b { return false; }
+        at += 8;
+    }
+    while at < left.len() {
+        if left[at] != right[at] { return false; }
+        at += 1;
+    }
+    true
+}
 
 /// One client window as the frame shows it, bottom to top.
 #[derive(Clone)]
@@ -137,9 +158,14 @@ impl Compositor {
     /// targets, which the caller draws. The pointer is drawn at `scale` pixels per bitmap cell.
     pub fn open(width: u32, height: u32, appbar_height: u32, scale: u32) -> Result<Self, String> {
         wait_for_admission()?;
+        libuitest::startup::mark("context-begin");
         let context = gpu::context_create().map_err(|e| format!("context: errno {}", -e))?;
-        let (desktop, background) = match (Surface::new(width as usize, height as usize, Format::BGRX),
-            Surface::new(width as usize, height as usize, Format::BGRX)) {
+        libuitest::startup::mark("context-ready");
+        let desktop = Surface::new(width as usize, height as usize, Format::BGRX);
+        libuitest::startup::mark("desktop-target-ready");
+        let background = Surface::new(width as usize, height as usize, Format::BGRX);
+        libuitest::startup::mark("background-target-ready");
+        let (desktop, background) = match (desktop, background) {
             (Ok(d), Ok(b)) => (d, b),
             (d, b) => {
                 gpu::context_destroy(context);
@@ -182,9 +208,11 @@ impl Compositor {
         for slot in 0..2 {
             self.scanout[slot] = gpu::scanout_target_create(abi::format::B8G8R8A8, self.width, self.height)
                 .map_err(|e| format!("scanout target: errno {}", -e))?;
+            libuitest::startup::mark(if slot == 0 { "scanout-a-ready" } else { "scanout-b-ready" });
         }
         self.scene = gpu::target_create(abi::format::B8G8R8A8, self.width, self.height)
             .map_err(|e| format!("scene target: errno {}", -e))?;
+        libuitest::startup::mark("scene-target-ready");
         self.next = 0;
         self.full = true;
         let mut words = Vec::new();
@@ -300,11 +328,15 @@ impl Compositor {
             c.length = (words.len() * 4) as u64;
             c.scene_target = self.scene;
             let userspace_prepare=monotonic_ns().saturating_sub(began_ns);
+            libuitest::startup::mark("client-compose-begin");
             let r = call(op::COMPOSITE, &mut c);
             match r {
                 0 => {
                     // Scheduling hints cannot undo an already completed COMPOSITE.
                     self.last_timing=super::session::timing(c.serial).unwrap_or_default();
+                    if self.last_timing.presented_ns != 0 && windows.iter().any(|w| w.sample != 0 && w.commit_id != 0) {
+                        libuitest::startup::at("first-composite", self.last_timing.presented_ns);
+                    }
                     self.last_timing.prepare_ns=self.last_timing.prepare_ns.saturating_add(userspace_prepare);
                     self.next ^= 1;
                     self.last_serial = c.serial;
@@ -461,6 +493,7 @@ impl Compositor {
         if w == 0 || y_top >= y1 {
             return Err(CheckError::Failed(format!("the area ({}, {})..({}, {}) is empty", x0, y_top, x1, y1)));
         }
+        libuitest::startup::mark("frame-check-begin");
         // The clients this area shows, the subject first, with their sampled pixels.
         let mut clients: Vec<(u64, [i32; 4], u32, Vec<u8>)> = Vec::new();
         let mut shown: Vec<_> = layers.iter().filter_map(|l| self.sampled_content(l).map(|r| (l.window_id, r)))
@@ -498,25 +531,42 @@ impl Compositor {
             }
             clients.push((id, r, s.width, px));
         }
-        let mut band = prefaulted_bytes((w * CHECK_BAND_ROWS * 4) as usize);
-        let mut desk = prefaulted_bytes((w * CHECK_BAND_ROWS * 4) as usize);
+        let band_rows = (CHECK_BAND_BYTES / (w * 4)).max(1).min(y1 - y_top);
+        let mut band = prefaulted_bytes((w * band_rows * 4) as usize);
+        let mut desk = prefaulted_bytes((w * band_rows * 4) as usize);
         let mut record = Box::new([0u8; abi::record::SIZE]);
         // SAFETY: the record is one live allocation.
         unsafe { core::ptr::write_volatile(record.as_mut_ptr(), 0) };
         let pointer = pointer.map(|p| (p, pointer_bitmap(p.shape)));
+        libuitest::startup::mark("frame-buffers-ready");
         let mut compared = 0u64;
         let mut y0 = y_top;
         while y0 < y1 {
-            let rows = CHECK_BAND_ROWS.min(y1 - y0);
+            let rows = band_rows.min(y1 - y0);
             let len = (w * rows * 4) as usize;
             let (r, a) = gpu::readback_why(0, [x0, y0, w, rows], &mut band[..len], w * 4, &mut *record);
+            libuitest::startup::mark("frame-scanout-return");
             if r != 0 {
                 return Err(CheckError::Failed(format!("readback of rows {}..{}: errno {}, reason {}", y0, y0 + rows, -r, a.reason)));
             }
-            self.desktop.read_rect([x0 as usize, y0 as usize, w as usize, rows as usize], &mut desk[..len], w as usize * 4)
-                .map_err(|e| CheckError::Failed(format!("desktop readback of rows {}..{}: errno {}", y0, y0 + rows, -e)))?;
+            let desktop = self.desktop.read_rect([x0 as usize, y0 as usize, w as usize, rows as usize], &mut desk[..len], w as usize * 4);
+            libuitest::startup::mark("frame-desktop-return");
+            desktop.map_err(|e| CheckError::Failed(format!("desktop readback of rows {}..{}: errno {}", y0, y0 + rows, -e)))?;
             for row in 0..rows {
                 let y = (y0 + row) as i32;
+                let desktop_row = layers.is_empty() && pointer.is_none_or(|(p, bitmap)| {
+                    let top = p.y - hotspot(p.shape).1 * self.scale;
+                    y < top || y >= top + bitmap.len() as i32 * self.scale
+                });
+                let start = (row * w * 4) as usize;
+                let end = start + (w * 4) as usize;
+                // Equal bytes satisfy the RGB comparison for this whole desktop-only
+                // row. A difference still takes the pixel path, including X masking
+                // and the exact first-mismatch diagnostic.
+                if desktop_row && equal_row(&band[start..end], &desk[start..end]) {
+                    compared += u64::from(w);
+                    continue;
+                }
                 for x in x0 as i32..x1 as i32 {
                     let o = ((row * w) as usize + (x as u32 - x0) as usize) * 4;
                     let got = u32::from_le_bytes([band[o], band[o + 1], band[o + 2], band[o + 3]]);
@@ -532,6 +582,7 @@ impl Compositor {
                     compared += 1;
                 }
             }
+            libuitest::startup::mark("frame-pixels-ready");
             y0 += rows;
         }
         Ok(compared)

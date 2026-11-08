@@ -23,6 +23,7 @@ pub const GRND_INSECURE: u32 = 0x0004;
 /// ARM64: Uses the Linux ARM64 (asm-generic/unistd.h) system call numbers.
 #[cfg(target_arch = "x86_64")]
 pub mod nr {
+    pub const CLOSE_RANGE: u64 = 436;
     pub const PRCTL: u64 = 157;
     pub const MQ_OPEN: u64 = 240;
     pub const MQ_UNLINK: u64 = 241;
@@ -207,6 +208,7 @@ pub mod nr {
 
 #[cfg(target_arch = "aarch64")]
 pub mod nr {
+    pub const CLOSE_RANGE: u64 = 436;
     pub const PRCTL: u64 = 167;
     pub const MQ_OPEN: u64 = 180;
     pub const MQ_UNLINK: u64 = 181;

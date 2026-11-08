@@ -15,7 +15,13 @@ impl Drop for Child {
     }
 }
 
-fn fixture(mode: &str) -> Result<(String, i32), breenix_suite::suite::CaseError> {
+pub(crate) fn fixture(mode: &str) -> Result<(String, i32), breenix_suite::suite::CaseError> {
+    capture(mode, false)
+}
+pub(crate) fn config_fixture(order: &str) -> Result<(String, i32), breenix_suite::suite::CaseError> {
+    capture(order, true)
+}
+fn capture(mode: &str, config_sequence: bool) -> Result<(String, i32), breenix_suite::suite::CaseError> {
     let (r, w) = io::pipe2(io::status_flags::O_CLOEXEC)?;
     let mut reader = unsafe { File::from_raw_fd(r.raw() as i32) };
     let writer = unsafe { File::from_raw_fd(w.raw() as i32) };
@@ -25,7 +31,9 @@ fn fixture(mode: &str) -> Result<(String, i32), breenix_suite::suite::CaseError>
     // Environment is changed in the child only; the outer case keeps its own result pipe.
     let mut exec = || {
         std::env::set_var("BREENIX_SUITE_TRANSCRIPT_FD", "3");
-        let argv = [args[0].as_ptr(), args[1].as_ptr(), args[2].as_ptr(), core::ptr::null()];
+        if config_sequence { std::env::set_var("BREENIX_CONFIG_SCENARIOS", mode); }
+        let argv = if config_sequence { [args[0].as_ptr(), core::ptr::null(), core::ptr::null(), core::ptr::null()] }
+            else { [args[0].as_ptr(), args[1].as_ptr(), args[2].as_ptr(), core::ptr::null()] };
         let _ = process::execv(FIXTURE, argv.as_ptr());
         127
     };
@@ -138,5 +146,63 @@ pub fn sweep_descendants() -> CaseResult {
         check(pid > 1, "invalid descendant pid")?;
         check(!std::path::Path::new(&format!("/proc/{pid}/stat")).exists(), "fixture descendant was not reaped")?;
     }
+    Ok(())
+}
+
+/// A silent fixture supervisor is swept at the case limit as collector-timeout;
+/// a dead one is recorded supervisor-died with its session orphans reaped.
+pub fn outer_collector_timeout() -> CaseResult {
+    for (mode, reason) in [("silent-supervisor", "collector-timeout"), ("dead-supervisor", "supervisor-died")] {
+        let start = time::now_monotonic()?.as_nanos();
+        let text = one(mode, Some("planted collection failure"))?;
+        let elapsed = time::now_monotonic()?.as_nanos() - start;
+        if mode == "silent-supervisor" {
+            check(elapsed >= 3_000_000_000 && elapsed < 6_000_000_000, "silent supervisor was not bounded by L")?;
+        }
+        let collect = format!("SUITE runner-fixture COLLECT fixture/{mode} trigger=fail screen=none:{reason} windows=0 remnants=0 artifacts=none:{reason}");
+        check(text.lines().filter(|l| l.contains(" COLLECT ")).count() == 1, "fallback COLLECT count differs")?;
+        let at = text.find(&collect).ok_or("fallback COLLECT differs")?;
+        check(at < text.find(" CASE ").ok_or("fixture CASE missing")?, "COLLECT followed CASE")?;
+        for key in ["supervisor-pid", "orphan-pid"] {
+            let prefix = format!("SUITE runner-fixture VALUE fixture/{mode} {key}=");
+            let pid: u64 = text.lines().find_map(|l| l.strip_prefix(&prefix))
+                .and_then(|s| s.strip_suffix("pid")).and_then(|s| s.parse().ok()).ok_or("missing collector process witness")?;
+            check(pid > 1 && !std::path::Path::new(&format!("/proc/{pid}/stat")).exists(), "collector process survived sweep")?;
+        }
+    }
+    Ok(())
+}
+
+/// A real fixture death must finish local collection before the runner sweeps.
+pub fn outer_case_death() -> CaseResult { collection_evidence("collection-death", "crash") }
+pub(crate) fn collection_evidence(mode: &str, trigger: &str) -> CaseResult {
+    let (text, exit) = fixture(mode)?;
+    check(exit == 1, "killed fixture did not fail")?;
+    let collect = format!("SUITE runner-fixture COLLECT fixture/{mode} trigger={trigger} screen=at-collection");
+    let at = text.find(&collect).ok_or("collection did not save a screen")?;
+    let done = text.find(" collection-done=1bool").ok_or("runner never received done")?;
+    let swept = text.find("COLLECTION-SWEEP reaped=true evidence=true").ok_or("evidence or sweep witness missing")?;
+    check(at < done && done < swept, "COLLECT/done did not arrive before sweep")?;
+    let case = text.find(&format!("CASE fixture/{mode} FAIL")).ok_or("fixture case did not fail")?;
+    check(done < case && text.contains("DONE passed=0 failed=1 skipped=0 total=1"), "fixture result ordering differs")?;
+    let path = std::path::Path::new("/var/uitest/runner-fixture/fixture").join(mode);
+    let manifest = std::fs::read_to_string(path.join("collection.txt")).map_err(|e| e.to_string())?;
+    check(manifest.contains(&format!("trigger={trigger}")) && manifest.contains("frame=partial:case-died"), "missing death/timeout or partial-slot evidence")?;
+    check(std::fs::read(path.join("screen.png")).map_err(|e| e.to_string())?.starts_with(b"\x89PNG\r\n\x1a\n"), "screen is not a saved PNG")?;
+    for name in ["screen.record", "input.log", "composites.log"] {
+        check(std::fs::metadata(path.join(name)).map_err(|e| e.to_string())?.len() != 0, &format!("collection evidence is empty: {name}"))?;
+    }
+    check(std::fs::read_dir(&path).map_err(|e| e.to_string())?.any(|p| p.is_ok_and(|p| p.file_name().to_string_lossy().starts_with("window-"))), "no live window capture saved")?;
+    let stderr = std::fs::read_dir(&path).map_err(|e| e.to_string())?.filter_map(Result::ok)
+        .filter(|p| p.file_name().to_string_lossy().starts_with("stderr-"))
+        .map(|p| std::fs::read(p.path()).unwrap_or_default()).collect::<Vec<_>>();
+    check(stderr.iter().any(|b| b.len() == 4096 && b.iter().all(|&v| v == b'x')), "app stderr was not saved")?;
+    if trigger == "timeout" {
+        check(text.contains("timed out after 1500 ms"), "timeout did not use the logic bound")?;
+        let elapsed: u64 = text.split(" collection-ms=").nth(1).ok_or("collection elapsed missing")?
+            .split("ms").next().unwrap().parse().map_err(|_| "invalid collection elapsed")?;
+        check(elapsed < 3000, "evidence missed the reserve")?;
+    }
+    std::fs::remove_dir_all(path).map_err(|e| e.to_string())?;
     Ok(())
 }

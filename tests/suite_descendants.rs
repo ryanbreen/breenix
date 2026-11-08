@@ -27,6 +27,15 @@ fn production_victims_stay_inside_the_runner_tree() {
     let mut reversed = rows.to_vec(); reversed.reverse();
     let mut actual = descendant_victims(40, &reversed); actual.sort();
     assert_eq!(actual, vec![41,42,44,45]);
+    // The sequence handoff shares this selector: the outer case, its helper,
+    // and a separate subreaper tree are held in the table throughout reparenting.
+    let mut sequence = rows.to_vec();
+    sequence.extend([(90,50),(91,90),(92,91)]);
+    assert_eq!(descendant_victims(40, &sequence), vec![41,42,44,45]);
+    sequence.retain(|&(pid,_)| ![41,42].contains(&pid));
+    for row in &mut sequence {{ if row.0 == 45 {{ row.1 = 40; }} }}
+    assert_eq!(descendant_victims(40, &sequence), vec![44,45]);
+    assert!(sequence.contains(&(50,10)) && sequence.contains(&(92,91)));
     // Parent exits: its children become direct children of the subreaper.
     assert_eq!(descendant_victims(40, &[(40,10),(42,40),(45,42),(50,10)]), vec![42,45]);
     assert!(descendant_victims(0, &rows).is_empty());

@@ -2394,37 +2394,12 @@ impl core::ops::Deref for Ext2ReadGuard {
 impl Drop for Ext2ReadGuard {
     fn drop(&mut self) {
         self.inner = None;
-        // A dropped *read* guard only ever unblocks the single upgradeable
-        // holder waiting on `try_upgrade()` (releasing a reader never
-        // admits another reader -- spin's RwLock never blocks reader vs.
-        // reader), so at most one waiter can actually make progress from
-        // this event: wake_up_one() (never queue every waiter for a
-        // thundering herd), not the full broadcast `wake_up()`.
-        //
-        // Correction (review round-2 finding M1, re-found in the closure
-        // round): an earlier version of this comment additionally claimed
-        // `has_waiters()` "skips the lock entirely in the common
-        // uncontended case." That was false -- `has_waiters()` calls
-        // `with_waiters()` (`task/waitqueue.rs`), the *same*
-        // `arch_without_interrupts`-guarded `spin::Mutex` `wake_up_one()`
-        // itself takes. Gating on it saved nothing on the uncontended path
-        // (one lock acquisition either way) and cost an extra one on the
-        // contended path (two acquisitions instead of one), so it has been
-        // removed; `wake_up_one()` is now called unconditionally.
-        //
-        // Residual, disclosed rather than fixed: `wake_up_one()` pops the
-        // waitqueue's *front* entry, which may be a parked reader rather
-        // than the upgrade-waiting writer that could actually proceed --
-        // that reader retries `try_read()`, is refused while UPGRADED is
-        // set, and re-parks, deferring the writer's own wake to its next
-        // bounded per-round timeout (C6, `EXT2_LOCK_PARK_TIMEOUT_NS`). This
-        // is bounded added latency, not a hang, and it existed before this
-        // correction too (`has_waiters()` never changed which waiter gets popped) --
-        // recorded here since it was under-stated originally. The queue is
-        // shared rather than writer-priority (module docs above); making it
-        // writer-priority is a real option for a future round, not done
-        // here.
-        self.waiters.wake_up_one();
+        // Readers and the upgrading writer share this queue. Its front may
+        // be a reader that UPGRADED still excludes; waking only that entry
+        // strands the eligible upgrader until the 200 ms retry deadline.
+        // Recheck the shared queue after releasing the guard, including the
+        // writer even when an ineligible reader was queued ahead of it.
+        self.waiters.wake_up();
     }
 }
 

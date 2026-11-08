@@ -3934,6 +3934,30 @@ def capture_boot(directory):
     return boot
 
 
+def planned_aggregate_refusals(directory, boot):
+    """Classify the driver's failed aggregate without excusing a real refusal."""
+    names = boot['suites']
+    rows = (directory / 'suite-verdict.txt').read_text().splitlines()
+    if len(rows) != len(names) + 1:
+        raise ValueError('aggregate verdict rows differ from its suites')
+    passed = 0
+    for name, row in zip(names, rows):
+        manifest = json.loads((directory / 'definition/docs/suites' / (name + '.json')).read_text())
+        if row.startswith('PASS ' + name + ': '):
+            disk = manifest.get('diskChecks')
+            if disk and not row.endswith('; raw disk checks passed=' + str(len(disk))):
+                raise ValueError('aggregate disk checks did not pass')
+            passed += 1
+            continue
+        empty = [category['id'] for category in manifest['categories'] if not category['cases']]
+        expected = ('FAIL ' + name + ': planned categories have no cases: '
+                    + ', '.join(empty) + '; acceptance is blocked')
+        if not empty or row != expected:
+            raise ValueError('aggregate has an unplanned refusal: ' + row)
+    if passed == len(names) or rows[-1] != f'FAIL: {passed} of {len(names)} suites passed':
+        raise ValueError('aggregate failure tally differs')
+
+
 def completed_suite_capture(directory, sha, suite=None):
     """Read an authoritative, driver-closed native capture, including bulk pixels."""
     directory = Path(directory)
@@ -3953,24 +3977,54 @@ def completed_suite_capture(directory, sha, suite=None):
         resources_identity(boot, suite or boot.get('suite'), sha)
     events = [json.loads(line) for line in read('events.jsonl').splitlines()]
     status = int(read('exit-status'))
+    handoffs = [i for i, event in enumerate(events) if event.get('event') == 'cold-readback-next']
+    if handoffs:
+        boundaries = [i for i, event in enumerate(events) if event.get('event') == 'closed']
+        if len(boundaries) != 1 or handoffs != [boundaries[0] + 1]:
+            raise ValueError('cold disk handoff is outside its post-closure position')
+    if len(boot.get('suites') or []) > 1:
+        serial = read('serial.txt')
+        bad = re.search(r'^SUITE \S+ CASE \S+ (?:FAIL|SKIP)\b.*$', serial, re.M)
+        if bad:
+            raise ValueError('aggregate case failure or skip: ' + bad[0])
+        for done in re.finditer(r'^SUITE \S+ DONE passed=\d+ failed=(\d+) skipped=(\d+) total=\d+$', serial, re.M):
+            if int(done[1]) or int(done[2]):
+                raise ValueError('aggregate case failure or skip: ' + done[0])
+        if status == 1:
+            planned_aggregate_refusals(directory, boot)
     driver_closed = bool(events) and (events[-1].get('event') == 'closed'
         and events[-1].get('status') == status and events[-1].get('endedBy') == 'driver')
-    # metal-boot finalizes a disk-checking aggregate after its cold readback:
-    # source closure(1), suite-verdict(0), then a bound cold-disk-verdict.
-    if (not driver_closed and status == 0 and len(boot.get('suites') or []) > 1
+    # The source closes before its cold-readback handoff. The aggregate verdict
+    # can fail planned categories while a non-disk selection passes its own
+    # cases. Keep completion separate from that selection's verdict.
+    if (not driver_closed and status in (0, 1) and len(boot.get('suites') or []) > 1
             and events and events[-1].get('event') == 'cold-disk-verdict'):
         boundaries = [i for i, e in enumerate(events) if e.get('event') == 'closed']
         if len(boundaries) == 1:
             boundary = events[boundaries[0]]
             tail = events[boundaries[0] + 1:]
+            handoff = tail[:1] if tail and tail[0].get('event') == 'cold-readback-next' else []
+            if handoff:
+                tail = tail[1:]
             receipt = json.loads(read('suite-readback.json'))
             child = receipt.get('id', '')
+            if receipt.get('passed') is not (status == 0):
+                raise ValueError('cold disk receipt differs from the aggregate verdict')
+            non_disk = bool(suite) and (receipt.get('passed') is True or not json.loads((directory
+                / 'definition/docs/suites' / (suite + '.json')).read_text()).get('diskChecks'))
+            disk_handoff = not handoff or any(json.loads((directory / 'definition/docs/suites'
+                / (name + '.json')).read_text()).get('diskChecks') for name in boot['suites'])
             driver_closed = (boundary.get('status') == 1 and boundary.get('endedBy') == 'driver'
                 and [e.get('event') for e in tail] == ['suite-verdict', 'cold-disk-verdict']
-                and tail[0].get('status') == 0 and tail[1].get('passed') is True
+                and type(tail[0].get('status')) is int and tail[0]['status'] == status
+                and tail[1].get('passed') is (status == 0)
                 and tail[1].get('readback') == child and child != boot.get('id')
+                and disk_handoff
+                and (not handoff or handoff[0].get('readback') == child)
                 and re.fullmatch(r'\d{8}T\d{6}Z-metal', child) is not None
-                and receipt.get('passed') is True and type(receipt.get('bytes')) is int
+                and receipt.get('passed') is tail[1]['passed']
+                and (receipt['passed'] is True or non_disk)
+                and type(receipt.get('bytes')) is int
                 and receipt['bytes'] > 0 and re.fullmatch('[a-f0-9]{64}', receipt.get('sha256', '')) is not None)
     if (boot.get('onlyCase') is not None or boot.get('session') or not read('ended')
             or read('dirty') != '0' or read('commit') != sha or read('ended-by') != 'driver'
@@ -4044,7 +4098,14 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
             or required != [name for name in names if name in required]):
         raise ValueError('invalid WM selection or manifest order')
     fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal']
-    if (not serial.endswith('\n') or any(re.search(p, serial) for p in
+    complete_serial = serial.endswith('\n')
+    if not complete_serial:
+        # Coordinator ruling 291: power-off may cut a diagnostic after the
+        # final sequence record, never suite evidence or an upload record.
+        tail = serial.rsplit('\n', 1)[-1]
+        complete_serial = (re.search(r'^SUITE_SEQUENCE DONE suites=\d+\n', serial, re.M) is not None
+                           and re.search(r'SUITE|CASE|MEMORY|SCREEN|upload', tail, re.I) is None)
+    if (not complete_serial or any(re.search(p, serial) for p in
             fatal + [r'KERNEL PANIC[:!]', r'SUITE_SEQUENCE (?:STALLED|FAIL)'])):
         raise ValueError('incomplete or fatal WM capture')
     startup = one(r'^GT710_CLOCK_STARTUP (.+)$', serial, 'WM full-clock startup')
@@ -4073,6 +4134,9 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
         'RECLAIMED': fr'SUITE {suite} MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)',
         'LIVE': fr'SUITE {suite} (?:VALUE|WAIT|PULSES|HOSTKEY|HOSTPOINTER|SCREEN) ([a-z0-9/-]+) \S.*',
     }
+    verdict_api = runpy.run_path(str(root / 'scripts/suite-verdict.py'))
+    shapes.update({kind: fr'SUITE {suite} {kind} ([a-z0-9/-]+) .+'
+                   for kind in verdict_api['RESULT']})
     parsed = []
     for line in text.splitlines():
         if not line.startswith(f'SUITE {suite} '):
@@ -4101,7 +4165,10 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
                          f'full suite: {tally[0]}/{case_count} passed, {tally[1]} failed')
     if not 0 < int(records[case_count + 2][1][1]) <= 1800000:
         raise ValueError('WM elapsed time exceeds 1800 seconds')
-    memory = runpy.run_path(str(root / 'scripts/suite-verdict.py'))['memory_problem'](parsed)
+    problem = verdict_api['result_problem'](manifest, parsed, names)
+    if problem:
+        raise ValueError(problem)
+    memory = verdict_api['memory_problem'](parsed)
     if not memory[0]:
         raise ValueError(memory[1])
     start_at = text.index(records[0][2])

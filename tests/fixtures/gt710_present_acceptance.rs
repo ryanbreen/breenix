@@ -7,6 +7,7 @@ mod test_point {pub const STALE_FENCE:u32=20;pub const WITHHOLD_FENCE:u32=21;pub
 mod test_control {pub fn take(_:u32,_:u32)->Option<u32>{None}pub fn take_if(_:u32,_:u32,_:impl Fn(u32)->bool)->Option<u32>{None}}
 mod completion {pub fn finish_write(_: &mut bool,_:&mut Option<u64>,_:u64,_:bool,_:bool){}}
 fn notify(){}
+fn now_ns()->u64{1}
 #[derive(Clone,Copy)]struct Binding{id:u32,fence:u64,answer:u32}
 #[derive(Clone,Copy)]struct Presenting{id:u32,seq:u64,owner:u64}
 struct Owner{group:u64,last:Option<Binding>}
@@ -22,7 +23,7 @@ impl Answers{fn complete(&mut self,n:u32,a:u32){self.values.insert(n,a);}fn take
 struct Context{ns:u32,done_upto:u32,early:BTreeSet<u32>,outcomes:BTreeMap<u32,(u32,u32)>,errors_in_row:u32,inflight:VecDeque<u64>,owner:u64,totals:Totals,state:CtxState,flushes:Answers,native_probe_mask:u32,vertex_arena:Option<Arena>,depth:Option<Depth>}
 struct LastWrite{ctx:u32,device_ctx:u64,fence:u64,serial:u64,answer:u32,kind:u32}
 struct Resource{holds:u32,writers:u32,invalid:bool,invalidated_by:Option<u64>,generation:u64,last:Option<LastWrite>}
-struct Sub{sampled:Vec<()>,sent_ns:Option<u64>,ctx:u32,n:u32,fence:u64,native_fence:u64,present:Option<Presenting>,published:bool,requests:u32,result:Option<(u32,u32)>,error:Option<u32>,mismatch:Option<u32>,writer:Option<Writer>,written:Vec<u32>,whole:Vec<u32>,held:Vec<u32>,native_probe_mask:u32}
+struct Sub{sampled:Vec<()>,sent_ns:Option<u64>,progress_ns:Option<u64>,ctx:u32,n:u32,fence:u64,native_fence:u64,present:Option<Presenting>,published:bool,requests:u32,result:Option<(u32,u32)>,error:Option<u32>,mismatch:Option<u32>,writer:Option<Writer>,written:Vec<u32>,whole:Vec<u32>,held:Vec<u32>,native_probe_mask:u32}
 struct Done{answer:u32,fence:Option<u64>,native_fence:Option<u64>,echoed:u64}
 impl Done{fn matches_fence(&self,f:u64)->bool{self.fence==Some(f)}}
 struct Core{retired_pins:Vec<Vec<()>>,display:Display,contexts:BTreeMap<u32,Context>,procs:BTreeMap<u64,Proc>,resources:BTreeMap<u32,Resource>,subs:BTreeMap<u64,Sub>,stalled:bool,released:Vec<u32>}
@@ -41,7 +42,7 @@ fn fresh()->Core{
  contexts:BTreeMap::from([(1,Context{ns:7,done_upto:1,early:BTreeSet::new(),outcomes:BTreeMap::new(),errors_in_row:0,inflight:VecDeque::from([17]),owner:1,totals:Totals::default(),state:CtxState::Live,flushes:Answers::default(),native_probe_mask:0,vertex_arena:None,depth:None})]),
  procs:BTreeMap::from([(1,Proc{presents:0,totals:Totals::default()})]),
  resources:[(71,2),(72,2)].into_iter().map(|(id,holds)|(id,Resource{holds,writers:0,invalid:false,invalidated_by:None,generation:0,last:None})).collect(),
- subs:BTreeMap::from([(17,Sub{sampled:vec![],sent_ns:Some(1),ctx:1,n:2,fence:123,native_fence:0,present:Some(Presenting{id:72,seq:2,owner:1}),published:false,requests:1,result:None,error:None,mismatch:None,writer:None,written:vec![],whole:vec![],held:vec![72],native_probe_mask:0})]),stalled:false,released:vec![]}
+ subs:BTreeMap::from([(17,Sub{sampled:vec![],sent_ns:Some(1),progress_ns:None,ctx:1,n:2,fence:123,native_fence:0,present:Some(Presenting{id:72,seq:2,owner:1}),published:false,requests:1,result:None,error:None,mismatch:None,writer:None,written:vec![],whole:vec![],held:vec![72],native_probe_mask:0})]),stalled:false,released:vec![]}
 }
 fn wait_for<T>(_:Option<u64>,_:bool,f:impl FnOnce(&mut Core)->Option<T>)->Result<T,()>{CORE.with(|c|f(&mut c.borrow_mut()).ok_or(()))}
 fn wait_for_traced<T>(deadline:Option<u64>,interruptible:bool,f:impl FnOnce(&mut Core)->Option<T>,_:Option<()>,_:bool,_:Option<()>)->Result<T,()>{wait_for(deadline,interruptible,f)}

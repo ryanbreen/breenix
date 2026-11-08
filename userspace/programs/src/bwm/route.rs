@@ -108,6 +108,7 @@ impl HotkeyManager {
         };
         let _ = io::close(fd);
         buf.truncate(n);
+        let digest: String = libbreenix::crypto::sha256::sha256(&buf).iter().map(|b| format!("{b:02x}")).collect();
 
         let mut found_any = false;
         for line in buf.split(|&b| b == b'\n') {
@@ -119,6 +120,7 @@ impl HotkeyManager {
             }
         }
 
+        print!("[bwm] hotkeys: loaded {path} sha256={digest} bindings={}\n", self.bindings.len());
         if !found_any {
             print!("[bwm] hotkeys: config empty, using defaults\n");
             self.load_defaults();

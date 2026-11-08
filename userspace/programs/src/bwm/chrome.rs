@@ -105,7 +105,7 @@ pub(super) fn draw_text_at(fb: &mut Surface, text: &[u8], x: i32, y: i32, color:
     if let Some(font) = ttf {
         // Use LCD subpixel rendering for crisp window chrome text
         let s = unsafe { core::str::from_utf8_unchecked(text) };
-        ttf_font::draw_text_subpixel(fb, font, s, x, y, TTF_FONT_SIZE * ui().scale as f32, color);
+        ttf_font::draw_text_subpixel(fb, font, s, x, y, ttf_font_size() * ui().scale as f32, color);
     } else {
         // Only the characters whose whole cell lies across the surface's width are drawn.
         let cell_w = ui().cell_w as i32;
@@ -266,6 +266,7 @@ pub(super) fn eastern_offset_secs(utc_secs: i64) -> i64 {
 }
 
 pub(super) fn format_clock(utc_secs: i64, buf: &mut [u8; 11]) {
+    if !settings().clock_visible { buf.fill(b' '); return; }
     let offset = eastern_offset_secs(utc_secs);
     let local = utc_secs + offset;
     // Handle day wrap
@@ -295,9 +296,9 @@ pub(super) fn draw_taskbar(fb: &mut Surface, clock_text: &[u8], ui_font: &mut Op
         let clip = fb.clip();
         let runs = [
             ttf_font::TextRun { bytes: b"Breenix", x: pxi(8), y: label_y,
-                size: TTF_FONT_SIZE * ui().scale as f32, fg: TASKBAR_TEXT, clip },
+                size: ttf_font_size() * ui().scale as f32, fg: TASKBAR_TEXT, clip },
             ttf_font::TextRun { bytes: clock_text, x: clock_x, y: label_y,
-                size: TTF_FONT_SIZE * ui().scale as f32, fg: TASKBAR_TEXT, clip },
+                size: ttf_font_size() * ui().scale as f32, fg: TASKBAR_TEXT, clip },
         ];
         ttf_font::draw_runs_subpixel(fb, font, &runs);
     } else {
@@ -400,11 +401,18 @@ pub(super) fn appbar_hit_test(windows: &[Window], screen_w: usize, screen_h: usi
 pub(super) fn redraw_all_windows(fb: &mut Surface, windows: &[Window], stack: &Stack,
                       clock_text: &[u8], ui_font: &mut Option<CachedFont>) {
     draw_taskbar(fb, clock_text, ui_font);
+    libuitest::startup::mark("chrome-taskbar-ready");
+    draw_window_chrome(fb, windows, stack, ui_font);
+}
+
+fn draw_window_chrome(fb: &mut Surface, windows: &[Window], stack: &Stack,
+    ui_font: &mut Option<CachedFont>) {
     for win in ordered_windows(windows, stack) {
         if stack.minimized(win.window_id) || win.chromeless { continue; }
         draw_window_frame(fb, win, stack.focus() == Some(win.window_id), ui_font);
     }
     draw_appbar(fb, windows, stack, ui_font);
+    libuitest::startup::mark("chrome-appbar-ready");
 }
 
 /// Repaint the whole desktop target: the background, then the chrome.
@@ -412,7 +420,15 @@ pub(super) fn compose_full_redraw(gpu: &mut Compositor, windows: &[Window], stac
                        ui_font: &mut Option<CachedFont>) {
     let Compositor { desktop, background, .. } = gpu;
     libgfx::blit::blit(desktop, background, 0, 0);
+    libuitest::startup::mark("chrome-blit-ready");
     redraw_all_windows(desktop, windows, stack, clock, ui_font);
+}
+
+/// The first discovered windows add their chrome to the verified bare desktop.
+/// The background and clock taskbar already have their initial pixels.
+pub(super) fn compose_initial_windows(gpu: &mut Compositor, windows: &[Window], stack: &Stack,
+    ui_font: &mut Option<CachedFont>) {
+    draw_window_chrome(&mut gpu.desktop, windows, stack, ui_font);
 }
 
 /// Partial redraw: repaint only the dirty sub-region `(dx0, dy0)..(dx1, dy1)` of the desktop
@@ -483,10 +499,11 @@ pub(super) fn frame_layers(windows: &[Window], stack: &Stack, layers: &mut Vec<L
 /// Each must be the colour the desktop's definition gives there (the bar colours, and
 /// `background_pixel`'s formula). The read-back's record must name a scanout of the composed
 /// size, the one MODES reports bound, and the GPU core's current mode must have that size.
-pub(super) fn check_desktop_fills(gpu: &mut Compositor, screen_w: usize, screen_h: usize, mode_index: u32) -> Result<String, String> {
+pub(super) fn check_desktop_fills(gpu: &mut Compositor, screen_w: usize, screen_h: usize, mode_index: u32) -> Result<Result<String, String>, FrameError> {
     measure_check(|| {
         // The whole frame, so no pointer the last frame drew remains in it.
-        gpu.present_startup_desktop(None).map_err(|e| e.to_string())?;
+        gpu.present_startup_desktop(None)?;
+        Ok((|| {
         let (w, h) = (screen_w as u32, screen_h as u32);
         let (tb, ab) = (px(TASKBAR_HEIGHT) as u32, px(APPBAR_HEIGHT) as u32);
         let word = |c: Color| 0xFF00_0000 | (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32;
@@ -514,5 +531,6 @@ pub(super) fn check_desktop_fills(gpu: &mut Compositor, screen_w: usize, screen_
             shown.resource, shown.width, shown.height, mode_index, mode.width, mode.height, w, h, ui().scale,
             tb, w - 1, tb - 1, w - 1, tb, h - ab, h, h - ab, w - 1, h - 1, w - 1, h - ab - 1, samples.len()
         ))
+        })())
     })
 }

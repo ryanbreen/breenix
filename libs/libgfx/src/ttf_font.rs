@@ -72,8 +72,8 @@ impl Font {
     }
 }
 
-/// Uncached glyphs: rows of the process's scratch targets, each handed out once, so a
-/// glyph's region is as the core zeroed it and its draws and work are a new target's.
+/// Uncached glyphs occupy disjoint rectangles of the process's scratch targets.
+/// Fresh rectangles retain the core's zeroed coverage, including LCD padding.
 struct ScratchSlot { owner: AtomicU64, targets: UnsafeCell<[Option<Scratch>; 2]>, geometry: UnsafeCell<Option<Geometry>> }
 // SAFETY: the targets and geometry are only reached with the PID-tagged owner lock held.
 unsafe impl Sync for ScratchSlot {}
@@ -101,21 +101,31 @@ pub(crate) fn retire_scratch() -> Result<(), Error> {
     Ok(())
 }
 
-/// A `width × height` region of scratch target `which`, its rows handed out once each.
+/// A fresh `width × height` rectangle of scratch target `which`. Pack short
+/// glyphs across a shelf before starting another shelf or allocating a target.
 fn region(which: usize, width: usize, height: usize) -> Result<Region, Error> {
     let _held = scratch_lock()?;
     // SAFETY: the PID-tagged lock is held for the rest of this call.
     let slot = unsafe { &mut (*SCRATCH.targets.get())[which] };
     let context = device::with(|d| Ok(d.context.handle())).map_err(Error::Device)?;
-    let fits = slot.as_ref().is_some_and(|s| s.context == context && s.target.owned_here() && width <= s.target.width()
-        && s.next_row + height <= s.target.height());
+    let fits = slot.as_mut().is_some_and(|s| {
+        if s.context != context || !s.target.owned_here() || width > s.target.width() { return false; }
+        if s.next_x + width > s.target.width() {
+            s.next_y += s.shelf_height;
+            s.next_x = 0;
+            s.shelf_height = 0;
+        }
+        s.next_y + height <= s.target.height()
+    });
     if !fits {
-        *slot = Some(Scratch { target: Arc::new(target(width.max(SCRATCH_SIDE), height.max(SCRATCH_SIDE))?), context, next_row: 0 });
+        *slot = Some(Scratch { target: Arc::new(target(width.max(SCRATCH_SIDE), height.max(SCRATCH_SIDE))?),
+            context, next_x: 0, next_y: 0, shelf_height: 0 });
     }
     let s = slot.as_mut().expect("scratch made above");
-    let y = s.next_row;
-    s.next_row += height;
-    Ok(Region { target: s.target.clone(), x: 0, y })
+    let (x, y) = (s.next_x, s.next_y);
+    s.next_x += width;
+    s.shelf_height = s.shelf_height.max(height);
+    Ok(Region { target: s.target.clone(), x, y })
 }
 
 /// The crossing wire layout, useful for independent host inspection.
@@ -123,10 +133,10 @@ pub fn crossing_table(segments: &[LineSegment], first_row: usize, rows: usize) -
     CrossingTable::new(segments, first_row, rows).bytes().to_vec()
 }
 
-/// A scratch target's side when no glyph needs more; its rows are handed out once each.
+/// A scratch target's side when no glyph needs more.
 const SCRATCH_SIDE: usize = 256;
 // Context handles change when device::with replaces a reset context after EIO.
-struct Scratch { target: Arc<Surface>, context: u64, next_row: usize }
+struct Scratch { target: Arc<Surface>, context: u64, next_x: usize, next_y: usize, shelf_height: usize }
 
 /// A glyph-sized rectangle of a target, at (x, y).
 struct Region { target: Arc<Surface>, x: usize, y: usize }
@@ -437,11 +447,18 @@ struct Batch { run: Run, draws: Vec<(Arc<AtlasGlyph>, i64)>, slots: Vec<(u64, us
 pub struct CachedFont {
     font: Font, entries: Vec<Entry>, pages: Vec<Page>, next_page: u64, capacity: usize, max_bytes: usize, clock: u64,
     stats: CacheStats, readback: Option<GlyphBitmap>, owner: u64,
+    phase_observer: Option<fn(&'static str)>,
 }
 impl CachedFont {
     pub fn new(font: Font, capacity: usize) -> Self {
         Self { font, entries: Vec::new(), pages: Vec::new(), next_page: 0, capacity: capacity.max(1), max_bytes: usize::MAX,
-            clock: 0, stats: CacheStats::default(), readback: None, owner: device::pid() }
+            clock: 0, stats: CacheStats::default(), readback: None, owner: device::pid(), phase_observer: None }
+    }
+    /// Observe CPU planning, submission and wait boundaries without a renderer dependency
+    /// on the consumer's trace storage.
+    pub fn observe_phases(&mut self, observer: fn(&'static str)) { self.phase_observer = Some(observer); }
+    fn phase(&self, name: &'static str) {
+        if let Some(observer) = self.phase_observer { observer(name); }
     }
     pub fn with_default_cache(font: Font) -> Self {
         let mut f = Self::new(font, libfont::cache::DEFAULT_ENTRIES); f.max_bytes = libfont::cache::DEFAULT_BYTES; f
@@ -451,6 +468,20 @@ impl CachedFont {
     pub fn glyph_index(&self, ch: char) -> u16 { self.font.glyph_index(ch) }
     pub fn advance_width(&self, g: u16, size: f32) -> f32 { self.font.advance_width(g, size) }
     pub fn kern(&self, l: u16, r: u16, size: f32) -> f32 { self.font.kern(l,r,size) }
+
+    /// Prepare LCD coverage without drawing to a framebuffer. Device errors
+    /// propagate; unsupported glyphs follow the drawing path's omission policy.
+    pub fn prepare_subpixel(&mut self, texts: &[&[u8]], size: f32) -> Result<(), Error> {
+        let mut placed = Vec::new();
+        for text in texts {
+            placed.extend(glyphs_of(self, decode_utf8(text)).map(|glyph| (glyph, 0)));
+        }
+        let mut result = Ok(());
+        self.run_mode(&placed, Font::size26(size).unwrap_or(0), true, |got| {
+            if let Err(Error::Device(error)) = got { result = Err(Error::Device(error)); }
+        });
+        result
+    }
 
     /// The atlas image of `glyph` at `size26`, rasterized on a miss.
     fn glyph(&mut self, glyph: u16, size26: i32) -> Result<Arc<AtlasGlyph>, Error> {
@@ -469,6 +500,7 @@ impl CachedFont {
 
     // Keep three-channel LCD coverage separate from grayscale entries.
     fn run_mode(&mut self, placed: &[(u16, i64)], size26: i32, lcd: bool, mut out: impl FnMut(Result<(Arc<AtlasGlyph>, i64), Error>)) {
+        self.phase("font-plan-begin");
         if self.owner != device::pid() { self.clear(); self.owner = device::pid(); }
         let mut batch = Batch { first: self.clock + 1, ..Batch::default() };
         for &(glyph, dx) in placed {
@@ -478,6 +510,7 @@ impl CachedFont {
                 Err(e) => out(Err(e)),
             }
         }
+        self.phase("font-plan-return");
         self.finish(&mut batch, &mut out);
     }
 
@@ -567,7 +600,14 @@ impl CachedFont {
         let draws = core::mem::take(&mut batch.draws);
         let slots = core::mem::take(&mut batch.slots);
         batch.first = self.clock;
-        let sent = run.send().and_then(|f| f.map_or(Ok(()), |f| f.wait(u64::MAX).map_err(Error::Device)));
+        self.phase("font-submit-begin");
+        let submitted = run.send();
+        self.phase("font-submit-return");
+        let sent = submitted.and_then(|f| {
+            let result = f.map_or(Ok(()), |f| f.wait(u64::MAX).map_err(Error::Device));
+            self.phase("font-wait-return");
+            result
+        });
         match sent {
             Ok(()) => for d in draws { out(Ok(d)); },
             Err(e) => {
@@ -842,39 +882,65 @@ pub fn draw_runs_subpixel(fb: &mut Surface, font: &mut CachedFont, runs: &[TextR
     draw_runs_mode(fb, font, runs, true);
 }
 
+/// Rasterize adjacent text runs at one size together. The rasterizer carries
+/// opaque placement indices; map those back before drawing or layering glyphs.
+fn rasterize_text_runs(font: &mut CachedFont, runs: &[(Vec<(u16, i64)>, i32)], lcd: bool,
+    mut out: impl FnMut(usize, Result<(Arc<AtlasGlyph>, i64), Error>)) {
+    let mut first = 0;
+    while first < runs.len() {
+        let size = runs[first].1;
+        let mut end = first + 1;
+        while end < runs.len() && runs[end].1 == size { end += 1; }
+        let mut placements = Vec::new();
+        let mut glyphs = Vec::new();
+        for (run, (placed, _)) in runs.iter().enumerate().take(end).skip(first) {
+            for &(glyph, dx) in placed {
+                glyphs.push((glyph, placements.len() as i64));
+                placements.push((run, dx));
+            }
+        }
+        font.run_mode(&glyphs, size, lcd, |got| match got {
+            Ok((image, index)) => {
+                let (run, dx) = placements[index as usize];
+                out(run, Ok((image, dx)));
+            }
+            Err(error) => out(first, Err(error)),
+        });
+        first = end;
+    }
+}
+
 fn draw_runs_mode(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>], lcd: bool) {
     type Placed = (Arc<AtlasGlyph>, i64, i64, Box64, Color);
     let before = font.cache_stats();
     let mut layers: Vec<Vec<Placed>> = Vec::new();
+    let mut planned = Vec::new();
+    let mut clips = Vec::new();
     for r in runs {
         fb.push_clip(r.clip);
         let glyphs = glyphs_of(font, decode_utf8(r.bytes)).collect();
         let (placed, _) = visible(fb, font, glyphs, r.x, r.y, r.size);
-        let clip = fb.clip_box();
-        // Each earlier glyph of this run that draws: its box and layer.
-        let mut drawn: Vec<(Box64, usize)> = Vec::new();
-        let mut failed = None;
-        font.run_mode(&placed, Font::size26(r.size).unwrap_or(0), lcd, |got| match got {
-            Ok((image, dx)) => {
-                let (x, y) = (r.x as i64 + dx, r.y as i64);
-                let b = Box64::wide(x + image.x_offset as i64, y + image.y_offset as i64, image.width as i64, image.height as i64).intersect(&clip);
-                let layer = drawn.iter().filter(|(o, _)| !o.intersect(&b).is_empty()).map(|(_, l)| l + 1).max().unwrap_or(0);
-                if !b.is_empty() {
-                    drawn.push((b, layer));
-                }
-                if layers.len() <= layer {
-                    layers.resize_with(layer + 1, Vec::new);
-                }
-                layers[layer].push((image, x, y, clip, r.fg));
-            }
-            Err(Error::Device(e)) => failed = Some(e),
-            Err(_) => {}
-        });
-        if let Some(e) = failed {
-            fb.fail(e);
-        }
+        planned.push((placed, Font::size26(r.size).unwrap_or(0)));
+        clips.push(fb.clip_box());
         fb.pop_clip();
     }
+    let mut drawn: Vec<Vec<(Box64, usize)>> = vec![Vec::new(); runs.len()];
+    let mut failed = None;
+    rasterize_text_runs(font, &planned, lcd, |run, got| match got {
+        Ok((image, dx)) => {
+            let r = &runs[run];
+            let clip = clips[run];
+            let (x, y) = (r.x as i64 + dx, r.y as i64);
+            let b = Box64::wide(x + image.x_offset as i64, y + image.y_offset as i64, image.width as i64, image.height as i64).intersect(&clip);
+            let layer = drawn[run].iter().filter(|(o, _)| !o.intersect(&b).is_empty()).map(|(_, l)| l + 1).max().unwrap_or(0);
+            if !b.is_empty() { drawn[run].push((b, layer)); }
+            if layers.len() <= layer { layers.resize_with(layer + 1, Vec::new); }
+            layers[layer].push((image, x, y, clip, r.fg));
+        }
+        Err(Error::Device(e)) => failed = Some(e),
+        Err(_) => {},
+    });
+    if let Some(e) = failed { fb.fail(e); }
     let after = font.cache_stats();
     if before.entries + (after.misses - before.misses) as usize > after.entries {
         for r in runs {
@@ -887,6 +953,7 @@ fn draw_runs_mode(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>],
             }
             fb.pop_clip();
         }
+        font.phase("font-draw-return");
         return;
     }
     for layer in &layers {
@@ -935,6 +1002,7 @@ fn draw_runs_mode(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>],
             }
         }
     }
+    font.phase("font-draw-return");
 }
 
 /// The width `draw_text` returns, without drawing.

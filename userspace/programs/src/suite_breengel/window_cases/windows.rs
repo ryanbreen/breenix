@@ -1311,7 +1311,7 @@ fn windows_distinct_content() -> CaseResult {
     let wins: Vec<W> = (0..16).map(|_| W::new(80, 50, 2)).collect::<Result<_, _>>()?;
     for (i, w) in wins.iter().enumerate() {
         want_ok(w.register(b"distinct"), "17.1", "REGISTER")?;
-        w.frame(w.id() as u32).cite("17.3")?;
+        w.frame(i as u32).cite("17.3")?;
         let (x, y) = (100 * (i as i32 % 4) + 10, 60 * (i as i32 / 4) + 10);
         let r = kiosk.ask(&format!("place {} {x} {y} {i} 1", w.id())).cite("24")?;
         ensure(r == "ok", "18", format!("kiosk_test place answered `{r}`"))?;
@@ -1324,9 +1324,9 @@ fn windows_distinct_content() -> CaseResult {
         for y in 0..50 {
             for x in 0..80 {
                 let at = ((oy + y) as usize * width + (ox + x) as usize) * 4;
-                let want = pattern(w.id() as u32, x, y);
+                let want = pattern(i as u32, x, y);
                 ensure(screen[at..at + 3] == want[..3], "18", format!(
-                    "window {} (seed {}) at screen ({},{}) shows {:02x?}; its own pixel is {:02x?}", i, w.id(), ox + x, oy + y, &screen[at..at + 3], &want[..3]))?;
+                    "window {} (id {}, seed {}) at screen ({},{}) shows {:02x?}; its own pixel is {:02x?}", i, w.id(), i, ox + x, oy + y, &screen[at..at + 3], &want[..3]))?;
             }
         }
     }

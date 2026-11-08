@@ -27,5 +27,14 @@ fn startup_presents_without_window_receipt_and_finishes_cursor_before_readiness(
     let fills = section(&chrome, "pub(super) fn check_desktop_fills", "\n}");
     assert!(fills.contains("present_startup_desktop(None)"));
     let main = fs::read_to_string(root.join("userspace/programs/src/bwm.rs")).unwrap();
-    ordered(&main, &["[bwm] Breenix Window Manager starting", "[bwm] GPU compositing mode", "let fills = check_desktop_fills(", "present_startup_desktop(Some(first_pointer))", "gpu.check(0, &[], Some(first_pointer))", "[bwm] first frame read back:", "[bwm] desktop fills the scanout:", "let mut drawn_pointer = first_presented.then_some(first_pointer)", "let mut full_redraw = !first_presented", "Initial window discovery"]);
+    ordered(&main, &["[bwm] Breenix Window Manager starting", "[bwm] GPU compositing mode",
+        "let strict_startup =", "let mut fills = startup_prepare::recover(",
+        "if let Err(error) = &fills", "fills-ready", "initial-windows-ready",
+        "startup_prepare::during(", "present_startup_desktop(Some(first_pointer))",
+        "gpu.check(0, &[], Some(first_pointer))", "title coverage warm-up unavailable",
+        "startup_prepare::recover(presented, strict_startup", "fills = match check_desktop_fills(",
+        "if let Err(error) = &fills", "present_startup_desktop(Some(first_pointer))",
+        "gpu.check(0, &[], Some(first_pointer))", "match first {", "first frame read back:",
+        "match fills {", "desktop fills the scanout:", "let mut drawn_pointer = Some(first_pointer)",
+        "let mut full_redraw = false", "compose_initial_windows("]);
 }

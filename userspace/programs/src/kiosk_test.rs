@@ -125,6 +125,7 @@ fn write_raw(id: u64, ptr: u64, count: u32) -> i64 {
 
 struct Kiosk {
     auto: bool,
+    session: bool,
     gpu_fixtures: Vec<(bgl::Context,u64)>,
     /// The next input serial.
     serial: u64,
@@ -150,7 +151,9 @@ impl Kiosk {
         if let Some(c) = &self.compositor {
             return Ok(c.clone());
         }
+        libuitest::startup::mark("context-begin");
         let c = Arc::new(Mutex::new(Compositor::new()?));
+        libuitest::startup::mark("targets-ready");
         self.compositor = Some(c.clone());
         Ok(c)
     }
@@ -423,7 +426,29 @@ impl Kiosk {
 
 /// Compose when the scene has damage: new pixels, geometry, stacking or registration, or
 /// the cursor. Composition starts once a window is visible with a commit.
+fn place_session_windows() -> Result<(), libbreenix::error::Error> {
+    let mut infos = vec![abi::WinInfo::default(); 64];
+    loop {
+        let count = window::list(&mut infos)?;
+        if count > infos.len() {
+            infos.resize(count, abi::WinInfo::default());
+            continue;
+        }
+        for info in &infos[..count] {
+            // Ordinary kiosk callers place their own windows. Session callers
+            // launch apps without a placement command; show each new window once.
+            if info.flags & abi::win_flags::REGISTERED != 0
+                && info.flags & (abi::win_flags::VISIBLE | abi::win_flags::MINIMIZED) == 0
+            {
+                window::set_geometry(info.id, 0, 0, 0, abi::geometry_flags::VISIBLE)?;
+            }
+        }
+        return Ok(());
+    }
+}
+
 fn compose_damage(kiosk: &mut Kiosk) {
+    if kiosk.session && place_session_windows().is_err() { return; }
     // Automatic composition takes display custody once some window is visible with a commit.
     if kiosk.compositor.is_none() {
         let mut infos = vec![abi::WinInfo::default(); 64];
@@ -444,26 +469,64 @@ fn compose_damage(kiosk: &mut Kiosk) {
     }
 }
 
+/// Session kiosk consumes its restricted stream without routing to an app.
+/// These raw-session edges are WM-handled, with terminal ledger witnesses.
+fn drain_session_input(reader: &libbreenix::input::Reader) -> Result<(), libbreenix::error::Error> {
+    use libbreenix::{error::Error, errno::Errno, input::{Disposition, disposition}};
+    let mut buffer = [0; 32 * 1024];
+    for _ in 0..4 {
+        let records = match reader.read(&mut buffer) {
+            Ok(records) => records,
+            Err(Error::Os(Errno::EAGAIN)) => break,
+            Err(Error::Os(Errno::EINTR)) => continue,
+            Err(error) => return Err(error),
+        };
+        for record in records {
+            reader.dispose(&Disposition { serial: record?.event.serial,
+                disposition: disposition::WM_HANDLED, ..Default::default() })?;
+        }
+    }
+    Ok(())
+}
+
 fn main() {
-    match window::claim_compositor() {
-        Ok(epoch) => say(&format!("ready {epoch}")),
+    libuitest::startup::mark("compositor-exec");
+    let epoch = match window::claim_compositor() {
+        Ok(epoch) => epoch,
         Err(e) => {
             say(&format!("claim-failed {}", errno(e)));
             std::process::exit(1);
         }
-    }
-    let mut kiosk = Kiosk { auto: true, serial: 1, gpu_fixtures:Vec::new(), compositor: None, last: 0 };
+    };
+    let value = std::env::var_os("BREENIX_INPUT_DEVICES");
+    let selection = libbreenix::input::input_device_selection(value.as_ref().map(|v| v.to_str().expect("input devices must be UTF-8")))
+        .expect("invalid input device selection");
+    let session = selection.is_some();
+    let input_reader = selection.map(|devices| {
+        let reader = libbreenix::input::Reader::open(true).expect("open compositor input reader");
+        reader.grab(&devices).expect("claim compositor input grab");
+        reader
+    });
+    say(&format!("ready {epoch}"));
+    let mut kiosk = Kiosk { auto: true, session, serial: 1, gpu_fixtures:Vec::new(), compositor: None, last: 0 };
     let scene = window::call(op::EVENT_FD, &mut abi::WinId { id: 0 }).map(|fd| fd as i32);
     if let Err(e) = scene {
         say(&format!("scene-descriptor-failed {}", errno(e)));
         std::process::exit(1);
     }
     let scene = scene.unwrap_or(-1);
+    libuitest::startup::mark("scene-ready");
     let mut pending = Vec::new();
     loop {
-        let mut fds = [PollFd { fd: 0, events: POLLIN, revents: 0 }, PollFd { fd: scene, events: POLLIN, revents: 0 }];
-        let watched = if kiosk.auto { 2 } else { 1 };
-        let ready = io::poll(&mut fds[..watched], -1).unwrap_or(0);
+        let mut fds = [PollFd { fd: 0, events: POLLIN, revents: 0 },
+            PollFd { fd: if kiosk.auto { scene } else { -1 }, events: POLLIN, revents: 0 },
+            PollFd { fd: input_reader.as_ref().map_or(-1, |reader| reader.fd().raw() as i32), events: POLLIN, revents: 0 }];
+        let ready = io::poll(&mut fds, -1).unwrap_or(0);
+        if fds[2].revents != 0 {
+            if let Some(reader) = &input_reader {
+                if drain_session_input(reader).is_err() { return; }
+            }
+        }
         if ready > 0 && fds[0].revents != 0 {
             let mut buf = [0u8; 4096];
             match io::read(Fd::STDIN, &mut buf) {

@@ -52,12 +52,15 @@ fn arrange(keep: Keep<'_>) -> Result<(), Error> {
     for &(parked, to) in staged.iter() {
         io::dup2(parked, to)?;
     }
-    let targets: std::vec::Vec<u64> = keep.iter().map(|&(_, to)| to.raw()).collect();
-    for fd in 3..top {
-        if !targets.contains(&fd) {
-            let _ = io::close(Fd::from_raw(fd));
-        }
+    let mut targets: std::vec::Vec<u64> = keep.iter().map(|&(_, to)| to.raw()).filter(|&fd| fd >= 3).collect();
+    targets.sort_unstable();
+    targets.dedup();
+    let mut first = 3;
+    for target in targets {
+        if first < target { io::close_range(first as u32, target as u32 - 1)?; }
+        first = target + 1;
     }
+    io::close_range(first as u32, u32::MAX)?;
     Ok(())
 }
 

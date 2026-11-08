@@ -129,6 +129,25 @@ class UiStep(unittest.TestCase):
         (self.path / 'native-final-upload.json').unlink()
         self.assertEqual(self.record(), 1)
 
+    def test_collection_uses_shared_strict_result_contract(self):
+        # The startup producer declares local failure collection in the manifest.
+        case = 'sessions/start-desktop'
+        record = f'SUITE ui-testing COLLECT {case} trigger=fail screen=at-collection windows=1 remnants=0 artifacts=complete\n'
+        original = serial()
+        at = f'SUITE ui-testing CASE {case} '
+        valid = original.replace(at, record + at)
+        (self.path / 'serial.txt').write_text(valid)
+        self.assertEqual(self.record(), 0)
+        for bad in [record.replace('windows=1', 'windows=-1'),
+                    record.replace(case, NAMES[1]), record + record,
+                    record.replace('COLLECT', 'UNKNOWN'),
+                    record.replace('artifacts=complete', 'artifacts=maybe')]:
+            with self.subTest(record=bad):
+                (self.path / 'serial.txt').write_text(original.replace(at, bad + at))
+                self.assertEqual(self.record(), 1)
+        (self.path / 'serial.txt').write_text(original.replace(at, '') + record)
+        self.assertEqual(self.record(), 1)
+
     def test_cli(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/metal/gt710-suite'),
                                  '--ui-step', '1', '--capture-directory', str(self.path), '--sha', SHA],

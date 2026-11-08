@@ -227,7 +227,13 @@ pub(super) struct Stream {
 impl Stream {
     pub(super) fn new() -> Self {
         let reader = core_input::Reader::open(true).expect("open compositor input reader");
-        reader.grab(&[]).expect("claim compositor input grab");
+        let value = std::env::var_os("BREENIX_INPUT_DEVICES");
+        let selection = core_input::input_device_selection(value.as_ref().map(|v| v.to_str().expect("input devices must be UTF-8")))
+            .expect("invalid input device selection");
+        match selection {
+            Some(devices) => reader.grab(&devices).expect("claim compositor input grab"),
+            None => reader.grab(&[]).expect("claim compositor input grab"),
+        }
         assert!(READER.set(reader).is_ok(), "one input reader");
         Self {
             capabilities: BTreeMap::new(),

@@ -73,7 +73,7 @@ mod arch {
 mod per_cpu {pub fn preempt_count()->u32{1} pub fn preempt_disable(){} pub fn preempt_enable(){}}
 #[derive(Debug,PartialEq)]enum Stop{Timeout,Interrupted}
 struct Device;impl Device{fn outstanding(&self)->usize{1}}
-struct Sub{published:bool,sent_ns:Option<u64>}struct Sync{failed:bool,sent_ns:Option<u64>}
+struct Sub{published:bool,sent_ns:Option<u64>,progress_ns:Option<u64>}struct Sync{failed:bool,sent_ns:Option<u64>}
 #[derive(PartialEq)]enum CtxState{Live}
 struct Ctx{warm_catalogue:bool,state:CtxState,dropped:bool,warm:u32,warm_after:u64}
 struct Core{stalled:bool,dev:Option<Device>,subs:BTreeMap<u64,Sub>,syncs:BTreeMap<u64,Sync>,quarantined_at:Option<u64>,last_progress:u64,contexts:BTreeMap<u64,Ctx>,backlog:VecDeque<()>}

@@ -172,8 +172,282 @@ fn parent_pid_of(pid: u64) -> Result<u64, String> {
     text.rsplit_once(") ").and_then(|(_, r)| r.split_whitespace().nth(1)).and_then(|n| n.parse().ok()).ok_or("bad parent stat".into())
 }
 
+#[path = "uitest_suite/sessions.rs"]
+pub mod sessions;
+#[path = "uitest_suite/runner.rs"]
+pub mod runner;
+#[path = "uitest_suite/config.rs"]
+pub mod config_cases;
+fn settings_a() -> CaseResult { config_cases::settings_round(1) }
+fn settings_b() -> CaseResult { config_cases::settings_round(2) }
+fn config_baseline_path(pid: u64) -> String { format!("/tmp/ui-config-baseline-{pid}") }
+fn config_crash_marker() -> String { format!("/tmp/ui-config-crash-{}", parent_pid()) }
+fn settings_crash() -> CaseResult {
+    let session = libuitest::Session::connect()?;
+    let root = std::path::Path::new(session.config_root());
+    std::fs::write(config_crash_marker(), session.config_root()).map_err(|e| e.to_string())?;
+    for (name, data) in [("fonts.conf", "planted fonts"), ("bwm.conf", "font.size=12\nclock.visible=false\n"),
+        ("hotkeys.conf", "Ctrl+a = focus_next\n"), ("app.conf", "theme=crashed\n")] {
+        std::fs::write(root.join("etc").join(name), data).map_err(|e| e.to_string())?;
+    }
+    std::fs::write("/etc/fonts.conf", b"planted global config fault\n").map_err(|e| e.to_string())?;
+    signal::kill(process::getpid()?.raw() as i32, signal::SIGKILL)?;
+    Err("SIGKILL returned".into())
+}
+fn settings_defaults() -> CaseResult {
+    let marker = config_crash_marker();
+    let root = std::fs::read_to_string(&marker).map_err(|e| e.to_string())?;
+    check(!std::path::Path::new(&root).exists(), "crashed session root survived into next case")?;
+    std::fs::remove_file(marker).map_err(|e| e.to_string())?;
+    let baseline_path = config_baseline_path(parent_pid());
+    let before = std::fs::read(&baseline_path).map_err(|e| e.to_string())?;
+    let after = match std::fs::read("/etc/fonts.conf") {
+        Ok(bytes) => { let mut saved = vec![1]; saved.extend(bytes); saved },
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![0],
+        Err(e) => return Err(e.to_string().into()),
+    };
+    check(before == after, "global fonts were not restored before the next case")?;
+    std::fs::remove_file(baseline_path).map_err(|e| e.to_string())?;
+    config_cases::settings_round(0)
+}
+fn config_sequence(order: &str) -> ! {
+    if order == "crash" {
+        let bytes = match std::fs::read("/etc/fonts.conf") {
+            Ok(bytes) => { let mut saved = vec![1]; saved.extend(bytes); saved },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => vec![0],
+            Err(e) => panic!("global font baseline: {e}"),
+        };
+        std::fs::write(config_baseline_path(process::getpid().expect("fixture pid").raw()), bytes).expect("save global baseline");
+    }
+    let a = case("settings-a", "First settings scenario", settings_a).session(libuitest::supervisor::serve);
+    let b = case("settings-b", "Second settings scenario", settings_b).session(libuitest::supervisor::serve);
+    let entries = match order {
+        "ab" => vec![a, b], "ba" => vec![b, a],
+        "crash" => vec![case("settings-crash", "Crash during settings write", settings_crash).session(libuitest::supervisor::serve),
+            case("settings-defaults", "Read defaults after crash", settings_defaults).session(libuitest::supervisor::serve)],
+        _ => panic!("unknown config sequence"),
+    };
+    let cases = Box::leak(entries.into_boxed_slice());
+    let categories = Box::leak(vec![category("fixture", "Config isolation", cases)].into_boxed_slice());
+    suite::set_painter(Box::new(stage_painter::StagePainter::new()));
+    suite::suite("runner-fixture", "Runner config fixture", categories).gui().defer_display().case_limit_ms(6000).run()
+}
+
+
+fn collection_case() -> CaseResult {
+    let mut session = libuitest::Session::kiosk()?;
+    let app = session.launch_app(&[b"/usr/libexec/breenix/uitest-app_test", b"collection witness", b"--stderr-flood=4096"], 0)?;
+    session.read_line(app)?;
+    let window = session.wait_window("collection witness")?;
+    session.hold_window(window.id)?;
+    session.raw_press(libbreenix::input::key::A)?;
+    session.raw_release(libbreenix::input::key::A)?;
+    let input_end = time::now_monotonic()?.as_nanos() + 500_000_000;
+    loop {
+        let ledger = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
+        if ledger.lines().any(|l| l.contains(" wm-handled ")) { break; }
+        check(time::now_monotonic()?.as_nanos() < input_end, "kiosk did not dispose the collection input")?;
+        time::sleep_ms(1)?;
+    }
+    let stderr_end = time::now_monotonic()?.as_nanos() + 500_000_000;
+    loop {
+        let stderr = session.stderr(app)?;
+        if stderr.bytes.len() == 4096 {
+            check(stderr.bytes == vec![b'x'; 4096], "stderr precondition differs")?; break;
+        }
+        check(time::now_monotonic()?.as_nanos() < stderr_end, "stderr flood did not finish before the case fault")?;
+        time::sleep_ms(1)?;
+    }
+    let pid = process::getpid()?.raw();
+    suite::value("supervisor-pid", session.supervisor_pid() as i64, "pid", None);
+    let marker = format!("/tmp/ui-collection-{}", parent_pid());
+    std::fs::write(marker, format!("{} {} {}", session.supervisor_pid(), app, time::now_monotonic()?.as_nanos())).map_err(|e| e.to_string())?;
+    // Deliberately leave a slot writing: no incomplete pixels may be exported.
+    let mut slot = session.arena_mut().begin(libuitest::arena::Slot::Frame)?;
+    slot.bytes_mut()[..4].copy_from_slice(&[1, 2, 3, 255]);
+    drop(slot);
+    if mode() == "collection-death" {
+        signal::kill(pid as i32, signal::SIGKILL)?;
+        return Err("SIGKILL returned".into());
+    }
+    loop { time::sleep_ms(10)?; }
+}
+fn collection_observer(name: &str) {
+    let result = (|| -> CaseResult {
+        let marker = format!("/tmp/ui-collection-{}", process::getpid()?.raw());
+        let content = std::fs::read_to_string(&marker).map_err(|e| e.to_string())?;
+        let fields: Vec<_> = content.split_whitespace().collect();
+        for pid in &fields[..2] {
+            check(!std::path::Path::new(&format!("/proc/{pid}/stat")).exists(), "collection sweep left a process")?;
+        }
+        let began: u64 = fields[2].parse().map_err(|_| "invalid fixture start")?;
+        let elapsed = (time::now_monotonic()?.as_nanos() as u64 - began) / 1_000_000;
+        let path = std::path::Path::new("/var/uitest/runner-fixture").join(name);
+        check(path.join("collection.txt").is_file() && path.join("screen.png").is_file(), "sweep preceded disk evidence")?;
+        let mut status = 0;
+        check(matches!(process::waitpid(-1, &mut status, process::WNOHANG), Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ECHILD))), "collection left descendants")?;
+        std::fs::remove_file(marker).map_err(|e| e.to_string())?;
+        let _ = io::write(Fd::from_raw(3), format!("COLLECTION-SWEEP reaped=true evidence=true elapsed_ms={elapsed}\n").as_bytes());
+        Ok(())
+    })();
+    if let Err(e) = result { let _ = io::write(Fd::from_raw(3), format!("COLLECTION-SWEEP failed {e:?}\n").as_bytes()); }
+}
+
+fn collection_fault() -> CaseResult {
+    let mut session = libuitest::Session::connect()?;
+    let orphan = sessions::orphan(&mut session)?;
+    let supervisor = session.supervisor_pid();
+    suite::value("supervisor-pid", supervisor as i64, "pid", None);
+    suite::value("orphan-pid", orphan as i64, "pid", None);
+    signal::kill(supervisor as i32, if mode() == "silent-supervisor" { signal::SIGSTOP } else { signal::SIGKILL })?;
+    Err("planted collection failure".into())
+}
+
+fn supervisor_died() -> CaseResult {
+    let mut session = libuitest::Session::connect()?;
+    let orphan = sessions::orphan(&mut session)?;
+    let supervisor = session.supervisor_pid();
+    signal::kill(supervisor as i32, signal::SIGKILL)?;
+    let start = time::now_monotonic()?.as_nanos();
+    while parent_pid_of(orphan)? != parent_pid() {
+        check(time::now_monotonic()?.as_nanos() - start < 500_000_000, "orphan did not reach runner after supervisor death")?;
+        time::sleep_ms(1)?;
+    }
+    suite::value("orphan-pid", orphan as i64, "pid", None);
+    // Return Ok: the real runner must convert it to FAIL for the dead supervisor.
+    Ok(())
+}
+
+fn orphan_helper(expected: u64) -> i32 {
+    let mut middle = || {
+        let mut leaf = || {
+            let pid = process::getpid().unwrap().raw();
+            let path = format!("/tmp/uitest-orphan-{pid}");
+            let start = time::now_monotonic().unwrap().as_nanos();
+            while parent_pid() != expected {
+                if time::now_monotonic().unwrap().as_nanos() - start > 1_000_000_000 { return 2; }
+                let _ = time::sleep_ms(1);
+            }
+            println!("ORPHAN {pid} {expected}");
+            use std::io::Write;
+            let _ = std::io::stdout().flush();
+            while !std::path::Path::new(&path).exists() { let _ = time::sleep_ms(1); }
+            7
+        };
+        i32::from(spawn(&[], Run::Call(&mut leaf)).is_err())
+    };
+    match spawn(&[], Run::Call(&mut middle)) {
+        Ok(pid) => i32::from(wait(pid.raw()).is_err()),
+        Err(_) => 1,
+    }
+}
+
+fn session_display() -> CaseResult {
+    if mode() == "session-ownership" {
+        let (supervisor, compositor) = sessions::device_death_round()?;
+        std::fs::write(format!("/tmp/ui-display-{}", parent_pid()),
+            format!("{supervisor} {compositor}\n")).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    let mut session = libuitest::Session::kiosk()?;
+    let app = session.launch_app(&[b"/usr/libexec/breenix/uitest-app_test", b"panel fixture"], 0)?;
+    session.wait_window("panel fixture")?;
+    let mut status = libbreenix::window::abi::CompositorStatus::default();
+    let result = unsafe { libbreenix::window::raw_call(libbreenix::window::abi::op::COMPOSITOR_STATUS,
+        &mut status as *mut _ as *mut u8, core::mem::size_of_val(&status)) };
+    check(result == 0 && status.owner != 0, "missing live session compositor")?;
+    std::fs::write(format!("/tmp/ui-display-{}", parent_pid()),
+        format!("{} {} {}\n{} {}", session.supervisor_pid(), app, status.owner, session.input_devices()[0], session.input_devices()[1])).map_err(|e| e.to_string())?;
+    if mode() == "session-devices" {
+        for code in [libbreenix::input::key::LEFT_SHIFT, libbreenix::input::key::BUTTON_LEFT] {
+            session.raw_press(code)?;
+        }
+    }
+    // Leave compositor and app running: the real runner must end the session.
+    if mode() == "session-panel-fail" { return Err("planted panel result".into()); }
+    Ok(())
+}
+fn display_observer(done: usize, _: usize, name: &str) {
+    if done != 0 && name.starts_with("fixture/collection-") { collection_observer(name); return; }
+    if done == 0 || !name.starts_with("fixture/session-") { return; }
+    let result = (|| -> CaseResult {
+        let path = format!("/tmp/ui-display-{}", process::getpid()?.raw());
+        let pids = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+        for pid in pids.lines().next().ok_or("missing session pids")?.split_whitespace() {
+            check(!std::path::Path::new(&format!("/proc/{pid}/stat")).exists(), "session process survived case end")?;
+        }
+        if let Some(ids) = pids.lines().nth(1) {
+            let reader = libbreenix::input::Reader::open(true)?;
+            for id in ids.split_whitespace() {
+                let id: u32 = id.parse().map_err(|_| "invalid session device id")?;
+                check(matches!(reader.capabilities(id, &mut []), Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENODEV))), "fixture session device survived")?;
+            }
+        }
+        std::fs::remove_file(path).map_err(|e| e.to_string())?;
+        let mut status = 0;
+        check(matches!(process::waitpid(-1, &mut status, process::WNOHANG),
+            Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ECHILD))), "fixture still has descendants")?;
+        let pixels = sessions::screen_pixels()?;
+        let failed = name.ends_with("-fail");
+        // The text panel and tile panel each have literal, distinct result fills.
+        let colors = if failed { [[58, 50, 145], [66, 77, 232]] } else { [[77, 112, 26], [106, 196, 69]] };
+        let opposite = if failed { [[77, 112, 26], [106, 196, 69]] } else { [[58, 50, 145], [66, 77, 232]] };
+        check(pixels.chunks_exact(4).any(|p| colors.iter().any(|c| p[..3] == *c)), "case result color absent from panel")?;
+        check(!pixels.chunks_exact(4).any(|p| opposite.iter().any(|c| p[..3] == *c)), "panel shows opposite case result")?;
+        // GIVE_BACK is EPERM for a process that is not the current owner.
+        libbreenix::graphics::give_back_display()?;
+        libbreenix::graphics::take_over_display()?;
+        Ok(())
+    })();
+    let line = match result {
+        Ok(()) => "SESSION-DISPLAY reaped=true owned=true panel=true\n".to_owned(),
+        Err(error) => format!("SESSION-DISPLAY failed {error:?}\n"),
+    };
+    let _ = io::write(Fd::from_raw(3), line.as_bytes());
+}
+
+// Leave a child and process-local poison after the per-case sweep, so the
+// next executable judges the real sequence handoff rather than case cleanup.
+fn sequence_poison() {
+    let own = process::getpid().expect("sequence runner pid").raw();
+    std::env::set_var("BREENIX_UI_SEQUENCE_RUNNER", own.to_string());
+    let mut hold_child = hold;
+    let child = spawn(&[], Run::Call(&mut hold_child)).expect("sequence descendant");
+    let line = format!("SEQUENCE-DESCENDANT pid={}\n", child.raw());
+    io::write(Fd::STDOUT, line.as_bytes()).expect("descendant witness");
+    signal::sigaction(signal::SIGUSR1, Some(&signal::Sigaction::ignore()), None).expect("poison disposition");
+    let mask = 1u64 << (signal::SIGUSR1 - 1);
+    signal::sigprocmask(signal::SIG_SETMASK, Some(&mask), None).expect("poison mask");
+    // Leak a non-CLOEXEC descriptor intentionally; hand_off must close it.
+    let fd = libbreenix::fs::open("/dev/null", libbreenix::fs::O_RDONLY).expect("poison descriptor");
+    assert!(fd.raw() > 2);
+}
+
+fn sequence_session() -> CaseResult {
+    let mut session = libuitest::Session::kiosk()?;
+    let title = b"sequence session";
+    session.launch_app(&[b"/usr/libexec/breenix/uitest-app_test", title], 0)?;
+    session.wait_window("sequence session")?;
+    // The runner and supervisor own teardown at the GUI case boundary.
+    Ok(())
+}
+
+fn scoped_sequence() -> ! {
+    let cases = Box::leak(vec![case("sequence-session", "Clean session before sequence handoff", sequence_session)
+        .session(libuitest::supervisor::serve)].into_boxed_slice());
+    let categories = Box::leak(vec![category("fixture", "Sequence GUI fixture", cases)].into_boxed_slice());
+    suite::set_painter(Box::new(stage_painter::StagePainter::new()));
+    suite::suite("runner-fixture", "Sequence GUI fixture", categories).gui().defer_display()
+        .with_finalizer(sequence_poison).case_limit_ms(3000).run()
+}
+
 fn main() {
+    if std::env::var_os("BREENIX_UI_SEQUENCE_FIXTURE").is_some() { scoped_sequence(); }
+    if let Ok(order) = std::env::var("BREENIX_CONFIG_SCENARIOS") { config_sequence(&order); }
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).is_some_and(|s| s == "--orphan-helper") {
+        process::exit(orphan_helper(args[2].parse().expect("supervisor pid")));
+    }
     if args.get(1).is_some_and(|s| s == "--probe-exec") {
         let fds: Vec<u64> = args[2].split(',').filter_map(|s| s.parse().ok()).collect();
         let ok = probe(&fds).is_ok();
@@ -192,14 +466,24 @@ fn main() {
         "mismatch-is-fail" => (mismatch, vec!["label"]),
         "forgery-exec" => (forgery_exec, vec!["label"]),
         "forgery-fork" => (forgery_fork, vec!["label"]),
+        "subreaper" => (sessions::reaped_orphan, vec![]),
+        "session-teardown" | "session-panel-pass" | "session-panel-fail" | "session-ownership" | "session-devices" => (session_display, vec![]),
+        "supervisor-died" => (supervisor_died, vec![]),
+        "silent-supervisor" | "dead-supervisor" => (collection_fault, vec![]),
+        "collection-death" | "collection-timeout" => (collection_case, vec![]),
         "sweep-descendants" => (descendants, vec!["label"]),
         "outer-positive" | "transport-always" | "transport-exit-race" => (positive, vec!["label"]),
         _ => panic!("unknown fixture mode"),
     };
     let id = Box::leak(selected.to_string().into_boxed_str());
     let checks = Box::leak(checks.into_boxed_slice());
-    let cases = Box::leak(vec![case(id, "Scoped runner control", body).checks(checks)].into_boxed_slice());
+    let entry = case(id, "Scoped runner control", body).checks(checks);
+    let entry = if matches!(selected, "subreaper" | "supervisor-died" | "session-teardown" | "session-panel-pass" | "session-panel-fail" | "session-ownership" | "session-devices") { entry.session(libuitest::supervisor::serve) } else { entry };
+    let entry = if matches!(selected, "silent-supervisor" | "dead-supervisor" | "collection-death" | "collection-timeout") {
+        entry.session(libuitest::supervisor::serve).collects()
+    } else { entry };
+    let cases = Box::leak(vec![entry].into_boxed_slice());
     let categories = Box::leak(vec![category("fixture", "Scoped runner", cases)].into_boxed_slice());
     suite::set_painter(Box::new(stage_painter::StagePainter::new()));
-    suite::suite("runner-fixture", "Runner fixture", categories).gui().defer_display().case_limit_ms(3000).run()
+    suite::suite("runner-fixture", "Runner fixture", categories).gui().defer_display().with_case_observer(display_observer).case_limit_ms(3000).run()
 }
