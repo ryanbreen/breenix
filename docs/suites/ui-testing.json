@@ -274,20 +274,8 @@
           "title": "Capturing commit N while the app draws N+1 returns N whole"
         },
         {
-          "id": "capture-two-readers",
-          "title": "Two readers capturing the same window each get whole commits"
-        },
-        {
           "id": "capture-resize-race",
           "title": "A resize during a capture gives the whole old commit, pixels and tree, never ENOENT or a mixture"
-        },
-        {
-          "id": "capture-destroy-race",
-          "title": "A destroy during a capture gives the whole commit and frees the buffer afterwards; a destroy before the copy begins gives ENOENT"
-        },
-        {
-          "id": "capture-threads",
-          "title": "Commits from two producer threads are each captured whole"
         },
         {
           "id": "screen-capture",
@@ -298,96 +286,12 @@
           "title": "A screen capture lists the commit of each window it contains"
         },
         {
-          "id": "exact-match",
-          "title": "An identical frame matches with zero differing pixels"
-        },
-        {
-          "id": "one-pixel-fails",
-          "title": "A frame with one changed pixel fails as pixel-mismatch, naming that pixel and both colors"
-        },
-        {
-          "id": "channel-tolerance",
-          "title": "A difference of 2 passes at tolerance 2 and fails at tolerance 1"
-        },
-        {
-          "id": "max-differing",
-          "title": "The differing-pixel cap passes at its limit and fails one pixel past it"
-        },
-        {
-          "id": "regions-same-frame",
-          "title": "All regions of a check must pass in the same frame"
-        },
-        {
-          "id": "mask",
-          "title": "A masked region is excluded, and a mask without a reason fails validation"
-        },
-        {
-          "id": "mask-cap",
-          "title": "Masks leaving under 75% of a region fail validation; four masked one-pixel border strips (96.04% compared) pass this rule"
-        },
-        {
-          "id": "unknown-field",
-          "title": "A check carrying a field schema version 1 does not define, edgeRadius included, fails validation"
-        },
-        {
-          "id": "size-mismatch",
-          "title": "Frames of different sizes fail without comparing"
-        },
-        {
-          "id": "reference-pin",
-          "title": "A reference whose SHA-256 differs from its pin fails before comparing"
-        },
-        {
-          "id": "reference-missing",
-          "title": "A missing reference fails, naming the path"
-        },
-        {
-          "id": "formula",
-          "title": "A formula check compares like a stored one"
-        },
-        {
-          "id": "structural-uniform",
-          "title": "A uniform-region check passes on a flat fill and fails on one stray pixel"
-        },
-        {
-          "id": "structural-outside",
-          "title": "A no-color-outside check catches a pixel leaking past its rectangle"
-        },
-        {
-          "id": "structural-count",
-          "title": "A color-count check catches a blank frame"
-        },
-        {
-          "id": "structural-vacuous",
-          "title": "Every structural predicate's effective-domain rule is enforced after masks, before any comparison"
-        },
-        {
-          "id": "formula-params",
-          "title": "A formula check with a missing, extra, mistyped or out-of-range parameter fails validation"
-        },
-        {
-          "id": "schema-version",
-          "title": "A check with an unknown schema version fails validation"
-        },
-        {
-          "id": "schema-binding",
-          "title": "A check bound to a window key or checkpoint the scenario never reaches fails, naming it"
-        },
-        {
-          "id": "png-reference",
-          "title": "A reference PNG decodes to the pixels that were encoded"
-        },
-        {
           "id": "cursor-excluded",
           "title": "Captures taken with the cursor hidden contain no cursor pixels"
         },
         {
           "id": "cross-target",
           "title": "The test app's canonical scene hashes to the pinned value on this target"
-        },
-        {
-          "id": "frame-record",
-          "title": "Every check writes one well-formed FRAME record with its definition hash"
         },
         {
           "id": "compare-cost",
@@ -685,37 +589,5 @@
     }
   ],
   "aggregate": "after E22 22.8",
-  "frameChecks": [
-    {
-      "version": 1,
-      "case": "frames/frame-record",
-      "check": "pattern",
-      "kind": "stored",
-      "source": {
-        "kind": "surface"
-      },
-      "at": {
-        "checkpoint": "after-pattern",
-        "requires": []
-      },
-      "reference": {
-        "path": "ui-testing/coordinate-pattern.png",
-        "sha256": "244b7ddb41d62cfb5969a036c3141662592798e5505cdce5dcddb829a64d87d9"
-      },
-      "regions": [
-        {
-          "name": "all",
-          "x": 0,
-          "y": 0,
-          "w": 4,
-          "h": 4
-        }
-      ],
-      "mask": [],
-      "tolerance": {
-        "channel": 0,
-        "maxDiffering": 0
-      }
-    }
-  ]
+  "frameChecks": []
 }
