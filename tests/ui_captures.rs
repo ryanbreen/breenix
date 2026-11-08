@@ -157,3 +157,12 @@ fn typed_capture_error_distinguishes_device_from_arena_refusal() {
     }
     assert_eq!(DEVICE.lock().unwrap().calls,3);
 }
+
+#[test] fn old_cursor_sequence_refuses_second_screen_capture() {
+    let _guard=SERIAL.lock().unwrap();
+    *DEVICE.lock().unwrap()=State::default();
+    let (path,mut arena)=arena("cursor-old");
+    capture::screen(&mut arena,"before-motion",window::ObservationKind::Composed).unwrap();
+    assert_eq!(capture::screen(&mut arena,"cursor-screen",window::ObservationKind::Composed).unwrap_err(),"arena slot already used");
+    drop(arena);std::fs::remove_file(path).unwrap();
+}

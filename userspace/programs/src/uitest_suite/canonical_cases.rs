@@ -60,7 +60,9 @@ pub fn cursor_excluded() -> CaseResult {
     check(x >= 0 && y >= 0,"canonical client is off screen")?;
     capture::window(session.arena_mut(),"cursor-client",ready.id)?;
     let expected = pixels(&mut session,Slot::Frame)?;
-    let before = capture::screen(session.arena_mut(),"before-motion",libbreenix::window::ObservationKind::Composed)?;
+    let scratch = std::path::Path::new(session.config_root()).join("cursor-observation.arena");
+    let layout = session.arena_mut().layout();
+    let (before, _) = capture::screen_fresh(&scratch,layout,"before-motion",libbreenix::window::ObservationKind::Composed)?;
     // Home the relative device, then put its arrow over the center of the client.
     session.raw_motion(i32::MIN/2,i32::MIN/2)?;
     session.raw_motion(x+160,y+100)?;
@@ -74,14 +76,13 @@ pub fn cursor_excluded() -> CaseResult {
     };
     check(commit > ready.commit_id,"cursor witness did not commit after motion")?;
     let end = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    let record = loop {
-        let record = capture::screen(session.arena_mut(),"cursor-screen",libbreenix::window::ObservationKind::Composed)?;
-        if record.composite > before.composite && capture::screen_windows(&record)?.contains(&(ready.id,commit)) { break record; }
+    let (record, screen) = loop {
+        let (record, screen) = capture::screen_fresh(&scratch,layout,"cursor-screen",libbreenix::window::ObservationKind::Composed)?;
+        if record.composite > before.composite && capture::screen_windows(&record)?.contains(&(ready.id,commit)) { break (record, screen); }
         check(std::time::Instant::now() < end,"cursor motion did not reach a later composite")?;
         libbreenix::time::sleep_ms(1).map_err(|e| e.to_string())?;
     };
     check(capture::screen_windows(&record)?.contains(&(ready.id,commit)),"cursor screen omits client commit")?;
-    let screen = pixels(&mut session,Slot::Screen)?;
     check(x as usize+WIDTH <= record.width as usize && y as usize+HEIGHT <= record.height as usize,"cursor client clipped")?;
     for row in 0..HEIGHT {
         let at = ((y as usize+row)*record.width as usize+x as usize)*4;

@@ -1,5 +1,5 @@
 //! Captures write into the case's evidence arena before any comparison runs.
-use crate::{arena::{Arena, Record, Slot}, capture_marker::{self, Generation}, compare::{self, Format, Frame, Options}, FailureClass, ScenarioOutcome};
+use crate::{arena::{Arena, Layout, Record, Slot, SlotRead}, capture_marker::{self, Generation}, compare::{self, Format, Frame, Options}, FailureClass, ScenarioOutcome};
 use libbreenix::{gpu, window::{self, abi, ObservationKind}};
 use libgfx::surface::Surface;
 
@@ -60,6 +60,20 @@ pub fn screen(arena: &mut Arena, check: &str, kind: ObservationKind) -> Result<R
     screen_windows(&record)?;
     writer.publish(record.clone(), len)?;
     Ok(record)
+}
+/// Take a temporary observation without consuming the case's evidence slot.
+pub fn screen_fresh(path: &std::path::Path, layout: Layout, check: &str, kind: ObservationKind) -> Result<(Record, Vec<u8>), String> {
+    let mut arena = Arena::create(path, layout)?;
+    let result = (|| {
+        let record = screen(&mut arena, check, kind)?;
+        match arena.read(Slot::Screen)? {
+            SlotRead::Final { bytes, .. } => Ok((record, bytes)),
+            _ => Err("screen observation incomplete".into()),
+        }
+    })();
+    drop(arena);
+    let cleanup = std::fs::remove_file(path).map_err(|e| e.to_string());
+    match (result, cleanup) { (Err(e), _) => Err(e), (Ok(_), Err(e)) => Err(e), (Ok(value), Ok(())) => Ok(value) }
 }
 /// The v2 observation has 16 rows of (window, commit, render fence, generation). Refuse malformed or
 /// duplicate identities instead of truncating the list.
