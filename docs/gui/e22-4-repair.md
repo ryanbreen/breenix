@@ -2,7 +2,8 @@
 
 The retained head boot `20261108T122858Z-metal` at `10351004` did not pass
 22.4: 77/78 selected cases passed. `sessions/start-desktop` exhausted its
-300 ms deadline; its actual first composite was 301.746 ms after connect.
+300 ms deadline; its observed first composite was 301.746 ms after connect. That observation is
+after the deadline and can be affected by collection.
 Memory passed. There was no GR refusal. `20261108T120415Z-metal` ran at
 `db222c5e`; it is not evidence for the later runtime tree.
 
@@ -96,3 +97,58 @@ change, those affected binaries were rebuilt once; unchanged code is not
 retested after push. Claim-lint on changed prose and `git diff --check` exit 0.
 The standalone libgfx host check refreshed its lockfile to include the existing
 libbreenix input-abi dependency.
+
+## Retained acceptance and coordinator hold
+
+Runtime head `616ab6ab` has one new acceptance capture,
+`20261108T130827Z-metal`: console 88/88, memory PASS, no GR refusal, driver exit
+0, complete capture, power-off confirmed. Build and tools identities both equal
+`616ab6ab0d6d369e1bb8c0987f231f919c9a5649`. Handoff 85.2 s and final marker
+380.7 s give **295.5 s**, inside the unchanged 330 s bound. The host production
+build exits 0; its builder rejects compiler warnings. The broad GT scorer
+returns 1: 28/31 rows pass; `core/row` and `core/dispatch` report missing core
+bulk anchors, and `core/producer` reports missing named production and diagnostic
+companions. That historical proof set is not supplied by this console capture.
+No replacement core or GPU boot was run.
+
+Before another boot, coordinator ledger line 328 (8:07 AM ET) requires a
+stage-by-stage comparison of the two previous UI phase lines, attributing the
+roughly 55 ms variance before a new prediction. The authoritative full records
+contradict its premise that both phase lines exist:
+
+| Retained file | Bytes | UI_STARTUP / UITEST_STARTUP occurrences |
+|---|---:|---:|
+| 120415 serial.txt | 381480 | 0 / 0 |
+| 120415 serial.raw | 383939 | 0 / 0 |
+| 122858 serial.txt | 383375 | 1 / 0 |
+| 122858 serial.raw | 385844 | 1 / 0 |
+
+120415's text SHA-256 is
+`efe5bd5691b1adee7531b8e519beaaf818d98d80c406b6bafbf36f1d83368ec0`;
+its raw SHA-256 is
+`9096917753eec51aeee608e8d27df00008b153a8124be66380b9a8691925798b`.
+The source explanation is the old supervisor's collection-only diagnostic
+branch, reproduced and repaired in this change. A passing case's stdout line
+was not retained. Independent `bwm-check-us` records give fill checks
+11.649 to 9.820 ms and full comparison 64.420 to 61.769 ms: those costs fell.
+The second-present acceptance to first-client presentation interval grew from
+82.999310 to 96.700858 ms. The absent clean phase record prevents splitting the
+remaining change among setup, font planning, targets and scheduling.
+
+A blocker with these facts is recorded in the coordinator ledger. UI,
+window-manager, BreenGL and default-desktop acceptance remain unrun at this
+runtime head; the 269 ms forecast and the step remain **unproven**. No further
+boot follows the new prerequisite without its disposition. #2791 remains open.
+
+The subsequent host source-fixture correction replaces only literal
+`Some(first_pointer)` inventory tokens with the branch's cursor-selection
+expression. Its same ordered operations pass 1/1 under `-Dwarnings`. This and
+the report do not change guest code; they do not justify repeating the console
+boot. PR #2801 remains open and unmerged.
+
+Claim-lint results: changed prose, this report, the runtime commit message and
+the final source-fixture message exit 0. Auditing the earlier pushed check
+messages finds wording-only exit-1 findings in `113f5dba` (glyph-coverage wording),
+`40117ef7` and `8d457998` (zero-valued negative fixtures). Their executable
+checks passed the documented red/green sequence. History was not rewritten to
+change those messages.
