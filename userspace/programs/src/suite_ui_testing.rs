@@ -9,6 +9,10 @@ mod sessions;
 mod config;
 #[path = "suite_breengel/stage_painter.rs"]
 mod stage_painter;
+use libuitest::schema as frame_schema;
+use breenix_suite::suite as frame_case;
+#[path = "uitest_suite/frames.rs"]
+mod frames;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
 
 fn pending(layer: &str, step: u8) -> CaseResult {
@@ -198,11 +202,11 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // All regions of a check must pass in the same frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("regions-same-frame", "All regions of a check must pass in the same frame", || pending("frames", 4)),
         // A masked region is excluded, and a mask without a reason fails validation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("mask", "A masked region is excluded, and a mask without a reason fails validation", || pending("frames", 4)),
+        case("mask", "A masked region is excluded, and a mask without a reason fails validation", frames::mask),
         // Masks that leave less than 75% of a region fail validation; the 100x100 region whose four one-pixel border strips are masked (396 pixels, 96.04% still compared) passes this region rule, so `structural-vacuous` must be what rejects it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("mask-cap", "Masks leaving under 75% of a region fail validation; four masked one-pixel border strips (96.04% compared) pass this rule", || pending("frames", 4)),
+        case("mask-cap", "Masks leaving under 75% of a region fail validation; four masked one-pixel border strips (96.04% compared) pass this rule", frames::mask_cap),
         // A check carrying a field schema version 1 does not define, `edgeRadius` included, fails validation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("unknown-field", "A check carrying a field schema version 1 does not define, edgeRadius included, fails validation", || pending("frames", 4)),
+        case("unknown-field", "A check carrying a field schema version 1 does not define, edgeRadius included, fails validation", frames::unknown_field),
         // Frames of different sizes fail without comparing. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("size-mismatch", "Frames of different sizes fail without comparing", || pending("frames", 4)),
         // A reference whose SHA-256 differs from its pin fails before comparing. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -218,11 +222,11 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A colour-count check catches a blank frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("structural-count", "A color-count check catches a blank frame", || pending("frames", 4)),
         // Each predicate's effective-domain rule is enforced after masks, before any comparison: a uniform check without a colour, a colour count below 2 or above the compared pixels, overlapping equal regions, equal regions with fewer than 2 compared pairs, `minDiffering` above the domain, an operand that names no declared region, and a region of one pixel each fail validation; and an `outside` check on a 100x100 region with a strictly interior 98x98 `rect` and its four border strips masked fails validation for an empty outside domain, while the same check unmasked catches one forbidden-colour pixel planted in the border. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("structural-vacuous", "Every structural predicate's effective-domain rule is enforced after masks, before any comparison", || pending("frames", 4)),
+        case("structural-vacuous", "Every structural predicate's effective-domain rule is enforced after masks, before any comparison", frames::structural_vacuous),
         // A formula check with a missing, extra, mistyped or out-of-range parameter fails validation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("formula-params", "A formula check with a missing, extra, mistyped or out-of-range parameter fails validation", || pending("frames", 4)),
+        case("formula-params", "A formula check with a missing, extra, mistyped or out-of-range parameter fails validation", frames::formula_params),
         // A check with an unknown schema version fails validation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("schema-version", "A check with an unknown schema version fails validation", || pending("frames", 4)),
+        case("schema-version", "A check with an unknown schema version fails validation", frames::schema_version),
         // A check bound to a window key or checkpoint the scenario never reaches fails, naming it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("schema-binding", "A check bound to a window key or checkpoint the scenario never reaches fails, naming it", || pending("frames", 4)),
         // A reference PNG decodes to the pixels that were encoded. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)

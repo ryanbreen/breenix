@@ -1663,3 +1663,33 @@ fn session_case_declarations_preserve_the_case_table() {
     let count: usize = categories.iter().map(|c| c.cases.len()).sum();
     assert_eq!(count, 206);
 }
+
+
+#[test]
+fn frame_checks_are_optional_and_strict() {
+    let mut manifest = serde_json::json!({"id":"ui-testing", "title":"UI test framework",
+        "area":"gui", "summary":"Schema fixture", "binary":"/sbin/suite-ui-testing",
+        "categories":[{"id":"frames","title":"Frames","cases":[{"id":"mask","title":"Masks"}]}]});
+    let rows: Value = serde_json::from_str(include_str!("fixtures/frame-schema-v1.json")).unwrap();
+    let dir = std::env::temp_dir().join(format!("suite-frames-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ui-testing.json");
+    let validate = |value: &Value| {
+        fs::write(&path, value.to_string()).unwrap();
+        let mut errors = Vec::new();
+        read_manifest(&path, &mut errors);
+        errors
+    };
+    let baseline_errors = validate(&manifest);
+    assert!(baseline_errors.is_empty(), "{baseline_errors:?}");
+    manifest["frameChecks"] = serde_json::json!([rows[0]["check"]]);
+    assert!(validate(&manifest).is_empty(), "a valid frameChecks entry must be admitted: {:?}", validate(&manifest));
+    for invalid in [serde_json::json!({}), serde_json::json!([{"version":2}])] {
+        manifest["frameChecks"] = invalid;
+        assert!(!validate(&manifest).is_empty());
+    }
+    manifest["frameChecks"] = serde_json::json!([]);
+    manifest["unknownFrameKey"] = serde_json::json!(true);
+    assert!(validate(&manifest).iter().any(|e|e.contains("unknownFrameKey")));
+    fs::remove_dir_all(dir).unwrap();
+}
