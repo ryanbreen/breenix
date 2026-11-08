@@ -78,7 +78,7 @@ class UiStep(unittest.TestCase):
             target = self.definition / name
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / name, target)
-        for n in range(1, 9):
+        for n in range(1, 8):
             target = self.definition / f'docs/gui/gt710-step-22-{n}.json'
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(ROOT / f'docs/gui/gt710-step-22-{n}.json', target)
@@ -156,14 +156,12 @@ class UiStep(unittest.TestCase):
             text = text.replace(f'CASE {name} FAIL ms=1 msg=pending', f'CASE {name} PASS ms=1')
         text = text.replace(f'DONE passed={len(SELECTED)} failed={len(NAMES)-len(SELECTED)}',
                             f'DONE passed={len(selected)} failed={len(NAMES)-len(selected)}')
-        frame = ('SUITE ui-testing FRAME frames/frame-record pattern def=0123abcd ref=formula '
-                 'source=surface commit=0 epoch=0 w=4 h=4 sha256=' + 'a' * 64 + ' result=match\n')
-        text = text.replace('SUITE ui-testing CASE frames/frame-record ', frame + 'SUITE ui-testing CASE frames/frame-record ')
-        phase = 'UI_STARTUP ui-testing sessions/start-desktop connect-begin=100 first-composite=270000100\n'
-        text = text.replace('SUITE ui-testing CASE sessions/start-desktop ', phase + 'SUITE ui-testing CASE sessions/start-desktop ')
+        phases = [f'UI_STARTUP ui-testing sessions/start-{mode} connect-begin=100 first-composite=2000000100\n'
+                  for mode in ('desktop', 'kiosk')]
+        for mode, phase in zip(('desktop', 'kiosk'), phases):
+            text = text.replace(f'SUITE ui-testing CASE sessions/start-{mode} ', phase + f'SUITE ui-testing CASE sessions/start-{mode} ')
         witnesses = []
-        for name, rounds in [('capture-while-drawing', 1), ('capture-two-readers', 1),
-                             ('capture-resize-race', 1), ('capture-destroy-race', 23), ('capture-threads', 3)]:
+        for name, rounds in [('capture-while-drawing', 1), ('capture-resize-race', 1)]:
             case = 'frames/' + name
             values = ''.join(f'SUITE ui-testing VALUE {case} {label}={rounds}count\n'
                              for label in ['capture-stall-fired', 'capture-release-fired'])
@@ -173,9 +171,10 @@ class UiStep(unittest.TestCase):
             (self.path / 'serial.txt').write_text(body)
             return API['record_ui_capture'](self.path, SHA, 4)
         self.assertEqual(score(text), 0)
-        for bad in [text.replace(phase, ''), text.replace(phase, phase + phase),
-                    text.replace('first-composite=270000100', 'first-composite=270000101')]:
-            self.assertEqual(score(bad), 1)
+        for phase in phases:
+            for bad in [text.replace(phase, ''), text.replace(phase, phase + phase),
+                        text.replace(phase, phase.replace('first-composite=2000000100', 'first-composite=2000000101'))]:
+                self.assertEqual(score(bad), 1)
         for values in witnesses:
             line = values.splitlines(keepends=True)[0]
             for bad in [text.replace(line, '', 1), text.replace(line, line.replace(line.split('=')[1].strip(), '0count'), 1),
@@ -195,12 +194,50 @@ class UiStep(unittest.TestCase):
         path.write_text(original + 'DISPATCH_STRAND_CENSUS save_no_t')
         with patch.dict(API['step_capture'].__globals__, {'completed_suite_capture': lambda *args: {'boot': self.boot, 'serial': path.read_text()}}):
             with self.assertRaisesRegex(ValueError, 'incomplete or fatal WM capture'):
-                API['step_capture'](self.path, SHA, 1, 'ui-testing', 'gt710-step-22-', 8)
+                API['step_capture'](self.path, SHA, 1, 'ui-testing', 'gt710-step-22-', 7)
         self.boot['suites'] = ['ui-testing']
         self.boot['suite'] = 'ui-testing'
         (self.path / 'run.json').write_text(json.dumps(self.boot))
         path.write_text(original + 'SUITE ui-testing CASE')
         self.assertEqual(self.record(), 1)
+
+    def test_step_five_requires_bounded_case_bound_measurements(self):
+        selected = json.loads((ROOT / 'docs/gui/gt710-step-22-5.json').read_text())['cases']
+        text = serial()
+        for name in selected:
+            text = text.replace(f'CASE {name} FAIL ms=1 msg=pending', f'CASE {name} PASS ms=1')
+        text = text.replace(f'DONE passed={len(SELECTED)} failed={len(NAMES)-len(SELECTED)}',
+                            f'DONE passed={len(selected)} failed={len(NAMES)-len(selected)}')
+        for mode in ('desktop', 'kiosk'):
+            phase = f'UI_STARTUP ui-testing sessions/start-{mode} connect-begin=100 first-composite=200\n'
+            text = text.replace(f'SUITE ui-testing CASE sessions/start-{mode} ', phase + f'SUITE ui-testing CASE sessions/start-{mode} ')
+        for name in ('capture-while-drawing', 'capture-resize-race'):
+            case = 'frames/' + name
+            values = ''.join(f'SUITE ui-testing VALUE {case} {label}=1count\n'
+                             for label in ('capture-stall-fired', 'capture-release-fired'))
+            text = text.replace(f'SUITE ui-testing CASE {case} ', values + f'SUITE ui-testing CASE {case} ')
+        readings = []
+        for case, metric, cap in [('sessions/start-desktop', 'startup', 2000000000),
+                                  ('sessions/start-kiosk', 'startup', 2000000000),
+                                  ('frames/compare-cost', 'compare-ns', 500000000)]:
+            line = f'SUITE ui-testing VALUE {case} {metric}=123ns expect=0..{cap}ns\n'
+            text = text.replace(f'SUITE ui-testing CASE {case} ', line + f'SUITE ui-testing CASE {case} ')
+            readings.append((line, cap))
+        def score(body):
+            (self.path / 'serial.txt').write_text(body)
+            return API['record_ui_capture'](self.path, SHA, 5)
+        self.assertEqual(score(text), 0)
+        for line, cap in readings:
+            for bad in [text.replace(line, ''), text.replace(line, line + line),
+                        text.replace(line, line.replace('=123ns', f'={cap+1}ns')),
+                        text.replace(line, '', 1) + line]:
+                self.assertEqual(score(bad), 1)
+
+    def test_step_eight_is_refused(self):
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/metal/gt710-suite'),
+                                 '--ui-step', '8'], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('invalid choice', result.stderr)
 
     def test_cli(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/metal/gt710-suite'),

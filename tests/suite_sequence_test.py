@@ -25,7 +25,10 @@ def skeleton(suite):
 class ResolveTests(unittest.TestCase):
     def test_ui_hold_preserves_metal_aggregate_and_explicit_selection(self):
         expected = "console,directories,processes,signals,time,memory,threads,ipc,terminals,networking,libc,rust-std,utilities,sdk,breengel,files-io".split(",")
+        manifest = json.loads((ROOT / "docs/suites/ui-testing.json").read_text())
+        self.assertEqual(manifest["aggregate"], "after E22 22.7")
         ids, skipped = SEQUENCE["resolve"]("all", "x86-metal", True)
+        self.assertEqual(len(ids), 16)
         self.assertEqual(ids, expected)
         self.assertEqual(dict(skipped)["ui-testing"], "under construction: run --suite ui-testing explicitly")
         self.assertEqual(SEQUENCE["resolve"]("ui-testing", "x86-metal", True)[0], ["ui-testing"])

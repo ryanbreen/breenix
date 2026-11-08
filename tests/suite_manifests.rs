@@ -27,7 +27,7 @@ mod frame_case {
     pub type CaseResult = Result<(), String>;
     pub fn fail(message: impl Into<String>) -> CaseResult { Err(message.into()) }
 }
-#[path = "../userspace/programs/src/uitest_suite/frames.rs"]
+#[path = "ui_frames/schema_cases.rs"]
 mod frame_cases;
 
 fn validate_frame_checks(value: &Value, frame: Option<(u32,u32)>, formulas: &[frame_schema::Formula]) -> Result<Vec<frame_schema::Check>, String> {
@@ -288,11 +288,17 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
                         for (k, case_value) in case_list.iter().enumerate() {
                             let case_at = format!("{cat_at} cases[{k}]");
                             // Validate optional gallery prose without adding it to the scored Entry.
-                            let extra: Vec<&str> = ["expect", "expectEnd"].into_iter()
+                            let mut extra: Vec<&str> = ["expect", "expectEnd"].into_iter()
                                 .filter(|key| case_value.get(*key).is_some()).collect();
                             for key in &extra {
                                 if !case_value[*key].as_str().is_some_and(|text| !text.trim().is_empty() && text.chars().count() <= 300) {
                                     errors.push(format!("{case_at}: {key} must be non-empty text of at most 300 characters"));
+                                }
+                            }
+                            if let Some(collects) = case_value.get("collects") {
+                                extra.push("collects");
+                                if collects != &Value::Bool(true) {
+                                    errors.push(format!("{case_at}: collects is true when present"));
                                 }
                             }
                             if let Some(case) = entry(case_value, &case_at, &extra, errors) {
@@ -533,6 +539,15 @@ fn source_suite_files(files: &[(String, String)]) -> Result<(Entry, Vec<Category
 /// `pictured!("id", "Title", f)`, which expands to a `case` with the same id and title whose
 /// body hands the case's judged frame to the runner.
 fn case_entry(expr: &syn::Expr) -> Result<Entry, String> {
+    // Collection is an optional, argument-free flag after the session callback.
+    let expr = if let syn::Expr::MethodCall(method) = expr {
+        if method.method == "collects" {
+            if !method.args.is_empty() || !method.attrs.is_empty() || method.turbofish.is_some() {
+                return Err(table_error("collects takes no arguments"));
+            }
+            &*method.receiver
+        } else { expr }
+    } else { expr };
     // E22 section 10.1: this declaration adds a sibling supervisor, without
     // changing which case the runner executes. Admit only the shared callback.
     let expr = if let syn::Expr::MethodCall(method) = expr {
@@ -1634,6 +1649,34 @@ fn setup_is_silent_and_cannot_bypass_the_table() {
 }
 
 #[test]
+fn collection_metadata_is_optional_and_strict() {
+    let mut manifest = serde_json::json!({"id":"demo", "title":"Demo", "area":"gui",
+        "summary":"Collection fixture", "binary":"/sbin/suite-demo",
+        "categories":[{"id":"c","title":"C","cases":[{"id":"a","title":"A"}]}]});
+    let dir = std::env::temp_dir().join(format!("suite-collects-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("demo.json");
+    let validate = |value: &Value| {
+        fs::write(&path, value.to_string()).unwrap();
+        let mut errors = Vec::new();
+        read_manifest(&path, &mut errors);
+        errors
+    };
+    assert!(validate(&manifest).is_empty());
+    manifest["categories"][0]["cases"][0]["collects"] = serde_json::json!(true);
+    assert!(validate(&manifest).is_empty());
+    for invalid in [serde_json::json!(false), serde_json::json!(null),
+        serde_json::json!("true"), serde_json::json!(1)] {
+        manifest["categories"][0]["cases"][0]["collects"] = invalid;
+        assert!(validate(&manifest).iter().any(|error| error.contains("collects")));
+    }
+    manifest["categories"][0]["cases"][0].as_object_mut().unwrap().remove("collects");
+    manifest["categories"][0]["cases"][0]["unknown"] = serde_json::json!(true);
+    assert!(validate(&manifest).iter().any(|error| error.contains("unexpected key \"unknown\"")));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
 fn aggregate_is_optional_and_strict_and_unknown_keys_stay_rejected() {
     let root = repo_root();
     let manifest: Value = serde_json::from_str(&fs::read_to_string(root.join("docs/suites/ui-testing.json")).unwrap()).unwrap();
@@ -1691,6 +1734,11 @@ fn session_case_declarations_preserve_the_case_table() {
     ])]).gui(); fn main() { S.run() }"#;
     let (_, categories) = source_suite(source).unwrap();
     assert_eq!(categories[0].cases.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    let collecting = source.replace("session(libuitest::supervisor::serve)", "session(libuitest::supervisor::serve).collects()");
+    assert_eq!(source_suite(&collecting).unwrap().1, categories);
+    for bad in ["collects(1)", "collects::<u8>()", "collects().collects()", "unknown()"] {
+        assert!(source_suite(&collecting.replace("collects()", bad)).is_err(), "{bad}");
+    }
     for bad in ["session()", "session(a, b)", "session(|| hidden())", "session(other::serve)", "unknown(libuitest::supervisor::serve)"] {
         assert!(source_suite(&source.replace("session(libuitest::supervisor::serve)", bad)).is_err(), "{bad}");
     }
@@ -1698,7 +1746,7 @@ fn session_case_declarations_preserve_the_case_table() {
     let (_, files) = suite_files(&root, "ui_testing").unwrap();
     let (_, categories) = source_suite_files(&files).unwrap();
     let count: usize = categories.iter().map(|c| c.cases.len()).sum();
-    assert_eq!(count, 206);
+    assert_eq!(count, 108);
 }
 
 
@@ -1720,6 +1768,8 @@ fn frame_checks_are_optional_and_strict() {
     let baseline_errors = validate(&manifest);
     assert!(baseline_errors.is_empty(), "{baseline_errors:?}");
     manifest["frameChecks"] = serde_json::json!([rows[0]["check"]]);
+    let checked = validate_frame_checks(&manifest["frameChecks"], None, frame_cases::FORMULAS).unwrap();
+    assert_eq!(checked[0].definition, rows[0]["check"]);
     assert!(validate(&manifest).is_empty(), "a valid frameChecks entry must be admitted: {:?}", validate(&manifest));
     for invalid in [serde_json::json!({}), serde_json::json!([{"version":2}])] {
         manifest["frameChecks"] = invalid;

@@ -16,6 +16,11 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+The UI test framework trim to 108 guest cases and measured startup costs lands
+through [PR #2805](https://github.com/ryanbreen/breenix/pull/2805). The PR records
+UI and console hardware acceptance; remaining review cleanup is grouped in
+[#2806](https://github.com/ryanbreen/breenix/issues/2806).
+
 Window-manager restart adoption and bounded retained state for E21 step 21.6
 land through [PR #2752](https://github.com/ryanbreen/breenix/pull/2752).
 The PR records R240 acceptance, including the unchanged memory bound and

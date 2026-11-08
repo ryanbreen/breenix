@@ -9,25 +9,8 @@
   ],
   "added": 0,
   "addedByCategory": {},
-  "total": 18,
+  "total": 1,
   "cases": [
-    "runner/transport-always",
-    "runner/transport-blocking",
-    "runner/transport-exit-race",
-    "runner/transport-capacity",
-    "runner/record-binding",
-    "runner/record-malformed",
-    "runner/record-duplicate",
-    "runner/forgery-exec",
-    "runner/forgery-fork",
-    "runner/never-ran",
-    "runner/mismatch-is-fail",
-    "runner/outer-positive",
-    "runner/sweep-descendants",
-    "runner/inner-pass",
-    "runner/inner-wrong-class",
-    "runner/inner-crash-not-detection",
-    "runner/inner-teardown-scoped",
-    "runner/inner-records-contained"
+    "runner/inner-pass"
   ]
 }

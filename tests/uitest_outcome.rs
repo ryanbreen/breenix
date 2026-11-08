@@ -120,3 +120,13 @@ fn record_client_contains_inner_records_and_refuses_ignored_errors() {
     let planted = fault(FailureClass::PixelMismatch, "label", "first=12,4");
     assert_eq!(classify(&Expected::Pass, &malformed.finish(planted)), Classification::InfrastructureError);
 }
+
+#[test]
+fn frame_record_binds_definition_hash_and_check() {
+    let line = format!("SUITE ui-testing FRAME frames/frame-record pattern def=0123abcd ref=formula source=surface commit=0 epoch=0 w=4 h=4 sha256={} result=match", "a".repeat(64));
+    let mut accounting = result::Accounting::new("ui-testing", "frames/frame-record", &["pattern"], false).unwrap();
+    accounting.accept(&line).unwrap();
+    assert_eq!(accounting.problem(), None);
+    let mut bad = result::Accounting::new("ui-testing", "frames/frame-record", &["pattern"], false).unwrap();
+    assert!(bad.accept(&line.replace("def=0123abcd", "def=xyz")).is_err());
+}

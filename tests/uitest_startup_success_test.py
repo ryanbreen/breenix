@@ -12,6 +12,39 @@ def source(path):
     return subprocess.check_output(['git', 'show', f'{old}:{path}'], cwd=ROOT, text=True) if old else (ROOT/path).read_text()
 
 class StartupSuccess(unittest.TestCase):
+    def test_comparison_measurement_survives_the_shared_name_validator(self):
+        runner = source('libs/libbreenix/src/suite.rs')
+        caller = source('userspace/programs/src/uitest_suite/comparison_cases.rs')
+        call = next(line.strip() for line in caller.splitlines() if 'breenix_suite::suite::value(' in line)
+        run_rust(self, r'''
+use std::{fmt::Write, sync::Mutex};
+static OUTPUT: Mutex<String> = Mutex::new(String::new());
+fn record(kind: &str, rest: &str) { *OUTPUT.lock().unwrap() = format!("{kind} {rest}"); }
+@WORD@
+@VALUE@
+#[test] fn emitted_comparison_measurement() {
+    let elapsed = 123u64;
+    @CALL@
+    assert_eq!(&*OUTPUT.lock().unwrap(), "VALUE compare-ns=123ns expect=0..500000000ns");
+}
+'''.replace('@WORD@', item(runner, 'fn is_word('))
+           .replace('@VALUE@', item(runner, 'pub fn value('))
+           .replace('@CALL@', call.replace('breenix_suite::suite::', '')))
+
+    def test_startup_verdict_measurement_boundaries(self):
+        trace = source('libs/libuitest/src/startup.rs').replace('//!', '//')
+        run_rust(self, r'''
+pub mod libbreenix { pub mod time {pub fn now_monotonic()->Result<std::time::Duration,()> {Ok(std::time::Duration::ZERO)}} }
+@TRACE@
+#[test] fn measurement_boundaries() {
+    assert!(verdict(400_000_000, true));
+    assert!(verdict(1_900_000_000, true));
+    assert!(verdict(2_000_000_000, true));
+    assert!(!verdict(2_100_000_000, true));
+    assert!(!verdict(0, false));
+}
+'''.replace('@TRACE@', trace))
+
     def test_every_start_reports_one_bounded_phase_line(self):
         body = item(source('userspace/programs/src/uitest_suite/sessions.rs'), 'fn start(kiosk: bool)')
         trace = source('libs/libuitest/src/startup.rs').replace('//!', '//')
@@ -31,13 +64,13 @@ impl Session {
  fn teardown(&mut self)->CaseResult{Ok(())}
 }
 fn first_window(_: &mut Session,title:&str,end:u64)->CaseResult {
- assert_eq!((title,end),("startup app",300001000));
+ assert_eq!((title,end),("startup app",2000001000));
  if FAIL.load(std::sync::atomic::Ordering::Relaxed){Err("planted startup failure".into())}else{Ok(())}
 }
 fn check(ok:bool,message:&str)->CaseResult{if ok{Ok(())}else{Err(message.into())}}
 pub mod breenix_suite { pub mod suite {
  pub fn value(name:&str,ns:i64,unit:&str,bound:Option<(i64,i64)>){
-  if name=="startup"{assert_eq!((ns,unit,bound),(0,"ns",Some((0,300000000))));}
+  if name=="startup"{assert_eq!((ns,unit,bound),(0,"ns",Some((0,2000000000))));}
   super::super::OUTPUT.lock().unwrap().push_str(&format!("VALUE {name}={ns}{unit}\n"));
  }
 }}
@@ -48,6 +81,7 @@ pub mod breenix_suite { pub mod suite {
   OUTPUT.lock().unwrap().clear();FAIL.store(failed,std::sync::atomic::Ordering::Relaxed);
   assert_eq!(start(kiosk).is_err(),failed);
   let output=OUTPUT.lock().unwrap();
+  assert!(output.contains("VALUE startup=0ns\n"), "missing measurement on success or failure: {output}");
   let lines:Vec<_>=output.lines().filter(|s|s.starts_with("UITEST_STARTUP ")).collect();
   assert_eq!(lines.len(),1,"each start needs one phase line, including passes: {output}");
   let line=lines[0];assert!(line.len()<4096,"unbounded phase record");

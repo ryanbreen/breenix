@@ -1229,21 +1229,19 @@ rules: `timingSensitive` records host load and does not wait for a quiet host (`
 | `window-manager/performance/frame-floor` | one client animating as fast as released; 1 s warmup, 5 s window | composites per second | ≥ 60/s |
 | `window-manager/performance/idle-cpu` | three static clients; 1 s settle, 5 s window | utime + stime of bwm and clients over the window | ≤ 2% of one CPU |
 | `window-manager/performance/clipboard-latency` | 64 KiB set in one process, get in another, 20 times; first 2 discarded | set to completed get | max ≤ 50 ms |
-| `ui-testing/sessions/start-desktop` | bwm plus one app | session start to the app's first composited commit | ≤ 300 ms |
-| `ui-testing/sessions/start-kiosk` | `kiosk_test` plus one app | as above | ≤ 300 ms |
-| `ui-testing/frames/compare-cost` | two 1280x800 frames differing in one pixel | one comparison | ≤ 50 ms |
+| `ui-testing/sessions/start-desktop` | bwm plus one app | session start to the app's first composited commit | measured; sanity cap 2 s |
+| `ui-testing/sessions/start-kiosk` | `kiosk_test` plus one app | as above | measured; sanity cap 2 s |
+| `ui-testing/frames/compare-cost` | two 1280x800 frames differing in one pixel | one comparison | measured; sanity cap 500 ms |
 | `gui-apps/bterm/throughput-time` | 1 MiB of numbered lines through the PTY | first byte to the commit with `pty-consumed` = 1 MiB | ≤ 8 s |
 | `gui-apps/guskit-collab/large-sync` | joiner to a 1024x768 canvas | join to the joiner's commit of the synced canvas | ≤ 2 s |
 | `gui-apps/desktop/idle-all-apps` | every app open and idle; 2 s settle, 5 s window | utime + stime of the session | ≤ 5% of one CPU |
 | `window-manager/liveness/memory-bounded` | eight animating clients, 60 epochs warmup then 600 epochs | bwm VmRSS growth | ≤ 64 KiB, with caches at their documented capacity |
 | `breengel/text/cache-bound` | 2,000 distinct glyph and size pairs | cache entries and bytes | ≤ 256 entries and ≤ 4 MiB |
 
-**Session start is 300 ms.** The first design adopted "a session start (bwm plus one app at first composite) must be
-under 300 ms on every target", and both session-start cases use that bound; kiosk is held to
-it because it is a session start too. The case's outer time limit (the default 10 s) is a separate thing and does
-not loosen the bound. Section 19 measures session start early. If that measurement shows 300 ms out of reach on
-a target, the measurement goes to the operator as an evidence-backed request to correct the expectation, and the
-case keeps failing at 300 ms until there is a ruling.
+**Session start is measured.** U20 (operator, 2026-11-08) replaces the original 300 ms pass/fail bound
+for desktop and kiosk starts with recorded measurements and a generous sanity cap. Both cases use the
+2 s cap in the table above and retain phase records for the measured starts. The case's outer time limit
+(the default 10 s) remains separate from the measured startup interval.
 
 ### 12.3 Functional limits and deadlines
 
@@ -1348,9 +1346,9 @@ POSIX `area`, so the effort objects omit it. Each suite manifest's `area` is the
 |---|---|---|---|---|---|
 | 1 | `breengel`: BreenGL graphics library | `breengel` | 17, 22, 25 | 14 | 380 |
 | 2 | `window-manager`: Window manager | `window-manager` | 17, 18, 25 | 13 | 249 |
-| 3 | `ui-testing`: UI test framework | `ui-testing` | 18, 21, 25 | 9 | 206 |
+| 3 | `ui-testing`: UI test framework | `ui-testing` | 18, 21, 25 | 9 | 108 |
 | 4 | `gui-apps`: GUI applications (the destination) | `gui-apps` | 24, 25 | 10 | 307 |
-| | **Total** | | | **46** | **1,142** |
+| | **Total** | | | **46** | **1,044** |
 
 The desktop's real startup is measured by suite cases, not by a `bootPath` milestone. The bootPath measure
 counts only the full tests gate on x86-64, and that gate never runs `init desktop`, so a desktop boot-path
@@ -2239,6 +2237,109 @@ Real time on `CLOCK_MONOTONIC`, with the workloads and bounds in section 12.2.
 
 ## 17. Suite `ui-testing`
 
+The following IDs left the guest manifest under U20. Their dispositions are in the case disposition tables of `e22/plan-trimmed.md`.
+
+- `runner/transport-always`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/transport-blocking`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/transport-exit-race`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/transport-capacity`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/record-binding`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/record-malformed`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/record-duplicate`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/forgery-exec`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/forgery-fork`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/never-ran`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/mismatch-is-fail`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/outer-collector-timeout`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/sweep-descendants`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/inner-wrong-class`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/inner-crash-not-detection`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/inner-teardown-scoped`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/inner-records-contained`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `sessions/app-stderr-capped`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `sessions/fixtures-pinned`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/outer-positive`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/outer-case-death`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `sessions/panel-after-case`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `sessions/sequence-compatible`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/capture-two-readers`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/capture-destroy-race`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/capture-threads`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/exact-match`: move-host (tests/ui_compare.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/one-pixel-fails`: move-host (tests/ui_compare.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/channel-tolerance`: move-host (tests/ui_compare.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/max-differing`: move-host (tests/ui_compare.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/regions-same-frame`: move-host (tests/ui_compare.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/mask`: move-host (tests/suite_manifests.rs and tests/ui_frame_schema.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/mask-cap`: move-host (tests/suite_manifests.rs and tests/ui_frame_schema.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/unknown-field`: move-host (tests/suite_manifests.rs and tests/ui_frame_schema.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/size-mismatch`: move-host (tests/ui_compare.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/reference-pin`: move-host (tests/ui_stored_frames.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/reference-missing`: move-host (tests/ui_stored_frames.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/formula`: move-host (tests/ui_structural_formula.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/structural-uniform`: move-host (tests/ui_structural_formula.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/structural-outside`: move-host (tests/ui_structural_formula.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/structural-count`: move-host (tests/ui_structural_formula.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/structural-vacuous`: move-host (tests/ui_frame_schema.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/formula-params`: move-host (tests/suite_manifests.rs and tests/ui_frame_schema.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/schema-version`: move-host (tests/suite_manifests.rs and tests/ui_frame_schema.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/schema-binding`: move-host (tests/ui_frame_schema.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/png-reference`: move-host (tests/ui_stored_frames.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/frame-record`: move-host (tests/uitest_outcome.rs (over suite_result.rs)). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+
+- `input/type-keymap-all`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `input/click-covered-fails`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `input/click-zero-area-fails`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `input/click-stale-scene`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `input/click-stale-layout`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `input/trace-hops`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `input/synthetic-tagged`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `tree/role-invariants`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `tree/rapid-commits`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `tree/truncation-flagged`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `tree/wm-tree-vs-model`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `tree/find-unique`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `tree/find-ambiguous-fails`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `tree/find-none-fails`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `tree/dump-roundtrip`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `clock/equal-deadlines`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `clock/multiple-expiry`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `clock/zero-step`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `clock/large-step`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `clock/stamps`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `clock/watchdog-real`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `clock/no-real-clock`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/diff-image`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/got-image`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/tree-at-commit`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/cap`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/io-error`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/path-in-record`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/synced`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/message-pixel`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/message-tree`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/message-input`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/failed-screen-retained`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/reserve`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/clean-passes`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-off-by-one`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-drain-no-render`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-misroute`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-chrome-offset`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-keymap-swap`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-lie-bounds`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-lie-text`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-slow-commit`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-wallclock`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-crash`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-trail`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-lost-disposition`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-real-input`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/animation-scenario`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/wm-resize-scenario`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/wm-clipboard-scenario`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+
+
 Manifest: id `ui-testing`, title "UI test framework", area "UI test framework", `"timingSensitive": true`,
 binary `/sbin/suite-ui-testing`, source `suite_ui_testing.rs`. Summary: *"Scripted keyboard, pointer and text
 input reaches GUI programs through the window manager with a recorded outcome for every event; their trees and
@@ -2388,7 +2489,7 @@ bwm built with one named fault per run (`misroute-focus`, `chrome-offset`, `keym
 - `cursor-excluded` — Captures taken with the cursor hidden contain no cursor pixels.
 - `cross-target` — The test app's canonical scene hashes to the pinned value on this target.
 - `frame-record` — Every check writes one well-formed FRAME record with its definition hash.
-- `compare-cost` — Comparing two 1280x800 frames takes at most 50 ms.
+- `compare-cost` — Comparing two 1280x800 frames is measured with a 500 ms sanity cap.
 
 #### `clock` — UI time & stepping (19)
 - `clock-frozen` — An app reading the UI clock sees it stand still between steps.
@@ -2427,8 +2528,8 @@ bwm built with one named fault per run (`misroute-focus`, `chrome-offset`, `keym
 - `repeated-settle` — Repeated settle calls with nothing changing cause no extra frames.
 
 #### `sessions` — sessions, state isolation & cleanup (23)
-- `start-desktop` — A desktop session with one app reaches its first composited commit within 300 ms.
-- `start-kiosk` — A kiosk session with one app reaches its first composited commit within 300 ms.
+- `start-desktop` — A desktop session with one app measures time to its first composited commit with a 2 s sanity cap.
+- `start-kiosk` — A kiosk session with one app measures time to its first composited commit with a 2 s sanity cap.
 - `environment` — Apps in a session receive its fonts, clock, seed, mode, time zone, locale and config root.
 - `config-root` — bwm, Breengel's font configuration and every app read and write under the session's config root.
 - `global-untouched` — A session that changes every setting leaves the global configuration files unchanged.
@@ -3035,7 +3136,7 @@ W10a Q1 exception. Stale captures containing the removed case are refused.
   also makes cross-target identity a property of integer arithmetic. The bounds are not relaxed instead.
 - **Frame work in the guest.** Comparing a 1280x800 frame reads 4 MB, and decoding references is the slowest
   step. References are kept at window size, decoded references are cached within a case, and
-  `frames/compare-cost` holds the cost to 50 ms.
+  `frames/compare-cost` measures the cost with a 500 ms sanity cap.
 - **Software composition** of a full 1280x800 frame costs a few milliseconds of copying on HVF. Damage-bounded
   composition keeps steady state far below that, and `performance/frame-floor` is the line to watch on x86-64.
 - **Host contention and App Nap.** The UI clock takes timing out of every functional case. Only the
