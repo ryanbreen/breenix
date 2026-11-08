@@ -79,6 +79,9 @@ def score(directory):
                     cursor = index + 1
                     break
         results[milestone['id']] = {'reached': reached, 'total': len(stages), 'passed': reached == len(stages)}
+        if (run['mode'] == 'default' and milestone['id'] == 'desktop'
+                and any(re.search(r'\[bwm\] (?:first frame|desktop fill) check FAILED:', line) for line in lines)):
+            results[milestone['id']].update(passed=False, reason='desktop startup self-check failed')
     # Host-driven cases are captured while the persistent boot holds its lease, then
     # scored again from the completed capture without rerunning them. Each measured
     # category's records are server-<category>.json, or users-operator.json for the

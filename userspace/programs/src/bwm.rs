@@ -246,7 +246,7 @@ fn main() {
         });
     if let Err(error) = &fills {
         eprintln!("[bwm] desktop fill check FAILED: {error}");
-        process::exit(1);
+        if strict_startup { process::exit(1); }
     }
     libuitest::startup::mark("fills-ready");
     // Discover metadata while the bare desktop remains unchanged. Coverage
@@ -296,7 +296,7 @@ fn main() {
         };
         if let Err(error) = &fills {
             eprintln!("[bwm] desktop fill check FAILED: {error}");
-            process::exit(1);
+            if strict_startup { process::exit(1); }
         }
         gpu.present_startup_desktop(Some(first_pointer)).map(|()| {
             measure_check(|| gpu.check(0, &[], Some(first_pointer)))
@@ -310,14 +310,14 @@ fn main() {
         Ok(pixels) => print!("[bwm] first frame read back: {} pixels exact\n", pixels),
         Err(CheckError::Moved(e)) | Err(CheckError::Failed(e)) => {
             print!("[bwm] first frame check FAILED: {}\n", e);
-            process::exit(1);
+            if strict_startup { process::exit(1); }
         },
     }
     match fills {
         Ok(line) => print!("[bwm] desktop fills the scanout: {}\n", line),
         Err(e) => {
             print!("[bwm] desktop fill check FAILED: {}\n", e);
-            process::exit(1);
+            if strict_startup { process::exit(1); }
         },
     }
     libuitest::startup::mark("desktop-ready");
