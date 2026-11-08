@@ -17,7 +17,7 @@ names!(Role {
     Window => "window", Button => "button", Checkbox => "checkbox", Slider => "slider",
     Textfield => "textfield", Label => "label", Text => "text", Tablist => "tablist",
     Tab => "tab", Menubar => "menubar", Menu => "menu", Menuitem => "menuitem",
-    List => "list", Listitem => "listitem", Scrollbar => "scrollbar", Canvas => "canvas",
+    List => "list", Listitem => "listitem", Scrollbar => "scrollbar", ScrollThumb => "scrollthumb", Canvas => "canvas",
     Image => "image", Terminal => "terminal", Dialog => "dialog", Status => "status"
 });
 names!(Flag {

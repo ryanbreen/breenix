@@ -281,6 +281,17 @@ impl super::Widget for ScrollBar {
         super::flag(&mut n, crate::tree::Flag::Visible, visible);
         n
     }
+    fn tree_nodes(&self, key: &str, parent: Option<&str>, clip: Rect, _theme: &Theme) -> alloc::vec::Vec<crate::tree::Node> {
+        use crate::tree::{Flag, Role};
+        let track = self.tree_node(key, parent, clip);
+        let mut thumb = super::node(&alloc::format!("{key}/thumb"), Some(key), Role::ScrollThumb,
+            "", self.thumb_rect(), self.rect.intersection(clip));
+        super::flag(&mut thumb, Flag::Enabled, self.enabled);
+        super::flag(&mut thumb, Flag::Pressed, self.dragging);
+        let visible = self.can_scroll() && thumb.clip[2] > 0 && thumb.clip[3] > 0;
+        super::flag(&mut thumb, Flag::Visible, visible);
+        alloc::vec![track, thumb]
+    }
 }
 
 #[cfg(test)]
