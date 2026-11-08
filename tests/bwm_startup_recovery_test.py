@@ -56,7 +56,24 @@ fn warm(prepared:Result<(),&str>){@BLOCK@}
   run_rust(self,r'''
 #[path="@PATH@"]mod startup;
 #[test]fn strict_session_does_not_retry(){let mut calls=0;let r:Result<Result<u64,&str>,&str>=startup::recover(Err("present"),true,|_|{calls+=1;Ok(Ok(4096000))});assert_eq!(r,Err("present"));assert_eq!(calls,0);}
+#[test]fn persistent_refusal_stops_reopening(){let mut calls=0;let r:Result<(),&str>=startup::recover(Err("not display owner"),false,|_|{calls+=1;assert!(calls<=2,"persistent refusal reopened a third context");Err("still refused")});assert_eq!(r,Err("still refused"));assert_eq!(calls,2);}
 #[test]fn production_retries_then_checks(){let mut calls=0;let r:Result<Result<u64,&str>,&str>=startup::recover(Err("present"),false,|_|{calls+=1;if calls==1{Err("present again")}else{Ok(Ok(4096000))}});assert_eq!(r,Ok(Ok(4096000)));assert_eq!(calls,2);let mut retries=0;let r:Result<Result<u64,&str>,&str>=startup::recover(Ok(Err("pixel mismatch")),false,|_|{retries+=1;Ok(Ok(4096000))});assert_eq!(r,Ok(Err("pixel mismatch")));assert_eq!(retries,0);let(prepared,checked)=startup::during(||Ok(()),||7);assert_eq!((prepared,checked),(Ok(()),7));}
 '''.replace('@PATH@',str(path)))
+
+ def test_pending_sigterm_stops_startup_before_reopening(self):
+  text=(ROOT/'userspace/programs/src/bwm.rs').read_text()
+  # Extract the real retry checkpoint, including its signal-mask transition.
+  body=item(text,'fn startup_retry_wait(')
+  run_rust(self,r'''
+use std::sync::atomic::{AtomicBool,Ordering};
+static TERMINATE:AtomicBool=AtomicBool::new(false);
+static BLOCKED:AtomicBool=AtomicBool::new(true);
+mod signal{pub const SIG_UNBLOCK:i32=1;pub const SIG_BLOCK:i32=0;}
+fn term_mask(how:i32){BLOCKED.store(how==signal::SIG_BLOCK,Ordering::Relaxed);if how==signal::SIG_UNBLOCK{TERMINATE.store(true,Ordering::Relaxed);}}
+mod libbreenix{pub mod time{pub fn sleep_ms(_ms:u64)->Result<(),()>{assert!(!super::super::BLOCKED.load(super::super::Ordering::Relaxed));Ok(())}}}
+mod process{pub fn exit(status:i32)->!{assert_eq!(status,0);panic!("terminated")}}
+@BODY@
+#[test]fn queued_term_is_delivered_before_retry(){assert!(std::panic::catch_unwind(startup_retry_wait).is_err(),"startup ignored SIGTERM");assert!(TERMINATE.load(Ordering::Relaxed));assert!(BLOCKED.load(Ordering::Relaxed));}
+'''.replace('@BODY@',body))
 
 if __name__=='__main__':unittest.main()

@@ -232,7 +232,7 @@ fn main() {
                 eprintln!("[bwm] initial presentation unavailable: {error}; recovering");
                 reported_startup_error = true;
             }
-            let _ = libbreenix::time::sleep_ms(16);
+            startup_retry_wait();
             if let Err(error) = gpu.reopen() {
                 eprintln!("[bwm] ERROR: GPU compositor could not be reopened: {error}");
                 process::exit(1);
@@ -283,7 +283,7 @@ fn main() {
             eprintln!("[bwm] initial presentation unavailable: {error}; recovering");
             reported_startup_error = true;
         }
-        let _ = libbreenix::time::sleep_ms(16);
+        startup_retry_wait();
         if let Err(error) = gpu.reopen() {
             eprintln!("[bwm] ERROR: GPU compositor could not be reopened: {error}");
             process::exit(1);
@@ -986,6 +986,17 @@ fn term_mask(how: i32) {
     if let Err(error) = signal::sigprocmask(how, Some(&mask), None) {
         eprintln!("[bwm] cannot set shutdown signal mask: {error}");
         process::exit(1);
+    }
+}
+
+// Startup has not reached the poll loop that normally delivers blocked signals.
+// Deliver a pending SIGTERM during the retry delay, before allocating targets.
+fn startup_retry_wait() {
+    term_mask(signal::SIG_UNBLOCK);
+    let _ = libbreenix::time::sleep_ms(16);
+    term_mask(signal::SIG_BLOCK);
+    if TERMINATE.load(std::sync::atomic::Ordering::Relaxed) {
+        process::exit(0);
     }
 }
 
