@@ -397,6 +397,9 @@ pub struct TreeReaderState {
 const _: () = assert!(core::mem::size_of::<TreeReaderState>() == 8);
 
 /// Argument of `MAP_TREE`, `MAP_TREE_READERS` and `MAP_COMPOSITOR_TEXTURE`.
+/// For the tree operations, id 0 names the current compositor claim's tree:
+/// MAP_TREE maps it writable for the claimant and read-only for other root callers;
+/// MAP_TREE_READERS maps its reader counter for the claimant.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MapTree {

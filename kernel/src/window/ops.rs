@@ -1129,6 +1129,7 @@ fn all_waits(reg: &super::Registry) -> Vec<Arc<Waits>> {
 /// Publish claim loss before waking readers; clients need not wait for a replacement.
 fn end_claim(reg: &mut super::Registry) -> Vec<Arc<Waits>> {
     reg.claim = None;
+    reg.compositor_tree = None;
     reg.epoch += 1;
     for window in reg.windows.values_mut() {
         let mut event = kernel_event(event_kind::COMPOSITOR_CHANGED);
@@ -1228,6 +1229,24 @@ pub fn read_meta(caller: &Caller, id: u64) -> Result<(u64, Meta), i32> {
 /// `MAP_TREE` (owner, compositor or root): the window's tree pages, read-only. The mapping is
 /// undone when the output cannot be copied to `out`.
 pub fn map_tree(caller: &Caller, m: &mut MapTree, out: u64) -> Result<u64, i32> {
+    if m.id == 0 {
+        let (tree, readers, access) = {
+            let reg = REGISTRY.lock();
+            let held = reg.compositor_tree.as_ref().ok_or(EPERM)?;
+            let access = super::compositor_tree::access(Some(held.holder), caller.tgid, caller.is_root())?;
+            (held.page.clone(), held.readers.clone(), access)
+        };
+        m.addr = match access {
+            super::compositor_tree::Access::Write => mem::map(&tree, true)?,
+            super::compositor_tree::Access::Read => tree.map_reader(readers)?,
+        };
+        m.len = tree.len();
+        if let Err(e) = crate::syscall::window::copy_out(out, &*m) {
+            mem::unmap(&tree, m.addr);
+            return Err(e);
+        }
+        return Ok(0);
+    }
     let (tree, readers) = {
         let mut reg = REGISTRY.lock();
         let w = reg.window(m.id, caller, who::owner_compositor_or_root)?;
@@ -1246,7 +1265,12 @@ pub fn map_tree(caller: &Caller, m: &mut MapTree, out: u64) -> Result<u64, i32> 
 pub fn map_tree_readers(caller: &Caller, m: &mut MapTree, out: u64) -> Result<u64, i32> {
     let status = {
         let mut reg = REGISTRY.lock();
-        reg.window(m.id, caller, who::owner)?.tree_readers.clone()
+        if m.id == 0 {
+            if !reg.is_compositor(caller) { return Err(EPERM); }
+            reg.compositor_tree.as_ref().ok_or(EPERM)?.readers.clone()
+        } else {
+            reg.window(m.id, caller, who::owner)?.tree_readers.clone()
+        }
     };
     m.addr = mem::map(&status, false)?;
     m.len = status.len();
@@ -1268,12 +1292,15 @@ pub fn claim(caller: &Caller, c: &mut Claim, out: u64) -> Result<u64, i32> {
         return Err(EINVAL);
     }
     sweep_dead_owners();
+    let tree = Mem::new(mem::PAGE_BYTES)?;
+    let tree_readers = Mem::new(mem::PAGE_BYTES)?;
     let epoch = {
         let mut reg = REGISTRY.lock();
         if reg.claim.is_some() {
             return Err(EBUSY);
         }
         reg.epoch += 1;
+        reg.compositor_tree = Some(super::compositor_tree::ClaimTree::new(caller.tgid, tree, tree_readers));
         reg.claim = Some(Held {
             holder: caller.tgid,
             epoch: reg.epoch,
@@ -1288,6 +1315,7 @@ pub fn claim(caller: &Caller, c: &mut Claim, out: u64) -> Result<u64, i32> {
         let mut reg = REGISTRY.lock();
         if reg.claim.is_some_and(|h| h.holder == caller.tgid && h.epoch == epoch) {
             reg.claim = None;
+            reg.compositor_tree = None;
             if reg.epoch == epoch {
                 reg.epoch -= 1;
             }

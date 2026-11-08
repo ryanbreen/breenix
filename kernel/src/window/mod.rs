@@ -8,6 +8,7 @@
 //!
 //! No path in this module writes to the serial log or any other kernel output (section 17.5).
 
+mod compositor_tree;
 mod damage_union;
 mod event_admission;
 pub mod events;
@@ -287,6 +288,7 @@ pub struct Remnant {
 }
 
 pub struct Registry {
+    pub compositor_tree: Option<compositor_tree::ClaimTree<Arc<Mem>>>,
     pub windows: BTreeMap<u64, Window>,
     pub next_window: u64,
     pub next_uid: u64,
@@ -302,6 +304,7 @@ pub struct Registry {
 impl Registry {
     const fn new() -> Registry {
         Registry {
+            compositor_tree: None,
             windows: BTreeMap::new(),
             next_window: 1,
             next_uid: 1,
