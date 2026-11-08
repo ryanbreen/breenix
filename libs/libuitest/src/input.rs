@@ -82,6 +82,22 @@ pub fn home_then_move(
     Ok([(-width, -height), target])
 }
 
+/// Wake a newly observed app through the middle of its exposed content.
+pub fn tree_probe_point(
+    content: [i64; 4],
+    screen: [i64; 4],
+    covers: &[[i64; 4]],
+) -> Result<(i32, i32), String> {
+    let rect = exposed_region(content, screen, covers).into_iter()
+        .max_by_key(|r| (i128::from(r[2]) * i128::from(r[3]), -i128::from(r[1]), -i128::from(r[0])))
+        .ok_or("input tree has no exposed content")?;
+    let x = i32::try_from(i128::from(rect[0]) + i128::from(rect[2]) / 2)
+        .map_err(|_| "input tree probe x outside pointer range")?;
+    let y = i32::try_from(i128::from(rect[1]) + i128::from(rect[3]) / 2)
+        .map_err(|_| "input tree probe y outside pointer range")?;
+    Ok((x, y))
+}
+
 /// A stable widget address, resolved afresh for each new operation.
 #[derive(Clone, Debug)]
 pub struct Target {

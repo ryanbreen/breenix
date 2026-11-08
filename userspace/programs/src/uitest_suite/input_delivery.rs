@@ -261,6 +261,8 @@ fn outside(device: &Injector, code: u16, pressed: bool) -> Result<input::Event, 
                             row.disposition == "rejected" && row.reason == "not-selected",
                             format!("unselected source {row:?}"),
                         )?;
+                        println!("UI_INPUT_EXCLUDED serial={} key={} pressed={} disposition={} reason={}",
+                            e.serial, code, pressed, row.disposition, row.reason);
                         return Ok(e);
                     }
                 }
@@ -307,8 +309,10 @@ fn excluded(live: &mut LivePointer<'_>, id: u64) -> Result<(), String> {
     script::delivered(b.serial)?;
     let release = live.send_key(key::B, false)?;
     script::delivered(release.serial)?;
+    let field = entry(live, id)?;
+    println!("UI_INPUT_EXCLUDED field={field}");
     require(
-        entry(live, id)? == "ab",
+        field == "ab",
         "K did not type ab after excluded Q events",
     )
 }

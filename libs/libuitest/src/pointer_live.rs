@@ -181,7 +181,19 @@ impl<'a> LivePointer<'a> {
         }
         self.watched.insert(id, Mapping::new(id)?);
         let info = self.info(id)?;
-        self.move_to((info.x + 10, info.y + 30))?;
+        let desktop = self.desktop_tree()?;
+        let window = desktop.children.iter().find(|node| node.value["id"].as_u64() == Some(id))
+            .filter(|node| node.flags.contains(&Flag::Visible))
+            .ok_or_else(|| format!("input tree window={id} has no exposed content"))?;
+        let z = window.value["z"].as_u64().ok_or("desktop window z missing")?;
+        let covers: Vec<_> = desktop.children.iter()
+            .filter(|node| node.flags.contains(&Flag::Visible)
+                && node.value["z"].as_u64().is_some_and(|other| other > z))
+            .map(|node| node.bounds).collect();
+        let point = super::tree_probe_point(
+            [i64::from(info.x), i64::from(info.y), i64::from(info.width), i64::from(info.height)],
+            desktop.root.bounds, &covers)?;
+        self.move_to(point)?;
         let end = Instant::now() + Duration::from_secs(2);
         while window::read_meta(id)
             .map_err(|e| e.to_string())?
@@ -190,7 +202,7 @@ impl<'a> LivePointer<'a> {
             == 0
         {
             if Instant::now() >= end {
-                return Err(format!("input tree window={id} not committed after attach"));
+                return Err(format!("input tree window={id} not committed after attach probe={point:?}"));
             }
             pause()?;
         }

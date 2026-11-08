@@ -24,11 +24,13 @@ pub fn no_reader_no_serialize() -> CaseResult {
     check(count()? == 0, "initial unattached commit serialized")?;
     for _ in 0..N { app.command("commit 0")?; }
     check(count()? == 0, "unattached commits serialized")?;
+    breenix_suite::suite::value("unattached-serializations", count()? as i64, "count", Some((0, 0)));
     let reader = TreeReader::attach(first.id)?;
     for i in 1..=N {
         app.command("commit 0")?;
         check(count()? == i, "attached commit did not serialize exactly once")?;
     }
+    breenix_suite::suite::value("attached-serializations", count()? as i64, "count", Some((N as i64, N as i64)));
     drop(reader);
     for _ in 0..N { app.command("commit 0")?; }
     check(count()? == N, "unmapped reader still triggered serialization")?;

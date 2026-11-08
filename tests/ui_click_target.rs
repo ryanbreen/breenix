@@ -89,7 +89,7 @@ fn reader_probe_reaches_content_instead_of_resize_chrome() {
     let desk = include_str!("../userspace/programs/src/bwm/desk.rs");
     let start = desk.find("    pub(super) fn hit_resize_edge(").unwrap();
     let end = start + desk[start..].find("\n    }\n").unwrap() + 6;
-    let method = &desk[start..end];
+    let method = desk[start..end].replace("pub(super) fn", "fn");
     let config = include_str!("../userspace/programs/src/bwm/config.rs");
     let constant = |name: &str| -> usize {
         config.lines().find_map(|line| line.strip_prefix(&format!("pub(super) const {name}: usize = ")))
