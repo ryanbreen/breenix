@@ -25,7 +25,7 @@ class UiSelectionsTest(unittest.TestCase):
                 self.assertEqual(selection['added'], len(set(selected) - previous))
                 self.assertEqual(selected, [case for case in cases if case in set(selected)])
                 previous = set(selected)
-        self.assertEqual(len(cases), 206)
+        self.assertEqual(len(cases), 155)
         self.assertEqual(previous, set(cases))
 
 

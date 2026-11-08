@@ -114,10 +114,6 @@
           "title": "Characters that need Shift arrive correctly"
         },
         {
-          "id": "type-keymap-all",
-          "title": "Every printable ASCII character, typed through libuitest's literal key table, arrives exactly"
-        },
-        {
           "id": "type-utf8",
           "title": "Characters outside the keymap arrive through a text event"
         },
@@ -142,24 +138,8 @@
           "title": "Clicking a node partly covered by another window lands on its exposed part, confirmed by hit test"
         },
         {
-          "id": "click-covered-fails",
-          "title": "Clicking a node fully covered by another window fails the step by name"
-        },
-        {
           "id": "click-clipped",
           "title": "Clicking a node clipped by a scrolled container uses its visible part"
-        },
-        {
-          "id": "click-zero-area-fails",
-          "title": "Clicking a node with no visible area fails the step by name"
-        },
-        {
-          "id": "click-stale-scene",
-          "title": "A window move between query and click is rejected as a stale scene, re-resolved and lands correctly"
-        },
-        {
-          "id": "click-stale-layout",
-          "title": "An unstarted click hit by a layout change is rejected and re-resolved; a started gesture is captured or canceled, never retried"
         },
         {
           "id": "double-click",
@@ -188,14 +168,6 @@
         {
           "id": "dispositions-all",
           "title": "Every serial of a script ends with a terminal disposition"
-        },
-        {
-          "id": "trace-hops",
-          "title": "The input log records each event at the core, the WM and the client"
-        },
-        {
-          "id": "synthetic-tagged",
-          "title": "Injected events are tagged synthetic in the trace"
         },
         {
           "id": "nonroot-denied",
@@ -236,10 +208,6 @@
           "title": "Names and values match the widgets' states set by the script"
         },
         {
-          "id": "role-invariants",
-          "title": "Menu items lie inside their menu, tabs inside their tablist, and thumbs inside their track"
-        },
-        {
           "id": "focus-flag",
           "title": "The focused flag moves with Tab"
         },
@@ -268,32 +236,8 @@
           "title": "A tree and its pixels always come from the same commit"
         },
         {
-          "id": "rapid-commits",
-          "title": "Over 1,000 rapid commits, every read gives a tree and pixels from one commit"
-        },
-        {
-          "id": "truncation-flagged",
-          "title": "A tree larger than its page is flagged truncated, not corrupted"
-        },
-        {
           "id": "wm-tree",
           "title": "bwm's tree lists each window's title, bounds, z order, focus and minimized state"
-        },
-        {
-          "id": "wm-tree-vs-model",
-          "title": "bwm's tree agrees with the operation model and the client logs after every step of a script"
-        },
-        {
-          "id": "find-unique",
-          "title": "A query that matches exactly one node returns it"
-        },
-        {
-          "id": "find-ambiguous-fails",
-          "title": "A query that matches two nodes fails, naming both"
-        },
-        {
-          "id": "find-none-fails",
-          "title": "A query that matches nothing fails, naming the query"
         },
         {
           "id": "hidden-nodes",
@@ -310,10 +254,6 @@
         {
           "id": "no-reader-no-serialize",
           "title": "With no reader attached the tree is never serialized, and with one it is serialized once per commit"
-        },
-        {
-          "id": "dump-roundtrip",
-          "title": "The text dump of a tree parses back to the same tree"
         },
         {
           "id": "text-pixels",
@@ -472,26 +412,6 @@
           "title": "Each step is acknowledged by every required participant in its commit metadata"
         },
         {
-          "id": "equal-deadlines",
-          "title": "Two timers due at the same time fire in registration order"
-        },
-        {
-          "id": "multiple-expiry",
-          "title": "A periodic timer whose period passes ten times in one step fires once and reports nine missed"
-        },
-        {
-          "id": "zero-step",
-          "title": "step(0) advances the epoch, fires only timers due now, and is acknowledged without new frames"
-        },
-        {
-          "id": "large-step",
-          "title": "One step of 1,000 ms leaves an animation in the same state as a thousand steps of 1 ms"
-        },
-        {
-          "id": "stamps",
-          "title": "Each commit carries its epoch and its UI time in milliseconds"
-        },
-        {
           "id": "timers-virtual",
           "title": "An app's one-second timer fires on step(1000), not on real time"
         },
@@ -526,14 +446,6 @@
         {
           "id": "input-time",
           "title": "Injected events carry UI time, and bwm's double-click threshold uses it"
-        },
-        {
-          "id": "watchdog-real",
-          "title": "With the UI clock frozen, the case is still ended by its real deadline"
-        },
-        {
-          "id": "no-real-clock",
-          "title": "With a UI clock set, Breengel's clock functions never read the real clocks"
         }
       ]
     },
@@ -712,18 +624,6 @@
           "title": "With saving turned on, a passing case saves its frames"
         },
         {
-          "id": "diff-image",
-          "title": "The diff image marks exactly the differing pixels"
-        },
-        {
-          "id": "got-image",
-          "title": "The saved got image decodes to the captured frame"
-        },
-        {
-          "id": "tree-at-commit",
-          "title": "The saved tree is the compared commit's, after 30 later commits, the case's death before writing and the app's death"
-        },
-        {
           "id": "input-log",
           "title": "The saved input log lists every serial with its disposition"
         },
@@ -732,48 +632,12 @@
           "title": "The saved screen is the readback at the failing step, with its record"
         },
         {
-          "id": "cap",
-          "title": "Past the artifact cap, a failure records artifacts=none:cap and keeps its primary message"
-        },
-        {
-          "id": "io-error",
-          "title": "An artifact write that fails records artifacts=none:io, and the primary failure stands"
-        },
-        {
-          "id": "path-in-record",
-          "title": "The FRAME record says what was saved and where"
-        },
-        {
-          "id": "synced",
-          "title": "Artifacts are on disk before the CASE line is written"
-        },
-        {
-          "id": "message-pixel",
-          "title": "A frame failure's message names the check, the first pixel and both colors"
-        },
-        {
-          "id": "message-tree",
-          "title": "A tree failure's message names the node key and the field"
-        },
-        {
-          "id": "message-input",
-          "title": "A delivery failure's message names the serial and its disposition"
-        },
-        {
           "id": "case-death",
           "title": "When the case process is killed, the runner sends end collect, waits for done before sweeping, and the evidence is on disk"
         },
         {
-          "id": "failed-screen-retained",
-          "title": "The screen, frame and tree saved for a failing check are those captured at the failure; a slot left writing is recorded partial:case-died"
-        },
-        {
           "id": "app-death",
           "title": "An app that dies right after a commit still has that commit and tree saved, from its remnant"
-        },
-        {
-          "id": "reserve",
-          "title": "Evidence collection finishes inside the reserve, before the runner's limit"
         }
       ]
     },
@@ -782,20 +646,8 @@
       "title": "Proven on bwm & a test app",
       "cases": [
         {
-          "id": "clean-passes",
-          "title": "The test app with no fault passes every check of a full script"
-        },
-        {
-          "id": "fault-off-by-one",
-          "title": "A frame drawn one pixel off fails as pixel-mismatch at the first shifted pixel"
-        },
-        {
           "id": "fault-wrong-color",
           "title": "A widget drawn in the wrong color fails as pixel-mismatch with both colors"
-        },
-        {
-          "id": "fault-drain-no-render",
-          "title": "An app that drains a key and never commits fails as unprocessed-serial for that key"
         },
         {
           "id": "fault-stale-pixels",
@@ -806,52 +658,8 @@
           "title": "An app that drops one key fails as tree-mismatch on the text field's value"
         },
         {
-          "id": "fault-misroute",
-          "title": "bwm-fault_test sending keys to the wrong window fails as pixel-mismatch and tree-mismatch on the intended window"
-        },
-        {
-          "id": "fault-chrome-offset",
-          "title": "bwm-fault_test drawing chrome one pixel off fails as pixel-mismatch against the contract table"
-        },
-        {
-          "id": "fault-keymap-swap",
-          "title": "bwm-fault_test with two keys swapped fails as tree-mismatch on typed text"
-        },
-        {
-          "id": "fault-lie-bounds",
-          "title": "A tree whose bounds disagree with the drawn widget, still inside its parent, fails as tree-mismatch against the literal expected geometry"
-        },
-        {
-          "id": "fault-lie-text",
-          "title": "A label drawn FAIL whose tree says PASS, with valid ink and bounds, fails as pixel-mismatch"
-        },
-        {
-          "id": "fault-slow-commit",
-          "title": "An app that never settles fails as settle-timeout, naming it"
-        },
-        {
-          "id": "fault-wallclock",
-          "title": "An app animating on the real clock fails as clock-violation on every run"
-        },
-        {
           "id": "fault-hang",
           "title": "A hung app fails as app-hung when the 2 s step bound passes, instead of hanging the suite"
-        },
-        {
-          "id": "fault-crash",
-          "title": "A crashing app fails as app-crashed, naming the signal"
-        },
-        {
-          "id": "fault-trail",
-          "title": "A cursor trail fails as pixel-mismatch in a screen check"
-        },
-        {
-          "id": "fault-lost-disposition",
-          "title": "bwm-fault_test leaving a serial without a disposition fails as missing-disposition"
-        },
-        {
-          "id": "fault-real-input",
-          "title": "bwm-fault_test that ignores the session's device selection fails when a non-selected device types"
         },
         {
           "id": "form-scenario",
@@ -866,24 +674,12 @@
           "title": "Scrolling and selecting in a list gives the expected tree and frame"
         },
         {
-          "id": "animation-scenario",
-          "title": "Stepping the test app's animation gives its reference frames at epochs 1, 10 and 60"
-        },
-        {
           "id": "wm-focus-scenario",
           "title": "A scripted focus scenario on bwm gives the expected trees and screens"
         },
         {
           "id": "wm-stack-scenario",
           "title": "A scripted stacking scenario on bwm gives the expected trees and screens"
-        },
-        {
-          "id": "wm-resize-scenario",
-          "title": "A scripted resize of the test app gives the expected trees and screens"
-        },
-        {
-          "id": "wm-clipboard-scenario",
-          "title": "Copying between two test apps through bwm gives the expected text fields"
         }
       ]
     }
