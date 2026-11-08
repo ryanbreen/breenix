@@ -21,6 +21,7 @@ static POINTER:Mutex<bool>=Mutex::new(false);
 static HIGH_X:Mutex<bool>=Mutex::new(false);
 static BAD:Mutex<Option<(u32,u32)>>=Mutex::new(None);
 CONSTANTS
+mod libuitest {pub mod startup{pub fn mark(_: &str){}}}
 mod abi {pub mod record{pub const SIZE:usize=1024;}}
 mod libbreenix {
  pub mod errno {#[derive(Debug)]pub enum Errno{EINVAL}}

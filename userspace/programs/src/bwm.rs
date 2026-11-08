@@ -162,7 +162,11 @@ fn main() {
         print!("[bwm] fonts {config:?}\n");
         let font = std::fs::read(&config.display_path).ok()
             .and_then(|data| Font::parse(&data).ok())
-            .map(|f| CachedFont::new(f, 256));
+            .map(|f| {
+                let mut font = CachedFont::new(f, 256);
+                font.observe_phases(libuitest::startup::mark);
+                font
+            });
         if font.is_some() {
             print!("[bwm] display font loaded: {}\n", config.display_path);
         } else {

@@ -472,6 +472,7 @@ impl Compositor {
         if w == 0 || y_top >= y1 {
             return Err(CheckError::Failed(format!("the area ({}, {})..({}, {}) is empty", x0, y_top, x1, y1)));
         }
+        libuitest::startup::mark("frame-check-begin");
         // The clients this area shows, the subject first, with their sampled pixels.
         let mut clients: Vec<(u64, [i32; 4], u32, Vec<u8>)> = Vec::new();
         let mut shown: Vec<_> = layers.iter().filter_map(|l| self.sampled_content(l).map(|r| (l.window_id, r)))
@@ -516,17 +517,20 @@ impl Compositor {
         // SAFETY: the record is one live allocation.
         unsafe { core::ptr::write_volatile(record.as_mut_ptr(), 0) };
         let pointer = pointer.map(|p| (p, pointer_bitmap(p.shape)));
+        libuitest::startup::mark("frame-buffers-ready");
         let mut compared = 0u64;
         let mut y0 = y_top;
         while y0 < y1 {
             let rows = band_rows.min(y1 - y0);
             let len = (w * rows * 4) as usize;
             let (r, a) = gpu::readback_why(0, [x0, y0, w, rows], &mut band[..len], w * 4, &mut *record);
+            libuitest::startup::mark("frame-scanout-return");
             if r != 0 {
                 return Err(CheckError::Failed(format!("readback of rows {}..{}: errno {}, reason {}", y0, y0 + rows, -r, a.reason)));
             }
-            self.desktop.read_rect([x0 as usize, y0 as usize, w as usize, rows as usize], &mut desk[..len], w as usize * 4)
-                .map_err(|e| CheckError::Failed(format!("desktop readback of rows {}..{}: errno {}", y0, y0 + rows, -e)))?;
+            let desktop = self.desktop.read_rect([x0 as usize, y0 as usize, w as usize, rows as usize], &mut desk[..len], w as usize * 4);
+            libuitest::startup::mark("frame-desktop-return");
+            desktop.map_err(|e| CheckError::Failed(format!("desktop readback of rows {}..{}: errno {}", y0, y0 + rows, -e)))?;
             for row in 0..rows {
                 let y = (y0 + row) as i32;
                 let desktop_row = layers.is_empty() && pointer.is_none_or(|(p, bitmap)| {
@@ -557,6 +561,7 @@ impl Compositor {
                     compared += 1;
                 }
             }
+            libuitest::startup::mark("frame-pixels-ready");
             y0 += rows;
         }
         Ok(compared)

@@ -29,6 +29,12 @@ fn checked(path: &Path, pin: &str) -> Result<(), String> {
 }
 /// The caller must supply a private session directory.
 pub fn prepare(root: &Path) -> Result<(), String> {
+    // The supervisor prepares this tree before launching session children.
+    // Create regular files at their final mode instead of writing then chmodding.
+    unsafe extern "C" { fn umask(mask: u32) -> u32; }
+    struct RestoreMask(u32);
+    impl Drop for RestoreMask { fn drop(&mut self) { unsafe { umask(self.0); } } }
+    let mask = RestoreMask(unsafe { umask(0o022) });
     let result = (|| -> std::io::Result<()> {
         match fs::symlink_metadata(root) {
             Ok(meta) if meta.is_dir() => fs::remove_dir_all(root)?,
@@ -46,19 +52,17 @@ pub fn prepare(root: &Path) -> Result<(), String> {
             ("etc/bwm.conf", b"font.size=14\nclock.visible=true\n"),
             ("etc/app.conf", b"theme=default\n")] {
             let path = root.join(name); fs::write(&path, contents)?;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o644))?;
         }
         for &(name, contents) in FIXTURE_FILES {
             let path = root.join("fixtures").join(name); fs::write(&path, contents)?;
-            fs::set_permissions(path, fs::Permissions::from_mode(0o644))?;
         }
         // A valid frozen BGCLK001 page; participant/step support is E22 22.6.
         let mut clock = [0u8; 64]; clock[..8].copy_from_slice(b"BGCLK001");
         clock[24..32].copy_from_slice(&WALL_BASE_NS.to_le_bytes());
         let path = root.join("ui-clock"); fs::write(&path, clock)?;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o644))?;
         Ok(())
     })();
+    drop(mask);
     result.map_err(|e| format!("session fixture setup: {e}"))
 }
 pub fn verify(root: &Path) -> Result<(), String> {

@@ -447,11 +447,18 @@ struct Batch { run: Run, draws: Vec<(Arc<AtlasGlyph>, i64)>, slots: Vec<(u64, us
 pub struct CachedFont {
     font: Font, entries: Vec<Entry>, pages: Vec<Page>, next_page: u64, capacity: usize, max_bytes: usize, clock: u64,
     stats: CacheStats, readback: Option<GlyphBitmap>, owner: u64,
+    phase_observer: Option<fn(&'static str)>,
 }
 impl CachedFont {
     pub fn new(font: Font, capacity: usize) -> Self {
         Self { font, entries: Vec::new(), pages: Vec::new(), next_page: 0, capacity: capacity.max(1), max_bytes: usize::MAX,
-            clock: 0, stats: CacheStats::default(), readback: None, owner: device::pid() }
+            clock: 0, stats: CacheStats::default(), readback: None, owner: device::pid(), phase_observer: None }
+    }
+    /// Observe CPU planning, submission and wait boundaries without a renderer dependency
+    /// on the consumer's trace storage.
+    pub fn observe_phases(&mut self, observer: fn(&'static str)) { self.phase_observer = Some(observer); }
+    fn phase(&self, name: &'static str) {
+        if let Some(observer) = self.phase_observer { observer(name); }
     }
     pub fn with_default_cache(font: Font) -> Self {
         let mut f = Self::new(font, libfont::cache::DEFAULT_ENTRIES); f.max_bytes = libfont::cache::DEFAULT_BYTES; f
@@ -479,6 +486,7 @@ impl CachedFont {
 
     // Keep three-channel LCD coverage separate from grayscale entries.
     fn run_mode(&mut self, placed: &[(u16, i64)], size26: i32, lcd: bool, mut out: impl FnMut(Result<(Arc<AtlasGlyph>, i64), Error>)) {
+        self.phase("font-plan-begin");
         if self.owner != device::pid() { self.clear(); self.owner = device::pid(); }
         let mut batch = Batch { first: self.clock + 1, ..Batch::default() };
         for &(glyph, dx) in placed {
@@ -488,6 +496,7 @@ impl CachedFont {
                 Err(e) => out(Err(e)),
             }
         }
+        self.phase("font-plan-return");
         self.finish(&mut batch, &mut out);
     }
 
@@ -577,7 +586,14 @@ impl CachedFont {
         let draws = core::mem::take(&mut batch.draws);
         let slots = core::mem::take(&mut batch.slots);
         batch.first = self.clock;
-        let sent = run.send().and_then(|f| f.map_or(Ok(()), |f| f.wait(u64::MAX).map_err(Error::Device)));
+        self.phase("font-submit-begin");
+        let submitted = run.send();
+        self.phase("font-submit-return");
+        let sent = submitted.and_then(|f| {
+            let result = f.map_or(Ok(()), |f| f.wait(u64::MAX).map_err(Error::Device));
+            self.phase("font-wait-return");
+            result
+        });
         match sent {
             Ok(()) => for d in draws { out(Ok(d)); },
             Err(e) => {
@@ -897,6 +913,7 @@ fn draw_runs_mode(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>],
             }
             fb.pop_clip();
         }
+        font.phase("font-draw-return");
         return;
     }
     for layer in &layers {
@@ -945,6 +962,7 @@ fn draw_runs_mode(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>],
             }
         }
     }
+    font.phase("font-draw-return");
 }
 
 /// The width `draw_text` returns, without drawing.
