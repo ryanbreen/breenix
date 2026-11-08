@@ -118,6 +118,17 @@ pub(crate) mod runtime {
             let owner = status()?.map(|s| u64::from(s.owner));
             self.state.send(event, owner, |event| write(&self.keyboard, &self.pointer, event))
         }
+        pub(crate) fn motion(&mut self,x:i32,y:i32)->Result<bool,String> {
+            let owner=status()?.map(|s|u64::from(s.owner));
+            let pointer=&self.pointer;
+            self.state.send(RawInput {kind:kind::REL,code:axis::X,value:x},owner,|_| {
+                let mut bytes=[0;96];let mut batch=Batch::new(&mut bytes);
+                let stamp=libbreenix::ui_clock::now_ns();
+                batch.event(kind::REL,axis::X,x,stamp).and_then(|b|b.event(kind::REL,axis::Y,y,stamp))
+                    .and_then(|b|b.finish(stamp)).map_err(|e|e.to_string())?;
+                pointer.inject(&batch).map_err(|e|e.to_string())
+            })
+        }
         /// The recovered compositor consumes input without routing to a client.
         pub(crate) fn drain(&self) -> Result<(), String> {
             let Some(reader) = &self.reader else { return Ok(()); };

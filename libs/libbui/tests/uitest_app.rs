@@ -124,7 +124,7 @@ fn committed_geometry_matches_render_scale_on_both_display_scales() {
 fn pointer_probe_reports_partial_scroll_and_captured_drag_through_layout() {
     let mut scene=Widgets::pointer_probe();
     scene.pointer(&InputState::from_raw(30,180,0,0,0));
-    scene.scroll(-40);
+    scene.scroll(-1);
     let tree=scene.tree();
     let row=checks::node(&tree,"list/item-06").unwrap();
     assert_eq!(row.bounds,[20,230,200,20]); assert_eq!(row.clip,[20,230,200,15]);

@@ -24,6 +24,8 @@ fn echo_round_trips_bytes_and_boundaries() {
 fn flags_are_checked() {
     let parsed = support::parse(&["window", "--crash=11", "--hang", "--stderr-flood=65537"]).unwrap();
     assert_eq!(parsed.title, "window");
+    let probe = support::parse(&["window", "--pointer-probe"]).unwrap();
+    assert!(probe.widgets && probe.pointer_probe);
     assert_eq!(parsed.crash, Some(11));
     assert!(parsed.hang);
     assert_eq!(parsed.stderr_flood, 65537);

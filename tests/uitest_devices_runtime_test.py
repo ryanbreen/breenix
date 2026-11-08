@@ -9,6 +9,25 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DevicesRuntime(unittest.TestCase):
+    def test_terminal_source_does_not_wait_for_future_settle_ack(self):
+        source = (ROOT / 'libs/libuitest/src/pointer_live.rs').read_text()
+        function = source.split('pub fn wait_pointer_idle(', 1)[1].split('struct Mapping', 1)[0]
+        harness = r'''
+use std::time::{Duration,Instant};
+pub struct Status {pub handled_serial:u64}
+pub fn status()->Result<Status,String>{Ok(Status{handled_serial:0})}
+fn outcome(_:u64)->Result<Option<(String,u64,String)>,String>{Ok(Some(("wm-handled".into(),0,"none".into())))}
+fn pause()->Result<(),String>{Err("polled after terminal source outcome".into())}
+fn main(){assert_eq!(wait_pointer_idle(17),Ok(()));}
+''' + 'pub fn wait_pointer_idle(' + function
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / 'idle.rs').write_text(harness)
+            result = subprocess.run(['rustc', '--edition=2021', '-Dwarnings', str(path / 'idle.rs'), '-o', str(path / 'idle')], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            result = subprocess.run([str(path / 'idle')], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_grab_gates_writes_and_releases_precede_descriptor_close(self):
         source = (ROOT / 'libs/libuitest/src/devices.rs').read_text()
         source = source.replace('#[cfg(target_os = "breenix")]', '')
@@ -51,7 +70,7 @@ pub mod input {
     impl<'a> Batch<'a> {
         pub fn new(storage:&'a mut [u8])->Self{Self{events:Vec::new(),storage}}
         pub fn event(&mut self,k:u16,c:u16,v:i32,_:u64)->Result<&mut Self,Error>{self.events.push((k,c,v));Ok(self)}
-        pub fn finish(&mut self,_:u64)->Result<&mut Self,Error>{assert_eq!(self.storage.len(),64);Ok(self)}
+        pub fn finish(&mut self,_:u64)->Result<&mut Self,Error>{assert_eq!(self.storage.len(),(self.events.len()+1)*32);Ok(self)}
     }
     pub struct Injector(u32);
     impl Injector {
@@ -91,8 +110,8 @@ fn owner(owner:u32,composites:u64){let mut s=STATE.lock().unwrap();s.owner=owner
         assert_eq!(s.caps[1].iter().map(|c|(c.kind,c.code)).collect::<Vec<_>>(),[(1,272),(1,273),(1,274),(2,0),(2,1),(2,8),(2,6)]);
     }
     let key=RawInput{kind:1,code:42,value:1};
-    owner(7,0);pair.observe(Some(7),false).unwrap();assert!(!pair.inject(key).unwrap());
-    owner(7,1);pair.observe(Some(7),false).unwrap();assert!(pair.inject(key).unwrap());
+    owner(7,0);pair.observe(Some(7),false).unwrap();assert!(!pair.inject(key).unwrap());assert!(!pair.motion(7,-9).unwrap());
+    owner(7,1);pair.observe(Some(7),false).unwrap();assert!(pair.inject(key).unwrap());assert!(pair.motion(7,-9).unwrap());
     owner(0,0);assert!(!pair.inject(key).unwrap());
     owner(8,0);pair.observe(Some(7),true).unwrap();assert!(!pair.inject(key).unwrap());
     STATE.lock().unwrap().fail_grab=true;assert!(pair.recover(8).is_err());assert!(!pair.inject(key).unwrap());
@@ -101,7 +120,7 @@ fn owner(owner:u32,composites:u64){let mut s=STATE.lock().unwrap();s.owner=owner
     assert!(pair.inject(RawInput{kind:2,code:8,value:-2}).unwrap());
     pair.destroy().unwrap();
     let s=STATE.lock().unwrap();
-    assert_eq!(s.effects, ["write 1 1 42 1","grab [1, 2]","ungrab","grab [1, 2]",
+    assert_eq!(s.effects, ["write 1 1 42 1","write 2 2 0 7","write 2 2 1 -9","grab [1, 2]","ungrab","grab [1, 2]",
         "write 2 1 272 1","write 2 2 8 -2","write 1 1 42 0","write 2 1 272 0","close 1","close 2","ungrab"]);
 }
 '''.replace('SOURCE', source)

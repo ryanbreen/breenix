@@ -109,6 +109,10 @@ pub struct PointerCapture {
 }
 
 impl PointerCapture {
+    /// The stable pressed-widget identity, until release or cancellation.
+    pub fn owner(&self) -> Option<u64> { self.owner }
+    pub fn is_held(&self) -> bool { self.held }
+
     pub fn route(&mut self, input: &InputState, hit: Option<u64>) -> Option<u64> {
         if input.mouse_pressed {
             self.owner = hit;

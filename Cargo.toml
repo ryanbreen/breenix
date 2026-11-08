@@ -116,3 +116,6 @@ quote = "1"
 # kernel`) is optimized; this optimizes the x86-64 kernel the same way.
 [profile.release.build-override]
 opt-level = 3
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))'] }

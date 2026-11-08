@@ -1,7 +1,7 @@
 //! Process ownership and local collector handshake for the shared session core.
 use libbreenix::{error::Error, errno::Errno, fs, io, process, signal, time, types::Fd};
 use breenix_suite::suite::{descendants::descendant_victims, spawn, Run};
-use super::devices::{runtime::Devices, RawInput};
+use super::devices::runtime::Devices;
 use super::{Message, SessionEnvironment, StderrRing};
 use super::ownership::{Custody, Event, Owner, Ownership};
 use crate::channel::{Channel, now};
@@ -248,7 +248,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
         let mut stopped = false;
         let mut connected = true;
         let mut stderr_request = None;
-        let mut pending_input: Option<(RawInput, i128)> = None;
+        let mut pending_input: Option<(Message, i128)> = None;
         loop {
             if !stopped && ownership.owner() != Owner::SupervisorHolds {
                 evidence.observe(own, &output.keys().copied().collect())?;
@@ -355,10 +355,24 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                             Err(error) => channel.queue(&Message::Error(error))?,
                         }
                     }
-                    Ok(Some(Message::StartCompositor { kiosk })) => {
+                    Ok(Some(message @ (Message::StartCompositor { .. } | Message::StartCompositorWithPointer(_)))) => {
+                        let kiosk=matches!(message, Message::StartCompositor {kiosk:true});
+                        let extra=if let Message::StartCompositorWithPointer(id)=message {Some(id)} else {None};
                         if compositor.is_some() { return Err("session compositor already started".into()); }
                         let mut env = environment.as_ref().ok_or("session not configured")?.environment();
-                        env.push(devices.as_ref().ok_or("session devices missing")?.environment());
+                        let devices=devices.as_ref().ok_or("session devices missing")?;
+                        let mut selection=devices.environment();
+                        if let Some(id)=extra {
+                            let reader=libbreenix::input::Reader::open(true).map_err(|e|e.to_string())?;
+                            let mut caps=vec![libbreenix::input::Capability::default();16];
+                            let count=reader.capabilities(id,&mut caps).map_err(|e|e.to_string())?;
+                            if count>caps.len() || devices.ids().contains(&id)
+                                || ![(2,0),(2,1),(1,272)].iter().all(|&(kind,code)|caps[..count].iter().any(|c|c.kind==kind && c.code==code)) {
+                                return Err("auxiliary device must be a distinct relative pointer".into());
+                            }
+                            selection.extend_from_slice(format!(",{id}").as_bytes());
+                        }
+                        env.push(selection);
                         let path = if kiosk { "/usr/libexec/breenix/kiosk_test" } else { "/usr/bin/bwm" };
                         let trace = crate::startup::Trace::open(Path::new(environment.as_ref().unwrap().config_root()))?;
                         trace.mark("compositor-request");
@@ -374,10 +388,10 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                         if !evidence.holds(id) { channel.queue(&Message::Error(format!("window {id} is not a held session window")))?; }
                         else { channel.queue(&Message::WindowHeld(id))?; }
                     }
-                    Ok(Some(Message::Input(event))) => {
+                    Ok(Some(message @ (Message::Input(_) | Message::Motion {..}))) => {
                         if pending_input.is_some() { return Err("input request already pending".into()); }
-                        event.validate()?;
-                        pending_input = Some((event, now()? + 2000));
+                        if let Message::Input(event)=&message {event.validate()?;}
+                        pending_input = Some((message, now()? + 2000));
                     }
                     Ok(Some(Message::ReadStderr(pid))) => {
                         if stderr_request.is_some() || !output.contains_key(&pid) { return Err("invalid app stderr request".into()); }
@@ -394,9 +408,13 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     Err(error) => return Err(error),
                 }
                 outputs(&mut output, &mut channel, connected)?;
-                if let Some((event, end)) = pending_input {
+                if let Some((event, end)) = pending_input.clone() {
                     if stopped { pending_input = None; }
-                    else if devices.as_mut().ok_or("session devices missing")?.inject(event)? {
+                    else if match event {
+                            Message::Input(event)=>devices.as_mut().ok_or("session devices missing")?.inject(event)?,
+                            Message::Motion {x,y}=>devices.as_mut().ok_or("session devices missing")?.motion(x,y)?,
+                            _=>unreachable!(),
+                        } {
                         pending_input = None;
                         channel.queue(&Message::InputDone)?;
                     } else if now()? >= end { return Err("input paused awaiting compositor grab".into()); }

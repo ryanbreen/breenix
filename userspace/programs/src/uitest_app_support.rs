@@ -10,15 +10,18 @@ pub struct Options<'a> {
     pub canonical: bool,
     pub capture_control: bool,
     pub widgets: bool,
+    pub pointer_probe: bool,
 }
 
 pub fn parse<'a>(args: &[&'a str]) -> Result<Options<'a>, &'static str> {
     let title = *args.first().ok_or("missing window title")?;
     if title.is_empty() || title.starts_with("--") { return Err("invalid window title"); }
-    let mut options = Options { title, crash: None, hang: false, stderr_flood: 0, session_probe: false, config_probe: false, canonical: false, capture_control: false, widgets: false };
+    let mut options = Options { title, crash: None, hang: false, stderr_flood: 0, session_probe: false, config_probe: false, canonical: false, capture_control: false, widgets: false, pointer_probe: false };
     let mut flood_seen = false;
     for arg in &args[1..] {
-        if *arg == "--widgets" && !options.widgets {
+        if *arg == "--pointer-probe" && !options.widgets {
+            options.widgets=true;options.pointer_probe=true;
+        } else if *arg == "--widgets" && !options.widgets {
             options.widgets = true;
         } else if *arg == "--capture-control" && !options.capture_control {
             options.capture_control = true;

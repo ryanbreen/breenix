@@ -160,7 +160,14 @@ impl Terminal {
     }
 }
 
+#[derive(Default)]
+struct PointerProbe {
+    motions: Vec<(u64,i32,i32)>, presses: u32, releases: u32,
+    // Accumulated logical scrolling distance (40 pixels per wheel step).
+    completed: u32, layout_changes: u32, wheel: i32,
+}
 pub struct Widgets {
+    probe: Option<PointerProbe>,
     theme: Theme,
     entry: TextField,
     submit: Button,
@@ -214,6 +221,7 @@ impl Widgets {
         focus.focus(ENTRY as usize);
         let mut scene = Self {
             theme,
+            probe: None,
             entry: TextField::new(rect(layout::ENTRY), 256),
             submit: Button::new(rect(layout::SUBMIT), b"Submit"),
             disabled,
@@ -239,6 +247,24 @@ impl Widgets {
         scene.sync_focus();
         scene
     }
+    /// Deterministic partial-row and captured-layout scene for pointer cases.
+    pub fn pointer_probe() -> Self {
+        let mut scene=Self::new();
+        scene.probe=Some(PointerProbe::default());
+        scene.list.set_rect(Rect::new(20,150,200,95));
+        libbui::layout::layout_changed();
+        scene
+    }
+    pub fn record_motion(&mut self,serial:u64,x:i32,y:i32) {
+        if self.capture.owner()!=Some(SLIDER) {return;}
+        if let Some(probe)=&mut self.probe {
+            probe.motions.push((serial,x,y));
+            if probe.motions.len()==5 {
+                self.amount.rect.x+=15;probe.layout_changes+=1;
+                libbui::layout::layout_changed();
+            }
+        }
+    }
     fn sync_focus(&mut self) {
         let f = self.focus.focused();
         self.entry.set_focused(f == Some(ENTRY as usize));
@@ -263,7 +289,7 @@ impl Widgets {
                     (ENTRY, layout::ENTRY),
                     (SUBMIT, layout::SUBMIT),
                     (CHECKBOX, layout::CHECKBOX),
-                    (SLIDER, layout::SLIDER),
+                    (SLIDER, self.amount.rect.as_tree_rect().map(|v|v as i32)),
                     (LIST, layout::LIST),
                     (TABS, layout::TABS),
                 ]
@@ -271,6 +297,7 @@ impl Widgets {
                 .find(|(_, r)| rect(*r).contains(input.mouse_x, input.mouse_y))
                 .map(|(id, _)| id)
             };
+        let captured=self.capture.owner();
         let target = self.capture.route(input, hit);
         if input.mouse_pressed && target != Some(MENU) {
             self.focus.update(input);
@@ -301,6 +328,15 @@ impl Widgets {
             }
             Some(SLIDER) => {
                 self.amount.update(input);
+                if let Some(probe)=&mut self.probe {
+                    if input.mouse_pressed {
+                        probe.presses+=1;self.amount.rect.x+=15;probe.layout_changes+=1;
+                        libbui::layout::layout_changed();
+                    }
+                    if input.mouse_released && captured==Some(SLIDER) {
+                        probe.releases+=1;probe.completed+=1;
+                    }
+                }
             }
             Some(LIST) => {
                 self.list.update(input);
@@ -324,6 +360,7 @@ impl Widgets {
     pub fn scroll(&mut self, delta_y: i32) {
         if !self.menu.is_open() && rect(layout::LIST).contains(self.pointer.0, self.pointer.1) {
             self.list.scroll(delta_y);
+            if let Some(probe)=&mut self.probe {probe.wheel+=delta_y*40;}
         }
     }
     pub fn key(&mut self, input: &KeyInput<'_>) {
@@ -377,7 +414,7 @@ impl Widgets {
     }
     pub fn tree(&self) -> Tree {
         let clip = Rect::new(0, 0, layout::WIDTH as i32, layout::HEIGHT as i32);
-        let root = Node {
+        let mut root = Node {
             key: "root".into(),
             parent: None,
             role: Role::Window,
@@ -387,6 +424,11 @@ impl Widgets {
             clip: clip.as_tree_rect(),
             flags: vec![Flag::Enabled, Flag::Visible],
         };
+        if let Some(probe)=&self.probe {
+            root.value["pointer"]=json!({"motions":probe.motions,"presses":probe.presses,
+                "releases":probe.releases,"completed":probe.completed,"layout_changes":probe.layout_changes,
+                "wheel":probe.wheel,"held":self.capture.is_held(),"captured":self.capture.owner().is_some()});
+        }
         let mut children = vec![
             self.entry.tree_node("entry", Some("root"), clip),
             self.submit.tree_node("submit", Some("root"), clip),

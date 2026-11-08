@@ -38,6 +38,8 @@ fn session_environment_is_complete_and_has_no_inherited_or_duplicate_keys() {
     for message in [
         Message::Configure { case_pid: 123, seed: 17, mode: "2560x1600@2".into() },
         Message::Configured,
+        Message::Motion { x: i32::MIN, y: i32::MAX },
+        Message::StartCompositorWithPointer(17),
         Message::LaunchApp { argv: vec![b"/app".to_vec()], uid: 1000 },
         Message::ReadStderr(23),
         Message::Stderr { pid: 23, dropped: 999, bytes: vec![255, 0, 1], done: true },

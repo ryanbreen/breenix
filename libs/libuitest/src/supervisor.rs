@@ -16,10 +16,12 @@ pub enum Message {
     Configured,
     LaunchApp { argv: Vec<Vec<u8>>, uid: u32 },
     StartCompositor { kiosk: bool },
+    StartCompositorWithPointer(u32),
     ReadStderr(u64),
     Stderr { pid: u64, dropped: u64, bytes: Vec<u8>, done: bool },
     Devices([u32; 2]),
     Input(RawInput),
+    Motion { x: i32, y: i32 },
     InputDone,
     HoldWindow(u64),
     WindowHeld(u64),
@@ -71,6 +73,10 @@ pub fn encode(message: &Message) -> Result<Vec<u8>, String> {
             out.push(11); out.extend_from_slice(&uid.to_le_bytes()); strings(&mut out, argv);
         }
         Message::StartCompositor { kiosk } => { out.push(14); out.push(u8::from(*kiosk)); }
+        Message::StartCompositorWithPointer(id) => {
+            if *id == 0 { return Err("invalid auxiliary pointer".into()); }
+            out.push(20); out.extend_from_slice(&id.to_le_bytes());
+        }
         Message::ReadStderr(pid) => { out.push(12); out.extend_from_slice(&pid.to_le_bytes()); }
         Message::Stderr { pid, dropped, bytes: value, done } => {
             out.push(13); out.extend_from_slice(&pid.to_le_bytes()); out.extend_from_slice(&dropped.to_le_bytes());
@@ -85,6 +91,7 @@ pub fn encode(message: &Message) -> Result<Vec<u8>, String> {
             out.push(16); out.extend_from_slice(&event.kind.to_le_bytes());
             out.extend_from_slice(&event.code.to_le_bytes()); out.extend_from_slice(&event.value.to_le_bytes());
         }
+        Message::Motion {x,y} => {out.push(21);out.extend_from_slice(&x.to_le_bytes());out.extend_from_slice(&y.to_le_bytes());}
         Message::InputDone => out.push(17),
         Message::HoldWindow(id) => { out.push(18); out.extend_from_slice(&id.to_le_bytes()); }
         Message::WindowHeld(id) => { out.push(19); out.extend_from_slice(&id.to_le_bytes()); }
@@ -145,6 +152,8 @@ pub fn decode(payload: &[u8]) -> Result<Message, String> {
             if !valid_launch(&argv, &[]) || !matches!(uid, 0 | 1000) { return Err("invalid app launch".into()); }
             Message::LaunchApp { argv, uid }
         }
+        21 => Message::Motion {x:cur.word()? as i32,y:cur.word()? as i32},
+        20 => { let id=cur.word()?; if id==0 {return Err("invalid auxiliary pointer".into());} Message::StartCompositorWithPointer(id) },
         12 => Message::ReadStderr(cur.pid()?),
         13 => {
             let pid = cur.pid()?; let dropped = cur.pid()?;

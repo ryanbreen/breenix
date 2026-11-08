@@ -3,7 +3,7 @@ extern crate self as libbui;
 #[path = "../libs/libbui/src/tree.rs"]
 pub mod tree;
 #[path = "../libs/libuitest/src/input.rs"]
-mod input;
+pub mod input;
 use input::{click_target, home_then_move};
 use tree::{Flag, Node, Role};
 

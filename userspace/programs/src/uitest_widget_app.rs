@@ -3,7 +3,7 @@ use crate::{uitest_widget_layout as layout, uitest_widgets::Widgets};
 use breengel::{Event, Handled, Window};
 use libbui::{InputState, Key, KeyInput};
 
-pub fn run(title: &str) -> Result<(), String> {
+pub fn run(title: &str, pointer_probe: bool) -> Result<(), String> {
     let scale = libbreenix::gpu::current_mode()
         .map_err(|e| e.to_string())?
         .scale;
@@ -16,7 +16,7 @@ pub fn run(title: &str) -> Result<(), String> {
         layout::HEIGHT * scale,
     )
     .map_err(|e| e.to_string())?;
-    let mut scene = Widgets::new();
+    let mut scene = if pointer_probe {Widgets::pointer_probe()} else {Widgets::new()};
     paint(&mut window, &scene)?;
     libuitest::startup::mark("app-commit");
     let mut buttons = 0;
@@ -39,6 +39,9 @@ pub fn run(title: &str) -> Result<(), String> {
                             buttons,
                             time_ms,
                         ));
+                        if matches!(&delivered.event,Event::MouseMove {..}) {
+                            scene.record_motion(delivered.serial,x.div_euclid(scale as i32),y.div_euclid(scale as i32));
+                        }
                         dirty = true;
                     }
                     Event::MouseButton {

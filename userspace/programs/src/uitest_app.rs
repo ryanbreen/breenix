@@ -32,7 +32,7 @@ fn main() {
         Err(error) => { eprintln!("{error}"); std::process::exit(2); }
     };
     if options.widgets {
-        if let Err(error) = uitest_widget_app::run(options.title) {
+        if let Err(error) = uitest_widget_app::run(options.title, options.pointer_probe) {
             eprintln!("widget mode: {error}"); std::process::exit(1);
         }
         return;

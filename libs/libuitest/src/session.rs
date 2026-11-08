@@ -60,6 +60,15 @@ impl Session {
         }
         Ok(pid)
     }
+    /// Include another relative pointer in the compositor's restricted selection.
+    /// Its injector remains owned by the case and releases on descriptor close.
+    pub fn start_compositor_with_pointer(&mut self, id: u32) -> Result<u64,String> {
+        if self.compositor.is_some() || self.stopped { return Err("session compositor already started or ended".into()); }
+        self.control.send(&Message::StartCompositorWithPointer(id))?;
+        let pid=self.await_launch(&[b"/usr/bin/bwm"])?;
+        self.compositor=Some(pid);
+        Ok(pid)
+    }
     pub fn connect() -> Result<Self, String> { Self::connect_with_seed(0) }
     pub fn connect_with_seed(seed: u64) -> Result<Self, String> {
         let began = crate::startup::now();
@@ -108,8 +117,12 @@ impl Session {
     pub fn raw_press(&mut self, code: u16) -> Result<(), String> { self.raw_input(RawInput { kind: 1, code, value: 1 }) }
     pub fn raw_release(&mut self, code: u16) -> Result<(), String> { self.raw_input(RawInput { kind: 1, code, value: 0 }) }
     pub fn raw_motion(&mut self, x: i32, y: i32) -> Result<(), String> {
-        self.raw_input(RawInput { kind: 2, code: 0, value: x })?;
-        self.raw_input(RawInput { kind: 2, code: 1, value: y })
+        if self.stopped {return Err("session has ended".into());}
+        self.input_done=false;
+        self.control.send(&Message::Motion {x,y})?;
+        let end=now()?+2000;
+        while !self.input_done {self.poll(end)?;}
+        Ok(())
     }
     pub fn raw_wheel(&mut self, delta: i32) -> Result<(), String> { self.raw_input(RawInput { kind: 2, code: 8, value: delta }) }
     pub fn config_root(&self) -> &str { self.environment.config_root() }
