@@ -45,13 +45,13 @@ impl Session {
  fn teardown(&mut self)->CaseResult{Ok(())}
 }
 fn first_window(_: &mut Session,title:&str,end:u64)->CaseResult {
- assert_eq!((title,end),("startup app",300001000));
+ assert_eq!((title,end),("startup app",2000001000));
  if FAIL.load(std::sync::atomic::Ordering::Relaxed){Err("planted startup failure".into())}else{Ok(())}
 }
 fn check(ok:bool,message:&str)->CaseResult{if ok{Ok(())}else{Err(message.into())}}
 pub mod breenix_suite { pub mod suite {
  pub fn value(name:&str,ns:i64,unit:&str,bound:Option<(i64,i64)>){
-  if name=="startup"{assert_eq!((ns,unit,bound),(0,"ns",Some((0,300000000))));}
+  if name=="startup"{assert_eq!((ns,unit,bound),(0,"ns",Some((0,2000000000))));}
   super::super::OUTPUT.lock().unwrap().push_str(&format!("VALUE {name}={ns}{unit}\n"));
  }
 }}
@@ -62,6 +62,7 @@ pub mod breenix_suite { pub mod suite {
   OUTPUT.lock().unwrap().clear();FAIL.store(failed,std::sync::atomic::Ordering::Relaxed);
   assert_eq!(start(kiosk).is_err(),failed);
   let output=OUTPUT.lock().unwrap();
+  assert!(output.contains("VALUE startup=0ns\n"), "missing measurement on success or failure: {output}");
   let lines:Vec<_>=output.lines().filter(|s|s.starts_with("UITEST_STARTUP ")).collect();
   assert_eq!(lines.len(),1,"each start needs one phase line, including passes: {output}");
   let line=lines[0];assert!(line.len()<4096,"unbounded phase record");

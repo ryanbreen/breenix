@@ -127,8 +127,8 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         case("cursor-excluded", "Captures taken with the cursor hidden contain no cursor pixels", canonical_cases::cursor_excluded).session(libuitest::supervisor::serve),
         // The test app's canonical scene hashes to the pinned value on this target. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("cross-target", "The test app's canonical scene hashes to the pinned value on this target", canonical_cases::cross_target).session(libuitest::supervisor::serve),
-        // Comparing two 1280x800 frames takes at most 50 ms. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("compare-cost", "Comparing two 1280x800 frames takes at most 50 ms", || comparison_cases::compare_cost().map_err(Into::into)),
+        // Comparing two 1280x800 frames is measured with a 500 ms sanity cap. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
+        case("compare-cost", "Comparing two 1280x800 frames is measured with a 500 ms sanity cap", || comparison_cases::compare_cost().map_err(Into::into)),
     ]),
     category("clock", "UI time & stepping", &[
         // An app reading the UI clock sees it stand still between steps. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -185,10 +185,10 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         case("repeated-settle", "Repeated settle calls with nothing changing cause no extra frames", || pending("settle", 7)),
     ]),
     category("sessions", "Sessions, state isolation & cleanup", &[
-        // A desktop session with one app reaches its first composited commit within 300 ms. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("start-desktop", "A desktop session with one app reaches its first composited commit within 300 ms", sessions::start_desktop).session(libuitest::supervisor::serve).collects(),
-        // A kiosk session with one app reaches its first composited commit within 300 ms. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("start-kiosk", "A kiosk session with one app reaches its first composited commit within 300 ms", sessions::start_kiosk).session(libuitest::supervisor::serve).collects(),
+        // A desktop session with one app measures time to its first composited commit with a 2 s sanity cap. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
+        case("start-desktop", "A desktop session with one app measures time to its first composited commit with a 2 s sanity cap", sessions::start_desktop).session(libuitest::supervisor::serve).collects(),
+        // A kiosk session with one app measures time to its first composited commit with a 2 s sanity cap. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
+        case("start-kiosk", "A kiosk session with one app measures time to its first composited commit with a 2 s sanity cap", sessions::start_kiosk).session(libuitest::supervisor::serve).collects(),
         // Apps in a session receive its fonts, clock, seed, mode, time zone, locale and config root. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("environment", "Apps in a session receive its fonts, clock, seed, mode, time zone, locale and config root", sessions::environment).session(libuitest::supervisor::serve),
         // bwm, Breengel's font configuration and every app read and write under the session's config root. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)

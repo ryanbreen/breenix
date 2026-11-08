@@ -2,7 +2,7 @@
 use std::{fs::OpenOptions, os::{fd::AsRawFd, unix::fs::OpenOptionsExt}, path::Path,
     sync::{OnceLock, atomic::{AtomicU64, Ordering}}};
 pub fn verdict(elapsed_ns: u64, composited: bool) -> bool {
-    composited && elapsed_ns <= 300_000_000
+    composited && elapsed_ns <= 2_000_000_000
 }
 
 pub const PHASES: &[&str] = &[

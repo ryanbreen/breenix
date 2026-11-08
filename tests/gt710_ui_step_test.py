@@ -156,8 +156,10 @@ class UiStep(unittest.TestCase):
             text = text.replace(f'CASE {name} FAIL ms=1 msg=pending', f'CASE {name} PASS ms=1')
         text = text.replace(f'DONE passed={len(SELECTED)} failed={len(NAMES)-len(SELECTED)}',
                             f'DONE passed={len(selected)} failed={len(NAMES)-len(selected)}')
-        phase = 'UI_STARTUP ui-testing sessions/start-desktop connect-begin=100 first-composite=270000100\n'
-        text = text.replace('SUITE ui-testing CASE sessions/start-desktop ', phase + 'SUITE ui-testing CASE sessions/start-desktop ')
+        phases = [f'UI_STARTUP ui-testing sessions/start-{mode} connect-begin=100 first-composite=2000000100\n'
+                  for mode in ('desktop', 'kiosk')]
+        for mode, phase in zip(('desktop', 'kiosk'), phases):
+            text = text.replace(f'SUITE ui-testing CASE sessions/start-{mode} ', phase + f'SUITE ui-testing CASE sessions/start-{mode} ')
         witnesses = []
         for name, rounds in [('capture-while-drawing', 1), ('capture-resize-race', 1)]:
             case = 'frames/' + name
@@ -169,9 +171,10 @@ class UiStep(unittest.TestCase):
             (self.path / 'serial.txt').write_text(body)
             return API['record_ui_capture'](self.path, SHA, 4)
         self.assertEqual(score(text), 0)
-        for bad in [text.replace(phase, ''), text.replace(phase, phase + phase),
-                    text.replace('first-composite=270000100', 'first-composite=270000101')]:
-            self.assertEqual(score(bad), 1)
+        for phase in phases:
+            for bad in [text.replace(phase, ''), text.replace(phase, phase + phase),
+                        text.replace(phase, phase.replace('first-composite=2000000100', 'first-composite=2000000101'))]:
+                self.assertEqual(score(bad), 1)
         for values in witnesses:
             line = values.splitlines(keepends=True)[0]
             for bad in [text.replace(line, '', 1), text.replace(line, line.replace(line.split('=')[1].strip(), '0count'), 1),

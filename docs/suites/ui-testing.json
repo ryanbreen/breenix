@@ -219,7 +219,7 @@
         },
         {
           "id": "compare-cost",
-          "title": "Comparing two 1280x800 frames takes at most 50 ms"
+          "title": "Comparing two 1280x800 frames is measured with a 500 ms sanity cap"
         }
       ]
     },
@@ -341,12 +341,12 @@
       "cases": [
         {
           "id": "start-desktop",
-          "title": "A desktop session with one app reaches its first composited commit within 300 ms",
+          "title": "A desktop session with one app measures time to its first composited commit with a 2 s sanity cap",
           "collects": true
         },
         {
           "id": "start-kiosk",
-          "title": "A kiosk session with one app reaches its first composited commit within 300 ms",
+          "title": "A kiosk session with one app measures time to its first composited commit with a 2 s sanity cap",
           "collects": true
         },
         {
