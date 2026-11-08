@@ -27,6 +27,21 @@ fn attempt(gpu:&mut Gpu)->Outcome{let first_pointer=();let first=(||{@BODY@})();
 #[test]fn failure_classes(){assert_eq!(attempt(&mut Gpu{fail_present:true,fail_pixels:false}),Outcome::Presentation);assert_eq!(attempt(&mut Gpu{fail_present:false,fail_pixels:true}),Outcome::Mismatch);assert_eq!(attempt(&mut Gpu{fail_present:false,fail_pixels:false}),Outcome::Pixels(4096000));}
 '''.replace('@BODY@',body))
 
+ def test_fill_presentation_error_is_not_a_pixel_mismatch(self):
+  text=(ROOT/'userspace/programs/src/bwm/chrome.rs').read_text()
+  body=item(text,'pub(super) fn check_desktop_fills').replace('pub(super) fn','fn',1)
+  run_rust(self,r'''
+#[derive(Debug)]struct FrameError;impl std::fmt::Display for FrameError{fn fmt(&self,f:&mut std::fmt::Formatter)->std::fmt::Result{write!(f,"present unavailable")}}
+struct Color{r:u8,g:u8,b:u8}const TASKBAR_BG:Color=Color{r:0,g:0,b:0};const APPBAR_BORDER:Color=Color{r:1,g:1,b:1};const APPBAR_BG:Color=Color{r:2,g:2,b:2};const TASKBAR_HEIGHT:usize=28;const APPBAR_HEIGHT:usize=36;
+fn background_pixel(_x:usize,_y:usize,_h:usize)->Color{Color{r:3,g:3,b:3}}fn px(n:usize)->usize{n*2}struct Ui{scale:u32}fn ui()->Ui{Ui{scale:2}}
+struct Shown{resource:u64,width:u32,height:u32}struct Compositor{fail_present:bool,fail_pixels:bool}impl Compositor{fn present_startup_desktop(&mut self,_p:Option<()>)->Result<(),FrameError>{if self.fail_present{Err(FrameError)}else{Ok(())}}fn check_fills(&mut self,_s:&[(u32,u32,u32)])->Result<Shown,String>{if self.fail_pixels{Err("wrong pixel".into())}else{Ok(Shown{resource:7,width:2560,height:1600})}}}
+mod compositor{pub struct Mode{pub width:u32,pub height:u32}pub fn scanout_resource()->Result<u64,String>{Ok(7)}pub fn display()->Result<(u32,Mode),String>{Ok((0,Mode{width:2560,height:1600}))}}
+fn measure_check<T>(f:impl FnOnce()->T)->T{f()}
+#[derive(Debug,PartialEq)]enum Outcome{Pixels,Mismatch,Presentation}trait Classified{fn classified(self)->Outcome;}impl Classified for Result<String,String>{fn classified(self)->Outcome{match self{Ok(_)=>Outcome::Pixels,Err(_)=>Outcome::Mismatch}}}impl Classified for Result<Result<String,String>,FrameError>{fn classified(self)->Outcome{match self{Ok(v)=>v.classified(),Err(_)=>Outcome::Presentation}}}
+@BODY@
+#[test]fn fill_failure_classes(){assert_eq!(check_desktop_fills(&mut Compositor{fail_present:true,fail_pixels:false},2560,1600,0).classified(),Outcome::Presentation);assert_eq!(check_desktop_fills(&mut Compositor{fail_present:false,fail_pixels:true},2560,1600,0).classified(),Outcome::Mismatch);assert_eq!(check_desktop_fills(&mut Compositor{fail_present:false,fail_pixels:false},2560,1600,0).classified(),Outcome::Pixels);}
+'''.replace('@BODY@',body))
+
  def test_optional_title_warmup_error_does_not_exit(self):
   text=(ROOT/'userspace/programs/src/bwm.rs').read_text()
   block=item(text,'if let Err(error) = prepared {')
