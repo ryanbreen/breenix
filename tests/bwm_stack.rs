@@ -108,3 +108,76 @@ fn cycling_uses_creation_order_and_skips_minimized() {
     assert_eq!(s.cycle(true), None);
     assert_eq!(s.focus(), None);
 }
+
+//! Desktop reporting from the production stack, plus live-page publication.
+extern crate alloc;
+extern crate self as breengel;
+#[path = "../libs/libbui/src/tree.rs"]
+pub mod tree;
+#[path = "../libs/breengel/src/tree_page.rs"]
+mod tree_page;
+#[path = "../libs/breengel/src/tree_commit.rs"]
+mod tree_commit;
+#[path = "../userspace/programs/src/bwm/desktop_tree.rs"]
+mod desktop_tree;
+use desktop_tree::{build, WindowState};
+use tree::{Flag, Role, Tree};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[test]
+fn canned_stack_reports_literal_windows_in_policy_order() {
+    let mut stack = stack::Stack::new();
+    stack.adopt(&[(7, 1, false, true, false), (42, 0, true, false, true)]);
+    // Metadata discovery order intentionally differs from stacking order.
+    let windows = [
+        WindowState { id: 7, title: "Editor", owner: 81, bounds: [90, 70, 320, 200], chromeless: false },
+        WindowState { id: 42, title: "\x01Palette", owner: 82, bounds: [-10, 20, 100, 80], chromeless: true },
+    ];
+    let tree = build(&stack, windows, [1280, 800], 91);
+    assert_eq!(tree.root.key, "desktop");
+    assert_eq!(tree.root.role, Role::Canvas);
+    assert_eq!(tree.root.bounds, [0, 0, 1280, 800]);
+    assert_eq!(tree.root.value, serde_json::json!({"scene_version":91}));
+    assert_eq!(tree.children.len(), 2);
+    let [lower, upper] = &tree.children[..] else { unreachable!() };
+    assert_eq!((&*lower.key, lower.parent.as_deref(), lower.role, &*lower.name),
+        ("window-42", Some("desktop"), Role::Window, "Palette"));
+    assert_eq!(lower.value, serde_json::json!({"id":42,"owner":82,"z":0,"minimized":true,"chromeless":true}));
+    assert_eq!(lower.bounds, [-10,20,100,80]);
+    assert_eq!(lower.clip, [0,20,0,0]);
+    assert_eq!(lower.flags, [Flag::Enabled]);
+    assert_eq!((&*upper.key, upper.parent.as_deref(), upper.role, &*upper.name),
+        ("window-7", Some("desktop"), Role::Window, "Editor"));
+    assert_eq!(upper.value, serde_json::json!({"id":7,"owner":81,"z":1,"minimized":false,"chromeless":false}));
+    assert_eq!(upper.bounds, [90,70,320,200]);
+    assert_eq!(upper.clip, [90,70,320,200]);
+    assert_eq!(upper.flags, [Flag::Enabled, Flag::Visible, Flag::Focused]);
+    let mut bytes = vec![0; 65528];
+    tree.write(&mut bytes).unwrap();
+    assert_eq!(Tree::parse(&bytes).unwrap(), tree);
+}
+
+#[test]
+fn live_page_refuses_unpublished_and_in_progress_data_and_gates_work() {
+    let mut backing = vec![0u64; 8192];
+    let page = unsafe { tree_page::Page::from_mapping(backing.as_mut_ptr().cast(), backing.len()*8).unwrap() };
+    assert_eq!(page.snapshot().unwrap(), None);
+    let mut count = 0;
+    tree_commit::serialize_for_commit(0, &mut count, || panic!("unattached work")).unwrap();
+    assert_eq!(count, 0);
+    let stack = stack::Stack::new();
+    let first = build(&stack, [], [800,600], 5);
+    tree_commit::serialize_for_commit(1, &mut count, || unsafe { page.publish(&first) }).unwrap();
+    assert_eq!(count, 1);
+    assert_eq!(page.snapshot().unwrap(), Some(first));
+    // Force an interleaving: writer started, previous valid JSON still present.
+    let sequence = unsafe { &*(backing.as_ptr().cast::<AtomicU64>()) };
+    assert_eq!(sequence.load(Ordering::SeqCst), 2);
+    sequence.store(3, Ordering::SeqCst);
+    assert_eq!(page.snapshot().unwrap(), None);
+    sequence.store(2, Ordering::SeqCst);
+    let next = build(&stack, [], [800,600], 6);
+    unsafe { page.publish(&next).unwrap(); }
+    assert_eq!(sequence.load(Ordering::SeqCst), 4);
+    assert_eq!(page.snapshot().unwrap(), Some(next));
+}

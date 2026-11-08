@@ -23,6 +23,8 @@ mod canonical_cases;
 mod capture_cases;
 #[path = "uitest_suite/tree.rs"]
 mod tree;
+#[path = "uitest_suite/wm_tree.rs"]
+mod wm_tree;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
 
 fn pending(layer: &str, step: u8) -> CaseResult {
@@ -104,7 +106,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A tree and its pixels always come from the same commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("commit-coupled", "A tree and its pixels always come from the same commit", frames::commit_coupled).session(libuitest::supervisor::serve),
         // bwm's tree lists each window's title, bounds, z order, focus and minimized state. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wm-tree", "bwm's tree lists each window's title, bounds, z order, focus and minimized state", || pending("tree", 6)),
+        case("wm-tree", "bwm's tree lists each window's title, bounds, z order, focus and minimized state", wm_tree::wm_tree).session(libuitest::supervisor::serve),
         // Nodes scrolled out or covered are flagged not visible, with their clip. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("hidden-nodes", "Nodes scrolled out or covered are flagged not visible, with their clip", tree::hidden_nodes).session(libuitest::supervisor::serve),
         // Scrolling a list changes which items are flagged visible. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
