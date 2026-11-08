@@ -162,8 +162,8 @@ class UiStep(unittest.TestCase):
         for name, rounds in [('capture-while-drawing', 1), ('capture-two-readers', 1),
                              ('capture-resize-race', 1), ('capture-destroy-race', 23), ('capture-threads', 3)]:
             case = 'frames/' + name
-            values = ''.join(f'SUITE ui-testing VALUE {case} {label}=1count\n'
-                             for _ in range(rounds) for label in ['capture-stall-fired', 'capture-release-fired'])
+            values = ''.join(f'SUITE ui-testing VALUE {case} {label}={rounds}count\n'
+                             for label in ['capture-stall-fired', 'capture-release-fired'])
             text = text.replace(f'SUITE ui-testing CASE {case} ', values + f'SUITE ui-testing CASE {case} ')
             witnesses.append(values)
         def score(body):
@@ -172,7 +172,7 @@ class UiStep(unittest.TestCase):
         self.assertEqual(score(text), 0)
         for values in witnesses:
             line = values.splitlines(keepends=True)[0]
-            for bad in [text.replace(line, '', 1), text.replace(line, line.replace('=1count', '=0count'), 1),
+            for bad in [text.replace(line, '', 1), text.replace(line, line.replace(line.split('=')[1].strip(), '0count'), 1),
                         text.replace(line, line + line, 1), text.replace(line, '', 1) + line]:
                 self.assertEqual(score(bad), 1)
 
