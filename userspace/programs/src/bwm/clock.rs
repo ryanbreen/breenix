@@ -47,9 +47,13 @@ impl Clock {
     }
 
     /// Stepped sessions acknowledge time without scheduling chrome-only composites.
+    pub(super) fn due(&self) -> bool {
+        !self.test && self.wall_sec() != self.drawn_sec
+    }
+
     pub(super) fn update_clock(&mut self) -> Option<i64> {
         let sec = self.wall_sec();
-        if self.test || sec == self.drawn_sec {
+        if !self.due() {
             return None;
         }
         self.drawn_sec = sec;

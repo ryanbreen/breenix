@@ -210,6 +210,8 @@ fn main() {
     let mut clock_wake = clock_wake::open().expect("UI clock wake setup failed");
     let mut clock_text = [0u8; 11];
     let mut taskbar_prepare_ns = None;
+    let mut clock_pace = pace::Maintenance::default();
+    let mut clock_dirty = false;
     format_clock(clock.wall_sec(), &mut clock_text);
     let mut next_creation_order: u32 = 0;
     // Resolve hotkeys through the same root as bwm.conf.
@@ -374,7 +376,8 @@ fn main() {
             });
         let timeout = closing.timeout_ms(now, timeout);
         let hold = if display_lost { None } else { hold };
-        let timeout = wake::wait_ns(timeout, pacing_ns(), hold);
+        let clock_hold = hold.into_iter().chain(clock_pace.deadline()).min();
+        let timeout = wake::wait_ns(timeout, pacing_ns(), clock_hold);
         poll_fds.truncate(2);
         if let Some(wake) = &clock_wake {
             poll_fds.push(io::PollFd { fd: wake.fd(), events: io::poll_events::POLLIN as i16, revents: 0 });
@@ -748,16 +751,16 @@ fn main() {
         }
 
         // ── 4. Update chrome on real UI-clock seconds ──
-        if let Some(sec) = clock.update_clock() {
+        if clock.due() && clock_pace.ready(pacing_ns(),
+            full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty, &pacing) {
+            let sec = clock.update_clock().expect("due wall-clock update");
             format_clock(sec, &mut clock_text);
             let began = pacing_ns();
             draw_taskbar(&mut gpu.desktop, &clock_text, &mut ui_font);
-            taskbar_prepare_ns = Some(pacing_ns().saturating_sub(began));
-            dirty_x0 = 0;
-            dirty_y0 = 0;
-            dirty_x1 = dirty_x1.max(screen_w as i32);
-            dirty_y1 = dirty_y1.max(px(TASKBAR_HEIGHT) as i32);
-            content_dirty = true;
+            let draw_ns = pacing_ns().saturating_sub(began);
+            taskbar_prepare_ns = Some(draw_ns);
+            clock_pace.reset();
+            clock_dirty = true;
         }
 
         validation.retain_clients(|id| windows.iter().any(|w| w.window_id == id && !w.frame_checked));
@@ -766,19 +769,25 @@ fn main() {
         }
 
         // ── 5. Composite on the GPU (only when something changed) ──
-        if full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty {
+        let urgent_frame = full_redraw || content_dirty || windows_dirty || mouse_moved_this_frame || cursor_dirty;
+        if urgent_frame || clock_dirty {
             refresh_pacing(&mut pacing);
-            if matches!(pacing.decision(pacing_ns()), pace::Decision::WaitUntil(_)) {
+            let clock_ready = !clock_dirty || clock_pace.ready(pacing_ns(), urgent_frame, &pacing);
+            if clock_ready && matches!(pacing.decision(pacing_ns()), pace::Decision::WaitUntil(_)) {
                 // Carry cursor/window dirt through descriptor wakes while the client handles input.
                 windows_dirty = true;
+                clock_pace.reset();
                 if content_dirty { full_redraw = true; }
-            } else {
+            } else if clock_ready {
                 let pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
                 let mut damage = Vec::new();
                 if full_redraw {
                     damage.push([0, 0, screen_w as i32, screen_h as i32]);
                 } else if content_dirty {
                     damage.push([dirty_x0.max(0), dirty_y0.max(0), dirty_x1.min(screen_w as i32), dirty_y1.min(screen_h as i32)]);
+                }
+                if clock_dirty {
+                    damage.push([0, 0, screen_w as i32, px(TASKBAR_HEIGHT) as i32]);
                 }
                 // The pointer where the last frame drew it and where this one draws it.
                 if drawn_pointer.is_none_or(|p| (p.x, p.y, p.shape) != (pointer.x, pointer.y, pointer.shape)) {
@@ -791,6 +800,8 @@ fn main() {
                 full_redraw = false;
                 content_dirty = false;
                 windows_dirty = false;
+                clock_dirty = false;
+                clock_pace.reset();
                 match frame {
                     Ok(()) => {
                         if let Some(draw_ns) = taskbar_prepare_ns.take() {
@@ -845,7 +856,7 @@ fn main() {
                 }
             }
         }
-        if !full_redraw && !content_dirty && !windows_dirty && !display_lost && !frame_failed {
+        if !full_redraw && !content_dirty && !windows_dirty && !clock_dirty && !display_lost && !frame_failed {
             let mut ack = clock.acknowledgment(claim_epoch);
             if let Some(deadline) = timing.deadline() {
                 if ack.next_deadline_ns == 0 || deadline < ack.next_deadline_ns { ack.next_deadline_ns = deadline; }

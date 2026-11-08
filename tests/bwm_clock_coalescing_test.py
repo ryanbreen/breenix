@@ -21,7 +21,7 @@ impl Clock {
 struct Background { drawn: bool }
 impl Background {
  fn ready(&mut self,_now:u64,urgent:bool,_pacing:&())->bool {urgent}
- fn drawn(&mut self,_ns:u64) {self.drawn=true;}
+ fn reset(&mut self) {self.drawn=true;}
 }
 struct Gpu { desktop: bool }
 fn format_clock(_sec:i64,_text:&mut [u8;11]) {}
@@ -34,16 +34,17 @@ fn update(urgent:bool)->(bool,bool,Option<u64>) {
  let mut gpu=Gpu{desktop:false};let mut clock_text=[0;11];let mut ui_font=();
  let pacing=();let full_redraw=false;let windows_dirty=urgent;
  let mouse_moved_this_frame=false;let cursor_dirty=false;
- let mut content_dirty=false;let mut taskbar_prepare_ns=None;
+ let mut content_dirty=false;let mut taskbar_prepare_ns=None;let mut clock_dirty=false;
  let screen_w=1280;let mut dirty_x0=99;let mut dirty_y0=99;
  let mut dirty_x1=0;let mut dirty_y1=0;
  @BLOCK@
  // Exercise the harness policy independently; only the extracted production
  // block decides whether it applies that policy before painting.
  assert!(clock.due() || gpu.desktop);assert!(clock_pace.ready(0,true,&()));
- let drew=clock_pace.drawn;clock_pace.drawn(0);
+ let drew=clock_pace.drawn;clock_pace.reset();
  std::hint::black_box((full_redraw,windows_dirty,mouse_moved_this_frame,
- cursor_dirty,&pacing,dirty_x0,dirty_y0,dirty_x1,dirty_y1,content_dirty));
+ cursor_dirty,&pacing,&mut dirty_x0,&mut dirty_y0,&mut dirty_x1,&mut dirty_y1,
+ &mut content_dirty,&mut clock_dirty,screen_w,px(TASKBAR_HEIGHT)));
  (gpu.desktop,drew,taskbar_prepare_ns)
 }
 #[test]fn clock_only_waits_for_the_background_slot(){assert_eq!(update(false),(false,false,None),

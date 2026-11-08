@@ -71,3 +71,29 @@ impl Pacer {
         self.waiting=None;
     }
 }
+
+/// Chrome maintenance can join arriving client work before taking the
+/// synchronous display path. Freeze a slot so a late wake cannot roll it on.
+#[derive(Default)]
+pub struct Maintenance {
+    deadline: Option<u64>,
+}
+impl Maintenance {
+    pub fn deadline(&self) -> Option<u64> { self.deadline }
+    pub fn ready(&mut self, now: u64, urgent: bool, pacing: &Pacer) -> bool {
+        if urgent { self.deadline = None; return true; }
+        if let Some(deadline) = self.deadline { return now >= deadline; }
+        match (pacing.edge, pacing.period, pacing.work) {
+            (Some(edge), Some(period), Some(work)) => {
+                match decide(now, true, edge, period, work) {
+                    Decision::WaitUntil(deadline) => { self.deadline = Some(deadline); false }
+                    Decision::Compose => true,
+                }
+            }
+            _ => true,
+        }
+    }
+    // Preparation may itself use the GPU. Select the display slot again after
+    // that work; its duration must not move acceptance past the chosen edge.
+    pub fn reset(&mut self) { self.deadline = None; }
+}
