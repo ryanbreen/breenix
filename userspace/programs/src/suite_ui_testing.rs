@@ -190,15 +190,15 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A window capture equals the committed buffer of that commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("window-capture", "A window capture equals the committed buffer of that commit", capture_cases::window_capture).session(libuitest::supervisor::serve),
         // Capturing commit N while the app draws N+1 returns N whole. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("capture-while-drawing", "Capturing commit N while the app draws N+1 returns N whole", || pending("frames", 4)),
+        case("capture-while-drawing", "Capturing commit N while the app draws N+1 returns N whole", frames::capture_while_drawing).session(libuitest::supervisor::serve),
         // Two readers capturing the same window each get whole commits. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("capture-two-readers", "Two readers capturing the same window each get whole commits", || pending("frames", 4)),
+        case("capture-two-readers", "Two readers capturing the same window each get whole commits", frames::capture_two_readers).session(libuitest::supervisor::serve),
         // A resize during a capture gives the whole old commit, pixels and tree, never ENOENT or a mixture. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("capture-resize-race", "A resize during a capture gives the whole old commit, pixels and tree, never ENOENT or a mixture", || pending("frames", 4)),
+        case("capture-resize-race", "A resize during a capture gives the whole old commit, pixels and tree, never ENOENT or a mixture", frames::capture_resize_race).session(libuitest::supervisor::serve),
         // A destroy during a capture gives the whole commit and frees the buffer afterwards; a destroy before the copy begins gives ENOENT. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("capture-destroy-race", "A destroy during a capture gives the whole commit and frees the buffer afterwards; a destroy before the copy begins gives ENOENT", || pending("frames", 4)),
+        case("capture-destroy-race", "A destroy during a capture gives the whole commit and frees the buffer afterwards; a destroy before the copy begins gives ENOENT", frames::capture_destroy_race).session(libuitest::supervisor::serve),
         // Commits from two producer threads are each captured whole. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("capture-threads", "Commits from two producer threads are each captured whole", || pending("frames", 4)),
+        case("capture-threads", "Commits from two producer threads are each captured whole", frames::capture_threads).session(libuitest::supervisor::serve),
         // A screen capture shows the window at its position, with its observation record. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("screen-capture", "A screen capture shows the window at its position, with its observation record", capture_cases::screen_capture).session(libuitest::supervisor::serve),
         // A screen capture lists the commit of each window it contains. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)

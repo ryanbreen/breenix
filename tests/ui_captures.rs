@@ -2,6 +2,7 @@ extern crate self as libbreenix;
 extern crate self as libgfx;
 #[path = "../libs/libuitest/src/arena.rs"] pub mod arena;
 #[path = "../libs/libuitest/src/capture_marker.rs"] pub mod capture_marker;
+#[path = "../libs/libuitest/src/capture_race.rs"] pub mod capture_race;
 #[path = "../libs/libuitest/src/capture.rs"] pub mod capture;
 #[path = "../libs/libuitest/src/compare.rs"] pub mod compare;
 #[path = "../libs/libuitest/src/schema.rs"] pub mod schema;
@@ -105,4 +106,26 @@ fn arena(name:&str)->(std::path::PathBuf,arena::Arena) {
     assert!(matches!(capture::compare_outcome("marker",&want,&want,16,4).unwrap(),ScenarioOutcome::Pass {..}));
     assert!(matches!(capture::compare_outcome("marker",&want,&got,16,4).unwrap(),ScenarioOutcome::Fail {class:FailureClass::PixelMismatch,operation,evidence,..} if operation=="marker" && evidence=="first=12,2 got=#182031 want=#182030"));
     drop(a);std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn race_judge_requires_fired_rise_and_one_generation() {
+    let g = capture_marker::Generation { commit: 7, producer: 8 };
+    let pixels = capture_marker::frame(16, 4, g).unwrap();
+    let tree = capture::root(g, 16, 4);
+    let judge = |before, after, px: &[u8], tr: &[u8], commit, expected| {
+        capture_race::judge(before, after, px, 16, 4, tr, commit, expected)
+    };
+    assert_eq!(judge(40, 41, &pixels, &tree, 7, Some(g)).unwrap(), g);
+    assert!(judge(40, 40, &pixels, &tree, 7, Some(g)).unwrap_err().contains("did not fire"));
+    assert!(judge(40, 39, &pixels, &tree, 7, Some(g)).is_err());
+    let next = capture_marker::Generation { commit: 8, producer: 9 };
+    let mut mixed = pixels.clone();
+    mixed[64..96].copy_from_slice(&capture_marker::encode(next));
+    assert!(judge(40, 41, &mixed, &tree, 7, None).is_err());
+    assert!(judge(40, 41, &pixels, &capture::root(next,16,4), 7, None).is_err());
+    assert!(judge(40, 41, &pixels, &tree, 8, None).is_err());
+    assert!(judge(40, 41, &pixels, &tree, 7, Some(next)).is_err());
+    let mut stray = pixels.clone(); stray[60] ^= 1;
+    assert!(judge(40, 41, &stray, &tree, 7, None).is_err());
 }
