@@ -381,6 +381,51 @@ mod guest {
             remove?;
             Ok(tree)
         }
+        fn check_pixels(&mut self, text: bool) -> Result<(), String> {
+            let path = std::path::Path::new(self.session.config_root()).join("widget-pixels.arena");
+            let mut arena = Arena::create(&path, self.session.arena_mut().layout())?;
+            let result = (|| {
+                let record = capture::window(&mut arena, "widget-pixels", self.id)?;
+                let tree = match arena.read(Slot::Tree)? {
+                    SlotRead::Final { bytes, .. } => Tree::parse(&bytes)?,
+                    other => return Err(format!("incomplete tree: {other:?}")),
+                };
+                let pixels = match arena.read(Slot::Frame)? {
+                    SlotRead::Final { bytes, .. } => bytes,
+                    other => return Err(format!("incomplete frame: {other:?}")),
+                };
+                let scale = self.scale as usize;
+                if text {
+                    equal("status", "name", node(&tree, "status")?.name.as_str(), "PASS")?;
+                    let mut surface = libgfx::surface::Surface::new(record.width as usize, record.height as usize, libgfx::surface::Format::BGRX).map_err(|e| format!("surface: {e:?}"))?;
+                    let theme = libbui::Theme::dark();
+                    surface.clear(theme.panel_bg);
+                    libbui::text::draw_text(&mut surface, b"PASS", literals::STATUS[0], literals::STATUS[1], theme.text_primary, &theme);
+                    let mut expected = vec![0; pixels.len()];
+                    surface.read(&mut expected, record.width as usize * 4).map_err(|e| format!("reference read: {e}"))?;
+                    let [x,y,w,h] = node(&tree,"status")?.bounds.map(|v| v as usize);
+                    for row in y..y+h {
+                        let start = (row * record.width as usize + x) * 4;
+                        equal("status", "pixels", &pixels[start..start+w*4], &expected[start..start+w*4])?;
+                    }
+                } else {
+                    focus_is(&tree, "submit")?;
+                    let [x,y,w,h] = node(&tree,"submit")?.bounds.map(|v| v as usize);
+                    let (left, top, right, bottom) = (x-2*scale, y-2*scale, x+w+2*scale-1, y+h+2*scale-1);
+                    let color = libbui::Theme::dark().focus_ring;
+                    for yy in top..=bottom { for xx in left..=right {
+                        if xx < left+scale || xx > right-scale || yy < top+scale || yy > bottom-scale {
+                            let at = (yy * record.width as usize + xx) * 4;
+                            equal("submit", "focus-ring", &pixels[at..at+3], &[color.b, color.g, color.r])?;
+                        }
+                    }}
+                }
+                Ok(())
+            })();
+            drop(arena);
+            let cleanup = std::fs::remove_file(path).map_err(|e| e.to_string());
+            result?; cleanup
+        }
         fn wait(&mut self, judge: impl Fn(&Tree) -> Result<(), String>) -> Result<(), String> {
             let end = Instant::now() + Duration::from_secs(2);
             loop {
@@ -399,6 +444,15 @@ mod guest {
                 libbreenix::time::sleep_ms(1).map_err(|e| e.to_string())?;
             }
         }
+    }
+    fn state(tree: &Tree, key: &str, flag: Flag, expected: bool) -> Result<(), String> {
+        equal(key, "flag", node(tree, key)?.flags.contains(&flag), expected)
+    }
+    fn focus_is(tree: &Tree, key: &str) -> Result<(), String> {
+        for name in ["entry", "submit", "accept", "amount", "list", "tabs"] {
+            state(tree, name, Flag::Focused, name == key)?;
+        }
+        Ok(())
     }
     fn run(which: u8) -> Result<(), String> {
         let mut app = App::launch()?;
@@ -443,6 +497,48 @@ mod guest {
                     app.wait(|tree| expect_hidden(tree, 40, scale))
                 }
                 4 => app.wait(|tree| expect_terminal(tree, scale)),
+                5 => {
+                    app.wait(|t| focus_is(t, "entry"))?;
+                    app.session.raw_press(15)?;
+                    app.session.raw_release(15)?;
+                    app.wait(|t| focus_is(t, "submit"))
+                }
+                6 => {
+                    app.wait(|t| focus_is(t, "entry"))?;
+                    app.session.raw_press(15)?;
+                    app.session.raw_release(15)?;
+                    app.wait(|t| focus_is(t, "submit"))?;
+                    app.check_pixels(false)
+                }
+                7 => {
+                    app.wait(|t| state(t, "accept", Flag::Checked, false))?;
+                    app.click(25, 100)?;
+                    app.wait(|t| state(t, "accept", Flag::Checked, true))?;
+                    app.wait(|t| state(t, "list/item-01", Flag::Selected, false))?;
+                    app.click(30, 180)?;
+                    app.wait(|t| state(t, "list/item-01", Flag::Selected, true))?;
+                    app.motion(330, 55)?;
+                    app.session.raw_press(0x110)?;
+                    app.wait(|t| state(t, "submit", Flag::Pressed, true))?;
+                    app.session.raw_release(0x110)?;
+                    app.wait(|t| state(t, "submit", Flag::Pressed, false))
+                }
+                8 => {
+                    app.wait(|t| equal("entry", "value", &node(t, "entry")?.value, &serde_json::json!("")))?;
+                    app.click(30, 55)?;
+                    for key in [35, 23] { app.session.raw_press(key)?; app.session.raw_release(key)?; }
+                    app.wait(|t| equal("entry", "value", &node(t, "entry")?.value, &serde_json::json!("hi")))
+                }
+                9 => {
+                    app.wait(|t| expect_hidden(t, 0, scale))?;
+                    app.motion(30, 180)?;
+                    app.session.raw_wheel(-1)?;
+                    app.wait(|t| expect_hidden(t, 40, scale))
+                }
+                10 => {
+                    app.wait(|t| equal("status", "name", node(t, "status")?.name.as_str(), "PASS"))?;
+                    app.check_pixels(true)
+                }
                 _ => unreachable!(),
             }
         })();
@@ -451,6 +547,12 @@ mod guest {
         teardown?;
         Ok(())
     }
+    pub fn focus_flag() -> CaseResult { run(5).map_err(Into::into) }
+    pub fn focus_ring_pixels() -> CaseResult { run(6).map_err(Into::into) }
+    pub fn state_flags() -> CaseResult { run(7).map_err(Into::into) }
+    pub fn textfield_value() -> CaseResult { run(8).map_err(Into::into) }
+    pub fn list_scroll() -> CaseResult { run(9).map_err(Into::into) }
+    pub fn text_pixels() -> CaseResult { run(10).map_err(Into::into) }
     pub fn roles_keys() -> CaseResult {
         run(0).map_err(Into::into)
     }
@@ -468,4 +570,4 @@ mod guest {
     }
 }
 #[cfg(target_os = "breenix")]
-pub use guest::{enabled_flag, hidden_nodes, names_values, roles_keys, terminal_grid};
+pub use guest::{enabled_flag, hidden_nodes, names_values, roles_keys, terminal_grid, focus_flag, focus_ring_pixels, state_flags, textfield_value, list_scroll, text_pixels};

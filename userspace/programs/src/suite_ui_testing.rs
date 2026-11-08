@@ -56,7 +56,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // chord(Ctrl, A) arrives as A with the Ctrl modifier. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("chord", "chord(Ctrl, A) arrives as A with the Ctrl modifier", input::chord).session(libuitest::supervisor::serve),
         // Holding a key for 600 ms of UI time gives exactly 3 repeats. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("hold-repeat", "Holding a key for 600 ms of UI time gives exactly 3 repeats", || pending("input", 6)),
+        case("hold-repeat", "Holding a key for 600 ms of UI time gives exactly 3 repeats", || pending("input", 7)),
         // click(node) lands on a visible point of the node, and the delivery names that node's window. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("click-node", "click(node) lands on a visible point of the node, and the delivery names that node's window", input::click_node).session(libuitest::supervisor::serve),
         // Clicking a node partly covered by another window lands on its exposed part, confirmed by hit test. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -64,7 +64,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Clicking a node clipped by a scrolled container uses its visible part. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("click-clipped", "Clicking a node clipped by a scrolled container uses its visible part", input::click_clipped).session(libuitest::supervisor::serve),
         // double_click delivers click counts 1 and 2. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("double-click", "double_click delivers click counts 1 and 2", || pending("input", 6)),
+        case("double-click", "double_click delivers click counts 1 and 2", || pending("input", 7)),
         // A ten-step drag delivers ten motions in order between a press and a release; when the layout changes on the press and again mid-drag, and when the window moves mid-drag, every later motion and the release still reach the captured node through bwm's grab, the drag ends in exactly one completed gesture, and no button, pressed flag or capture is held at the end. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("drag-steps", "A ten-step drag reaches its captured node in order through layout changes and a window move, ending with nothing held", input::drag_steps).session(libuitest::supervisor::serve),
         // scroll(node, dy) delivers the wheel amount to the window under the node. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -74,7 +74,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // delivered(serial) returns only after the target window processed that serial. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("delivered", "delivered(serial) returns only after the target window processed that serial", input_delivery::delivered).session(libuitest::supervisor::serve),
         // An event sent to a hung app is reported unprocessed when the 2 s settle bound passes, naming the serial and the window. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("undelivered-fails", "An event sent to a hung app is reported unprocessed at the 2 s settle bound, naming the serial and window", || pending("input", 6)),
+        case("undelivered-fails", "An event sent to a hung app is reported unprocessed at the 2 s settle bound, naming the serial and window", || pending("input", 7)),
         // Every serial of a script ends with a terminal disposition. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("dispositions-all", "Every serial of a script ends with a terminal disposition", input_delivery::dispositions_all).session(libuitest::supervisor::serve),
         // A non-root session cannot inject, after a root session has. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -82,7 +82,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Ending a session releases every held key and button. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("teardown-releases", "Ending a session releases every held key and button", sessions::teardown_releases).session(libuitest::supervisor::serve),
         // Input arrives in order while the app animates. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("input-during-animation", "Input arrives in order while the app animates", || pending("input", 6)),
+        case("input-during-animation", "Input arrives in order while the app animates", || pending("input", 7)),
         // Input addressed to two windows of one app arrives at each. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("two-windows", "Input addressed to two windows of one app arrives at each", input_delivery::two_windows).session(libuitest::supervisor::serve),
         // A scripted Super double tap opens the launcher through bwm's real hotkey path. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -96,15 +96,15 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Names and values match the widgets' states set by the script. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("names-values", "Names and values match the widgets' states set by the script", tree::names_values).session(libuitest::supervisor::serve),
         // The focused flag moves with Tab. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("focus-flag", "The focused flag moves with Tab", || pending("tree", 6)),
+        case("focus-flag", "The focused flag moves with Tab", tree::focus_flag).session(libuitest::supervisor::serve),
         // The focused widget draws the theme's focus ring at its bounds. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("focus-ring-pixels", "The focused widget draws the theme's focus ring at its bounds", || pending("tree", 6)),
+        case("focus-ring-pixels", "The focused widget draws the theme's focus ring at its bounds", tree::focus_ring_pixels).session(libuitest::supervisor::serve),
         // A disabled button is flagged not enabled. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("enabled-flag", "A disabled button is flagged not enabled", tree::enabled_flag).session(libuitest::supervisor::serve),
         // Checked, selected and pressed flags follow interaction. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("state-flags", "Checked, selected and pressed flags follow interaction", || pending("tree", 6)),
+        case("state-flags", "Checked, selected and pressed flags follow interaction", tree::state_flags).session(libuitest::supervisor::serve),
         // A text field's value equals the typed text. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("textfield-value", "A text field's value equals the typed text", || pending("tree", 6)),
+        case("textfield-value", "A text field's value equals the typed text", tree::textfield_value).session(libuitest::supervisor::serve),
         // A terminal node's rows, cell attributes and cursor equal what its grid holds. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("terminal-grid", "A terminal node's rows, cell attributes and cursor equal what its grid holds", tree::terminal_grid).session(libuitest::supervisor::serve),
         // A tree and its pixels always come from the same commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -114,13 +114,13 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Nodes scrolled out or covered are flagged not visible, with their clip. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("hidden-nodes", "Nodes scrolled out or covered are flagged not visible, with their clip", tree::hidden_nodes).session(libuitest::supervisor::serve),
         // Scrolling a list changes which items are flagged visible. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("list-scroll", "Scrolling a list changes which items are flagged visible", || pending("tree", 6)),
+        case("list-scroll", "Scrolling a list changes which items are flagged visible", tree::list_scroll).session(libuitest::supervisor::serve),
         // An unrelated non-root process cannot map another app's tree. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("permission", "An unrelated non-root process cannot map another app's tree", tree_cases::permission).session(libuitest::supervisor::serve),
         // With no reader attached the tree is never serialized, and with one it is serialized once per commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("no-reader-no-serialize", "With no reader attached the tree is never serialized, and with one it is serialized once per commit", tree_cases::no_reader_no_serialize).session(libuitest::supervisor::serve),
         // A label whose tree text is "PASS" is checked against the certified renderer's "PASS" at its bounds. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("text-pixels", "A label whose tree text is PASS is checked against the certified renderer's PASS at its bounds", || pending("tree", 6)),
+        case("text-pixels", "A label whose tree text is PASS is checked against the certified renderer's PASS at its bounds", tree::text_pixels).session(libuitest::supervisor::serve),
     ]),
     category("frames", "Frame capture & comparison", &[
         // A window capture equals the committed buffer of that commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
