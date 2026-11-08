@@ -5,7 +5,7 @@ use std::path::Path;
 
 pub const ROOT: &str = "/usr/share/breenix/uitest/frames";
 pub const RELATIVE: &str = "ui-testing/coordinate-pattern.png";
-pub const PIN: &str = "2ac80c844f91d369dc2a98187f54bb79f0a0d5d958ca41cc8702063ce4489656";
+pub const PIN: &str = "244b7ddb41d62cfb5969a036c3141662592798e5505cdce5dcddb829a64d87d9";
 
 pub fn definition(case: &str) -> Value {
     serde_json::json!({"version":1, "case":case, "check":"pattern", "kind":"stored",

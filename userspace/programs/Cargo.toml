@@ -12,6 +12,7 @@ description = "Userspace programs and utilities for Breenix"
 framebuffer-v1 = []
 
 [dependencies]
+serde_json = { version = "=1.0.154", default-features = false, features = ["alloc"] }
 libpixcheck = { path = "../../libs/libpixcheck" }
 libuitest = { path = "../../libs/libuitest" }
 # The 16 px bitmap font libgfx draws; suite-breengel reads its rasters as the reference cells.

@@ -1,5 +1,5 @@
 {
-  "about": "Reviewed reference frames of the breengel suite (docs/gui/breengel.md section 8.6). Each is rendered by tools/gfx-refgen from the guest's own no_std libgfx and libfont on the host at authoring time and reviewed before it is committed. The guest reads them from /usr/local/test/share/breengel/frames/. Frames saved from runs never become references.",
+  "about": "Reviewed reference frames of the breengel suite (docs/gui/breengel.md section 8.6). Each is rendered by tools/gfx-refgen from the guest's own no_std libgfx and libfont on the host at authoring time and reviewed before it is committed. The guest reads them from /usr/local/test/share/breengel/frames/. Frames saved from runs never become references. UI-testing references are authored under ui-testing/ and installed at /usr/share/breenix/uitest/frames/ui-testing/; the same provenance file is installed beside that directory.",
   "references": [
     {
       "path": "breengel/text/ttf-glyph.png",
@@ -67,6 +67,18 @@
       "reviewer": "GPT-6.1 Sol, inspected the generated 640x512 image before pinning",
       "checked": "All twenty cells contain the named icon at the specified center; roofs and doors, glass and handles, solid disks and slots, forward arrows are legible. Clicked cells show the door highlight, expanding sonar, inserted disk and trail; effects stay within their cells. The guest uses independent schedule code and reads this immutable file.",
       "license": "No third-party content: original in-tree procedural artwork, redistributed with the repository on the same terms as its source; see testdata/breengel/LICENSES.md."
+    },
+    {
+      "path": "ui-testing/coordinate-pattern.png",
+      "case": "frames/frame-record",
+      "scene": "4x4 coordinate pattern, B=x*10, G=y*20, R=30, X=255; integer x,y in 0..4",
+      "generator": "tools/gfx-refgen --bin ui-formula",
+      "generator_commit": "c793f34be202592847c6437364c16e6b2e750b3f",
+      "command": "cargo run --release --manifest-path tools/gfx-refgen/Cargo.toml --bin ui-formula -- docs/suites/frames/ui-testing/coordinate-pattern.png",
+      "sha256": "244b7ddb41d62cfb5969a036c3141662592798e5505cdce5dcddb829a64d87d9",
+      "date": "2026-11-08",
+      "reviewer": "GPT-6.1 Sol",
+      "checked": "tests/ui_stored_frames.rs compares the decoded PNG to the authored coordinate formula and exercises a PNG encode/decode round trip. The reference is generated at authoring time, never copied from a saved run."
     }
   ]
 }
