@@ -51,6 +51,11 @@ struct Grab {
     holder: u64,
     epoch: u64,
 }
+fn fold_modifiers(devices: impl Iterator<Item = (u32, u8)>, selection: Option<&[u32]>) -> u8 {
+    devices
+        .filter(|(id, _)| selection.is_none_or(|ids| ids.is_empty() || ids.contains(id)))
+        .fold(0, |all, (_, modifiers)| all | modifiers)
+}
 struct Row {
     event: Event,
     reader: Option<u64>,
@@ -260,8 +265,10 @@ impl State {
                     d.held.remove(&e.code);
                 }
             }
-            let mods =
-                super::event::Modifiers(self.devices.values().fold(0, |all, d| all | d.modifiers));
+            let mods = super::event::Modifiers(fold_modifiers(
+                self.devices.iter().map(|(&id, d)| (id, d.modifiers)),
+                self.grab.as_ref().map(|g| g.devices.as_slice()),
+            ));
             e.flags = mods.shift() as u32
                 | (mods.ctrl() as u32) << 1
                 | (mods.alt() as u32) << 2
