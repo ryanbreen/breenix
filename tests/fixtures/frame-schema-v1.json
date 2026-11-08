@@ -3969,7 +3969,7 @@
     "previous": {
       "version": 1,
       "case": "frames/mask",
-      "check": "schema-check",
+      "check": "previous-check",
       "kind": "stored",
       "source": {
         "kind": "window",
@@ -4091,7 +4091,7 @@
     "previous": {
       "version": 1,
       "case": "frames/mask",
-      "check": "schema-check",
+      "check": "previous-check",
       "kind": "stored",
       "source": {
         "kind": "screen"
@@ -4168,7 +4168,7 @@
     "previous": {
       "version": 1,
       "case": "frames/other",
-      "check": "schema-check",
+      "check": "previous-check",
       "kind": "stored",
       "source": {
         "kind": "window",
@@ -4246,7 +4246,7 @@
     "previous": {
       "version": 1,
       "case": "frames/mask",
-      "check": "schema-check",
+      "check": "previous-check",
       "kind": "stored",
       "source": {
         "kind": "window",
@@ -4324,7 +4324,7 @@
     "previous": {
       "version": 1,
       "case": "frames/mask",
-      "check": "schema-check",
+      "check": "previous-check",
       "kind": "stored",
       "source": {
         "kind": "window",
@@ -4402,7 +4402,7 @@
     "previous": {
       "version": 1,
       "case": "frames/mask",
-      "check": "schema-check",
+      "check": "previous-check",
       "kind": "stored",
       "source": {
         "kind": "window",
@@ -5740,5 +5740,593 @@
       "params": []
     },
     "error": "params"
+  },
+  {
+    "name": "count-after-mask",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "counter"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "count",
+      "params": {
+        "region": "main",
+        "min": 7501,
+        "max": 10000
+      }
+    },
+    "error": "domain"
+  },
+  {
+    "name": "outside-coverage-99",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 99,
+            "h": 1
+          },
+          "reason": "counter"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "outside",
+      "params": {
+        "region": "main",
+        "rect": {
+          "x": 1,
+          "y": 1,
+          "w": 98,
+          "h": 98
+        },
+        "colour": "#ff0000"
+      }
+    }
+  },
+  {
+    "name": "outside-coverage-100",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 100,
+            "h": 1
+          },
+          "reason": "counter"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "outside",
+      "params": {
+        "region": "main",
+        "rect": {
+          "x": 1,
+          "y": 1,
+          "w": 98,
+          "h": 98
+        },
+        "colour": "#ff0000"
+      }
+    },
+    "error": "domain"
+  },
+  {
+    "name": "equal-coverage-boundary",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        },
+        {
+          "name": "other",
+          "x": 100,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "same relative counter"
+        },
+        {
+          "rect": {
+            "x": 100,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "same relative counter"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "equal-regions",
+      "params": {
+        "a": "main",
+        "b": "other"
+      }
+    }
+  },
+  {
+    "name": "outside-tolerance-domain",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 1,
+        "reason": "documented noise"
+      },
+      "predicate": "outside",
+      "params": {
+        "region": "main",
+        "rect": {
+          "x": 1,
+          "y": 1,
+          "w": 98,
+          "h": 98
+        },
+        "colour": "#ff0000"
+      }
+    },
+    "error": "maxDiffering"
+  },
+  {
+    "name": "differs-previous-structural-domain",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "differs-from-previous",
+      "params": {
+        "region": "main",
+        "minDiffering": 397
+      }
+    },
+    "previous": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "previous-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "outside",
+      "params": {
+        "region": "main",
+        "rect": {
+          "x": 1,
+          "y": 1,
+          "w": 98,
+          "h": 98
+        },
+        "colour": "#ff0000"
+      }
+    },
+    "error": "domain"
+  },
+  {
+    "name": "differs-previous-equal-pairs",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 100,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "differs-from-previous",
+      "params": {
+        "region": "main",
+        "minDiffering": 7500
+      }
+    },
+    "previous": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "previous-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        },
+        {
+          "name": "other",
+          "x": 100,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "same relative counter"
+        },
+        {
+          "rect": {
+            "x": 100,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "same relative counter"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "equal-regions",
+      "params": {
+        "a": "main",
+        "b": "other"
+      }
+    }
+  },
+  {
+    "name": "differs-previous-equal-pairs-over-domain",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 100,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "differs-from-previous",
+      "params": {
+        "region": "main",
+        "minDiffering": 7501
+      }
+    },
+    "previous": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "previous-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        },
+        {
+          "name": "other",
+          "x": 100,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "same relative counter"
+        },
+        {
+          "rect": {
+            "x": 100,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "same relative counter"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "equal-regions",
+      "params": {
+        "a": "main",
+        "b": "other"
+      }
+    },
+    "error": "domain"
   }
 ]

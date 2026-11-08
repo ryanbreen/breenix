@@ -21,3 +21,5 @@ pub mod artifacts;
 mod collect;
 
 pub mod startup;
+
+pub mod schema;
