@@ -2314,7 +2314,7 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
                 feed.drain(fd);
                 let _ = io::close(fd);
             }
-            if case.collects { if let Some(session) = session.as_mut() { session.handoff_to_sweep(); } }
+            if let Some(session) = session.as_mut() { session.handoff_to_sweep(); }
             let outcome = match sweep_for_role(gui) {
                 Some(note) => with_note(outcome, note),
                 None => outcome,
