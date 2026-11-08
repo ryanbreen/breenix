@@ -58,3 +58,46 @@ fn rejects_duplicate_or_malformed_terminal_rows() {
         None
     );
 }
+
+#[test]
+fn metadata_only_ack_keeps_the_captured_tree_current() {
+    let source = include_str!("../libs/libuitest/src/input.rs");
+    let live = include_str!("../libs/libuitest/src/pointer_live.rs");
+    let function = if let Some(start) = source.find("pub fn tree_capture_current(") {
+        let brace = start + source[start..].find('{').unwrap();
+        let mut depth = 0;
+        let end = source[brace..].bytes().position(|b| {
+            if b == b'{' { depth += 1; }
+            if b == b'}' { depth -= 1; }
+            depth == 0
+        }).unwrap();
+        assert!(live.contains("tree_capture_current("));
+        source[start..=brace + end].to_owned()
+    } else {
+        assert!(live.contains("&& newest == commit"));
+        // Adapt the live guard before the repair to the same fixture inputs.
+        "fn tree_capture_current(captured: u64, latest: u64, _before: u64, _after: u64) -> bool { latest == captured }".into()
+    };
+    let fixture = format!(r#"
+{function}
+fn main() {{
+    // Pixel commit 7 serialized tree 3; no-change 8 acknowledges a release.
+    assert!(tree_capture_current(7, 8, 3, 3), "metadata ack does not replace the pixel/tree commit");
+    assert!(tree_capture_current(7, 7, 3, 3));
+    assert!(!tree_capture_current(7, 8, 3, 4), "a concurrent tree publication must retry");
+    assert!(!tree_capture_current(0, 8, 3, 3));
+    assert!(!tree_capture_current(9, 8, 3, 3));
+    assert!(!tree_capture_current(7, 8, 0, 0));
+}}
+"#);
+    let dir = std::env::temp_dir().join(format!("ui-tree-ack-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("ack.rs"); let binary = dir.join("ack");
+    std::fs::write(&path, fixture).unwrap();
+    let built = std::process::Command::new("rustc").args(["--edition=2021", "-Dwarnings"])
+        .arg(&path).arg("-o").arg(&binary).output().unwrap();
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = std::process::Command::new(&binary).output().unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+}
