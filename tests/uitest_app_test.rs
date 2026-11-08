@@ -33,3 +33,11 @@ fn flags_are_checked() {
         assert!(support::parse(&args).is_err(), "{args:?}");
     }
 }
+
+#[test]
+fn two_widget_windows_use_one_app_mode() {
+    let options=support::parse(&["pair", "--widgets", "--two-windows"]).unwrap();
+    assert!(options.widgets && options.two_windows);
+    assert!(support::parse(&["pair", "--two-windows"]).is_err());
+    assert!(support::parse(&["pair", "--widgets", "--two-windows", "--two-windows"]).is_err());
+}

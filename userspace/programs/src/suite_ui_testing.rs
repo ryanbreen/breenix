@@ -27,6 +27,8 @@ mod tree;
 mod wm_tree;
 #[path = "uitest_suite/input.rs"]
 mod input;
+#[path = "uitest_suite/input_delivery.rs"]
+mod input_delivery;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
 
 fn pending(layer: &str, step: u8) -> CaseResult {
@@ -70,23 +72,23 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Typing into a node focuses it first, and a node that cannot take focus fails by name. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("focus-then-type", "Typing into a node focuses it first, and a node that cannot take focus fails by name", input::focus_then_type).session(libuitest::supervisor::serve),
         // delivered(serial) returns only after the target window processed that serial. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("delivered", "delivered(serial) returns only after the target window processed that serial", || pending("input", 6)),
+        case("delivered", "delivered(serial) returns only after the target window processed that serial", input_delivery::delivered).session(libuitest::supervisor::serve),
         // An event sent to a hung app is reported unprocessed when the 2 s settle bound passes, naming the serial and the window. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("undelivered-fails", "An event sent to a hung app is reported unprocessed at the 2 s settle bound, naming the serial and window", || pending("input", 6)),
         // Every serial of a script ends with a terminal disposition. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("dispositions-all", "Every serial of a script ends with a terminal disposition", || pending("input", 6)),
+        case("dispositions-all", "Every serial of a script ends with a terminal disposition", input_delivery::dispositions_all).session(libuitest::supervisor::serve),
         // A non-root session cannot inject, after a root session has. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("nonroot-denied", "A non-root session cannot inject, after a root session has", || pending("input", 6)),
+        case("nonroot-denied", "A non-root session cannot inject, after a root session has", input_delivery::nonroot_denied).session(libuitest::supervisor::serve),
         // Ending a session releases every held key and button. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("teardown-releases", "Ending a session releases every held key and button", sessions::teardown_releases).session(libuitest::supervisor::serve),
         // Input arrives in order while the app animates. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("input-during-animation", "Input arrives in order while the app animates", || pending("input", 6)),
         // Input addressed to two windows of one app arrives at each. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("two-windows", "Input addressed to two windows of one app arrives at each", || pending("input", 6)),
+        case("two-windows", "Input addressed to two windows of one app arrives at each", input_delivery::two_windows).session(libuitest::supervisor::serve),
         // A scripted Super double tap opens the launcher through bwm's real hotkey path. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wm-hotkey-scripted", "A scripted Super double tap opens the launcher through bwm's real hotkey path", || pending("input", 6)),
+        case("wm-hotkey-scripted", "A scripted Super double tap opens the launcher through bwm's real hotkey path", input_delivery::wm_hotkey_scripted).session(libuitest::supervisor::serve),
         // Events from a device outside the session's selection, modifier keys included, change nothing in the session. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("real-input-excluded", "Events from a device outside the session's selection, modifier keys included, change nothing in the session", || pending("input", 6)),
+        case("real-input-excluded", "Events from a device outside the session's selection, modifier keys included, change nothing in the session", input_delivery::real_input_excluded).session(libuitest::supervisor::serve),
     ]),
     category("tree", "Semantic trees of windows & widgets", &[
         // The test app's tree lists every widget with its expected role and key. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
