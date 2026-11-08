@@ -24,7 +24,7 @@ pub mod libbreenix { pub mod time {pub fn now_monotonic()->Result<std::time::Dur
     assert!(!verdict(2_100_000_000, true));
     assert!(!verdict(0, false));
 }
-'''.replace('@TRACE@', trace)) 
+'''.replace('@TRACE@', trace))
 
     def test_every_start_reports_one_bounded_phase_line(self):
         body = item(source('userspace/programs/src/uitest_suite/sessions.rs'), 'fn start(kiosk: bool)')

@@ -63,4 +63,3 @@ pub fn schema_binding() -> Result<(), String> {
     bindings.checkpoint("never-reached");
     bindings.finish(&[&check])
 }
-

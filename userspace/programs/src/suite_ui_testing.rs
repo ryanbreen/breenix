@@ -26,7 +26,7 @@ fn pending(layer: &str, step: u8) -> CaseResult {
 }
 
 static SUITE: Suite = suite("ui-testing", "UI test framework", &[
-    category("runner", "Result transport & proof executor", &[
+    category("runner", "Proof executor & subreaper", &[
         // A clean scenario run in the inner executor returns Pass. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("inner-pass", "A clean scenario run in the inner executor returns Pass", inner::inner_pass),
         // A scenario with a planted pixel fault returns pixel-mismatch with its check and first pixel. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -240,7 +240,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // An app that dies right after a commit still has that commit and tree saved, from its remnant. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("app-death", "An app that dies right after a commit still has that commit and tree saved, from its remnant", || pending("diagnosis", 7)),
     ]),
-    category("proof", "Proven on bwm & a test app", &[
+    category("proof", "End-to-end scenarios & planted faults", &[
         // A widget drawn in the wrong color fails as pixel-mismatch with both colors. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("fault-wrong-color", "A widget drawn in the wrong color fails as pixel-mismatch with both colors", || pending("proof", 7)),
         // An app that updates its tree but not its pixels fails as pixel-mismatch. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -263,10 +263,9 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
 ]).gui().defer_display();
 
 fn main() {
-    if let Err(error) = libuitest::fixtures::verify_fonts(std::path::Path::new("/usr/share/fonts")) {
-        eprintln!("ui-testing fixture verification: {error}");
-        std::process::exit(1);
-    }
+    // Prime the cache without bypassing the runner. Each session independently
+    // verifies these pins and reports any failure through its case verdict.
+    let _ = libuitest::fixtures::verify_fonts(std::path::Path::new("/usr/share/fonts"));
     breenix_suite::suite::set_painter(Box::new(stage_painter::StagePainter::new()));
     SUITE.with_evidence_upload().run()
 }

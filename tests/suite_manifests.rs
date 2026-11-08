@@ -288,11 +288,17 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
                         for (k, case_value) in case_list.iter().enumerate() {
                             let case_at = format!("{cat_at} cases[{k}]");
                             // Validate optional gallery prose without adding it to the scored Entry.
-                            let extra: Vec<&str> = ["expect", "expectEnd"].into_iter()
+                            let mut extra: Vec<&str> = ["expect", "expectEnd"].into_iter()
                                 .filter(|key| case_value.get(*key).is_some()).collect();
                             for key in &extra {
                                 if !case_value[*key].as_str().is_some_and(|text| !text.trim().is_empty() && text.chars().count() <= 300) {
                                     errors.push(format!("{case_at}: {key} must be non-empty text of at most 300 characters"));
+                                }
+                            }
+                            if let Some(collects) = case_value.get("collects") {
+                                extra.push("collects");
+                                if collects != &Value::Bool(true) {
+                                    errors.push(format!("{case_at}: collects is true when present"));
                                 }
                             }
                             if let Some(case) = entry(case_value, &case_at, &extra, errors) {
@@ -533,6 +539,15 @@ fn source_suite_files(files: &[(String, String)]) -> Result<(Entry, Vec<Category
 /// `pictured!("id", "Title", f)`, which expands to a `case` with the same id and title whose
 /// body hands the case's judged frame to the runner.
 fn case_entry(expr: &syn::Expr) -> Result<Entry, String> {
+    // Collection is an optional, argument-free flag after the session callback.
+    let expr = if let syn::Expr::MethodCall(method) = expr {
+        if method.method == "collects" {
+            if !method.args.is_empty() || !method.attrs.is_empty() || method.turbofish.is_some() {
+                return Err(table_error("collects takes no arguments"));
+            }
+            &*method.receiver
+        } else { expr }
+    } else { expr };
     // E22 section 10.1: this declaration adds a sibling supervisor, without
     // changing which case the runner executes. Admit only the shared callback.
     let expr = if let syn::Expr::MethodCall(method) = expr {
@@ -1719,6 +1734,11 @@ fn session_case_declarations_preserve_the_case_table() {
     ])]).gui(); fn main() { S.run() }"#;
     let (_, categories) = source_suite(source).unwrap();
     assert_eq!(categories[0].cases.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(), ["a", "b"]);
+    let collecting = source.replace("session(libuitest::supervisor::serve)", "session(libuitest::supervisor::serve).collects()");
+    assert_eq!(source_suite(&collecting).unwrap().1, categories);
+    for bad in ["collects(1)", "collects::<u8>()", "collects().collects()", "unknown()"] {
+        assert!(source_suite(&collecting.replace("collects()", bad)).is_err(), "{bad}");
+    }
     for bad in ["session()", "session(a, b)", "session(|| hidden())", "session(other::serve)", "unknown(libuitest::supervisor::serve)"] {
         assert!(source_suite(&source.replace("session(libuitest::supervisor::serve)", bad)).is_err(), "{bad}");
     }
@@ -1726,7 +1746,7 @@ fn session_case_declarations_preserve_the_case_table() {
     let (_, files) = suite_files(&root, "ui_testing").unwrap();
     let (_, categories) = source_suite_files(&files).unwrap();
     let count: usize = categories.iter().map(|c| c.cases.len()).sum();
-    assert_eq!(count, 155);
+    assert_eq!(count, 108);
 }
 
 

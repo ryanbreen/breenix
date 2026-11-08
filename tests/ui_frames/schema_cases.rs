@@ -177,4 +177,3 @@ pub fn structural_vacuous() -> CaseResult {
     }
     Ok(())
 }
-
