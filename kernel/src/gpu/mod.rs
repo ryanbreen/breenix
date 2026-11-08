@@ -3711,14 +3711,14 @@ fn destroy_context(tgid: u64, handle: u64) -> bool {
     .unwrap_or(false)
 }
 
-/// A new native image must contain the zeroed guest backing before its handle
+/// A new native image must have texels initialized to 0 before its handle
 /// becomes visible. A storage acknowledgement alone leaves recycled VRAM intact.
 /// This CE initialization does not count as a caller's render or publish a frame.
 #[cfg(target_arch = "x86_64")]
 fn initialize_native_image(id: u32, backing: Arc<Pages>, width: u32, height: u32, pitch: u32) -> Result<(), i64> {
     backing.maintain(0, backing.bytes(), false);
     let (serial, fence) = with_core(|c| (c.serial(), c.device_fence())).ok_or(ENODEV)?;
-    let request = dev::transfer_to_host(Tag::Sync(serial), 0, fence, id, backing,
+    let request = dev::initialize_image(Tag::Sync(serial), 0, fence, id, backing,
         0, 0, width, height, 0, pitch).ok_or(ENOMEM)?;
     let done = exec_req(serial, request, 0, &[id], &[])?;
     if !dev::ok(done.answer) || !done.matches_fence(fence) { return Err(EIO); }

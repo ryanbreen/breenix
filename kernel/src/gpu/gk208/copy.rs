@@ -171,13 +171,13 @@ enum Surface { Tiled(Image, [u32; 2]), Pitch(Linear) }
 struct Blit { src: Surface, dst: Surface, width: u32, height: u32, bpp: u32 }
 /// At most two non-pipelined launches. The sole completion follows both.
 #[derive(Clone, Copy)]
-pub struct Plan { copies: [Option<Blit>; 2], stale_fence: bool }
+pub struct Plan { copies: [Option<Blit>; 2], zero: Option<Image>, stale_fence: bool }
 #[derive(Clone, Copy, Default)]
 pub struct Extras { pub skip: bool, pub stale_fence: bool }
 impl Plan {
     /// Apply one request's controls to its engine work before publication.
     pub fn with_extras(mut self, x: Extras) -> Self {
-        if x.skip { self.copies = [None, None]; }
+        if x.skip { self.copies = [None, None]; self.zero = None; }
         self.stale_fence = x.stale_fence;
         self
     }
@@ -222,7 +222,7 @@ fn host_plan(image: Image, backing: Linear, r: [u32; 4], upload: bool) -> Result
     }
     let (tiled,pitch) = (Surface::Tiled(image,[x,y]),Surface::Pitch(backing));
     let (src,dst) = if upload { (pitch,tiled) } else { (tiled,pitch) };
-    Ok(Plan { stale_fence: false, copies: [Some(Blit { src,dst,width:w,height:h,bpp:image.texel_bytes }),None] })
+    Ok(Plan { zero: None, stale_fence: false, copies: [Some(Blit { src,dst,width:w,height:h,bpp:image.texel_bytes }),None] })
 }
 pub fn upload(image: Image, backing: Linear, r: [u32; 4]) -> Result<Plan, &'static str> {
     host_plan(image,backing,r,true)
@@ -239,7 +239,7 @@ pub fn pitch(src: Linear, dst: Linear, width: u32, height: u32, bpp: u32) -> Res
     if src.address < dst.address + dst.bytes && dst.address < src.address + src.bytes {
         return Err("CE pitch copy aliases backing");
     }
-    Ok(Plan { copies: [Some(Blit { src: Surface::Pitch(src), dst: Surface::Pitch(dst), width, height, bpp }), None], stale_fence: false })
+    Ok(Plan { zero: None, copies: [Some(Blit { src: Surface::Pitch(src), dst: Surface::Pitch(dst), width, height, bpp }), None], stale_fence: false })
 }
 /// Clip both ends together and route aliased rectangles through staging.
 pub fn region(src: Image, dst: Image, r: [u32; 6], staging: Option<Image>) -> Result<Plan, &'static str> {
@@ -262,7 +262,7 @@ pub fn region(src: Image, dst: Image, r: [u32; 6], staging: Option<Image>) -> Re
             return Err("invalid CE overlap staging");
         }
         let t = Surface::Tiled(t,[0,0]);
-        Ok(Plan { stale_fence: false, copies:[Some(blit(s,t)),Some(blit(t,d))] })
+        Ok(Plan { zero: None, stale_fence: false, copies:[Some(blit(s,t)),Some(blit(t,d))] })
     } else {
         // A whole image with identical tiling is also an identical byte string.
         // Copy its complete padded allocation with A0B5 PITCH layout, without
@@ -277,7 +277,7 @@ pub fn region(src: Image, dst: Image, r: [u32; 6], staging: Option<Image>) -> Re
             let linear = |i: Image| Linear { address:i.address, bytes:i.bytes, offset:0, stride:bytes };
             return pitch(linear(src),linear(dst),bytes,1,1);
         }
-        Ok(Plan { stale_fence: false, copies:[Some(blit(s,d)),None] })
+        Ok(Plan { zero: None, stale_fence: false, copies:[Some(blit(s,d)),None] })
     }
 }
 fn surface(out: &mut Vec<u32>, s: Surface, source: bool, byte_mode: bool) -> (u64,u32,u32) {
@@ -293,6 +293,14 @@ fn surface(out: &mut Vec<u32>, s: Surface, source: bool, byte_mode: bool) -> (u6
         }
     }
 }
+/// Initialize every texel directly in VRAM before publishing a fresh image.
+/// MIT cla0b5.h SET_REMAP_CONST_A/COMPONENTS selects a constant instead of
+/// fetching a source. The ARM VirGL counterpart keeps its zero guest backing.
+/// claim-lint:ok: tests/gt710_zero_plan_test.py checks 3 of 3 extents and engine release ordering.
+pub fn zero(image: Image) -> Result<Plan, &'static str> {
+    image.validate()?;
+    Ok(Plan { copies: [None, None], zero: Some(image), stale_fence: false })
+}
 pub fn encode_plan(plan: Plan, semaphore: u64, epoch: u64, sequence: u32) -> Result<Vec<u32>, &'static str> {
     let record_bytes = if plan.stale_fence { 16 } else { 12 };
     if semaphore % 4 != 0 || semaphore > (1<<40)-record_bytes || epoch == 0 || sequence == 0 {
@@ -300,6 +308,15 @@ pub fn encode_plan(plan: Plan, semaphore: u64, epoch: u64, sequence: u32) -> Res
     }
     let mut out = vec![];
     method(&mut out,0,&[0xa0b5]);
+    if let Some(image) = plan.zero {
+        let (destination, pitch, layout) = surface(&mut out, Surface::Tiled(image, [0, 0]), false, false);
+        // One constant component, one destination component, texel-sized.
+        method(&mut out, 0x700, &[0, 0, 4 | ((image.texel_bytes - 1) << 16)]);
+        method(&mut out, 0x400, &[0, 0, (destination >> 32) as u32, destination as u32,
+            image.width * image.texel_bytes, pitch, image.width, image.height]);
+        // NON_PIPELINED | FLUSH | SRC_PITCH | MULTI_LINE | REMAP.
+        method(&mut out, 0x300, &[0x686 | layout]);
+    }
     for b in plan.copies.into_iter().flatten() {
         // Whole, tightly packed tiled rows need no component remapping. Keep
         // the established pixel-mode path for small images, subrectangles

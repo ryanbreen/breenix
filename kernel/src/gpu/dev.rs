@@ -373,6 +373,19 @@ pub fn transfer_to_host(tag: Tag, ctx: u32, fence: u64, id: u32, backing: Arc<Pa
         backend::SVGA3D_DX => svga::upload(tag, ctx, fence, id, backing).map(Request::Svga), backend::VIRGL => Some(Request::Virgl(virgl::transfer_to_host(tag, ctx, fence, id, backing, x, y, w, h, offset, stride))), _ => None }
 }
 
+/// Initialize a fresh image before its handle is visible. Native CE fills a
+/// constant; ARM VirGL uses the zeroed attached backing through its upload path.
+#[allow(clippy::too_many_arguments)]
+pub fn initialize_image(tag: Tag, ctx: u32, fence: u64, id: u32, backing: Arc<Pages>,
+    x: u32, y: u32, w: u32, h: u32, offset: u64, stride: u32,
+) -> Option<Request> {
+    #[cfg(target_arch = "x86_64")]
+    if backend() == backend::GK208 {
+        return crate::gk208::initialize_image(tag, fence, id, backing).map(Request::Gk208);
+    }
+    transfer_to_host(tag, ctx, fence, id, backing, x, y, w, h, offset, stride)
+}
+
 pub fn undefined_command(tag: Tag, ctx: u32, fence: u64) -> Option<Request> {
     match backend() {
         #[cfg(target_arch = "x86_64")]
