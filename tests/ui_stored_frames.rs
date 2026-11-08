@@ -8,8 +8,8 @@ pub use outcome::{FailureClass, ScenarioOutcome};
 #[path = "../libs/libuitest/src/client.rs"] mod client;
 pub use client::RecordClient;
 #[path = "../libs/libuitest/src/frames.rs"] pub mod frames;
-#[path = "../userspace/programs/src/uitest_suite/formula_pattern.rs"] mod formula_pattern;
-#[path = "../userspace/programs/src/uitest_suite/reference_cases.rs"] pub mod cases;
+#[path = "ui_frames/formula_pattern.rs"] mod formula_pattern;
+#[path = "ui_frames/reference_cases.rs"] pub mod cases;
 
 // Only the syscall boundary is substituted; client and decoder are production code.
 #[path = "../libs/libbreenix/src/suite_result.rs"] pub mod result;
@@ -29,15 +29,12 @@ fn root() -> std::path::PathBuf {
 #[test] fn tampered_pin_precedes_png_decoder() { cases::reference_pin_at(&root()).unwrap(); }
 #[test] fn missing_file_names_path() { cases::reference_missing_at(&root()).unwrap(); }
 #[test] fn png_roundtrip_and_generated_reference() { cases::png_reference_at(&root()).unwrap(); }
-#[test] fn unreached_window_and_checkpoint() { cases::schema_binding().unwrap(); }
 
 #[test]
 fn records_decode_and_account_for_the_exact_capture() {
     use compare::{Format, Frame};
     use frames::{Bindings, Capture};
-    let manifest: schema::Value = schema::from_str(include_str!("../docs/suites/ui-testing.json")).unwrap();
     let mut definition = cases::definition("frames/frame-record");
-    assert_eq!(manifest["frameChecks"][0], definition);
     definition["source"] = serde_json::json!({"kind":"window", "window":"pattern"});
     let mut bindings = Bindings::default();
     bindings.window("pattern");

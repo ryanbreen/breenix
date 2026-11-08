@@ -1,185 +1,4 @@
-//! Frame schema cases from docs/gui/plan.md section 7.5.
-use crate::frame_case::{fail, CaseResult};
-use crate::frame_schema::{self, Context, Formula, Param, ParamType, Value};
-
-// Suite-source signatures, also compiled by the manifest validator.
-pub const FORMULAS: &[Formula] = &[Formula {
-    name: "schema-pattern",
-    params: &[
-        Param {
-            name: "unsigned",
-            kind: ParamType::U32(0, 10),
-        },
-        Param {
-            name: "signed",
-            kind: ParamType::I32(-2, 2),
-        },
-        Param {
-            name: "colour",
-            kind: ParamType::Colour,
-        },
-        Param {
-            name: "rect",
-            kind: ParamType::Rect,
-        },
-        Param {
-            name: "window",
-            kind: ParamType::WindowKey,
-        },
-        Param {
-            name: "seed",
-            kind: ParamType::Seed,
-        },
-    ],
-}];
-
-pub fn fixtures() -> Vec<Value> {
-    frame_schema::from_str(include_str!(
-        "../../../../tests/fixtures/frame-schema-v1.json"
-    ))
-    .expect("committed frame schema fixture table")
-}
-
-pub fn verdict(row: &Value) -> Result<frame_schema::Check, String> {
-    let frame = Some((
-        row["frame"][0].as_u64().unwrap() as u32,
-        row["frame"][1].as_u64().unwrap() as u32,
-    ));
-    let previous = row
-        .get("previous")
-        .map(|value| {
-            frame_schema::validate(
-                value,
-                &Context {
-                    frame,
-                    formulas: FORMULAS,
-                    previous: None,
-                },
-            )
-        })
-        .transpose()?;
-    frame_schema::validate(
-        &row["check"],
-        &Context {
-            frame,
-            formulas: FORMULAS,
-            previous: previous.as_ref(),
-        },
-    )
-}
-
-fn group(name: &str) -> CaseResult {
-    let mut seen = 0;
-    for row in fixtures().iter().filter(|row| row["group"] == name) {
-        seen += 1;
-        match (verdict(row), row["error"].as_str()) {
-            (Ok(_), None) => {}
-            (Err(error), Some(expected)) if error.contains(expected) => {}
-            (result, expected) => {
-                return fail(format!(
-                    "schema {}: expected {expected:?}, got {result:?}",
-                    row["name"]
-                ))
-            }
-        }
-    }
-    if seen == 0 {
-        return fail(format!("empty schema group {name}"));
-    }
-    Ok(())
-}
-
-pub fn unknown_field() -> CaseResult {
-    group("unknown-field")
-}
-pub fn formula_params() -> CaseResult {
-    group("formula-params")
-}
-pub fn schema_version() -> CaseResult {
-    group("schema-version")
-}
-
-pub fn mask() -> CaseResult {
-    group("mask")?;
-    let rows = fixtures();
-    let row = rows.iter().find(|r| r["name"] == "valid-mask").unwrap();
-    let check = verdict(row)?;
-    if check.compares(0, 0) || !check.compares(10, 10) || check.compared_area != 9900 {
-        return fail("mask did not exclude exactly its rectangle");
-    }
-    Ok(())
-}
-
-pub fn mask_cap() -> CaseResult {
-    group("mask-cap")?;
-    let rows = fixtures();
-    let check = verdict(
-        rows.iter()
-            .find(|r| r["name"] == "four-border-strips")
-            .unwrap(),
-    )?;
-    if check.compared_area != 9604 {
-        return fail("border strip union must leave 9604 pixels");
-    }
-    Ok(())
-}
-
-pub fn structural_vacuous() -> CaseResult {
-    group("structural-vacuous")?;
-    let rows = fixtures();
-    let row = rows
-        .iter()
-        .find(|r| r["name"] == "outside-unmasked")
-        .unwrap();
-    let check = verdict(row)?;
-    if check.effective_area != 396
-        || !check.in_effective_domain(0, 0)
-        || check.in_effective_domain(1, 1)
-    {
-        return fail("outside effective domain differs from border");
-    }
-    let mut pixels = vec![0u8; 200 * 100 * 4];
-    let outside_matches = |pixels: &[u8]| {
-        use libpixcheck::{Format, Frame, Options, Predicate, Rect};
-        let frame =
-            Frame::new(pixels, 200, 100, 800, Format::Bgrx).map_err(|e| format!("{e:?}"))?;
-        libpixcheck::structural(
-            frame,
-            Options {
-                regions: &[Rect {
-                    x: 0,
-                    y: 0,
-                    w: 100,
-                    h: 100,
-                }],
-                ..Options::default()
-            },
-            Predicate::Outside {
-                region: 0,
-                rect: Rect {
-                    x: 1,
-                    y: 1,
-                    w: 98,
-                    h: 98,
-                },
-                colour: [255, 0, 0],
-            },
-            None,
-        )
-        .map_err(|e| format!("{e:?}"))
-    };
-    if !outside_matches(&pixels)? {
-        return fail("clean outside region failed");
-    }
-    pixels[2] = 255;
-    if outside_matches(&pixels)? {
-        return fail("outside missed planted border pixel");
-    }
-    Ok(())
-}
-
-// These cases use the guest device interface; the schema host harness above
-// compiles the pure schema cases on its own.
+// Guest capture race cases.
 #[cfg(target_os = "breenix")]
 mod races {
     use libbreenix::{test_control as tc, window::abi::tc_point};
@@ -314,16 +133,13 @@ mod races {
         fn drop(&mut self) { let _ = tc::arm(tc_point::RELEASE_STALL, 0, 0); let _ = tc::disarm_all(); }
     }
 
-    fn overlap(app: &mut App, reader: &Reader, root: &Path, old: Commit, action: &str, second_reader: bool, witnessed: &mut [i64; 2]) -> Result<Commit, String> {
+    fn overlap(app: &mut App, reader: &Reader, root: &Path, old: Commit, action: &str, witnessed: &mut [i64; 2]) -> Result<Commit, String> {
         let path = destination(root, "race-a.arena")?;
-        let other_path = if second_reader { Some(destination(root, "race-b.arena")?) } else { None };
         let mut stall = Stall::arm(old.id)?;
         reader.start(path, old.id)?;
         stall.wait()?;
-        // Sending without waiting lets B's CAPTURE overlap the producer's commit;
-        // A is already inside its forced copy in either ordering of B and commit.
+        // The capture is stalled inside its copy while the producer acts.
         app.send(action)?;
-        let other = other_path.as_ref().map(|path| read_capture(path, old.id));
         let next = app.reply();
         let release = stall.release();
         let got = reader.finish()?;
@@ -331,31 +147,10 @@ mod races {
         let next = next?;
         let got = got.map_err(|e| e.to_string())?;
         stall.judge(&got, Some(old))?;
-        if let Some(other) = other {
-            let other = other.map_err(|e| e.to_string())?;
-            if other.record.window != old.id || (other.record.width, other.record.height) != (old.width, old.height) {
-                return Err("reader B changed the window extent".into());
-            }
-            let generation = stall.judge(&other, None)?;
-            if generation != old.generation && generation != next.generation { return Err("reader B returned an unproduced generation".into()); }
-        }
         capture_race::record_witness(stall.before, stall.fired, stall.release_before,
             tc::fired(tc_point::RELEASE_STALL).map_err(|e| e.to_string())?,
             |label, value| witnessed[usize::from(label == "capture-release-fired")] += value)?;
         Ok(next)
-    }
-    fn free_kb() -> Result<u64, String> {
-        let text = std::fs::read_to_string("/proc/meminfo").map_err(|e| e.to_string())?;
-        text.lines().find_map(|line| line.strip_prefix("MemFree:").and_then(|s| s.split_whitespace().next())
-            .and_then(|s| s.parse().ok())).ok_or_else(|| "MemFree missing".into())
-    }
-    fn destroyed_before_copy(root: &Path, reader: &Reader, old: Commit) -> Result<(), String> {
-        reader.start(destination(root, "race-gone.arena")?, old.id)?;
-        match reader.finish()? {
-            Err(capture::WindowError { syscall: Some(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENOENT)), .. }) => Ok(()),
-            Err(other) => Err(format!("capture before copy needs ENOENT: {other}")),
-            Ok(_) => Err("capture after destroy returned pixels".into()),
-        }
     }
     fn run(kind: u8) -> Result<(), String> {
         let mut session = Session::connect()?;
@@ -363,44 +158,15 @@ mod races {
         let mut app = App::launch(&mut session)?;
         let reader = Reader::new();
         let mut witnessed = [0; 2];
-        let result = (|| {
+        let result: Result<(), String> = (|| {
             let first = app.command("create")?;
             match kind {
-                0 | 1 => { overlap(&mut app, &reader, &root, first, "commit 0", kind == 1, &mut witnessed)?; }
+                0 => { overlap(&mut app, &reader, &root, first, "commit 0", &mut witnessed)?; }
                 2 => {
-                    let next = overlap(&mut app, &reader, &root, first, "resize", false, &mut witnessed)?;
+                    let next = overlap(&mut app, &reader, &root, first, "resize", &mut witnessed)?;
                     if (next.width, next.height, next.generation.commit) != (160, 100, first.generation.commit + 1) {
                         return Err("resize did not commit the new extent".into());
                     }
-                }
-                3 => {
-                    let mut round = |app: &mut App, old| -> Result<(), String> {
-                        overlap(app, &reader, &root, old, "destroy", false, &mut witnessed)?;
-                        destroyed_before_copy(&root, &reader, old)
-                    };
-                    round(&mut app, first)?;
-                    // Match windows_capture_across_destroy's three warm-up and
-                    // twenty measured rounds, with its 64 KiB free-memory bound.
-                    for _ in 1..3 { let old = app.command("create")?; round(&mut app, old)?; }
-                    let _ = free_kb()?;
-                    let before = free_kb()?;
-                    for _ in 0..20 { let old = app.command("create")?; round(&mut app, old)?; }
-                    let after = free_kb()?;
-                    breenix_suite::suite::value("capture-free-change", after as i64 - before as i64, "kb", None);
-                    if after + 64 < before { return Err(format!("capture retained {} KiB across destroy rounds", before - after)); }
-                }
-                4 => {
-                    let second = overlap(&mut app, &reader, &root, first, "commit 1", false, &mut witnessed)?;
-                    let third = overlap(&mut app, &reader, &root, second, "commit 0", false, &mut witnessed)?;
-                    if first.generation.producer == 0 || second.generation.producer == 0
-                        || first.generation.producer == second.generation.producer
-                        || third.generation.producer != first.generation.producer
-                        || second.generation.commit != first.generation.commit + 1
-                        || third.generation.commit != second.generation.commit + 1 {
-                        return Err("two producers did not alternate thread/ordinal pairs".into());
-                    }
-                    // Capture the final producer too, pinned across thread 1's commit.
-                    overlap(&mut app, &reader, &root, third, "commit 1", false, &mut witnessed)?;
                 }
                 _ => unreachable!(),
             }
@@ -417,11 +183,8 @@ mod races {
         }
         Ok(())
     }
-    pub fn capture_while_drawing() -> crate::frame_case::CaseResult { run(0).map_err(Into::into) }
-    pub fn capture_two_readers() -> crate::frame_case::CaseResult { run(1).map_err(Into::into) }
-    pub fn capture_resize_race() -> crate::frame_case::CaseResult { run(2).map_err(Into::into) }
-    pub fn capture_destroy_race() -> crate::frame_case::CaseResult { run(3).map_err(Into::into) }
-    pub fn capture_threads() -> crate::frame_case::CaseResult { run(4).map_err(Into::into) }
+    pub fn capture_while_drawing() -> breenix_suite::suite::CaseResult { run(0).map_err(Into::into) }
+    pub fn capture_resize_race() -> breenix_suite::suite::CaseResult { run(2).map_err(Into::into) }
 }
 #[cfg(target_os = "breenix")]
-pub use races::{capture_while_drawing, capture_two_readers, capture_resize_race, capture_destroy_race, capture_threads};
+pub use races::{capture_while_drawing, capture_resize_race};

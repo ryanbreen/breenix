@@ -1,9 +1,8 @@
 //! Stored-reference and binding cases; the reference is an authored coordinate pattern.
-use libuitest::{compare::{Format, Frame}, formula, frames::{self, Bindings, Capture}, RecordClient};
+use libuitest::{formula, frames::{self, Bindings}};
 use libuitest::schema::{self, Value};
 use std::path::Path;
 
-pub const ROOT: &str = "/usr/share/breenix/uitest/frames";
 pub const RELATIVE: &str = "ui-testing/coordinate-pattern.png";
 pub const PIN: &str = "244b7ddb41d62cfb5969a036c3141662592798e5505cdce5dcddb829a64d87d9";
 
@@ -65,15 +64,3 @@ pub fn schema_binding() -> Result<(), String> {
     bindings.finish(&[&check])
 }
 
-pub fn frame_record_at(root: &Path) -> Result<(), String> {
-    let definition = definition("frames/frame-record");
-    let pixels = formula::reference(4, 4, crate::formula_pattern::pixel);
-    let mut bindings = Bindings::default();
-    bindings.checkpoint("after-pattern");
-    let mut client = RecordClient::outer("ui-testing", "frames/frame-record", &["pattern"])?;
-    let capture = Capture { frame:Frame::new(&pixels,4,4,16,Format::Bgrx).map_err(|e| format!("{e:?}"))?,
-        source:"surface", checkpoint:"after-pattern", commit:0, epoch:0, barriers:&[] };
-    let verdict = frames::check_stored("ui-testing", &definition, capture, &bindings, root, &mut client)?;
-    if !verdict.comparison.passed() { return Err("authored surface mismatched".into()); }
-    Ok(())
-}

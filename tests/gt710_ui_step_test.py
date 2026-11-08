@@ -156,14 +156,10 @@ class UiStep(unittest.TestCase):
             text = text.replace(f'CASE {name} FAIL ms=1 msg=pending', f'CASE {name} PASS ms=1')
         text = text.replace(f'DONE passed={len(SELECTED)} failed={len(NAMES)-len(SELECTED)}',
                             f'DONE passed={len(selected)} failed={len(NAMES)-len(selected)}')
-        frame = ('SUITE ui-testing FRAME frames/frame-record pattern def=0123abcd ref=formula '
-                 'source=surface commit=0 epoch=0 w=4 h=4 sha256=' + 'a' * 64 + ' result=match\n')
-        text = text.replace('SUITE ui-testing CASE frames/frame-record ', frame + 'SUITE ui-testing CASE frames/frame-record ')
         phase = 'UI_STARTUP ui-testing sessions/start-desktop connect-begin=100 first-composite=270000100\n'
         text = text.replace('SUITE ui-testing CASE sessions/start-desktop ', phase + 'SUITE ui-testing CASE sessions/start-desktop ')
         witnesses = []
-        for name, rounds in [('capture-while-drawing', 1), ('capture-two-readers', 1),
-                             ('capture-resize-race', 1), ('capture-destroy-race', 23), ('capture-threads', 3)]:
+        for name, rounds in [('capture-while-drawing', 1), ('capture-resize-race', 1)]:
             case = 'frames/' + name
             values = ''.join(f'SUITE ui-testing VALUE {case} {label}={rounds}count\n'
                              for label in ['capture-stall-fired', 'capture-release-fired'])

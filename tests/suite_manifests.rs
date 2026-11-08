@@ -27,7 +27,7 @@ mod frame_case {
     pub type CaseResult = Result<(), String>;
     pub fn fail(message: impl Into<String>) -> CaseResult { Err(message.into()) }
 }
-#[path = "../userspace/programs/src/uitest_suite/frames.rs"]
+#[path = "ui_frames/schema_cases.rs"]
 mod frame_cases;
 
 fn validate_frame_checks(value: &Value, frame: Option<(u32,u32)>, formulas: &[frame_schema::Formula]) -> Result<Vec<frame_schema::Check>, String> {

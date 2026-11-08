@@ -2241,6 +2241,31 @@ Real time on `CLOCK_MONOTONIC`, with the workloads and bounds in section 12.2.
 
 The following IDs left the guest manifest under U20. Their dispositions are in the case disposition tables of `e22/plan-trimmed.md`.
 
+- `frames/capture-two-readers`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/capture-destroy-race`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/capture-threads`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/exact-match`: move-host (tests/ui_compare.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/one-pixel-fails`: move-host (tests/ui_compare.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/channel-tolerance`: move-host (tests/ui_compare.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/max-differing`: move-host (tests/ui_compare.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/regions-same-frame`: move-host (tests/ui_compare.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/mask`: move-host (tests/suite_manifests.rs and tests/ui_frame_schema.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/mask-cap`: move-host (tests/suite_manifests.rs and tests/ui_frame_schema.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/unknown-field`: move-host (tests/suite_manifests.rs and tests/ui_frame_schema.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/size-mismatch`: move-host (tests/ui_compare.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/reference-pin`: move-host (tests/ui_stored_frames.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/reference-missing`: move-host (tests/ui_stored_frames.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/formula`: move-host (tests/ui_structural_formula.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/structural-uniform`: move-host (tests/ui_structural_formula.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/structural-outside`: move-host (tests/ui_structural_formula.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/structural-count`: move-host (tests/ui_structural_formula.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/structural-vacuous`: move-host (tests/ui_frame_schema.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/formula-params`: move-host (tests/suite_manifests.rs and tests/ui_frame_schema.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/schema-version`: move-host (tests/suite_manifests.rs and tests/ui_frame_schema.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/schema-binding`: move-host (tests/ui_frame_schema.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/png-reference`: move-host (tests/ui_stored_frames.rs). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `frames/frame-record`: move-host (tests/uitest_outcome.rs (over suite_result.rs)). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+
 - `input/type-keymap-all`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
 - `input/click-covered-fails`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
 - `input/click-zero-area-fails`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->

@@ -34,7 +34,7 @@ pub fn count() -> Result {
 }
 pub fn formula() -> Result {
     let expected = formula::reference(4,4, |x,y| crate::formula_pattern::pixel(x,y));
-    let image = libimg::png::decode(include_bytes!("../../../../tests/fixtures/ui-formula.png")).map_err(|e| format!("{e:?}"))?;
+    let image = libimg::png::decode(include_bytes!("../fixtures/ui-formula.png")).map_err(|e| format!("{e:?}"))?;
     let mut actual=expected.clone();
     for changed in [false,true] {
         if changed { actual[4]=9; }

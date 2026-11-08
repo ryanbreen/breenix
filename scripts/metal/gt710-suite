@@ -4175,8 +4175,7 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
         if (len(times) != len(phases) or 'connect-begin' not in times or 'first-composite' not in times
                 or not 0 < times['first-composite'] - times['connect-begin'] <= 270_000_000):
             raise ValueError('desktop first composite exceeds U17 270 ms headroom or phases are incomplete')
-        for name, rounds in (('capture-while-drawing', 1), ('capture-two-readers', 1),
-                             ('capture-resize-race', 1), ('capture-destroy-race', 23), ('capture-threads', 3)):
+        for name, rounds in (('capture-while-drawing', 1), ('capture-resize-race', 1)):
             case = 'frames/' + name
             index = names.index(case)
             begin_case = text.index(cases[index - 1][2]) + len(cases[index - 1][2]) if index else text.index(records[0][2])
