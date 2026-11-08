@@ -440,6 +440,8 @@ struct Sub {
     native_fence: u64,
     /// When `SUBMIT` handed it to the device's queue; the watchdog's clock.
     sent_ns: Option<u64>,
+    /// Latest returned chunk; short probes for refills do not move the watchdog.
+    progress_ns: Option<u64>,
     error: Option<u32>,
     mismatch: Option<u32>,
     /// Its requests the device or the backlog still holds.
@@ -1567,6 +1569,7 @@ impl Core {
         let answer = done.answer;
         let Some(sub) = self.subs.get_mut(&serial) else { return };
         sub.requests = sub.requests.saturating_sub(1);
+        sub.progress_ns = Some(now_ns());
         if !dev::ok(answer) { sub.error.get_or_insert(answer); }
         if last {
             let submitted = sub.present.is_none();
@@ -1950,11 +1953,13 @@ impl Core {
         let hangs = self.subs.values().filter(|s| !s.published).filter_map(|s| s.sent_ns);
         let waits = self.syncs.values().filter(|s| !s.failed).filter_map(|s| s.sent_ns);
         let progress = self.quarantined_at.map(|q| q.max(self.last_progress));
-        // Short work gets early sleeping probes; long work retains W22's CPU
-        // margin. Use submission age so unrelated worker wakes cannot postpone it.
+        // Probe refilled short work from this submission's own completion progress.
+        // A chunk without progress keeps W22's long-wait cadence. The watchdog
+        // above still uses the original send time.
         let poll = (matches!(dev::backend(), abi::backend::SVGA3D_DX | abi::backend::GK208)
             && self.dev.as_ref().is_some_and(|d| d.outstanding() > 0) && !self.stalled)
-            .then(|| self.subs.values().filter(|s| !s.published).filter_map(|s| s.sent_ns)
+            .then(|| self.subs.values().filter(|s| !s.published)
+                .filter_map(|s| s.sent_ns.map(|sent| sent.max(s.progress_ns.unwrap_or(sent))))
                 .chain(self.syncs.values().filter(|s| !s.failed).filter_map(|s| s.sent_ns))
                 .map(|sent| completion_timing::next_probe(sent, now)).min()
                 .unwrap_or_else(|| now.saturating_add(POLL_NS)));
@@ -5198,6 +5203,7 @@ fn submit_stream(tgid: u64, a: &mut abi::Submit, mut extra: Option<Extra<'_>>, o
             fence,
             native_fence: 0,
             sent_ns: None,
+            progress_ns: None,
             error: None,
             mismatch: None,
             requests: reqs.len() as u32,
