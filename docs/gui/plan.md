@@ -1238,12 +1238,10 @@ rules: `timingSensitive` records host load and does not wait for a quiet host (`
 | `window-manager/liveness/memory-bounded` | eight animating clients, 60 epochs warmup then 600 epochs | bwm VmRSS growth | ≤ 64 KiB, with caches at their documented capacity |
 | `breengel/text/cache-bound` | 2,000 distinct glyph and size pairs | cache entries and bytes | ≤ 256 entries and ≤ 4 MiB |
 
-**Session start is 300 ms.** The first design adopted "a session start (bwm plus one app at first composite) must be
-under 300 ms on every target", and both session-start cases use that bound; kiosk is held to
-it because it is a session start too. The case's outer time limit (the default 10 s) is a separate thing and does
-not loosen the bound. Section 19 measures session start early. If that measurement shows 300 ms out of reach on
-a target, the measurement goes to the operator as an evidence-backed request to correct the expectation, and the
-case keeps failing at 300 ms until there is a ruling.
+**Session start is measured.** U20 (operator, 2026-11-08) replaces the original 300 ms pass/fail bound
+for desktop and kiosk starts with recorded measurements and a generous sanity cap. Both cases use the
+2 s cap in the table above and retain phase records for the measured starts. The case's outer time limit
+(the default 10 s) remains separate from the measured startup interval.
 
 ### 12.3 Functional limits and deadlines
 
@@ -1348,9 +1346,9 @@ POSIX `area`, so the effort objects omit it. Each suite manifest's `area` is the
 |---|---|---|---|---|---|
 | 1 | `breengel`: BreenGL graphics library | `breengel` | 17, 22, 25 | 14 | 380 |
 | 2 | `window-manager`: Window manager | `window-manager` | 17, 18, 25 | 13 | 249 |
-| 3 | `ui-testing`: UI test framework | `ui-testing` | 18, 21, 25 | 9 | 206 |
+| 3 | `ui-testing`: UI test framework | `ui-testing` | 18, 21, 25 | 9 | 108 |
 | 4 | `gui-apps`: GUI applications (the destination) | `gui-apps` | 24, 25 | 10 | 307 |
-| | **Total** | | | **46** | **1,142** |
+| | **Total** | | | **46** | **1,044** |
 
 The desktop's real startup is measured by suite cases, not by a `bootPath` milestone. The bootPath measure
 counts only the full tests gate on x86-64, and that gate never runs `init desktop`, so a desktop boot-path
