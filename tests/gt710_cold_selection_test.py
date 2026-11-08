@@ -88,6 +88,28 @@ class ColdSelection(unittest.TestCase):
         with self.assertRaises(ValueError):
             API['completed_suite_capture'](self.path,SHA,'window-manager')
 
+    def test_handoff_must_follow_source_closure_and_name_a_disk_run(self):
+        saved=list(self.events)
+        self.events=self.events[:2]+[self.events[3],self.events[2]]+self.events[4:]
+        self.save()
+        with self.assertRaises(ValueError):
+            API['completed_suite_capture'](self.path,SHA,'window-manager')
+        self.events=saved;self.save()
+        root=Path(__file__).resolve().parents[1]
+        shutil.copyfile(root/'docs/suites/gpu.json',self.path/'definition/docs/suites/gpu.json')
+        boot=json.loads((self.path/'run.json').read_text());boot['suites']=['window-manager','gpu']
+        (self.path/'run.json').write_text(json.dumps(boot))
+        (self.path/'suite-verdict.txt').write_text(self.verdict.replace('files-io','gpu'))
+        with self.assertRaises(ValueError):
+            API['completed_suite_capture'](self.path,SHA,'window-manager')
+
+    def test_selection_uses_the_captured_manifest(self):
+        path=self.path/'definition/docs/suites/window-manager.json'
+        manifest=json.loads(path.read_text());manifest['diskChecks']=[{'id':'fixture-disk-check'}]
+        path.write_text(json.dumps(manifest))
+        with self.assertRaises(ValueError):
+            API['completed_suite_capture'](self.path,SHA,'window-manager')
+
     def test_tail_is_bound_and_disk_failure_stays_a_failure(self):
         with self.assertRaises(ValueError):
             API['completed_suite_capture'](self.path, SHA, 'files-io')
