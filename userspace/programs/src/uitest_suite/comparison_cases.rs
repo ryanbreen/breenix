@@ -17,7 +17,7 @@ pub fn one_pixel_fails() -> Result {
     let p = [0u8; 16]; let mut q = p; q[8..12].copy_from_slice(&[3, 4, 5, 0]);
     let r = compare(frame(&p, 2, 2), frame(&q, 2, 2), Options::default()).map_err(|e| format!("{e:?}"))?;
     let d = r.comparison.first.ok_or("missing difference")?;
-    if r.comparison.passed() || (d.x, d.y, d.expected, d.actual) != (0, 1, [0,0,0,255], [3,4,5,255]) { return Err(format!("wrong mismatch: {r:?}")); }
+    if r.failure_class() != Some(libuitest::outcome::FailureClass::PixelMismatch) || (d.x, d.y, d.expected, d.actual) != (0, 1, [0,0,0,255], [3,4,5,255]) { return Err(format!("wrong mismatch: {r:?}")); }
     Ok(())
 }
 pub fn channel_tolerance() -> Result {

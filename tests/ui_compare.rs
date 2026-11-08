@@ -1,6 +1,8 @@
 extern crate self as libuitest;
 #[path = "../libs/libuitest/src/compare.rs"]
 pub mod compare;
+#[path = "../libs/libuitest/src/outcome.rs"]
+pub mod outcome;
 #[path = "../userspace/programs/src/uitest_suite/comparison_cases.rs"]
 mod cases;
 #[test] fn exact() { cases::exact_match().unwrap(); }
