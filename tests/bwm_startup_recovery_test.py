@@ -1,0 +1,47 @@
+"""Startup presentation and optional warm-up errors are not pixel mismatches."""
+from pathlib import Path
+import unittest
+from gt710_gr_live_unwind_test import item
+from suite_collection_test import run_rust
+ROOT=Path(__file__).resolve().parents[1]
+
+class StartupRecovery(unittest.TestCase):
+ def test_presentation_error_keeps_its_own_class(self):
+  text=(ROOT/'userspace/programs/src/bwm.rs').read_text()
+  start=text.index('startup_prepare::during(')
+  closure=item(text[start:],'}, || {');body=closure[closure.index('{')+1:closure.rfind('}')]
+  run_rust(self,r'''
+#[derive(Debug)]struct FrameError;impl std::fmt::Display for FrameError{fn fmt(&self,f:&mut std::fmt::Formatter)->std::fmt::Result{write!(f,"present unavailable")}}
+enum CheckError{Failed(String)}
+#[derive(Debug,PartialEq)]enum Outcome{Pixels(u64),Mismatch,Presentation}
+trait Classified{fn classified(self)->Outcome;}
+impl Classified for Result<u64,CheckError>{fn classified(self)->Outcome{match self{Ok(n)=>Outcome::Pixels(n),Err(CheckError::Failed(e))=>{assert!(!e.is_empty());Outcome::Mismatch}}}}
+impl Classified for Result<Result<u64,CheckError>,FrameError>{fn classified(self)->Outcome{match self{Ok(r)=>r.classified(),Err(_)=>Outcome::Presentation}}}
+struct Gpu{fail_present:bool,fail_pixels:bool}impl Gpu{
+ fn present_startup_desktop(&mut self,_p:Option<()>)->Result<(),FrameError>{if self.fail_present{Err(FrameError)}else{Ok(())}}
+ fn check(&mut self,_id:u64,_layers:&[()],_p:Option<()>)->Result<u64,CheckError>{if self.fail_pixels{Err(CheckError::Failed("wrong pixel".into()))}else{Ok(4096000)}}
+}
+mod libuitest{pub mod startup{pub fn mark(_name:&str){}}}
+fn measure_check<T>(f:impl FnOnce()->T)->T{f()}
+fn attempt(gpu:&mut Gpu)->Outcome{let first_pointer=();let first=(||{@BODY@})();first.classified()}
+#[test]fn failure_classes(){assert_eq!(attempt(&mut Gpu{fail_present:true,fail_pixels:false}),Outcome::Presentation);assert_eq!(attempt(&mut Gpu{fail_present:false,fail_pixels:true}),Outcome::Mismatch);assert_eq!(attempt(&mut Gpu{fail_present:false,fail_pixels:false}),Outcome::Pixels(4096000));}
+'''.replace('@BODY@',body))
+
+ def test_optional_title_warmup_error_does_not_exit(self):
+  text=(ROOT/'userspace/programs/src/bwm.rs').read_text()
+  block=item(text,'if let Err(error) = prepared {')
+  run_rust(self,r'''
+mod process{pub fn exit(_status:i32)->!{panic!("optional warmup killed desktop")}}
+fn warm(prepared:Result<(),&str>){@BLOCK@}
+#[test]fn warmup_is_optional(){let old_exit:fn(i32)->! =process::exit;let _=old_exit;assert!(std::panic::catch_unwind(||warm(Err("device error"))).is_ok());warm(Ok(()));}
+'''.replace('@BLOCK@',block))
+
+ def test_recovery_retries_only_presentation_errors(self):
+  path=ROOT/'userspace/programs/src/bwm/startup_prepare.rs'
+  run_rust(self,r'''
+#[path="@PATH@"]mod startup;
+#[test]fn strict_session_does_not_retry(){let mut calls=0;let r:Result<Result<u64,&str>,&str>=startup::recover(Err("present"),true,|_|{calls+=1;Ok(Ok(4096000))});assert_eq!(r,Err("present"));assert_eq!(calls,0);}
+#[test]fn production_retries_then_checks(){let mut calls=0;let r:Result<Result<u64,&str>,&str>=startup::recover(Err("present"),false,|_|{calls+=1;if calls==1{Err("present again")}else{Ok(Ok(4096000))}});assert_eq!(r,Ok(Ok(4096000)));assert_eq!(calls,2);let mut retries=0;let r:Result<Result<u64,&str>,&str>=startup::recover(Ok(Err("pixel mismatch")),false,|_|{retries+=1;Ok(Ok(4096000))});assert_eq!(r,Ok(Err("pixel mismatch")));assert_eq!(retries,0);let(prepared,checked)=startup::during(||Ok(()),||7);assert_eq!((prepared,checked),(Ok(()),7));}
+'''.replace('@PATH@',str(path)))
+
+if __name__=='__main__':unittest.main()
