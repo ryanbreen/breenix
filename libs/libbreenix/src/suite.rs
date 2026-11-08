@@ -2583,9 +2583,8 @@ impl Screen {
     fn live_on(&self) -> bool { self.live && !self.session_active }
 
     fn release_for_session(&mut self) -> Result<(), String> {
-        if self.gui || self.fb.is_some() || self.gpu.is_some() {
-            graphics::give_back_display().map_err(|e| std::format!("release runner display: {e}"))?;
-        }
+        // The supervisor nests above this retained owner. Giving it back here
+        // needlessly restores the console between two graphical owners.
         self.session_active = true;
         Ok(())
     }

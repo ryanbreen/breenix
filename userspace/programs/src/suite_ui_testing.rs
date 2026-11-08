@@ -306,9 +306,9 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     ]),
     category("sessions", "Sessions, state isolation & cleanup", &[
         // A desktop session with one app reaches its first composited commit within 300 ms. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("start-desktop", "A desktop session with one app reaches its first composited commit within 300 ms", sessions::start_desktop).session(libuitest::supervisor::serve),
+        case("start-desktop", "A desktop session with one app reaches its first composited commit within 300 ms", sessions::start_desktop).session(libuitest::supervisor::serve).collects(),
         // A kiosk session with one app reaches its first composited commit within 300 ms. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("start-kiosk", "A kiosk session with one app reaches its first composited commit within 300 ms", sessions::start_kiosk).session(libuitest::supervisor::serve),
+        case("start-kiosk", "A kiosk session with one app reaches its first composited commit within 300 ms", sessions::start_kiosk).session(libuitest::supervisor::serve).collects(),
         // Apps in a session receive its fonts, clock, seed, mode, time zone, locale and config root. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("environment", "Apps in a session receive its fonts, clock, seed, mode, time zone, locale and config root", sessions::environment).session(libuitest::supervisor::serve),
         // bwm, Breengel's font configuration and every app read and write under the session's config root. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
