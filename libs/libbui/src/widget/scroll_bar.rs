@@ -282,3 +282,30 @@ impl super::Widget for ScrollBar {
         n
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tree::Tree;
+    use crate::widget::Widget;
+
+    #[test]
+    fn published_thumb_is_the_drawing_thumb() {
+        let theme = Theme::dark();
+        for height in [12, 80, 173] {
+            let mut bar = ScrollBar::new(Rect::new(10, 20, 12, height), 800, 160);
+            for delta in [0, -3, -100, 2] {
+                bar.scroll(delta);
+                let nodes = bar.tree_nodes("scroll", Some("root"), Rect::new(0, 0, 500, 500), &theme);
+                assert_eq!(nodes.len(), 2, "track must publish its drawing thumb");
+                assert_eq!(nodes[1].key, "scroll/thumb");
+                assert_eq!(nodes[1].parent.as_deref(), Some("scroll"));
+                assert_eq!(nodes[1].bounds, bar.thumb_rect().as_tree_rect());
+                let tree = Tree { root: nodes[0].clone(), children: nodes[1..].to_vec() };
+                let mut page = [0; 4096];
+                tree.write(&mut page).unwrap();
+                assert_eq!(Tree::parse(&page).unwrap(), tree);
+            }
+        }
+    }
+}
