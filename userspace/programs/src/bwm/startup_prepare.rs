@@ -10,3 +10,17 @@ pub fn during<R>(prepare: impl FnOnce() -> Result<(), String> + Send,
         (prepared, checked)
     })
 }
+
+/// Retry unavailable presentations in production. A presented pixel-check
+/// result is returned unchanged, including a mismatch.
+pub fn recover<T, E>(mut result: Result<T, E>, strict: bool,
+    mut retry: impl FnMut(E) -> Result<T, E>,
+) -> Result<T, E> {
+    loop {
+        match result {
+            Ok(value) => return Ok(value),
+            Err(error) if strict => return Err(error),
+            Err(error) => result = retry(error),
+        }
+    }
+}

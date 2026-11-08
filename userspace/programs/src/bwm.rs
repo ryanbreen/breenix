@@ -221,7 +221,31 @@ fn main() {
     // desktop target and the pointer's bitmap (`compositor`).
     compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
     libuitest::startup::mark("chrome-ready");
-    let fills = check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index);
+    let strict_startup = std::env::var_os("BREENIX_INPUT_DEVICES").is_some()
+        || std::env::var_os("BREENIX_CONFIG_ROOT").is_some();
+    let mut reported_startup_error = false;
+    let mut fills = startup_prepare::recover(
+        check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index), strict_startup, |error| {
+            if !reported_startup_error {
+                eprintln!("[bwm] initial presentation unavailable: {error}; recovering");
+                reported_startup_error = true;
+            }
+            let _ = libbreenix::time::sleep_ms(16);
+            if let Err(error) = gpu.reopen() {
+                eprintln!("[bwm] ERROR: GPU compositor could not be reopened: {error}");
+                process::exit(1);
+            }
+            paint_background(&mut gpu.background);
+            compose_full_redraw(&mut gpu, &[], &stack, &clock_text, &mut ui_font);
+            check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index)
+        }).unwrap_or_else(|error| {
+            eprintln!("[bwm] initial presentation FAILED: {error}");
+            process::exit(1);
+        });
+    if let Err(error) = &fills {
+        eprintln!("[bwm] desktop fill check FAILED: {error}");
+        process::exit(1);
+    }
     libuitest::startup::mark("fills-ready");
     // Discover metadata while the bare desktop remains unchanged. Coverage
     // preparation writes only the font atlas, independently of the pixel check.
@@ -229,7 +253,7 @@ fn main() {
     if initial_windows { reconcile_stack(&windows, &mut stack, true); }
     libuitest::startup::mark("initial-windows-ready");
     let first_pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
-    let (prepared, first) = startup_prepare::during(|| {
+    let (prepared, presented) = startup_prepare::during(|| {
         libuitest::startup::mark("title-plan-begin");
         let result = if let Some(font) = ui_font.as_mut() {
             let titles: Vec<&[u8]> = ordered_windows(&windows, &stack)
@@ -242,18 +266,44 @@ fn main() {
         result
     }, || {
         gpu.present_startup_desktop(Some(first_pointer))
-            .map_err(|e| CheckError::Failed(e.to_string()))
-            .and_then(|()| {
+            .map(|()| {
                 libuitest::startup::mark("pointer-presented");
                 measure_check(|| gpu.check(0, &[], Some(first_pointer)))
             })
     });
     if let Err(error) = prepared {
-        eprintln!("[bwm] first frame check FAILED: {error}");
-        process::exit(1);
+        eprintln!("[bwm] title coverage warm-up unavailable: {error}");
     }
+    // Use the normal fresh-context recovery before composing clients, then
+    // perform the same whole-frame and fill checks on the recovered desktop.
+    let first = startup_prepare::recover(presented, strict_startup, |error| {
+        if !reported_startup_error {
+            eprintln!("[bwm] initial presentation unavailable: {error}; recovering");
+            reported_startup_error = true;
+        }
+        let _ = libbreenix::time::sleep_ms(16);
+        if let Err(error) = gpu.reopen() {
+            eprintln!("[bwm] ERROR: GPU compositor could not be reopened: {error}");
+            process::exit(1);
+        }
+        paint_background(&mut gpu.background);
+        compose_full_redraw(&mut gpu, &[], &stack, &clock_text, &mut ui_font);
+        fills = match check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index) {
+            Ok(checked) => checked,
+            Err(error) => return Err(error),
+        };
+        if let Err(error) = &fills {
+            eprintln!("[bwm] desktop fill check FAILED: {error}");
+            process::exit(1);
+        }
+        gpu.present_startup_desktop(Some(first_pointer)).map(|()| {
+            measure_check(|| gpu.check(0, &[], Some(first_pointer)))
+        })
+    }).unwrap_or_else(|error| {
+        eprintln!("[bwm] initial presentation FAILED: {error}");
+        process::exit(1);
+    });
     libuitest::startup::mark("checks-ready");
-    let first_presented = first.is_ok();
     match first {
         Ok(pixels) => print!("[bwm] first frame read back: {} pixels exact\n", pixels),
         Err(CheckError::Moved(e)) | Err(CheckError::Failed(e)) => {
@@ -273,8 +323,8 @@ fn main() {
     // Another process holds the display: bwm composes again when it has it back.
     let mut display_lost = false;
     // The pointer the last composed frame drew, so a move repaints where it was.
-    let mut drawn_pointer = first_presented.then_some(first_pointer);
-    let mut full_redraw = !first_presented;
+    let mut drawn_pointer = Some(first_pointer);
+    let mut full_redraw = false;
     let mut validation: ValidationQueue<PresentedScene> = ValidationQueue::new();
     let mut working_scene = PresentedScene { layers: Vec::new(), pointer: first_pointer };
 

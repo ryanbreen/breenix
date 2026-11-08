@@ -499,10 +499,11 @@ pub(super) fn frame_layers(windows: &[Window], stack: &Stack, layers: &mut Vec<L
 /// Each must be the colour the desktop's definition gives there (the bar colours, and
 /// `background_pixel`'s formula). The read-back's record must name a scanout of the composed
 /// size, the one MODES reports bound, and the GPU core's current mode must have that size.
-pub(super) fn check_desktop_fills(gpu: &mut Compositor, screen_w: usize, screen_h: usize, mode_index: u32) -> Result<String, String> {
+pub(super) fn check_desktop_fills(gpu: &mut Compositor, screen_w: usize, screen_h: usize, mode_index: u32) -> Result<Result<String, String>, FrameError> {
     measure_check(|| {
         // The whole frame, so no pointer the last frame drew remains in it.
-        gpu.present_startup_desktop(None).map_err(|e| e.to_string())?;
+        gpu.present_startup_desktop(None)?;
+        Ok((|| {
         let (w, h) = (screen_w as u32, screen_h as u32);
         let (tb, ab) = (px(TASKBAR_HEIGHT) as u32, px(APPBAR_HEIGHT) as u32);
         let word = |c: Color| 0xFF00_0000 | (c.r as u32) << 16 | (c.g as u32) << 8 | c.b as u32;
@@ -530,5 +531,6 @@ pub(super) fn check_desktop_fills(gpu: &mut Compositor, screen_w: usize, screen_
             shown.resource, shown.width, shown.height, mode_index, mode.width, mode.height, w, h, ui().scale,
             tb, w - 1, tb - 1, w - 1, tb, h - ab, h, h - ab, w - 1, h - 1, w - 1, h - ab - 1, samples.len()
         ))
+        })())
     })
 }
