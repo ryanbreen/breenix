@@ -9,6 +9,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts/metal'))
@@ -180,6 +181,26 @@ class UiStep(unittest.TestCase):
             for bad in [text.replace(line, '', 1), text.replace(line, line.replace(line.split('=')[1].strip(), '0count'), 1),
                         text.replace(line, line + line, 1), text.replace(line, '', 1) + line]:
                 self.assertEqual(score(bad), 1)
+
+    def test_launch_shape_completion_marker(self):
+        original = serial()
+        path = self.path / 'serial.txt'
+        path.write_text(original + 'DISPATCH_STRAND_CENSUS save_no_t')
+        self.assertEqual(self.record(), 0)
+        path.write_text(original.replace('SUITE_SEQUENCE READY ui-testing\n', ''))
+        self.assertEqual(self.record(), 1)
+        self.boot['suites'] = ['ui-testing', 'console']
+        self.boot['suite'] = None
+        (self.path / 'run.json').write_text(json.dumps(self.boot))
+        path.write_text(original + 'DISPATCH_STRAND_CENSUS save_no_t')
+        with patch.dict(API['step_capture'].__globals__, {'completed_suite_capture': lambda *args: {'boot': self.boot, 'serial': path.read_text()}}):
+            with self.assertRaisesRegex(ValueError, 'incomplete or fatal WM capture'):
+                API['step_capture'](self.path, SHA, 1, 'ui-testing', 'gt710-step-22-', 8)
+        self.boot['suites'] = ['ui-testing']
+        self.boot['suite'] = 'ui-testing'
+        (self.path / 'run.json').write_text(json.dumps(self.boot))
+        path.write_text(original + 'SUITE ui-testing CASE')
+        self.assertEqual(self.record(), 1)
 
     def test_cli(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/metal/gt710-suite'),
