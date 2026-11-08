@@ -119,3 +119,30 @@ fn committed_geometry_matches_render_scale_on_both_display_scales() {
         }
     }
 }
+
+#[test]
+fn pointer_probe_reports_partial_scroll_and_captured_drag_through_layout() {
+    let mut scene=Widgets::pointer_probe();
+    scene.pointer(&InputState::from_raw(30,180,0,0,0));
+    scene.scroll(-40);
+    let tree=scene.tree();
+    let row=checks::node(&tree,"list/item-06").unwrap();
+    assert_eq!(row.bounds,[20,230,200,20]); assert_eq!(row.clip,[20,230,200,15]);
+    scene.pointer(&InputState::from_raw(340,102,1,0,0));
+    assert_eq!(scene.tree().root.value["pointer"]["layout_changes"],1);
+    for i in 0..10 {
+        let (x,y)=if i<5 {(343+i*3,102)} else {(90+i*3,-16)};
+        scene.pointer(&InputState::from_raw(x,y,1,1,0));
+        scene.record_motion(100+i as u64,x,y);
+    }
+    scene.pointer(&InputState::from_raw(117,-16,0,1,0));
+    let tree=scene.tree(); let trace=&tree.root.value["pointer"];
+    assert_eq!(trace["motions"].as_array().unwrap().len(),10);
+    assert_eq!(trace["motions"][9],serde_json::json!([109,117,-16]));
+    assert_eq!(trace["layout_changes"],2); assert_eq!(trace["presses"],1);
+    assert_eq!(trace["releases"],1); assert_eq!(trace["completed"],1);
+    assert_eq!(trace["held"],false); assert_eq!(trace["captured"],false);
+    assert!(!checks::node(&tree,"amount").unwrap().flags.contains(&libbui::tree::Flag::Pressed));
+    click(&mut scene,25,100);
+    assert_eq!(checks::node(&scene.tree(),"accept").unwrap().value,true);
+}
