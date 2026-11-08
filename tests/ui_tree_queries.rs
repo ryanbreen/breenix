@@ -1,4 +1,5 @@
-#[path = "../libs/breengel/src/tree.rs"]
+extern crate alloc;
+#[path = "../libs/libbui/src/tree.rs"]
 mod tree;
 use tree::{Flag, Node, Role, Tree};
 use serde_json::json;

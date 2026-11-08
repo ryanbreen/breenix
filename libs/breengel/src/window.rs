@@ -176,6 +176,11 @@ impl Window {
         self.semantic_tree = Some(tree);
     }
 
+    /// Report application-managed geometry changes alongside libbui's layout calls.
+    pub fn layout_changed(&mut self) { libbui::layout::layout_changed(); }
+
+    pub fn layout_version(&self) -> u64 { libbui::layout::layout_version() }
+
     /// The live MAP_TREE count, read from the page mapped once at construction.
     pub fn tree_reader_count(&self) -> u64 {
         // The kernel keeps this read-only, aligned mapping alive until munmap.
@@ -203,6 +208,7 @@ impl Window {
         m.ui_time_ms = crate::clock::now_ns() / 1_000_000;
         m.real_clock_reads = crate::clock::real_clock_reads();
         m.tree_serializations = self.tree_serializations;
+        m.layout_version = libbui::layout::layout_version();
         m
     }
 
@@ -459,6 +465,7 @@ impl Window {
         self.buffers = r.buffer;
         self.width = new_width;
         self.height = new_height;
+        self.layout_changed();
         Ok(())
     }
 }

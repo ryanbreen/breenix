@@ -17,6 +17,18 @@ impl Rect {
         px >= self.x && px < self.x + self.w && py >= self.y && py < self.y + self.h
     }
 
+    /// Intersect with an ancestor's effective clip; empty axes have length 0.
+    pub fn intersection(self, other: Self) -> Self {
+        let x = self.x.max(other.x);
+        let y = self.y.max(other.y);
+        Self::new(x, y, self.right().min(other.right()).saturating_sub(x).max(0),
+            self.bottom().min(other.bottom()).saturating_sub(y).max(0))
+    }
+
+    pub fn as_tree_rect(self) -> [i64; 4] {
+        [self.x.into(), self.y.into(), self.w.into(), self.h.into()]
+    }
+
     /// Returns a new rectangle shrunk by `padding` on all sides.
     pub fn inset(&self, padding: i32) -> Self {
         Self {

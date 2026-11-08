@@ -48,6 +48,8 @@ fn widget_set_reports_roles_values_flags_and_children() {
         assert!(n.flags.contains(&Flag::Visible));
     }
     assert_eq!(bar.tree_node("scroll", None, clip).role, Role::Scrollbar);
+    let idle_bar = ScrollBar::new(r, 100, 100);
+    assert!(!idle_bar.tree_node("idle-scroll", None, clip).flags.contains(&Flag::Visible));
     let mut tabs = TabBar::new(r, vec![b"First", b"Second"], &theme);
     tabs.set_selected(1);
     let t = tabs.tree_nodes("tabs", Some("root"), clip, &theme);
@@ -55,7 +57,7 @@ fn widget_set_reports_roles_values_flags_and_children() {
     assert_eq!(t[2].parent.as_deref(), Some("tabs"));
     assert_eq!(t[2].name, "Second");
     assert!(t[2].flags.contains(&Flag::Selected));
-    let mut menu = MenuBar::new(r, vec![Menu { label: b"File", items: vec![
+    let mut menu = MenuBar::new(Rect::new(10, 20, 200, 22), vec![Menu { label: b"File", items: vec![
         MenuItem::checkable(b"Show", 1, libbui::shortcut::Shortcut::NONE, true),
     ] }]);
     menu.layout(&theme);
@@ -65,6 +67,7 @@ fn widget_set_reports_roles_values_flags_and_children() {
     assert!(m[1].flags.contains(&Flag::Expanded));
     assert!(m[2].flags.contains(&Flag::Checked));
     assert_eq!(m[2].parent.as_deref(), Some("menu/0"));
+    assert!(m[2].clip[1] + m[2].clip[3] <= m[0].clip[1] + m[0].clip[3]);
     let picker = FilePicker::new(r, b"/tmp".to_vec(), vec![FileEntry { name: b"note".to_vec(), is_dir: false, size: 3 }], &theme);
     let p = picker.tree_nodes("picker", None, clip, &theme);
     assert_eq!(p[0].role, Role::Dialog);

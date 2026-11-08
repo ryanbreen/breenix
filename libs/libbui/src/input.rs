@@ -98,3 +98,35 @@ impl<'a> KeyInput<'a> {
         }
     }
 }
+
+/// Routes a button sequence by stable widget identity, independent of later hit tests.
+/// Call with the topmost enabled hit, then deliver the event to the returned widget.
+/// Keep identities stable across layout changes; cancel when the owner is removed.
+#[derive(Default, Debug)]
+pub struct PointerCapture {
+    owner: Option<u64>,
+    held: bool,
+}
+
+impl PointerCapture {
+    pub fn route(&mut self, input: &InputState, hit: Option<u64>) -> Option<u64> {
+        if input.mouse_pressed {
+            self.owner = hit;
+            self.held = true;
+        }
+        if self.held {
+            let owner = self.owner;
+            if input.mouse_released || !input.mouse_down {
+                self.cancel();
+            }
+            return owner;
+        }
+        // A release without a press observed by this router has no owner.
+        if input.mouse_down || input.mouse_released { None } else { hit }
+    }
+
+    pub fn cancel(&mut self) {
+        self.owner = None;
+        self.held = false;
+    }
+}

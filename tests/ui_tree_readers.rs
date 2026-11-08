@@ -1,7 +1,7 @@
 //! Execute the production VMA lease and BreenGL commit gate off hardware.
 extern crate alloc;
 use std::sync::{Arc, atomic::Ordering};
-#[path = "../libs/breengel/src/tree.rs"]
+#[path = "../libs/libbui/src/tree.rs"]
 mod tree;
 #[path = "../libs/breengel/src/tree_commit.rs"]
 mod tree_commit;

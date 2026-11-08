@@ -109,6 +109,7 @@ impl FilePicker {
 
     /// Replace the displayed directory and entries, resetting scroll and selection.
     pub fn navigate(&mut self, path: Vec<u8>, mut entries: Vec<FileEntry>) {
+        crate::layout::layout_changed();
         sort_entries(&mut entries);
         self.path_field = super::text_field::TextField::new(
             Rect::new(
@@ -237,6 +238,7 @@ impl FilePicker {
         self.error.as_deref()
     }
     pub fn show_error(&mut self, message: &[u8]) {
+        crate::layout::layout_changed();
         self.error = Some(message.to_vec());
         self.entries.clear();
         self.selected = None;
@@ -248,18 +250,22 @@ impl FilePicker {
         Rect::new(self.list_area.x + self.list_area.w - width, self.list_area.y, width, self.list_area.h)
     }
     fn reveal(&mut self) {
+        let before = self.scroll_offset;
         if let Some(i) = self.selected {
             self.scroll_offset = self.scroll_offset.min(i);
             if i >= self.scroll_offset + self.visible_rows {
                 self.scroll_offset = (i + 1).saturating_sub(self.visible_rows.max(1));
             }
         }
+        if self.scroll_offset != before { crate::layout::layout_changed(); }
     }
     /// Wheel direction is positive up, three rows per step.
     pub fn scroll(&mut self, steps: i32) {
+        let before = self.scroll_offset;
         let max = self.entries.len().saturating_sub(self.visible_rows);
         self.scroll_offset =
             (self.scroll_offset as i64 - i64::from(steps) * 3).clamp(0, max as i64) as usize;
+        if self.scroll_offset != before { crate::layout::layout_changed(); }
     }
     pub fn key(&mut self, input: &crate::KeyInput<'_>) -> FilePickerResult {
         self.redraw = false;
@@ -585,4 +591,48 @@ fn write_u64(val: u64, buf: &mut [u8; 16]) -> usize {
 
 fn sort_entries(entries: &mut [FileEntry]) {
     entries.sort_by(|a, b| b.is_dir.cmp(&a.is_dir).then_with(|| a.name.cmp(&b.name)));
+}
+
+impl super::Widget for FilePicker {
+    type Event = FilePickerResult;
+    fn rect(&self) -> Rect { self.rect }
+    fn draw(&self, fb: &mut FrameBuf, theme: &Theme) { FilePicker::draw(self, fb, theme); }
+    fn update(&mut self, input: &InputState) -> Self::Event { FilePicker::update(self, input) }
+    fn tree_node(&self, key: &str, parent: Option<&str>, clip: Rect) -> crate::tree::Node {
+        use crate::tree::Role;
+        let mut n = super::node(key, parent, Role::Dialog, "Open file", self.rect, clip);
+        n.value = super::name(&self.path).into();
+        n
+    }
+    fn tree_nodes(&self, key: &str, parent: Option<&str>, clip: Rect, _theme: &Theme) -> Vec<crate::tree::Node> {
+        use crate::tree::{Role, Flag};
+        let mut nodes = alloc::vec![self.tree_node(key, parent, clip)];
+        let clip = self.rect.intersection(clip);
+        nodes.push(self.path_field.tree_node(&alloc::format!("{key}/path"), Some(key), clip));
+        for (suffix, label, rect, pressed) in [
+            ("open", "Open", self.open_btn, self.open_pressed),
+            ("cancel", "Cancel", self.cancel_btn, self.cancel_pressed),
+        ] {
+            let mut n = super::node(&alloc::format!("{key}/{suffix}"), Some(key), Role::Button, label, rect, clip);
+            super::flag(&mut n, Flag::Pressed, pressed);
+            nodes.push(n);
+        }
+        let list_key = alloc::format!("{key}/list");
+        let list = super::node(&list_key, Some(key), Role::List, "Files", self.list_area, clip);
+        nodes.push(list);
+        // Row geometry matches draw(): the scroll rail and partial bottom row are excluded.
+        let rail = self.scroll_rail();
+        let rows = Rect::new(self.list_area.x, self.list_area.y, self.list_area.w - rail.w,
+            self.visible_rows as i32 * self.row_height).intersection(clip);
+        for (i, entry) in self.entries.iter().enumerate() {
+            let y = self.list_area.y + (i as i32 - self.scroll_offset as i32) * self.row_height;
+            let bounds = Rect::new(self.list_area.x, y, self.list_area.w - rail.w, self.row_height);
+            let mut n = super::node(&alloc::format!("{list_key}/{i}"), Some(&list_key), Role::Listitem,
+                &super::name(&entry.name), bounds, rows);
+            super::flag(&mut n, Flag::Selected, self.selected == Some(i));
+            nodes.push(n);
+        }
+        nodes
+    }
+
 }

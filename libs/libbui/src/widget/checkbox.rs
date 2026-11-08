@@ -17,6 +17,7 @@ pub struct Checkbox {
     pub label: &'static [u8],
     pub checked: bool,
     hovered: bool,
+    pressed: bool,
 }
 
 impl Checkbox {
@@ -29,6 +30,7 @@ impl Checkbox {
             label,
             checked: false,
             hovered: false,
+            pressed: false,
         }
     }
 
@@ -38,15 +40,16 @@ impl Checkbox {
         if !self.enabled {
             return WidgetEvent::None;
         }
-        let before = (self.checked, self.hovered);
+        let before = (self.checked, self.hovered, self.pressed);
         let result = self.update_inner(input);
-        self.redraw = before != (self.checked, self.hovered);
+        self.redraw = before != (self.checked, self.hovered, self.pressed);
         result
     }
     pub fn set_enabled(&mut self, enabled: bool) {
         self.enabled = enabled;
         if !enabled {
             self.hovered = false;
+            self.pressed = false;
         }
     }
     pub fn set_focused(&mut self, focused: bool) {
@@ -67,7 +70,9 @@ impl Checkbox {
     fn update_inner(&mut self, input: &InputState) -> WidgetEvent {
         self.hovered = self.rect.contains(input.mouse_x, input.mouse_y);
 
+        if input.mouse_released { self.pressed = false; }
         if self.hovered && input.mouse_pressed {
+            self.pressed = true;
             self.checked = !self.checked;
             return WidgetEvent::Toggled(self.checked);
         }
@@ -131,5 +136,23 @@ impl Checkbox {
         if self.focused && self.enabled {
             crate::widget::draw_focus_ring(fb, &self.rect, theme);
         }
+    }
+}
+
+impl super::Widget for Checkbox {
+    type Event = crate::WidgetEvent;
+    fn rect(&self) -> Rect { self.rect }
+    fn draw(&self, fb: &mut FrameBuf, theme: &Theme) { Checkbox::draw(self, fb, theme); }
+    fn update(&mut self, input: &InputState) -> Self::Event { Checkbox::update(self, input) }
+    fn tree_node(&self, key: &str, parent: Option<&str>, clip: Rect) -> crate::tree::Node {
+        use crate::tree::Role;
+        let mut n = super::node(key, parent, Role::Checkbox, &super::name(self.label), self.rect, clip);
+        n.value = self.checked.into();
+        super::flag(&mut n, crate::tree::Flag::Pressed, self.pressed);
+        super::flag(&mut n, crate::tree::Flag::Enabled, self.enabled);
+        super::flag(&mut n, crate::tree::Flag::Focused, self.focused);
+        super::flag(&mut n, crate::tree::Flag::Checked, self.checked);
+        super::flag(&mut n, crate::tree::Flag::Hovered, self.hovered);
+        n
     }
 }

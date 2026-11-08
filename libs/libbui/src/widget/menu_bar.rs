@@ -151,6 +151,7 @@ enum MenuState {
 
 /// Windows-style horizontal menu bar with pull-down dropdowns.
 pub struct MenuBar {
+    layout_theme: Theme,
     rect: Rect,
     menus: Vec<Menu>,
     state: MenuState,
@@ -175,6 +176,7 @@ impl MenuBar {
     pub fn new(rect: Rect, menus: Vec<Menu>) -> Self {
         let top_rects = Self::compute_top_rects_approx(&rect, &menus);
         Self {
+            layout_theme: Theme::dark(),
             rect,
             menus,
             state: MenuState::Closed,
@@ -189,11 +191,14 @@ impl MenuBar {
     /// Recompute top-level label rects using actual font metrics from `theme`.
     /// Call this once after construction (and after any font change).
     pub fn layout(&mut self, theme: &Theme) {
+        self.layout_theme = *theme;
+        crate::layout::layout_changed();
         self.top_rects = Self::compute_top_rects_exact(&self.rect, &self.menus, theme);
     }
 
     /// Update the bar's bounding rectangle (e.g. after a window resize).
     pub fn set_rect(&mut self, rect: Rect) {
+        if self.rect != rect { crate::layout::layout_changed(); }
         self.rect = rect;
         self.top_rects = Self::compute_top_rects_approx(&rect, &self.menus);
     }
@@ -210,6 +215,7 @@ impl MenuBar {
 
     /// Force-close any open dropdown.
     pub fn close(&mut self) {
+        if self.is_open() { crate::layout::layout_changed(); }
         self.state = MenuState::Closed;
         self.open_index = None;
         self.hover_item = None;
@@ -331,6 +337,7 @@ impl MenuBar {
         let before = (self.state, self.open_index, self.hover_item);
         let event = self.update_inner(input, theme);
         self.redraw = before != (self.state, self.open_index, self.hover_item);
+        if (before.0, before.1) != (self.state, self.open_index) { crate::layout::layout_changed(); }
         event
     }
     fn update_inner(&mut self, input: &InputState, theme: &Theme) -> MenuEvent {
@@ -565,6 +572,16 @@ impl MenuBar {
         Rect::new(anchor.x, self.rect.y + MENU_BAR_HEIGHT, w, h)
     }
 
+    // The widget draws the popup as well as the strip. Its tree clip contains both.
+    fn tree_bounds(&self) -> Rect {
+        let Some(index) = self.open_index.filter(|_| self.is_open()) else { return self.rect; };
+        let popup = self.dropdown_rect(index, &self.layout_theme);
+        let x = self.rect.x.min(popup.x);
+        let y = self.rect.y.min(popup.y);
+        Rect::new(x, y, self.rect.right().max(popup.right()) - x,
+            self.rect.bottom().max(popup.bottom()) - y)
+    }
+
     /// Return the top-level menu index that the point (px, py) hits, or None.
     fn hit_top(&self, px: i32, py: i32) -> Option<usize> {
         if !self.rect.contains(px, py) {
@@ -689,4 +706,52 @@ impl MenuBar {
             y += ITEM_HEIGHT;
         }
     }
+}
+
+impl super::Widget for MenuBar {
+    type Event = MenuEvent;
+    fn rect(&self) -> Rect { self.rect }
+    fn draw(&self, fb: &mut FrameBuf, theme: &Theme) { MenuBar::draw(self, fb, theme); }
+    fn update(&mut self, input: &InputState) -> Self::Event {
+        let theme = self.layout_theme;
+        self.update(input, &theme)
+    }
+    fn tree_node(&self, key: &str, parent: Option<&str>, clip: Rect) -> crate::tree::Node {
+        use crate::tree::Role;
+        let mut n = super::node(key, parent, Role::Menubar, "", self.tree_bounds(), clip);
+        super::flag(&mut n, crate::tree::Flag::Expanded, self.is_open());
+        n
+    }
+    fn tree_nodes(&self, key: &str, parent: Option<&str>, clip: Rect, theme: &Theme) -> Vec<crate::tree::Node> {
+        use crate::tree::{Role, Flag};
+        let mut nodes = alloc::vec![self.tree_node(key, parent, clip)];
+        // Dropdowns escape the menubar strip, but remain clipped by its ancestors.
+        for (i, menu) in self.menus.iter().enumerate() {
+            let menu_key = alloc::format!("{key}/{i}");
+            let open = self.open_index == Some(i) && self.is_open();
+            let bounds = if open { self.dropdown_rect(i, theme) } else { self.top_rects[i] };
+            let mut n = super::node(&menu_key, Some(key), Role::Menu, &super::name(menu.label), bounds, clip);
+            super::flag(&mut n, Flag::Expanded, open);
+            nodes.push(n);
+            let dropdown = self.dropdown_rect(i, theme);
+            let child_clip = dropdown.intersection(clip);
+            let mut y = dropdown.y;
+            for (j, item) in menu.items.iter().enumerate() {
+                let height = if item.separator { SEPARATOR_HEIGHT } else { ITEM_HEIGHT };
+                if !item.separator {
+                    let mut n = super::node(&alloc::format!("{menu_key}/{j}"), Some(&menu_key),
+                        Role::Menuitem, &super::name(item.label), Rect::new(dropdown.x, y, dropdown.w, height), child_clip);
+                    let visible = open && n.clip[2] > 0 && n.clip[3] > 0;
+                    super::flag(&mut n, Flag::Visible, visible);
+                    super::flag(&mut n, Flag::Enabled, item.enabled);
+                    super::flag(&mut n, Flag::Checked, item.checked);
+                    n.value = item.action.into();
+                    nodes.push(n);
+                }
+                y += height;
+            }
+        }
+        nodes
+    }
+
 }
