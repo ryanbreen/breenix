@@ -64,6 +64,10 @@ use geometry::*;
 mod adopt;
 #[path = "bwm/desk.rs"]
 mod desk;
+#[path = "bwm/desktop_tree.rs"]
+mod desktop_tree;
+#[path = "bwm/desktop_publish.rs"]
+mod desktop_publish;
 use desk::*;
 #[path = "bwm/stack.rs"]
 mod stack;
@@ -151,6 +155,7 @@ fn main() {
         }
     };
 
+    let mut desktop_tree = desktop_publish::Publisher::new().expect("compositor tree mapping failed");
     libuitest::startup::mark("scene-ready");
     // Clock state
     let mut clock = clock::Clock::new(std::env::var_os("BREENIX_UI_CLOCK").is_some());
@@ -877,6 +882,8 @@ fn main() {
                 }
             }
         }
+        desktop_tree.publish(&windows, &stack, [screen_w as i64, screen_h as i64])
+            .expect("compositor tree publication failed");
         if !full_redraw && !content_dirty && !windows_dirty && !clock_dirty && !display_lost && !frame_failed {
             let mut ack = clock.acknowledgment(claim_epoch);
             if let Some(deadline) = timing.deadline() {

@@ -109,7 +109,7 @@ fn cycling_uses_creation_order_and_skips_minimized() {
     assert_eq!(s.focus(), None);
 }
 
-//! Desktop reporting from the production stack, plus live-page publication.
+// Desktop reporting from the production stack, plus live-page publication.
 extern crate alloc;
 extern crate self as breengel;
 #[path = "../libs/libbui/src/tree.rs"]

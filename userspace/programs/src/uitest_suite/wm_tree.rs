@@ -82,7 +82,7 @@ pub fn wm_tree() -> CaseResult {
         let upper_id = session.wait_window("wm tree upper")?.id;
         let mode = libbreenix::gpu::current_mode().map_err(|e| e.to_string())?;
         let scale = i64::from(mode.scale);
-        check(matches!(scale, 1 | 2), "unsupported literal desktop scale")?;
+        check(matches!(scale, 1 | 2), "unsupported literal desktop scale").map_err(|e| format!("{e:?}"))?;
         let screen = [i64::from(mode.width),i64::from(mode.height)];
         let reader = Reader::attach()?;
         // Attaching is passive: a real pointer event wakes bwm after attachment.
