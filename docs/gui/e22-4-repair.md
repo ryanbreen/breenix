@@ -98,7 +98,7 @@ retested after push. Claim-lint on changed prose and `git diff --check` exit 0.
 The standalone libgfx host check refreshed its lockfile to include the existing
 libbreenix input-abi dependency.
 
-## Retained acceptance and coordinator hold
+## Retained console acceptance and historical coordinator hold
 
 Runtime head `616ab6ab` has one new acceptance capture,
 `20261108T130827Z-metal`: console 88/88, memory PASS, no GR refusal, driver exit
@@ -152,3 +152,64 @@ messages finds wording-only exit-1 findings in `113f5dba` (glyph-coverage wordin
 `40117ef7` and `8d457998` (zero-valued negative fixtures). Their executable
 checks passed the documented red/green sequence. History was not rewritten to
 change those messages.
+
+
+## Continuation after the coordinator released the hold
+
+Coordinator ledger line 335 (2026-11-08 08:37 ET) accepts the missing historical
+phase-line explanation and authorizes one UI proof at the existing runtime,
+then window-manager, production BreenGL and the default desktop. It explicitly
+preserves console `130827` and separates the broad core evidence gaps from
+22.4. Those gaps are tracked in #2802. The hold described above is historical.
+
+The authorized UI proof `20261108T134205Z-metal` at `4b8a514b` fails:
+42/78 selected cases pass, DONE is 42 passed, 164 failed, 0 skipped, total 206.
+Memory passes with 12 retained pages; clocks are full and no GR refusal appears.
+The host production builder exits 0 under its zero-warning gate. Build and tools
+identities match. The driver closes the capture with exit 1 and powers off.
+The canonical step scorer refuses the 36 selected failures.
+
+Desktop's VALUE is 269,836,671 ns, and kiosk's is 146,183,534 ns. Both pass
+the shared 300 ms case check. Neither has a retained startup phase line, so the
+step scorer's independent 270 ms first-composite requirement is still unproven.
+
+Reading the supervisor and its callers identifies two defects introduced by
+the previous retention repair:
+
+- `RunnerSession::start` and the inner executor do not supply collection names.
+  The new unconditional environment lookup on discard makes those supervisors
+  return an error instead of completing their existing `done` handshake. The
+  failures include ordinary frame sessions and clean inner-scenario controls.
+- `Session::teardown` requests explicit teardown before the case returns. The
+  supervisor removes its environment and private root at that point. Opening
+  the trace only when the runner later sends discard cannot retain a successful
+  startup record.
+
+Check-first commit `bc80c10e` extends this branch's retention fixture under G2.
+It executes the production explicit-teardown and collector branches together,
+with a real temporary root whose removal the check verifies. The unchanged
+source compiles with `-Dwarnings`, then fails at both mechanisms: unnamed discard
+returns `environment variable not found`, and desktop/kiosk explicit teardown
+loses its phase line. The earlier direct success/failure checks remain.
+Initial fixture compilation found an unused type alias and an unread initial
+state; those mock issues were corrected before recording the runtime red.
+
+The repair makes identity optional only for diagnostic formatting; the existing
+collection branch still requires names. It snapshots the named startup line
+after explicit teardown and before removing the root, then emits that saved
+line through the supervisor transcript at collector completion. The other path
+opens the still-live trace then, as before. It preserves one emitted line per
+startup and the existing cleanup/handshake order. The two host checks pass.
+No renderer, kernel, case, threshold, or selection changes in this continuation.
+The prior yielding/chrome fixes and their evidence remain unchanged.
+
+Scoped release builds of `suite-ui-testing` and `ui-runner-fixture_test` pass
+for x86 and ARM64 with `CARGO_BUILD_JOBS=4` under `taskpolicy -b`, with 0
+compiler warnings and errors. Logs are `/tmp/e22-proof/build-x86.log` and
+`build-arm.log`. Kernel source is unchanged; the earlier ARM kernel evidence
+stands. ARM runtime and its canonical-scene pin remain #2770.
+
+Claim-lint: the corrected #2802 issue body, the lifecycle check and its commit
+message, changed prose and this repair's commit message exit 0. The first #2802
+body invocation flagged wording in an instruction; the posted body was corrected.
+`git diff --check` exits 0 after removing a trailing blank in the check commit.
