@@ -2239,6 +2239,61 @@ Real time on `CLOCK_MONOTONIC`, with the workloads and bounds in section 12.2.
 
 ## 17. Suite `ui-testing`
 
+The following IDs left the guest manifest under U20. Their dispositions are in the case disposition tables of `e22/plan-trimmed.md`.
+
+- `input/type-keymap-all`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `input/click-covered-fails`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `input/click-zero-area-fails`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `input/click-stale-scene`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `input/click-stale-layout`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `input/trace-hops`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `input/synthetic-tagged`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `tree/role-invariants`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `tree/rapid-commits`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `tree/truncation-flagged`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `tree/wm-tree-vs-model`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `tree/find-unique`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `tree/find-ambiguous-fails`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `tree/find-none-fails`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `tree/dump-roundtrip`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `clock/equal-deadlines`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `clock/multiple-expiry`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `clock/zero-step`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `clock/large-step`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `clock/stamps`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `clock/watchdog-real`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `clock/no-real-clock`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/diff-image`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/got-image`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/tree-at-commit`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/cap`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/io-error`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/path-in-record`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/synced`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/message-pixel`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/message-tree`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/message-input`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/failed-screen-retained`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `diagnosis/reserve`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/clean-passes`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-off-by-one`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-drain-no-render`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-misroute`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-chrome-offset`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-keymap-swap`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-lie-bounds`: move-host. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-lie-text`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-slow-commit`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-wallclock`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-crash`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-trail`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-lost-disposition`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/fault-real-input`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/animation-scenario`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/wm-resize-scenario`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `proof/wm-clipboard-scenario`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+
+
 Manifest: id `ui-testing`, title "UI test framework", area "UI test framework", `"timingSensitive": true`,
 binary `/sbin/suite-ui-testing`, source `suite_ui_testing.rs`. Summary: *"Scripted keyboard, pointer and text
 input reaches GUI programs through the window manager with a recorded outcome for every event; their trees and

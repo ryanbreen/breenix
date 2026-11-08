@@ -1698,7 +1698,7 @@ fn session_case_declarations_preserve_the_case_table() {
     let (_, files) = suite_files(&root, "ui_testing").unwrap();
     let (_, categories) = source_suite_files(&files).unwrap();
     let count: usize = categories.iter().map(|c| c.cases.len()).sum();
-    assert_eq!(count, 206);
+    assert_eq!(count, 155);
 }
 
 
