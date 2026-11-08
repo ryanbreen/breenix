@@ -4098,13 +4098,17 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
             or required != [name for name in names if name in required]):
         raise ValueError('invalid WM selection or manifest order')
     fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal']
-    complete_serial = serial.endswith('\n')
-    if not complete_serial:
-        # Coordinator ruling 291: power-off may cut a diagnostic after the
-        # final sequence record, never suite evidence or an upload record.
-        tail = serial.rsplit('\n', 1)[-1]
-        complete_serial = (re.search(r'^SUITE_SEQUENCE DONE suites=\d+\n', serial, re.M) is not None
-                           and re.search(r'SUITE|CASE|MEMORY|SCREEN|upload', tail, re.I) is None)
+    # U19: launch metadata determines the producer's final record.
+    suites = boot.get('suites') or [boot['suite']]
+    marker = (r'^SUITE_SEQUENCE DONE suites=\d+\n' if len(suites) > 1
+              else rf'^SUITE_SEQUENCE READY {re.escape(suite)}\n')
+    markers = list(re.finditer(marker, serial, re.M))
+    complete_serial = len(markers) == 1
+    if complete_serial:
+        tail = serial[markers[0].end():]
+        if tail and not tail.endswith('\n'):
+            fragment = tail.rsplit('\n', 1)[-1]
+            complete_serial = re.search(r'SUITE|CASE|MEMORY|SCREEN|upload', fragment, re.I) is None
     if (not complete_serial or any(re.search(p, serial) for p in
             fatal + [r'KERNEL PANIC[:!]', r'SUITE_SEQUENCE (?:STALLED|FAIL)'])):
         raise ValueError('incomplete or fatal WM capture')
