@@ -36,7 +36,7 @@ fn start(kiosk: bool) -> CaseResult {
     let result = result.map_err(|error| format!("{error:?}; startup_ns={elapsed}; connected_ns={connected}; stages={}",
         std::fs::read_to_string("/proc/breenix/stage-composites").unwrap_or_else(|e| e.to_string())));
     result?;
-    check(elapsed <= 300_000_000, &format!("first composited app took {elapsed} ns; bound=300000000"))?;
+    check(libuitest::startup::verdict(elapsed, true), &format!("first composited app took {elapsed} ns; bound=300000000"))?;
     breenix_suite::suite::value("startup", elapsed as i64, "ns", Some((0, 300_000_000)));
     session.teardown()?;
     Ok(())
