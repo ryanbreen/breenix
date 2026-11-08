@@ -321,6 +321,53 @@ def session_wiring(test, expected):
 
 
 class RunnerRoles(unittest.TestCase):
+    def test_result_transport_opens_independently_of_the_live_strip(self):
+        source = (ROOT / PATH).read_text()
+        body = item(source, 'fn run_case_body(')
+        transport = body[body.index('let mut results ='):body.index('// The live strip')]
+        self.assertEqual(transport.strip(), '''let mut results = if gui {
+        match ResultPipe::new(suite, name, case.checks, case.collects) {
+            Ok(pipe) => Some(pipe),
+            Err(msg) => return Outcome::Fail { ms: 0, msg: plain(&msg) },
+        }
+    } else { None };''')
+        self.assertLess(body.index('ResultPipe::new('), body.index('let live ='))
+
+    def test_result_writer_stays_blocking(self):
+        source = (ROOT / PATH).read_text()
+        pipe = item(source, "impl<'a> ResultPipe<'a>")
+        constructor = item(pipe, 'fn new(')
+        self.assertIn('io::pipe2(', constructor)
+        # Only the read end changes flags; pipe2 must not make both ends nonblocking.
+        flags = constructor.split('io::pipe2(', 1)[1].split(')', 1)[0]
+        self.assertNotIn('O_NONBLOCK', flags)
+        self.assertIn('io::fcntl_setfl(reader, status_flags::O_NONBLOCK)', constructor)
+        self.assertNotIn('io::fcntl_setfl(writer', source)
+        self.assertNotIn('io::fcntl(writer', source)
+        writer = item(source, 'pub fn result_record(')
+        self.assertEqual(writer.count('io::write('), 1)
+        self.assertIn('Ok(n) if n == bytes.len()', writer)
+
+    def test_result_pipe_closes_on_exec(self):
+        source = (ROOT / PATH).read_text()
+        pipe = item(source, "impl<'a> ResultPipe<'a>")
+        constructor = item(pipe, 'fn new(')
+        flags = constructor.split('io::pipe2(', 1)[1].split(')', 1)[0]
+        self.assertIn('status_flags::O_CLOEXEC', flags.split(' | '))
+
+    def test_spawn_closes_runner_descriptors_before_call_or_exec(self):
+        source = (ROOT / 'libs/libbreenix/src/suite_spawn.rs').read_text()
+        child = item(source, 'pub fn spawn(').split('ForkResult::Child => {', 1)[1]
+        self.assertIn('crate::suite::close_result_output();', child)
+        self.assertLess(child.index('crate::suite::close_result_output();'),
+                        child.index('if arrange(keep).is_err()'))
+        self.assertLess(child.index('if arrange(keep).is_err()'), child.index('match run'))
+        arrange = item(source, 'fn arrange(')
+        self.assertIn('let mut first = 3;', arrange)
+        self.assertIn('io::close_range(first as u32, target as u32 - 1)?;', arrange)
+        self.assertIn('first = target + 1;', arrange)
+        self.assertIn('io::close_range(first as u32, u32::MAX)?;', arrange)
+
     def test_pid_one_bodies_equal_main(self):
         source = (ROOT / PATH).read_text()
         main = historical(MAIN, PATH)
