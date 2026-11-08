@@ -469,6 +469,20 @@ impl CachedFont {
     pub fn advance_width(&self, g: u16, size: f32) -> f32 { self.font.advance_width(g, size) }
     pub fn kern(&self, l: u16, r: u16, size: f32) -> f32 { self.font.kern(l,r,size) }
 
+    /// Prepare LCD coverage without drawing to a framebuffer. Device errors
+    /// propagate; unsupported glyphs follow the drawing path's omission policy.
+    pub fn prepare_subpixel(&mut self, texts: &[&[u8]], size: f32) -> Result<(), Error> {
+        let mut placed = Vec::new();
+        for text in texts {
+            placed.extend(glyphs_of(self, decode_utf8(text)).map(|glyph| (glyph, 0)));
+        }
+        let mut result = Ok(());
+        self.run_mode(&placed, Font::size26(size).unwrap_or(0), true, |got| {
+            if let Err(Error::Device(error)) = got { result = Err(Error::Device(error)); }
+        });
+        result
+    }
+
     /// The atlas image of `glyph` at `size26`, rasterized on a miss.
     fn glyph(&mut self, glyph: u16, size26: i32) -> Result<Arc<AtlasGlyph>, Error> {
         let mut image = Err(Error::Device(-abi::errno::EIO));

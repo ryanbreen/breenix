@@ -12,6 +12,7 @@ pub const PHASES: &[&str] = &[
     "background-ready", "chrome-blit-ready", "chrome-taskbar-ready", "chrome-appbar-ready", "chrome-ready", "fills-ready", "pointer-presented", "checks-ready",
     "font-plan-begin", "font-plan-return", "font-submit-begin", "font-submit-return", "font-wait-return", "font-draw-return",
     "frame-check-begin", "frame-buffers-ready", "frame-scanout-return", "frame-desktop-return", "frame-pixels-ready",
+    "initial-windows-ready", "title-plan-begin", "title-plan-return", "client-chrome-ready", "client-compose-begin",
     "desktop-ready", "app-request", "app-forked", "app-exec", "app-commit", "first-composite",
 ];
 extern "C" {

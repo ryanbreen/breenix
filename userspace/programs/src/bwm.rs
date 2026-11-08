@@ -10,6 +10,8 @@
 
 #[path = "bwm/compositor.rs"]
 mod compositor;
+#[path = "bwm/startup_prepare.rs"]
+mod startup_prepare;
 #[path = "bwm/placement.rs"]
 mod placement;
 #[path = "bwm/session.rs"]
@@ -221,23 +223,50 @@ fn main() {
     libuitest::startup::mark("chrome-ready");
     let fills = check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index);
     libuitest::startup::mark("fills-ready");
+    // Discover metadata while the bare desktop remains unchanged. Coverage
+    // preparation writes only the font atlas, independently of the pixel check.
+    let initial_windows = discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults);
+    if initial_windows { reconcile_stack(&windows, &mut stack, true); }
+    libuitest::startup::mark("initial-windows-ready");
     let first_pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
-    let first = gpu
-        .present_startup_desktop(Some(first_pointer))
-        .map_err(|e| CheckError::Failed(e.to_string()))
-        .and_then(|()| {
-            libuitest::startup::mark("pointer-presented");
-            measure_check(|| gpu.check(0, &[], Some(first_pointer)))
-        });
+    let (prepared, first) = startup_prepare::during(|| {
+        libuitest::startup::mark("title-plan-begin");
+        let result = if let Some(font) = ui_font.as_mut() {
+            let titles: Vec<&[u8]> = ordered_windows(&windows, &stack)
+                .filter(|win| !stack.minimized(win.window_id) && !win.chromeless)
+                .map(|win| &win.title[..win.title_len]).collect();
+            font.prepare_subpixel(&titles, ttf_font_size() * ui().scale as f32)
+                .map_err(|error| format!("initial title coverage: {error:?}"))
+        } else { Ok(()) };
+        libuitest::startup::mark("title-plan-return");
+        result
+    }, || {
+        gpu.present_startup_desktop(Some(first_pointer))
+            .map_err(|e| CheckError::Failed(e.to_string()))
+            .and_then(|()| {
+                libuitest::startup::mark("pointer-presented");
+                measure_check(|| gpu.check(0, &[], Some(first_pointer)))
+            })
+    });
+    if let Err(error) = prepared {
+        eprintln!("[bwm] first frame check FAILED: {error}");
+        process::exit(1);
+    }
     libuitest::startup::mark("checks-ready");
     let first_presented = first.is_ok();
     match first {
         Ok(pixels) => print!("[bwm] first frame read back: {} pixels exact\n", pixels),
-        Err(CheckError::Moved(e)) | Err(CheckError::Failed(e)) => print!("[bwm] first frame check FAILED: {}\n", e),
+        Err(CheckError::Moved(e)) | Err(CheckError::Failed(e)) => {
+            print!("[bwm] first frame check FAILED: {}\n", e);
+            process::exit(1);
+        },
     }
     match fills {
         Ok(line) => print!("[bwm] desktop fills the scanout: {}\n", line),
-        Err(e) => print!("[bwm] desktop fill check FAILED: {}\n", e),
+        Err(e) => {
+            print!("[bwm] desktop fill check FAILED: {}\n", e);
+            process::exit(1);
+        },
     }
     libuitest::startup::mark("desktop-ready");
     let mut frame_failed = false;
@@ -256,12 +285,13 @@ fn main() {
         io::PollFd { fd: scene_fd, events: io::poll_events::POLLIN as i16, revents: 0 },
     ];
 
-    // Initial window discovery (before entering event loop)
-    if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
-        reconcile_stack(&windows, &mut stack, true);
-        compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
+    // The complete bare-desktop comparison and title preparation have both
+    // finished before a client can receive its first COMPOSITE receipt.
+    if initial_windows {
+        compose_initial_windows(&mut gpu, &windows, &stack, &mut ui_font);
         full_redraw = true;
     }
+    libuitest::startup::mark("client-chrome-ready");
 
     loop {
         flush_input();

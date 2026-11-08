@@ -402,6 +402,11 @@ pub(super) fn redraw_all_windows(fb: &mut Surface, windows: &[Window], stack: &S
                       clock_text: &[u8], ui_font: &mut Option<CachedFont>) {
     draw_taskbar(fb, clock_text, ui_font);
     libuitest::startup::mark("chrome-taskbar-ready");
+    draw_window_chrome(fb, windows, stack, ui_font);
+}
+
+fn draw_window_chrome(fb: &mut Surface, windows: &[Window], stack: &Stack,
+    ui_font: &mut Option<CachedFont>) {
     for win in ordered_windows(windows, stack) {
         if stack.minimized(win.window_id) || win.chromeless { continue; }
         draw_window_frame(fb, win, stack.focus() == Some(win.window_id), ui_font);
@@ -417,6 +422,13 @@ pub(super) fn compose_full_redraw(gpu: &mut Compositor, windows: &[Window], stac
     libgfx::blit::blit(desktop, background, 0, 0);
     libuitest::startup::mark("chrome-blit-ready");
     redraw_all_windows(desktop, windows, stack, clock, ui_font);
+}
+
+/// The first discovered windows add their chrome to the verified bare desktop.
+/// The background and clock taskbar already have their initial pixels.
+pub(super) fn compose_initial_windows(gpu: &mut Compositor, windows: &[Window], stack: &Stack,
+    ui_font: &mut Option<CachedFont>) {
+    draw_window_chrome(&mut gpu.desktop, windows, stack, ui_font);
 }
 
 /// Partial redraw: repaint only the dirty sub-region `(dx0, dy0)..(dx1, dy1)` of the desktop
