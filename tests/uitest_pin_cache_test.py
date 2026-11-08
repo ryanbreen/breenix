@@ -25,6 +25,7 @@ pub mod fixtures{@SOURCE@
  let mut status=-1;assert_eq!(unsafe{waitpid(child,&mut status,0)},child);assert_eq!(status,0,"forked supervisor lost verified input identity");
  let before=crate::HASHES.load(crate::Ordering::SeqCst);std::fs::write(&path,b"mutate").unwrap();assert!(checked(&path,&pin).is_err(),"changed same-size input was accepted");assert!(crate::HASHES.load(crate::Ordering::SeqCst)>before);
  std::fs::write(&path,b"pinned").unwrap();checked(&path,&pin).unwrap();let before=crate::HASHES.load(crate::Ordering::SeqCst);let replacement=root.join("new");std::fs::write(&replacement,b"pinned").unwrap();std::fs::rename(&replacement,&path).unwrap();checked(&path,&pin).unwrap();assert!(crate::HASHES.load(crate::Ordering::SeqCst)>before,"replacement inode reused an old verification");assert!(checked(&path,&"0".repeat(64)).is_err());
+ let coarse=root.join("coarse");std::fs::write(&coarse,b"pinned").unwrap();crate::NOW.store(std::fs::metadata(&coarse).unwrap().ctime(),crate::Ordering::SeqCst);let before=crate::HASHES.load(crate::Ordering::SeqCst);checked(&coarse,&pin).unwrap();checked(&coarse,&pin).unwrap();assert_eq!(crate::HASHES.load(crate::Ordering::SeqCst),before+2,"current timestamp epoch was cached before it closed");std::fs::write(&coarse,b"mutate").unwrap();assert!(checked(&coarse,&pin).is_err());
  @COARSE@
  std::fs::remove_dir_all(root).unwrap();
 }

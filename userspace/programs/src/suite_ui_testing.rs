@@ -449,6 +449,10 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
 ]).gui().defer_display();
 
 fn main() {
+    if let Err(error) = libuitest::fixtures::verify_fonts(std::path::Path::new("/usr/share/fonts")) {
+        eprintln!("ui-testing fixture verification: {error}");
+        std::process::exit(1);
+    }
     breenix_suite::suite::set_painter(Box::new(stage_painter::StagePainter::new()));
     SUITE.with_evidence_upload().run()
 }

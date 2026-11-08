@@ -22,10 +22,60 @@ pub const WALL_BASE_NS: u64 = 1_704_067_200_000_000_000;
 pub fn digest(bytes: &[u8]) -> String {
     sha256(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileIdentity {
+    dev: u64, inode: u64, size: u64,
+    mtime: i64, mtime_nsec: i64, ctime: i64, ctime_nsec: i64,
+}
+impl FileIdentity {
+    fn of(meta: &fs::Metadata) -> Self {
+        use std::os::unix::fs::MetadataExt;
+        Self { dev: meta.dev(), inode: meta.ino(), size: meta.len(),
+            mtime: meta.mtime(), mtime_nsec: meta.mtime_nsec(),
+            ctime: meta.ctime(), ctime_nsec: meta.ctime_nsec() }
+    }
+    // ext2 timestamps have whole-second resolution. Seal a digest only after
+    // that second has ended, so a same-second content write cannot reuse it.
+    fn stable_before(self, verified: i64) -> bool {
+        self.mtime < verified && self.ctime < verified
+    }
+}
+struct VerifiedPin { path: std::path::PathBuf, identity: FileIdentity, digest: String }
+static VERIFIED_PINS: std::sync::Mutex<Vec<VerifiedPin>> = std::sync::Mutex::new(Vec::new());
+fn pin_now_seconds() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_secs() as i64)
+}
 fn checked(path: &Path, pin: &str) -> Result<(), String> {
-    let bytes = fs::read(path).map_err(|e| format!("{}: {e}", path.display()))?;
-    if digest(&bytes) != pin { return Err(format!("fixture pin mismatch: {}", path.display())); }
+    use std::io::Read;
+    let mut file = fs::File::open(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    let meta = file.metadata().map_err(|e| e.to_string())?;
+    if !meta.is_file() { return Err(format!("fixture pin is not a file: {}", path.display())); }
+    let identity = FileIdentity::of(&meta);
+    let mut cache = VERIFIED_PINS.lock().map_err(|_| "fixture pin cache poisoned")?;
+    if let Some(verified) = cache.iter().find(|v| v.path == path && v.identity == identity) {
+        return if verified.digest == pin { Ok(()) }
+            else { Err(format!("fixture pin mismatch: {}", path.display())) };
+    }
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    let after = FileIdentity::of(&file.metadata().map_err(|e| e.to_string())?);
+    if after != identity { return Err(format!("fixture changed during verification: {}", path.display())); }
+    let got = digest(&bytes);
+    if got != pin { return Err(format!("fixture pin mismatch: {}", path.display())); }
+    if identity.stable_before(pin_now_seconds()) {
+        // The runner primes immutable inputs before forking session supervisors.
+        // Fresh per-case files remain independently read and checked.
+        if cache.len() == 16 { cache.remove(0); }
+        cache.push(VerifiedPin { path: path.to_owned(), identity, digest: got });
+    }
     Ok(())
+}
+/// Prime immutable font pins in the boot's runner before session forks. A
+/// different identity still reads and verifies the file against its fixed pin.
+pub fn verify_fonts(fonts: &Path) -> Result<(), String> {
+    checked(&fonts.join("DejaVuSansMono.ttf"), MONO_FONT_SHA256)?;
+    checked(&fonts.join("DejaVuSans.ttf"), DISPLAY_FONT_SHA256)
 }
 /// The caller must supply a private session directory.
 pub fn prepare(root: &Path) -> Result<(), String> {
@@ -71,8 +121,7 @@ pub fn verify(root: &Path) -> Result<(), String> {
 pub fn verify_at(root: &Path, fonts: &Path) -> Result<(), String> {
     checked(&root.join("etc/fonts.conf"), FONT_CONFIG_SHA256)?;
     checked(&root.join("etc/locale.conf"), LOCALE_SHA256)?;
-    checked(&fonts.join("DejaVuSansMono.ttf"), MONO_FONT_SHA256)?;
-    checked(&fonts.join("DejaVuSans.ttf"), DISPLAY_FONT_SHA256)?;
+    verify_fonts(fonts)?;
     let mut entries = fs::read_dir(root.join("fixtures")).map_err(|e| e.to_string())?
         .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?;
     entries.sort_by_key(|e| e.file_name());
