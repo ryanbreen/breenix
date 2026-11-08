@@ -1,5 +1,5 @@
 {
-  "about": "Reviewed reference frames of the breengel suite (docs/gui/breengel.md section 8.6). Each is rendered by tools/gfx-refgen from the guest's own no_std libgfx and libfont on the host at authoring time and reviewed before it is committed. The guest reads them from /usr/local/test/share/breengel/frames/. Frames saved from runs never become references.",
+  "about": "Reviewed reference frames of the breengel suite (docs/gui/breengel.md section 8.6). Each is rendered by tools/gfx-refgen from the guest's own no_std libgfx and libfont on the host at authoring time and reviewed before it is committed. The guest reads them from /usr/local/test/share/breengel/frames/. Frames saved from runs never become references. UI-testing references are authored under ui-testing/ and installed at /usr/share/breenix/uitest/frames/ui-testing/; the same provenance file is installed beside that directory.",
   "references": [
     {
       "path": "breengel/text/ttf-glyph.png",
@@ -67,6 +67,42 @@
       "reviewer": "GPT-6.1 Sol, inspected the generated 640x512 image before pinning",
       "checked": "All twenty cells contain the named icon at the specified center; roofs and doors, glass and handles, solid disks and slots, forward arrows are legible. Clicked cells show the door highlight, expanding sonar, inserted disk and trail; effects stay within their cells. The guest uses independent schedule code and reads this immutable file.",
       "license": "No third-party content: original in-tree procedural artwork, redistributed with the repository on the same terms as its source; see testdata/breengel/LICENSES.md."
+    },
+    {
+      "path": "ui-testing/coordinate-pattern.png",
+      "case": "frames/frame-record",
+      "scene": "4x4 coordinate pattern, B=x*10, G=y*20, R=30, X=255; integer x,y in 0..4",
+      "generator": "tools/gfx-refgen --bin ui-formula",
+      "generator_commit": "c793f34be202592847c6437364c16e6b2e750b3f",
+      "command": "cargo run --release --manifest-path tools/gfx-refgen/Cargo.toml --bin ui-formula -- docs/suites/frames/ui-testing/coordinate-pattern.png",
+      "sha256": "244b7ddb41d62cfb5969a036c3141662592798e5505cdce5dcddb829a64d87d9",
+      "date": "2026-11-08",
+      "reviewer": "GPT-6.1 Sol",
+      "checked": "tests/ui_stored_frames.rs compares the decoded PNG to the authored coordinate formula and exercises a PNG encode/decode round trip. The reference is generated at authoring time, never copied from a saved run."
+    },
+    {
+      "path": "ui-testing/canonical-scene.png",
+      "case": "frames/cross-target",
+      "target": "x86-metal",
+      "scene": "Canonical v1: 320x200 opaque integer rectangles; blue header, three swatches, progress bar and two checkerboard rows. Literal geometry and RGB in userspace/programs/src/uitest_canonical.rs.",
+      "generator": "tools/gfx-refgen --bin ui-canonical",
+      "command": "cargo run --release --manifest-path tools/gfx-refgen/Cargo.toml --bin ui-canonical -- docs/suites/frames/ui-testing",
+      "generator_sources": {
+        "userspace/programs/src/uitest_canonical.rs": "6ef213557fcf8f21168c4b74f79408124d8a3fc8ac941ef3b30630f11c75514c",
+        "tools/gfx-refgen/src/bin/ui-canonical.rs": "7d93433bb85c763e43288232b5bc8c615bc0999d38fb518a5717fbd3ae36dac0",
+        "tools/gfx-refgen/src/png.rs": "17f8b746840e4a0f7f101138d4cf8422e74479566ba52b8983386f5215b328e2",
+        "tools/gfx-refgen/src/sha256.rs": "1b4f0cc5d36a6972cf920aec784d2a441ada999369d20009e5883c9990383871"
+      },
+      "sha256": "72768d6a53dae659d5936b76a900bd4e4897b6ccf9e7644f91677265c0783745",
+      "pixel_sha256": "edf9969c42ca7aecf9992c9a47a2ee058c374b521efa3184c420a1e18b90cc56",
+      "pixel_format": "row-major B,G,R,255 with no geometry header or stride padding",
+      "pin_path": "ui-testing/canonical-x86-metal.sha256",
+      "date": "2026-11-08",
+      "reviewer": "GPT-6.1 Sol",
+      "checked": "Host-authored by the same scene function called by uitest-app_test. The host check compares the render to the committed pixel pin and the PNG to its file hash; no guest capture is used.",
+      "arm_gap": "ARM canonical-scene pin is unrecorded; shared code builds there, runtime attestation waits for ARM release (#2770).",
+      "license": "Original in-tree scene; no third-party implementation copied or adapted.",
+      "architecture": "x86_64"
     }
   ]
 }

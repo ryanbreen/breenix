@@ -888,5 +888,38 @@
       ]
     }
   ],
-  "aggregate": "after E22 22.8"
+  "aggregate": "after E22 22.8",
+  "frameChecks": [
+    {
+      "version": 1,
+      "case": "frames/frame-record",
+      "check": "pattern",
+      "kind": "stored",
+      "source": {
+        "kind": "surface"
+      },
+      "at": {
+        "checkpoint": "after-pattern",
+        "requires": []
+      },
+      "reference": {
+        "path": "ui-testing/coordinate-pattern.png",
+        "sha256": "244b7ddb41d62cfb5969a036c3141662592798e5505cdce5dcddb829a64d87d9"
+      },
+      "regions": [
+        {
+          "name": "all",
+          "x": 0,
+          "y": 0,
+          "w": 4,
+          "h": 4
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    }
+  ]
 }

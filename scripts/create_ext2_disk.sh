@@ -101,7 +101,9 @@ done
 # installed at /usr/local/test/share/breengel/ and /usr/local/test/share/breengel/frames/.
 BREENGEL_DATA="$PROJECT_ROOT/testdata/breengel"
 BREENGEL_FRAMES="$PROJECT_ROOT/docs/suites/frames/breengel"
-for dir in "$BREENGEL_DATA" "$BREENGEL_FRAMES"; do
+UITEST_FRAMES="$PROJECT_ROOT/docs/suites/frames/ui-testing"
+payload_bytes=$(( payload_bytes + $(file_size_bytes "$PROJECT_ROOT/docs/suites/frames/PROVENANCE.json") ))
+for dir in "$BREENGEL_DATA" "$BREENGEL_FRAMES" "$UITEST_FRAMES"; do
     [[ -d "$dir" ]] || continue
     while IFS= read -r -d '' f; do
         payload_bytes=$(( payload_bytes + $(file_size_bytes "$f") ))
@@ -196,6 +198,8 @@ if [[ "$(uname)" == "Darwin" && "${BREENIX_REPRODUCIBLE_EXT2:-0}" != 1 ]]; then
         -v "$TARGET_DIR:/work" \
         -v "$USERSPACE_DIR:/binaries:ro" \
         -v "$PROJECT_ROOT/fonts:/fonts:ro" \
+        -v "$PROJECT_ROOT/docs/suites/frames:/suite-frames:ro" \
+        -v "$SCRIPT_DIR/install-ui-references.sh:/install-ui-references.sh:ro" \
         "${BREENGEL_MOUNTS[@]}" \
         -v "$SCRIPT_DIR/install-libc-busybox.sh:/install-libc-busybox.sh:ro" \
         -v "$SCRIPT_DIR/install-layout.sh:/install-layout.sh:ro" \
@@ -362,6 +366,8 @@ EOF
                 fi
             done
             echo "  Installed $font_count fonts in /usr/share/fonts"
+
+            sh /install-ui-references.sh /suite-frames /mnt/ext2
 
             # Install the breengel suite test data and reviewed reference frames
             if [ -d /breengel-data ] || [ -d /breengel-frames ]; then
@@ -655,6 +661,8 @@ EOF
         fi
     done
     echo "  Installed $font_count fonts in /usr/share/fonts"
+
+    sh "$PROJECT_ROOT/scripts/install-ui-references.sh" "$PROJECT_ROOT/docs/suites/frames" "$MOUNT_DIR"
 
     # Install the breengel suite test data and reviewed reference frames
     if [[ -d "$BREENGEL_DATA" || -d "$BREENGEL_FRAMES" ]]; then

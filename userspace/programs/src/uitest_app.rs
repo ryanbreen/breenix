@@ -1,5 +1,7 @@
 //! Small application used by UI session tests.
 mod uitest_app_support;
+mod uitest_canonical;
+mod uitest_capture_app;
 
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -26,10 +28,31 @@ fn main() {
         Ok(options) => options,
         Err(error) => { eprintln!("{error}"); std::process::exit(2); }
     };
+    if options.capture_control {
+        if let Err(error) = uitest_capture_app::serve(options.title) {
+            eprintln!("capture control: {error}"); std::process::exit(1);
+        }
+        return;
+    }
     let mut win = Window::new_without_fonts(options.title.as_bytes(), 320, 200)
         .unwrap_or_else(|error| { eprintln!("window: {error}"); std::process::exit(1); });
-    win.surface().unwrap_or_else(|error| { eprintln!("surface: {error}"); std::process::exit(1); });
-    win.present().unwrap_or_else(|error| { eprintln!("present: {error}"); std::process::exit(1); });
+    if options.canonical {
+        draw_canonical(&mut win);
+    } else {
+        let generation = libuitest::capture_marker::Generation { commit: 1,
+            producer: u32::try_from(libbreenix::process::gettid().expect("producer tid").raw()).expect("producer tid fits marker") };
+        let marker = libuitest::capture_marker::encode(generation);
+        let surface = win.surface().unwrap_or_else(|error| { eprintln!("surface: {error}"); std::process::exit(1); });
+        surface.batch(|surface| {
+            surface.clear(libgfx::color::Color::rgb(0x18,0x20,0x30));
+            for (x, pixel) in marker.chunks_exact(4).enumerate() {
+                libgfx::shapes::fill_rect(surface, x as i32, 0, 1, 200, libgfx::color::Color::rgb(pixel[2],pixel[1],pixel[0]));
+            }
+        });
+        win.write_tree(&libuitest::capture::root(generation, 320, 200)).expect("generation tree");
+        let committed = win.commit(&[libbreenix::window::abi::Rect::new(0,0,320,200)]).expect("generation commit");
+        assert_eq!(committed.commit_id, generation.commit, "producer ordinal differs from commit id");
+    }
     libuitest::startup::mark("app-commit");
     if options.session_probe {
         extern "C" {
@@ -76,6 +99,28 @@ fn main() {
     }
     if options.hang { loop { let _ = libbreenix::time::sleep_ms(1000); } }
     loop {
-        if win.wait_event().iter().any(|event| matches!(event, Event::CloseRequested)) { break; }
+        let events = win.wait_event();
+        if events.iter().any(|event| matches!(event, Event::CloseRequested)) { break; }
+        if options.canonical {
+            for event in events {
+                if let Event::MouseMove { x,y } = event {
+                    let commit = draw_canonical(&mut win);
+                    println!("UITEST-CURSOR x={x} y={y} commit={commit}");
+                    let _ = io::stdout().flush();
+                }
+            }
+        }
     }
+}
+
+fn draw_canonical(win: &mut Window) -> u64 {
+    let surface = win.surface().expect("canonical surface");
+    surface.batch(|surface| {
+        uitest_canonical::draw(|x,y,w,h,[r,g,b]| {
+            libgfx::shapes::fill_rect(surface,x,y,w,h,libgfx::color::Color::rgb(r,g,b));
+        });
+    });
+    win.write_tree(b"{\"key\":\"root\",\"parent\":null,\"role\":\"window\",\"name\":\"canonical-v1\",\"value\":\"static\",\"bounds\":[0,0,320,200],\"clip\":[0,0,320,200],\"flags\":[\"enabled\",\"visible\"]}\0").expect("canonical tree");
+    win.commit(&[libbreenix::window::abi::Rect::new(0,0,uitest_canonical::WIDTH as i32,uitest_canonical::HEIGHT as i32)])
+        .expect("canonical commit").commit_id
 }

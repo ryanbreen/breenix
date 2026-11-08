@@ -102,6 +102,10 @@ fn main() {
     let paths = settings::Paths::environment();
     let loaded = settings::Settings::load(&paths.bwm).unwrap_or_else(|e| { eprintln!("[bwm] config: {e}"); process::exit(1); });
     let _ = SETTINGS.set(loaded);
+    let session_root = std::env::var_os("BREENIX_CONFIG_ROOT");
+    let visible = cursor::load(session_root.as_deref().map(std::path::Path::new))
+        .unwrap_or_else(|e| { eprintln!("[bwm] cursor config: {e}"); process::exit(1); });
+    let _ = CURSOR_VISIBLE.set(visible);
     libuitest::startup::mark("config-ready");
     print!("[bwm] settings font.size={} clock.visible={}\n", settings().font_size, settings().clock_visible);
     let signal_wake = initialize_shutdown();
@@ -148,8 +152,44 @@ fn main() {
     };
 
     libuitest::startup::mark("scene-ready");
+    // Clock state
+    let mut clock = clock::Clock::new(std::env::var_os("BREENIX_UI_CLOCK").is_some());
+    let mut clock_wake = clock_wake::open().expect("UI clock wake setup failed");
+    let mut clock_text = [0u8; 11];
+    format_clock(clock.wall_sec(), &mut clock_text);
     // The GPU core composes the desktop (`compositor`); there is no CPU-only fallback.
-    let mut gpu = match Compositor::open(screen_w as u32, screen_h as u32, px(APPBAR_HEIGHT) as u32, ui().scale as u32) {
+    // Font parsing and cold taskbar atlas coverage do not touch these targets.
+    // Prepare the same clock snapshot that draw_taskbar will use.
+    let (opened, mut ui_font) = std::thread::scope(|scope| {
+        let font = scope.spawn(|| {
+            libuitest::startup::mark("startup-font-begin");
+            let config = FontConfig::load();
+            print!("[bwm] fonts {config:?}\n");
+            let mut font = std::fs::read(&config.display_path).ok()
+                .and_then(|data| Font::parse(&data).ok())
+                .map(|f| {
+                    let mut font = CachedFont::new(f, 256);
+                    font.observe_phases(libuitest::startup::mark);
+                    font
+                });
+            if font.is_some() {
+                print!("[bwm] display font loaded: {}\n", config.display_path);
+            } else {
+                print!("[bwm] no display font, using bitmap fallback\n");
+            }
+            if let Some(font) = font.as_mut() {
+                if let Err(error) = font.prepare_subpixel(&[b"Breenix", &clock_text], ttf_font_size() * ui().scale as f32) {
+                    eprintln!("[bwm] taskbar coverage warm-up unavailable: {error}");
+                }
+            }
+            libuitest::startup::mark("fonts-ready");
+            font
+        });
+        let opened = Compositor::open(screen_w as u32, screen_h as u32, px(APPBAR_HEIGHT) as u32, ui().scale as u32);
+        libuitest::startup::mark("targets-ready");
+        (opened, font.join().expect("startup font worker panicked"))
+    });
+    let mut gpu = match opened {
         Ok(c) => c,
         Err(e) => {
             print!("[bwm] ERROR: GPU compositing required: {}\n", e);
@@ -158,26 +198,6 @@ fn main() {
     };
     print!("[bwm] GPU compositing mode (GPU core), display: {}x{}\n", screen_w, screen_h);
 
-    libuitest::startup::mark("targets-ready");
-    let mut ui_font: Option<CachedFont> = {
-        let config = FontConfig::load();
-        print!("[bwm] fonts {config:?}\n");
-        let font = std::fs::read(&config.display_path).ok()
-            .and_then(|data| Font::parse(&data).ok())
-            .map(|f| {
-                let mut font = CachedFont::new(f, 256);
-                font.observe_phases(libuitest::startup::mark);
-                font
-            });
-        if font.is_some() {
-            print!("[bwm] display font loaded: {}\n", config.display_path);
-        } else {
-            print!("[bwm] no display font, using bitmap fallback\n");
-        }
-        font
-    };
-
-    libuitest::startup::mark("fonts-ready");
     // Paint the decorative background once; each desktop repaint copies it.
     paint_background(&mut gpu.background);
     libuitest::startup::mark("background-ready");
@@ -205,14 +225,9 @@ fn main() {
         title: [0; 32], title_len: 0, x: 0, y: 0, width: 0, height: 0, valid: false,
     });
 
-    // Clock state
-    let mut clock = clock::Clock::new(std::env::var_os("BREENIX_UI_CLOCK").is_some());
-    let mut clock_wake = clock_wake::open().expect("UI clock wake setup failed");
-    let mut clock_text = [0u8; 11];
     let mut taskbar_prepare_ns = None;
     let mut clock_pace = pace::Maintenance::default();
     let mut clock_dirty = false;
-    format_clock(clock.wall_sec(), &mut clock_text);
     let mut next_creation_order: u32 = 0;
     // Resolve hotkeys through the same root as bwm.conf.
     let mut hotkey_mgr = HotkeyManager::new();
@@ -258,19 +273,25 @@ fn main() {
     let (prepared, presented) = startup_prepare::during(|| {
         libuitest::startup::mark("title-plan-begin");
         let result = if let Some(font) = ui_font.as_mut() {
-            let titles: Vec<&[u8]> = ordered_windows(&windows, &stack)
+            let mut titles: Vec<&[u8]> = ordered_windows(&windows, &stack)
                 .filter(|win| !stack.minimized(win.window_id) && !win.chromeless)
                 .map(|win| &win.title[..win.title_len]).collect();
+            titles.push(b"x-");
             font.prepare_subpixel(&titles, ttf_font_size() * ui().scale as f32)
                 .map_err(|error| format!("initial title coverage: {error:?}"))
         } else { Ok(()) };
         libuitest::startup::mark("title-plan-return");
         result
     }, || {
-        gpu.present_startup_desktop(Some(first_pointer))
+        // The fill check already presented this exact bare desktop. With no
+        // cursor there are no new pixels to present; retain the full pixel comparison.
+        let presented = if cursor_pointer(first_pointer).is_some() {
+            gpu.present_startup_desktop(cursor_pointer(first_pointer))
+        } else { Ok(()) };
+        presented
             .map(|()| {
                 libuitest::startup::mark("pointer-presented");
-                measure_check(|| gpu.check(0, &[], Some(first_pointer)))
+                measure_check(|| gpu.check(0, &[], cursor_pointer(first_pointer)))
             })
     });
     if let Err(error) = prepared {
@@ -298,8 +319,8 @@ fn main() {
             eprintln!("[bwm] desktop fill check FAILED: {error}");
             if strict_startup { process::exit(1); }
         }
-        gpu.present_startup_desktop(Some(first_pointer)).map(|()| {
-            measure_check(|| gpu.check(0, &[], Some(first_pointer)))
+        gpu.present_startup_desktop(cursor_pointer(first_pointer)).map(|()| {
+            measure_check(|| gpu.check(0, &[], cursor_pointer(first_pointer)))
         })
     }).unwrap_or_else(|error| {
         eprintln!("[bwm] initial presentation FAILED: {error}");
@@ -325,7 +346,7 @@ fn main() {
     // Another process holds the display: bwm composes again when it has it back.
     let mut display_lost = false;
     // The pointer the last composed frame drew, so a move repaints where it was.
-    let mut drawn_pointer = Some(first_pointer);
+    let mut drawn_pointer = cursor_pointer(first_pointer);
     let mut full_redraw = false;
     let mut validation: ValidationQueue<PresentedScene> = ValidationQueue::new();
     let mut working_scene = PresentedScene { layers: Vec::new(), pointer: first_pointer };
@@ -352,7 +373,7 @@ fn main() {
         let now = libbreenix::ui_clock::now_ns();
         let monotonic_ns = pacing_ns();
         let wall = clock.acknowledgment(claim_epoch).next_deadline_ns;
-        let shown = validation.scene().map(|scene| gpu.shown_clients(&scene.layers, Some(scene.pointer)))
+        let shown = validation.scene().map(|scene| gpu.shown_clients(&scene.layers, cursor_pointer(scene.pointer)))
             .unwrap_or_default();
         refresh_pacing(&mut pacing);
         let hold = match pacing.decision(pacing_ns()) {
@@ -796,7 +817,7 @@ fn main() {
                 }
                 frame_layers(&windows, &stack, &mut working_scene.layers);
                 working_scene.pointer = pointer;
-                let frame = gpu.compose(&working_scene.layers, Some(pointer), &damage);
+                let frame = gpu.compose(&working_scene.layers, cursor_pointer(pointer), &damage);
                 full_redraw = false;
                 content_dirty = false;
                 windows_dirty = false;
@@ -820,7 +841,7 @@ fn main() {
                             display_lost = false;
                             print!("[bwm] display back: composing again\n");
                         }
-                        drawn_pointer = Some(pointer);
+                        drawn_pointer = cursor_pointer(pointer);
                         launch::acknowledge(&mut children, gpu.last_serial);
                         clock.presented(gpu.last_serial);
                         working_scene = validation.presented(working_scene);

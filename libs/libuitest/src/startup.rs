@@ -1,4 +1,4 @@
-//! Bounded monotonic startup stamps for failure diagnostics.
+//! Bounded monotonic startup stamps for session diagnostics.
 use std::{fs::OpenOptions, os::{fd::AsRawFd, unix::fs::OpenOptionsExt}, path::Path,
     sync::{OnceLock, atomic::{AtomicU64, Ordering}}};
 pub const PHASES: &[&str] = &[
@@ -8,7 +8,7 @@ pub const PHASES: &[&str] = &[
     "configure-begin", "fixtures-ready", "pins-ready", "arena-ready", "case-connected",
     "compositor-request", "compositor-forked", "compositor-exec", "config-ready",
     "context-begin", "context-ready", "desktop-target-ready", "background-target-ready",
-    "scanout-a-ready", "scanout-b-ready", "scene-target-ready", "targets-ready", "fonts-ready", "scene-ready",
+    "scanout-a-ready", "scanout-b-ready", "scene-target-ready", "targets-ready", "startup-font-begin", "fonts-ready", "scene-ready",
     "background-ready", "chrome-blit-ready", "chrome-taskbar-ready", "chrome-appbar-ready", "chrome-ready", "fills-ready", "pointer-presented", "checks-ready",
     "font-plan-begin", "font-plan-return", "font-submit-begin", "font-submit-return", "font-wait-return", "font-draw-return",
     "frame-check-begin", "frame-buffers-ready", "frame-scanout-return", "frame-desktop-return", "frame-pixels-ready",
@@ -64,4 +64,16 @@ pub fn mark(name: &str) {
 }
 pub fn at(name: &str, ns: u64) {
     if let Some(trace) = configured_trace() { trace.at(name, ns); }
+}
+
+/// One bounded line in catalog order, including 0 for an unreached phase.
+/// Names come from the fixed phase catalog.
+pub fn phase_line(snapshot: &[(&str, u64)]) -> String {
+    use std::fmt::Write;
+    let mut line = String::from("UITEST_STARTUP v=1");
+    for &name in PHASES {
+        let ns = snapshot.iter().find(|&&(phase, _)| phase == name).map_or(0, |&(_, ns)| ns);
+        write!(&mut line, " {name}={ns}").expect("format startup phase");
+    }
+    line
 }

@@ -56,6 +56,8 @@ pub struct Window {
     width: u32,
     height: u32,
     buffers: [u64; 3],
+    tree: u64,
+    tree_bytes: usize,
     held: Option<Held>,
     gpu: Option<libgfx::surface::Surface>,
     font_watcher: FontWatcher,
@@ -95,6 +97,8 @@ impl Window {
             width,
             height,
             buffers: c.buffer,
+            tree: c.tree,
+            tree_bytes: c.tree_kib as usize * 1024,
             held: None,
             gpu: None,
             font_watcher,
@@ -154,6 +158,17 @@ impl Window {
     pub fn surface(&mut self) -> Result<&mut libgfx::surface::Surface, Error> {
         if self.held.is_none() { self.acquire(u64::MAX)?; }
         Ok(self.gpu.as_mut().expect("GPU view accompanies acquisition"))
+    }
+
+    /// Write serialized tree bytes into the currently acquired buffer's page.
+    /// ACQUIRE makes only this page writable; COMMIT seals it with the pixels.
+    pub fn write_tree(&mut self, bytes: &[u8]) -> Result<(), Error> {
+        if bytes.len() > self.tree_bytes { return Err(Error::Os(Errno::EINVAL)); }
+        let buffer = self.acquire(u64::MAX)?.buffer as usize;
+        // The window owns CREATE's mapping and the acquisition excludes readers
+        // and other writers of this buffer until commit or cancellation.
+        unsafe { core::ptr::copy_nonoverlapping(bytes.as_ptr(), (self.tree as *mut u8).add(buffer * self.tree_bytes), bytes.len()); }
+        Ok(())
     }
 
     /// A commit's metadata (section 17.1): the processed watermark, the compositor epoch the

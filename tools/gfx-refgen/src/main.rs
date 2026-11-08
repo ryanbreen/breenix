@@ -7,6 +7,10 @@
 //! reference is a reviewed document: rendering one never replaces an existing reference
 //! without a review recorded in PROVENANCE.json.
 
+#[path = "../../../libs/libuitest/src/formula.rs"]
+mod ui_formula;
+#[path = "../../../userspace/programs/src/uitest_suite/formula_pattern.rs"]
+mod ui_formula_pattern;
 mod png;
 mod sha256;
 
@@ -139,6 +143,17 @@ fn draw_icon_reference(fb: &mut libgfx_ref::framebuf::FrameBuf) {
 fn main() {
     let mut args = std::env::args().skip(1);
     let first = args.next();
+    if first.as_deref() == Some("--ui-formula") {
+        let path = args.next().expect("--ui-formula needs an output path");
+        let pixels = ui_formula::reference(4, 4, ui_formula_pattern::pixel);
+        let mut fb = black(4, 4);
+        for y in 0..4 { for x in 0..4 {
+            let p = &pixels[(y * 4 + x) * 4..][..4];
+            fb.put_pixel(x, y, Color::rgb(p[2], p[1], p[0]));
+        }}
+        std::fs::write(path, png::encode_rgb(&fb)).expect("write formula reference");
+        return;
+    }
     if first.as_deref() == Some("--icons-only") {
         let out = args.next().map(PathBuf::from).expect("--icons-only needs an output directory");
         std::fs::create_dir_all(out.join("icons")).unwrap();

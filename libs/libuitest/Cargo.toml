@@ -7,8 +7,10 @@ description = "Shared userspace UI test records and contained scenario execution
 [workspace]
 
 [dependencies]
+libgfx = { path = "../libgfx" }
 libbreenix = { path = "../libbreenix", features = ["std"] }
 breenix-suite = { path = "../libbreenix/suite" }
 libpixcheck = { path = "../libpixcheck" }
 libimg = { path = "../libimg" }
 libimg-encode = { path = "../libimg-encode" }
+serde_json = { version = "=1.0.154", default-features = false, features = ["alloc"] }

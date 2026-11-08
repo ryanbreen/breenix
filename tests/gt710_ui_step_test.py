@@ -9,6 +9,7 @@ import struct
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'scripts/metal'))
@@ -146,6 +147,59 @@ class UiStep(unittest.TestCase):
                 (self.path / 'serial.txt').write_text(original.replace(at, bad + at))
                 self.assertEqual(self.record(), 1)
         (self.path / 'serial.txt').write_text(original.replace(at, '') + record)
+        self.assertEqual(self.record(), 1)
+
+    def test_step_four_requires_each_forced_overlap_witness(self):
+        selected = json.loads((ROOT / 'docs/gui/gt710-step-22-4.json').read_text())['cases']
+        text = serial()
+        for name in selected:
+            text = text.replace(f'CASE {name} FAIL ms=1 msg=pending', f'CASE {name} PASS ms=1')
+        text = text.replace(f'DONE passed={len(SELECTED)} failed={len(NAMES)-len(SELECTED)}',
+                            f'DONE passed={len(selected)} failed={len(NAMES)-len(selected)}')
+        frame = ('SUITE ui-testing FRAME frames/frame-record pattern def=0123abcd ref=formula '
+                 'source=surface commit=0 epoch=0 w=4 h=4 sha256=' + 'a' * 64 + ' result=match\n')
+        text = text.replace('SUITE ui-testing CASE frames/frame-record ', frame + 'SUITE ui-testing CASE frames/frame-record ')
+        phase = 'UI_STARTUP ui-testing sessions/start-desktop connect-begin=100 first-composite=270000100\n'
+        text = text.replace('SUITE ui-testing CASE sessions/start-desktop ', phase + 'SUITE ui-testing CASE sessions/start-desktop ')
+        witnesses = []
+        for name, rounds in [('capture-while-drawing', 1), ('capture-two-readers', 1),
+                             ('capture-resize-race', 1), ('capture-destroy-race', 23), ('capture-threads', 3)]:
+            case = 'frames/' + name
+            values = ''.join(f'SUITE ui-testing VALUE {case} {label}={rounds}count\n'
+                             for label in ['capture-stall-fired', 'capture-release-fired'])
+            text = text.replace(f'SUITE ui-testing CASE {case} ', values + f'SUITE ui-testing CASE {case} ')
+            witnesses.append(values)
+        def score(body):
+            (self.path / 'serial.txt').write_text(body)
+            return API['record_ui_capture'](self.path, SHA, 4)
+        self.assertEqual(score(text), 0)
+        for bad in [text.replace(phase, ''), text.replace(phase, phase + phase),
+                    text.replace('first-composite=270000100', 'first-composite=270000101')]:
+            self.assertEqual(score(bad), 1)
+        for values in witnesses:
+            line = values.splitlines(keepends=True)[0]
+            for bad in [text.replace(line, '', 1), text.replace(line, line.replace(line.split('=')[1].strip(), '0count'), 1),
+                        text.replace(line, line + line, 1), text.replace(line, '', 1) + line]:
+                self.assertEqual(score(bad), 1)
+
+    def test_launch_shape_completion_marker(self):
+        original = serial()
+        path = self.path / 'serial.txt'
+        path.write_text(original + 'DISPATCH_STRAND_CENSUS save_no_t')
+        self.assertEqual(self.record(), 0)
+        path.write_text(original.replace('SUITE_SEQUENCE READY ui-testing\n', ''))
+        self.assertEqual(self.record(), 1)
+        self.boot['suites'] = ['ui-testing', 'console']
+        self.boot['suite'] = None
+        (self.path / 'run.json').write_text(json.dumps(self.boot))
+        path.write_text(original + 'DISPATCH_STRAND_CENSUS save_no_t')
+        with patch.dict(API['step_capture'].__globals__, {'completed_suite_capture': lambda *args: {'boot': self.boot, 'serial': path.read_text()}}):
+            with self.assertRaisesRegex(ValueError, 'incomplete or fatal WM capture'):
+                API['step_capture'](self.path, SHA, 1, 'ui-testing', 'gt710-step-22-', 8)
+        self.boot['suites'] = ['ui-testing']
+        self.boot['suite'] = 'ui-testing'
+        (self.path / 'run.json').write_text(json.dumps(self.boot))
+        path.write_text(original + 'SUITE ui-testing CASE')
         self.assertEqual(self.record(), 1)
 
     def test_cli(self):

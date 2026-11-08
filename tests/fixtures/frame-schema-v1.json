@@ -1,0 +1,6332 @@
+[
+  {
+    "name": "valid-stored",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    }
+  },
+  {
+    "name": "unknown-version",
+    "group": "schema-version",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 2,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "version"
+  },
+  {
+    "name": "fraction-version",
+    "group": "schema-version",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1.0,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "version"
+  },
+  {
+    "name": "case-type",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": 4,
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "case"
+  },
+  {
+    "name": "check-empty",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "check"
+  },
+  {
+    "name": "kind-unknown",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "other",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "kind"
+  },
+  {
+    "name": "source-kind",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "other",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "source"
+  },
+  {
+    "name": "window-type",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": 3
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "window"
+  },
+  {
+    "name": "checkpoint-empty",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "checkpoint"
+  },
+  {
+    "name": "requires-list",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": "settled"
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "requires"
+  },
+  {
+    "name": "requires-type",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          2
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "requires"
+  },
+  {
+    "name": "reference-path",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "path"
+  },
+  {
+    "name": "reference-pin",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "ab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "sha256"
+  },
+  {
+    "name": "regions-empty",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "regions"
+  },
+  {
+    "name": "negative-coordinate",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": -1,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "x"
+  },
+  {
+    "name": "zero-width",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 0,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "w"
+  },
+  {
+    "name": "fraction-height",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 1.5
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "h"
+  },
+  {
+    "name": "coordinate-overflow",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 4294967295,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "rect"
+  },
+  {
+    "name": "outside-frame",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 201,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "frame"
+  },
+  {
+    "name": "channel-range",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 9,
+        "maxDiffering": 0
+      }
+    },
+    "error": "channel"
+  },
+  {
+    "name": "differing-cap",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 11
+      }
+    },
+    "error": "maxDiffering"
+  },
+  {
+    "name": "channel-type",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": "1",
+        "maxDiffering": 0
+      }
+    },
+    "error": "channel"
+  },
+  {
+    "name": "mask-list",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": {},
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "mask"
+  },
+  {
+    "name": "missing-version",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "version"
+  },
+  {
+    "name": "missing-case",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "case"
+  },
+  {
+    "name": "missing-check",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "check"
+  },
+  {
+    "name": "missing-kind",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "kind"
+  },
+  {
+    "name": "missing-source",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "source"
+  },
+  {
+    "name": "missing-at",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "at"
+  },
+  {
+    "name": "missing-regions",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "regions"
+  },
+  {
+    "name": "missing-mask",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "mask"
+  },
+  {
+    "name": "missing-tolerance",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": []
+    },
+    "error": "tolerance"
+  },
+  {
+    "name": "missing-reference",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "reference"
+  },
+  {
+    "name": "unknown-check-edgeRadius",
+    "group": "unknown-field",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "edgeRadius": 0
+    },
+    "error": "unknown"
+  },
+  {
+    "name": "unknown-check-mystery",
+    "group": "unknown-field",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "mystery": 0
+    },
+    "error": "unknown"
+  },
+  {
+    "name": "unknown-source-edgeRadius",
+    "group": "unknown-field",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main",
+        "edgeRadius": 0
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "unknown"
+  },
+  {
+    "name": "unknown-source-mystery",
+    "group": "unknown-field",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main",
+        "mystery": 0
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "unknown"
+  },
+  {
+    "name": "unknown-at-edgeRadius",
+    "group": "unknown-field",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ],
+        "edgeRadius": 0
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "unknown"
+  },
+  {
+    "name": "unknown-at-mystery",
+    "group": "unknown-field",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ],
+        "mystery": 0
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "unknown"
+  },
+  {
+    "name": "unknown-reference-edgeRadius",
+    "group": "unknown-field",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab",
+        "edgeRadius": 0
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "unknown"
+  },
+  {
+    "name": "unknown-reference-mystery",
+    "group": "unknown-field",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab",
+        "mystery": 0
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "unknown"
+  },
+  {
+    "name": "unknown-regions-0-edgeRadius",
+    "group": "unknown-field",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100,
+          "edgeRadius": 0
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "unknown"
+  },
+  {
+    "name": "unknown-regions-0-mystery",
+    "group": "unknown-field",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100,
+          "mystery": 0
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "unknown"
+  },
+  {
+    "name": "unknown-tolerance-edgeRadius",
+    "group": "unknown-field",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0,
+        "edgeRadius": 0
+      }
+    },
+    "error": "unknown"
+  },
+  {
+    "name": "unknown-tolerance-mystery",
+    "group": "unknown-field",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0,
+        "mystery": 0
+      }
+    },
+    "error": "unknown"
+  },
+  {
+    "name": "duplicate-region",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        },
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "unique"
+  },
+  {
+    "name": "valid-screen",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "screen"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    }
+  },
+  {
+    "name": "valid-surface",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "surface"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    }
+  },
+  {
+    "name": "window-missing",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "window"
+  },
+  {
+    "name": "screen-window",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "screen",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "unknown"
+  },
+  {
+    "name": "nonzero-tolerance-reason",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 8,
+        "maxDiffering": 10,
+        "reason": "documented noise"
+      }
+    }
+  },
+  {
+    "name": "tolerance-reason-missing",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 1,
+        "maxDiffering": 0
+      }
+    },
+    "error": "reason"
+  },
+  {
+    "name": "tolerance-reason-empty",
+    "group": "fields",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 1,
+        "maxDiffering": 0,
+        "reason": " "
+      }
+    },
+    "error": "reason"
+  },
+  {
+    "name": "valid-mask",
+    "group": "mask",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 10,
+            "h": 10
+          },
+          "reason": "volatile counter"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    }
+  },
+  {
+    "name": "mask-reason-",
+    "group": "mask",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 10,
+            "h": 10
+          },
+          "reason": ""
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "reason"
+  },
+  {
+    "name": "mask-reason-5",
+    "group": "mask",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 10,
+            "h": 10
+          },
+          "reason": 5
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "reason"
+  },
+  {
+    "name": "mask-rect-{'x': 101, 'y': 0, 'w': 1, 'h': 1}",
+    "group": "mask",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 101,
+            "y": 0,
+            "w": 1,
+            "h": 1
+          },
+          "reason": "volatile counter"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "mask"
+  },
+  {
+    "name": "mask-extra-0",
+    "group": "mask",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 10,
+            "h": 10
+          },
+          "reason": "volatile counter",
+          "extra": 0
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "unknown"
+  },
+  {
+    "name": "mask-no-reason",
+    "group": "mask",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 10,
+            "h": 10
+          }
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "reason"
+  },
+  {
+    "name": "mask-width-25",
+    "group": "mask-cap",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "excluded"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    }
+  },
+  {
+    "name": "mask-width-26",
+    "group": "mask-cap",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 26,
+            "h": 100
+          },
+          "reason": "excluded"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "75%"
+  },
+  {
+    "name": "mask-width-100",
+    "group": "mask-cap",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 100,
+            "h": 100
+          },
+          "reason": "excluded"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    "error": "75%"
+  },
+  {
+    "name": "four-border-strips",
+    "group": "mask-cap",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 100,
+            "h": 1
+          },
+          "reason": "border"
+        },
+        {
+          "rect": {
+            "x": 0,
+            "y": 99,
+            "w": 100,
+            "h": 1
+          },
+          "reason": "border"
+        },
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1,
+            "h": 100
+          },
+          "reason": "border"
+        },
+        {
+          "rect": {
+            "x": 99,
+            "y": 0,
+            "w": 1,
+            "h": 100
+          },
+          "reason": "border"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    }
+  },
+  {
+    "name": "duplicate-masks-union",
+    "group": "mask-cap",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "overlap"
+        },
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "overlap"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    }
+  },
+  {
+    "name": "valid-uniform",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "uniform",
+      "params": {
+        "region": "main",
+        "colour": "#123abc"
+      }
+    }
+  },
+  {
+    "name": "uniform-colour",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "uniform",
+      "params": {
+        "region": "main"
+      }
+    },
+    "error": "colour"
+  },
+  {
+    "name": "uniform-colour-type",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "uniform",
+      "params": {
+        "region": "main",
+        "colour": 12
+      }
+    },
+    "error": "colour"
+  },
+  {
+    "name": "uniform-colour-format",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "uniform",
+      "params": {
+        "region": "main",
+        "colour": "red"
+      }
+    },
+    "error": "colour"
+  },
+  {
+    "name": "operand",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "uniform",
+      "params": {
+        "region": "absent",
+        "colour": "#123abc"
+      }
+    },
+    "error": "region"
+  },
+  {
+    "name": "count-low",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "count",
+      "params": {
+        "region": "main",
+        "min": 1
+      }
+    },
+    "error": "min"
+  },
+  {
+    "name": "count-high",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "count",
+      "params": {
+        "region": "main",
+        "min": 10001
+      }
+    },
+    "error": "domain"
+  },
+  {
+    "name": "count-max",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "count",
+      "params": {
+        "region": "main",
+        "min": 2,
+        "max": 1
+      }
+    },
+    "error": "max"
+  },
+  {
+    "name": "unknown-predicate",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "other",
+      "params": {}
+    },
+    "error": "predicate"
+  },
+  {
+    "name": "one-pixel",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "uniform",
+      "params": {
+        "region": "main",
+        "colour": "#123abc"
+      }
+    },
+    "error": "domain"
+  },
+  {
+    "name": "valid-count",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "count",
+      "params": {
+        "region": "main",
+        "min": 2,
+        "max": 10000
+      }
+    }
+  },
+  {
+    "name": "outside-unmasked",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "outside",
+      "params": {
+        "region": "main",
+        "rect": {
+          "x": 1,
+          "y": 1,
+          "w": 98,
+          "h": 98
+        },
+        "colour": "#ff0000"
+      }
+    }
+  },
+  {
+    "name": "outside-masked-border",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 100,
+            "h": 1
+          },
+          "reason": "border"
+        },
+        {
+          "rect": {
+            "x": 0,
+            "y": 99,
+            "w": 100,
+            "h": 1
+          },
+          "reason": "border"
+        },
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 1,
+            "h": 100
+          },
+          "reason": "border"
+        },
+        {
+          "rect": {
+            "x": 99,
+            "y": 0,
+            "w": 1,
+            "h": 100
+          },
+          "reason": "border"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "outside",
+      "params": {
+        "region": "main",
+        "rect": {
+          "x": 1,
+          "y": 1,
+          "w": 98,
+          "h": 98
+        },
+        "colour": "#ff0000"
+      }
+    },
+    "error": "domain"
+  },
+  {
+    "name": "outside-too-masked",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 100,
+            "h": 1
+          },
+          "reason": "border"
+        },
+        {
+          "rect": {
+            "x": 0,
+            "y": 99,
+            "w": 100,
+            "h": 1
+          },
+          "reason": "border"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "outside",
+      "params": {
+        "region": "main",
+        "rect": {
+          "x": 1,
+          "y": 1,
+          "w": 98,
+          "h": 98
+        },
+        "colour": "#ff0000"
+      }
+    },
+    "error": "domain"
+  },
+  {
+    "name": "outside-not-strict",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "outside",
+      "params": {
+        "region": "main",
+        "rect": {
+          "x": 0,
+          "y": 1,
+          "w": 98,
+          "h": 98
+        },
+        "colour": "#ff0000"
+      }
+    },
+    "error": "strict"
+  },
+  {
+    "name": "valid-equal",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        },
+        {
+          "name": "other",
+          "x": 100,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "equal-regions",
+      "params": {
+        "a": "main",
+        "b": "other"
+      }
+    }
+  },
+  {
+    "name": "equal-overlap",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        },
+        {
+          "name": "other",
+          "x": 99,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "equal-regions",
+      "params": {
+        "a": "main",
+        "b": "other"
+      }
+    },
+    "error": "overlap"
+  },
+  {
+    "name": "equal-size",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        },
+        {
+          "name": "other",
+          "x": 100,
+          "y": 0,
+          "w": 99,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "equal-regions",
+      "params": {
+        "a": "main",
+        "b": "other"
+      }
+    },
+    "error": "size"
+  },
+  {
+    "name": "equal-operand",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        },
+        {
+          "name": "other",
+          "x": 100,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "equal-regions",
+      "params": {
+        "a": "main",
+        "b": "absent"
+      }
+    },
+    "error": "region"
+  },
+  {
+    "name": "equal-one-pair",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        },
+        {
+          "name": "other",
+          "x": 1,
+          "y": 0,
+          "w": 1,
+          "h": 1
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "equal-regions",
+      "params": {
+        "a": "main",
+        "b": "other"
+      }
+    },
+    "error": "domain"
+  },
+  {
+    "name": "equal-pairs-mask-intersection",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        },
+        {
+          "name": "other",
+          "x": 100,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "a"
+        },
+        {
+          "rect": {
+            "x": 175,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "b"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "equal-regions",
+      "params": {
+        "a": "main",
+        "b": "other"
+      }
+    },
+    "error": "domain"
+  },
+  {
+    "name": "valid-differs",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "differs-from-previous",
+      "params": {
+        "region": "main",
+        "minDiffering": 1
+      }
+    },
+    "previous": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "previous-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    }
+  },
+  {
+    "name": "previous-missing",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "differs-from-previous",
+      "params": {
+        "region": "main",
+        "minDiffering": 1
+      }
+    },
+    "error": "previous"
+  },
+  {
+    "name": "previous-source",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "differs-from-previous",
+      "params": {
+        "region": "main",
+        "minDiffering": 1
+      }
+    },
+    "error": "previous",
+    "previous": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "previous-check",
+      "kind": "stored",
+      "source": {
+        "kind": "screen"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    }
+  },
+  {
+    "name": "previous-case",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "differs-from-previous",
+      "params": {
+        "region": "main",
+        "minDiffering": 1
+      }
+    },
+    "error": "previous",
+    "previous": {
+      "version": 1,
+      "case": "frames/other",
+      "check": "previous-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    }
+  },
+  {
+    "name": "differs-zero",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "differs-from-previous",
+      "params": {
+        "region": "main",
+        "minDiffering": 0
+      }
+    },
+    "error": "minDiffering",
+    "previous": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "previous-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    }
+  },
+  {
+    "name": "differs-over-domain",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "differs-from-previous",
+      "params": {
+        "region": "main",
+        "minDiffering": 10001
+      }
+    },
+    "error": "domain",
+    "previous": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "previous-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    }
+  },
+  {
+    "name": "differs-previous-mask",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "differs-from-previous",
+      "params": {
+        "region": "main",
+        "minDiffering": 7501
+      }
+    },
+    "error": "domain",
+    "previous": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "previous-check",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "reference": {
+        "path": "frames/ui-testing/schema.png",
+        "sha256": "abababababababababababababababababababababababababababababababab"
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "previous"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    }
+  },
+  {
+    "name": "valid-formula",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": -1,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    }
+  },
+  {
+    "name": "formula-missing-unsigned",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "signed": -1,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "unsigned"
+  },
+  {
+    "name": "formula-mistyped-unsigned",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": false,
+        "signed": -1,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "unsigned"
+  },
+  {
+    "name": "formula-missing-signed",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "signed"
+  },
+  {
+    "name": "formula-mistyped-signed",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": false,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "signed"
+  },
+  {
+    "name": "formula-missing-colour",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": -1,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "colour"
+  },
+  {
+    "name": "formula-mistyped-colour",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": -1,
+        "colour": false,
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "colour"
+  },
+  {
+    "name": "formula-missing-rect",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": -1,
+        "colour": "#aabbcc",
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "rect"
+  },
+  {
+    "name": "formula-mistyped-rect",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": -1,
+        "colour": "#aabbcc",
+        "rect": false,
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "rect"
+  },
+  {
+    "name": "formula-missing-window",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": -1,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "window"
+  },
+  {
+    "name": "formula-mistyped-window",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": -1,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": false,
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "window"
+  },
+  {
+    "name": "formula-missing-seed",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": -1,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main"
+      }
+    },
+    "error": "seed"
+  },
+  {
+    "name": "formula-mistyped-seed",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": -1,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": false
+      }
+    },
+    "error": "seed"
+  },
+  {
+    "name": "formula-range-unsigned-11",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 11,
+        "signed": -1,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "unsigned"
+  },
+  {
+    "name": "formula-range-unsigned--1",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": -1,
+        "signed": -1,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "unsigned"
+  },
+  {
+    "name": "formula-range-signed--3",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": -3,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "signed"
+  },
+  {
+    "name": "formula-range-signed-3",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": 3,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "signed"
+  },
+  {
+    "name": "formula-range-seed--1",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": -1,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": -1
+      }
+    },
+    "error": "seed"
+  },
+  {
+    "name": "formula-range-unsigned-5.0",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5.0,
+        "signed": -1,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "unsigned"
+  },
+  {
+    "name": "formula-range-colour-#zz0000",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": -1,
+        "colour": "#zz0000",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "colour"
+  },
+  {
+    "name": "formula-range-window-",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": -1,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "window"
+  },
+  {
+    "name": "formula-range-rect-{'x': 199, 'y': 0, 'w': 2, 'h': 2}",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": -1,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 199,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "rect"
+  },
+  {
+    "name": "formula-extra",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": {
+        "unsigned": 5,
+        "signed": -1,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": 18446744073709551615,
+        "extra": 1
+      }
+    },
+    "error": "unknown"
+  },
+  {
+    "name": "formula-unregistered",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "absent",
+      "params": {
+        "unsigned": 5,
+        "signed": -1,
+        "colour": "#aabbcc",
+        "rect": {
+          "x": 0,
+          "y": 0,
+          "w": 2,
+          "h": 2
+        },
+        "window": "main",
+        "seed": 18446744073709551615
+      }
+    },
+    "error": "formula"
+  },
+  {
+    "name": "formula-params-type",
+    "group": "formula-params",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "formula",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "formula": "schema-pattern",
+      "params": []
+    },
+    "error": "params"
+  },
+  {
+    "name": "count-after-mask",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "counter"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "count",
+      "params": {
+        "region": "main",
+        "min": 7501,
+        "max": 10000
+      }
+    },
+    "error": "domain"
+  },
+  {
+    "name": "outside-coverage-99",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 99,
+            "h": 1
+          },
+          "reason": "counter"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "outside",
+      "params": {
+        "region": "main",
+        "rect": {
+          "x": 1,
+          "y": 1,
+          "w": 98,
+          "h": 98
+        },
+        "colour": "#ff0000"
+      }
+    }
+  },
+  {
+    "name": "outside-coverage-100",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 100,
+            "h": 1
+          },
+          "reason": "counter"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "outside",
+      "params": {
+        "region": "main",
+        "rect": {
+          "x": 1,
+          "y": 1,
+          "w": 98,
+          "h": 98
+        },
+        "colour": "#ff0000"
+      }
+    },
+    "error": "domain"
+  },
+  {
+    "name": "equal-coverage-boundary",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        },
+        {
+          "name": "other",
+          "x": 100,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "same relative counter"
+        },
+        {
+          "rect": {
+            "x": 100,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "same relative counter"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "equal-regions",
+      "params": {
+        "a": "main",
+        "b": "other"
+      }
+    }
+  },
+  {
+    "name": "outside-tolerance-domain",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 1,
+        "reason": "documented noise"
+      },
+      "predicate": "outside",
+      "params": {
+        "region": "main",
+        "rect": {
+          "x": 1,
+          "y": 1,
+          "w": 98,
+          "h": 98
+        },
+        "colour": "#ff0000"
+      }
+    },
+    "error": "maxDiffering"
+  },
+  {
+    "name": "differs-previous-structural-domain",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "differs-from-previous",
+      "params": {
+        "region": "main",
+        "minDiffering": 397
+      }
+    },
+    "previous": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "previous-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "outside",
+      "params": {
+        "region": "main",
+        "rect": {
+          "x": 1,
+          "y": 1,
+          "w": 98,
+          "h": 98
+        },
+        "colour": "#ff0000"
+      }
+    },
+    "error": "domain"
+  },
+  {
+    "name": "differs-previous-equal-pairs",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 100,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "differs-from-previous",
+      "params": {
+        "region": "main",
+        "minDiffering": 7500
+      }
+    },
+    "previous": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "previous-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        },
+        {
+          "name": "other",
+          "x": 100,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "same relative counter"
+        },
+        {
+          "rect": {
+            "x": 100,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "same relative counter"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "equal-regions",
+      "params": {
+        "a": "main",
+        "b": "other"
+      }
+    }
+  },
+  {
+    "name": "differs-previous-equal-pairs-over-domain",
+    "group": "structural-vacuous",
+    "frame": [
+      200,
+      100
+    ],
+    "check": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "schema-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 100,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "differs-from-previous",
+      "params": {
+        "region": "main",
+        "minDiffering": 7501
+      }
+    },
+    "previous": {
+      "version": 1,
+      "case": "frames/mask",
+      "check": "previous-check",
+      "kind": "structural",
+      "source": {
+        "kind": "window",
+        "window": "main"
+      },
+      "at": {
+        "checkpoint": "ready",
+        "requires": [
+          "settled"
+        ]
+      },
+      "regions": [
+        {
+          "name": "main",
+          "x": 0,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        },
+        {
+          "name": "other",
+          "x": 100,
+          "y": 0,
+          "w": 100,
+          "h": 100
+        }
+      ],
+      "mask": [
+        {
+          "rect": {
+            "x": 0,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "same relative counter"
+        },
+        {
+          "rect": {
+            "x": 100,
+            "y": 0,
+            "w": 25,
+            "h": 100
+          },
+          "reason": "same relative counter"
+        }
+      ],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      },
+      "predicate": "equal-regions",
+      "params": {
+        "a": "main",
+        "b": "other"
+      }
+    },
+    "error": "domain"
+  }
+]

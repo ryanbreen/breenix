@@ -9,6 +9,22 @@ mod sessions;
 mod config;
 #[path = "suite_breengel/stage_painter.rs"]
 mod stage_painter;
+use libuitest::schema as frame_schema;
+use breenix_suite::suite as frame_case;
+#[path = "uitest_suite/comparison_cases.rs"]
+mod comparison_cases;
+#[path = "uitest_suite/structural_cases.rs"]
+mod structural_cases;
+#[path = "uitest_suite/formula_pattern.rs"]
+mod formula_pattern;
+#[path = "uitest_suite/reference_cases.rs"]
+mod reference_cases;
+#[path = "uitest_suite/frames.rs"]
+mod frames;
+#[path = "uitest_suite/canonical_cases.rs"]
+mod canonical_cases;
+#[path = "uitest_suite/capture_cases.rs"]
+mod capture_cases;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
 
 fn pending(layer: &str, step: u8) -> CaseResult {
@@ -50,7 +66,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A clean scenario run in the inner executor returns Pass. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("inner-pass", "A clean scenario run in the inner executor returns Pass", inner::inner_pass),
         // A scenario with a planted pixel fault returns pixel-mismatch with its check and first pixel. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("inner-expected-failure", "A scenario with a planted pixel fault returns pixel-mismatch with its check and first pixel", || pending("runner", 4)),
+        case("inner-expected-failure", "A scenario with a planted pixel fault returns pixel-mismatch with its check and first pixel", capture_cases::inner_expected_failure),
         // An outer case expecting pixel-mismatch fails when the scenario fails another way. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("inner-wrong-class", "An outer case expecting pixel-mismatch fails when the scenario fails another way", inner::inner_wrong_class),
         // A scenario whose app crashes is not accepted as detecting a pixel fault. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -172,69 +188,69 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     ]),
     category("frames", "Frame capture & comparison", &[
         // A window capture equals the committed buffer of that commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("window-capture", "A window capture equals the committed buffer of that commit", || pending("frames", 4)),
+        case("window-capture", "A window capture equals the committed buffer of that commit", capture_cases::window_capture).session(libuitest::supervisor::serve),
         // Capturing commit N while the app draws N+1 returns N whole. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("capture-while-drawing", "Capturing commit N while the app draws N+1 returns N whole", || pending("frames", 4)),
+        case("capture-while-drawing", "Capturing commit N while the app draws N+1 returns N whole", frames::capture_while_drawing).session(libuitest::supervisor::serve),
         // Two readers capturing the same window each get whole commits. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("capture-two-readers", "Two readers capturing the same window each get whole commits", || pending("frames", 4)),
+        case("capture-two-readers", "Two readers capturing the same window each get whole commits", frames::capture_two_readers).session(libuitest::supervisor::serve),
         // A resize during a capture gives the whole old commit, pixels and tree, never ENOENT or a mixture. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("capture-resize-race", "A resize during a capture gives the whole old commit, pixels and tree, never ENOENT or a mixture", || pending("frames", 4)),
+        case("capture-resize-race", "A resize during a capture gives the whole old commit, pixels and tree, never ENOENT or a mixture", frames::capture_resize_race).session(libuitest::supervisor::serve),
         // A destroy during a capture gives the whole commit and frees the buffer afterwards; a destroy before the copy begins gives ENOENT. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("capture-destroy-race", "A destroy during a capture gives the whole commit and frees the buffer afterwards; a destroy before the copy begins gives ENOENT", || pending("frames", 4)),
+        case("capture-destroy-race", "A destroy during a capture gives the whole commit and frees the buffer afterwards; a destroy before the copy begins gives ENOENT", frames::capture_destroy_race).session(libuitest::supervisor::serve),
         // Commits from two producer threads are each captured whole. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("capture-threads", "Commits from two producer threads are each captured whole", || pending("frames", 4)),
+        case("capture-threads", "Commits from two producer threads are each captured whole", frames::capture_threads).session(libuitest::supervisor::serve),
         // A screen capture shows the window at its position, with its observation record. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("screen-capture", "A screen capture shows the window at its position, with its observation record", || pending("frames", 4)),
+        case("screen-capture", "A screen capture shows the window at its position, with its observation record", capture_cases::screen_capture).session(libuitest::supervisor::serve),
         // A screen capture lists the commit of each window it contains. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("capture-commits", "A screen capture lists the commit of each window it contains", || pending("frames", 4)),
+        case("capture-commits", "A screen capture lists the commit of each window it contains", capture_cases::capture_commits).session(libuitest::supervisor::serve),
         // An identical frame matches with zero differing pixels. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("exact-match", "An identical frame matches with zero differing pixels", || pending("frames", 4)),
+        case("exact-match", "An identical frame matches with zero differing pixels", || comparison_cases::exact_match().map_err(Into::into)),
         // A frame with one changed pixel fails as pixel-mismatch, naming that pixel and both colours. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("one-pixel-fails", "A frame with one changed pixel fails as pixel-mismatch, naming that pixel and both colors", || pending("frames", 4)),
+        case("one-pixel-fails", "A frame with one changed pixel fails as pixel-mismatch, naming that pixel and both colors", || comparison_cases::one_pixel_fails().map_err(Into::into)),
         // A difference of 2 passes at tolerance 2 and fails at tolerance 1. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("channel-tolerance", "A difference of 2 passes at tolerance 2 and fails at tolerance 1", || pending("frames", 4)),
+        case("channel-tolerance", "A difference of 2 passes at tolerance 2 and fails at tolerance 1", || comparison_cases::channel_tolerance().map_err(Into::into)),
         // The differing-pixel cap passes at its limit and fails one pixel past it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("max-differing", "The differing-pixel cap passes at its limit and fails one pixel past it", || pending("frames", 4)),
+        case("max-differing", "The differing-pixel cap passes at its limit and fails one pixel past it", || comparison_cases::max_differing().map_err(Into::into)),
         // All regions of a check must pass in the same frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("regions-same-frame", "All regions of a check must pass in the same frame", || pending("frames", 4)),
+        case("regions-same-frame", "All regions of a check must pass in the same frame", || comparison_cases::regions_same_frame().map_err(Into::into)),
         // A masked region is excluded, and a mask without a reason fails validation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("mask", "A masked region is excluded, and a mask without a reason fails validation", || pending("frames", 4)),
+        case("mask", "A masked region is excluded, and a mask without a reason fails validation", frames::mask),
         // Masks that leave less than 75% of a region fail validation; the 100x100 region whose four one-pixel border strips are masked (396 pixels, 96.04% still compared) passes this region rule, so `structural-vacuous` must be what rejects it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("mask-cap", "Masks leaving under 75% of a region fail validation; four masked one-pixel border strips (96.04% compared) pass this rule", || pending("frames", 4)),
+        case("mask-cap", "Masks leaving under 75% of a region fail validation; four masked one-pixel border strips (96.04% compared) pass this rule", frames::mask_cap),
         // A check carrying a field schema version 1 does not define, `edgeRadius` included, fails validation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("unknown-field", "A check carrying a field schema version 1 does not define, edgeRadius included, fails validation", || pending("frames", 4)),
+        case("unknown-field", "A check carrying a field schema version 1 does not define, edgeRadius included, fails validation", frames::unknown_field),
         // Frames of different sizes fail without comparing. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("size-mismatch", "Frames of different sizes fail without comparing", || pending("frames", 4)),
+        case("size-mismatch", "Frames of different sizes fail without comparing", || comparison_cases::size_mismatch().map_err(Into::into)),
         // A reference whose SHA-256 differs from its pin fails before comparing. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("reference-pin", "A reference whose SHA-256 differs from its pin fails before comparing", || pending("frames", 4)),
+        case("reference-pin", "A reference whose SHA-256 differs from its pin fails before comparing", || reference_cases::reference_pin_at(std::path::Path::new(reference_cases::ROOT)).map_err(Into::into)),
         // A missing reference fails, naming the path. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("reference-missing", "A missing reference fails, naming the path", || pending("frames", 4)),
+        case("reference-missing", "A missing reference fails, naming the path", || reference_cases::reference_missing_at(std::path::Path::new(reference_cases::ROOT)).map_err(Into::into)),
         // A formula check compares like a stored one. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("formula", "A formula check compares like a stored one", || pending("frames", 4)),
+        case("formula", "A formula check compares like a stored one", || structural_cases::formula().map_err(Into::into)),
         // A uniform-region check passes on a flat fill and fails on one stray pixel. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("structural-uniform", "A uniform-region check passes on a flat fill and fails on one stray pixel", || pending("frames", 4)),
+        case("structural-uniform", "A uniform-region check passes on a flat fill and fails on one stray pixel", || structural_cases::uniform().map_err(Into::into)),
         // A no-colour-outside check catches a pixel leaking past its rectangle. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("structural-outside", "A no-color-outside check catches a pixel leaking past its rectangle", || pending("frames", 4)),
+        case("structural-outside", "A no-color-outside check catches a pixel leaking past its rectangle", || structural_cases::outside().map_err(Into::into)),
         // A colour-count check catches a blank frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("structural-count", "A color-count check catches a blank frame", || pending("frames", 4)),
+        case("structural-count", "A color-count check catches a blank frame", || structural_cases::count().map_err(Into::into)),
         // Each predicate's effective-domain rule is enforced after masks, before any comparison: a uniform check without a colour, a colour count below 2 or above the compared pixels, overlapping equal regions, equal regions with fewer than 2 compared pairs, `minDiffering` above the domain, an operand that names no declared region, and a region of one pixel each fail validation; and an `outside` check on a 100x100 region with a strictly interior 98x98 `rect` and its four border strips masked fails validation for an empty outside domain, while the same check unmasked catches one forbidden-colour pixel planted in the border. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("structural-vacuous", "Every structural predicate's effective-domain rule is enforced after masks, before any comparison", || pending("frames", 4)),
+        case("structural-vacuous", "Every structural predicate's effective-domain rule is enforced after masks, before any comparison", frames::structural_vacuous),
         // A formula check with a missing, extra, mistyped or out-of-range parameter fails validation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("formula-params", "A formula check with a missing, extra, mistyped or out-of-range parameter fails validation", || pending("frames", 4)),
+        case("formula-params", "A formula check with a missing, extra, mistyped or out-of-range parameter fails validation", frames::formula_params),
         // A check with an unknown schema version fails validation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("schema-version", "A check with an unknown schema version fails validation", || pending("frames", 4)),
+        case("schema-version", "A check with an unknown schema version fails validation", frames::schema_version),
         // A check bound to a window key or checkpoint the scenario never reaches fails, naming it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("schema-binding", "A check bound to a window key or checkpoint the scenario never reaches fails, naming it", || pending("frames", 4)),
+        case("schema-binding", "A check bound to a window key or checkpoint the scenario never reaches fails, naming it", || reference_cases::schema_binding().map_err(Into::into)),
         // A reference PNG decodes to the pixels that were encoded. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("png-reference", "A reference PNG decodes to the pixels that were encoded", || pending("frames", 4)),
+        case("png-reference", "A reference PNG decodes to the pixels that were encoded", || reference_cases::png_reference_at(std::path::Path::new(reference_cases::ROOT)).map_err(Into::into)),
         // Captures taken with the cursor hidden contain no cursor pixels. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("cursor-excluded", "Captures taken with the cursor hidden contain no cursor pixels", || pending("frames", 4)),
+        case("cursor-excluded", "Captures taken with the cursor hidden contain no cursor pixels", canonical_cases::cursor_excluded).session(libuitest::supervisor::serve),
         // The test app's canonical scene hashes to the pinned value on this target. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("cross-target", "The test app's canonical scene hashes to the pinned value on this target", || pending("frames", 4)),
+        case("cross-target", "The test app's canonical scene hashes to the pinned value on this target", canonical_cases::cross_target).session(libuitest::supervisor::serve),
         // Every check writes one well-formed FRAME record with its definition hash. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("frame-record", "Every check writes one well-formed FRAME record with its definition hash", || pending("frames", 4)),
+        case("frame-record", "Every check writes one well-formed FRAME record with its definition hash", || reference_cases::frame_record_at(std::path::Path::new(reference_cases::ROOT)).map_err(Into::into)).checks(&["pattern"]),
         // Comparing two 1280x800 frames takes at most 50 ms. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("compare-cost", "Comparing two 1280x800 frames takes at most 50 ms", || pending("frames", 4)),
+        case("compare-cost", "Comparing two 1280x800 frames takes at most 50 ms", || comparison_cases::compare_cost().map_err(Into::into)),
     ]),
     category("clock", "UI time & stepping", &[
         // An app reading the UI clock sees it stand still between steps. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)

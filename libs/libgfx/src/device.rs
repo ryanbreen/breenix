@@ -116,7 +116,9 @@ pub(crate) fn acquire(owner: &AtomicU64, pid: u64) -> bool {
                 Err(next) => seen = next,
             }
         } else {
-            core::hint::spin_loop();
+            // The holder can be asleep in a GPU syscall, or preempted on this
+            // CPU. Let it resume instead of spending our timeslice spinning.
+            let _ = libbreenix::process::yield_now();
             seen = owner.load(Ordering::Relaxed);
         }
     }

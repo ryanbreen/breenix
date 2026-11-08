@@ -21,6 +21,30 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+#[path = "../libs/libuitest/src/schema.rs"]
+mod frame_schema;
+mod frame_case {
+    pub type CaseResult = Result<(), String>;
+    pub fn fail(message: impl Into<String>) -> CaseResult { Err(message.into()) }
+}
+#[path = "../userspace/programs/src/uitest_suite/frames.rs"]
+mod frame_cases;
+
+fn validate_frame_checks(value: &Value, frame: Option<(u32,u32)>, formulas: &[frame_schema::Formula]) -> Result<Vec<frame_schema::Check>, String> {
+    let values = value.as_array().ok_or("frameChecks: expected array")?;
+    let mut checks: Vec<frame_schema::Check> = Vec::new();
+    for value in values {
+        let previous = checks.iter().rev().find(|c|value["source"]==c.source && value["case"]==c.case);
+        let check = frame_schema::validate(value, &frame_schema::Context {frame, formulas, previous})?;
+        if checks.iter().any(|c|c.case==check.case && c.check==check.check) {
+            return Err(format!("frameChecks: duplicate check {} in {}",check.check,check.case));
+        }
+        checks.push(check);
+    }
+    Ok(checks)
+}
+
+
 fn repo_root() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
 }
@@ -195,6 +219,19 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
                 .all(|part| !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())));
         if !valid {
             errors.push(format!("{at}: aggregate must match after E[0-9]+ [0-9]+\\.[0-9]+"));
+        }
+    }
+    if let Some(checks) = object.get("frameChecks") {
+        expected.push("frameChecks");
+        let formulas = if value["id"] == "ui-testing" { frame_cases::FORMULAS } else { &[] };
+        match validate_frame_checks(checks, None, formulas) {
+            Ok(checks) => for check in checks {
+                let bound = value["categories"].as_array().is_some_and(|cats|cats.iter().any(|cat|
+                    cat["cases"].as_array().is_some_and(|cases|cases.iter().any(|case|
+                        check.case == format!("{}/{}",cat["id"].as_str().unwrap_or(""),case["id"].as_str().unwrap_or(""))))));
+                if !bound { errors.push(format!("{at}: frameChecks case {} is not declared",check.case)); }
+            },
+            Err(error) => errors.push(format!("{at}: {error}")),
         }
     }
     keys(object, &expected, &at, errors);
@@ -1662,4 +1699,60 @@ fn session_case_declarations_preserve_the_case_table() {
     let (_, categories) = source_suite_files(&files).unwrap();
     let count: usize = categories.iter().map(|c| c.cases.len()).sum();
     assert_eq!(count, 206);
+}
+
+
+#[test]
+fn frame_checks_are_optional_and_strict() {
+    let mut manifest = serde_json::json!({"id":"ui-testing", "title":"UI test framework",
+        "area":"gui", "summary":"Schema fixture", "binary":"/sbin/suite-ui-testing",
+        "categories":[{"id":"frames","title":"Frames","cases":[{"id":"mask","title":"Masks"}]}]});
+    let rows: Value = serde_json::from_str(include_str!("fixtures/frame-schema-v1.json")).unwrap();
+    let dir = std::env::temp_dir().join(format!("suite-frames-{}", std::process::id()));
+    fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ui-testing.json");
+    let validate = |value: &Value| {
+        fs::write(&path, value.to_string()).unwrap();
+        let mut errors = Vec::new();
+        read_manifest(&path, &mut errors);
+        errors
+    };
+    let baseline_errors = validate(&manifest);
+    assert!(baseline_errors.is_empty(), "{baseline_errors:?}");
+    manifest["frameChecks"] = serde_json::json!([rows[0]["check"]]);
+    assert!(validate(&manifest).is_empty(), "a valid frameChecks entry must be admitted: {:?}", validate(&manifest));
+    for invalid in [serde_json::json!({}), serde_json::json!([{"version":2}])] {
+        manifest["frameChecks"] = invalid;
+        assert!(!validate(&manifest).is_empty());
+    }
+    manifest["frameChecks"] = serde_json::json!([]);
+    manifest["unknownFrameKey"] = serde_json::json!(true);
+    assert!(validate(&manifest).iter().any(|e|e.contains("unknownFrameKey")));
+    fs::remove_dir_all(dir).unwrap();
+}
+
+
+#[test]
+fn frame_schema_guest_and_host_agree_over_fixtures() {
+    for row in frame_cases::fixtures() {
+        let mut values = Vec::new();
+        if let Some(prev) = row.get("previous") {values.push(prev.clone());}
+        values.push(row["check"].clone());
+        let frame = Some((row["frame"][0].as_u64().unwrap() as u32, row["frame"][1].as_u64().unwrap() as u32));
+        let host = validate_frame_checks(&Value::Array(values), frame, frame_cases::FORMULAS);
+        let guest = frame_cases::verdict(&row);
+        assert_eq!(host.is_ok(), guest.is_ok(), "host/guest disagreement: {}: {host:?} / {guest:?}",row["name"]);
+        assert_eq!(host.as_ref().err(), guest.as_ref().err(), "refusal differs: {}", row["name"]);
+        match (guest, row["error"].as_str()) {
+            (Ok(check), None) => assert_eq!(check.compared_area,host.unwrap().last().unwrap().compared_area),
+            (Err(error), Some(expected)) => assert!(error.contains(expected),"{}: expected {expected}, got {error}",row["name"]),
+            (result, expected) => panic!("{}: expected {expected:?}, got {result:?}",row["name"]),
+        }
+    }
+    frame_cases::unknown_field().unwrap();
+    frame_cases::mask().unwrap();
+    frame_cases::mask_cap().unwrap();
+    frame_cases::formula_params().unwrap();
+    frame_cases::schema_version().unwrap();
+    frame_cases::structural_vacuous().unwrap();
 }

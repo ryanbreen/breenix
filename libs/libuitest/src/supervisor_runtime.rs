@@ -198,6 +198,21 @@ fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mu
     release.and(handback)
 }
 
+// Named startup records must outlive explicit teardown of the private root.
+fn startup_phase_record(environment: &Option<SessionEnvironment>, collect: bool) -> Option<String> {
+    let suite = std::env::var("BREENIX_COLLECT_SUITE").ok()?;
+    let case = std::env::var("BREENIX_COLLECT_CASE").ok()?;
+    if !collect && !matches!(case.as_str(), "sessions/start-desktop" | "sessions/start-kiosk") {
+        return None;
+    }
+    let config = environment.as_ref()?;
+    let trace = crate::startup::Trace::open(Path::new(config.config_root())).ok()?;
+    let mut line = format!("UI_STARTUP {suite} {case}");
+    for (name, ns) in trace.snapshot() { line.push_str(&format!(" {name}={ns}")); }
+    line.push('\n');
+    Some(line)
+}
+
 /// Runner callback. Its first operation registers the subreaper; failure refuses
 /// startup without launching any process. spawn has already closed runner fds.
 pub fn serve(control: Fd, collector: Fd) -> i32 {
@@ -212,6 +227,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
     }
     let mut output = BTreeMap::new();
     let mut environment: Option<SessionEnvironment> = None;
+    let mut startup_record = None;
     let mut compositor = None;
     let mut devices = None;
     let mut ownership = Ownership::default();
@@ -253,18 +269,14 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                             Accounting::new(&suite, &case, &[], true)?;
                             let stderr = output.iter().map(|(&pid, app)| (pid, app.ring.dropped(), app.ring.bytes())).collect::<Vec<_>>();
                             let record = evidence.collect(&suite, &case, trigger, &stderr);
-                            // The supervisor retains the runner's transcript, unlike the
-                            // silent case. Emit bounded diagnostics on collection only.
-                            if let Some(config) = &environment {
-                                if let Ok(trace) = crate::startup::Trace::open(Path::new(config.config_root())) {
-                                    let mut line = format!("UI_STARTUP {suite} {case}");
-                                    for (name, ns) in trace.snapshot() { line.push_str(&format!(" {name}={ns}")); }
-                                    line.push('\n');
-                                    let _ = io::write(Fd::STDOUT, line.as_bytes());
-                                }
-                            }
                             Some(record)
                         } else { None };
+                        // The supervisor owns an independent transcript. Successful
+                        // starts may already have removed their private configuration.
+                        if let Some(line) = startup_record.take()
+                            .or_else(|| startup_phase_record(&environment, record.is_some())) {
+                            let _ = io::write(Fd::STDOUT, line.as_bytes());
+                        }
                         if !stopped { teardown(&mut channel, &mut output, false, compositor, &mut ownership, &mut devices)?; }
                         if let Some(config) = environment.take() { std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())?; }
                         evidence.release_remnants();
@@ -372,6 +384,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                         stderr_request = Some(pid);
                     }
                     Ok(Some(Message::Teardown)) => { teardown(&mut channel, &mut output, true, compositor, &mut ownership, &mut devices)?;
+                        startup_record = startup_record.or_else(|| startup_phase_record(&environment, false));
                         if let Some(config) = environment.take() { std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())?; }
                         stopped = true; channel.send(&Message::Stopped)?; }
                     Ok(Some(_)) => return Err("unexpected case control message".into()),

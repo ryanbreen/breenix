@@ -52,7 +52,7 @@ pub(super) fn run_deferred_check(
     if resizing { return; }
 
     let now = monotonic_ms().unwrap_or(0);
-    let shown = queue.scene().map(|scene| gpu.shown_clients(&scene.layers, Some(scene.pointer)))
+    let shown = queue.scene().map(|scene| gpu.shown_clients(&scene.layers, cursor_pointer(scene.pointer)))
         .unwrap_or_default();
     let Some((scene, unchecked)) = queue.next_if_idle(
         |id| shown.iter().any(|(shown, _)| *shown == id)
@@ -62,7 +62,7 @@ pub(super) fn run_deferred_check(
     let next = unchecked.iter().copied()
         .min_by_key(|id| windows.iter().find(|w| w.window_id == *id).map_or(0, |w| w.check_moved));
     let id = next.unwrap_or(0);
-    let result = measure_check(|| gpu.check(id, &scene.layers, Some(scene.pointer)));
+    let result = measure_check(|| gpu.check(id, &scene.layers, cursor_pointer(scene.pointer)));
     if result.is_ok() {
         // Harvested from 097962f6: the full-scene comparison includes the
         // shown sources, so its successful result also serves these clients.
@@ -104,8 +104,11 @@ pub(super) fn draw_text_at(fb: &mut Surface, text: &[u8], x: i32, y: i32, color:
     if y < 0 || y >= fb.height() as i32 { return; }
     if let Some(font) = ttf {
         // Use LCD subpixel rendering for crisp window chrome text
-        let s = unsafe { core::str::from_utf8_unchecked(text) };
-        ttf_font::draw_text_subpixel(fb, font, s, x, y, ttf_font_size() * ui().scale as f32, color);
+        let clip = fb.clip();
+        ttf_font::draw_runs_subpixel(fb, font, &[ttf_font::TextRun {
+            bytes: text, x, y, size: ttf_font_size() * ui().scale as f32,
+            fg: color, clip,
+        }]);
     } else {
         // Only the characters whose whole cell lies across the surface's width are drawn.
         let cell_w = ui().cell_w as i32;

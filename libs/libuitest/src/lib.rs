@@ -21,3 +21,16 @@ pub mod artifacts;
 mod collect;
 
 pub mod startup;
+
+pub mod schema;
+
+pub mod compare;
+
+pub mod formula;
+
+pub mod frames;
+
+pub mod capture_marker;
+pub mod capture;
+
+pub mod capture_race;
