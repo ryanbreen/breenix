@@ -888,7 +888,3 @@ path = "src/suite_runner_fixture.rs"
 [[bin]]
 name = "uitest-app_test"
 path = "src/uitest_app.rs"
-
-[[bin]]
-name = "ui-sequence-sentinel_test"
-path = "src/suite_sequence_sentinel.rs"

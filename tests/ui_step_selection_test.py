@@ -14,7 +14,7 @@ class UiSelectionsTest(unittest.TestCase):
                  for category in manifest['categories'] for case in category['cases']]
         self.assertEqual(len(set(cases)), len(cases))
         previous = set()
-        for step in range(1, 9):
+        for step in range(1, 8):
             with self.subTest(step=step):
                 selection = json.loads((ROOT / f"docs/gui/gt710-step-22-{step}.json").read_text())
                 selected = selection['cases']
@@ -25,7 +25,7 @@ class UiSelectionsTest(unittest.TestCase):
                 self.assertEqual(selection['added'], len(set(selected) - previous))
                 self.assertEqual(selected, [case for case in cases if case in set(selected)])
                 previous = set(selected)
-        self.assertEqual(len(cases), 131)
+        self.assertEqual(len(cases), 108)
         self.assertEqual(previous, set(cases))
 
 

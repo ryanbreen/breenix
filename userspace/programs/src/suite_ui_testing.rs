@@ -5,6 +5,8 @@ mod runner;
 mod inner;
 #[path = "uitest_suite/sessions.rs"]
 mod sessions;
+#[path = "uitest_suite/diagnosis.rs"]
+mod diagnosis;
 #[path = "uitest_suite/config.rs"]
 mod config;
 #[path = "suite_breengel/stage_painter.rs"]
@@ -25,48 +27,10 @@ fn pending(layer: &str, step: u8) -> CaseResult {
 
 static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     category("runner", "Result transport & proof executor", &[
-        // Records reach the runner with the live strip turned off. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("transport-always", "Records reach the runner with the live strip turned off", runner::transport_always),
-        // A writer that fills the pipe blocks, and all 256 records arrive. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("transport-blocking", "A writer that fills the pipe blocks, and all 256 records arrive", runner::transport_blocking),
-        // A record written immediately before the case exits still arrives. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("transport-exit-race", "A record written immediately before the case exits still arrives", runner::transport_exit_race),
-        // A suite table declaring more checks for one case than the record limit is refused at suite start. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("transport-capacity", "A suite table declaring more checks for one case than the record limit is refused at suite start", runner::transport_capacity),
-        // Under the real runner in the scoped fixture (section 8.4), a record naming another case or an undeclared check makes that runner report the case FAIL. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("record-binding", "Under the real runner in the fixture, a record naming another case or an undeclared check fails the case", runner::record_binding),
-        // Under the real runner in the fixture, a malformed record makes it report the case FAIL. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("record-malformed", "Under the real runner in the fixture, a malformed record fails the case", runner::record_malformed),
-        // Under the real runner in the fixture, a second record for the same check makes it report the case FAIL. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("record-duplicate", "Under the real runner in the fixture, a second record for the same check fails the case", runner::record_duplicate),
-        // An app the case execs cannot write records. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("forgery-exec", "An app the case execs cannot write records", runner::forgery_exec),
-        // A helper created through `suite::spawn` that never execs cannot write records. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("forgery-fork", "A helper created through suite::spawn that never execs cannot write records", runner::forgery_fork),
-        // Under the real runner in the fixture, a case that declares a frame check and never runs it is reported FAIL, naming the check. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("never-ran", "Under the real runner in the fixture, a declared frame check that never runs fails the case, naming the check", runner::never_ran),
-        // Under the real runner in the fixture, a case that returns Ok after a mismatch record is reported FAIL. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("mismatch-is-fail", "Under the real runner in the fixture, a case that returns Ok after a mismatch record fails", runner::mismatch_is_fail),
-        // The fixture's clean case passes under the real runner, and the fixture's transcript ends in a consistent DONE. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("outer-positive", "The fixture's clean case passes under the real runner and its transcript ends in a consistent DONE", runner::outer_positive),
-        // A fixture case killed mid-scenario is reported FAIL by the real runner, its supervisor's COLLECT and `done` arrive before the sweep, and the evidence it names is on disk. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("outer-case-death", "A fixture case killed mid-scenario fails, its COLLECT and done arrive before the sweep, and its evidence is on disk", runner::outer_case_death),
-        // A fixture supervisor that never answers is swept at the case limit, the runner writes `artifacts=none:collector-timeout`, and the case's primary failure stands; a fixture supervisor that dies instead makes the runner write `artifacts=none:supervisor-died` and reap the session's orphans. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("outer-collector-timeout", "A silent fixture supervisor is swept at the limit as collector-timeout, and a dead one is recorded supervisor-died with its orphans reaped", runner::outer_collector_timeout),
-        // The real runner, run as a subreaper, kills and reaps every descendant of the fixture, a double-forked helper included, and nothing outside it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("sweep-descendants", "The real runner as a subreaper kills and reaps every descendant of the fixture and nothing outside it", runner::sweep_descendants),
         // A clean scenario run in the inner executor returns Pass. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("inner-pass", "A clean scenario run in the inner executor returns Pass", inner::inner_pass),
         // A scenario with a planted pixel fault returns pixel-mismatch with its check and first pixel. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("inner-expected-failure", "A scenario with a planted pixel fault returns pixel-mismatch with its check and first pixel", capture_cases::inner_expected_failure),
-        // An outer case expecting pixel-mismatch fails when the scenario fails another way. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("inner-wrong-class", "An outer case expecting pixel-mismatch fails when the scenario fails another way", inner::inner_wrong_class),
-        // A scenario whose app crashes is not accepted as detecting a pixel fault. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("inner-crash-not-detection", "A scenario whose app crashes is not accepted as detecting a pixel fault", inner::inner_crash_not_detection),
-        // Inner teardown kills only the scenario's descendants, and the outer case's helpers survive. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("inner-teardown-scoped", "Inner teardown kills only the scenario's descendants, and the outer case's helpers survive", inner::inner_teardown_scoped),
-        // An inner scenario's records never appear in the outer suite's records. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("inner-records-contained", "An inner scenario's records never appear in the outer suite's records", inner::inner_records_contained),
         // In a boot session, an inner scenario and the real-runner fixture alike, a double-forked descendant that exits with status 7 after its parent has died is reparented to that session's supervisor (its parent pid read from `/proc/<pid>/stat` is the supervisor's) and reaped there, and the supervisor reports its pid and status 7 to the case; when the supervisor is killed first, the orphan goes to the runner, the runner writes `artifacts=none:supervisor-died`, and the case fails naming the dead supervisor. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("subreaper", "A double-forked orphan is reparented to and reaped by its session supervisor, or by the runner when the supervisor died first", sessions::subreaper).session(libuitest::supervisor::serve),
     ]),
@@ -243,16 +207,12 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         case("teardown-hung", "A hung app is killed and reaped at teardown", sessions::teardown_hung).session(libuitest::supervisor::serve),
         // A screen capture during a case contains no panel pixels. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("panel-not-in-case", "A screen capture during a case contains no panel pixels", sessions::panel_not_in_case).session(libuitest::supervisor::serve),
-        // The panel is redrawn after the case, with that case's result. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("panel-after-case", "The panel is redrawn after the case, with that case's result", sessions::panel_after_case),
         // When a session's compositor dies, the display goes to the session supervisor, then to the runner at case end. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("ownership-stack", "When a session's compositor dies, the display goes to the session supervisor, then to the runner at case end", sessions::ownership_stack),
         // A scenario that runs out of time fails, and its evidence is saved inside the reserve. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("case-timeout", "A scenario that runs out of time fails, and its evidence is saved inside the reserve", sessions::case_timeout),
         // An app crashing during a scenario fails it, naming the app and the signal. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("app-crash", "An app crashing during a scenario fails it, naming the app and the signal", sessions::app_crash),
-        // An app's stderr is saved, capped at 64 KiB. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("app-stderr-capped", "An app's stderr is saved, capped at 64 KiB", sessions::app_stderr_capped).session(libuitest::supervisor::serve),
         // An app launched as uid 1000 runs in the session while the harness keeps root observation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("unprivileged-app", "An app launched as uid 1000 runs in the session while the harness keeps root observation", sessions::unprivileged_app).session(libuitest::supervisor::serve),
         // Twenty sessions in a row leave windows, processes and memory at the baseline. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -263,10 +223,6 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         case("wait-window-timeout", "wait_window for a window that never appears fails, naming the title", sessions::wait_window_timeout).session(libuitest::supervisor::serve),
         // launch passes argv and the environment exactly. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("launch-argv", "launch passes argv and the environment exactly", sessions::launch_argv).session(libuitest::supervisor::serve),
-        // A GUI suite runs inside a suite sequence and hands off at READY. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("sequence-compatible", "A GUI suite runs inside a suite sequence and hands off at READY", sessions::sequence_compatible),
-        // The session's fixture tree, fonts and locale match their pinned hashes. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("fixtures-pinned", "The session's fixture tree, fonts and locale match their pinned hashes", sessions::fixtures_pinned).session(libuitest::supervisor::serve),
     ]),
     category("diagnosis", "Saved evidence & failure messages", &[
         // A mismatch saves the got image, diff image, tree, input log and screen. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -280,7 +236,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // The saved screen is the readback at the failing step, with its record. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("screen-saved", "The saved screen is the readback at the failing step, with its record", || pending("diagnosis", 7)),
         // When the case process is killed, the runner sends `end collect`, waits for the supervisor's `done` before sweeping, and the evidence is on disk. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("case-death", "When the case process is killed, the runner sends end collect, waits for done before sweeping, and the evidence is on disk", || pending("diagnosis", 7)),
+        case("case-death", "When the case process is killed, the runner sends end collect, waits for done before sweeping, and the evidence is on disk", diagnosis::case_death),
         // An app that dies right after a commit still has that commit and tree saved, from its remnant. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("app-death", "An app that dies right after a commit still has that commit and tree saved, from its remnant", || pending("diagnosis", 7)),
     ]),

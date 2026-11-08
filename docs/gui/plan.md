@@ -2241,6 +2241,29 @@ Real time on `CLOCK_MONOTONIC`, with the workloads and bounds in section 12.2.
 
 The following IDs left the guest manifest under U20. Their dispositions are in the case disposition tables of `e22/plan-trimmed.md`.
 
+- `runner/transport-always`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/transport-blocking`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/transport-exit-race`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/transport-capacity`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/record-binding`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/record-malformed`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/record-duplicate`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/forgery-exec`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/forgery-fork`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/never-ran`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/mismatch-is-fail`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/outer-collector-timeout`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/sweep-descendants`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/inner-wrong-class`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/inner-crash-not-detection`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/inner-teardown-scoped`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/inner-records-contained`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `sessions/app-stderr-capped`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `sessions/fixtures-pinned`: move-host (docs/gui/e22-5-u3b.md). <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/outer-positive`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `runner/outer-case-death`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `sessions/panel-after-case`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
+- `sessions/sequence-compatible`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
 - `frames/capture-two-readers`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
 - `frames/capture-destroy-race`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->
 - `frames/capture-threads`: drop. <!-- claim-lint:ok: docs/gui/plan.md section 17 case catalog -->

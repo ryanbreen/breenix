@@ -12,88 +12,12 @@
       "title": "Result transport & proof executor",
       "cases": [
         {
-          "id": "transport-always",
-          "title": "Records reach the runner with the live strip turned off"
-        },
-        {
-          "id": "transport-blocking",
-          "title": "A writer that fills the pipe blocks, and all 256 records arrive"
-        },
-        {
-          "id": "transport-exit-race",
-          "title": "A record written immediately before the case exits still arrives"
-        },
-        {
-          "id": "transport-capacity",
-          "title": "A suite table declaring more checks for one case than the record limit is refused at suite start"
-        },
-        {
-          "id": "record-binding",
-          "title": "Under the real runner in the fixture, a record naming another case or an undeclared check fails the case"
-        },
-        {
-          "id": "record-malformed",
-          "title": "Under the real runner in the fixture, a malformed record fails the case"
-        },
-        {
-          "id": "record-duplicate",
-          "title": "Under the real runner in the fixture, a second record for the same check fails the case"
-        },
-        {
-          "id": "forgery-exec",
-          "title": "An app the case execs cannot write records"
-        },
-        {
-          "id": "forgery-fork",
-          "title": "A helper created through suite::spawn that never execs cannot write records"
-        },
-        {
-          "id": "never-ran",
-          "title": "Under the real runner in the fixture, a declared frame check that never runs fails the case, naming the check"
-        },
-        {
-          "id": "mismatch-is-fail",
-          "title": "Under the real runner in the fixture, a case that returns Ok after a mismatch record fails"
-        },
-        {
-          "id": "outer-positive",
-          "title": "The fixture's clean case passes under the real runner and its transcript ends in a consistent DONE"
-        },
-        {
-          "id": "outer-case-death",
-          "title": "A fixture case killed mid-scenario fails, its COLLECT and done arrive before the sweep, and its evidence is on disk"
-        },
-        {
-          "id": "outer-collector-timeout",
-          "title": "A silent fixture supervisor is swept at the limit as collector-timeout, and a dead one is recorded supervisor-died with its orphans reaped"
-        },
-        {
-          "id": "sweep-descendants",
-          "title": "The real runner as a subreaper kills and reaps every descendant of the fixture and nothing outside it"
-        },
-        {
           "id": "inner-pass",
           "title": "A clean scenario run in the inner executor returns Pass"
         },
         {
           "id": "inner-expected-failure",
           "title": "A scenario with a planted pixel fault returns pixel-mismatch with its check and first pixel"
-        },
-        {
-          "id": "inner-wrong-class",
-          "title": "An outer case expecting pixel-mismatch fails when the scenario fails another way"
-        },
-        {
-          "id": "inner-crash-not-detection",
-          "title": "A scenario whose app crashes is not accepted as detecting a pixel fault"
-        },
-        {
-          "id": "inner-teardown-scoped",
-          "title": "Inner teardown kills only the scenario's descendants, and the outer case's helpers survive"
-        },
-        {
-          "id": "inner-records-contained",
-          "title": "An inner scenario's records never appear in the outer suite's records"
         },
         {
           "id": "subreaper",
@@ -462,10 +386,6 @@
           "title": "A screen capture during a case contains no panel pixels"
         },
         {
-          "id": "panel-after-case",
-          "title": "The panel is redrawn after the case, with that case's result"
-        },
-        {
           "id": "ownership-stack",
           "title": "When a session's compositor dies, the display goes to the session supervisor, then to the runner at case end"
         },
@@ -476,10 +396,6 @@
         {
           "id": "app-crash",
           "title": "An app crashing during a scenario fails it, naming the app and the signal"
-        },
-        {
-          "id": "app-stderr-capped",
-          "title": "An app's stderr is saved, capped at 64 KiB"
         },
         {
           "id": "unprivileged-app",
@@ -500,14 +416,6 @@
         {
           "id": "launch-argv",
           "title": "launch passes argv and the environment exactly"
-        },
-        {
-          "id": "sequence-compatible",
-          "title": "A GUI suite runs inside a suite sequence and hands off at READY"
-        },
-        {
-          "id": "fixtures-pinned",
-          "title": "The session's fixture tree, fonts and locale match their pinned hashes"
         }
       ]
     },

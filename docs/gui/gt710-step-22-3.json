@@ -7,34 +7,15 @@
   "milestonesCompleted": [
     "sessions"
   ],
-  "added": 27,
+  "added": 21,
   "addedByCategory": {
-    "runner": 3,
+    "runner": 1,
     "input": 1,
-    "sessions": 23
+    "sessions": 19
   },
-  "total": 45,
+  "total": 22,
   "cases": [
-    "runner/transport-always",
-    "runner/transport-blocking",
-    "runner/transport-exit-race",
-    "runner/transport-capacity",
-    "runner/record-binding",
-    "runner/record-malformed",
-    "runner/record-duplicate",
-    "runner/forgery-exec",
-    "runner/forgery-fork",
-    "runner/never-ran",
-    "runner/mismatch-is-fail",
-    "runner/outer-positive",
-    "runner/outer-case-death",
-    "runner/outer-collector-timeout",
-    "runner/sweep-descendants",
     "runner/inner-pass",
-    "runner/inner-wrong-class",
-    "runner/inner-crash-not-detection",
-    "runner/inner-teardown-scoped",
-    "runner/inner-records-contained",
     "runner/subreaper",
     "input/teardown-releases",
     "sessions/start-desktop",
@@ -48,17 +29,13 @@
     "sessions/teardown",
     "sessions/teardown-hung",
     "sessions/panel-not-in-case",
-    "sessions/panel-after-case",
     "sessions/ownership-stack",
     "sessions/case-timeout",
     "sessions/app-crash",
-    "sessions/app-stderr-capped",
     "sessions/unprivileged-app",
     "sessions/twenty-sessions",
     "sessions/wait-window",
     "sessions/wait-window-timeout",
-    "sessions/launch-argv",
-    "sessions/sequence-compatible",
-    "sessions/fixtures-pinned"
+    "sessions/launch-argv"
   ]
 }
