@@ -5,12 +5,13 @@ use std::{io::{BufRead, BufReader, Write}, os::unix::net::UnixStream,
     sync::{mpsc, Arc, Mutex}, thread, time::Duration};
 
 #[derive(Clone, Copy)]
-enum Command { Create, Commit, Resize, Destroy }
-struct Producer { window: Option<Window>, ordinal: u64, generation: Generation }
+enum Command { Create, CreateTree, Commit, Resize, Destroy }
+struct Producer { semantic: bool, window: Option<Window>, ordinal: u64, generation: Generation }
 impl Producer {
     fn apply(&mut self, command: Command, title: &str) -> Result<String, String> {
         match command {
-            Command::Create => {
+            Command::Create | Command::CreateTree => {
+                self.semantic = matches!(command, Command::CreateTree);
                 if self.window.is_some() { return Err("window already exists".into()); }
                 self.window = Some(Window::new_without_fonts(title.as_bytes(), 320, 200).map_err(|e| e.to_string())?);
                 self.ordinal = 0;
@@ -41,7 +42,17 @@ impl Producer {
                     libgfx::color::Color::rgb(pixel[2], pixel[1], pixel[0]));
             }
         });
-        window.write_tree(&libuitest::capture::root(generation, width, height)).map_err(|e| e.to_string())?;
+        if self.semantic {
+            use breengel::tree::{Tree, Node, Role, Flag};
+            window.set_tree(Tree { root: Node {
+                key: "root".into(), parent: None, role: Role::Window, name: "capture".into(),
+                value: serde_json::json!({"commit": generation.commit, "producer": generation.producer}),
+                bounds: [0, 0, width.into(), height.into()], clip: [0, 0, width.into(), height.into()],
+                flags: vec![Flag::Enabled, Flag::Visible],
+            }, children: Vec::new() });
+        } else {
+            window.write_tree(&libuitest::capture::root(generation, width, height)).map_err(|e| e.to_string())?;
+        }
         let commit = window.commit(&[libbreenix::window::abi::Rect::new(0, 0, width as i32, height as i32)]).map_err(|e| e.to_string())?;
         if commit.commit_id != generation.commit { return Err("producer ordinal differs from commit id".into()); }
         let id = window.id();
@@ -60,7 +71,7 @@ pub fn serve(title: &str) -> Result<(), String> {
     socket.set_read_timeout(Some(Duration::from_secs(2))).map_err(|e| e.to_string())?;
     socket.set_write_timeout(Some(Duration::from_secs(2))).map_err(|e| e.to_string())?;
     let mut socket = BufReader::new(socket);
-    let state = Arc::new(Mutex::new(Producer { window: None, ordinal: 0, generation: Generation { commit: 0, producer: 0 } }));
+    let state = Arc::new(Mutex::new(Producer { semantic: false, window: None, ordinal: 0, generation: Generation { commit: 0, producer: 0 } }));
     let (replies, results) = mpsc::channel();
     let mut senders = Vec::new(); let mut workers = Vec::new();
     for _ in 0..2 {
@@ -80,7 +91,7 @@ pub fn serve(title: &str) -> Result<(), String> {
             let mut line = String::new();
             if socket.read_line(&mut line).map_err(|e| e.to_string())? == 0 { return Err("capture controller disconnected".into()); }
             let (worker, command) = match line.trim_end() {
-                "create" => (0, Command::Create), "commit 0" => (0, Command::Commit),
+                "create" => (0, Command::Create), "create-tree" => (0, Command::CreateTree), "commit 0" => (0, Command::Commit),
                 "commit 1" => (1, Command::Commit), "resize" => (0, Command::Resize),
                 "destroy" => (0, Command::Destroy),
                 "quit" => {

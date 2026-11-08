@@ -49,6 +49,7 @@
 //! ```
 
 mod window;
+mod tree_commit;
 mod event;
 pub mod clock;
 pub mod font;

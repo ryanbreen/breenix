@@ -15,6 +15,8 @@ mod stage_painter;
 mod comparison_cases;
 #[path = "uitest_suite/frames.rs"]
 mod frames;
+#[path = "uitest_suite/tree_cases.rs"]
+mod tree_cases;
 #[path = "uitest_suite/canonical_cases.rs"]
 mod canonical_cases;
 #[path = "uitest_suite/capture_cases.rs"]
@@ -98,7 +100,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A terminal node's rows, cell attributes and cursor equal what its grid holds. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("terminal-grid", "A terminal node's rows, cell attributes and cursor equal what its grid holds", || pending("tree", 6)),
         // A tree and its pixels always come from the same commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("commit-coupled", "A tree and its pixels always come from the same commit", || pending("tree", 6)),
+        case("commit-coupled", "A tree and its pixels always come from the same commit", frames::commit_coupled).session(libuitest::supervisor::serve),
         // bwm's tree lists each window's title, bounds, z order, focus and minimized state. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("wm-tree", "bwm's tree lists each window's title, bounds, z order, focus and minimized state", || pending("tree", 6)),
         // Nodes scrolled out or covered are flagged not visible, with their clip. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -106,9 +108,9 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Scrolling a list changes which items are flagged visible. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("list-scroll", "Scrolling a list changes which items are flagged visible", || pending("tree", 6)),
         // An unrelated non-root process cannot map another app's tree. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("permission", "An unrelated non-root process cannot map another app's tree", || pending("tree", 6)),
+        case("permission", "An unrelated non-root process cannot map another app's tree", tree_cases::permission).session(libuitest::supervisor::serve),
         // With no reader attached the tree is never serialized, and with one it is serialized once per commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("no-reader-no-serialize", "With no reader attached the tree is never serialized, and with one it is serialized once per commit", || pending("tree", 6)),
+        case("no-reader-no-serialize", "With no reader attached the tree is never serialized, and with one it is serialized once per commit", tree_cases::no_reader_no_serialize).session(libuitest::supervisor::serve),
         // A label whose tree text is "PASS" is checked against the certified renderer's "PASS" at its bounds. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("text-pixels", "A label whose tree text is PASS is checked against the certified renderer's PASS at its bounds", || pending("tree", 6)),
     ]),

@@ -11,6 +11,13 @@ use abi::{op, Plain};
 use crate::error::Error;
 use crate::syscall::raw;
 
+/// A read-only view of the tree-reader count; it does not attach a tree reader.
+pub fn map_tree_readers(id: u64) -> Result<abi::MapTree, Error> {
+    let mut mapping = abi::MapTree { id, ..Default::default() };
+    call(op::MAP_TREE_READERS, &mut mapping)?;
+    Ok(mapping)
+}
+
 /// The evidence a caller requires from a scanout observation.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum ObservationKind {

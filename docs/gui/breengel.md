@@ -884,6 +884,25 @@ architecture only.
 | 28 | `READ_META` | `MetaQuery` (24) | 0 | ENOENT |
 | 29 | `COMPOSITE_SNAPSHOT` | `SceneSnapshot` (96) | 0 | EPERM, EINVAL, EBUSY, EAGAIN pending render, ENOMEM, ENODEV, EIO |
 | 32 | `HIT_TEST` | `HitTest` (32) | 0 | EPERM, EINVAL flags or reserved |
+| 33 | `MAP_TREE_READERS` | `MapTree` (24) | 0 | owner only; EPERM, ENOENT, ENOMEM, EFAULT |
+
+`MAP_TREE_READERS` maps a window's reader-status page read-only for its owner, with
+`MapTree.addr` and `len` reporting the mapping. Offset 0 is `TreeReaderState.readers`, an
+aligned atomic u64; userspace loads it with acquire ordering. This operation does not attach a
+reader or change the scene. Each successful `MAP_TREE` attaches one reader until the last
+piece of that mapping is unmapped, replaced, or released by exec or process exit. Splits
+share one attachment; window mappings are not inherited by fork. Failed mapping or output
+copy releases the attachment. The counter storage outlives the window while mappings remain.
+The interface and lifetime rules are shared by x86-64 and ARM64.
+
+BreenGL maps the status page once when constructing `Window`. `set_tree` replaces semantic
+state without encoding it. At a pixel commit, a nonzero reader count causes one tree
+serialization into the acquired buffer's tree page, before the kernel seals tree and pixels.
+Each successful serialization increments the cumulative `Meta.tree_serializations`, including
+an encoding done before a subsequently refused commit. A count of 0 skips encoding. Metadata-only
+`commit_no_change` preserves the tree and count. `write_tree` remains the raw, pre-encoded
+page writer used by capture fixtures; it does not invoke the semantic serializer.
+<!-- claim-lint:ok: This paragraph specifies the Window contract; tests/ui_tree_readers.rs executes its serialization gate. -->
 
 Argument structures (offsets in bytes):
 
@@ -1071,6 +1090,7 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 | `WRITE_EVENTS`, `SET_GEOMETRY` | EPERM | yes | EPERM | EPERM |
 | retired `MAP_COMMITTED`, `MAP_COMPOSITOR_TEXTURE` | ENOSYS | ENOSYS | ENOSYS | ENOSYS |
 | `CAPTURE`, `MAP_TREE`, `READ_META` | yes | yes | yes | EPERM |
+| `MAP_TREE_READERS` | yes | no | no | EPERM |
 | `COMPOSITE_SNAPSHOT`, `COMPOSITE` | — | only while also current display owner | EPERM | EPERM |
 | `COMPOSITE_RECORD`, `SET_CURSOR` | — | yes | EPERM | EPERM |
 | `CLAIM_COMPOSITOR` | — | — | yes if no live claim, else EBUSY | EPERM |
@@ -1309,7 +1329,7 @@ example is `LAST + 1` (19 after PointerCancel), as required by W12.
 - `EVENT_FD` of window 0 gives the compositor its scene descriptor (ENOENT to any other caller, as for an id
   that names no window). It is pollable and reports POLLIN while the scene has changed since the descriptor
   was made or last read: a window op that can change what the next composite shows (the ops other than `LIST`, `ACQUIRE`,
-  `READ_EVENTS`, `WRITE_EVENTS`, `EVENT_FD`, `CAPTURE`, `MAP_TREE`, `COMPOSITE_SNAPSHOT`, `COMPOSITE_RECORD`,
+  `READ_EVENTS`, `WRITE_EVENTS`, `EVENT_FD`, `CAPTURE`, `MAP_TREE`, `MAP_TREE_READERS`, `COMPOSITE_SNAPSHOT`, `COMPOSITE_RECORD`,
   `SCANOUT_READBACK`, `READ_META`, `READ_REMNANT` and the retired ops), a commit's publication or rejection,
   and an owner's exit. A read of at least 8 bytes returns the running total of changes as a `u64` and marks that total read;
   a shorter read is EINVAL. A compositor sleeps on it and uses `COMPOSITE_SNAPSHOT`'s sizing query to learn

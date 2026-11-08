@@ -165,7 +165,8 @@ pub fn create(caller: &Caller, a: &mut Create) -> Result<u64, i32> {
     .map_err(|_| ENOMEM)?;
     let count = a.buffers as usize;
     let tree_len = count as u64 * tree_kib as u64 * 1024;
-    room_for(tree_len + count as u64 * crate::gpu::window_targets::backing_len(a.width,a.height))?;
+    room_for(tree_len + mem::PAGE_BYTES + count as u64 * crate::gpu::window_targets::backing_len(a.width,a.height))?;
+    let tree_readers = Mem::new(mem::PAGE_BYTES)?;
     let keys = uids(count);
     let mut buffers: Vec<Buffer> = Vec::new();
     buffers.try_reserve_exact(count).map_err(|_| ENOMEM)?;
@@ -222,6 +223,7 @@ pub fn create(caller: &Caller, a: &mut Create) -> Result<u64, i32> {
             buffers,
             tree_pins: [0; limits::MAX_BUFFERS as usize],
             tree,
+            tree_readers,
             tree_addr,
             tree_kib,
             front: None,
@@ -1226,14 +1228,30 @@ pub fn read_meta(caller: &Caller, id: u64) -> Result<(u64, Meta), i32> {
 /// `MAP_TREE` (owner, compositor or root): the window's tree pages, read-only. The mapping is
 /// undone when the output cannot be copied to `out`.
 pub fn map_tree(caller: &Caller, m: &mut MapTree, out: u64) -> Result<u64, i32> {
-    let tree = {
+    let (tree, readers) = {
         let mut reg = REGISTRY.lock();
-        reg.window(m.id, caller, who::owner_compositor_or_root)?.tree.clone()
+        let w = reg.window(m.id, caller, who::owner_compositor_or_root)?;
+        (w.tree.clone(), w.tree_readers.clone())
     };
-    m.addr = mem::map(&tree, false)?;
+    m.addr = tree.map_reader(readers)?;
     m.len = tree.len();
     if let Err(e) = crate::syscall::window::copy_out(out, &*m) {
         mem::unmap(&tree, m.addr);
+        return Err(e);
+    }
+    Ok(0)
+}
+
+/// Map the owner-visible reader counter without attaching another tree reader.
+pub fn map_tree_readers(caller: &Caller, m: &mut MapTree, out: u64) -> Result<u64, i32> {
+    let status = {
+        let mut reg = REGISTRY.lock();
+        reg.window(m.id, caller, who::owner)?.tree_readers.clone()
+    };
+    m.addr = mem::map(&status, false)?;
+    m.len = status.len();
+    if let Err(e) = crate::syscall::window::copy_out(out, &*m) {
+        mem::unmap(&status, m.addr);
         return Err(e);
     }
     Ok(0)

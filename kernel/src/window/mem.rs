@@ -53,6 +53,17 @@ impl Mem {
         Arc::try_new(mem).map_err(|_| ENOMEM)
     }
 
+    /// The page is zero-initialized and held resident by Mem. Only reader status
+    /// allocations use this view; their kernel updates are atomic.
+    pub fn reader_state(&self) -> &breengel_abi::TreeReaderState {
+        unsafe { &*self.page_ptr(0).cast::<breengel_abi::TreeReaderState>() }
+    }
+
+    pub fn map_reader(self: &Arc<Self>, status: Arc<Mem>) -> Result<u64, i32> {
+        let lease = Arc::try_new(super::readers::Reader::attach(status)).map_err(|_| ENOMEM)?;
+        crate::ipc::shmem::map_window_reader(&self.obj, self.len, lease).map_err(|e| e as i32)
+    }
+
     pub fn len(&self) -> u64 {
         self.len
     }
@@ -120,6 +131,14 @@ fn is_piece_of(vma: &crate::memory::vma::Vma, mem: &Mem, start: u64) -> bool {
 /// Bytes of `mem` that no piece of its window mapping at `start` in `vmas` maps any more.
 pub fn unmapped_len(mem: &Mem, start: u64, vmas: &[crate::memory::vma::Vma]) -> u64 {
     let mapped: u64 = vmas.iter().filter(|v| is_piece_of(v, mem, start)).map(|v| v.size()).sum();
+    mem.len.saturating_sub(mapped)
+}
+
+/// Unmapped storage of a status object, across any of its read-only aliases.
+pub fn unmapped_status_len(mem: &Mem, vmas: &[crate::memory::vma::Vma]) -> u64 {
+    let mapped: u64 = vmas.iter().filter(|v| v.shm.as_ref().is_some_and(|m|
+        m.origin() == MappingOrigin::Window && Arc::ptr_eq(m.object(), &mem.obj)))
+        .map(|v| v.size()).sum();
     mem.len.saturating_sub(mapped)
 }
 

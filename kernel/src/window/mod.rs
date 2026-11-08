@@ -12,6 +12,7 @@ mod damage_union;
 mod event_admission;
 pub mod events;
 pub mod mem;
+pub mod readers;
 pub mod ops;
 pub mod policy;
 pub mod pipeline;
@@ -196,6 +197,7 @@ pub struct Window {
     /// has replaced the buffer the capture pinned.
     pub tree_pins: [u32; limits::MAX_BUFFERS as usize],
     pub tree: Arc<Mem>,
+    pub tree_readers: Arc<Mem>,
     pub tree_addr: u64,
     pub tree_kib: u32,
     /// Index into `buffers` of the front, if any commit has been made.
@@ -463,7 +465,8 @@ pub fn charged_bytes(tgid: u64, vmas: &[crate::memory::vma::Vma]) -> u64 {
         .windows
         .values()
         .filter(|w| w.owner == tgid)
-        .map(|w| mem::unmapped_len(&w.tree, w.tree_addr, vmas))
+        .map(|w| mem::unmapped_len(&w.tree, w.tree_addr, vmas)
+            + mem::unmapped_status_len(&w.tree_readers, vmas))
         .sum();
     remnants + unmapped
 }
