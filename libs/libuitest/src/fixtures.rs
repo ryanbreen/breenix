@@ -100,6 +100,7 @@ pub fn prepare(root: &Path) -> Result<(), String> {
         for (name, contents) in [("etc/fonts.conf", FONT_CONFIG), ("etc/locale.conf", LOCALE),
             ("etc/hotkeys.conf", HOTKEY_CONFIG),
             ("etc/bwm.conf", b"font.size=14\nclock.visible=true\n"),
+            ("etc/uitest-cursor.conf", b"visible=false\n"),
             ("etc/app.conf", b"theme=default\n")] {
             let path = root.join(name); fs::write(&path, contents)?;
         }

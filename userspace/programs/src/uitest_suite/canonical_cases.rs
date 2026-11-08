@@ -1,10 +1,10 @@
 //! Canonical client pixels, authored on the host rather than captured from a run.
 use breenix_suite::suite::{check, CaseResult};
 use libuitest::{arena::{Slot, SlotRead}, capture, Session};
-#[path = "../uitest_canonical.rs"]
-mod scene;
+const WIDTH: usize = 320;
+const HEIGHT: usize = 200;
 const APP: &[u8] = b"/usr/libexec/breenix/uitest-app_test";
-const ROOT: &str = "/usr/share/breenix/uitest/frames/ui-testing";
+const ROOT: &str = "/usr/share/breenix/uitest/frames";
 
 fn pixels(session: &mut Session, slot: Slot) -> Result<Vec<u8>, String> {
     match session.arena_mut().read(slot)? {
@@ -24,18 +24,24 @@ fn digest(bytes: &[u8], width: usize, height: usize) -> Result<String, String> {
 
 /// The test app's canonical scene hashes to the pinned value on this target.
 pub fn cross_target() -> CaseResult {
-    // Pins are target data; ARM intentionally has no attested pin yet (U1).
-    let target = match std::env::consts::ARCH {
-        "x86_64" => "x86-metal",
-        other => return Err(format!("canonical scene pin gap: target={other}; ARM pin remains unrecorded").into()),
-    };
-    let pin = std::fs::read_to_string(format!("{ROOT}/canonical-{target}.sha256")).map_err(|e| e.to_string())?;
+    // Target selection is provenance data, not an architecture-specific case body.
+    let provenance: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(format!("{ROOT}/PROVENANCE.json")).map_err(|e| e.to_string())?
+    ).map_err(|e| e.to_string())?;
+    let architecture = std::env::consts::ARCH;
+    let row = provenance["references"].as_array().ok_or("canonical provenance references missing")?
+        .iter().find(|row| row["case"] == "frames/cross-target" && row["architecture"] == architecture)
+        .ok_or_else(|| format!("canonical scene pin gap: architecture={architecture}; see PROVENANCE.json and #2770"))?;
+    let target = row["target"].as_str().ok_or("canonical provenance target missing")?;
+    let pin_path = row["pin_path"].as_str().ok_or("canonical provenance pin path missing")?;
+    let pin = std::fs::read_to_string(format!("{ROOT}/{pin_path}")).map_err(|e| e.to_string())?;
+    check(row["pixel_sha256"] == pin.trim(),"installed canonical pin differs from provenance")?;
     let mut session = Session::kiosk()?;
     let ready = launch(&mut session,"canonical hash")?;
     let record = capture::window(session.arena_mut(),"canonical",ready.id)?;
-    check((record.width as usize,record.height as usize) == (scene::WIDTH,scene::HEIGHT) && record.commit == ready.commit_id,
+    check((record.width as usize,record.height as usize) == (WIDTH,HEIGHT) && record.commit == ready.commit_id,
         "canonical window dimensions or commit differ")?;
-    let got = digest(&pixels(&mut session,Slot::Frame)?,scene::WIDTH,scene::HEIGHT)?;
+    let got = digest(&pixels(&mut session,Slot::Frame)?,WIDTH,HEIGHT)?;
     check(got == pin.trim(), &format!("canonical target={target} got={got} want={}",pin.trim()))?;
     session.teardown()?;
     Ok(())
@@ -76,12 +82,12 @@ pub fn cursor_excluded() -> CaseResult {
     };
     check(capture::screen_windows(&record)?.contains(&(ready.id,commit)),"cursor screen omits client commit")?;
     let screen = pixels(&mut session,Slot::Screen)?;
-    check(x as usize+scene::WIDTH <= record.width as usize && y as usize+scene::HEIGHT <= record.height as usize,"cursor client clipped")?;
-    for row in 0..scene::HEIGHT {
+    check(x as usize+WIDTH <= record.width as usize && y as usize+HEIGHT <= record.height as usize,"cursor client clipped")?;
+    for row in 0..HEIGHT {
         let at = ((y as usize+row)*record.width as usize+x as usize)*4;
         // X is padding in scanout; compare the canonical colors.
-        for col in 0..scene::WIDTH {
-            check(screen[at+col*4..at+col*4+3] == expected[(row*scene::WIDTH+col)*4..(row*scene::WIDTH+col)*4+3],
+        for col in 0..WIDTH {
+            check(screen[at+col*4..at+col*4+3] == expected[(row*WIDTH+col)*4..(row*WIDTH+col)*4+3],
                 &format!("hidden cursor changed client pixel {col},{row}"))?;
         }
     }

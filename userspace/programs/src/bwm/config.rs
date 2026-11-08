@@ -1,4 +1,10 @@
 use super::*;
+#[path = "cursor.rs"]
+pub(super) mod cursor;
+pub(super) static CURSOR_VISIBLE: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+pub(super) fn cursor_pointer(pointer: Pointer) -> Option<Pointer> {
+    cursor::choose(*CURSOR_VISIBLE.get().expect("bwm cursor policy loaded at start"),pointer)
+}
 #[path = "settings.rs"]
 pub(super) mod settings;
 pub(super) static SETTINGS: std::sync::OnceLock<settings::Settings> = std::sync::OnceLock::new();

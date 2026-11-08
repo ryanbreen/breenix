@@ -52,7 +52,7 @@ pub(super) fn run_deferred_check(
     if resizing { return; }
 
     let now = monotonic_ms().unwrap_or(0);
-    let shown = queue.scene().map(|scene| gpu.shown_clients(&scene.layers, Some(scene.pointer)))
+    let shown = queue.scene().map(|scene| gpu.shown_clients(&scene.layers, cursor_pointer(scene.pointer)))
         .unwrap_or_default();
     let Some((scene, unchecked)) = queue.next_if_idle(
         |id| shown.iter().any(|(shown, _)| *shown == id)
@@ -62,7 +62,7 @@ pub(super) fn run_deferred_check(
     let next = unchecked.iter().copied()
         .min_by_key(|id| windows.iter().find(|w| w.window_id == *id).map_or(0, |w| w.check_moved));
     let id = next.unwrap_or(0);
-    let result = measure_check(|| gpu.check(id, &scene.layers, Some(scene.pointer)));
+    let result = measure_check(|| gpu.check(id, &scene.layers, cursor_pointer(scene.pointer)));
     if result.is_ok() {
         // Harvested from 097962f6: the full-scene comparison includes the
         // shown sources, so its successful result also serves these clients.

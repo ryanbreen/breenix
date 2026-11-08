@@ -7,15 +7,18 @@ pub struct Options<'a> {
     pub stderr_flood: usize,
     pub session_probe: bool,
     pub config_probe: bool,
+    pub canonical: bool,
 }
 
 pub fn parse<'a>(args: &[&'a str]) -> Result<Options<'a>, &'static str> {
     let title = *args.first().ok_or("missing window title")?;
     if title.is_empty() || title.starts_with("--") { return Err("invalid window title"); }
-    let mut options = Options { title, crash: None, hang: false, stderr_flood: 0, session_probe: false, config_probe: false };
+    let mut options = Options { title, crash: None, hang: false, stderr_flood: 0, session_probe: false, config_probe: false, canonical: false };
     let mut flood_seen = false;
     for arg in &args[1..] {
-        if *arg == "--hang" && !options.hang {
+        if *arg == "--canonical" && !options.canonical {
+            options.canonical = true;
+        } else if *arg == "--hang" && !options.hang {
             options.hang = true;
         } else if *arg == "--session-probe" && !options.session_probe {
             options.session_probe = true;

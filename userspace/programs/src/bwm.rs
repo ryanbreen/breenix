@@ -102,6 +102,10 @@ fn main() {
     let paths = settings::Paths::environment();
     let loaded = settings::Settings::load(&paths.bwm).unwrap_or_else(|e| { eprintln!("[bwm] config: {e}"); process::exit(1); });
     let _ = SETTINGS.set(loaded);
+    let session_root = std::env::var_os("BREENIX_CONFIG_ROOT");
+    let visible = cursor::load(session_root.as_deref().map(std::path::Path::new))
+        .unwrap_or_else(|e| { eprintln!("[bwm] cursor config: {e}"); process::exit(1); });
+    let _ = CURSOR_VISIBLE.set(visible);
     libuitest::startup::mark("config-ready");
     print!("[bwm] settings font.size={} clock.visible={}\n", settings().font_size, settings().clock_visible);
     let signal_wake = initialize_shutdown();
@@ -278,10 +282,10 @@ fn main() {
         libuitest::startup::mark("title-plan-return");
         result
     }, || {
-        gpu.present_startup_desktop(Some(first_pointer))
+        gpu.present_startup_desktop(cursor_pointer(first_pointer))
             .map(|()| {
                 libuitest::startup::mark("pointer-presented");
-                measure_check(|| gpu.check(0, &[], Some(first_pointer)))
+                measure_check(|| gpu.check(0, &[], cursor_pointer(first_pointer)))
             })
     });
     if let Err(error) = prepared {
@@ -309,8 +313,8 @@ fn main() {
             eprintln!("[bwm] desktop fill check FAILED: {error}");
             if strict_startup { process::exit(1); }
         }
-        gpu.present_startup_desktop(Some(first_pointer)).map(|()| {
-            measure_check(|| gpu.check(0, &[], Some(first_pointer)))
+        gpu.present_startup_desktop(cursor_pointer(first_pointer)).map(|()| {
+            measure_check(|| gpu.check(0, &[], cursor_pointer(first_pointer)))
         })
     }).unwrap_or_else(|error| {
         eprintln!("[bwm] initial presentation FAILED: {error}");
@@ -336,7 +340,7 @@ fn main() {
     // Another process holds the display: bwm composes again when it has it back.
     let mut display_lost = false;
     // The pointer the last composed frame drew, so a move repaints where it was.
-    let mut drawn_pointer = Some(first_pointer);
+    let mut drawn_pointer = cursor_pointer(first_pointer);
     let mut full_redraw = false;
     let mut validation: ValidationQueue<PresentedScene> = ValidationQueue::new();
     let mut working_scene = PresentedScene { layers: Vec::new(), pointer: first_pointer };
@@ -363,7 +367,7 @@ fn main() {
         let now = libbreenix::ui_clock::now_ns();
         let monotonic_ns = pacing_ns();
         let wall = clock.acknowledgment(claim_epoch).next_deadline_ns;
-        let shown = validation.scene().map(|scene| gpu.shown_clients(&scene.layers, Some(scene.pointer)))
+        let shown = validation.scene().map(|scene| gpu.shown_clients(&scene.layers, cursor_pointer(scene.pointer)))
             .unwrap_or_default();
         refresh_pacing(&mut pacing);
         let hold = match pacing.decision(pacing_ns()) {
@@ -807,7 +811,7 @@ fn main() {
                 }
                 frame_layers(&windows, &stack, &mut working_scene.layers);
                 working_scene.pointer = pointer;
-                let frame = gpu.compose(&working_scene.layers, Some(pointer), &damage);
+                let frame = gpu.compose(&working_scene.layers, cursor_pointer(pointer), &damage);
                 full_redraw = false;
                 content_dirty = false;
                 windows_dirty = false;
@@ -831,7 +835,7 @@ fn main() {
                             display_lost = false;
                             print!("[bwm] display back: composing again\n");
                         }
-                        drawn_pointer = Some(pointer);
+                        drawn_pointer = cursor_pointer(pointer);
                         launch::acknowledge(&mut children, gpu.last_serial);
                         clock.presented(gpu.last_serial);
                         working_scene = validation.presented(working_scene);
