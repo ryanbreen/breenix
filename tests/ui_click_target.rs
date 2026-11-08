@@ -74,3 +74,57 @@ fn homing_matches_bwm_production_clamp() {
         assert!(home_then_move(screen, target).is_err());
     }
 }
+
+#[test]
+fn reader_probe_reaches_content_instead_of_resize_chrome() {
+    let content = [64, 136, 1280, 800];
+    let screen = [0, 0, 2560, 1600];
+    let clear = input::tree_probe_point(content, screen, &[]).unwrap();
+    assert_eq!(clear, (704, 536));
+    let exposed = input::tree_probe_point(content, screen, &[[108, 156, 1288, 872]]).unwrap();
+    assert_eq!(exposed, (86, 546));
+    assert!(input::tree_probe_point(content, screen, &[[0, 0, 2560, 1600]]).is_err());
+
+    // Execute bwm's resize policy with its production constants at scale 2.
+    let desk = include_str!("../userspace/programs/src/bwm/desk.rs");
+    let start = desk.find("    pub(super) fn hit_resize_edge(").unwrap();
+    let end = start + desk[start..].find("\n    }\n").unwrap() + 6;
+    let method = &desk[start..end];
+    let config = include_str!("../userspace/programs/src/bwm/config.rs");
+    let constant = |name: &str| -> usize {
+        config.lines().find_map(|line| line.strip_prefix(&format!("pub(super) const {name}: usize = ")))
+            .unwrap().trim_end_matches(';').parse().unwrap()
+    };
+    let border = constant("BORDER_WIDTH") * 2;
+    let title = constant("TITLE_BAR_HEIGHT") * 2;
+    let grab = constant("RESIZE_GRAB");
+    let fixture = format!(r#"
+const RESIZE_GRAB: usize = {grab};
+fn px(n: usize) -> usize {{ n * 2 }}
+#[derive(Debug, PartialEq)]
+enum ResizeEdge {{ TopLeft, TopRight, BottomLeft, BottomRight, Left, Right, Top, Bottom }}
+struct Window {{ x: i32, y: i32, width: usize, height: usize, chromeless: bool }}
+impl Window {{ fn total_height(&self) -> usize {{ self.height }} {method} }}
+fn main() {{
+    let win = Window {{ x: {}, y: {}, width: {}, height: {}, chromeless: false }};
+    assert_eq!(win.hit_resize_edge(74, 166), Some(ResizeEdge::Left));
+    assert_eq!(win.hit_resize_edge({}, {}), None);
+    assert_eq!(win.hit_resize_edge({}, {}), None);
+}}
+"#, 64 - border as i32, 136 - title as i32 - border as i32,
+        1280 + border * 2, 800 + title + border * 2,
+        clear.0, clear.1, exposed.0, exposed.1);
+    let dir = std::env::temp_dir().join(format!("ui-reader-probe-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let source = dir.join("probe.rs");
+    let binary = dir.join("probe");
+    std::fs::write(&source, fixture).unwrap();
+    let built = std::process::Command::new("rustc").args(["--edition=2021", "-Dwarnings"])
+        .arg(&source).arg("-o").arg(&binary).output().unwrap();
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = std::process::Command::new(&binary).output().unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+    let live = include_str!("../libs/libuitest/src/pointer_live.rs");
+    assert!(live.contains("tree_probe_point("), "live attachment must use the tested point");
+}
