@@ -49,7 +49,7 @@ pub mod syscall { pub mod raw {
             let word=|b:&mut [u8], at:usize,v:u32| b[at..at+4].copy_from_slice(&v.to_le_bytes());
             let quad=|b:&mut [u8], at:usize,v:u64| b[at..at+8].copy_from_slice(&v.to_le_bytes());
             for (at,v) in [(0,2),(4,1024),(16,6),(20,5),(24,3),(40,16),(44,4),(56,64),(112,0x60000000),(116,0xa1971b0c),(128,0x60000000),(132,0xa0b50300),(152,0xa0b50300),(156,0x60000000),(192,0x60000000),(196,2)] {word(bytes,at,v);}
-            for (at,v) in [(8,91),(80,1),(104,2),(120,3),(176,90),(184,4),(200,11),(208,7),(216,12),(224,9)] {quad(bytes,at,v);}
+            for (at,v) in [(8,91),(80,1),(104,2),(120,3),(176,90),(184,4),(200,11),(208,7),(216,70),(224,3),(232,12),(240,9),(248,90),(256,4)] {quad(bytes,at,v);}
             if state.invalid {word(bytes,164,1);}
             std::slice::from_raw_parts_mut(r.dst as *mut u8,256).fill(0x42);
             r.serial=91;state.calls+=1;
@@ -85,7 +85,7 @@ fn arena(name:&str)->(std::path::PathBuf,arena::Arena) {
     let(path,mut a)=arena("screen");let r=capture::screen(&mut a,"screen",window::ObservationKind::Composed).unwrap();
     assert_eq!(r.composite,90);assert_eq!(capture::screen_windows(&r).unwrap(),vec![(11,7),(12,9)]);
     let arena::SlotRead::Final {bytes,..}=a.read(arena::Slot::Screen).unwrap() else {panic!()};assert_eq!(bytes,vec![0x42;256]);
-    let mut bad=r.clone();bad.observation[196..200].copy_from_slice(&33u32.to_le_bytes());assert!(capture::screen_windows(&bad).is_err());
+    let mut bad=r.clone();bad.observation[196..200].copy_from_slice(&17u32.to_le_bytes());assert!(capture::screen_windows(&bad).is_err());
     drop(a);std::fs::remove_file(path).unwrap();
     DEVICE.lock().unwrap().invalid=true;let(path,mut a)=arena("invalid");
     assert!(capture::screen(&mut a,"invalid",window::ObservationKind::Composed).is_err());
