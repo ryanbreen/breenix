@@ -74,5 +74,5 @@ impl Compositor {
  *BAD.lock().unwrap()=None;*HIGH_X.lock().unwrap()=true;
  assert_eq!(c.check_area(0,&[],None,[13,7,2559,1599]).unwrap(),2546*1592);
 }
-'''.replace('CONSTANTS',constants).replace('@CHECK@',item(source,'pub fn check_area(')).replace('@EXPECTED@',item(source,'fn expected(')))
+'''.replace('CONSTANTS',constants+'\n'+(item(source,'fn equal_row(') if 'fn equal_row(' in source else '')).replace('@CHECK@',item(source,'pub fn check_area(')).replace('@EXPECTED@',item(source,'fn expected(')))
 if __name__=='__main__':unittest.main()

@@ -38,6 +38,26 @@ const CURSOR_WHITE: u32 = 0xFFFF_FFFF;
 const CURSOR_BLACK: u32 = 0xFF00_0000;
 const BLACK: u32 = 0xFF00_0000;
 
+/// Exact byte equality for a desktop-only row. Use bounded word loads rather
+/// than routing megabytes through the process C library's scalar comparator.
+fn equal_row(left: &[u8], right: &[u8]) -> bool {
+    if left.len() != right.len() { return false; }
+    let mut at = 0;
+    while left.len() - at >= 8 {
+        // SAFETY: both eight-byte words are inside their slices; neither needs
+        // alignment, including a clipped row beginning between pixel pairs.
+        let a = unsafe { core::ptr::read_unaligned(left.as_ptr().add(at).cast::<u64>()) };
+        let b = unsafe { core::ptr::read_unaligned(right.as_ptr().add(at).cast::<u64>()) };
+        if a != b { return false; }
+        at += 8;
+    }
+    while at < left.len() {
+        if left[at] != right[at] { return false; }
+        at += 1;
+    }
+    true
+}
+
 /// One client window as the frame shows it, bottom to top.
 #[derive(Clone)]
 pub struct Layer {
@@ -308,6 +328,7 @@ impl Compositor {
             c.length = (words.len() * 4) as u64;
             c.scene_target = self.scene;
             let userspace_prepare=monotonic_ns().saturating_sub(began_ns);
+            libuitest::startup::mark("client-compose-begin");
             let r = call(op::COMPOSITE, &mut c);
             match r {
                 0 => {
@@ -542,7 +563,7 @@ impl Compositor {
                 // Equal bytes satisfy the RGB comparison for this whole desktop-only
                 // row. A difference still takes the pixel path, including X masking
                 // and the exact first-mismatch diagnostic.
-                if desktop_row && band[start..end] == desk[start..end] {
+                if desktop_row && equal_row(&band[start..end], &desk[start..end]) {
                     compared += u64::from(w);
                     continue;
                 }
