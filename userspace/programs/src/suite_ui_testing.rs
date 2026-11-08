@@ -44,15 +44,15 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     ]),
     category("input", "Scripted keyboard, pointer & text input", &[
         // type_text("hello world") puts exactly that text in the focused text field. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("type-ascii", "type_text(\"hello world\") puts exactly that text in the focused text field", || pending("input", 6)),
+        case("type-ascii", "type_text(\"hello world\") puts exactly that text in the focused text field", input::type_ascii).session(libuitest::supervisor::serve),
         // Characters that need Shift arrive correctly. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("type-shifted", "Characters that need Shift arrive correctly", || pending("input", 6)),
+        case("type-shifted", "Characters that need Shift arrive correctly", input::type_shifted).session(libuitest::supervisor::serve),
         // Characters outside the keymap arrive through a text event. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("type-utf8", "Characters outside the keymap arrive through a text event", || pending("input", 6)),
+        case("type-utf8", "Characters outside the keymap arrive through a text event", input::type_utf8).session(libuitest::supervisor::serve),
         // Newline and Tab arrive as the Enter and Tab keys. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("type-control", "Newline and Tab arrive as the Enter and Tab keys", || pending("input", 6)),
+        case("type-control", "Newline and Tab arrive as the Enter and Tab keys", input::type_control).session(libuitest::supervisor::serve),
         // chord(Ctrl, A) arrives as A with the Ctrl modifier. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("chord", "chord(Ctrl, A) arrives as A with the Ctrl modifier", || pending("input", 6)),
+        case("chord", "chord(Ctrl, A) arrives as A with the Ctrl modifier", input::chord).session(libuitest::supervisor::serve),
         // Holding a key for 600 ms of UI time gives exactly 3 repeats. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("hold-repeat", "Holding a key for 600 ms of UI time gives exactly 3 repeats", || pending("input", 6)),
         // click(node) lands on a visible point of the node, and the delivery names that node's window. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -68,7 +68,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // scroll(node, dy) delivers the wheel amount to the window under the node. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("scroll-node", "scroll(node, dy) delivers the wheel amount to the window under the node", input::scroll_node).session(libuitest::supervisor::serve),
         // Typing into a node focuses it first, and a node that cannot take focus fails by name. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("focus-then-type", "Typing into a node focuses it first, and a node that cannot take focus fails by name", || pending("input", 6)),
+        case("focus-then-type", "Typing into a node focuses it first, and a node that cannot take focus fails by name", input::focus_then_type).session(libuitest::supervisor::serve),
         // delivered(serial) returns only after the target window processed that serial. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("delivered", "delivered(serial) returns only after the target window processed that serial", || pending("input", 6)),
         // An event sent to a hung app is reported unprocessed when the 2 s settle bound passes, naming the serial and the window. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)

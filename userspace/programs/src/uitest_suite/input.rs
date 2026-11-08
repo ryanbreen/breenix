@@ -349,3 +349,56 @@ pub fn scroll_node() -> CaseResult {
 pub fn drag_steps() -> CaseResult {
     run(4).map_err(Into::into)
 }
+
+
+fn keyboard_case(which: u8) -> Result<(), String> {
+    use libuitest::input::{Keyboard, KeyboardBackend, Modifier};
+    let mut session = Session::connect()?;
+    session.start_compositor(false)?;
+    let result: Result<(),String> = (|| {
+        session.launch_app(&[b"/usr/libexec/breenix/uitest-app_test",b"keyboard",b"--widgets"],0)?;
+        let id=session.wait_window("keyboard")?.id;
+        let mut k=Keyboard::new(LivePointer::new(&mut session)?);
+        k.backend_mut().watch(id)?;
+        let entry=Target::new(id,"entry");
+        k.backend_mut().focus(&entry)?;
+        let expected=match which {
+            0=>{k.type_text(id,"hello world")?;"hello world"},
+            1=>{k.type_text(id,"AZ!@#$%^&*()_+{}:\"~|<>?")?;"AZ!@#$%^&*()_+{}:\"~|<>?"},
+            2=>{k.type_text(id,"héλ🙂界")?;"héλ🙂界"},
+            3=>{
+                k.type_text(id,"one\n\ttwo")?;
+                let tree=k.backend_mut().tree(id)?;
+                require(crate::tree::node(&tree,"submit")?.flags.contains(&Flag::Focused),"Tab did not focus submit")?;
+                k.type_text(id,"\n")?;
+                require(k.backend_mut().tree(id)?.root.value["submissions"]==1,"Enter did not activate focused submit")?;
+                "one"
+            },
+            4=>{
+                k.type_text(id,"replace me")?;
+                k.chord(id,&[Modifier::Ctrl],key::A)?;
+                k.type_text(id,"selected")?;
+                "selected"
+            },
+            5=>{
+                k.backend_mut().focus(&Target::new(id,"submit"))?;
+                k.focus_then_type(&entry,"focused")?;
+                for key in ["status","disabled"] {
+                    let error=k.focus_then_type(&Target::new(id,key),"BAD").unwrap_err();
+                    require(error.contains(key),format!("unnamed focus failure: {error}"))?;
+                }
+                "focused"
+            },
+            _=>unreachable!(),
+        };
+        require(value(&k.backend_mut().tree(id)?,"entry")?==expected,format!("entry value differs from {expected:?}"))?;
+        Ok(())
+    })();
+    let teardown=session.teardown();result?;teardown?;Ok(())
+}
+pub fn type_ascii()->CaseResult {keyboard_case(0).map_err(Into::into)}
+pub fn type_shifted()->CaseResult {keyboard_case(1).map_err(Into::into)}
+pub fn type_utf8()->CaseResult {keyboard_case(2).map_err(Into::into)}
+pub fn type_control()->CaseResult {keyboard_case(3).map_err(Into::into)}
+pub fn chord()->CaseResult {keyboard_case(4).map_err(Into::into)}
+pub fn focus_then_type()->CaseResult {keyboard_case(5).map_err(Into::into)}
