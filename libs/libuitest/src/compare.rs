@@ -14,6 +14,12 @@ pub struct Verdict {
     pub closest_region: Option<usize>,
 }
 
+impl Verdict {
+    pub fn failure_class(&self) -> Option<crate::outcome::FailureClass> {
+        if self.comparison.passed() { None } else { Some(crate::outcome::FailureClass::PixelMismatch) }
+    }
+}
+
 pub fn compare(expected: Frame<'_>, actual: Frame<'_>, options: Options<'_>) -> Result<Verdict, Error> {
     if (expected.width, expected.height) != (actual.width, actual.height) {
         return Err(Error::SizeMismatch {
