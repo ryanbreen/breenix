@@ -18,3 +18,21 @@ fn marker_round_trip_and_whole_frame() {
     assert!(!whole(&pixels, MARKER_BYTES, 3, &other, generation.commit));
     assert!(!whole(&pixels[..pixels.len()-1], MARKER_BYTES, 3, &marker, generation.commit));
 }
+
+#[test]
+fn marker_frame_is_opaque_bounded_and_complete() {
+    use capture_marker::{frame, BACKGROUND};
+    let g = Generation { commit: 9, producer: 2 };
+    let pixels = frame(16, 4, g).unwrap();
+    assert!(whole(&pixels, 64, 4, &encode(g), 9));
+    assert_eq!(&pixels[48..52], &BACKGROUND);
+    assert!(pixels.chunks_exact(4).all(|p| p[3] == 255));
+    assert!(frame(MARKER_BYTES/4 - 1, 4, g).is_err());
+    assert!(frame(16, 0, g).is_err());
+    assert!(frame(usize::MAX, 4, g).is_err());
+    assert!(!whole(&pixels, usize::MAX, 4, &encode(g), 9));
+    for n in 0..MARKER_BYTES { assert_eq!(decode(&encode(g)[..n]), None); }
+    let mut invalid = encode(g);
+    invalid[3] = 0;
+    assert_eq!(decode(&invalid), None);
+}

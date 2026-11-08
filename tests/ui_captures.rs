@@ -4,12 +4,13 @@ extern crate self as libgfx;
 #[path = "../libs/libuitest/src/capture_marker.rs"] pub mod capture_marker;
 #[path = "../libs/libuitest/src/capture.rs"] pub mod capture;
 #[path = "../libs/libuitest/src/compare.rs"] pub mod compare;
+#[path = "../libs/libuitest/src/schema.rs"] pub mod schema;
 #[path = "../libs/libuitest/src/outcome.rs"] pub mod outcome;
 pub use outcome::{FailureClass, ScenarioOutcome};
 #[path = "../libs/libbreenix/src/window.rs"] pub mod window;
 #[derive(Debug)] pub struct DeviceError;
 impl std::fmt::Display for DeviceError { fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { write!(f,"device refused") } }
-pub mod error { pub use crate::DeviceError as Error; impl Error { pub fn from_syscall(value: u64) -> Result<u64, Self> { if value as i64 >= 0 { Ok(value) } else { Err(Self) } } } }
+pub mod error { pub use crate::DeviceError as Error; impl Error { pub fn from_syscall(value: i64) -> Result<u64, Self> { if value >= 0 { Ok(value as u64) } else { Err(Self) } } } }
 pub mod gpu {
     pub use gpu_abi as abi;
     pub struct Mode { pub width:u32, pub height:u32 }
