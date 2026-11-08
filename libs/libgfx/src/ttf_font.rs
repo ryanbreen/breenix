@@ -868,39 +868,65 @@ pub fn draw_runs_subpixel(fb: &mut Surface, font: &mut CachedFont, runs: &[TextR
     draw_runs_mode(fb, font, runs, true);
 }
 
+/// Rasterize adjacent text runs at one size together. The rasterizer carries
+/// opaque placement indices; map those back before drawing or layering glyphs.
+fn rasterize_text_runs(font: &mut CachedFont, runs: &[(Vec<(u16, i64)>, i32)], lcd: bool,
+    mut out: impl FnMut(usize, Result<(Arc<AtlasGlyph>, i64), Error>)) {
+    let mut first = 0;
+    while first < runs.len() {
+        let size = runs[first].1;
+        let mut end = first + 1;
+        while end < runs.len() && runs[end].1 == size { end += 1; }
+        let mut placements = Vec::new();
+        let mut glyphs = Vec::new();
+        for (run, (placed, _)) in runs.iter().enumerate().take(end).skip(first) {
+            for &(glyph, dx) in placed {
+                glyphs.push((glyph, placements.len() as i64));
+                placements.push((run, dx));
+            }
+        }
+        font.run_mode(&glyphs, size, lcd, |got| match got {
+            Ok((image, index)) => {
+                let (run, dx) = placements[index as usize];
+                out(run, Ok((image, dx)));
+            }
+            Err(error) => out(first, Err(error)),
+        });
+        first = end;
+    }
+}
+
 fn draw_runs_mode(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>], lcd: bool) {
     type Placed = (Arc<AtlasGlyph>, i64, i64, Box64, Color);
     let before = font.cache_stats();
     let mut layers: Vec<Vec<Placed>> = Vec::new();
+    let mut planned = Vec::new();
+    let mut clips = Vec::new();
     for r in runs {
         fb.push_clip(r.clip);
         let glyphs = glyphs_of(font, decode_utf8(r.bytes)).collect();
         let (placed, _) = visible(fb, font, glyphs, r.x, r.y, r.size);
-        let clip = fb.clip_box();
-        // Each earlier glyph of this run that draws: its box and layer.
-        let mut drawn: Vec<(Box64, usize)> = Vec::new();
-        let mut failed = None;
-        font.run_mode(&placed, Font::size26(r.size).unwrap_or(0), lcd, |got| match got {
-            Ok((image, dx)) => {
-                let (x, y) = (r.x as i64 + dx, r.y as i64);
-                let b = Box64::wide(x + image.x_offset as i64, y + image.y_offset as i64, image.width as i64, image.height as i64).intersect(&clip);
-                let layer = drawn.iter().filter(|(o, _)| !o.intersect(&b).is_empty()).map(|(_, l)| l + 1).max().unwrap_or(0);
-                if !b.is_empty() {
-                    drawn.push((b, layer));
-                }
-                if layers.len() <= layer {
-                    layers.resize_with(layer + 1, Vec::new);
-                }
-                layers[layer].push((image, x, y, clip, r.fg));
-            }
-            Err(Error::Device(e)) => failed = Some(e),
-            Err(_) => {}
-        });
-        if let Some(e) = failed {
-            fb.fail(e);
-        }
+        planned.push((placed, Font::size26(r.size).unwrap_or(0)));
+        clips.push(fb.clip_box());
         fb.pop_clip();
     }
+    let mut drawn: Vec<Vec<(Box64, usize)>> = vec![Vec::new(); runs.len()];
+    let mut failed = None;
+    rasterize_text_runs(font, &planned, lcd, |run, got| match got {
+        Ok((image, dx)) => {
+            let r = &runs[run];
+            let clip = clips[run];
+            let (x, y) = (r.x as i64 + dx, r.y as i64);
+            let b = Box64::wide(x + image.x_offset as i64, y + image.y_offset as i64, image.width as i64, image.height as i64).intersect(&clip);
+            let layer = drawn[run].iter().filter(|(o, _)| !o.intersect(&b).is_empty()).map(|(_, l)| l + 1).max().unwrap_or(0);
+            if !b.is_empty() { drawn[run].push((b, layer)); }
+            if layers.len() <= layer { layers.resize_with(layer + 1, Vec::new); }
+            layers[layer].push((image, x, y, clip, r.fg));
+        }
+        Err(Error::Device(e)) => failed = Some(e),
+        Err(_) => {},
+    });
+    if let Some(e) = failed { fb.fail(e); }
     let after = font.cache_stats();
     if before.entries + (after.misses - before.misses) as usize > after.entries {
         for r in runs {

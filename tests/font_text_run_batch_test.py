@@ -19,7 +19,7 @@ impl CachedFont{fn run_mode(&mut self,placed:&[(u16,i64)],size:i32,lcd:bool,mut 
  let runs=vec![(vec![(1,-7),(2,15)],896),(vec![(3,400),(4,411)],896)];let mut font=CachedFont::default();let mut got=vec![];
  rasterize_text_runs(&mut font,&runs,true,|run,value|{let(g,dx)=value.unwrap();got.push((run,*g,dx));});
  assert_eq!(got,vec![(0,1,-7),(0,2,15),(1,3,400),(1,4,411)]);
- assert_eq!(font.calls,vec![(896,true,4)],"two taskbar runs need one cold raster submission/wait");
+ assert_eq!(font.calls,vec![(896,true,4)],"two taskbar runs need one cold raster run/wait");
  let runs=vec![(vec![(5,1)],640),(vec![(6,2)],896),(vec![(7,3)],640)];let mut got=vec![];font.calls.clear();
  rasterize_text_runs(&mut font,&runs,false,|run,value|{let(g,dx)=value.unwrap();got.push((run,*g,dx));});
  assert_eq!(font.calls,vec![(640,false,1),(896,false,1),(640,false,1)]);assert_eq!(got,vec![(0,5,1),(1,6,2),(2,7,3)]);
