@@ -30,11 +30,11 @@ fn startup_presents_without_window_receipt_and_finishes_cursor_before_readiness(
     ordered(&main, &["[bwm] Breenix Window Manager starting", "[bwm] GPU compositing mode",
         "let strict_startup =", "let mut fills = startup_prepare::recover(",
         "if let Err(error) = &fills", "fills-ready", "initial-windows-ready",
-        "startup_prepare::during(", "present_startup_desktop(Some(first_pointer))",
-        "gpu.check(0, &[], Some(first_pointer))", "title coverage warm-up unavailable",
+        "startup_prepare::during(", "present_startup_desktop(cursor_pointer(first_pointer))",
+        "gpu.check(0, &[], cursor_pointer(first_pointer))", "title coverage warm-up unavailable",
         "startup_prepare::recover(presented, strict_startup", "fills = match check_desktop_fills(",
-        "if let Err(error) = &fills", "present_startup_desktop(Some(first_pointer))",
-        "gpu.check(0, &[], Some(first_pointer))", "match first {", "first frame read back:",
-        "match fills {", "desktop fills the scanout:", "let mut drawn_pointer = Some(first_pointer)",
+        "if let Err(error) = &fills", "present_startup_desktop(cursor_pointer(first_pointer))",
+        "gpu.check(0, &[], cursor_pointer(first_pointer))", "match first {", "first frame read back:",
+        "match fills {", "desktop fills the scanout:", "let mut drawn_pointer = cursor_pointer(first_pointer)",
         "let mut full_redraw = false", "compose_initial_windows("]);
 }
