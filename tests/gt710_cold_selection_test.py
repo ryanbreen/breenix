@@ -60,7 +60,8 @@ class ColdSelection(unittest.TestCase):
 
     def test_aggregate_failure_must_only_name_planned_empty_categories(self):
         for text in [self.text+'SUITE files-io CASE io/write FAIL ms=1 msg=planted\n',
-                     self.text+'SUITE files-io CASE io/write SKIP ms=1\n']:
+                     self.text+'SUITE files-io CASE io/write SKIP ms=1\n',
+                     self.text+'SUITE files-io DONE passed=219 failed=0 skipped=1 total=220\n']:
             (self.path/'serial.txt').write_text(text)
             with self.assertRaises(ValueError):
                 API['completed_suite_capture'](self.path,SHA,'window-manager')
@@ -70,6 +71,20 @@ class ColdSelection(unittest.TestCase):
             API['completed_suite_capture'](self.path,SHA,'window-manager')
         (self.path/'suite-verdict.txt').write_text(self.verdict)
         self.events[3],self.events[4]=self.events[4],self.events[3];self.save()
+        with self.assertRaises(ValueError):
+            API['completed_suite_capture'](self.path,SHA,'window-manager')
+
+    def test_ordinary_aggregate_uses_the_same_refusal_rule(self):
+        boot=json.loads((self.path/'run.json').read_text())
+        boot['suites']=['console','window-manager']
+        (self.path/'run.json').write_text(json.dumps(boot))
+        root=Path(__file__).resolve().parents[1]
+        shutil.copyfile(root/'docs/suites/console.json',self.path/'definition/docs/suites/console.json')
+        wm=self.verdict.splitlines()[0]
+        (self.path/'suite-verdict.txt').write_text('PASS console: verified fixture\n'+wm+'\nFAIL: 1 of 2 suites passed\n')
+        self.events=self.events[:3];self.save()
+        self.assertEqual(API['record_wm_capture'](self.path,SHA,7),0)
+        (self.path/'suite-verdict.txt').write_text('FAIL console: unrelated refusal\n'+wm+'\nFAIL: 0 of 2 suites passed\n')
         with self.assertRaises(ValueError):
             API['completed_suite_capture'](self.path,SHA,'window-manager')
 

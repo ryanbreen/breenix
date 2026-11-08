@@ -244,6 +244,13 @@ class WmStep(unittest.TestCase):
         (self.path / 'run.json').write_text(json.dumps(self.boot))
         self.uploads(self.path / 'native-suites/window-manager', '/suites/window-manager')
         (self.path / 'serial.txt').write_text('SUITE console START cases=88\nSUITE_SEQUENCE READY console\n' + serial())
+        # Coordinator ledger 264: an aggregate's real case failure is fatal,
+        # including a pending body outside the requested cumulative selection.
+        self.assertEqual(self.record(), 1)
+        # Standalone cumulative selections still judge their requested cases.
+        self.boot.update(suite='window-manager', suites=['window-manager'])
+        (self.path / 'run.json').write_text(json.dumps(self.boot))
+        (self.path / 'serial.txt').write_text(serial())
         self.assertEqual(self.record(), 0)
         # Step 2 needs cases outside step 1: its cumulative selection must fail.
         self.assertEqual(API['record_wm_capture'](self.path, SHA, 2), 1)
