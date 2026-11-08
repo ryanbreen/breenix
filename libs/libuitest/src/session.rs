@@ -62,20 +62,25 @@ impl Session {
     }
     pub fn connect() -> Result<Self, String> { Self::connect_with_seed(0) }
     pub fn connect_with_seed(seed: u64) -> Result<Self, String> {
+        let began = crate::startup::now();
         let fd = breenix_suite::suite::take_session_control().ok_or("case did not declare a session")?;
         let control = Channel::new(fd)?;
         let case_pid = process::getpid().map_err(|e| e.to_string())?.raw();
         let mode = libbreenix::gpu::current_mode().map_err(|e| format!("session mode: {e}"))?;
+        let mode_at = crate::startup::now();
         let mode = format!("{}x{}@{}", mode.width, mode.height, mode.scale);
         let environment = SessionEnvironment::new(case_pid, seed, &mode)?;
         let mut session = Self { arena: None, startup: None, held_window: None, environment, configured: false, devices: None, input_done: false, stderr: None, control, supervisor: 0, names: BTreeMap::new(), output: BTreeMap::new(), exits: Vec::new(), launched: None, stopped: false, compositor: None, excluded: BTreeSet::new() };
         let end = now()? + 1000;
         while session.supervisor == 0 || session.devices.is_none() { session.poll(end)?; }
+        let ready_at = crate::startup::now();
         session.control.send(&Message::Configure { case_pid, seed, mode })?;
         let end = now()? + 1000;
         while !session.configured { session.poll(end)?; }
         session.startup = Some(crate::startup::Trace::open(std::path::Path::new(session.config_root()))?);
-        session.startup.as_ref().unwrap().mark("case-connected");
+        let trace = session.startup.as_ref().unwrap();
+        trace.at("connect-begin", began); trace.at("case-mode-ready", mode_at); trace.at("case-ready", ready_at);
+        trace.mark("case-connected");
         session.arena = Some(crate::arena::Arena::open(&std::path::Path::new(session.config_root()).join("evidence.arena"))?);
         Ok(session)
     }

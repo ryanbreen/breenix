@@ -26,11 +26,11 @@ mod libbreenix { pub mod time {
  assert_eq!(reader.snapshot().len(),PHASES.len());
  assert!(reader.snapshot().iter().all(|(_,ns)|*ns==0));
  writer.at("configure-begin",41);reader.at("configure-begin",42);
- assert_eq!(reader.snapshot()[0],("configure-begin",41));
- reader.mark("app-commit");assert_eq!(writer.snapshot()[18],("app-commit",99));
- reader.at("unknown",500);assert_eq!(writer.snapshot()[19].1,0);
+ assert_eq!(reader.snapshot().into_iter().find(|(name,_)|*name=="configure-begin").unwrap(),("configure-begin",41));
+ reader.mark("app-commit");assert_eq!(writer.snapshot().into_iter().find(|(name,_)|*name=="app-commit").unwrap(),("app-commit",99));
+ reader.at("unknown",500);assert_eq!(writer.snapshot().into_iter().find(|(name,_)|*name=="first-composite").unwrap().1,0);
  std::env::set_var("BREENIX_CONFIG_ROOT",&root);mark("scene-ready");
- assert_eq!(writer.snapshot()[13].1,99);
+ assert_eq!(writer.snapshot().into_iter().find(|(name,_)|*name=="scene-ready").unwrap().1,99);
  drop(reader);drop(writer);std::fs::remove_dir_all(root).unwrap();
 }
 ''')

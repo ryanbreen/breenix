@@ -13,7 +13,14 @@ class LocalCollect(unittest.TestCase):
         start = source.index('let record = if let Request::Collect(trigger)')
         body = source[start:source.index('let mut left = reply.as_bytes();', start)]
         run_rust(self, r'''
-use std::{collections::BTreeMap,sync::Mutex};
+use std::{collections::BTreeMap,sync::Mutex,path::Path};
+pub struct Fd;impl Fd { const STDOUT:Self=Self; }
+mod io {pub fn write(_:super::Fd,_:&[u8])->Result<usize,String>{panic!("no configured trace in this publication fixture")}}
+mod startup {pub struct Trace;impl Trace {
+ pub fn open(_: &std::path::Path)->Result<Self,String>{Err("no trace".into())}
+ pub fn snapshot(&self)->Vec<(&'static str,u64)>{Vec::new()}
+}}
+
 #[path="RESULT"]pub mod result;
 #[path="COLLECTION"]pub mod collection;
 use result::Accounting;

@@ -201,8 +201,11 @@ fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mu
 /// Runner callback. Its first operation registers the subreaper; failure refuses
 /// startup without launching any process. spawn has already closed runner fds.
 pub fn serve(control: Fd, collector: Fd) -> i32 {
+    let entered = crate::startup::now();
     let registered = process::set_child_subreaper(true);
+    let registered_at = crate::startup::now();
     let mut channel = match Channel::new(control) { Ok(channel) => channel, Err(_) => return 125 };
+    let channel_at = crate::startup::now();
     if let Err(error) = registered {
         let _ = channel.send(&Message::Error(format!("session subreaper: {error}")));
         return 125;
@@ -217,10 +220,14 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
         io::fcntl_setfl(collector, io::status_flags::O_NONBLOCK).map_err(|e| e.to_string())?;
         let own = process::getpid().map_err(|e| e.to_string())?.raw();
         let mut evidence = Evidence::new()?;
+        let evidence_at = crate::startup::now();
         ownership.apply(Event::Begin, &mut Display)?;
+        let display_at = crate::startup::now();
         devices = Some(Devices::create()?);
         channel.queue(&Message::Devices(devices.as_ref().unwrap().ids()))?;
         channel.queue(&Message::Ready(process::getpid().map_err(|e| e.to_string())?.raw()))?;
+        let devices_at = crate::startup::now();
+        let mut ready_at = 0;
         let mut ended = Vec::new();
         let mut stopped = false;
         let mut connected = true;
@@ -245,6 +252,16 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                             let case = std::env::var("BREENIX_COLLECT_CASE").map_err(|e| e.to_string())?;
                             Accounting::new(&suite, &case, &[], true)?;
                             let stderr = output.iter().map(|(&pid, app)| (pid, app.ring.dropped(), app.ring.bytes())).collect::<Vec<_>>();
+                            // The supervisor retains the runner's transcript, unlike the
+                            // silent case. Emit bounded diagnostics on collection only.
+                            if let Some(config) = &environment {
+                                if let Ok(trace) = crate::startup::Trace::open(Path::new(config.config_root())) {
+                                    let mut line = format!("UI_STARTUP {suite} {case}");
+                                    for (name, ns) in trace.snapshot() { line.push_str(&format!(" {name}={ns}")); }
+                                    line.push('\n');
+                                    let _ = io::write(Fd::STDOUT, line.as_bytes());
+                                }
+                            }
                             Some(evidence.collect(&suite, &case, trigger, &stderr))
                         } else { None };
                         if !stopped { teardown(&mut channel, &mut output, false, compositor, &mut ownership, &mut devices)?; }
@@ -304,6 +321,10 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                         let root = Path::new(environment.as_ref().unwrap().config_root());
                         crate::fixtures::prepare(root)?;
                         let trace = crate::startup::Trace::create(root)?;
+                        for (name, ns) in [("supervisor-enter", entered), ("supervisor-registered", registered_at),
+                            ("supervisor-channel", channel_at), ("supervisor-evidence", evidence_at),
+                            ("supervisor-display", display_at), ("supervisor-devices", devices_at),
+                            ("supervisor-ready", ready_at)] { trace.at(name, ns); }
                         trace.at("configure-begin", configure_began);
                         trace.mark("fixtures-ready");
                         crate::fixtures::verify(root)?;
@@ -383,6 +404,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     }
                 }
                 if connected && channel.flush().is_err() { connected = false; }
+                if ready_at == 0 { ready_at = crate::startup::now(); }
             }
             time::sleep_ms(1).map_err(|e| e.to_string())?;
         }

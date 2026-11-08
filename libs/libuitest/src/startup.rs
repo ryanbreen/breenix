@@ -2,6 +2,9 @@
 use std::{fs::OpenOptions, os::{fd::AsRawFd, unix::fs::OpenOptionsExt}, path::Path,
     sync::{OnceLock, atomic::{AtomicU64, Ordering}}};
 pub const PHASES: &[&str] = &[
+    "connect-begin", "case-mode-ready", "case-ready",
+    "supervisor-enter", "supervisor-registered", "supervisor-channel", "supervisor-evidence",
+    "supervisor-display", "supervisor-devices", "supervisor-ready",
     "configure-begin", "fixtures-ready", "pins-ready", "arena-ready", "case-connected",
     "compositor-request", "compositor-forked", "compositor-exec", "config-ready",
     "context-begin", "context-ready", "targets-ready", "fonts-ready", "scene-ready",
