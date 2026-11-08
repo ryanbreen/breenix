@@ -2,6 +2,9 @@
 mod uitest_app_support;
 mod uitest_canonical;
 mod uitest_capture_app;
+mod uitest_widget_layout;
+mod uitest_widgets;
+mod uitest_widget_app;
 
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -28,6 +31,12 @@ fn main() {
         Ok(options) => options,
         Err(error) => { eprintln!("{error}"); std::process::exit(2); }
     };
+    if options.widgets {
+        if let Err(error) = uitest_widget_app::run(options.title) {
+            eprintln!("widget mode: {error}"); std::process::exit(1);
+        }
+        return;
+    }
     if options.capture_control {
         if let Err(error) = uitest_capture_app::serve(options.title) {
             eprintln!("capture control: {error}"); std::process::exit(1);
