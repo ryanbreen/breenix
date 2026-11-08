@@ -17,6 +17,8 @@ mod comparison_cases;
 mod structural_cases;
 #[path = "uitest_suite/formula_pattern.rs"]
 mod formula_pattern;
+#[path = "uitest_suite/reference_cases.rs"]
+mod reference_cases;
 #[path = "uitest_suite/frames.rs"]
 mod frames;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
@@ -216,9 +218,9 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Frames of different sizes fail without comparing. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("size-mismatch", "Frames of different sizes fail without comparing", || comparison_cases::size_mismatch().map_err(Into::into)),
         // A reference whose SHA-256 differs from its pin fails before comparing. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("reference-pin", "A reference whose SHA-256 differs from its pin fails before comparing", || pending("frames", 4)),
+        case("reference-pin", "A reference whose SHA-256 differs from its pin fails before comparing", || reference_cases::reference_pin_at(std::path::Path::new(reference_cases::ROOT)).map_err(Into::into)),
         // A missing reference fails, naming the path. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("reference-missing", "A missing reference fails, naming the path", || pending("frames", 4)),
+        case("reference-missing", "A missing reference fails, naming the path", || reference_cases::reference_missing_at(std::path::Path::new(reference_cases::ROOT)).map_err(Into::into)),
         // A formula check compares like a stored one. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("formula", "A formula check compares like a stored one", || structural_cases::formula().map_err(Into::into)),
         // A uniform-region check passes on a flat fill and fails on one stray pixel. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -234,15 +236,15 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A check with an unknown schema version fails validation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("schema-version", "A check with an unknown schema version fails validation", frames::schema_version),
         // A check bound to a window key or checkpoint the scenario never reaches fails, naming it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("schema-binding", "A check bound to a window key or checkpoint the scenario never reaches fails, naming it", || pending("frames", 4)),
+        case("schema-binding", "A check bound to a window key or checkpoint the scenario never reaches fails, naming it", || reference_cases::schema_binding().map_err(Into::into)),
         // A reference PNG decodes to the pixels that were encoded. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("png-reference", "A reference PNG decodes to the pixels that were encoded", || pending("frames", 4)),
+        case("png-reference", "A reference PNG decodes to the pixels that were encoded", || reference_cases::png_reference_at(std::path::Path::new(reference_cases::ROOT)).map_err(Into::into)),
         // Captures taken with the cursor hidden contain no cursor pixels. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("cursor-excluded", "Captures taken with the cursor hidden contain no cursor pixels", || pending("frames", 4)),
         // The test app's canonical scene hashes to the pinned value on this target. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("cross-target", "The test app's canonical scene hashes to the pinned value on this target", || pending("frames", 4)),
         // Every check writes one well-formed FRAME record with its definition hash. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("frame-record", "Every check writes one well-formed FRAME record with its definition hash", || pending("frames", 4)),
+        case("frame-record", "Every check writes one well-formed FRAME record with its definition hash", || reference_cases::frame_record_at(std::path::Path::new(reference_cases::ROOT)).map_err(Into::into)).checks(&["pattern"]),
         // Comparing two 1280x800 frames takes at most 50 ms. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("compare-cost", "Comparing two 1280x800 frames takes at most 50 ms", || comparison_cases::compare_cost().map_err(Into::into)),
     ]),
