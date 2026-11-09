@@ -192,3 +192,55 @@ fn screen_editing_and_modes_are_independent_of_chunking() {
         }
     }
 }
+
+#[test]
+fn extended_color_is_independent_of_chunking() {
+    let input = b"\x1b[38;5;196;48;5;25mA\x1b[38;2;1;2;3;48;2;4;5;6mB";
+    for mode in 0..3 {
+        let mut vt = TermEmu::new(8, 2);
+        let mut pos = 0;
+        let mut seed = 0x1234u32;
+        while pos < input.len() {
+            seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+            let n = match mode { 0 => input.len(), 1 => 1, _ => (seed as usize % 5) + 1 };
+            let end = (pos + n).min(input.len());
+            vt.feed(&input[pos..end]);
+            pos = end;
+        }
+        assert_eq!((vt.cell(0, 0).fg, vt.cell(0, 0).bg), (Color::rgb(255, 0, 0), Color::rgb(0, 95, 175)), "mode {mode}");
+        assert_eq!((vt.cell(1, 0).fg, vt.cell(1, 0).bg), (Color::rgb(1, 2, 3), Color::rgb(4, 5, 6)), "mode {mode}");
+    }
+}
+
+#[test]
+fn rendition_replies_and_titles_are_independent_of_chunking() {
+    let cases: &[(&[u8], &[(bool, bool)], &[u8], &str)] = &[
+        (b"\x1b[4mA\x1b[24mB", &[(true, false), (false, false)], b"", "Terminal"),
+        (b"\x1b[7mA\x1b[27mB", &[(false, true), (false, false)], b"", "Terminal"),
+        (b"\x1b[1;4;7;38;2;1;2;3mA\x1b[0mB", &[(true, true), (false, false)], b"", "Terminal"),
+        (b"\x1b[5n\x1b[2;4H\x1b[6n\x1b[c", &[], b"\x1b[0n\x1b[2;4R\x1b[?1;2c", "Terminal"),
+        (b"\x1b]0;hello\x07", &[], b"", "hello"),
+        (b"\x1b]2;world\x1b\\", &[], b"", "world"),
+        (b"\x1b]0;old\x07\x1b]2;new\x07", &[], b"", "new"),
+    ];
+    for &(input, attrs, reply, title) in cases {
+        for mode in 0..3 {
+            let mut vt = TermEmu::new(8, 2);
+            let mut pos = 0;
+            let mut seed = 0x1234u32;
+            while pos < input.len() {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let n = match mode { 0 => input.len(), 1 => 1, _ => (seed as usize % 5) + 1 };
+                let end = (pos + n).min(input.len());
+                vt.feed(&input[pos..end]);
+                pos = end;
+            }
+            for (x, &(underline, inverse)) in attrs.iter().enumerate() {
+                let cell = vt.cell(x, 0);
+                assert_eq!((cell.underline, cell.inverse), (underline, inverse), "{input:?} mode {mode}");
+            }
+            assert_eq!(vt.replies.iter().copied().collect::<Vec<_>>(), reply, "{input:?} mode {mode}");
+            assert_eq!(vt.title(), title, "{input:?} mode {mode}");
+        }
+    }
+}
