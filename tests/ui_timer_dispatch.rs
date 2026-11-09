@@ -23,3 +23,12 @@ fn dispatch_runs_clock_handlers_before_idle_acknowledgment() {
     let ack = body(source, "fn acknowledge_clock(");
     assert!(ack.contains("!self.clock_redraw"));
 }
+
+#[test]
+fn timer_client_publishes_no_redraw_input_watermarks() {
+    let source = include_str!("../userspace/programs/src/uitest_timer_app.rs");
+    let run = body(source, "pub fn run(");
+    assert!(run.contains("let count = win.wait_dispatch("));
+    assert!(run.contains("else if count != 0"));
+    assert!(run.contains("win.commit_no_change()"), "a release must publish its processed serial with no new pixels");
+}
