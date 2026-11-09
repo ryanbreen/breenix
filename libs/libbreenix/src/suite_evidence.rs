@@ -6,6 +6,26 @@ pub(super) const MAX_ROUTE: usize = 2048;
 pub(super) const MAX_UPLOAD: usize = 2 << 20;
 pub(super) const MAX_TOTAL: usize = 64 << 20;
 
+/// Decode before Error::from_syscall can replace an unknown errno with EINVAL.
+pub(super) fn syscall_result(stage: &str, ret: i64) -> Result<u64, String> {
+    if ret >= 0 { return Ok(ret as u64); }
+    let number = ret.unsigned_abs();
+    let known = libbreenix::Errno::from_raw(number as i64);
+    let name = if number == 113 {
+        // The syscall ABI has EHOSTUNREACH even though Errno lacks that variant.
+        "ehostunreach".into()
+    } else if known as u64 == number {
+        format!("{known:?}").to_ascii_lowercase()
+    } else {
+        format!("errno-{number}")
+    };
+    Err(format!("{stage}-{name}"))
+}
+
+pub(super) fn lease_ready(ready: bool) -> Result<(), String> {
+    if ready { Ok(()) } else { Err("lease-wait-expired".into()) }
+}
+
 #[derive(Clone)]
 pub(super) struct Route {
     pub host: String,
