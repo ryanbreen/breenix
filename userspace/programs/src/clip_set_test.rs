@@ -3,5 +3,6 @@ fn main() {
     let window = breengel::Window::new_without_fonts(b"Clipboard helper", 32, 32)
         .expect("create clipboard owner window");
     libclipboard::set(window.id(), text.as_bytes()).expect("set clipboard");
+    drop(window);
     println!("CLIPBOARD SET");
 }

@@ -24,3 +24,9 @@ pub fn encode(key: u32, ctrl: bool, text: &str, application: bool) -> Vec<u8> {
     }
     text.as_bytes().to_vec()
 }
+
+/// A companion TEXT event repeats the preceding physical key's text. Explicit
+/// text sources, including their continuation chunks, carry their own bytes.
+pub fn encode_text(text: &str, source: Option<u64>, last_key: u64) -> Vec<u8> {
+    if source == Some(last_key) { Vec::new() } else { text.as_bytes().to_vec() }
+}

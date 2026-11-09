@@ -13,7 +13,7 @@ pub fn timeout_message(expected: &str, rows: &[&str]) -> String {
 #[cfg(target_os = "breenix")]
 mod live {
     use super::*;
-    use crate::{input::{Backend, Keyboard, LivePointer, Modifier}, tree::{self, Query, Role, Tree}, Session};
+    use crate::{input::{Backend, Keyboard, KeyboardBackend, LivePointer, Modifier}, tree::{self, Query, Role, Tree}, Session};
     use breenix_suite::suite::control::{Wait, Watchdog};
     use libbreenix::{input::key, process, signal, time};
 
@@ -30,7 +30,7 @@ mod live {
             Ok(Self { keys: Keyboard::new(live), pid, window })
         }
         pub fn type_line(&mut self, text: &str) -> Result<(), String> {
-            self.keys.type_text(self.window, text)?;
+            self.keys.backend_mut().text(text, self.window)?;
             self.key(key::ENTER, &[])
         }
         pub fn key(&mut self, code: u16, mods: &[Modifier]) -> Result<(), String> {

@@ -404,6 +404,7 @@ fn main() {
     let sleep_ts = libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 10_000_000 };
     let mut first_frame = true;
     let mut first_present = true;
+    let mut last_key_serial = 0;
 
     loop {
         // Dispatch input before the rendered commit publishes its watermark.
@@ -423,6 +424,7 @@ fn main() {
                     return Handled::Redraw;
                 }
                 Event::KeyPress { ascii, keycode, modifiers, text, .. } => {
+                    last_key_serial = delivered.serial;
                     if modifiers.shift && (*keycode == breengel::keys::PAGE_UP || *keycode == breengel::keys::PAGE_DOWN) {
                         if let Some(tab) = tabs.get_mut(tab_bar.selected()) {
                             let page = tab.emu.vt.size().1 as isize;
@@ -518,6 +520,14 @@ fn main() {
                     let sel = tab_bar.selected();
                     if let Some(tab) = tabs.get_mut(sel) {
                         let bytes = keys::encode(*keycode, modifiers.ctrl, text, tab.emu.vt.application_cursor_keys());
+                        if !bytes.is_empty() { tab.send_input(&bytes); }
+                    }
+                }
+                Event::Text { text } => {
+                    if let Some(tab) = tabs.get_mut(tab_bar.selected()) {
+                        let bytes = keys::encode_text(text,
+                            libbreenix::input::abi::derived_source(delivered.serial).map(|(source, _)| source),
+                            last_key_serial);
                         if !bytes.is_empty() { tab.send_input(&bytes); }
                     }
                 }
