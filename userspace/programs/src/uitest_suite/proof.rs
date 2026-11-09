@@ -751,9 +751,8 @@ fn wm_checkpoint(
         let after = wm_window(id)?;
         let projected = entries.iter().find(|entry| entry.id == id);
         if !projected.is_some_and(|entry| {
-            observed.contains(&(id, entry.commit_id))
-                && entry.pixels != 0
-                && wm_checks::front_matches(commit, generation, after.pixel_gen, entry.commit_id, entry.pixel_gen)
+            wm_front_matches(commit, generation, after.pixel_gen,
+                observed.iter().find(|row| row.0 == id).map(|row| row.1), entry)
         }) {
             return Err(format!(
                 "WM screen missing compared window={id} commit={commit} generation={generation} current={} composite={} observed={observed:?} projected={projected:?}",
@@ -777,6 +776,12 @@ fn wm_checkpoint(
         other => return Err(format!("incomplete WM screen: {other:?}")),
     }
     libuitest::input::dispositions(live.serials())
+}
+
+fn wm_front_matches(captured: u64, before: u64, after: u64, observed: Option<u64>,
+    entry: &libbreenix::window::abi::CompositeEntry) -> bool {
+    observed == Some(entry.commit_id) && entry.pixels != 0
+        && wm_checks::front_matches(captured, before, after, entry.commit_id, entry.pixel_gen)
 }
 
 fn wm_window(id: u64) -> Result<libbreenix::window::abi::WinInfo, String> {
