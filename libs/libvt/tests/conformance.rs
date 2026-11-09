@@ -26,6 +26,22 @@ fn current_sequences_are_independent_of_chunking() {
         Row { name: "erase preceding", input: b"abc\nxyz\x1b[2;2H\x1b[1K\x1b[1J", lines: ["        ", "  z     "], cursor: (1, 1), attributes: &[] },
         Row { name: "erase all", input: b"abc\x1b[2J", lines: ["        ", "        "], cursor: (0, 0), attributes: &[] },
         Row { name: "sgr", input: b"\x1b[1;31;44mA\x1b[22;91;49mB\x1b[0mC", lines: ["ABC     ", "        "], cursor: (3, 0), attributes: &[(0, 0, RED, BLUE, true), (1, 0, BRIGHT_RED, BG, false)] },
+        Row { name: "sgr 30", input: b"\x1b[30mX", lines: ["X       ", "        "], cursor: (1, 0), attributes: &[(0, 0, Color::rgb(0, 0, 0), BG, false)] },
+        Row { name: "sgr 90", input: b"\x1b[90mX", lines: ["X       ", "        "], cursor: (1, 0), attributes: &[(0, 0, Color::rgb(60, 60, 60), BG, false)] },
+        Row { name: "sgr 31", input: b"\x1b[31mX", lines: ["X       ", "        "], cursor: (1, 0), attributes: &[(0, 0, Color::rgb(205, 49, 49), BG, false)] },
+        Row { name: "sgr 91", input: b"\x1b[91mX", lines: ["X       ", "        "], cursor: (1, 0), attributes: &[(0, 0, Color::rgb(255, 109, 109), BG, false)] },
+        Row { name: "sgr 32", input: b"\x1b[32mX", lines: ["X       ", "        "], cursor: (1, 0), attributes: &[(0, 0, Color::rgb(13, 188, 121), BG, false)] },
+        Row { name: "sgr 92", input: b"\x1b[92mX", lines: ["X       ", "        "], cursor: (1, 0), attributes: &[(0, 0, Color::rgb(73, 248, 181), BG, false)] },
+        Row { name: "sgr 33", input: b"\x1b[33mX", lines: ["X       ", "        "], cursor: (1, 0), attributes: &[(0, 0, Color::rgb(229, 229, 16), BG, false)] },
+        Row { name: "sgr 93", input: b"\x1b[93mX", lines: ["X       ", "        "], cursor: (1, 0), attributes: &[(0, 0, Color::rgb(255, 255, 76), BG, false)] },
+        Row { name: "sgr 34", input: b"\x1b[34mX", lines: ["X       ", "        "], cursor: (1, 0), attributes: &[(0, 0, Color::rgb(36, 114, 200), BG, false)] },
+        Row { name: "sgr 94", input: b"\x1b[94mX", lines: ["X       ", "        "], cursor: (1, 0), attributes: &[(0, 0, Color::rgb(96, 174, 255), BG, false)] },
+        Row { name: "sgr 35", input: b"\x1b[35mX", lines: ["X       ", "        "], cursor: (1, 0), attributes: &[(0, 0, Color::rgb(188, 63, 188), BG, false)] },
+        Row { name: "sgr 95", input: b"\x1b[95mX", lines: ["X       ", "        "], cursor: (1, 0), attributes: &[(0, 0, Color::rgb(248, 123, 248), BG, false)] },
+        Row { name: "sgr 36", input: b"\x1b[36mX", lines: ["X       ", "        "], cursor: (1, 0), attributes: &[(0, 0, Color::rgb(17, 168, 205), BG, false)] },
+        Row { name: "sgr 96", input: b"\x1b[96mX", lines: ["X       ", "        "], cursor: (1, 0), attributes: &[(0, 0, Color::rgb(77, 228, 255), BG, false)] },
+        Row { name: "sgr 37", input: b"\x1b[37mX", lines: ["X       ", "        "], cursor: (1, 0), attributes: &[(0, 0, Color::rgb(229, 229, 229), BG, false)] },
+        Row { name: "sgr 97", input: b"\x1b[97mX", lines: ["X       ", "        "], cursor: (1, 0), attributes: &[(0, 0, Color::rgb(255, 255, 255), BG, false)] },
     ];
     for row in rows {
         for mode in 0..3 {
