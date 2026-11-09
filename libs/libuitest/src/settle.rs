@@ -1,4 +1,4 @@
-//! App-side causal barrier (docs/gui/plan.md section 6.4).
+//! Causal app and completed-composite barrier (docs/gui/plan.md section 6.4).
 //! A poll is not an acknowledgment. Only accepted commit metadata advances it.
 
 pub const BOUND_NS: u64 = 2_000_000_000;
@@ -24,6 +24,66 @@ impl Observation {
     }
 }
 
+/// A recorded completed composite and the registry/status observed around it.
+/// An occluded window's entry accounts for its generation (docs/gui/plan.md 6.4).
+pub struct Presentation {
+    pub windows: Vec<libbreenix::window::abi::WinInfo>,
+    pub header: libbreenix::window::abi::CompositeRecordHeader,
+    pub entries: Vec<libbreenix::window::abi::CompositeEntry>,
+    pub status: libbreenix::window::abi::CompositorStatus,
+}
+impl Presentation {
+    pub fn waiting(&self, epoch: u64, wm_serial: u64, excluded: &[u64]) -> Option<String> {
+        use libbreenix::window::abi::{compositor_ack_flags::NONE_NEEDED, win_flags};
+        let s = &self.status;
+        if s.claim_epoch == 0 || s.epoch < epoch {
+            return Some(format!("waiting=compositor-epoch epoch={epoch}"));
+        }
+        if wm_serial != 0
+            && libbreenix::input::abi::source_order(s.handled_serial)
+                < libbreenix::input::abi::source_order(wm_serial)
+        {
+            return Some(format!("waiting=wm-handled serial={wm_serial}"));
+        }
+        let none = s.flags & NONE_NEEDED != 0;
+        if s.flags & !NONE_NEEDED != 0 || (none && s.presented != 0) {
+            return Some("waiting=compositor-ack".into());
+        }
+        let completed = self.header.serial != 0
+            && self.header.flags == 0
+            && self.header.count as usize == self.entries.len();
+        // A newer completed frame supersedes an older acknowledged frame. A
+        // NONE_NEEDED acknowledgment reuses available completed pixels.
+        if !none
+            && ((s.presented == 0 && (epoch != 0 || wm_serial != 0))
+                || (s.presented != 0 && (!completed || self.header.serial < s.presented)))
+        {
+            return Some(format!("waiting=presentation composite={}", s.presented));
+        }
+        self.windows
+            .iter()
+            .filter(|w| {
+                !excluded.contains(&w.id)
+                    && w.flags & (win_flags::REGISTERED | win_flags::VISIBLE | win_flags::MINIMIZED)
+                        == win_flags::REGISTERED | win_flags::VISIBLE
+            })
+            .find(|w| {
+                !completed
+                    || w.pixel_gen == 0
+                    || !self
+                        .entries
+                        .iter()
+                        .any(|e| e.id == w.id && e.pixel_gen >= w.pixel_gen)
+            })
+            .map(|w| {
+                format!(
+                    "waiting=presentation window={} pixel_gen={} composite={}",
+                    w.id, w.pixel_gen, self.header.serial
+                )
+            })
+    }
+}
+
 pub struct Barrier {
     deadline: u64,
     targets: Vec<(u64, u64)>,
@@ -40,6 +100,26 @@ impl Barrier {
             predicates,
             previous: None,
         }
+    }
+
+    /// Combine presentation and app conditions under the same real deadline.
+    pub fn observe_composite(
+        &mut self,
+        real_now_ns: u64,
+        observation: &Observation,
+        presentation: &Presentation,
+        epoch: u64,
+        wm_serial: u64,
+        excluded: &[u64],
+    ) -> Result<bool, String> {
+        if let Some(waiting) = presentation.waiting(epoch, wm_serial, excluded) {
+            if real_now_ns >= self.deadline {
+                return Err(format!("settle-timeout {waiting}"));
+            }
+            self.previous = None;
+            return Ok(false);
+        }
+        self.observe(real_now_ns, observation)
     }
 
     /// Require two consecutive matching observations, without imposing a quiet
@@ -119,10 +199,55 @@ pub struct Predicate<'a> {
     pub check: &'a mut dyn FnMut() -> Result<bool, String>,
 }
 
-/// Wait for app-side conditions. Callers combine this with the epoch and
-/// presentation acknowledgments of section 6.4.
+/// Wait for processed commits, predicates and completed presentation.
+/// Session callers use `settle_session` for the current epoch and exclusions.
 #[cfg(target_os = "breenix")]
 pub fn settle(targets: &[(u64, u64)], predicates: &mut [Predicate<'_>]) -> Result<(), String> {
+    settle_inner(targets, predicates, 0, 0, &[])
+}
+
+/// Settle the current stepped epoch, with a WM-handled serial when requested.
+#[cfg(target_os = "breenix")]
+pub fn settle_session(
+    session: &crate::Session,
+    targets: &[(u64, u64)],
+    wm_serial: u64,
+    predicates: &mut [Predicate<'_>],
+) -> Result<(), String> {
+    let page = libbreenix::ui_clock::ClockPage::open(
+        &std::path::Path::new(session.config_root()).join("ui-clock"),
+    )?;
+    let mut excluded: Vec<u64> = page
+        .participants()
+        .iter()
+        .map(|p| p.id)
+        .filter(|id| session.is_excluded(*id))
+        .collect();
+    for w in registry()? {
+        if session.is_excluded(w.id) && !excluded.contains(&w.id) {
+            excluded.push(w.id);
+        }
+    }
+    let epoch = if page
+        .participants()
+        .iter()
+        .any(|p| p.flags & libbreenix::ui_clock::COMPOSITOR != 0)
+    {
+        page.stamp().epoch
+    } else {
+        0
+    };
+    settle_inner(targets, predicates, epoch, wm_serial, &excluded)
+}
+
+#[cfg(target_os = "breenix")]
+fn settle_inner(
+    targets: &[(u64, u64)],
+    predicates: &mut [Predicate<'_>],
+    epoch: u64,
+    wm_serial: u64,
+    excluded: &[u64],
+) -> Result<(), String> {
     use libbreenix::{errno::Errno, error::Error, time, window};
     let now = || {
         time::now_monotonic()
@@ -155,9 +280,94 @@ pub fn settle(targets: &[(u64, u64)], predicates: &mut [Predicate<'_>]) -> Resul
             checks.push((predicate.name.into(), holds));
         }
         // Stamp after reads/callbacks: a late acknowledgment cannot rescue the bound.
-        if barrier.observe(now()?, &Observation::new(windows, checks))? {
+        let presentation = presentation()?;
+        if barrier.observe_composite(
+            now()?,
+            &Observation::new(windows, checks),
+            &presentation,
+            epoch,
+            wm_serial,
+            excluded,
+        )? {
             return Ok(());
         }
         time::sleep_ms(1).map_err(|e| e.to_string())?;
     }
+}
+
+#[cfg(target_os = "breenix")]
+fn registry() -> Result<Vec<libbreenix::window::abi::WinInfo>, String> {
+    let mut windows = vec![libbreenix::window::abi::WinInfo::default(); 64];
+    loop {
+        let n = libbreenix::window::list(&mut windows).map_err(|e| e.to_string())?;
+        if n <= windows.len() {
+            windows.truncate(n);
+            return Ok(windows);
+        }
+        windows.resize(n, Default::default());
+    }
+}
+
+/// Read the registry, compositor status and retained completion record.
+#[cfg(target_os = "breenix")]
+pub fn presentation() -> Result<Presentation, String> {
+    use libbreenix::{
+        errno::Errno,
+        error::Error,
+        window::{self, abi},
+    };
+    let mut status = abi::CompositorStatus::default();
+    window::call(abi::op::COMPOSITOR_STATUS, &mut status).map_err(|e| e.to_string())?;
+    let windows = registry()?;
+    let head = core::mem::size_of::<abi::CompositeRecordHeader>();
+    let entry = core::mem::size_of::<abi::CompositeEntry>();
+    // The retained frame can contain windows destroyed since LIST. Retry its
+    // bounded sizing query instead of truncating the record to LIST's count.
+    let mut bytes = vec![0u8; head + 64 * entry];
+    loop {
+        let mut query = abi::RecordQuery {
+            serial: 0,
+            ptr: bytes.as_mut_ptr() as u64,
+            len: bytes.len() as u32,
+            reserved: 0,
+        };
+        match window::call(abi::op::COMPOSITE_RECORD, &mut query) {
+            Ok(_) => break,
+            Err(Error::Os(Errno::ENOENT)) => {
+                return Ok(Presentation {
+                    windows,
+                    status,
+                    header: Default::default(),
+                    entries: vec![],
+                })
+            }
+            Err(Error::Os(Errno::EINVAL)) if bytes.len() < head + 4096 * entry => {
+                bytes.resize((bytes.len() * 2).min(head + 4096 * entry), 0);
+            }
+            Err(e) => return Err(format!("settle composite record: {e}")),
+        }
+    }
+    // SAFETY: the successful kernel copy writes plain ABI values; the byte
+    // buffer may be unaligned. Check the count before reading its entries.
+    let header =
+        unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<abi::CompositeRecordHeader>()) };
+    if header.count as usize > (bytes.len() - head) / entry {
+        return Err("settle composite record truncated".into());
+    }
+    let entries = (0..header.count as usize)
+        .map(|i| unsafe {
+            core::ptr::read_unaligned(
+                bytes
+                    .as_ptr()
+                    .add(head + i * entry)
+                    .cast::<abi::CompositeEntry>(),
+            )
+        })
+        .collect();
+    Ok(Presentation {
+        windows,
+        status,
+        header,
+        entries,
+    })
 }

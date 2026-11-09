@@ -23,7 +23,7 @@ fn require(ok: bool, message: impl Into<String>) -> Result<(), String> {
         Err(message.into())
     }
 }
-struct Control(BufReader<UnixStream>);
+pub(super) struct Control(BufReader<UnixStream>);
 impl Control {
     fn line(&mut self) -> Result<String, String> {
         let mut line = String::new();
@@ -32,7 +32,7 @@ impl Control {
         }
         Ok(line.trim_end().into())
     }
-    fn command(&mut self, command: &str) -> Result<(), String> {
+    pub(super) fn command(&mut self, command: &str) -> Result<(), String> {
         writeln!(self.0.get_mut(), "{command}").map_err(|e| e.to_string())?;
         loop {
             let line = self.line()?;
@@ -45,7 +45,7 @@ impl Control {
             )?;
         }
     }
-    fn drained(&mut self, source: u64) -> Result<(), String> {
+    pub(super) fn drained(&mut self, source: u64) -> Result<(), String> {
         loop {
             let line = self.line()?;
             let serial = line
@@ -60,7 +60,7 @@ impl Control {
     }
 }
 
-fn launch(session: &mut Session, drain: bool) -> Result<(Control, u64), String> {
+pub(super) fn launch(session: &mut Session, drain: bool) -> Result<(Control, u64), String> {
     let path = std::path::Path::new(session.config_root()).join("settle-control.sock");
     let listener = UnixListener::bind(&path).map_err(|e| e.to_string())?;
     listener.set_nonblocking(true).map_err(|e| e.to_string())?;
@@ -101,7 +101,7 @@ fn launch(session: &mut Session, drain: bool) -> Result<(Control, u64), String> 
     )?;
     Ok((control, id))
 }
-fn snapshot(id: u64) -> Result<Window, String> {
+pub(super) fn snapshot(id: u64) -> Result<Window, String> {
     let (commit, meta) = window::read_meta(id).map_err(|e| e.to_string())?;
     Ok(Window {
         id,
@@ -109,7 +109,7 @@ fn snapshot(id: u64) -> Result<Window, String> {
         processed_serial: meta.processed_serial,
     })
 }
-fn pixels(id: u64) -> Result<u64, String> {
+pub(super) fn pixels(id: u64) -> Result<u64, String> {
     let mut infos = vec![abi::WinInfo::default(); 64];
     let n = window::list(&mut infos).map_err(|e| e.to_string())?;
     infos

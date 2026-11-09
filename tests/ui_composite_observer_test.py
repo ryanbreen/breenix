@@ -72,7 +72,7 @@ fn main() {
         atomic = source[start:source.index(';', start) + 1]
         program = r"""
 extern crate self as libbreenix;
-mod errno { #[derive(Debug)] pub enum Errno { EALREADY } }
+mod errno { #[derive(Debug)] pub enum Errno { EALREADY, Other } }
 mod error { #[derive(Debug)] pub enum Error { Os(super::errno::Errno) }
 impl std::fmt::Display for Error { fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result { write!(f,"{self:?}") } } }
 mod core_input {
@@ -80,7 +80,8 @@ mod core_input {
     pub struct Reader;
     impl Reader { pub fn dispose(&self,d:&Disposition)->Result<(),crate::error::Error> {
         assert_eq!(d.reserved,0); let _ = (d.window,d.disposition,d.reason,d.derived);
-        if d.serial == 43 { Err(crate::error::Error::Os(crate::errno::Errno::EALREADY)) } else { Ok(()) }
+        if d.serial == 43 { Err(crate::error::Error::Os(crate::errno::Errno::EALREADY)) }
+        else if d.serial == 45 { Err(crate::error::Error::Os(crate::errno::Errno::Other)) } else { Ok(()) }
     } }
 }
 mod outcome { pub const WM_HANDLED:u32 = 1; }
@@ -98,6 +99,7 @@ fn main() {
     dispose(102,1,0,outcome::WM_HANDLED,0); assert_eq!(handled_serial(),42);
     dispose(43,0,0,outcome::WM_HANDLED,0); assert_eq!(handled_serial(),42);
     dispose(44,0,0,outcome::WM_HANDLED,0); assert_eq!(handled_serial(),44);
+    dispose(45,0,0,outcome::WM_HANDLED,0); assert_eq!(handled_serial(),44);
 }
 """.replace('ATOMIC', atomic).replace('WATERMARK', item(source, 'pub(super) fn handled_serial(').replace('pub(super) ', ''))
         program = program.replace('DISPOSE', item(source, 'fn dispose('))

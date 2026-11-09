@@ -488,6 +488,8 @@ pub struct SceneWindow {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RecordQuery {
+    /// 0 reads the live compositor claim's latest successful record.
+    /// Explicit serials read retained completed or failed records.
     pub serial: u64,
     /// A `CompositeRecord` buffer of `len` bytes.
     pub ptr: u64,

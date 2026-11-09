@@ -1092,7 +1092,8 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 | `CAPTURE`, `MAP_TREE`, `READ_META` | yes | yes | yes | EPERM |
 | `MAP_TREE_READERS` | yes | no | no | EPERM |
 | `COMPOSITE_SNAPSHOT`, `COMPOSITE` | — | only while also current display owner | EPERM | EPERM |
-| `COMPOSITE_RECORD`, `SET_CURSOR` | — | yes | EPERM | EPERM |
+| `COMPOSITE_RECORD` | — | yes | yes (read only) | EPERM |
+| `SET_CURSOR` | — | yes | EPERM | EPERM |
 | `CLAIM_COMPOSITOR` | — | — | yes if no live claim, else EBUSY | EPERM |
 | `SCANOUT_READBACK` | — | yes | yes | EPERM |
 | `HOLD_EVIDENCE`, `READ_REMNANT`, `RELEASE_REMNANT` | EPERM | EPERM | yes (EBUSY if another holder) | EPERM |
@@ -1148,7 +1149,10 @@ The compositor's keyboard state, once version 1's ops 26 (modifiers) and 31
   `commit_id: u64`, `pixel_gen: u64`, `pixels: u64`). Every presentation-required window (registered,
   visible, not minimized) is listed with the generation the frame is correct for, a wholly occluded one with
   `pixels = 0`. A commit is presented when a composite with its readback completion lists its window at a
-  `pixel_gen` at or above the commit's.
+  `pixel_gen` at or above the commit's. The compositor and root observer may read records; this
+  grants no submission, input or geometry authority. Serial 0 selects the latest successful record
+  newer than the live claim's start serial, or ENOENT if that claim has no successful completion.
+  Explicit serials retain their existing completed/failed-record semantics.
 - **Failure.** A backend failure leaves the commit uncomposited, fails `COMPOSITE` with EIO and the record's
   reason, and the next composite retries it. The failed composite keeps its serial and has a record: `pixels`
   0, no entries, and `flags` bit 0 set with the backend's reason code in bits 8 to 15.

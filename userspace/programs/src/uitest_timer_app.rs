@@ -9,6 +9,8 @@ struct State {
     velocity: i64,
     fires: u64,
     missed: u64,
+    keys: Vec<u32>,
+    serials: Vec<u64>,
 }
 impl State {
     fn draw(&self, win: &mut Window) -> Result<(), String> {
@@ -18,27 +20,39 @@ impl State {
             Ok(_) => {}
             Err(Error::Os(Errno::ETIMEDOUT)) => {
                 if let Some(root) = std::env::var_os("BREENIX_CONFIG_ROOT") {
-                    std::fs::write(std::path::Path::new(&root).join("timer-backpressure"),
-                        breengel::clock::epoch().to_string()).map_err(|e| e.to_string())?;
+                    std::fs::write(
+                        std::path::Path::new(&root).join("timer-backpressure"),
+                        breengel::clock::epoch().to_string(),
+                    )
+                    .map_err(|e| e.to_string())?;
                 }
             }
             Err(error) => return Err(error.to_string()),
         }
         let surface = win.surface().map_err(|e| e.to_string())?;
-        surface.clear(libgfx::color::Color::rgb((self.ticks % 251) as u8, (self.fires % 251) as u8, 0x60));
-        let mut tree = serde_json::json!({"key":"root","parent":null,"role":"window","name":"timer",
+        surface.clear(libgfx::color::Color::rgb(
+            (self.ticks % 251) as u8,
+            (self.fires % 251) as u8,
+            0x60,
+        ));
+        let mut tree =
+            serde_json::json!({"key":"root","parent":null,"role":"window","name":"timer",
             "value":{"ticks":self.ticks,"position":self.position,"velocity":self.velocity,
-                "fires":self.fires,"missed":self.missed},
-            "bounds":[0,0,320,200],"clip":[0,0,320,200],"flags":["enabled","visible"]}).to_string().into_bytes();
+                "fires":self.fires,"missed":self.missed,"keys":self.keys,"serials":self.serials},
+            "bounds":[0,0,320,200],"clip":[0,0,320,200],"flags":["enabled","visible"]})
+            .to_string()
+            .into_bytes();
         tree.push(0);
         win.write_tree(&tree).map_err(|e| e.to_string())?;
-        win.commit(&[abi::Rect::new(0,0,320,200)]).map_err(|e| e.to_string())?;
+        win.commit(&[abi::Rect::new(0, 0, 320, 200)])
+            .map_err(|e| e.to_string())?;
         Ok(())
     }
 }
 
 pub fn run(title: &str, animate: bool, real_clock: bool) -> Result<(), String> {
-    let mut win = Window::new_without_fonts(title.as_bytes(), 320, 200).map_err(|e| e.to_string())?;
+    let mut win =
+        Window::new_without_fonts(title.as_bytes(), 320, 200).map_err(|e| e.to_string())?;
     win.timer(1, 1000, 1000);
     if animate {
         win.timer(2, 1, 1);
@@ -60,18 +74,35 @@ pub fn run(title: &str, animate: bool, real_clock: bool) -> Result<(), String> {
                     redraw = true;
                 }
                 Event::Timer { id, missed } => {
-                    if id == 1 { state.fires += 1; state.missed = missed; }
+                    if id == 1 {
+                        state.fires += 1;
+                        state.missed = missed;
+                    }
                     if real_clock && (id == 2 || !animate) {
                         let _ = breengel::clock::real_now_ns();
                     }
                     redraw = true;
                 }
+                Event::KeyPress { keycode, .. } => {
+                    state.keys.push(keycode);
+                    state.serials.push(delivered.serial);
+                    redraw = true;
+                }
                 Event::CloseRequested => close = true,
                 _ => {}
             }
-            if redraw { Handled::Redraw } else { Handled::NoChange }
-        }).map_err(|e| e.to_string())?;
-        if close { return Ok(()); }
-        if redraw { state.draw(&mut win)?; }
+            if redraw {
+                Handled::Redraw
+            } else {
+                Handled::NoChange
+            }
+        })
+        .map_err(|e| e.to_string())?;
+        if close {
+            return Ok(());
+        }
+        if redraw {
+            state.draw(&mut win)?;
+        }
     }
 }

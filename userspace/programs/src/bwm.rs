@@ -903,6 +903,7 @@ fn main() {
         }
         if !full_redraw && !content_dirty && !windows_dirty && !clock_dirty && !display_lost && !frame_failed {
             let mut ack = clock.acknowledgment(claim_epoch);
+            ack.handled_serial = input::handled_serial();
             if let Some(deadline) = timing.deadline() {
                 if ack.next_deadline_ns == 0 || deadline < ack.next_deadline_ns { ack.next_deadline_ns = deadline; }
             }

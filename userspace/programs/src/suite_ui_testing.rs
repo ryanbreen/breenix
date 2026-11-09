@@ -37,6 +37,8 @@ mod clock;
 mod timers;
 #[path = "uitest_suite/settle.rs"]
 mod settle;
+#[path = "uitest_suite/settle_composite.rs"]
+mod settle_composite;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
 
 fn pending(layer: &str, step: u8) -> CaseResult {
@@ -90,7 +92,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Ending a session releases every held key and button. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("teardown-releases", "Ending a session releases every held key and button", sessions::teardown_releases).session(libuitest::supervisor::serve),
         // Input arrives in order while the app animates. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("input-during-animation", "Input arrives in order while the app animates", || pending("input", 7)),
+        case("input-during-animation", "Input arrives in order while the app animates", settle_composite::input_during_animation).session(libuitest::supervisor::serve),
         // Input addressed to two windows of one app arrives at each. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("two-windows", "Input addressed to two windows of one app arrives at each", input_delivery::two_windows).session(libuitest::supervisor::serve),
         // A scripted Super double tap opens the launcher through bwm's real hotkey path. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -184,23 +186,23 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // An event that changes nothing settles through commit_no_change. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("no-change-ack", "An event that changes nothing settles through commit_no_change", settle::no_change_ack).session(libuitest::supervisor::serve),
         // settle waits until a completed composite lists every visible window at its newest pixel generation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("composited", "settle waits until a completed composite lists every visible window at its newest pixel generation", || pending("settle", 7)),
+        case("composited", "settle waits until a completed composite lists every visible window at its newest pixel generation", settle_composite::composited).session(libuitest::supervisor::serve),
         // Settling after a commit_no_change completes through the composite that already holds the window's pixels, with no new composite. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("no-change-no-composite", "Settling after a commit_no_change completes through the composite that already holds the window's pixels", || pending("settle", 7)),
+        case("no-change-no-composite", "Settling after a commit_no_change completes through the composite that already holds the window's pixels", settle_composite::no_change_no_composite).session(libuitest::supervisor::serve),
         // An idle step settles through bwm's `none-needed` acknowledgment, with the composite counter unchanged. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("bwm-ack-no-composite", "An idle step settles through bwm's none-needed acknowledgment, with the composite counter unchanged", || pending("settle", 7)),
+        case("bwm-ack-no-composite", "An idle step settles through bwm's none-needed acknowledgment, with the composite counter unchanged", settle_composite::bwm_ack_no_composite).session(libuitest::supervisor::serve),
         // A hotkey settles with no client involved, through its WM-handled disposition. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wm-handled", "A hotkey settles with no client involved, through its WM-handled disposition", || pending("settle", 7)),
+        case("wm-handled", "A hotkey settles with no client involved, through its WM-handled disposition", settle_composite::wm_handled).session(libuitest::supervisor::serve),
         // settle waits for a named tree predicate on an asynchronous result. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("async-predicate", "settle waits for a named tree predicate on an asynchronous result", settle::async_predicate).session(libuitest::supervisor::serve),
         // A settle that cannot complete fails, naming the window, serial or predicate it waited for. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("timeout-names", "A settle that cannot complete fails, naming the window, serial or predicate it waited for", settle::timeout_names).session(libuitest::supervisor::serve),
         // settle returns while an app has a future animation deadline. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("animation-allowed", "settle returns while an app has a future animation deadline", || pending("settle", 7)),
+        case("animation-allowed", "settle returns while an app has a future animation deadline", settle_composite::animation_allowed).session(libuitest::supervisor::serve),
         // A minimized window still acknowledges epochs and processes its serials, settle waits for those, and settle does not wait for its pixels; once restored, the next settle waits for its current generation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("minimized-acks", "A minimized window acknowledges and processes without being waited on for pixels until it is restored", || pending("settle", 7)),
+        case("minimized-acks", "A minimized window acknowledges and processes without being waited on for pixels until it is restored", settle_composite::minimized_acks).session(libuitest::supervisor::serve),
         // Repeated settle calls with nothing changing cause no extra frames. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("repeated-settle", "Repeated settle calls with nothing changing cause no extra frames", || pending("settle", 7)),
+        case("repeated-settle", "Repeated settle calls with nothing changing cause no extra frames", settle_composite::repeated_settle).session(libuitest::supervisor::serve),
     ]),
     category("sessions", "Sessions, state isolation & cleanup", &[
         // A desktop session with one app measures time to its first composited commit with a 2 s sanity cap. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
