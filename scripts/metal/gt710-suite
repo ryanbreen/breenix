@@ -4180,6 +4180,16 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
     tally = (sum(k == 'PASS' for k, _, _ in cases), sum(k == 'FAIL' for k, _, _ in cases), 0, case_count)
     if tuple(map(int, records[case_count + 1][1].groups())) != tally:
         raise ValueError('WM DONE disagrees with cases or contains skips')
+    if (suite == 'window-manager' and len(suites) == 1
+            and capture['exit_status'] == 1 and tally[1] == 0):
+        # Coordinator ledger 264 admits the planned-empty refusal for a step,
+        # never an unexplained driver failure. The full-suite gate stays red.
+        captured_manifest = json.loads((directory / 'definition/docs/suites/window-manager.json').read_text())
+        empty = [c['id'] for c in captured_manifest['categories'] if not c['cases']]
+        expected = ('FAIL: planned categories have no cases: ' + ', '.join(empty)
+                    + '; acceptance is blocked')
+        if not empty or (directory / 'suite-verdict.txt').read_text().splitlines() != [expected]:
+            raise ValueError('WM exit 1 is not the exact planned-empty verdict')
     failed = [m[1] for k, m, _ in cases if m[1] in required and k != 'PASS']
     if failed:
         raise ValueError(f'selected {"WM" if suite == "window-manager" else suite} cases failed: {len(required) - len(failed)}/{len(required)} '
@@ -4308,6 +4318,9 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
                   selection=selection, cases=[dict(id=f'{kind}-step/suite', result='PASS',
                     reason=f'{len(required) - len(failed)}/{len(required)} selected {"WM" if suite == "window-manager" else suite} cases passed; '
                            f'{case_count} cases, memory and uploads verified')])
+    if suite == 'window-manager':
+        report.update(scope='wm-step-selection', exitStatus=capture['exit_status'],
+                      toolsCommit=boot['toolsCommit'], build=boot['build'])
     return report
 
 
