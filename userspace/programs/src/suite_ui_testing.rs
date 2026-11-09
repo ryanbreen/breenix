@@ -41,6 +41,8 @@ mod timers;
 mod settle;
 #[path = "uitest_suite/settle_composite.rs"]
 mod settle_composite;
+#[path = "uitest_suite/proof.rs"]
+mod proof;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
 
 fn pending(layer: &str, step: u8) -> CaseResult {
@@ -264,7 +266,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     ]),
     category("proof", "End-to-end scenarios & planted faults", &[
         // A widget drawn in the wrong color fails as pixel-mismatch with both colors. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("fault-wrong-color", "A widget drawn in the wrong color fails as pixel-mismatch with both colors", || pending("proof", 7)),
+        case("fault-wrong-color", "A widget drawn in the wrong color fails as pixel-mismatch with both colors", proof::fault_wrong_color),
         // An app that updates its tree but not its pixels fails as pixel-mismatch. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("fault-stale-pixels", "An app that updates its tree but not its pixels fails as pixel-mismatch", || pending("proof", 7)),
         // An app that drops one key fails as tree-mismatch on the text field's value. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)

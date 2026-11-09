@@ -68,3 +68,20 @@ fn settle_controls_and_drain_without_commit_are_explicit() {
         assert!(support::parse(&flags).is_err(), "{flags:?}");
     }
 }
+
+#[test]
+fn planted_flags_are_individual_widget_modes() {
+    for flag in ["--wrong-color", "--drop-key", "--stale-pixels", "--hang"] {
+        let options = support::parse(&["fault", "--widgets", flag]).unwrap();
+        assert!(options.widgets);
+        assert_eq!(options.hang, flag == "--hang");
+        assert_eq!(options.wrong_color, flag == "--wrong-color");
+        assert_eq!(options.drop_key, flag == "--drop-key");
+        assert_eq!(options.stale_pixels, flag == "--stale-pixels");
+        assert!(support::parse(&["fault", "--widgets", flag, flag]).is_err());
+    }
+    for args in [vec!["fault", "--wrong-color"], vec!["fault", "--timer", "--drop-key"],
+        vec!["fault", "--widgets", "--wrong-color", "--stale-pixels"]] {
+        assert!(support::parse(&args).is_err(), "{args:?}");
+    }
+}
