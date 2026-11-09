@@ -31,6 +31,12 @@ class UiSelectionsTest(unittest.TestCase):
         self.assertEqual(selected, cases)
         self.assertFalse((ROOT / "docs/gui/gt710-step-22-8.json").exists())
 
+    def test_app_scenarios_declare_their_supervised_sessions(self):
+        source = (ROOT / "userspace/programs/src/suite_ui_testing.rs").read_text()
+        for case in ('form-scenario', 'menu-scenario', 'list-scenario'):
+            line = next(line for line in source.splitlines() if f'case("{case}"' in line)
+            self.assertIn('.session(libuitest::supervisor::serve)', line)
+
     def test_step_seven_has_no_pending_body(self):
         source = (ROOT / "userspace/programs/src/suite_ui_testing.rs").read_text()
         category = None

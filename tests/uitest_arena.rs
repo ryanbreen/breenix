@@ -127,3 +127,26 @@ fn failed_screen_retained_and_interrupted_frame_tree_publication_is_partial() {
     drop(collector);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn checkpoints_replace_the_active_path_without_mutating_older_readers() {
+    let path = std::env::temp_dir().join(format!("ui-checkpoint-{}", std::process::id()));
+    let mut active = arena::Arena::create(&path, arena::Layout::for_mode(2, 1).unwrap()).unwrap();
+    let mut writer = active.begin(arena::Slot::Frame).unwrap();
+    writer.bytes_mut()[..4].copy_from_slice(&[1, 2, 3, 255]);
+    writer.publish(arena::Record { check: "first".into(), ..Default::default() }, 4).unwrap();
+    let older = arena::Arena::open(&path).unwrap();
+    active.next_checkpoint().unwrap();
+    let mut writer = active.begin(arena::Slot::Frame).unwrap();
+    writer.bytes_mut()[..4].copy_from_slice(&[4, 5, 6, 255]);
+    writer.publish(arena::Record { check: "second".into(), ..Default::default() }, 4).unwrap();
+    let newest = older.reopen().unwrap();
+    for (view, check, expected) in [(&older, "first", [1,2,3,255]), (&newest, "second", [4,5,6,255])] {
+        match view.read(arena::Slot::Frame).unwrap() {
+            arena::SlotRead::Final {record, bytes} => { assert_eq!(record.check, check); assert_eq!(bytes, expected); },
+            other => panic!("incomplete checkpoint {other:?}"),
+        }
+    }
+    drop((active, older, newest));
+    std::fs::remove_file(path).unwrap();
+}
