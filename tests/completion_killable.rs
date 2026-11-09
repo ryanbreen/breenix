@@ -19,5 +19,5 @@ fn killable_wait_checks_fatal_signal_at_each_syscall_wait_boundary() {
     assert!(inner.contains("thread.uninterruptible_io = wait_mode == WaitMode::Uninterruptible"));
     assert!(COMPLETION.contains("WaitMode::Killable => crate::syscall::fatal_signal_pending()"));
     assert!(SYSCALL.contains("pub fn fatal_signal_pending()"));
-    assert!(SYSCALL.contains("signals.mirror.pending() & crate::signal::sig_mask(crate::signal::SIGKILL) != 0"));
+    assert!(SYSCALL.contains("signals.mirror.pending() & crate::signal::constants::sig_mask(crate::signal::constants::SIGKILL) != 0"));
 }

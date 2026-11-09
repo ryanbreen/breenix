@@ -649,6 +649,13 @@ pub fn check_signals_for_eintr() -> Option<i32> {
     signals.mirror.interrupting(&signals).then_some(errno::EINTR)
 }
 
+/// Whether the current thread has a pending SIGKILL, without taking the process manager lock.
+pub fn fatal_signal_pending() -> bool {
+    signal_wait_signals().is_some_and(|signals| {
+        signals.mirror.pending() & crate::signal::constants::sig_mask(crate::signal::constants::SIGKILL) != 0
+    })
+}
+
 /// The current thread's signal state, when its return-work hint says a
 /// signal or a stop may be waiting for it (`signal_wait_thread`).
 fn signal_wait_signals() -> Option<alloc::sync::Arc<crate::signal::ThreadSignals>> {

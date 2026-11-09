@@ -262,6 +262,23 @@ fn wait_idle_completion(completion: &Completion, expected_token: u32, timeout_ns
     })
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WaitMode {
+    Interruptible,
+    Uninterruptible,
+    Killable,
+}
+
+impl WaitMode {
+    fn signal_pending(self) -> bool {
+        match self {
+            WaitMode::Interruptible => crate::syscall::check_signals_for_eintr().is_some(),
+            WaitMode::Uninterruptible => false,
+            WaitMode::Killable => crate::syscall::fatal_signal_pending(),
+        }
+    }
+}
+
 /// Completion primitive — pairs one waiter thread with one ISR.
 pub struct Completion {
     /// 0 = not done, otherwise the completion token published by `complete()`.
@@ -323,7 +340,7 @@ impl Completion {
     /// Falls back to spin-polling when the scheduler is not yet running
     /// (detected by `with_scheduler` returning None).
     pub fn wait_timeout(&self, expected_token: u32, timeout_ns: u64) -> Result<bool, i32> {
-        self.wait_timeout_inner(expected_token, timeout_ns, true)
+        self.wait_timeout_inner(expected_token, timeout_ns, WaitMode::Interruptible)
     }
 
     /// Wait for completion without returning early for pending signals.
@@ -335,14 +352,23 @@ impl Completion {
         expected_token: u32,
         timeout_ns: u64,
     ) -> Result<bool, i32> {
-        self.wait_timeout_inner(expected_token, timeout_ns, false)
+        self.wait_timeout_inner(expected_token, timeout_ns, WaitMode::Uninterruptible)
+    }
+
+    /// Wait for completion, returning early only for a pending SIGKILL.
+    pub fn wait_timeout_killable(
+        &self,
+        expected_token: u32,
+        timeout_ns: u64,
+    ) -> Result<bool, i32> {
+        self.wait_timeout_inner(expected_token, timeout_ns, WaitMode::Killable)
     }
 
     fn wait_timeout_inner(
         &self,
         expected_token: u32,
         timeout_ns: u64,
-        interruptible: bool,
+        wait_mode: WaitMode,
     ) -> Result<bool, i32> {
         // Fast path: already done (e.g., very fast device, or spurious call).
         if self.done.load(Ordering::Acquire) == expected_token {
@@ -437,7 +463,7 @@ impl Completion {
                     return Ok(true);
                 }
 
-                if interruptible && crate::syscall::check_signals_for_eintr().is_some() {
+                if wait_mode.signal_pending() {
                     self.waiter.store(0, Ordering::Release);
                     finish_wait_current();
                     return Err(EINTR);
@@ -451,7 +477,7 @@ impl Completion {
                 crate::per_cpu::preempt_enable();
 
                 loop {
-                    if interruptible && crate::syscall::check_signals_for_eintr().is_some() {
+                    if wait_mode.signal_pending() {
                         self.waiter.store(0, Ordering::Release);
                         finish_wait_current();
                         restore_syscall_preempt_state();
@@ -467,7 +493,7 @@ impl Completion {
                             true
                         } else {
                             if let Some(thread) = sched.current_thread_mut() {
-                                thread.uninterruptible_io = !interruptible;
+                                thread.uninterruptible_io = wait_mode == WaitMode::Uninterruptible;
                             }
                             sched.block_current_for_io_with_timeout(Some(deadline_ns));
                             false
@@ -528,7 +554,7 @@ impl Completion {
                         return Ok(true);
                     }
 
-                    if interruptible && crate::syscall::check_signals_for_eintr().is_some() {
+                    if wait_mode.signal_pending() {
                         self.waiter.store(0, Ordering::Release);
                         restore_syscall_preempt_state();
                         return Err(EINTR);
