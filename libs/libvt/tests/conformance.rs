@@ -18,7 +18,7 @@ const BRIGHT_RED: Color = Color::rgb(255, 109, 109);
 fn current_sequences_are_independent_of_chunking() {
     let rows = [
         Row { name: "cr lf bs", input: b"abc\rZ\n12\x08X", lines: ["Zbc     ", "1X      "], cursor: (2, 1), attributes: &[] },
-        Row { name: "tab", input: b"a\tb", lines: ["a       ", "b       "], cursor: (1, 1), attributes: &[] },
+        Row { name: "tab", input: b"a\tb", lines: ["a      b", "        "], cursor: (7, 0), attributes: &[] },
         Row { name: "cup and movement", input: b"\x1b[2;4HX\x1b[A\x1b[2D!\x1b[B\x1b[C?", lines: ["  !     ", "   X?   "], cursor: (5, 1), attributes: &[] },
         Row { name: "cha vpa", input: b"\x1b[2d\x1b[3Gz", lines: ["        ", "  z     "], cursor: (3, 1), attributes: &[] },
         Row { name: "erase line", input: b"abcdef\x1b[3G\x1b[K", lines: ["ab      ", "        "], cursor: (2, 0), attributes: &[] },
@@ -110,5 +110,85 @@ fn characters_and_parser_bounds_are_independent_of_chunking() {
         let input = b"\x1b[999999999G";
         for chunk in input.chunks(match mode { 0 => input.len(), 1 => 1, _ => 3 }) { vt.feed(chunk); }
         assert_eq!(vt.cursor(), (9998, 0), "clamp mode {mode}");
+    }
+}
+
+
+struct ScreenRow {
+    name: &'static str,
+    input: &'static [u8],
+    lines: &'static [&'static str],
+    cursor: (usize, usize),
+    alt: bool,
+    visible: bool,
+    attributes: &'static [(usize, usize, Color, Color, bool)],
+}
+
+fn screen(name: &'static str, input: &'static [u8], lines: &'static [&'static str], cursor: (usize, usize)) -> ScreenRow {
+    ScreenRow { name, input, lines, cursor, alt: false, visible: true, attributes: &[] }
+}
+
+#[test]
+fn screen_editing_and_modes_are_independent_of_chunking() {
+    let rows = [
+        ScreenRow { alt: true, ..screen("alt_screen_1049", b"MAIN\x1b[2;3H\x1b[?1049h", &["        ", "        "], (2, 1)) },
+        screen("1049 restores main and cursor", b"MAIN\x1b[2;3H\x1b[?1049hALT\x1b[?1049l!", &["MAIN    ", "  !     "], (3, 1)),
+        ScreenRow { alt: true, ..screen("1049 reentry clears", b"MAIN\x1b[?1049hALT\x1b[?1049l\x1b[?1049h", &["        ", "        "], (4, 0)) },
+        screen("1049 repeated set preserves saved main", b"M\x1b[?1049hA\x1b[?1049h\x1b[?1049l!", &["M!      ", "        "], (2, 0)),
+        screen("IND bottom margin", b"A\r\nB\r\nC\r\nD\x1b[2;3r\x1b[3;2H\x1bDX", &["A       ", "C       ", " X      ", "D       "], (2, 2)),
+        screen("RI top margin", b"A\r\nB\r\nC\r\nD\x1b[2;3r\x1b[2;2H\x1bMX", &["A       ", " X      ", "B       ", "D       "], (2, 1)),
+        screen("LF bottom margin", b"A\r\nB\r\nC\r\nD\x1b[2;3r\x1b[3;2H\nX", &["A       ", "C       ", "X       ", "D       "], (1, 2)),
+        screen("index outside region", b"A\r\nB\r\nC\r\nD\x1b[2;3r\x1b[4;2H\x1bDX", &["A       ", "B       ", "C       ", "DX      "], (2, 3)),
+        screen("region reset", b"A\r\nB\r\nC\r\nD\x1b[2;3r\x1b[r\x1b[4;1H\x1bD", &["B       ", "C       ", "D       ", "        "], (0, 3)),
+        screen("invalid region ignored", b"\x1b[2;3H\x1b[3;2rX", &["        ", "  X     ", "        ", "        "], (3, 1)),
+        screen("insert line in region", b"A\r\nB\r\nC\r\nD\x1b[2;3r\x1b[2;2H\x1b[L", &["A       ", "        ", "B       ", "D       "], (0, 1)),
+        screen("delete lines clamped", b"A\r\nB\r\nC\r\nD\x1b[2;3r\x1b[2;2H\x1b[999M", &["A       ", "        ", "        ", "D       "], (0, 1)),
+        screen("delete line moves remainder", b"A\r\nB\r\nC\r\nD\x1b[2;3r\x1b[2;2H\x1b[M", &["A       ", "C       ", "        ", "D       "], (0, 1)),
+        screen("line edits outside region ignored", b"A\r\nB\r\nC\r\nD\x1b[2;3r\x1b[4;2H\x1b[L\x1b[M", &["A       ", "B       ", "C       ", "D       "], (1, 3)),
+        screen("insert characters", b"abcdef\x1b[3G\x1b[2@", &["ab  cdef", "        "], (2, 0)),
+        screen("delete characters", b"abcdef\x1b[3G\x1b[2P", &["abef    ", "        "], (2, 0)),
+        screen("erase characters clamped", b"abcdef\x1b[3G\x1b[999X", &["ab      ", "        "], (2, 0)),
+        ScreenRow { attributes: &[(0, 0, RED, BG, false), (2, 0, RED, BG, false)], ..screen("editing moves attributes", b"\x1b[31mAB\x1b[0mC\x1b[2G\x1b[@", &["A BC    ", "        "], (1, 0)) },
+        screen("pending wrap", b"12345678", &["12345678", "        "], (7, 0)),
+        screen("wrap on next character", b"12345678X", &["12345678", "X       "], (1, 1)),
+        screen("CR cancels pending wrap", b"12345678\rX", &["X2345678", "        "], (1, 0)),
+        screen("CUP cancels pending wrap", b"12345678\x1b[1;8HX", &["1234567X", "        "], (7, 0)),
+        screen("SGR preserves pending wrap", b"12345678\x1b[0mX", &["12345678", "X       "], (1, 1)),
+        screen("autowrap off and on", b"\x1b[?7l12345678XY\x1b[?7hZ!", &["1234567Z", "!       "], (1, 1)),
+        screen("default tab stops", b"a\tb\tc", &["a       b      c", "                "], (15, 0)),
+        screen("HTS TBC current and all", b"\x1b[3g\x1b[4G\x1bH\r\tA\x1b[4G\x1b[g\r\tB", &["   A   B", "        "], (7, 0)),
+        screen("tab does not erase", b"abcdefgh\r\tX", &["abcdefgX", "        "], (7, 0)),
+        ScreenRow { attributes: &[(0, 0, RED, BLUE, true), (1, 0, RED, BLUE, true), (2, 0, RED, BLUE, true)], ..screen("DECSC DECRC rendition", b"\x1b[1;31;44mAB\x1b7\x1b[0m\x1b[2;1Hq\x1b8Z", &["ABZ     ", "q       "], (3, 0)) },
+        screen("DECSC restores pending wrap", b"12345678\x1b7\r\x1b8X", &["12345678", "X       "], (1, 1)),
+        ScreenRow { visible: false, ..screen("DECTCEM hide", b"A\x1b[?25l", &["A       ", "        "], (1, 0)) },
+        screen("DECTCEM show", b"A\x1b[?25l\x1b[?25h", &["A       ", "        "], (1, 0)),
+        screen("private parameters stay private", b"A\x1b[?2J\x1b[25l", &["A       ", "        "], (1, 0)),
+    ];
+    for row in rows {
+        for mode in 0..3 {
+            let cols = row.lines[0].chars().count();
+            let mut vt = TermEmu::new(cols, row.lines.len());
+            let mut pos = 0;
+            let mut seed = 0x1234u32;
+            while pos < row.input.len() {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let n = match mode { 0 => row.input.len(), 1 => 1, _ => (seed as usize % 5) + 1 };
+                let end = (pos + n).min(row.input.len());
+                vt.feed(&row.input[pos..end]);
+                pos = end;
+            }
+            assert_eq!(vt.alternate_screen(), row.alt, "{} mode {mode}", row.name);
+            assert_eq!(vt.cursor_visible(), row.visible, "{} mode {mode}", row.name);
+            assert_eq!(vt.cursor(), row.cursor, "{} mode {mode}", row.name);
+            for (y, line) in row.lines.iter().enumerate() {
+                assert_eq!(line.chars().count(), cols, "{} fixture width", row.name);
+                for (x, ch) in line.chars().enumerate() {
+                    let cell = vt.cell(x, y);
+                    let attr = row.attributes.iter().find(|a| a.0 == x && a.1 == y)
+                        .map(|a| (a.2, a.3, a.4)).unwrap_or((FG, BG, false));
+                    assert_eq!((cell.ch, cell.fg, cell.bg, cell.bold), (ch, attr.0, attr.1, attr.2), "{} mode {mode} at {x},{y}", row.name);
+                }
+            }
+        }
     }
 }

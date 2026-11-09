@@ -435,6 +435,8 @@ pub struct TermEmu {
     fg: Color,
     bg: Color,
     bold: bool,
+    alternate: bool,
+    cursor_visible: bool,
     ansi_state: AnsiState,
     ansi_params: [u16; 16],
     ansi_len: usize,
@@ -454,6 +456,7 @@ impl TermEmu {
             cells: vec![Cell::blank(); cols * rows],
             cursor_x: 0, cursor_y: 0,
             fg: FG_COLOR, bg: BG_COLOR, bold: false,
+            alternate: false, cursor_visible: true,
             ansi_state: AnsiState::Normal,
             ansi_params: [0; 16],
             ansi_len: 0, ansi_invalid: false, utf8: [0; 4], utf8_len: 0, utf8_expected: 0,
@@ -486,6 +489,8 @@ impl TermEmu {
     }
 
     pub fn cursor(&self) -> (usize, usize) { (self.cursor_x, self.cursor_y) }
+    pub fn alternate_screen(&self) -> bool { self.alternate }
+    pub fn cursor_visible(&self) -> bool { self.cursor_visible }
     pub fn size(&self) -> (usize, usize) { (self.cols, self.rows) }
     pub fn feed(&mut self, bytes: &[u8]) { for &byte in bytes { self.feed_byte(byte); } }
 
