@@ -16,7 +16,6 @@ use libbui::widget::{
 use libbui::{
     focus::FocusChain, input::PointerCapture, InputState, Key, KeyInput, Rect, Theme, WidgetEvent,
 };
-#[cfg(target_os = "breenix")]
 use libgfx::{color::Color, surface::Surface};
 use serde_json::json;
 
@@ -96,7 +95,6 @@ impl Terminal {
             self.cells.len() as i32 * layout::CELL_HEIGHT,
         )
     }
-    #[cfg(target_os = "breenix")]
     fn draw(&self, surface: &mut Surface) {
         let scale = surface.ui_scale() as i32;
         let color = |rgb: u32| Color::rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8);
@@ -498,12 +496,10 @@ impl Widgets {
         }
         tree
     }
-    #[cfg(target_os = "breenix")]
     pub fn draw(&self, surface: &mut Surface) {
         let scene = self.drawing_scene();
         scene.draw_current(surface);
     }
-    #[cfg(target_os = "breenix")]
     fn draw_current(&self, surface: &mut Surface) {
         surface.clear(self.theme.panel_bg);
         self.entry.draw(surface, &self.theme);
