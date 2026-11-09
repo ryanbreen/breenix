@@ -412,6 +412,13 @@ fn describe(path: &Path, meta: &std::fs::Metadata) -> Entry {
     Entry { kind, mode: meta.mode() & 0o7777, uid: meta.uid(), gid: meta.gid(), size, stamp }
 }
 
+enum Comparison { Same, Changed }
+
+fn compare(path: &str, recorded: &Entry, meta: Option<&std::fs::Metadata>) -> Comparison {
+    let now = meta.map(|meta| describe(Path::new(path), meta));
+    if now.as_ref() == Some(recorded) { Comparison::Same } else { Comparison::Changed }
+}
+
 /// 64-bit FNV-1a.
 fn fnv(bytes: &[u8]) -> u64 {
     bytes.iter().fold(0xcbf2_9ce4_8422_2325, |hash, &b| (hash ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3))
@@ -527,8 +534,7 @@ fn reset() -> Result<Reset, String> {
             return false;
         };
         seen.insert(String::from(path));
-        let now = meta.map(|meta| describe(Path::new(path), &meta));
-        if now.as_ref() != Some(recorded) {
+        if matches!(compare(path, recorded, meta.as_ref()), Comparison::Changed) {
             result.changed.push(String::from(path));
         }
         true
