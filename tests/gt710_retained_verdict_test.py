@@ -1,5 +1,6 @@
 """Retained native suite evidence must produce a saved, independently checked verdict."""
 import json
+import hashlib
 from pathlib import Path
 import sys
 import tempfile
@@ -34,6 +35,60 @@ class RetainedVerdict(unittest.TestCase):
         (directory / 'events.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in events))
         return run
 
+    def test_unreadable_capture_replaces_stale_pass(self):
+        for broken in ('malformed-run', 'missing-run', 'missing-exit-status'):
+            with self.subTest(broken=broken), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                self.capture(directory)
+                report_path = directory / 'gt710-breengel-full.json'
+                report_path.write_text(json.dumps(dict(passed=True)))
+                if broken == 'malformed-run':
+                    (directory / 'run.json').write_text('{')
+                else:
+                    (directory / ('run.json' if broken == 'missing-run' else 'exit-status')).unlink()
+                self.assertEqual(API['record_breengel_capture'](directory, 'a' * 40, 'breengel-full'), 1)
+                report = json.loads(report_path.read_text())
+                self.assertFalse(report['passed'])
+                self.assertFalse(report['captureAccepted'])
+                self.assertEqual(report['cases'][0]['result'], 'FAIL')
+                self.assertTrue(report['cases'][0]['reason'])
+
+    def test_rejected_aggregate_saves_failure_and_source_boot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            run = self.capture(directory)
+            run.update(suite=None, suites=['console', 'breengel'])
+            (directory / 'run.json').write_text(json.dumps(run))
+            (directory / 'exit-status').write_text('1\n')
+            for name in run['suites']:
+                path = directory / 'definition/docs/suites' / (name + '.json')
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(json.dumps(dict(categories=[dict(id='case', cases=[dict(id='one')])])))
+            (directory / 'suite-verdict.txt').write_text(
+                'PASS console: complete\n'
+                'NOT-ISOLATED breengel: RESET breengel changed=1 paths=/var/log/auth.log\n'
+                'FAIL: 1 of 2 suites passed\n')
+            original = {name: (directory / name).read_bytes() for name in
+                        ('run.json', 'serial.txt', 'events.jsonl', 'exit-status', 'suite-verdict.txt')}
+            # A previous successful report must not survive a rejected re-score.
+            path = directory / 'gt710-breengel-full.json'
+            path.write_text(json.dumps(dict(passed=True)))
+            self.assertEqual(API['record_breengel_capture'](directory, 'a' * 40, 'breengel-full'), 1)
+            report = json.loads(path.read_text())
+            self.assertFalse(report['passed'])
+            self.assertFalse(report['captureAccepted'])
+            self.assertEqual(report['cases'][0]['result'], 'FAIL')
+            self.assertIn('aggregate has an unplanned refusal: NOT-ISOLATED breengel',
+                          report['cases'][0]['reason'])
+            self.assertEqual(report['boots'][0]['id'], run['id'])
+            self.assertEqual(report['boots'][0]['commit'], run['commit'])
+            self.assertEqual(report['boots'][0]['toolsCommit'], run['toolsCommit'])
+            self.assertEqual(report['boots'][0]['build'], run['build'])
+            self.assertEqual(report['boots'][0]['exitStatus'], 1)
+            for name, data in original.items():
+                self.assertEqual((directory / name).read_bytes(), data)
+                self.assertEqual(report['boots'][0]['sha256'][name], hashlib.sha256(data).hexdigest())
+
     def test_breengel_cli_saves_pass_and_failed_selected_case(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
@@ -56,6 +111,37 @@ class RetainedVerdict(unittest.TestCase):
                 self.assertEqual(record['commit'], 'a' * 40)
                 self.assertEqual(record['milestone'], 'metal-gt710/breengel-full')
                 self.assertEqual(record['cases'][0]['result'], 'PASS' if expected == 0 else 'FAIL')
+
+    def test_nonzero_breengel_exit_requires_completed_case_failure(self):
+        # G13: distinguish a case-derived exit from an unexplained driver exit.
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self.capture(directory)
+            original = composition_capture()
+            selected = json.loads((ROOT / 'docs/gui/gt710-step-9-1.json').read_text())['cases']
+            manifest = json.loads((ROOT / 'docs/suites/breengel.json').read_text())
+            name = next(c['id'] + '/' + case['id'] for c in manifest['categories']
+                        for case in c['cases'] if c['id'] + '/' + case['id'] not in selected)
+            failed = original.replace(f'CASE {name} PASS ms=1',
+                                      f'CASE {name} FAIL ms=1')
+            line = next(l for l in failed.splitlines() if l.startswith(f'SUITE breengel CASE {name} '))
+            failed = failed.replace(line, line + ' msg=pending')
+            failed = failed.replace('DONE passed=401 failed=0', 'DONE passed=400 failed=1')
+            events = [dict(event='final-marker'), dict(event='decided', status=0),
+                      dict(event='power-off', off=True), dict(event='suite-verdict', status=1),
+                      dict(event='closed', status=1, endedBy='driver')]
+            (directory / 'exit-status').write_text('1\n')
+            def read(serial, trace):
+                (directory / 'events.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in trace))
+                with patch.dict(API['completed_suite_capture'].__globals__,
+                                capture_serial=lambda *a: serial):
+                    return API['completed_suite_capture'](directory, 'a' * 40, 'breengel')
+            self.assertEqual(read(failed, events)['exit_status'], 1)
+            for serial, trace in [(original, events), (failed, events[:3] + events[4:]),
+                                  (failed, [events[0], dict(event='decided', status=1)] + events[2:])]:
+                with self.subTest(failed_cases=serial == failed, trace=trace):
+                    with self.assertRaisesRegex(ValueError, 'BreenGL exit 1'):
+                        read(serial, trace)
 
     def test_canonical_verdict_requires_the_full_breengel_record(self):
         with tempfile.TemporaryDirectory() as tmp:

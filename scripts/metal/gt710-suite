@@ -4036,6 +4036,21 @@ def completed_suite_capture(directory, sha, suite=None):
         raise ValueError('native suite requires a complete clean driver-closed capture')
     serial = ((directory / 'serial.txt').read_text() if suite in ('window-manager', 'ui-testing')
               else capture_serial(directory, suite))
+    if status == 1 and boot.get('suite') == 'breengel':
+        # G13: a completed case verdict must explain a nonzero suite exit.
+        done = one(r'^SUITE breengel DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)$',
+                   serial, 'BreenGL exit 1 DONE')
+        passed, failed, skipped, total = map(int, done.groups())
+        lifecycle = ('final-marker', 'decided', 'power-off', 'suite-verdict', 'closed')
+        rows = [e for e in events if e.get('event') in lifecycle]
+        if (failed == 0 or skipped != 0 or passed + failed != total
+                or len(re.findall(r'^SUITE breengel CASE \S+ FAIL .+$', serial, re.M)) != failed
+                or len(re.findall(r'^SUITE breengel CASE \S+ PASS .+$', serial, re.M)) != passed
+                or [e['event'] for e in rows] != list(lifecycle)
+                or rows[1].get('status') != 0 or rows[2].get('off') is not True
+                or rows[3].get('status') != 1 or rows[4].get('status') != 1
+                or rows[4].get('endedBy') != 'driver'):
+            raise ValueError('BreenGL exit 1 is not a completed failed-case verdict')
     return dict(boot=dict(boot, bootedCommit=sha), serial=serial, events=events, exit_status=status)
 
 
@@ -4332,16 +4347,39 @@ def record_breengel_capture(directory, sha, category):
     if category not in ('breengel-fronts', 'breengel-composition', 'breengel-stage', 'breengel-full'):
         raise ValueError('unknown BreenGL selection')
     directory = Path(directory)
-    capture = completed_suite_capture(directory, sha, 'breengel')
-    resources_identity(capture['boot'], 'breengel', sha)
-    rows = cases(category, '', {'breengel': capture})
-    report = dict(boot=capture['boot']['id'], commit=sha,
+    boot = {}
+    source = {}
+    # Keep source provenance even when admission refuses the capture. These
+    # fields describe the input; captureAccepted records the validator's result.
+    artifacts = ('run.json', 'metal-run.json', 'commit', 'dirty', 'ended', 'ended-by',
+                 'exit-status', 'serial.txt', 'serial.ts', 'events.jsonl',
+                 'suite-verdict.txt', 'suite-readback.json')
+    accepted = False
+    try:
+        source['sha256'] = {name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
+                            for name in artifacts if (directory / name).is_file()}
+        identity = capture_boot(directory)
+        if not isinstance(identity, dict):
+            raise ValueError('capture manifest must be an object')
+        boot = identity
+        source.update({name: boot.get(name) for name in ('id', 'commit', 'toolsCommit', 'build')})
+        status = (directory / 'exit-status').read_text().strip()
+        source['exitStatus'] = int(status) if re.fullmatch(r'-?\d+', status) else None
+        capture = completed_suite_capture(directory, sha, 'breengel')
+        resources_identity(capture['boot'], 'breengel', sha)
+        rows = cases(category, '', {'breengel': capture})
+        accepted = True
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        rows = [dict(id=category + '/capture', result='FAIL', reason=str(error))]
+    passed = accepted and all(row['result'] == 'PASS' for row in rows)
+    report = dict(boot=boot.get('id'), commit=sha, boots=[source],
+                  captureAccepted=accepted, passed=passed,
                   milestone='metal-gt710/' + category, cases=rows)
     (directory / ('gt710-' + category + '.json')).write_text(json.dumps(report, indent=2) + '\n')
     for row in rows:
         print('SUITE gt710 CASE ' + row['id'] + ' ' + row['result'] + ' ms=0'
               + (' msg=' + row['reason'] if row['reason'] else ''), flush=True)
-    return 0 if all(row['result'] == 'PASS' for row in rows) else 1
+    return 0 if passed else 1
 
 
 def rescore_suite_capture(directory, sha, scorer_head):

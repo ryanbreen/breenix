@@ -8,24 +8,65 @@ static REACHED: [AtomicBool; MARKERS.len()] = [const { AtomicBool::new(false) };
 // Timestamp bytes follow each newline in this private capture encoding. The
 // raw serial endpoint strips them. A 1 MiB byte store bounds the writable image
 // without reserving a timestamp word for byte positions that are not newlines.
-const CAPACITY: usize = 1024 * 1024;
-static SERIAL: [AtomicU8; CAPACITY] = [const { AtomicU8::new(0) }; CAPACITY];
+// Capture 132025 encoded about 158.5 KB before the first START and about
+// 698 KB from BreenGL START to panel/kernel-screens (#2824).
+const HEAD: usize = 192 * 1024;
+const RING: usize = 1024 * 1024 - HEAD;
+static BOOT_HEAD: [AtomicU8; HEAD] = [const { AtomicU8::new(0) }; HEAD];
+static SERIAL: [AtomicU8; RING] = [const { AtomicU8::new(0) }; RING];
 static TAIL: AtomicUsize = AtomicUsize::new(0);
-static OVERFLOW: AtomicBool = AtomicBool::new(false);
+static FIRST_START: AtomicUsize = AtomicUsize::new(usize::MAX);
+static LATEST_START: AtomicUsize = AtomicUsize::new(usize::MAX);
+static LAPPED: AtomicBool = AtomicBool::new(false);
+static LAPPED_BEFORE_FIRST: AtomicBool = AtomicBool::new(false);
+// One immutable first late line per stage, independent of the rolling tail.
+// The bounded scanner admits at most 1024 bytes plus the newline per line.
+// Atomic claims also cover the independent snapshot scanner; length publishes
+// the bytes, so a preempting reader can refuse an unfinished copy without waiting.
+struct LateLine {
+    start: AtomicUsize,
+    len: AtomicUsize,
+    bytes: [AtomicU8; 1025],
+}
+impl LateLine {
+    const fn new() -> Self {
+        Self {
+            start: AtomicUsize::new(usize::MAX),
+            len: AtomicUsize::new(0),
+            bytes: [const { AtomicU8::new(0) }; 1025],
+        }
+    }
+    fn retain(&self, start: usize, bytes: &[u8]) {
+        if self.start.compare_exchange(usize::MAX, start, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            for (out, byte) in self.bytes.iter().zip(bytes) {
+                out.store(*byte, Ordering::Relaxed);
+            }
+            self.bytes[bytes.len()].store(b'\n', Ordering::Relaxed);
+            self.len.store(bytes.len() + 1, Ordering::Release);
+        }
+    }
+}
+static LATE_LINES: [LateLine; MARKERS.len()] = [const { LateLine::new() }; MARKERS.len()];
+fn put(offset: usize, byte: u8) {
+    SERIAL[offset % RING].store(byte, Ordering::Relaxed);
+    if offset < HEAD { BOOT_HEAD[offset].store(byte, Ordering::Relaxed); }
+}
+fn at(offset: usize) -> u8 {
+    if offset < HEAD { BOOT_HEAD[offset].load(Ordering::Relaxed) }
+    else { SERIAL[offset % RING].load(Ordering::Relaxed) }
+}
 type Scan = (usize, [u8; 1024], usize, crate::console::status::SuiteStatus);
 static SCAN: spin::Mutex<Scan> = spin::Mutex::new((0, [0; 1024], 0, crate::console::status::SuiteStatus::new()));
 /// Constant work per byte under UART ownership, including before the framebuffer exists.
 pub fn byte(b: u8) {
-    if OVERFLOW.load(Ordering::Relaxed) { return; }
     let tail = TAIL.load(Ordering::Relaxed);
     let size = if b == b'\n' { 9 } else { 1 };
-    if tail + size > CAPACITY { OVERFLOW.store(true, Ordering::Release); return; }
-    SERIAL[tail].store(b, Ordering::Relaxed);
+    put(tail, b);
     if b == b'\n' {
         let (seconds, nanos) = crate::time::get_monotonic_time_ns();
         let ms = seconds.saturating_mul(1000).saturating_add(nanos / 1_000_000);
         for (i, byte) in ms.to_le_bytes().into_iter().enumerate() {
-            SERIAL[tail + 1 + i].store(byte, Ordering::Relaxed);
+            put(tail + 1 + i, byte);
         }
     }
     TAIL.store(tail + size, Ordering::Release);
@@ -35,21 +76,42 @@ pub fn drain() -> bool {
     if !crate::arch_interrupts_enabled() { return false; }
     let Some(mut scan) = SCAN.try_lock() else { return false; };
     let end = TAIL.load(Ordering::Acquire).min(scan.0 + 8192);
-    scan_to(&mut scan, end)
+    scan_to(&mut scan, end, true)
 }
-fn scan_to(scan: &mut Scan, end: usize) -> bool {
+fn scan_to(scan: &mut Scan, end: usize, live: bool) -> bool {
     let mut changed = false;
     while scan.0 < end {
-        let b = SERIAL[scan.0].load(Ordering::Relaxed);
+        if live && (LAPPED.load(Ordering::Acquire)
+            || TAIL.load(Ordering::Acquire).saturating_sub(scan.0) > RING - 9) {
+            if FIRST_START.load(Ordering::Acquire) == usize::MAX {
+                LAPPED_BEFORE_FIRST.store(true, Ordering::Release);
+            }
+            LAPPED.store(true, Ordering::Release);
+            break;
+        }
+        let b = at(scan.0);
         scan.0 += 1;
         let n = scan.2;
         if b == b'\n' {
             let ms = recorded_ms(&mut scan.0);
             if n <= 1024 {
                 let bytes = &scan.1[..n];
-                changed |= scan.3.observe(bytes, ms);
+                let start = scan.0 - n - 9;
+                let observed = scan.3.observe(bytes, ms);
+                changed |= observed;
+                let is_start = observed && bytes.split(|b| *b == b' ').nth(2) == Some(b"START".as_slice());
+                if is_start {
+                    FIRST_START.fetch_min(start, Ordering::AcqRel);
+                    // The independent snapshot can scan an older prefix after the live scanner.
+                    let _ = LATEST_START.fetch_update(Ordering::AcqRel, Ordering::Acquire, |old| {
+                        Some(if old == usize::MAX { start } else { old.max(start) })
+                    });
+                }
                 for (i, marker) in MARKERS.iter().enumerate() {
                     if super::boot_producer::matches(bytes, marker, MARKERS) {
+                        if start >= FIRST_START.load(Ordering::Acquire) {
+                            LATE_LINES[i].retain(start, bytes);
+                        }
                         changed |= !REACHED[i].swap(true, Ordering::AcqRel);
                     }
                 }
@@ -66,26 +128,43 @@ fn scan_to(scan: &mut Scan, end: usize) -> bool {
 fn drain_snapshot() {
     let end = TAIL.load(Ordering::Acquire);
     if let Some(mut scan) = SCAN.try_lock() {
-        scan_to(&mut scan, end);
+        scan_to(&mut scan, end, true);
     } else {
         // A syscall can preempt the render thread while it owns SCAN, then run
         // with preemption disabled. Parse the immutable prefix independently
         // instead of waiting for that thread to run. Reached bits are atomic.
         let mut scan = (0, [0; 1024], 0, crate::console::status::SuiteStatus::new());
-        scan_to(&mut scan, end);
+        scan_to(&mut scan, end.min(HEAD - 8), false);
     }
 }
-/// Complete serial prefix, not the matcher's interpretation of it. Never silently truncate.
+/// Boot prefix followed by each stage's first late producer line in stream order.
+/// The retained evidence uses original bytes, not reconstructed marker text.
 pub fn serial() -> Result<alloc::string::String, i32> {
-    if OVERFLOW.load(Ordering::Acquire) { return Err(-75); }
-    let n = TAIL.load(Ordering::Acquire);
+    drain_snapshot();
+    let start = FIRST_START.load(Ordering::Acquire);
+    let n = if start == usize::MAX { TAIL.load(Ordering::Acquire) } else { start };
+    if n > HEAD || LAPPED_BEFORE_FIRST.load(Ordering::Acquire) { return Err(-75); }
     let mut bytes = alloc::vec::Vec::with_capacity(n);
     let mut offset = 0;
     while offset < n {
-        let byte = SERIAL[offset].load(Ordering::Relaxed);
+        let byte = at(offset);
         offset += 1;
         bytes.push(byte);
         if byte == b'\n' { offset += 8; }
+    }
+    let mut late = alloc::vec::Vec::new();
+    for line in &LATE_LINES {
+        let start = line.start.load(Ordering::Acquire);
+        if start == usize::MAX { continue; }
+        let len = line.len.load(Ordering::Acquire);
+        if len == 0 { return Err(-11); }
+        late.push((start, line, len));
+    }
+    late.sort_unstable_by_key(|(start, _, _)| *start);
+    // A producer line can satisfy several markers. Include that line once.
+    late.dedup_by_key(|(start, _, _)| *start);
+    for (_, line, len) in late {
+        bytes.extend(line.bytes[..len].iter().map(|byte| byte.load(Ordering::Relaxed)));
     }
     Ok(alloc::string::String::from_utf8_lossy(&bytes).into_owned())
 }
@@ -93,26 +172,37 @@ pub fn serial() -> Result<alloc::string::String, i32> {
 /// The timestamps come from the writer before publication. Keep the original, unannotated serial endpoint unchanged.
 pub fn serial_timed() -> Result<alloc::string::String, i32> {
     use core::fmt::Write;
-    if OVERFLOW.load(Ordering::Acquire) { return Err(-75); }
+    drain_snapshot();
+    let start = LATEST_START.load(Ordering::Acquire);
+    let start = if start == usize::MAX { 0 } else { start };
     let n = TAIL.load(Ordering::Acquire);
+    if LAPPED.load(Ordering::Acquire) || start.saturating_add(RING) < n.saturating_add(9) {
+        return Err(-75);
+    }
     let mut line = alloc::vec::Vec::new();
     let mut out = alloc::string::String::new();
-    let mut offset = 0;
+    let mut offset = start;
     while offset < n {
-        let byte = SERIAL[offset].load(Ordering::Relaxed);
+        let byte = SERIAL[offset % RING].load(Ordering::Relaxed);
         offset += 1;
         line.push(byte);
         if byte == b'\n' {
-            let ms = recorded_ms(&mut offset);
+            let stamp = core::array::from_fn(|i| SERIAL[(offset + i) % RING].load(Ordering::Relaxed));
+            offset += 8;
+            let ms = u64::from_le_bytes(stamp);
             let _ = write!(out, "{ms}|{}", alloc::string::String::from_utf8_lossy(&line));
             line.clear();
         }
+    }
+    if LAPPED.load(Ordering::Acquire)
+        || start.saturating_add(RING) < TAIL.load(Ordering::Acquire).saturating_add(9) {
+        return Err(-75);
     }
     Ok(out)
 }
 // TAIL publishes a newline together with its eight timestamp bytes.
 fn recorded_ms(offset: &mut usize) -> u64 {
-    let bytes = core::array::from_fn(|i| SERIAL[*offset + i].load(Ordering::Relaxed));
+    let bytes = core::array::from_fn(|i| at(*offset + i));
     *offset += 8;
     u64::from_le_bytes(bytes)
 }
@@ -141,5 +231,8 @@ pub fn records() -> alloc::string::String {
 /// Suite state observed by the same complete-line scanner as the stage producers.
 /// Rendering calls this in thread context, outside UART ownership.
 pub fn suite_status() -> Option<crate::console::status::SuiteStatus> {
-    SCAN.try_lock().map(|scan| scan.3.clone())
+    if LAPPED.load(Ordering::Acquire) { return None; }
+    SCAN.try_lock().and_then(|scan| {
+        if LAPPED.load(Ordering::Acquire) { None } else { Some(scan.3.clone()) }
+    })
 }
