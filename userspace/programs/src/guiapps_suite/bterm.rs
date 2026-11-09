@@ -16,7 +16,7 @@ pub fn prompt() -> CaseResult {
 
 pub fn exit_status() -> CaseResult {
     let mut t = App::launch(&[b"/usr/bin/bterm"], "Terminal")?;
-    t.type_line("false; echo $?")?;
+    t.type_line("/bin/sh -c 'false; echo $?'")?;
     t.expect_text("1")?;
     Ok(t.finish()?)
 }
@@ -151,7 +151,7 @@ pub fn scrollback() -> CaseResult {
     if !(2..=200).contains(&rows) { return Err("unexpected terminal height for scrollback".into()); }
     // Include the final prompt row so page-sized steps can put line 1 exactly at the top.
     let padding = (rows - 201 % rows) % rows;
-    t.type_line(&format!("for(let i=1;i<=200;i++)print(i);for(let i=0;i<{padding};i++)print('')"))?;
+    t.type_line(&format!("for(let i=1;i<=200;i++)print(i);for(let i=0;i<{padding};i++)print('');undefined"))?;
     until("numbered output complete", || {
         let v = grid(&mut t)?;
         Ok(v["scrollback"].as_u64().is_some_and(|n| n >= 201 - rows)
