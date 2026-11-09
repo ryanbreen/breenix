@@ -1487,25 +1487,45 @@ fn evidence_scanout() -> Result<evidence::Observation, String> {
 
 fn evidence_transfer(route: &evidence::Route, path: &str, data: &[u8], digest: [u8; 32]) -> Result<(), String> {
     use libbreenix::{dns, socket};
+    use libbreenix::syscall::{nr, raw};
     // A staged route may be used before the network lease has completed.
-    for _ in 0..200 {
-        if std::fs::read_to_string("/proc/net/pnp").is_ok_and(|s| s.lines().any(|l| l.starts_with("bootserver "))) { break; }
-        time::sleep_ms(100).map_err(|_| "lease-wait")?;
+    let mut ready = false;
+    for attempt in 0..=200 {
+        if std::fs::read_to_string("/proc/net/pnp").is_ok_and(|s| s.lines().any(|l| l.starts_with("bootserver "))) {
+            ready = true;
+            break;
+        }
+        if attempt == 200 { break; }
+        let delay = libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 100_000_000 };
+        evidence::syscall_result("lease-wait", unsafe {
+            raw::syscall2(nr::NANOSLEEP, &delay as *const _ as u64, 0) as i64
+        })?;
     }
+    evidence::lease_ready(ready)?;
     let ip = match route.host.parse::<std::net::Ipv4Addr>() {
         Ok(address) => address.octets(),
         Err(_) => dns::resolve_auto(&route.host).map_err(|_| "route-resolution")?.addr,
     };
-    let fd = socket::socket(socket::AF_INET, socket::SOCK_STREAM, 0).map_err(|_| "socket")?;
+    // Keep the raw errno here: the typed socket wrappers remap unknown values.
+    let fd = libbreenix::types::Fd::from_raw(evidence::syscall_result("socket", unsafe {
+        raw::syscall3(nr::SOCKET, socket::AF_INET as u64, socket::SOCK_STREAM as u64, 0) as i64
+    })?);
     let result = (|| {
-        socket::connect_inet(fd, &socket::SockAddrIn::new(ip, route.port)).map_err(|_| "connect")?;
+        let address = socket::SockAddrIn::new(ip, route.port);
+        evidence::syscall_result("connect", unsafe {
+            raw::syscall3(nr::CONNECT, fd.raw(), &address as *const _ as u64,
+                core::mem::size_of::<socket::SockAddrIn>() as u64) as i64
+        })?;
         let digest: String = digest.iter().map(|b| std::format!("{b:02x}")).collect();
         let header = std::format!("PUT {path} HTTP/1.1\r\nHost: {}\r\nContent-Length: {}\r\nX-Content-SHA256: {digest}\r\nConnection: close\r\n\r\n", route.authority, data.len());
         for bytes in [header.as_bytes(), data] {
             let mut offset = 0;
             while offset < bytes.len() {
-                let n = socket::send(fd, &bytes[offset..(offset+65536).min(bytes.len())]).map_err(|_| "send")?;
-                if n == 0 { return Err("send-stopped"); }
+                let part = &bytes[offset..(offset+65536).min(bytes.len())];
+                let n = evidence::syscall_result("send", unsafe {
+                    raw::syscall3(nr::WRITE, fd.raw(), part.as_ptr() as u64, part.len() as u64) as i64
+                })? as usize;
+                if n == 0 { return Err("send-stopped".into()); }
                 offset += n;
             }
         }
@@ -1513,19 +1533,26 @@ fn evidence_transfer(route: &evidence::Route, path: &str, data: &[u8], digest: [
         let mut used = 0;
         while used < response.len() && !response[..used].windows(4).any(|w| w == b"\r\n\r\n") {
             let mut fds = [io::PollFd::new(fd, io::poll_events::POLLIN)];
-            if io::poll(&mut fds, 10_000).map_err(|_| "response-poll")? == 0 { return Err("response-timeout"); }
-            let n = socket::recv(fd, &mut response[used..]).map_err(|_| "response-read")?;
+            let timeout = libbreenix::types::Timespec { tv_sec: 10, tv_nsec: 0 };
+            if evidence::syscall_result("response-poll", unsafe {
+                raw::syscall5(nr::PPOLL, fds.as_mut_ptr() as u64, fds.len() as u64,
+                    &timeout as *const _ as u64, 0, 0) as i64
+            })? == 0 { return Err("response-timeout".into()); }
+            let n = evidence::syscall_result("response-read", unsafe {
+                raw::syscall3(nr::READ, fd.raw(), response[used..].as_mut_ptr() as u64,
+                    (response.len()-used) as u64) as i64
+            })? as usize;
             if n == 0 { break; }
             used += n;
         }
         let response = &response[..used];
         if !response.starts_with(b"HTTP/1.1 200 ") || !response.windows(4).any(|w| w == b"\r\n\r\n") {
-            return Err("http-status");
+            return Err("http-status".into());
         }
         Ok(())
     })();
     let _ = io::close(fd);
-    result.map_err(str::to_string)
+    result
 }
 
 /// Resolve the text view's ownership while its handles are still alive, before

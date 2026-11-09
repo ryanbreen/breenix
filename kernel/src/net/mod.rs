@@ -16,6 +16,7 @@ pub mod ethernet;
 pub mod icmp;
 pub mod ipv4;
 pub(crate) mod loopback_pump;
+mod rx_claim;
 #[cfg(target_arch = "aarch64")]
 mod rx_poll;
 
@@ -799,6 +800,7 @@ pub fn dump_loopback_state() {
 /// PCI VirtIO uses a NAPI-shaped completion path: the IRQ handler suppresses
 /// device callbacks and raises NetRx; this handler drains a bounded packet
 /// budget and either re-enables callbacks or re-raises NetRx for more work.
+/// On x86 the receive claim itself re-raises NetRx on budget exhaustion.
 fn net_rx_softirq_handler(_softirq: SoftirqType) {
     crate::tracing::providers::net_rx::count_softirq_entry();
     #[cfg(target_arch = "aarch64")]
@@ -830,15 +832,6 @@ fn net_rx_softirq_handler(_softirq: SoftirqType) {
         #[cfg(target_arch = "aarch64")]
         if !net_pci::is_initialized() && outcome == PollOutcome::BudgetExhausted {
             crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
-        }
-
-        #[cfg(not(target_arch = "aarch64"))]
-        match outcome {
-            PollOutcome::Drained => {}
-            PollOutcome::BudgetExhausted => {
-                crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
-            }
-            PollOutcome::InProgress => {}
         }
 
         break;
@@ -1119,13 +1112,7 @@ pub fn config() -> NetConfig {
     c
 }
 
-/// Result of a bounded network RX poll.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PollOutcome {
-    Drained,
-    BudgetExhausted,
-    InProgress,
-}
+pub use rx_claim::PollOutcome;
 
 #[cfg(target_arch = "aarch64")]
 fn reclaim_driver_tx_completed() {
@@ -1180,42 +1167,17 @@ fn x86_receive(buffer: &mut [u8]) -> Option<usize> {
 /// Process incoming packets up to `budget` frames.
 ///
 /// Returns `InProgress` when another CPU is draining; that CPU drains again
-/// for this request before it stops.
+/// for this request before it stops. On budget exhaustion, schedules NetRx
+/// to continue draining even when the caller ignores the outcome.
 #[cfg(target_arch = "x86_64")]
 pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
-    use core::sync::atomic::Ordering::SeqCst;
-
-    // Request, then claim. The holder releases, then reads the request, so
-    // with sequentially consistent ordering one of the two always sees the
-    // other: either this claim succeeds or the holder drains again.
-    X86_RX_REQUESTED.store(true, SeqCst);
-    let mut buffer = [0u8; 2048];
-    let mut remaining = budget;
-    loop {
-        if X86_RX_DRAINING
-            .compare_exchange(false, true, SeqCst, SeqCst)
-            .is_err()
-        {
-            return PollOutcome::InProgress;
-        }
-        X86_RX_REQUESTED.store(false, SeqCst);
-
-        while remaining > 0 {
-            let Some(len) = x86_receive(&mut buffer) else {
-                break;
-            };
-            process_packet(&buffer[..len]);
-            remaining -= 1;
-        }
-
-        X86_RX_DRAINING.store(false, SeqCst);
-        if remaining == 0 {
-            return PollOutcome::BudgetExhausted;
-        }
-        if !X86_RX_REQUESTED.load(SeqCst) {
-            return PollOutcome::Drained;
-        }
-    }
+    rx_claim::drain(
+        &X86_RX_REQUESTED,
+        &X86_RX_DRAINING,
+        budget,
+        x86_receive,
+        process_packet,
+    )
 }
 
 /// Wait between two receive polls of a client awaiting a reply (DHCP).
