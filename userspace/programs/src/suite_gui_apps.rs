@@ -16,14 +16,14 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("keys", "Terminal keys", terminal_emulation::keys),
     ]),
     category("bterm", "bterm", &[
-        case("prompt", "Shell prompt", pending::not_built),
+        case("prompt", "Shell prompt", bterm::prompt),
         case("command-output", "Command output", bterm::command_output),
-        case("exit-status", "Exit status", pending::not_built),
-        case("ctrl-c", "Interrupt foreground command", pending::not_built),
+        case("exit-status", "Exit status", bterm::exit_status),
+        case("ctrl-c", "Interrupt foreground command", bterm::ctrl_c),
         case("tabs", "Tabs", pending::not_built),
         case("resize", "Resize", pending::not_built),
         case("scrollback", "Scrollback", pending::not_built),
-        case("exec-tab", "Execute a command in a tab", pending::not_built),
+        case("exec-tab", "Execute a command in a tab", bterm::exec_tab),
         case("paste", "Paste", pending::not_built),
     ]),
 ]).gui().defer_display();
