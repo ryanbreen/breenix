@@ -374,7 +374,12 @@ impl Session {
     pub fn teardown(&mut self) -> Result<Vec<ProcessExit>, String> {
         if !self.stopped { self.control.send(&Message::Teardown)?; }
         let end = now()? + 1500;
-        while !self.stopped { self.poll(end)?; }
+        while !self.stopped {
+            if let Err(error) = self.poll(end) {
+                let note = self.startup.as_ref().map_or_else(|| "teardown-stage=unavailable".into(), crate::startup::Trace::teardown_note);
+                return Err(format!("{error}; {note}"));
+            }
+        }
         Ok(self.exits.clone())
     }
 }

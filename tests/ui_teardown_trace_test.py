@@ -15,8 +15,9 @@ class TeardownTrace(unittest.TestCase):
 enum Message{Teardown}
 struct Channel;
 impl Channel{fn send(&mut self,_:&Message)->Result<(),String>{Ok(())}}
-struct Trace;
+pub struct Trace;
 impl Trace{fn teardown_note(&self)->String{"teardown-stage=root-delete-begin at=99".into()}}
+mod startup{pub use crate::Trace;}
 struct Session{control:Channel,stopped:bool,exits:Vec<ProcessExit>,startup:Option<Trace>}
 fn now()->Result<i128,String>{Ok(100)}
 impl Session{
@@ -32,6 +33,36 @@ fn main(){
  let _=session.startup.as_ref().unwrap().teardown_note();
 }
 '''.replace('METHOD', method))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_shared_stamps_outlive_unlink_without_changing_startup_records(self):
+        trace = (ROOT / 'libs/libuitest/src/startup.rs').read_text()
+        result = run_rust(r'''
+extern crate self as libbreenix;
+pub mod time{
+ pub struct Time;impl Time{pub fn as_nanos(&self)->u128{99}}
+ pub fn now_monotonic()->Result<Time,String>{Ok(Time)}
+}
+#[path="TRACE"]mod startup;
+fn main(){
+ let root=std::env::temp_dir().join(format!("ui-teardown-{}",std::process::id()));
+ std::fs::create_dir(&root).unwrap();
+ let writer=startup::Trace::create(&root).unwrap();let reader=startup::Trace::open(&root).unwrap();
+ assert_eq!(reader.teardown_note(),"teardown-stage=unreached at=0");
+ writer.at("connect-begin",3);writer.mark("case-ready");
+ let original=startup::phase_line(&reader.snapshot());
+ assert!(startup::PHASES.len()<128);assert!(startup::verdict(99,true));
+ std::env::set_var("BREENIX_CONFIG_ROOT",&root);startup::at("first-composite",7);startup::mark("app-commit");
+ startup::teardown(1);assert_eq!(reader.teardown_note(),"teardown-stage=begin at=99");
+ let baseline=startup::phase_line(&reader.snapshot());
+ for stage in 2..=7{writer.teardown_mark(stage);}
+ std::fs::remove_dir_all(&root).unwrap();
+ writer.teardown_mark(5);assert_eq!(reader.teardown_note(),"teardown-stage=root-delete-begin at=99");
+ writer.teardown_mark(6);assert_eq!(reader.teardown_note(),"teardown-stage=root-delete-done at=99");
+ assert_eq!(startup::phase_line(&reader.snapshot()),baseline);
+ assert!(!original.contains("teardown"));assert!(!baseline.contains("teardown"));
+}
+'''.replace('TRACE', str(ROOT / 'libs/libuitest/src/startup.rs')))
         self.assertEqual(result.returncode, 0, result.stderr)
 
 

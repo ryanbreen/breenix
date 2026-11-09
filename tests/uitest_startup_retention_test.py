@@ -50,7 +50,7 @@ use std::{collections::BTreeMap,path::Path,sync::Mutex};
 static OUTPUT:Mutex<Vec<u8>>=Mutex::new(Vec::new());
 struct Fd;impl Fd{const STDOUT:Self=Self;}
 mod io{pub fn write(_:super::Fd,b:&[u8])->Result<usize,String>{super::OUTPUT.lock().unwrap().extend_from_slice(b);Ok(b.len())}}
-mod startup{pub struct Trace;impl Trace{
+mod startup{pub fn teardown(_:usize){} pub struct Trace;impl Trace{
  pub fn open(p:&std::path::Path)->Result<Self,String>{if p.join("startup.trace").is_file(){Ok(Self)}else{Err("trace removed".into())}}
  pub fn snapshot(&self)->Vec<(&'static str,u64)>{vec![("connect-begin",100),("first-composite",200)]}
 }}

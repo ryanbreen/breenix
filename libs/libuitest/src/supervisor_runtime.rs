@@ -169,6 +169,7 @@ fn kill_descendants() -> Result<(), String> {
     Ok(())
 }
 fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mut connected: bool, compositor: Option<u64>, ownership: &mut Ownership, devices: &mut Option<Devices>) -> Result<(), String> {
+    crate::startup::teardown(1);
     let end = now()? + 1000;
     loop {
         kill_descendants()?;
@@ -187,6 +188,7 @@ fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mu
         time::sleep_ms(1).map_err(|e| e.to_string())?;
     }
     // Reap recovers the compositor claim before releases can reach the console.
+    crate::startup::teardown(2);
     let release = if let Some(mut pair) = devices.take() {
         let grabbed = if ownership.owner() == Owner::SupervisorHolds {
             pair.recover(process::getpid().map_err(|e| e.to_string())?.raw())
@@ -194,7 +196,9 @@ fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mu
         let destroyed = pair.destroy();
         grabbed.and(destroyed)
     } else { Ok(()) };
+    crate::startup::teardown(3);
     let handback = ownership.apply(Event::End, &mut Display);
+    crate::startup::teardown(4);
     release.and(handback)
 }
 
@@ -336,6 +340,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                         crate::fixtures::prepare(root)?;
                         // Input injection runs in this supervisor, beside its apps.
                         std::env::set_var("BREENIX_UI_CLOCK", root.join("ui-clock"));
+                        std::env::set_var("BREENIX_CONFIG_ROOT", root);
                         let trace = crate::startup::Trace::create(root)?;
                         for (name, ns) in [("supervisor-enter", entered), ("supervisor-registered", registered_at),
                             ("supervisor-channel", channel_at), ("supervisor-evidence", evidence_at),
@@ -402,8 +407,11 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     }
                     Ok(Some(Message::Teardown)) => { teardown(&mut channel, &mut output, true, compositor, &mut ownership, &mut devices)?;
                         startup_record = startup_record.or_else(|| startup_phase_record(&environment, false));
+                        crate::startup::teardown(5);
                         if let Some(config) = environment.take() { std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())?; }
-                        stopped = true; channel.send(&Message::Stopped)?; }
+                        crate::startup::teardown(6);
+                        stopped = true; channel.send(&Message::Stopped)?;
+                        crate::startup::teardown(7); }
                     Ok(Some(_)) => return Err("unexpected case control message".into()),
                     Ok(None) => {},
                     // Case exited: keep the collector alive until runner tells us to end.

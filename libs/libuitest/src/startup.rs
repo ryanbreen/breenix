@@ -24,6 +24,9 @@ extern "C" {
     fn munmap(addr: *mut u8, len: usize) -> i32;
 }
 pub struct Trace(*mut AtomicU64);
+const TEARDOWN_SLOT: usize = 128;
+const TEARDOWN_PHASES: &[&str] = &["unreached", "begin", "children-reaped", "devices-released",
+    "display-returned", "root-delete-begin", "root-delete-done", "stopped-sent"];
 // Each slot is published once by atomic compare-exchange in shared mapped memory.
 unsafe impl Send for Trace {}
 unsafe impl Sync for Trace {}
@@ -54,6 +57,21 @@ impl Trace {
     pub fn snapshot(&self) -> Vec<(&'static str, u64)> {
         PHASES.iter().enumerate().map(|(i, &name)| (name, unsafe { &*self.0.add(i) }.load(Ordering::Acquire))).collect()
     }
+    pub fn teardown_mark(&self, stage: usize) {
+        if stage == 0 || stage >= TEARDOWN_PHASES.len() { return; }
+        unsafe {
+            (&*self.0.add(TEARDOWN_SLOT + stage)).store(now(), Ordering::Relaxed);
+            (&*self.0.add(TEARDOWN_SLOT)).store(stage as u64, Ordering::Release);
+        }
+    }
+    pub fn teardown_note(&self) -> String {
+        let stage = unsafe { (&*self.0.add(TEARDOWN_SLOT)).load(Ordering::Acquire) } as usize;
+        let name = TEARDOWN_PHASES.get(stage).copied().unwrap_or("invalid");
+        let at = if stage < TEARDOWN_PHASES.len() {
+            unsafe { (&*self.0.add(TEARDOWN_SLOT + stage)).load(Ordering::Relaxed) }
+        } else { 0 };
+        format!("teardown-stage={name} at={at}")
+    }
 }
 impl Drop for Trace { fn drop(&mut self) { unsafe { munmap(self.0.cast(), 4096); } } }
 pub fn now() -> u64 { libbreenix::time::now_monotonic().map_or(0, |t| t.as_nanos() as u64) }
@@ -68,6 +86,9 @@ pub fn mark(name: &str) {
 }
 pub fn at(name: &str, ns: u64) {
     if let Some(trace) = configured_trace() { trace.at(name, ns); }
+}
+pub fn teardown(stage: usize) {
+    if let Some(trace) = configured_trace() { trace.teardown_mark(stage); }
 }
 
 /// One bounded line in catalog order, including 0 for an unreached phase.
