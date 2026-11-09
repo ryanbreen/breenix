@@ -208,6 +208,20 @@ class ScoreTests(unittest.TestCase):
         self.assertEqual([status for _, status, _ in rows], ["PASS", "PASS", "NOT-ISOLATED"])
         self.assertIn("tcp=1", rows[2][2])
 
+    def test_only_appended_service_logs_are_running_state(self):
+        for fields, expected in (
+            ("changed=0 appended=1 logs=/var/log/auth.log", "PASS"),
+            ("changed=0 appended=invalid logs=/var/log/auth.log", "NOT-ISOLATED"),
+            ("changed=0 appended=1", "NOT-ISOLATED"),
+            ("changed=1 paths=/var/log/auth.log", "NOT-ISOLATED"),
+            ("changed=0 appended=1 logs=/etc/hosts", "NOT-ISOLATED"),
+            ("changed=0 appended=1 logs=/var/log/../etc/hosts", "NOT-ISOLATED"),
+        ):
+            with self.subTest(fields=fields):
+                serial = self.passing("a") + f"SUITE_SEQUENCE RESET b removed=0 {fields} tcp=0 tcpwait=0\n" + self.passing("b")
+                _, rows = self.score(serial, ["a", "b"])
+                self.assertEqual(rows[1][1], expected)
+
     def test_a_boot_stopped_mid_suite_records_its_partial_cases(self):
         ok, rows = self.score(self.passing("a") + "SUITE_SEQUENCE RESET b removed=0 changed=0 tcp=0 tcpwait=0\nSUITE b START cases=2\nSUITE b CASE case/one PASS ms=1\n", ["a", "b"])
         self.assertFalse(ok)
