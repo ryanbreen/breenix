@@ -280,7 +280,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Scrolling and selecting in a list gives the expected tree and frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("list-scenario", "Scrolling and selecting in a list gives the expected tree and frame", proof::list_scenario).checks(&["initial", "scrolled", "selected"]),
         // A scripted focus scenario on bwm gives the expected trees and screens. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wm-focus-scenario", "A scripted focus scenario on bwm gives the expected trees and screens", || pending("proof", 7)),
+        case("wm-focus-scenario", "A scripted focus scenario on bwm gives the expected trees and screens", proof::wm_focus_scenario),
         // A scripted stacking scenario on bwm gives the expected trees and screens. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("wm-stack-scenario", "A scripted stacking scenario on bwm gives the expected trees and screens", || pending("proof", 7)),
     ]),

@@ -591,3 +591,20 @@ pub fn menu_scenario() -> CaseResult {
 pub fn list_scenario() -> CaseResult {
     selection_scenario(false)
 }
+
+
+pub fn wm_focus_scenario() -> CaseResult {
+    use libuitest::input::Keyboard;
+    wm_scenario(|mut live, ids, owners, scale, screen| {
+        wm_checkpoint(&mut live, ids, owners, scale, screen, 1, ["", ""])?;
+        wm_click(&mut live, ids[0], "entry")?;
+        wm_checkpoint(&mut live, ids, owners, scale, screen, 0, ["", ""])?;
+        let mut keyboard = Keyboard::new(live);
+        keyboard.type_text(ids[0], "alpha")?;
+        wm_checkpoint(keyboard.backend_mut(), ids, owners, scale, screen, 0, ["alpha", ""])?;
+        wm_focus_next(keyboard.backend_mut())?;
+        wm_checkpoint(keyboard.backend_mut(), ids, owners, scale, screen, 1, ["alpha", ""])?;
+        keyboard.type_text(ids[1], "beta")?;
+        wm_checkpoint(keyboard.backend_mut(), ids, owners, scale, screen, 1, ["alpha", "beta"])
+    })
+}
