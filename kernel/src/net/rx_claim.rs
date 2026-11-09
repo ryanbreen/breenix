@@ -44,6 +44,7 @@ pub fn drain(
 
         draining.store(false, SeqCst);
         if remaining == 0 {
+            crate::task::softirqd::raise_softirq(crate::task::softirqd::SoftirqType::NetRx);
             return PollOutcome::BudgetExhausted;
         }
         if !requested.load(SeqCst) {

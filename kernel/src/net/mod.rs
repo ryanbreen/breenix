@@ -800,6 +800,7 @@ pub fn dump_loopback_state() {
 /// PCI VirtIO uses a NAPI-shaped completion path: the IRQ handler suppresses
 /// device callbacks and raises NetRx; this handler drains a bounded packet
 /// budget and either re-enables callbacks or re-raises NetRx for more work.
+/// On x86 the receive claim itself re-raises NetRx on budget exhaustion.
 fn net_rx_softirq_handler(_softirq: SoftirqType) {
     crate::tracing::providers::net_rx::count_softirq_entry();
     #[cfg(target_arch = "aarch64")]
@@ -831,15 +832,6 @@ fn net_rx_softirq_handler(_softirq: SoftirqType) {
         #[cfg(target_arch = "aarch64")]
         if !net_pci::is_initialized() && outcome == PollOutcome::BudgetExhausted {
             crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
-        }
-
-        #[cfg(not(target_arch = "aarch64"))]
-        match outcome {
-            PollOutcome::Drained => {}
-            PollOutcome::BudgetExhausted => {
-                crate::task::softirqd::raise_softirq(SoftirqType::NetRx);
-            }
-            PollOutcome::InProgress => {}
         }
 
         break;
@@ -1175,7 +1167,8 @@ fn x86_receive(buffer: &mut [u8]) -> Option<usize> {
 /// Process incoming packets up to `budget` frames.
 ///
 /// Returns `InProgress` when another CPU is draining; that CPU drains again
-/// for this request before it stops.
+/// for this request before it stops. On budget exhaustion, schedules NetRx
+/// to continue draining even when the caller ignores the outcome.
 #[cfg(target_arch = "x86_64")]
 pub fn process_rx_budgeted(budget: u32) -> PollOutcome {
     rx_claim::drain(
