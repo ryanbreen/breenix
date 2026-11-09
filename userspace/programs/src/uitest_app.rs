@@ -48,6 +48,7 @@ fn main() {
     }
     let mut win = Window::new_without_fonts(options.title.as_bytes(), 320, 200)
         .unwrap_or_else(|error| { eprintln!("window: {error}"); std::process::exit(1); });
+    if options.clock_probe { win.clock_schedule(0, false); }
     if options.canonical {
         draw_canonical(&mut win);
     } else {
@@ -97,6 +98,7 @@ fn main() {
         println!("UITEST-CONFIG {fonts:?} {}", theme.trim_end());
         let _ = io::stdout().flush();
     }
+    if options.clock_probe { clock_report(&win); }
     let block = [b'x'; 4096];
     let mut remaining = options.stderr_flood;
     let mut stderr = io::stderr().lock();
@@ -112,6 +114,7 @@ fn main() {
     if options.hang { loop { let _ = libbreenix::time::sleep_ms(1000); } }
     loop {
         let events = win.wait_event();
+        if options.clock_probe { clock_report(&win); }
         if events.iter().any(|event| matches!(event, Event::CloseRequested)) { break; }
         if options.canonical {
             for event in events {
@@ -135,4 +138,11 @@ fn draw_canonical(win: &mut Window) -> u64 {
     win.write_tree(b"{\"key\":\"root\",\"parent\":null,\"role\":\"window\",\"name\":\"canonical-v1\",\"value\":\"static\",\"bounds\":[0,0,320,200],\"clip\":[0,0,320,200],\"flags\":[\"enabled\",\"visible\"]}\0").expect("canonical tree");
     win.commit(&[libbreenix::window::abi::Rect::new(0,0,uitest_canonical::WIDTH as i32,uitest_canonical::HEIGHT as i32)])
         .expect("canonical commit").commit_id
+}
+
+fn clock_report(win: &Window) {
+    let stamp = breengel::clock::stamp();
+    println!("UITEST-CLOCK window={} epoch={} now_ns={} real_reads={}",
+        win.id(), stamp.epoch, stamp.now_ns, breengel::clock::real_clock_reads());
+    let _ = io::stdout().flush();
 }

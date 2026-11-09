@@ -48,6 +48,7 @@ struct Held {
     info: Acquired,
     /// The highest serial whose handler had returned when the buffer was acquired.
     handled_at_acquire: u64,
+    stamp: crate::clock::Stamp,
 }
 
 /// A GUI window on the kernel window interface.
@@ -70,8 +71,8 @@ pub struct Window {
     since_pixel: Vec<(u64, Handled)>,
     /// The processed watermark last published.
     published: u64,
-    /// The compositor epoch of the last `CompositorChanged`, 0 before one.
-    epoch: u64,
+    ui_stamp: crate::clock::Stamp,
+    clock_participant: Option<crate::clock::Participant>,
     last: Option<Committed>,
     pending: Option<(Committed, Option<libgfx::surface::Surface>)>,
 }
@@ -99,6 +100,14 @@ impl Window {
             Ok(mapping) => mapping,
             Err(error) => { let _ = window::destroy(c.id); return Err(error); }
         };
+        let clock_participant = match crate::clock::Participant::configured(c.id) {
+            Ok(participant) => participant,
+            Err(_) => {
+                let _ = libbreenix::memory::munmap(tree_readers.addr as *mut u8, tree_readers.len as usize);
+                let _ = window::destroy(c.id);
+                return Err(Error::Os(Errno::EINVAL));
+            }
+        };
         Ok(Self {
             id: c.id,
             width,
@@ -115,7 +124,8 @@ impl Window {
             handled: 0,
             since_pixel: Vec::new(),
             published: 0,
-            epoch: 0,
+            ui_stamp: crate::clock::stamp(),
+            clock_participant,
             last: None,
             pending: None,
         })
@@ -151,7 +161,7 @@ impl Window {
             replay: a.replay[..(a.replay_count as usize).min(16)].to_vec(),
         };
         self.gpu = Some(self.surface_over(a.buffer)?);
-        self.held = Some(Held { info: info.clone(), handled_at_acquire: self.handled });
+        self.held = Some(Held { info: info.clone(), handled_at_acquire: self.handled, stamp: crate::clock::stamp() });
         Ok(info)
     }
 
@@ -199,13 +209,12 @@ impl Window {
         Ok(())
     }
 
-    /// A commit's metadata (section 17.1): the processed watermark, the compositor epoch the
-    /// window last heard of, and the time on the UI clock with its real-clock read count.
-    fn meta(&self, processed_serial: u64) -> abi::Meta {
+    /// Metadata describes the epoch rendered by the frame, sampled before drawing.
+    fn meta(&self, processed_serial: u64, stamp: crate::clock::Stamp) -> abi::Meta {
         let mut m = <abi::Meta as abi::Plain>::ZERO;
         m.processed_serial = processed_serial;
-        m.epoch = self.epoch;
-        m.ui_time_ms = crate::clock::now_ns() / 1_000_000;
+        m.epoch = stamp.epoch;
+        m.ui_time_ms = stamp.now_ns / 1_000_000;
         m.real_clock_reads = crate::clock::real_clock_reads();
         m.tree_serializations = self.tree_serializations;
         m.layout_version = libbui::layout::layout_version();
@@ -243,7 +252,7 @@ impl Window {
             return self.no_change();
         };
         let processed = h.handled_at_acquire;
-        let meta = self.meta(processed);
+        let meta = self.meta(processed, h.stamp);
         let surface = self.gpu.take();
         let c = match window::commit(self.id, h.info.buffer, damage, Some(&meta)) {
             Ok(c) => c,
@@ -280,6 +289,10 @@ impl Window {
         if published < done.commit_id { return Err(Error::Os(Errno::EIO)); }
         let (done, _) = self.pending.take().expect("pending publication checked above");
         self.published(done);
+        if let Some(participant) = &self.clock_participant {
+            let (_, meta) = window::read_meta(self.id)?;
+            participant.accepted(crate::clock::Stamp { epoch: meta.epoch, now_ns: meta.ui_time_ms * 1_000_000 });
+        }
         Ok(())
     }
 
@@ -301,8 +314,9 @@ impl Window {
             }
             processed = libbreenix::input::abi::advance_watermark(processed, serial);
         }
-        let meta = self.meta(processed);
+        let meta = self.meta(processed, self.ui_stamp);
         let commit_id = window::commit_no_change(self.id, Some(&meta))?;
+        if let Some(participant) = &self.clock_participant { participant.accepted(self.ui_stamp); }
         self.published = processed;
         let pixel_gen = self.last.map_or(0, |c| c.pixel_gen);
         let done = Committed { commit_id, pixel_gen, processed_serial: processed };
@@ -321,18 +335,45 @@ impl Window {
         self.last
     }
 
+    /// Set the next UI timer deadline and animation state used by the step driver.
+    pub fn clock_schedule(&self, next_deadline_ns: u64, animating: bool) {
+        if let Some(participant) = &self.clock_participant { participant.schedule(next_deadline_ns, animating); }
+    }
+
     fn read(&mut self, block: bool, timeout_ns: u64) -> Result<Vec<abi::WindowEvent>, Error> {
         let mut raw = vec![<abi::WindowEvent as abi::Plain>::ZERO; 64];
-        let n = window::read_events(self.id, &mut raw, block, timeout_ns)?;
-        raw.truncate(n);
-        Ok(raw)
+        if self.clock_participant.is_none() {
+            let n = window::read_events(self.id, &mut raw, block, timeout_ns)?;
+            raw.truncate(n);
+            return Ok(raw);
+        }
+        let began = std::time::Instant::now();
+        loop {
+            let generation = self.clock_participant.as_ref().unwrap().page().wake_generation();
+            let stamp = crate::clock::stamp();
+            let changed = stamp.epoch != self.ui_stamp.epoch;
+            self.ui_stamp = stamp;
+            let n = window::read_events(self.id, &mut raw, false, 0)?;
+            // Idle windows acknowledge without acquiring buffers or waiting for
+            // presentation. A pending redraw must be rendered first.
+            if changed && self.held.is_none() && (self.last.is_some() || self.pending.is_some())
+                && !self.since_pixel.iter().any(|(_, handled)| *handled == Handled::Redraw) {
+                self.no_change()?;
+            }
+            if n != 0 || changed || !block {
+                raw.truncate(n);
+                return Ok(raw);
+            }
+            let elapsed = began.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+            if elapsed >= timeout_ns { return Ok(Vec::new()); }
+            self.clock_participant.as_ref().unwrap().page().wait(generation, (timeout_ns - elapsed).min(1_000_000));
+        }
     }
 
     fn deliver(&mut self, raw: &[abi::WindowEvent], handler: &mut dyn FnMut(&Delivered) -> Handled) -> usize {
         let mut count = 0;
         for r in raw {
             let d = Delivered::from_raw(r);
-            self.note(&d.event);
             let handled = handler(&d);
             count += 1;
             if d.serial != 0 {
@@ -376,22 +417,10 @@ impl Window {
 
     fn decode(&mut self, raw: Vec<abi::WindowEvent>) -> Vec<Event> {
         let mut events: Vec<Event> = raw.iter().map(Event::from_raw).collect();
-        for e in events.iter() {
-            self.note(e);
-        }
         if matches!(self.font_watcher.poll(), Ok(Some(_))) {
             events.push(Event::FontChanged);
         }
         events
-    }
-
-    /// Take what the window needs to know from an event: the compositor's epoch. The window's
-    /// size is never taken from an event: it changes only with the buffers, in `apply_resize`,
-    /// which is what `Resized` reports.
-    fn note(&mut self, event: &Event) {
-        if let Event::CompositorChanged { epoch } = *event {
-            self.epoch = epoch;
-        }
     }
 
     // ── Fonts ──────────────────────────────────────────────────────────

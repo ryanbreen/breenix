@@ -36,3 +36,5 @@ pub mod capture;
 pub mod capture_race;
 pub mod tree;
 pub mod input;
+
+pub mod clock;

@@ -98,7 +98,7 @@ bootloader = { git = "https://github.com/rust-osdev/bootloader.git", rev = "707d
 
 [dev-dependencies]
 libpixcheck = { path = "libs/libpixcheck" }
-libbreenix = { path = "libs/libbreenix" }
+libbreenix = { path = "libs/libbreenix", features = ["std"] }
 gpu-abi = { path = "libs/gpu-abi" }
 breengel-abi = { path = "libs/breengel-abi" }
 toml = "0.8"

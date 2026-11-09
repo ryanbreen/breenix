@@ -138,6 +138,26 @@ impl Session {
     pub fn exclude(&mut self, window: u64) { self.excluded.insert(window); }
     pub fn is_excluded(&self, window: u64) -> bool { self.excluded.contains(&window) }
 
+    /// Advance UI milliseconds and wait for kernel-accepted participant metadata.
+    pub fn step(&mut self, dt_ms: u64) -> Result<libbreenix::ui_clock::Stamp, String> {
+        if self.stopped { return Err("session has ended".into()); }
+        let clock = crate::clock::Clock::open(&std::path::Path::new(self.config_root()).join("ui-clock"))?;
+        let mut step = clock.begin(dt_ms, Self::now_ns()?, |id| self.is_excluded(id))?;
+        loop {
+            step.check(Self::now_ns()?)?;
+            for id in step.waiting().to_vec() {
+                if let Ok((_, meta)) = libbreenix::window::read_meta(id) {
+                    step.check(Self::now_ns()?)?;
+                    step.observe(id, meta.epoch);
+                }
+            }
+            // A metadata read finishing beyond the real bound cannot rescue a timeout.
+            step.check(Self::now_ns()?)?;
+            if step.complete() { return Ok(step.stamp()); }
+            self.poll_once()?;
+        }
+    }
+
     /// Wait at most two real seconds for a registered title's completed commit.
     pub fn wait_window(&mut self, title: &str) -> Result<WindowReady, String> {
         self.wait_window_until(title, Self::now_ns()?.saturating_add(2_000_000_000))

@@ -29,6 +29,8 @@ mod wm_tree;
 mod input;
 #[path = "uitest_suite/input_delivery.rs"]
 mod input_delivery;
+#[path = "uitest_suite/clock.rs"]
+mod clock;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
 
 fn pending(layer: &str, step: u8) -> CaseResult {
@@ -142,9 +144,9 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     ]),
     category("clock", "UI time & stepping", &[
         // An app reading the UI clock sees it stand still between steps. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("clock-frozen", "An app reading the UI clock sees it stand still between steps", || pending("clock", 7)),
+        case("clock-frozen", "An app reading the UI clock sees it stand still between steps", clock::frozen).session(libuitest::supervisor::serve),
         // step(16) advances the app's clock by exactly 16 ms and the epoch by one. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("clock-step", "step(16) advances the app's clock by exactly 16 ms and the epoch by one", || pending("clock", 7)),
+        case("clock-step", "step(16) advances the app's clock by exactly 16 ms and the epoch by one", clock::step).session(libuitest::supervisor::serve),
         // Each step is acknowledged by every required participant in its commit metadata. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("epochs-acked", "Each step is acknowledged by every required participant in its commit metadata", || pending("clock", 7)),
         // An app's one-second timer fires on step(1000), not on real time. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -154,9 +156,9 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // bwm's taskbar clock and repeat timer read the UI clock. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("wm-clock", "bwm's taskbar clock and repeat timer read the UI clock", || pending("clock", 7)),
         // Two apps in one session step together. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("shared-clock", "Two apps in one session step together", || pending("clock", 7)),
+        case("shared-clock", "Two apps in one session step together", clock::shared).session(libuitest::supervisor::serve),
         // A stopped participant makes step fail naming it, unless the case excluded it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("stopped-unacked-fails", "A stopped participant makes step fail naming it, unless the case excluded it", || pending("clock", 7)),
+        case("stopped-unacked-fails", "A stopped participant makes step fail naming it, unless the case excluded it", clock::stopped).session(libuitest::supervisor::serve),
         // Stepping never deadlocks against buffer back-pressure. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("backpressure-stepped", "Stepping never deadlocks against buffer back-pressure", || pending("clock", 7)),
         // An app that animates forever still lets every step complete. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)

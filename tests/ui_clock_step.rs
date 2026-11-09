@@ -20,10 +20,15 @@ fn recorded_commits_complete_only_the_required_epoch_and_name_a_stopped_window()
     let mut step = driver.begin(16, 100, |_| false).unwrap();
     assert_eq!(step.stamp(), ui_clock::Stamp { epoch: 1, now_ns: 16_000_000 });
     assert_eq!(page.stamp(), step.stamp());
+    assert_eq!(step.waiting(), &[41, 42]);
     assert_eq!(page.participants().len(), 3);
     // READ_META fixtures: old commit, current pixel commit, current no-change commit.
     for (window, epoch) in [(41, 0), (43, 1), (41, 1)] { step.observe(window, epoch); }
     assert!(!step.complete());
+    step.observe(42, 2);
+    assert!(!step.complete(), "a future epoch is not the requested acknowledgment");
+    b.accepted(step.stamp());
+    assert!(!step.complete(), "participant self-report is not kernel metadata");
     assert!(step.check(2_000_000_099).is_ok());
     let error = step.check(2_000_000_100).unwrap_err();
     assert!(error.contains("window=42") && error.contains("epoch=1"), "{error}");
