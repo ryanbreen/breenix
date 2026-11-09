@@ -211,6 +211,8 @@ class ScoreTests(unittest.TestCase):
     def test_only_appended_service_logs_are_running_state(self):
         for fields, expected in (
             ("changed=0 appended=1 logs=/var/log/auth.log", "PASS"),
+            ("changed=0 appended=invalid logs=/var/log/auth.log", "NOT-ISOLATED"),
+            ("changed=0 appended=1", "NOT-ISOLATED"),
             ("changed=1 paths=/var/log/auth.log", "NOT-ISOLATED"),
             ("changed=0 appended=1 logs=/etc/hosts", "NOT-ISOLATED"),
             ("changed=0 appended=1 logs=/var/log/../etc/hosts", "NOT-ISOLATED"),
