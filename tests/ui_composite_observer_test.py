@@ -1,6 +1,7 @@
 """Run the production record reader with a deterministic registry and credentials."""
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 from gt710_gr_live_unwind_test import item
@@ -57,7 +58,54 @@ fn main() {
             path = Path(tmp) / 'check.rs'
             path.write_text(source)
             binary = Path(tmp) / 'check'
-            build = subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', str(path), '-o', str(binary)], capture_output=True, text=True)
+            build = subprocess.run((['taskpolicy', '-b'] if sys.platform == 'darwin' else []) + ['rustc', '--edition=2021', str(path), '-o', str(binary)], capture_output=True, text=True)
+            self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
+            run = subprocess.run([str(binary)], capture_output=True, text=True)
+            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
+
+    def test_wm_ack_uses_only_accepted_source_dispositions(self):
+        main = (ROOT / 'userspace/programs/src/bwm.rs').read_text()
+        self.assertIn('ack.handled_serial = input::handled_serial();', main,
+                      'bwm publishes zero instead of its accepted WM watermark')
+        source = (ROOT / 'userspace/programs/src/bwm/input.rs').read_text()
+        start = source.index('static HANDLED:')
+        atomic = source[start:source.index(';', start) + 1]
+        program = r"""
+extern crate self as libbreenix;
+mod errno { #[derive(Debug)] pub enum Errno { EALREADY } }
+mod error { #[derive(Debug)] pub enum Error { Os(super::errno::Errno) }
+impl std::fmt::Display for Error { fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result { write!(f,"{self:?}") } } }
+mod core_input {
+    pub struct Disposition { pub serial:u64, pub window:u64, pub disposition:u32, pub reason:u32, pub derived:u32, pub reserved:u32 }
+    pub struct Reader;
+    impl Reader { pub fn dispose(&self,d:&Disposition)->Result<(),crate::error::Error> {
+        assert_eq!(d.reserved,0); let _ = (d.window,d.disposition,d.reason,d.derived);
+        if d.serial == 43 { Err(crate::error::Error::Os(crate::errno::Errno::EALREADY)) } else { Ok(()) }
+    } }
+}
+mod outcome { pub const WM_HANDLED:u32 = 1; }
+static READER: std::sync::OnceLock<core_input::Reader> = std::sync::OnceLock::new();
+ATOMIC
+WATERMARK
+DISPOSE
+fn main() {
+    assert!(READER.set(core_input::Reader).is_ok());
+    assert_eq!(handled_serial(),0);
+    dispose(42,0,0,outcome::WM_HANDLED,0); assert_eq!(handled_serial(),42);
+    dispose(41,0,0,outcome::WM_HANDLED,0); assert_eq!(handled_serial(),42);
+    dispose(100,0,7,0,0); assert_eq!(handled_serial(),42);
+    dispose(101,0,0,2,0); assert_eq!(handled_serial(),42);
+    dispose(102,1,0,outcome::WM_HANDLED,0); assert_eq!(handled_serial(),42);
+    dispose(43,0,0,outcome::WM_HANDLED,0); assert_eq!(handled_serial(),42);
+    dispose(44,0,0,outcome::WM_HANDLED,0); assert_eq!(handled_serial(),44);
+}
+""".replace('ATOMIC', atomic).replace('WATERMARK', item(source, 'pub(super) fn handled_serial(').replace('pub(super) ', ''))
+        program = program.replace('DISPOSE', item(source, 'fn dispose('))
+        with tempfile.TemporaryDirectory(prefix='uitest-wm-watermark-') as tmp:
+            path = Path(tmp) / 'check.rs'; path.write_text(program)
+            binary = Path(tmp) / 'check'
+            command = (['taskpolicy', '-b'] if sys.platform == 'darwin' else []) + ['rustc', '--edition=2021', '-Dwarnings', str(path), '-o', str(binary)]
+            build = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(build.returncode, 0, build.stdout + build.stderr)
             run = subprocess.run([str(binary)], capture_output=True, text=True)
             self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
