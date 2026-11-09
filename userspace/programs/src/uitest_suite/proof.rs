@@ -608,3 +608,14 @@ pub fn wm_focus_scenario() -> CaseResult {
         wm_checkpoint(keyboard.backend_mut(), ids, owners, scale, screen, 1, ["alpha", "beta"])
     })
 }
+
+
+pub fn wm_stack_scenario() -> CaseResult {
+    wm_scenario(|mut live, ids, owners, scale, screen| {
+        wm_checkpoint(&mut live, ids, owners, scale, screen, 1, ["", ""])?;
+        wm_click(&mut live, ids[0], "entry")?;
+        wm_checkpoint(&mut live, ids, owners, scale, screen, 0, ["", ""])?;
+        wm_click(&mut live, ids[1], "root")?;
+        wm_checkpoint(&mut live, ids, owners, scale, screen, 1, ["", ""])
+    })
+}

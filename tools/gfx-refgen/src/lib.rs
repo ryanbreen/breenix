@@ -69,3 +69,7 @@ pub mod uitest_widget_layout;
 pub mod widget_references;
 #[path = "../../../userspace/programs/src/uitest_widgets.rs"]
 pub mod widgets;
+
+#[cfg(test)]
+#[path = "../../../tests/ui_wm_scenarios.rs"]
+mod ui_wm_scenarios;

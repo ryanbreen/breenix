@@ -31,6 +31,25 @@ class UiSelectionsTest(unittest.TestCase):
         self.assertEqual(selected, cases)
         self.assertFalse((ROOT / "docs/gui/gt710-step-22-8.json").exists())
 
+    def test_step_seven_has_no_pending_body(self):
+        source = (ROOT / "userspace/programs/src/suite_ui_testing.rs").read_text()
+        category = None
+        bodies = {}
+        for line in source.splitlines():
+            match = re.search(r'category\("([^"]+)"', line)
+            if match:
+                category = match.group(1)
+            match = re.search(r'case\("([^"]+)".*', line)
+            if match:
+                bodies[f"{category}/{match.group(1)}"] = line
+        selected = json.loads((ROOT / "docs/gui/gt710-step-22-7.json").read_text())["cases"]
+        self.assertEqual(len(bodies), 108)
+        self.assertEqual(list(bodies), selected)
+        for case, body in bodies.items():
+            with self.subTest(case=case):
+                self.assertNotIn("pending(", body)
+        self.assertNotRegex(source, r"fn\s+pending\s*\(")
+
     def test_step_six_bodies_and_pending_assignments(self):
         source = (ROOT / "userspace/programs/src/suite_ui_testing.rs").read_text()
         category = None
