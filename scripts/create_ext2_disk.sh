@@ -1,7 +1,7 @@
 #!/bin/bash
 # Create ext2 disk image for Breenix kernel testing
 #
-# This script creates an ext2 filesystem image (256MB default) with:
+# This script creates an ext2 filesystem image (payload-sized, at least 256MB) with:
 #   - Test files for filesystem testing
 #   - Breenix-libc BusyBox in /bin/busybox with hard links for its applets
 #   - hello_world binary for exec testing
@@ -17,8 +17,7 @@
 # --size below what the current userspace binaries + fonts payload needs is
 # rejected up front with the computed shortfall (#850) rather than failing
 # partway through the copy step with ENOSPC -- omit --size to get the
-# 256MB default, which comfortably fits the payload on both architectures
-# as of this writing.
+# payload-derived default, with a 256MB floor on both architectures.
 #
 # Or use xtask:
 #   cargo run -p xtask -- create-ext2-disk
@@ -29,6 +28,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 TARGET_DIR="$PROJECT_ROOT/target"
 SIZE_MB=256
+SIZE_EXPLICIT=0
 
 DNS_SERVER="10.0.2.3"
 ARCH="x86_64"
@@ -44,6 +44,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --size)
             SIZE_MB="$2"
+            SIZE_EXPLICIT=1
             shift 2
             ;;
         *)
@@ -57,7 +58,7 @@ if [[ "$ARCH" == "aarch64" ]]; then
     USERSPACE_DIR="$PROJECT_ROOT/userspace/programs/aarch64"
     OUTPUT_FILE="$TARGET_DIR/ext2-aarch64.img"
     TESTDATA_FILE="$PROJECT_ROOT/testdata/ext2-aarch64.img"
-    # ARM64 uses the same 256MB default as x86_64
+    # ARM64 uses the same payload-derived default as x86_64
 else
     USERSPACE_DIR="$PROJECT_ROOT/userspace/programs"
     OUTPUT_FILE="$TARGET_DIR/ext2.img"
@@ -72,7 +73,6 @@ python3 "$PROJECT_ROOT/scripts/userspace-manifest.py" check --arch "$ARCH"
 echo "Creating ext2 disk image..."
 echo "  Arch: $ARCH"
 echo "  Output: $OUTPUT_FILE"
-echo "  Size: ${SIZE_MB}MB"
 
 # --- #850: refuse a --size too small for the real payload -----------------
 #
@@ -131,13 +131,19 @@ payload_mb_display=$(( (payload_bytes + 1024 * 1024 - 1) / (1024 * 1024) ))
 echo "  Payload: ${payload_mb_display}MB (userspace binaries + fonts)"
 echo "  Minimum image size for this payload: ${required_mb}MB (incl. ext2 overhead + headroom)"
 
+# An omitted size follows payload growth; an explicit request remains a limit.
+if (( SIZE_EXPLICIT == 0 && required_mb > SIZE_MB )); then
+    SIZE_MB=$required_mb
+fi
+echo "  Size: ${SIZE_MB}MB"
+
 if (( SIZE_MB < required_mb )); then
     echo ""
     echo "ERROR: requested size ${SIZE_MB}MB is too small for the ${payload_mb_display}MB payload." >&2
     echo "  Needs at least ${required_mb}MB (shortfall: $((required_mb - SIZE_MB))MB)." >&2
     echo "  Refusing to build a disk image that would fail partway through the copy" >&2
     echo "  step with ENOSPC. Pass --size ${required_mb} or larger, or omit --size to" >&2
-    echo "  use the 256MB default." >&2
+    echo "  use the payload-derived default." >&2
     exit 1
 fi
 
