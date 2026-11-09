@@ -13,6 +13,9 @@
 #[path = "bterm/terminal_node.rs"]
 mod terminal_node;
 
+#[path = "bterm/exit_row.rs"]
+mod exit_row;
+
 #[path = "bterm/keys.rs"]
 mod keys;
 
@@ -21,7 +24,7 @@ use std::process;
 use breengel::{Window, Event, CachedFont, TabBar, Rect, Theme, Color, Surface};
 use libbreenix::io;
 use libbreenix::fs;
-use libbreenix::process::{fork, exec, setsid, ForkResult};
+use libbreenix::process::{fork, execv, setsid, ForkResult};
 use libbreenix::pty;
 use libbreenix::termios;
 use libbreenix::types::Fd;
@@ -169,13 +172,17 @@ impl TermEmu {
 struct Tab {
     emu: TermEmu,
     master_fd: Fd,
-    #[allow(dead_code)] // used for future kill/waitpid on tab close
     child_pid: i64,
+    show_exit: bool,
 }
 
 // ─── Process Spawning ───────────────────────────────────────────────────────
 
-fn spawn_child(path: &[u8]) -> (Fd, i64) {
+fn spawn_child(args: &[String]) -> (Fd, i64) {
+    let strings: Vec<std::ffi::CString> = args.iter().map(|s| std::ffi::CString::new(s.as_bytes()).expect("argument contains NUL")).collect();
+    let mut argv: Vec<*const u8> = strings.iter().map(|s| s.as_ptr().cast()).collect();
+    argv.push(core::ptr::null());
+    let path = strings[0].as_bytes_with_nul();
     let (master_fd, slave_name) = match pty::openpty() {
         Ok((m, s)) => (m, s),
         Err(_) => {
@@ -205,7 +212,7 @@ fn spawn_child(path: &[u8]) -> (Fd, i64) {
             let _ = io::dup2(slave_fd, Fd::from_raw(1));
             let _ = io::dup2(slave_fd, Fd::from_raw(2));
             if slave_fd.raw() > 2 { let _ = io::close(slave_fd); }
-            let _ = exec(path);
+            let _ = execv(path, argv.as_ptr());
             libbreenix::process::exit(127);
         }
         Ok(ForkResult::Parent(child_pid)) => {
@@ -238,16 +245,17 @@ fn make_tab_label() -> &'static [u8] {
 }
 
 fn spawn_tab(cols: usize, rows: usize) -> Tab {
-    spawn_tab_cmd(cols, rows, b"/bin/bsh\0")
+    spawn_tab_cmd(cols, rows, &["/bin/bsh".into()], false)
 }
 
-fn spawn_tab_cmd(cols: usize, rows: usize, cmd: &[u8]) -> Tab {
-    let (master_fd, child_pid) = spawn_child(cmd);
+fn spawn_tab_cmd(cols: usize, rows: usize, args: &[String], show_exit: bool) -> Tab {
+    let (master_fd, child_pid) = spawn_child(args);
     let _ = io::fcntl_setfl(master_fd, io::status_flags::O_NONBLOCK);
     Tab {
         emu: TermEmu::new(cols, rows),
         master_fd,
         child_pid,
+        show_exit,
     }
 }
 
@@ -310,20 +318,29 @@ fn main() {
     let mut cols = (content_w as usize / cell_w).max(1);
     let mut rows = (content_h as usize / cell_h).max(1);
 
-    // Create tab bar
+    // A normal window starts at a shell; -e runs the requested argv directly.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let exec_args = if args.first().map(String::as_str) == Some("-e") {
+        if args.len() < 2 { eprintln!("bterm: -e requires a program"); process::exit(2); }
+        let mut command = args[1..].to_vec();
+        if !command[0].contains('/') {
+            if let Some(path) = std::env::var_os("PATH") {
+                if let Some(found) = std::env::split_paths(&path).map(|dir| dir.join(&command[0])).find(|p| p.is_file()) {
+                    command[0] = found.to_string_lossy().into_owned();
+                }
+            }
+        }
+        Some(command)
+    } else { None };
     let theme = Theme::dark();
-    let btop_label = make_static_label("btop");
+    let label = if let Some(ref cmd) = exec_args { make_static_label(&cmd[0]) } else { make_tab_label() };
     let mut tab_bar = TabBar::new(
         Rect::new(0, 0, WIN_WIDTH as i32 / ui_scale, TAB_BAR_HEIGHT),
-        vec![btop_label], &theme);
-
-    // Spawn initial tabs: btop (default visible) + shell
-    let mut tabs: Vec<Tab> = vec![spawn_tab_cmd(cols, rows, b"/usr/bin/btop\0")];
-
-    // Add shell in a second tab
-    let shell_label = make_tab_label();
-    tab_bar.add_tab(shell_label);
-    tabs.push(spawn_tab(cols, rows));
+        vec![label], &theme);
+    let mut tabs = vec![match exec_args {
+        Some(ref cmd) => spawn_tab_cmd(cols, rows, cmd, true),
+        None => spawn_tab(cols, rows),
+    }];
 
     // Mouse state for InputState edge detection
     let mut prev_buttons: u32 = 0;
@@ -528,6 +545,23 @@ fn main() {
                 }
             }
             tab.emu.flush_replies(tab.master_fd);
+            if tab.child_pid > 0 {
+                let mut status = 0;
+                if let Ok(pid) = libbreenix::process::waitpid(tab.child_pid as i32, &mut status, libbreenix::process::WNOHANG) {
+                    if pid.raw() != 0 {
+                        tab.child_pid = -1;
+                        if tab.show_exit {
+                            // The child can write and exit between the earlier read and waitpid.
+                            while let Ok(n) = io::read(tab.master_fd, &mut pty_buf) {
+                                if n == 0 { break; }
+                                tab.emu.feed(&pty_buf[..n], tab.master_fd);
+                            }
+                            let row = format!("\r\n{}", exit_row::exit_row(status));
+                            tab.emu.feed(row.as_bytes(), tab.master_fd);
+                        }
+                    }
+                }
+            }
         }
 
         // ── 3. Render ───────────────────────────────────────────────
