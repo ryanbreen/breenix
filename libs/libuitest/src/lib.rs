@@ -1,9 +1,11 @@
 //! Shared userspace UI test client (docs/gui/plan.md section 8).
 mod client;
+#[cfg(target_os = "breenix")]
 mod executor;
 pub mod outcome;
 
 pub use client::RecordClient;
+#[cfg(target_os = "breenix")]
 pub use executor::{run_scenario, ScenarioSpec};
 pub use outcome::{classify, Classification, Expected, FailureClass, ScenarioOutcome};
 
@@ -43,3 +45,7 @@ pub mod settle;
 
 #[cfg(target_os = "breenix")]
 pub mod retention;
+
+pub mod app;
+#[cfg(target_os = "breenix")]
+pub use app::App;
