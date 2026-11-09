@@ -97,11 +97,15 @@ impl Session {
         let environment = SessionEnvironment::new(case_pid, seed, &mode)?;
         let mut session = Self { arena: None, artifacts: None, startup: None, held_window: None, environment, configured: false, devices: None, input_done: false, stderr: None, control, supervisor: 0, names: BTreeMap::new(), output: BTreeMap::new(), exits: Vec::new(), launched: None, stopped: false, compositor: None, excluded: BTreeSet::new() };
         let end = now()? + 1000;
-        while session.supervisor == 0 || session.devices.is_none() { session.poll(end)?; }
+        while session.supervisor == 0 || session.devices.is_none() {
+            session.poll(end).map_err(|error| format!("{error}; waiting=supervisor-ready"))?;
+        }
         let ready_at = crate::startup::now();
         session.control.send(&Message::Configure { case_pid, seed, mode })?;
         let end = now()? + 1000;
-        while !session.configured { session.poll(end)?; }
+        while !session.configured {
+            session.poll(end).map_err(|error| format!("{error}; waiting=configuration"))?;
+        }
         session.startup = Some(crate::startup::Trace::open(std::path::Path::new(session.config_root()))?);
         let trace = session.startup.as_ref().unwrap();
         trace.at("connect-begin", began); trace.at("case-mode-ready", mode_at); trace.at("case-ready", ready_at);
@@ -303,7 +307,7 @@ impl Session {
                 self.names.insert(pid, String::from_utf8_lossy(argv[0]).into_owned());
                 return Ok(pid);
             }
-            self.poll(end)?;
+            self.poll(end).map_err(|error| format!("{error}; waiting=launch program={}", String::from_utf8_lossy(argv[0])))?;
         }
     }
     fn poll(&mut self, end: i128) -> Result<(), String> {
