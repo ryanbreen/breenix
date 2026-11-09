@@ -117,6 +117,31 @@ class WmStep(unittest.TestCase):
         result = metal_score.score(self.path)['milestones']['metal-gt710/wm-step']
         self.assertTrue(result['passed'], result)
 
+    def test_all_passing_selection_keeps_and_explains_driver_failure(self):
+        text = serial()
+        for name in NAMES:
+            text = text.replace(f'CASE {name} FAIL ms=1 msg=pending', f'CASE {name} PASS ms=1')
+        text = text.replace(f'DONE passed={len(SELECTED)} failed={len(NAMES) - len(SELECTED)}',
+                            f'DONE passed={len(NAMES)} failed=0')
+        (self.path / 'serial.txt').write_text(text)
+        verdict = self.path / 'suite-verdict.txt'
+        # Coordinator ledger 264 permits only the exact planned-empty refusal.
+        for refusal in (None, 'FAIL: suite verdict timed out\n',
+                        'FAIL: planned categories have no cases: invented; acceptance is blocked\n'):
+            with self.subTest(refusal=refusal):
+                if refusal is not None:
+                    verdict.write_text(refusal)
+                self.assertEqual(API['record_wm_capture'](self.path, SHA, 7), 1)
+        empty = [c['id'] for c in MANIFEST['categories'] if not c['cases']]
+        verdict.write_text('FAIL: planned categories have no cases: ' + ', '.join(empty)
+                           + '; acceptance is blocked\n')
+        self.assertEqual(API['record_wm_capture'](self.path, SHA, 7), 0)
+        report = json.loads((self.path / 'gt710-wm-step.json').read_text())
+        self.assertEqual(report['scope'], 'wm-step-selection')
+        self.assertEqual(report['exitStatus'], 1)
+        self.assertEqual(report['toolsCommit'], SHA)
+        self.assertEqual(report['build'], self.boot['build'])
+
     def test_post_sequence_partial_diagnostic_preserves_complete_evidence(self):
         # Exact diagnostic fragment from the retained capture; no site values.
         tail = '[DISPATCH_STRAND_CENSUS:seq=694:tick=139251:ms=697713:saved=837:stranded=0:tids=-:tid_overflow=0:ledger_overflow=0:save_no_thread=0:idle_no_stack=0:kthread_no_info=0:user_no_kstack=0:sig_deliverable_us'
