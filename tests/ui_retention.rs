@@ -42,6 +42,20 @@ pub mod time {
     pub fn now_monotonic() -> Result<Stamp, super::error::Error> { Ok(Stamp(super::CLOCK.get())) }
     pub fn sleep_ms(ms: u64) -> Result<(), super::error::Error> { super::CLOCK.set(super::CLOCK.get()+ms); Ok(()) }
 }
+pub mod memory {
+    use std::sync::atomic::AtomicU64;
+    pub const PROT_READ:i32=1; pub const PROT_WRITE:i32=2;
+    pub const MAP_SHARED:i32=1; pub const MAP_ANONYMOUS:i32=32;
+    pub fn mmap(_: *mut u8, length:usize, prot:i32, flags:i32, fd:i32, offset:i64)
+        -> Result<*mut u8, super::error::Error> {
+        assert_eq!((length,prot,flags,fd,offset),(4096,3,33,-1,0));
+        Ok(Box::into_raw(Box::new([const {AtomicU64::new(0)};3])).cast())
+    }
+    pub fn munmap(ptr:*mut u8,length:usize)->Result<(),super::error::Error> {
+        assert_eq!(length,4096);
+        unsafe {drop(Box::from_raw(ptr.cast::<[AtomicU64;3]>()));} Ok(())
+    }
+}
 pub mod signal {
     pub const SIGKILL: u32 = 9;
     pub fn kill(pid: i32, signal: u32) -> Result<(), super::error::Error> {
@@ -82,6 +96,9 @@ pub mod suite {
         if matches!(super::MODE.get(),super::Mode::Failure) {Err("http-status".into())} else {Ok("receipt".into())}
     }
     pub fn case_ms_left() -> u64 {10000}
+    pub fn value(name:&str,value:i64,unit:&str,_:Option<(i64,i64)>) {
+        super::REPORTS.with_borrow_mut(|records|records.push(format!("{name}={value}{unit}")));
+    }
     pub fn evidence_bundle(label: &str, bytes: usize, hash: &str, result: &str, path: &str) -> Result<(), String> {
         super::REPORTS.with_borrow_mut(|records| records.push(format!("{label} bytes={bytes} sha256={hash} result={result} path={path}")));
         Ok(())
@@ -120,4 +137,17 @@ fn retention_uses_the_runner_record_transport_even_with_silenced_stdout() {
         assert!(records[0].contains("result=disk-only:"));
         assert!(records[0].ends_with("path=/var/uitest/ui-testing/diagnosis/transport-check"));
     });
+}
+
+#[test]
+fn failure_stamps_distinguish_sender_entry_from_exit_cleanup() {
+    REPORTS.with_borrow_mut(Vec::clear);
+    assert_eq!(run(Mode::Hung,250),Err("deadline".into()));
+    REPORTS.with_borrow(|rows|assert!(rows.iter().any(|row|row=="retention-phase=0state")));
+    REPORTS.with_borrow_mut(Vec::clear);
+    assert_eq!(run(Mode::Delayed(251),250),Err("deadline".into()));
+    REPORTS.with_borrow(|rows|assert!(rows.iter().any(|row|row=="retention-phase=2state")));
+    REPORTS.with_borrow_mut(Vec::clear);
+    assert_eq!(run(Mode::Success,250),Ok(()));
+    REPORTS.with_borrow(|rows|assert!(rows.is_empty(),"success emitted failure diagnostics"));
 }
