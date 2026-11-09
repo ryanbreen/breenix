@@ -112,6 +112,19 @@ fn serial_timed_starts_at_current_suite_with_exact_writer_stamps() {
     let capture = capture();
     let actual = boot_ribbon::serial_timed().expect("late suite reader must not overflow");
     assert_eq!(actual, capture.timed_suite);
+    let heading = kernel_restore::Heading::read(&actual).expect("consumer must parse the timed records");
+    assert_eq!(heading.prefix, "breengel: 2 passed · 0 failed · 1 pending of 3");
+}
+
+#[test]
+fn zz_timed_reader_rejects_overwritten_start() {
+    capture();
+    let line = format!("{}\n", "x".repeat(99));
+    for _ in 0..(1024 * 1024 / line.len() + 1) {
+        for byte in line.bytes() { boot_ribbon::byte(byte); }
+        boot_ribbon::drain();
+    }
+    assert!(matches!(boot_ribbon::serial_timed(), Err(-75)));
 }
 
 #[test]

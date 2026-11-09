@@ -23,6 +23,7 @@ pub mod graphics {{
     use graphics::boot_ribbon::*;
     for _ in 0..250 * 1024 {{ byte(b'x'); }}
     assert!(matches!(serial(), Err(-75)), "head overflow must be reported");
+    assert_eq!(serial_timed().unwrap(), "", "incomplete prefix has no timed lines");
 }}
 ''')
     subprocess.run((['taskpolicy', '-b'] if sys.platform == 'darwin' else []) +
