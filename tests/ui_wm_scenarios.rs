@@ -169,3 +169,14 @@ fn desktop_oracle_rejects_minimized_and_removed_windows_and_accepts_restored_pol
     policy.remove(22);
     assert!(verify(&policy, 0).is_err());
 }
+
+#[test]
+fn composed_front_accepts_no_change_metadata_and_refuses_stale_pixels() {
+    // Pixel front 19 remains generation 7 after metadata-only release ACK 20.
+    assert!(checks::front_matches(19, 7, 7, 20, 7));
+    assert!(checks::front_matches(19, 7, 7, 19, 7));
+    assert!(!checks::front_matches(19, 7, 7, 18, 7), "pre-front projection");
+    assert!(!checks::front_matches(19, 7, 7, 20, 6), "stale pixels");
+    assert!(!checks::front_matches(19, 7, 7, 20, 8), "uncompared newer pixels");
+    assert!(!checks::front_matches(19, 7, 8, 20, 8), "front moved during capture");
+}

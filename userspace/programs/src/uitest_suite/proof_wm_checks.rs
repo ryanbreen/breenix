@@ -3,6 +3,11 @@ use libbui::tree::{Flag, Role, Tree};
 use libpixcheck::{Frame, Options, Predicate, Rect};
 use serde_json::json;
 
+/// Match a captured front with the generation pinned by a completed composite.
+pub fn front_matches(captured: u64, before: u64, after: u64, projected_commit: u64, projected_generation: u64) -> bool {
+    before == after && after == projected_generation && captured == projected_commit
+}
+
 pub fn desktop(
     tree: &Tree,
     ids: [u64; 2],
