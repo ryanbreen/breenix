@@ -436,7 +436,7 @@ they read a single-suite boot. The runner (`breenix_suite::suite::sequence`) add
 
 ```text
 SUITE_SEQUENCE BEGIN suites=<id>,<id>,... baseline=<entries> memfree=<kB> heapfree=<kB>
-SUITE_SEQUENCE RESET <id> removed=<n> changed=<n>[ paths=<path>,...] tcp=<n> tcpwait=<ms> memfree=<kB> heapfree=<kB>
+SUITE_SEQUENCE RESET <id> removed=<n> changed=<n>[ paths=<path>,...] appended=<n>[ logs=<path>,...] tcp=<n> tcpwait=<ms> memfree=<kB> heapfree=<kB>
 SUITE_SEQUENCE RESET <id> FAIL <why>
 SUITE_SEQUENCE FRAMES <id> <a line of /proc/breenix/frames>
 SUITE_SEQUENCE READY <id>
@@ -482,8 +482,12 @@ Each suite starts from the state its own boot gives it:
   larger files; `/proc` and `/dev` are left out, but for the POSIX shared memory and message
   queue names in `/dev/shm` and `/dev/mqueue`. Before each later suite's START the runner
   removes whatever earlier suites created and prints RESET. A recorded path that is missing
-  or differs (a fixture an earlier suite changed) cannot be put back, since no copy was
+  or otherwise differs (a fixture an earlier suite changed) cannot be put back, since no copy was
   kept: RESET names it, and that suite is scored NOT-ISOLATED, its own verdict alongside.
+  Verified appends to pre-existing regular files under `/var/log` are running state (U18):
+  RESET reports their count and up to eight paths separately, and never restores them.
+  Other differences remain changes.
+  claim-lint:ok: `reset()` in `libs/libbreenix/src/suite_sequence.rs` records `Comparison::Appended` without writing the file.
   Fixtures the launcher stages (the SDK suite's host results) are on the disk before the
   baseline, so they stay.
 - **Network.** An earlier suite's TCP connections outlive its processes: TIME_WAIT keeps a
@@ -527,7 +531,7 @@ later kernel panic fails only the suite it happened in) and prints one line per 
 | PASS / FAIL | `scripts/suite-verdict.py`'s verdict for the suite; the last suite's disk checks too |
 | STALLED | The runner's watchdog, or the end of the boot, stopped it; the cases it reported are kept |
 | NOT-RUN | It did not print START: an earlier suite stopped the boot, or its binary could not start |
-| NOT-ISOLATED | Its RESET named files it could not restore or a TCP connection still open; its own verdict follows |
+| NOT-ISOLATED | Its RESET named changed files it could not restore or a TCP connection still open; reported log appends are running state; its own verdict follows |
 
 The boot passes when each suite passes. The ARM64 QEMU, Parallels and VMware launchers print
 the table's lines after the boot, even one stopped part way; x86-metal writes them to the

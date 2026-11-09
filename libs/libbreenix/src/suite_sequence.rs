@@ -7,7 +7,7 @@
 //!
 //! ```text
 //! SUITE_SEQUENCE BEGIN suites=<id>,<id>,... baseline=<entries> memfree=<kB> heapfree=<kB>
-//! SUITE_SEQUENCE RESET <id> removed=<n> changed=<n>[ paths=<path>,...] tcp=<n> tcpwait=<ms> memfree=<kB> heapfree=<kB>
+//! SUITE_SEQUENCE RESET <id> removed=<n> changed=<n>[ paths=<path>,...] appended=<n>[ logs=<path>,...] tcp=<n> tcpwait=<ms> memfree=<kB> heapfree=<kB>
 //! SUITE_SEQUENCE RESET <id> FAIL <why>
 //! SUITE_SEQUENCE FRAMES <id> <a line of /proc/breenix/frames>
 //! SUITE_SEQUENCE READY <id>
@@ -23,7 +23,9 @@
 //!   POSIX shared memory and message queue names in `/dev/shm` and `/dev/mqueue`.
 //! - Before each later suite's START it puts the root back: what earlier suites created
 //!   is removed, and a recorded path that is missing or differs is named in RESET (the
-//!   runner kept no copy to restore it from). A RESET with `changed` above 0, or a
+//!   runner kept no copy to restore it from). Verified appends to pre-existing regular
+//!   files under `/var/log` are running state: RESET reports them separately and leaves
+//!   them intact. Other differences remain changes. A RESET with `changed` above 0, or a
 //!   RESET FAIL, means the suite did not start from the state its own boot gives it.
 //! - Before each later suite's START it also waits, up to [`TCP_DRAIN_MS`], until
 //!   `/proc/net/tcp` lists no listener or connection: an earlier suite's connections stay
@@ -91,7 +93,7 @@ pub const STALL_MS: u64 = 90_000;
 /// Regular files up to this size are compared by content; larger ones by size and
 /// modification time.
 pub const HASHED_BYTES: u64 = 64 * 1024;
-/// How many changed paths a RESET record names.
+/// How many changed paths or appended logs a RESET record names in each list.
 const PATHS_SHOWN: usize = 8;
 /// The descriptors closed before exec: each one a process can hold (below the kernel's MAX_FDS).
 const MAX_FDS: u64 = 4096;
@@ -534,6 +536,7 @@ fn load_baseline() -> Result<BTreeMap<String, Entry>, String> {
 struct Reset {
     removed: usize,
     changed: Vec<String>,
+    appended: Vec<String>,
 }
 
 impl Reset {
@@ -543,6 +546,11 @@ impl Reset {
             let shown: Vec<&str> = self.changed.iter().take(PATHS_SHOWN).map(String::as_str).collect();
             line.push_str(&std::format!(" paths={}", shown.join(",")));
         }
+        line.push_str(&std::format!(" appended={}", self.appended.len()));
+        if !self.appended.is_empty() {
+            let shown: Vec<&str> = self.appended.iter().take(PATHS_SHOWN).map(String::as_str).collect();
+            line.push_str(&std::format!(" logs={}", shown.join(",")));
+        }
         line
     }
 }
@@ -551,7 +559,7 @@ impl Reset {
 fn reset() -> Result<Reset, String> {
     let baseline = load_baseline()?;
     let mut seen = std::collections::BTreeSet::new();
-    let mut result = Reset { removed: 0, changed: Vec::new() };
+    let mut result = Reset { removed: 0, changed: Vec::new(), appended: Vec::new() };
     walk(&mut |path, meta| {
         let Some(recorded) = baseline.get(path) else {
             let removed = match &meta {
@@ -565,8 +573,10 @@ fn reset() -> Result<Reset, String> {
             return false;
         };
         seen.insert(String::from(path));
-        if !matches!(compare(path, recorded, meta.as_ref()), Comparison::Same) {
-            result.changed.push(String::from(path));
+        match compare(path, recorded, meta.as_ref()) {
+            Comparison::Same => {},
+            Comparison::Changed => result.changed.push(String::from(path)),
+            Comparison::Appended => result.appended.push(String::from(path)),
         }
         true
     });
