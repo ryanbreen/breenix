@@ -9,6 +9,40 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class RemovalPressure(unittest.TestCase):
+    def test_removal_keeps_exclusion_shrink_wait_and_errors_on_both_mounts(self):
+        method = item((ROOT / 'kernel/src/fs/namei.rs').read_text(), '    pub fn write_removal(')
+        guard = item((ROOT / 'kernel/src/fs/ext2/mod.rs').read_text(), 'pub(crate) fn fs_sync_guard(')
+        result = run_rust(r'''
+use std::sync::{Mutex,atomic::{AtomicBool,Ordering}};
+static CALLS:Mutex<Vec<(bool,&str)>>=Mutex::new(Vec::new());
+static FAIL:AtomicBool=AtomicBool::new(false);
+mod ext2{
+ pub struct Ext2WriteGuard{pub home:bool}
+ impl Ext2WriteGuard{
+  fn wait_for_shrink_writer(self)->Result<Self,&'static str>{
+   crate::CALLS.lock().unwrap().push((self.home,"shrink-wait"));
+   if crate::FAIL.load(crate::Ordering::Relaxed){Err("interrupted")}else{Ok(self)}
+  }
+ }
+ fn fs_write_raw(home:bool)->Result<Ext2WriteGuard,&'static str>{
+  crate::CALLS.lock().unwrap().push((home,"write-lock"));Ok(Ext2WriteGuard{home})
+ }
+ GUARD
+}
+#[derive(Clone,Copy)]enum Mount{Root,Home}
+fn fs_errno(error:&str)->u64{assert_eq!(error,"interrupted");4}
+impl Mount{METHOD}
+fn main(){
+ for (mount,home) in [(Mount::Root,false),(Mount::Home,true)]{
+  CALLS.lock().unwrap().clear();let guard=mount.write_removal().unwrap();assert_eq!(guard.home,home);
+  assert_eq!(*CALLS.lock().unwrap(),[(home,"write-lock"),(home,"shrink-wait")]);
+  FAIL.store(true,Ordering::Relaxed);assert_eq!(mount.write_removal().err(),Some(4));
+  FAIL.store(false,Ordering::Relaxed);
+ }
+}
+'''.replace('METHOD', method).replace('GUARD', guard))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_unlink_and_rmdir_use_a_nonallocating_guard(self):
         text = (ROOT / 'kernel/src/syscall/fs.rs').read_text()
         functions = []
