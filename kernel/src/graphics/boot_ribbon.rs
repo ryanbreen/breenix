@@ -18,6 +18,7 @@ static TAIL: AtomicUsize = AtomicUsize::new(0);
 static FIRST_START: AtomicUsize = AtomicUsize::new(usize::MAX);
 static LATEST_START: AtomicUsize = AtomicUsize::new(usize::MAX);
 static LAPPED: AtomicBool = AtomicBool::new(false);
+static LAPPED_BEFORE_FIRST: AtomicBool = AtomicBool::new(false);
 fn put(offset: usize, byte: u8) {
     SERIAL[offset % RING].store(byte, Ordering::Relaxed);
     if offset < HEAD { BOOT_HEAD[offset].store(byte, Ordering::Relaxed); }
@@ -54,6 +55,9 @@ fn scan_to(scan: &mut Scan, end: usize, live: bool) -> bool {
     while scan.0 < end {
         if live && (LAPPED.load(Ordering::Acquire)
             || TAIL.load(Ordering::Acquire).saturating_sub(scan.0) > RING - 9) {
+            if FIRST_START.load(Ordering::Acquire) == usize::MAX {
+                LAPPED_BEFORE_FIRST.store(true, Ordering::Release);
+            }
             LAPPED.store(true, Ordering::Release);
             break;
         }
@@ -106,8 +110,10 @@ fn drain_snapshot() {
 }
 /// Complete serial prefix, not the matcher's interpretation of it. Never silently truncate.
 pub fn serial() -> Result<alloc::string::String, i32> {
-    let n = TAIL.load(Ordering::Acquire);
-    if n > RING { return Err(-75); }
+    drain_snapshot();
+    let start = FIRST_START.load(Ordering::Acquire);
+    let n = if start == usize::MAX { TAIL.load(Ordering::Acquire) } else { start };
+    if n > HEAD || LAPPED_BEFORE_FIRST.load(Ordering::Acquire) { return Err(-75); }
     let mut bytes = alloc::vec::Vec::with_capacity(n);
     let mut offset = 0;
     while offset < n {
