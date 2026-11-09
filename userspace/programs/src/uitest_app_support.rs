@@ -6,6 +6,9 @@ pub struct Options<'a> {
     pub title: &'a str,
     pub crash: Option<i32>,
     pub hang: bool,
+    pub wrong_color: bool,
+    pub drop_key: bool,
+    pub stale_pixels: bool,
     pub stderr_flood: usize,
     pub session_probe: bool,
     pub config_probe: bool,
@@ -23,7 +26,7 @@ pub struct Options<'a> {
 pub fn parse<'a>(args: &[&'a str]) -> Result<Options<'a>, &'static str> {
     let title = *args.first().ok_or("missing window title")?;
     if title.is_empty() || title.starts_with("--") { return Err("invalid window title"); }
-    let mut options = Options { settle_control: false, drain_no_render: false, title, crash: None, hang: false, stderr_flood: 0, session_probe: false, config_probe: false, canonical: false, capture_control: false, widgets: false, pointer_probe: false, two_windows: false, clock_probe: false, timer: false, animate: false, real_clock: false };
+    let mut options = Options { settle_control: false, drain_no_render: false, title, crash: None, hang: false, wrong_color: false, drop_key: false, stale_pixels: false, stderr_flood: 0, session_probe: false, config_probe: false, canonical: false, capture_control: false, widgets: false, pointer_probe: false, two_windows: false, clock_probe: false, timer: false, animate: false, real_clock: false };
     let mut flood_seen = false;
     for arg in &args[1..] {
         if *arg == "--settle-control" && !options.settle_control {
@@ -48,6 +51,12 @@ pub fn parse<'a>(args: &[&'a str]) -> Result<Options<'a>, &'static str> {
             options.capture_control = true;
         } else if *arg == "--canonical" && !options.canonical {
             options.canonical = true;
+        } else if *arg == "--wrong-color" && !options.wrong_color {
+            options.wrong_color = true;
+        } else if *arg == "--drop-key" && !options.drop_key {
+            options.drop_key = true;
+        } else if *arg == "--stale-pixels" && !options.stale_pixels {
+            options.stale_pixels = true;
         } else if *arg == "--hang" && !options.hang {
             options.hang = true;
         } else if *arg == "--session-probe" && !options.session_probe {
@@ -65,6 +74,10 @@ pub fn parse<'a>(args: &[&'a str]) -> Result<Options<'a>, &'static str> {
             flood_seen = true;
         } else { return Err("unknown or duplicate flag"); }
     }
+    let faults = usize::from(options.wrong_color) + usize::from(options.drop_key) + usize::from(options.stale_pixels);
+    if faults > 0 && (!options.widgets || options.pointer_probe || options.two_windows || options.hang || faults != 1) {
+        return Err("one planted fault requires plain widget mode");
+    }
     if options.drain_no_render && !options.settle_control {
         return Err("drain without render requires settle control");
     }
@@ -80,10 +93,10 @@ pub fn parse<'a>(args: &[&'a str]) -> Result<Options<'a>, &'static str> {
     if options.capture_control && (options.clock_probe || options.widgets || options.canonical || options.hang || options.crash.is_some() || options.session_probe || options.config_probe || flood_seen) {
         return Err("capture control cannot be combined with other modes");
     }
-    if options.widgets && (options.clock_probe || options.canonical || options.hang || options.crash.is_some() || options.session_probe || options.config_probe || flood_seen) {
+    if options.widgets && (options.clock_probe || options.canonical || options.crash.is_some() || options.session_probe || options.config_probe || flood_seen) {
         return Err("widgets cannot be combined with other modes");
     }
-    if options.two_windows && (!options.widgets || options.pointer_probe) {
+    if options.two_windows && (!options.widgets || options.pointer_probe || options.hang) {
         return Err("two windows requires plain widget mode");
     }
     Ok(options)

@@ -268,11 +268,11 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A widget drawn in the wrong color fails as pixel-mismatch with both colors. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("fault-wrong-color", "A widget drawn in the wrong color fails as pixel-mismatch with both colors", proof::fault_wrong_color),
         // An app that updates its tree but not its pixels fails as pixel-mismatch. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("fault-stale-pixels", "An app that updates its tree but not its pixels fails as pixel-mismatch", || pending("proof", 7)),
+        case("fault-stale-pixels", "An app that updates its tree but not its pixels fails as pixel-mismatch", proof::fault_stale_pixels),
         // An app that drops one key fails as tree-mismatch on the text field's value. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("fault-drop-key", "An app that drops one key fails as tree-mismatch on the text field's value", || pending("proof", 7)),
+        case("fault-drop-key", "An app that drops one key fails as tree-mismatch on the text field's value", proof::fault_drop_key),
         // A hung app fails as app-hung when the 2 s step bound passes, instead of hanging the suite. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("fault-hang", "A hung app fails as app-hung when the 2 s step bound passes, instead of hanging the suite", || pending("proof", 7)),
+        case("fault-hang", "A hung app fails as app-hung when the 2 s step bound passes, instead of hanging the suite", proof::fault_hang),
         // Filling the test app's form (text field, checkbox, slider, submit) gives the expected tree and frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("form-scenario", "Filling the test app's form (text field, checkbox, slider, submit) gives the expected tree and frame", || pending("proof", 7)),
         // Opening a menu and choosing an item gives the expected tree and frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)

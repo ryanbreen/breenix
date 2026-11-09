@@ -1,7 +1,12 @@
 //! Planted faults are accepted only after the same scenario passes cleanly.
 use breenix_suite::suite::{check, CaseResult};
-use libuitest::{arena::{Slot, SlotRead}, capture, classify, compare::{self, Format, Frame, Options, Rect},
-    input::LivePointer, Classification, Expected, FailureClass, ScenarioOutcome, ScenarioSpec, Session};
+use libuitest::{
+    arena::{Slot, SlotRead},
+    capture, classify,
+    compare::{self, Format, Frame, Options, Rect},
+    input::LivePointer,
+    Classification, Expected, FailureClass, ScenarioOutcome, ScenarioSpec, Session,
+};
 
 const APP: &[u8] = b"/usr/libexec/breenix/uitest-app_test";
 const WRONG_OPERATION: &str = "expect_pixels(submit)";
@@ -17,50 +22,370 @@ fn submit_color(session: &mut Session, id: u64, scale: usize) -> Result<Scenario
     let (width, height, got) = pixels(session, id)?;
     // A literal flat patch inside the button, away from its border and text.
     let want = [60, 60, 60, 255].repeat(width as usize * height as usize);
-    let regions = [Rect { x: 282 * scale, y: 44 * scale, w: 4 * scale, h: 4 * scale }];
+    let regions = [Rect {
+        x: 282 * scale,
+        y: 44 * scale,
+        w: 4 * scale,
+        h: 4 * scale,
+    }];
     let verdict = compare::compare(
-        Frame::new(&want, width as usize, height as usize, width as usize * 4, Format::Bgrx).map_err(|e|format!("reference: {e:?}"))?,
-        Frame::new(&got, width as usize, height as usize, width as usize * 4, Format::Bgrx).map_err(|e|format!("capture: {e:?}"))?,
-        Options { regions: &regions, ..Options::default() }).map_err(|e|format!("comparison: {e:?}"))?;
+        Frame::new(
+            &want,
+            width as usize,
+            height as usize,
+            width as usize * 4,
+            Format::Bgrx,
+        )
+        .map_err(|e| format!("reference: {e:?}"))?,
+        Frame::new(
+            &got,
+            width as usize,
+            height as usize,
+            width as usize * 4,
+            Format::Bgrx,
+        )
+        .map_err(|e| format!("capture: {e:?}"))?,
+        Options {
+            regions: &regions,
+            ..Options::default()
+        },
+    )
+    .map_err(|e| format!("comparison: {e:?}"))?;
     Ok(match verdict.comparison.first {
         None => ScenarioOutcome::pass(),
-        Some(first) => ScenarioOutcome::fail(FailureClass::PixelMismatch, WRONG_OPERATION,
-            &libuitest::messages::pixel_details(first.x, first.y, first.actual, first.expected)),
+        Some(first) => ScenarioOutcome::fail(
+            FailureClass::PixelMismatch,
+            WRONG_OPERATION,
+            &libuitest::messages::pixel_details(first.x, first.y, first.actual, first.expected),
+        ),
     })
 }
 fn wrong_color_scenario(fault: bool) -> Result<ScenarioOutcome, String> {
     let mut session = Session::desktop()?;
     let mut argv = vec![APP, b"planted color".as_slice(), b"--widgets".as_slice()];
-    if fault { argv.push(b"--wrong-color"); }
+    if fault {
+        argv.push(b"--wrong-color");
+    }
     let pid = session.launch_app(&argv, 0)?;
     let result = (|| {
         let id = session.wait_window("planted color")?.id;
         let mut live = LivePointer::new(&mut session)?;
         live.watch(id)?;
-        let scale = libbreenix::gpu::current_mode().map_err(|e|e.to_string())?.scale as usize;
+        let scale = libbreenix::gpu::current_mode()
+            .map_err(|e| e.to_string())?
+            .scale as usize;
         submit_color(live.session(), id, scale)
     })();
     let exits = session.teardown()?;
-    for exit in exits.iter().filter(|e| e.pid == pid) {
-        if !libbreenix::process::wifsignaled(exit.status)
-            || libbreenix::process::wtermsig(exit.status) != libbreenix::signal::SIGKILL {
-            return Ok(ScenarioOutcome::fail(FailureClass::AppCrashed, "widget-app", &format!("status={}",exit.status)));
-        }
-    }
+    reject_crash(pid, &exits)?;
     result
 }
 
 pub fn fault_wrong_color() -> CaseResult {
-    let scale = libbreenix::gpu::current_mode()?.scale as usize;
+    let scale = libbreenix::gpu::current_mode()
+        .map_err(|e| e.to_string())?
+        .scale as usize;
     for fault in [false, true] {
-        let outcome = libuitest::run_scenario(ScenarioSpec { suite: "ui-testing", case: "proof/fault-wrong-color",
-            checks: &[], limit_ms: 6500, run: &mut |_| wrong_color_scenario(fault)
-                .unwrap_or_else(|e| ScenarioOutcome::fail(FailureClass::Infrastructure,"wrong-color-scenario",&e)) });
-        let evidence = format!("first={},{} got=#d02040 want=#3c3c3c",282*scale,44*scale);
-        let expected = if fault { Expected::Fault { class: FailureClass::PixelMismatch, operation: WRONG_OPERATION, evidence: &evidence } }
-            else { Expected::Pass };
-        check(classify(&expected,&outcome) == if fault {Classification::ExpectedFault} else {Classification::CleanPass},
-            &format!("wrong-color fault={fault}: {outcome:?}"))?;
+        let outcome = libuitest::run_scenario(ScenarioSpec {
+            suite: "ui-testing",
+            case: "proof/fault-wrong-color",
+            checks: &[],
+            limit_ms: 6500,
+            run: &mut |_| {
+                wrong_color_scenario(fault).unwrap_or_else(|e| {
+                    ScenarioOutcome::fail(FailureClass::Infrastructure, "wrong-color-scenario", &e)
+                })
+            },
+        });
+        let evidence = format!(
+            "first={},{} got=#d02040 want=#3c3c3c",
+            282 * scale,
+            44 * scale
+        );
+        let expected = if fault {
+            Expected::Fault {
+                class: FailureClass::PixelMismatch,
+                operation: WRONG_OPERATION,
+                evidence: &evidence,
+            }
+        } else {
+            Expected::Pass
+        };
+        check(
+            classify(&expected, &outcome)
+                == if fault {
+                    Classification::ExpectedFault
+                } else {
+                    Classification::CleanPass
+                },
+            &format!("wrong-color fault={fault}: {outcome:?}"),
+        )?;
     }
     Ok(())
+}
+
+const ENTRY_OPERATION: &str = "expect_value(entry)";
+const STALE_OPERATION: &str = "expect_pixels(entry)";
+const HANG_OPERATION: &str = "step(16)";
+const STALE_EVIDENCE: &str = "node=entry field=value tree=\"ab\" pixels=\"\" expected=\"ab\"";
+const HANG_EVIDENCE: &str = "app=planted hang epoch=1 bound_ns=2000000000";
+
+fn entry_value(tree: &libbui::tree::Tree) -> Result<serde_json::Value, String> {
+    Ok(libuitest::tree::find(
+        tree,
+        &libuitest::tree::Query {
+            key: Some("entry"),
+            ..Default::default()
+        },
+    )?
+    .value
+    .clone())
+}
+fn entry_reference(width: u32, height: u32, text: &str) -> Result<Vec<u8>, String> {
+    let mut surface = libgfx::surface::Surface::new(
+        width as usize,
+        height as usize,
+        libgfx::surface::Format::BGRX,
+    )
+    .map_err(|e| e.to_string())?;
+    let mut field =
+        libbui::widget::text_field::TextField::new(libbui::Rect::new(20, 42, 240, 28), 256);
+    field.set_focused(true);
+    if !field.insert_str(text) && !text.is_empty() {
+        return Err("reference text refused".into());
+    }
+    surface.batch(|s| field.draw(s, &libbui::Theme::dark()));
+    let mut pixels = vec![0; width as usize * height as usize * 4];
+    surface
+        .read(&mut pixels, width as usize * 4)
+        .map_err(|e| e.to_string())?;
+    Ok(pixels)
+}
+fn entry_comparison(
+    want: &[u8],
+    got: &[u8],
+    width: u32,
+    height: u32,
+    scale: usize,
+) -> Result<compare::Verdict, String> {
+    let regions = [Rect {
+        x: 20 * scale,
+        y: 42 * scale,
+        w: 240 * scale,
+        h: 28 * scale,
+    }];
+    compare::compare(
+        Frame::new(
+            want,
+            width as usize,
+            height as usize,
+            width as usize * 4,
+            Format::Bgrx,
+        )
+        .map_err(|e| format!("reference: {e:?}"))?,
+        Frame::new(
+            got,
+            width as usize,
+            height as usize,
+            width as usize * 4,
+            Format::Bgrx,
+        )
+        .map_err(|e| format!("capture: {e:?}"))?,
+        Options {
+            regions: &regions,
+            ..Default::default()
+        },
+    )
+    .map_err(|e| format!("entry comparison: {e:?}"))
+}
+fn text_scenario(flag: &str, fault: bool) -> Result<ScenarioOutcome, String> {
+    use libuitest::input::{Keyboard, Target};
+    let mut session = Session::desktop()?;
+    let mut argv = vec![APP, b"planted text".as_slice(), b"--widgets".as_slice()];
+    if fault {
+        argv.push(flag.as_bytes());
+    }
+    let pid = session.launch_app(&argv, 0)?;
+    let result = (|| {
+        let id = session.wait_window("planted text")?.id;
+        let mut live = LivePointer::new(&mut session)?;
+        live.watch(id)?;
+        let mut keys = Keyboard::new(live);
+        keys.focus_then_type(&Target::new(id, "entry"), "ab")?;
+        let mut live = keys.into_backend();
+        let scale = libbreenix::gpu::current_mode()
+            .map_err(|e| e.to_string())?
+            .scale as usize;
+        // Capture tree and pixels together, after the final key has been processed.
+        let (width, height, got) = pixels(live.session(), id)?;
+        let tree = match live.session().arena_mut().read(Slot::Tree)? {
+            SlotRead::Final { bytes, .. } => libbui::tree::Tree::parse(&bytes)?,
+            other => return Err(format!("incomplete text tree: {other:?}")),
+        };
+        let value = entry_value(&tree)?;
+        if value != "ab" {
+            return Ok(ScenarioOutcome::fail(
+                FailureClass::TreeMismatch,
+                ENTRY_OPERATION,
+                &libuitest::messages::tree(
+                    ENTRY_OPERATION,
+                    "entry",
+                    "value",
+                    &serde_json::json!("ab"),
+                    &value,
+                ),
+            ));
+        }
+        let want = entry_reference(width, height, "ab")?;
+        let verdict = entry_comparison(&want, &got, width, height, scale)?;
+        if verdict.comparison.passed() {
+            return Ok(ScenarioOutcome::pass());
+        }
+        // A stale frame must equal the independently rendered empty field exactly;
+        // arbitrary corruption or a partial render cannot stand in for this fault.
+        let empty = entry_reference(width, height, "")?;
+        if !entry_comparison(&empty, &got, width, height, scale)?
+            .comparison
+            .passed()
+        {
+            return Err("entry pixels match neither current nor initial rendering".into());
+        }
+        Ok(ScenarioOutcome::fail(
+            FailureClass::PixelMismatch,
+            STALE_OPERATION,
+            STALE_EVIDENCE,
+        ))
+    })();
+    let exits = session.teardown()?;
+    reject_crash(pid, &exits)?;
+    result
+}
+fn reject_crash(pid: u64, exits: &[libuitest::ProcessExit]) -> Result<(), String> {
+    let exit = exits
+        .iter()
+        .find(|e| e.pid == pid)
+        .ok_or("app exit not witnessed during teardown")?;
+    if !libbreenix::process::wifsignaled(exit.status)
+        || libbreenix::process::wtermsig(exit.status) != libbreenix::signal::SIGKILL
+    {
+        return Err(format!("app exited before teardown status={}", exit.status));
+    }
+    Ok(())
+}
+fn hang_scenario(fault: bool) -> Result<ScenarioOutcome, String> {
+    let mut session = Session::desktop()?;
+    let mut argv = vec![APP, b"planted hang".as_slice(), b"--widgets".as_slice()];
+    if fault {
+        argv.push(b"--hang");
+    }
+    let pid = session.launch_app(&argv, 0)?;
+    let result = (|| {
+        let id = session.wait_window("planted hang")?.id;
+        let mut live = LivePointer::new(&mut session)?;
+        live.watch(id)?;
+        let began = libbreenix::time::now_monotonic()
+            .map_err(|e| e.to_string())?
+            .as_nanos();
+        let step = live.session().step(16);
+        let elapsed = libbreenix::time::now_monotonic()
+            .map_err(|e| e.to_string())?
+            .as_nanos()
+            - began;
+        match step {
+            Ok(stamp) if stamp.epoch == 1 && stamp.now_ns == 16_000_000 => {
+                Ok(ScenarioOutcome::pass())
+            }
+            Err(error)
+                if error == format!("clock-step-timeout epoch=1 window={id} waiting=[{id}]")
+                    && elapsed >= 2_000_000_000 =>
+            {
+                let (_, meta) = libbreenix::window::read_meta(id).map_err(|e| e.to_string())?;
+                if meta.epoch != 0 {
+                    return Err("timed-out widget acknowledged the step".into());
+                }
+                let stat = std::fs::read_to_string(format!("/proc/{pid}/stat"))
+                    .map_err(|e| e.to_string())?;
+                let state = stat
+                    .rsplit_once(") ")
+                    .and_then(|(_, tail)| tail.split_whitespace().next());
+                if !matches!(state, Some("S" | "R")) {
+                    return Err(format!("hung app is not live: {state:?}"));
+                }
+                Ok(ScenarioOutcome::fail(
+                    FailureClass::AppHung,
+                    HANG_OPERATION,
+                    HANG_EVIDENCE,
+                ))
+            }
+            other => Err(format!(
+                "unexpected clock step elapsed_ns={elapsed}: {other:?}"
+            )),
+        }
+    })();
+    let exits = session.teardown()?;
+    reject_crash(pid, &exits)?;
+    result
+}
+fn fault_pair(
+    case: &str,
+    operation: &str,
+    class: FailureClass,
+    evidence: &str,
+    mut body: impl FnMut(bool) -> Result<ScenarioOutcome, String>,
+) -> CaseResult {
+    for fault in [false, true] {
+        let outcome = libuitest::run_scenario(ScenarioSpec {
+            suite: "ui-testing",
+            case,
+            checks: &[],
+            limit_ms: 6500,
+            run: &mut |_| {
+                body(fault).unwrap_or_else(|e| {
+                    ScenarioOutcome::fail(FailureClass::Infrastructure, "fault-scenario", &e)
+                })
+            },
+        });
+        let expected = if fault {
+            Expected::Fault {
+                class,
+                operation,
+                evidence,
+            }
+        } else {
+            Expected::Pass
+        };
+        check(
+            classify(&expected, &outcome)
+                == if fault {
+                    Classification::ExpectedFault
+                } else {
+                    Classification::CleanPass
+                },
+            &format!("{case} fault={fault}: {outcome:?}"),
+        )?;
+    }
+    Ok(())
+}
+pub fn fault_drop_key() -> CaseResult {
+    fault_pair("proof/fault-drop-key",ENTRY_OPERATION,FailureClass::TreeMismatch,
+        "tree-mismatch check=\"expect_value(entry)\" node=\"entry\" field=value expected=String(\"ab\") reported=String(\"b\")",
+        |fault|text_scenario("--drop-key",fault))
+}
+pub fn fault_stale_pixels() -> CaseResult {
+    fault_pair(
+        "proof/fault-stale-pixels",
+        STALE_OPERATION,
+        FailureClass::PixelMismatch,
+        STALE_EVIDENCE,
+        |fault| text_scenario("--stale-pixels", fault),
+    )
+}
+pub fn fault_hang() -> CaseResult {
+    fault_pair(
+        "proof/fault-hang",
+        HANG_OPERATION,
+        FailureClass::AppHung,
+        HANG_EVIDENCE,
+        hang_scenario,
+    )
 }
