@@ -1,6 +1,4 @@
-//! Run the guest scenarios' commands through their real word parser and JS engine.
-#[path = "../userspace/programs/src/bsh_words.rs"]
-mod bsh_words;
+//! Evaluate the guest scenarios' bsh expressions with the production JS engine.
 use std::sync::Mutex;
 static OUTPUT: Mutex<Vec<u8>> = Mutex::new(Vec::new());
 fn capture(s: &str) { OUTPUT.lock().unwrap().extend_from_slice(s.as_bytes()); }
@@ -10,12 +8,21 @@ fn exit_status_command_produces_one() {
     let source = include_str!("../userspace/programs/src/guiapps_suite/bterm.rs");
     let exit = source.split("pub fn exit_status()").nth(1).unwrap()
         .split("t.type_line(\"").nth(1).unwrap().split("\")?").next().unwrap();
-    let words = bsh_words::words(exit).unwrap();
-    let output = std::process::Command::new(&words[0]).args(&words[1..]).output()
-        .expect("the scenario must name an executable, not a POSIX command list passed as argv");
-    assert!(output.status.success());
-    assert_eq!(output.stdout, b"1\n");
-
+    fn exec(args: &[breenish_js::value::JsValue],
+            strings: &mut breenish_js::string::StringPool,
+            heap: &mut breenish_js::object::ObjectHeap) -> breenish_js::error::JsResult<breenish_js::value::JsValue> {
+        use breenish_js::{object::JsObject, value::JsValue};
+        assert_eq!(args.len(), 1);
+        let command = strings.get(args[0].as_string_id());
+        let status = std::process::Command::new(command).status().unwrap().code().unwrap();
+        let mut result = JsObject::new();
+        result.set(strings.intern("exitCode"), JsValue::number(f64::from(status)));
+        Ok(JsValue::object(heap.alloc(result)))
+    }
+    let mut context = breenish_js::Context::new();
+    context.register_native("exec", exec);
+    let result = context.eval(exit).unwrap();
+    assert_eq!(context.format_value(result), "1");
 }
 
 #[test]
@@ -49,5 +56,4 @@ fn scrollback_command_preserves_page_alignment() {
         }
         assert!(found, "page up never places line 1 at the top for {rows} rows");
     }
-    assert_eq!(bsh_words::js_string("$?"), "\"$?\"");
 }

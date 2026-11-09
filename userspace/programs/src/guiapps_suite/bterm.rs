@@ -16,7 +16,7 @@ pub fn prompt() -> CaseResult {
 
 pub fn exit_status() -> CaseResult {
     let mut t = App::launch(&[b"/usr/bin/bterm"], "Terminal")?;
-    t.type_line("/bin/sh -c 'false; echo $?'")?;
+    t.type_line("exec('false').exitCode")?;
     t.expect_text("1")?;
     Ok(t.finish()?)
 }
