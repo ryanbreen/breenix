@@ -17,8 +17,13 @@ probe = '''
         emit("boot\n");
         let first = TAIL.load(Ordering::Acquire);
         emit("SUITE first START cases=1\n");
-        emit("BOOT_LATE_READY\n");
-        assert!(!reached()[0], "a stage after the first START must not latch");
+        // Coordinator 2:30 PM ET: late DHCP must latch and remain independently visible.
+        emit("[net] DHCP bound late\n");
+        emit("[net] ARP reply late\n");
+        emit("[net] DHCP bound duplicate\n");
+        assert_eq!(reached(), vec![true, true, false], "late stages must latch");
+        assert_eq!(serial().unwrap(), "boot\n[net] DHCP bound late\n[net] ARP reply late\n",
+            "retain the first producer line per late stage in stream order");
         emit("SUITE invalid START cases=no\n");
         let latest = TAIL.load(Ordering::Acquire);
         emit("SUITE second START cases=1\n");
@@ -40,7 +45,7 @@ with tempfile.TemporaryDirectory(prefix='boot-ribbon-boundaries-') as tmp:
     path = Path(tmp)
     (path / 'src').mkdir()
     (path / 'Cargo.toml').write_text('[package]\nname="ribbon-boundaries"\nversion="0.1.0"\nedition="2021"\n[dependencies]\nspin="0.9.8"\n')
-    (path / 'boot_ribbon.rs').write_text('&["BOOT_LATE_READY"]\n')
+    (path / 'boot_ribbon.rs').write_text('&["DHCP bound", "ARP reply", "DNS resolved"]\n')
     (path / 'ribbon.rs').write_text(source + probe.replace('OFFSETS', offsets))
     (path / 'src/lib.rs').write_text(f'''extern crate alloc;
 pub fn arch_interrupts_enabled() -> bool {{ true }}
