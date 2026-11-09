@@ -468,6 +468,7 @@ pub struct TermEmu {
     underline: bool,
     inverse: bool,
     autowrap: bool,
+    application_cursor_keys: bool,
     pending_wrap: bool,
     saved_cursor: SavedCursor,
     main_screen: Option<MainScreen>,
@@ -500,7 +501,7 @@ impl TermEmu {
             cells: vec![Cell::blank(); cols * rows],
             cursor_x: 0, cursor_y: 0,
             fg: FG_COLOR, bg: BG_COLOR, bold: false, underline: false, inverse: false,
-            autowrap: true, pending_wrap: false, saved_cursor: SavedCursor::default(),
+            application_cursor_keys: false, autowrap: true, pending_wrap: false, saved_cursor: SavedCursor::default(),
             main_screen: None, scroll_top: 0, scroll_bottom: rows - 1,
             tabs: (0..cols).map(|x| x != 0 && x % 8 == 0).collect(),
             ansi_private: false, alternate: false, cursor_visible: true,
@@ -554,6 +555,7 @@ impl TermEmu {
     pub fn cursor(&self) -> (usize, usize) { (self.cursor_x, self.cursor_y) }
     pub fn alternate_screen(&self) -> bool { self.alternate }
     pub fn title(&self) -> &str { &self.title }
+    pub fn application_cursor_keys(&self) -> bool { self.application_cursor_keys }
     pub fn cursor_visible(&self) -> bool { self.cursor_visible }
     pub fn size(&self) -> (usize, usize) { (self.cols, self.rows) }
     pub fn feed(&mut self, bytes: &[u8]) { for &byte in bytes { self.feed_byte(byte); } }
@@ -780,6 +782,7 @@ impl TermEmu {
                 let enabled = cmd == b'h';
                 for i in 0..nparams {
                     match self.ansi_params[i] {
+                        1 => self.application_cursor_keys = enabled,
                         7 => { self.autowrap = enabled; self.pending_wrap = false; }
                         25 => self.cursor_visible = enabled,
                         1049 => self.alternate_screen_mode(enabled),

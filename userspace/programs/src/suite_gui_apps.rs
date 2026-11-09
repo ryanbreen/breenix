@@ -13,7 +13,7 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("scroll-region", "Scroll region", terminal_emulation::scroll_region),
         case("alt-screen", "Alternate screen", terminal_emulation::alt_screen),
         case("utf8", "UTF-8 text", terminal_emulation::utf8),
-        case("keys", "Terminal keys", pending::not_built),
+        case("keys", "Terminal keys", terminal_emulation::keys),
     ]),
     category("bterm", "bterm", &[
         case("prompt", "Shell prompt", pending::not_built),

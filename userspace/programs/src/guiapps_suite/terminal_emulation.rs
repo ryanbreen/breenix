@@ -25,3 +25,28 @@ pub fn vt_screen() -> CaseResult { run("vt-screen", ["Hello red!", "moved", "", 
 pub fn scroll_region() -> CaseResult { run("scroll-region", ["top", "two", "three", "bottom"], false, [0, 4]) }
 pub fn alt_screen() -> CaseResult { run("alt-screen", ["main restored", "", "", ""], false, [13, 0]) }
 pub fn utf8() -> CaseResult { run("utf8", ["Aé界�B", "", "", ""], false, [5, 0]) }
+
+pub fn keys() -> CaseResult {
+    use libuitest::input::Modifier;
+    let mut t = App::launch(&[b"/usr/bin/bterm"], "Terminal")?;
+    t.type_line("/usr/libexec/breenix/vt-script_test --keys")?;
+    t.expect_text("KEYS READY")?;
+    for (key, expected) in [
+        (103, "1b5b41"), (108, "1b5b42"), (106, "1b5b43"), (105, "1b5b44"),
+        (102, "1b5b48"), (107, "1b5b46"), (111, "1b5b337e"), (104, "1b5b357e"),
+        (109, "1b5b367e"), (59, "1b4f50"), (60, "1b4f51"), (61, "1b4f52"),
+        (62, "1b4f53"), (14, "7f"),
+    ] {
+        t.key(key, &[])?;
+        t.expect_text(expected)?;
+    }
+    t.key(30, &[Modifier::Ctrl])?;
+    t.expect_text("01")?;
+    t.expect_text("APPLICATION READY")?;
+    for (key, expected) in [(103, "1b4f41"), (108, "1b4f42"), (106, "1b4f43"),
+        (105, "1b4f44"), (102, "1b4f48"), (107, "1b4f46")] {
+        t.key(key, &[])?;
+        t.expect_text(expected)?;
+    }
+    Ok(t.finish()?)
+}

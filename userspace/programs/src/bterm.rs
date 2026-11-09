@@ -13,6 +13,9 @@
 #[path = "bterm/terminal_node.rs"]
 mod terminal_node;
 
+#[path = "bterm/keys.rs"]
+mod keys;
+
 use std::process;
 
 use breengel::{Window, Event, CachedFont, TabBar, Rect, Theme, Color, Surface};
@@ -419,23 +422,10 @@ fn main() {
                         }
                     }
 
-                    // Arrow keys (Linux key codes); Enter sends a carriage return, as a
-                    // terminal's Enter does; any other key sends its text, control codes
-                    // included.
                     let sel = tab_bar.selected();
                     if let Some(tab) = tabs.get(sel) {
-                        match *keycode {
-                            breengel::keys::RIGHT => { let _ = io::write(tab.master_fd, b"\x1b[C"); }
-                            breengel::keys::LEFT => { let _ = io::write(tab.master_fd, b"\x1b[D"); }
-                            breengel::keys::DOWN => { let _ = io::write(tab.master_fd, b"\x1b[B"); }
-                            breengel::keys::UP => { let _ = io::write(tab.master_fd, b"\x1b[A"); }
-                            breengel::keys::ENTER => { let _ = io::write(tab.master_fd, b"\r"); }
-                            _ => {
-                                if !text.is_empty() {
-                                    let _ = io::write(tab.master_fd, text.as_bytes());
-                                }
-                            }
-                        }
+                        let bytes = keys::encode(*keycode, modifiers.ctrl, text, tab.emu.vt.application_cursor_keys());
+                        if !bytes.is_empty() { let _ = io::write(tab.master_fd, &bytes); }
                     }
                 }
                 Event::MouseMove { x, y } => {
