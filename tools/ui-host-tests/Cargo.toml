@@ -27,3 +27,7 @@ path = "../../tests/uitest_arena.rs"
 [[test]]
 name = "ui_messages"
 path = "../../tests/ui_messages.rs"
+
+[[test]]
+name = "ui_retention"
+path = "../../tests/ui_retention.rs"
