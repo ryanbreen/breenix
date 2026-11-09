@@ -23,6 +23,43 @@ def run(source):
 
 
 class OrphanCache(unittest.TestCase):
+    def test_cache_drops_dirty_frames_with_a_budget_and_refuses_bindings(self):
+        text = (ROOT / 'kernel/src/memory/file_map.rs').read_text()
+        methods = item(text, '    pub(crate) fn discard_unobserved(') + item(text, '    fn refresh(')
+        result = run(r'''
+use std::{cell::Cell,rc::Rc,sync::{Mutex,MutexGuard,atomic::{AtomicBool,Ordering}}};
+struct Lock<T>(Mutex<T>);
+impl<T> Lock<T>{fn lock(&self)->MutexGuard<'_,T>{self.0.lock().unwrap()}}
+struct Page{dirty:bool,released:Rc<Cell<usize>>}
+impl Drop for Page{fn drop(&mut self){self.released.set(self.released.get()+1);}}
+struct PageVec<T>{entries:Vec<(u64,T)>}
+impl<T> PageVec<T>{
+fn new()->Self{Self{entries:vec![]}}
+fn len(&self)->usize{self.entries.len()}
+fn is_empty(&self)->bool{self.entries.is_empty()}
+}
+struct MapInner{pages:PageVec<Page>,poisoned:PageVec<()>,bindings:Vec<u64>}
+struct Map{inner:Lock<MapInner>,resident:AtomicBool,dirty:AtomicBool}
+impl Map{METHODS}
+fn main(){
+    let released=Rc::new(Cell::new(0));
+    let map=Map{inner:Lock(Mutex::new(MapInner{
+        pages:PageVec{entries:(0..67).map(|i|(i,Page{dirty:i!=0,released:released.clone()})).collect()},
+        poisoned:PageVec{entries:vec![(68,())]},bindings:vec![1]})),
+        resident:AtomicBool::new(true),dirty:AtomicBool::new(true)};
+    let mut budget=64;assert!(map.discard_unobserved(&mut budget));
+    assert_eq!(budget,64);assert_eq!(released.get(),0,"live mapping lost its bytes");
+    map.inner.lock().bindings.clear();
+    assert!(map.discard_unobserved(&mut budget));assert_eq!(budget,0);assert_eq!(released.get(),64);
+    assert!(map.resident.load(Ordering::Acquire));assert!(map.dirty.load(Ordering::Acquire));
+    assert!(map.discard_unobserved(&mut budget));assert_eq!(released.get(),64);
+    budget=64;assert!(!map.discard_unobserved(&mut budget));assert_eq!(budget,61);
+    assert_eq!(released.get(),67);assert!(map.inner.lock().poisoned.is_empty());
+    assert!(!map.resident.load(Ordering::Acquire));assert!(!map.dirty.load(Ordering::Acquire));
+}
+'''.replace('METHODS', methods))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_last_observer_cache_retires_before_disk_io(self):
         production = item((ROOT / 'kernel/src/fs/ext2/mod.rs').read_text(), '    fn finalize_pending_orphans(')
         source = r'''

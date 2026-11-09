@@ -330,6 +330,17 @@ impl Ext2Fs {
         if self.is_read_only() { return Finalize::Idle; }
         let mut budget = RECLAIM_BUDGET;
         let objects = self.live_inodes.pending(self.finalization_cursor);
+        // An unused orphan cannot acquire another observer. Its cached file
+        // bytes have no consumer, even if disk detachment must retry. Release
+        // those frames in bounded batches before starting disk work.
+        let mut cache_budget = crate::memory::file_map::EVICT_BUDGET;
+        let mut cached = false;
+        for object in &objects {
+            if object.unused() {
+                cached |= object.map.discard_unobserved(&mut cache_budget);
+            }
+        }
+        if cached { return Finalize::More; }
         let mut outcome = self.finalize_orphans(&objects, &mut budget);
         if matches!(outcome, Finalize::Idle)
             && !self
