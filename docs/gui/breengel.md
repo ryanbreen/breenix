@@ -1708,6 +1708,23 @@ suite's captured serial state. The case checks the complete heading against the 
 samples, including the case name, skipped suffix and background after clipped text.
 Elapsed time is derived independently from the captured producer's monotonic START
 timestamp in `/proc/breenix/boot-serial-timed`; each line is `milliseconds|serial line`.
+<!-- claim-lint:ok: Normative endpoint ranges for #2824, not an acceptance claim. -->
+The `/proc/breenix/boot-serial` endpoint returns the boot prefix before the first
+accepted suite START (excluding that line), followed by the first occurrence
+of each stage-marker line after START, in stream order. Lines satisfying more
+than one marker appear once. REACHED latches stage markers throughout the stream;
+the unchanged ribbon oracle parses this endpoint and compares it with REACHED.
+Before any START the endpoint returns the current prefix within the frozen boot
+head. A fixed side store retains at most one scanner-bounded line per marker;
+a reader preempting an unfinished side-store copy receives EAGAIN, not partial
+evidence. The timed endpoint returns complete records
+from the latest accepted suite START (including that line) up to its snapshot
+tail (exclusive), or the current prefix before any START, within the ring.
+After copying timed records, it re-reads the producer tail and returns EOVERFLOW
+if `start + RING < TAIL_after + 9` or the scanner's sticky `LAPPED` flag is set.
+The nine-byte guard includes an in-flight newline and its timestamp. Either
+endpoint returns EOVERFLOW when its required range cannot be retained; neither
+silently truncates the evidence.
 The sample interval permits the 250 ms panel refresh interval plus 50 ms for clock
 resolution and sampling. The check must reject a stale elapsed field outside that
 interval, including after a display owner has held the screen.
