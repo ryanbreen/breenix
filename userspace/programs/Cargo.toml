@@ -12,6 +12,7 @@ description = "Userspace programs and utilities for Breenix"
 framebuffer-v1 = []
 
 [dependencies]
+libvt = { path = "../../libs/libvt" }
 serde_json = { version = "=1.0.154", default-features = false, features = ["alloc"] }
 libpixcheck = { path = "../../libs/libpixcheck" }
 libuitest = { path = "../../libs/libuitest" }
