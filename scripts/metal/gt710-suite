@@ -4347,16 +4347,34 @@ def record_breengel_capture(directory, sha, category):
     if category not in ('breengel-fronts', 'breengel-composition', 'breengel-stage', 'breengel-full'):
         raise ValueError('unknown BreenGL selection')
     directory = Path(directory)
-    capture = completed_suite_capture(directory, sha, 'breengel')
-    resources_identity(capture['boot'], 'breengel', sha)
-    rows = cases(category, '', {'breengel': capture})
-    report = dict(boot=capture['boot']['id'], commit=sha,
+    boot = capture_boot(directory)
+    # Keep source provenance even when admission refuses the capture. These
+    # fields describe the input; captureAccepted records the validator's result.
+    artifacts = ('run.json', 'metal-run.json', 'commit', 'dirty', 'ended', 'ended-by',
+                 'exit-status', 'serial.txt', 'serial.ts', 'events.jsonl',
+                 'suite-verdict.txt', 'suite-readback.json')
+    source = {name: boot.get(name) for name in ('id', 'commit', 'toolsCommit', 'build')}
+    status = (directory / 'exit-status').read_text().strip()
+    source['exitStatus'] = int(status) if re.fullmatch(r'-?\d+', status) else None
+    source['sha256'] = {name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
+                        for name in artifacts if (directory / name).is_file()}
+    accepted = False
+    try:
+        capture = completed_suite_capture(directory, sha, 'breengel')
+        resources_identity(capture['boot'], 'breengel', sha)
+        rows = cases(category, '', {'breengel': capture})
+        accepted = True
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        rows = [dict(id=category + '/capture', result='FAIL', reason=str(error))]
+    passed = accepted and all(row['result'] == 'PASS' for row in rows)
+    report = dict(boot=boot.get('id'), commit=sha, boots=[source],
+                  captureAccepted=accepted, passed=passed,
                   milestone='metal-gt710/' + category, cases=rows)
     (directory / ('gt710-' + category + '.json')).write_text(json.dumps(report, indent=2) + '\n')
     for row in rows:
         print('SUITE gt710 CASE ' + row['id'] + ' ' + row['result'] + ' ms=0'
               + (' msg=' + row['reason'] if row['reason'] else ''), flush=True)
-    return 0 if all(row['result'] == 'PASS' for row in rows) else 1
+    return 0 if passed else 1
 
 
 def rescore_suite_capture(directory, sha, scorer_head):
