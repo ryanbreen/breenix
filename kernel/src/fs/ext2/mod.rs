@@ -2766,20 +2766,21 @@ pub(crate) fn fs_sync_guard(home: bool) -> Result<Ext2WriteGuard, &'static str> 
     fs_write_raw(home)?.wait_for_shrink_writer()
 }
 
+fn allocation_pressure(fs: &Ext2Fs) -> bool {
+    let stats = fs.statfs();
+    stats.free_blocks <= (stats.blocks / 16).max(128) || stats.free_inodes <= 32
+}
+
 fn fs_write(home: bool) -> Result<Ext2WriteGuard, &'static str> {
     let guard = fs_write_raw(home)?;
     if let Some(fs) = guard.as_ref() { fs.ensure_writable()?; }
     let guard = guard.wait_for_shrink_writer()?;
-    let pressure = guard.as_ref().is_some_and(|fs| {
-        let stats = fs.statfs();
-        stats.free_blocks <= (stats.blocks / 16).max(128)
-            || stats.free_inodes <= 32
-    });
+    let pressure = guard.as_ref().is_some_and(allocation_pressure);
     if pressure {
         drop(guard);
         // Last-observer reclamation must not turn rm followed by allocation
         // into ENOSPC solely because the background service has not run yet.
-        if let Ok(guard) = accounting_fs_write(home) {
+        if let Ok(guard) = reclaim_fs_write(home, true) {
             return guard.wait_for_shrink_writer();
         }
         // Failed I/O keeps allocations quarantined; normal operations report
@@ -2796,6 +2797,13 @@ fn fs_write(home: bool) -> Result<Ext2WriteGuard, &'static str> {
 /// The returned guard excludes reclamation while counters and their disk
 /// counterparts are read. I/O errors retain custody and reach the reader.
 pub(crate) fn accounting_fs_write(home: bool) -> Result<Ext2WriteGuard, &'static str> {
+    reclaim_fs_write(home, false)
+}
+
+/// Accounting drains the captured cohort; allocation only needs the existing
+/// pressure thresholds restored. Both retain the same per-pass disk budgets,
+/// mount identity checks and finite snapshot of the pending cohort.
+fn reclaim_fs_write(home: bool, pressure_only: bool) -> Result<Ext2WriteGuard, &'static str> {
     let mut guard = fs_write_raw(home)?;
     let pin = guard.as_ref().map(|fs| fs.mount_pin);
     let objects = guard
@@ -2810,6 +2818,7 @@ pub(crate) fn accounting_fs_write(home: bool) -> Result<Ext2WriteGuard, &'static
             if let Some(pin) = pin {
                 pin.verify(fs)?;
             }
+            if pressure_only && !allocation_pressure(fs) { return Ok(guard); }
             let mut budget = RECLAIM_BUDGET;
             fs.finalize_orphans(&objects[cohort_at..cohort_end], &mut budget)
         } else {
