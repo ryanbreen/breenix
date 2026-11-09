@@ -334,6 +334,8 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                         environment = Some(config);
                         let root = Path::new(environment.as_ref().unwrap().config_root());
                         crate::fixtures::prepare(root)?;
+                        // Input injection runs in this supervisor, beside its apps.
+                        std::env::set_var("BREENIX_UI_CLOCK", root.join("ui-clock"));
                         let trace = crate::startup::Trace::create(root)?;
                         for (name, ns) in [("supervisor-enter", entered), ("supervisor-registered", registered_at),
                             ("supervisor-channel", channel_at), ("supervisor-evidence", evidence_at),
