@@ -7,3 +7,13 @@ pub fn script(name: &str) -> Option<&'static [u8]> {
         _ => None,
     }
 }
+
+/// Keep the screen stable until the PTY supplies input or closes.
+pub fn write_and_hold(input: &mut impl std::io::Read, output: &mut impl std::io::Write, bytes: &[u8]) -> std::io::Result<()> {
+    for byte in bytes {
+        output.write_all(&[*byte])?;
+        output.flush()?;
+    }
+    input.read(&mut [0u8; 1])?;
+    Ok(())
+}

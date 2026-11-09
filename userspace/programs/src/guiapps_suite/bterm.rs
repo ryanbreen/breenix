@@ -170,7 +170,7 @@ pub fn paste() -> CaseResult {
     let mut t = App::launch(&[b"/usr/bin/bterm"], "Terminal")?;
     t.expect_text("bsh />")?;
     t.type_line("/usr/libexec/breenix/clip-set_test 'echo pasted'")?;
-    t.expect_text("bsh />")?;
+    t.expect_text("CLIPBOARD SET")?;
     t.key(47, &[Modifier::Ctrl, Modifier::Shift])?;
     t.key(28, &[])?;
     t.expect_text("pasted")?;

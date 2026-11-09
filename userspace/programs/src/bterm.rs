@@ -25,7 +25,7 @@ mod session;
 
 use std::process;
 
-use breengel::{Window, Event, CachedFont, TabBar, Rect, Theme, Color, Surface};
+use breengel::{Window, Event, Handled, CachedFont, TabBar, Rect, Theme, Color, Surface};
 use libbreenix::io;
 use libbreenix::fs;
 use libbreenix::process::{fork, execv, setsid, ForkResult};
@@ -405,18 +405,22 @@ fn main() {
     let mut first_frame = true;
     let mut first_present = true;
 
-    'mainloop: loop {
-        // ── 1. Poll Breengel events ─────────────────────────────────
-        let events = win.poll_events();
+    loop {
+        // Dispatch input before the rendered commit publishes its watermark.
+        let window_id = win.id();
+        let mut close_requested = false;
+        let mut reload_font = false;
+        let mut resize_requested = None;
         let mut mouse_x: i32 = 0;
         let mut mouse_y: i32 = 0;
         let mut buttons: u32 = prev_buttons;
         let mut font_changed = false;
 
-        for event in &events {
-            match event {
+        let event_count = win.dispatch(|delivered| {
+            match &delivered.event {
                 Event::CloseRequested => {
-                    break 'mainloop;
+                    close_requested = true;
+                    return Handled::Redraw;
                 }
                 Event::KeyPress { ascii, keycode, modifiers, text, .. } => {
                     if modifiers.shift && (*keycode == breengel::keys::PAGE_UP || *keycode == breengel::keys::PAGE_DOWN) {
@@ -425,7 +429,7 @@ fn main() {
                             tab.emu.vt.scroll_view(if *keycode == breengel::keys::PAGE_UP { page } else { -page });
                             tab.emu.dirty = true;
                         }
-                        continue;
+                        return Handled::Redraw;
                     }
                     // Debug: log key events for +/- and ctrl
                     if *ascii == b'+' || *ascii == b'=' || *ascii == b'-'
@@ -436,7 +440,7 @@ fn main() {
                     }
                     if modifiers.ctrl && modifiers.shift && *keycode == libbreenix::input::key::V as u32 {
                         if let Some(tab) = tabs.get_mut(tab_bar.selected()) {
-                            if let Ok(data) = libclipboard::get(win.id()) {
+                            if let Ok(data) = libclipboard::get(window_id) {
                                 let mut bytes = Vec::new();
                                 if tab.emu.vt.bracketed_paste() { bytes.extend_from_slice(b"\x1b[200~"); }
                                 bytes.extend_from_slice(&data);
@@ -444,7 +448,7 @@ fn main() {
                                 tab.send_input(&bytes);
                             }
                         }
-                        continue;
+                        return Handled::Redraw;
                     }
                     if modifiers.ctrl {
                         // Ctrl+T: new tab
@@ -458,7 +462,7 @@ fn main() {
                             if let Some(tab) = tabs.get_mut(idx) {
                                 tab.emu.dirty = true;
                             }
-                            continue;
+                            return Handled::Redraw;
                         }
                         // Ctrl+W: close tab
                         if *ascii == b'w' - b'a' + 1 || *ascii == b'W' - b'A' + 1
@@ -466,7 +470,8 @@ fn main() {
                         {
                             let sel = tab_bar.selected();
                             if tabs.len() <= 1 {
-                                break 'mainloop;
+                                close_requested = true;
+                                return Handled::Redraw;
                             }
                             tabs.remove(sel);
                             tab_bar.remove_tab(sel);
@@ -474,7 +479,7 @@ fn main() {
                             if let Some(tab) = tabs.get_mut(new_sel) {
                                 tab.emu.dirty = true;
                             }
-                            continue;
+                            return Handled::Redraw;
                         }
                         // Ctrl+C: send interrupt to PTY
                         if text.as_bytes() == [3] {
@@ -482,7 +487,7 @@ fn main() {
                             if let Some(tab) = tabs.get_mut(sel) {
                                 tab.send_input(&[3]);
                             }
-                            continue;
+                            return Handled::Redraw;
                         }
                         // Ctrl+= or Ctrl++: increase font size
                         if *ascii == b'+' || *ascii == b'=' || *keycode == breengel::keys::EQUAL {
@@ -494,7 +499,7 @@ fn main() {
                                     font_changed = true;
                                 }
                             }
-                            continue;
+                            return Handled::Redraw;
                         }
                         // Ctrl+-: decrease font size
                         if *ascii == b'-' || *keycode == breengel::keys::MINUS {
@@ -506,7 +511,7 @@ fn main() {
                                     font_changed = true;
                                 }
                             }
-                            continue;
+                            return Handled::Redraw;
                         }
                     }
 
@@ -538,17 +543,11 @@ fn main() {
                     }
                 }
                 Event::FontChanged => {
-                    // Window loaded the new font internally — swap it in
-                    win.put_mono_font(ttf_font.take());
-                    ttf_font = win.take_mono_font();
-                    font_size = win.mono_size();
-                    print!("[bterm] font changed: {} size={}\n", win.mono_path(), font_size);
+                    reload_font = true;
                     font_changed = true;
                 }
                 Event::ResizeRequested { width, height } => {
-                    if let Err(e) = win.apply_resize(*width, *height) {
-                        print!("[bterm] resize refused: {}x{}: {}\n", width, height, e);
-                    }
+                    resize_requested = Some((*width, *height));
                 }
                 Event::Resized { width, height } => {
                     content_w = *width;
@@ -564,6 +563,22 @@ fn main() {
                     }
                 }
                 _ => {}
+            }
+            Handled::Redraw
+        }).unwrap_or_else(|error| {
+            eprintln!("[bterm] event dispatch failed: {error}");
+            process::exit(1);
+        });
+        if close_requested { break; }
+        // These operations borrow Window, so finish them before acquiring a frame.
+        if reload_font {
+            win.put_mono_font(ttf_font.take());
+            ttf_font = win.take_mono_font();
+            font_size = win.mono_size();
+        }
+        if let Some((width, height)) = resize_requested {
+            if let Err(error) = win.apply_resize(width, height) {
+                eprintln!("[bterm] resize refused: {width}x{height}: {error}");
             }
         }
 
@@ -636,7 +651,7 @@ fn main() {
         // ── 3. Render ───────────────────────────────────────────────
         let sel = tab_bar.selected();
         let any_dirty = tabs.get(sel).map_or(false, |t| t.emu.dirty);
-        let need_redraw = any_dirty || !events.is_empty() || font_changed || first_frame;
+        let need_redraw = any_dirty || event_count != 0 || font_changed || first_frame;
         first_frame = false;
 
         if need_redraw {

@@ -40,6 +40,5 @@ fn main() {
     }
     let Some(bytes) = scripts::script(&name) else { eprintln!("unknown script: {name}"); std::process::exit(1); };
     let mut out = std::io::stdout().lock();
-    for byte in bytes { out.write_all(&[*byte]).unwrap(); out.flush().unwrap(); }
-    let _ = std::io::stdin().read(&mut [0]);
+    scripts::write_and_hold(&mut std::io::stdin(), &mut out, bytes).expect("script output and hold");
 }
