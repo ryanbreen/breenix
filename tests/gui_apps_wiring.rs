@@ -16,5 +16,6 @@ fn bterm_handles_input_before_publishing_the_watermark() {
     let dispatch = source.split("win.dispatch(|delivered| {").nth(1).expect("dispatch handler");
     let handler = dispatch.split("}).unwrap_or_else").next().unwrap();
     assert!(handler.contains("tab.send_input(&bytes)"), "PTY input must run inside the handler");
+    assert!(handler.contains("Event::Text { text }"), "core text input must reach the PTY");
     assert!(handler.contains("Handled::Redraw"), "input must wait for the rendered commit");
 }

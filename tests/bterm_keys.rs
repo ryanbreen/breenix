@@ -22,3 +22,16 @@ fn terminal_keys_follow_xterm_sequences() {
     }
     assert_eq!(keys::encode(0, false, "é", false), "é".as_bytes());
 }
+
+#[test]
+fn key_and_text_events_insert_printable_text_once() {
+    for (key, text) in [(30, "a"), (30, "A"), (0, "é界")] {
+        let mut bytes = keys::encode_press(key, false, text, false);
+        bytes.extend(keys::encode_text(text));
+        assert_eq!(bytes, text.as_bytes());
+    }
+    let mut bytes = keys::encode_press(30, true, "\x01", false);
+    bytes.extend(keys::encode_text("\x01"));
+    assert_eq!(bytes, [1]);
+    assert_eq!(keys::encode_press(103, false, "", false), b"\x1b[A");
+}
