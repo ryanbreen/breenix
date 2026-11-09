@@ -40,3 +40,40 @@ fn large_step_integrates_each_millisecond() {
     assert_eq!(advance(&[1000]), advance(&[1; 1000]));
     assert_eq!(advance(&[1000]), (1000, 1000));
 }
+
+#[test]
+fn nonlinear_animation_runs_each_quantum_before_coalesced_callbacks() {
+    fn run(parts: &[u64]) -> (i64, i64, Vec<(u64, u64)>, u64) {
+        let mut timers = Timers::new(0);
+        timers.register(1, 1000, 1000);
+        let (mut position, mut velocity) = (0_i64, 0_i64);
+        let mut ticks = Vec::new();
+        let mut fired = Vec::new();
+        for &part in parts {
+            fired.extend(timers.advance(part, |time_ms| {
+                ticks.push(time_ms);
+                velocity += (1000 - position) / 16;
+                position += velocity;
+                velocity = velocity * 31 / 32;
+            }));
+        }
+        assert_eq!(ticks, (1..=1000).collect::<Vec<_>>());
+        (position, velocity, fired, timers.next_deadline())
+    }
+    let large = run(&[1000]);
+    assert_eq!(large, run(&[1; 1000]));
+    assert_eq!(large.2, vec![(1, 0)]);
+    assert_eq!(large.3, 2000);
+    assert_ne!((large.0, large.1), (62, 60)); // One oversized integration update.
+}
+
+#[test]
+fn deadlines_sort_before_registration_and_zero_has_no_integration() {
+    let mut timers = Timers::new(10);
+    timers.register(1, 12, 0);
+    timers.register(2, 10, 0);
+    assert_eq!(timers.advance(0, |_| panic!("zero step integrated")), vec![(2, 0)]);
+    assert_eq!(timers.next_deadline(), 12);
+    assert_eq!(timers.step(2), vec![(1, 0)]);
+    assert_eq!(timers.next_deadline(), u64::MAX);
+}

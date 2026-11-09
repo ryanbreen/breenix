@@ -41,3 +41,15 @@ fn two_widget_windows_use_one_app_mode() {
     assert!(support::parse(&["pair", "--two-windows"]).is_err());
     assert!(support::parse(&["pair", "--widgets", "--two-windows", "--two-windows"]).is_err());
 }
+
+#[test]
+fn timer_modes_and_deliberate_real_clock_read_are_explicit() {
+    let timer = support::parse(&["timer", "--timer"]).unwrap();
+    assert!(timer.timer && !timer.animate && !timer.real_clock);
+    let animation = support::parse(&["animation", "--animate", "--real-clock"]).unwrap();
+    assert!(animation.animate && animation.real_clock);
+    for flags in [vec!["app", "--real-clock"], vec!["app", "--animate", "--widgets"],
+        vec!["app", "--animate", "--animate"], vec!["app", "--timer", "--capture-control"]] {
+        assert!(support::parse(&flags).is_err(), "{flags:?}");
+    }
+}

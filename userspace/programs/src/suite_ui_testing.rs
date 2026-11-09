@@ -31,6 +31,8 @@ mod input;
 mod input_delivery;
 #[path = "uitest_suite/clock.rs"]
 mod clock;
+#[path = "uitest_suite/timers.rs"]
+mod timers;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
 
 fn pending(layer: &str, step: u8) -> CaseResult {
@@ -150,7 +152,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Each step is acknowledged by every required participant in its commit metadata. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("epochs-acked", "Each step is acknowledged by every required participant in its commit metadata", || pending("clock", 7)),
         // An app's one-second timer fires on step(1000), not on real time. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("timers-virtual", "An app's one-second timer fires on step(1000), not on real time", || pending("clock", 7)),
+        case("timers-virtual", "An app's one-second timer fires on step(1000), not on real time", timers::timers_virtual).session(libuitest::supervisor::serve),
         // Wall-clock time shown by apps and bwm is the fixed instant plus elapsed UI time. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("wall-time-fixed", "Wall-clock time shown by apps and bwm is the fixed instant plus elapsed UI time", || pending("clock", 7)),
         // bwm's taskbar clock and repeat timer read the UI clock. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -160,11 +162,11 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A stopped participant makes step fail naming it, unless the case excluded it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("stopped-unacked-fails", "A stopped participant makes step fail naming it, unless the case excluded it", clock::stopped).session(libuitest::supervisor::serve),
         // Stepping never deadlocks against buffer back-pressure. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("backpressure-stepped", "Stepping never deadlocks against buffer back-pressure", || pending("clock", 7)),
+        case("backpressure-stepped", "Stepping never deadlocks against buffer back-pressure", timers::backpressure_stepped).session(libuitest::supervisor::serve),
         // An app that animates forever still lets every step complete. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("continuous-animation", "An app that animates forever still lets every step complete", || pending("clock", 7)),
+        case("continuous-animation", "An app that animates forever still lets every step complete", timers::continuous_animation).session(libuitest::supervisor::serve),
         // An app's real-clock read counter stays 0 in a session and rises when the test app reads the real clock on purpose. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("real-clock-counter", "An app's real-clock read counter stays 0 in a session and rises when the test app reads the real clock on purpose", || pending("clock", 7)),
+        case("real-clock-counter", "An app's real-clock read counter stays 0 in a session and rises when the test app reads the real clock on purpose", timers::real_clock_counter).session(libuitest::supervisor::serve),
         // Injected events carry UI time, and bwm's double-click threshold uses it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("input-time", "Injected events carry UI time, and bwm's double-click threshold uses it", || pending("clock", 7)),
     ]),
