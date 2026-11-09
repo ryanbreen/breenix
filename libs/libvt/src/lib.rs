@@ -469,6 +469,7 @@ pub struct TermEmu {
     inverse: bool,
     autowrap: bool,
     application_cursor_keys: bool,
+    bracketed_paste: bool,
     pending_wrap: bool,
     saved_cursor: SavedCursor,
     main_screen: Option<MainScreen>,
@@ -502,7 +503,7 @@ impl TermEmu {
             cells: vec![Cell::blank(); cols * rows],
             cursor_x: 0, cursor_y: 0,
             fg: FG_COLOR, bg: BG_COLOR, bold: false, underline: false, inverse: false,
-            application_cursor_keys: false, autowrap: true, pending_wrap: false, saved_cursor: SavedCursor::default(),
+            bracketed_paste: false, application_cursor_keys: false, autowrap: true, pending_wrap: false, saved_cursor: SavedCursor::default(),
             main_screen: None, scroll_top: 0, scroll_bottom: rows - 1,
             tabs: (0..cols).map(|x| x != 0 && x % 8 == 0).collect(),
             ansi_private: false, alternate: false, cursor_visible: true,
@@ -516,6 +517,7 @@ impl TermEmu {
         }
     }
 
+    pub fn bracketed_paste(&self) -> bool { self.bracketed_paste }
     pub fn cell(&self, x: usize, y: usize) -> &Cell { &self.cells[y * self.cols + x] }
     /// Rows above the live screen; 0 follows output.
     pub fn view_offset(&self) -> usize { self.view_offset }
@@ -809,6 +811,7 @@ impl TermEmu {
                         7 => { self.autowrap = enabled; self.pending_wrap = false; }
                         25 => self.cursor_visible = enabled,
                         1049 => self.alternate_screen_mode(enabled),
+                        2004 => self.bracketed_paste = enabled,
                         _ => {}
                     }
                 }

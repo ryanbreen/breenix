@@ -15,7 +15,9 @@ fn set_and_get_over_socketpair() {
             loop {
                 let mut byte = [0];
                 server.read_exact(&mut byte).unwrap();
-                if let Some(request) = decoder.feed(&byte).1 {
+                let (_, result) = decoder.feed(&byte);
+                if result.is_none() && decoder.window().is_some() { assert_eq!(decoder.window(), Some(42)); }
+                if let Some(request) = result {
                     let request = request.unwrap();
                     assert_eq!(request.window, 42);
                     server.write_all(&store.execute(request).encode()).unwrap();

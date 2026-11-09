@@ -24,6 +24,7 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("resize", "Resize", bterm::resize),
         case("scrollback", "Scrollback", bterm::scrollback),
         case("exec-tab", "Execute a command in a tab", bterm::exec_tab),
+        case("paste", "Paste clipboard text", bterm::paste),
         case("paste", "Paste", pending::not_built),
     ]),
 ]).gui().defer_display();

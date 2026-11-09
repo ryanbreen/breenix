@@ -176,6 +176,7 @@ impl TermEmu {
 struct Tab {
     emu: TermEmu,
     master_fd: Fd,
+    pending_input: Vec<u8>,
     child_pid: i64,
     session_pid: i64,
     show_exit: bool,
@@ -200,6 +201,18 @@ fn winsize(cols: usize, rows: usize, width: u32, height: u32) -> termios::Winsiz
 }
 
 impl Tab {
+    fn send_input(&mut self, bytes: &[u8]) {
+        self.pending_input.extend_from_slice(bytes);
+        self.flush_input();
+    }
+    fn flush_input(&mut self) {
+        while !self.pending_input.is_empty() {
+            match io::write(self.master_fd, &self.pending_input) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => { self.pending_input.drain(..n); }
+            }
+        }
+    }
     fn resize(&mut self, cols: usize, rows: usize, width: u32, height: u32) {
         self.emu.resize(cols, rows);
         if let Err(error) = termios::set_winsize(self.master_fd, &winsize(cols, rows, width, height)) {
@@ -291,6 +304,7 @@ fn spawn_tab_cmd(cols: usize, rows: usize, width: u32, height: u32, args: &[Stri
     Tab {
         emu: TermEmu::new(cols, rows),
         master_fd,
+        pending_input: Vec::new(),
         child_pid,
         session_pid: child_pid,
         show_exit,
@@ -420,6 +434,18 @@ fn main() {
                         print!("[bterm] key: ascii={} keycode=0x{:02X} ctrl={}\n",
                                *ascii, *keycode, modifiers.ctrl);
                     }
+                    if modifiers.ctrl && modifiers.shift && *keycode == libbreenix::input::key::V as u32 {
+                        if let Some(tab) = tabs.get_mut(tab_bar.selected()) {
+                            if let Ok(data) = libclipboard::get(win.id()) {
+                                let mut bytes = Vec::new();
+                                if tab.emu.vt.bracketed_paste() { bytes.extend_from_slice(b"\x1b[200~"); }
+                                bytes.extend_from_slice(&data);
+                                if tab.emu.vt.bracketed_paste() { bytes.extend_from_slice(b"\x1b[201~"); }
+                                tab.send_input(&bytes);
+                            }
+                        }
+                        continue;
+                    }
                     if modifiers.ctrl {
                         // Ctrl+T: new tab
                         if *ascii == b't' - b'a' + 1 || *ascii == b'T' - b'A' + 1
@@ -453,8 +479,8 @@ fn main() {
                         // Ctrl+C: send interrupt to PTY
                         if text.as_bytes() == [3] {
                             let sel = tab_bar.selected();
-                            if let Some(tab) = tabs.get(sel) {
-                                let _ = io::write(tab.master_fd, &[3]);
+                            if let Some(tab) = tabs.get_mut(sel) {
+                                tab.send_input(&[3]);
                             }
                             continue;
                         }
@@ -485,9 +511,9 @@ fn main() {
                     }
 
                     let sel = tab_bar.selected();
-                    if let Some(tab) = tabs.get(sel) {
+                    if let Some(tab) = tabs.get_mut(sel) {
                         let bytes = keys::encode(*keycode, modifiers.ctrl, text, tab.emu.vt.application_cursor_keys());
-                        if !bytes.is_empty() { let _ = io::write(tab.master_fd, &bytes); }
+                        if !bytes.is_empty() { tab.send_input(&bytes); }
                     }
                 }
                 Event::Scroll { delta_y, .. } => {
@@ -577,6 +603,7 @@ fn main() {
 
         // ── 2. Read PTY output for ALL tabs (non-blocking) ──────────
         for tab in tabs.iter_mut() {
+            tab.flush_input();
             loop {
                 match io::read(tab.master_fd, &mut pty_buf) {
                     Ok(0) => break,

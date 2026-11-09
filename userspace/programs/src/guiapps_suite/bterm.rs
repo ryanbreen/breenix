@@ -164,3 +164,15 @@ pub fn scrollback() -> CaseResult {
     }
     Err("scrollback did not show line 1 at the top".into())
 }
+
+pub fn paste() -> CaseResult {
+    use libuitest::input::Modifier;
+    let mut t = App::launch(&[b"/usr/bin/bterm"], "Terminal")?;
+    t.expect_text("bsh />")?;
+    t.type_line("/usr/libexec/breenix/clip-set_test 'echo pasted'")?;
+    t.expect_text("bsh />")?;
+    t.key(47, &[Modifier::Ctrl, Modifier::Shift])?;
+    t.key(28, &[])?;
+    t.expect_text("pasted")?;
+    Ok(t.finish()?)
+}
