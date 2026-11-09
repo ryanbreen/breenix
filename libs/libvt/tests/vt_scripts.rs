@@ -27,3 +27,18 @@ fn scripts_produce_the_guest_screen_literals() {
         for y in 4..10 { assert!((0..40).all(|x| vt.cell(x, y).ch == ' '), "{name} row {y}"); }
     }
 }
+
+#[test]
+fn scripted_screen_waits_for_input_after_output() {
+    struct Input;
+    impl std::io::Read for Input {
+        fn read(&mut self, bytes: &mut [u8]) -> std::io::Result<usize> {
+            assert!(!bytes.is_empty(), "an empty read cannot hold the scripted screen");
+            Ok(0)
+        }
+    }
+    let bytes = scripts::script("utf8").unwrap();
+    let mut output = Vec::new();
+    scripts::write_and_hold(&mut Input, &mut output, bytes).unwrap();
+    assert_eq!(output, bytes);
+}
