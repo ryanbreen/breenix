@@ -128,20 +128,31 @@ pub fn serial() -> Result<alloc::string::String, i32> {
 /// The timestamps come from the writer before publication. Keep the original, unannotated serial endpoint unchanged.
 pub fn serial_timed() -> Result<alloc::string::String, i32> {
     use core::fmt::Write;
+    drain_snapshot();
+    let start = LATEST_START.load(Ordering::Acquire);
+    let start = if start == usize::MAX { 0 } else { start };
     let n = TAIL.load(Ordering::Acquire);
-    if n > RING { return Err(-75); }
+    if LAPPED.load(Ordering::Acquire) || start.saturating_add(RING) < n.saturating_add(9) {
+        return Err(-75);
+    }
     let mut line = alloc::vec::Vec::new();
     let mut out = alloc::string::String::new();
-    let mut offset = 0;
+    let mut offset = start;
     while offset < n {
-        let byte = at(offset);
+        let byte = SERIAL[offset % RING].load(Ordering::Relaxed);
         offset += 1;
         line.push(byte);
         if byte == b'\n' {
-            let ms = recorded_ms(&mut offset);
+            let stamp = core::array::from_fn(|i| SERIAL[(offset + i) % RING].load(Ordering::Relaxed));
+            offset += 8;
+            let ms = u64::from_le_bytes(stamp);
             let _ = write!(out, "{ms}|{}", alloc::string::String::from_utf8_lossy(&line));
             line.clear();
         }
+    }
+    if LAPPED.load(Ordering::Acquire)
+        || start.saturating_add(RING) < TAIL.load(Ordering::Acquire).saturating_add(9) {
+        return Err(-75);
     }
     Ok(out)
 }

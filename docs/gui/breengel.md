@@ -1708,6 +1708,12 @@ suite's captured serial state. The case checks the complete heading against the 
 samples, including the case name, skipped suffix and background after clipped text.
 Elapsed time is derived independently from the captured producer's monotonic START
 timestamp in `/proc/breenix/boot-serial-timed`; each line is `milliseconds|serial line`.
+<!-- claim-lint:ok: Normative endpoint ranges for #2824, not an acceptance claim. -->
+The `/proc/breenix/boot-serial` endpoint returns the boot prefix before the first
+suite START, or the current prefix before any START. The timed endpoint returns
+complete records from the latest suite START through its snapshot tail, or the
+current prefix before any START. Either returns EOVERFLOW when its required range
+cannot be retained; neither silently truncates the evidence.
 The sample interval permits the 250 ms panel refresh interval plus 50 ms for clock
 resolution and sampling. The check must reject a stale elapsed field outside that
 interval, including after a display owner has held the screen.
