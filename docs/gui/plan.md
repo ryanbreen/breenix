@@ -815,6 +815,12 @@ reviewer, date, what was checked). Frames saved from runs never become reference
   copies the manifests, references, font pins and provenance file into each run's evidence directory before
   boot. That copy is storage, not verdict.
 
+The form, menu and list scenarios declare 11 logical-scale-1 definitions in
+`docs/suites/ui-testing.json`. `app_checkpoint` constructs the corresponding
+geometry and reviewed reference pin for the active UI scale, 1 or 2, using `PROVENANCE.json`.
+The host transport accounting binds the stable case/check names; the FRAME
+definition hash identifies the concrete instance validated before comparison.
+
 ### 7.6 Tolerance policy
 
 Exact (`channel` 0, `maxDiffering` 0) for everything BreenGL draws and everything either compositor

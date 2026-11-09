@@ -496,5 +496,358 @@
       ]
     }
   ],
-  "frameChecks": []
+  "frameChecks": [
+    {
+      "version": 1,
+      "case": "proof/form-scenario",
+      "check": "initial",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "widgets"
+      },
+      "at": {
+        "checkpoint": "initial",
+        "requires": []
+      },
+      "reference": {
+        "path": "ui-testing/form-initial-s1.png",
+        "sha256": "d8f7ad649ead61d0f61a3cdc309455a55ee91bae3ce2dc3dc52a1793523248d6"
+      },
+      "regions": [
+        {
+          "name": "all",
+          "x": 0,
+          "y": 0,
+          "w": 640,
+          "h": 400
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    {
+      "version": 1,
+      "case": "proof/form-scenario",
+      "check": "typed",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "widgets"
+      },
+      "at": {
+        "checkpoint": "typed",
+        "requires": []
+      },
+      "reference": {
+        "path": "ui-testing/form-typed-s1.png",
+        "sha256": "0faeeb4ea2334b440b782ff73488bf86e8fc66aad837c6ac93cd986256044747"
+      },
+      "regions": [
+        {
+          "name": "all",
+          "x": 0,
+          "y": 0,
+          "w": 640,
+          "h": 400
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    {
+      "version": 1,
+      "case": "proof/form-scenario",
+      "check": "checked",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "widgets"
+      },
+      "at": {
+        "checkpoint": "checked",
+        "requires": []
+      },
+      "reference": {
+        "path": "ui-testing/form-checked-s1.png",
+        "sha256": "ddcd973d2c5f099772e48b5820066d706f9edc54e6ad7a36509d243b1de60e5c"
+      },
+      "regions": [
+        {
+          "name": "all",
+          "x": 0,
+          "y": 0,
+          "w": 640,
+          "h": 400
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    {
+      "version": 1,
+      "case": "proof/form-scenario",
+      "check": "slider",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "widgets"
+      },
+      "at": {
+        "checkpoint": "slider",
+        "requires": []
+      },
+      "reference": {
+        "path": "ui-testing/form-slider-s1.png",
+        "sha256": "d27af51ceec4e3fdcae1f079f6dbd06bb9a358305403300e0531ec8980aa39e6"
+      },
+      "regions": [
+        {
+          "name": "all",
+          "x": 0,
+          "y": 0,
+          "w": 640,
+          "h": 400
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    {
+      "version": 1,
+      "case": "proof/form-scenario",
+      "check": "submitted",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "widgets"
+      },
+      "at": {
+        "checkpoint": "submitted",
+        "requires": []
+      },
+      "reference": {
+        "path": "ui-testing/form-submitted-s1.png",
+        "sha256": "934fe85e25d94a2e27d01242226117cbe4e73f0af7f32db9d8604fcd886f982b"
+      },
+      "regions": [
+        {
+          "name": "all",
+          "x": 0,
+          "y": 0,
+          "w": 640,
+          "h": 400
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    {
+      "version": 1,
+      "case": "proof/menu-scenario",
+      "check": "initial",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "widgets"
+      },
+      "at": {
+        "checkpoint": "initial",
+        "requires": []
+      },
+      "reference": {
+        "path": "ui-testing/menu-initial-s1.png",
+        "sha256": "d8f7ad649ead61d0f61a3cdc309455a55ee91bae3ce2dc3dc52a1793523248d6"
+      },
+      "regions": [
+        {
+          "name": "all",
+          "x": 0,
+          "y": 0,
+          "w": 640,
+          "h": 400
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    {
+      "version": 1,
+      "case": "proof/menu-scenario",
+      "check": "opened",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "widgets"
+      },
+      "at": {
+        "checkpoint": "opened",
+        "requires": []
+      },
+      "reference": {
+        "path": "ui-testing/menu-opened-s1.png",
+        "sha256": "eb1acf47f87dc9bde259251423b0dddac1c3f4d1dc48441eed32adbde3577599"
+      },
+      "regions": [
+        {
+          "name": "all",
+          "x": 0,
+          "y": 0,
+          "w": 640,
+          "h": 400
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    {
+      "version": 1,
+      "case": "proof/menu-scenario",
+      "check": "chosen",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "widgets"
+      },
+      "at": {
+        "checkpoint": "chosen",
+        "requires": []
+      },
+      "reference": {
+        "path": "ui-testing/menu-chosen-s1.png",
+        "sha256": "d8f7ad649ead61d0f61a3cdc309455a55ee91bae3ce2dc3dc52a1793523248d6"
+      },
+      "regions": [
+        {
+          "name": "all",
+          "x": 0,
+          "y": 0,
+          "w": 640,
+          "h": 400
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    {
+      "version": 1,
+      "case": "proof/list-scenario",
+      "check": "initial",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "widgets"
+      },
+      "at": {
+        "checkpoint": "initial",
+        "requires": []
+      },
+      "reference": {
+        "path": "ui-testing/list-initial-s1.png",
+        "sha256": "d8f7ad649ead61d0f61a3cdc309455a55ee91bae3ce2dc3dc52a1793523248d6"
+      },
+      "regions": [
+        {
+          "name": "all",
+          "x": 0,
+          "y": 0,
+          "w": 640,
+          "h": 400
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    {
+      "version": 1,
+      "case": "proof/list-scenario",
+      "check": "scrolled",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "widgets"
+      },
+      "at": {
+        "checkpoint": "scrolled",
+        "requires": []
+      },
+      "reference": {
+        "path": "ui-testing/list-scrolled-s1.png",
+        "sha256": "8b2e39218097c34f34674f27a064c34ce0abc6d5fffe716ccee085bd4d837e76"
+      },
+      "regions": [
+        {
+          "name": "all",
+          "x": 0,
+          "y": 0,
+          "w": 640,
+          "h": 400
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    },
+    {
+      "version": 1,
+      "case": "proof/list-scenario",
+      "check": "selected",
+      "kind": "stored",
+      "source": {
+        "kind": "window",
+        "window": "widgets"
+      },
+      "at": {
+        "checkpoint": "selected",
+        "requires": []
+      },
+      "reference": {
+        "path": "ui-testing/list-selected-s1.png",
+        "sha256": "b5110279f12a107247448a803b63fe0944f2f41c5577a28f09ccc888d1bc8646"
+      },
+      "regions": [
+        {
+          "name": "all",
+          "x": 0,
+          "y": 0,
+          "w": 640,
+          "h": 400
+        }
+      ],
+      "mask": [],
+      "tolerance": {
+        "channel": 0,
+        "maxDiffering": 0
+      }
+    }
+  ]
 }
