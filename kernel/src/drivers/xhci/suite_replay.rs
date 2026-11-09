@@ -13,6 +13,28 @@ static STATE: AtomicU8 = AtomicU8::new(IDLE);
 static PENDING: spin::Mutex<Option<(Request, bool)>> = spin::Mutex::new(None);
 static ANSWER: spin::Mutex<Option<Result<Receipt, u64>>> = spin::Mutex::new(None);
 static ANSWER_READY: Completion = Completion::new();
+static DIAGNOSTICS: [crate::log_notice::Record; 4] =
+    [const { crate::log_notice::Record::new() }; 4];
+
+fn report_killed(state: &str, posted_at: u64) {
+    let age_ns = super::now().saturating_sub(posted_at);
+    let worker_tid = super::WORKER_TID.load(Ordering::Acquire);
+    let snapshot = crate::task::scheduler::try_thread_wait(worker_tid);
+    let worker_state = snapshot.map(|(state, _, _)| state);
+    let cpu = snapshot.and_then(|(_, cpu, _)| cpu);
+    let wake_time_ns = snapshot.and_then(|(_, _, deadline)| deadline);
+    let work_pending = super::WORK.pending();
+    let waiter = super::WORK.waiter();
+    let leds = super::LEDS.load(Ordering::Acquire);
+    let interrupts = super::interrupt_count();
+    // Deferred to the existing thread-context notice drain. A busy record is
+    // tried once; no serial lock, UART wait, allocation or mailbox lock here.
+    for record in &DIAGNOSTICS {
+        if record.post_again(format_args!("XHCI_REPLAY_STATE state={state} age_ns={age_ns} worker_tid={worker_tid} worker_state={worker_state:?} cpu={cpu:?} wake_time_ns={wake_time_ns:?} work_pending={work_pending} waiter={waiter} leds={leds} interrupts={interrupts}")) {
+            break;
+        }
+    }
+}
 
 pub(super) fn pending() -> bool { STATE.load(Ordering::Acquire) == POSTED }
 pub(super) fn take() -> Option<(Request, bool)> {
@@ -40,6 +62,7 @@ pub(super) fn submit(request: Request, suppress: bool) -> Result<Receipt, u64> {
     ANSWER_READY.reset();
     *ANSWER.lock() = None;
     *PENDING.lock() = Some((request, suppress));
+    let posted_at = super::now();
     let _ = STATE.compare_exchange(TAKEN, POSTED, Ordering::Release, Ordering::Relaxed);
     // request() supplies the existing publish/check/wake ordering.
     super::request(&super::LEDS);
@@ -61,11 +84,17 @@ pub(super) fn submit(request: Request, suppress: bool) -> Result<Receipt, u64> {
                     POSTED if wait == Err(EINTR) => {
                         if STATE.compare_exchange(POSTED, IDLE, Ordering::AcqRel, Ordering::Acquire).is_ok() {
                             pending.take();
+                            drop(answer);
+                            drop(pending);
+                            report_killed("Posted", posted_at);
                             return Err(EINTR as u64);
                         }
                     }
                     TAKEN if wait == Err(EINTR) => {
                         if STATE.compare_exchange(TAKEN, ABANDONED, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+                            drop(answer);
+                            drop(pending);
+                            report_killed("Taken", posted_at);
                             return Err(EINTR as u64);
                         }
                     }

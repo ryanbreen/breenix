@@ -55,6 +55,9 @@ pub struct Node {
     next: AtomicPtr<Node>,
     len: UnsafeCell<usize>,
     line: UnsafeCell<[u8; LINE]>,
+    // A Record supplies static storage for a longer line. Ordinary notices
+    // keep using the inline buffer and its existing truncation contract.
+    external: AtomicPtr<u8>,
 }
 
 // SAFETY: `len` and `line` are written only by the poster that moved `state`
@@ -69,6 +72,7 @@ impl Node {
             next: AtomicPtr::new(ptr::null_mut()),
             len: UnsafeCell::new(0),
             line: UnsafeCell::new([0; LINE]),
+            external: AtomicPtr::new(ptr::null_mut()),
         }
     }
 
@@ -118,12 +122,17 @@ impl Node {
         line[len] = b'\n';
         // SAFETY: as above.
         unsafe { *self.len.get() = len + 1 };
+        self.external.store(ptr::null_mut(), Ordering::Relaxed);
+        self.publish(len + 1);
+    }
+
+    fn publish(&self, len: usize) {
         self.state.store(POSTED, Ordering::Relaxed);
         let hook = ON_POST.load(Ordering::Acquire);
         if hook != 0 {
             // SAFETY: only `set_on_post` stores a nonzero value, and it stores a `fn(usize)`.
             let hook: fn(usize) = unsafe { core::mem::transmute(hook) };
-            hook(len + 1);
+            hook(len);
         }
 
         let me = self as *const Node as *mut Node;
@@ -135,6 +144,59 @@ impl Node {
                 Err(now) => head = now,
             }
         }
+    }
+}
+
+/// A static diagnostic line, deferred to the existing thread-context notice
+/// drain. Posting formats into fixed storage without taking a lock or touching
+/// the UART. A busy record or an oversized line is refused without truncation.
+pub struct Record {
+    node: Node,
+    line: UnsafeCell<[u8; 512]>,
+}
+
+// SAFETY: the node's COMPOSING state excludes other posters; the notice list's
+// release/acquire publication and WRITTEN handoff cover the reader and reuse.
+unsafe impl Sync for Record {}
+
+impl Record {
+    pub const fn new() -> Self {
+        Self { node: Node::new(), line: UnsafeCell::new([0; 512]) }
+    }
+
+    pub fn post_again(&'static self, args: core::fmt::Arguments) -> bool {
+        use core::fmt::Write;
+        if !self.node.claim(IDLE) && !self.node.claim(WRITTEN) {
+            return false;
+        }
+        // SAFETY: this caller claimed COMPOSING, and self is static.
+        let line = unsafe { &mut *self.line.get() };
+        let mut writer = RecordWriter { bytes: line, len: 0 };
+        if writer.write_fmt(args).and_then(|_| writer.write_str("\n")).is_err() {
+            self.node.state.store(WRITTEN, Ordering::Release);
+            return false;
+        }
+        let len = writer.len;
+        // SAFETY: COMPOSING excludes the reader until publish's release.
+        unsafe { *self.node.len.get() = len };
+        self.node.external.store(line.as_mut_ptr(), Ordering::Relaxed);
+        self.node.publish(len);
+        true
+    }
+}
+
+struct RecordWriter<'a> {
+    bytes: &'a mut [u8],
+    len: usize,
+}
+
+impl core::fmt::Write for RecordWriter<'_> {
+    fn write_str(&mut self, text: &str) -> core::fmt::Result {
+        let end = self.len.checked_add(text.len()).ok_or(core::fmt::Error)?;
+        let out = self.bytes.get_mut(self.len..end).ok_or(core::fmt::Error)?;
+        out.copy_from_slice(text.as_bytes());
+        self.len = end;
+        Ok(())
     }
 }
 
@@ -209,10 +271,18 @@ pub fn take(mut write: impl FnMut(&[u8])) {
         let node = unsafe { &*oldest };
         let next = node.next.load(Ordering::Relaxed);
         // SAFETY: published by the poster's Release, taken with the Acquire above.
-        let line: &[u8; LINE] = unsafe { &*node.line.get() };
         // SAFETY: as above.
         let len = unsafe { *node.len.get() };
-        write(&line[..len]);
+        let external = node.external.load(Ordering::Relaxed);
+        let line = if external.is_null() {
+            // SAFETY: an ordinary Node keeps its line inline.
+            unsafe { &(&*node.line.get())[..len] }
+        } else {
+            // SAFETY: Record's storage is static, published before the list's
+            // release, and cannot be reused until this reader sets WRITTEN.
+            unsafe { core::slice::from_raw_parts(external, len) }
+        };
+        write(line);
         node.state.store(WRITTEN, Ordering::Release);
         oldest = next;
     }
