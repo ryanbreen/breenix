@@ -269,6 +269,11 @@ def score_one(scorer, repo, suite, last, records, window, logs, disk, needs_rese
     unrestored = [reset for reset in resets if " FAIL " in reset
                   or not re.search(r" removed=\d+(?: |$)", reset)
                   or not re.search(r" changed=0(?: |$)", reset)
+                  or (" appended=" in reset and not re.search(r" appended=\d+(?: |$)", reset))
+                  or (re.search(r" appended=[1-9]\d*(?: |$)", reset)
+                      and not re.search(r" logs=\S+(?: |$)", reset))
+                  or any(not path.startswith("/var/log/") or any(part in ("", ".", "..") for part in path[9:].split("/"))
+                         for match in re.finditer(r" logs=(\S+)", reset) for path in match[1].split(","))
                   or not re.search(r" tcp=0(?: |$)", reset)
                   or not re.search(r" tcpwait=\d+(?: |$)", reset)]
     if needs_reset:
