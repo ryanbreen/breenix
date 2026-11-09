@@ -253,7 +253,8 @@ fn run(id: &str, which: u8) -> Result<(), String> {
         .ok_or("artifact scenario has no FRAME")?;
     if which != 1 {
         require(
-            record.ends_with(&format!("artifacts=complete path={}", path.display())),
+            record.ends_with(&format!("artifacts=complete path={}", path.display()))
+                || record.ends_with("artifacts=partial:screen-dropped"),
             format!("artifact FRAME path: {record}"),
         )?;
     } else {
@@ -261,6 +262,10 @@ fn run(id: &str, which: u8) -> Result<(), String> {
             !path.exists(),
             "passing inner case saved evidence at teardown",
         )?;
+    }
+    if which == 0 {
+        // Retain this contained FRAME snapshot through the real diagnostic route.
+        libuitest::retention::retain("ui-testing", &case)?;
     }
     Ok(())
 }

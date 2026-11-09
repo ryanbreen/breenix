@@ -153,10 +153,15 @@ impl Session {
             writer:if input_log.is_ok() { writer } else { &mut unavailable },
             save_all:crate::artifacts::save_all(),
         };
-        crate::frames::check_stored_with_artifacts(suite,definition,
+        let verdict = crate::frames::check_stored_with_artifacts(suite,definition,
             crate::frames::Capture {frame,source:&source,
                 checkpoint:definition["at"]["checkpoint"].as_str().ok_or("missing checkpoint")?,
-                commit:record.commit,epoch:record.epoch,barriers},bindings,references,client,&mut artifacts)
+                commit:record.commit,epoch:record.epoch,barriers},bindings,references,client,&mut artifacts)?;
+        #[cfg(target_os = "breenix")]
+        if !verdict.comparison.passed() && client.is_outer() {
+            let _ = crate::retention::retain(suite, case);
+        }
+        Ok(verdict)
     }
     /// Wait for the supervisor to witness the live window and register its remnant hold.
     pub fn hold_window(&mut self, id: u64) -> Result<(), String> {

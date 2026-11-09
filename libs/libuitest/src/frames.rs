@@ -287,10 +287,18 @@ fn check_stored_impl(
                 context.input_log,
             );
             match result {
-                Ok(()) => format!(
-                    "artifacts=complete path={}",
-                    context.writer.path().display()
-                ),
+                Ok(()) => {
+                    let dropped = !verdict.comparison.passed()
+                        && context.writer.prepare_retention().ok().flatten() == Some(true);
+                    if dropped {
+                        "artifacts=partial:screen-dropped".into()
+                    } else {
+                        format!(
+                            "artifacts=complete path={}",
+                            context.writer.path().display()
+                        )
+                    }
+                }
                 Err(error) => format!("artifacts={}", error.record()),
             }
         });
@@ -309,9 +317,12 @@ fn check_stored_impl(
             .comparison
             .first
             .ok_or("mismatch without first pixel")?;
-        line.push_str(&format!(" compared={} differing={} {}",
-            verdict.comparison.compared, verdict.comparison.differing,
-            crate::messages::pixel_details(first.x, first.y, first.actual, first.expected)));
+        line.push_str(&format!(
+            " compared={} differing={} {}",
+            verdict.comparison.compared,
+            verdict.comparison.differing,
+            crate::messages::pixel_details(first.x, first.y, first.actual, first.expected)
+        ));
     }
     if let Some(saved) = saved {
         line.push(' ');

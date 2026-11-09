@@ -21,6 +21,7 @@ thread_local! {
     static MODE: Cell<Mode> = const { Cell::new(Mode::Success) };
     static KILLED: Cell<bool> = const { Cell::new(false) };
     static REAPED: Cell<bool> = const { Cell::new(false) };
+    static EXIT: Cell<i32> = const { Cell::new(0) };
     static SENT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 pub mod errno {
@@ -61,7 +62,7 @@ pub mod process {
         };
         if !complete { assert_eq!(flags,WNOHANG); return Ok(super::Pid(0)); }
         assert!(!super::REAPED.replace(true), "child reaped twice");
-        *status = if matches!(super::MODE.get(), super::Mode::Failure) {1} else {0};
+        *status = super::EXIT.get();
         Ok(super::Pid(123))
     }
     pub fn wifexited(status: i32) -> bool { (0..=1).contains(&status) }
@@ -71,7 +72,7 @@ pub mod suite {
     pub enum Run<'a> { Call(&'a mut dyn FnMut() -> i32) }
     pub fn spawn(keep: &[(u64,u64)], Run::Call(send): Run<'_>) -> Result<super::Pid, super::error::Error> {
         assert!(keep.is_empty(), "upload inherited a runner descriptor");
-        if !matches!(super::MODE.get(), super::Mode::Hung) { send(); }
+        if !matches!(super::MODE.get(), super::Mode::Hung) { super::EXIT.set(send()); }
         Ok(super::Pid(123))
     }
     pub fn upload_diagnostic(suite: &str, label: &str, bytes: &[u8]) -> Result<String,String> {
@@ -82,7 +83,7 @@ pub mod suite {
     pub fn case_ms_left() -> u64 {10000}
 }
 fn run(mode: Mode, budget: u64) -> Result<(), String> {
-    CLOCK.set(0); MODE.set(mode); KILLED.set(false); REAPED.set(false); SENT.with_borrow_mut(Vec::clear);
+    CLOCK.set(0); EXIT.set(0); MODE.set(mode); KILLED.set(false); REAPED.set(false); SENT.with_borrow_mut(Vec::clear);
     retention::transfer("ui-testing","uitest-0000000000000000",b"exact frozen snapshot",budget)
 }
 #[test]

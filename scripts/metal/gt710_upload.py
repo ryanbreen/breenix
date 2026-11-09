@@ -108,7 +108,8 @@ def receive(handler):
                 or (is_picture and (intent.get('suite') not in (('gpu', 'breengel', 'window-manager', 'ui-testing') if proof else ('breengel', 'window-manager', 'ui-testing')) or not intent.get('complete')
                     or intent.get('finalComplete') or picture_index != intent.get('pictureUploads', 0)))
                 or (is_diagnostic and (not intent.get('complete') or intent.get('finalComplete') or
-                    (len(intent.get('diagnosticUploads', {})) >= (206 if intent.get('suite') == 'ui-testing' else 16)
+                    ((len(intent.get('diagnosticUploads', {})) >= 16 or
+                      (intent.get('suite') == 'ui-testing' and not re.fullmatch(r'uitest-[0-9a-f]{16}', diagnostic_label)))
                      if intent.get('suite') in ('window-manager', 'ui-testing') else
                      not (proof and intent.get('suite') in ('gpu', 'breengel') and
                           re.fullmatch(r'crc-' + intent['suite'] + r'-[0-9a-f]{16}', diagnostic_label) and

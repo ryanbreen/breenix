@@ -40,3 +40,6 @@ pub mod input;
 
 pub mod clock;
 pub mod settle;
+
+#[cfg(target_os = "breenix")]
+pub mod retention;
