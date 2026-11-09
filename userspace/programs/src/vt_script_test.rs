@@ -26,6 +26,11 @@ fn main() {
         }
         return;
     }
+    if name == "--session" {
+        let session = libbreenix::process::getsid(0).expect("getsid");
+        println!("SESSION {}", session.raw());
+        return;
+    }
     if name == "--size" {
         match libbreenix::termios::get_winsize(libbreenix::types::Fd::STDIN) {
             Ok(size) => println!("{} {}", size.ws_row, size.ws_col),

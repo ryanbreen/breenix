@@ -55,7 +55,7 @@ fn until(label: &str, mut ready: impl FnMut() -> Result<bool, String>) -> Result
     use breenix_suite::suite::control::{Wait, Watchdog};
     let watchdog = Watchdog::new(Wait::AppOutput)?;
     loop {
-        if libbreenix::time::now_monotonic().map_err(|e| e.to_string())?.as_nanos() >= u128::from(watchdog.deadline_ns()) {
+        if libbreenix::time::now_monotonic().map_err(|e| e.to_string())?.as_nanos() >= i128::from(watchdog.deadline_ns()) {
             return Err(format!("{label}: hang watchdog"));
         }
         if ready()? { return Ok(()); }

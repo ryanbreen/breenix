@@ -19,6 +19,9 @@ mod exit_row;
 #[path = "bterm/keys.rs"]
 mod keys;
 
+#[path = "bterm/session.rs"]
+mod session;
+
 use std::process;
 
 use breengel::{Window, Event, CachedFont, TabBar, Rect, Theme, Color, Surface};
@@ -173,12 +176,40 @@ struct Tab {
     emu: TermEmu,
     master_fd: Fd,
     child_pid: i64,
+    session_pid: i64,
     show_exit: bool,
+}
+
+impl Drop for Tab {
+    fn drop(&mut self) {
+        if self.session_pid > 1 {
+            let child = (self.child_pid > 0).then_some(self.child_pid as i32);
+            if let Err(error) = session::hangup_and_reap(self.session_pid as i32, child, self.master_fd.raw() as i32) {
+                eprintln!("[bterm] close tab: {error}");
+            }
+        } else {
+            let _ = io::close(self.master_fd);
+        }
+    }
+}
+
+fn winsize(cols: usize, rows: usize, width: u32, height: u32) -> termios::Winsize {
+    termios::Winsize { ws_row: rows as u16, ws_col: cols as u16,
+        ws_xpixel: width as u16, ws_ypixel: height as u16 }
+}
+
+impl Tab {
+    fn resize(&mut self, cols: usize, rows: usize, width: u32, height: u32) {
+        self.emu.resize(cols, rows);
+        if let Err(error) = termios::set_winsize(self.master_fd, &winsize(cols, rows, width, height)) {
+            eprintln!("[bterm] PTY resize failed: {error}");
+        }
+    }
 }
 
 // ─── Process Spawning ───────────────────────────────────────────────────────
 
-fn spawn_child(args: &[String]) -> (Fd, i64) {
+fn spawn_child(args: &[String], size: &termios::Winsize) -> (Fd, i64) {
     let strings: Vec<std::ffi::CString> = args.iter().map(|s| std::ffi::CString::new(s.as_bytes()).expect("argument contains NUL")).collect();
     let mut argv: Vec<*const u8> = strings.iter().map(|s| s.as_ptr().cast()).collect();
     argv.push(core::ptr::null());
@@ -190,6 +221,11 @@ fn spawn_child(args: &[String]) -> (Fd, i64) {
             return (Fd::from_raw(u64::MAX), -1);
         }
     };
+
+    // Initialize the PTY before fork, so even a child that runs first sees its grid.
+    if let Err(error) = termios::set_winsize(master_fd, size) {
+        eprintln!("[bterm] initial PTY size: {error}");
+    }
 
     // Build slave path on the STACK (not heap) to avoid CoW corruption after fork.
     // slave_name is [u8; 32] containing e.g. "/dev/pts/0\0..."
@@ -244,17 +280,18 @@ fn make_tab_label() -> &'static [u8] {
     Box::leak(boxed)
 }
 
-fn spawn_tab(cols: usize, rows: usize) -> Tab {
-    spawn_tab_cmd(cols, rows, &["/bin/bsh".into()], false)
+fn spawn_tab(cols: usize, rows: usize, width: u32, height: u32) -> Tab {
+    spawn_tab_cmd(cols, rows, width, height, &["/bin/bsh".into()], false)
 }
 
-fn spawn_tab_cmd(cols: usize, rows: usize, args: &[String], show_exit: bool) -> Tab {
-    let (master_fd, child_pid) = spawn_child(args);
+fn spawn_tab_cmd(cols: usize, rows: usize, width: u32, height: u32, args: &[String], show_exit: bool) -> Tab {
+    let (master_fd, child_pid) = spawn_child(args, &winsize(cols, rows, width, height));
     let _ = io::fcntl_setfl(master_fd, io::status_flags::O_NONBLOCK);
     Tab {
         emu: TermEmu::new(cols, rows),
         master_fd,
         child_pid,
+        session_pid: child_pid,
         show_exit,
     }
 }
@@ -338,8 +375,8 @@ fn main() {
         Rect::new(0, 0, WIN_WIDTH as i32 / ui_scale, TAB_BAR_HEIGHT),
         vec![label], &theme);
     let mut tabs = vec![match exec_args {
-        Some(ref cmd) => spawn_tab_cmd(cols, rows, cmd, true),
-        None => spawn_tab(cols, rows),
+        Some(ref cmd) => spawn_tab_cmd(cols, rows, content_w, content_h, cmd, true),
+        None => spawn_tab(cols, rows, content_w, content_h),
     }];
 
     // Mouse state for InputState edge detection
@@ -353,7 +390,7 @@ fn main() {
     let mut first_frame = true;
     let mut first_present = true;
 
-    loop {
+    'mainloop: loop {
         // ── 1. Poll Breengel events ─────────────────────────────────
         let events = win.poll_events();
         let mut mouse_x: i32 = 0;
@@ -364,7 +401,7 @@ fn main() {
         for event in &events {
             match event {
                 Event::CloseRequested => {
-                    process::exit(0);
+                    break 'mainloop;
                 }
                 Event::KeyPress { ascii, keycode, modifiers, text, .. } => {
                     // Debug: log key events for +/- and ctrl
@@ -381,7 +418,7 @@ fn main() {
                         {
                             let label = make_tab_label();
                             let idx = tab_bar.add_tab(label);
-                            tabs.push(spawn_tab(cols, rows));
+                            tabs.push(spawn_tab(cols, rows, content_w, content_h));
                             tab_bar.set_selected(idx);
                             if let Some(tab) = tabs.get_mut(idx) {
                                 tab.emu.dirty = true;
@@ -394,9 +431,8 @@ fn main() {
                         {
                             let sel = tab_bar.selected();
                             if tabs.len() <= 1 {
-                                process::exit(0);
+                                break 'mainloop;
                             }
-                            let _ = io::close(tabs[sel].master_fd);
                             tabs.remove(sel);
                             tab_bar.remove_tab(sel);
                             let new_sel = tab_bar.selected();
@@ -476,19 +512,10 @@ fn main() {
                 Event::Resized { width, height } => {
                     content_w = *width;
                     content_h = height.saturating_sub(tab_bar_pixels);
-                    let new_cols = (content_w as usize / cell_w).max(1);
-                    let new_rows = (content_h as usize / cell_h).max(1);
-                    if new_cols != cols || new_rows != rows {
-                        cols = new_cols;
-                        rows = new_rows;
-                        for tab in tabs.iter_mut() {
-                            tab.emu.resize(cols, rows);
-                            let size = termios::Winsize { ws_row: rows as u16, ws_col: cols as u16,
-                                ws_xpixel: content_w as u16, ws_ypixel: content_h as u16 };
-                            if let Err(e) = termios::set_winsize(tab.master_fd, &size) {
-                                print!("[bterm] PTY resize failed: {}\n", e);
-                            }
-                        }
+                    cols = (content_w as usize / cell_w).max(1);
+                    rows = (content_h as usize / cell_h).max(1);
+                    for tab in &mut tabs {
+                        tab.resize(cols, rows, content_w, content_h);
                     }
                     tab_bar.set_rect(Rect::new(0, 0, *width as i32 / ui_scale, TAB_BAR_HEIGHT));
                     for tab in tabs.iter_mut() {
@@ -512,7 +539,7 @@ fn main() {
                     cols = new_cols;
                     rows = new_rows;
                     for tab in tabs.iter_mut() {
-                        tab.emu.resize(cols, rows);
+                        tab.resize(cols, rows, content_w, content_h);
                     }
                 } else {
                     // Same grid size but different font — force redraw
@@ -575,6 +602,7 @@ fn main() {
                 Ok(fb) => fb,
                 Err(e) => {
                     print!("[bterm] ERROR: no window surface: {}\n", e);
+                    tabs.clear();
                     process::exit(1);
                 }
             };
@@ -603,7 +631,7 @@ fn main() {
                 win.set_tree(breengel::tree::Tree { root: breengel::tree::Node {
                     key: "grid".into(), parent: None, role: breengel::tree::Role::Terminal,
                     name: "Terminal".into(),
-                    value: terminal_node::terminal_value(&tab.emu.vt),
+                    value: terminal_node::terminal_value(&tab.emu.vt, sel, tabs.len()),
                     bounds, clip: bounds, flags: vec![breengel::tree::Flag::Enabled, breengel::tree::Flag::Visible],
                 }, children: Vec::new() });
             }
