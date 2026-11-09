@@ -64,7 +64,9 @@ pub fn run(title: &str, animate: bool, real_clock: bool) -> Result<(), String> {
     loop {
         let mut redraw = false;
         let mut close = false;
-        win.wait_dispatch(100_000_000, |delivered| {
+        let mut handled_input = false;
+        let count = win.wait_dispatch(100_000_000, |delivered| {
+            handled_input |= delivered.serial != 0;
             match delivered.event {
                 Event::AnimationTick { .. } => {
                     state.ticks += 1;
@@ -103,6 +105,8 @@ pub fn run(title: &str, animate: bool, real_clock: bool) -> Result<(), String> {
         }
         if redraw {
             state.draw(&mut win)?;
+        } else if count != 0 && handled_input {
+            win.commit_no_change().map_err(|e| e.to_string())?;
         }
     }
 }

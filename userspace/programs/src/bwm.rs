@@ -503,7 +503,12 @@ fn main() {
             if event.kind == kind::KEY && event.code < key::BUTTON_LEFT {
                 let slot = (event.device, event.code);
                 let released_chord = event.value == 0 && consumed_keys.remove(&slot);
-                let mut consumed = released_chord;
+                // A bound modifier-only gesture belongs to the WM, including
+                // the first tap and its release before the action fires.
+                let modifier_tap = matches!(event.code, key::LEFT_SUPER | key::RIGHT_SUPER)
+                    && hotkey_mgr.bindings.iter().any(|binding|
+                        binding.key == 0 && binding.modifiers == modifier::SUPER);
+                let mut consumed = released_chord || modifier_tap;
                 if event.value != 0 {
                     if (key::F1..key::F1 + 5).contains(&event.code) {
                         if let Some(&id) = stack.order().get((event.code - key::F1) as usize) {
