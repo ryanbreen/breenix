@@ -10,10 +10,42 @@ fn launch(session: &mut Session, title: &str, flags: &[&[u8]]) -> Result<WindowR
     session.launch_app(&args, 0)?;
     session.wait_window(title)
 }
+fn capture_current(captured: u64, latest: u64, before: u64, after: u64, previous: Option<(u64, u64)>) -> bool {
+    if before != after { return false; }
+    match previous {
+        // Under U23, an unchanged pixel generation permits intervening metadata
+        // acknowledgments, while the captured front retains its exact identity.
+        Some((front, generation)) => captured == front && latest >= captured && after == generation,
+        None => captured == latest,
+    }
+}
+fn info(id: u64) -> Result<abi::WinInfo, String> {
+    let mut windows = vec![abi::WinInfo::default(); 64];
+    let count = window::list(&mut windows).map_err(|e| e.to_string())?;
+    windows[..count.min(windows.len())].iter().find(|w| w.id == id).copied().ok_or("timer window missing from registry".into())
+}
 fn state(id: u64, stamp: Stamp, ticks: u64, fires: u64, missed: u64) -> Result<(u64, u64), breenix_suite::suite::CaseError> {
+    state_front(id, stamp, ticks, fires, missed, None)
+}
+fn state_front(id: u64, stamp: Stamp, ticks: u64, fires: u64, missed: u64, previous: Option<(u64, u64)>) -> Result<(u64, u64), breenix_suite::suite::CaseError> {
     let mut pixels = vec![0; 320*200*4];
     let mut tree = vec![0; abi::limits::DEFAULT_TREE_KIB as usize * 1024];
-    let captured = window::capture(id, &mut pixels, Some(&mut tree)).map_err(|e| e.to_string())?;
+    let deadline = real_ns()? + 2_000_000_000;
+    let (commit, meta, info) = loop {
+        let before = info(id)?;
+        let (_, meta_before) = window::read_meta(id).map_err(|e| e.to_string())?;
+        let captured = window::capture(id, &mut pixels, Some(&mut tree)).map_err(|e| e.to_string())?;
+        let (commit, meta) = window::read_meta(id).map_err(|e| e.to_string())?;
+        let after = info(id)?;
+        if before.pixel_gen != after.pixel_gen || meta_before.tree_serializations != meta.tree_serializations
+            || after.commit_id != commit {
+            check(real_ns()? < deadline, "timer front did not stabilize around capture")?;
+            continue;
+        }
+        check(capture_current(captured.commit_id, commit, before.pixel_gen, after.pixel_gen, previous),
+            &format!("timer captured stale front window={id} captured={} latest={commit} pixel_gen={} previous={previous:?}", captured.commit_id, after.pixel_gen))?;
+        break (commit, meta, after);
+    };
     let end = tree.iter().position(|&b| b == 0).ok_or("timer tree lacks terminator")?;
     let tree: serde_json::Value = serde_json::from_slice(&tree[..end]).map_err(|e| e.to_string())?;
     let value = &tree["value"];
@@ -29,12 +61,8 @@ fn state(id: u64, stamp: Stamp, ticks: u64, fires: u64, missed: u64) -> Result<(
         &format!("timer state window={id} got={value} ticks={ticks} fires={fires} missed={missed} position={position} velocity={velocity}"))?;
     let want = [0x60, (fires % 251) as u8, (ticks % 251) as u8];
     check(pixels.chunks_exact(4).all(|pixel| pixel[..3] == want), "animation pixels differ from independent timer state")?;
-    let (commit, meta) = window::read_meta(id).map_err(|e| e.to_string())?;
-    check(commit == captured.commit_id && meta.epoch == stamp.epoch && meta.ui_time_ms == stamp.now_ns/1_000_000,
+    check(meta.epoch == stamp.epoch && meta.ui_time_ms == stamp.now_ns/1_000_000,
         "timer callback was not published before step acknowledged")?;
-    let mut windows = vec![abi::WinInfo::default(); 64];
-    let count = window::list(&mut windows).map_err(|e| e.to_string())?;
-    let info = windows[..count.min(windows.len())].iter().find(|w| w.id == id).ok_or("timer window missing from registry")?;
     check(info.commit_id == commit, "timer registry changed after capture")?;
     Ok((commit, info.pixel_gen))
 }
@@ -66,7 +94,7 @@ pub fn continuous_animation() -> CaseResult {
         previous = next;
     }
     let zero = session.step(0)?;
-    let idle = state(ready.id, zero, 64, 0, 0)?;
+    let idle = state_front(ready.id, zero, 64, 0, 0, Some(previous))?;
     check(idle.0 == previous.0+1 && idle.1 == previous.1, "zero step must acknowledge without new pixels")?;
     let stamp = session.step(1000)?;
     state(ready.id, stamp, 1064, 1, 0)?;
