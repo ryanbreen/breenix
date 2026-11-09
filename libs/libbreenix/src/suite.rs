@@ -830,6 +830,17 @@ fn record(kind: &str, rest: &str) {
     }
 }
 
+/// Report bounded UI retention metadata through the case's serial descriptor.
+pub fn evidence_bundle(label: &str, bytes: usize, hash: &str, result: &str, path: &str) -> Result<(), String> {
+    for (word, cap) in [(label, 23), (hash, 64), (result, 64), (path, 256)] {
+        if word.is_empty() || word.len() > cap || word.bytes().any(|b| b.is_ascii_whitespace() || !b.is_ascii_graphic()) {
+            return Err("invalid evidence record field".into());
+        }
+    }
+    record("EVIDENCE bundle", &std::format!("label={label} bytes={bytes} sha256={hash} result={result} path={path}"));
+    Ok(())
+}
+
 static HOSTKEY_METHOD: OnceLock<String> = OnceLock::new();
 static HOSTKEY_SEQ: AtomicU64 = AtomicU64::new(0);
 

@@ -98,7 +98,7 @@ pub fn retain(suite: &str, case: &str) -> Result<(), String> {
         Ok(()) => "ok".into(),
         Err(reason) => format!("disk-only:{reason}"),
     };
-    println!("SUITE {suite} EVIDENCE bundle {case} label={label} bytes={size} sha256={hash} result={status} path={}", path.display());
+    suite::evidence_bundle(&label, size, &hash, &status, &path.to_string_lossy())?;
     match result {
         Err(reason) if reason == "no-route" => Ok(()),
         other => other,
