@@ -122,3 +122,19 @@ fn suite_status_tracks_two_of_three_breengel_cases_after_long_prefix() {
             "breengel: 2 passed · 0 failed · 1 pending of 3 · 0:00 · case: panel/second"))),
     );
 }
+
+#[test]
+fn z_suite_status_advances_after_three_megabytes_drained() {
+    capture();
+    let line = format!("{}\n", "x".repeat(99));
+    for _ in 0..(3 * 1024 * 1024 / line.len() + 1) {
+        for byte in line.bytes() { boot_ribbon::byte(byte); }
+        boot_ribbon::drain();
+    }
+    for line in ["SUITE latest START cases=1\n", "SUITE latest CASE work/done PASS ms=1\n"] {
+        for byte in line.bytes() { boot_ribbon::byte(byte); }
+        boot_ribbon::drain();
+    }
+    let status = boot_ribbon::suite_status().expect("suite scanner must be available");
+    assert_eq!((status.total(), status.passed(), status.current_case()), (1, 1, Some("work/done")));
+}
