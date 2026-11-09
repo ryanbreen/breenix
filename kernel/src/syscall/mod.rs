@@ -653,6 +653,10 @@ pub fn check_signals_for_eintr() -> Option<i32> {
 pub fn fatal_signal_pending() -> bool {
     signal_wait_signals().is_some_and(|signals| {
         signals.mirror.pending() & crate::signal::constants::sig_mask(crate::signal::constants::SIGKILL) != 0
+            // kill/tgkill can publish directly to the thread before the row
+            // collects it. Do not require PROCESS_MANAGER to notice that kill.
+            || signals.sent.load(core::sync::atomic::Ordering::Acquire)
+                & crate::signal::constants::sig_mask(crate::signal::constants::SIGKILL) != 0
     })
 }
 
