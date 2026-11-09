@@ -57,7 +57,7 @@ fn current_sequences_are_independent_of_chunking() {
             }
             assert_eq!(vt.cursor(), row.cursor, "{} mode {}", row.name, mode);
             for y in 0..2 {
-                for (x, ch) in row.lines[y].bytes().enumerate() {
+                for (x, ch) in row.lines[y].chars().enumerate() {
                     let cell = vt.cell(x, y);
                     let attr = row.attributes.iter().find(|a| a.0 == x && a.1 == y)
                         .map(|a| (a.2, a.3, a.4)).unwrap_or((FG, BG, false));
@@ -99,7 +99,7 @@ fn characters_and_parser_bounds_are_independent_of_chunking() {
                 vt.feed(&input[pos..end]);
                 pos = end;
             }
-            let actual: String = (0..expected.chars().count()).map(|x| char::from(vt.cell(x, 0).ch)).collect();
+            let actual: String = (0..expected.chars().count()).map(|x| vt.cell(x, 0).ch).collect();
             assert_eq!(actual, expected, "{name} mode {mode}");
             assert_eq!(vt.cursor(), (expected.chars().count(), 0), "{name} mode {mode}");
             assert_eq!(vt.cell(0, 0).fg, if red { RED } else { FG }, "{name} mode {mode}");

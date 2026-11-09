@@ -86,13 +86,14 @@ impl TermEmu {
         });
         let glyphs: Vec<(usize, usize, Color)> = (0..rows)
             .flat_map(|row| (0..cols).map(move |col| (col, row)))
-            .filter(|&(col, row)| self.vt.cell(col, row).ch != b' ')
+            .filter(|&(col, row)| self.vt.cell(col, row).ch != ' ')
             .map(|(col, row)| (col, row, fg_of(self.vt.cell(col, row))))
             .collect();
         if let Some(font) = ttf {
             let clip = libgfx::surface::Rect::new(0, 0, max_x as i32, max_y as i32);
-            let runs: Vec<ttf_font::TextRun<'_>> = glyphs.iter().map(|&(col, row, fg)| ttf_font::TextRun {
-                bytes: core::slice::from_ref(&self.vt.cell(col, row).ch),
+            let encoded: Vec<[u8; 4]> = glyphs.iter().map(|&(col, row, _)| { let mut b = [0; 4]; self.vt.cell(col, row).ch.encode_utf8(&mut b); b }).collect();
+            let runs: Vec<ttf_font::TextRun<'_>> = glyphs.iter().zip(&encoded).map(|(&(col, row, fg), bytes)| ttf_font::TextRun {
+                bytes: &bytes[..self.vt.cell(col, row).ch.len_utf8()],
                 x: (x_off + col * cell_w) as i32,
                 y: (y_off + row * cell_h) as i32,
                 size: font_size,
@@ -106,11 +107,12 @@ impl TermEmu {
             let mut i = 0;
             while i < glyphs.len() {
                 let (col, row, fg) = glyphs[i];
-                let mut text = vec![self.vt.cell(col, row).ch];
+                let mut text = vec![if self.vt.cell(col, row).ch.is_ascii() { self.vt.cell(col, row).ch as u8 } else { b'?' }];
                 let mut j = i + 1;
                 while j < glyphs.len() && glyphs[j].1 == row && glyphs[j].2 == fg
                     && glyphs[j].0 == col + text.len() && cell_w == bitmap_font::metrics().char_width {
-                    text.push(self.vt.cell(glyphs[j].0, row).ch);
+                    let ch = self.vt.cell(glyphs[j].0, row).ch;
+                    text.push(if ch.is_ascii() { ch as u8 } else { b'?' });
                     j += 1;
                 }
                 bitmap_font::draw_text(fb, &text, x_off + col * cell_w, y_off + row * cell_h, fg);
@@ -547,7 +549,7 @@ fn main() {
 
             if let Some(tab) = tabs.get(sel) {
                 let (cols, rows) = tab.emu.vt.size();
-                let cells: Vec<u8> = (0..rows).flat_map(|y| (0..cols).map(move |x| (x, y)))
+                let cells: Vec<char> = (0..rows).flat_map(|y| (0..cols).map(move |x| (x, y)))
                     .map(|(x, y)| tab.emu.vt.cell(x, y).ch).collect();
                 let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
                 win.set_tree(breengel::tree::Tree { root: breengel::tree::Node {
