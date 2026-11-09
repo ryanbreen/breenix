@@ -173,7 +173,7 @@ fn stepped_clock_acknowledges_without_clock_composites_or_fps() {
     // The repeat scheduler consumes the mapped clock, including a frozen page.
     use libbreenix::{input::{Event, key, kind}, ui_clock};
     let source = Event { serial: 42, device: 7, kind: kind::KEY, code: key::A,
-        value: 1, ..Event::default() };
+        value: 1, time_ns: 3_000_000_000, ..Event::default() };
     let mut repeats = timing::Timing::new();
     assert!(repeats.key(source, Some(9), false, ui_clock::now_ns()));
     assert_eq!(repeats.deadline(), Some(3_500_000_000));
@@ -197,7 +197,7 @@ fn stepped_clock_acknowledges_without_clock_composites_or_fps() {
     let mut clicks = timing::Clicks::new();
     assert_eq!(clicks.press(7, 272, 9, (2, 3), ui_clock::now_ns()), 1);
     assert_eq!(clicks.release(7, 272), 1);
-    clicks.retain_devices(|device| device == 7);
+    timing::retire_unregistered(&mut clicks, &mut std::collections::BTreeSet::new(), |device| device == 7);
     page.write_all_at(&4_400_000_000u64.to_le_bytes(), 16).unwrap();
     assert_eq!(clicks.press(7, 272, 9, (2, 3), ui_clock::now_ns()), 2);
     assert!(timing::within(4_000_000_000, ui_clock::now_ns()));

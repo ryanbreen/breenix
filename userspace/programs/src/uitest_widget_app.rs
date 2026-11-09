@@ -69,6 +69,9 @@ fn run_ready(title: &str, pointer_probe: bool, ready: Option<std::sync::mpsc::Se
                         x,
                         y,
                     } if *button == breengel::buttons::LEFT => {
+                        if pointer_probe {
+                            println!("UITEST-POINTER serial={} time_ns={} clicks={} pressed={}", delivered.serial, delivered.time_ns, delivered.clicks, pressed);
+                        }
                         let before = buttons;
                         buttons = u32::from(*pressed);
                         scene.pointer(&InputState::from_raw(
@@ -93,9 +96,11 @@ fn run_ready(title: &str, pointer_probe: bool, ready: Option<std::sync::mpsc::Se
                         keycode,
                         modifiers,
                         text,
+                        repeat,
                         ..
                     } => {
                         crate::uitest_keyboard::press(&mut scene, *keycode, modifiers.shift, modifiers.ctrl, modifiers.alt, text);
+                        if *repeat { crate::uitest_keyboard::text(&mut scene, text); }
                         dirty = true;
                     }
                     Event::Text { text } => {

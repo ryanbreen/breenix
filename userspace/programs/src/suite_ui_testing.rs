@@ -27,6 +27,8 @@ mod tree;
 mod wm_tree;
 #[path = "uitest_suite/input.rs"]
 mod input;
+#[path = "uitest_suite/input_time.rs"]
+mod input_time;
 #[path = "uitest_suite/input_delivery.rs"]
 mod input_delivery;
 #[path = "uitest_suite/clock.rs"]
@@ -60,7 +62,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // chord(Ctrl, A) arrives as A with the Ctrl modifier. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("chord", "chord(Ctrl, A) arrives as A with the Ctrl modifier", input::chord).session(libuitest::supervisor::serve),
         // Holding a key for 600 ms of UI time gives exactly 3 repeats. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("hold-repeat", "Holding a key for 600 ms of UI time gives exactly 3 repeats", || pending("input", 7)),
+        case("hold-repeat", "Holding a key for 600 ms of UI time gives exactly 3 repeats", input_time::hold_repeat).session(libuitest::supervisor::serve),
         // click(node) lands on a visible point of the node, and the delivery names that node's window. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("click-node", "click(node) lands on a visible point of the node, and the delivery names that node's window", input::click_node).session(libuitest::supervisor::serve),
         // Clicking a node partly covered by another window lands on its exposed part, confirmed by hit test. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -68,7 +70,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Clicking a node clipped by a scrolled container uses its visible part. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("click-clipped", "Clicking a node clipped by a scrolled container uses its visible part", input::click_clipped).session(libuitest::supervisor::serve),
         // double_click delivers click counts 1 and 2. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("double-click", "double_click delivers click counts 1 and 2", || pending("input", 7)),
+        case("double-click", "double_click delivers click counts 1 and 2", input_time::double_click).session(libuitest::supervisor::serve),
         // A ten-step drag delivers ten motions in order between a press and a release; when the layout changes on the press and again mid-drag, and when the window moves mid-drag, every later motion and the release still reach the captured node through bwm's grab, the drag ends in exactly one completed gesture, and no button, pressed flag or capture is held at the end. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("drag-steps", "A ten-step drag reaches its captured node in order through layout changes and a window move, ending with nothing held", input::drag_steps).session(libuitest::supervisor::serve),
         // scroll(node, dy) delivers the wheel amount to the window under the node. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -168,7 +170,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // An app's real-clock read counter stays 0 in a session and rises when the test app reads the real clock on purpose. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("real-clock-counter", "An app's real-clock read counter stays 0 in a session and rises when the test app reads the real clock on purpose", timers::real_clock_counter).session(libuitest::supervisor::serve),
         // Injected events carry UI time, and bwm's double-click threshold uses it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("input-time", "Injected events carry UI time, and bwm's double-click threshold uses it", || pending("clock", 7)),
+        case("input-time", "Injected events carry UI time, and bwm's double-click threshold uses it", input_time::input_time).session(libuitest::supervisor::serve),
     ]),
     category("settle", "Causal barriers & settling", &[
         // settle returns once nothing changes. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)

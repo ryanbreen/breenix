@@ -22,6 +22,11 @@ path = "../../tests/bwm_clock.rs"
 required-features = ["std"]
 
 [[test]]
+name = "bwm_ui_input_time"
+path = "../../tests/bwm_ui_input_time.rs"
+required-features = ["std"]
+
+[[test]]
 name = "bwm_timing"
 path = "../../tests/bwm_timing.rs"
 required-features = ["std"]
