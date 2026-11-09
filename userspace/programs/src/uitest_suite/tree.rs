@@ -310,6 +310,7 @@ mod guest {
         session: Session,
         id: u64,
         scale: u32,
+        tree_baseline: u64,
         _reader: crate::tree_cases::TreeReader,
     }
     impl App {
@@ -326,6 +327,8 @@ mod guest {
             let ready = session.wait_window("widget tree")?;
             let reader =
                 crate::tree_cases::TreeReader::attach(ready.id).map_err(|e| e.to_string())?;
+            let tree_baseline = libbreenix::window::read_meta(ready.id)
+                .map_err(|e| e.to_string())?.1.tree_serializations;
             let scale = libbreenix::gpu::current_mode()
                 .map_err(|e| e.to_string())?
                 .scale;
@@ -333,6 +336,7 @@ mod guest {
                 session,
                 id: ready.id,
                 scale,
+                tree_baseline,
                 _reader: reader,
             };
             // A real pointer event after attachment forces the first serialized commit.
@@ -431,7 +435,7 @@ mod guest {
             loop {
                 let (_, meta) =
                     libbreenix::window::read_meta(self.id).map_err(|e| e.to_string())?;
-                if meta.tree_serializations > 0 {
+                if libuitest::input::tree_ready_after_attach(meta.tree_serializations, self.tree_baseline) {
                     let tree = self.snapshot()?;
                     match judge(&tree) {
                         Ok(()) => return Ok(()),

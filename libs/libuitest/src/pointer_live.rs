@@ -203,7 +203,8 @@ impl<'a> LivePointer<'a> {
         if self.watched.contains_key(&id) {
             return Ok(());
         }
-        self.watched.insert(id, Mapping::new(id)?);
+        let mapping = Mapping::new(id)?;
+        let baseline = window::read_meta(id).map_err(|e| e.to_string())?.1.tree_serializations;
         let info = self.info(id)?;
         let desktop = self.desktop_tree()?;
         let window = desktop.children.iter().find(|node| node.value["id"].as_u64() == Some(id))
@@ -219,17 +220,17 @@ impl<'a> LivePointer<'a> {
             desktop.root.bounds, &covers)?;
         self.move_to(point)?;
         let end = Instant::now() + Duration::from_secs(2);
-        while window::read_meta(id)
-            .map_err(|e| e.to_string())?
-            .1
-            .tree_serializations
-            == 0
+        while !super::tree_ready_after_attach(
+            window::read_meta(id).map_err(|e| e.to_string())?.1.tree_serializations,
+            baseline,
+        )
         {
             if Instant::now() >= end {
                 return Err(format!("input tree window={id} not committed after attach probe={point:?}"));
             }
             pause()?;
         }
+        self.watched.insert(id, mapping);
         Ok(())
     }
     fn capture(&self, id: u64) -> Result<(Tree, u64), String> {

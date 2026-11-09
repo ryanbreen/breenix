@@ -98,6 +98,12 @@ pub fn tree_probe_point(
     Ok((x, y))
 }
 
+/// Sample the baseline with the mapping held, then wait for a later serialization.
+/// A cumulative count can describe a tree left by a reader that already detached.
+pub fn tree_ready_after_attach(count: u64, baseline: u64) -> bool {
+    count > baseline
+}
+
 /// Metadata-only acknowledgments keep the current pixel/tree publication.
 pub fn tree_capture_current(captured: u64, latest: u64, before: u64, after: u64) -> bool {
     captured != 0 && captured <= latest && before != 0 && before == after
