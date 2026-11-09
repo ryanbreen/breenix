@@ -1,15 +1,15 @@
 use breenix_suite::suite::CaseResult;
-use libuitest::{input::{Keyboard, LivePointer}, tree::{self, Query, Role}, Session};
+use libuitest::{input::{Keyboard, LivePointer, Target}, tree::{self, Query, Role}, Session};
 
 pub fn command_output() -> CaseResult {
     let mut session = Session::desktop()?;
-    let pid = session.launch_app(&[b"/bin/bterm"], 0)?;
+    let pid = session.launch_app(&[b"/usr/bin/bterm"], 0)?;
     let result: Result<(), String> = (|| {
         let id = session.wait_window("Terminal")?.id;
         let mut live = LivePointer::new(&mut session)?;
         live.watch(id)?;
         let mut keys = Keyboard::new(live);
-        keys.type_text(id, "echo hello")?;
+        keys.focus_then_type(&Target::new(id, "grid"), "echo hello")?;
         keys.chord(id, &[], 28)?;
         let live = keys.into_backend();
         let start = libbreenix::time::now_monotonic().map_err(|e| e.to_string())?.as_nanos();

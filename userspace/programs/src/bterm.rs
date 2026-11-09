@@ -10,6 +10,9 @@
 //!   Ctrl+Plus/=  — increase font size
 //!   Ctrl+Minus   — decrease font size
 
+#[path = "bterm/terminal_node.rs"]
+mod terminal_node;
+
 use std::process;
 
 use breengel::{Window, Event, CachedFont, TabBar, Rect, Theme, Color, Surface};
@@ -773,6 +776,17 @@ fn main() {
                 );
             }
 
+            if let Some(tab) = tabs.get(sel) {
+                let cells: Vec<u8> = tab.emu.cells.iter().map(|cell| cell.ch).collect();
+                let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
+                win.set_tree(breengel::tree::Tree { root: breengel::tree::Node {
+                    key: "grid".into(), parent: None, role: breengel::tree::Role::Terminal,
+                    name: "Terminal".into(),
+                    value: terminal_node::terminal_value(tab.emu.cols, tab.emu.rows,
+                        [tab.emu.cursor_x, tab.emu.cursor_y], &cells, "Terminal"),
+                    bounds, clip: bounds, flags: vec![breengel::tree::Flag::Enabled, breengel::tree::Flag::Visible],
+                }, children: Vec::new() });
+            }
             match win.present() {
                 Err(e) => print!("[bterm] present failed: {}\n", e),
                 Ok(()) if first_present => {
