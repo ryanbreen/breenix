@@ -8,24 +8,33 @@ static REACHED: [AtomicBool; MARKERS.len()] = [const { AtomicBool::new(false) };
 // Timestamp bytes follow each newline in this private capture encoding. The
 // raw serial endpoint strips them. A 1 MiB byte store bounds the writable image
 // without reserving a timestamp word for byte positions that are not newlines.
-const CAPACITY: usize = 1024 * 1024;
-static SERIAL: [AtomicU8; CAPACITY] = [const { AtomicU8::new(0) }; CAPACITY];
+// Capture 132025 encoded about 158.5 KB before the first START and about
+// 698 KB from BreenGL START to panel/kernel-screens (#2824).
+const HEAD: usize = 192 * 1024;
+const RING: usize = 1024 * 1024 - HEAD;
+static BOOT_HEAD: [AtomicU8; HEAD] = [const { AtomicU8::new(0) }; HEAD];
+static SERIAL: [AtomicU8; RING] = [const { AtomicU8::new(0) }; RING];
 static TAIL: AtomicUsize = AtomicUsize::new(0);
-static OVERFLOW: AtomicBool = AtomicBool::new(false);
+fn put(offset: usize, byte: u8) {
+    SERIAL[offset % RING].store(byte, Ordering::Relaxed);
+    if offset < HEAD { BOOT_HEAD[offset].store(byte, Ordering::Relaxed); }
+}
+fn at(offset: usize) -> u8 {
+    if offset < HEAD { BOOT_HEAD[offset].load(Ordering::Relaxed) }
+    else { SERIAL[offset % RING].load(Ordering::Relaxed) }
+}
 type Scan = (usize, [u8; 1024], usize, crate::console::status::SuiteStatus);
 static SCAN: spin::Mutex<Scan> = spin::Mutex::new((0, [0; 1024], 0, crate::console::status::SuiteStatus::new()));
 /// Constant work per byte under UART ownership, including before the framebuffer exists.
 pub fn byte(b: u8) {
-    if OVERFLOW.load(Ordering::Relaxed) { return; }
     let tail = TAIL.load(Ordering::Relaxed);
     let size = if b == b'\n' { 9 } else { 1 };
-    if tail + size > CAPACITY { OVERFLOW.store(true, Ordering::Release); return; }
-    SERIAL[tail].store(b, Ordering::Relaxed);
+    put(tail, b);
     if b == b'\n' {
         let (seconds, nanos) = crate::time::get_monotonic_time_ns();
         let ms = seconds.saturating_mul(1000).saturating_add(nanos / 1_000_000);
         for (i, byte) in ms.to_le_bytes().into_iter().enumerate() {
-            SERIAL[tail + 1 + i].store(byte, Ordering::Relaxed);
+            put(tail + 1 + i, byte);
         }
     }
     TAIL.store(tail + size, Ordering::Release);
@@ -40,7 +49,7 @@ pub fn drain() -> bool {
 fn scan_to(scan: &mut Scan, end: usize) -> bool {
     let mut changed = false;
     while scan.0 < end {
-        let b = SERIAL[scan.0].load(Ordering::Relaxed);
+        let b = at(scan.0);
         scan.0 += 1;
         let n = scan.2;
         if b == b'\n' {
@@ -72,17 +81,17 @@ fn drain_snapshot() {
         // with preemption disabled. Parse the immutable prefix independently
         // instead of waiting for that thread to run. Reached bits are atomic.
         let mut scan = (0, [0; 1024], 0, crate::console::status::SuiteStatus::new());
-        scan_to(&mut scan, end);
+        scan_to(&mut scan, end.min(HEAD - 8));
     }
 }
 /// Complete serial prefix, not the matcher's interpretation of it. Never silently truncate.
 pub fn serial() -> Result<alloc::string::String, i32> {
-    if OVERFLOW.load(Ordering::Acquire) { return Err(-75); }
     let n = TAIL.load(Ordering::Acquire);
+    if n > RING { return Err(-75); }
     let mut bytes = alloc::vec::Vec::with_capacity(n);
     let mut offset = 0;
     while offset < n {
-        let byte = SERIAL[offset].load(Ordering::Relaxed);
+        let byte = at(offset);
         offset += 1;
         bytes.push(byte);
         if byte == b'\n' { offset += 8; }
@@ -93,13 +102,13 @@ pub fn serial() -> Result<alloc::string::String, i32> {
 /// The timestamps come from the writer before publication. Keep the original, unannotated serial endpoint unchanged.
 pub fn serial_timed() -> Result<alloc::string::String, i32> {
     use core::fmt::Write;
-    if OVERFLOW.load(Ordering::Acquire) { return Err(-75); }
     let n = TAIL.load(Ordering::Acquire);
+    if n > RING { return Err(-75); }
     let mut line = alloc::vec::Vec::new();
     let mut out = alloc::string::String::new();
     let mut offset = 0;
     while offset < n {
-        let byte = SERIAL[offset].load(Ordering::Relaxed);
+        let byte = at(offset);
         offset += 1;
         line.push(byte);
         if byte == b'\n' {
@@ -112,7 +121,7 @@ pub fn serial_timed() -> Result<alloc::string::String, i32> {
 }
 // TAIL publishes a newline together with its eight timestamp bytes.
 fn recorded_ms(offset: &mut usize) -> u64 {
-    let bytes = core::array::from_fn(|i| SERIAL[*offset + i].load(Ordering::Relaxed));
+    let bytes = core::array::from_fn(|i| at(*offset + i));
     *offset += 8;
     u64::from_le_bytes(bytes)
 }
