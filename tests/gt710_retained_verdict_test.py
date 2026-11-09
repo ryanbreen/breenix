@@ -57,6 +57,37 @@ class RetainedVerdict(unittest.TestCase):
                 self.assertEqual(record['milestone'], 'metal-gt710/breengel-full')
                 self.assertEqual(record['cases'][0]['result'], 'PASS' if expected == 0 else 'FAIL')
 
+    def test_nonzero_breengel_exit_requires_completed_case_failure(self):
+        # G13: distinguish a case-derived exit from an unexplained driver exit.
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            self.capture(directory)
+            original = composition_capture()
+            selected = json.loads((ROOT / 'docs/gui/gt710-step-9-1.json').read_text())['cases']
+            manifest = json.loads((ROOT / 'docs/suites/breengel.json').read_text())
+            name = next(c['id'] + '/' + case['id'] for c in manifest['categories']
+                        for case in c['cases'] if c['id'] + '/' + case['id'] not in selected)
+            failed = original.replace(f'CASE {name} PASS ms=1',
+                                      f'CASE {name} FAIL ms=1')
+            line = next(l for l in failed.splitlines() if l.startswith(f'SUITE breengel CASE {name} '))
+            failed = failed.replace(line, line + ' msg=pending')
+            failed = failed.replace('DONE passed=401 failed=0', 'DONE passed=400 failed=1')
+            events = [dict(event='final-marker'), dict(event='decided', status=0),
+                      dict(event='power-off', off=True), dict(event='suite-verdict', status=1),
+                      dict(event='closed', status=1, endedBy='driver')]
+            (directory / 'exit-status').write_text('1\n')
+            def read(serial, trace):
+                (directory / 'events.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in trace))
+                with patch.dict(API['completed_suite_capture'].__globals__,
+                                capture_serial=lambda *a: serial):
+                    return API['completed_suite_capture'](directory, 'a' * 40, 'breengel')
+            self.assertEqual(read(failed, events)['exit_status'], 1)
+            for serial, trace in [(original, events), (failed, events[:3] + events[4:]),
+                                  (failed, [events[0], dict(event='decided', status=1)] + events[2:])]:
+                with self.subTest(failed_cases=serial == failed, trace=trace):
+                    with self.assertRaisesRegex(ValueError, 'BreenGL exit 1'):
+                        read(serial, trace)
+
     def test_canonical_verdict_requires_the_full_breengel_record(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
