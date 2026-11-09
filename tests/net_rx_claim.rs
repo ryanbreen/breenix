@@ -5,6 +5,15 @@ use rx_claim::{drain, PollOutcome};
 use std::cell::Cell;
 use std::sync::atomic::{AtomicBool, Ordering::SeqCst};
 
+mod task {
+    pub mod softirqd {
+        use std::cell::Cell;
+        thread_local! { pub static RAISED: Cell<u32> = const { Cell::new(0) }; }
+        pub enum SoftirqType { NetRx }
+        pub fn raise_softirq(_: SoftirqType) { RAISED.with(|count| count.set(count.get() + 1)); }
+    }
+}
+
 #[test]
 fn busy_holder_keeps_request_pending() {
     let requested = AtomicBool::new(false);
@@ -56,4 +65,26 @@ fn budget_limits_delivered_frames() {
     assert_eq!(outcome, PollOutcome::BudgetExhausted);
     assert_eq!(delivered.get(), 3);
     assert!(!draining.load(SeqCst));
+}
+
+#[test]
+fn exhaustion_schedules_another_receive() {
+    use task::softirqd::{raise_softirq, SoftirqType, RAISED};
+    let _raise: fn(SoftirqType) = raise_softirq;
+    let _ = SoftirqType::NetRx;
+    let requested = AtomicBool::new(false);
+    let draining = AtomicBool::new(false);
+    let queued = Cell::new(65);
+    let delivered = Cell::new(0);
+    RAISED.with(|count| count.set(0));
+    let outcome = drain(&requested, &draining, 64, |buffer| {
+        if queued.get() == 0 { return None; }
+        queued.set(queued.get() - 1);
+        buffer[0] = 7;
+        Some(1)
+    }, |_| delivered.set(delivered.get() + 1));
+    assert_eq!(outcome, PollOutcome::BudgetExhausted);
+    assert_eq!(delivered.get(), 64);
+    assert_eq!(queued.get(), 1);
+    RAISED.with(|count| assert_eq!(count.get(), 1));
 }
