@@ -109,6 +109,32 @@ class UiStep(unittest.TestCase):
     def record(self):
         return API['record_ui_capture'](self.path, SHA, 1)
 
+    def test_retained_bundle_record_is_scored_and_bound(self):
+        case = 'diagnosis/artifacts-on-mismatch'
+        label = 'uitest-' + hashlib.sha256(case.encode()).hexdigest()[:16]
+        body = b'UTART001 fixture'
+        digest = hashlib.sha256(body).hexdigest()
+        record = (f'SUITE ui-testing EVIDENCE bundle {case} label={label} '
+                  f'bytes={len(body)} sha256={digest} result=ok path=/var/uitest/ui-testing/{case}\n')
+        text = serial().replace(f'SUITE ui-testing CASE {case} ', record + f'SUITE ui-testing CASE {case} ')
+        (self.path / f'diagnostic-{label}.bin').write_bytes(body)
+        receipt = dict(id=BOOT, route='/gt710-upload/' + 'b' * 64 + '/diagnostics/' + label,
+                       complete=True, bytes=len(body), sha256=digest)
+        (self.path / f'native-diagnostic-{label}.json').write_text(json.dumps(receipt))
+        def score(value):
+            (self.path / 'serial.txt').write_text(value)
+            return self.record()
+        self.assertEqual(score(text), 0)
+        for bad in [record.replace(label, 'uitest-' + '0' * 16),
+                    record.replace('result=ok', 'result=disk-only:deadline'),
+                    record.replace(f'bytes={len(body)}', 'bytes=2097153'),
+                    record.replace('path=/var/uitest/ui-testing/', 'path=/wrong/'),
+                    record + record]:
+            with self.subTest(record=bad):
+                self.assertEqual(score(text.replace(record, bad)), 1)
+        (self.path / f'diagnostic-{label}.bin').write_bytes(b'corrupt')
+        self.assertEqual(score(text), 1)
+
     def test_selection_and_required_refusals(self):
         self.assertEqual(self.record(), 0)
         self.assertTrue(metal_score.score(self.path)['milestones']['metal-gt710/ui-step']['passed'])
