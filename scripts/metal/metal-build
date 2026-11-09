@@ -256,6 +256,7 @@ def inner(args):
         definition_files += [str(path.relative_to(clone)) for path in sorted((clone / 'docs/suites/frames/ui-testing').rglob('*')) if path.is_file()]
         definition_files += [f'docs/gui/gt710-step-21-{step}.json' for step in range(1, 8)]
         definition_files += [f'docs/gui/gt710-step-22-{step}.json' for step in range(1, 8)]
+        definition_files += [str(path.relative_to(clone)) for path in sorted((clone / 'docs/gui').glob('gt710-step-23-*.json'))]
         definition_files += ['docs/gui/gt710-breengel-pictured.json', 'docs/gui/gt710-step-9-1.json', 'docs/gui/gt710-step-9-2.json', 'docs/gui/gt710-step-9-3.json', 'docs/gui/gt710-step-9-4.json', 'docs/gui/gt710-step-8-2.json', 'docs/gui/gt710-step-8-3.json', 'docs/gui/gt710-step-8-4.json', 'docs/gui/gt710-step-8-5.json', 'docs/gui/gt710-step-8-6.json', 'docs/gui/gt710-step-8-7.json', 'docs/gui/provenance/gt710-triangle.json', 'docs/gui/provenance/gt710-contexts.json', 'kernel/assets/kepler/manifest.json'] + [f'kernel/assets/kepler/diagnostic-triangle-{stage}.{ext}' for stage in ('vertex', 'fragment') for ext in ('bin', 'sph', 'json')]
         definition_files += [f'kernel/src/gpu/gk208/caps/{name}' for name in
                              ('colour.bgra', 'colour.rgba', 'r8.bgra', 'integer.bgra', 'region.bgra')]

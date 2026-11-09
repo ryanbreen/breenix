@@ -888,3 +888,7 @@ path = "src/suite_runner_fixture.rs"
 [[bin]]
 name = "uitest-app_test"
 path = "src/uitest_app.rs"
+
+[[bin]]
+name = "suite-gui-apps"
+path = "src/suite_gui_apps.rs"
