@@ -22,6 +22,7 @@ thread_local! {
     static KILLED: Cell<bool> = const { Cell::new(false) };
     static REAPED: Cell<bool> = const { Cell::new(false) };
     static EXIT: Cell<i32> = const { Cell::new(0) };
+    static REPORTS: RefCell<Vec<String>> = const { RefCell::new(Vec::new()) };
     static SENT: RefCell<Vec<u8>> = const { RefCell::new(Vec::new()) };
 }
 pub mod errno {
@@ -81,6 +82,10 @@ pub mod suite {
         if matches!(super::MODE.get(),super::Mode::Failure) {Err("http-status".into())} else {Ok("receipt".into())}
     }
     pub fn case_ms_left() -> u64 {10000}
+    pub fn evidence_bundle(label: &str, bytes: usize, hash: &str, result: &str, path: &str) -> Result<(), String> {
+        super::REPORTS.with_borrow_mut(|records| records.push(format!("{label} bytes={bytes} sha256={hash} result={result} path={path}")));
+        Ok(())
+    }
 }
 fn run(mode: Mode, budget: u64) -> Result<(), String> {
     CLOCK.set(0); EXIT.set(0); MODE.set(mode); KILLED.set(false); REAPED.set(false); SENT.with_borrow_mut(Vec::clear);
@@ -104,4 +109,15 @@ fn blocked_sender_is_killed_and_reaped_at_one_absolute_deadline() {
     assert_eq!(CLOCK.get(),249); assert!(!KILLED.get());
     assert_eq!(run(Mode::Delayed(251),250),Err("deadline".into()));
     assert_eq!(CLOCK.get(),250); assert!(KILLED.get()); assert!(REAPED.get());
+}
+
+#[test]
+fn retention_uses_the_runner_record_transport_even_with_silenced_stdout() {
+    REPORTS.with_borrow_mut(Vec::clear);
+    let _ = retention::retain("ui-testing", "diagnosis/transport-check");
+    REPORTS.with_borrow(|records| {
+        assert_eq!(records.len(), 1, "retention bypassed the case record transport");
+        assert!(records[0].contains("result=disk-only:"));
+        assert!(records[0].ends_with("path=/var/uitest/ui-testing/diagnosis/transport-check"));
+    });
 }
