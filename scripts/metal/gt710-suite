@@ -4036,6 +4036,21 @@ def completed_suite_capture(directory, sha, suite=None):
         raise ValueError('native suite requires a complete clean driver-closed capture')
     serial = ((directory / 'serial.txt').read_text() if suite in ('window-manager', 'ui-testing')
               else capture_serial(directory, suite))
+    if status == 1 and boot.get('suite') == 'breengel':
+        # G13: a completed case verdict must explain a nonzero suite exit.
+        done = one(r'^SUITE breengel DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)$',
+                   serial, 'BreenGL exit 1 DONE')
+        passed, failed, skipped, total = map(int, done.groups())
+        lifecycle = ('final-marker', 'decided', 'power-off', 'suite-verdict', 'closed')
+        rows = [e for e in events if e.get('event') in lifecycle]
+        if (failed == 0 or skipped != 0 or passed + failed != total
+                or len(re.findall(r'^SUITE breengel CASE \S+ FAIL .+$', serial, re.M)) != failed
+                or len(re.findall(r'^SUITE breengel CASE \S+ PASS .+$', serial, re.M)) != passed
+                or [e['event'] for e in rows] != list(lifecycle)
+                or rows[1].get('status') != 0 or rows[2].get('off') is not True
+                or rows[3].get('status') != 1 or rows[4].get('status') != 1
+                or rows[4].get('endedBy') != 'driver'):
+            raise ValueError('BreenGL exit 1 is not a completed failed-case verdict')
     return dict(boot=dict(boot, bootedCommit=sha), serial=serial, events=events, exit_status=status)
 
 
