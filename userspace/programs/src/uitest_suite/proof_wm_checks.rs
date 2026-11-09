@@ -5,7 +5,11 @@ use serde_json::json;
 
 /// Match a captured front with the generation pinned by a completed composite.
 pub fn front_matches(captured: u64, before: u64, after: u64, projected_commit: u64, projected_generation: u64) -> bool {
-    before == after && after == projected_generation && captured == projected_commit
+    // Pixel publication advances the generation (kernel/src/window/ops.rs).
+    // With the front
+    // stable across CAPTURE, a newer commit at the same generation can only
+    // acknowledge metadata (U23a); it cannot hide a newer pixel frame.
+    before == after && after == projected_generation && captured <= projected_commit
 }
 
 pub fn desktop(

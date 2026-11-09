@@ -716,11 +716,22 @@ fn wm_checkpoint(
     live.move_to((1100 * scale as i32, 700 * scale as i32))?;
     libuitest::settle::settle_session(live.session(), &[(ids[0], 0), (ids[1], 0)], 0, &mut [])?;
     wm_checks::desktop(&live.desktop_tree()?, ids, owners, scale, screen, top)?;
-    let mut commits = [(0, 0); 2];
+    let mut commits = [(0, 0, 0); 2];
     for (index, id) in ids.into_iter().enumerate() {
-        live.session().next_checkpoint()?;
-        let record = capture::window(live.session().arena_mut(), "wm-client", id)?;
-        commits[index] = (id, record.commit);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        let (record, generation) = loop {
+            let before = wm_window(id)?;
+            live.session().next_checkpoint()?;
+            let record = capture::window(live.session().arena_mut(), "wm-client", id)?;
+            let after = wm_window(id)?;
+            if before.pixel_gen == after.pixel_gen {
+                break (record, after.pixel_gen);
+            }
+            if std::time::Instant::now() >= deadline {
+                return Err(format!("WM client front did not stabilize window={id}"));
+            }
+        };
+        commits[index] = (id, record.commit, generation);
         match live.session().arena_mut().read(Slot::Tree)? {
             SlotRead::Final { bytes, .. } => {
                 wm_checks::entry(&libbui::tree::Tree::parse(&bytes)?, text[index], scale)?
@@ -735,10 +746,18 @@ fn wm_checkpoint(
         libbreenix::window::ObservationKind::Composed,
     )?;
     let observed = capture::screen_windows(&record)?;
-    for (id, commit) in commits {
-        if !observed.contains(&(id, commit)) {
+    let entries = wm_composite(record.composite)?;
+    for (id, commit, generation) in commits {
+        let after = wm_window(id)?;
+        let projected = entries.iter().find(|entry| entry.id == id);
+        if !projected.is_some_and(|entry| {
+            observed.contains(&(id, entry.commit_id))
+                && entry.pixels != 0
+                && wm_checks::front_matches(commit, generation, after.pixel_gen, entry.commit_id, entry.pixel_gen)
+        }) {
             return Err(format!(
-                "WM screen missing compared window={id} commit={commit}"
+                "WM screen missing compared window={id} commit={commit} generation={generation} current={} composite={} observed={observed:?} projected={projected:?}",
+                after.pixel_gen, record.composite
             ));
         }
     }
@@ -758,4 +777,48 @@ fn wm_checkpoint(
         other => return Err(format!("incomplete WM screen: {other:?}")),
     }
     libuitest::input::dispositions(live.serials())
+}
+
+fn wm_window(id: u64) -> Result<libbreenix::window::abi::WinInfo, String> {
+    let mut windows = vec![libbreenix::window::abi::WinInfo::default(); 64];
+    let count = libbreenix::window::list(&mut windows).map_err(|e| e.to_string())?;
+    if count > windows.len() {
+        return Err("WM window registry exceeds scenario bound".into());
+    }
+    windows.truncate(count);
+    windows.into_iter().find(|entry| entry.id == id)
+        .ok_or_else(|| format!("WM window missing from registry window={id}"))
+}
+
+/// Bind scanout to the retained composite named by its observation serial.
+fn wm_composite(serial: u64) -> Result<Vec<libbreenix::window::abi::CompositeEntry>, String> {
+    use libbreenix::window::{self, abi};
+    if serial == 0 {
+        return Err("WM screen has no composite serial".into());
+    }
+    let head = core::mem::size_of::<abi::CompositeRecordHeader>();
+    let size = core::mem::size_of::<abi::CompositeEntry>();
+    // The two-client scenario fits within 64 entries, exceeding the observation's
+    // 16-row limit. Missing and oversized records are errors.
+    let mut bytes = vec![0u8; head + 64 * size];
+    let mut query = abi::RecordQuery {
+        serial, ptr: bytes.as_mut_ptr() as u64, len: bytes.len() as u32, reserved: 0,
+    };
+    window::call(abi::op::COMPOSITE_RECORD, &mut query)
+        .map_err(|e| format!("WM composite record serial={serial}: {e}"))?;
+    // SAFETY: the successful copy supplies plain ABI values, read unaligned
+    // from byte storage. Validate the header before accessing any entry.
+    let header = unsafe { core::ptr::read_unaligned(bytes.as_ptr().cast::<abi::CompositeRecordHeader>()) };
+    if header.serial != serial || header.flags != 0 || header.count as usize > (bytes.len() - head) / size {
+        return Err(format!("WM invalid composite record serial={serial} header={header:?}"));
+    }
+    let mut entries: Vec<abi::CompositeEntry> = Vec::with_capacity(header.count as usize);
+    for index in 0..header.count as usize {
+        let entry = unsafe { core::ptr::read_unaligned(bytes.as_ptr().add(head + index * size).cast::<abi::CompositeEntry>()) };
+        if entry.id == 0 || entries.iter().any(|prior| prior.id == entry.id) {
+            return Err(format!("WM duplicate/invalid composite window serial={serial} window={}", entry.id));
+        }
+        entries.push(entry);
+    }
+    Ok(entries)
 }
