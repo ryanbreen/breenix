@@ -19,6 +19,34 @@ static FIRST_START: AtomicUsize = AtomicUsize::new(usize::MAX);
 static LATEST_START: AtomicUsize = AtomicUsize::new(usize::MAX);
 static LAPPED: AtomicBool = AtomicBool::new(false);
 static LAPPED_BEFORE_FIRST: AtomicBool = AtomicBool::new(false);
+// One immutable first late line per stage, independent of the rolling tail.
+// The bounded scanner admits at most 1024 bytes plus the newline per line.
+// Atomic claims also cover the independent snapshot scanner; length publishes
+// the bytes, so a preempting reader can refuse an unfinished copy without waiting.
+struct LateLine {
+    start: AtomicUsize,
+    len: AtomicUsize,
+    bytes: [AtomicU8; 1025],
+}
+impl LateLine {
+    const fn new() -> Self {
+        Self {
+            start: AtomicUsize::new(usize::MAX),
+            len: AtomicUsize::new(0),
+            bytes: [const { AtomicU8::new(0) }; 1025],
+        }
+    }
+    fn retain(&self, start: usize, bytes: &[u8]) {
+        if self.start.compare_exchange(usize::MAX, start, Ordering::AcqRel, Ordering::Acquire).is_ok() {
+            for (out, byte) in self.bytes.iter().zip(bytes) {
+                out.store(*byte, Ordering::Relaxed);
+            }
+            self.bytes[bytes.len()].store(b'\n', Ordering::Relaxed);
+            self.len.store(bytes.len() + 1, Ordering::Release);
+        }
+    }
+}
+static LATE_LINES: [LateLine; MARKERS.len()] = [const { LateLine::new() }; MARKERS.len()];
 fn put(offset: usize, byte: u8) {
     SERIAL[offset % RING].store(byte, Ordering::Relaxed);
     if offset < HEAD { BOOT_HEAD[offset].store(byte, Ordering::Relaxed); }
@@ -79,12 +107,13 @@ fn scan_to(scan: &mut Scan, end: usize, live: bool) -> bool {
                         Some(if old == usize::MAX { start } else { old.max(start) })
                     });
                 }
-                if start < FIRST_START.load(Ordering::Acquire) {
                 for (i, marker) in MARKERS.iter().enumerate() {
                     if super::boot_producer::matches(bytes, marker, MARKERS) {
+                        if start >= FIRST_START.load(Ordering::Acquire) {
+                            LATE_LINES[i].retain(start, bytes);
+                        }
                         changed |= !REACHED[i].swap(true, Ordering::AcqRel);
                     }
-                }
                 }
             }
             scan.2 = 0;
@@ -108,7 +137,8 @@ fn drain_snapshot() {
         scan_to(&mut scan, end.min(HEAD - 8), false);
     }
 }
-/// Complete serial prefix, not the matcher's interpretation of it. Never silently truncate.
+/// Boot prefix followed by each stage's first late producer line in stream order.
+/// The retained evidence uses original bytes, not reconstructed marker text.
 pub fn serial() -> Result<alloc::string::String, i32> {
     drain_snapshot();
     let start = FIRST_START.load(Ordering::Acquire);
@@ -121,6 +151,20 @@ pub fn serial() -> Result<alloc::string::String, i32> {
         offset += 1;
         bytes.push(byte);
         if byte == b'\n' { offset += 8; }
+    }
+    let mut late = alloc::vec::Vec::new();
+    for line in &LATE_LINES {
+        let start = line.start.load(Ordering::Acquire);
+        if start == usize::MAX { continue; }
+        let len = line.len.load(Ordering::Acquire);
+        if len == 0 { return Err(-11); }
+        late.push((start, line, len));
+    }
+    late.sort_unstable_by_key(|(start, _, _)| *start);
+    // A producer line can satisfy several markers. Include that line once.
+    late.dedup_by_key(|(start, _, _)| *start);
+    for (_, line, len) in late {
+        bytes.extend(line.bytes[..len].iter().map(|byte| byte.load(Ordering::Relaxed)));
     }
     Ok(alloc::string::String::from_utf8_lossy(&bytes).into_owned())
 }

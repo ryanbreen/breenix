@@ -1710,8 +1710,14 @@ Elapsed time is derived independently from the captured producer's monotonic STA
 timestamp in `/proc/breenix/boot-serial-timed`; each line is `milliseconds|serial line`.
 <!-- claim-lint:ok: Normative endpoint ranges for #2824, not an acceptance claim. -->
 The `/proc/breenix/boot-serial` endpoint returns the boot prefix before the first
-accepted suite START (excluding that line), or the current prefix before any
-START, within the frozen boot head. The timed endpoint returns complete records
+accepted suite START (excluding that line), followed by the first occurrence
+of each stage-marker line after START, in stream order. Lines satisfying more
+than one marker appear once. REACHED latches stage markers throughout the stream;
+the unchanged ribbon oracle parses this endpoint and compares it with REACHED.
+Before any START the endpoint returns the current prefix within the frozen boot
+head. A fixed side store retains at most one scanner-bounded line per marker;
+a reader preempting an unfinished side-store copy receives EAGAIN, not partial
+evidence. The timed endpoint returns complete records
 from the latest accepted suite START (including that line) up to its snapshot
 tail (exclusive), or the current prefix before any START, within the ring.
 After copying timed records, it re-reads the producer tail and returns EOVERFLOW
