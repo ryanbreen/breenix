@@ -254,3 +254,15 @@ fn decckm_tracks_application_cursor_mode() {
     vt.feed(b"\x1b[?1l");
     assert!(!vt.application_cursor_keys());
 }
+
+#[test]
+fn resize_keeps_surviving_text() {
+    let mut vt = TermEmu::new(8, 3);
+    vt.feed(b"first\x1b[2;1Hsecond");
+    vt.resize(6, 2);
+    assert_eq!((0..6).map(|x| vt.cell(x, 0).ch).collect::<String>(), "first ");
+    assert_eq!((0..6).map(|x| vt.cell(x, 1).ch).collect::<String>(), "second");
+    vt.resize(10, 4);
+    assert_eq!((0..10).map(|x| vt.cell(x, 0).ch).collect::<String>(), "first     ");
+    assert_eq!((0..10).map(|x| vt.cell(x, 1).ch).collect::<String>(), "second    ");
+}

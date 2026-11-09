@@ -49,3 +49,96 @@ pub fn exec_tab() -> CaseResult {
     t.expect_text("[exited 0]")?;
     Ok(t.finish()?)
 }
+
+
+fn until(label: &str, mut ready: impl FnMut() -> Result<bool, String>) -> Result<(), String> {
+    use breenix_suite::suite::control::{Wait, Watchdog};
+    let watchdog = Watchdog::new(Wait::AppOutput)?;
+    loop {
+        if libbreenix::time::now_monotonic().map_err(|e| e.to_string())?.as_nanos() >= u128::from(watchdog.deadline_ns()) {
+            return Err(format!("{label}: hang watchdog"));
+        }
+        if ready()? { return Ok(()); }
+        libbreenix::time::sleep_ms(10).map_err(|e| e.to_string())?;
+    }
+}
+
+fn grid(t: &mut App) -> Result<serde_json::Value, String> {
+    Ok(t.tree()?.root.value)
+}
+
+fn expect_tab(t: &mut App, active: u64, count: u64) -> Result<(), String> {
+    until("terminal tab state", || {
+        let v = grid(t)?;
+        Ok(v["active_tab"] == active && v["tab_count"] == count)
+    })
+}
+
+fn has_line(v: &serde_json::Value, text: &str) -> bool {
+    v["lines"].as_array().is_some_and(|lines| lines.iter().any(|line| line == text))
+}
+
+pub fn tabs() -> CaseResult {
+    use libuitest::input::Modifier;
+    let mut t = App::launch(&[b"/usr/bin/bterm"], "Terminal")?;
+    t.type_line("echo one")?;
+    t.expect_text("one")?;
+    t.key(20, &[Modifier::Ctrl])?;
+    expect_tab(&mut t, 1, 2)?;
+    t.expect_text("bsh />")?;
+    t.type_line("echo two")?;
+    t.expect_text("two")?;
+    t.expect_node("grid", |v| !has_line(v, "one"))?;
+    t.type_line("/usr/libexec/breenix/vt-script_test --session")?;
+    let mut session = None;
+    until("second shell session id", || {
+        let v = grid(&mut t)?;
+        session = v["lines"].as_array().and_then(|lines| lines.iter().filter_map(|v| v.as_str())
+            .find_map(|line| line.strip_prefix("SESSION ").and_then(|pid| pid.parse::<i32>().ok())));
+        Ok(session.is_some())
+    })?;
+    let session = session.ok_or("missing second session")?;
+    if session <= 1 { return Err("invalid tab session id".into()); }
+    libbreenix::signal::kill(-session, 0).map_err(|e| e.to_string())?;
+    t.key(17, &[Modifier::Ctrl])?;
+    expect_tab(&mut t, 0, 1)?;
+    t.expect_text("one")?;
+    t.expect_node("grid", |v| !has_line(v, "two"))?;
+    until("closed tab group gone and shell reaped", || {
+        Ok(matches!(libbreenix::signal::kill(-session, 0),
+            Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ESRCH)))
+            && !std::path::Path::new(&format!("/proc/{session}/stat")).exists())
+    })?;
+    Ok(t.finish()?)
+}
+
+pub fn resize() -> CaseResult {
+    use libuitest::input::Modifier;
+    let mut t = App::launch(&[b"/usr/bin/bterm"], "Terminal")?;
+    t.type_line("echo first-survives")?;
+    t.expect_text("first-survives")?;
+    let before = grid(&mut t)?;
+    t.key(20, &[Modifier::Ctrl])?;
+    expect_tab(&mut t, 1, 2)?;
+    t.expect_text("bsh />")?;
+    t.type_line("echo second-survives")?;
+    t.expect_text("second-survives")?;
+    // App::resize drags the right and bottom edges with relative mouse motion.
+    t.resize(830, 610)?;
+    until("resized terminal grid", || {
+        let v = grid(&mut t)?;
+        Ok(v["cols"].as_u64() > before["cols"].as_u64() && v["rows"].as_u64() > before["rows"].as_u64())
+    })?;
+    let after = grid(&mut t)?;
+    let size = format!("{} {}", after["rows"], after["cols"]);
+    t.type_line("/usr/libexec/breenix/vt-script_test --size")?;
+    t.expect_text(&size)?;
+    t.expect_text("second-survives")?;
+    t.key(17, &[Modifier::Ctrl])?;
+    expect_tab(&mut t, 0, 1)?;
+    t.expect_node("grid", |v| v["cols"] == after["cols"] && v["rows"] == after["rows"])?;
+    t.type_line("/usr/libexec/breenix/vt-script_test --size")?;
+    t.expect_text(&size)?;
+    t.expect_text("first-survives")?;
+    Ok(t.finish()?)
+}
