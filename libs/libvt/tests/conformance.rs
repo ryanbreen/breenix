@@ -244,3 +244,13 @@ fn rendition_replies_and_titles_are_independent_of_chunking() {
         }
     }
 }
+
+#[test]
+fn decckm_tracks_application_cursor_mode() {
+    let mut vt = TermEmu::new(8, 2);
+    assert!(!vt.application_cursor_keys());
+    vt.feed(b"\x1b[?1h");
+    assert!(vt.application_cursor_keys());
+    vt.feed(b"\x1b[?1l");
+    assert!(!vt.application_cursor_keys());
+}
