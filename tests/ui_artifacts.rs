@@ -233,3 +233,66 @@ fn oversized_bundle_drops_screen_first_and_preserves_other_evidence() {
     assert!(bundle.bytes.windows(7).any(|w| w == b"got.png"));
     assert!(!bundle.bytes.windows(10).any(|w| w == b"screen.png"));
 }
+
+#[test]
+fn retention_freezes_synced_files_before_frame_and_labels_the_case() {
+    let root = root("retention");
+    let mut local = artifacts::Local::new(&root, "ui-testing", "diagnosis/local");
+    local.write("got.png", b"first capture").unwrap();
+    local.write("screen.png", &vec![2; 2 * 1024 * 1024]).unwrap();
+    assert_eq!(local.prepare_retention(), Ok(Some(true)));
+    let frozen = fs::read(local.path().join("retention.bundle")).unwrap();
+    assert!(frozen.starts_with(b"UTART001\n"));
+    assert!(!frozen.windows(10).any(|w| w == b"screen.png"));
+    assert!(frozen.windows(13).any(|w| w == b"first capture"));
+    assert_eq!(artifacts::label("diagnosis/local"), "uitest-19581b0bf17dadcb");
+    // Collection can append or replace files without changing the advertised bundle.
+    local.write("got.png", b"later collection").unwrap();
+    assert_eq!(local.prepare_retention(), Ok(Some(true)));
+    assert_eq!(fs::read(local.path().join("retention.bundle")).unwrap(), frozen);
+    assert_eq!(fs::metadata(local.path().join("screen.png")).unwrap().len(), 2 * 1024 * 1024);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn bundle_refuses_oversized_non_screen_evidence_and_counts_framing() {
+    let entries = vec![("got.png".to_string(), vec![1; 2 * 1024 * 1024])];
+    assert!(artifacts::bundle(&entries).is_err());
+    let bundle = artifacts::bundle(&[("got.png".into(), b"pixels".to_vec())]).unwrap();
+    assert!(!bundle.screen_dropped);
+    let header = format!("file=got.png bytes=6 sha256={}\n", frames::digest(b"pixels"));
+    assert_eq!(bundle.bytes, [b"UTART001\n".as_slice(), header.as_bytes(), b"pixels"].concat());
+}
+
+#[test]
+fn dropped_screen_is_reported_in_the_same_failure_frame() {
+    struct Dropped(Writer);
+    impl CheckWriter for Dropped {
+        fn path(&self) -> &Path { self.0.path() }
+        fn write(&mut self, name: &str, bytes: &[u8]) -> Result<(), SaveError> { self.0.write(name, bytes) }
+        fn prepare_retention(&mut self) -> Result<Option<bool>, SaveError> { Ok(Some(true)) }
+    }
+    let f = Fixture::new("drop-record", true);
+    let mut writer = Dropped(Writer {path:"/var/uitest/ui-testing/diagnosis/local".into(),files:vec![],error:None});
+    let (v, outcome) = f.run(&mut writer, false);
+    assert_eq!(v.failure_class(), Some(FailureClass::PixelMismatch));
+    let line = &outcome.records()[0];
+    assert!(line.ends_with("artifacts=partial:screen-dropped"), "{line}");
+    result::Accounting::new("ui-testing", "diagnosis/local", &["pixels"], false).unwrap().accept(line).unwrap();
+    fs::remove_dir_all(f.path).unwrap();
+}
+
+#[test]
+fn seventeenth_bundle_stays_local_and_budget_leaves_collection_time() {
+    let root = root("slots");
+    for n in 0..16 {
+        artifacts::reserve_upload(&root, &artifacts::label(&format!("diagnosis/case-{n}"))).unwrap();
+    }
+    assert_eq!(artifacts::reserve_upload(&root, &artifacts::label("diagnosis/seventeenth")).unwrap_err(), "slots");
+    assert_eq!(artifacts::reserve_upload(&root, &artifacts::label("diagnosis/case-0")).unwrap_err(), "already-attempted");
+    assert_eq!(artifacts::upload_budget_ms(10_000), 5000);
+    assert_eq!(artifacts::upload_budget_ms(2000), 250);
+    assert_eq!(artifacts::upload_budget_ms(1750), 0);
+    assert_eq!(artifacts::upload_budget_ms(10), 0);
+    fs::remove_dir_all(root).unwrap();
+}

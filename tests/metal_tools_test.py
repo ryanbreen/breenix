@@ -1925,6 +1925,48 @@ class DriverTest(StateTest):
                     self.assertEqual(h.code, expected)
                     (directory / ('diagnostic-' + label + '.bin')).unlink(missing_ok=True)
 
+    def test_ui_diagnostics_share_the_64_mib_boot_bound(self):
+        import gt710_upload as upload
+        import io
+        class Handler:
+            def __init__(self, path):
+                self.path, self.connection = path, self
+                self.rfile = io.BytesIO(b'xy')
+                self.headers = {'Content-Length': '2', 'X-Content-SHA256': hashlib.sha256(b'xy').hexdigest()}
+                self.code = None
+            def settimeout(self, value): pass
+            def send_error(self, code, *args): self.code = code
+            def send_response(self, code): self.code = code
+            def send_header(self, *args): pass
+            def end_headers(self): pass
+        route = '/gt710-upload/' + 'a' * 64
+        for sequence in (False, True):
+            for total, expected in ((upload.MAX_TOTAL - 2, 200), (upload.MAX_TOTAL - 1, 400)):
+                with self.subTest(sequence=sequence, total=total), tempfile.TemporaryDirectory() as tmp:
+                    state = Path(tmp)
+                    slot = dict(id='sample', suite='ui-testing', route=route, complete=True,
+                                bytes=1, pictureBytes=total - 3, diagnosticBytes=1, screenBytes=1)
+                    intent = slot
+                    if sequence:
+                        slot['route'] += '/suites/ui-testing'
+                        intent = dict(id='sample', suite='console,ui-testing', route=route,
+                                      aggregateBytes=total, suiteSlots={'ui-testing': slot})
+                    (state / 'gt710-upload.json').write_text(json.dumps(intent))
+                    with patch.object(upload.m, 'STATE', state), \
+                         patch.object(upload.m, 'read_lease', return_value=dict(id='sample', state='powered')):
+                        h = Handler(slot['route'] + '/diagnostics/uitest-' + 'c' * 16)
+                        upload.receive(h)
+                    self.assertEqual(h.code, expected)
+                    directory = state / 'boots/sample'
+                    if sequence: directory /= 'native-suites/ui-testing'
+                    payload = directory / ('diagnostic-uitest-' + 'c' * 16 + '.bin')
+                    self.assertEqual(payload.exists(), expected == 200)
+                    self.assertFalse(Path(str(payload) + '.partial').exists())
+                    if expected == 200:
+                        stored = json.loads((state / 'gt710-upload.json').read_text())
+                        admitted = stored['aggregateBytes'] if sequence else sum(stored.get(k, 0) for k in ('bytes', 'pictureBytes', 'diagnosticBytes', 'screenBytes'))
+                        self.assertEqual(admitted, upload.MAX_TOTAL)
+
     def test_window_manager_starts_the_hostkey_reader(self):
         d = self.driver
         d.args.mode, d.args.suite = 'suite', 'window-manager'
