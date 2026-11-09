@@ -12,3 +12,19 @@ fn visible_grid_preserves_rows_and_trims_only_trailing_spaces() {
         "alt": false, "scrollback": 0, "offset": 0, "runs": [[], [], []]
     }));
 }
+
+#[test]
+fn history_view_publishes_the_cells_being_drawn() {
+    let mut vt = libvt::TermEmu::new(6, 2);
+    vt.feed(b"\x1b[31mone\r\n\x1b[0mtwo\r\nthree");
+    vt.scroll_view(1);
+    let value = terminal_node::terminal_value(&vt, 0, 1);
+    assert_eq!(value["scrollback"], 1);
+    assert_eq!(value["offset"], 1);
+    assert_eq!(value["lines"], serde_json::json!(["one", "two"]));
+    assert_eq!(value["runs"][0][0]["fg"], serde_json::json!([205, 49, 49]));
+    vt.feed(b"!");
+    let value = terminal_node::terminal_value(&vt, 0, 1);
+    assert_eq!(value["offset"], 0);
+    assert_eq!(value["lines"], serde_json::json!(["two", "three!"]));
+}

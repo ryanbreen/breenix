@@ -22,7 +22,7 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("ctrl-c", "Interrupt foreground command", bterm::ctrl_c),
         case("tabs", "Tabs", bterm::tabs),
         case("resize", "Resize", bterm::resize),
-        case("scrollback", "Scrollback", pending::not_built),
+        case("scrollback", "Scrollback", bterm::scrollback),
         case("exec-tab", "Execute a command in a tab", bterm::exec_tab),
         case("paste", "Paste", pending::not_built),
     ]),

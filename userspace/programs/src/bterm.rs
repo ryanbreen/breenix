@@ -9,6 +9,7 @@
 //!   Ctrl+W       — close the active tab (exits if last tab)
 //!   Ctrl+Plus/=  — increase font size
 //!   Ctrl+Minus   — decrease font size
+//!   Shift+PgUp/PgDn — scroll history by a page; wheel scrolls three rows
 
 #[path = "bterm/terminal_node.rs"]
 mod terminal_node;
@@ -99,9 +100,9 @@ impl TermEmu {
                 let py = y_off + row * cell_h;
                 let mut col = 0;
                 while col < cols {
-                    let bg = bg_of(self.vt.cell(col, row));
+                    let bg = bg_of(self.vt.view_cell(col, row));
                     let start = col;
-                    while col < cols && bg_of(self.vt.cell(col, row)) == bg {
+                    while col < cols && bg_of(self.vt.view_cell(col, row)) == bg {
                         col += 1;
                     }
                     shapes::fill_rect(fb, (x_off + start * cell_w) as i32, py as i32,
@@ -111,14 +112,14 @@ impl TermEmu {
         });
         let glyphs: Vec<(usize, usize, Color)> = (0..rows)
             .flat_map(|row| (0..cols).map(move |col| (col, row)))
-            .filter(|&(col, row)| self.vt.cell(col, row).ch != ' ')
-            .map(|(col, row)| (col, row, fg_of(self.vt.cell(col, row))))
+            .filter(|&(col, row)| self.vt.view_cell(col, row).ch != ' ')
+            .map(|(col, row)| (col, row, fg_of(self.vt.view_cell(col, row))))
             .collect();
         if let Some(font) = ttf {
             let clip = libgfx::surface::Rect::new(0, 0, max_x as i32, max_y as i32);
-            let encoded: Vec<[u8; 4]> = glyphs.iter().map(|&(col, row, _)| { let mut b = [0; 4]; self.vt.cell(col, row).ch.encode_utf8(&mut b); b }).collect();
+            let encoded: Vec<[u8; 4]> = glyphs.iter().map(|&(col, row, _)| { let mut b = [0; 4]; self.vt.view_cell(col, row).ch.encode_utf8(&mut b); b }).collect();
             let runs: Vec<ttf_font::TextRun<'_>> = glyphs.iter().zip(&encoded).map(|(&(col, row, fg), bytes)| ttf_font::TextRun {
-                bytes: &bytes[..self.vt.cell(col, row).ch.len_utf8()],
+                bytes: &bytes[..self.vt.view_cell(col, row).ch.len_utf8()],
                 x: (x_off + col * cell_w) as i32,
                 y: (y_off + row * cell_h) as i32,
                 size: font_size,
@@ -132,11 +133,11 @@ impl TermEmu {
             let mut i = 0;
             while i < glyphs.len() {
                 let (col, row, fg) = glyphs[i];
-                let mut text = vec![if self.vt.cell(col, row).ch.is_ascii() { self.vt.cell(col, row).ch as u8 } else { b'?' }];
+                let mut text = vec![if self.vt.view_cell(col, row).ch.is_ascii() { self.vt.view_cell(col, row).ch as u8 } else { b'?' }];
                 let mut j = i + 1;
                 while j < glyphs.len() && glyphs[j].1 == row && glyphs[j].2 == fg
                     && glyphs[j].0 == col + text.len() && cell_w == bitmap_font::metrics().char_width {
-                    let ch = self.vt.cell(glyphs[j].0, row).ch;
+                    let ch = self.vt.view_cell(glyphs[j].0, row).ch;
                     text.push(if ch.is_ascii() { ch as u8 } else { b'?' });
                     j += 1;
                 }
@@ -147,7 +148,7 @@ impl TermEmu {
         fb.batch(|fb| {
             for row in 0..rows {
                 for col in 0..cols {
-                    let cell = self.vt.cell(col, row);
+                    let cell = self.vt.view_cell(col, row);
                     if cell.underline {
                         shapes::fill_rect(fb, (x_off + col * cell_w) as i32,
                             (y_off + (row + 1) * cell_h - 1) as i32,
@@ -158,7 +159,7 @@ impl TermEmu {
         });
         // Cursor underline
         let (cursor_x, cursor_y) = self.vt.cursor();
-        if self.vt.cursor_visible() && cursor_y < rows && cursor_x < cols {
+        if self.vt.view_offset() == 0 && self.vt.cursor_visible() && cursor_y < rows && cursor_x < cols {
             let cx = x_off + cursor_x * cell_w;
             let cy = y_off + cursor_y * cell_h + cell_h - 2;
             let w = cell_w.min(max_x.saturating_sub(cx));
@@ -404,6 +405,14 @@ fn main() {
                     break 'mainloop;
                 }
                 Event::KeyPress { ascii, keycode, modifiers, text, .. } => {
+                    if modifiers.shift && (*keycode == breengel::keys::PAGE_UP || *keycode == breengel::keys::PAGE_DOWN) {
+                        if let Some(tab) = tabs.get_mut(tab_bar.selected()) {
+                            let page = tab.emu.vt.size().1 as isize;
+                            tab.emu.vt.scroll_view(if *keycode == breengel::keys::PAGE_UP { page } else { -page });
+                            tab.emu.dirty = true;
+                        }
+                        continue;
+                    }
                     // Debug: log key events for +/- and ctrl
                     if *ascii == b'+' || *ascii == b'=' || *ascii == b'-'
                        || *keycode == breengel::keys::MINUS || *keycode == breengel::keys::EQUAL
@@ -479,6 +488,12 @@ fn main() {
                     if let Some(tab) = tabs.get(sel) {
                         let bytes = keys::encode(*keycode, modifiers.ctrl, text, tab.emu.vt.application_cursor_keys());
                         if !bytes.is_empty() { let _ = io::write(tab.master_fd, &bytes); }
+                    }
+                }
+                Event::Scroll { delta_y, .. } => {
+                    if let Some(tab) = tabs.get_mut(tab_bar.selected()) {
+                        tab.emu.vt.scroll_view((*delta_y as isize).saturating_mul(3));
+                        tab.emu.dirty = true;
                     }
                 }
                 Event::MouseMove { x, y } => {

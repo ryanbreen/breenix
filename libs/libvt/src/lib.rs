@@ -9,7 +9,7 @@ impl Color {
     pub const fn rgb(r: u8, g: u8, b: u8) -> Self { Self { r, g, b } }
 }
 
-/// Reserved for the scrollback implementation in a later unit.
+/// Lines scrolled off the main screen, oldest first.
 #[derive(Default)]
 pub struct Scrollback { pub lines: VecDeque<Vec<Cell>> }
 
@@ -487,6 +487,7 @@ pub struct TermEmu {
     utf8_expected: usize,
     ansi_param_idx: usize,
     pub scrollback: Scrollback,
+    view_offset: usize,
     pub replies: VecDeque<u8>,
     title: String,
     osc: Vec<u8>,
@@ -509,13 +510,28 @@ impl TermEmu {
             ansi_params: [0; 16],
             ansi_len: 0, ansi_invalid: false, utf8: [0; 4], utf8_len: 0, utf8_expected: 0,
             ansi_param_idx: 0,
-            scrollback: Scrollback::default(),
+            scrollback: Scrollback::default(), view_offset: 0,
             replies: VecDeque::new(),
             title: String::from("Terminal"), osc: Vec::new(),
         }
     }
 
     pub fn cell(&self, x: usize, y: usize) -> &Cell { &self.cells[y * self.cols + x] }
+    /// Rows above the live screen; 0 follows output.
+    pub fn view_offset(&self) -> usize { self.view_offset }
+    /// Positive deltas move toward older lines. Alternate screens have no history view.
+    pub fn scroll_view(&mut self, delta: isize) {
+        if self.alternate { return; }
+        self.view_offset = self.view_offset.saturating_add_signed(delta).min(self.scrollback.lines.len());
+    }
+    /// View history and live cells together, clipping or padding old widths after resize.
+    pub fn view_cell(&self, x: usize, y: usize) -> &Cell {
+        static BLANK: Cell = Cell::blank();
+        let history = self.scrollback.lines.len();
+        let row = history - self.view_offset + y;
+        if row < history { self.scrollback.lines[row].get(x).unwrap_or(&BLANK) }
+        else { self.cell(x, row - history) }
+    }
     fn cell_mut(&mut self, x: usize, y: usize) -> &mut Cell { &mut self.cells[y * self.cols + x] }
 
     pub fn resize(&mut self, new_cols: usize, new_rows: usize) {
@@ -558,7 +574,10 @@ impl TermEmu {
     pub fn application_cursor_keys(&self) -> bool { self.application_cursor_keys }
     pub fn cursor_visible(&self) -> bool { self.cursor_visible }
     pub fn size(&self) -> (usize, usize) { (self.cols, self.rows) }
-    pub fn feed(&mut self, bytes: &[u8]) { for &byte in bytes { self.feed_byte(byte); } }
+    pub fn feed(&mut self, bytes: &[u8]) {
+        if !bytes.is_empty() { self.view_offset = 0; }
+        for &byte in bytes { self.feed_byte(byte); }
+    }
 
     fn cursor_state(&self) -> SavedCursor {
         SavedCursor { x: self.cursor_x, y: self.cursor_y, fg: self.fg, bg: self.bg,
@@ -626,6 +645,10 @@ impl TermEmu {
                 self.scroll_region(self.scroll_top, self.scroll_bottom, 1, true);
             } else { self.cursor_y = self.cursor_y.saturating_sub(1); }
         } else if self.cursor_y == self.scroll_bottom {
+            if !self.alternate && self.scroll_top == 0 && self.scroll_bottom == self.rows - 1 {
+                if self.scrollback.lines.len() == 1000 { self.scrollback.lines.pop_front(); }
+                self.scrollback.lines.push_back(self.cells[..self.cols].to_vec());
+            }
             self.scroll_region(self.scroll_top, self.scroll_bottom, 1, false);
         } else { self.cursor_y = (self.cursor_y + 1).min(self.rows - 1); }
     }

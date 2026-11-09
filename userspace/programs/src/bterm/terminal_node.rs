@@ -6,17 +6,17 @@ pub fn terminal_value(vt: &TermEmu, active_tab: usize, tab_count: usize) -> Valu
     let mut lines = Vec::new();
     let mut runs = Vec::new();
     for y in 0..rows {
-        let line: String = (0..cols).map(|x| vt.cell(x, y).ch).collect();
+        let line: String = (0..cols).map(|x| vt.view_cell(x, y).ch).collect();
         lines.push(line.trim_end_matches(' ').to_owned());
         let mut row = Vec::new();
         let mut x = 0;
         while x < cols {
-            let cell = vt.cell(x, y);
+            let cell = vt.view_cell(x, y);
             let attr = (cell.fg, cell.bg, cell.bold, cell.underline, cell.inverse);
             let start = x;
             x += 1;
             while x < cols {
-                let c = vt.cell(x, y);
+                let c = vt.view_cell(x, y);
                 if (c.fg, c.bg, c.bold, c.underline, c.inverse) != attr { break; }
                 x += 1;
             }
@@ -27,5 +27,5 @@ pub fn terminal_value(vt: &TermEmu, active_tab: usize, tab_count: usize) -> Valu
         runs.push(row);
     }
     let (x, y) = vt.cursor();
-    json!({"active_tab": active_tab, "tab_count": tab_count, "cols": cols, "rows": rows, "cursor": [x, y], "lines": lines, "title": vt.title(), "alt": vt.alternate_screen(), "scrollback": vt.scrollback.lines.len(), "offset": 0, "runs": runs})
+    json!({"active_tab": active_tab, "tab_count": tab_count, "cols": cols, "rows": rows, "cursor": [x, y], "lines": lines, "title": vt.title(), "alt": vt.alternate_screen(), "scrollback": vt.scrollback.lines.len(), "offset": vt.view_offset(), "runs": runs})
 }

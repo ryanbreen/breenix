@@ -142,3 +142,25 @@ pub fn resize() -> CaseResult {
     t.expect_text("first-survives")?;
     Ok(t.finish()?)
 }
+
+pub fn scrollback() -> CaseResult {
+    use libuitest::input::Modifier;
+    let mut t = App::launch(&[b"/usr/bin/bterm"], "Terminal")?;
+    t.expect_text("bsh />")?;
+    let rows = grid(&mut t)?["rows"].as_u64().ok_or("missing rows")?;
+    if !(2..=200).contains(&rows) { return Err("unexpected terminal height for scrollback".into()); }
+    // Include the final prompt row so page-sized steps can put line 1 exactly at the top.
+    let padding = (rows - 201 % rows) % rows;
+    t.type_line(&format!("for(let i=1;i<=200;i++)print(i);for(let i=0;i<{padding};i++)print('')"))?;
+    until("numbered output complete", || {
+        let v = grid(&mut t)?;
+        Ok(v["scrollback"].as_u64().is_some_and(|n| n >= 201 - rows)
+            && has_line(&v, "bsh />"))
+    })?;
+    for _ in 0..(1000 / rows + 2) {
+        let v = grid(&mut t)?;
+        if v["lines"][0] == "1" { return Ok(t.finish()?); }
+        t.key(104, &[Modifier::Shift])?;
+    }
+    Err("scrollback did not show line 1 at the top".into())
+}
