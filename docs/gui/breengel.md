@@ -1710,10 +1710,15 @@ Elapsed time is derived independently from the captured producer's monotonic STA
 timestamp in `/proc/breenix/boot-serial-timed`; each line is `milliseconds|serial line`.
 <!-- claim-lint:ok: Normative endpoint ranges for #2824, not an acceptance claim. -->
 The `/proc/breenix/boot-serial` endpoint returns the boot prefix before the first
-suite START, or the current prefix before any START. The timed endpoint returns
-complete records from the latest suite START through its snapshot tail, or the
-current prefix before any START. Either returns EOVERFLOW when its required range
-cannot be retained; neither silently truncates the evidence.
+accepted suite START (excluding that line), or the current prefix before any
+START, within the frozen boot head. The timed endpoint returns complete records
+from the latest accepted suite START (including that line) up to its snapshot
+tail (exclusive), or the current prefix before any START, within the ring.
+After copying timed records, it re-reads the producer tail and returns EOVERFLOW
+if `start + RING < TAIL_after + 9` or the scanner's sticky `LAPPED` flag is set.
+The nine-byte guard includes an in-flight newline and its timestamp. Either
+endpoint returns EOVERFLOW when its required range cannot be retained; neither
+silently truncates the evidence.
 The sample interval permits the 250 ms panel refresh interval plus 50 ms for clock
 resolution and sampling. The check must reject a stale elapsed field outside that
 interval, including after a display owner has held the screen.

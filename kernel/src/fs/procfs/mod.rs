@@ -98,9 +98,12 @@ pub enum ProcEntryType {
     /// Actual producer markers reached in boot-path order.
     BootRibbon,
     // claim-lint:ok: Normative endpoint contract for #2824.
-    // Normative ranges (#2824): boot-serial is the prefix before the first
-    // suite START; boot-serial-timed is the latest START through snapshot tail,
-    // or the prefix before any START. Overflow returns -75, never truncation.
+    // Normative ranges (#2824): boot-serial is the frozen head before the first
+    // accepted suite START (exclusive), or the current prefix before any START.
+    // boot-serial-timed reads the ring from the latest accepted START (inclusive)
+    // to snapshot tail (exclusive), or the current prefix before any START.
+    // After copying, start + RING < TAIL_after + 9 or sticky LAPPED returns -75.
+    // Either endpoint refuses an unretained range with -75, never truncation.
     BootSerial,
     BootSerialTimed,
     StageComposites,
