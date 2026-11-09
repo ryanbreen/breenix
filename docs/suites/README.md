@@ -459,7 +459,7 @@ Each attempt keeps its serial and gets one Vigil boot record with the ordered su
 A suite that never starts gets no figure. Ctrl+C, quitting QEMU, closing its window, or
 a launcher killed by a signal cancels the run without resuming. Ctrl+C waits for the
 launcher to stop and clean up its VM.
-claim-lint:ok: S35; host cancellation replays in tests/suite_resume_test.py and tests/suite_watcher_test.py.
+<!-- claim-lint:ok: S35; host cancellation replays in tests/suite_resume_test.py and tests/suite_watcher_test.py. -->
 
 Mac launchers reuse the
 built artifacts on retries and place retry serials in separate `-resume-N`
@@ -484,10 +484,14 @@ Each suite starts from the state its own boot gives it:
   removes whatever earlier suites created and prints RESET. A recorded path that is missing
   or otherwise differs (a fixture an earlier suite changed) cannot be put back, since no copy was
   kept: RESET names it, and that suite is scored NOT-ISOLATED, its own verdict alongside.
-  Verified appends to pre-existing regular files under `/var/log` are running state (U18):
-  RESET reports their count and up to eight paths separately, and never restores them.
-  Other differences remain changes.
-  claim-lint:ok: `reset()` in `libs/libbreenix/src/suite_sequence.rs` records `Comparison::Appended` without writing the file.
+  Growth of pre-existing regular files under `/var/log/` is running state under coordinator
+  ruling U27 for #2693 when the recorded content prefix, mode, uid and gid match.
+  With an empty baseline, such as the staged `auth.log`, the prefix check covers 0 bytes:
+  only the path, regular-file type and metadata constrain the new contents. This does not
+  authenticate the new records or preserve records added after the baseline.
+  RESET reports these files as appended, with their count and up to eight paths separately,
+  and leaves them in place. Other differences remain changes.
+  <!-- claim-lint:ok: `reset()` in `libs/libbreenix/src/suite_sequence.rs` records `Comparison::Appended` without writing the file; `libs/libbreenix/src/layout.tsv` declares the empty auth.log fixture. -->
   Fixtures the launcher stages (the SDK suite's host results) are on the disk before the
   baseline, so they stay.
 - **Network.** An earlier suite's TCP connections outlive its processes: TIME_WAIT keeps a
