@@ -83,7 +83,7 @@ def receive(handler):
         sequence = (intent.get('suite') or '').split(',')
         suite_directory = None
         if len(sequence) > 1:
-            scoped = re.fullmatch(re.escape(intent.get('route', '')) + r'/suites/(console|gpu|breengel|window-manager|ui-testing)(/.*)?', route)
+            scoped = re.fullmatch(re.escape(intent.get('route', '')) + r'/suites/(console|gpu|breengel|window-manager|ui-testing|gui-apps)(/.*)?', route)
             if not scoped or scoped[1] not in sequence:
                 handler.send_error(404);return
             suite = scoped[1]
@@ -105,12 +105,12 @@ def receive(handler):
         if (not intent or (route!=intent.get('route') and not final and not is_picture and not is_diagnostic and not is_screen)
                 or (is_screen and (not proof or intent.get('suite') not in ('gpu', 'breengel') or not intent.get('complete')
                     or intent.get('finalComplete') or screen_index != intent.get('screenUploads', 0)))
-                or (is_picture and (intent.get('suite') not in (('gpu', 'breengel', 'window-manager', 'ui-testing') if proof else ('breengel', 'window-manager', 'ui-testing')) or not intent.get('complete')
+                or (is_picture and (intent.get('suite') not in (('gpu', 'breengel', 'window-manager', 'ui-testing', 'gui-apps') if proof else ('breengel', 'window-manager', 'ui-testing', 'gui-apps')) or not intent.get('complete')
                     or intent.get('finalComplete') or picture_index != intent.get('pictureUploads', 0)))
                 or (is_diagnostic and (not intent.get('complete') or intent.get('finalComplete') or
                     ((len(intent.get('diagnosticUploads', {})) >= 16 or
                       (intent.get('suite') == 'ui-testing' and not re.fullmatch(r'uitest-[0-9a-f]{16}', diagnostic_label)))
-                     if intent.get('suite') in ('window-manager', 'ui-testing') else
+                     if intent.get('suite') in ('window-manager', 'ui-testing', 'gui-apps') else
                      not (proof and intent.get('suite') in ('gpu', 'breengel') and
                           re.fullmatch(r'crc-' + intent['suite'] + r'-[0-9a-f]{16}', diagnostic_label) and
                           len(intent.get('diagnosticUploads', {})) < crc_checkpoint_cap(intent['suite'])))))

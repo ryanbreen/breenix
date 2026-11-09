@@ -147,6 +147,9 @@ class AppsStep(unittest.TestCase):
                 f'DONE passed={len(SELECTED)-1} failed={len(NAMES) - len(SELECTED)+1}'),
             original.replace(f'CASE {SELECTED[0]} PASS', f'CASE {SELECTED[0]} SKIP'),
             original.replace(f'SUITE gui-apps DONE passed={len(SELECTED)} failed={len(NAMES) - len(SELECTED)} skipped=0 total={len(NAMES)}\n', ''),
+            original.replace(f'SUITE gui-apps CASE {SELECTED[0]} PASS ms=1\n', ''),
+            original.replace(SELECTED[0], 'foreign/case'),
+            original.replace(SELECTED[0], '__swap__').replace(SELECTED[1], SELECTED[0]).replace('__swap__', SELECTED[1]),
             original.replace('clocks=full', 'clocks=post'),
             original.replace(f'total={len(NAMES)}', f'total={len(NAMES)-1}'),
         ]

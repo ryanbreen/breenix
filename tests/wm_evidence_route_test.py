@@ -24,7 +24,7 @@ class WmEvidenceRoute(StateTest):
         tree = self.inputs / 'tree'
         (tree / 'etc/breenix').mkdir(parents=True)
         (tree / 'sbin').mkdir()
-        for suite in ('window-manager', 'console', 'gpu', 'breengel', 'time'):
+        for suite in ('window-manager', 'console', 'gpu', 'breengel', 'gui-apps', 'time'):
             (tree / ('sbin/suite-' + suite)).write_bytes(b'\x7fELFfixture')
         self.image = self.inputs / 'ext2.img'
         subprocess.run([self.mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F',
@@ -44,11 +44,15 @@ class WmEvidenceRoute(StateTest):
         # Delivery starts from an ext2 image whose record sector is unused.
         with self.image.open('r+b') as image:
             image.write(bytes(512))
+        # Each iteration represents a fresh boot's upload slots.
+        for artifact in self.boot.iterdir():
+            if artifact.is_file() and artifact.name.startswith(('gt710-', 'native-')):
+                artifact.unlink()
         metal_disk.stage(self.boot, self.inputs, 'sample', 'a' * 40, self.site,
                          self.build, mode='suite', suite=suite)
 
     def test_staged_route_reaches_both_digest_verified_slots(self):
-        for suites in ('window-manager', 'console,window-manager'):
+        for suites in ('window-manager', 'console,window-manager', 'gui-apps', 'console,gui-apps'):
             with self.subTest(suites=suites):
                 self.stage(suites)
                 route = self.read('evidence-route')
@@ -61,8 +65,9 @@ class WmEvidenceRoute(StateTest):
                 path = urlsplit(route.strip()).path
                 slot = self.boot
                 if ',' in suites:
-                    path += '/suites/window-manager'
-                    slot /= 'native-suites/window-manager'
+                    selected = suites.split(',')[-1]
+                    path += '/suites/' + selected
+                    slot /= 'native-suites/' + selected
                 with patch.object(upload.m, 'read_lease', return_value=dict(id='sample', state='powered')):
                     bad = Handler(path + '/wrong', b'wrong')
                     upload.receive(bad)
@@ -83,34 +88,35 @@ class WmEvidenceRoute(StateTest):
                         self.assertEqual(facts['sha256'], hashlib.sha256(body).hexdigest())
 
     def test_large_single_request_refused_and_ordered_parts_accepted(self):
-        self.stage('window-manager')
-        path = urlsplit(self.read('evidence-route').strip()).path
-        body = b'x' * 2_400_000
-        digest = hashlib.sha256(body).hexdigest()
-        manifest = f'SUITE_PARTS v=1 first=0 parts=2 bytes={len(body)} sha256={digest}\n'.encode()
-        with patch.object(upload.m, 'read_lease', return_value=dict(id='sample', state='powered')):
-            oversized = Handler(path, body)
-            upload.receive(oversized)
-            self.assertEqual(oversized.code, 400)
-            self.assertFalse((self.boot / 'gt710-pixels.rle').exists())
-            start = Handler(path, manifest)
-            upload.receive(start)
-            self.assertEqual(start.code, 200)
-            wrong = Handler(path + '/pictures/1', body[2 << 20:])
-            upload.receive(wrong)
-            self.assertEqual(wrong.code, 404)
-            for index, part in enumerate((body[:2 << 20], body[2 << 20:])):
-                handler = Handler(path + f'/pictures/{index}', part)
-                upload.receive(handler)
-                self.assertEqual(handler.code, 200)
-            whole = b''.join((self.boot / f'gt710-breengel-{i:04}.rle').read_bytes() for i in range(2))
-            self.assertEqual(hashlib.sha256(whole).hexdigest(), digest)
-            final = Handler(path + '/final', b'final')
-            upload.receive(final)
-            self.assertEqual(final.code, 200)
-            late = Handler(path + '/pictures/2', b'late')
-            upload.receive(late)
-            self.assertEqual(late.code, 404)
+        for suite in ('window-manager', 'gui-apps'):
+            self.stage(suite)
+            path = urlsplit(self.read('evidence-route').strip()).path
+            body = b'x' * 2_400_000
+            digest = hashlib.sha256(body).hexdigest()
+            manifest = f'SUITE_PARTS v=1 first=0 parts=2 bytes={len(body)} sha256={digest}\n'.encode()
+            with patch.object(upload.m, 'read_lease', return_value=dict(id='sample', state='powered')):
+                oversized = Handler(path, body)
+                upload.receive(oversized)
+                self.assertEqual(oversized.code, 400)
+                self.assertFalse((self.boot / 'gt710-pixels.rle').exists())
+                start = Handler(path, manifest)
+                upload.receive(start)
+                self.assertEqual(start.code, 200)
+                wrong = Handler(path + '/pictures/1', body[2 << 20:])
+                upload.receive(wrong)
+                self.assertEqual(wrong.code, 404)
+                for index, part in enumerate((body[:2 << 20], body[2 << 20:])):
+                    handler = Handler(path + f'/pictures/{index}', part)
+                    upload.receive(handler)
+                    self.assertEqual(handler.code, 200)
+                whole = b''.join((self.boot / f'gt710-breengel-{i:04}.rle').read_bytes() for i in range(2))
+                self.assertEqual(hashlib.sha256(whole).hexdigest(), digest)
+                final = Handler(path + '/final', b'final')
+                upload.receive(final)
+                self.assertEqual(final.code, 200)
+                late = Handler(path + '/pictures/2', b'late')
+                upload.receive(late)
+                self.assertEqual(late.code, 404)
 
     def test_no_route_and_reused_root_disarm_the_shared_facility(self):
         self.stage('window-manager')
