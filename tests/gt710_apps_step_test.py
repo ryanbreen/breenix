@@ -120,6 +120,23 @@ class AppsStep(unittest.TestCase):
     def record(self):
         return API['record_apps_capture'](self.path, SHA, 1)
 
+    def test_gui_apps_stages_native_evidence_route(self):
+        import metal_disk
+        class Staged(Exception):
+            pass
+        with patch.object(metal_disk.metal_persist, 'layout', return_value={'existing': True}), \
+             patch.object(metal_disk.metal_persist, 'test_root', return_value=None), \
+             patch.object(metal_disk.metal_root, 'console_identity', return_value={}), \
+             patch.object(metal_disk.metal_image, 'sha256', return_value='a' * 64), \
+             patch.object(metal_disk.m, 'power_token', return_value='test'), \
+             patch.object(metal_disk.gt710_upload, 'prepare', return_value='test-route') as prepare, \
+             patch.object(metal_disk.metal_root, 'stage_root', side_effect=Staged) as stage:
+            with self.assertRaises(Staged):
+                metal_disk.stage(self.path, self.path, BOOT, SHA, {},
+                                 {'ext2': {'sha256': 'a' * 64}}, mode='suite', suite='gui-apps')
+            prepare.assert_called_once_with(self.path, BOOT, {}, suite='gui-apps')
+            self.assertEqual(stage.call_args.kwargs['gt710_upload'], 'test-route')
+
     def test_selection_and_required_refusals(self):
         self.assertEqual(self.record(), 0)
         self.assertTrue(metal_score.score(self.path)['milestones']['metal-gt710/apps-step']['passed'])
