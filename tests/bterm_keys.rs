@@ -26,12 +26,15 @@ fn terminal_keys_follow_xterm_sequences() {
 #[test]
 fn key_and_text_events_insert_printable_text_once() {
     for (key, text) in [(30, "a"), (30, "A"), (0, "é界")] {
-        let mut bytes = keys::encode_press(key, false, text, false);
-        bytes.extend(keys::encode_text(text));
+        let mut bytes = keys::encode(key, false, text, false);
+        bytes.extend(keys::encode_text(text, Some(17), 17));
         assert_eq!(bytes, text.as_bytes());
     }
-    let mut bytes = keys::encode_press(30, true, "\x01", false);
-    bytes.extend(keys::encode_text("\x01"));
+    let mut bytes = keys::encode(30, true, "\x01", false);
+    bytes.extend(keys::encode_text("\x01", Some(17), 17));
     assert_eq!(bytes, [1]);
-    assert_eq!(keys::encode_press(103, false, "", false), b"\x1b[A");
+    assert_eq!(keys::encode(103, false, "", false), b"\x1b[A");
+    assert!(keys::encode_text("+", Some(17), 17).is_empty());
+    assert_eq!(keys::encode_text("é界\n", None, 17), "é界\n".as_bytes());
+    assert_eq!(keys::encode_text("long input continuation", Some(18), 17), b"long input continuation");
 }
