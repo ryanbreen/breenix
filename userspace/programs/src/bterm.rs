@@ -53,7 +53,20 @@ struct TermEmu { vt: libvt::TermEmu, dirty: bool }
 impl TermEmu {
     fn new(cols: usize, rows: usize) -> Self { Self { vt: libvt::TermEmu::new(cols, rows), dirty: true } }
     fn resize(&mut self, cols: usize, rows: usize) { self.vt.resize(cols, rows); self.dirty = true; }
-    fn feed(&mut self, bytes: &[u8]) { self.vt.feed(bytes); self.dirty = true; }
+    fn feed(&mut self, bytes: &[u8], master_fd: Fd) {
+        self.vt.feed(bytes);
+        self.dirty = true;
+        self.flush_replies(master_fd);
+    }
+    fn flush_replies(&mut self, master_fd: Fd) {
+        while !self.vt.replies.is_empty() {
+            let (first, _) = self.vt.replies.as_slices();
+            match io::write(master_fd, first) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => { self.vt.replies.drain(..n); }
+            }
+        }
+    }
     /// Draw the grid: each row's cell backgrounds as runs of one colour, then the characters
     /// at their cells' origins in as few draws as their colours allow, then the cursor's
     /// underline. A cell is drawn only when it lies inside the clip area, edge to edge.
@@ -66,17 +79,20 @@ impl TermEmu {
         let max_y = (y_off + clip_h).min(fb.height());
         let rows = self.vt.size().1.min(max_y.saturating_sub(y_off) / cell_h.max(1));
         let cols = self.vt.size().0.min(max_x.saturating_sub(x_off) / cell_w.max(1));
-        let fg_of = |cell: &libvt::Cell| if cell.bold {
-            Color::rgb(cell.fg.r.saturating_add(40), cell.fg.g.saturating_add(40), cell.fg.b.saturating_add(40))
-        } else { Color::rgb(cell.fg.r, cell.fg.g, cell.fg.b) };
+        let fg_of = |cell: &libvt::Cell| {
+            let c = if cell.inverse { cell.bg } else { cell.fg };
+            if cell.bold { Color::rgb(c.r.saturating_add(40), c.g.saturating_add(40), c.b.saturating_add(40)) }
+            else { Color::rgb(c.r, c.g, c.b) }
+        };
+        let bg_of = |cell: &libvt::Cell| if cell.inverse { cell.fg } else { cell.bg };
         fb.batch(|fb| {
             for row in 0..rows {
                 let py = y_off + row * cell_h;
                 let mut col = 0;
                 while col < cols {
-                    let bg = self.vt.cell(col, row).bg;
+                    let bg = bg_of(self.vt.cell(col, row));
                     let start = col;
-                    while col < cols && self.vt.cell(col, row).bg == bg {
+                    while col < cols && bg_of(self.vt.cell(col, row)) == bg {
                         col += 1;
                     }
                     shapes::fill_rect(fb, (x_off + start * cell_w) as i32, py as i32,
@@ -119,9 +135,21 @@ impl TermEmu {
                 i = j;
             }
         }
+        fb.batch(|fb| {
+            for row in 0..rows {
+                for col in 0..cols {
+                    let cell = self.vt.cell(col, row);
+                    if cell.underline {
+                        shapes::fill_rect(fb, (x_off + col * cell_w) as i32,
+                            (y_off + (row + 1) * cell_h - 1) as i32,
+                            cell_w as i32, 1, fg_of(cell));
+                    }
+                }
+            }
+        });
         // Cursor underline
         let (cursor_x, cursor_y) = self.vt.cursor();
-        if cursor_y < rows && cursor_x < self.vt.size().0 {
+        if self.vt.cursor_visible() && cursor_y < rows && cursor_x < cols {
             let cx = x_off + cursor_x * cell_w;
             let cy = y_off + cursor_y * cell_h + cell_h - 2;
             let w = cell_w.min(max_x.saturating_sub(cx));
@@ -504,13 +532,12 @@ fn main() {
                 match io::read(tab.master_fd, &mut pty_buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        for i in 0..n {
-                            tab.emu.feed(&pty_buf[i..i + 1]);
-                        }
+                        tab.emu.feed(&pty_buf[..n], tab.master_fd);
                     }
                     Err(_) => break, // EAGAIN or error
                 }
             }
+            tab.emu.flush_replies(tab.master_fd);
         }
 
         // ── 3. Render ───────────────────────────────────────────────
@@ -556,7 +583,7 @@ fn main() {
                     key: "grid".into(), parent: None, role: breengel::tree::Role::Terminal,
                     name: "Terminal".into(),
                     value: terminal_node::terminal_value(cols, rows,
-                        { let (x, y) = tab.emu.vt.cursor(); [x, y] }, &cells, "Terminal"),
+                        { let (x, y) = tab.emu.vt.cursor(); [x, y] }, &cells, tab.emu.vt.title()),
                     bounds, clip: bounds, flags: vec![breengel::tree::Flag::Enabled, breengel::tree::Flag::Visible],
                 }, children: Vec::new() });
             }

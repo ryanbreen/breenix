@@ -1,7 +1,7 @@
 #![no_std]
 
 extern crate alloc;
-use alloc::{vec, vec::Vec, collections::VecDeque};
+use alloc::{format, string::String, vec, vec::Vec, collections::VecDeque};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Color { pub r: u8, pub g: u8, pub b: u8 }
@@ -403,11 +403,13 @@ pub struct Cell {
     pub fg: Color,
     pub bg: Color,
     pub bold: bool,
+    pub underline: bool,
+    pub inverse: bool,
 }
 
 impl Cell {
     const fn blank() -> Self {
-        Self { ch: ' ', fg: FG_COLOR, bg: BG_COLOR, bold: false }
+        Self { ch: ' ', fg: FG_COLOR, bg: BG_COLOR, bold: false, underline: false, inverse: false }
     }
 }
 
@@ -433,13 +435,15 @@ struct SavedCursor {
     fg: Color,
     bg: Color,
     bold: bool,
+    underline: bool,
+    inverse: bool,
     autowrap: bool,
     pending_wrap: bool,
 }
 
 impl Default for SavedCursor {
     fn default() -> Self {
-        Self { x: 0, y: 0, fg: FG_COLOR, bg: BG_COLOR, bold: false,
+        Self { x: 0, y: 0, fg: FG_COLOR, bg: BG_COLOR, bold: false, underline: false, inverse: false,
             autowrap: true, pending_wrap: false }
     }
 }
@@ -461,6 +465,8 @@ pub struct TermEmu {
     fg: Color,
     bg: Color,
     bold: bool,
+    underline: bool,
+    inverse: bool,
     autowrap: bool,
     pending_wrap: bool,
     saved_cursor: SavedCursor,
@@ -481,6 +487,8 @@ pub struct TermEmu {
     ansi_param_idx: usize,
     pub scrollback: Scrollback,
     pub replies: VecDeque<u8>,
+    title: String,
+    osc: Vec<u8>,
 }
 
 impl TermEmu {
@@ -491,7 +499,7 @@ impl TermEmu {
             cols, rows,
             cells: vec![Cell::blank(); cols * rows],
             cursor_x: 0, cursor_y: 0,
-            fg: FG_COLOR, bg: BG_COLOR, bold: false,
+            fg: FG_COLOR, bg: BG_COLOR, bold: false, underline: false, inverse: false,
             autowrap: true, pending_wrap: false, saved_cursor: SavedCursor::default(),
             main_screen: None, scroll_top: 0, scroll_bottom: rows - 1,
             tabs: (0..cols).map(|x| x != 0 && x % 8 == 0).collect(),
@@ -502,6 +510,7 @@ impl TermEmu {
             ansi_param_idx: 0,
             scrollback: Scrollback::default(),
             replies: VecDeque::new(),
+            title: String::from("Terminal"), osc: Vec::new(),
         }
     }
 
@@ -544,13 +553,14 @@ impl TermEmu {
 
     pub fn cursor(&self) -> (usize, usize) { (self.cursor_x, self.cursor_y) }
     pub fn alternate_screen(&self) -> bool { self.alternate }
+    pub fn title(&self) -> &str { &self.title }
     pub fn cursor_visible(&self) -> bool { self.cursor_visible }
     pub fn size(&self) -> (usize, usize) { (self.cols, self.rows) }
     pub fn feed(&mut self, bytes: &[u8]) { for &byte in bytes { self.feed_byte(byte); } }
 
     fn cursor_state(&self) -> SavedCursor {
         SavedCursor { x: self.cursor_x, y: self.cursor_y, fg: self.fg, bg: self.bg,
-            bold: self.bold, autowrap: self.autowrap, pending_wrap: self.pending_wrap }
+            bold: self.bold, underline: self.underline, inverse: self.inverse, autowrap: self.autowrap, pending_wrap: self.pending_wrap }
     }
 
     fn restore_cursor(&mut self, saved: SavedCursor) {
@@ -559,6 +569,8 @@ impl TermEmu {
         self.fg = saved.fg;
         self.bg = saved.bg;
         self.bold = saved.bold;
+        self.underline = saved.underline;
+        self.inverse = saved.inverse;
         self.autowrap = saved.autowrap;
         self.pending_wrap = saved.pending_wrap && self.cursor_x == self.cols - 1;
     }
@@ -587,7 +599,7 @@ impl TermEmu {
     }
 
     fn erase_cell(&self) -> Cell {
-        Cell { ch: ' ', fg: self.fg, bg: self.bg, bold: self.bold }
+        Cell { ch: ' ', fg: self.fg, bg: self.bg, bold: self.bold, underline: self.underline, inverse: self.inverse }
     }
 
     fn scroll_region(&mut self, top: usize, bottom: usize, count: usize, down: bool) {
@@ -647,7 +659,7 @@ impl TermEmu {
         }
         let fg = self.fg; let bg = self.bg; let bold = self.bold;
         let idx = self.cursor_y * self.cols + self.cursor_x;
-        self.cells[idx] = Cell { ch, fg, bg, bold };
+        self.cells[idx] = Cell { ch, fg, bg, bold, underline: self.underline, inverse: self.inverse };
         if self.cursor_x == self.cols - 1 { self.pending_wrap = self.autowrap; }
         else { self.cursor_x += 1; }
     }
@@ -693,7 +705,7 @@ impl TermEmu {
             },
             AnsiState::Escape => match byte {
                 b'[' => { self.ansi_state = AnsiState::Csi; self.ansi_params = [0; 16]; self.ansi_param_idx = 0; self.ansi_len = 0; self.ansi_invalid = false; self.ansi_private = false; }
-                b']' => { self.ansi_state = AnsiState::OscString; self.ansi_len = 0; }
+                b']' => { self.ansi_state = AnsiState::OscString; self.ansi_len = 0; self.ansi_invalid = false; self.osc.clear(); }
                 0x1b => {}
                 _ => {
                     match byte {
@@ -725,14 +737,38 @@ impl TermEmu {
             }
             AnsiState::CsiDiscard => { if (0x40..=0x7e).contains(&byte) { self.ansi_state = AnsiState::Normal; } }
             AnsiState::OscString => {
-                self.ansi_len = self.ansi_len.saturating_add(1);
-                if byte == 0x07 { self.ansi_state = AnsiState::Normal; }
+                if byte == 0x07 { self.finish_osc(); }
                 else if byte == 0x1b { self.ansi_state = AnsiState::OscEscape; }
+                else { self.osc_byte(byte); }
             }
             AnsiState::OscEscape => {
-                if byte == b'\\' || byte == 0x07 { self.ansi_state = AnsiState::Normal; }
-                else if byte != 0x1b { self.ansi_state = AnsiState::OscString; }
+                if byte == b'\\' || byte == 0x07 { self.finish_osc(); }
+                else {
+                    self.osc_byte(0x1b);
+                    if byte != 0x1b { self.osc_byte(byte); self.ansi_state = AnsiState::OscString; }
+                }
             }
+        }
+    }
+
+    fn osc_byte(&mut self, byte: u8) {
+        if self.osc.len() < 512 { self.osc.push(byte); } else { self.ansi_invalid = true; }
+    }
+
+    fn finish_osc(&mut self) {
+        if !self.ansi_invalid && (self.osc.starts_with(b"0;") || self.osc.starts_with(b"2;")) {
+            self.title = String::from_utf8_lossy(&self.osc[2..]).into_owned();
+        }
+        self.ansi_state = AnsiState::Normal;
+    }
+
+    fn indexed_color(index: u16) -> Option<Color> {
+        match index {
+            0..=7 => Some(ANSI_COLORS[index as usize]),
+            8..=15 => { let c = ANSI_COLORS[(index - 8) as usize]; Some(Color::rgb(c.r.saturating_add(60), c.g.saturating_add(60), c.b.saturating_add(60))) }
+            16..=231 => { let n = index - 16; let v = |x: u16| if x == 0 { 0 } else { (55 + 40 * x) as u8 }; Some(Color::rgb(v(n / 36), v(n / 6 % 6), v(n % 6))) }
+            232..=255 => { let v = (8 + 10 * (index - 232)) as u8; Some(Color::rgb(v, v, v)) }
+            _ => None,
         }
     }
 
@@ -818,27 +854,44 @@ impl TermEmu {
                 3 => self.tabs.fill(false),
                 _ => {}
             },
+            b'n' => match p0 {
+                5 => self.replies.extend(b"\x1b[0n"),
+                6 => self.replies.extend(format!("\x1b[{};{}R", self.cursor_y + 1, self.cursor_x + 1).bytes()),
+                _ => {}
+            },
+            b'c' if p0 == 0 => self.replies.extend(b"\x1b[?1;2c"),
             b'm' => {
-                if nparams == 1 && p0 == 0 { self.fg = FG_COLOR; self.bg = BG_COLOR; self.bold = false; }
-                else {
-                    for i in 0..nparams {
-                        let code = self.ansi_params[i];
-                        match code {
-                            0 => { self.fg = FG_COLOR; self.bg = BG_COLOR; self.bold = false; }
-                            1 => { self.bold = true; }
-                            22 => { self.bold = false; }
-                            30..=37 => { self.fg = ANSI_COLORS[(code - 30) as usize]; }
-                            39 => { self.fg = FG_COLOR; }
-                            40..=47 => { self.bg = ANSI_COLORS[(code - 40) as usize]; }
-                            49 => { self.bg = BG_COLOR; }
-                            90..=97 => {
-                                let mut c = ANSI_COLORS[(code - 90) as usize];
-                                c.r = c.r.saturating_add(60); c.g = c.g.saturating_add(60); c.b = c.b.saturating_add(60);
-                                self.fg = c;
-                            }
-                            _ => {}
+                let mut i = 0;
+                while i < nparams {
+                    let code = self.ansi_params[i];
+                    match code {
+                        0 => { self.fg = FG_COLOR; self.bg = BG_COLOR; self.bold = false; self.underline = false; self.inverse = false; }
+                        1 => self.bold = true,
+                        4 => self.underline = true,
+                        7 => self.inverse = true,
+                        22 => self.bold = false,
+                        24 => self.underline = false,
+                        27 => self.inverse = false,
+                        30..=37 => self.fg = ANSI_COLORS[(code - 30) as usize],
+                        39 => self.fg = FG_COLOR,
+                        40..=47 => self.bg = ANSI_COLORS[(code - 40) as usize],
+                        49 => self.bg = BG_COLOR,
+                        90..=97 => self.fg = Self::indexed_color(code - 90 + 8).unwrap(),
+                        100..=107 => self.bg = Self::indexed_color(code - 100 + 8).unwrap(),
+                        38 | 48 if i + 1 < nparams => {
+                            let mode = self.ansi_params[i + 1];
+                            let color = if mode == 5 && i + 2 < nparams {
+                                i += 2; Self::indexed_color(self.ansi_params[i])
+                            } else if mode == 2 && i + 4 < nparams {
+                                let vals = &self.ansi_params[i + 2..i + 5];
+                                let color = if vals.iter().all(|&v| v <= 255) { Some(Color::rgb(vals[0] as u8, vals[1] as u8, vals[2] as u8)) } else { None };
+                                i += 4; color
+                            } else { i += 1; None };
+                            if let Some(c) = color { if code == 38 { self.fg = c; } else { self.bg = c; } }
                         }
+                        _ => {}
                     }
+                    i += 1;
                 }
             }
             b'l' | b'h' => {}
