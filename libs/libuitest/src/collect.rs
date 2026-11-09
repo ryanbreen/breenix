@@ -61,7 +61,8 @@ impl Evidence {
         let mut notes = format!("trigger={}\n", trigger.name());
         let result = (|| -> Result<(), String> {
             let mut store = Store::open(Path::new("/var/uitest"), suite, case)?;
-            let slots = self.arena.as_ref().map(|arena| [Slot::Screen, Slot::Frame, Slot::Tree].map(|slot| arena.read(slot)));
+            let current = self.arena.as_ref().map(Arena::reopen).transpose()?;
+            let slots = current.as_ref().map(|arena| [Slot::Screen, Slot::Frame, Slot::Tree].map(|slot| arena.read(slot)));
             let failure_screen = slots.as_ref().is_some_and(|s| matches!(&s[0], Ok(SlotRead::Final { record, bytes }) if valid_screen(record, bytes)));
             // Screen readback is taken before terminating any session participant.
             let mode = gpu::current_mode().map_err(|e| e.to_string())?;

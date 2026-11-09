@@ -53,6 +53,7 @@ impl Mapping {
 }
 impl Drop for Mapping { fn drop(&mut self) { unsafe { munmap(self.base, self.len); } } }
 pub struct Arena {
+    path: std::path::PathBuf,
     file: File,
     headers: Vec<Mapping>,
     payloads: [Option<Mapping>; 3],
@@ -66,7 +67,7 @@ impl Arena {
         let mut header = [0; 16]; header[..8].copy_from_slice(b"UTARE001");
         header[8..12].copy_from_slice(&layout.width.to_le_bytes()); header[12..16].copy_from_slice(&layout.height.to_le_bytes());
         file.write_all(&header).map_err(|e| e.to_string())?;
-        Self::map(file, layout)
+        Self::map(path, file, layout)
     }
     pub fn open(path: &Path) -> Result<Self, String> {
         use std::{io::Read, os::unix::fs::MetadataExt};
@@ -77,15 +78,29 @@ impl Arena {
         if &header[..8] != b"UTARE001" { return Err("invalid arena header".into()); }
         let layout = Layout::for_mode(u32::from_le_bytes(header[8..12].try_into().unwrap()), u32::from_le_bytes(header[12..16].try_into().unwrap()))?;
         if file.metadata().map_err(|e| e.to_string())?.len() != layout.len() as u64 { return Err("arena length mismatch".into()); }
-        Self::map(file, layout)
+        Self::map(path, file, layout)
     }
-    fn map(file: File, layout: Layout) -> Result<Self, String> {
+    fn map(path: &Path, file: File, layout: Layout) -> Result<Self, String> {
         let headers = [Slot::Screen, Slot::Frame, Slot::Tree].into_iter()
             .map(|slot| Mapping::new(&file, layout.header_offset(slot), HEADER))
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(Self { file, headers, payloads: [None, None, None], layout })
+        Ok(Self { path: path.into(), file, headers, payloads: [None, None, None], layout })
     }
     pub fn layout(&self) -> Layout { self.layout }
+    /// Start another immutable checkpoint; existing mappings retain the old inode.
+    pub fn next_checkpoint(&mut self) -> Result<(), String> {
+        let next_path = self.path.with_extension("next");
+        let mut next = Self::create(&next_path, self.layout)?;
+        if let Err(error) = std::fs::rename(&next_path, &self.path) {
+            let _ = std::fs::remove_file(&next_path);
+            return Err(error.to_string());
+        }
+        next.path = self.path.clone();
+        *self = next;
+        Ok(())
+    }
+    /// The collector opens the active checkpoint after the case has stopped.
+    pub fn reopen(&self) -> Result<Self, String> { Self::open(&self.path) }
     fn state(&self, slot: Slot) -> &AtomicU32 {
         // Slot headers start on page boundaries; state is their first word.
         unsafe { &*self.headers[slot.index()].ptr.cast::<AtomicU32>() }

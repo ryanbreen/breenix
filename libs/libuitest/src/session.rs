@@ -113,6 +113,7 @@ impl Session {
         self.startup.as_ref().map_or_else(Vec::new, |trace| trace.snapshot())
     }
     pub fn arena_mut(&mut self) -> &mut crate::arena::Arena { self.arena.as_mut().expect("connected evidence arena") }
+    pub fn next_checkpoint(&mut self) -> Result<(), String> { self.arena_mut().next_checkpoint() }
     /// Compare the arena capture and retain local evidence before its FRAME record.
     /// Window/surface capture must already have published the check's frame slot.
     pub fn check_stored(&mut self, suite: &str, definition: &crate::schema::Value,

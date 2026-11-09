@@ -407,6 +407,7 @@ fn app_checkpoint(
     let info = live.info(id)?;
     live.move_to((info.x + 600 * scale as i32, info.y + 350 * scale as i32))?;
     libuitest::settle::settle_session(live.session(), &[(id, 0)], 0, &mut [])?;
+    live.session().next_checkpoint()?;
     let record = capture::window(live.session().arena_mut(), stage, id)?;
     let tree = match live.session().arena_mut().read(Slot::Tree)? {
         SlotRead::Final { bytes, .. } => libbui::tree::Tree::parse(&bytes)?,
@@ -717,6 +718,7 @@ fn wm_checkpoint(
     wm_checks::desktop(&live.desktop_tree()?, ids, owners, scale, screen, top)?;
     let mut commits = [(0, 0); 2];
     for (index, id) in ids.into_iter().enumerate() {
+        live.session().next_checkpoint()?;
         let record = capture::window(live.session().arena_mut(), "wm-client", id)?;
         commits[index] = (id, record.commit);
         match live.session().arena_mut().read(Slot::Tree)? {
@@ -726,6 +728,7 @@ fn wm_checkpoint(
             other => return Err(format!("incomplete WM app tree: {other:?}")),
         }
     }
+    live.session().next_checkpoint()?;
     let record = capture::screen(
         live.session().arena_mut(),
         "wm-screen",
