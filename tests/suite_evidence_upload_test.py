@@ -12,9 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class SuiteEvidence(unittest.TestCase):
     def test_route_bounds_digest_and_optional_upload(self):
         source = r'''
-extern crate self as libbreenix;
-pub mod crypto { #[path = "SHA"] pub mod sha256; }
-#[path = "EVIDENCE"] mod evidence;
+include!("ERRNO_CHECK");
 use evidence::{Observation, Route, Upload, MAX_TOTAL, MAX_UPLOAD};
 fn route(sequence: bool) -> Route {
     Route::parse("http://fixture.invalid:8080/upload/lease\n", "window-manager", sequence).unwrap()
@@ -136,8 +134,7 @@ fn picture(pixels: Vec<u8>, width: u32, height: u32) -> Observation {
     assert_eq!(upload.capture("suite-final-panel", || Ok(picture(vec![1,2,3,255],1,1)),
         |_,_,_,_|Err("http-status".into())), "SUITE_EVIDENCE window-manager suite-final-panel refused=http-status");
 }
-'''.replace('SHA', str(ROOT / 'libs/libbreenix/src/crypto/sha256.rs')).replace(
-            '"EVIDENCE"', '"' + str(ROOT / 'libs/libbreenix/src/suite_evidence.rs') + '"')
+'''.replace('ERRNO_CHECK', str(ROOT / 'tests/suite_evidence_errno.rs'))
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
             check = path / 'check.rs'

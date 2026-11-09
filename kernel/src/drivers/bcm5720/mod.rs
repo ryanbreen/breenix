@@ -881,6 +881,28 @@ impl Port {
         None
     }
 
+    fn report_failure(mac: [u8; 6], reason: &str) {
+        // Take the snapshot under the port and bottom-half guards.
+        // Release both guards before using the logger.
+        let snapshot = {
+            let _guard = crate::net::net_lock_guard();
+            let ports = ATTACHED.lock();
+            ports.iter().find(|port| port.mac == mac).map(|port| (
+                INTERRUPTS[port.slot].load(Ordering::Acquire),
+                port.status.word(0), port.status.word(4), port.f.read32(MBOX_INTERRUPT_0),
+                port.status.word(4) & 0xffff, port.return_consumer,
+                port.std_producer, port.rx_errored, port.rx_last_error_flags,
+                port.f.read32(STAT_IN_OCTETS), port.f.read32(STAT_IN_DISCARDS),
+                port.f.read32(RX_BD_INITIATOR_MODE), port.f.read32(RX_MAC_MODE),
+                port.f.phy_link(),
+            ))
+        };
+        if let Some((irqs, status, indices, mailbox, return_producer, consumer, producer, errors, flags,
+                     octets, discards, rbdi, rx_mode, carrier)) = snapshot {
+            log::warn!("[bcm5720] {reason} failure: MSI={irqs} status={status:#x} indices={indices:#x} mailbox={mailbox:#x} return_producer={return_producer} return={consumer} posted={producer} errors={errors} flags={flags:#x} rx_octets={octets} discards={discards} rbdi={rbdi:#x} rx_mode={rx_mode:#x} carrier={carrier:?}");
+        }
+    }
+
     /// Bring the port into service and maintain its DHCP configuration.
     fn run(mut self) {
         let bdf = self.f.bdf();
@@ -963,27 +985,12 @@ impl Port {
                 Err(error) => log::warn!("[bcm5720] gateway ARP request failed: {error}"),
             }
             let _ = crate::net::ping(lease.gateway);
-            crate::net::dns_probe::run(lease);
+            if !crate::net::dns_probe::run(lease) {
+                Self::report_failure(mac, "connectivity");
+            }
         } else {
             log::warn!("[dhcp] no lease acquired; interface remains unconfigured");
-            // A bounded failure snapshot in thread context, after the exchange.
-            // Release the port and BH guards before using the logger.
-            let snapshot = {
-                let _guard = crate::net::net_lock_guard();
-                let ports = ATTACHED.lock();
-                ports.iter().find(|port| port.mac == mac).map(|port| (
-                    INTERRUPTS[port.slot].load(Ordering::Acquire),
-                    port.status.word(0), port.status.word(4), port.return_consumer,
-                    port.std_producer, port.rx_errored, port.rx_last_error_flags,
-                    port.f.read32(STAT_IN_OCTETS), port.f.read32(STAT_IN_DISCARDS),
-                    port.f.read32(RX_BD_INITIATOR_MODE), port.f.read32(RX_MAC_MODE),
-                    port.f.phy_link(),
-                ))
-            };
-            if let Some((irqs, status, indices, consumer, producer, errors, flags,
-                         octets, discards, rbdi, rx_mode, carrier)) = snapshot {
-                log::warn!("[bcm5720] DHCP failure: MSI={irqs} status={status:#x} indices={indices:#x} return={consumer} posted={producer} errors={errors} flags={flags:#x} rx_octets={octets} discards={discards} rbdi={rbdi:#x} rx_mode={rx_mode:#x} carrier={carrier:?}");
-            }
+            Self::report_failure(mac, "DHCP");
         }
         let mut carrier = carrier::Carrier::linked();
         let [a, b, c, d] = dhcp::lease().map(|l| l.ip_addr).unwrap_or([0; 4]);
@@ -1021,7 +1028,9 @@ impl Port {
                         Err(error) => log::warn!("[bcm5720] gateway ARP request failed: {error}"),
                     }
                     let _ = crate::net::ping(lease.gateway);
-                    crate::net::dns_probe::run(lease);
+                    if !crate::net::dns_probe::run(lease) {
+                        Self::report_failure(mac, "connectivity");
+                    }
                 }
             }
             sleep_ms(1000);

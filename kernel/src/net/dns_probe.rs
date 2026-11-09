@@ -9,9 +9,9 @@ static SERVER: AtomicU32 = AtomicU32::new(0);
 static ID: AtomicU16 = AtomicU16::new(0);
 static ANSWER: AtomicBool = AtomicBool::new(false);
 
-pub fn run(lease: Lease) {
+pub fn run(lease: Lease) -> bool {
     let Some(server) = lease.nameservers.into_iter().flatten().next() else {
-        return;
+        return false;
     };
     let id = crate::arch_impl::x86_64::timer::rdtsc() as u16;
     ID.store(id, Ordering::Relaxed);
@@ -42,7 +42,9 @@ pub fn run(lease: Lease) {
     if ANSWER.load(Ordering::Acquire) {
         log::info!("[dns] answer received");
     }
+    let success = ANSWER.load(Ordering::Acquire) && super::icmp::gateway_echo_received();
     SERVER.store(0, Ordering::Release);
+    success
 }
 
 fn word(bytes: &[u8], offset: usize) -> Option<u16> {
