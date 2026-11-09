@@ -1,16 +1,18 @@
 //! GUI application suite.
 #[path = "guiapps_suite/pending.rs"]
 mod pending;
+#[path = "guiapps_suite/terminal_emulation.rs"]
+mod terminal_emulation;
 #[path = "guiapps_suite/bterm.rs"]
 mod bterm;
 use breenix_suite::suite::{case, category, suite, Suite};
 
 static SUITE: Suite = suite("gui-apps", "GUI applications", &[
     category("terminal-emulation", "bterm terminal emulation", &[
-        case("vt-screen", "Scripted terminal screen", pending::not_built),
-        case("scroll-region", "Scroll region", pending::not_built),
-        case("alt-screen", "Alternate screen", pending::not_built),
-        case("utf8", "UTF-8 text", pending::not_built),
+        case("vt-screen", "Scripted terminal screen", terminal_emulation::vt_screen),
+        case("scroll-region", "Scroll region", terminal_emulation::scroll_region),
+        case("alt-screen", "Alternate screen", terminal_emulation::alt_screen),
+        case("utf8", "UTF-8 text", terminal_emulation::utf8),
         case("keys", "Terminal keys", pending::not_built),
     ]),
     category("bterm", "bterm", &[

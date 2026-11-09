@@ -484,6 +484,7 @@ STD_BINARIES=(
 
     # Apps
     "bterm"
+    "vt-script_test"
     "blog"
     "bfontpicker"
     "blauncher"

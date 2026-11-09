@@ -893,3 +893,7 @@ path = "src/uitest_app.rs"
 [[bin]]
 name = "suite-gui-apps"
 path = "src/suite_gui_apps.rs"
+
+[[bin]]
+name = "vt-script_test"
+path = "src/vt_script_test.rs"

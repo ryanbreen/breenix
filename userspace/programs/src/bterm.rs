@@ -575,15 +575,11 @@ fn main() {
             }
 
             if let Some(tab) = tabs.get(sel) {
-                let (cols, rows) = tab.emu.vt.size();
-                let cells: Vec<char> = (0..rows).flat_map(|y| (0..cols).map(move |x| (x, y)))
-                    .map(|(x, y)| tab.emu.vt.cell(x, y).ch).collect();
                 let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
                 win.set_tree(breengel::tree::Tree { root: breengel::tree::Node {
                     key: "grid".into(), parent: None, role: breengel::tree::Role::Terminal,
                     name: "Terminal".into(),
-                    value: terminal_node::terminal_value(cols, rows,
-                        { let (x, y) = tab.emu.vt.cursor(); [x, y] }, &cells, tab.emu.vt.title()),
+                    value: terminal_node::terminal_value(&tab.emu.vt),
                     bounds, clip: bounds, flags: vec![breengel::tree::Flag::Enabled, breengel::tree::Flag::Visible],
                 }, children: Vec::new() });
             }
