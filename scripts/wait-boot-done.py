@@ -76,7 +76,11 @@ def main():
     parser.add_argument("--case", default="", dest="only")
     parser.add_argument("--timeout", type=int, default=1800)
     parser.add_argument("--started", type=float, help="host epoch immediately before VM launch")
+    parser.add_argument("--post-stop-ui-verdict", action="store_true",
+                        help="wait for UI completion; the launcher scores its stopped disk afterwards")
     args = parser.parse_args()
+    if args.post_stop_ui_verdict and (args.mode != 'suite' or args.suite != 'ui-testing' or args.only):
+        parser.error('--post-stop-ui-verdict requires a full ui-testing run')
     progress = BootProgress(args.serial)
     clock = WallClockCheck(args.serial, args.started)
     # Give a watched case's final panel the same render delay and visible hold
@@ -119,14 +123,15 @@ def main():
                 if time.monotonic() - done_at < 2 + hold:
                     time.sleep(0.2)
                     continue
-            if ok and args.mode == "suite":
+            if ok and args.mode == "suite" and not args.post_stop_ui_verdict:
                 # Match the x86 gate's manifest, case order and tally checks.
                 manifest = json.loads((ROOT / f"docs/suites/{args.suite}.json").read_text())
                 verdict = runpy.run_path(str(ROOT / "scripts/suite-verdict.py"))["verdict"]
                 ok, reason = verdict(manifest, args.serial, [args.serial], only=args.only)
             clock_ok, clock_reason = clock.verdict()
             print(clock_reason)
-            print(f"{'PASS' if ok else 'FAIL'}: {reason}")
+            state = 'DONE' if ok and args.post_stop_ui_verdict else 'PASS' if ok else 'FAIL'
+            print(f"{state}: {reason}")
             return 0 if ok and clock_ok else 1
         if progress.stalled():
             progress.record()

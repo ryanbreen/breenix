@@ -4270,6 +4270,10 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
     for kind, match, line in parsed:
         if kind != 'EVIDENCE':
             continue
+        # The native proof exercises its diagnostic route on every UI boot.
+        # ARM's stopped-disk fallback is scored by suite-verdict.py instead.
+        if match['status'] != 'ok':
+            raise ValueError('native UI proof requires its bundle upload: ' + match['status'])
         label = match[2]
         body = (slots / f'diagnostic-{label}.bin').read_bytes()
         receipt = json.loads((slots / f'native-diagnostic-{label}.json').read_text())

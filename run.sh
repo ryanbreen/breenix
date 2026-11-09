@@ -606,8 +606,12 @@ efi_artifacts_match() {
 
 # Wait for a userspace completion record and reject missing or failing verdicts.
 wait_boot_done() {
+    local post_stop=()
+    if [ "$BOOT_MODE" = suite ] && [ "$SUITE" = ui-testing ] && [ -z "$ONLY" ]; then
+        post_stop=(--post-stop-ui-verdict)
+    fi
     python3 "$BREENIX_ROOT/scripts/wait-boot-done.py" "$SERIAL_LOG" "$BOOT_MODE" \
-        --suite "$SUITE" --case "$ONLY" --timeout "$GATE_TIMEOUT" --started "$CLOCK_STARTED"
+        --suite "$SUITE" --case "$ONLY" --timeout "$GATE_TIMEOUT" --started "$CLOCK_STARTED" ${post_stop[@]+"${post_stop[@]}"}
 }
 
 # Install before starting a VM. Ignore further signals during cleanup so Vigil
@@ -667,7 +671,7 @@ score_vm_suite_disk() {
         [ -z "${ONLY:-}" ] || exit 0
         local manifest="$BREENIX_ROOT/docs/suites/${SUITE##*,}.json" checks disk="" temporary
         checks=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("diskChecks", [])))' "$manifest") || exit $?
-        if [ "$checks" = 0 ]; then
+        if [ "$checks" = 0 ] && [[ ",$SUITE," != *",ui-testing,"* ]]; then
             [[ "$SUITE" == *,* ]] || exit 0
             python3 "$BREENIX_ROOT/scripts/suite-sequence.py" score "$SUITE" "$SERIAL_LOG"
             exit $?
