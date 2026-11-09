@@ -296,3 +296,12 @@ fn seventeenth_bundle_stays_local_and_budget_leaves_collection_time() {
     assert_eq!(artifacts::upload_budget_ms(10), 0);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn repeated_full_screen_evidence_fits_the_existing_artifact_cap_losslessly() {
+    let pixels = [45, 45, 45, 255].repeat(2560 * 1600);
+    let encoded = artifacts::png(frame(&pixels, 2560, 1600)).unwrap();
+    assert!(encoded.len() * 8 < artifacts::CAP_BYTES,
+        "eight normal full-screen evidence pictures exceed the boot cap: {} bytes each", encoded.len());
+    assert_eq!(libimg::png::decode(&encoded).unwrap().pixels, pixels);
+}
