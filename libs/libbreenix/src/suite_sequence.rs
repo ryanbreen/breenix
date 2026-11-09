@@ -434,7 +434,7 @@ fn compare(path: &str, recorded: &Entry, meta: Option<&std::fs::Metadata>) -> Co
     Comparison::Changed
 }
 
-/// Hash exactly the recorded prefix; a short read or an I/O error cannot prove an append.
+/// Hash the recorded prefix, rejecting short reads and I/O errors.
 fn prefix_hash(path: &Path, mut remaining: u64) -> Option<u64> {
     use std::io::Read;
     let mut file = std::fs::File::open(path).ok()?;
