@@ -43,6 +43,41 @@ class ControlWatchdogs(unittest.TestCase):
         self.assertIn('saturating_sub(1750)', budget)
         self.assertIn('min(breenix_suite::suite::control::HANG_MS)', budget)
 
+    def test_watchdog_durations_survive_forks(self):
+        from ui_idle_capture_test import run_rust
+        source = r'''extern crate self as libbreenix;
+use std::sync::atomic::{AtomicU64,Ordering};
+static NOW:AtomicU64=AtomicU64::new(100);
+pub mod time {
+ pub struct Stamp(u64);impl Stamp{pub fn as_nanos(&self)->i128{i128::from(self.0)*1_000_000}}
+ pub fn now_monotonic()->Result<Stamp,String>{Ok(Stamp(super::NOW.load(super::Ordering::Relaxed)))}
+}
+#[path="MODULE"]mod control;
+extern "C" {fn fork()->i32;fn waitpid(pid:i32,status:*mut i32,flags:i32)->i32;fn _exit(status:i32)->!;}
+fn main(){
+ let scope=control::Scope::new().unwrap();
+ let watchdog=control::Watchdog::new(control::Wait::Configure).unwrap();
+ assert_eq!(watchdog.deadline_ms(),10100);assert_eq!(watchdog.deadline_ns(),10_100_000_000);
+ NOW.store(125,Ordering::Relaxed);drop(watchdog);
+ let pid=unsafe{fork()};assert!(pid>=0);
+ if pid==0{
+  let watchdog=control::Watchdog::new(control::Wait::Configure).unwrap();
+  NOW.store(205,Ordering::Relaxed);drop(watchdog);
+  let _unfinished=control::Watchdog::new(control::Wait::Stopped).unwrap();
+  unsafe{_exit(0)}
+ }
+ let mut status=0;assert_eq!(unsafe{waitpid(pid,&mut status,0)},pid);assert_eq!(status,0);
+ let report=scope.report("ui-testing","test");
+ assert!(report.iter().any(|s|s.contains("wait=Configure started=2 completed=2 total_ms=105 max_ms=80")),"{report:?}");
+ assert!(report.iter().any(|s|s.contains("wait=Stopped started=1 completed=0")),"{report:?}");
+ assert!(report.iter().all(|s|s.contains("clock_errors=0")));
+ drop(scope);
+ let scope=control::Scope::new().unwrap();assert!(scope.report("next","case").is_empty());
+}
+'''.replace('MODULE', str(ROOT / 'libs/libbreenix/src/suite_control.rs'))
+        result = run_rust(source)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_named_subjects_keep_their_original_bounds(self):
         for relative, text in [
             ('libs/libuitest/src/clock.rs', 'pub const STEP_BOUND_NS: u64 = 2_000_000_000;'),

@@ -19,7 +19,8 @@ pub struct Trace;
 impl Trace{fn teardown_note(&self)->String{"teardown-stage=root-delete-begin at=99".into()}}
 mod startup{pub use crate::Trace;}
 struct Session{control:Channel,stopped:bool,exits:Vec<ProcessExit>,startup:Option<Trace>}
-fn now()->Result<i128,String>{Ok(100)}
+enum Wait{Stopped}
+struct Watchdog;impl Watchdog{fn new(_:Wait)->Result<Self,String>{Ok(Self)}fn deadline_ms(&self)->i128{10100}}
 impl Session{
 fn poll(&mut self,_:i128)->Result<(),String>{Err("session control deadline".into())}
 METHOD

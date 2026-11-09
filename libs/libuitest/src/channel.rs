@@ -1,4 +1,5 @@
 //! Bounded nonblocking control I/O, shared by the case and its supervisor.
+use breenix_suite::suite::control::{Watchdog, Wait};
 use libbreenix::{error::Error, errno::Errno, io, time, types::Fd};
 use crate::supervisor::{encode, Decoder, Message};
 
@@ -55,7 +56,8 @@ impl Channel {
     }
     pub fn send(&mut self, message: &Message) -> Result<(), String> {
         self.queue(message)?;
-        let end = now()? + 1000;
+        let watchdog = Watchdog::new(Wait::ChannelSend)?;
+    let end = watchdog.deadline_ms();
         while !self.flush()? {
             if now()? >= end { return Err("control send deadline".into()); }
             time::sleep_ms(1).map_err(|e| e.to_string())?;

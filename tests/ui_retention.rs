@@ -84,6 +84,15 @@ pub mod process {
     pub fn wexitstatus(status: i32) -> i32 { status }
 }
 pub mod suite {
+    pub mod control {
+        pub const HANG_MS:u64=10_000;
+        pub enum Wait{DiagnosticUpload}
+        pub struct Watchdog(u64);
+        impl Watchdog {
+            pub fn new(_:Wait)->Result<Self,String>{Ok(Self(crate::CLOCK.get()+HANG_MS))}
+            pub fn deadline_ms(&self)->i128{i128::from(self.0)}
+        }
+    }
     pub enum Run<'a> { Call(&'a mut dyn FnMut() -> i32) }
     pub fn spawn(keep: &[(u64,u64)], Run::Call(send): Run<'_>) -> Result<super::Pid, super::error::Error> {
         assert!(keep.is_empty(), "upload inherited a runner descriptor");

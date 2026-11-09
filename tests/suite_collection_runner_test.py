@@ -29,21 +29,23 @@ static CALL:Mutex<Option<Request>>=Mutex::new(None);
 static RECORDS:Mutex<Vec<String>>=Mutex::new(Vec::new());
 fn emit(line:&str){RECORDS.lock().unwrap().push(line.trim().into());}
 fn ms_since(_:Option<i128>)->u64{1500}
+fn monotonic_ns()->Option<i128>{Some(1_500_000_000)}
+mod control{pub const HANG_MS:u64=10_000;}
 struct Case{collects:bool}
 pub struct Results{pub accounting:result::Accounting<'static>}
 impl Results{pub fn drain(&mut self){}}
 pub struct Session{error:Option<&'static str>}
 impl Session{
-    pub fn finish(&mut self,left:u64)->Result<(),String>{assert_eq!(left,1500);Ok(())}
+    pub fn finish(&mut self,left:u64)->Result<(),String>{assert_eq!(left,10_000);Ok(())}
     pub fn collect_until(&mut self,deadline:Option<i128>,request:Request,suite:&str,name:&str,mut record:impl FnMut(&str)->Result<(),String>)->Result<(),String>{
-        assert_eq!(deadline,Some(3_000_000_000));*CALL.lock().unwrap()=Some(request);
+        assert_eq!(deadline,Some(11_500_000_000));*CALL.lock().unwrap()=Some(request);
         if let Some(error)=self.error{return Err(error.into());}
         if let Request::Collect(trigger)=request{record(&format!("SUITE {suite} COLLECT {name} trigger={} screen=none:unavailable windows=0 remnants=0 artifacts=none:unavailable",trigger.name()))?;}
         Ok(())
     }
 }
 fn run(collects:bool,primary:bool,trigger:Trigger,error:Option<&'static str>,missing:bool)->Outcome{
-    let mut session=Some(Session{error});let case=Case{collects};let limit_ms:u64=3000;let start=Some(0);let suite="test";let name="cat/case";
+    let mut session=Some(Session{error});let case=Case{collects};let start=Some(0);let suite="test";let name="cat/case";
     let mut results=Some(Results{accounting:result::Accounting::new("test","cat/case",if missing{&["label"]}else{&[]},collects).unwrap()});
     // The old branch has no accounting input before its discard-only finish.
     let _ = (&case.collects,&trigger,&mut results);

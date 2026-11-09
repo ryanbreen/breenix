@@ -68,7 +68,7 @@ pub fn bundle(entries: &[(String, Vec<u8>)]) -> Result<Bundle, String> {
 
 /// Leave the runner's 1.5 s collection reserve and 250 ms for returning the result.
 pub fn upload_budget_ms(case_ms_left: u64) -> u64 {
-    case_ms_left.saturating_sub(1750).min(5000)
+    case_ms_left.saturating_sub(1750).min(breenix_suite::suite::control::HANG_MS)
 }
 
 /// Filesystem claims survive forks; ambiguous attempts consume their slot.

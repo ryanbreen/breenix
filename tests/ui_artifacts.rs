@@ -12,6 +12,7 @@ pub use client::RecordClient;
 #[path = "../libs/libuitest/src/frames.rs"] pub mod frames;
 #[path = "../libs/libbreenix/src/suite_result.rs"] pub mod result;
 pub mod suite {
+    pub mod control {pub const HANG_MS:u64=10_000;}
     pub use crate::result;
     thread_local! { pub static AT_RECORD: std::cell::RefCell<Option<Box<dyn Fn(&str)>>> = std::cell::RefCell::new(None); }
     pub fn result_record(line: &str) -> Result<(), String> {
@@ -290,7 +291,7 @@ fn seventeenth_bundle_stays_local_and_budget_leaves_collection_time() {
     }
     assert_eq!(artifacts::reserve_upload(&root, &artifacts::label("diagnosis/seventeenth")).unwrap_err(), "slots");
     assert_eq!(artifacts::reserve_upload(&root, &artifacts::label("diagnosis/case-0")).unwrap_err(), "already-attempted");
-    assert_eq!(artifacts::upload_budget_ms(10_000), 5000);
+    assert_eq!(artifacts::upload_budget_ms(10_000), 8250);
     assert_eq!(artifacts::upload_budget_ms(2000), 250);
     assert_eq!(artifacts::upload_budget_ms(1750), 0);
     assert_eq!(artifacts::upload_budget_ms(10), 0);

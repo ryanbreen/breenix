@@ -56,6 +56,8 @@ pub mod time{
     pub fn now_monotonic()->Result<Stamp,Error>{Ok(Stamp(SIM.lock().unwrap().now))}
     pub fn sleep_ms(ms:u64)->Result<(),Error>{SIM.lock().unwrap().now+=i128::from(ms)*1_000_000;Ok(())}
 }
+enum Wait{CollectorReply}
+struct Watchdog(i128);impl Watchdog{fn new(_:Wait)->Result<Self,String>{Ok(Self(time::now_monotonic().unwrap().as_nanos()+10_000_000_000))}fn deadline_ns(&self)->u64{self.0 as u64}}
 COMMAND_IMPL
 struct RunnerSession{pid:Option<Pid>,collector:Option<Fd>,control:bool}
 impl RunnerSession{fn in_parent(&mut self){self.control=false;}

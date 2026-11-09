@@ -1,5 +1,6 @@
 //! Bounded retention outside the supervisor's local collection reserve.
 use crate::artifacts;
+use breenix_suite::suite::control::{Watchdog, Wait};
 use breenix_suite::suite::{self, Run};
 use libbreenix::{errno::Errno, error::Error, memory, process, signal, time};
 use std::{fs, path::Path};
@@ -54,7 +55,8 @@ pub(crate) fn transfer(
     bytes: &[u8],
     budget_ms: u64,
 ) -> Result<(), String> {
-    let end = now_ms()?.saturating_add(budget_ms);
+    let watchdog = Watchdog::new(Wait::DiagnosticUpload)?;
+    let end = now_ms()?.saturating_add(budget_ms).min(watchdog.deadline_ms() as u64);
     let trace = TransferTrace::new()?;
     let mut send = || {
         trace.mark(1);

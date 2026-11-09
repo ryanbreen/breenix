@@ -1,6 +1,7 @@
 //! A subreaper controller outlives the scenario logic so even a logic crash has
 //! descendant-scoped teardown. Both forks use the suite's descriptor rule.
 use std::{fs::File, io::{Read, Write}, os::fd::{AsRawFd, FromRawFd}};
+use breenix_suite::suite::control::{self, Watchdog, Wait};
 use breenix_suite::suite::{descendants::sweep_descendants, spawn, Run};
 use libbreenix::{error::Error, errno::Errno, io, process, signal, time, types::{Fd, Pid}};
 use crate::{RecordClient, ScenarioOutcome, FailureClass, outcome::{decode, encode, MAX_OUTCOME_BYTES}};
@@ -148,7 +149,7 @@ fn controller(spec: &mut ScenarioSpec<'_>) -> ScenarioOutcome {
         // Child's guard stops an unfinished logic process before the controller sweep.
         receive(&mut reader, &mut child, spec.limit_ms, WriterRole::Logic)
     })();
-    let result = match session.finish(1500) {
+    let result = match session.finish(control::HANG_MS) {
         Ok(()) => result,
         Err(error) => match result {
             ScenarioOutcome::Pass { .. } => infrastructure("session-teardown", error),
@@ -172,12 +173,16 @@ pub fn run_scenario(mut spec: ScenarioSpec<'_>) -> ScenarioOutcome {
         return infrastructure("scenario-spec", error);
     }
     let (mut reader, writer) = match pipe() { Ok(pair) => pair, Err(e) => return infrastructure("outcome-pipe", e) };
-    let limit = spec.limit_ms + 3000;
+    let limit = spec.limit_ms + control::HANG_MS;
     let mut supervise = || { send(&controller(&mut spec)) };
     let pid = match spawn(&[(Fd::from_raw(writer.as_raw_fd() as u64), Fd::from_raw(3))], Run::Call(&mut supervise)) {
         Ok(pid) => pid,
         Err(error) => return infrastructure("spawn-scenario", error),
     };
     drop(writer);
+    let _watchdog = match Watchdog::new(Wait::ControllerReply) {
+        Ok(watchdog) => watchdog,
+        Err(error) => return infrastructure("controller-clock", error),
+    };
     receive(&mut reader, &mut Child(Some(pid)), limit, WriterRole::Controller)
 }
