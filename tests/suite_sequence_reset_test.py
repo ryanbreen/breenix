@@ -7,6 +7,15 @@ import unittest
 from suite_sequence_roles_test import ROOT, STUBS
 
 CHECKS = r'''
+        #[test] fn records_appends_and_changes_separately() {
+            let mut reset = Reset { removed: 0, changed: Vec::new(), appended: Vec::new() };
+            assert_eq!(reset.record("time"), "SUITE_SEQUENCE RESET time removed=0 changed=0 appended=0");
+            reset.appended.push(String::from("/var/log/auth.log"));
+            assert_eq!(reset.record("time"), "SUITE_SEQUENCE RESET time removed=0 changed=0 appended=1 logs=/var/log/auth.log");
+            reset.changed.push(String::from("/etc/hosts"));
+            assert_eq!(reset.record("time"), "SUITE_SEQUENCE RESET time removed=0 changed=1 paths=/etc/hosts appended=1 logs=/var/log/auth.log");
+        }
+
 fn fixture_path(path: &str) -> std::path::PathBuf {
     match path {
         "/var/log/auth.log" | "/etc/hosts" | "/var/logs/x" =>
@@ -107,6 +116,9 @@ class SequenceReset(unittest.TestCase):
         source = source[:start] + comparison + source[end:]
         # Let the old implementation compile so the new assertion fails on its result.
         source = source.replace('enum Comparison { Same, Changed }', 'enum Comparison { Same, Changed, Appended }')
+        # Give the old Reset storage for the new input, without changing its formatter.
+        source = source.replace('    changed: Vec<String>,\n}', '    changed: Vec<String>,\n    appended: Vec<String>,\n}')
+        source = source.replace('Reset { removed: 0, changed: Vec::new() }', 'Reset { removed: 0, changed: Vec::new(), appended: Vec::new() }')
         with tempfile.TemporaryDirectory() as scratch:
             source_path = Path(scratch) / 'test.rs'
             binary = Path(scratch) / 'test'
