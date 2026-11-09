@@ -468,8 +468,9 @@ pub fn charged_bytes(tgid: u64, vmas: &[crate::memory::vma::Vma]) -> u64 {
         .windows
         .values()
         .filter(|w| w.owner == tgid)
-        .map(|w| mem::unmapped_len(&w.tree, w.tree_addr, vmas)
-            + mem::unmapped_status_len(&w.tree_readers, vmas))
+        // Reader-status storage is kernel bookkeeping. An owner-requested
+        // read-only projection counts through its VMA, not as guest tree backing.
+        .map(|w| mem::unmapped_len(&w.tree, w.tree_addr, vmas))
         .sum();
     remnants + unmapped
 }

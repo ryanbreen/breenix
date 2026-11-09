@@ -165,7 +165,9 @@ pub fn create(caller: &Caller, a: &mut Create) -> Result<u64, i32> {
     .map_err(|_| ENOMEM)?;
     let count = a.buffers as usize;
     let tree_len = count as u64 * tree_kib as u64 * 1024;
-    room_for(tree_len + mem::PAGE_BYTES + count as u64 * crate::gpu::window_targets::backing_len(a.width,a.height))?;
+    // Guest trees and GPU backing determine CREATE's reservation. The reader
+    // counter is kernel bookkeeping; its requested projection is charged as a VMA.
+    room_for(tree_len + count as u64 * crate::gpu::window_targets::backing_len(a.width,a.height))?;
     let tree_readers = Mem::new(mem::PAGE_BYTES)?;
     let keys = uids(count);
     let mut buffers: Vec<Buffer> = Vec::new();

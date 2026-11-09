@@ -134,14 +134,6 @@ pub fn unmapped_len(mem: &Mem, start: u64, vmas: &[crate::memory::vma::Vma]) -> 
     mem.len.saturating_sub(mapped)
 }
 
-/// Unmapped storage of a status object, across any of its read-only aliases.
-pub fn unmapped_status_len(mem: &Mem, vmas: &[crate::memory::vma::Vma]) -> u64 {
-    let mapped: u64 = vmas.iter().filter(|v| v.shm.as_ref().is_some_and(|m|
-        m.origin() == MappingOrigin::Window && Arc::ptr_eq(m.object(), &mem.obj)))
-        .map(|v| v.size()).sum();
-    mem.len.saturating_sub(mapped)
-}
-
 /// Remove what is left of the calling process's mapping of `mem` at `start`: every piece of
 /// it. A range the process unmapped itself, or reused for another mapping, is left alone.
 pub fn unmap(mem: &Mem, start: u64) {
