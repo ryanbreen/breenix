@@ -56,6 +56,17 @@ def serial():
     return '\n'.join(lines) + '\n'
 
 
+def passing_frame_records(text):
+    """Supply the FRAME obligations of the synthetic full-PASS recording."""
+    for entry in MANIFEST.get('frameChecks', []):
+        case, check = entry['case'], entry['check']
+        record = (f'SUITE ui-testing FRAME {case} {check} def=0123abcd ref=formula '
+                  f'source=window:app commit=1 epoch=0 w=2 h=1 sha256={"a" * 64} result=match\n')
+        marker = f'SUITE ui-testing CASE {case} PASS '
+        text = text.replace(marker, record + marker)
+    return text
+
+
 class UiStep(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -132,12 +143,14 @@ class UiStep(unittest.TestCase):
                             f'DONE passed={len(NAMES)} failed=0')
         verdict = runpy.run_path(str(ROOT / 'scripts/suite-verdict.py'))['verdict']
         full_log = self.path / 'full-bundle.txt'
+        full = passing_frame_records(full)
         full_log.write_text(full)
         self.assertTrue(verdict(MANIFEST, full_log, [full_log])[0])
         full_log.write_text(full.replace(record, record + record))
         self.assertFalse(verdict(MANIFEST, full_log, [full_log])[0])
         for bad in [record.replace(label, 'uitest-' + '0' * 16),
                     record.replace('result=ok', 'result=disk-only:deadline'),
+                    record.replace('result=ok', 'result=disk-only:no-route'),
                     record.replace(f'bytes={len(body)}', 'bytes=2097153'),
                     record.replace('path=/var/uitest/ui-testing/', 'path=/wrong/'),
                     record + record]:
@@ -279,7 +292,7 @@ class UiStep(unittest.TestCase):
         text = text.replace(f'DONE passed={len(SELECTED)} failed={len(NAMES)-len(SELECTED)}',
                             f'DONE passed={len(NAMES)} failed=0')
         log = self.path / 'full-serial.txt'
-        log.write_text(text)
+        log.write_text(passing_frame_records(text))
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/suite-verdict.py'),
                                  str(ROOT / 'docs/suites/ui-testing.json'), str(log)],
                                 capture_output=True, text=True)
