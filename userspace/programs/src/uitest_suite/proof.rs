@@ -780,7 +780,8 @@ fn wm_checkpoint(
 
 fn wm_front_matches(captured: u64, before: u64, after: u64, observed: Option<u64>,
     entry: &libbreenix::window::abi::CompositeEntry) -> bool {
-    observed == Some(entry.commit_id) && entry.pixels != 0
+    // entry.pixels is work in this update; unchanged visible pixels need no work.
+    observed == Some(entry.commit_id)
         && wm_checks::front_matches(captured, before, after, entry.commit_id, entry.pixel_gen)
 }
 

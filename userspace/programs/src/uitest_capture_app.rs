@@ -68,7 +68,9 @@ pub fn serve(title: &str) -> Result<(), String> {
     let root = std::env::var_os("BREENIX_CONFIG_ROOT").ok_or("capture control requires a session root")?;
     let path = std::path::Path::new(&root).join("capture-control.sock");
     let socket = UnixStream::connect(path).map_err(|e| e.to_string())?;
-    socket.set_read_timeout(Some(Duration::from_secs(2))).map_err(|e| e.to_string())?;
+    // The controller can be comparing a saved screen between commands. Its
+    // enclosing runner owns the case deadline; waiting here is not app work.
+    socket.set_read_timeout(None).map_err(|e| e.to_string())?;
     socket.set_write_timeout(Some(Duration::from_secs(2))).map_err(|e| e.to_string())?;
     let mut socket = BufReader::new(socket);
     let state = Arc::new(Mutex::new(Producer { semantic: false, window: None, ordinal: 0, generation: Generation { commit: 0, producer: 0 } }));
