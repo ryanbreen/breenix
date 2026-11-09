@@ -67,3 +67,48 @@ fn current_sequences_are_independent_of_chunking() {
         }
     }
 }
+
+#[test]
+fn characters_and_parser_bounds_are_independent_of_chunking() {
+    let mut csi = b"\x1b[".to_vec();
+    csi.extend(core::iter::repeat_n(b'0', 256));
+    csi.extend_from_slice(b"m\x1b[31mX");
+    let mut osc = b"\x1b]".to_vec();
+    osc.extend(core::iter::repeat_n(b'x', 512));
+    osc.extend_from_slice(b"\x07\x1b[31mX");
+    let rows: Vec<(&str, Vec<u8>, &str, bool)> = vec![
+        ("utf8_split", "Aé界B".as_bytes().to_vec(), "Aé界B", false),
+        ("utf8_invalid", b"A\xe2\x82B\xffC".to_vec(), "A�B�C", false),
+        ("combining", "a\u{301}界b".as_bytes().to_vec(), "a界b", false),
+        ("16 parameters", b"\x1b[0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;31mX".to_vec(), "X", true),
+        ("excess parameters", b"\x1b[0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;0;31mX".to_vec(), "X", false),
+        ("long csi", csi, "X", true),
+        ("long osc", osc, "X", true),
+        ("can sub", b"\x1b[31\x18A\x1b]ignored\x1aB".to_vec(), "AB", false),
+        ("unknown", b"\x1b[?31mA\x1b[1 qB\x1bZC".to_vec(), "ABC", false),
+    ];
+    for (name, input, expected, red) in rows {
+        for mode in 0..3 {
+            let mut vt = TermEmu::new(16, 2);
+            let mut pos = 0;
+            let mut seed = 0x1234u32;
+            while pos < input.len() {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                let n = match mode { 0 => input.len(), 1 => 1, _ => (seed as usize % 5) + 1 };
+                let end = (pos + n).min(input.len());
+                vt.feed(&input[pos..end]);
+                pos = end;
+            }
+            let actual: String = (0..expected.chars().count()).map(|x| char::from(vt.cell(x, 0).ch)).collect();
+            assert_eq!(actual, expected, "{name} mode {mode}");
+            assert_eq!(vt.cursor(), (expected.chars().count(), 0), "{name} mode {mode}");
+            assert_eq!(vt.cell(0, 0).fg, if red { RED } else { FG }, "{name} mode {mode}");
+        }
+    }
+    for mode in 0..3 {
+        let mut vt = TermEmu::new(10002, 1);
+        let input = b"\x1b[999999999G";
+        for chunk in input.chunks(match mode { 0 => input.len(), 1 => 1, _ => 3 }) { vt.feed(chunk); }
+        assert_eq!(vt.cursor(), (9998, 0), "clamp mode {mode}");
+    }
+}
