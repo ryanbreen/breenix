@@ -40,23 +40,25 @@ pub fn delivered(serial: u64) -> Result<Delivery, String> {
 fn wait_delivery(serial: u64, wanted: Option<u64>, allow_wm: bool) -> Result<Delivery, String> {
     let end = Instant::now() + Duration::from_secs(2);
     let mut target = wanted;
+    let mut disposition = "missing".to_string();
     loop {
         if let Some((name, window, reason)) = outcome(serial)? {
+            disposition.clone_from(&name);
             if name == "delivered" && window != 0 && wanted.is_none_or(|id| id == window) {
                 target = Some(window);
                 let (commit, meta) = window::read_meta(window)
-                    .map_err(|e| format!("input serial={serial} window={window} metadata: {e}"))?;
+                    .map_err(|e| crate::messages::input("delivered", serial, &name, &format!("window={window} metadata: {e}")))?;
                 if commit != 0 && super::client_processed(meta.processed_serial, serial) {
                     return Ok(Delivery {serial, window});
                 }
             } else if allow_wm && wanted.is_none() && name == "wm-handled" {
                 return Ok(Delivery {serial, window: 0});
             } else {
-                return Err(format!("input serial={serial} disposition={name} window={window} expected={wanted:?} reason={reason}"));
+                return Err(crate::messages::input("delivered", serial, &name, &format!("window={window} expected={wanted:?} reason={reason}")));
             }
         }
         if Instant::now() >= end {
-            return Err(format!("input unprocessed serial={serial} window={target:?}"));
+            return Err(crate::messages::input("delivered", serial, &disposition, &format!("unprocessed window={target:?}")));
         }
         pause()?;
     }
@@ -68,7 +70,7 @@ pub fn dispositions(serials: &[u64]) -> Result<(), String> {
     loop {
         let ledger = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
         let Some(serial) = super::first_missing_disposition(&ledger, serials)? else { return Ok(()); };
-        if Instant::now() >= end { return Err(format!("missing-disposition serial={serial}")); }
+        if Instant::now() >= end { return Err(crate::messages::input("dispositions", serial, "missing", "missing-disposition")); }
         pause()?;
     }
 }
@@ -79,14 +81,12 @@ pub fn wait_pointer_idle(serial: u64) -> Result<(), String> {
     loop {
         if let Some((name, _, reason)) = outcome(serial)? {
             if name != "delivered" && name != "wm-handled" {
-                return Err(format!("input serial={serial} {name} reason={reason}"));
+                return Err(crate::messages::input("wait_pointer_idle", serial, &name, &format!("reason={reason}")));
             }
             return Ok(());
         }
         if Instant::now() >= end {
-            return Err(format!(
-                "input timeout serial={serial} waiting=source-disposition"
-            ));
+            return Err(crate::messages::input("wait_pointer_idle", serial, "missing", "timeout waiting=source-disposition"));
         }
         pause()?;
     }

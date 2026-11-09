@@ -29,6 +29,7 @@ pub mod compare;
 pub mod formula;
 
 pub mod frames;
+pub mod messages;
 
 pub mod capture_marker;
 pub mod capture;

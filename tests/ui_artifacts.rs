@@ -1,4 +1,5 @@
 //! Local failure evidence, exercising the production writer and comparison path.
+#[path = "../libs/libuitest/src/messages.rs"] pub mod messages;
 extern crate self as breenix_suite;
 #[path = "../libs/libuitest/src/outcome.rs"] pub mod outcome;
 pub use outcome::{FailureClass, ScenarioOutcome};

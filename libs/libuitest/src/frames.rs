@@ -309,11 +309,9 @@ fn check_stored_impl(
             .comparison
             .first
             .ok_or("mismatch without first pixel")?;
-        let got = first.actual;
-        let want = first.expected;
-        line.push_str(&format!(" compared={} differing={} first={},{} got=#{:02x}{:02x}{:02x} want=#{:02x}{:02x}{:02x}",
-            verdict.comparison.compared, verdict.comparison.differing, first.x, first.y,
-            got[2], got[1], got[0], want[2], want[1], want[0]));
+        line.push_str(&format!(" compared={} differing={} {}",
+            verdict.comparison.compared, verdict.comparison.differing,
+            crate::messages::pixel_details(first.x, first.y, first.actual, first.expected)));
     }
     if let Some(saved) = saved {
         line.push(' ');

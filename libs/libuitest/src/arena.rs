@@ -115,6 +115,11 @@ impl Arena {
             FREE => return Ok(SlotRead::Free), WRITING => return Ok(SlotRead::Partial("case-died")),
             FINAL => {}, _ => return Err("invalid arena state".into()),
         }
+        // The frame's release is the commit point for write_frame_tree. A death
+        // after the tree release alone has not published a complete capture.
+        if matches!(slot, Slot::Tree) && self.state(Slot::Frame).load(Ordering::Acquire) == WRITING {
+            return Ok(SlotRead::Partial("case-died"));
+        }
         // FINAL is terminal. No writer can touch either range after the release.
         let h = unsafe { std::slice::from_raw_parts(self.headers[slot.index()].ptr.add(4), HEADER - 4) };
         let q = |at| u64::from_le_bytes(h[at..at+8].try_into().unwrap());

@@ -72,5 +72,5 @@ pub fn role_invariants(tree: &Tree) -> Result<(), String> {
 /// Compare with a scenario-authored literal, independently of containment checks.
 pub fn expect_bounds(node: &Node, expected: [i64; 4]) -> Result<(), String> {
     if node.bounds == expected { return Ok(()); }
-    Err(format!("tree-mismatch: expect_bounds({}) bounds expected={expected:?} reported={:?}", node.key, node.bounds))
+    Err(crate::messages::tree(&format!("expect_bounds({})", node.key), &node.key, "bounds", &expected, &node.bounds))
 }

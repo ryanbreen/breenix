@@ -1,3 +1,4 @@
+#[path = "../libs/libuitest/src/messages.rs"] pub mod messages;
 #[path = "../libs/libuitest/src/arena.rs"] pub mod arena;
 #[path = "../libs/libuitest/src/artifacts.rs"] pub mod artifacts;
 extern crate self as libuitest;

@@ -279,3 +279,47 @@ pub fn input_log() -> CaseResult {
 pub fn screen_saved() -> CaseResult {
     run("screen-saved", 4).map_err(Into::into)
 }
+
+
+pub fn app_death() -> CaseResult {
+    let path = Path::new("/var/uitest/runner-fixture/fixture/app-death");
+    if path.exists() { fs::remove_dir_all(path).map_err(|e| e.to_string())?; }
+    let (transcript, exit) = super::runner::fixture("app-death")?;
+    require(exit == 1 && transcript.contains("app-death witness"),
+        format!("app death fixture did not reach its witness: {transcript}"))?;
+    let collect = transcript.lines().find(|l| l.starts_with("SUITE runner-fixture COLLECT fixture/app-death "))
+        .ok_or("app death collection record missing")?;
+    require(collect.contains("remnants=1 artifacts=complete"), format!("app death collection: {collect}"))?;
+    let collect_at = transcript.find(collect).ok_or("collection position missing")?;
+    let case_at = transcript.find("CASE fixture/app-death FAIL").ok_or("fixture failure missing")?;
+    require(collect_at < case_at, "app death CASE preceded collection")?;
+    let value = |name: &str| -> Result<u64, String> {
+        let prefix = format!("SUITE runner-fixture VALUE fixture/app-death {name}=");
+        let mut lines = transcript.lines().filter_map(|line| line.strip_prefix(&prefix));
+        let number = lines.next().and_then(|s| s.split_whitespace().next())
+            .and_then(|s| s.strip_suffix("count")).ok_or_else(|| format!("missing app death oracle {name}"))?;
+        require(lines.next().is_none(), format!("duplicate app death oracle {name}"))?;
+        number.parse::<u64>().map_err(|e| e.to_string())
+    };
+    let (id, commit, producer, width, height) = (value("remnant-window")?, value("remnant-commit")?,
+        value("remnant-producer")?, value("remnant-width")?, value("remnant-height")?);
+    let generation = capture_marker::Generation { commit, producer: u32::try_from(producer).map_err(|e| e.to_string())? };
+    let stem = format!("remnant-{id}-{commit}");
+    let image = libimg::png::decode(&fs::read(path.join(format!("{stem}.png"))).map_err(|e| e.to_string())?)
+        .map_err(|e| format!("remnant PNG: {e:?}"))?;
+    require(u64::from(image.width) == width && u64::from(image.height) == height,
+        "remnant dimensions differ from final commit")?;
+    require(image.pixels == capture_marker::frame(width as usize, height as usize, generation)?,
+        "saved remnant pixels differ from final commit")?;
+    let tree = fs::read(path.join(format!("{stem}.tree"))).map_err(|e| e.to_string())?;
+    require(capture::root_marker(&tree)? == capture_marker::encode(generation),
+        "saved remnant tree differs from final commit")?;
+    let record = fs::read_to_string(path.join(format!("{stem}.record"))).map_err(|e| e.to_string())?;
+    require(record.contains(&format!("window={id} ")) && record.contains(&format!("commit={commit} ")),
+        "saved remnant record differs from final commit")?;
+    let manifest = fs::read_to_string(path.join("collection.txt")).map_err(|e| e.to_string())?;
+    for suffix in ["png", "tree", "record"] {
+        require(manifest.contains(&format!("file={stem}.{suffix} ")), "remnant absent from synced collection")?;
+    }
+    Ok(())
+}

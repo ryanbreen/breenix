@@ -1,4 +1,6 @@
 //! UI testing suite skeleton; each unbuilt case fails with its planned layer.
+#[path = "uitest_suite/capture_app.rs"]
+mod capture_app;
 #[path = "uitest_suite/runner.rs"]
 mod runner;
 #[path = "uitest_suite/inner.rs"]
@@ -258,7 +260,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // When the case process is killed, the runner sends `end collect`, waits for the supervisor's `done` before sweeping, and the evidence is on disk. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("case-death", "When the case process is killed, the runner sends end collect, waits for done before sweeping, and the evidence is on disk", diagnosis::case_death),
         // An app that dies right after a commit still has that commit and tree saved, from its remnant. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("app-death", "An app that dies right after a commit still has that commit and tree saved, from its remnant", || pending("diagnosis", 7)),
+        case("app-death", "An app that dies right after a commit still has that commit and tree saved, from its remnant", diagnosis::app_death),
     ]),
     category("proof", "End-to-end scenarios & planted faults", &[
         // A widget drawn in the wrong color fails as pixel-mismatch with both colors. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)

@@ -142,8 +142,8 @@ pub fn compare_outcome(check: &str, want: &[u8], got: &[u8], width: usize, heigh
         None => Ok(ScenarioOutcome::pass()),
         Some(FailureClass::PixelMismatch) => {
             let first = verdict.comparison.first.ok_or("mismatch lacks first pixel")?;
-            let got = first.actual; let want = first.expected;
-            Ok(ScenarioOutcome::fail(FailureClass::PixelMismatch, check, &format!("first={},{} got=#{:02x}{:02x}{:02x} want=#{:02x}{:02x}{:02x}", first.x, first.y, got[2], got[1], got[0], want[2], want[1], want[0])))
+            Ok(ScenarioOutcome::fail(FailureClass::PixelMismatch, check,
+                &crate::messages::pixel_details(first.x, first.y, first.actual, first.expected)))
         }
         Some(_) => Err("unexpected capture comparison class".into()),
     }
