@@ -426,6 +426,32 @@ enum AnsiState {
 
 // ─── Terminal Emulator ──────────────────────────────────────────────────────
 
+#[derive(Clone, Copy)]
+struct SavedCursor {
+    x: usize,
+    y: usize,
+    fg: Color,
+    bg: Color,
+    bold: bool,
+    autowrap: bool,
+    pending_wrap: bool,
+}
+
+impl Default for SavedCursor {
+    fn default() -> Self {
+        Self { x: 0, y: 0, fg: FG_COLOR, bg: BG_COLOR, bold: false,
+            autowrap: true, pending_wrap: false }
+    }
+}
+
+struct MainScreen {
+    cells: Vec<Cell>,
+    cursor: SavedCursor,
+    saved_cursor: SavedCursor,
+    scroll_top: usize,
+    scroll_bottom: usize,
+}
+
 pub struct TermEmu {
     cols: usize,
     rows: usize,
@@ -435,6 +461,14 @@ pub struct TermEmu {
     fg: Color,
     bg: Color,
     bold: bool,
+    autowrap: bool,
+    pending_wrap: bool,
+    saved_cursor: SavedCursor,
+    main_screen: Option<MainScreen>,
+    scroll_top: usize,
+    scroll_bottom: usize,
+    tabs: Vec<bool>,
+    ansi_private: bool,
     alternate: bool,
     cursor_visible: bool,
     ansi_state: AnsiState,
@@ -451,12 +485,17 @@ pub struct TermEmu {
 
 impl TermEmu {
     pub fn new(cols: usize, rows: usize) -> Self {
+        let cols = cols.max(1);
+        let rows = rows.max(1);
         Self {
             cols, rows,
             cells: vec![Cell::blank(); cols * rows],
             cursor_x: 0, cursor_y: 0,
             fg: FG_COLOR, bg: BG_COLOR, bold: false,
-            alternate: false, cursor_visible: true,
+            autowrap: true, pending_wrap: false, saved_cursor: SavedCursor::default(),
+            main_screen: None, scroll_top: 0, scroll_bottom: rows - 1,
+            tabs: (0..cols).map(|x| x != 0 && x % 8 == 0).collect(),
+            ansi_private: false, alternate: false, cursor_visible: true,
             ansi_state: AnsiState::Normal,
             ansi_params: [0; 16],
             ansi_len: 0, ansi_invalid: false, utf8: [0; 4], utf8_len: 0, utf8_expected: 0,
@@ -470,22 +509,37 @@ impl TermEmu {
     fn cell_mut(&mut self, x: usize, y: usize) -> &mut Cell { &mut self.cells[y * self.cols + x] }
 
     pub fn resize(&mut self, new_cols: usize, new_rows: usize) {
-        if new_cols == self.cols && new_rows == self.rows {
-            return;
-        }
-        let mut new_cells = vec![Cell::blank(); new_cols * new_rows];
-        let copy_cols = self.cols.min(new_cols);
-        let copy_rows = self.rows.min(new_rows);
-        for y in 0..copy_rows {
-            for x in 0..copy_cols {
-                new_cells[y * new_cols + x] = self.cells[y * self.cols + x];
+        let new_cols = new_cols.max(1);
+        let new_rows = new_rows.max(1);
+        if new_cols == self.cols && new_rows == self.rows { return; }
+        let resize_cells = |cells: &[Cell]| {
+            let mut resized = vec![Cell::blank(); new_cols * new_rows];
+            for y in 0..self.rows.min(new_rows) {
+                let n = self.cols.min(new_cols);
+                resized[y * new_cols..y * new_cols + n]
+                    .copy_from_slice(&cells[y * self.cols..y * self.cols + n]);
             }
+            resized
+        };
+        self.cells = resize_cells(&self.cells);
+        if let Some(main) = &mut self.main_screen {
+            main.cells = resize_cells(&main.cells);
+            main.cursor.x = main.cursor.x.min(new_cols - 1);
+            main.cursor.y = main.cursor.y.min(new_rows - 1);
+            main.cursor.pending_wrap = false;
+            main.scroll_top = 0;
+            main.scroll_bottom = new_rows - 1;
         }
+        let old_cols = self.cols;
+        self.tabs.resize(new_cols, false);
+        for x in old_cols..new_cols { self.tabs[x] = x != 0 && x % 8 == 0; }
         self.cols = new_cols;
         self.rows = new_rows;
-        self.cells = new_cells;
-        self.cursor_x = self.cursor_x.min(new_cols.saturating_sub(1));
-        self.cursor_y = self.cursor_y.min(new_rows.saturating_sub(1));
+        self.cursor_x = self.cursor_x.min(new_cols - 1);
+        self.cursor_y = self.cursor_y.min(new_rows - 1);
+        self.pending_wrap = false;
+        self.scroll_top = 0;
+        self.scroll_bottom = new_rows - 1;
     }
 
     pub fn cursor(&self) -> (usize, usize) { (self.cursor_x, self.cursor_y) }
@@ -494,15 +548,91 @@ impl TermEmu {
     pub fn size(&self) -> (usize, usize) { (self.cols, self.rows) }
     pub fn feed(&mut self, bytes: &[u8]) { for &byte in bytes { self.feed_byte(byte); } }
 
-    fn scroll_up(&mut self) {
-        let cols = self.cols;
-        for y in 1..self.rows {
-            for x in 0..cols {
-                self.cells[(y - 1) * cols + x] = self.cells[y * cols + x];
-            }
+    fn cursor_state(&self) -> SavedCursor {
+        SavedCursor { x: self.cursor_x, y: self.cursor_y, fg: self.fg, bg: self.bg,
+            bold: self.bold, autowrap: self.autowrap, pending_wrap: self.pending_wrap }
+    }
+
+    fn restore_cursor(&mut self, saved: SavedCursor) {
+        self.cursor_x = saved.x.min(self.cols - 1);
+        self.cursor_y = saved.y.min(self.rows - 1);
+        self.fg = saved.fg;
+        self.bg = saved.bg;
+        self.bold = saved.bold;
+        self.autowrap = saved.autowrap;
+        self.pending_wrap = saved.pending_wrap && self.cursor_x == self.cols - 1;
+    }
+
+    fn alternate_screen_mode(&mut self, enabled: bool) {
+        if enabled == self.alternate { return; }
+        if enabled {
+            let cursor = self.cursor_state();
+            self.main_screen = Some(MainScreen {
+                cells: core::mem::replace(&mut self.cells, vec![Cell::blank(); self.cols * self.rows]),
+                cursor, saved_cursor: self.saved_cursor,
+                scroll_top: self.scroll_top, scroll_bottom: self.scroll_bottom,
+            });
+            self.saved_cursor = SavedCursor::default();
+            self.pending_wrap = false;
+            self.scroll_top = 0;
+            self.scroll_bottom = self.rows - 1;
+        } else if let Some(main) = self.main_screen.take() {
+            self.cells = main.cells;
+            self.restore_cursor(main.cursor);
+            self.saved_cursor = main.saved_cursor;
+            self.scroll_top = main.scroll_top;
+            self.scroll_bottom = main.scroll_bottom;
         }
-        let last_row = self.rows - 1;
-        for x in 0..cols { self.cells[last_row * cols + x] = Cell::blank(); }
+        self.alternate = enabled;
+    }
+
+    fn erase_cell(&self) -> Cell {
+        Cell { ch: ' ', fg: self.fg, bg: self.bg, bold: self.bold }
+    }
+
+    fn scroll_region(&mut self, top: usize, bottom: usize, count: usize, down: bool) {
+        let n = count.min(bottom - top + 1);
+        let start = top * self.cols;
+        let end = (bottom + 1) * self.cols;
+        let shift = n * self.cols;
+        let blank = self.erase_cell();
+        if down {
+            self.cells.copy_within(start..end - shift, start + shift);
+            self.cells[start..start + shift].fill(blank);
+        } else {
+            self.cells.copy_within(start + shift..end, start);
+            self.cells[end - shift..end].fill(blank);
+        }
+    }
+
+    fn index(&mut self, reverse: bool) {
+        self.pending_wrap = false;
+        if reverse {
+            if self.cursor_y == self.scroll_top {
+                self.scroll_region(self.scroll_top, self.scroll_bottom, 1, true);
+            } else { self.cursor_y = self.cursor_y.saturating_sub(1); }
+        } else if self.cursor_y == self.scroll_bottom {
+            self.scroll_region(self.scroll_top, self.scroll_bottom, 1, false);
+        } else { self.cursor_y = (self.cursor_y + 1).min(self.rows - 1); }
+    }
+
+    fn edit_characters(&mut self, cmd: u8, count: usize) {
+        let start = self.cursor_y * self.cols + self.cursor_x;
+        let end = (self.cursor_y + 1) * self.cols;
+        let n = count.min(self.cols - self.cursor_x);
+        let blank = self.erase_cell();
+        match cmd {
+            b'@' => {
+                self.cells.copy_within(start..end - n, start + n);
+                self.cells[start..start + n].fill(blank);
+            }
+            b'P' => {
+                self.cells.copy_within(start + n..end, start);
+                self.cells[end - n..end].fill(blank);
+            }
+            b'X' => self.cells[start..start + n].fill(blank),
+            _ => unreachable!(),
+        }
     }
 
     fn put_char(&mut self, ch: char) {
@@ -511,12 +641,15 @@ impl TermEmu {
             else if (ch as u32) > end { core::cmp::Ordering::Less }
             else { core::cmp::Ordering::Equal }
         }).is_ok() { return; }
-        if self.cursor_x >= self.cols { self.cursor_x = 0; self.cursor_y += 1; }
-        if self.cursor_y >= self.rows { self.scroll_up(); self.cursor_y = self.rows - 1; }
+        if self.pending_wrap {
+            self.cursor_x = 0;
+            self.index(false);
+        }
         let fg = self.fg; let bg = self.bg; let bold = self.bold;
         let idx = self.cursor_y * self.cols + self.cursor_x;
         self.cells[idx] = Cell { ch, fg, bg, bold };
-        self.cursor_x += 1;
+        if self.cursor_x == self.cols - 1 { self.pending_wrap = self.autowrap; }
+        else { self.cursor_x += 1; }
     }
 
     fn feed_byte(&mut self, byte: u8) {
@@ -542,16 +675,14 @@ impl TermEmu {
         match self.ansi_state {
             AnsiState::Normal => match byte {
                 0x1b => self.ansi_state = AnsiState::Escape,
-                b'\n' => {
-                    self.cursor_x = 0; self.cursor_y += 1;
-                    if self.cursor_y >= self.rows { self.scroll_up(); self.cursor_y = self.rows - 1; }
-                }
-                b'\r' => self.cursor_x = 0,
+                b'\n' => { self.cursor_x = 0; self.index(false); }
+                b'\r' => { self.cursor_x = 0; self.pending_wrap = false; }
                 b'\t' => {
-                    let next_tab = (self.cursor_x + 8) & !7;
-                    while self.cursor_x < next_tab && self.cursor_x < self.cols { self.put_char(' '); }
+                    self.cursor_x = (self.cursor_x + 1..self.cols)
+                        .find(|&x| self.tabs[x]).unwrap_or(self.cols - 1);
+                    self.pending_wrap = false;
                 }
-                0x08 => { if self.cursor_x > 0 { self.cursor_x -= 1; } }
+                0x08 => { self.cursor_x = self.cursor_x.saturating_sub(1); self.pending_wrap = false; }
                 0x20..=0x7e => self.put_char(byte as char),
                 0xc2..=0xf4 => {
                     self.utf8[0] = byte; self.utf8_len = 1;
@@ -561,15 +692,27 @@ impl TermEmu {
                 _ => {}
             },
             AnsiState::Escape => match byte {
-                b'[' => { self.ansi_state = AnsiState::Csi; self.ansi_params = [0; 16]; self.ansi_param_idx = 0; self.ansi_len = 0; self.ansi_invalid = false; }
+                b'[' => { self.ansi_state = AnsiState::Csi; self.ansi_params = [0; 16]; self.ansi_param_idx = 0; self.ansi_len = 0; self.ansi_invalid = false; self.ansi_private = false; }
                 b']' => { self.ansi_state = AnsiState::OscString; self.ansi_len = 0; }
                 0x1b => {}
-                _ => self.ansi_state = AnsiState::Normal,
+                _ => {
+                    match byte {
+                        b'D' => self.index(false),
+                        b'M' => self.index(true),
+                        b'H' => self.tabs[self.cursor_x] = true,
+                        b'7' => self.saved_cursor = self.cursor_state(),
+                        b'8' => self.restore_cursor(self.saved_cursor),
+                        _ => {}
+                    }
+                    self.ansi_state = AnsiState::Normal;
+                }
             },
             AnsiState::Csi | AnsiState::CsiParam => {
                 self.ansi_len += 1;
                 if self.ansi_len >= 256 { self.ansi_state = if (0x40..=0x7e).contains(&byte) { AnsiState::Normal } else { AnsiState::CsiDiscard }; }
-                else if byte.is_ascii_digit() && !self.ansi_invalid {
+                else if byte == b'?' && self.ansi_len == 1 {
+                    self.ansi_private = true;
+                } else if byte.is_ascii_digit() && !self.ansi_invalid {
                     self.ansi_state = AnsiState::CsiParam;
                     let p = &mut self.ansi_params[self.ansi_param_idx];
                     *p = p.saturating_mul(10).saturating_add((byte - b'0') as u16).min(9999);
@@ -596,6 +739,24 @@ impl TermEmu {
     fn execute_csi(&mut self, cmd: u8, nparams: usize) {
         let p0 = self.ansi_params[0] as usize;
         let p1 = if nparams > 1 { self.ansi_params[1] as usize } else { 0 };
+        if self.ansi_private {
+            if matches!(cmd, b'h' | b'l') {
+                let enabled = cmd == b'h';
+                for i in 0..nparams {
+                    match self.ansi_params[i] {
+                        7 => { self.autowrap = enabled; self.pending_wrap = false; }
+                        25 => self.cursor_visible = enabled,
+                        1049 => self.alternate_screen_mode(enabled),
+                        _ => {}
+                    }
+                }
+            }
+            return;
+        }
+        if matches!(cmd, b'H' | b'f' | b'A' | b'B' | b'C' | b'D' | b'G' | b'd'
+            | b'J' | b'K' | b'L' | b'M' | b'@' | b'P' | b'X') {
+            self.pending_wrap = false;
+        }
         match cmd {
             b'H' | b'f' => {
                 let row = if p0 > 0 { p0 - 1 } else { 0 };
@@ -634,7 +795,29 @@ impl TermEmu {
                 }
                     }
             b'd' => { let row = if p0 > 0 { p0 - 1 } else { 0 }; self.cursor_y = row.min(self.rows - 1); }
-            b'r' => { self.cursor_x = 0; self.cursor_y = 0; }
+            b'r' => {
+                let top = p0.max(1) - 1;
+                let bottom = if p1 == 0 { self.rows - 1 } else { p1 - 1 };
+                if top < bottom && bottom < self.rows {
+                    self.scroll_top = top;
+                    self.scroll_bottom = bottom;
+                    self.cursor_x = 0;
+                    self.cursor_y = 0;
+                    self.pending_wrap = false;
+                }
+            }
+            b'L' | b'M' => {
+                if (self.scroll_top..=self.scroll_bottom).contains(&self.cursor_y) {
+                    self.scroll_region(self.cursor_y, self.scroll_bottom, p0.max(1), cmd == b'L');
+                    self.cursor_x = 0;
+                }
+            }
+            b'@' | b'P' | b'X' => self.edit_characters(cmd, p0.max(1)),
+            b'g' => match p0 {
+                0 => self.tabs[self.cursor_x] = false,
+                3 => self.tabs.fill(false),
+                _ => {}
+            },
             b'm' => {
                 if nparams == 1 && p0 == 0 { self.fg = FG_COLOR; self.bg = BG_COLOR; self.bold = false; }
                 else {
