@@ -274,7 +274,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A hung app fails as app-hung when the 2 s step bound passes, instead of hanging the suite. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("fault-hang", "A hung app fails as app-hung when the 2 s step bound passes, instead of hanging the suite", proof::fault_hang),
         // Filling the test app's form (text field, checkbox, slider, submit) gives the expected tree and frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("form-scenario", "Filling the test app's form (text field, checkbox, slider, submit) gives the expected tree and frame", || pending("proof", 7)),
+        case("form-scenario", "Filling the test app's form (text field, checkbox, slider, submit) gives the expected tree and frame", proof::form_scenario).checks(&["initial", "typed", "checked", "slider", "submitted"]),
         // Opening a menu and choosing an item gives the expected tree and frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("menu-scenario", "Opening a menu and choosing an item gives the expected tree and frame", || pending("proof", 7)),
         // Scrolling and selecting in a list gives the expected tree and frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)

@@ -389,3 +389,121 @@ pub fn fault_hang() -> CaseResult {
         hang_scenario,
     )
 }
+
+#[path = "proof_app_tree.rs"]
+mod app_tree;
+const REFERENCES: &str = "/usr/share/breenix/uitest/frames";
+
+fn app_checkpoint(
+    live: &mut LivePointer<'_>,
+    id: u64,
+    case: &str,
+    stage: &str,
+    scale: u32,
+    client: &mut libuitest::RecordClient<'_>,
+    expect: impl FnOnce(&libbui::tree::Tree) -> Result<(), String>,
+) -> Result<(), String> {
+    use libuitest::{frames::Bindings, input::Backend};
+    let info = live.info(id)?;
+    live.move_to((info.x + 600 * scale as i32, info.y + 350 * scale as i32))?;
+    libuitest::settle::settle(&[(id, 0)], &mut [])?;
+    let record = capture::window(live.session().arena_mut(), stage, id)?;
+    let tree = match live.session().arena_mut().read(Slot::Tree)? {
+        SlotRead::Final { bytes, .. } => libbui::tree::Tree::parse(&bytes)?,
+        other => return Err(format!("incomplete scenario tree: {other:?}")),
+    };
+    expect(&tree)?;
+    let scenario = case
+        .strip_prefix("proof/")
+        .ok_or("scenario case prefix missing")?
+        .strip_suffix("-scenario")
+        .ok_or("scenario case suffix missing")?;
+    let path = format!("ui-testing/{scenario}-{stage}-s{scale}.png");
+    let provenance: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(format!("{REFERENCES}/PROVENANCE.json")).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())?;
+    let rows: Vec<_> = provenance["references"]
+        .as_array()
+        .ok_or("missing references")?
+        .iter()
+        .filter(|row| row["path"] == path)
+        .collect();
+    if rows.len() != 1 {
+        return Err(format!(
+            "scenario reference pin missing or duplicate: {path}"
+        ));
+    }
+    let pin = rows[0]["sha256"].as_str().ok_or("scenario pin missing")?;
+    let definition = serde_json::json!({"version":1,"case":case,"check":stage,"kind":"stored",
+        "source":{"kind":"window","window":"widgets"},"at":{"checkpoint":stage,"requires":[]},
+        "reference":{"path":path,"sha256":pin},
+        "regions":[{"name":"all","x":0,"y":0,"w":640*scale,"h":400*scale}],
+        "mask":[],"tolerance":{"channel":0,"maxDiffering":0}});
+    let mut bindings = Bindings::default();
+    bindings.window("widgets");
+    bindings.checkpoint(stage);
+    let verdict = live.session().check_stored(
+        "ui-testing",
+        &definition,
+        &bindings,
+        std::path::Path::new(REFERENCES),
+        &[],
+        client,
+    )?;
+    if !verdict.comparison.passed() {
+        return Err(format!(
+            "pixel-mismatch check={stage} commit={} first={:?}",
+            record.commit, verdict.comparison.first
+        ));
+    }
+    Ok(())
+}
+
+pub fn form_scenario() -> CaseResult {
+    use libuitest::input::{Keyboard, Pointer, Target};
+    const CASE: &str = "proof/form-scenario";
+    const CHECKS: &[&str] = &["initial", "typed", "checked", "slider", "submitted"];
+    let mut client = libuitest::RecordClient::outer("ui-testing", CASE, CHECKS)?;
+    let mut session = Session::desktop()?;
+    let pid = session.launch_app(&[APP, b"form scenario", b"--widgets"], 0)?;
+    let result: Result<(), String> = (|| {
+        let id = session.wait_window("form scenario")?.id;
+        let scale = libbreenix::gpu::current_mode()
+            .map_err(|e| e.to_string())?
+            .scale;
+        let mut live = LivePointer::new(&mut session)?;
+        live.watch(id)?;
+        app_checkpoint(&mut live, id, CASE, "initial", scale, &mut client, |t| {
+            app_tree::form(t, 0, scale)
+        })?;
+        let mut keyboard = Keyboard::new(live);
+        keyboard.focus_then_type(&Target::new(id, "entry"), "hello")?;
+        live = keyboard.into_backend();
+        app_checkpoint(&mut live, id, CASE, "typed", scale, &mut client, |t| {
+            app_tree::form(t, 1, scale)
+        })?;
+        let mut pointer = Pointer::new(live);
+        for (index, key) in ["accept", "amount", "submit"].into_iter().enumerate() {
+            pointer.click(&Target::new(id, key))?;
+            app_checkpoint(
+                pointer.backend_mut(),
+                id,
+                CASE,
+                CHECKS[index + 2],
+                scale,
+                &mut client,
+                |t| app_tree::form(t, index + 2, scale),
+            )?;
+        }
+        libuitest::input::dispositions(pointer.backend_mut().serials())?;
+        Ok(())
+    })();
+    let exits = session.teardown()?;
+    reject_crash(pid, &exits)?;
+    result?;
+    match client.finish(ScenarioOutcome::pass()) {
+        ScenarioOutcome::Pass { .. } => Ok(()),
+        other => Err(format!("form scenario records: {other:?}").into()),
+    }
+}
