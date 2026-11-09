@@ -1908,18 +1908,22 @@ class DriverTest(StateTest):
             route = '/gt710-upload/' + 'a' * 64
             with patch.object(upload.m, 'STATE', state), \
                  patch.object(upload.m, 'read_lease', return_value=dict(id='sample', state='powered')):
-                for suite, count, expected in [('ui-testing', 205, 200), ('ui-testing', 206, 404),
-                                               ('window-manager', 16, 404)]:
+                for suite, count, label, expected in [('ui-testing', 15, 'uitest-' + 'a' * 16, 200),
+                        ('ui-testing', 16, 'uitest-' + 'b' * 16, 404),
+                        ('ui-testing', 0, 'test', 404),
+                        ('ui-testing', 0, 'uitest-' + 'A' * 16, 404),
+                        ('ui-testing', 0, 'uitest-' + 'a' * 15, 404),
+                        ('window-manager', 15, 'test', 200), ('window-manager', 16, 'test', 404)]:
                     directory = state / 'boots/sample/native-suites' / suite
                     directory.mkdir(parents=True, exist_ok=True)
                     intent = dict(id='sample', route=route, suite='console,' + suite, suiteSlots={suite: dict(
                         id='sample', route=route + '/suites/' + suite, suite=suite, complete=True,
                         diagnosticUploads={str(n): {} for n in range(count)})})
                     (state / 'gt710-upload.json').write_text(json.dumps(intent))
-                    h = Handler(route + '/suites/' + suite + '/diagnostics/test')
+                    h = Handler(route + '/suites/' + suite + '/diagnostics/' + label)
                     upload.receive(h)
                     self.assertEqual(h.code, expected)
-                    (directory / 'diagnostic-test.bin').unlink(missing_ok=True)
+                    (directory / ('diagnostic-' + label + '.bin')).unlink(missing_ok=True)
 
     def test_window_manager_starts_the_hostkey_reader(self):
         d = self.driver

@@ -222,3 +222,14 @@ fn local_writer_is_lazy_clears_stale_case_files_once_and_keeps_its_outputs() {
     assert_eq!(fs::read(path.join("second")).unwrap(),b"same run");
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn oversized_bundle_drops_screen_first_and_preserves_other_evidence() {
+    let entries = vec![("got.png".to_string(), vec![1; 1024]),
+        ("screen.png".to_string(), vec![2; 2 * 1024 * 1024])];
+    let bundle = artifacts::bundle(&entries).unwrap();
+    assert!(bundle.screen_dropped);
+    assert!(bundle.bytes.len() <= 2 * 1024 * 1024);
+    assert!(bundle.bytes.windows(7).any(|w| w == b"got.png"));
+    assert!(!bundle.bytes.windows(10).any(|w| w == b"screen.png"));
+}
