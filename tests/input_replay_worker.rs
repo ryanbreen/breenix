@@ -2,6 +2,13 @@
 extern crate self as spin;
 use core::sync::atomic::{AtomicBool,AtomicU32,AtomicU64,Ordering};
 static QUERY_ONLY:AtomicBool=AtomicBool::new(false);
+static IRQ_MASK_DEPTH:AtomicU32=AtomicU32::new(0);
+pub fn arch_without_interrupts<R>(f:impl FnOnce()->R)->R {
+    IRQ_MASK_DEPTH.fetch_add(1,Ordering::Relaxed);
+    let result=f();
+    IRQ_MASK_DEPTH.fetch_sub(1,Ordering::Relaxed);
+    result
+}
 pub struct Mutex<T>(std::sync::Mutex<T>);
 pub struct Guard<'a,T>(std::sync::MutexGuard<'a,T>);
 static MAILBOX_LOCKS:AtomicU32=AtomicU32::new(0);
@@ -94,7 +101,15 @@ pub mod task { pub mod thread {
     impl Completion {
         pub const fn new()->Self { Self(crate::AtomicBool::new(false)) }
         pub fn reset(&self) { self.0.store(false,crate::Ordering::Relaxed); }
-        pub fn complete(&self,token:u32) { assert_eq!(token,1);self.0.store(true,crate::Ordering::Relaxed); }
+        pub fn complete(&self,token:u32) {
+            assert_eq!(token,1);
+            // Force a scheduling point at wakeup. On one CPU a submitter
+            // cannot spin for a preempted producer still holding its lock.
+            assert!(crate::MAILBOX_LOCKS.load(crate::Ordering::Relaxed)==0
+                || crate::IRQ_MASK_DEPTH.load(crate::Ordering::Relaxed)>0,
+                "wakeup can preempt the worker while it owns the answer lock");
+            self.0.store(true,crate::Ordering::Relaxed);
+        }
         pub fn wait_timeout_uninterruptible(&self,token:u32,ns:u64)->Result<bool,i32> {
             assert_eq!(token,1);assert_eq!(ns,1_000_000_000);
             crate::WAITS.fetch_add(1,crate::Ordering::Relaxed);
@@ -195,13 +210,9 @@ fn sigkill_after_take_keeps_worker_custody_until_answer() {
 #[test]
 fn sigkill_racing_answer_releases_mailbox_once() {
     start_killed(3);
-    match suite_replay::submit(suite_replay::Request::Keyboard,false) {
-        Err(e) => { assert_eq!(e,4); assert_diag("Taken"); }
-        Ok(receipt) => {
-            assert_eq!((receipt.calls,receipt.posted,receipt.ring),(9,9,9));
-            assert!(log_notice::LINES.lock().unwrap().is_empty(),"answer won the race, so this is success");
-        }
-    }
+    let receipt=suite_replay::submit(suite_replay::Request::Keyboard,false).unwrap();
+    assert_eq!((receipt.calls,receipt.posted,receipt.ring),(9,9,9));
+    assert!(log_notice::LINES.lock().unwrap().is_empty(),"answer won the race, so this is success");
     assert!(!suite_replay::pending());
     next_submit();
 }
@@ -213,5 +224,18 @@ fn sigkill_diagnostic_does_not_wait_for_worker_snapshot() {
     assert_eq!(suite_replay::submit(suite_replay::Request::Keyboard,false).unwrap_err(),4);
     let lines=std::mem::take(&mut *log_notice::LINES.lock().unwrap());
     assert_eq!(lines,vec!["XHCI_REPLAY_STATE state=Posted age_ns=10000 worker_tid=73 worker_state=None cpu=None wake_time_ns=None work_pending=true waiter=73 leds=true interrupts=17\n"]);
+    next_submit();
+}
+
+#[test]
+fn failed_controller_refuses_an_abandoned_request_with_eio() {
+    start_killed(2);
+    assert_eq!(suite_replay::submit(suite_replay::Request::Keyboard,false).unwrap_err(),4);
+    assert_diag("Taken");
+    FAILED.store(true,Ordering::Release);
+    assert_eq!(suite_replay::submit(suite_replay::Request::Keyboard,false).unwrap_err(),5);
+    // Controller failure must not steal custody from its in-flight worker.
+    suite_replay::answer(Err(5));
+    FAILED.store(false,Ordering::Release);
     next_submit();
 }
