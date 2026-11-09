@@ -125,6 +125,17 @@ class UiStep(unittest.TestCase):
             (self.path / 'serial.txt').write_text(value)
             return self.record()
         self.assertEqual(score(text), 0)
+        full = text
+        for name in NAMES:
+            full = full.replace(f'CASE {name} FAIL ms=1 msg=pending', f'CASE {name} PASS ms=1')
+        full = full.replace(f'DONE passed={len(SELECTED)} failed={len(NAMES)-len(SELECTED)}',
+                            f'DONE passed={len(NAMES)} failed=0')
+        verdict = runpy.run_path(str(ROOT / 'scripts/suite-verdict.py'))['verdict']
+        full_log = self.path / 'full-bundle.txt'
+        full_log.write_text(full)
+        self.assertTrue(verdict(MANIFEST, full_log, [full_log])[0])
+        full_log.write_text(full.replace(record, record + record))
+        self.assertFalse(verdict(MANIFEST, full_log, [full_log])[0])
         for bad in [record.replace(label, 'uitest-' + '0' * 16),
                     record.replace('result=ok', 'result=disk-only:deadline'),
                     record.replace(f'bytes={len(body)}', 'bytes=2097153'),

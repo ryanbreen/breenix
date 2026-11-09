@@ -4140,6 +4140,8 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
         'LIVE': fr'SUITE {suite} (?:VALUE|WAIT|PULSES|HOSTKEY|HOSTPOINTER|SCREEN) ([a-z0-9/-]+) \S.*',
     }
     verdict_api = runpy.run_path(str(root / 'scripts/suite-verdict.py'))
+    if suite == 'ui-testing':
+        shapes['EVIDENCE'] = verdict_api['bundle_shape'](suite)
     shapes.update({kind: fr'SUITE {suite} {kind} ([a-z0-9/-]+) .+'
                    for kind in verdict_api['RESULT']})
     parsed = []
@@ -4265,6 +4267,19 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
         receipts.append(receipt)
     if len(list(slots.glob('gt710-breengel-*.rle'))) != part_index:
         raise ValueError('WM unanchored picture parts')
+    for kind, match, line in parsed:
+        if kind != 'EVIDENCE':
+            continue
+        label = match[2]
+        body = (slots / f'diagnostic-{label}.bin').read_bytes()
+        receipt = json.loads((slots / f'native-diagnostic-{label}.json').read_text())
+        digest = hashlib.sha256(body).hexdigest()
+        if (len(body) != int(match[3]) or digest != match[4]
+                or receipt.get('id') != boot['id'] or receipt.get('complete') is not True
+                or receipt.get('bytes') != len(body) or receipt.get('sha256') != digest
+                or receipt.get('route') != receipts[0]['route'] + '/diagnostics/' + label):
+            raise ValueError('UI bundle differs from its serial digest or authenticated receipt')
+        transport_bytes += len(body)
     if transport_bytes > 64 << 20:
         raise ValueError('WM uploads exceed the per-boot evidence bound')
     if receipts[1]['route'] != receipts[0]['route'] + '/final':

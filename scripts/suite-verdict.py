@@ -38,6 +38,7 @@ Prints "PASS: <DONE line>" or "FAIL: <reason>" and exits 0 or 1.
 """
 
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
@@ -49,9 +50,14 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 # The records a case prints while it runs, which do not count.
 RESULT = ("FRAME", "TREE", "INPUT", "COLLECT")
-LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY", "HOSTPOINTER", "HOSTSSH", "SCREEN", "SCREENPERTURB") + RESULT
+LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY", "HOSTPOINTER", "HOSTSSH", "SCREEN", "SCREENPERTURB", "EVIDENCE") + RESULT
 # The runner's memory record, around the cases.
 MEMORY = ("MEMORY", "RECLAIMED")
+
+
+def bundle_shape(suite):
+    return (rf"SUITE {suite} EVIDENCE bundle ([a-z0-9/-]+) label=(uitest-[0-9a-f]{{16}})"
+            r" bytes=([1-9][0-9]*) sha256=([0-9a-f]{64}) result=ok path=(/var/uitest/[^ ]+)")
 
 
 def read_lines(path):
@@ -175,11 +181,21 @@ def result_problem(manifest, records, cases):
                 for cat in manifest["categories"] for row in cat["cases"]}
     seen, matched, mismatched = set(), set(), set()
     count, index, started, done = 0, 0, False, False
+    bundles = set()
     for kind, match, line in records:
         if kind == "START":
             started = True
         elif kind == "DONE":
             done = True
+        elif kind == "EVIDENCE":
+            case = match.group(1)
+            if (manifest['id'] != 'ui-testing' or not started or done or index >= len(cases)
+                    or case != cases[index] or case in bundles or len(bundles) >= 16
+                    or match.group(2) != 'uitest-' + hashlib.sha256(case.encode()).hexdigest()[:16]
+                    or int(match.group(3)) > 2 << 20
+                    or match.group(5) != '/var/uitest/ui-testing/' + case):
+                return "UI bundle record binding, size or slot limit differs"
+            bundles.add(case)
         elif kind in RESULT:
             if not started or done or index >= len(cases) or match.group(1) != cases[index]:
                 return f"a {kind} record is not bound to the running case"
@@ -279,6 +295,8 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
                   r' raster=[1-9][0-9]*x[1-9][0-9]* out=sor[0-9]+ resource=[1-9][0-9]*'
                   r' present_fence=[1-9][0-9]* fired=[0-9]+ disarmed=[01]|error=sequence-failed)')
         shapes['SCREENPERTURB'] = re.compile(rf"^SUITE {suite} SCREENPERTURB {name} end {fields}$")
+    if suite == "ui-testing":
+        shapes['EVIDENCE'] = re.compile('^' + bundle_shape(suite) + '$')
     shapes.update({kind: re.compile(rf"^SUITE {suite} {kind} {name} .+$") for kind in RESULT})
     records = []
     for line in read_lines(records_log):
