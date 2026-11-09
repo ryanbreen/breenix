@@ -1,6 +1,8 @@
 //! GUI application suite.
 #[path = "guiapps_suite/pending.rs"]
 mod pending;
+#[path = "guiapps_suite/bterm.rs"]
+mod bterm;
 use breenix_suite::suite::{case, category, suite, Suite};
 
 static SUITE: Suite = suite("gui-apps", "GUI applications", &[
@@ -13,7 +15,7 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
     ]),
     category("bterm", "bterm", &[
         case("prompt", "Shell prompt", pending::not_built),
-        case("command-output", "Command output", pending::not_built),
+        case("command-output", "Command output", bterm::command_output),
         case("exit-status", "Exit status", pending::not_built),
         case("ctrl-c", "Interrupt foreground command", pending::not_built),
         case("tabs", "Tabs", pending::not_built),
