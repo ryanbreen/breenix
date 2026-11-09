@@ -155,7 +155,13 @@ fn main() {
         }
     };
 
-    let mut desktop_tree = desktop_publish::Publisher::new().expect("compositor tree mapping failed");
+    let mut desktop_tree = match desktop_publish::Publisher::new() {
+        Ok(publisher) => Some(publisher),
+        Err(error) => {
+            eprintln!("[bwm] compositor tree mapping failed: {}", error);
+            None
+        }
+    };
     libuitest::startup::mark("scene-ready");
     // Clock state
     let mut clock = clock::Clock::new(std::env::var_os("BREENIX_UI_CLOCK").is_some());
@@ -882,8 +888,11 @@ fn main() {
                 }
             }
         }
-        desktop_tree.publish(&windows, &stack, [screen_w as i64, screen_h as i64])
-            .expect("compositor tree publication failed");
+        if let Some(publisher) = &mut desktop_tree {
+            if let Err(error) = publisher.publish(&windows, &stack, [screen_w as i64, screen_h as i64]) {
+                eprintln!("[bwm] compositor tree publication failed: {}", error);
+            }
+        }
         if !full_redraw && !content_dirty && !windows_dirty && !clock_dirty && !display_lost && !frame_failed {
             let mut ack = clock.acknowledgment(claim_epoch);
             if let Some(deadline) = timing.deadline() {
