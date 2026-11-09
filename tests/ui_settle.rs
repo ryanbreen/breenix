@@ -11,8 +11,9 @@ fn processed_requires_a_commit_and_a_matching_watermark() {
     let mut b = Barrier::new(0, vec![(7, 42)], vec![]);
     assert!(!b.observe(1, &Observation::new(vec![window(0, 42)], vec![])).unwrap());
     assert!(!b.observe(2, &Observation::new(vec![window(1, 41)], vec![])).unwrap());
-    assert!(!b.observe(3, &Observation::new(vec![window(2, 42)], vec![])).unwrap());
-    assert!(b.observe(4, &Observation::new(vec![window(2, 42)], vec![])).unwrap());
+    assert!(!b.observe(3, &Observation::new(vec![window(1, 41)], vec![])).unwrap());
+    assert!(!b.observe(4, &Observation::new(vec![window(2, 42)], vec![])).unwrap());
+    assert!(b.observe(5, &Observation::new(vec![window(2, 42)], vec![])).unwrap());
 }
 
 #[test]
@@ -20,6 +21,7 @@ fn drained_without_commit_times_out_with_window_and_serial() {
     let mut b = Barrier::new(0, vec![(7, 42)], vec![]);
     let o = Observation::new(vec![window(1, 41)], vec![]);
     assert!(!b.observe(1, &o).unwrap());
+    assert!(!b.observe(1_999_999_999, &o).unwrap());
     let error = b.observe(2_000_000_000, &o).unwrap_err();
     assert!(error.contains("window=7") && error.contains("serial=42"), "{error}");
 }

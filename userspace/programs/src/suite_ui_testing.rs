@@ -35,6 +35,8 @@ mod input_delivery;
 mod clock;
 #[path = "uitest_suite/timers.rs"]
 mod timers;
+#[path = "uitest_suite/settle.rs"]
+mod settle;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
 
 fn pending(layer: &str, step: u8) -> CaseResult {
@@ -80,7 +82,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // delivered(serial) returns only after the target window processed that serial. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("delivered", "delivered(serial) returns only after the target window processed that serial", input_delivery::delivered).session(libuitest::supervisor::serve),
         // An event sent to a hung app is reported unprocessed when the 2 s settle bound passes, naming the serial and the window. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("undelivered-fails", "An event sent to a hung app is reported unprocessed at the 2 s settle bound, naming the serial and window", || pending("input", 7)),
+        case("undelivered-fails", "An event sent to a hung app is reported unprocessed at the 2 s settle bound, naming the serial and window", settle::undelivered_fails).session(libuitest::supervisor::serve),
         // Every serial of a script ends with a terminal disposition. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("dispositions-all", "Every serial of a script ends with a terminal disposition", input_delivery::dispositions_all).session(libuitest::supervisor::serve),
         // A non-root session cannot inject, after a root session has. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -174,13 +176,13 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     ]),
     category("settle", "Causal barriers & settling", &[
         // settle returns once nothing changes. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("idle", "settle returns once nothing changes", || pending("settle", 7)),
+        case("idle", "settle returns once nothing changes", settle::idle).session(libuitest::supervisor::serve),
         // settle waits until the target window commits with the serial processed, not until it reads the event. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("processed-not-consumed", "settle waits until the target window commits with the serial processed, not until it reads the event", || pending("settle", 7)),
+        case("processed-not-consumed", "settle waits until the target window commits with the serial processed, not until it reads the event", settle::processed_not_consumed).session(libuitest::supervisor::serve),
         // An app that drains events and never commits makes settle fail, naming the window and the serial. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("drained-not-rendered", "An app that drains events and never commits makes settle fail, naming the window and the serial", || pending("settle", 7)),
+        case("drained-not-rendered", "An app that drains events and never commits makes settle fail, naming the window and the serial", settle::drained_not_rendered).session(libuitest::supervisor::serve),
         // An event that changes nothing settles through commit_no_change. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("no-change-ack", "An event that changes nothing settles through commit_no_change", || pending("settle", 7)),
+        case("no-change-ack", "An event that changes nothing settles through commit_no_change", settle::no_change_ack).session(libuitest::supervisor::serve),
         // settle waits until a completed composite lists every visible window at its newest pixel generation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("composited", "settle waits until a completed composite lists every visible window at its newest pixel generation", || pending("settle", 7)),
         // Settling after a commit_no_change completes through the composite that already holds the window's pixels, with no new composite. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -190,9 +192,9 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // A hotkey settles with no client involved, through its WM-handled disposition. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("wm-handled", "A hotkey settles with no client involved, through its WM-handled disposition", || pending("settle", 7)),
         // settle waits for a named tree predicate on an asynchronous result. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("async-predicate", "settle waits for a named tree predicate on an asynchronous result", || pending("settle", 7)),
+        case("async-predicate", "settle waits for a named tree predicate on an asynchronous result", settle::async_predicate).session(libuitest::supervisor::serve),
         // A settle that cannot complete fails, naming the window, serial or predicate it waited for. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("timeout-names", "A settle that cannot complete fails, naming the window, serial or predicate it waited for", || pending("settle", 7)),
+        case("timeout-names", "A settle that cannot complete fails, naming the window, serial or predicate it waited for", settle::timeout_names).session(libuitest::supervisor::serve),
         // settle returns while an app has a future animation deadline. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("animation-allowed", "settle returns while an app has a future animation deadline", || pending("settle", 7)),
         // A minimized window still acknowledges epochs and processes its serials, settle waits for those, and settle does not wait for its pixels; once restored, the next settle waits for its current generation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)

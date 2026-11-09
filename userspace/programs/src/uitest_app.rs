@@ -7,6 +7,7 @@ mod uitest_widgets;
 mod uitest_widget_app;
 mod uitest_keyboard;
 mod uitest_timer_app;
+mod uitest_settle_app;
 
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -33,6 +34,12 @@ fn main() {
         Ok(options) => options,
         Err(error) => { eprintln!("{error}"); std::process::exit(2); }
     };
+    if options.settle_control {
+        if let Err(error) = uitest_settle_app::run(options.title, options.drain_no_render) {
+            eprintln!("settle control: {error}"); std::process::exit(1);
+        }
+        return;
+    }
     if options.timer || options.animate {
         if let Err(error) = uitest_timer_app::run(options.title, options.animate, options.real_clock) {
             eprintln!("timer mode: {error}"); std::process::exit(1);
