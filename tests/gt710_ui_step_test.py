@@ -233,6 +233,22 @@ class UiStep(unittest.TestCase):
                         text.replace(line, '', 1) + line]:
                 self.assertEqual(score(bad), 1)
 
+    def test_step_seven_is_the_full_manifest_and_scores_as_a_full_suite(self):
+        selection = json.loads((ROOT / 'docs/gui/gt710-step-22-7.json').read_text())['cases']
+        self.assertEqual(selection, NAMES)
+        text = serial()
+        for name in NAMES:
+            text = text.replace(f'CASE {name} FAIL ms=1 msg=pending', f'CASE {name} PASS ms=1')
+        text = text.replace(f'DONE passed={len(SELECTED)} failed={len(NAMES)-len(SELECTED)}',
+                            f'DONE passed={len(NAMES)} failed=0')
+        log = self.path / 'full-serial.txt'
+        log.write_text(text)
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/suite-verdict.py'),
+                                 str(ROOT / 'docs/suites/ui-testing.json'), str(log)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('PASS:', result.stdout)
+
     def test_step_eight_is_refused(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/metal/gt710-suite'),
                                  '--ui-step', '8'], capture_output=True, text=True)
