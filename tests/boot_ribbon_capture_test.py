@@ -28,6 +28,7 @@ pub mod graphics {{
     #[path="{ROOT}/kernel/src/graphics/boot_producer.rs"] pub mod boot_producer;
     #[path="{ROOT}/kernel/src/graphics/boot_ribbon.rs"] pub mod boot_ribbon;
 }}
+#[path="{ROOT}/userspace/programs/src/suite_breengel/stage_serial.rs"] pub mod stage_serial;
 '''
     fixture = (ROOT / 'tests/boot_ribbon_capture_test.rs').read_text()
     (path / 'src/lib.rs').write_text(modules + fixture)

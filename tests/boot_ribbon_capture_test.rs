@@ -86,6 +86,10 @@ fn serial_preserves_exact_pre_first_start_prefix_for_late_reader() {
     let capture = capture();
     let actual = boot_ribbon::serial().expect("late boot-prefix reader must not overflow");
     assert_eq!(actual, capture.boot_prefix);
+    let records: Vec<bool> = boot_ribbon::records().lines().map(|line| {
+        line.split_once('|').unwrap().0 == "1"
+    }).collect();
+    assert_eq!(stage_serial::reached(&actual, MARKERS), records);
 }
 
 #[test]
