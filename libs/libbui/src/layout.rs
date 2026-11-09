@@ -1,3 +1,13 @@
+use core::sync::atomic::{AtomicU64, Ordering};
+
+// Conservative process-wide invalidation: windows publish the same monotonic version.
+static LAYOUT_VERSION: AtomicU64 = AtomicU64::new(1);
+
+pub fn layout_version() -> u64 { LAYOUT_VERSION.load(Ordering::Relaxed) }
+
+/// Report changed hit-test geometry before committing its pixels and semantic tree.
+pub fn layout_changed() { LAYOUT_VERSION.fetch_add(1, Ordering::Relaxed); }
+
 use alloc::vec::Vec;
 
 use crate::rect::Rect;
@@ -7,6 +17,7 @@ use crate::rect::Rect;
 /// Returns a `Vec<Rect>` of `count` items, each `item_width` wide and the
 /// full height of the container, spaced `spacing` pixels apart.
 pub fn h_stack(container: &Rect, item_width: i32, count: usize, spacing: i32) -> Vec<Rect> {
+    layout_changed();
     let mut rects = Vec::with_capacity(count);
     let mut x = container.x;
     for _ in 0..count {
@@ -21,6 +32,7 @@ pub fn h_stack(container: &Rect, item_width: i32, count: usize, spacing: i32) ->
 /// Returns a `Vec<Rect>` of `count` items, each `item_height` tall and the
 /// full width of the container, spaced `spacing` pixels apart.
 pub fn v_stack(container: &Rect, item_height: i32, count: usize, spacing: i32) -> Vec<Rect> {
+    layout_changed();
     let mut rects = Vec::with_capacity(count);
     let mut y = container.y;
     for _ in 0..count {
@@ -32,6 +44,7 @@ pub fn v_stack(container: &Rect, item_height: i32, count: usize, spacing: i32) -
 
 /// Center a rectangle of size (`w`, `h`) within `container`.
 pub fn center(container: &Rect, w: i32, h: i32) -> Rect {
+    layout_changed();
     Rect::new(
         container.x + (container.w - w) / 2,
         container.y + (container.h - h) / 2,
@@ -42,6 +55,7 @@ pub fn center(container: &Rect, w: i32, h: i32) -> Rect {
 
 /// Right-align a rectangle of size (`w`, `h`) within `container` with a right margin.
 pub fn align_right(container: &Rect, w: i32, h: i32, margin: i32) -> Rect {
+    layout_changed();
     Rect::new(
         container.x + container.w - w - margin,
         container.y + (container.h - h) / 2,

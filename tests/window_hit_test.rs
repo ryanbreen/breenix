@@ -33,7 +33,7 @@ fn edges_are_exclusive_and_flags_refused() {
 fn hit_test_abi_layout() {
     use core::mem::{offset_of, size_of};
     assert_eq!(breengel_abi::op::HIT_TEST, 32);
-    assert_eq!(breengel_abi::op::LAST, 32);
+    assert_eq!(breengel_abi::op::LAST, breengel_abi::op::MAP_TREE_READERS);
     assert_eq!(breengel_abi::arg_size(32), Some(32));
     assert_eq!(size_of::<HitTest>(), 32);
     assert_eq!([offset_of!(HitTest, x), offset_of!(HitTest, y), offset_of!(HitTest, id), offset_of!(HitTest, scene_version), offset_of!(HitTest, flags), offset_of!(HitTest, reserved)], [0, 4, 8, 16, 24, 28]);

@@ -7,11 +7,11 @@ mod races {
     use std::{io::{BufRead, BufReader, Write}, os::unix::net::{UnixListener, UnixStream},
         path::{Path, PathBuf}, sync::mpsc, thread, time::{Duration, Instant}};
 
-    struct App { socket: BufReader<UnixStream>, pid: u64 }
+    pub(crate) struct App { socket: BufReader<UnixStream>, pub pid: u64 }
     #[derive(Clone, Copy)]
-    struct Commit { id: u64, generation: Generation, width: u32, height: u32 }
+    pub(crate) struct Commit { pub id: u64, pub generation: Generation, pub width: u32, pub height: u32 }
     impl App {
-        fn launch(session: &mut Session) -> Result<Self, String> {
+        pub(crate) fn launch(session: &mut Session) -> Result<Self, String> {
             let path = Path::new(session.config_root()).join("capture-control.sock");
             let listener = UnixListener::bind(&path).map_err(|e| e.to_string())?;
             listener.set_nonblocking(true).map_err(|e| e.to_string())?;
@@ -43,7 +43,7 @@ mod races {
                 width: u32::try_from(number(4)?).map_err(|e| e.to_string())?,
                 height: u32::try_from(number(5)?).map_err(|e| e.to_string())? })
         }
-        fn command(&mut self, command: &str) -> Result<Commit, String> { self.send(command)?; self.reply() }
+        pub(crate) fn command(&mut self, command: &str) -> Result<Commit, String> { self.send(command)?; self.reply() }
     }
 
     struct Captured { record: Record, pixels: Vec<u8>, tree: Vec<u8> }
@@ -159,9 +159,14 @@ mod races {
         let reader = Reader::new();
         let mut witnessed = [0; 2];
         let result: Result<(), String> = (|| {
-            let first = app.command("create")?;
+            let mut first = app.command(if kind == 3 { "create-tree" } else { "create" })?;
+            let _tree_reader = if kind == 3 {
+                let mapping = crate::tree_cases::TreeReader::attach(first.id).map_err(|e| e.to_string())?;
+                first = app.command("commit 0")?;
+                Some(mapping)
+            } else { None };
             match kind {
-                0 => { overlap(&mut app, &reader, &root, first, "commit 0", &mut witnessed)?; }
+                0 | 3 => { overlap(&mut app, &reader, &root, first, "commit 0", &mut witnessed)?; }
                 2 => {
                     let next = overlap(&mut app, &reader, &root, first, "resize", &mut witnessed)?;
                     if (next.width, next.height, next.generation.commit) != (160, 100, first.generation.commit + 1) {
@@ -183,8 +188,11 @@ mod races {
         }
         Ok(())
     }
+    pub fn commit_coupled() -> breenix_suite::suite::CaseResult { run(3).map_err(Into::into) }
     pub fn capture_while_drawing() -> breenix_suite::suite::CaseResult { run(0).map_err(Into::into) }
     pub fn capture_resize_race() -> breenix_suite::suite::CaseResult { run(2).map_err(Into::into) }
 }
 #[cfg(target_os = "breenix")]
-pub use races::{capture_while_drawing, capture_resize_race};
+pub use races::{capture_while_drawing, capture_resize_race, commit_coupled};
+#[cfg(target_os = "breenix")]
+pub(crate) use races::App;

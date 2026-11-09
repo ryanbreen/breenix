@@ -1165,7 +1165,7 @@ fn isolation_retired_ops() -> CaseResult {
 fn isolation_unknown_op() -> CaseResult {
     match window_version() {
         2 => {
-            for unknown in [30, 0xFFFF, u32::MAX as u64] {
+            for unknown in [u64::from(op::LAST) + 1, 0xFFFF, u32::MAX as u64] {
                 // SAFETY: an unknown op is refused before any argument is read.
                 let r = unsafe { raw::syscall3(SYS_WINDOW, unknown, 0, 0) as i64 };
                 ensure(r == -22, "17.1", format!("window(op {unknown:#x}) {}; an unknown op fails with EINVAL", outcome(r)))?;

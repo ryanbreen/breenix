@@ -97,3 +97,19 @@ impl Button {
         self.update(input) == WidgetEvent::Clicked
     }
 }
+
+impl super::Widget for Button {
+    type Event = crate::WidgetEvent;
+    fn rect(&self) -> Rect { self.rect }
+    fn draw(&self, fb: &mut FrameBuf, theme: &Theme) { Button::draw(self, fb, theme); }
+    fn update(&mut self, input: &InputState) -> Self::Event { Button::update(self, input) }
+    fn tree_node(&self, key: &str, parent: Option<&str>, clip: Rect) -> crate::tree::Node {
+        use crate::tree::Role;
+        let mut n = super::node(key, parent, Role::Button, &super::name(self.label), self.rect, clip);
+        super::flag(&mut n, crate::tree::Flag::Enabled, self.enabled);
+        super::flag(&mut n, crate::tree::Flag::Focused, self.focused);
+        super::flag(&mut n, crate::tree::Flag::Pressed, self.pressed);
+        super::flag(&mut n, crate::tree::Flag::Hovered, self.hovered);
+        n
+    }
+}

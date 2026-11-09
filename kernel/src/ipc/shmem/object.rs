@@ -456,6 +456,7 @@ pub struct ShmMapping {
     may_write: bool,
     pid: i32,
     counted: bool,
+    pub(crate) tree_reader: Option<Arc<crate::window::readers::Reader>>,
 }
 impl ShmMapping {
     pub fn new(object: &Arc<ShmObject>) -> Self {
@@ -475,6 +476,7 @@ impl ShmMapping {
             may_write,
             pid,
             counted: true,
+            tree_reader: None,
         }
     }
     pub fn fork(&self, pid: i32) -> Self {
@@ -491,6 +493,7 @@ impl ShmMapping {
             may_write: self.may_write,
             pid: self.pid,
             counted: true,
+            tree_reader: self.tree_reader.take(),
         }
     }
     pub fn object(&self) -> &Arc<ShmObject> {
@@ -508,7 +511,9 @@ impl ShmMapping {
 }
 impl Clone for ShmMapping {
     fn clone(&self) -> Self {
-        Self::for_pid(&self.object, self.origin, self.may_write, self.pid)
+        let mut piece = Self::for_pid(&self.object, self.origin, self.may_write, self.pid);
+        piece.tree_reader = self.tree_reader.clone();
+        piece
     }
 }
 impl Drop for ShmMapping {

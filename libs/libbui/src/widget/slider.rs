@@ -151,3 +151,19 @@ impl Slider {
         self.mapped_value() as i32
     }
 }
+
+impl super::Widget for Slider {
+    type Event = crate::WidgetEvent;
+    fn rect(&self) -> Rect { self.rect }
+    fn draw(&self, fb: &mut FrameBuf, theme: &Theme) { Slider::draw(self, fb, theme); }
+    fn update(&mut self, input: &InputState) -> Self::Event { Slider::update(self, input) }
+    fn tree_node(&self, key: &str, parent: Option<&str>, clip: Rect) -> crate::tree::Node {
+        use crate::tree::Role;
+        let mut n = super::node(key, parent, Role::Slider, "", self.rect, clip);
+        n.value = serde_json::json!(self.mapped_value());
+        super::flag(&mut n, crate::tree::Flag::Enabled, self.enabled);
+        super::flag(&mut n, crate::tree::Flag::Focused, self.focused);
+        super::flag(&mut n, crate::tree::Flag::Pressed, self.dragging);
+        n
+    }
+}

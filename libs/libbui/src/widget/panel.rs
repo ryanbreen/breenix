@@ -68,3 +68,15 @@ impl Panel {
         }
     }
 }
+
+impl super::Widget for Panel {
+    type Event = crate::WidgetEvent;
+    fn rect(&self) -> Rect { self.rect }
+    fn draw(&self, fb: &mut FrameBuf, theme: &Theme) { Panel::draw(self, fb, theme); }
+    fn update(&mut self, _input: &crate::InputState) -> Self::Event { crate::WidgetEvent::None }
+    fn tree_node(&self, key: &str, parent: Option<&str>, clip: Rect) -> crate::tree::Node {
+        use crate::tree::Role;
+        let n = super::node(key, parent, Role::Canvas, &self.title.map(super::name).unwrap_or_default(), self.rect, clip);
+        n
+    }
+}

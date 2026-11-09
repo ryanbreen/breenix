@@ -73,8 +73,10 @@ impl TextField {
         text::text_width(self.text[self.byte(first)..self.byte(end)].as_bytes(), &Theme::dark())
     }
     fn reveal(&mut self) {
+        let before = self.scroll;
         self.scroll = self.scroll.min(self.cursor);
         while self.scroll < self.cursor && self.width_between(self.scroll,self.cursor) >= (self.rect.w-8).max(0) {self.scroll+=1;}
+        if before != self.scroll { crate::layout::layout_changed(); }
     }
     /// Refuse the entire insertion if its resulting scalar count exceeds the limit.
     pub fn insert_str(&mut self, value: &str) -> bool {
@@ -200,5 +202,22 @@ impl TextField {
             shapes::fill_rect(fb, self.cursor_x(), y, 1, 16, theme.text_primary);
             widget::draw_focus_ring(fb, &self.rect, theme);
         }
+    }
+}
+
+impl super::Widget for TextField {
+    type Event = crate::WidgetEvent;
+    fn rect(&self) -> Rect { self.rect }
+    fn draw(&self, fb: &mut FrameBuf, theme: &Theme) { TextField::draw(self, fb, theme); }
+    fn update(&mut self, input: &InputState) -> Self::Event { TextField::update(self, input) }
+    fn tree_node(&self, key: &str, parent: Option<&str>, clip: Rect) -> crate::tree::Node {
+        use crate::tree::Role;
+        let mut n = super::node(key, parent, Role::Textfield, "", self.rect, clip);
+        n.value = self.text.clone().into();
+        super::flag(&mut n, crate::tree::Flag::Enabled, self.enabled);
+        super::flag(&mut n, crate::tree::Flag::Focused, self.focused);
+        super::flag(&mut n, crate::tree::Flag::Editable, self.enabled);
+        super::flag(&mut n, crate::tree::Flag::Selected, self.selection().is_some());
+        n
     }
 }

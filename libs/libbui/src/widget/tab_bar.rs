@@ -59,7 +59,10 @@ impl TabBar {
 
     /// Update the tab bar's bounding rectangle (e.g. after a window resize).
     pub fn set_rect(&mut self, rect: Rect) {
-        self.rect = rect;
+        if self.rect != rect {
+            self.rect = rect;
+            crate::layout::layout_changed();
+        }
     }
 
     /// Number of tabs.
@@ -69,6 +72,7 @@ impl TabBar {
 
     /// Add a tab with the given label. Returns the new tab's index.
     pub fn add_tab(&mut self, label: &'static [u8]) -> usize {
+        crate::layout::layout_changed();
         self.labels.push(label);
         self.labels.len() - 1
     }
@@ -78,6 +82,7 @@ impl TabBar {
         if index >= self.labels.len() {
             return;
         }
+        crate::layout::layout_changed();
         self.labels.remove(index);
         if self.selected >= self.labels.len() && !self.labels.is_empty() {
             self.selected = self.labels.len() - 1;
@@ -98,6 +103,7 @@ impl TabBar {
     pub fn layout(&mut self, theme: &Theme) {
         if self.bitmap_font != theme.use_bitmap_font {
             self.bitmap_font = theme.use_bitmap_font;
+            crate::layout::layout_changed();
             self.redraw = true;
         }
     }
@@ -116,7 +122,10 @@ impl TabBar {
     pub fn scroll_by(&mut self, tabs: i32) {
         let next =
             (self.scroll as i64 + tabs as i64).clamp(0, self.labels.len().saturating_sub(1) as i64);
-        self.scroll = next as usize;
+        if self.scroll != next as usize {
+            self.scroll = next as usize;
+            crate::layout::layout_changed();
+        }
     }
     fn tab_rect(&self, index: usize) -> Rect {
         if !self.overflowing() {
@@ -243,4 +252,34 @@ impl TabBar {
             crate::widget::draw_focus_ring(fb, &self.rect, theme);
         }
     }
+}
+
+impl super::Widget for TabBar {
+    type Event = crate::WidgetEvent;
+    fn rect(&self) -> Rect { self.rect }
+    fn draw(&self, fb: &mut FrameBuf, theme: &Theme) { TabBar::draw(self, fb, theme); }
+    fn update(&mut self, input: &InputState) -> Self::Event { TabBar::update(self, input) }
+    fn tree_node(&self, key: &str, parent: Option<&str>, clip: Rect) -> crate::tree::Node {
+        use crate::tree::Role;
+        let mut n = super::node(key, parent, Role::Tablist, "", self.rect, clip);
+        n.value = self.selected.into();
+        super::flag(&mut n, crate::tree::Flag::Enabled, self.enabled);
+        super::flag(&mut n, crate::tree::Flag::Focused, self.focused);
+        n
+    }
+    fn tree_nodes(&self, key: &str, parent: Option<&str>, clip: Rect, _theme: &Theme) -> Vec<crate::tree::Node> {
+        use crate::tree::{Role, Flag};
+        let mut nodes = alloc::vec![self.tree_node(key, parent, clip)];
+        let clip = self.rect.intersection(clip);
+        for (i, label) in self.labels.iter().enumerate() {
+            let mut n = super::node(&alloc::format!("{key}/{i}"), Some(key), Role::Tab,
+                &super::name(label), self.tab_rect(i), clip);
+            super::flag(&mut n, Flag::Enabled, self.enabled);
+            super::flag(&mut n, Flag::Selected, i == self.selected);
+            super::flag(&mut n, Flag::Focused, self.focused && i == self.selected);
+            nodes.push(n);
+        }
+        nodes
+    }
+
 }

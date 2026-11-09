@@ -49,9 +49,12 @@
 //! ```
 
 mod window;
+mod tree_commit;
 mod event;
 pub mod clock;
 pub mod font;
+pub mod tree;
+pub mod tree_page;
 
 pub use window::Window;
 pub use event::{buttons, keys, Delivered, Event, Modifiers};

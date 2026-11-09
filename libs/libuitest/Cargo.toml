@@ -7,6 +7,8 @@ description = "Shared userspace UI test records and contained scenario execution
 [workspace]
 
 [dependencies]
+breengel = { path = "../breengel" }
+libbui = { path = "../libbui" }
 libgfx = { path = "../libgfx" }
 libbreenix = { path = "../libbreenix", features = ["std"] }
 breenix-suite = { path = "../libbreenix/suite" }

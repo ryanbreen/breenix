@@ -49,3 +49,14 @@ fn grammar_refuses_truncation_trailing_bytes_and_invalid_launches() {
     assert!(stream.push(&((MAX_FRAME+1) as u32).to_le_bytes()).is_err());
     assert!(encode(&Message::Output { pid: 1, bytes: vec![0; MAX_FRAME] }).is_err());
 }
+
+#[test]
+fn text_payload_round_trips_with_utf8_boundaries_and_limits() {
+    for text in ["λ🙂界".to_owned(), "é".repeat(128)] {
+        let message=Message::Text(text);
+        let frame=encode(&message).unwrap();
+        assert_eq!(decode(&frame[4..]).unwrap(),message);
+    }
+    for text in [String::new(),"a".repeat(257)] {assert!(encode(&Message::Text(text)).is_err());}
+    assert!(decode(&[22,1,0,0,0,255]).is_err());
+}

@@ -87,6 +87,21 @@ fn map_range(
     origin: MappingOrigin,
     may_write: bool,
 ) -> Result<u64, u64> {
+    map_range_with_reader(obj, addr, len, prot, flags, offset, origin, may_write, None)
+}
+
+/// MAP_TREE's VMA owns the lease; splits share it, unmap/exec/exit drop it.
+pub fn map_window_reader(obj: &Arc<ShmObject>, len: u64,
+    reader: Arc<crate::window::readers::Reader>) -> Result<u64, u64> {
+    map_range_with_reader(obj, 0, len, Protection::READ, MmapFlags::SHARED, 0,
+        MappingOrigin::Window, false, Some(reader))
+}
+
+fn map_range_with_reader(
+    obj: &Arc<ShmObject>, addr: u64, len: u64, prot: Protection, flags: MmapFlags,
+    offset: u64, origin: MappingOrigin, may_write: bool,
+    reader: Option<Arc<crate::window::readers::Reader>>,
+) -> Result<u64, u64> {
     if len == 0 || !memory_common::is_page_aligned(offset) {
         return Err(EINVAL as u64);
     }
@@ -180,7 +195,9 @@ fn map_range(
             prot,
             flags,
         );
-        vma.shm = Some(ShmMapping::with_origin(obj, origin, may_write));
+        let mut mapping = ShmMapping::with_origin(obj, origin, may_write);
+        mapping.tree_reader = reader;
+        vma.shm = Some(mapping);
         vma.shm_offset = offset;
         process.vmas.push(vma);
         crate::syscall::memory_advice::record_future(process, start, start + len);

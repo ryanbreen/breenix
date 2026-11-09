@@ -53,6 +53,17 @@ impl Mem {
         Arc::try_new(mem).map_err(|_| ENOMEM)
     }
 
+    /// The page is zero-initialized and held resident by Mem. Only reader status
+    /// allocations use this view; their kernel updates are atomic.
+    pub fn reader_state(&self) -> &breengel_abi::TreeReaderState {
+        unsafe { &*self.page_ptr(0).cast::<breengel_abi::TreeReaderState>() }
+    }
+
+    pub fn map_reader(self: &Arc<Self>, status: Arc<Mem>) -> Result<u64, i32> {
+        let lease = Arc::try_new(super::readers::Reader::attach(status)).map_err(|_| ENOMEM)?;
+        crate::ipc::shmem::map_window_reader(&self.obj, self.len, lease).map_err(|e| e as i32)
+    }
+
     pub fn len(&self) -> u64 {
         self.len
     }

@@ -2,6 +2,7 @@ pub mod button;
 pub mod checkbox;
 pub mod file_picker;
 pub mod label;
+pub mod list;
 pub mod menu_bar;
 pub mod panel;
 pub mod scroll_bar;
@@ -13,15 +14,47 @@ use libgfx::color::Color;
 use libgfx::surface::Surface as FrameBuf;
 use crate::drawing as shapes;
 
-use crate::input::{InputState, WidgetEvent};
+use crate::input::InputState;
 use crate::rect::Rect;
 use crate::theme::Theme;
 
 /// Optional trait for uniform widget handling.
 pub trait Widget {
+    type Event;
     fn rect(&self) -> Rect;
     fn draw(&self, fb: &mut FrameBuf, theme: &Theme);
-    fn update(&mut self, input: &InputState) -> WidgetEvent;
+    fn update(&mut self, input: &InputState) -> Self::Event;
+
+    /// Report this widget using the caller's stable key and effective ancestor clip.
+    /// Custom widgets default to a canvas and can override their semantic state.
+    fn tree_node(&self, key: &str, parent: Option<&str>, clip: Rect) -> crate::tree::Node {
+        node(key, parent, crate::tree::Role::Canvas, "", self.rect(), clip)
+    }
+
+    /// Preorder nodes, including a compound widget's semantic children.
+    fn tree_nodes(&self, key: &str, parent: Option<&str>, clip: Rect, _theme: &Theme) -> alloc::vec::Vec<crate::tree::Node> {
+        alloc::vec![self.tree_node(key, parent, clip)]
+    }
+}
+
+pub(crate) fn name(bytes: &[u8]) -> alloc::string::String {
+    alloc::string::String::from_utf8_lossy(bytes).into_owned()
+}
+
+pub(crate) fn node(key: &str, parent: Option<&str>, role: crate::tree::Role, name: &str, bounds: Rect, ancestor_clip: Rect) -> crate::tree::Node {
+    use crate::tree::Flag;
+    let clip = bounds.intersection(ancestor_clip);
+    let mut flags = alloc::vec![Flag::Enabled];
+    if clip.w > 0 && clip.h > 0 { flags.push(Flag::Visible); }
+    crate::tree::Node {
+        key: key.into(), parent: parent.map(Into::into), role, name: name.into(),
+        value: serde_json::Value::Null, bounds: bounds.as_tree_rect(), clip: clip.as_tree_rect(), flags,
+    }
+}
+
+pub(crate) fn flag(node: &mut crate::tree::Node, flag: crate::tree::Flag, set: bool) {
+    node.flags.retain(|f| *f != flag);
+    if set { node.flags.push(flag); }
 }
 
 /// Draw a filled background for a widget, selecting color based on hover/pressed state.

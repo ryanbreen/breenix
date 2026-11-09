@@ -52,7 +52,8 @@ pub mod op {
     pub const COMPOSITOR_ACK: u32 = 30;
     pub const COMPOSITOR_STATUS: u32 = 31;
     pub const HIT_TEST: u32 = 32;
-    pub const LAST: u32 = HIT_TEST;
+    pub const MAP_TREE_READERS: u32 = 33;
+    pub const LAST: u32 = MAP_TREE_READERS;
 }
 
 /// Linux's errno values, which the interface returns negated (section 25).
@@ -387,7 +388,18 @@ pub struct Capture {
     pub height: u32,
 }
 
-/// Argument of `MAP_TREE` and `MAP_COMPOSITOR_TEXTURE`.
+/// Shared read-only page returned by MAP_TREE_READERS. Only the kernel writes it.
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct TreeReaderState {
+    pub readers: core::sync::atomic::AtomicU64,
+}
+const _: () = assert!(core::mem::size_of::<TreeReaderState>() == 8);
+
+/// Argument of `MAP_TREE`, `MAP_TREE_READERS` and `MAP_COMPOSITOR_TEXTURE`.
+/// For the tree operations, id 0 names the current compositor claim's tree:
+/// MAP_TREE maps it writable for the claimant and read-only for other root callers;
+/// MAP_TREE_READERS maps its reader counter for the claimant.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MapTree {
@@ -922,7 +934,7 @@ pub const fn arg_size(op: u32) -> Option<usize> {
         op::SET_GEOMETRY => size_of::<Geometry>(),
         op::MAP_COMMITTED => size_of::<MapBuffers>(),
         op::CAPTURE | op::READ_REMNANT => size_of::<Capture>(),
-        op::MAP_TREE | op::MAP_COMPOSITOR_TEXTURE => size_of::<MapTree>(),
+        op::MAP_TREE | op::MAP_TREE_READERS | op::MAP_COMPOSITOR_TEXTURE => size_of::<MapTree>(),
         op::CLAIM_COMPOSITOR => size_of::<Claim>(),
         op::COMPOSITE => size_of::<Composite>(),
         op::COMPOSITE_RECORD => size_of::<RecordQuery>(),

@@ -86,14 +86,20 @@ impl ScrollBar {
     ///
     /// The offset is clamped to the new valid range automatically.
     pub fn set_dimensions(&mut self, content_height: i32, view_height: i32) {
-        self.content_height = content_height;
-        self.view_height = view_height;
-        self.clamp_offset();
+        if (self.content_height, self.view_height) != (content_height, view_height) {
+            self.content_height = content_height;
+            self.view_height = view_height;
+            self.clamp_offset();
+            crate::layout::layout_changed();
+        }
     }
 
     /// Update the scrollbar's bounding rect (e.g., after a window resize).
     pub fn set_rect(&mut self, rect: Rect) {
-        self.rect = rect;
+        if self.rect != rect {
+            self.rect = rect;
+            crate::layout::layout_changed();
+        }
     }
 
     /// Scroll by `delta_y` units.
@@ -109,6 +115,7 @@ impl ScrollBar {
                 .clamp(0, i64::from(self.max_scroll())) as i32;
         }
         self.redraw = before != self.offset;
+        if self.redraw { crate::layout::layout_changed(); }
     }
 
     /// Whether the most recent input changed the scrollbar's drawing.
@@ -131,6 +138,7 @@ impl ScrollBar {
         let before = (self.offset, self.dragging);
         let consumed = self.update_inner(input);
         self.redraw = before != (self.offset, self.dragging);
+        if before.0 != self.offset { crate::layout::layout_changed(); }
         consumed
     }
     fn update_inner(&mut self, input: &InputState) -> bool {
@@ -255,5 +263,60 @@ impl ScrollBar {
         };
 
         Rect::new(self.rect.x, thumb_y, self.rect.w, thumb_h)
+    }
+}
+
+impl super::Widget for ScrollBar {
+    type Event = bool;
+    fn rect(&self) -> Rect { self.rect }
+    fn draw(&self, fb: &mut FrameBuf, theme: &Theme) { ScrollBar::draw(self, fb, theme); }
+    fn update(&mut self, input: &InputState) -> Self::Event { ScrollBar::update(self, input) }
+    fn tree_node(&self, key: &str, parent: Option<&str>, clip: Rect) -> crate::tree::Node {
+        use crate::tree::Role;
+        let mut n = super::node(key, parent, Role::Scrollbar, "", self.rect, clip);
+        n.value = self.offset.into();
+        super::flag(&mut n, crate::tree::Flag::Enabled, self.enabled);
+        super::flag(&mut n, crate::tree::Flag::Pressed, self.dragging);
+        let visible = self.can_scroll() && n.clip[2] > 0 && n.clip[3] > 0;
+        super::flag(&mut n, crate::tree::Flag::Visible, visible);
+        n
+    }
+    fn tree_nodes(&self, key: &str, parent: Option<&str>, clip: Rect, _theme: &Theme) -> alloc::vec::Vec<crate::tree::Node> {
+        use crate::tree::{Flag, Role};
+        let track = self.tree_node(key, parent, clip);
+        let mut thumb = super::node(&alloc::format!("{key}/thumb"), Some(key), Role::ScrollThumb,
+            "", self.thumb_rect(), self.rect.intersection(clip));
+        super::flag(&mut thumb, Flag::Enabled, self.enabled);
+        super::flag(&mut thumb, Flag::Pressed, self.dragging);
+        let visible = self.can_scroll() && thumb.clip[2] > 0 && thumb.clip[3] > 0;
+        super::flag(&mut thumb, Flag::Visible, visible);
+        alloc::vec![track, thumb]
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tree::Tree;
+    use crate::widget::Widget;
+
+    #[test]
+    fn published_thumb_is_the_drawing_thumb() {
+        let theme = Theme::dark();
+        for height in [12, 80, 173] {
+            let mut bar = ScrollBar::new(Rect::new(10, 20, 12, height), 800, 160);
+            for delta in [0, -3, -100, 2] {
+                bar.scroll(delta);
+                let nodes = bar.tree_nodes("scroll", Some("root"), Rect::new(0, 0, 500, 500), &theme);
+                assert_eq!(nodes.len(), 2, "track must publish its drawing thumb");
+                assert_eq!(nodes[1].key, "scroll/thumb");
+                assert_eq!(nodes[1].parent.as_deref(), Some("scroll"));
+                assert_eq!(nodes[1].bounds, bar.thumb_rect().as_tree_rect());
+                let tree = Tree { root: nodes[0].clone(), children: nodes[1..].to_vec() };
+                let mut page = [0; 4096];
+                tree.write(&mut page).unwrap();
+                assert_eq!(Tree::parse(&page).unwrap(), tree);
+            }
+        }
     }
 }

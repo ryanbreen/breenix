@@ -58,6 +58,9 @@ pub struct Window {
     buffers: [u64; 3],
     tree: u64,
     tree_bytes: usize,
+    tree_readers: abi::MapTree,
+    semantic_tree: Option<crate::tree::Tree>,
+    tree_serializations: u64,
     held: Option<Held>,
     gpu: Option<libgfx::surface::Surface>,
     font_watcher: FontWatcher,
@@ -92,6 +95,10 @@ impl Window {
             let _ = window::destroy(c.id);
             return Err(e);
         }
+        let tree_readers = match window::map_tree_readers(c.id) {
+            Ok(mapping) => mapping,
+            Err(error) => { let _ = window::destroy(c.id); return Err(error); }
+        };
         Ok(Self {
             id: c.id,
             width,
@@ -99,6 +106,9 @@ impl Window {
             buffers: c.buffer,
             tree: c.tree,
             tree_bytes: c.tree_kib as usize * 1024,
+            tree_readers,
+            semantic_tree: None,
+            tree_serializations: 0,
             held: None,
             gpu: None,
             font_watcher,
@@ -160,6 +170,24 @@ impl Window {
         Ok(self.gpu.as_mut().expect("GPU view accompanies acquisition"))
     }
 
+    /// Replace the semantic state to serialize with the next pixel commit.
+    /// Updating state does not serialize it or acquire a pixel buffer.
+    pub fn set_tree(&mut self, tree: crate::tree::Tree) {
+        self.semantic_tree = Some(tree);
+    }
+
+    /// Report application-managed geometry changes alongside libbui's layout calls.
+    pub fn layout_changed(&mut self) { libbui::layout::layout_changed(); }
+
+    pub fn layout_version(&self) -> u64 { libbui::layout::layout_version() }
+
+    /// The live MAP_TREE count, read from the page mapped once at construction.
+    pub fn tree_reader_count(&self) -> u64 {
+        // The kernel keeps this read-only, aligned mapping alive until munmap.
+        let state = unsafe { &*(self.tree_readers.addr as *const abi::TreeReaderState) };
+        state.readers.load(core::sync::atomic::Ordering::Acquire)
+    }
+
     /// Write serialized tree bytes into the currently acquired buffer's page.
     /// ACQUIRE makes only this page writable; COMMIT seals it with the pixels.
     pub fn write_tree(&mut self, bytes: &[u8]) -> Result<(), Error> {
@@ -179,6 +207,8 @@ impl Window {
         m.epoch = self.epoch;
         m.ui_time_ms = crate::clock::now_ns() / 1_000_000;
         m.real_clock_reads = crate::clock::real_clock_reads();
+        m.tree_serializations = self.tree_serializations;
+        m.layout_version = libbui::layout::layout_version();
         m
     }
 
@@ -199,6 +229,15 @@ impl Window {
     pub fn commit_async(&mut self, damage: &[abi::Rect]) -> Result<Committed, Error> {
         if let Some(e)=self.gpu.as_ref().and_then(|s|s.error()) {
             return Err(Error::Os(Errno::from_raw(-e)));
+        }
+        if let (Some(h), Some(tree)) = (&self.held, &self.semantic_tree) {
+            let readers = self.tree_reader_count();
+            crate::tree_commit::serialize_for_commit(readers, &mut self.tree_serializations, || {
+                // The acquired buffer's tree page is writable until COMMIT seals it.
+                let page = unsafe { core::slice::from_raw_parts_mut(
+                    (self.tree as *mut u8).add(h.info.buffer as usize * self.tree_bytes), self.tree_bytes) };
+                tree.write(page).map(|_| ())
+            }).map_err(|_| Error::Os(Errno::EINVAL))?;
         }
         let Some(h) = self.held.take() else {
             return self.no_change();
@@ -426,12 +465,14 @@ impl Window {
         self.buffers = r.buffer;
         self.width = new_width;
         self.height = new_height;
+        self.layout_changed();
         Ok(())
     }
 }
 
 impl Drop for Window {
     fn drop(&mut self) {
+        let _ = libbreenix::memory::munmap(self.tree_readers.addr as *mut u8, self.tree_readers.len as usize);
         let _ = window::destroy(self.id);
     }
 }

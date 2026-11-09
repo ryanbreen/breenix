@@ -8,6 +8,7 @@ description = "Breengel — Breenix Graphical Environment Library"
 crate-type = ["rlib"]
 
 [dependencies]
+serde_json = { version = "=1.0.154", default-features = false, features = ["alloc"] }
 libbreenix = { path = "../libbreenix", features = ["std"] }
 libfont = { path = "../libfont" }
 libgfx = { path = "../libgfx" }

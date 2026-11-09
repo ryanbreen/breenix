@@ -51,6 +51,14 @@ struct Grab {
     holder: u64,
     epoch: u64,
 }
+fn fold_modifiers(devices: impl Iterator<Item = (u32, u8)>, selection: Option<&[u32]>) -> u8 {
+    devices
+        .filter(|(id, _)| selection.is_none_or(|ids| ids.is_empty() || ids.contains(id)))
+        .fold(0, |all, (_, modifiers)| all | modifiers)
+}
+fn publication_flags(modifiers: u8, origin: u32) -> u32 {
+    u32::from(modifiers & input_abi::modifier::MASK as u8) | (origin & input_abi::SYNTHETIC)
+}
 struct Row {
     event: Event,
     reader: Option<u64>,
@@ -260,12 +268,16 @@ impl State {
                     d.held.remove(&e.code);
                 }
             }
-            let mods =
-                super::event::Modifiers(self.devices.values().fold(0, |all, d| all | d.modifiers));
-            e.flags = mods.shift() as u32
-                | (mods.ctrl() as u32) << 1
-                | (mods.alt() as u32) << 2
-                | (mods.meta() as u32) << 3;
+            let mods = super::event::Modifiers(fold_modifiers(
+                self.devices.iter().map(|(&id, d)| (id, d.modifiers)),
+                self.grab.as_ref().map(|g| g.devices.as_slice()),
+            ));
+            let flags = mods.shift() as u8
+                | (mods.ctrl() as u8) << 1
+                | (mods.alt() as u8) << 2
+                | (mods.meta() as u8) << 3;
+            let trace_flags = publication_flags(flags, e.flags);
+            e.flags = u32::from(flags);
             let d = self.devices.get_mut(&device).unwrap();
             let console_reserved = e.kind == kind::KEY
                 && super::event::reserved(&mut d.reserved, e.code, e.value, mods);
@@ -303,6 +315,7 @@ impl State {
                 None
             };
             crate::window::pipeline::record(1, device as u64, e.time_ns, e.serial);
+            crate::window::pipeline::record(16, device as u64, u64::from(trace_flags), e.serial);
             self.ledger.push_back(Row {
                 event: *e,
                 reader: holder,
@@ -824,6 +837,7 @@ impl InputFile {
             if ended && at != bytes.len() {
                 return Err(EINVAL as u64);
             }
+            e.flags = input_abi::SYNTHETIC;
             records.push(Record { event: e, payload });
         }
         if records.is_empty()
@@ -979,6 +993,10 @@ impl IpcFile for InputFile {
     fn write(&self, bytes: &[u8], _append: bool) -> Result<u64, u64> {
         if self.reader.is_some() {
             return Err(EBADF as u64);
+        }
+        let caller = crate::window::Caller::current().map_err(|e| e as u64)?;
+        if !caller.is_root() {
+            return Err(EPERM as u64);
         }
         let mut slot = self.device.lock();
         match *slot {

@@ -423,6 +423,7 @@ pub struct UCred {
 
 const SHUT_RD_BIT: u8 = 1;
 const SHUT_WR_BIT: u8 = 2;
+const ROOT_ONLY_BIT: u8 = 4;
 
 /// Stream bytes a receive took from the protocol but could not copy to the
 /// caller, and the descriptors that rode with them. The next receive takes
@@ -434,12 +435,12 @@ struct Stash {
     rights: Vec<FileDescriptor>,
 }
 
-/// The state every protocol shares: options, the pending error, the shutdown
-/// directions and the wait queue that `notify` wakes.
+/// Shared options, the pending error, endpoint flags and the wait queue that
+/// `notify` wakes.
 pub struct SocketCommon {
     opts: spin::Mutex<SockOpts>,
     so_error: AtomicI32,
-    shut: AtomicU8,
+    state_flags: AtomicU8,
     seq: AtomicU64,
     rx_seq: AtomicU64,
     tx_seq: AtomicU64,
@@ -462,7 +463,7 @@ impl SocketCommon {
         SocketCommon {
             opts: spin::Mutex::new(SockOpts::new()),
             so_error: AtomicI32::new(0),
-            shut: AtomicU8::new(0),
+            state_flags: AtomicU8::new(0),
             seq: AtomicU64::new(0),
             rx_seq: AtomicU64::new(0),
             tx_seq: AtomicU64::new(0),
@@ -577,15 +578,23 @@ impl SocketCommon {
             1 => SHUT_WR_BIT,
             _ => SHUT_RD_BIT | SHUT_WR_BIT,
         };
-        self.shut.fetch_or(bits, Ordering::AcqRel);
+        self.state_flags.fetch_or(bits, Ordering::AcqRel);
     }
 
     pub fn shut_rd(&self) -> bool {
-        self.shut.load(Ordering::Acquire) & SHUT_RD_BIT != 0
+        self.state_flags.load(Ordering::Acquire) & SHUT_RD_BIT != 0
     }
 
     pub fn shut_wr(&self) -> bool {
-        self.shut.load(Ordering::Acquire) & SHUT_WR_BIT != 0
+        self.state_flags.load(Ordering::Acquire) & SHUT_WR_BIT != 0
+    }
+
+    pub fn root_only(&self) -> bool {
+        self.state_flags.load(Ordering::Acquire) & ROOT_ONLY_BIT != 0
+    }
+    pub fn set_root_only(&self, on: bool) {
+        if on { self.state_flags.fetch_or(ROOT_ONLY_BIT, Ordering::AcqRel); }
+        else { self.state_flags.fetch_and(!ROOT_ONLY_BIT, Ordering::AcqRel); }
     }
 
     /// Publish a state change and wake every waiter. Thread or softirq

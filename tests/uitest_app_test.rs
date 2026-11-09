@@ -24,10 +24,20 @@ fn echo_round_trips_bytes_and_boundaries() {
 fn flags_are_checked() {
     let parsed = support::parse(&["window", "--crash=11", "--hang", "--stderr-flood=65537"]).unwrap();
     assert_eq!(parsed.title, "window");
+    let probe = support::parse(&["window", "--pointer-probe"]).unwrap();
+    assert!(probe.widgets && probe.pointer_probe);
     assert_eq!(parsed.crash, Some(11));
     assert!(parsed.hang);
     assert_eq!(parsed.stderr_flood, 65537);
     for args in [vec!["window", "--bogus"], vec!["window", "--crash=0"], vec!["window", "--stderr-flood=no"], vec!["window", "--hang", "--hang"]] {
         assert!(support::parse(&args).is_err(), "{args:?}");
     }
+}
+
+#[test]
+fn two_widget_windows_use_one_app_mode() {
+    let options=support::parse(&["pair", "--widgets", "--two-windows"]).unwrap();
+    assert!(options.widgets && options.two_windows);
+    assert!(support::parse(&["pair", "--two-windows"]).is_err());
+    assert!(support::parse(&["pair", "--widgets", "--two-windows", "--two-windows"]).is_err());
 }

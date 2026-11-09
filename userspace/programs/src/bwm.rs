@@ -64,6 +64,10 @@ use geometry::*;
 mod adopt;
 #[path = "bwm/desk.rs"]
 mod desk;
+#[path = "bwm/desktop_tree.rs"]
+mod desktop_tree;
+#[path = "bwm/desktop_publish.rs"]
+mod desktop_publish;
 use desk::*;
 #[path = "bwm/stack.rs"]
 mod stack;
@@ -151,6 +155,13 @@ fn main() {
         }
     };
 
+    let mut desktop_tree = match desktop_publish::Publisher::new() {
+        Ok(publisher) => Some(publisher),
+        Err(error) => {
+            eprintln!("[bwm] compositor tree mapping failed: {}", error);
+            None
+        }
+    };
     libuitest::startup::mark("scene-ready");
     // Clock state
     let mut clock = clock::Clock::new(std::env::var_os("BREENIX_UI_CLOCK").is_some());
@@ -875,6 +886,11 @@ fn main() {
                         full_redraw = true;
                     }
                 }
+            }
+        }
+        if let Some(publisher) = &mut desktop_tree {
+            if let Err(error) = publisher.publish(&windows, &stack, [screen_w as i64, screen_h as i64]) {
+                eprintln!("[bwm] compositor tree publication failed: {}", error);
             }
         }
         if !full_redraw && !content_dirty && !windows_dirty && !clock_dirty && !display_lost && !frame_failed {

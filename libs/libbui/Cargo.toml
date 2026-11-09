@@ -8,6 +8,7 @@ description = "Breenix UI Widget Toolkit"
 crate-type = ["rlib"]
 
 [dependencies]
+serde_json = { version = "=1.0.154", default-features = false, features = ["alloc"] }
 libgfx = { path = "../libgfx" }
 
 libbreenix = { path = "../libbreenix" }

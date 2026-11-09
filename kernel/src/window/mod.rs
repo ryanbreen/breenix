@@ -8,10 +8,12 @@
 //!
 //! No path in this module writes to the serial log or any other kernel output (section 17.5).
 
+mod compositor_tree;
 mod damage_union;
 mod event_admission;
 pub mod events;
 pub mod mem;
+pub mod readers;
 pub mod ops;
 pub mod policy;
 pub mod pipeline;
@@ -196,6 +198,7 @@ pub struct Window {
     /// has replaced the buffer the capture pinned.
     pub tree_pins: [u32; limits::MAX_BUFFERS as usize],
     pub tree: Arc<Mem>,
+    pub tree_readers: Arc<Mem>,
     pub tree_addr: u64,
     pub tree_kib: u32,
     /// Index into `buffers` of the front, if any commit has been made.
@@ -285,6 +288,7 @@ pub struct Remnant {
 }
 
 pub struct Registry {
+    pub compositor_tree: Option<compositor_tree::ClaimTree<Arc<Mem>>>,
     pub windows: BTreeMap<u64, Window>,
     pub next_window: u64,
     pub next_uid: u64,
@@ -300,6 +304,7 @@ pub struct Registry {
 impl Registry {
     const fn new() -> Registry {
         Registry {
+            compositor_tree: None,
             windows: BTreeMap::new(),
             next_window: 1,
             next_uid: 1,
@@ -463,6 +468,8 @@ pub fn charged_bytes(tgid: u64, vmas: &[crate::memory::vma::Vma]) -> u64 {
         .windows
         .values()
         .filter(|w| w.owner == tgid)
+        // Reader-status storage is kernel bookkeeping. An owner-requested
+        // read-only projection counts through its VMA, not as guest tree backing.
         .map(|w| mem::unmapped_len(&w.tree, w.tree_addr, vmas))
         .sum();
     remnants + unmapped

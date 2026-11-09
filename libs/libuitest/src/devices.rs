@@ -80,7 +80,8 @@ pub(crate) mod runtime {
     }
     impl Devices {
         pub(crate) fn create() -> Result<Self, String> {
-            let keyboard: Vec<_> = (1..=255).map(|code| Capability { kind: kind::KEY, code, minimum: 0, maximum: 1 }).collect();
+            let keyboard: Vec<_> = (1..=255).map(|code| Capability { kind: kind::KEY, code, minimum: 0, maximum: 1 })
+                .chain([Capability { kind: kind::TEXT, code: 0, minimum: 1, maximum: 256 }]).collect();
             let pointer: Vec<_> = [key::BUTTON_LEFT, key::BUTTON_RIGHT, key::BUTTON_MIDDLE].into_iter()
                 .map(|code| Capability { kind: kind::KEY, code, minimum: 0, maximum: 1 })
                 .chain([axis::X, axis::Y, axis::WHEEL, axis::HWHEEL].into_iter()
@@ -117,6 +118,30 @@ pub(crate) mod runtime {
         pub(crate) fn inject(&mut self, event: RawInput) -> Result<bool, String> {
             let owner = status()?.map(|s| u64::from(s.owner));
             self.state.send(event, owner, |event| write(&self.keyboard, &self.pointer, event))
+        }
+        pub(crate) fn text(&mut self, text: &str) -> Result<bool, String> {
+            if text.is_empty() || text.len() > 256 { return Err("invalid session text length".into()); }
+            let owner = status()?.map(|s| u64::from(s.owner));
+            if self.state.owner().is_none() || self.state.owner() != owner {
+                self.state.pause(); return Ok(false);
+            }
+            let mut bytes = vec![0; 64 + text.len()];
+            let mut batch = Batch::new(&mut bytes);
+            let stamp = libbreenix::ui_clock::now_ns();
+            batch.text(text, stamp).and_then(|b| b.finish(stamp)).map_err(|e| e.to_string())?;
+            self.keyboard.inject(&batch).map_err(|e| e.to_string())?;
+            Ok(true)
+        }
+        pub(crate) fn motion(&mut self,x:i32,y:i32)->Result<bool,String> {
+            let owner=status()?.map(|s|u64::from(s.owner));
+            let pointer=&self.pointer;
+            self.state.send(RawInput {kind:kind::REL,code:axis::X,value:x},owner,|_| {
+                let mut bytes=[0;96];let mut batch=Batch::new(&mut bytes);
+                let stamp=libbreenix::ui_clock::now_ns();
+                batch.event(kind::REL,axis::X,x,stamp).and_then(|b|b.event(kind::REL,axis::Y,y,stamp))
+                    .and_then(|b|b.finish(stamp)).map_err(|e|e.to_string())?;
+                pointer.inject(&batch).map_err(|e|e.to_string())
+            })
         }
         /// The recovered compositor consumes input without routing to a client.
         pub(crate) fn drain(&self) -> Result<(), String> {

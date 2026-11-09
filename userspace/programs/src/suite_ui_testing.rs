@@ -15,10 +15,20 @@ mod stage_painter;
 mod comparison_cases;
 #[path = "uitest_suite/frames.rs"]
 mod frames;
+#[path = "uitest_suite/tree_cases.rs"]
+mod tree_cases;
 #[path = "uitest_suite/canonical_cases.rs"]
 mod canonical_cases;
 #[path = "uitest_suite/capture_cases.rs"]
 mod capture_cases;
+#[path = "uitest_suite/tree.rs"]
+mod tree;
+#[path = "uitest_suite/wm_tree.rs"]
+mod wm_tree;
+#[path = "uitest_suite/input.rs"]
+mod input;
+#[path = "uitest_suite/input_delivery.rs"]
+mod input_delivery;
 use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
 
 fn pending(layer: &str, step: u8) -> CaseResult {
@@ -36,81 +46,81 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     ]),
     category("input", "Scripted keyboard, pointer & text input", &[
         // type_text("hello world") puts exactly that text in the focused text field. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("type-ascii", "type_text(\"hello world\") puts exactly that text in the focused text field", || pending("input", 6)),
+        case("type-ascii", "type_text(\"hello world\") puts exactly that text in the focused text field", input::type_ascii).session(libuitest::supervisor::serve),
         // Characters that need Shift arrive correctly. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("type-shifted", "Characters that need Shift arrive correctly", || pending("input", 6)),
+        case("type-shifted", "Characters that need Shift arrive correctly", input::type_shifted).session(libuitest::supervisor::serve),
         // Characters outside the keymap arrive through a text event. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("type-utf8", "Characters outside the keymap arrive through a text event", || pending("input", 6)),
+        case("type-utf8", "Characters outside the keymap arrive through a text event", input::type_utf8).session(libuitest::supervisor::serve),
         // Newline and Tab arrive as the Enter and Tab keys. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("type-control", "Newline and Tab arrive as the Enter and Tab keys", || pending("input", 6)),
+        case("type-control", "Newline and Tab arrive as the Enter and Tab keys", input::type_control).session(libuitest::supervisor::serve),
         // chord(Ctrl, A) arrives as A with the Ctrl modifier. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("chord", "chord(Ctrl, A) arrives as A with the Ctrl modifier", || pending("input", 6)),
+        case("chord", "chord(Ctrl, A) arrives as A with the Ctrl modifier", input::chord).session(libuitest::supervisor::serve),
         // Holding a key for 600 ms of UI time gives exactly 3 repeats. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("hold-repeat", "Holding a key for 600 ms of UI time gives exactly 3 repeats", || pending("input", 6)),
+        case("hold-repeat", "Holding a key for 600 ms of UI time gives exactly 3 repeats", || pending("input", 7)),
         // click(node) lands on a visible point of the node, and the delivery names that node's window. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("click-node", "click(node) lands on a visible point of the node, and the delivery names that node's window", || pending("input", 6)),
+        case("click-node", "click(node) lands on a visible point of the node, and the delivery names that node's window", input::click_node).session(libuitest::supervisor::serve),
         // Clicking a node partly covered by another window lands on its exposed part, confirmed by hit test. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("click-partly-covered", "Clicking a node partly covered by another window lands on its exposed part, confirmed by hit test", || pending("input", 6)),
+        case("click-partly-covered", "Clicking a node partly covered by another window lands on its exposed part, confirmed by hit test", input::click_partly_covered).session(libuitest::supervisor::serve),
         // Clicking a node clipped by a scrolled container uses its visible part. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("click-clipped", "Clicking a node clipped by a scrolled container uses its visible part", || pending("input", 6)),
+        case("click-clipped", "Clicking a node clipped by a scrolled container uses its visible part", input::click_clipped).session(libuitest::supervisor::serve),
         // double_click delivers click counts 1 and 2. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("double-click", "double_click delivers click counts 1 and 2", || pending("input", 6)),
+        case("double-click", "double_click delivers click counts 1 and 2", || pending("input", 7)),
         // A ten-step drag delivers ten motions in order between a press and a release; when the layout changes on the press and again mid-drag, and when the window moves mid-drag, every later motion and the release still reach the captured node through bwm's grab, the drag ends in exactly one completed gesture, and no button, pressed flag or capture is held at the end. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("drag-steps", "A ten-step drag reaches its captured node in order through layout changes and a window move, ending with nothing held", || pending("input", 6)),
+        case("drag-steps", "A ten-step drag reaches its captured node in order through layout changes and a window move, ending with nothing held", input::drag_steps).session(libuitest::supervisor::serve),
         // scroll(node, dy) delivers the wheel amount to the window under the node. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("scroll-node", "scroll(node, dy) delivers the wheel amount to the window under the node", || pending("input", 6)),
+        case("scroll-node", "scroll(node, dy) delivers the wheel amount to the window under the node", input::scroll_node).session(libuitest::supervisor::serve),
         // Typing into a node focuses it first, and a node that cannot take focus fails by name. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("focus-then-type", "Typing into a node focuses it first, and a node that cannot take focus fails by name", || pending("input", 6)),
+        case("focus-then-type", "Typing into a node focuses it first, and a node that cannot take focus fails by name", input::focus_then_type).session(libuitest::supervisor::serve),
         // delivered(serial) returns only after the target window processed that serial. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("delivered", "delivered(serial) returns only after the target window processed that serial", || pending("input", 6)),
+        case("delivered", "delivered(serial) returns only after the target window processed that serial", input_delivery::delivered).session(libuitest::supervisor::serve),
         // An event sent to a hung app is reported unprocessed when the 2 s settle bound passes, naming the serial and the window. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("undelivered-fails", "An event sent to a hung app is reported unprocessed at the 2 s settle bound, naming the serial and window", || pending("input", 6)),
+        case("undelivered-fails", "An event sent to a hung app is reported unprocessed at the 2 s settle bound, naming the serial and window", || pending("input", 7)),
         // Every serial of a script ends with a terminal disposition. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("dispositions-all", "Every serial of a script ends with a terminal disposition", || pending("input", 6)),
+        case("dispositions-all", "Every serial of a script ends with a terminal disposition", input_delivery::dispositions_all).session(libuitest::supervisor::serve),
         // A non-root session cannot inject, after a root session has. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("nonroot-denied", "A non-root session cannot inject, after a root session has", || pending("input", 6)),
+        case("nonroot-denied", "A non-root session cannot inject, after a root session has", input_delivery::nonroot_denied).session(libuitest::supervisor::serve),
         // Ending a session releases every held key and button. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("teardown-releases", "Ending a session releases every held key and button", sessions::teardown_releases).session(libuitest::supervisor::serve),
         // Input arrives in order while the app animates. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("input-during-animation", "Input arrives in order while the app animates", || pending("input", 6)),
+        case("input-during-animation", "Input arrives in order while the app animates", || pending("input", 7)),
         // Input addressed to two windows of one app arrives at each. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("two-windows", "Input addressed to two windows of one app arrives at each", || pending("input", 6)),
+        case("two-windows", "Input addressed to two windows of one app arrives at each", input_delivery::two_windows).session(libuitest::supervisor::serve),
         // A scripted Super double tap opens the launcher through bwm's real hotkey path. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wm-hotkey-scripted", "A scripted Super double tap opens the launcher through bwm's real hotkey path", || pending("input", 6)),
+        case("wm-hotkey-scripted", "A scripted Super double tap opens the launcher through bwm's real hotkey path", input_delivery::wm_hotkey_scripted).session(libuitest::supervisor::serve),
         // Events from a device outside the session's selection, modifier keys included, change nothing in the session. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("real-input-excluded", "Events from a device outside the session's selection, modifier keys included, change nothing in the session", || pending("input", 6)),
+        case("real-input-excluded", "Events from a device outside the session's selection, modifier keys included, change nothing in the session", input_delivery::real_input_excluded).session(libuitest::supervisor::serve),
     ]),
     category("tree", "Semantic trees of windows & widgets", &[
         // The test app's tree lists every widget with its expected role and key. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("roles-keys", "The test app's tree lists every widget with its expected role and key", || pending("tree", 6)),
+        case("roles-keys", "The test app's tree lists every widget with its expected role and key", tree::roles_keys).session(libuitest::supervisor::serve),
         // Names and values match the widgets' states set by the script. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("names-values", "Names and values match the widgets' states set by the script", || pending("tree", 6)),
+        case("names-values", "Names and values match the widgets' states set by the script", tree::names_values).session(libuitest::supervisor::serve),
         // The focused flag moves with Tab. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("focus-flag", "The focused flag moves with Tab", || pending("tree", 6)),
+        case("focus-flag", "The focused flag moves with Tab", tree::focus_flag).session(libuitest::supervisor::serve),
         // The focused widget draws the theme's focus ring at its bounds. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("focus-ring-pixels", "The focused widget draws the theme's focus ring at its bounds", || pending("tree", 6)),
+        case("focus-ring-pixels", "The focused widget draws the theme's focus ring at its bounds", tree::focus_ring_pixels).session(libuitest::supervisor::serve),
         // A disabled button is flagged not enabled. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("enabled-flag", "A disabled button is flagged not enabled", || pending("tree", 6)),
+        case("enabled-flag", "A disabled button is flagged not enabled", tree::enabled_flag).session(libuitest::supervisor::serve),
         // Checked, selected and pressed flags follow interaction. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("state-flags", "Checked, selected and pressed flags follow interaction", || pending("tree", 6)),
+        case("state-flags", "Checked, selected and pressed flags follow interaction", tree::state_flags).session(libuitest::supervisor::serve),
         // A text field's value equals the typed text. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("textfield-value", "A text field's value equals the typed text", || pending("tree", 6)),
+        case("textfield-value", "A text field's value equals the typed text", tree::textfield_value).session(libuitest::supervisor::serve),
         // A terminal node's rows, cell attributes and cursor equal what its grid holds. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("terminal-grid", "A terminal node's rows, cell attributes and cursor equal what its grid holds", || pending("tree", 6)),
+        case("terminal-grid", "A terminal node's rows, cell attributes and cursor equal what its grid holds", tree::terminal_grid).session(libuitest::supervisor::serve),
         // A tree and its pixels always come from the same commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("commit-coupled", "A tree and its pixels always come from the same commit", || pending("tree", 6)),
+        case("commit-coupled", "A tree and its pixels always come from the same commit", frames::commit_coupled).session(libuitest::supervisor::serve),
         // bwm's tree lists each window's title, bounds, z order, focus and minimized state. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wm-tree", "bwm's tree lists each window's title, bounds, z order, focus and minimized state", || pending("tree", 6)),
+        case("wm-tree", "bwm's tree lists each window's title, bounds, z order, focus and minimized state", wm_tree::wm_tree).session(libuitest::supervisor::serve),
         // Nodes scrolled out or covered are flagged not visible, with their clip. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("hidden-nodes", "Nodes scrolled out or covered are flagged not visible, with their clip", || pending("tree", 6)),
+        case("hidden-nodes", "Nodes scrolled out or covered are flagged not visible, with their clip", tree::hidden_nodes).session(libuitest::supervisor::serve),
         // Scrolling a list changes which items are flagged visible. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("list-scroll", "Scrolling a list changes which items are flagged visible", || pending("tree", 6)),
+        case("list-scroll", "Scrolling a list changes which items are flagged visible", tree::list_scroll).session(libuitest::supervisor::serve),
         // An unrelated non-root process cannot map another app's tree. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("permission", "An unrelated non-root process cannot map another app's tree", || pending("tree", 6)),
+        case("permission", "An unrelated non-root process cannot map another app's tree", tree_cases::permission).session(libuitest::supervisor::serve),
         // With no reader attached the tree is never serialized, and with one it is serialized once per commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("no-reader-no-serialize", "With no reader attached the tree is never serialized, and with one it is serialized once per commit", || pending("tree", 6)),
+        case("no-reader-no-serialize", "With no reader attached the tree is never serialized, and with one it is serialized once per commit", tree_cases::no_reader_no_serialize).session(libuitest::supervisor::serve),
         // A label whose tree text is "PASS" is checked against the certified renderer's "PASS" at its bounds. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("text-pixels", "A label whose tree text is PASS is checked against the certified renderer's PASS at its bounds", || pending("tree", 6)),
+        case("text-pixels", "A label whose tree text is PASS is checked against the certified renderer's PASS at its bounds", tree::text_pixels).session(libuitest::supervisor::serve),
     ]),
     category("frames", "Frame capture & comparison", &[
         // A window capture equals the committed buffer of that commit. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)

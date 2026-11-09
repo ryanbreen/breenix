@@ -26,6 +26,10 @@
 
 use crate::error::Error;
 use crate::syscall::{nr, raw};
+
+/// Breenix AF_UNIX receive-end policy, SOL_SOCKET boolean, settable by root.
+/// A write/send to that endpoint checks its sender's current effective UID.
+pub const SO_BREENIX_ROOT_ONLY: i32 = 0x4252_0001;
 use crate::types::{Fd, OwnedFd};
 use crate::Errno;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};

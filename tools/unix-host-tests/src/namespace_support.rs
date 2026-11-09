@@ -46,13 +46,13 @@ pub mod fs {
             pub euid: u32,
         }
         impl Credentials {
-            pub fn current(_real: bool) -> Self {
-                Self {
+            pub fn current(_real: bool) -> Result<Self, u64> {
+                Ok(Self {
                     umask: 0o022,
                     euid: 0,
-                }
+                })
             }
-            pub fn permits(&self, node: &super::super::Node, wanted: u32) -> bool {
+            pub fn may(&self, node: &super::super::Node, wanted: u32) -> bool {
                 (node.mode >> 6) & wanted == wanted
             }
         }
@@ -112,6 +112,7 @@ pub struct Node {
     pub handle: fs::ext2::live_inode::FileHandle,
     pub mode: u32,
 }
+impl Node { pub fn attrs(&self) -> &Self { self } }
 pub struct HostFs {
     paths: BTreeMap<Vec<u8>, Node>,
     next: u32,

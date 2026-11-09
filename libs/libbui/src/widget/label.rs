@@ -51,3 +51,15 @@ impl Label {
         fb.pop_clip();
     }
 }
+
+impl super::Widget for Label {
+    type Event = crate::WidgetEvent;
+    fn rect(&self) -> Rect { self.rect }
+    fn draw(&self, fb: &mut FrameBuf, theme: &Theme) { Label::draw(self, fb, theme); }
+    fn update(&mut self, _input: &crate::InputState) -> Self::Event { crate::WidgetEvent::None }
+    fn tree_node(&self, key: &str, parent: Option<&str>, clip: Rect) -> crate::tree::Node {
+        use crate::tree::Role;
+        let n = super::node(key, parent, Role::Label, &super::name(self.text), self.rect, clip);
+        n
+    }
+}
