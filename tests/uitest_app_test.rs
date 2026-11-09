@@ -53,3 +53,18 @@ fn timer_modes_and_deliberate_real_clock_read_are_explicit() {
         assert!(support::parse(&flags).is_err(), "{flags:?}");
     }
 }
+
+#[test]
+fn settle_controls_and_drain_without_commit_are_explicit() {
+    let controlled = support::parse(&["app", "--settle-control"]).unwrap();
+    assert!(controlled.settle_control && !controlled.drain_no_render);
+    let drain = support::parse(&["app", "--settle-control", "--drain-no-render"]).unwrap();
+    assert!(drain.settle_control && drain.drain_no_render);
+    for flags in [vec!["app", "--drain-no-render"],
+        vec!["app", "--settle-control", "--settle-control"],
+        vec!["app", "--settle-control", "--widgets"],
+        vec!["app", "--settle-control", "--timer"],
+        vec!["app", "--settle-control", "--hang"]] {
+        assert!(support::parse(&flags).is_err(), "{flags:?}");
+    }
+}

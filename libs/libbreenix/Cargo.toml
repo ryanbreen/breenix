@@ -65,3 +65,8 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix
 name = "input_device_selection"
 path = "../../tests/input_device_selection.rs"
 required-features = ["std"]
+
+[[test]]
+name = "ui_settle"
+path = "../../tests/ui_settle.rs"
+required-features = ["std"]
