@@ -406,7 +406,7 @@ fn app_checkpoint(
     use libuitest::{frames::Bindings, input::Backend};
     let info = live.info(id)?;
     live.move_to((info.x + 600 * scale as i32, info.y + 350 * scale as i32))?;
-    libuitest::settle::settle(&[(id, 0)], &mut [])?;
+    libuitest::settle::settle_session(live.session(), &[(id, 0)], 0, &mut [])?;
     let record = capture::window(live.session().arena_mut(), stage, id)?;
     let tree = match live.session().arena_mut().read(Slot::Tree)? {
         SlotRead::Final { bytes, .. } => libbui::tree::Tree::parse(&bytes)?,
@@ -502,8 +502,92 @@ pub fn form_scenario() -> CaseResult {
     let exits = session.teardown()?;
     reject_crash(pid, &exits)?;
     result?;
-    match client.finish(ScenarioOutcome::pass()) {
-        ScenarioOutcome::Pass { .. } => Ok(()),
-        other => Err(format!("form scenario records: {other:?}").into()),
-    }
+    Ok(())
+}
+
+fn selection_scenario(menu: bool) -> CaseResult {
+    use libuitest::input::{Pointer, Target};
+    let (case, title, stages) = if menu {
+        (
+            "proof/menu-scenario",
+            "menu scenario",
+            ["initial", "opened", "chosen"],
+        )
+    } else {
+        (
+            "proof/list-scenario",
+            "list scenario",
+            ["initial", "scrolled", "selected"],
+        )
+    };
+    let mut client = libuitest::RecordClient::outer("ui-testing", case, &stages)?;
+    let mut session = Session::desktop()?;
+    let pid = session.launch_app(&[APP, title.as_bytes(), b"--widgets"], 0)?;
+    let result: Result<(), String> = (|| {
+        let id = session.wait_window(title)?.id;
+        let scale = libbreenix::gpu::current_mode()
+            .map_err(|e| e.to_string())?
+            .scale;
+        let mut live = LivePointer::new(&mut session)?;
+        live.watch(id)?;
+        app_checkpoint(&mut live, id, case, stages[0], scale, &mut client, |t| {
+            if menu {
+                app_tree::menu(t, 0, scale)
+            } else {
+                app_tree::list(t, 0, scale)
+            }
+        })?;
+        let mut pointer = Pointer::new(live);
+        if menu {
+            pointer.click(&Target::new(id, "menu/0"))?;
+        } else {
+            pointer.scroll(&Target::new(id, "list"), -2)?;
+        }
+        app_checkpoint(
+            pointer.backend_mut(),
+            id,
+            case,
+            stages[1],
+            scale,
+            &mut client,
+            |t| {
+                if menu {
+                    app_tree::menu(t, 1, scale)
+                } else {
+                    app_tree::list(t, 1, scale)
+                }
+            },
+        )?;
+        pointer.click(&Target::new(
+            id,
+            if menu { "menu/0/0" } else { "list/item-07" },
+        ))?;
+        app_checkpoint(
+            pointer.backend_mut(),
+            id,
+            case,
+            stages[2],
+            scale,
+            &mut client,
+            |t| {
+                if menu {
+                    app_tree::menu(t, 2, scale)
+                } else {
+                    app_tree::list(t, 2, scale)
+                }
+            },
+        )?;
+        libuitest::input::dispositions(pointer.backend_mut().serials())?;
+        Ok(())
+    })();
+    let exits = session.teardown()?;
+    reject_crash(pid, &exits)?;
+    result?;
+    Ok(())
+}
+pub fn menu_scenario() -> CaseResult {
+    selection_scenario(true)
+}
+pub fn list_scenario() -> CaseResult {
+    selection_scenario(false)
 }

@@ -87,3 +87,125 @@ pub fn form(tree: &Tree, stage: usize, scale: u32) -> Result<(), String> {
         json!(stage >= 2),
     )
 }
+
+fn bounds(tree: &Tree, key: &str, rect: [i64; 4], scale: u32) -> Result<(), String> {
+    equal(
+        key,
+        "bounds",
+        json!(node(tree, key)?.bounds),
+        json!(rect.map(|v| v * i64::from(scale))),
+    )
+}
+fn flag(tree: &Tree, key: &str, f: Flag, expected: bool) -> Result<(), String> {
+    equal(
+        key,
+        &format!("{f:?}"),
+        json!(node(tree, key)?.flags.contains(&f)),
+        json!(expected),
+    )
+}
+pub fn menu(tree: &Tree, stage: usize, scale: u32) -> Result<(), String> {
+    if stage > 2 {
+        return Err("unknown menu stage".into());
+    }
+    bounds(tree, "root", [0, 0, 640, 400], scale)?;
+    bounds(
+        tree,
+        "menu",
+        [0, 0, 640, if stage == 1 { 66 } else { 22 }],
+        scale,
+    )?;
+    equal(
+        "root",
+        "value",
+        tree.root.value.clone(),
+        json!({"submissions":0,"menu_action":if stage==2 {7} else {0}}),
+    )?;
+    equal(
+        "menu/0",
+        "name",
+        json!(node(tree, "menu/0")?.name),
+        json!("Actions"),
+    )?;
+    flag(tree, "menu/0", Flag::Expanded, stage == 1)?;
+    if stage == 1 {
+        bounds(tree, "menu/0", [0, 22, 140, 44], scale)?;
+    }
+    for (key, name, value, y) in [("menu/0/0", "Choose", 7, 22), ("menu/0/1", "Reset", 8, 44)] {
+        let n = node(tree, key)?;
+        equal(
+            key,
+            "role",
+            json!(format!("{:?}", n.role)),
+            json!("Menuitem"),
+        )?;
+        equal(key, "name", json!(n.name), json!(name))?;
+        equal(key, "value", n.value.clone(), json!(value))?;
+        bounds(tree, key, [0, y, 140, 22], scale)?;
+        equal(
+            key,
+            "clip",
+            json!(n.clip),
+            json!([0, y, 140, 22].map(|v| v * i64::from(scale))),
+        )?;
+        flag(tree, key, Flag::Visible, stage == 1)?;
+        flag(tree, key, Flag::Enabled, true)?;
+    }
+    equal(
+        "entry",
+        "value",
+        node(tree, "entry")?.value.clone(),
+        json!(""),
+    )?;
+    flag(tree, "entry", Flag::Focused, true)
+}
+pub fn list(tree: &Tree, stage: usize, scale: u32) -> Result<(), String> {
+    if stage > 2 {
+        return Err("unknown list stage".into());
+    }
+    bounds(tree, "root", [0, 0, 640, 400], scale)?;
+    bounds(tree, "list", [20, 150, 200, 100], scale)?;
+    equal(
+        "root",
+        "value",
+        tree.root.value.clone(),
+        json!({"submissions":0,"menu_action":0}),
+    )?;
+    equal(
+        "list",
+        "value",
+        node(tree, "list")?.value.clone(),
+        if stage == 2 {
+            json!("item-07")
+        } else {
+            Value::Null
+        },
+    )?;
+    flag(tree, "list", Flag::Focused, stage == 2)?;
+    let offset = if stage == 0 { 0 } else { 80 };
+    for i in 0i64..20 {
+        let key = format!("list/item-{i:02}");
+        let n = node(tree, &key)?;
+        let y = 150 + i * 20 - offset;
+        let top = y.max(150);
+        let height = (y + 20).min(250).saturating_sub(top).max(0);
+        equal(&key, "name", json!(n.name), json!(format!("Item {i:02}")))?;
+        equal(
+            &key,
+            "role",
+            json!(format!("{:?}", n.role)),
+            json!("Listitem"),
+        )?;
+        bounds(tree, &key, [20, y, 200, 20], scale)?;
+        equal(
+            &key,
+            "clip",
+            json!(n.clip),
+            json!([20, top, 200, height].map(|v| v * i64::from(scale))),
+        )?;
+        flag(tree, &key, Flag::Visible, height > 0)?;
+        flag(tree, &key, Flag::Selected, stage == 2 && i == 7)?;
+        flag(tree, &key, Flag::Enabled, true)?;
+    }
+    Ok(())
+}

@@ -117,3 +117,12 @@ fn regenerated_scenario_pins(scenario: &str, stages: &[&str]) {
 fn form_reference_pins_match_regenerated_pngs() {
     regenerated_scenario_pins("form", &["initial", "typed", "checked", "slider", "submitted"]);
 }
+
+#[test]
+fn menu_reference_pins_match_regenerated_pngs() {
+    regenerated_scenario_pins("menu", &["initial", "opened", "chosen"]);
+}
+#[test]
+fn list_reference_pins_match_regenerated_pngs() {
+    regenerated_scenario_pins("list", &["initial", "scrolled", "selected"]);
+}

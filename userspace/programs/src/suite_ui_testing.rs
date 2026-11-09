@@ -276,9 +276,9 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Filling the test app's form (text field, checkbox, slider, submit) gives the expected tree and frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("form-scenario", "Filling the test app's form (text field, checkbox, slider, submit) gives the expected tree and frame", proof::form_scenario).checks(&["initial", "typed", "checked", "slider", "submitted"]),
         // Opening a menu and choosing an item gives the expected tree and frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("menu-scenario", "Opening a menu and choosing an item gives the expected tree and frame", || pending("proof", 7)),
+        case("menu-scenario", "Opening a menu and choosing an item gives the expected tree and frame", proof::menu_scenario).checks(&["initial", "opened", "chosen"]),
         // Scrolling and selecting in a list gives the expected tree and frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("list-scenario", "Scrolling and selecting in a list gives the expected tree and frame", || pending("proof", 7)),
+        case("list-scenario", "Scrolling and selecting in a list gives the expected tree and frame", proof::list_scenario).checks(&["initial", "scrolled", "selected"]),
         // A scripted focus scenario on bwm gives the expected trees and screens. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("wm-focus-scenario", "A scripted focus scenario on bwm gives the expected trees and screens", || pending("proof", 7)),
         // A scripted stacking scenario on bwm gives the expected trees and screens. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
