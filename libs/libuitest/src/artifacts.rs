@@ -409,7 +409,7 @@ pub fn save_all() -> bool {
     fs::read_to_string("/etc/breenix/uitest-save").is_ok_and(|s| s.trim() == "all")
 }
 pub fn png(frame: Frame<'_>) -> Result<Vec<u8>, String> {
-    libimg_encode::encode(&libimg::png::Image {
+    libimg_encode::encode_compact(&libimg::png::Image {
         width: frame.width as u32,
         height: frame.height as u32,
         pixels: frame.canonical(),
@@ -503,7 +503,7 @@ pub fn save_check(
     }
     // Encode before publishing any file; codec errors leave the primary verdict intact.
     let got_png = png(got).map_err(|_| SaveError::Io)?;
-    let diff_png = libimg_encode::encode(&diff(want, got, options).map_err(|_| SaveError::Io)?)
+    let diff_png = libimg_encode::encode_compact(&diff(want, got, options).map_err(|_| SaveError::Io)?)
         .map_err(|_| SaveError::Io)?;
     let screen = Frame::new(
         &screen,

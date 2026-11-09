@@ -28,6 +28,13 @@ fn straight(c: u8, a: u8) -> u8 {
 /// claim-lint:ok: docs/gui/breengel.md sections 7, 8 and 13 and docs/gui/gpu.md section 2 specify this contract.
 /// Returns TooLarge before inspecting pixels or allocating for invalid dimensions.
 pub fn encode(image: &Image) -> Result<Vec<u8>, PngError> {
+    encode_with(image, crate::deflate::zlib_compress)
+}
+/// Lossless compact PNGs for retained evidence; authored reference bytes keep encode().
+pub fn encode_compact(image: &Image) -> Result<Vec<u8>, PngError> {
+    encode_with(image, crate::deflate::zlib_compact)
+}
+fn encode_with(image: &Image, compress: fn(&[u8]) -> Vec<u8>) -> Result<Vec<u8>, PngError> {
     dimensions(image.width, image.height)?;
     if image.pixels.len() != image.width as usize * image.height as usize * 4 {
         return Err(BadHeader);
@@ -64,7 +71,7 @@ pub fn encode(image: &Image) -> Result<Vec<u8>, PngError> {
     header[8] = 8;
     header[9] = if alpha { 6 } else { 2 };
     write_chunk(&mut out, b"IHDR", &header);
-    write_chunk(&mut out, b"IDAT", &crate::deflate::zlib_compress(&raw));
+    write_chunk(&mut out, b"IDAT", &compress(&raw));
     write_chunk(&mut out, b"IEND", &[]);
     Ok(out)
 }

@@ -155,7 +155,7 @@ impl Evidence {
 fn save_png(store: &mut Store, name: &str, width: u32, height: u32, mut pixels: Vec<u8>) -> Result<(), String> {
     if pixels.len() != width as usize * height as usize * 4 { return Err("artifact pixel length mismatch".into()); }
     for pixel in pixels.chunks_exact_mut(4) { pixel[3] = 255; }
-    let png = libimg_encode::encode(&libimg::png::Image { width, height, pixels }).map_err(|e| format!("artifact PNG: {e:?}"))?;
+    let png = libimg_encode::encode_compact(&libimg::png::Image { width, height, pixels }).map_err(|e| format!("artifact PNG: {e:?}"))?;
     store.write(name, &png)
 }
 
