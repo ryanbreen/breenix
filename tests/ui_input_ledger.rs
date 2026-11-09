@@ -101,3 +101,51 @@ fn main() {{
     std::fs::remove_dir_all(dir).unwrap();
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
 }
+#[test]
+fn reattaching_reader_rejects_a_previous_readers_tree() {
+    let source = include_str!("../libs/libuitest/src/input.rs");
+    let function = if let Some(start) = source.find("pub fn tree_ready_after_attach(") {
+        let end = start + source[start..].find("\n}").unwrap() + 2;
+        source[start..end].to_owned()
+    } else {
+        // Adapt both production pre-fix attachment guards to the fixture.
+        let live = include_str!("../libs/libuitest/src/pointer_live.rs");
+        let app = include_str!("../userspace/programs/src/uitest_suite/tree.rs");
+        assert!(live.contains(".tree_serializations\n            == 0"));
+        assert!(app.contains("if meta.tree_serializations > 0"));
+        "fn tree_ready_after_attach(count: u64, baseline: u64) -> bool { let _ = baseline; count > 0 }".into()
+    };
+    let gate = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("libs/breengel/src/tree_commit.rs");
+    let fixture = format!(r#"
+#[path = {gate:?}] mod gate;
+{function}
+fn main() {{
+    let mut count = 0;
+    let mut tree = 0;
+    gate::serialize_for_commit(1, &mut count, || {{ tree = 1; Ok(()) }}).unwrap();
+    // The first reader leaves; commits 2..4 copy pixels but skip tree encoding.
+    for pixel in 2..=4 {{
+        gate::serialize_for_commit(0, &mut count, || {{ tree = pixel; Ok(()) }}).unwrap();
+    }}
+    assert_eq!((count, tree), (1, 1));
+    let baseline = count; // sampled with the replacement mapping held
+    assert!(!tree_ready_after_attach(count, baseline), "old tree accepted with commit 4 pixels");
+    gate::serialize_for_commit(1, &mut count, || {{ tree = 5; Ok(()) }}).unwrap();
+    assert!(tree_ready_after_attach(count, baseline));
+    assert_eq!(tree, 5);
+    // Metadata-only acknowledgments keep this valid pixel/tree publication.
+    assert!(tree_ready_after_attach(count, baseline));
+    assert!(!tree_ready_after_attach(0, 0));
+}}
+"#);
+    let dir = std::env::temp_dir().join(format!("ui-tree-reattach-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("reattach.rs"); let binary = dir.join("reattach");
+    std::fs::write(&path, fixture).unwrap();
+    let built = std::process::Command::new("rustc").args(["--edition=2021", "-Dwarnings"])
+        .arg(&path).arg("-o").arg(&binary).output().unwrap();
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = std::process::Command::new(&binary).output().unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+}
