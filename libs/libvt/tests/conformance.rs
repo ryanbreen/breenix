@@ -266,3 +266,13 @@ fn resize_keeps_surviving_text() {
     assert_eq!((0..10).map(|x| vt.cell(x, 0).ch).collect::<String>(), "first     ");
     assert_eq!((0..10).map(|x| vt.cell(x, 1).ch).collect::<String>(), "second    ");
 }
+
+#[test]
+fn bracketed_paste_mode_2004() {
+    let mut vt = TermEmu::new(8, 2);
+    assert!(!vt.bracketed_paste());
+    vt.feed(b"\x1b[?2004h");
+    assert!(vt.bracketed_paste());
+    vt.feed(b"\x1b[?2004l");
+    assert!(!vt.bracketed_paste());
+}

@@ -80,6 +80,7 @@ members = [
     "libs/breengel-abi",
     "libs/input-abi",
     "libs/libvt",
+    "libs/libclipboard",
     "libs/gpu-abi"
 ]
 
