@@ -249,6 +249,19 @@ impl Participant {
     }
     pub fn configured(id: u64) -> Result<Option<Self>, String> {
         let Some(path) = std::env::var_os("BREENIX_UI_CLOCK") else { return Ok(None); };
+        // BGCLK001 predates participants. wm_suite/measure.rs still supplies
+        // its 64-byte header in a zero-padded page. Keep using that frozen
+        // clock without registering in an extension the driver did not create.
+        // Nonzero extension bytes go through the strict BGPT0001 validator.
+        use std::io::Read;
+        let mut file = std::fs::File::open(&path).map_err(|e| e.to_string())?;
+        let length = file.metadata().map_err(|e| e.to_string())?.len();
+        if length == 64 || length == PAGE_BYTES as u64 {
+            let mut bytes = vec![0; length as usize];
+            file.read_exact(&mut bytes).map_err(|e| e.to_string())?;
+            if &bytes[..8] != b"BGCLK001" { return Err("invalid UI clock magic".into()); }
+            if bytes[64..].iter().all(|&byte| byte == 0) { return Ok(None); }
+        }
         ClockPage::open(std::path::Path::new(&path))?.register(id).map(Some)
     }
     pub fn schedule(&self, next_deadline_ns: u64, animating: bool) {
