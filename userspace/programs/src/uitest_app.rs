@@ -151,5 +151,7 @@ fn clock_report(win: &Window) {
     let stamp = breengel::clock::stamp();
     println!("UITEST-CLOCK window={} epoch={} now_ns={} real_reads={}",
         win.id(), stamp.epoch, stamp.now_ns, breengel::clock::real_clock_reads());
+    println!("UITEST-WALL window={} epoch={} wall_ns={}",
+        win.id(), stamp.epoch, breengel::clock::wall_ns());
     let _ = io::stdout().flush();
 }

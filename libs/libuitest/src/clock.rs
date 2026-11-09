@@ -31,6 +31,14 @@ impl Step {
     pub fn observe(&mut self, window: u64, epoch: u64) {
         if epoch == self.stamp.epoch { self.waiting.retain(|id| *id != window); }
     }
+    /// The kernel's status is the authority, not the participant table's hint.
+    pub fn observe_compositor(&mut self, status: &libbreenix::window::abi::CompositorStatus) {
+        use libbreenix::{ui_clock::COMPOSITOR_ID, window::abi::compositor_ack_flags::NONE_NEEDED};
+        let none = status.flags & NONE_NEEDED != 0;
+        if status.flags & !NONE_NEEDED == 0 && (none != (status.presented != 0)) {
+            self.observe(COMPOSITOR_ID, status.epoch);
+        }
+    }
     pub fn complete(&self) -> bool { self.waiting.is_empty() }
     pub fn check(&self, real_now_ns: u64) -> Result<(), String> {
         if real_now_ns >= self.deadline && !self.complete() {

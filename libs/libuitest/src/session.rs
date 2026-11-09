@@ -57,6 +57,8 @@ impl Session {
             // closes the race where an app commits before the scene fd exists.
             let line = session.read_line(pid)?;
             if line != "ok" { return Err(format!("kiosk automatic composition: {line}")); }
+        } else {
+            session.wait_compositor_clock()?;
         }
         Ok(pid)
     }
@@ -67,7 +69,20 @@ impl Session {
         self.control.send(&Message::StartCompositorWithPointer(id))?;
         let pid=self.await_launch(&[b"/usr/bin/bwm"])?;
         self.compositor=Some(pid);
+        self.wait_compositor_clock()?;
         Ok(pid)
+    }
+    fn wait_compositor_clock(&mut self) -> Result<(), String> {
+        use libbreenix::ui_clock::{ClockPage, COMPOSITOR, COMPOSITOR_ID};
+        let page = ClockPage::open(&std::path::Path::new(self.config_root()).join("ui-clock"))?;
+        let deadline = Self::now_ns()?.saturating_add(crate::clock::STEP_BOUND_NS);
+        loop {
+            if page.participants().iter().any(|p| p.id == COMPOSITOR_ID && p.flags & COMPOSITOR != 0) {
+                return Ok(());
+            }
+            if Self::now_ns()? >= deadline { return Err("clock-registration-timeout compositor=bwm".into()); }
+            self.poll_once()?;
+        }
     }
     pub fn connect() -> Result<Self, String> { Self::connect_with_seed(0) }
     pub fn connect_with_seed(seed: u64) -> Result<Self, String> {
@@ -146,6 +161,15 @@ impl Session {
         loop {
             step.check(Self::now_ns()?)?;
             for id in step.waiting().to_vec() {
+                if id == libbreenix::ui_clock::COMPOSITOR_ID {
+                    let mut status = libbreenix::window::abi::CompositorStatus::default();
+                    if libbreenix::window::call(libbreenix::window::abi::op::COMPOSITOR_STATUS, &mut status).is_ok()
+                        && self.compositor == Some(u64::from(status.owner)) {
+                        step.check(Self::now_ns()?)?;
+                        step.observe_compositor(&status);
+                    }
+                    continue;
+                }
                 if let Ok((_, meta)) = libbreenix::window::read_meta(id) {
                     step.check(Self::now_ns()?)?;
                     step.observe(id, meta.epoch);

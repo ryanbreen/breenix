@@ -1,5 +1,5 @@
 //! Compositor progress publication (BreenGL 17.1, E18 W16).
-use breengel_abi::{errno::{EINVAL, ENOENT, EPERM}, CompositorAck, CompositorStatus};
+use breengel_abi::{errno::{EINVAL, ENOENT, EPERM}, compositor_ack_flags::NONE_NEEDED, CompositorAck, CompositorStatus};
 use super::{Caller, REGISTRY};
 
 pub(super) fn completed() -> u64 {
@@ -7,7 +7,8 @@ pub(super) fn completed() -> u64 {
 }
 
 pub fn ack(caller: &Caller, ack: &CompositorAck) -> Result<u64, i32> {
-    if ack.flags & !1 != 0 || ack.reserved != 0 { return Err(EINVAL); }
+    if ack.flags & !NONE_NEEDED != 0 || ack.reserved != 0
+        || (ack.flags & NONE_NEEDED != 0 && ack.presented != 0) { return Err(EINVAL); }
     let mut reg = REGISTRY.lock();
     let claim = reg.claim.filter(|c| c.holder == caller.tgid && c.epoch == ack.claim_epoch)
         .ok_or(EPERM)?;

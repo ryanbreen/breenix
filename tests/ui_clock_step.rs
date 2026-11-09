@@ -1,8 +1,9 @@
 extern crate self as libbreenix;
 #[path = "../libs/libbreenix/src/ui_clock.rs"]
 pub mod ui_clock;
+pub mod window { pub use breengel_abi as abi; }
 #[path = "../libs/libuitest/src/clock.rs"]
-mod clock;
+pub mod clock;
 
 #[test]
 fn recorded_commits_complete_only_the_required_epoch_and_name_a_stopped_window() {

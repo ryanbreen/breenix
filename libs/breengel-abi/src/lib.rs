@@ -592,6 +592,12 @@ pub struct CompositeEntry {
     pub pixels: u64,
 }
 
+/// Compositor acknowledgment flags, shared with `CompositorStatus`.
+pub mod compositor_ack_flags {
+    /// This epoch needs no new composite; `presented` must be 0.
+    pub const NONE_NEEDED: u32 = 1;
+}
+
 /// W16 compositor progress acknowledgment.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

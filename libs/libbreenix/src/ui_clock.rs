@@ -107,6 +107,8 @@ const SLOTS: usize = (PAGE_BYTES - TABLE) / SLOT_BYTES;
 const RESERVED: u64 = u64::MAX;
 pub const ANIMATING: u64 = 1;
 pub const COMPOSITOR: u64 = 2;
+/// Sentinel for the session compositor, outside the client window id space.
+pub const COMPOSITOR_ID: u64 = u64::MAX - 1;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Stamp { pub epoch: u64, pub now_ns: u64 }
@@ -240,6 +242,11 @@ impl ClockPage {
 
 pub struct Participant { page: ClockPage, offset: usize }
 impl Participant {
+    pub fn compositor_configured() -> Result<Option<Self>, String> {
+        let Some(participant) = Self::configured(COMPOSITOR_ID)? else { return Ok(None); };
+        participant.page.0.word(participant.offset + 16).store(COMPOSITOR, Ordering::Release);
+        Ok(Some(participant))
+    }
     pub fn configured(id: u64) -> Result<Option<Self>, String> {
         let Some(path) = std::env::var_os("BREENIX_UI_CLOCK") else { return Ok(None); };
         ClockPage::open(std::path::Path::new(&path))?.register(id).map(Some)

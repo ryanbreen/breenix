@@ -150,13 +150,13 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // step(16) advances the app's clock by exactly 16 ms and the epoch by one. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("clock-step", "step(16) advances the app's clock by exactly 16 ms and the epoch by one", clock::step).session(libuitest::supervisor::serve),
         // Each step is acknowledged by every required participant in its commit metadata. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("epochs-acked", "Each step is acknowledged by every required participant in its commit metadata", || pending("clock", 7)),
+        case("epochs-acked", "Each step is acknowledged by every required participant in its commit metadata", clock::epochs_acked).session(libuitest::supervisor::serve),
         // An app's one-second timer fires on step(1000), not on real time. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("timers-virtual", "An app's one-second timer fires on step(1000), not on real time", timers::timers_virtual).session(libuitest::supervisor::serve),
         // Wall-clock time shown by apps and bwm is the fixed instant plus elapsed UI time. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wall-time-fixed", "Wall-clock time shown by apps and bwm is the fixed instant plus elapsed UI time", || pending("clock", 7)),
+        case("wall-time-fixed", "Wall-clock time shown by apps and bwm is the fixed instant plus elapsed UI time", clock::wall_time_fixed).session(libuitest::supervisor::serve),
         // bwm's taskbar clock and repeat timer read the UI clock. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wm-clock", "bwm's taskbar clock and repeat timer read the UI clock", || pending("clock", 7)),
+        case("wm-clock", "bwm's taskbar clock and repeat timer read the UI clock", clock::wm_clock).session(libuitest::supervisor::serve),
         // Two apps in one session step together. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("shared-clock", "Two apps in one session step together", clock::shared).session(libuitest::supervisor::serve),
         // A stopped participant makes step fail naming it, unless the case excluded it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)

@@ -165,6 +165,7 @@ fn main() {
     libuitest::startup::mark("scene-ready");
     // Clock state
     let mut clock = clock::Clock::new(std::env::var_os("BREENIX_UI_CLOCK").is_some());
+    clock.participate().expect("UI clock participant registration failed");
     let mut clock_wake = clock_wake::open().expect("UI clock wake setup failed");
     let mut clock_text = [0u8; 11];
     format_clock(clock.wall_sec(), &mut clock_text);
@@ -811,6 +812,13 @@ fn main() {
                 clock_pace.reset();
                 if content_dirty { full_redraw = true; }
             } else if clock_ready {
+                // Scene work already owns this paced composite. Refresh frozen
+                // session chrome here without scheduling clock-only work.
+                if let Some(sec) = clock.scene_clock() {
+                    format_clock(sec, &mut clock_text);
+                    draw_taskbar(&mut gpu.desktop, &clock_text, &mut ui_font);
+                    clock_dirty = true;
+                }
                 let pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
                 let mut damage = Vec::new();
                 if full_redraw {
@@ -904,6 +912,7 @@ fn main() {
                 eprintln!("[bwm] compositor acknowledgment failed: {}", error);
                 process::exit(1);
             }
+            clock.acknowledged();
             run_deferred_check(&mut validation, &mut gpu, &mut windows, &mut poll_fds, resizing.is_some());
         }
     }
