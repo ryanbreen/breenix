@@ -22,6 +22,11 @@ path = "../../tests/bwm_clock.rs"
 required-features = ["std"]
 
 [[test]]
+name = "bwm_ui_input_time"
+path = "../../tests/bwm_ui_input_time.rs"
+required-features = ["std"]
+
+[[test]]
 name = "bwm_timing"
 path = "../../tests/bwm_timing.rs"
 required-features = ["std"]
@@ -59,4 +64,9 @@ unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix
 [[test]]
 name = "input_device_selection"
 path = "../../tests/input_device_selection.rs"
+required-features = ["std"]
+
+[[test]]
+name = "ui_settle"
+path = "../../tests/ui_settle.rs"
 required-features = ["std"]

@@ -12,16 +12,20 @@ pub fn run_pair(title: &str) -> Result<(), String> {
             created.recv().map_err(|e|e.to_string())?;
             run(&format!("{title} second"), false)
         });
-        let first = run_ready(title, false, Some(ready));
+        let first = run_ready(title, false, Some(ready), false, false, false, false);
         let second = other.join().map_err(|_| "second widget thread panicked")?;
         first.and(second)
     })
 }
 
 pub fn run(title: &str, pointer_probe: bool) -> Result<(), String> {
-    run_ready(title, pointer_probe, None)
+    run_ready(title, pointer_probe, None, false, false, false, false)
 }
-fn run_ready(title: &str, pointer_probe: bool, ready: Option<std::sync::mpsc::Sender<()>>) -> Result<(), String> {
+pub fn run_fault(title: &str, wrong_color: bool, drop_key: bool, stale_pixels: bool, hang: bool) -> Result<(), String> {
+    run_ready(title, false, None, wrong_color, drop_key, stale_pixels, hang)
+}
+fn run_ready(title: &str, pointer_probe: bool, ready: Option<std::sync::mpsc::Sender<()>>,
+    wrong_color: bool, drop_key: bool, stale_pixels: bool, hang: bool) -> Result<(), String> {
     let scale = libbreenix::gpu::current_mode()
         .map_err(|e| e.to_string())?
         .scale;
@@ -34,7 +38,9 @@ fn run_ready(title: &str, pointer_probe: bool, ready: Option<std::sync::mpsc::Se
         layout::HEIGHT * scale,
     )
     .map_err(|e| e.to_string())?;
-    let mut scene = if pointer_probe {Widgets::pointer_probe()} else {Widgets::new()};
+    let mut scene = if pointer_probe {Widgets::pointer_probe()} else {Widgets::faulted(wrong_color, drop_key, stale_pixels)};
+    // Both clean and hung widget scenarios reach the same 16 ms timer.
+    window.timer(0xface, 16, 0);
     paint(&mut window, &scene)?;
     if let Some(ready) = ready { ready.send(()).map_err(|e|e.to_string())?; }
     libuitest::startup::mark("app-commit");
@@ -47,6 +53,10 @@ fn run_ready(title: &str, pointer_probe: bool, ready: Option<std::sync::mpsc::Se
             .wait_dispatch(u64::MAX, |delivered| {
                 let time_ms = delivered.time_ns / 1_000_000;
                 match &delivered.event {
+                    Event::Timer { id: 0xface, .. } if hang => {
+                        // Stay inside the callback, before dispatch can acknowledge the epoch.
+                        loop { let _ = libbreenix::time::sleep_ms(1000); }
+                    }
                     Event::CloseRequested => closed = true,
                     Event::MouseMove { x, y }
                     | Event::PointerEnter { x, y }
@@ -69,6 +79,9 @@ fn run_ready(title: &str, pointer_probe: bool, ready: Option<std::sync::mpsc::Se
                         x,
                         y,
                     } if *button == breengel::buttons::LEFT => {
+                        if pointer_probe {
+                            println!("UITEST-POINTER serial={} time_ns={} clicks={} pressed={}", delivered.serial, delivered.time_ns, delivered.clicks, pressed);
+                        }
                         let before = buttons;
                         buttons = u32::from(*pressed);
                         scene.pointer(&InputState::from_raw(
@@ -93,9 +106,11 @@ fn run_ready(title: &str, pointer_probe: bool, ready: Option<std::sync::mpsc::Se
                         keycode,
                         modifiers,
                         text,
+                        repeat,
                         ..
                     } => {
                         crate::uitest_keyboard::press(&mut scene, *keycode, modifiers.shift, modifiers.ctrl, modifiers.alt, text);
+                        if *repeat { crate::uitest_keyboard::text(&mut scene, text); }
                         dirty = true;
                     }
                     Event::Text { text } => {

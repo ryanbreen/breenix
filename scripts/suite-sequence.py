@@ -281,7 +281,8 @@ def score_one(scorer, repo, suite, last, records, window, logs, disk, needs_rese
             return suite, "NOT-ISOLATED", f"RESET {'; '.join(unrestored)}; it never printed START"
         failed_exec = any(line == f"SUITE_SEQUENCE FAIL exec {suite}" for line in records)
         return suite, "NOT-RUN", "its binary could not be started" if failed_exec else "it never printed START"
-    ok, detail = scorer["verdict"](manifest, window, logs)
+    bundle_disk = {'disk': disk} if suite == 'ui-testing' else {}
+    ok, detail = scorer["verdict"](manifest, window, logs, **bundle_disk)
     if stalled:
         status, detail = "STALLED", f"the runner's watchdog stopped it after {stalled[1]} of {stalled[2]} cases"
     elif not done and not detail.startswith("fatal kernel output"):

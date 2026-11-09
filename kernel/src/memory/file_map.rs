@@ -897,6 +897,22 @@ impl MapState {
         self.eviction_pending.load(Ordering::Acquire)
     }
 
+    /// An unlinked inode with no external handle has no reader or writer left.
+    /// Retire its cache independently of disk detachment, including dirty pages
+    /// whose contents no observer can recover. The caller holds the mount write
+    /// guard and has established that the orphan has no external handles.
+    pub(crate) fn discard_unobserved(&self, budget: &mut usize) -> bool {
+        let mut inner = self.inner.lock();
+        if !inner.bindings.is_empty() { return true; }
+        let count = inner.pages.len().min(*budget);
+        let keep = inner.pages.len() - count;
+        inner.pages.entries.truncate(keep);
+        *budget -= count;
+        if inner.pages.is_empty() { inner.poisoned = PageVec::new(); }
+        self.refresh(&inner);
+        !inner.pages.is_empty()
+    }
+
     /// Retire cache pages no binding covers. The filesystem write guard
     /// excludes population and every mutation hook.
     pub(crate) fn evict(&self, budget: &mut usize) -> bool {

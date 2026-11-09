@@ -61,3 +61,92 @@ fn artifact_publication_is_local_complete_and_replaces_no_partial_file() {
     assert!(store.write("../escape", b"x").is_err());
     fs::remove_dir_all(root).unwrap();
 }
+
+
+#[test]
+fn tree_at_compared_commit_survives_thirty_updates_and_case_death_before_saving() {
+    let root = root("historical");
+    let path = root.join("arena");
+    let mut case = Arena::create(&path, Layout::for_mode(2, 1).unwrap()).unwrap();
+    let compared = Record { check: "label".into(), window: 17, commit: 41,
+        epoch: 3, width: 2, height: 1, ..Record::default() };
+    case.write_frame_tree(|pixels, tree| {
+        pixels[..8].copy_from_slice(&[1, 2, 3, 255, 4, 5, 6, 255]);
+        tree[..12].copy_from_slice(b"commit=41\0\0\0");
+        Ok((compared.clone(), 8))
+    }).unwrap();
+    let mut screen = case.begin(Slot::Screen).unwrap();
+    screen.bytes_mut()[..8].fill(19);
+    screen.publish(Record { check: "label".into(), composite: 12, width: 2, height: 1,
+        observation: vec![7; 1024], ..Record::default() }, 8).unwrap();
+    // The live producer reuses its own storage after the compared capture.
+    let mut live_tree = b"commit=41".to_vec();
+    for commit in 42..=71 { live_tree = format!("commit={commit}").into_bytes(); }
+    assert_eq!(live_tree, b"commit=71");
+    drop(case); // No artifact write ran in the case.
+    let collector = Arena::open(&path).unwrap();
+    let SlotRead::Final { record, bytes } = collector.read(Slot::Tree).unwrap() else { panic!("lost tree") };
+    assert_eq!((record.check.as_str(), record.window, record.commit, record.epoch), ("label", 17, 41, 3));
+    assert_eq!(&bytes[..10], b"commit=41\0");
+    let SlotRead::Final { record, bytes } = collector.read(Slot::Frame).unwrap() else { panic!("lost frame") };
+    assert_eq!(record.commit, 41);
+    assert_eq!(bytes, [1, 2, 3, 255, 4, 5, 6, 255]);
+    let SlotRead::Final { record, bytes } = collector.read(Slot::Screen).unwrap() else { panic!("lost screen") };
+    assert_eq!(record.composite, 12);
+    assert_eq!(record.observation, vec![7; 1024]);
+    assert_eq!(bytes, vec![19; 8]);
+    drop(collector);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn failed_screen_retained_and_interrupted_frame_tree_publication_is_partial() {
+    let root = root("interrupted-pair");
+    let path = root.join("arena");
+    let mut case = Arena::create(&path, Layout::for_mode(2, 1).unwrap()).unwrap();
+    let mut screen = case.begin(Slot::Screen).unwrap();
+    screen.bytes_mut()[..8].fill(29);
+    screen.publish(Record { check: "failed".into(), composite: 9, width: 2, height: 1,
+        observation: vec![3; 1024], ..Record::default() }, 8).unwrap();
+    // Force the exact interval between write_frame_tree's two release stores.
+    let mut frame = case.begin(Slot::Frame).unwrap();
+    frame.bytes_mut()[..8].fill(31);
+    drop(frame);
+    let mut tree = case.begin(Slot::Tree).unwrap();
+    tree.bytes_mut()[..10].copy_from_slice(b"commit=41\0");
+    tree.publish(Record { check: "failed".into(), window: 17, commit: 41,
+        width: 2, height: 1, ..Record::default() }, 10).unwrap();
+    drop(case);
+    let collector = Arena::open(&path).unwrap();
+    assert!(matches!(collector.read(Slot::Frame).unwrap(), SlotRead::Partial("case-died")));
+    assert!(matches!(collector.read(Slot::Tree).unwrap(), SlotRead::Partial("case-died")),
+        "a tree is not a completed capture until its paired frame publishes");
+    let SlotRead::Final { record, bytes } = collector.read(Slot::Screen).unwrap() else { panic!("failure screen lost") };
+    assert_eq!(record.composite, 9);
+    assert_eq!(bytes, vec![29; 8]);
+    drop(collector);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn checkpoints_replace_the_active_path_without_mutating_older_readers() {
+    let path = std::env::temp_dir().join(format!("ui-checkpoint-{}", std::process::id()));
+    let mut active = arena::Arena::create(&path, arena::Layout::for_mode(2, 1).unwrap()).unwrap();
+    let mut writer = active.begin(arena::Slot::Frame).unwrap();
+    writer.bytes_mut()[..4].copy_from_slice(&[1, 2, 3, 255]);
+    writer.publish(arena::Record { check: "first".into(), ..Default::default() }, 4).unwrap();
+    let older = arena::Arena::open(&path).unwrap();
+    active.next_checkpoint().unwrap();
+    let mut writer = active.begin(arena::Slot::Frame).unwrap();
+    writer.bytes_mut()[..4].copy_from_slice(&[4, 5, 6, 255]);
+    writer.publish(arena::Record { check: "second".into(), ..Default::default() }, 4).unwrap();
+    let newest = older.reopen().unwrap();
+    for (view, check, expected) in [(&older, "first", [1,2,3,255]), (&newest, "second", [4,5,6,255])] {
+        match view.read(arena::Slot::Frame).unwrap() {
+            arena::SlotRead::Final {record, bytes} => { assert_eq!(record.check, check); assert_eq!(bytes, expected); },
+            other => panic!("incomplete checkpoint {other:?}"),
+        }
+    }
+    drop((active, older, newest));
+    std::fs::remove_file(path).unwrap();
+}

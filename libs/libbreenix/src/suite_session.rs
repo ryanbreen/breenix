@@ -2,6 +2,7 @@
 use std::{fs::File, os::fd::{AsRawFd, FromRawFd, IntoRawFd}, sync::atomic::{AtomicI32, Ordering}};
 use libbreenix::{error::Error, errno::Errno, io, process, signal, socket, time, types::{Fd, Pid}};
 use super::{spawn, Run};
+use super::control::{Watchdog, Wait};
 use super::collection::{Handshake, Request, State};
 
 static CONTROL: AtomicI32 = AtomicI32::new(-1);
@@ -67,12 +68,13 @@ impl RunnerSession {
         install_session_control(Fd::from_raw(control as u64));
     }
     pub fn in_parent(&mut self) { self.control.take(); }
-    /// Collection uses the original absolute L, including command writes and
+    /// Collection uses one absolute hang watchdog, including command writes and
     /// fragmented reads. A done reply authorizes the sweep without an exit wait.
     pub fn collect_until(&mut self, deadline_ns: Option<i128>, request: Request, suite: &str, case: &str,
         mut record: impl FnMut(&str) -> Result<(), String>) -> Result<(), String> {
         self.in_parent();
-        let deadline = deadline_ns.ok_or("collector monotonic clock unavailable")?;
+        let watchdog = Watchdog::new(Wait::CollectorReply)?;
+        let deadline = deadline_ns.ok_or("collector monotonic clock unavailable")?.min(i128::from(watchdog.deadline_ns()));
         let collector = fd(self.collector.as_ref().ok_or("missing collector")?);
         let mut handshake = Handshake::new(suite, case, request);
         let command = handshake.request().command();
@@ -128,7 +130,8 @@ impl RunnerSession {
     /// and for the inner executor. Keep its exit-before-sweep order.
     pub fn finish(&mut self, reserve_ms: u64) -> Result<(), String> {
         self.in_parent();
-        let end = now()? + i128::from(reserve_ms);
+        let watchdog = Watchdog::new(Wait::DiscardReply)?;
+        let end = (now()? + i128::from(reserve_ms)).min(watchdog.deadline_ms());
         let collector = fd(self.collector.as_ref().ok_or("missing collector")?);
         let mut command = &b"end discard\n"[..];
         let mut reply = Vec::new();

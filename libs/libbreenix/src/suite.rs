@@ -110,6 +110,8 @@ mod host_input;
 pub mod descendants;
 #[path = "suite_collection.rs"]
 pub mod collection;
+#[path = "suite_control.rs"]
+pub mod control;
 #[path = "suite_session.rs"]
 pub mod session_runner;
 #[path = "suite_config.rs"]
@@ -828,6 +830,17 @@ fn record(kind: &str, rest: &str) {
         // One write of a short line: whole or not at all, and never blocking the case.
         let _ = io::write(Fd::from_raw(live as u64), std::format!("{line}\n").as_bytes());
     }
+}
+
+/// Report bounded UI retention metadata through the case's serial descriptor.
+pub fn evidence_bundle(label: &str, bytes: usize, hash: &str, result: &str, path: &str) -> Result<(), String> {
+    for (word, cap) in [(label, 23), (hash, 64), (result, 64), (path, 256)] {
+        if word.is_empty() || word.len() > cap || word.bytes().any(|b| b.is_ascii_whitespace() || !b.is_ascii_graphic()) {
+            return Err("invalid evidence record field".into());
+        }
+    }
+    record("EVIDENCE bundle", &std::format!("label={label} bytes={bytes} sha256={hash} result={result} path={path}"));
+    Ok(())
 }
 
 static HOSTKEY_METHOD: OnceLock<String> = OnceLock::new();
@@ -2042,6 +2055,12 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
             Err(msg) => return Outcome::Fail { ms: 0, msg },
         }
     } else { None };
+    let controls = if gui {
+        match control::Scope::new() {
+            Ok(scope) => Some(scope),
+            Err(msg) => return Outcome::Fail { ms: 0, msg },
+        }
+    } else { None };
     let session = gui && case.supervisor.is_some();
     let outcome = (|| {
         if session {
@@ -2053,14 +2072,18 @@ fn run_case(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, scre
         }
         outcome
     })();
-    match snapshot.map(config::Snapshot::verify_restore).transpose() {
+    let outcome = match snapshot.map(config::Snapshot::verify_restore).transpose() {
         Err(note) => match outcome {
             Outcome::Pass { ms } => Outcome::Fail { ms, msg: plain(&note) },
             Outcome::Fail { ms, msg } => with_note(Outcome::Fail { ms, msg: note }, &msg),
             Outcome::Skip { msg } => with_note(Outcome::Fail { ms: 0, msg: note }, &msg),
         },
         Ok(_) => outcome,
+    };
+    if let Some(controls) = controls {
+        for line in controls.report(suite, name) { emit(&line); }
     }
+    outcome
 }
 
 fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool, screen: &mut Screen, feed: &mut Feed) -> Outcome {
@@ -2266,7 +2289,7 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
                     } else if std::fs::read_to_string("/etc/breenix/uitest-save").is_ok_and(|s| s.trim() == "all") {
                         collection::Request::Collect(collection::Trigger::SaveAll)
                     } else { collection::Request::Discard };
-                    let deadline = start.map(|t| t + i128::from(limit_ms) * 1_000_000);
+                    let deadline = monotonic_ns().map(|t| t + i128::from(control::HANG_MS) * 1_000_000);
                     let collected = session.collect_until(deadline, request, suite, name, |line| {
                         if let Some(results) = results.as_mut() { results.accounting.accept(line)?; }
                         emit(line);
@@ -2291,7 +2314,7 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
                         }
                     }
                 } else {
-                    match session.finish(limit_ms.saturating_sub(ms_since(start))) {
+                    match session.finish(control::HANG_MS) {
                         Ok(()) => outcome,
                         Err(note) => {
                             let reason = if note == "session supervisor died" { "supervisor-died" } else { "collector-timeout" };

@@ -41,3 +41,47 @@ fn two_widget_windows_use_one_app_mode() {
     assert!(support::parse(&["pair", "--two-windows"]).is_err());
     assert!(support::parse(&["pair", "--widgets", "--two-windows", "--two-windows"]).is_err());
 }
+
+#[test]
+fn timer_modes_and_deliberate_real_clock_read_are_explicit() {
+    let timer = support::parse(&["timer", "--timer"]).unwrap();
+    assert!(timer.timer && !timer.animate && !timer.real_clock);
+    let animation = support::parse(&["animation", "--animate", "--real-clock"]).unwrap();
+    assert!(animation.animate && animation.real_clock);
+    for flags in [vec!["app", "--real-clock"], vec!["app", "--animate", "--widgets"],
+        vec!["app", "--animate", "--animate"], vec!["app", "--timer", "--capture-control"]] {
+        assert!(support::parse(&flags).is_err(), "{flags:?}");
+    }
+}
+
+#[test]
+fn settle_controls_and_drain_without_commit_are_explicit() {
+    let controlled = support::parse(&["app", "--settle-control"]).unwrap();
+    assert!(controlled.settle_control && !controlled.drain_no_render);
+    let drain = support::parse(&["app", "--settle-control", "--drain-no-render"]).unwrap();
+    assert!(drain.settle_control && drain.drain_no_render);
+    for flags in [vec!["app", "--drain-no-render"],
+        vec!["app", "--settle-control", "--settle-control"],
+        vec!["app", "--settle-control", "--widgets"],
+        vec!["app", "--settle-control", "--timer"],
+        vec!["app", "--settle-control", "--hang"]] {
+        assert!(support::parse(&flags).is_err(), "{flags:?}");
+    }
+}
+
+#[test]
+fn planted_flags_are_individual_widget_modes() {
+    for flag in ["--wrong-color", "--drop-key", "--stale-pixels", "--hang"] {
+        let options = support::parse(&["fault", "--widgets", flag]).unwrap();
+        assert!(options.widgets);
+        assert_eq!(options.hang, flag == "--hang");
+        assert_eq!(options.wrong_color, flag == "--wrong-color");
+        assert_eq!(options.drop_key, flag == "--drop-key");
+        assert_eq!(options.stale_pixels, flag == "--stale-pixels");
+        assert!(support::parse(&["fault", "--widgets", flag, flag]).is_err());
+    }
+    for args in [vec!["fault", "--wrong-color"], vec!["fault", "--timer", "--drop-key"],
+        vec!["fault", "--widgets", "--wrong-color", "--stale-pixels"]] {
+        assert!(support::parse(&args).is_err(), "{args:?}");
+    }
+}

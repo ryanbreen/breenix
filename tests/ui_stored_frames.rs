@@ -1,3 +1,6 @@
+#[path = "../libs/libuitest/src/messages.rs"] pub mod messages;
+#[path = "../libs/libuitest/src/arena.rs"] pub mod arena;
+#[path = "../libs/libuitest/src/artifacts.rs"] pub mod artifacts;
 extern crate self as libuitest;
 extern crate self as breenix_suite;
 #[path = "../libs/libuitest/src/outcome.rs"] pub mod outcome;
@@ -76,4 +79,71 @@ fn records_decode_and_account_for_the_exact_capture() {
     assert_eq!(frames::definition_hash(&same).unwrap(), def);
     definition["at"]["checkpoint"] = "other".into();
     assert_ne!(frames::definition_hash(&definition).unwrap(), def);
+}
+
+fn regenerated_scenario_pins(scenario: &str, stages: &[&str]) {
+    let repo = root().parent().unwrap().parent().unwrap().parent().unwrap().to_path_buf();
+    let out = std::env::temp_dir().join(format!("ui-refgen-{}-{scenario}", std::process::id()));
+    let output = std::process::Command::new("cargo")
+        .args(["run", "--quiet", "--release", "--manifest-path"])
+        .arg(repo.join("tools/gfx-refgen/Cargo.toml"))
+        .args(["--bin", "ui-widgets", "--", scenario])
+        .arg(&out)
+        .env("CARGO_BUILD_JOBS", "4")
+        .output().expect("run host reference generator");
+    assert!(output.status.success(), "gfx-refgen failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(output.stderr.is_empty(), "generator warnings: {}", String::from_utf8_lossy(&output.stderr));
+    let provenance: serde_json::Value = serde_json::from_slice(&std::fs::read(root().join("PROVENANCE.json")).unwrap()).unwrap();
+    for scale in [1, 2] {
+        for stage in stages {
+            let name = format!("{scenario}-{stage}-s{scale}.png");
+            let path = format!("ui-testing/{name}");
+            let rows: Vec<_> = provenance["references"].as_array().unwrap().iter()
+                .filter(|r| r["path"] == path).collect();
+            assert_eq!(rows.len(), 1, "one pin for {path}");
+            let pin = rows[0]["sha256"].as_str().unwrap();
+            let regenerated = std::fs::read(out.join(&name)).unwrap();
+            let committed = std::fs::read(root().join(&path)).unwrap();
+            assert_eq!(frames::digest(&regenerated), pin, "regenerated {path}");
+            assert_eq!(regenerated, committed, "committed {path}");
+            let image = frames::decode_reference(std::path::Path::new(&path), &committed, pin).unwrap();
+            assert_eq!((image.width, image.height), (640 * scale, 400 * scale));
+        }
+    }
+    std::fs::remove_dir_all(out).unwrap();
+}
+
+#[test]
+fn form_reference_pins_match_regenerated_pngs() {
+    regenerated_scenario_pins("form", &["initial", "typed", "checked", "slider", "submitted"]);
+}
+
+#[test]
+fn menu_reference_pins_match_regenerated_pngs() {
+    regenerated_scenario_pins("menu", &["initial", "opened", "chosen"]);
+}
+#[test]
+fn list_reference_pins_match_regenerated_pngs() {
+    regenerated_scenario_pins("list", &["initial", "scrolled", "selected"]);
+}
+
+#[test]
+fn manifest_scenario_declarations_pin_the_logical_reference_frames() {
+    let manifest:serde_json::Value=serde_json::from_slice(&std::fs::read(root().parent().unwrap().join("ui-testing.json")).unwrap()).unwrap();
+    let declarations=manifest["frameChecks"].as_array().unwrap();
+    assert_eq!(declarations.len(),11,"the scenario FRAME obligations are missing");
+    let provenance:serde_json::Value=serde_json::from_slice(&std::fs::read(root().join("PROVENANCE.json")).unwrap()).unwrap();
+    for definition in declarations {
+        let checked=schema::validate(definition,&schema::Context {frame:Some((640,400)),formulas:&[],previous:None}).unwrap();
+        assert_eq!(checked.definition,*definition);
+        let path=definition["reference"]["path"].as_str().unwrap();
+        let pin=definition["reference"]["sha256"].as_str().unwrap();
+        let rows:Vec<_>=provenance["references"].as_array().unwrap().iter().filter(|row|row["path"]==path).collect();
+        assert_eq!(rows.len(),1);
+        assert_eq!(rows[0]["sha256"],pin);
+        let bytes=std::fs::read(root().join(path)).unwrap();
+        assert_eq!(frames::digest(&bytes),pin);
+        let image=libimg::png::decode(&bytes).unwrap();
+        assert_eq!((image.width,image.height),(640,400));
+    }
 }

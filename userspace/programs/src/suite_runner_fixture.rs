@@ -24,6 +24,8 @@ fn parent_pid_of(pid: u64) -> Result<u64, String> {
 pub mod sessions;
 #[path = "uitest_suite/runner.rs"]
 pub mod runner;
+#[path = "uitest_suite/capture_app.rs"]
+mod capture_app;
 #[path = "uitest_suite/config.rs"]
 pub mod config_cases;
 fn settings_a() -> CaseResult { config_cases::settings_round(1) }
@@ -81,6 +83,35 @@ fn config_sequence(order: &str) -> ! {
     suite::suite("runner-fixture", "Runner config fixture", categories).gui().defer_display().case_limit_ms(6000).run()
 }
 
+
+
+/// Fixture logic returns a failure after the app exit so the real runner collects.
+fn app_death_case() -> CaseResult {
+    let mut session = libuitest::Session::desktop()?;
+    let mut app = capture_app::App::launch(&mut session)?;
+    let initial = app.command("create")?;
+    session.wait_window("capture races")?;
+    session.hold_window(initial.id)?;
+    let final_commit = app.command("commit 0")?;
+    check(final_commit.id == initial.id && final_commit.generation.commit == initial.generation.commit + 1,
+        "app death did not follow the commanded commit")?;
+    signal::kill(app.pid as i32, signal::SIGKILL)?;
+    let exit = session.wait_exit(app.pid)?;
+    check(process::wifsignaled(exit.status) && process::wtermsig(exit.status) == signal::SIGKILL,
+        &format!("app death status differs: {}", exit.status))?;
+    let mut live = [libbreenix::window::abi::WinInfo::default(); 64];
+    let count = libbreenix::window::list(&mut live).map_err(|e| e.to_string())?;
+    check(count <= live.len() && !live[..count].iter().any(|w| w.id == final_commit.id),
+        "dead app window still live before collection")?;
+    // The independent oracle travels through the fixture's existing VALUE
+    // transport; only the collector writes the remnant artifact files.
+    for (name, value) in [("remnant-window", final_commit.id), ("remnant-commit", final_commit.generation.commit),
+        ("remnant-producer", u64::from(final_commit.generation.producer)),
+        ("remnant-width", u64::from(final_commit.width)), ("remnant-height", u64::from(final_commit.height))] {
+        suite::value(name, value as i64, "count", None);
+    }
+    Err("app-death witness".into())
+}
 
 fn collection_case() -> CaseResult {
     let mut session = libuitest::Session::kiosk()?;
@@ -255,17 +286,19 @@ fn main() {
         "session-teardown" | "session-ownership" | "session-devices" => (session_display, vec![]),
         "supervisor-died" => (supervisor_died, vec![]),
         "collection-death" | "collection-timeout" => (collection_case, vec![]),
+        "app-death" => (app_death_case, vec![]),
         _ => panic!("unknown fixture mode"),
     };
     let id = Box::leak(selected.to_string().into_boxed_str());
     let checks = Box::leak(checks.into_boxed_slice());
     let entry = case(id, "Scoped runner control", body).checks(checks);
     let entry = if matches!(selected, "subreaper" | "supervisor-died" | "session-teardown" | "session-ownership" | "session-devices") { entry.session(libuitest::supervisor::serve) } else { entry };
-    let entry = if matches!(selected, "collection-death" | "collection-timeout") {
+    let entry = if matches!(selected, "collection-death" | "collection-timeout" | "app-death") {
         entry.session(libuitest::supervisor::serve).collects()
     } else { entry };
     let cases = Box::leak(vec![entry].into_boxed_slice());
     let categories = Box::leak(vec![category("fixture", "Scoped runner", cases)].into_boxed_slice());
     suite::set_painter(Box::new(stage_painter::StagePainter::new()));
-    suite::suite("runner-fixture", "Runner fixture", categories).gui().defer_display().with_case_observer(display_observer).case_limit_ms(3000).run()
+    suite::suite("runner-fixture", "Runner fixture", categories).gui().defer_display().with_case_observer(display_observer)
+        .case_limit_ms(if selected == "app-death" { 6000 } else { 3000 }).run()
 }

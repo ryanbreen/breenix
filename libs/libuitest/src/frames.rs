@@ -128,6 +128,14 @@ pub struct Capture<'a> {
     pub barriers: &'a [&'a str],
 }
 
+/// Evidence supplied by a session, captured at the check's step.
+pub struct ArtifactContext<'a> {
+    pub arena: &'a crate::arena::Arena,
+    pub input_log: &'a [u8],
+    pub writer: &'a mut dyn crate::artifacts::CheckWriter,
+    pub save_all: bool,
+}
+
 /// Run one stored check and send one record through the existing client. Refused
 /// inputs return a named error; the runner's never-ran obligation stays unsatisfied.
 pub fn check_stored(
@@ -137,6 +145,38 @@ pub fn check_stored(
     bindings: &Bindings,
     root: &Path,
     client: &mut RecordClient<'_>,
+) -> Result<Verdict, String> {
+    check_stored_impl(suite, definition, capture, bindings, root, client, None)
+}
+
+pub fn check_stored_with_artifacts(
+    suite: &str,
+    definition: &Value,
+    capture: Capture<'_>,
+    bindings: &Bindings,
+    root: &Path,
+    client: &mut RecordClient<'_>,
+    artifacts: &mut ArtifactContext<'_>,
+) -> Result<Verdict, String> {
+    check_stored_impl(
+        suite,
+        definition,
+        capture,
+        bindings,
+        root,
+        client,
+        Some(artifacts),
+    )
+}
+
+fn check_stored_impl(
+    suite: &str,
+    definition: &Value,
+    capture: Capture<'_>,
+    bindings: &Bindings,
+    root: &Path,
+    client: &mut RecordClient<'_>,
+    mut artifacts: Option<&mut ArtifactContext<'_>>,
 ) -> Result<Verdict, String> {
     let check = schema::validate(
         definition,
@@ -220,20 +260,48 @@ pub fn check_stored(
         })
         .collect();
     let tol = &definition["tolerance"];
-    let verdict = compare::compare(
-        expected,
-        capture.frame,
-        Options {
-            regions: &regions,
-            masks: &masks,
-            tolerance: Tolerance {
-                channel: tol["channel"].as_u64().unwrap() as u8,
-                max_differing: tol["maxDiffering"].as_u64().unwrap() as usize,
-            },
-            reason: tol["reason"].as_str().unwrap_or(""),
+    let options = Options {
+        regions: &regions,
+        masks: &masks,
+        tolerance: Tolerance {
+            channel: tol["channel"].as_u64().unwrap() as u8,
+            max_differing: tol["maxDiffering"].as_u64().unwrap() as usize,
         },
-    )
-    .map_err(|e| format!("check {}: {e:?}", check.check))?;
+        reason: tol["reason"].as_str().unwrap_or(""),
+    };
+    let verdict = compare::compare(expected, capture.frame, options)
+        .map_err(|e| format!("check {}: {e:?}", check.check))?;
+    let saved = artifacts
+        .as_mut()
+        .filter(|context| !verdict.comparison.passed() || context.save_all)
+        .map(|context| {
+            // Publication completes before the FRAME record, and hence before CASE.
+            let result = crate::artifacts::save_check(
+                context.writer,
+                context.arena,
+                &check.check,
+                capture.commit,
+                expected,
+                capture.frame,
+                options,
+                context.input_log,
+            );
+            match result {
+                Ok(()) => {
+                    let dropped = !verdict.comparison.passed()
+                        && context.writer.prepare_retention().ok().flatten() == Some(true);
+                    if dropped {
+                        "artifacts=partial:screen-dropped".into()
+                    } else {
+                        format!(
+                            "artifacts=complete path={}",
+                            context.writer.path().display()
+                        )
+                    }
+                }
+                Err(error) => format!("artifacts={}", error.record()),
+            }
+        });
     let def = definition_hash(definition)?;
     let hash: String = capture
         .frame
@@ -249,11 +317,18 @@ pub fn check_stored(
             .comparison
             .first
             .ok_or("mismatch without first pixel")?;
-        let got = first.actual;
-        let want = first.expected;
-        line.push_str(&format!(" compared={} differing={} first={},{} got=#{:02x}{:02x}{:02x} want=#{:02x}{:02x}{:02x} artifacts=none:not-requested",
-            verdict.comparison.compared, verdict.comparison.differing, first.x, first.y,
-            got[2], got[1], got[0], want[2], want[1], want[0]));
+        line.push_str(&format!(
+            " compared={} differing={} {}",
+            verdict.comparison.compared,
+            verdict.comparison.differing,
+            crate::messages::pixel_details(first.x, first.y, first.actual, first.expected)
+        ));
+    }
+    if let Some(saved) = saved {
+        line.push(' ');
+        line.push_str(&saved);
+    } else if !verdict.comparison.passed() {
+        line.push_str(" artifacts=none:not-requested");
     }
     client.record(&line)?;
     Ok(verdict)

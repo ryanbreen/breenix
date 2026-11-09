@@ -1,3 +1,4 @@
+#[path = "../libs/libuitest/src/messages.rs"] pub mod messages;
 extern crate alloc;
 extern crate self as libbui;
 #[path = "../libs/libbui/src/tree.rs"]

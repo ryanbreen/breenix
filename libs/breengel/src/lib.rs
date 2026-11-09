@@ -52,6 +52,7 @@ mod window;
 mod tree_commit;
 mod event;
 pub mod clock;
+pub mod timer;
 pub mod font;
 pub mod tree;
 pub mod tree_page;

@@ -488,6 +488,8 @@ pub struct SceneWindow {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RecordQuery {
+    /// 0 reads the live compositor claim's latest successful record.
+    /// Explicit serials read retained completed or failed records.
     pub serial: u64,
     /// A `CompositeRecord` buffer of `len` bytes.
     pub ptr: u64,
@@ -590,6 +592,12 @@ pub struct CompositeEntry {
     pub commit_id: u64,
     pub pixel_gen: u64,
     pub pixels: u64,
+}
+
+/// Compositor acknowledgment flags, shared with `CompositorStatus`.
+pub mod compositor_ack_flags {
+    /// This epoch needs no new composite; `presented` must be 0.
+    pub const NONE_NEEDED: u32 = 1;
 }
 
 /// W16 compositor progress acknowledgment.

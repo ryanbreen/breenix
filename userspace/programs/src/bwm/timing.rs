@@ -22,7 +22,11 @@ impl Timing {
         match event.value {
             0 => { self.held.remove(&slot); }
             1 if !consumed && !matches!(event.code, 1 | 29 | 42 | 54 | 56 | 97 | 100 | 125 | 126) => {
-                if let Some(target) = focus { self.held.insert(slot, Held { source: event, target, next: now.saturating_add(500_000_000), derived: 2 }); }
+                if let Some(target) = focus {
+                    // A session may drain the press after its injected UI timestamp.
+                    let start = if libbreenix::ui_clock::configured() { event.time_ns } else { now };
+                    self.held.insert(slot, Held { source: event, target, next: start.saturating_add(500_000_000), derived: 2 });
+                }
             }
             2 => return false,
             _ => {}

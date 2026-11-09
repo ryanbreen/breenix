@@ -165,6 +165,7 @@ fn main() {
     libuitest::startup::mark("scene-ready");
     // Clock state
     let mut clock = clock::Clock::new(std::env::var_os("BREENIX_UI_CLOCK").is_some());
+    clock.participate().expect("UI clock participant registration failed");
     let mut clock_wake = clock_wake::open().expect("UI clock wake setup failed");
     let mut clock_text = [0u8; 11];
     format_clock(clock.wall_sec(), &mut clock_text);
@@ -502,7 +503,12 @@ fn main() {
             if event.kind == kind::KEY && event.code < key::BUTTON_LEFT {
                 let slot = (event.device, event.code);
                 let released_chord = event.value == 0 && consumed_keys.remove(&slot);
-                let mut consumed = released_chord;
+                // A bound modifier-only gesture belongs to the WM, including
+                // the first tap and its release before the action fires.
+                let modifier_tap = matches!(event.code, key::LEFT_SUPER | key::RIGHT_SUPER)
+                    && hotkey_mgr.bindings.iter().any(|binding|
+                        binding.key == 0 && binding.modifiers == modifier::SUPER);
+                let mut consumed = released_chord || modifier_tap;
                 if event.value != 0 {
                     if (key::F1..key::F1 + 5).contains(&event.code) {
                         if let Some(&id) = stack.order().get((event.code - key::F1) as usize) {
@@ -811,6 +817,13 @@ fn main() {
                 clock_pace.reset();
                 if content_dirty { full_redraw = true; }
             } else if clock_ready {
+                // Scene work already owns this paced composite. Refresh frozen
+                // session chrome here without scheduling clock-only work.
+                if let Some(sec) = clock.scene_clock() {
+                    format_clock(sec, &mut clock_text);
+                    draw_taskbar(&mut gpu.desktop, &clock_text, &mut ui_font);
+                    clock_dirty = true;
+                }
                 let pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
                 let mut damage = Vec::new();
                 if full_redraw {
@@ -895,6 +908,7 @@ fn main() {
         }
         if !full_redraw && !content_dirty && !windows_dirty && !clock_dirty && !display_lost && !frame_failed {
             let mut ack = clock.acknowledgment(claim_epoch);
+            ack.handled_serial = input::handled_serial();
             if let Some(deadline) = timing.deadline() {
                 if ack.next_deadline_ns == 0 || deadline < ack.next_deadline_ns { ack.next_deadline_ns = deadline; }
             }
@@ -904,6 +918,7 @@ fn main() {
                 eprintln!("[bwm] compositor acknowledgment failed: {}", error);
                 process::exit(1);
             }
+            clock.acknowledged();
             run_deferred_check(&mut validation, &mut gpu, &mut windows, &mut poll_fds, resizing.is_some());
         }
     }

@@ -21,6 +21,7 @@ impl<'a> RecordClient<'a> {
     fn new(suite: &'a str, case: &'a str, checks: &'a [&'a str], outer: bool) -> Result<Self, String> {
         Ok(Self { accounting: Accounting::new(suite, case, checks, false)?, outer, records: Vec::new(), error: None })
     }
+    pub fn is_outer(&self) -> bool { self.outer }
     /// Validate one complete FRAME/TREE/INPUT line and bind it to this scenario.
     pub fn record(&mut self, line: &str) -> Result<(), String> {
         let valid = self.accounting.accept(line);

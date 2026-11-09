@@ -30,7 +30,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::Mutex;
 use input_abi::{disposition, reason, kind, Event, Disposition};
 pub mod input { pub use input_abi::*; }
-pub mod ui_clock { pub fn now_ns() -> u64 { 100 } }
+pub mod ui_clock { pub fn now_ns() -> u64 { 100 } pub fn configured() -> bool { false } }
 pub mod errno { #[derive(Debug)] pub enum Errno { EALREADY, Other } }
 pub mod error {
     #[derive(Debug)] pub enum Error { Os(super::errno::Errno) }

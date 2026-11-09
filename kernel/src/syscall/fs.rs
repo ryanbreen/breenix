@@ -1863,7 +1863,7 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
         let Some(parent) = resolved.entry_dir() else {
             return SyscallResult::Err(EIO as u64);
         };
-        let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+        let mut guard = match mount.write_removal() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
         let Some(fs) = guard.as_mut() else {
             return SyscallResult::Err(EIO as u64);
         };
@@ -2135,7 +2135,7 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
         let Some(parent) = resolved.entry_dir() else {
             return SyscallResult::Err(EIO as u64);
         };
-        let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+        let mut guard = match mount.write_removal() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
         let Some(fs) = guard.as_mut() else {
             return SyscallResult::Err(EIO as u64);
         };

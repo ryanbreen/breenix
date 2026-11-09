@@ -1,0 +1,33 @@
+[package]
+name = "ui-host-tests"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[workspace]
+
+[dependencies]
+libpixcheck = { path = "../../libs/libpixcheck" }
+libimg = { path = "../../libs/libimg" }
+libimg-encode = { path = "../../libs/libimg-encode" }
+serde_json = "=1.0.154"
+
+[[test]]
+name = "ui_artifacts"
+path = "../../tests/ui_artifacts.rs"
+
+[[test]]
+name = "ui_stored_frames"
+path = "../../tests/ui_stored_frames.rs"
+
+[[test]]
+name = "uitest_arena"
+path = "../../tests/uitest_arena.rs"
+
+[[test]]
+name = "ui_messages"
+path = "../../tests/ui_messages.rs"
+
+[[test]]
+name = "ui_retention"
+path = "../../tests/ui_retention.rs"

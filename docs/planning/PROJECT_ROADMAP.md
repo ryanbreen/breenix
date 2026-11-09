@@ -16,6 +16,13 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Frozen UI clocks, causal settling, retained failure evidence and application
+scenarios land through [PR #2814](https://github.com/ryanbreen/breenix/pull/2814).
+The PR records the 108-case UI result and the coordinator's dispositions for
+the gate deviations. Review follow-ups are grouped in
+[#2826](https://github.com/ryanbreen/breenix/issues/2826); #2822, #2823, #2824
+and #2693 precede E23 under rulings U25, U26 and U27.
+
 The UI test framework trim to 108 guest cases and measured startup costs lands
 through [PR #2805](https://github.com/ryanbreen/breenix/pull/2805). The PR records
 UI and console hardware acceptance; remaining review cleanup is grouped in

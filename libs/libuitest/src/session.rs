@@ -1,4 +1,5 @@
 //! Case-side client for the runner's sibling session supervisor.
+use breenix_suite::suite::control::{Watchdog, Wait};
 use std::collections::{BTreeMap, BTreeSet};
 use libbreenix::{process, time};
 use crate::{channel::{Channel, now}, supervisor::{Message, SessionEnvironment, signal_name}};
@@ -13,6 +14,7 @@ pub struct AppStderr { pub bytes: Vec<u8>, pub dropped: u64 }
 
 pub struct Session {
     arena: Option<crate::arena::Arena>,
+    artifacts: Option<crate::artifacts::Local>,
     startup: Option<crate::startup::Trace>,
     held_window: Option<u64>,
     environment: SessionEnvironment,
@@ -57,6 +59,8 @@ impl Session {
             // closes the race where an app commits before the scene fd exists.
             let line = session.read_line(pid)?;
             if line != "ok" { return Err(format!("kiosk automatic composition: {line}")); }
+        } else {
+            session.wait_compositor_clock()?;
         }
         Ok(pid)
     }
@@ -67,7 +71,21 @@ impl Session {
         self.control.send(&Message::StartCompositorWithPointer(id))?;
         let pid=self.await_launch(&[b"/usr/bin/bwm"])?;
         self.compositor=Some(pid);
+        self.wait_compositor_clock()?;
         Ok(pid)
+    }
+    fn wait_compositor_clock(&mut self) -> Result<(), String> {
+        use libbreenix::ui_clock::{ClockPage, COMPOSITOR, COMPOSITOR_ID};
+        let page = ClockPage::open(&std::path::Path::new(self.config_root()).join("ui-clock"))?;
+        let watchdog = Watchdog::new(Wait::CompositorRegistration)?;
+        let deadline = watchdog.deadline_ns();
+        loop {
+            if page.participants().iter().any(|p| p.id == COMPOSITOR_ID && p.flags & COMPOSITOR != 0) {
+                return Ok(());
+            }
+            if Self::now_ns()? >= deadline { return Err("clock-registration-timeout compositor=bwm".into()); }
+            self.poll_once()?;
+        }
     }
     pub fn connect() -> Result<Self, String> { Self::connect_with_seed(0) }
     pub fn connect_with_seed(seed: u64) -> Result<Self, String> {
@@ -79,13 +97,21 @@ impl Session {
         let mode_at = crate::startup::now();
         let mode = format!("{}x{}@{}", mode.width, mode.height, mode.scale);
         let environment = SessionEnvironment::new(case_pid, seed, &mode)?;
-        let mut session = Self { arena: None, startup: None, held_window: None, environment, configured: false, devices: None, input_done: false, stderr: None, control, supervisor: 0, names: BTreeMap::new(), output: BTreeMap::new(), exits: Vec::new(), launched: None, stopped: false, compositor: None, excluded: BTreeSet::new() };
-        let end = now()? + 1000;
-        while session.supervisor == 0 || session.devices.is_none() { session.poll(end)?; }
+        let mut session = Self { arena: None, artifacts: None, startup: None, held_window: None, environment, configured: false, devices: None, input_done: false, stderr: None, control, supervisor: 0, names: BTreeMap::new(), output: BTreeMap::new(), exits: Vec::new(), launched: None, stopped: false, compositor: None, excluded: BTreeSet::new() };
+        let watchdog = Watchdog::new(Wait::SupervisorReady)?;
+        let end = watchdog.deadline_ms();
+        while session.supervisor == 0 || session.devices.is_none() {
+            session.poll(end).map_err(|error| format!("{error}; waiting=supervisor-ready"))?;
+        }
+        drop(watchdog);
         let ready_at = crate::startup::now();
         session.control.send(&Message::Configure { case_pid, seed, mode })?;
-        let end = now()? + 1000;
-        while !session.configured { session.poll(end)?; }
+        let watchdog = Watchdog::new(Wait::Configure)?;
+        let end = watchdog.deadline_ms();
+        while !session.configured {
+            session.poll(end).map_err(|error| format!("{error}; waiting=configuration"))?;
+        }
+        drop(watchdog);
         session.startup = Some(crate::startup::Trace::open(std::path::Path::new(session.config_root()))?);
         let trace = session.startup.as_ref().unwrap();
         trace.at("connect-begin", began); trace.at("case-mode-ready", mode_at); trace.at("case-ready", ready_at);
@@ -97,11 +123,63 @@ impl Session {
         self.startup.as_ref().map_or_else(Vec::new, |trace| trace.snapshot())
     }
     pub fn arena_mut(&mut self) -> &mut crate::arena::Arena { self.arena.as_mut().expect("connected evidence arena") }
+    pub fn next_checkpoint(&mut self) -> Result<(), String> { self.arena_mut().next_checkpoint() }
+    /// Compare the arena capture and retain local evidence before its FRAME record.
+    /// Window/surface capture must already have published the check's frame slot.
+    pub fn check_stored(&mut self, suite: &str, definition: &crate::schema::Value,
+        bindings: &crate::frames::Bindings, references: &std::path::Path, barriers: &[&str],
+        client: &mut crate::RecordClient<'_>) -> Result<crate::compare::Verdict, String> {
+        use crate::arena::{Slot, SlotRead};
+        let check = definition["check"].as_str().ok_or("missing check name")?;
+        let case = definition["case"].as_str().ok_or("missing case name")?;
+        let arena = self.arena.as_mut().ok_or("session arena not connected")?;
+        let (record, bytes) = match arena.read(Slot::Frame)? {
+            SlotRead::Final {record,bytes} if record.check == check && !record.oversize => (record,bytes),
+            _ => return Err("check frame is not finalized in arena".into()),
+        };
+        if matches!(arena.read(Slot::Screen)?, SlotRead::Free) {
+            let _ = crate::capture::screen(arena, check, libbreenix::window::ObservationKind::Composed);
+        }
+        let input_log = std::fs::read("/proc/breenix/input-ledger");
+        let source = match definition["source"]["kind"].as_str() {
+            Some("window") => format!("window:{}", definition["source"]["window"].as_str().ok_or("missing window key")?),
+            Some(kind) => kind.to_string(),
+            None => return Err("missing source kind".into()),
+        };
+        let frame = crate::compare::Frame::new(&bytes, record.width as usize, record.height as usize,
+            record.width as usize*4, crate::compare::Format::Bgrx).map_err(|e| format!("check frame: {e:?}"))?;
+        use crate::artifacts::CheckWriter;
+        let destination = std::path::Path::new("/var/uitest").join(suite).join(case);
+        let writer = self.artifacts.get_or_insert_with(|| crate::artifacts::Local::new(std::path::Path::new("/var/uitest"),suite,case));
+        if writer.path() != destination { return Err("session artifact case changed".into()); }
+        // An unreadable input ledger is a save error, not a comparison error.
+        struct Unavailable(std::path::PathBuf);
+        impl crate::artifacts::CheckWriter for Unavailable {
+            fn path(&self) -> &std::path::Path { &self.0 }
+            fn write(&mut self, _: &str, _: &[u8]) -> Result<(), crate::artifacts::SaveError> { Err(crate::artifacts::SaveError::Io) }
+        }
+        let mut unavailable = Unavailable(std::path::Path::new("/var/uitest").join(suite).join(case));
+        let mut artifacts = crate::frames::ArtifactContext {
+            arena, input_log:input_log.as_deref().unwrap_or(&[]),
+            writer:if input_log.is_ok() { writer } else { &mut unavailable },
+            save_all:crate::artifacts::save_all(),
+        };
+        let verdict = crate::frames::check_stored_with_artifacts(suite,definition,
+            crate::frames::Capture {frame,source:&source,
+                checkpoint:definition["at"]["checkpoint"].as_str().ok_or("missing checkpoint")?,
+                commit:record.commit,epoch:record.epoch,barriers},bindings,references,client,&mut artifacts)?;
+        #[cfg(target_os = "breenix")]
+        if !verdict.comparison.passed() && client.is_outer() {
+            let _ = crate::retention::retain(suite, case);
+        }
+        Ok(verdict)
+    }
     /// Wait for the supervisor to witness the live window and register its remnant hold.
     pub fn hold_window(&mut self, id: u64) -> Result<(), String> {
         self.held_window = None;
         self.control.send(&Message::HoldWindow(id))?;
-        let end = now()? + 1000;
+        let watchdog = Watchdog::new(Wait::HoldWindow)?;
+        let end = watchdog.deadline_ms();
         while self.held_window != Some(id) { self.poll(end)?; }
         Ok(())
     }
@@ -110,7 +188,8 @@ impl Session {
         if self.stopped { return Err("session has ended".into()); }
         self.input_done = false;
         self.control.send(&Message::Input(event))?;
-        let end = now()? + 2000;
+        let watchdog = Watchdog::new(Wait::InputAck)?;
+        let end = watchdog.deadline_ms();
         while !self.input_done { self.poll(end)?; }
         Ok(())
     }
@@ -120,7 +199,8 @@ impl Session {
         if self.stopped {return Err("session has ended".into());}
         self.input_done=false;
         self.control.send(&Message::Motion {x,y})?;
-        let end=now()?+2000;
+        let watchdog = Watchdog::new(Wait::InputAck)?;
+        let end = watchdog.deadline_ms();
         while !self.input_done {self.poll(end)?;}
         Ok(())
     }
@@ -128,7 +208,8 @@ impl Session {
         if self.stopped { return Err("session has ended".into()); }
         self.input_done = false;
         self.control.send(&Message::Text(text.into()))?;
-        let end = now()? + 2000;
+        let watchdog = Watchdog::new(Wait::InputAck)?;
+        let end = watchdog.deadline_ms();
         while !self.input_done { self.poll(end)?; }
         Ok(())
     }
@@ -137,6 +218,35 @@ impl Session {
     /// Exclude a window from required clock/settle participation (plan 6.3).
     pub fn exclude(&mut self, window: u64) { self.excluded.insert(window); }
     pub fn is_excluded(&self, window: u64) -> bool { self.excluded.contains(&window) }
+
+    /// Advance UI milliseconds and wait for kernel-accepted participant metadata.
+    pub fn step(&mut self, dt_ms: u64) -> Result<libbreenix::ui_clock::Stamp, String> {
+        if self.stopped { return Err("session has ended".into()); }
+        let clock = crate::clock::Clock::open(&std::path::Path::new(self.config_root()).join("ui-clock"))?;
+        let mut step = clock.begin(dt_ms, Self::now_ns()?, |id| self.is_excluded(id))?;
+        loop {
+            step.check(Self::now_ns()?)?;
+            for id in step.waiting().to_vec() {
+                if id == libbreenix::ui_clock::COMPOSITOR_ID {
+                    let mut status = libbreenix::window::abi::CompositorStatus::default();
+                    if libbreenix::window::call(libbreenix::window::abi::op::COMPOSITOR_STATUS, &mut status).is_ok()
+                        && self.compositor == Some(u64::from(status.owner)) {
+                        step.check(Self::now_ns()?)?;
+                        step.observe_compositor(&status);
+                    }
+                    continue;
+                }
+                if let Ok((_, meta)) = libbreenix::window::read_meta(id) {
+                    step.check(Self::now_ns()?)?;
+                    step.observe(id, meta.epoch);
+                }
+            }
+            // A metadata read finishing beyond the real bound cannot rescue a timeout.
+            step.check(Self::now_ns()?)?;
+            if step.complete() { return Ok(step.stamp()); }
+            self.poll_once()?;
+        }
+    }
 
     /// Wait at most two real seconds for a registered title's completed commit.
     pub fn wait_window(&mut self, title: &str) -> Result<WindowReady, String> {
@@ -184,7 +294,8 @@ impl Session {
     pub fn stderr(&mut self, pid: u64) -> Result<AppStderr, String> {
         self.stderr = Some((pid, AppStderr::default(), false));
         self.control.send(&Message::ReadStderr(pid))?;
-        let end = now()? + 1000;
+        let watchdog = Watchdog::new(Wait::Stderr)?;
+        let end = watchdog.deadline_ms();
         loop {
             if self.stderr.as_ref().is_some_and(|(_, _, done)| *done) {
                 return Ok(self.stderr.take().unwrap().1);
@@ -201,13 +312,14 @@ impl Session {
         self.await_launch(argv)
     }
     fn await_launch(&mut self, argv: &[&[u8]]) -> Result<u64, String> {
-        let end = now()? + 1000;
+        let watchdog = Watchdog::new(Wait::Launch)?;
+        let end = watchdog.deadline_ms();
         loop {
             if let Some(pid) = self.launched.take() {
                 self.names.insert(pid, String::from_utf8_lossy(argv[0]).into_owned());
                 return Ok(pid);
             }
-            self.poll(end)?;
+            self.poll(end).map_err(|error| format!("{error}; waiting=launch program={}", String::from_utf8_lossy(argv[0])))?;
         }
     }
     fn poll(&mut self, end: i128) -> Result<(), String> {
@@ -244,7 +356,8 @@ impl Session {
         Ok(())
     }
     pub fn read_line(&mut self, pid: u64) -> Result<String, String> {
-        let end = now()? + 2000;
+        let watchdog = Watchdog::new(Wait::AppOutput)?;
+        let end = watchdog.deadline_ms();
         loop {
             if let Some(bytes) = self.output.get_mut(&pid) {
                 if let Some(at) = bytes.iter().position(|&b| b == b'\n') {
@@ -256,7 +369,8 @@ impl Session {
         }
     }
     pub fn wait_exit(&mut self, pid: u64) -> Result<ProcessExit, String> {
-        let end = now()? + 2000;
+        let watchdog = Watchdog::new(Wait::AppExit)?;
+        let end = watchdog.deadline_ms();
         loop {
             if let Some(exit) = self.exits.iter().find(|exit| exit.pid == pid) { return Ok(exit.clone()); }
             self.poll(end)?;
@@ -277,8 +391,14 @@ impl Session {
     }
     pub fn teardown(&mut self) -> Result<Vec<ProcessExit>, String> {
         if !self.stopped { self.control.send(&Message::Teardown)?; }
-        let end = now()? + 1500;
-        while !self.stopped { self.poll(end)?; }
+        let watchdog = Watchdog::new(Wait::Stopped)?;
+        let end = watchdog.deadline_ms();
+        while !self.stopped {
+            if let Err(error) = self.poll(end) {
+                let note = self.startup.as_ref().map_or_else(|| "teardown-stage=unavailable".into(), crate::startup::Trace::teardown_note);
+                return Err(format!("{error}; {note}"));
+            }
+        }
         Ok(self.exits.clone())
     }
 }

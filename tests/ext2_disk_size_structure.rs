@@ -327,12 +327,12 @@ payload_bytes=$(( payload_bytes + $(file_size_bytes \"$f\") ))\ndone\n";
     // the "silently continue instead of refusing" regression #850's own
     // fix rules out. exits_on_shortfall must redden; the other two
     // predicates, which don't depend on this one line, must stay green.
-    let exit_in_context = "    echo \"  use the 256MB default.\" >&2\n    exit 1\nfi\n";
+    let exit_in_context = "    echo \"  use the payload-derived default.\" >&2\n    exit 1\nfi\n";
     assert!(
         text.contains(exit_in_context),
         "the reconstructed exit line must match the real file, or this mutation proves nothing"
     );
-    let without_exit = text.replacen(exit_in_context, "    echo \"  use the 256MB default.\" >&2\nfi\n", 1);
+    let without_exit = text.replacen(exit_in_context, "    echo \"  use the payload-derived default.\" >&2\nfi\n", 1);
     assert_ne!(without_exit, text, "mutation 2 must apply");
     assert!(
         computes_payload_from_globs(&without_exit),
@@ -358,7 +358,7 @@ echo \"ERROR: requested size ${SIZE_MB}MB is too small for the ${payload_mb_disp
 echo \"  Needs at least ${required_mb}MB (shortfall: $((required_mb - SIZE_MB))MB).\" >&2\n    \
 echo \"  Refusing to build a disk image that would fail partway through the copy\" >&2\n    \
 echo \"  step with ENOSPC. Pass --size ${required_mb} or larger, or omit --size to\" >&2\n    \
-echo \"  use the 256MB default.\" >&2\n    \
+echo \"  use the payload-derived default.\" >&2\n    \
 exit 1\nfi\n";
     assert!(
         text.contains(guard_block),

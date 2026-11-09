@@ -815,6 +815,12 @@ reviewer, date, what was checked). Frames saved from runs never become reference
   copies the manifests, references, font pins and provenance file into each run's evidence directory before
   boot. That copy is storage, not verdict.
 
+The form, menu and list scenarios declare 11 logical-scale-1 definitions in
+`docs/suites/ui-testing.json`. `app_checkpoint` constructs the corresponding
+geometry and reviewed reference pin for the active UI scale, 1 or 2, using `PROVENANCE.json`.
+The host transport accounting binds the stable case/check names; the FRAME
+definition hash identifies the concrete instance validated before comparison.
+
 ### 7.6 Tolerance policy
 
 Exact (`channel` 0, `maxDiffering` 0) for everything BreenGL draws and everything either compositor
@@ -1090,6 +1096,11 @@ buffer pool. Evidence is kept by copies and remnants instead:
   counts and hashes, the INPUT record's first missing serial, and the COLLECT record, all on serial. Artifacts
   are capped at 32 MiB per boot. Past the cap, or on an I/O error, the record says `artifacts=none:cap` or
   `none:io` and the primary failure stands. A save failure never turns into a PASS.
+<!-- claim-lint:ok: tests/ui_artifacts.rs and tests/ui_artifact_records_test.py check the case-bound saved path. -->
+- A locally saved FRAME appends `path=/var/uitest/<suite>/<cat>/<case>` after
+  `artifacts=complete`. A passing FRAME may carry the same pair under `uitest-save`,
+  or `artifacts=none:cap|none:io` when saving fails. The path must name that record's
+  suite and case exactly; failed saving leaves the comparison verdict unchanged.
 - `scripts/uitest-artifacts.py --disk IMAGE --out DIR` extracts the files from a stopped disk and writes an
   `index.html` that shows got, reference and diff side by side. It is a viewer, and its only exit status is
   "extracted".

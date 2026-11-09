@@ -29,6 +29,7 @@ pub mod compare;
 pub mod formula;
 
 pub mod frames;
+pub mod messages;
 
 pub mod capture_marker;
 pub mod capture;
@@ -36,3 +37,9 @@ pub mod capture;
 pub mod capture_race;
 pub mod tree;
 pub mod input;
+
+pub mod clock;
+pub mod settle;
+
+#[cfg(target_os = "breenix")]
+pub mod retention;

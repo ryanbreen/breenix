@@ -179,18 +179,21 @@ impl State {
     }
 }
 
-/// `COMPOSITE_RECORD`: the record of composite `serial`, as its header and entries.
+/// `COMPOSITE_RECORD`: read-only for the compositor or root observer.
+/// Serial 0 selects the latest successful completion of the live claim, so an
+/// idle/no-change epoch can reuse pixels without reusing a previous session.
 pub fn record(caller: &Caller, serial: u64) -> Result<(CompositeRecordHeader, Vec<CompositeEntry>), i32> {
     let reg = REGISTRY.lock();
-    if !reg.is_compositor(caller) {
+    if !reg.is_compositor(caller) && !caller.is_root() {
         return Err(EPERM);
     }
-    let r = reg
-        .present
-        .records
-        .iter()
-        .find(|r| r.serial == serial)
-        .ok_or(ENOENT)?;
+    let r = if serial == 0 {
+        let claim = reg.claim.ok_or(ENOENT)?;
+        reg.present.records.iter().rev()
+            .find(|r| r.serial > claim.first_serial && r.flags == 0)
+    } else {
+        reg.present.records.iter().find(|r| r.serial == serial)
+    }.ok_or(ENOENT)?;
     let mut header = CompositeRecordHeader::ZERO;
     header.serial = r.serial;
     header.pixels = r.pixels;

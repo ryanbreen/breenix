@@ -12,3 +12,12 @@ publish = false
 libgfx-ref = { path = "../../libs/libgfx-ref" }
 libfont = { path = "../../libs/libfont" }
 libicon = { path = "../../libs/libicon" }
+libimg = { path = "../../libs/libimg" }
+libimg-encode = { path = "../../libs/libimg-encode" }
+serde_json = "=1.0.154"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))'] }
+
+[dev-dependencies]
+libpixcheck = { path = "../../libs/libpixcheck" }

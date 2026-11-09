@@ -16,7 +16,6 @@ use libbui::widget::{
 use libbui::{
     focus::FocusChain, input::PointerCapture, InputState, Key, KeyInput, Rect, Theme, WidgetEvent,
 };
-#[cfg(target_os = "breenix")]
 use libgfx::{color::Color, surface::Surface};
 use serde_json::json;
 
@@ -96,7 +95,6 @@ impl Terminal {
             self.cells.len() as i32 * layout::CELL_HEIGHT,
         )
     }
-    #[cfg(target_os = "breenix")]
     fn draw(&self, surface: &mut Surface) {
         let scale = surface.ui_scale() as i32;
         let color = |rgb: u32| Color::rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8);
@@ -168,6 +166,9 @@ struct PointerProbe {
 }
 pub struct Widgets {
     probe: Option<PointerProbe>,
+    wrong_color: bool,
+    drop_key: bool,
+    frozen: Option<Box<Widgets>>,
     theme: Theme,
     entry: TextField,
     submit: Button,
@@ -222,6 +223,9 @@ impl Widgets {
         let mut scene = Self {
             theme,
             probe: None,
+            wrong_color: false,
+            drop_key: false,
+            frozen: None,
             entry: TextField::new(rect(layout::ENTRY), 256),
             submit: Button::new(rect(layout::SUBMIT), b"Submit"),
             disabled,
@@ -246,6 +250,20 @@ impl Widgets {
         };
         scene.sync_focus();
         scene
+    }
+    pub fn faulted(wrong_color: bool, drop_key: bool, stale_pixels: bool) -> Self {
+        let mut scene = Self::new();
+        scene.wrong_color = wrong_color;
+        scene.drop_key = drop_key;
+        if stale_pixels { scene.frozen = Some(Box::new(Self::new())); }
+        scene
+    }
+    /// Select drawing state separately from the semantic publication state.
+    pub fn drawing_scene(&self) -> &Self { self.frozen.as_deref().unwrap_or(self) }
+    pub fn submit_theme(&self) -> Theme {
+        let mut theme = self.theme;
+        if self.wrong_color { theme.widget_bg = libgfx::color::Color::rgb(0xd0, 0x20, 0x40); }
+        theme
     }
     /// Deterministic partial-row and captured-layout scene for pointer cases.
     pub fn pointer_probe() -> Self {
@@ -364,6 +382,14 @@ impl Widgets {
         }
     }
     pub fn key(&mut self, input: &KeyInput<'_>) {
+        let mut input = *input;
+        if self.drop_key && self.focus.focused() == Some(ENTRY as usize)
+            && input.key == Key::Char && !input.ctrl && !input.alt && !input.text.is_empty() {
+            let first = input.text.chars().next().expect("nonempty text");
+            input.text = &input.text[first.len_utf8()..];
+            self.drop_key = false;
+        }
+        let input = &input;
         if self.menu.is_open() {
             let event = self.menu.key(input);
             self.menu_event(event);
@@ -470,11 +496,14 @@ impl Widgets {
         }
         tree
     }
-    #[cfg(target_os = "breenix")]
     pub fn draw(&self, surface: &mut Surface) {
+        let scene = self.drawing_scene();
+        scene.draw_current(surface);
+    }
+    fn draw_current(&self, surface: &mut Surface) {
         surface.clear(self.theme.panel_bg);
         self.entry.draw(surface, &self.theme);
-        self.submit.draw(surface, &self.theme);
+        self.submit.draw(surface, &self.submit_theme());
         self.disabled.draw(surface, &self.theme);
         self.accept.draw(surface, &self.theme);
         self.amount.draw(surface, &self.theme);

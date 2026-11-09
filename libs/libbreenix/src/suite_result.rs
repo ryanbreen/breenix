@@ -57,7 +57,7 @@ fn parse<'a>(line: &'a str, suite: &str, case: &str) -> Option<Record<'a>> {
         || t[0] != "SUITE" || t[1] != suite || t[3] != case { return None; }
     match t[2] {
         "FRAME" => {
-            if !matches!(t.len(), 14 | 20) || !name(t[4]) || !hex(field(t[5], "def")?, 8) { return None; }
+            if !matches!(t.len(), 14 | 15 | 16 | 20 | 21) || !name(t[4]) || !hex(field(t[5], "def")?, 8) { return None; }
             let reference = field(t[6], "ref")?;
             if !matches!(reference, "formula" | "structural") && !hex(reference, 8) { return None; }
             let source = field(t[7], "source")?;
@@ -68,9 +68,15 @@ fn parse<'a>(line: &'a str, suite: &str, case: &str) -> Option<Record<'a>> {
             let h = count(t[11], "h")?;
             if w == 0 || h == 0 || !hex(field(t[12], "sha256")?, 64) { return None; }
             let matched = field(t[13], "result")?;
+            let valid_path = |token: &str| {
+                field(token, "path").is_some_and(|p| p == std::format!("/var/uitest/{suite}/{case}"))
+            };
             match matched {
-                "match" if t.len() == 14 => Some(Record::Frame { check: t[4], matched: true }),
-                "mismatch" if t.len() == 20 => {
+                "match" if t.len() == 14 || (t.len() == 15 && artifacts(field(t[14], "artifacts")?)
+                    && field(t[14], "artifacts")? != "complete")
+                    || (t.len() == 16 && t[14] == "artifacts=complete" && valid_path(t[15])) =>
+                        Some(Record::Frame { check: t[4], matched: true }),
+                "mismatch" if t.len() == 20 || t.len() == 21 => {
                     let compared = count(t[14], "compared")?;
                     let differing = count(t[15], "differing")?;
                     let (x, y) = field(t[16], "first")?.split_once(',')?;
@@ -78,7 +84,8 @@ fn parse<'a>(line: &'a str, suite: &str, case: &str) -> Option<Record<'a>> {
                         || number(x)? >= w || number(y)? >= h
                         || !hex(field(t[17], "got")?.strip_prefix('#')?, 6)
                         || !hex(field(t[18], "want")?.strip_prefix('#')?, 6)
-                        || !artifacts(field(t[19], "artifacts")?) { return None; }
+                        || !artifacts(field(t[19], "artifacts")?)
+                        || (t.len() == 21 && (t[19] != "artifacts=complete" || !valid_path(t[20]))) { return None; }
                     Some(Record::Frame { check: t[4], matched: false })
                 }
                 _ => None,

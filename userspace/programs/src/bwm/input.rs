@@ -26,6 +26,11 @@ struct Context {
     derived: u32,
     accounted: bool,
 }
+// Published only after the kernel accepts a source's WM_HANDLED disposition.
+static HANDLED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(super) fn handled_serial() -> u64 {
+    HANDLED.load(std::sync::atomic::Ordering::Relaxed)
+}
 #[derive(Clone, Copy)]
 struct Queued {
     event: abi::WindowEvent,
@@ -62,7 +67,11 @@ fn dispose(serial: u64, derived: u32, window: u64, disposition: u32, reason: u32
         reserved: 0,
     };
     match READER.get().expect("input reader").dispose(&d) {
-        Ok(()) => {}
+        Ok(()) => {
+            if derived == 0 && disposition == outcome::WM_HANDLED {
+                HANDLED.fetch_max(serial, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
         // Pressure recovery can terminate a source row before bwm drains it.
         Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EALREADY)) => {}
         Err(e) => eprintln!("[bwm] input disposition {}: {}", serial, e),

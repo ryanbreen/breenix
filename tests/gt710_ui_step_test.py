@@ -56,6 +56,17 @@ def serial():
     return '\n'.join(lines) + '\n'
 
 
+def passing_frame_records(text):
+    """Supply the FRAME obligations of the synthetic full-PASS recording."""
+    for entry in MANIFEST.get('frameChecks', []):
+        case, check = entry['case'], entry['check']
+        record = (f'SUITE ui-testing FRAME {case} {check} def=0123abcd ref=formula '
+                  f'source=window:app commit=1 epoch=0 w=2 h=1 sha256={"a" * 64} result=match\n')
+        marker = f'SUITE ui-testing CASE {case} PASS '
+        text = text.replace(marker, record + marker)
+    return text
+
+
 class UiStep(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
@@ -108,6 +119,45 @@ class UiStep(unittest.TestCase):
 
     def record(self):
         return API['record_ui_capture'](self.path, SHA, 1)
+
+    def test_retained_bundle_record_is_scored_and_bound(self):
+        case = 'diagnosis/artifacts-on-mismatch'
+        label = 'uitest-' + hashlib.sha256(case.encode()).hexdigest()[:16]
+        body = b'UTART001 fixture'
+        digest = hashlib.sha256(body).hexdigest()
+        record = (f'SUITE ui-testing EVIDENCE bundle {case} label={label} '
+                  f'bytes={len(body)} sha256={digest} result=ok path=/var/uitest/ui-testing/{case}\n')
+        text = serial().replace(f'SUITE ui-testing CASE {case} ', record + f'SUITE ui-testing CASE {case} ')
+        (self.path / f'diagnostic-{label}.bin').write_bytes(body)
+        receipt = dict(id=BOOT, route='/gt710-upload/' + 'b' * 64 + '/diagnostics/' + label,
+                       complete=True, bytes=len(body), sha256=digest)
+        (self.path / f'native-diagnostic-{label}.json').write_text(json.dumps(receipt))
+        def score(value):
+            (self.path / 'serial.txt').write_text(value)
+            return self.record()
+        self.assertEqual(score(text), 0)
+        full = text
+        for name in NAMES:
+            full = full.replace(f'CASE {name} FAIL ms=1 msg=pending', f'CASE {name} PASS ms=1')
+        full = full.replace(f'DONE passed={len(SELECTED)} failed={len(NAMES)-len(SELECTED)}',
+                            f'DONE passed={len(NAMES)} failed=0')
+        verdict = runpy.run_path(str(ROOT / 'scripts/suite-verdict.py'))['verdict']
+        full_log = self.path / 'full-bundle.txt'
+        full = passing_frame_records(full)
+        full_log.write_text(full)
+        self.assertTrue(verdict(MANIFEST, full_log, [full_log])[0])
+        full_log.write_text(full.replace(record, record + record))
+        self.assertFalse(verdict(MANIFEST, full_log, [full_log])[0])
+        for bad in [record.replace(label, 'uitest-' + '0' * 16),
+                    record.replace('result=ok', 'result=disk-only:deadline'),
+                    record.replace('result=ok', 'result=disk-only:no-route'),
+                    record.replace(f'bytes={len(body)}', 'bytes=2097153'),
+                    record.replace('path=/var/uitest/ui-testing/', 'path=/wrong/'),
+                    record + record]:
+            with self.subTest(record=bad):
+                self.assertEqual(score(text.replace(record, bad)), 1)
+        (self.path / f'diagnostic-{label}.bin').write_bytes(b'corrupt')
+        self.assertEqual(score(text), 1)
 
     def test_selection_and_required_refusals(self):
         self.assertEqual(self.record(), 0)
@@ -232,6 +282,22 @@ class UiStep(unittest.TestCase):
                         text.replace(line, line.replace('=123ns', f'={cap+1}ns')),
                         text.replace(line, '', 1) + line]:
                 self.assertEqual(score(bad), 1)
+
+    def test_step_seven_is_the_full_manifest_and_scores_as_a_full_suite(self):
+        selection = json.loads((ROOT / 'docs/gui/gt710-step-22-7.json').read_text())['cases']
+        self.assertEqual(selection, NAMES)
+        text = serial()
+        for name in NAMES:
+            text = text.replace(f'CASE {name} FAIL ms=1 msg=pending', f'CASE {name} PASS ms=1')
+        text = text.replace(f'DONE passed={len(SELECTED)} failed={len(NAMES)-len(SELECTED)}',
+                            f'DONE passed={len(NAMES)} failed=0')
+        log = self.path / 'full-serial.txt'
+        log.write_text(passing_frame_records(text))
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/suite-verdict.py'),
+                                 str(ROOT / 'docs/suites/ui-testing.json'), str(log)],
+                                capture_output=True, text=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('PASS:', result.stdout)
 
     def test_step_eight_is_refused(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/metal/gt710-suite'),

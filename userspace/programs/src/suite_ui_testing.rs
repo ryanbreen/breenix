@@ -1,4 +1,6 @@
-//! UI testing suite skeleton; each unbuilt case fails with its planned layer.
+//! UI testing: scripted sessions, literal trees, frames and causal barriers.
+#[path = "uitest_suite/capture_app.rs"]
+mod capture_app;
 #[path = "uitest_suite/runner.rs"]
 mod runner;
 #[path = "uitest_suite/inner.rs"]
@@ -27,13 +29,21 @@ mod tree;
 mod wm_tree;
 #[path = "uitest_suite/input.rs"]
 mod input;
+#[path = "uitest_suite/input_time.rs"]
+mod input_time;
 #[path = "uitest_suite/input_delivery.rs"]
 mod input_delivery;
-use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
-
-fn pending(layer: &str, step: u8) -> CaseResult {
-    fail(format!("not built: {} (E22 step 22.{})", layer, step))
-}
+#[path = "uitest_suite/clock.rs"]
+mod clock;
+#[path = "uitest_suite/timers.rs"]
+mod timers;
+#[path = "uitest_suite/settle.rs"]
+mod settle;
+#[path = "uitest_suite/settle_composite.rs"]
+mod settle_composite;
+#[path = "uitest_suite/proof.rs"]
+mod proof;
+use breenix_suite::suite::{case, category, suite, Suite};
 
 static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     category("runner", "Proof executor & subreaper", &[
@@ -56,7 +66,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // chord(Ctrl, A) arrives as A with the Ctrl modifier. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("chord", "chord(Ctrl, A) arrives as A with the Ctrl modifier", input::chord).session(libuitest::supervisor::serve),
         // Holding a key for 600 ms of UI time gives exactly 3 repeats. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("hold-repeat", "Holding a key for 600 ms of UI time gives exactly 3 repeats", || pending("input", 7)),
+        case("hold-repeat", "Holding a key for 600 ms of UI time gives exactly 3 repeats", input_time::hold_repeat).session(libuitest::supervisor::serve),
         // click(node) lands on a visible point of the node, and the delivery names that node's window. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("click-node", "click(node) lands on a visible point of the node, and the delivery names that node's window", input::click_node).session(libuitest::supervisor::serve),
         // Clicking a node partly covered by another window lands on its exposed part, confirmed by hit test. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -64,7 +74,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Clicking a node clipped by a scrolled container uses its visible part. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("click-clipped", "Clicking a node clipped by a scrolled container uses its visible part", input::click_clipped).session(libuitest::supervisor::serve),
         // double_click delivers click counts 1 and 2. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("double-click", "double_click delivers click counts 1 and 2", || pending("input", 7)),
+        case("double-click", "double_click delivers click counts 1 and 2", input_time::double_click).session(libuitest::supervisor::serve),
         // A ten-step drag delivers ten motions in order between a press and a release; when the layout changes on the press and again mid-drag, and when the window moves mid-drag, every later motion and the release still reach the captured node through bwm's grab, the drag ends in exactly one completed gesture, and no button, pressed flag or capture is held at the end. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("drag-steps", "A ten-step drag reaches its captured node in order through layout changes and a window move, ending with nothing held", input::drag_steps).session(libuitest::supervisor::serve),
         // scroll(node, dy) delivers the wheel amount to the window under the node. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -74,7 +84,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // delivered(serial) returns only after the target window processed that serial. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("delivered", "delivered(serial) returns only after the target window processed that serial", input_delivery::delivered).session(libuitest::supervisor::serve),
         // An event sent to a hung app is reported unprocessed when the 2 s settle bound passes, naming the serial and the window. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("undelivered-fails", "An event sent to a hung app is reported unprocessed at the 2 s settle bound, naming the serial and window", || pending("input", 7)),
+        case("undelivered-fails", "An event sent to a hung app is reported unprocessed at the 2 s settle bound, naming the serial and window", settle::undelivered_fails).session(libuitest::supervisor::serve),
         // Every serial of a script ends with a terminal disposition. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("dispositions-all", "Every serial of a script ends with a terminal disposition", input_delivery::dispositions_all).session(libuitest::supervisor::serve),
         // A non-root session cannot inject, after a root session has. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -82,7 +92,7 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Ending a session releases every held key and button. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("teardown-releases", "Ending a session releases every held key and button", sessions::teardown_releases).session(libuitest::supervisor::serve),
         // Input arrives in order while the app animates. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("input-during-animation", "Input arrives in order while the app animates", || pending("input", 7)),
+        case("input-during-animation", "Input arrives in order while the app animates", settle_composite::input_during_animation).session(libuitest::supervisor::serve),
         // Input addressed to two windows of one app arrives at each. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("two-windows", "Input addressed to two windows of one app arrives at each", input_delivery::two_windows).session(libuitest::supervisor::serve),
         // A scripted Super double tap opens the launcher through bwm's real hotkey path. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -142,57 +152,57 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     ]),
     category("clock", "UI time & stepping", &[
         // An app reading the UI clock sees it stand still between steps. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("clock-frozen", "An app reading the UI clock sees it stand still between steps", || pending("clock", 7)),
+        case("clock-frozen", "An app reading the UI clock sees it stand still between steps", clock::frozen).session(libuitest::supervisor::serve),
         // step(16) advances the app's clock by exactly 16 ms and the epoch by one. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("clock-step", "step(16) advances the app's clock by exactly 16 ms and the epoch by one", || pending("clock", 7)),
+        case("clock-step", "step(16) advances the app's clock by exactly 16 ms and the epoch by one", clock::step).session(libuitest::supervisor::serve),
         // Each step is acknowledged by every required participant in its commit metadata. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("epochs-acked", "Each step is acknowledged by every required participant in its commit metadata", || pending("clock", 7)),
+        case("epochs-acked", "Each step is acknowledged by every required participant in its commit metadata", clock::epochs_acked).session(libuitest::supervisor::serve),
         // An app's one-second timer fires on step(1000), not on real time. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("timers-virtual", "An app's one-second timer fires on step(1000), not on real time", || pending("clock", 7)),
+        case("timers-virtual", "An app's one-second timer fires on step(1000), not on real time", timers::timers_virtual).session(libuitest::supervisor::serve),
         // Wall-clock time shown by apps and bwm is the fixed instant plus elapsed UI time. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wall-time-fixed", "Wall-clock time shown by apps and bwm is the fixed instant plus elapsed UI time", || pending("clock", 7)),
+        case("wall-time-fixed", "Wall-clock time shown by apps and bwm is the fixed instant plus elapsed UI time", clock::wall_time_fixed).session(libuitest::supervisor::serve),
         // bwm's taskbar clock and repeat timer read the UI clock. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wm-clock", "bwm's taskbar clock and repeat timer read the UI clock", || pending("clock", 7)),
+        case("wm-clock", "bwm's taskbar clock and repeat timer read the UI clock", clock::wm_clock).session(libuitest::supervisor::serve),
         // Two apps in one session step together. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("shared-clock", "Two apps in one session step together", || pending("clock", 7)),
+        case("shared-clock", "Two apps in one session step together", clock::shared).session(libuitest::supervisor::serve),
         // A stopped participant makes step fail naming it, unless the case excluded it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("stopped-unacked-fails", "A stopped participant makes step fail naming it, unless the case excluded it", || pending("clock", 7)),
+        case("stopped-unacked-fails", "A stopped participant makes step fail naming it, unless the case excluded it", clock::stopped).session(libuitest::supervisor::serve),
         // Stepping never deadlocks against buffer back-pressure. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("backpressure-stepped", "Stepping never deadlocks against buffer back-pressure", || pending("clock", 7)),
+        case("backpressure-stepped", "Stepping never deadlocks against buffer back-pressure", timers::backpressure_stepped).session(libuitest::supervisor::serve),
         // An app that animates forever still lets every step complete. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("continuous-animation", "An app that animates forever still lets every step complete", || pending("clock", 7)),
+        case("continuous-animation", "An app that animates forever still lets every step complete", timers::continuous_animation).session(libuitest::supervisor::serve),
         // An app's real-clock read counter stays 0 in a session and rises when the test app reads the real clock on purpose. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("real-clock-counter", "An app's real-clock read counter stays 0 in a session and rises when the test app reads the real clock on purpose", || pending("clock", 7)),
+        case("real-clock-counter", "An app's real-clock read counter stays 0 in a session and rises when the test app reads the real clock on purpose", timers::real_clock_counter).session(libuitest::supervisor::serve),
         // Injected events carry UI time, and bwm's double-click threshold uses it. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("input-time", "Injected events carry UI time, and bwm's double-click threshold uses it", || pending("clock", 7)),
+        case("input-time", "Injected events carry UI time, and bwm's double-click threshold uses it", input_time::input_time).session(libuitest::supervisor::serve),
     ]),
     category("settle", "Causal barriers & settling", &[
         // settle returns once nothing changes. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("idle", "settle returns once nothing changes", || pending("settle", 7)),
+        case("idle", "settle returns once nothing changes", settle::idle).session(libuitest::supervisor::serve),
         // settle waits until the target window commits with the serial processed, not until it reads the event. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("processed-not-consumed", "settle waits until the target window commits with the serial processed, not until it reads the event", || pending("settle", 7)),
+        case("processed-not-consumed", "settle waits until the target window commits with the serial processed, not until it reads the event", settle::processed_not_consumed).session(libuitest::supervisor::serve),
         // An app that drains events and never commits makes settle fail, naming the window and the serial. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("drained-not-rendered", "An app that drains events and never commits makes settle fail, naming the window and the serial", || pending("settle", 7)),
+        case("drained-not-rendered", "An app that drains events and never commits makes settle fail, naming the window and the serial", settle::drained_not_rendered).session(libuitest::supervisor::serve),
         // An event that changes nothing settles through commit_no_change. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("no-change-ack", "An event that changes nothing settles through commit_no_change", || pending("settle", 7)),
+        case("no-change-ack", "An event that changes nothing settles through commit_no_change", settle::no_change_ack).session(libuitest::supervisor::serve),
         // settle waits until a completed composite lists every visible window at its newest pixel generation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("composited", "settle waits until a completed composite lists every visible window at its newest pixel generation", || pending("settle", 7)),
+        case("composited", "settle waits until a completed composite lists every visible window at its newest pixel generation", settle_composite::composited).session(libuitest::supervisor::serve),
         // Settling after a commit_no_change completes through the composite that already holds the window's pixels, with no new composite. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("no-change-no-composite", "Settling after a commit_no_change completes through the composite that already holds the window's pixels", || pending("settle", 7)),
+        case("no-change-no-composite", "Settling after a commit_no_change completes through the composite that already holds the window's pixels", settle_composite::no_change_no_composite).session(libuitest::supervisor::serve),
         // An idle step settles through bwm's `none-needed` acknowledgment, with the composite counter unchanged. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("bwm-ack-no-composite", "An idle step settles through bwm's none-needed acknowledgment, with the composite counter unchanged", || pending("settle", 7)),
+        case("bwm-ack-no-composite", "An idle step settles through bwm's none-needed acknowledgment, with the composite counter unchanged", settle_composite::bwm_ack_no_composite).session(libuitest::supervisor::serve),
         // A hotkey settles with no client involved, through its WM-handled disposition. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wm-handled", "A hotkey settles with no client involved, through its WM-handled disposition", || pending("settle", 7)),
+        case("wm-handled", "A hotkey settles with no client involved, through its WM-handled disposition", settle_composite::wm_handled).session(libuitest::supervisor::serve),
         // settle waits for a named tree predicate on an asynchronous result. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("async-predicate", "settle waits for a named tree predicate on an asynchronous result", || pending("settle", 7)),
+        case("async-predicate", "settle waits for a named tree predicate on an asynchronous result", settle::async_predicate).session(libuitest::supervisor::serve),
         // A settle that cannot complete fails, naming the window, serial or predicate it waited for. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("timeout-names", "A settle that cannot complete fails, naming the window, serial or predicate it waited for", || pending("settle", 7)),
+        case("timeout-names", "A settle that cannot complete fails, naming the window, serial or predicate it waited for", settle::timeout_names).session(libuitest::supervisor::serve),
         // settle returns while an app has a future animation deadline. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("animation-allowed", "settle returns while an app has a future animation deadline", || pending("settle", 7)),
+        case("animation-allowed", "settle returns while an app has a future animation deadline", settle_composite::animation_allowed).session(libuitest::supervisor::serve),
         // A minimized window still acknowledges epochs and processes its serials, settle waits for those, and settle does not wait for its pixels; once restored, the next settle waits for its current generation. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("minimized-acks", "A minimized window acknowledges and processes without being waited on for pixels until it is restored", || pending("settle", 7)),
+        case("minimized-acks", "A minimized window acknowledges and processes without being waited on for pixels until it is restored", settle_composite::minimized_acks).session(libuitest::supervisor::serve),
         // Repeated settle calls with nothing changing cause no extra frames. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("repeated-settle", "Repeated settle calls with nothing changing cause no extra frames", || pending("settle", 7)),
+        case("repeated-settle", "Repeated settle calls with nothing changing cause no extra frames", settle_composite::repeated_settle).session(libuitest::supervisor::serve),
     ]),
     category("sessions", "Sessions, state isolation & cleanup", &[
         // A desktop session with one app measures time to its first composited commit with a 2 s sanity cap. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
@@ -236,39 +246,39 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     ]),
     category("diagnosis", "Saved evidence & failure messages", &[
         // A mismatch saves the got image, diff image, tree, input log and screen. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("artifacts-on-mismatch", "A mismatch saves the got image, diff image, tree, input log and screen", || pending("diagnosis", 7)),
+        case("artifacts-on-mismatch", "A mismatch saves the got image, diff image, tree, input log and screen", diagnosis::artifacts_on_mismatch),
         // A passing case saves nothing unless saving is turned on. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("nothing-on-pass", "A passing case saves nothing unless saving is turned on", || pending("diagnosis", 7)),
+        case("nothing-on-pass", "A passing case saves nothing unless saving is turned on", diagnosis::nothing_on_pass),
         // With saving turned on, a passing case saves its frames. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("save-all", "With saving turned on, a passing case saves its frames", || pending("diagnosis", 7)),
+        case("save-all", "With saving turned on, a passing case saves its frames", diagnosis::save_all),
         // The saved input log lists every serial with its disposition. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("input-log", "The saved input log lists every serial with its disposition", || pending("diagnosis", 7)),
+        case("input-log", "The saved input log lists every serial with its disposition", diagnosis::input_log),
         // The saved screen is the readback at the failing step, with its record. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("screen-saved", "The saved screen is the readback at the failing step, with its record", || pending("diagnosis", 7)),
+        case("screen-saved", "The saved screen is the readback at the failing step, with its record", diagnosis::screen_saved),
         // When the case process is killed, the runner sends `end collect`, waits for the supervisor's `done` before sweeping, and the evidence is on disk. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("case-death", "When the case process is killed, the runner sends end collect, waits for done before sweeping, and the evidence is on disk", diagnosis::case_death),
         // An app that dies right after a commit still has that commit and tree saved, from its remnant. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("app-death", "An app that dies right after a commit still has that commit and tree saved, from its remnant", || pending("diagnosis", 7)),
+        case("app-death", "An app that dies right after a commit still has that commit and tree saved, from its remnant", diagnosis::app_death),
     ]),
     category("proof", "End-to-end scenarios & planted faults", &[
         // A widget drawn in the wrong color fails as pixel-mismatch with both colors. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("fault-wrong-color", "A widget drawn in the wrong color fails as pixel-mismatch with both colors", || pending("proof", 7)),
+        case("fault-wrong-color", "A widget drawn in the wrong color fails as pixel-mismatch with both colors", proof::fault_wrong_color),
         // An app that updates its tree but not its pixels fails as pixel-mismatch. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("fault-stale-pixels", "An app that updates its tree but not its pixels fails as pixel-mismatch", || pending("proof", 7)),
+        case("fault-stale-pixels", "An app that updates its tree but not its pixels fails as pixel-mismatch", proof::fault_stale_pixels),
         // An app that drops one key fails as tree-mismatch on the text field's value. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("fault-drop-key", "An app that drops one key fails as tree-mismatch on the text field's value", || pending("proof", 7)),
+        case("fault-drop-key", "An app that drops one key fails as tree-mismatch on the text field's value", proof::fault_drop_key),
         // A hung app fails as app-hung when the 2 s step bound passes, instead of hanging the suite. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("fault-hang", "A hung app fails as app-hung when the 2 s step bound passes, instead of hanging the suite", || pending("proof", 7)),
+        case("fault-hang", "A hung app fails as app-hung when the 2 s step bound passes, instead of hanging the suite", proof::fault_hang),
         // Filling the test app's form (text field, checkbox, slider, submit) gives the expected tree and frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("form-scenario", "Filling the test app's form (text field, checkbox, slider, submit) gives the expected tree and frame", || pending("proof", 7)),
+        case("form-scenario", "Filling the test app's form (text field, checkbox, slider, submit) gives the expected tree and frame", proof::form_scenario).session(libuitest::supervisor::serve).checks(&["initial", "typed", "checked", "slider", "submitted"]),
         // Opening a menu and choosing an item gives the expected tree and frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("menu-scenario", "Opening a menu and choosing an item gives the expected tree and frame", || pending("proof", 7)),
+        case("menu-scenario", "Opening a menu and choosing an item gives the expected tree and frame", proof::menu_scenario).session(libuitest::supervisor::serve).checks(&["initial", "opened", "chosen"]),
         // Scrolling and selecting in a list gives the expected tree and frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("list-scenario", "Scrolling and selecting in a list gives the expected tree and frame", || pending("proof", 7)),
+        case("list-scenario", "Scrolling and selecting in a list gives the expected tree and frame", proof::list_scenario).session(libuitest::supervisor::serve).checks(&["initial", "scrolled", "selected"]),
         // A scripted focus scenario on bwm gives the expected trees and screens. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wm-focus-scenario", "A scripted focus scenario on bwm gives the expected trees and screens", || pending("proof", 7)),
+        case("wm-focus-scenario", "A scripted focus scenario on bwm gives the expected trees and screens", proof::wm_focus_scenario).session(libuitest::supervisor::serve),
         // A scripted stacking scenario on bwm gives the expected trees and screens. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wm-stack-scenario", "A scripted stacking scenario on bwm gives the expected trees and screens", || pending("proof", 7)),
+        case("wm-stack-scenario", "A scripted stacking scenario on bwm gives the expected trees and screens", proof::wm_stack_scenario).session(libuitest::supervisor::serve),
     ]),
 ]).gui().defer_display();
 

@@ -107,10 +107,8 @@ pub fn prepare(root: &Path) -> Result<(), String> {
         for &(name, contents) in FIXTURE_FILES {
             let path = root.join("fixtures").join(name); fs::write(&path, contents)?;
         }
-        // A valid frozen BGCLK001 page; participant/step support is E22 22.6.
-        let mut clock = [0u8; 64]; clock[..8].copy_from_slice(b"BGCLK001");
-        clock[24..32].copy_from_slice(&WALL_BASE_NS.to_le_bytes());
-        let path = root.join("ui-clock"); fs::write(&path, clock)?;
+        libbreenix::ui_clock::ClockPage::create(&root.join("ui-clock"), WALL_BASE_NS)
+            .map_err(std::io::Error::other)?;
         Ok(())
     })();
     drop(mask);

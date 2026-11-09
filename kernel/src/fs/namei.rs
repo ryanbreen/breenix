@@ -81,6 +81,13 @@ impl Mount {
             Mount::Home => ext2::home_fs_write(),
         }.map_err(fs_errno)
     }
+
+    /// Removing names reuses their existing directory blocks. Keep mutation
+    /// exclusion and shrink custody, without waiting for unrelated allocation
+    /// reclamation merely because the device has little free space.
+    pub fn write_removal(self) -> Result<ext2::Ext2WriteGuard, u64> {
+        ext2::fs_sync_guard(matches!(self, Mount::Home)).map_err(fs_errno)
+    }
 }
 
 /// What a resolved pathname names.

@@ -38,6 +38,7 @@ Prints "PASS: <DONE line>" or "FAIL: <reason>" and exits 0 or 1.
 """
 
 import argparse
+import hashlib
 import json
 import shutil
 import subprocess
@@ -49,9 +50,46 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 # The records a case prints while it runs, which do not count.
 RESULT = ("FRAME", "TREE", "INPUT", "COLLECT")
-LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY", "HOSTPOINTER", "HOSTSSH", "SCREEN", "SCREENPERTURB") + RESULT
+LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY", "HOSTPOINTER", "HOSTSSH", "SCREEN", "SCREENPERTURB", "EVIDENCE") + RESULT
 # The runner's memory record, around the cases.
 MEMORY = ("MEMORY", "RECLAIMED")
+
+
+def bundle_shape(suite):
+    return (rf"SUITE {suite} EVIDENCE bundle ([a-z0-9/-]+) label=(uitest-[0-9a-f]{{16}})"
+            r" bytes=([1-9][0-9]*) sha256=([0-9a-f]{64})"
+            r" result=(?P<status>ok|disk-only:[a-z0-9]+(?:-[a-z0-9]+)*) path=(?P<path>/var/uitest/[^ ]+)")
+
+
+def bundle_disk_problem(records, disk):
+    """Disk-only anchors need bytes read from the stopped image, not a guest claim."""
+    retained = [match for kind, match, _ in records
+                if kind == 'EVIDENCE' and match['status'] != 'ok']
+    if not retained:
+        return None
+    if not disk:
+        return 'disk-only UI bundles require --disk for readback'
+    debugfs = next((path for path in (
+        'debugfs', '/usr/sbin/debugfs', '/sbin/debugfs',
+        '/opt/homebrew/opt/e2fsprogs/sbin/debugfs',
+        '/usr/local/opt/e2fsprogs/sbin/debugfs') if shutil.which(path)), None)
+    if not debugfs:
+        return 'UI bundle readback requires debugfs (e2fsprogs)'
+    with tempfile.TemporaryDirectory(prefix='suite-bundles-') as directory:
+        for index, match in enumerate(retained):
+            output = Path(directory) / str(index)
+            path = match['path'] + '/retention.bundle'
+            try:
+                read = subprocess.run([debugfs, '-R', f'dump {path} {output}', str(disk)],
+                                      capture_output=True, timeout=30, check=False)
+                if read.returncode or not output.is_file():
+                    return f'UI bundle is missing from raw disk: {path}'
+                if (output.stat().st_size != int(match[3])
+                        or hashlib.sha256(output.read_bytes()).hexdigest() != match[4]):
+                    return f'UI bundle raw disk size or digest differs: {path}'
+            except (OSError, subprocess.TimeoutExpired) as error:
+                return f'UI bundle raw disk read failed: {error}'
+    return None
 
 
 def read_lines(path):
@@ -103,7 +141,7 @@ def parse_result(line, suite, case, checks, collects):
             or t[0] != "SUITE" or t[1] != suite or t[3] != case):
         raise ValueError("malformed or other-case result record")
     kind = t[2]
-    if kind == "FRAME" and len(t) in (14, 20):
+    if kind == "FRAME" and len(t) in (14, 15, 16, 20, 21):
         check = t[4]
         reference, source = field(t[6], "ref"), field(t[7], "source")
         if (not name(check) or check not in checks or not hexdigits(field(t[5], "def"), 8)
@@ -116,9 +154,12 @@ def parse_result(line, suite, case, checks, collects):
         if not width or not height or not hexdigits(field(t[12], "sha256"), 64):
             raise ValueError("malformed FRAME dimensions or hash")
         result = field(t[13], "result")
-        if result == "match" and len(t) == 14:
+        valid_path = lambda token: field(token, "path") == f"/var/uitest/{suite}/{case}"
+        if result == "match" and (len(t) == 14
+                or len(t) == 15 and artifacts(field(t[14], "artifacts")) and t[14] != "artifacts=complete"
+                or len(t) == 16 and t[14] == "artifacts=complete" and valid_path(t[15])):
             return "FRAME:" + check, check, None
-        if result == "mismatch" and len(t) == 20:
+        if result == "mismatch" and len(t) in (20, 21):
             compared, differing = number(t[14], "compared"), number(t[15], "differing")
             first = field(t[16], "first").split(",")
             if len(first) != 2:
@@ -127,7 +168,8 @@ def parse_result(line, suite, case, checks, collects):
             if (not 0 < differing <= compared <= width * height <= 2**64 - 1 or x >= width or y >= height
                     or re.fullmatch(r"#[0-9a-f]{6}", field(t[17], "got")) is None
                     or re.fullmatch(r"#[0-9a-f]{6}", field(t[18], "want")) is None
-                    or not artifacts(field(t[19], "artifacts"))):
+                    or not artifacts(field(t[19], "artifacts"))
+                    or len(t) == 21 and (t[19] != "artifacts=complete" or not valid_path(t[20]))):
                 raise ValueError("malformed FRAME mismatch")
             return "FRAME:" + check, None, check
     elif kind == "TREE" and len(t) == 9:
@@ -171,11 +213,24 @@ def result_problem(manifest, records, cases):
                 for cat in manifest["categories"] for row in cat["cases"]}
     seen, matched, mismatched = set(), set(), set()
     count, index, started, done = 0, 0, False, False
+    bundles = set()
+    uploads, bundle_bytes = 0, 0
     for kind, match, line in records:
         if kind == "START":
             started = True
         elif kind == "DONE":
             done = True
+        elif kind == "EVIDENCE":
+            case = match.group(1)
+            uploads += match['status'] == 'ok'
+            bundle_bytes += int(match[3])
+            if (manifest['id'] != 'ui-testing' or not started or done or index >= len(cases)
+                    or case != cases[index] or case in bundles or uploads > 16 or bundle_bytes > 32 << 20
+                    or match.group(2) != 'uitest-' + hashlib.sha256(case.encode()).hexdigest()[:16]
+                    or int(match.group(3)) > 2 << 20
+                    or match['path'] != '/var/uitest/ui-testing/' + case):
+                return "UI bundle record binding, size or slot limit differs"
+            bundles.add(case)
         elif kind in RESULT:
             if not started or done or index >= len(cases) or match.group(1) != cases[index]:
                 return f"a {kind} record is not bound to the running case"
@@ -206,7 +261,7 @@ def result_problem(manifest, records, cases):
     return None
 
 
-def verdict(manifest, records_log, logs, only=None, categories=None):
+def verdict(manifest, records_log, logs, only=None, categories=None, disk=None):
     suite = manifest["id"]
     planned = [category["id"] for category in manifest["categories"] if not category["cases"]]
     hosted = [category["id"] for category in manifest["categories"] if category.get("hostRunner")]
@@ -275,6 +330,8 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
                   r' raster=[1-9][0-9]*x[1-9][0-9]* out=sor[0-9]+ resource=[1-9][0-9]*'
                   r' present_fence=[1-9][0-9]* fired=[0-9]+ disarmed=[01]|error=sequence-failed)')
         shapes['SCREENPERTURB'] = re.compile(rf"^SUITE {suite} SCREENPERTURB {name} end {fields}$")
+    if suite == "ui-testing":
+        shapes['EVIDENCE'] = re.compile('^' + bundle_shape(suite) + '$')
     shapes.update({kind: re.compile(rf"^SUITE {suite} {kind} {name} .+$") for kind in RESULT})
     records = []
     for line in read_lines(records_log):
@@ -297,6 +354,9 @@ def verdict(manifest, records_log, logs, only=None, categories=None):
     if not records:
         return False, f"no 'SUITE {suite}' lines in {records_log}"
     problem = result_problem(manifest, records, cases)
+    if problem:
+        return False, problem
+    problem = bundle_disk_problem(records, disk)
     if problem:
         return False, problem
     for index, (kind, match, line) in enumerate(records):
@@ -440,7 +500,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest")
     parser.add_argument("logs", nargs="+")
-    parser.add_argument("--disk", help="stopped VM's raw ext2 image for manifest diskChecks")
+    parser.add_argument("--disk", help="stopped VM's raw ext2 image for diskChecks and disk-only UI bundles")
     parser.add_argument("--milestone", help="effort/milestone whose category set this full boot must pass")
     args = parser.parse_args()
     manifest = json.loads(Path(args.manifest).read_text())
@@ -449,7 +509,7 @@ def main():
                                           args.milestone, manifest["id"]) if args.milestone else None
     except ValueError as error:
         parser.error(str(error))
-    ok, reason = verdict(manifest, args.logs[0], args.logs, categories=categories)
+    ok, reason = verdict(manifest, args.logs[0], args.logs, categories=categories, disk=args.disk)
     if ok:
         ok, disk_reason = disk_verdict(manifest.get("diskChecks", []), args.disk)
         if disk_reason:

@@ -1,3 +1,6 @@
+#[path = "../libs/libuitest/src/arena.rs"] pub mod arena;
+#[path = "../libs/libuitest/src/artifacts.rs"] pub mod artifacts;
+#[path = "../libs/libuitest/src/messages.rs"] pub mod messages;
 extern crate self as libuitest;
 extern crate self as breenix_suite;
 #[path = "../libs/libuitest/src/outcome.rs"] pub mod outcome;

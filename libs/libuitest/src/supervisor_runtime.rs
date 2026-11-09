@@ -1,4 +1,5 @@
 //! Process ownership and local collector handshake for the shared session core.
+use breenix_suite::suite::control::{Watchdog, Wait};
 use libbreenix::{error::Error, errno::Errno, fs, io, process, signal, time, types::Fd};
 use breenix_suite::suite::{descendants::descendant_victims, spawn, Run};
 use super::devices::runtime::Devices;
@@ -169,7 +170,9 @@ fn kill_descendants() -> Result<(), String> {
     Ok(())
 }
 fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mut connected: bool, compositor: Option<u64>, ownership: &mut Ownership, devices: &mut Option<Devices>) -> Result<(), String> {
-    let end = now()? + 1000;
+    crate::startup::teardown(1);
+    let watchdog = Watchdog::new(Wait::SupervisorTeardown)?;
+    let end = watchdog.deadline_ms();
     loop {
         kill_descendants()?;
         outputs(outputs_state, channel, connected)?;
@@ -187,6 +190,7 @@ fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mu
         time::sleep_ms(1).map_err(|e| e.to_string())?;
     }
     // Reap recovers the compositor claim before releases can reach the console.
+    crate::startup::teardown(2);
     let release = if let Some(mut pair) = devices.take() {
         let grabbed = if ownership.owner() == Owner::SupervisorHolds {
             pair.recover(process::getpid().map_err(|e| e.to_string())?.raw())
@@ -194,7 +198,9 @@ fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mu
         let destroyed = pair.destroy();
         grabbed.and(destroyed)
     } else { Ok(()) };
+    crate::startup::teardown(3);
     let handback = ownership.apply(Event::End, &mut Display);
+    crate::startup::teardown(4);
     release.and(handback)
 }
 
@@ -249,7 +255,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
         let mut stopped = false;
         let mut connected = true;
         let mut stderr_request = None;
-        let mut pending_input: Option<(Message, i128)> = None;
+        let mut pending_input: Option<(Message, Watchdog)> = None;
         loop {
             if !stopped && ownership.owner() != Owner::SupervisorHolds {
                 evidence.observe(own, &output.keys().copied().collect())?;
@@ -334,6 +340,9 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                         environment = Some(config);
                         let root = Path::new(environment.as_ref().unwrap().config_root());
                         crate::fixtures::prepare(root)?;
+                        // Input injection runs in this supervisor, beside its apps.
+                        std::env::set_var("BREENIX_UI_CLOCK", root.join("ui-clock"));
+                        std::env::set_var("BREENIX_CONFIG_ROOT", root);
                         let trace = crate::startup::Trace::create(root)?;
                         for (name, ns) in [("supervisor-enter", entered), ("supervisor-registered", registered_at),
                             ("supervisor-channel", channel_at), ("supervisor-evidence", evidence_at),
@@ -392,7 +401,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     Ok(Some(message @ (Message::Input(_) | Message::Motion {..} | Message::Text(_)))) => {
                         if pending_input.is_some() { return Err("input request already pending".into()); }
                         if let Message::Input(event)=&message {event.validate()?;}
-                        pending_input = Some((message, now()? + 2000));
+                        pending_input = Some((message, Watchdog::new(Wait::InputGrab)?));
                     }
                     Ok(Some(Message::ReadStderr(pid))) => {
                         if stderr_request.is_some() || !output.contains_key(&pid) { return Err("invalid app stderr request".into()); }
@@ -400,8 +409,11 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     }
                     Ok(Some(Message::Teardown)) => { teardown(&mut channel, &mut output, true, compositor, &mut ownership, &mut devices)?;
                         startup_record = startup_record.or_else(|| startup_phase_record(&environment, false));
+                        crate::startup::teardown(5);
                         if let Some(config) = environment.take() { std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())?; }
-                        stopped = true; channel.send(&Message::Stopped)?; }
+                        crate::startup::teardown(6);
+                        stopped = true; channel.send(&Message::Stopped)?;
+                        crate::startup::teardown(7); }
                     Ok(Some(_)) => return Err("unexpected case control message".into()),
                     Ok(None) => {},
                     // Case exited: keep the collector alive until runner tells us to end.
@@ -409,17 +421,17 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                     Err(error) => return Err(error),
                 }
                 outputs(&mut output, &mut channel, connected)?;
-                if let Some((event, end)) = pending_input.clone() {
+                if let Some((event, watchdog)) = pending_input.as_ref() {
                     if stopped { pending_input = None; }
                     else if match event {
-                            Message::Input(event)=>devices.as_mut().ok_or("session devices missing")?.inject(event)?,
-                            Message::Text(text)=>devices.as_mut().ok_or("session devices missing")?.text(&text)?,
-                            Message::Motion {x,y}=>devices.as_mut().ok_or("session devices missing")?.motion(x,y)?,
+                            Message::Input(event)=>devices.as_mut().ok_or("session devices missing")?.inject(*event)?,
+                            Message::Text(text)=>devices.as_mut().ok_or("session devices missing")?.text(text)?,
+                            Message::Motion {x,y}=>devices.as_mut().ok_or("session devices missing")?.motion(*x,*y)?,
                             _=>unreachable!(),
                         } {
                         pending_input = None;
                         channel.queue(&Message::InputDone)?;
-                    } else if now()? >= end { return Err("input paused awaiting compositor grab".into()); }
+                    } else if now()? >= watchdog.deadline_ms() { return Err("input paused awaiting compositor grab".into()); }
                 }
                 if let Some(pid) = stderr_request {
                     let app = output.get(&pid).ok_or("unknown app stderr pid")?;
