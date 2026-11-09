@@ -15,6 +15,9 @@ const RING: usize = 1024 * 1024 - HEAD;
 static BOOT_HEAD: [AtomicU8; HEAD] = [const { AtomicU8::new(0) }; HEAD];
 static SERIAL: [AtomicU8; RING] = [const { AtomicU8::new(0) }; RING];
 static TAIL: AtomicUsize = AtomicUsize::new(0);
+static FIRST_START: AtomicUsize = AtomicUsize::new(usize::MAX);
+static LATEST_START: AtomicUsize = AtomicUsize::new(usize::MAX);
+static LAPPED: AtomicBool = AtomicBool::new(false);
 fn put(offset: usize, byte: u8) {
     SERIAL[offset % RING].store(byte, Ordering::Relaxed);
     if offset < HEAD { BOOT_HEAD[offset].store(byte, Ordering::Relaxed); }
@@ -44,11 +47,16 @@ pub fn drain() -> bool {
     if !crate::arch_interrupts_enabled() { return false; }
     let Some(mut scan) = SCAN.try_lock() else { return false; };
     let end = TAIL.load(Ordering::Acquire).min(scan.0 + 8192);
-    scan_to(&mut scan, end)
+    scan_to(&mut scan, end, true)
 }
-fn scan_to(scan: &mut Scan, end: usize) -> bool {
+fn scan_to(scan: &mut Scan, end: usize, live: bool) -> bool {
     let mut changed = false;
     while scan.0 < end {
+        if live && (LAPPED.load(Ordering::Acquire)
+            || TAIL.load(Ordering::Acquire).saturating_sub(scan.0) > RING - 9) {
+            LAPPED.store(true, Ordering::Release);
+            break;
+        }
         let b = at(scan.0);
         scan.0 += 1;
         let n = scan.2;
@@ -56,11 +64,23 @@ fn scan_to(scan: &mut Scan, end: usize) -> bool {
             let ms = recorded_ms(&mut scan.0);
             if n <= 1024 {
                 let bytes = &scan.1[..n];
-                changed |= scan.3.observe(bytes, ms);
+                let start = scan.0 - n - 9;
+                let observed = scan.3.observe(bytes, ms);
+                changed |= observed;
+                let is_start = observed && bytes.split(|b| *b == b' ').nth(2) == Some(b"START".as_slice());
+                if is_start {
+                    FIRST_START.fetch_min(start, Ordering::AcqRel);
+                    // The independent snapshot can scan an older prefix after the live scanner.
+                    let _ = LATEST_START.fetch_update(Ordering::AcqRel, Ordering::Acquire, |old| {
+                        Some(if old == usize::MAX { start } else { old.max(start) })
+                    });
+                }
+                if start < FIRST_START.load(Ordering::Acquire) {
                 for (i, marker) in MARKERS.iter().enumerate() {
                     if super::boot_producer::matches(bytes, marker, MARKERS) {
                         changed |= !REACHED[i].swap(true, Ordering::AcqRel);
                     }
+                }
                 }
             }
             scan.2 = 0;
@@ -75,13 +95,13 @@ fn scan_to(scan: &mut Scan, end: usize) -> bool {
 fn drain_snapshot() {
     let end = TAIL.load(Ordering::Acquire);
     if let Some(mut scan) = SCAN.try_lock() {
-        scan_to(&mut scan, end);
+        scan_to(&mut scan, end, true);
     } else {
         // A syscall can preempt the render thread while it owns SCAN, then run
         // with preemption disabled. Parse the immutable prefix independently
         // instead of waiting for that thread to run. Reached bits are atomic.
         let mut scan = (0, [0; 1024], 0, crate::console::status::SuiteStatus::new());
-        scan_to(&mut scan, end.min(HEAD - 8));
+        scan_to(&mut scan, end.min(HEAD - 8), false);
     }
 }
 /// Complete serial prefix, not the matcher's interpretation of it. Never silently truncate.
@@ -150,5 +170,8 @@ pub fn records() -> alloc::string::String {
 /// Suite state observed by the same complete-line scanner as the stage producers.
 /// Rendering calls this in thread context, outside UART ownership.
 pub fn suite_status() -> Option<crate::console::status::SuiteStatus> {
-    SCAN.try_lock().map(|scan| scan.3.clone())
+    if LAPPED.load(Ordering::Acquire) { return None; }
+    SCAN.try_lock().and_then(|scan| {
+        if LAPPED.load(Ordering::Acquire) { None } else { Some(scan.3.clone()) }
+    })
 }
