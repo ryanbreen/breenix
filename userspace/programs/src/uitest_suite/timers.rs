@@ -10,9 +10,9 @@ fn launch(session: &mut Session, title: &str, flags: &[&[u8]]) -> Result<WindowR
     session.launch_app(&args, 0)?;
     session.wait_window(title)
 }
-fn state(id: u64, stamp: Stamp, ticks: u64, fires: u64, missed: u64) -> Result<(u64, u64), String> {
+fn state(id: u64, stamp: Stamp, ticks: u64, fires: u64, missed: u64) -> Result<(u64, u64), breenix_suite::suite::CaseError> {
     let mut pixels = vec![0; 320*200*4];
-    let mut tree = vec![0; 4096];
+    let mut tree = vec![0; abi::limits::DEFAULT_TREE_KIB as usize * 1024];
     let captured = window::capture(id, &mut pixels, Some(&mut tree)).map_err(|e| e.to_string())?;
     let end = tree.iter().position(|&b| b == 0).ok_or("timer tree lacks terminator")?;
     let tree: serde_json::Value = serde_json::from_slice(&tree[..end]).map_err(|e| e.to_string())?;
@@ -108,7 +108,7 @@ pub fn backpressure_stepped() -> CaseResult {
     let release = ReleaseStall;
     let capture = std::thread::spawn(move || {
         let mut pixels = vec![0; 320*200*4];
-        let mut tree = vec![0; 4096];
+        let mut tree = vec![0; abi::limits::DEFAULT_TREE_KIB as usize * 1024];
         window::capture(id, &mut pixels, Some(&mut tree)).map_err(|e| e.to_string())
     });
     let result = (|| -> CaseResult {
@@ -148,8 +148,7 @@ pub fn backpressure_stepped() -> CaseResult {
         state(id, recovery, 48, 0, 0)?;
         Ok(())
     })();
-    // Also release on failure before the releaser thread was created.
-    let _ = test_control::arm(abi::tc_point::RELEASE_STALL, 0, 0);
+    // The guard releases the capture on both early errors and the witnessed path.
     let captured = capture.join().map_err(|_| "stalled capture panicked")?;
     result?;
     check(captured.map_err(|e| e.to_string())?.commit_id == ready.commit_id, "stalled capture did not retain the original front")?;

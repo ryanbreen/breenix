@@ -72,9 +72,14 @@ pub struct Window {
     /// The processed watermark last published.
     published: u64,
     ui_stamp: crate::clock::Stamp,
+    clock_ack_stamp: crate::clock::Stamp,
+    clock_dispatched: crate::clock::Stamp,
+    clock_redraw: bool,
+    timers: crate::timer::Timers,
+    animating: bool,
     clock_participant: Option<crate::clock::Participant>,
     last: Option<Committed>,
-    pending: Option<(Committed, Option<libgfx::surface::Surface>)>,
+    pending: Option<(Committed, Option<libgfx::surface::Surface>, crate::clock::Stamp)>,
 }
 
 impl Window {
@@ -108,6 +113,7 @@ impl Window {
                 return Err(Error::Os(Errno::EINVAL));
             }
         };
+        let ui_stamp = crate::clock::stamp();
         Ok(Self {
             id: c.id,
             width,
@@ -124,7 +130,12 @@ impl Window {
             handled: 0,
             since_pixel: Vec::new(),
             published: 0,
-            ui_stamp: crate::clock::stamp(),
+            ui_stamp,
+            clock_ack_stamp: ui_stamp,
+            clock_dispatched: ui_stamp,
+            clock_redraw: false,
+            timers: crate::timer::Timers::new(ui_stamp.now_ns / 1_000_000),
+            animating: false,
             clock_participant,
             last: None,
             pending: None,
@@ -151,8 +162,8 @@ impl Window {
                 return Err(e);
             }
         };
-        if let Some((done, _)) = self.pending.take() {
-            if a.base >= done.commit_id { self.published(done); }
+        if let Some((done, _, stamp)) = self.pending.take() {
+            if a.base >= done.commit_id { self.published(done, stamp); }
         }
         let info = Acquired {
             buffer: a.buffer,
@@ -161,7 +172,13 @@ impl Window {
             replay: a.replay[..(a.replay_count as usize).min(16)].to_vec(),
         };
         self.gpu = Some(self.surface_over(a.buffer)?);
-        self.held = Some(Held { info: info.clone(), handled_at_acquire: self.handled, stamp: crate::clock::stamp() });
+        let mut stamp = crate::clock::stamp();
+        // A caller acquiring before dispatch cannot acknowledge timer work that
+        // has not run yet. A frame rendered after dispatch uses the new stamp.
+        if self.has_clock_work(stamp) && stamp != self.clock_dispatched {
+            stamp = self.clock_dispatched;
+        }
+        self.held = Some(Held { info: info.clone(), handled_at_acquire: self.handled, stamp });
         Ok(info)
     }
 
@@ -267,31 +284,36 @@ impl Window {
             }
         };
         let done = Committed { commit_id: c.commit_id, pixel_gen: c.pixel_gen, processed_serial: processed };
-        self.pending = Some((done, surface));
+        self.pending = Some((done, surface, h.stamp));
         Ok(done)
     }
 
-    fn published(&mut self, done: Committed) {
+    fn published(&mut self, done: Committed, stamp: crate::clock::Stamp) {
         self.published = done.processed_serial;
         self.since_pixel.retain(|&(serial, _)| libbreenix::input::abi::source_order(serial)
             > libbreenix::input::abi::source_order(done.processed_serial));
         self.last = Some(done);
+        if stamp.epoch >= self.clock_dispatched.epoch && stamp.now_ns >= self.clock_dispatched.now_ns {
+            self.clock_redraw = false;
+        }
+        self.clock_ack_stamp = stamp;
     }
 
     /// Confirm publication before advancing library metadata. Holding a non-owning
     /// Surface here retains fence identities, with no additional kernel buffer pin.
     fn finish_pending(&mut self) -> Result<(), Error> {
-        let Some((done, surface)) = &self.pending else { return Ok(()); };
+        let Some((done, surface, _)) = &self.pending else { return Ok(()); };
         if let Some(surface) = surface {
             surface.wait().map_err(|e| Error::Os(Errno::from_raw(-e)))?;
         }
         let (published, _) = window::read_meta(self.id)?;
         if published < done.commit_id { return Err(Error::Os(Errno::EIO)); }
-        let (done, _) = self.pending.take().expect("pending publication checked above");
-        self.published(done);
+        let (done, _, stamp) = self.pending.take().expect("pending publication checked above");
+        self.published(done, stamp);
         if let Some(participant) = &self.clock_participant {
             let (_, meta) = window::read_meta(self.id)?;
             participant.accepted(crate::clock::Stamp { epoch: meta.epoch, now_ns: meta.ui_time_ms * 1_000_000 });
+            self.clock_ack_stamp = crate::clock::Stamp { epoch: meta.epoch, now_ns: meta.ui_time_ms * 1_000_000 };
         }
         Ok(())
     }
@@ -314,9 +336,15 @@ impl Window {
             }
             processed = libbreenix::input::abi::advance_watermark(processed, serial);
         }
-        let meta = self.meta(processed, self.ui_stamp);
+        // An explicit metadata-only commit cannot stand in for unfinished timer
+        // callbacks or a callback's requested redraw.
+        let stamp = if self.clock_redraw || (self.has_clock_work(self.ui_stamp) && self.clock_dispatched != self.ui_stamp) {
+            self.clock_ack_stamp
+        } else { self.ui_stamp };
+        let meta = self.meta(processed, stamp);
         let commit_id = window::commit_no_change(self.id, Some(&meta))?;
-        if let Some(participant) = &self.clock_participant { participant.accepted(self.ui_stamp); }
+        if let Some(participant) = &self.clock_participant { participant.accepted(stamp); }
+        self.clock_ack_stamp = stamp;
         self.published = processed;
         let pixel_gen = self.last.map_or(0, |c| c.pixel_gen);
         let done = Committed { commit_id, pixel_gen, processed_serial: processed };
@@ -340,10 +368,52 @@ impl Window {
         if let Some(participant) = &self.clock_participant { participant.schedule(next_deadline_ns, animating); }
     }
 
+    /// Register a timer relative to UI time. A zero period is a one-shot.
+    /// Timer callbacks are delivered through `dispatch` and `wait_dispatch`.
+    /// (claim-lint:ok: tests/ui_clock_timers.rs zero_step_fires_only_due_timers.)
+    pub fn timer(&mut self, id: u64, delay_ms: u64, period_ms: u64) {
+        let deadline = (crate::clock::now_ns() / 1_000_000).checked_add(delay_ms)
+            .expect("UI timer deadline overflow");
+        self.timers.register(id, deadline, period_ms);
+        self.schedule_timers();
+    }
+
+    /// Enable fixed 1 ms integration events, rendering after the whole dispatch.
+    pub fn set_animating(&mut self, animating: bool) {
+        self.animating = animating;
+        self.schedule_timers();
+    }
+
+    fn schedule_timers(&self) {
+        self.clock_schedule(self.timers.next_deadline().saturating_mul(1_000_000), self.animating);
+    }
+
+    fn has_clock_work(&self, stamp: crate::clock::Stamp) -> bool {
+        self.animating || self.timers.next_deadline() <= stamp.now_ns / 1_000_000
+    }
+
     fn read(&mut self, block: bool, timeout_ns: u64) -> Result<Vec<abi::WindowEvent>, Error> {
+        // Complete any prior asynchronous publication before dispatch can mark
+        // new timer work dirty.
+        if self.animating || self.timers.next_deadline() != u64::MAX || self.clock_redraw {
+            self.finish_pending()?;
+        }
         let mut raw = vec![<abi::WindowEvent as abi::Plain>::ZERO; 64];
         if self.clock_participant.is_none() {
-            let n = window::read_events(self.id, &mut raw, block, timeout_ns)?;
+            if self.timers.next_deadline() == u64::MAX && !self.animating {
+                let n = window::read_events(self.id, &mut raw, block, timeout_ns)?;
+                raw.truncate(n);
+                return Ok(raw);
+            }
+            let now = crate::clock::stamp();
+            let until_timer = self.timers.next_deadline().saturating_mul(1_000_000).saturating_sub(now.now_ns);
+            let timeout = timeout_ns.min(until_timer).min(if self.animating { 16_000_000 } else { u64::MAX });
+            let n = match window::read_events(self.id, &mut raw, block, timeout) {
+                Ok(n) => n,
+                Err(Error::Os(Errno::ETIMEDOUT)) => 0, // The timer wait expired normally.
+                Err(error) => return Err(error),
+            };
+            self.ui_stamp = crate::clock::stamp();
             raw.truncate(n);
             return Ok(raw);
         }
@@ -354,12 +424,6 @@ impl Window {
             let changed = stamp.epoch != self.ui_stamp.epoch;
             self.ui_stamp = stamp;
             let n = window::read_events(self.id, &mut raw, false, 0)?;
-            // Idle windows acknowledge without acquiring buffers or waiting for
-            // presentation. A pending redraw must be rendered first.
-            if changed && self.held.is_none() && (self.last.is_some() || self.pending.is_some())
-                && !self.since_pixel.iter().any(|(_, handled)| *handled == Handled::Redraw) {
-                self.no_change()?;
-            }
             if n != 0 || changed || !block {
                 raw.truncate(n);
                 return Ok(raw);
@@ -370,8 +434,43 @@ impl Window {
         }
     }
 
-    fn deliver(&mut self, raw: &[abi::WindowEvent], handler: &mut dyn FnMut(&Delivered) -> Handled) -> usize {
+    fn deliver_clock(&mut self, handler: &mut dyn FnMut(&Delivered) -> Handled) -> usize {
+        if !self.animating && self.timers.next_deadline() == u64::MAX { return 0; }
         let mut count = 0;
+        let mut redraw = false;
+        let elapsed = (self.ui_stamp.now_ns / 1_000_000).saturating_sub(self.timers.now());
+        let fired = if self.animating {
+            self.timers.advance(elapsed, |time_ms| {
+                let event = Delivered { serial: 0, time_ns: time_ms * 1_000_000, clicks: 0,
+                    event: Event::AnimationTick { time_ms } };
+                redraw |= handler(&event) == Handled::Redraw;
+                count += 1;
+            })
+        } else { self.timers.step(elapsed) };
+        for (id, missed) in fired {
+            let event = Delivered { serial: 0, time_ns: self.ui_stamp.now_ns, clicks: 0,
+                event: Event::Timer { id, missed } };
+            redraw |= handler(&event) == Handled::Redraw;
+            count += 1;
+        }
+        self.clock_redraw |= redraw;
+        self.clock_dispatched = self.ui_stamp;
+        self.schedule_timers();
+        count
+    }
+
+    fn acknowledge_clock(&mut self) -> Result<(), Error> {
+        if self.clock_participant.is_some() && self.clock_ack_stamp.epoch != self.ui_stamp.epoch
+            && !self.clock_redraw && (!self.has_clock_work(self.ui_stamp) || self.clock_dispatched == self.ui_stamp)
+            && self.held.is_none() && (self.last.is_some() || self.pending.is_some())
+            && !self.since_pixel.iter().any(|(_, handled)| *handled == Handled::Redraw) {
+            self.no_change()?;
+        }
+        Ok(())
+    }
+
+    fn deliver(&mut self, raw: &[abi::WindowEvent], handler: &mut dyn FnMut(&Delivered) -> Handled) -> usize {
+        let mut count = self.deliver_clock(handler);
         for r in raw {
             let d = Delivered::from_raw(r);
             let handled = handler(&d);
@@ -392,13 +491,17 @@ impl Window {
     /// its handler has returned. Returns how many events were delivered.
     pub fn dispatch(&mut self, mut handler: impl FnMut(&Delivered) -> Handled) -> Result<usize, Error> {
         let raw = self.read(false, 0)?;
-        Ok(self.deliver(&raw, &mut handler))
+        let count = self.deliver(&raw, &mut handler);
+        self.acknowledge_clock()?;
+        Ok(count)
     }
 
     /// Like `dispatch`, waiting up to `timeout_ns` for the first event.
     pub fn wait_dispatch(&mut self, timeout_ns: u64, mut handler: impl FnMut(&Delivered) -> Handled) -> Result<usize, Error> {
         let raw = self.read(true, timeout_ns)?;
-        Ok(self.deliver(&raw, &mut handler))
+        let count = self.deliver(&raw, &mut handler);
+        self.acknowledge_clock()?;
+        Ok(count)
     }
 
     /// The queued events, without waiting. Polled events are not handled: they never move the
@@ -420,6 +523,9 @@ impl Window {
         if matches!(self.font_watcher.poll(), Ok(Some(_))) {
             events.push(Event::FontChanged);
         }
+        // Polling alone does not handle timer callbacks. Idle legacy pollers can
+        // still acknowledge epochs when they have no timer or animation work.
+        let _ = self.acknowledge_clock();
         events
     }
 

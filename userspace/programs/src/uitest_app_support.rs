@@ -13,15 +13,24 @@ pub struct Options<'a> {
     pub pointer_probe: bool,
     pub two_windows: bool,
     pub clock_probe: bool,
+    pub timer: bool,
+    pub animate: bool,
+    pub real_clock: bool,
 }
 
 pub fn parse<'a>(args: &[&'a str]) -> Result<Options<'a>, &'static str> {
     let title = *args.first().ok_or("missing window title")?;
     if title.is_empty() || title.starts_with("--") { return Err("invalid window title"); }
-    let mut options = Options { title, crash: None, hang: false, stderr_flood: 0, session_probe: false, config_probe: false, canonical: false, capture_control: false, widgets: false, pointer_probe: false, two_windows: false, clock_probe: false };
+    let mut options = Options { title, crash: None, hang: false, stderr_flood: 0, session_probe: false, config_probe: false, canonical: false, capture_control: false, widgets: false, pointer_probe: false, two_windows: false, clock_probe: false, timer: false, animate: false, real_clock: false };
     let mut flood_seen = false;
     for arg in &args[1..] {
-        if *arg == "--clock-probe" && !options.clock_probe {
+        if *arg == "--timer" && !options.timer {
+            options.timer = true;
+        } else if *arg == "--animate" && !options.animate {
+            options.animate = true;
+        } else if *arg == "--real-clock" && !options.real_clock {
+            options.real_clock = true;
+        } else if *arg == "--clock-probe" && !options.clock_probe {
             options.clock_probe = true;
         } else if *arg == "--two-windows" && !options.two_windows {
             options.two_windows = true;
@@ -49,6 +58,12 @@ pub fn parse<'a>(args: &[&'a str]) -> Result<Options<'a>, &'static str> {
             options.stderr_flood = value.parse().map_err(|_| "invalid flood size")?;
             flood_seen = true;
         } else { return Err("unknown or duplicate flag"); }
+    }
+    if options.real_clock && !options.timer && !options.animate {
+        return Err("real clock requires timer or animation mode");
+    }
+    if (options.timer || options.animate) && (options.capture_control || options.widgets || options.clock_probe || options.canonical || options.hang || options.crash.is_some() || options.session_probe || options.config_probe || flood_seen || options.two_windows) {
+        return Err("timer mode cannot be combined with other app modes");
     }
     if options.capture_control && (options.clock_probe || options.widgets || options.canonical || options.hang || options.crash.is_some() || options.session_probe || options.config_probe || flood_seen) {
         return Err("capture control cannot be combined with other modes");

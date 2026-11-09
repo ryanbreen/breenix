@@ -55,6 +55,13 @@ impl Modifiers {
 /// High-level input event.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Event {
+    /// A UI timer delivered once per dispatch, after integration. `missed` is
+    /// the number of additional elapsed periods; one-shots report zero.
+    /// (claim-lint:ok: tests/ui_clock_timers.rs missed_periods_fire_once.)
+    Timer { id: u64, missed: u64 },
+    /// One 1 ms simulation quantum, before the coalesced timer callbacks.
+    /// Render after dispatch, once for the whole epoch, rather than per tick.
+    AnimationTick { time_ms: u64 },
     /// A key was pressed. `keycode` is the Linux key code, `text` the UTF-8 text the compositor
     /// attached, `ascii` its first byte when that is printable ASCII (else 0), and `repeat`
     /// marks an auto-repeat.

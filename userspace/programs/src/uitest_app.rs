@@ -6,6 +6,7 @@ mod uitest_widget_layout;
 mod uitest_widgets;
 mod uitest_widget_app;
 mod uitest_keyboard;
+mod uitest_timer_app;
 
 use std::io::{self, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -32,6 +33,12 @@ fn main() {
         Ok(options) => options,
         Err(error) => { eprintln!("{error}"); std::process::exit(2); }
     };
+    if options.timer || options.animate {
+        if let Err(error) = uitest_timer_app::run(options.title, options.animate, options.real_clock) {
+            eprintln!("timer mode: {error}"); std::process::exit(1);
+        }
+        return;
+    }
     if options.widgets {
         let result = if options.two_windows { uitest_widget_app::run_pair(options.title) }
             else { uitest_widget_app::run(options.title, options.pointer_probe) };
