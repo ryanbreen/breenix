@@ -134,3 +134,18 @@ fn posted_output_is_counted_at_the_producer_once_including_its_newline() {
     assert_eq!(written(), vec!["producer 42\n"]);
     assert_eq!(COUNTED.load(Ordering::Relaxed) - before, "producer 42\n".len());
 }
+
+#[test]
+fn diagnostic_record_defers_a_complete_long_line_and_refuses_busy_or_oversized() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    written();
+    static RECORD: log_notice::Record = log_notice::Record::new();
+    let line = "x".repeat(400);
+    assert!(RECORD.post_again(format_args!("{line}")));
+    assert!(!RECORD.post_again(format_args!("must not replace pending evidence")));
+    assert_eq!(written(), vec![format!("{line}\n")]);
+    assert!(!RECORD.post_again(format_args!("{}", "x".repeat(512))));
+    assert!(written().is_empty(), "oversized evidence must not be truncated");
+    assert!(RECORD.post_again(format_args!("reused {}", 42)));
+    assert_eq!(written(), vec!["reused 42\n"]);
+}

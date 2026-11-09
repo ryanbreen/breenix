@@ -84,6 +84,8 @@ pub fn interrupt_count() -> u64 {
 }
 
 static WORK: Work = Work::new();
+// Unlike WORK.waiter(), this identity remains published while the worker runs.
+static WORKER_TID: AtomicU64 = AtomicU64::new(0);
 /// A thread-context console request, serviced after initial keyboard attach.
 static CONSOLE_START: AtomicBool = AtomicBool::new(false);
 static REPLUG: AtomicBool = AtomicBool::new(false);
@@ -535,6 +537,7 @@ fn size_bar(device: &pci::Device) -> Result<(u64, usize), &'static str> {
 }
 
 fn start(device: pci::Device) -> Result<(), &'static str> {
+    WORKER_TID.store(scheduler::current_thread_id().ok_or("worker has no thread identity")?, Ordering::Release);
     let (phys, size) = platform::bar(&device)?;
     #[cfg(target_arch = "x86_64")]
     pci::publish_xhci_bar0(&device, phys, size as u64);

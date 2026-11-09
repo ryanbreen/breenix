@@ -2510,12 +2510,17 @@ fn each_of_pid(pid: u64, mut f: impl FnMut(u64, bool)) {
 /// do, but try the lock even for the local CPU: `local()` waits unboundedly.
 /// Ownership is rechecked under the lock before dereferencing the thread.
 pub(super) fn thread_wait(tid: u64) -> Option<(ThreadState, Option<u64>)> {
+    thread_wait_cpu(tid).map(|(state, _, deadline)| (state, deadline))
+}
+
+/// Include the owner CPU from the same revalidated owner-lock hold.
+pub(super) fn thread_wait_cpu(tid: u64) -> Option<(ThreadState, Option<usize>, Option<u64>)> {
     for _ in 0..OWNER_TRIES {
         let owner = owner(tid)?;
         if let Some(mut held) = try_remote(owner) {
             if self::owner(tid) == Some(owner) {
                 let thread = held.thread(tid)?;
-                return Some((thread.state, thread.wake_time_ns));
+                return Some((thread.state, Some(owner), thread.wake_time_ns));
             }
         }
         core::hint::spin_loop();

@@ -9748,6 +9748,26 @@ pub(crate) fn thread_wait(tid: u64) -> Option<(ThreadState, Option<u64>)> {
     })
 }
 
+/// Failure-only wait evidence, using try-locks for scheduler ownership. On x86 the
+/// CPU is the revalidated run-queue owner, including for a blocked thread. On
+/// ARM it is the current/queued CPU or a pin; otherwise the CPU is unavailable.
+pub(crate) fn try_thread_wait(tid: u64) -> Option<(ThreadState, Option<usize>, Option<u64>)> {
+    without_interrupts(|| {
+        #[cfg(target_arch = "x86_64")]
+        if rq_live() {
+            return rq::thread_wait_cpu(tid);
+        }
+        let scheduler = try_lock_scheduler()?;
+        let sched = scheduler.as_ref()?;
+        let thread = sched.get_thread(tid)?;
+        let cpu = (0..MAX_CPUS).find(|&cpu| {
+            sched.cpu_state[cpu].current_thread == Some(tid)
+                || sched.per_cpu_queues[cpu].contains(&tid)
+        }).or_else(|| thread.cpu_affinity.as_ref().map(|pin| pin.cpu));
+        Some((thread.state, cpu, thread.wake_time_ns))
+    })
+}
+
 /// Whether a user thread has not terminated. x86_64: read from the thread
 /// index without a lock.
 pub fn has_live_user_threads() -> bool {
