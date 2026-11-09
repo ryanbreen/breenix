@@ -412,11 +412,42 @@ fn describe(path: &Path, meta: &std::fs::Metadata) -> Entry {
     Entry { kind, mode: meta.mode() & 0o7777, uid: meta.uid(), gid: meta.gid(), size, stamp }
 }
 
-enum Comparison { Same, Changed }
+enum Comparison { Same, Changed, Appended }
 
 fn compare(path: &str, recorded: &Entry, meta: Option<&std::fs::Metadata>) -> Comparison {
-    let now = meta.map(|meta| describe(Path::new(path), meta));
-    if now.as_ref() == Some(recorded) { Comparison::Same } else { Comparison::Changed }
+    let file = Path::new(path).to_path_buf();
+    let now = meta.map(|meta| describe(&file, meta));
+    if now.as_ref() == Some(recorded) {
+        return Comparison::Same;
+    }
+    if let Some(now) = now {
+        if path.starts_with("/var/log/") && recorded.kind == 'f' && now.kind == 'f'
+            && recorded.mode == now.mode && recorded.uid == now.uid && recorded.gid == now.gid
+            && recorded.size <= HASHED_BYTES && now.size >= recorded.size
+            && prefix_hash(&file, recorded.size) == Some(recorded.stamp)
+        {
+            return Comparison::Appended;
+        }
+    }
+    Comparison::Changed
+}
+
+/// Hash exactly the recorded prefix; a short read or an I/O error cannot prove an append.
+fn prefix_hash(path: &Path, mut remaining: u64) -> Option<u64> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path).ok()?;
+    let mut hash = 0xcbf2_9ce4_8422_2325u64;
+    let mut buf = [0u8; 4096];
+    while remaining > 0 {
+        let limit = remaining.min(buf.len() as u64) as usize;
+        let count = file.read(&mut buf[..limit]).ok()?;
+        if count == 0 { return None; }
+        for &byte in &buf[..count] {
+            hash = (hash ^ byte as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        remaining -= count as u64;
+    }
+    Some(hash)
 }
 
 /// 64-bit FNV-1a.
@@ -534,7 +565,7 @@ fn reset() -> Result<Reset, String> {
             return false;
         };
         seen.insert(String::from(path));
-        if matches!(compare(path, recorded, meta.as_ref()), Comparison::Changed) {
+        if !matches!(compare(path, recorded, meta.as_ref()), Comparison::Same) {
             result.changed.push(String::from(path));
         }
         true
