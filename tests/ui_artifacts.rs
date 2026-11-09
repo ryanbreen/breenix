@@ -12,7 +12,11 @@ pub use client::RecordClient;
 #[path = "../libs/libbreenix/src/suite_result.rs"] pub mod result;
 pub mod suite {
     pub use crate::result;
-    pub fn result_record(_: &str) -> Result<(), String> { panic!("contained check wrote outer pipe") }
+    thread_local! { pub static AT_RECORD: std::cell::RefCell<Option<Box<dyn Fn(&str)>>> = std::cell::RefCell::new(None); }
+    pub fn result_record(line: &str) -> Result<(), String> {
+        AT_RECORD.with(|hook| hook.borrow().as_ref().expect("contained check wrote outer pipe")(line));
+        Ok(())
+    }
 }
 use std::{fs, path::{Path, PathBuf}};
 use artifacts::{CheckWriter, Publish, SaveError};
@@ -109,8 +113,12 @@ impl Fixture {
         Self {path,arena,want,got,definition}
     }
     fn run(&self,writer:&mut dyn CheckWriter,save_all:bool)->(compare::Verdict,ScenarioOutcome) {
+        self.run_mode(writer,save_all,false)
+    }
+    fn run_mode(&self,writer:&mut dyn CheckWriter,save_all:bool,outer:bool)->(compare::Verdict,ScenarioOutcome) {
         let mut bindings=frames::Bindings::default(); bindings.window("app"); bindings.checkpoint("saved");
-        let mut client=RecordClient::contained("ui-testing","diagnosis/local",&["pixels"]).unwrap();
+        let mut client=if outer {RecordClient::outer("ui-testing","diagnosis/local",&["pixels"])}
+            else {RecordClient::contained("ui-testing","diagnosis/local",&["pixels"])}.unwrap();
         let capture=frames::Capture {frame:frame(&self.got,2,1),source:"window:app",checkpoint:"saved",commit:41,epoch:0,barriers:&[]};
         let mut context=frames::ArtifactContext {arena:&self.arena,input_log:b"serial=1 disposition=processed\nserial=2 disposition=rejected\n",writer,save_all};
         let verdict=frames::check_stored_with_artifacts("ui-testing",&self.definition,capture,&bindings,&self.path,&mut client,&mut context).unwrap();
@@ -161,4 +169,55 @@ fn record_path_is_strictly_bound_to_the_suite_case_and_complete_status() {
         assert!(!accepts(&format!("{base} path={tail}")),"{tail}");
     }
     assert!(!accepts(&format!("{} path=/var/uitest/ui-testing/diagnosis/local",base.replace("artifacts=complete","artifacts=none:io"))));
+}
+
+#[test]
+fn all_six_publications_finish_before_the_result_pipe_write() {
+    use std::{rc::Rc,cell::Cell};
+    struct Counting<'a> {writer:&'a mut Writer, count:Rc<Cell<usize>>}
+    impl CheckWriter for Counting<'_> {
+        fn path(&self)->&Path {self.writer.path()}
+        fn write(&mut self,name:&str,bytes:&[u8])->Result<(),SaveError> {
+            self.writer.write(name,bytes)?; self.count.set(self.count.get()+1); Ok(())
+        }
+    }
+    let f=Fixture::new("before-record",true);
+    let count=Rc::new(Cell::new(0)); let observed=count.clone();
+    let sent=Rc::new(Cell::new(false)); let observed_sent=sent.clone();
+    suite::AT_RECORD.with(|hook| *hook.borrow_mut()=Some(Box::new(move |line| {
+        assert_eq!(observed.get(),6,"FRAME emitted before artifacts finished");
+        assert!(line.contains("artifacts=complete path=")); observed_sent.set(true);
+    })));
+    let mut writer=Writer {path:"/var/uitest/ui-testing/diagnosis/local".into(),files:vec![],error:None};
+    let mut writer=Counting {writer:&mut writer,count};
+    f.run_mode(&mut writer,false,true);
+    assert!(sent.get()); suite::AT_RECORD.with(|hook|hook.borrow_mut().take());
+    fs::remove_dir_all(&f.path).unwrap();
+}
+#[test]
+fn rename_failure_removes_temporary_output_and_keeps_existing_files() {
+    let root=root("rename-error");
+    let mut store=artifacts::Store::new(&root,"ui-testing","diagnosis/local").unwrap();
+    store.write("kept",b"already synced").unwrap();
+    let path=root.join("ui-testing/diagnosis/local");
+    fs::create_dir(path.join("blocked")).unwrap();
+    assert_eq!(CheckWriter::write(&mut store,"blocked",b"new data"),Err(SaveError::Io));
+    assert!(!path.join("blocked.tmp").exists());
+    assert_eq!(fs::read(path.join("kept")).unwrap(),b"already synced");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn local_writer_is_lazy_clears_stale_case_files_once_and_keeps_its_outputs() {
+    let root=root("lazy-local");
+    let path=root.join("ui-testing/diagnosis/local");
+    let mut local=artifacts::Local::new(&root,"ui-testing","diagnosis/local");
+    assert!(!path.exists());
+    fs::create_dir_all(&path).unwrap();fs::write(path.join("stale"),b"old run").unwrap();
+    local.write("first",b"new run").unwrap();
+    assert!(!path.join("stale").exists());
+    local.write("second",b"same run").unwrap();
+    assert_eq!(fs::read(path.join("first")).unwrap(),b"new run");
+    assert_eq!(fs::read(path.join("second")).unwrap(),b"same run");
+    fs::remove_dir_all(root).unwrap();
 }

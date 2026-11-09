@@ -103,7 +103,7 @@ def parse_result(line, suite, case, checks, collects):
             or t[0] != "SUITE" or t[1] != suite or t[3] != case):
         raise ValueError("malformed or other-case result record")
     kind = t[2]
-    if kind == "FRAME" and len(t) in (14, 20):
+    if kind == "FRAME" and len(t) in (14, 15, 16, 20, 21):
         check = t[4]
         reference, source = field(t[6], "ref"), field(t[7], "source")
         if (not name(check) or check not in checks or not hexdigits(field(t[5], "def"), 8)
@@ -116,9 +116,12 @@ def parse_result(line, suite, case, checks, collects):
         if not width or not height or not hexdigits(field(t[12], "sha256"), 64):
             raise ValueError("malformed FRAME dimensions or hash")
         result = field(t[13], "result")
-        if result == "match" and len(t) == 14:
+        valid_path = lambda token: field(token, "path") == f"/var/uitest/{suite}/{case}"
+        if result == "match" and (len(t) == 14
+                or len(t) == 15 and artifacts(field(t[14], "artifacts")) and t[14] != "artifacts=complete"
+                or len(t) == 16 and t[14] == "artifacts=complete" and valid_path(t[15])):
             return "FRAME:" + check, check, None
-        if result == "mismatch" and len(t) == 20:
+        if result == "mismatch" and len(t) in (20, 21):
             compared, differing = number(t[14], "compared"), number(t[15], "differing")
             first = field(t[16], "first").split(",")
             if len(first) != 2:
@@ -127,7 +130,8 @@ def parse_result(line, suite, case, checks, collects):
             if (not 0 < differing <= compared <= width * height <= 2**64 - 1 or x >= width or y >= height
                     or re.fullmatch(r"#[0-9a-f]{6}", field(t[17], "got")) is None
                     or re.fullmatch(r"#[0-9a-f]{6}", field(t[18], "want")) is None
-                    or not artifacts(field(t[19], "artifacts"))):
+                    or not artifacts(field(t[19], "artifacts"))
+                    or len(t) == 21 and (t[19] != "artifacts=complete" or not valid_path(t[20]))):
                 raise ValueError("malformed FRAME mismatch")
             return "FRAME:" + check, None, check
     elif kind == "TREE" and len(t) == 9:

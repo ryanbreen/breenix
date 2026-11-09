@@ -246,15 +246,15 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     ]),
     category("diagnosis", "Saved evidence & failure messages", &[
         // A mismatch saves the got image, diff image, tree, input log and screen. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("artifacts-on-mismatch", "A mismatch saves the got image, diff image, tree, input log and screen", || pending("diagnosis", 7)),
+        case("artifacts-on-mismatch", "A mismatch saves the got image, diff image, tree, input log and screen", diagnosis::artifacts_on_mismatch),
         // A passing case saves nothing unless saving is turned on. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("nothing-on-pass", "A passing case saves nothing unless saving is turned on", || pending("diagnosis", 7)),
+        case("nothing-on-pass", "A passing case saves nothing unless saving is turned on", diagnosis::nothing_on_pass),
         // With saving turned on, a passing case saves its frames. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("save-all", "With saving turned on, a passing case saves its frames", || pending("diagnosis", 7)),
+        case("save-all", "With saving turned on, a passing case saves its frames", diagnosis::save_all),
         // The saved input log lists every serial with its disposition. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("input-log", "The saved input log lists every serial with its disposition", || pending("diagnosis", 7)),
+        case("input-log", "The saved input log lists every serial with its disposition", diagnosis::input_log),
         // The saved screen is the readback at the failing step, with its record. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("screen-saved", "The saved screen is the readback at the failing step, with its record", || pending("diagnosis", 7)),
+        case("screen-saved", "The saved screen is the readback at the failing step, with its record", diagnosis::screen_saved),
         // When the case process is killed, the runner sends `end collect`, waits for the supervisor's `done` before sweeping, and the evidence is on disk. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("case-death", "When the case process is killed, the runner sends end collect, waits for done before sweeping, and the evidence is on disk", diagnosis::case_death),
         // An app that dies right after a commit still has that commit and tree saved, from its remnant. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)

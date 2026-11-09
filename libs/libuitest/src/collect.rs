@@ -60,7 +60,7 @@ impl Evidence {
         let mut remnants = 0;
         let mut notes = format!("trigger={}\n", trigger.name());
         let result = (|| -> Result<(), String> {
-            let mut store = Store::new(Path::new("/var/uitest"), suite, case)?;
+            let mut store = Store::open(Path::new("/var/uitest"), suite, case)?;
             let slots = self.arena.as_ref().map(|arena| [Slot::Screen, Slot::Frame, Slot::Tree].map(|slot| arena.read(slot)));
             let failure_screen = slots.as_ref().is_some_and(|s| matches!(&s[0], Ok(SlotRead::Final { record, bytes }) if valid_screen(record, bytes)));
             // Screen readback is taken before terminating any session participant.
@@ -78,6 +78,7 @@ impl Evidence {
                 screen = "at-collection";
             } else { notes.push_str(&format!("screen=readback-error:{rc:?}\n")); }
             for (name, source) in [("input.log", "/proc/breenix/input-ledger"), ("composites.log", "/proc/breenix/composites")] {
+                if store.contains(name) { continue; }
                 store.write(name, &std::fs::read(source).map_err(|e| format!("{source}: {e}"))?)?;
             }
             if let Some(slots) = slots {
@@ -141,7 +142,7 @@ impl Evidence {
             notes.push_str(&format!("screen={screen}\nwindows={windows}\nremnants={remnants}\n"));
             store.finish(&notes)
         })();
-        let artifacts = match result { Ok(()) => "complete", Err(_) => "none:io" };
+        let artifacts = match result { Ok(()) => "complete", Err(ref e) if e == "none:cap" => "none:cap", Err(_) => "none:io" };
         // A write failure is an evidence outcome; the case's primary failure stands.
         format!("SUITE {suite} COLLECT {case} trigger={} screen={screen} windows={windows} remnants={remnants} artifacts={artifacts}\n", trigger.name())
     }

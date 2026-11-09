@@ -81,6 +81,9 @@ pub mod window{
     let root=Path::new(env!("COLLECT_ROOT"));std::fs::create_dir_all(root).unwrap();
     std::fs::write(env!("COLLECT_INPUT"),b"serial=9 delivered\n").unwrap();
     std::fs::write(env!("COLLECT_COMPOSITES"),b"1 100 17 7 1\n").unwrap();
+    // Check-owned files must survive the collector opening this same case path.
+    let mut saved=artifacts::Store::new(root,"test","runner/live").unwrap();
+    saved.write("pixels.got.png",b"check-owned").unwrap();
     let config=root.join("config");std::fs::create_dir(&config).unwrap();
     let mut evidence=collect::Evidence::new().unwrap();evidence.configure(&config).unwrap();
     let mut case=arena::Arena::open(&config.join("evidence.arena")).unwrap();
@@ -89,6 +92,7 @@ pub mod window{
     let reply=evidence.collect("test","runner/live",collection::Trigger::Crash,&[(1234,4,b"stderr".to_vec())]);
     assert_eq!(reply,"SUITE test COLLECT runner/live trigger=crash screen=at-collection windows=1 remnants=0 artifacts=complete\n");
     let out=root.join("test/runner/live");
+    assert_eq!(std::fs::read(out.join("pixels.got.png")).unwrap(),b"check-owned");
     assert_eq!(libimg::png::decode(&std::fs::read(out.join("screen.png")).unwrap()).unwrap().pixels,vec![255;128]);
     let image=libimg::png::decode(&std::fs::read(out.join("window-17-7.png")).unwrap()).unwrap();
     assert!(image.pixels.chunks_exact(4).all(|p|p==[21,31,41,255]));

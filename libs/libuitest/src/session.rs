@@ -13,6 +13,7 @@ pub struct AppStderr { pub bytes: Vec<u8>, pub dropped: u64 }
 
 pub struct Session {
     arena: Option<crate::arena::Arena>,
+    artifacts: Option<crate::artifacts::Local>,
     startup: Option<crate::startup::Trace>,
     held_window: Option<u64>,
     environment: SessionEnvironment,
@@ -94,7 +95,7 @@ impl Session {
         let mode_at = crate::startup::now();
         let mode = format!("{}x{}@{}", mode.width, mode.height, mode.scale);
         let environment = SessionEnvironment::new(case_pid, seed, &mode)?;
-        let mut session = Self { arena: None, startup: None, held_window: None, environment, configured: false, devices: None, input_done: false, stderr: None, control, supervisor: 0, names: BTreeMap::new(), output: BTreeMap::new(), exits: Vec::new(), launched: None, stopped: false, compositor: None, excluded: BTreeSet::new() };
+        let mut session = Self { arena: None, artifacts: None, startup: None, held_window: None, environment, configured: false, devices: None, input_done: false, stderr: None, control, supervisor: 0, names: BTreeMap::new(), output: BTreeMap::new(), exits: Vec::new(), launched: None, stopped: false, compositor: None, excluded: BTreeSet::new() };
         let end = now()? + 1000;
         while session.supervisor == 0 || session.devices.is_none() { session.poll(end)?; }
         let ready_at = crate::startup::now();
@@ -112,6 +113,51 @@ impl Session {
         self.startup.as_ref().map_or_else(Vec::new, |trace| trace.snapshot())
     }
     pub fn arena_mut(&mut self) -> &mut crate::arena::Arena { self.arena.as_mut().expect("connected evidence arena") }
+    /// Compare the arena capture and retain local evidence before its FRAME record.
+    /// Window/surface capture must already have published the check's frame slot.
+    pub fn check_stored(&mut self, suite: &str, definition: &crate::schema::Value,
+        bindings: &crate::frames::Bindings, references: &std::path::Path, barriers: &[&str],
+        client: &mut crate::RecordClient<'_>) -> Result<crate::compare::Verdict, String> {
+        use crate::arena::{Slot, SlotRead};
+        let check = definition["check"].as_str().ok_or("missing check name")?;
+        let case = definition["case"].as_str().ok_or("missing case name")?;
+        let arena = self.arena.as_mut().ok_or("session arena not connected")?;
+        let (record, bytes) = match arena.read(Slot::Frame)? {
+            SlotRead::Final {record,bytes} if record.check == check && !record.oversize => (record,bytes),
+            _ => return Err("check frame is not finalized in arena".into()),
+        };
+        if matches!(arena.read(Slot::Screen)?, SlotRead::Free) {
+            let _ = crate::capture::screen(arena, check, libbreenix::window::ObservationKind::Composed);
+        }
+        let input_log = std::fs::read("/proc/breenix/input-ledger");
+        let source = match definition["source"]["kind"].as_str() {
+            Some("window") => format!("window:{}", definition["source"]["window"].as_str().ok_or("missing window key")?),
+            Some(kind) => kind.to_string(),
+            None => return Err("missing source kind".into()),
+        };
+        let frame = crate::compare::Frame::new(&bytes, record.width as usize, record.height as usize,
+            record.width as usize*4, crate::compare::Format::Bgrx).map_err(|e| format!("check frame: {e:?}"))?;
+        use crate::artifacts::CheckWriter;
+        let destination = std::path::Path::new("/var/uitest").join(suite).join(case);
+        let writer = self.artifacts.get_or_insert_with(|| crate::artifacts::Local::new(std::path::Path::new("/var/uitest"),suite,case));
+        if writer.path() != destination { return Err("session artifact case changed".into()); }
+        // An unreadable input ledger is a save error, not a comparison error.
+        struct Unavailable(std::path::PathBuf);
+        impl crate::artifacts::CheckWriter for Unavailable {
+            fn path(&self) -> &std::path::Path { &self.0 }
+            fn write(&mut self, _: &str, _: &[u8]) -> Result<(), crate::artifacts::SaveError> { Err(crate::artifacts::SaveError::Io) }
+        }
+        let mut unavailable = Unavailable(std::path::Path::new("/var/uitest").join(suite).join(case));
+        let mut artifacts = crate::frames::ArtifactContext {
+            arena, input_log:input_log.as_deref().unwrap_or(&[]),
+            writer:if input_log.is_ok() { writer } else { &mut unavailable },
+            save_all:crate::artifacts::save_all(),
+        };
+        crate::frames::check_stored_with_artifacts(suite,definition,
+            crate::frames::Capture {frame,source:&source,
+                checkpoint:definition["at"]["checkpoint"].as_str().ok_or("missing checkpoint")?,
+                commit:record.commit,epoch:record.epoch,barriers},bindings,references,client,&mut artifacts)
+    }
     /// Wait for the supervisor to witness the live window and register its remnant hold.
     pub fn hold_window(&mut self, id: u64) -> Result<(), String> {
         self.held_window = None;
