@@ -7,6 +7,57 @@ use clock::Clock;
 use std::fs::{self, OpenOptions};
 use std::os::unix::fs::FileExt;
 
+#[test]
+fn header_only_clock_keeps_time_without_a_participant_table() {
+    const CHILD:&str="BWM_HEADER_CLOCK_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        assert!(std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact","header_only_clock_keeps_time_without_a_participant_table","--nocapture"])
+            .env(CHILD,"1").status().unwrap().success());
+        return;
+    }
+    use libbreenix::ui_clock;
+    for length in [4096,64] {
+        // wm_suite/measure.rs writes this header and pads its carrier to 4096.
+        let path=std::env::temp_dir().join(format!("bwm-header-{}-{length}",std::process::id()));
+        let mut bytes=vec![0;length];bytes[..8].copy_from_slice(b"BGCLK001");
+        bytes[8..16].copy_from_slice(&7u64.to_le_bytes());
+        bytes[16..24].copy_from_slice(&250_000_000u64.to_le_bytes());
+        bytes[24..32].copy_from_slice(&1_767_225_600_000_000_000u64.to_le_bytes());
+        fs::write(&path,&bytes).unwrap();
+        std::env::set_var("BREENIX_UI_CLOCK",&path);
+        let reads=ui_clock::real_clock_reads();
+        let mut clock=Clock::new(true);
+        clock.participate().expect("valid header-only clock must start bwm");
+        clock.acknowledged();
+        assert_eq!(clock.acknowledgment(9).epoch,7);
+        assert_eq!(ui_clock::now_ns(),250_000_000);
+        assert_eq!(ui_clock::real_clock_reads(),reads);
+        assert!(ui_clock::Participant::configured(41).unwrap().is_none());
+        assert!(ui_clock::ClockPage::open(&path).is_err(),"step driver still requires its table");
+        assert_eq!(fs::read(&path).unwrap(),bytes);
+        bytes[0]=b'X';fs::write(&path,&bytes).unwrap();
+        assert!(ui_clock::Participant::configured(41).is_err(),"bad magic became a legacy clock");
+        if length==4096 {
+            bytes[0]=b'B';bytes[72..80].copy_from_slice(b"BGPT0002");fs::write(&path,&bytes).unwrap();
+            assert!(ui_clock::Participant::configured(41).is_err(),"unknown extension was ignored");
+        }
+        std::env::remove_var("BREENIX_UI_CLOCK");fs::remove_file(&path).unwrap();
+    }
+    let path=std::env::temp_dir().join(format!("bwm-full-clock-{}",std::process::id()));
+    ui_clock::ClockPage::create(&path,1_767_225_600_000_000_000).unwrap();
+    std::env::set_var("BREENIX_UI_CLOCK",&path);
+    let page=ui_clock::ClockPage::open(&path).unwrap();
+    let participants:Vec<_>=(1..=62).map(|id|page.register(id).unwrap()).collect();
+    assert!(ui_clock::Participant::compositor_configured().is_err(),"full table became a legacy clock");
+    drop(participants);
+    let compositor=ui_clock::Participant::compositor_configured().unwrap().unwrap();
+    assert_eq!(page.participants().len(),1);
+    assert_eq!(page.participants()[0].flags,ui_clock::COMPOSITOR);
+    drop(compositor);
+    std::env::remove_var("BREENIX_UI_CLOCK");fs::remove_file(path).unwrap();
+}
+
 #[path = "../libs/libuitest/src/clock.rs"]
 mod step_clock;
 
