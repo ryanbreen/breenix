@@ -126,3 +126,24 @@ fn menu_reference_pins_match_regenerated_pngs() {
 fn list_reference_pins_match_regenerated_pngs() {
     regenerated_scenario_pins("list", &["initial", "scrolled", "selected"]);
 }
+
+#[test]
+fn manifest_scenario_declarations_pin_the_logical_reference_frames() {
+    let manifest:serde_json::Value=serde_json::from_slice(&std::fs::read(root().parent().unwrap().join("ui-testing.json")).unwrap()).unwrap();
+    let declarations=manifest["frameChecks"].as_array().unwrap();
+    assert_eq!(declarations.len(),11,"the scenario FRAME obligations are missing");
+    let provenance:serde_json::Value=serde_json::from_slice(&std::fs::read(root().join("PROVENANCE.json")).unwrap()).unwrap();
+    for definition in declarations {
+        let checked=schema::validate(definition,&schema::Context {frame:Some((640,400)),formulas:&[],previous:None}).unwrap();
+        assert_eq!(checked.definition,*definition);
+        let path=definition["reference"]["path"].as_str().unwrap();
+        let pin=definition["reference"]["sha256"].as_str().unwrap();
+        let rows:Vec<_>=provenance["references"].as_array().unwrap().iter().filter(|row|row["path"]==path).collect();
+        assert_eq!(rows.len(),1);
+        assert_eq!(rows[0]["sha256"],pin);
+        let bytes=std::fs::read(root().join(path)).unwrap();
+        assert_eq!(frames::digest(&bytes),pin);
+        let image=libimg::png::decode(&bytes).unwrap();
+        assert_eq!((image.width,image.height),(640,400));
+    }
+}
