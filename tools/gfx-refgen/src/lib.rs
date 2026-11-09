@@ -2,6 +2,8 @@
 //! The aliases bind included widget sources to the reference surface in this crate;
 //! production libbui continues to use GPU surfaces.
 extern crate alloc;
+#[cfg(test)]
+extern crate self as breengel;
 extern crate self as libbui;
 extern crate self as libgfx;
 pub use libgfx_ref::{bitmap_font, color, font, shapes, ttf_font};

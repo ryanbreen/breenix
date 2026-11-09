@@ -601,14 +601,37 @@ pub fn wm_focus_scenario() -> CaseResult {
         wm_checkpoint(&mut live, ids, owners, scale, screen, 0, ["", ""])?;
         let mut keyboard = Keyboard::new(live);
         keyboard.type_text(ids[0], "alpha")?;
-        wm_checkpoint(keyboard.backend_mut(), ids, owners, scale, screen, 0, ["alpha", ""])?;
+        wm_checkpoint(
+            keyboard.backend_mut(),
+            ids,
+            owners,
+            scale,
+            screen,
+            0,
+            ["alpha", ""],
+        )?;
         wm_focus_next(keyboard.backend_mut())?;
-        wm_checkpoint(keyboard.backend_mut(), ids, owners, scale, screen, 1, ["alpha", ""])?;
+        wm_checkpoint(
+            keyboard.backend_mut(),
+            ids,
+            owners,
+            scale,
+            screen,
+            1,
+            ["alpha", ""],
+        )?;
         keyboard.type_text(ids[1], "beta")?;
-        wm_checkpoint(keyboard.backend_mut(), ids, owners, scale, screen, 1, ["alpha", "beta"])
+        wm_checkpoint(
+            keyboard.backend_mut(),
+            ids,
+            owners,
+            scale,
+            screen,
+            1,
+            ["alpha", "beta"],
+        )
     })
 }
-
 
 pub fn wm_stack_scenario() -> CaseResult {
     wm_scenario(|mut live, ids, owners, scale, screen| {
@@ -618,4 +641,118 @@ pub fn wm_stack_scenario() -> CaseResult {
         wm_click(&mut live, ids[1], "root")?;
         wm_checkpoint(&mut live, ids, owners, scale, screen, 1, ["", ""])
     })
+}
+
+#[path = "proof_wm_checks.rs"]
+mod wm_checks;
+
+fn wm_scenario(
+    run: impl FnOnce(LivePointer<'_>, [u64; 2], [u64; 2], u32, [u32; 2]) -> Result<(), String>,
+) -> CaseResult {
+    let mut session = Session::desktop()?;
+    let mut owners = [0; 2];
+    let result: Result<(), String> = (|| {
+        let mut ids = [0; 2];
+        for (index, title) in ["wm scenario lower", "wm scenario upper"]
+            .into_iter()
+            .enumerate()
+        {
+            owners[index] = session.launch_app(&[APP, title.as_bytes(), b"--widgets"], 0)?;
+            ids[index] = session.wait_window(title)?.id;
+        }
+        let mode = libbreenix::gpu::current_mode().map_err(|e| e.to_string())?;
+        let mut live = LivePointer::new(&mut session)?;
+        for id in ids {
+            live.watch(id)?;
+        }
+        run(live, ids, owners, mode.scale, [mode.width, mode.height])
+    })();
+    let exits = session.teardown()?;
+    for pid in owners.into_iter().filter(|pid| *pid != 0) {
+        reject_crash(pid, &exits)?;
+    }
+    result?;
+    Ok(())
+}
+
+fn wm_click(live: &mut LivePointer<'_>, id: u64, key: &str) -> Result<(), String> {
+    use libuitest::input::{Backend, Target};
+    let resolved = live.resolve(&Target::new(id, key))?;
+    live.move_to(resolved.point)?;
+    live.confirm(&resolved)?;
+    let press = live.button(true, id);
+    let release = live.button(false, id);
+    press?;
+    release?;
+    Ok(())
+}
+fn wm_focus_next(live: &mut LivePointer<'_>) -> Result<(), String> {
+    use libbreenix::input::key;
+    let alt = live.wm_key(key::LEFT_ALT, true);
+    let tab = match &alt {
+        Ok(_) => live.wm_key(key::TAB, true),
+        Err(error) => Err(error.clone()),
+    };
+    let tab_up = live.wm_key(key::TAB, false);
+    let alt_up = live.wm_key(key::LEFT_ALT, false);
+    alt?;
+    tab?;
+    tab_up?;
+    alt_up?;
+    Ok(())
+}
+fn wm_checkpoint(
+    live: &mut LivePointer<'_>,
+    ids: [u64; 2],
+    owners: [u64; 2],
+    scale: u32,
+    screen: [u32; 2],
+    top: usize,
+    text: [&str; 2],
+) -> Result<(), String> {
+    use libuitest::input::Backend;
+    // Park beyond the two frames so hover state cannot color the structural patch.
+    live.move_to((1100 * scale as i32, 700 * scale as i32))?;
+    libuitest::settle::settle_session(live.session(), &[(ids[0], 0), (ids[1], 0)], 0, &mut [])?;
+    wm_checks::desktop(&live.desktop_tree()?, ids, owners, scale, screen, top)?;
+    let mut commits = [(0, 0); 2];
+    for (index, id) in ids.into_iter().enumerate() {
+        let record = capture::window(live.session().arena_mut(), "wm-client", id)?;
+        commits[index] = (id, record.commit);
+        match live.session().arena_mut().read(Slot::Tree)? {
+            SlotRead::Final { bytes, .. } => {
+                wm_checks::entry(&libbui::tree::Tree::parse(&bytes)?, text[index], scale)?
+            }
+            other => return Err(format!("incomplete WM app tree: {other:?}")),
+        }
+    }
+    let record = capture::screen(
+        live.session().arena_mut(),
+        "wm-screen",
+        libbreenix::window::ObservationKind::Composed,
+    )?;
+    let observed = capture::screen_windows(&record)?;
+    for (id, commit) in commits {
+        if !observed.contains(&(id, commit)) {
+            return Err(format!(
+                "WM screen missing compared window={id} commit={commit}"
+            ));
+        }
+    }
+    match live.session().arena_mut().read(Slot::Screen)? {
+        SlotRead::Final { bytes, .. } => wm_checks::screen(
+            Frame::new(
+                &bytes,
+                record.width as usize,
+                record.height as usize,
+                record.width as usize * 4,
+                Format::Bgrx,
+            )
+            .map_err(|e| format!("WM screen frame: {e:?}"))?,
+            scale,
+            top,
+        )?,
+        other => return Err(format!("incomplete WM screen: {other:?}")),
+    }
+    libuitest::input::dispositions(live.serials())
 }

@@ -1,4 +1,4 @@
-//! UI testing suite skeleton; each unbuilt case fails with its planned layer.
+//! UI testing: scripted sessions, literal trees, frames and causal barriers.
 #[path = "uitest_suite/capture_app.rs"]
 mod capture_app;
 #[path = "uitest_suite/runner.rs"]
@@ -43,11 +43,7 @@ mod settle;
 mod settle_composite;
 #[path = "uitest_suite/proof.rs"]
 mod proof;
-use breenix_suite::suite::{case, category, fail, suite, CaseResult, Suite};
-
-fn pending(layer: &str, step: u8) -> CaseResult {
-    fail(format!("not built: {} (E22 step 22.{})", layer, step))
-}
+use breenix_suite::suite::{case, category, suite, Suite};
 
 static SUITE: Suite = suite("ui-testing", "UI test framework", &[
     category("runner", "Proof executor & subreaper", &[
@@ -280,9 +276,9 @@ static SUITE: Suite = suite("ui-testing", "UI test framework", &[
         // Scrolling and selecting in a list gives the expected tree and frame. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
         case("list-scenario", "Scrolling and selecting in a list gives the expected tree and frame", proof::list_scenario).checks(&["initial", "scrolled", "selected"]),
         // A scripted focus scenario on bwm gives the expected trees and screens. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wm-focus-scenario", "A scripted focus scenario on bwm gives the expected trees and screens", proof::wm_focus_scenario),
+        case("wm-focus-scenario", "A scripted focus scenario on bwm gives the expected trees and screens", proof::wm_focus_scenario).session(libuitest::supervisor::serve),
         // A scripted stacking scenario on bwm gives the expected trees and screens. (claim-lint:ok: docs/gui/plan.md section 17 specifies this future case.)
-        case("wm-stack-scenario", "A scripted stacking scenario on bwm gives the expected trees and screens", || pending("proof", 7)),
+        case("wm-stack-scenario", "A scripted stacking scenario on bwm gives the expected trees and screens", proof::wm_stack_scenario).session(libuitest::supervisor::serve),
     ]),
 ]).gui().defer_display();
 
