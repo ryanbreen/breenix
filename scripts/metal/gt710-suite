@@ -4347,19 +4347,24 @@ def record_breengel_capture(directory, sha, category):
     if category not in ('breengel-fronts', 'breengel-composition', 'breengel-stage', 'breengel-full'):
         raise ValueError('unknown BreenGL selection')
     directory = Path(directory)
-    boot = capture_boot(directory)
+    boot = {}
+    source = {}
     # Keep source provenance even when admission refuses the capture. These
     # fields describe the input; captureAccepted records the validator's result.
     artifacts = ('run.json', 'metal-run.json', 'commit', 'dirty', 'ended', 'ended-by',
                  'exit-status', 'serial.txt', 'serial.ts', 'events.jsonl',
                  'suite-verdict.txt', 'suite-readback.json')
-    source = {name: boot.get(name) for name in ('id', 'commit', 'toolsCommit', 'build')}
-    status = (directory / 'exit-status').read_text().strip()
-    source['exitStatus'] = int(status) if re.fullmatch(r'-?\d+', status) else None
-    source['sha256'] = {name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
-                        for name in artifacts if (directory / name).is_file()}
     accepted = False
     try:
+        source['sha256'] = {name: hashlib.sha256((directory / name).read_bytes()).hexdigest()
+                            for name in artifacts if (directory / name).is_file()}
+        identity = capture_boot(directory)
+        if not isinstance(identity, dict):
+            raise ValueError('capture manifest must be an object')
+        boot = identity
+        source.update({name: boot.get(name) for name in ('id', 'commit', 'toolsCommit', 'build')})
+        status = (directory / 'exit-status').read_text().strip()
+        source['exitStatus'] = int(status) if re.fullmatch(r'-?\d+', status) else None
         capture = completed_suite_capture(directory, sha, 'breengel')
         resources_identity(capture['boot'], 'breengel', sha)
         rows = cases(category, '', {'breengel': capture})

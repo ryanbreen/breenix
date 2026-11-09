@@ -35,6 +35,24 @@ class RetainedVerdict(unittest.TestCase):
         (directory / 'events.jsonl').write_text(''.join(json.dumps(e) + '\n' for e in events))
         return run
 
+    def test_unreadable_capture_replaces_stale_pass(self):
+        for broken in ('malformed-run', 'missing-run', 'missing-exit-status'):
+            with self.subTest(broken=broken), tempfile.TemporaryDirectory() as tmp:
+                directory = Path(tmp)
+                self.capture(directory)
+                report_path = directory / 'gt710-breengel-full.json'
+                report_path.write_text(json.dumps(dict(passed=True)))
+                if broken == 'malformed-run':
+                    (directory / 'run.json').write_text('{')
+                else:
+                    (directory / ('run.json' if broken == 'missing-run' else 'exit-status')).unlink()
+                self.assertEqual(API['record_breengel_capture'](directory, 'a' * 40, 'breengel-full'), 1)
+                report = json.loads(report_path.read_text())
+                self.assertFalse(report['passed'])
+                self.assertFalse(report['captureAccepted'])
+                self.assertEqual(report['cases'][0]['result'], 'FAIL')
+                self.assertTrue(report['cases'][0]['reason'])
+
     def test_rejected_aggregate_saves_failure_and_source_boot(self):
         with tempfile.TemporaryDirectory() as tmp:
             directory = Path(tmp)
