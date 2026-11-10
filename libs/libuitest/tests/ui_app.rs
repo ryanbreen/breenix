@@ -35,3 +35,16 @@ fn wait_node_failure_reports_key_and_last_value() {
     assert!(message.contains("last"));
     assert!(app::node_timeout_message("missing", None).contains("missing"));
 }
+
+#[test]
+fn exit_input_requires_targeted_delivery_and_clean_expected_exit() {
+    use app::exit_input_verdict;
+    // The client destroys its window in the callback: the durable delivery
+    // record plus its supervised exit must both survive that ordering.
+    assert!(exit_input_verdict("delivered", 12, 12, 0, 0).is_ok());
+    assert!(exit_input_verdict("delivered", 13, 12, 0, 0).is_err());
+    assert!(exit_input_verdict("wm-handled", 12, 12, 0, 0).is_err());
+    assert!(exit_input_verdict("missing", 0, 12, 0, 0).is_err());
+    assert!(exit_input_verdict("delivered", 12, 12, 9, 0).is_err());
+    assert!(exit_input_verdict("delivered", 12, 12, 256, 0).is_err());
+}
