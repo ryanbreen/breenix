@@ -78,7 +78,7 @@ pub fn launch_terminal() -> CaseResult {
 }
 
 pub fn launch_missing() -> CaseResult {
-    std::fs::write("/tmp/blauncher-missing", "Missing\tFixture\tgui\t/usr/bin/no-such-app\n").map_err(|e| e.to_string())?;
+    std::fs::write("/tmp/blauncher-missing", "Terminal\tFixture\tterminal\t/bin/echo\twrong-row\nMissing\tFixture\tgui\t/usr/bin/no-such-app\n").map_err(|e| e.to_string())?;
     let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-missing"], "\u{1}Launcher")?;
     let launcher = std::fs::read_dir("/proc").map_err(|e| e.to_string())?
         .filter_map(Result::ok).filter_map(|entry| {
@@ -87,8 +87,11 @@ pub fn launch_missing() -> CaseResult {
             if stat.contains("(blauncher)") { Some(pid) } else { None }
         }).collect::<Vec<_>>();
     if launcher.len() != 1 { return Err(format!("expected one launcher, found {launcher:?}").into()); }
-    t.key(28, &[])?;
-    t.wait_node("apps", |v| v["error"] == "Missing program: /usr/bin/no-such-app")?;
+    t.key(108, &[])?;
+    for _ in 0..2 {
+        t.key(28, &[])?;
+        t.wait_node("apps", |v| v["selected"] == 1 && v["error"] == "Missing program: /usr/bin/no-such-app")?;
+    }
     t.attach("\u{1}Launcher")?;
     for entry in std::fs::read_dir("/proc").map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;

@@ -24,6 +24,8 @@ mod node;
 mod dismiss;
 #[path = "blauncher/launch.rs"]
 mod launch;
+#[path = "blauncher/query.rs"]
+mod query;
 use libbreenix::{errno::Errno, error::Error};
 use libbreenix::time;
 
@@ -589,10 +591,7 @@ fn main() {
                     }
                 }
                 Event::Text { text } => {
-                    for byte in text.bytes().filter(|b| *b >= 0x20 && *b < 0x7f) {
-                        if state.query_len < 63 { state.query[state.query_len] = byte; state.query_len += 1; }
-                    }
-                    state.selected = 0;
+                    query::append(&mut state.query, &mut state.query_len, &mut state.selected, &text);
                 }
                 Event::MouseMove { x, y } => {
                     let filtered_count = get_filtered_apps(&entries, &state.query, state.query_len).len();
