@@ -28,3 +28,11 @@ fn blauncher_dispatches_input_before_presenting() {
     assert!(source.contains("Handled::Redraw"));
     assert!(source.contains("Event::Text { text }"));
 }
+
+#[test]
+fn launcher_cases_wait_for_the_registered_chromeless_title() {
+    let launcher = include_str!("../userspace/programs/src/blauncher.rs");
+    let cases = include_str!("../userspace/programs/src/guiapps_suite/blauncher.rs");
+    assert!(launcher.contains(r#"Window::new(b"\x01Launcher""#));
+    assert!(!cases.contains(r#""Launcher")?"#), "launcher waits must include the chromeless title prefix");
+}
