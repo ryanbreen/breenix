@@ -22,6 +22,7 @@ use std::path::{Path, PathBuf};
 
 use super::auth::Authorizer;
 use super::keys;
+use crate::crypto::ct::ct_eq;
 
 /// The largest authorized_keys file read.
 const MAX_AUTHORIZED_KEYS: u64 = 64 * 1024;
@@ -190,7 +191,7 @@ impl Authorizer for FileAuthorizer {
             }
         };
         match authorized_keys(&self.root, &account) {
-            Ok(blobs) => blobs.iter().any(|blob| keys::ct_eq(blob, key_blob)),
+            Ok(blobs) => blobs.iter().any(|blob| ct_eq(blob, key_blob)),
             Err(why) => {
                 println!("bsshd: authorized keys of '{}' refused: {}", user, why);
                 false
@@ -245,7 +246,7 @@ pub fn authorize_key(root: &Path, account: &Account, blob: &[u8], line: &str) ->
     ensure_directory(&ssh, account, 0o700)?;
     let path = ssh.join("authorized_keys");
     let present = fs::symlink_metadata(&path).is_ok();
-    if present && authorized_keys(root, account)?.iter().any(|known| keys::ct_eq(known, blob)) {
+    if present && authorized_keys(root, account)?.iter().any(|known| ct_eq(known, blob)) {
         return Ok(false);
     }
     let mut file = if present {
