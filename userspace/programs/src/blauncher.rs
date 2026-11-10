@@ -659,7 +659,7 @@ fn main() {
         }
         let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
         let query = core::str::from_utf8(&state.query[..state.query_len]).unwrap_or("");
-        let mut value = node::value(&entries, &errors, query, state.selected, MAX_VISIBLE);
+        let mut value = node::value(&entries, &errors, query, state.selected, MAX_VISIBLE, has_focus);
         value["error"] = serde_json::json!(state.error);
         win.set_tree(breengel::tree::Tree { root: breengel::tree::Node {
             key: "apps".into(), parent: None, role: breengel::tree::Role::List,

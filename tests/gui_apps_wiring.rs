@@ -47,6 +47,13 @@ fn acknowledgment_fixture_publishes_handled_input() {
 }
 
 #[test]
+fn hotkey_open_observes_focus_without_activating_the_window() {
+    let source = include_str!("../libs/libuitest/src/app.rs");
+    let hotkey = source.split("pub fn hotkey(").nth(1).unwrap().split("pub fn launch_next(").next().unwrap();
+    assert!(!hotkey.contains(".activate("), "activation conceals missing WM focus");
+}
+
+#[test]
 fn both_close_actions_use_the_one_declared_session() {
     let source = include_str!("../userspace/programs/src/guiapps_suite/blauncher.rs");
     let close = source.split("pub fn close()").nth(1).unwrap();

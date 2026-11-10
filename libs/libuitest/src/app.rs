@@ -77,7 +77,6 @@ mod live {
             let window = live.session().wait_window_until(title, watchdog.deadline_ns())?.id;
             let pid = u64::from(live.info(window)?.owner);
             live.watch(window)?;
-            live.activate(window)?;
             Ok(Self { keys: Keyboard::new(live), launched: Some(pid), tracked: vec![(pid, None)], window })
         }
         /// Start another app without consuming a second per-case session.
