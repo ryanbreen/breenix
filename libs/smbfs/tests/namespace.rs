@@ -101,7 +101,7 @@ impl Backend for Fake {
         path: &str,
         _: u32,
         disposition: CreateDisposition,
-        _: u32,
+        options: u32,
     ) -> Result<FileId, u32> {
         if self.reconnects > 0 {
             assert!(matches!(disposition, CreateDisposition::Open));
@@ -114,7 +114,10 @@ impl Backend for Fake {
             if self.files.contains_key(path) {
                 return Err(0xc0000035);
             }
-            self.files.insert(path.into(), true);
+            self.files.insert(
+                path.into(),
+                options & libsmb::msg::create_options::DIRECTORY_FILE != 0,
+            );
         }
         if !self.files.contains_key(path)
             && !matches!(
@@ -217,7 +220,11 @@ impl Backend for Fake {
                     .collect();
                 for (p, d) in moved {
                     self.files.remove(&p);
-                    self.files.insert(format!("{name}{}", &p[old.len()..]), d);
+                    let new = format!("{name}{}", &p[old.len()..]);
+                    if let Some(bytes) = self.data.remove(&p) {
+                        self.data.insert(new.clone(), bytes);
+                    }
+                    self.files.insert(new, d);
                 }
             }
             SetInfo::EndOfFile(size) => {
@@ -405,7 +412,7 @@ fn second_connection_failure_invalidates_every_file_id() {
         let closes = fs.backend().closes;
         fs.release(h).unwrap();
         fs.release(other).unwrap();
-        // Failed-session FileIds must never be sent to close or a later read.
+        // Check that release discards the failed session's FileIds locally.
         assert_eq!(fs.backend().closes, closes);
         assert_eq!(fs.read(h, 0, 1), Err(9));
     }

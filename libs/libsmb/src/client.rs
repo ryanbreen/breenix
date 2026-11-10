@@ -2,7 +2,7 @@
 //! Authentication uses MS-NLMP and MS-SPNG through the sans-I/O modules.
 use std::{
     io::{self, Read, Write},
-    net::{Shutdown, TcpStream, ToSocketAddrs},
+    net::{Shutdown, SocketAddr, TcpStream, ToSocketAddrs},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
@@ -49,6 +49,7 @@ impl std::error::Error for Error {}
 pub struct DirectTcp {
     stream: TcpStream,
     timeout: Duration,
+    deadline: Option<Instant>,
 }
 impl DirectTcp {
     pub fn connect(host: &str, port: u16, timeout: Duration) -> Result<Self, Error> {
@@ -73,12 +74,26 @@ impl DirectTcp {
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;
         stream.set_nodelay(true)?;
-        Ok(Self { stream, timeout })
+        Ok(Self {
+            stream,
+            timeout,
+            deadline: None,
+        })
+    }
+
+    /// Use the caller's operation deadline for frames, without resetting
+    /// it between requests, responses or authentication exchanges.
+    pub fn set_deadline(&mut self, deadline: Option<Instant>) {
+        self.deadline = deadline;
+    }
+    fn frame_deadline(&self) -> Instant {
+        let frame = Instant::now() + self.timeout;
+        self.deadline.map_or(frame, |end| end.min(frame))
     }
 
     pub fn send(&mut self, message: &[u8]) -> Result<(), Error> {
         let framed = crate::frame(message)?;
-        let deadline = Instant::now() + self.timeout;
+        let deadline = self.frame_deadline();
         let mut rest = framed.as_slice();
         while !rest.is_empty() {
             self.stream.set_write_timeout(Some(remaining(deadline)?))?;
@@ -93,7 +108,7 @@ impl DirectTcp {
     }
 
     pub fn receive(&mut self) -> Result<Vec<u8>, Error> {
-        let deadline = Instant::now() + self.timeout;
+        let deadline = self.frame_deadline();
         let mut header = [0; 4];
         self.read_exact(&mut header, deadline)?;
         let size = u32::from_be_bytes(header) as usize;
@@ -147,6 +162,39 @@ impl Client {
         creds: &Credentials<'_>,
         max_dialect: DialectCap,
     ) -> Result<Self, Error> {
+        let tcp = DirectTcp::connect(host, port, Duration::from_secs(15))?;
+        Self::on_transport(host, share, creds, max_dialect, tcp)
+    }
+
+    /// Authenticate on an already resolved endpoint under one absolute deadline.
+    /// Resolution belongs to the caller and need not run during a reconnect.
+    pub fn connect_at(
+        host: &str,
+        address: SocketAddr,
+        share: &str,
+        creds: &Credentials<'_>,
+        max_dialect: DialectCap,
+        deadline: Instant,
+    ) -> Result<Self, Error> {
+        let stream = TcpStream::connect_timeout(&address, remaining(deadline)?)?;
+        let mut tcp = DirectTcp::from_stream(stream, remaining(deadline)?)?;
+        tcp.set_deadline(Some(deadline));
+        let client = Self::on_transport(host, share, creds, max_dialect, tcp)?;
+        remaining(deadline)?;
+        Ok(client)
+    }
+
+    pub fn set_deadline(&mut self, deadline: Option<Instant>) {
+        self.tcp.set_deadline(deadline);
+    }
+
+    fn on_transport(
+        host: &str,
+        share: &str,
+        creds: &Credentials<'_>,
+        max_dialect: DialectCap,
+        tcp: DirectTcp,
+    ) -> Result<Self, Error> {
         if host.is_empty()
             || share.is_empty()
             || host.contains(['\\', '/', '\0'])
@@ -162,10 +210,7 @@ impl Client {
             random[16..48].try_into().map_err(|_| Error::Protocol)?,
             random[48..51].try_into().map_err(|_| Error::Protocol)?,
         );
-        let mut client = Self {
-            tcp: DirectTcp::connect(host, port, Duration::from_secs(15))?,
-            session,
-        };
+        let mut client = Self { tcp, session };
         client.success(Request::Negotiate)?;
         let negotiate = ntlm::negotiate();
         let token = spnego::encode_init(&negotiate);
