@@ -16,6 +16,10 @@ pub mod hmac;
 #[cfg(feature = "std")]
 pub mod keccak;
 #[cfg(feature = "std")]
+pub mod md4;
+#[cfg(feature = "std")]
+pub mod md5;
+#[cfg(feature = "std")]
 pub mod mlkem;
 #[cfg(feature = "std")]
 pub mod rand;
