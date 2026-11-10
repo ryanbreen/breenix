@@ -217,5 +217,25 @@ class AppsStep(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_missing_pixels_cannot_retain_a_passing_score(self):
+        self.assertEqual(self.record(), 0)
+        (self.path / 'gt710-pixels.rle').unlink()
+        self.assertEqual(self.record(), 1)
+        report = json.loads((self.path / 'gt710-apps-step.json').read_text())
+        self.assertEqual(report['cases'][0]['result'], 'FAIL')
+        self.assertIn('gt710-pixels.rle', report['cases'][0]['reason'])
+        self.assertFalse(metal_score.score(self.path)['milestones']['metal-gt710/apps-step']['passed'])
+
+    def test_operator_stop_is_not_completed_acceptance(self):
+        (self.path / 'exit-status').write_text('143')
+        events = [dict(event='final-marker'), dict(event='power-off', off=True),
+                  dict(event='closed', status=143, endedBy='driver')]
+        (self.path / 'events.jsonl').write_text('\n'.join(map(json.dumps, events)) + '\n')
+        self.assertEqual(self.record(), 1)
+        report = json.loads((self.path / 'gt710-apps-step.json').read_text())
+        self.assertEqual(report['cases'][0]['result'], 'FAIL')
+        self.assertEqual(report['cases'][0]['reason'],
+                         'native suite requires a complete clean driver-closed capture')
+
 if __name__ == '__main__':
     unittest.main()
