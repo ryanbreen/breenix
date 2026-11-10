@@ -14,8 +14,19 @@
 
 use std::process;
 
-use breengel::{CachedFont, Window, Event};
-use libbreenix::process::{fork, execv, ForkResult};
+use breengel::{CachedFont, Window, Event, Handled};
+
+#[path = "blauncher/catalog.rs"]
+mod catalog;
+#[path = "blauncher/node.rs"]
+mod node;
+#[path = "blauncher/dismiss.rs"]
+mod dismiss;
+#[path = "blauncher/launch.rs"]
+mod launch;
+#[path = "blauncher/query.rs"]
+mod query;
+use libbreenix::{errno::Errno, error::Error};
 use libbreenix::time;
 
 use libgfx::bitmap_font;
@@ -61,28 +72,6 @@ const KEY_ESCAPE: u32 = breengel::keys::ESC;
 // App catalog
 // ---------------------------------------------------------------------------
 
-struct AppEntry {
-    name: &'static str,
-    description: &'static str,
-    binary: &'static [u8],
-    is_gui: bool,
-}
-
-const APPS: &[AppEntry] = &[
-    AppEntry { name: "Terminal",     description: "Terminal emulator",     binary: b"/usr/bin/bterm\0",       is_gui: true },
-    AppEntry { name: "System Check", description: "System health",        binary: b"/usr/bin/bcheck\0",      is_gui: true },
-    AppEntry { name: "Log Viewer",   description: "View system logs",     binary: b"/usr/bin/bless\0",       is_gui: true },
-    AppEntry { name: "Bounce",       description: "Physics demo",         binary: b"/usr/bin/bounce\0",      is_gui: true },
-    AppEntry { name: "Breenix Log",  description: "System log viewer",    binary: b"/usr/bin/blog\0",        is_gui: true },
-    AppEntry { name: "Font Picker",  description: "Configure fonts",      binary: b"/usr/bin/bfontpicker\0", is_gui: true },
-    AppEntry { name: "Shell",        description: "Breenix shell",        binary: b"bsh\0",              is_gui: false },
-    AppEntry { name: "URL Fetch",    description: "Fetch URLs",           binary: b"burl\0",             is_gui: false },
-    AppEntry { name: "cat",          description: "Display file contents", binary: b"cat\0",             is_gui: false },
-    AppEntry { name: "ls",           description: "List directory",       binary: b"ls\0",               is_gui: false },
-    AppEntry { name: "echo",         description: "Print text",           binary: b"echo\0",             is_gui: false },
-    AppEntry { name: "ps",           description: "List processes",       binary: b"ps\0",               is_gui: false },
-];
-
 // ---------------------------------------------------------------------------
 // no_std math helpers
 // ---------------------------------------------------------------------------
@@ -115,40 +104,8 @@ fn clock_ms() -> u64 {
 // Filtering
 // ---------------------------------------------------------------------------
 
-fn to_lower(b: u8) -> u8 {
-    if b >= b'A' && b <= b'Z' { b + 32 } else { b }
-}
-
-fn matches_query(text: &str, query: &[u8], query_len: usize) -> bool {
-    if query_len == 0 { return true; }
-    let text = text.as_bytes();
-    if query_len > text.len() { return false; }
-    for start in 0..=(text.len() - query_len) {
-        let mut ok = true;
-        for i in 0..query_len {
-            if to_lower(text[start + i]) != to_lower(query[i]) {
-                ok = false;
-                break;
-            }
-        }
-        if ok { return true; }
-    }
-    false
-}
-
-fn get_filtered_apps(query: &[u8], query_len: usize) -> ([usize; 16], usize) {
-    let mut indices = [0usize; 16];
-    let mut count = 0;
-    for (i, app) in APPS.iter().enumerate() {
-        if count >= 16 { break; }
-        if matches_query(app.name, query, query_len)
-            || matches_query(app.description, query, query_len)
-        {
-            indices[count] = i;
-            count += 1;
-        }
-    }
-    (indices, count)
+fn get_filtered_apps<'a>(entries: &'a [catalog::Entry], query: &[u8], query_len: usize) -> Vec<&'a catalog::Entry> {
+    catalog::filter(entries, core::str::from_utf8(&query[..query_len]).unwrap_or(""))
 }
 
 // ---------------------------------------------------------------------------
@@ -259,6 +216,7 @@ fn draw_sinuous_border(fb: &mut Surface, lw: i32, lh: i32, frame: u32) {
 // ---------------------------------------------------------------------------
 
 struct LauncherState {
+    error: Option<String>,
     query: [u8; 64],
     query_len: usize,
     selected: usize,
@@ -272,6 +230,7 @@ struct LauncherState {
 impl LauncherState {
     fn new() -> Self {
         Self {
+            error: None,
             query: [0; 64],
             query_len: 0,
             selected: 0,
@@ -302,7 +261,7 @@ struct PanelLayout {
 
 fn compute_layout(win_w: usize, _win_h: usize, filtered_count: usize) -> PanelLayout {
     let visible = filtered_count.min(MAX_VISIBLE);
-    let panel_h = PADDING + SEARCH_H + 8 + (visible as i32 * ITEM_H) + 24 + PADDING;
+    let panel_h = PADDING + SEARCH_H + 8 + (visible.max(1) as i32 * ITEM_H) + 24 + PADDING;
     // Panel centered horizontally in the window, at the top
     let panel_x = (win_w as i32 - PANEL_W) / 2;
     let panel_y = 0;
@@ -333,9 +292,10 @@ fn render(
     state: &LauncherState,
     ttf: &mut Option<CachedFont>,
     font_size: f32,
+    entries: &[catalog::Entry], errors: &[catalog::ParseError],
 ) {
-    let (filtered, filtered_count) = get_filtered_apps(&state.query, state.query_len);
-    let layout = compute_layout(w, h, filtered_count);
+    let filtered = get_filtered_apps(entries, &state.query, state.query_len);
+    let layout = compute_layout(w, h, filtered.len());
 
     // Panel background color everywhere, so the animated border ring pops as a bright
     // contrasting element at the window edge.
@@ -365,7 +325,7 @@ fn render(
 
     // App list: row highlights and badge dots
     for idx in 0..layout.visible_count {
-        let app = &APPS[filtered[idx]];
+        let app = filtered[idx];
         let row_y = layout.list_y + idx as i32 * ITEM_H;
 
         if idx == state.selected {
@@ -375,7 +335,7 @@ fn render(
         }
 
         // App type badge dot
-        let badge = if app.is_gui { GUI_BADGE } else { CLI_BADGE };
+        let badge = if app.mode == catalog::Mode::Gui { GUI_BADGE } else { CLI_BADGE };
         shapes::fill_circle(fb, layout.x + 22, row_y + ITEM_H / 2, 4, badge);
     }
 
@@ -393,15 +353,25 @@ fn render(
 
     // App list text
     for idx in 0..layout.visible_count {
-        let app = &APPS[filtered[idx]];
+        let app = filtered[idx];
         let row_y = layout.list_y + idx as i32 * ITEM_H;
-        text.push(app.name, layout.x + 36, row_y + 4, font_size, TEXT_COLOR);
-        text.push(app.description, layout.x + 36, row_y + 20, desc_size, DIM_COLOR);
+        text.push(&app.name, layout.x + 36, row_y + 4, font_size, TEXT_COLOR);
+        text.push(&app.description, layout.x + 36, row_y + 20, desc_size, DIM_COLOR);
     }
 
+    if filtered.is_empty() {
+        text.push("No matches", layout.x + 36, layout.list_y + 4, font_size, DIM_COLOR);
+    }
     // Footer hint
-    let footer_y = layout.list_y + layout.visible_count as i32 * ITEM_H + 4;
+    let footer_y = layout.list_y + layout.visible_count.max(1) as i32 * ITEM_H + 4;
     text.push("Enter to launch | Esc to close", layout.x + PADDING, footer_y, desc_size, HINT_COLOR);
+    let error_lines: Vec<String> = errors.iter().map(|e| format!("Line {}: {}", e.line, e.reason)).collect();
+    for (i, line) in error_lines.iter().enumerate() {
+        text.push(line, layout.x + PADDING, footer_y + 20 + i as i32 * 18, desc_size, DIM_COLOR);
+    }
+    if let Some(error) = &state.error {
+        text.push(error, layout.x + PADDING, footer_y + 20 + error_lines.len() as i32 * 18, desc_size, DIM_COLOR);
+    }
     text.finish(fb, ttf.as_mut());
 }
 
@@ -460,29 +430,33 @@ fn font_line_height(ttf: Option<&CachedFont>, size: f32) -> i32 {
 // App launching
 // ---------------------------------------------------------------------------
 
-fn launch_app(app: &AppEntry) {
-    if app.is_gui {
-        match fork() {
-            Ok(ForkResult::Child) => {
-                let argv: [*const u8; 2] = [app.binary.as_ptr(), core::ptr::null()];
-                let _ = execv(app.binary, argv.as_ptr());
-                libbreenix::process::exit(1);
-            }
-            Ok(ForkResult::Parent(_)) => {}
-            Err(_) => {}
+fn launch_app(app: &catalog::Entry) -> Result<(), String> {
+    if app.mode == catalog::Mode::Terminal {
+        use std::os::unix::fs::PermissionsExt;
+        let path = &app.argv[0];
+        let metadata = std::fs::metadata(path).map_err(|error|
+            launch::error_text(path, error.kind() == std::io::ErrorKind::NotFound, &error.to_string()))?;
+        if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+            return Err(format!("Not executable: {path}"));
         }
-    } else {
-        // CLI app: just launch bterm
-        match fork() {
-            Ok(ForkResult::Child) => {
-                let path = b"/usr/bin/bterm\0";
-                let argv: [*const u8; 2] = [path.as_ptr(), core::ptr::null()];
-                let _ = execv(path, argv.as_ptr());
-                libbreenix::process::exit(1);
-            }
-            Ok(ForkResult::Parent(_)) => {}
-            Err(_) => {}
-        }
+        libbreenix::fs::access(path, libbreenix::fs::X_OK).map_err(|error|
+            launch::error_text(path, matches!(error, Error::Os(Errno::ENOENT)), &error.to_string()))?;
+    }
+    let argv = if app.mode == catalog::Mode::Gui { launch::gui_argv(&app.argv) }
+        else { launch::terminal_argv(&app.argv) };
+    let strings: Vec<_> = argv.iter().map(|field| std::ffi::CString::new(field.as_bytes()))
+        .collect::<Result<_, _>>().map_err(|error| error.to_string())?;
+    let mut pointers: Vec<_> = strings.iter().map(|field| field.as_ptr().cast::<u8>()).collect();
+    pointers.push(core::ptr::null());
+    libbreenix::process::spawnv(strings[0].as_bytes_with_nul(), pointers.as_ptr())
+        .map(|_| ())
+        .map_err(|error| launch::error_text(&argv[0], matches!(error, Error::Os(Errno::ENOENT)), &error.to_string()))
+}
+
+fn try_launch(app: &catalog::Entry, state: &mut LauncherState) {
+    match launch_app(app) {
+        Ok(()) => process::exit(0),
+        Err(error) => state.error = Some(error),
     }
 }
 
@@ -523,9 +497,18 @@ fn point_in_panel(x: i32, y: i32, layout: &PanelLayout) -> bool {
 fn main() {
     println!("[blauncher] starting");
 
+    let mut args = std::env::args().skip(1);
+    let path = match args.next().as_deref() {
+        None => "/usr/share/applications/catalog".to_owned(),
+        Some("--catalog") => args.next().unwrap_or_else(|| { eprintln!("--catalog requires a file"); process::exit(1) }),
+        Some(_) => { eprintln!("usage: blauncher [--catalog FILE]"); process::exit(1) }
+    };
+    let contents = std::fs::read_to_string(&path).unwrap_or_else(|e| { eprintln!("{path}: {e}"); process::exit(1) });
+    let (entries, errors) = catalog::parse(&contents);
+
     // Panel-sized chromeless window (dimmer provides desktop darkening)
     let panel_w = PANEL_W as u32 + 2 * PADDING as u32;
-    let panel_max_h = (PADDING + SEARCH_H + 8 + (MAX_VISIBLE as i32 * ITEM_H) + 24 + PADDING) as u32;
+    let panel_max_h = (PADDING + SEARCH_H + 8 + (MAX_VISIBLE as i32 * ITEM_H) + 24 + PADDING + errors.len() as i32 * 18 + 20) as u32;
 
     // Create chromeless window (title prefix \x01), BWM will center it
     let mut win = match Window::new(b"\x01Launcher", panel_w, panel_max_h) {
@@ -551,13 +534,19 @@ fn main() {
     let mut state = LauncherState::new();
     let start_ms = clock_ms();
     let mut first_frame = true;
+    let mut has_focus = false;
 
     loop {
-        // Poll events
-        let events = win.poll_events();
-
-        for event in events {
-            match event {
+        loop {
+            let mut status = 0;
+            match libbreenix::process::waitpid(-1, &mut status, libbreenix::process::WNOHANG) {
+                Ok(pid) if pid.raw() != 0 => continue,
+                Err(Error::Os(Errno::EINTR)) => continue,
+                _ => break,
+            }
+        }
+        win.dispatch(|delivered| {
+            match delivered.event.clone() {
                 Event::KeyPress { ascii, keycode, .. } => {
                     match keycode {
                         KEY_ESCAPE => {
@@ -567,36 +556,28 @@ fn main() {
                             state.selected = state.selected.saturating_sub(1);
                         }
                         KEY_DOWN => {
-                            let (_, filtered_count) = get_filtered_apps(
-                                &state.query, state.query_len,
-                            );
+                            let filtered_count = get_filtered_apps(&entries, &state.query, state.query_len).len();
                             let max_vis = filtered_count.min(MAX_VISIBLE);
                             if max_vis > 0 {
                                 state.selected = (state.selected + 1).min(max_vis - 1);
                             }
                         }
                         KEY_ENTER => {
-                            let (filtered, filtered_count) = get_filtered_apps(
-                                &state.query, state.query_len,
-                            );
+                            let filtered = get_filtered_apps(&entries, &state.query, state.query_len);
+                            let filtered_count = filtered.len();
                             let max_vis = filtered_count.min(MAX_VISIBLE);
                             if max_vis > 0 && state.selected < max_vis {
-                                let app_idx = filtered[state.selected];
-                                launch_app(&APPS[app_idx]);
-                                process::exit(0);
+                                try_launch(filtered[state.selected], &mut state);
                             }
                         }
                         _ => {
                             if ascii == b'\r' || ascii == b'\n' {
                                 // Enter via ASCII
-                                let (filtered, filtered_count) = get_filtered_apps(
-                                    &state.query, state.query_len,
-                                );
+                                let filtered = get_filtered_apps(&entries, &state.query, state.query_len);
+                                let filtered_count = filtered.len();
                                 let max_vis = filtered_count.min(MAX_VISIBLE);
                                 if max_vis > 0 && state.selected < max_vis {
-                                    let app_idx = filtered[state.selected];
-                                    launch_app(&APPS[app_idx]);
-                                    process::exit(0);
+                                    try_launch(filtered[state.selected], &mut state);
                                 }
                             } else if ascii == 0x1b {
                                 // Escape via ASCII
@@ -607,26 +588,21 @@ fn main() {
                                     state.query_len -= 1;
                                     state.selected = 0;
                                 }
-                            } else if ascii >= 0x20 && ascii < 0x7f && state.query_len < 63 {
-                                // Printable character -> append to query
-                                state.query[state.query_len] = ascii;
-                                state.query_len += 1;
-                                state.selected = 0;
                             }
                         }
                     }
                 }
+                Event::Text { text } => {
+                    query::append(&mut state.query, &mut state.query_len, &mut state.selected, &text);
+                }
                 Event::MouseMove { x, y } => {
-                    let (_, filtered_count) = get_filtered_apps(
-                        &state.query, state.query_len,
-                    );
+                    let filtered_count = get_filtered_apps(&entries, &state.query, state.query_len).len();
                     let layout = compute_layout(w, h, filtered_count.min(MAX_VISIBLE));
                     state.hovered = hit_test_row(x, y, &layout);
                 }
                 Event::MouseButton { button: breengel::buttons::LEFT, pressed: true, x, y } => {
-                    let (filtered, filtered_count) = get_filtered_apps(
-                        &state.query, state.query_len,
-                    );
+                    let filtered = get_filtered_apps(&entries, &state.query, state.query_len);
+                    let filtered_count = filtered.len();
                     let max_vis = filtered_count.min(MAX_VISIBLE);
                     let layout = compute_layout(w, h, max_vis);
 
@@ -639,9 +615,7 @@ fn main() {
                         {
                             // Double-click -> launch
                             if row < max_vis {
-                                let app_idx = filtered[row];
-                                launch_app(&APPS[app_idx]);
-                                process::exit(0);
+                                try_launch(filtered[row], &mut state);
                             }
                         } else {
                             // Single click -> select
@@ -650,16 +624,17 @@ fn main() {
                             state.last_click_idx = row;
                         }
                     } else if !point_in_panel(x, y, &layout)
-                        && clock_ms().saturating_sub(start_ms) > 500
+                        && dismiss::should_dismiss(has_focus)
                     {
-                        // Click outside panel -> dismiss (grace period prevents
-                        // accidental dismissal from clicks during spawn)
+                        // Click outside the panel after the window gained focus.
                         process::exit(0);
                     }
                 }
+                Event::FocusGained => {
+                    has_focus = true;
+                }
                 Event::FocusLost => {
-                    // Grace period prevents spurious dismiss during startup
-                    if clock_ms().saturating_sub(start_ms) > 500 {
+                    if dismiss::should_dismiss(has_focus) {
                         process::exit(0);
                     }
                 }
@@ -668,7 +643,8 @@ fn main() {
                 }
                 _ => {}
             }
-        }
+            Handled::Redraw
+        }).unwrap_or_else(|e| { eprintln!("[blauncher] dispatch: {e}"); process::exit(1) });
 
         let elapsed_ms = clock_ms().saturating_sub(start_ms);
         state.frame_count = (elapsed_ms.saturating_mul(60) / 1000) as u32;
@@ -676,12 +652,21 @@ fn main() {
 
         // Draw the whole frame into the acquired buffer, then publish it.
         match win.surface() {
-            Ok(fb) => render(fb, w, h, &state, &mut ttf_font, font_size),
+            Ok(fb) => render(fb, w, h, &state, &mut ttf_font, font_size, &entries, &errors),
             Err(e) => {
                 println!("[blauncher] ERROR: no window surface: {}", e);
                 process::exit(1);
             }
         }
+        let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
+        let query = core::str::from_utf8(&state.query[..state.query_len]).unwrap_or("");
+        let mut value = node::value(&entries, &errors, query, state.selected, MAX_VISIBLE, has_focus);
+        value["error"] = serde_json::json!(state.error);
+        win.set_tree(breengel::tree::Tree { root: breengel::tree::Node {
+            key: "apps".into(), parent: None, role: breengel::tree::Role::List,
+            name: "Applications".into(), value,
+            bounds, clip: bounds, flags: vec![breengel::tree::Flag::Enabled, breengel::tree::Flag::Visible],
+        }, children: Vec::new() });
         let presented = win.present();
         if first_frame {
             first_frame = false;

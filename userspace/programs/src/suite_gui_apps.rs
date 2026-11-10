@@ -3,6 +3,8 @@
 mod terminal_emulation;
 #[path = "guiapps_suite/bterm.rs"]
 mod bterm;
+#[path = "guiapps_suite/blauncher.rs"]
+mod blauncher;
 use breenix_suite::suite::{case, category, suite, Suite};
 
 static SUITE: Suite = suite("gui-apps", "GUI applications", &[
@@ -23,6 +25,16 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("scrollback", "Scrollback", bterm::scrollback).session(libuitest::supervisor::serve),
         case("exec-tab", "Execute a command in a tab", bterm::exec_tab).session(libuitest::supervisor::serve),
         case("paste", "Paste clipboard text", bterm::paste).session(libuitest::supervisor::serve),
+    ]),
+    category("blauncher", "blauncher", &[
+        case("open", "Open launcher", blauncher::open).session(libuitest::supervisor::serve),
+        case("filter", "Filter entries", blauncher::filter).session(libuitest::supervisor::serve),
+        case("no-results", "No matches", blauncher::no_results).session(libuitest::supervisor::serve),
+        case("keys-select", "Keyboard selection", blauncher::keys_select).session(libuitest::supervisor::serve),
+        case("launch-gui", "Launch GUI app", blauncher::launch_gui).session(libuitest::supervisor::serve),
+        case("launch-terminal", "Launch terminal app", blauncher::launch_terminal).session(libuitest::supervisor::serve),
+        case("launch-missing", "Missing program", blauncher::launch_missing).session(libuitest::supervisor::serve),
+        case("close", "Close launcher", blauncher::close).session(libuitest::supervisor::serve),
     ]),
 ]).gui().defer_display();
 

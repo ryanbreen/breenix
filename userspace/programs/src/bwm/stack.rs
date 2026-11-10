@@ -30,6 +30,7 @@ impl Stack {
     }
     pub(super) fn order(&self) -> &[u64] { &self.order }
     pub(super) fn focus(&self) -> Option<u64> { self.focus }
+    pub(super) fn clear_focus(&mut self) -> (Option<u64>, Option<u64>) { self.transition(None) }
     pub(super) fn minimized(&self, id: u64) -> bool { self.minimized.contains(&id) }
     /// Published z, minimized and focused state for a registered id.
     pub(super) fn state(&self, id: u64) -> Option<(u32, bool, bool)> {

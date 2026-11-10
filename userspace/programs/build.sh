@@ -484,6 +484,7 @@ STD_BINARIES=(
 
     # Apps
     "bterm"
+    "ack-app_test"
     "vt-script_test"
     "clip-set_test"
     "blog"

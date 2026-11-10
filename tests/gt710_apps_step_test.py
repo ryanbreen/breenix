@@ -161,6 +161,34 @@ class AppsStep(unittest.TestCase):
         (self.path / 'native-final-upload.json').unlink()
         self.assertEqual(self.record(), 1)
 
+    def test_step_two_selection_and_order(self):
+        expected = SELECTED + [
+            'blauncher/open', 'blauncher/filter', 'blauncher/no-results',
+            'blauncher/keys-select', 'blauncher/launch-gui',
+            'blauncher/launch-terminal', 'blauncher/launch-missing', 'blauncher/close',
+        ]
+        selection_path = ROOT / 'docs/gui/gt710-step-23-2.json'
+        selected = json.loads(selection_path.read_text())['cases']
+        self.assertEqual(selected, expected)
+        self.assertEqual(NAMES, expected)
+        target = self.definition / 'docs/gui/gt710-step-23-2.json'
+        shutil.copyfile(selection_path, target)
+        with patch.dict(globals(), SELECTED=selected):
+            original = serial()
+        def record(text):
+            (self.path / 'serial.txt').write_text(text)
+            return API['record_apps_capture'](self.path, SHA, 2)
+        self.assertEqual(record(original), 0)
+        first, second = selected[-2:]
+        mutations = [
+            original.replace(f'SUITE gui-apps CASE {first} PASS ms=1\n', ''),
+            original.replace(first, 'foreign/case'),
+            original.replace(first, '__swap__').replace(second, first).replace('__swap__', second),
+        ]
+        for text in mutations:
+            with self.subTest(text=text[-400:]):
+                self.assertEqual(record(text), 1)
+
     def test_cli(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/metal/gt710-suite'),
                                  '--apps-step', '1', '--capture-directory', str(self.path), '--sha', SHA],

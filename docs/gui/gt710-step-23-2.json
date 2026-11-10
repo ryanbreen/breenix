@@ -1,0 +1,39 @@
+{
+  "id": "gt710-step-23-2",
+  "suite": "gui-apps",
+  "boardStep": "23.2",
+  "title": "blauncher: finds and starts programs truthfully",
+  "basis": "origin/main 4f4d3fb5 (fetched 2026-11-09); e23/plan.md step 23.2; manifest order; cumulative",
+  "milestonesCompleted": [
+    "blauncher"
+  ],
+  "added": 8,
+  "addedByCategory": {
+    "blauncher": 8
+  },
+  "total": 22,
+  "cases": [
+    "terminal-emulation/vt-screen",
+    "terminal-emulation/scroll-region",
+    "terminal-emulation/alt-screen",
+    "terminal-emulation/utf8",
+    "terminal-emulation/keys",
+    "bterm/prompt",
+    "bterm/command-output",
+    "bterm/exit-status",
+    "bterm/ctrl-c",
+    "bterm/tabs",
+    "bterm/resize",
+    "bterm/scrollback",
+    "bterm/exec-tab",
+    "bterm/paste",
+    "blauncher/open",
+    "blauncher/filter",
+    "blauncher/no-results",
+    "blauncher/keys-select",
+    "blauncher/launch-gui",
+    "blauncher/launch-terminal",
+    "blauncher/launch-missing",
+    "blauncher/close"
+  ]
+}

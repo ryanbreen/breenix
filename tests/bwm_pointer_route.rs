@@ -15,6 +15,27 @@ fn scene() -> (Stack, Vec<Content>, Router) {
     stack.add(20, false);
     (stack, vec![content(20, 50, 40), content(10, 10, 20)], Router::new())
 }
+
+#[test]
+fn desktop_press_clears_launcher_focus_but_chrome_and_grabs_do_not() {
+    let (mut s, windows, mut r) = scene();
+    s.adopt(&[(10, 0, false, false, false), (20, 1, false, true, false)]);
+    s.add(30, true);
+    let out = r.route(&mut s, &windows, 1, (400, 300), false, button(0x110, 1));
+    assert_eq!(s.focus(), Some(30), "chrome owns disabled content");
+    assert!(out.focus.is_none());
+    r.route(&mut s, &windows, 1, (400, 300), false, button(0x110, 0));
+    let out = r.route(&mut s, &windows, 1, (400, 300), true, button(0x110, 1));
+    assert_eq!(out.focus, Some((Some(30), None)));
+    assert_eq!(s.focus(), None);
+    assert!(!out.notices.iter().any(|n| matches!(n.kind, NoticeKind::Button { .. })));
+    r.route(&mut s, &windows, 1, (400, 300), true, button(0x110, 0));
+    r.route(&mut s, &windows, 1, (60, 50), true, button(0x110, 1));
+    r.route(&mut s, &windows, 1, (400, 300), true, Action::Move);
+    let out = r.route(&mut s, &windows, 1, (400, 300), true, button(0x110, 0));
+    assert_eq!(s.focus(), Some(20), "a captured drag is not a desktop click");
+    assert!(out.focus.is_none());
+}
 fn button(code: u16, value: i32) -> Action { Action::Button { code, value } }
 fn has(notices: &[Notice], id: u64, kind: NoticeKind, x: i32, y: i32) -> bool {
     notices.contains(&Notice { id, kind, x, y })
