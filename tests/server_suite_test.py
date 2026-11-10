@@ -331,6 +331,24 @@ class HostServerScore(unittest.TestCase):
              patch.object(host['time'], 'sleep', side_effect=sleep):
             self.assertEqual(console.run('svc reload', timeout=1), 'child output\n')
 
+    def test_kernel_restart_reads_versioned_cursor_for_this_boot(self):
+        logs = object.__new__(host['Logs'])
+        logs.boot_id, logs.nonce = '1-2-3', 'fresh'
+        controls, cursors = [], []
+        logs.console = SimpleNamespace(run=controls.append)
+        header = 'BREENIX-KMSG-CURSOR 1 boot=1-2-3 next=260647\n'
+        logs.root_check = lambda command: header if command.startswith('head ') else ''
+        logs.kernel_records = lambda record: record + '\n'
+        logs.kernel_gap = lambda live, cursor: cursors.append(cursor)
+        logs.case_kernel()
+        self.assertEqual(cursors, [260647])
+        self.assertEqual(controls, ['svc stop blogd', 'svc start blogd'])
+        for header in ['260647\n', 'BREENIX-KMSG-CURSOR 1 boot=other next=260647\n']:
+            controls.clear()
+            with self.assertRaises(ValueError):
+                logs.case_kernel()
+            self.assertEqual(controls, ['svc stop blogd', 'svc start blogd'])
+
     def test_kernel_gap_requires_this_boot_nonce_and_exact_cursor_across_rotation(self):
         with tempfile.TemporaryDirectory() as scratch:
             root = Path(scratch)

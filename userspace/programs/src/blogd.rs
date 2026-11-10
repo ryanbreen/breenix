@@ -1,8 +1,6 @@
 //! Persistent, bounded kernel logs from non-destructive sequenced proc snapshots.
-use libbreenix::service_logs::{Lines, Log};
-use std::path::Path;
-use std::io::Write;
-use std::os::unix::fs::OpenOptionsExt;
+use libbreenix::service_logs::KmsgFollower;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static STOP: AtomicBool = AtomicBool::new(false);
@@ -12,49 +10,35 @@ fn main() {
     libbreenix::signal::sigaction(libbreenix::signal::SIGTERM,
         Some(&libbreenix::signal::Sigaction::new(stop)), None).expect("blogd stop handler");
     let boot = std::fs::read_to_string("/run/breenix/boot-id").expect("blogd boot ID");
-    let mut log = Log::new(Path::new("/var/log"), "kernel", boot.trim()).expect("kernel log");
-    let state = format!("/run/breenix/kmsg-{}", boot.trim());
-    let (mut next, mut lines) = std::fs::read(&state).ok().and_then(|bytes| {
-        let split = bytes.iter().position(|&b| b == b'\n')?;
-        let offset = std::str::from_utf8(&bytes[..split]).ok()?.parse().ok()?;
-        Some((offset, Lines::restore(&bytes[split + 1..])?))
-    }).unwrap_or((0, Lines::new()));
+    let mut directory = PathBuf::from("/var/log");
+    let mut state = PathBuf::from(format!("/run/breenix/kmsg-{}", boot.trim()));
+    let mut args = std::env::args_os().skip(1);
+    while let Some(arg) = args.next() {
+        let target = if arg == "--dir" { &mut directory }
+            else if arg == "--state" { &mut state }
+            else { panic!("usage: blogd [--dir DIR] [--state FILE]") };
+        *target = args.next().expect("blogd option requires a path").into();
+    }
+    let mut follower = None;
+    let mut failures = 0u64;
     println!("[blogd] logging kernel snapshots boot={}", boot.trim());
     while !STOP.load(Ordering::Relaxed) {
-        if let Ok(snapshot) = std::fs::read_to_string("/proc/kmsg-sequence") {
-            if let Some((header, hex)) = snapshot.split_once('\n') {
-                let fields: Vec<&str> = header.split_whitespace().collect();
-                if fields.len() == 4 && fields[0..2] == ["BREENIX-KMSG", "1"] {
-                    if let (Some(start), Some(end)) = (fields[2].strip_prefix("start=").and_then(|s| s.parse::<u64>().ok()),
-                        fields[3].strip_prefix("end=").and_then(|s| s.parse::<u64>().ok())) {
-                        let data: Option<Vec<u8>> = hex.trim().as_bytes().chunks(2).map(|pair| {
-                            std::str::from_utf8(pair).ok().and_then(|s| u8::from_str_radix(s, 16).ok())
-                        }).collect();
-                        if let Some(data) = data.filter(|data| end >= start && data.len() as u64 == end - start) {
-                            if next < start {
-                                lines.finish("kernel", &mut log);
-                                log.record(format!("[log] lost lines=unknown bytes={} reason=ring-overrun from={} to={}\n", start - next, next, start).as_bytes());
-                                next = start;
-                            }
-                            if end > next && next >= start {
-                                for chunk in data[(next - start) as usize..].chunks(4096) {
-                                    lines.feed(chunk, "kernel", &mut log);
-                                }
-                                next = end;
-                                let mut saved = format!("{}\n", next).into_bytes();
-                                saved.extend_from_slice(&lines.checkpoint());
-                                // Atomic replacement keeps the cursor and partial line together.
-                                let temporary = format!("{}.new", state);
-                                let mut file = std::fs::OpenOptions::new().write(true).create(true).truncate(true)
-                                    .mode(0o600).open(&temporary).expect("kernel log cursor open");
-                                file.write_all(&saved).expect("kernel log cursor write");
-                                file.sync_all().expect("kernel log cursor sync");
-                                std::fs::rename(&temporary, &state).expect("kernel log cursor publish");
-                            }
-                        }
-                    }
-                }
+        let result = (|| -> std::io::Result<()> {
+            if follower.is_none() {
+                follower = Some(KmsgFollower::restore(&directory, &state, boot.trim())?);
             }
+            let snapshot = std::fs::read_to_string("/proc/kmsg-sequence")?;
+            follower.as_mut().unwrap().apply(&snapshot)
+        })();
+        if let Err(error) = result {
+            // An append may have reached disk without its cursor. Restore the
+            // committed files and partial input before the next attempt.
+            follower = None;
+            failures = failures.saturating_add(1);
+            if failures == 1 { eprintln!("[blogd] kernel log unavailable; retrying: {error}"); }
+        } else if failures != 0 {
+            println!("[blogd] kernel log recovered after failed attempts={failures}");
+            failures = 0;
         }
         let _ = libbreenix::time::sleep_ms(250);
     }

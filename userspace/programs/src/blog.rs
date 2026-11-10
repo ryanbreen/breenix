@@ -6,7 +6,6 @@
 //!
 //! Default tabs:
 //!   Tab 0: "Kernel"  — tails /var/log/kernel.log
-//!   Tab 1: "Serial"  — tails /var/log/serial.log
 //!
 //! Navigation:
 //!   Up/k       Scroll up one line
@@ -21,7 +20,16 @@
 
 use std::process;
 
-use breengel::{CachedFont, Event, InputState, Rect, TabBar, Theme, Window};
+#[path = "blog/tail.rs"]
+mod tail;
+#[path = "blog/node.rs"]
+mod node;
+#[path = "blog/view.rs"]
+mod view;
+use view::{Command, View};
+use tail::{Action, Tail};
+
+use breengel::{CachedFont, Event, Handled, InputState, Rect, TabBar, Theme, Window};
 use libbreenix::fs;
 use libbreenix::io;
 use libbreenix::time;
@@ -43,7 +51,6 @@ const WIN_H: u32 = 400;
 const TAB_BAR_H: i32 = 20;
 const STATUS_BAR_H: i32 = 18;
 const READ_CHUNK: usize = 4096;
-const MAX_FILE_SIZE: usize = 256 * 1024;
 
 // Colors
 const BG: Color = Color::rgb(30, 30, 40);
@@ -67,143 +74,64 @@ const KEY_END: u32 = breengel::keys::END;
 // ---------------------------------------------------------------------------
 
 struct LogTab {
-    path: &'static str,
-    content: Vec<u8>,
-    lines: Vec<(usize, usize)>,
-    scroll_offset: usize,
-    follow: bool,
+    path: String,
+    tail: Tail,
+    view: View,
     fd: Option<Fd>,
-    last_size: usize,
 }
 
 impl LogTab {
-    fn new(path: &'static str) -> Self {
+    fn new(path: String) -> Self {
         Self {
             path,
-            content: Vec::new(),
-            lines: Vec::new(),
-            scroll_offset: 0,
-            follow: true,
+            tail: Tail::new(),
+            view: View::new(),
             fd: None,
-            last_size: 0,
         }
     }
 
     fn open(&mut self) {
-        match fs::open(self.path, fs::O_RDONLY) {
-            Ok(fd) => {
-                self.fd = Some(fd);
-                self.load_all(fd);
-            }
-            Err(_) => {
-                self.fd = None;
-            }
-        }
+        let _ = self.poll_new_content();
     }
 
-    fn load_all(&mut self, fd: Fd) {
-        let mut buf = [0u8; READ_CHUNK];
-        loop {
-            match io::read(fd, &mut buf) {
-                Ok(n) if n > 0 => {
-                    if self.content.len() + n > MAX_FILE_SIZE {
-                        let drain = (self.content.len() + n) - MAX_FILE_SIZE;
-                        if drain < self.content.len() {
-                            self.content.drain(..drain);
-                        } else {
-                            self.content.clear();
-                        }
-                    }
-                    self.content.extend_from_slice(&buf[..n]);
-                }
-                _ => break,
-            }
-        }
-        self.last_size = self.content.len();
-        self.rebuild_lines();
-    }
-
-    fn poll_new_content(&mut self) {
-        if self.fd.is_none() {
-            match fs::open(self.path, fs::O_RDONLY) {
-                Ok(fd) => {
-                    self.fd = Some(fd);
-                    self.load_all(fd);
-                    return;
-                }
-                Err(_) => return,
-            }
-        }
-
-        let fd = self.fd.unwrap();
-        let current_size = match fs::fstat(fd) {
-            Ok(stat) => stat.st_size as usize,
-            Err(_) => return,
+    fn poll_new_content(&mut self) -> bool {
+        // Opening the path lets us detect rename-rotation without relying on
+        // metadata from the old, still-open file descriptor.
+        let candidate = match fs::open(&self.path, fs::O_RDONLY) {
+            Ok(fd) => fd,
+            Err(_) => return false,
         };
-
-        if current_size > self.last_size {
-            let _ = fs::lseek(fd, self.last_size as i64, fs::SEEK_SET);
-            let mut buf = [0u8; READ_CHUNK];
-            loop {
-                match io::read(fd, &mut buf) {
-                    Ok(n) if n > 0 => {
-                        if self.content.len() + n > MAX_FILE_SIZE {
-                            let drain = (self.content.len() + n) - MAX_FILE_SIZE;
-                            if drain < self.content.len() {
-                                self.content.drain(..drain);
-                            } else {
-                                self.content.clear();
-                            }
-                        }
-                        self.content.extend_from_slice(&buf[..n]);
-                    }
-                    _ => break,
-                }
+        let stat = match fs::fstat(candidate) {
+            Ok(stat) => stat,
+            Err(_) => { let _ = io::close(candidate); return false; }
+        };
+        let action = self.tail.observe(stat.st_ino, stat.st_size.max(0) as usize);
+        if self.fd.is_none() || action == Action::Reopen {
+            if let Some(old) = self.fd.replace(candidate) {
+                let _ = io::close(old);
             }
-            self.last_size = current_size;
-            self.rebuild_lines();
-        } else if current_size < self.last_size {
-            let _ = fs::lseek(fd, 0, fs::SEEK_SET);
-            self.content.clear();
-            self.load_all(fd);
+        } else {
+            let _ = io::close(candidate);
         }
+        let fd = self.fd.unwrap();
+        if fs::lseek(fd, self.tail.offset() as i64, fs::SEEK_SET).is_err() {
+            return false;
+        }
+        let mut buf = [0u8; READ_CHUNK];
+        while let Ok(n) = io::read(fd, &mut buf) {
+            if n == 0 { break; }
+            self.tail.feed(&buf[..n]);
+        }
+        self.view.offset = self.view.offset.min(self.tail.line_count().saturating_sub(1));
+        action != Action::Read
     }
 
-    fn rebuild_lines(&mut self) {
-        self.lines.clear();
-        if self.content.is_empty() {
-            return;
-        }
-        let mut start = 0;
-        for (i, &b) in self.content.iter().enumerate() {
-            if b == b'\n' {
-                self.lines.push((start, i));
-                start = i + 1;
-            }
-        }
-        if start < self.content.len() {
-            self.lines.push((start, self.content.len()));
-        }
-    }
+    fn line_bytes(&self, line: usize) -> &[u8] { self.tail.line(line) }
 
-    fn line_bytes(&self, line: usize) -> &[u8] {
-        if line >= self.lines.len() {
-            return b"";
-        }
-        let (start, end) = self.lines[line];
-        &self.content[start..end]
-    }
-
-    fn line_count(&self) -> usize {
-        self.lines.len()
-    }
+    fn line_count(&self) -> usize { self.tail.line_count() }
 
     fn scroll_to_bottom(&mut self, visible_lines: usize) {
-        if self.line_count() > visible_lines {
-            self.scroll_offset = self.line_count() - visible_lines;
-        } else {
-            self.scroll_offset = 0;
-        }
+        self.view.bottom(self.tail.line_count(), visible_lines);
     }
 
     fn is_open(&self) -> bool {
@@ -293,18 +221,19 @@ fn render(
     let tab = &tabs[selected];
 
     if !tab.is_open() {
-        let msg = b"File not found";
-        let msg_x = (w as usize - msg.len() * char_w) / 2;
+        let msg = format!("Waiting for {}", tab.path);
+        let msg = msg.as_bytes();
+        let msg_x = (w as usize).saturating_sub(msg.len() * char_w) / 2;
         let msg_y = content_y as usize + content_h as usize / 2;
         text.draw_text(msg, msg_x, msg_y, NOT_FOUND_COLOR);
     } else if tab.line_count() == 0 {
         let msg = b"(empty)";
-        let msg_x = (w as usize - msg.len() * char_w) / 2;
+        let msg_x = (w as usize).saturating_sub(msg.len() * char_w) / 2;
         let msg_y = content_y as usize + content_h as usize / 2;
         text.draw_text(msg, msg_x, msg_y, TEXT_LINE_NUM);
     } else {
         for i in 0..visible_lines {
-            let line_idx = tab.scroll_offset + i;
+            let line_idx = tab.view.offset + i;
             if line_idx >= tab.line_count() {
                 break;
             }
@@ -312,10 +241,11 @@ fn render(
 
             // Line number
             let mut num_buf = [b' '; 5];
-            format_line_number(&mut num_buf, line_idx + 1);
+            format_line_number(&mut num_buf, tab.tail.line_number(line_idx));
             text.draw_text(&num_buf, 2, y, TEXT_LINE_NUM);
 
             // Line content, truncated to fit
+            if tab.view.matched == Some(line_idx) { shapes::fill_rect(fb, 0, y as i32, w, line_h as i32, Color::rgb(80, 70, 35)); }
             let line = tab.line_bytes(line_idx);
             let max_chars = ((w as usize).saturating_sub(gutter_w)) / char_w;
             let display_len = line.len().min(max_chars);
@@ -329,24 +259,39 @@ fn render(
     let status_y = h - STATUS_BAR_H;
     shapes::fill_rect(fb, 0, status_y, w, STATUS_BAR_H, STATUS_BG);
 
-    let path_bytes = tab.path.as_bytes();
+    let search_text = format!("/{}", tab.view.draft());
+    let path_bytes = if tab.view.editing { search_text.as_bytes() } else { tab.path.as_bytes() };
     text.draw_text(path_bytes, 4, status_y as usize + 2, STATUS_FG);
 
     let mut info_buf = [0u8; 40];
     let info_len = format_line_info(
         &mut info_buf,
-        tab.scroll_offset + 1,
-        tab.line_count(),
+        tab.tail.line_number(tab.view.offset),
+        tab.tail.line_number(tab.line_count()).saturating_sub(1),
     );
     let info_x = (w as usize / 2).saturating_sub(info_len * char_w / 2);
     text.draw_text(&info_buf[..info_len], info_x, status_y as usize + 2, STATUS_FG);
 
-    if tab.follow {
+    if tab.view.follow {
         let label = b"[FOLLOW]";
         let label_x = w as usize - label.len() * char_w - 4;
         text.draw_text(label, label_x, status_y as usize + 2, FOLLOW_COLOR);
     }
     text.finish(fb, fonts);
+}
+
+fn publish_tree(win: &mut Window, tabs: &[LogTab], selected: usize, visible: usize) {
+    use breengel::tree::{Flag, Node, Role, Tree};
+    let tab = &tabs[selected];
+    let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
+    let flags = vec![Flag::Enabled, Flag::Visible];
+    win.set_tree(Tree { root: Node {
+        key: "lines".into(), parent: None, role: Role::List, name: "Lines".into(),
+        value: node::lines_view(&tab.tail, tab.view.offset, visible, tab.view.matched), bounds, clip: bounds, flags: flags.clone(),
+    }, children: vec![Node {
+        key: "status".into(), parent: Some("lines".into()), role: Role::Status, name: "Status".into(),
+        value: node::status_view(selected, &tab.path, tab.view.follow, tab.is_open(), &tab.view.query, tab.view.matched, tab.view.matches, &tab.tail), bounds, clip: bounds, flags,
+    }] });
 }
 
 fn format_line_number(buf: &mut [u8; 5], n: usize) {
@@ -443,12 +388,14 @@ fn main() {
     let ui_scale = win.surface().expect("log surface").ui_scale() as i32;
     let tab_pixels = TAB_BAR_H * ui_scale;
     let tab_rect = Rect::new(0, 0, WIN_W as i32 / ui_scale, TAB_BAR_H);
-    let mut tab_bar = TabBar::new(tab_rect, vec![b"Kernel", b"Serial"], &theme);
-
-    let mut tabs = vec![
-        LogTab::new("/var/log/kernel.log"),
-        LogTab::new("/var/log/serial.log"),
-    ];
+    let paths: Vec<String> = {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if args.is_empty() { vec!["/var/log/kernel.log".into()] } else { args }
+    };
+    // TabBar retains labels for the lifetime of the process.
+    let labels: Vec<&'static [u8]> = paths.iter().map(|path| &*Box::leak(path.clone().into_bytes().into_boxed_slice())).collect();
+    let mut tab_bar = TabBar::new(tab_rect, labels, &theme);
+    let mut tabs: Vec<LogTab> = paths.into_iter().map(LogTab::new).collect();
 
     for tab in tabs.iter_mut() {
         tab.open();
@@ -457,7 +404,7 @@ fn main() {
     // Diagnostic: show log file status
     for (i, tab) in tabs.iter().enumerate() {
         println!("[blog] tab[{}] '{}': open={} lines={} bytes={}",
-                 i, tab.path, tab.is_open(), tab.line_count(), tab.content.len());
+                 i, tab.path, tab.is_open(), tab.line_count(), tab.tail.offset());
     }
 
     let content_h = WIN_H as i32 - tab_pixels - STATUS_BAR_H;
@@ -468,7 +415,7 @@ fn main() {
     };
 
     for tab in tabs.iter_mut() {
-        if tab.follow {
+        if tab.view.follow {
             tab.scroll_to_bottom(visible_lines);
         }
     }
@@ -476,103 +423,57 @@ fn main() {
     let mut mouse_x: i32 = 0;
     let mut mouse_y: i32 = 0;
     let mut mouse_buttons: u32 = 0;
-    let mut poll_counter: u32 = 0;
+
 
     render(&mut win, &tabs, &tab_bar, &theme, &mut fonts);
+    publish_tree(&mut win, &tabs, tab_bar.selected(), visible_lines);
     match win.present() {
         Ok(()) => println!("[blog] first frame presented: {}x{}", win.width(), win.height()),
         Err(e) => println!("[blog] first frame present failed: {}", e),
     }
 
+    let mut last_poll = std::time::Instant::now();
     loop {
-        let events = win.poll_events();
-        let mut needs_redraw = !events.is_empty();
-
-        for event in events {
-            match event {
+        let mut resize_requested = None;
+        let mut reload_font = false;
+        let event_count = win.dispatch(|delivered| {
+            match delivered.event.clone() {
                 Event::KeyPress { ascii, keycode, .. } => {
                     let sel = tab_bar.selected();
-                    match keycode {
-                        KEY_UP => {
-                            if tabs[sel].scroll_offset > 0 {
-                                tabs[sel].scroll_offset -= 1;
-                                tabs[sel].follow = false;
+                    let command = if tabs[sel].view.editing {
+                        match keycode {
+                            breengel::keys::ENTER => Some(Command::Enter),
+                            breengel::keys::ESC => Some(Command::Escape),
+                            breengel::keys::BACKSPACE => Some(Command::Backspace),
+                            _ if ascii != 0 => Some(Command::Character(ascii)),
+                            _ => None,
+                        }
+                    } else {
+                        match keycode {
+                            KEY_UP => Some(Command::Up), KEY_DOWN => Some(Command::Down),
+                            KEY_PAGE_UP => Some(Command::PageUp), KEY_PAGE_DOWN => Some(Command::PageDown),
+                            KEY_HOME => Some(Command::Top), KEY_END => Some(Command::Bottom),
+                            _ => match ascii {
+                                b'k' => Some(Command::Up), b'j' => Some(Command::Down),
+                                b' ' => Some(Command::PageDown), b'g' => Some(Command::Top),
+                                b'G' => Some(Command::Bottom), b'f' => Some(Command::ToggleFollow),
+                                b'/' => Some(Command::Search), b'n' => Some(Command::Next), b'N' => Some(Command::Previous),
+                                b'\t' => { tab_bar.set_selected((sel + 1) % tabs.len()); None },
+                                b'q' | b'Q' => { for tab in &tabs { if let Some(fd) = tab.fd { let _ = io::close(fd); } } process::exit(0); },
+                                _ => None,
                             }
                         }
-                        KEY_DOWN => {
-                            if tabs[sel].scroll_offset + visible_lines < tabs[sel].line_count() {
-                                tabs[sel].scroll_offset += 1;
-                            }
-                        }
-                        KEY_PAGE_UP => {
-                            tabs[sel].scroll_offset =
-                                tabs[sel].scroll_offset.saturating_sub(visible_lines);
-                            tabs[sel].follow = false;
-                        }
-                        KEY_PAGE_DOWN => {
-                            let max = tabs[sel].line_count().saturating_sub(visible_lines);
-                            tabs[sel].scroll_offset =
-                                (tabs[sel].scroll_offset + visible_lines).min(max);
-                        }
-                        KEY_HOME => {
-                            tabs[sel].scroll_offset = 0;
-                            tabs[sel].follow = false;
-                        }
-                        KEY_END => {
-                            tabs[sel].scroll_to_bottom(visible_lines);
-                            tabs[sel].follow = true;
-                        }
-                        _ => {
-                            match ascii {
-                                b'q' | b'Q' => {
-                                    for tab in &tabs {
-                                        if let Some(fd) = tab.fd {
-                                            let _ = io::close(fd);
-                                        }
-                                    }
-                                    process::exit(0);
-                                }
-                                b'k' => {
-                                    if tabs[sel].scroll_offset > 0 {
-                                        tabs[sel].scroll_offset -= 1;
-                                        tabs[sel].follow = false;
-                                    }
-                                }
-                                b'j' => {
-                                    if tabs[sel].scroll_offset + visible_lines
-                                        < tabs[sel].line_count()
-                                    {
-                                        tabs[sel].scroll_offset += 1;
-                                    }
-                                }
-                                b' ' => {
-                                    let max =
-                                        tabs[sel].line_count().saturating_sub(visible_lines);
-                                    tabs[sel].scroll_offset =
-                                        (tabs[sel].scroll_offset + visible_lines).min(max);
-                                }
-                                b'g' => {
-                                    tabs[sel].scroll_offset = 0;
-                                    tabs[sel].follow = false;
-                                }
-                                b'G' => {
-                                    tabs[sel].scroll_to_bottom(visible_lines);
-                                    tabs[sel].follow = true;
-                                }
-                                b'f' => {
-                                    tabs[sel].follow = !tabs[sel].follow;
-                                    if tabs[sel].follow {
-                                        tabs[sel].scroll_to_bottom(visible_lines);
-                                    }
-                                }
-                                b'\t' => {
-                                    let next = (tab_bar.selected() + 1) % tabs.len();
-                                    tab_bar.set_selected(next);
-                                }
-                                _ => {}
-                            }
-                        }
+                    };
+                    if let Some(command) = command {
+                        let tab = &mut tabs[sel];
+                        let lines: Vec<&[u8]> = (0..tab.tail.line_count()).map(|i| tab.tail.line(i)).collect();
+                        tab.view.apply(command, &lines, visible_lines);
                     }
+                }
+                Event::Scroll { delta_y, .. } => {
+                    let tab = &mut tabs[tab_bar.selected()];
+                    let lines: Vec<&[u8]> = (0..tab.tail.line_count()).map(|i| tab.tail.line(i)).collect();
+                    tab.view.apply(Command::Wheel(delta_y as i32), &lines, visible_lines);
                 }
                 Event::MouseMove { x, y } => {
                     mouse_x = x;
@@ -595,9 +496,7 @@ fn main() {
                     tab_bar.update(&input);
                 }
                 Event::ResizeRequested { width, height } => {
-                    if let Err(e) = win.apply_resize(width, height) {
-                        println!("[blog] resize refused: {}x{}: {}", width, height, e);
-                    }
+                    resize_requested = Some((width, height));
                 }
                 Event::Resized { width: w, height: h } => {
                     let new_content_h = h as i32 - tab_pixels - STATUS_BAR_H;
@@ -607,7 +506,6 @@ fn main() {
                         1
                     };
                     tab_bar.set_rect(Rect::new(0, 0, w as i32 / ui_scale, TAB_BAR_H));
-                    needs_redraw = true;
                 }
                 Event::CloseRequested => {
                     for tab in &tabs {
@@ -617,7 +515,18 @@ fn main() {
                     }
                     process::exit(0);
                 }
-                Event::FontChanged => {
+                Event::FontChanged => { reload_font = true; }
+                _ => {}
+            }
+            Handled::Redraw
+        }).unwrap_or_else(|e| { eprintln!("[blog] dispatch: {e}"); process::exit(1) });
+        let mut needs_redraw = event_count != 0;
+        if let Some((width, height)) = resize_requested {
+            if let Err(e) = win.apply_resize(width, height) {
+                println!("[blog] resize refused: {}x{}: {}", width, height, e);
+            }
+        }
+        if reload_font {
                     win.put_mono_font(fonts.ttf.take());
                     let new_font = win.take_mono_font();
                     let new_size = win.mono_size();
@@ -639,26 +548,27 @@ fn main() {
                             1
                         };
                         for tab in tabs.iter_mut() {
-                            if tab.follow {
+                            if tab.view.follow {
                                 tab.scroll_to_bottom(visible_lines);
                             }
                         }
                     }
                     fonts.ttf = new_font;
-                    needs_redraw = true;
-                }
-                _ => {}
-            }
-        }
 
-        poll_counter += 1;
-        if poll_counter % 10 == 0 {
+            needs_redraw = true;
+        }
+        if last_poll.elapsed() >= std::time::Duration::from_millis(500) {
+            last_poll = std::time::Instant::now();
             for tab in tabs.iter_mut() {
+                let was_open = tab.is_open();
                 let prev_count = tab.line_count();
-                tab.poll_new_content();
-                if tab.line_count() != prev_count {
+                let prev_offset = tab.tail.offset();
+                let reset = tab.poll_new_content();
+                if reset || tab.is_open() != was_open || tab.line_count() != prev_count || tab.tail.offset() != prev_offset {
                     needs_redraw = true;
-                    if tab.follow {
+                    let lines: Vec<&[u8]> = (0..tab.tail.line_count()).map(|i| tab.tail.line(i)).collect();
+                    tab.view.refresh(&lines, visible_lines);
+                    if tab.view.follow {
                         tab.scroll_to_bottom(visible_lines);
                     }
                 }
@@ -667,9 +577,10 @@ fn main() {
 
         if needs_redraw {
             render(&mut win, &tabs, &tab_bar, &theme, &mut fonts);
+            publish_tree(&mut win, &tabs, tab_bar.selected(), visible_lines);
             let _ = win.present();
         }
 
-        let _ = time::sleep_ms(50);
+        if !needs_redraw { let _ = time::sleep_ms(10); }
     }
 }

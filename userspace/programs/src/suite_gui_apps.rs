@@ -5,6 +5,8 @@ mod terminal_emulation;
 mod bterm;
 #[path = "guiapps_suite/blauncher.rs"]
 mod blauncher;
+#[path = "guiapps_suite/blog.rs"]
+mod blog;
 use breenix_suite::suite::{case, category, suite, Suite};
 
 static SUITE: Suite = suite("gui-apps", "GUI applications", &[
@@ -35,6 +37,16 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("launch-terminal", "Launch terminal app", blauncher::launch_terminal).session(libuitest::supervisor::serve),
         case("launch-missing", "Missing program", blauncher::launch_missing).session(libuitest::supervisor::serve),
         case("close", "Close launcher", blauncher::close).session(libuitest::supervisor::serve),
+    ]),
+    category("blog", "blog", &[
+        case("tail", "Tail appended lines", blog::tail).session(libuitest::supervisor::serve),
+        case("follow", "Follow new lines", blog::follow).session(libuitest::supervisor::serve),
+        case("truncate-rotate", "Truncate and rotate", blog::truncate_rotate).session(libuitest::supervisor::serve),
+        case("navigation", "Navigate log lines", blog::navigation).session(libuitest::supervisor::serve),
+        case("search", "Search log lines", blog::search).session(libuitest::supervisor::serve),
+        case("missing-file", "Wait for missing file", blog::missing_file).session(libuitest::supervisor::serve),
+        case("blogd-records-once", "Record kernel messages once", blog::blogd_records_once).session(libuitest::supervisor::serve),
+        case("blogd-restart", "Resume kernel messages after restart", blog::blogd_restart).session(libuitest::supervisor::serve),
     ]),
 ]).gui().defer_display();
 

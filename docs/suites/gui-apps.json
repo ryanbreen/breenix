@@ -113,6 +113,44 @@
           "title": "Close launcher"
         }
       ]
+    },
+    {
+      "id": "blog",
+      "title": "blog",
+      "cases": [
+        {
+          "id": "tail",
+          "title": "Tail appended lines"
+        },
+        {
+          "id": "follow",
+          "title": "Follow new lines"
+        },
+        {
+          "id": "truncate-rotate",
+          "title": "Truncate and rotate"
+        },
+        {
+          "id": "navigation",
+          "title": "Navigate log lines"
+        },
+        {
+          "id": "search",
+          "title": "Search log lines"
+        },
+        {
+          "id": "missing-file",
+          "title": "Wait for missing file"
+        },
+        {
+          "id": "blogd-records-once",
+          "title": "Record kernel messages once"
+        },
+        {
+          "id": "blogd-restart",
+          "title": "Resume kernel messages after restart"
+        }
+      ]
     }
   ]
 }

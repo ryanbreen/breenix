@@ -1590,9 +1590,13 @@ class Logs:
         losses = lambda text: re.findall(r'^\[log\] lost .* reason=ring-overrun.*$', text, re.M)
         if losses(before) != losses(after): raise ValueError('restart invented a ring overrun')
         self.console.run('svc stop blogd')
-        cursor_text = self.root_check('head -n 1 /run/breenix/kmsg-' + self.boot_id)
-        cursor = int(re.findall(r'^([0-9]+)\r?$', cursor_text, re.M)[-1])
         try:
+            cursor_text = self.root_check('head -n 1 /run/breenix/kmsg-' + self.boot_id)
+            matches = re.findall(r'^BREENIX-KMSG-CURSOR 1 boot=' + re.escape(self.boot_id)
+                                 + r' next=([0-9]+)\r?$', cursor_text, re.M)
+            if len(matches) != 1:
+                raise ValueError('no unique versioned kernel cursor for this boot')
+            cursor = int(matches[0])
             self.root_check('i=0; while test "$i" -lt 400; do '
                             'printf "kernel-gap-%04d %090d\\n" "$i" 0 > /dev/kmsg; i=$((i+1)); done')
         finally:

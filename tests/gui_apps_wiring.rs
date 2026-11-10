@@ -2,7 +2,7 @@
 fn gui_apps_cases_have_sessions_and_no_placeholder() {
     let source = include_str!("../userspace/programs/src/suite_gui_apps.rs");
     let cases: Vec<_> = source.lines().filter(|line| line.trim_start().starts_with("case(")).collect();
-    assert_eq!(cases.len(), 22);
+    assert_eq!(cases.len(), 30);
     for case in cases {
         assert!(case.contains(".session(libuitest::supervisor::serve)"), "missing session: {case}");
         assert!(!case.contains("pending::"), "placeholder: {case}");
@@ -61,4 +61,12 @@ fn both_close_actions_use_the_one_declared_session() {
         "take_session_control is single-use; relaunch within the existing session");
     assert_eq!(close.matches("t.finish()").count(), 1);
     assert!(close.contains("t.launch_next("));
+}
+
+#[test]
+fn blog_dispatches_input_before_presenting() {
+    let source = include_str!("../userspace/programs/src/blog.rs");
+    assert!(!source.contains("win.poll_events()"));
+    assert!(source.contains("win.dispatch(|delivered|"));
+    assert!(source.contains("Handled::Redraw"));
 }

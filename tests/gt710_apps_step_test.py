@@ -170,7 +170,7 @@ class AppsStep(unittest.TestCase):
         selection_path = ROOT / 'docs/gui/gt710-step-23-2.json'
         selected = json.loads(selection_path.read_text())['cases']
         self.assertEqual(selected, expected)
-        self.assertEqual(NAMES, expected)
+        self.assertEqual(NAMES[:len(expected)], expected)
         target = self.definition / 'docs/gui/gt710-step-23-2.json'
         shutil.copyfile(selection_path, target)
         with patch.dict(globals(), SELECTED=selected):
@@ -189,11 +189,53 @@ class AppsStep(unittest.TestCase):
             with self.subTest(text=text[-400:]):
                 self.assertEqual(record(text), 1)
 
+    def test_step_three_selection_and_order(self):
+        expected = json.loads((ROOT / 'docs/gui/gt710-step-23-2.json').read_text())['cases'] + [
+            'blog/tail', 'blog/follow', 'blog/truncate-rotate', 'blog/navigation',
+            'blog/search', 'blog/missing-file', 'blog/blogd-records-once', 'blog/blogd-restart',
+        ]
+        selection_path = ROOT / 'docs/gui/gt710-step-23-3.json'
+        selected = json.loads(selection_path.read_text())['cases']
+        self.assertEqual(selected, expected)
+        self.assertEqual(NAMES[:len(expected)], expected)
+        shutil.copyfile(selection_path, self.definition / 'docs/gui/gt710-step-23-3.json')
+        with patch.dict(globals(), SELECTED=selected):
+            original = serial()
+        def record(text):
+            (self.path / 'serial.txt').write_text(text)
+            return API['record_apps_capture'](self.path, SHA, 3)
+        self.assertEqual(record(original), 0)
+        first, second = selected[-2:]
+        for text in [original.replace(f'SUITE gui-apps CASE {first} PASS ms=1\n', ''),
+                     original.replace(first, 'foreign/case'),
+                     original.replace(first, '__swap__').replace(second, first).replace('__swap__', second)]:
+            self.assertEqual(record(text), 1)
+
     def test_cli(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/metal/gt710-suite'),
                                  '--apps-step', '1', '--capture-directory', str(self.path), '--sha', SHA],
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_missing_pixels_cannot_retain_a_passing_score(self):
+        self.assertEqual(self.record(), 0)
+        (self.path / 'gt710-pixels.rle').unlink()
+        self.assertEqual(self.record(), 1)
+        report = json.loads((self.path / 'gt710-apps-step.json').read_text())
+        self.assertEqual(report['cases'][0]['result'], 'FAIL')
+        self.assertIn('gt710-pixels.rle', report['cases'][0]['reason'])
+        self.assertFalse(metal_score.score(self.path)['milestones']['metal-gt710/apps-step']['passed'])
+
+    def test_operator_stop_is_not_completed_acceptance(self):
+        (self.path / 'exit-status').write_text('143')
+        events = [dict(event='final-marker'), dict(event='power-off', off=True),
+                  dict(event='closed', status=143, endedBy='driver')]
+        (self.path / 'events.jsonl').write_text('\n'.join(map(json.dumps, events)) + '\n')
+        self.assertEqual(self.record(), 1)
+        report = json.loads((self.path / 'gt710-apps-step.json').read_text())
+        self.assertEqual(report['cases'][0]['result'], 'FAIL')
+        self.assertEqual(report['cases'][0]['reason'],
+                         'native suite requires a complete clean driver-closed capture')
 
 if __name__ == '__main__':
     unittest.main()
