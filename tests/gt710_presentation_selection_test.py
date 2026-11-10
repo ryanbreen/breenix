@@ -25,7 +25,9 @@ class PresentationSelection(unittest.TestCase):
         manifest = json.loads((ROOT / 'docs/suites/gt710.json').read_text())
         API['validate_manifest'](manifest)
         category = next(c for c in manifest['categories'] if c['id'] == 'presentation')
-        self.assertTrue(category['hostRunner'])
+        # The whole suite is host-run; a per-category flag means server-suite (suite_manifests.rs).
+        self.assertIs(manifest['hostRunner'], True)
+        self.assertNotIn('hostRunner', category)
         self.assertEqual([c['id'] for c in category['cases']], ['display', 'panic', 'suite'])
         self.assertEqual(API['STEP_SELECTIONS']['presentation'], 'gt710-step-8-6.json')
         effort = json.loads((ROOT / 'docs/efforts/metal.json').read_text())
