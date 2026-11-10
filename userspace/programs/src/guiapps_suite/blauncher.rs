@@ -19,7 +19,7 @@ pub fn open() -> CaseResult {
 
 pub fn filter() -> CaseResult {
     std::fs::write("/tmp/blauncher-filter", "Alpha\tSystem LOG viewer\tgui\t/bin/a\nLogbook\tOther\tterminal\t/bin/b\nThird\tElse\tgui\t/bin/c\n").map_err(|e| e.to_string())?;
-    let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-filter"], "Launcher")?;
+    let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-filter"], "\u{1}Launcher")?;
     t.type_text("lOg")?;
     t.wait_node("apps", |v| v["query"] == "lOg" && v["rows"].as_array().is_some_and(|r| r.len() == 2 && r[0]["name"] == "Alpha" && r[1]["name"] == "Logbook"))?;
     Ok(t.finish()?)
@@ -27,7 +27,7 @@ pub fn filter() -> CaseResult {
 
 pub fn no_results() -> CaseResult {
     std::fs::write("/tmp/blauncher-empty", "Alpha\tFirst\tgui\t/bin/a\n").map_err(|e| e.to_string())?;
-    let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-empty"], "Launcher")?;
+    let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-empty"], "\u{1}Launcher")?;
     t.type_text("missing")?;
     t.wait_node("apps", |v| v["rows"] == serde_json::json!([]) && v["empty"] == "No matches")?;
     Ok(t.finish()?)
@@ -35,7 +35,7 @@ pub fn no_results() -> CaseResult {
 
 pub fn keys_select() -> CaseResult {
     std::fs::write("/tmp/blauncher-keys", "Alpha\tFirst\tgui\t/bin/a\nBeta\tSecond\tgui\t/bin/b\n").map_err(|e| e.to_string())?;
-    let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-keys"], "Launcher")?;
+    let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-keys"], "\u{1}Launcher")?;
     t.key(103, &[])?;
     t.wait_node("apps", |v| v["selected"] == 0)?;
     t.key(108, &[])?;
@@ -53,7 +53,7 @@ pub fn launch_gui() -> CaseResult {
     let expected = serde_json::json!([ACK, "--window", "Ack", "a", "b c", "--nonce", nonce]);
     let _ = std::fs::remove_file("/tmp/ack-app.jsonl");
     std::fs::write("/tmp/blauncher-gui", format!("Ack\tFixture\tgui\t{ACK}\t--window\tAck\ta\tb c\t--nonce\t{nonce}\n")).map_err(|e| e.to_string())?;
-    let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-gui"], "Launcher")?;
+    let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-gui"], "\u{1}Launcher")?;
     t.key(28, &[])?;
     t.wait_exit(0)?;
     t.attach("Ack")?;
@@ -70,7 +70,7 @@ pub fn launch_gui() -> CaseResult {
 
 pub fn launch_terminal() -> CaseResult {
     std::fs::write("/tmp/blauncher-terminal", "Echo\tFixture\tterminal\t/bin/echo\tlaunched-terminal\n").map_err(|e| e.to_string())?;
-    let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-terminal"], "Launcher")?;
+    let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-terminal"], "\u{1}Launcher")?;
     t.key(28, &[])?;
     t.wait_exit(0)?;
     t.attach("Terminal")?;
@@ -81,7 +81,7 @@ pub fn launch_terminal() -> CaseResult {
 
 pub fn launch_missing() -> CaseResult {
     std::fs::write("/tmp/blauncher-missing", "Missing\tFixture\tgui\t/usr/bin/no-such-app\n").map_err(|e| e.to_string())?;
-    let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-missing"], "Launcher")?;
+    let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-missing"], "\u{1}Launcher")?;
     let launcher = std::fs::read_dir("/proc").map_err(|e| e.to_string())?
         .filter_map(Result::ok).filter_map(|entry| {
             let pid = entry.file_name().to_str()?.parse::<u64>().ok()?;
@@ -91,7 +91,7 @@ pub fn launch_missing() -> CaseResult {
     if launcher.len() != 1 { return Err(format!("expected one launcher, found {launcher:?}").into()); }
     t.key(28, &[])?;
     t.wait_node("apps", |v| v["error"] == "Missing program: /usr/bin/no-such-app")?;
-    t.attach("Launcher")?;
+    t.attach("\u{1}Launcher")?;
     for entry in std::fs::read_dir("/proc").map_err(|e| e.to_string())? {
         let entry = entry.map_err(|e| e.to_string())?;
         if entry.file_name().to_str().and_then(|s| s.parse::<u64>().ok()).is_none() { continue; }
@@ -110,11 +110,11 @@ pub fn launch_missing() -> CaseResult {
 pub fn close() -> CaseResult {
     std::fs::write("/tmp/blauncher-close", "Alpha\tFirst\tgui\t/bin/a\n").map_err(|e| e.to_string())?;
     let argv: &[&[u8]] = &[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-close"];
-    let mut t = App::launch(argv, "Launcher")?;
+    let mut t = App::launch(argv, "\u{1}Launcher")?;
     t.key(1, &[])?;
     t.wait_exit(0)?;
     t.finish()?;
-    let mut t = App::launch(argv, "Launcher")?;
+    let mut t = App::launch(argv, "\u{1}Launcher")?;
     t.click(0, 0)?;
     t.wait_exit(0)?;
     Ok(t.finish()?)
