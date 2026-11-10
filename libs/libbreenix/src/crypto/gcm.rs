@@ -3,6 +3,7 @@
 //! Provides AES-128-GCM and AES-256-GCM encryption and decryption using the GHASH universal
 //! hash function over GF(2^128) and AES in CTR mode.
 
+use super::ct::ct_eq;
 use super::aes::{Aes128, Aes256};
 
 enum BlockCipher {
@@ -255,13 +256,7 @@ impl AesGcm {
             expected_tag[i] = encrypted_j0[i] ^ ghash_val[i];
         }
 
-        // Constant-time tag comparison to prevent timing attacks
-        let mut diff: u8 = 0;
-        for i in 0..16 {
-            diff |= expected_tag[i] ^ tag[i];
-        }
-
-        if diff != 0 {
+        if !ct_eq(&expected_tag, tag) {
             // Tag mismatch: zero the plaintext buffer and return false
             for byte in plaintext[..ciphertext.len()].iter_mut() {
                 *byte = 0;
