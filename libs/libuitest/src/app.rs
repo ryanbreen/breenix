@@ -182,6 +182,12 @@ mod live {
         pub fn key(&mut self, code: u16, mods: &[Modifier]) -> Result<(), String> {
             self.keys.chord(self.window, mods, code).map(|_| ())
         }
+        pub fn scroll(&mut self, dy: i32) -> Result<(), String> {
+            let live = self.keys.backend_mut();
+            let info = live.info(self.window)?;
+            live.move_to((info.x + (info.width / 2) as i32, info.y + (info.height / 2) as i32))?;
+            live.wheel(dy, self.window).map(|_| ())
+        }
         pub fn tree(&mut self) -> Result<Tree, String> { self.keys.backend_mut().tree(self.window) }
         pub fn expect_node(&mut self, key: &str, predicate: impl FnOnce(&serde_json::Value) -> bool) -> Result<(), String> {
             let tree = self.tree()?;

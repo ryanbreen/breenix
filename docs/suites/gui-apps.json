@@ -131,6 +131,14 @@
           "title": "Truncate and rotate"
         },
         {
+          "id": "navigation",
+          "title": "Navigate log lines"
+        },
+        {
+          "id": "search",
+          "title": "Search log lines"
+        },
+        {
           "id": "missing-file",
           "title": "Wait for missing file"
         }

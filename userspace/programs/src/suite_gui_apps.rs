@@ -42,6 +42,8 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("tail", "Tail appended lines", blog::tail).session(libuitest::supervisor::serve),
         case("follow", "Follow new lines", blog::follow).session(libuitest::supervisor::serve),
         case("truncate-rotate", "Truncate and rotate", blog::truncate_rotate).session(libuitest::supervisor::serve),
+        case("navigation", "Navigate log lines", blog::navigation).session(libuitest::supervisor::serve),
+        case("search", "Search log lines", blog::search).session(libuitest::supervisor::serve),
         case("missing-file", "Wait for missing file", blog::missing_file).session(libuitest::supervisor::serve),
     ]),
 ]).gui().defer_display();
