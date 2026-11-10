@@ -41,10 +41,10 @@ static SUITE: Suite = suite("network-shares", "Network shares", &[
 ]).case_limit_ms(30_000);
 
 fn main() {
-    let fd = sysio::fcntl(Fd::STDOUT, sysio::fcntl_cmd::F_DUPFD_CLOEXEC, 3)
-        .unwrap_or_else(|e| { eprintln!("retain SMB restart output: {e}"); std::process::exit(1) });
-    // SAFETY: fcntl returned a fresh owned descriptor; exec must not inherit it.
-    let _ = SMB_RESTART_OUTPUT.set(unsafe { File::from_raw_fd(fd as i32) });
+    if let Ok(fd) = sysio::fcntl(Fd::STDOUT, sysio::fcntl_cmd::F_DUPFD_CLOEXEC, 3) {
+        // SAFETY: fcntl returned a fresh owned descriptor; exec must not inherit it.
+        let _ = SMB_RESTART_OUTPUT.set(unsafe { File::from_raw_fd(fd as i32) });
+    }
     SUITE.with_evidence_upload().run()
 }
 fn io<T>(r: std::io::Result<T>) -> Result<T, String> { r.map_err(|e| e.to_string()) }
