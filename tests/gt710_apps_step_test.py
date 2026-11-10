@@ -259,6 +259,30 @@ class AppsStep(unittest.TestCase):
                                 capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_retained_replay_checks_runtime_diff_and_names_scorer(self):
+        head = 'b' * 40
+        original = {name: (self.path / name).read_bytes() for name in
+                    ('run.json', 'commit', 'serial.txt', 'events.jsonl')}
+        changes = ['scripts/metal/gt710-suite', 'tests/gt710_apps_step_test.py']
+        with patch('subprocess.run'), patch('subprocess.check_output',
+                return_value=('\0'.join(changes) + '\0').encode()):
+            self.assertEqual(API['record_apps_capture'](self.path, SHA, 1, scorer_head=head), 0)
+        report = json.loads((self.path / 'gt710-apps-step.json').read_text())
+        self.assertEqual(report['commit'], SHA)
+        self.assertEqual(report['toolsCommit'], SHA)
+        self.assertEqual(report['scorerCommit'], head)
+        self.assertEqual(report['hostOnlyDiff'], changes)
+        self.assertEqual(report['scorerSHA256'], hashlib.sha256(
+            (ROOT / 'scripts/metal/gt710-suite').read_bytes()).hexdigest())
+        for name, body in original.items():
+            self.assertEqual((self.path / name).read_bytes(), body)
+        with patch('subprocess.run'), patch('subprocess.check_output',
+                return_value=b'userspace/programs/src/bfontpicker.rs\0'):
+            self.assertEqual(API['record_apps_capture'](self.path, SHA, 1, scorer_head=head), 1)
+        report = json.loads((self.path / 'gt710-apps-step.json').read_text())
+        self.assertEqual(report['cases'][0]['result'], 'FAIL')
+        self.assertIn('runtime files', report['cases'][0]['reason'])
+
     def test_missing_pixels_cannot_retain_a_passing_score(self):
         self.assertEqual(self.record(), 0)
         (self.path / 'gt710-pixels.rle').unlink()
