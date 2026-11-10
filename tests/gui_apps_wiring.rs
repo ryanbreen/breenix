@@ -86,3 +86,11 @@ fn app_launch_as_passes_the_requested_uid() {
     assert!(launch.contains("launch_app(argv, uid)"));
     assert!(source.contains("Self::launch_as(argv, title, 0)"));
 }
+
+#[test]
+fn bcheck_dispatches_input_before_presenting() {
+    let source = include_str!("../userspace/programs/src/bcheck.rs");
+    assert!(!source.contains("win.poll_events()"));
+    assert!(source.contains("win.dispatch(|delivered|"));
+    assert!(source.contains("Handled::Redraw"));
+}
