@@ -5,10 +5,10 @@ use libvt::{Color, TermEmu};
 #[test]
 fn scripts_produce_the_guest_screen_literals() {
     for (name, lines, red, cursor) in [
-        ("vt-screen", ["Hello red!", "moved", "", ""], Some((6, 9)), (5, 1)),
-        ("scroll-region", ["top", "two", "three", "bottom"], None, (0, 4)),
-        ("alt-screen", ["main restored", "", "", ""], None, (13, 0)),
-        ("utf8", ["Aé界�B", "", "", ""], None, (5, 0)),
+        ("vt-screen", ["Hello red!", "moved", "", "", ""], Some((6, 9)), (5, 1)),
+        ("scroll-region", ["top", "inserted", "two", "", "bottom"], None, (0, 0)),
+        ("alt-screen", ["main restored", "", "", "", ""], None, (13, 0)),
+        ("utf8", ["Aé界�B", "", "", "", ""], None, (5, 0)),
     ] {
         let mut vt = TermEmu::new(40, 10);
         for byte in scripts::script(name).expect("named script") { vt.feed(&[*byte]); }
@@ -24,7 +24,7 @@ fn scripts_produce_the_guest_screen_literals() {
         }
         assert_eq!(vt.cursor(), cursor, "{name}");
         assert!(!vt.alternate_screen(), "{name}");
-        for y in 4..10 { assert!((0..40).all(|x| vt.cell(x, y).ch == ' '), "{name} row {y}"); }
+        for y in 5..10 { assert!((0..40).all(|x| vt.cell(x, y).ch == ' '), "{name} row {y}"); }
     }
 }
 
