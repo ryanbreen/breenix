@@ -62,3 +62,11 @@ fn both_close_actions_use_the_one_declared_session() {
     assert_eq!(close.matches("t.finish()").count(), 1);
     assert!(close.contains("t.launch_next("));
 }
+
+#[test]
+fn blog_dispatches_input_before_presenting() {
+    let source = include_str!("../userspace/programs/src/blog.rs");
+    assert!(!source.contains("win.poll_events()"));
+    assert!(source.contains("win.dispatch(|delivered|"));
+    assert!(source.contains("Handled::Redraw"));
+}
