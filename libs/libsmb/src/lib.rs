@@ -1,6 +1,7 @@
 //! SMB2 wire encoding and decoding, independent of transport I/O.
 
 pub mod auth;
+pub mod client;
 
 pub mod msg;
 pub mod security;
