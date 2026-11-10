@@ -149,7 +149,9 @@ impl Window {
     }
 
     pub(super) fn hit_resize_edge(&self, mx: i32, my: i32) -> Option<ResizeEdge> {
-        if self.chromeless { return None; }
+        // The grab margin expands outside the frame; it must never steal a
+        // client's pixels, even when the chrome is scaled and the client isn't.
+        if self.chromeless || self.hit_content(mx, my) { return None; }
 
         let x0 = self.x;
         let y0 = self.y;
