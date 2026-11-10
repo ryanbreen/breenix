@@ -140,21 +140,34 @@ pub fn shortcuts() -> CaseResult {
 }
 
 pub fn save_open() -> CaseResult {
-    for file in ["/tmp/a.bmp", "/tmp/a.png"] {
+    // Discard a new, unsaved canvas to close the process without ending the
+    // case's single session. Reopening must recover the saved stroke instead.
+    fn close(t: &mut App) -> Result<(), String> {
+        t.key(49, &[Modifier::Ctrl])?;
+        t.key(16, &[Modifier::Ctrl])?;
+        t.wait_node("confirm", |_| true)?;
+        t.key_exit(32, 0)
+    }
+    let files = ["/tmp/a.bmp", "/tmp/a.png"];
+    for file in files {
         match std::fs::remove_file(file) { Ok(()) => (), Err(e) if e.kind() == std::io::ErrorKind::NotFound => (), Err(e) => return Err(e.to_string().into()) }
-        let mut t = App::launch(&[b"/usr/bin/guskit", b"--canvas", b"200x120", file.as_bytes()], "Gus Kit")?;
+    }
+    let mut t = App::launch(&[b"/usr/bin/guskit", b"--canvas", b"200x120", files[0].as_bytes()], "Gus Kit")?;
+    for (index, file) in files.into_iter().enumerate() {
+        let argv: &[&[u8]] = &[b"/usr/bin/guskit", b"--canvas", b"200x120", file.as_bytes()];
+        if index != 0 { t.launch_next(argv, "Gus Kit")?; }
         stroke(&mut t, 10)?;
         let mut image = Expected::white(); image.horizontal(10, 40, 10);
         expect(&mut t, &image)?;
         t.wait_node("status", |v| v["dirty"] == true)?;
         t.key(31, &[Modifier::Ctrl])?;
         t.wait_node("status", |v| v["dirty"] == false && v["message"] == "Saved")?;
-        t.finish()?;
-        let mut reopened = App::launch(&[b"/usr/bin/guskit", b"--canvas", b"200x120", file.as_bytes()], "Gus Kit")?;
-        expect(&mut reopened, &image)?;
-        reopened.finish()?;
+        close(&mut t)?;
+        t.launch_next(argv, "Gus Kit")?;
+        expect(&mut t, &image)?;
+        close(&mut t)?;
     }
-    Ok(())
+    Ok(t.finish()?)
 }
 
 pub fn save_fails_cleanly() -> CaseResult {
