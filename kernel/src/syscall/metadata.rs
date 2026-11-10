@@ -154,7 +154,8 @@ fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -
     let (mount, ino) = match resolved.target {
         namei::Target::Inode { mount, ino, .. } => (mount, ino),
         namei::Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
-        namei::Target::Virtual => return SyscallResult::Err(EOPNOTSUPP as u64),
+        namei::Target::User { node: 0, .. } => return SyscallResult::Err(ENOENT as u64),
+        namei::Target::Virtual | namei::Target::User { .. } => return SyscallResult::Err(EOPNOTSUPP as u64),
     };
     let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
     match guard.as_mut() {

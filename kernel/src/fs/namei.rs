@@ -105,6 +105,8 @@ pub enum Target {
     Absent { mount: Mount, parent: u32 },
     /// A pathname at or below `/dev` or `/proc`.
     Virtual,
+    /// A daemon node; node 0 is an absent final name in `parent`.
+    User { mount: u64, node: u64, parent: Option<u64> },
 }
 
 /// The kind of the final component as written.
@@ -180,7 +182,7 @@ impl<P: AsRef<[u8]>> Resolved<P> {
     pub fn mount(&self) -> Option<Mount> {
         match self.target {
             Target::Inode { mount, .. } | Target::Absent { mount, .. } => Some(mount),
-            Target::Virtual => None,
+            Target::Virtual | Target::User { .. } => None,
         }
     }
 
@@ -188,10 +190,11 @@ impl<P: AsRef<[u8]>> Resolved<P> {
     /// or `/proc`.
     pub fn is_mount_point(&self) -> bool {
         match self.target {
-            Target::Inode { mount: Mount::Root, ino, .. } => ext2::root_namespace().is_mount(ino),
-            Target::Inode { mount: Mount::Home, ino, .. } => ino == EXT2_ROOT_INO,
+            Target::Inode { mount: Mount::Root, ino, .. } => ext2::root_namespace().is_mount(ino) || super::ufs::covering(Mount::Root, ino).is_some(),
+            Target::Inode { mount: Mount::Home, ino, .. } => ino == EXT2_ROOT_INO || super::ufs::covering(Mount::Home, ino).is_some(),
             Target::Virtual => self.path.as_ref() == b"/dev" || self.path.as_ref() == b"/proc",
             Target::Absent { .. } => false,
+            Target::User { node, .. } => node == ufs_abi::payload::ROOT,
         }
     }
 
@@ -225,6 +228,7 @@ impl<P> Resolved<P> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Node {
     Ext2(Mount, u32),
+    User(u64, u64),
     Virtual,
 }
 
@@ -559,6 +563,13 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                 return Err(crate::syscall::errno::EACCES as u64);
             }
             Some(inode)
+        } else if let Node::User(mount, node) = top(&stack) {
+            held.release();
+            let attr = super::ufs::path::getattr(mount, node)?;
+            let attrs = super::ufs::path::attrs(attr);
+            if !attrs.is_dir() { return Err(ENOTDIR as u64); }
+            if !cred.may(attrs, 1) { return Err(crate::syscall::errno::EACCES as u64); }
+            None
         } else {
             None
         };
@@ -571,13 +582,40 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
             b".." => {
                 last = Last::DotDot;
                 if !is_root(&stack, &root) {
+                    let parent = match top(&stack) {
+                        Node::User(mount, ufs_abi::payload::ROOT) => Some(super::ufs::covered_parent(mount).ok_or(ENOENT as u64)?),
+                        _ => None,
+                    };
                     stack.pop();
+                    if let Some((mount, ino)) = parent {
+                        if top(&stack) != Node::Ext2(mount, ino) { return Err(ENOENT as u64); }
+                    }
                 }
                 continue;
             }
             _ => last = Last::Name,
         }
         match top(&stack) {
+            Node::User(mount, dir) => {
+                held.release();
+                match super::ufs::path::lookup(mount, dir, &name) {
+                    Ok(attr) => {
+                        top_is_dir = super::ufs::path::attrs(attr).is_dir();
+                        stack.try_reserve(1).map_err(|_| 12u64)?;
+                        stack.push(Frame { name, node: Node::User(mount, attr.node) });
+                    }
+                    Err(errno) if errno == ENOENT as u64 && is_final => {
+                        let mut path = join(&stack)?;
+                        path.try_reserve(name.len() + 1).map_err(|_| 12u64)?;
+                        if !stack.is_empty() { path.push(b'/'); }
+                        path.extend_from_slice(&name);
+                        if path.len() >= PATH_MAX { return Err(ENAMETOOLONG as u64); }
+                        return Ok(Resolved { path, target: Target::User { mount, node: 0, parent: Some(dir) },
+                            last, trailing_slash, virtual_absent: false, pin: None, entry_dir: None });
+                    }
+                    Err(errno) => return Err(errno),
+                }
+            }
             Node::Virtual => {
                 // devfs and procfs take locks no filesystem guard is held
                 // across.
@@ -674,6 +712,14 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
                     });
                 };
                 let inode = fs.read_inode(ino).map_err(fs_errno)?;
+                if inode.is_dir() {
+                    if let Some(user_mount) = super::ufs::covering(mount, ino) {
+                        held.release();
+                        stack.try_reserve(1).map_err(|_| 12u64)?;
+                        stack.push(Frame { name, node: Node::User(user_mount, ufs_abi::payload::ROOT) });
+                        continue;
+                    }
+                }
                 if inode.is_symlink() && (!is_final || follow_final) {
                     may_follow(&dir_inode.attrs(), &inode.attrs(), cred)?;
                     links += 1;
@@ -748,6 +794,14 @@ fn walk_bytes(path: &[u8], mode: Mode, start: Option<WorkingDir>, cred: &super::
             };
             (target, pin, entry_dir)
         }
+        Node::User(mount, node) => {
+            held.release();
+            let parent = stack.len().checked_sub(2).and_then(|i| match stack[i].node {
+                Node::User(parent_mount, parent) if parent_mount == mount => Some(parent),
+                _ => None,
+            });
+            (Target::User { mount, node, parent }, None, None)
+        }
         Node::Virtual => (Target::Virtual, None, None),
     };
     drop(held);
@@ -778,7 +832,7 @@ pub(crate) fn resolve_file_bytes(path: &[u8]) -> Result<(Mount, u32, FileHandle,
             .map(|pin| (mount, ino, pin, resolved.path))
             .ok_or(EIO as u64),
         Target::Absent { .. } => Err(ENOENT as u64),
-        Target::Virtual => Err(crate::syscall::errno::EACCES as u64),
+        Target::Virtual | Target::User { .. } => Err(crate::syscall::errno::EACCES as u64),
     }
 }
 
@@ -972,6 +1026,8 @@ pub fn current_working_dir() -> WorkingDir {
 /// The working directory a resolved pathname names, for chdir.
 pub fn working_dir<P: AsRef<[u8]>>(resolved: &Resolved<P>) -> Result<WorkingDir, u64> {
     match resolved.target {
+        Target::User { node: 0, .. } => Err(ENOENT as u64),
+        Target::User { .. } => Err(crate::syscall::errno::EOPNOTSUPP as u64),
         Target::Absent { .. } => Err(ENOENT as u64),
         Target::Virtual => match core::str::from_utf8(resolved.path.as_ref()).ok().and_then(virtual_entry) {
             Some(true) => Ok(WorkingDir::Virtual(copy_string(core::str::from_utf8(resolved.path.as_ref()).map_err(|_| ENOENT as u64)?)?)),

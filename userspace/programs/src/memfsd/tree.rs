@@ -10,13 +10,15 @@ type Result<T> = std::result::Result<T, i32>;
 struct Node {
     parent: u64,
     mode: u32,
+    atime_ns: u64,
+    mtime_ns: u64,
     linked: bool,
     children: BTreeMap<Vec<u8>, u64>,
     data: Vec<u8>,
 }
 impl Node {
     fn new(parent: u64, mode: u32) -> Self {
-        Self { parent, mode, linked: true, children: BTreeMap::new(), data: Vec::new() }
+        Self { parent, mode, atime_ns: 0, mtime_ns: 0, linked: true, children: BTreeMap::new(), data: Vec::new() }
     }
     fn is_dir(&self) -> bool { self.mode & 0o170000 == S_IFDIR }
 }
@@ -47,7 +49,7 @@ impl Tree {
             2 + node.children.values().filter(|id| self.nodes[id].is_dir()).count() as u32
         } else { 1 };
         let attr = Attr { node: id, size: node.data.len() as u64, mode: node.mode, nlink,
-            uid: 0, gid: 0, atime_ns: 0, mtime_ns: 0 };
+            uid: 0, gid: 0, atime_ns: node.atime_ns, mtime_ns: node.mtime_ns };
         let mut bytes = vec![0; Attr::SIZE];
         attr.encode(&mut bytes).map_err(|_| EINVAL)?;
         Ok(bytes)
@@ -83,10 +85,17 @@ impl Tree {
             }
             Op::Getattr => { r.finish().map_err(|_| EINVAL)?; self.attr(req.node) }
             Op::Setattr => {
-                let size = r.u64().map_err(|_| EINVAL)?;
-                r.finish().map_err(|_| EINVAL)?;
-                let size = usize::try_from(size).map_err(|_| 27)?;
-                self.resize(req.node, size)?;
+                if req.payload.len() == ufs_abi::payload::SetTimes::SIZE {
+                    let times = ufs_abi::payload::SetTimes::decode(req.payload).map_err(|_| EINVAL)?;
+                    let node = self.nodes.get_mut(&req.node).ok_or(2)?;
+                    if let Some(ns) = times.atime_ns { node.atime_ns = ns; }
+                    if let Some(ns) = times.mtime_ns { node.mtime_ns = ns; }
+                } else {
+                    let size = r.u64().map_err(|_| EINVAL)?;
+                    r.finish().map_err(|_| EINVAL)?;
+                    let size = usize::try_from(size).map_err(|_| 27)?;
+                    self.resize(req.node, size)?;
+                }
                 self.attr(req.node)
             }
             Op::Create | Op::Mkdir => {

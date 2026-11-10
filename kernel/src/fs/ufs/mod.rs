@@ -5,6 +5,8 @@
 //! hook links an owned wake record; reclaim delivers it outside PROCESS_MANAGER.
 
 mod args;
+pub mod cover;
+pub mod path;
 pub mod table;
 
 use crate::ipc::object::IpcFile;
@@ -32,6 +34,7 @@ struct State {
 /// The id is stable for the mount's lifetime, including daemon death.
 pub struct Mount {
     pub id: u64,
+    cover: cover::Cover<(crate::fs::namei::Mount, u32)>,
     point: crate::fs::namei::Resolved<Vec<u8>>,
     state: Mutex<State>,
     readers: Arc<WaitQueueHead>,
@@ -87,16 +90,13 @@ impl Mount {
     }
 }
 
-/// Longest whole-component mount prefix, for namei's user-mount routing.
-pub fn at(path: &[u8]) -> Option<(u64, usize)> {
-    MOUNTS
-        .lock()
-        .iter()
-        .filter(|m| {
-            path.starts_with(m.path()) && matches!(path.get(m.path().len()), None | Some(b'/'))
-        })
-        .max_by_key(|m| m.path().len())
-        .map(|m| (m.id, m.path().len()))
+/// Enter a mount by the covered inode, even after an ancestor is renamed.
+pub fn covering(mount: crate::fs::namei::Mount, ino: u32) -> Option<u64> {
+    cover::enter(MOUNTS.lock().iter().map(|m| &m.cover), (mount, ino))
+}
+
+pub fn covered_parent(id: u64) -> Option<(crate::fs::namei::Mount, u32)> {
+    cover::leave(MOUNTS.lock().iter().map(|m| &m.cover), id)
 }
 
 pub fn get(id: u64) -> Result<Arc<Mount>, u64> {
@@ -399,6 +399,9 @@ fn mount(target: u64, fstype: u64, flags: u64, data: u64) -> Result<(), u64> {
                     e
                 }
             })?;
+    let crate::fs::namei::Target::Inode { mount: covered_mount, ino: covered_ino, .. } = point.target else {
+        return Err(EBUSY as u64);
+    };
     if point.is_mount_point() {
         return Err(EBUSY as u64);
     }
@@ -415,12 +418,19 @@ fn mount(target: u64, fstype: u64, flags: u64, data: u64) -> Result<(), u64> {
     {
         return Err(EBUSY as u64);
     }
+    let mut parent_path = raw;
+    parent_path.try_reserve(3).map_err(|_| ENOMEM as u64)?;
+    parent_path.extend_from_slice(b"/..");
+    let parent = crate::syscall::metadata::resolve_at(crate::syscall::at_path::AT_FDCWD, &parent_path, true, &cred)?;
+    let crate::fs::namei::Target::Inode { mount: parent_mount, ino: parent_ino, .. } = parent.target else {
+        return Err(EBUSY as u64);
+    };
     let mut binding = endpoint.binding.lock();
     if binding.is_some() {
         return Err(EBUSY as u64);
     }
     let mut mounts = MOUNTS.lock();
-    if mounts.iter().any(|m| m.path() == point.path) {
+    if mounts.iter().any(|m| m.cover.covered == (covered_mount, covered_ino)) {
         return Err(EBUSY as u64);
     }
     mounts.try_reserve(1).map_err(|_| ENOMEM as u64)?;
@@ -429,6 +439,7 @@ fn mount(target: u64, fstype: u64, flags: u64, data: u64) -> Result<(), u64> {
         .map_err(|_| ENOSPC as u64)?;
     let mount = Arc::try_new(Mount {
         id,
+        cover: cover::Cover { mount: id, covered: (covered_mount, covered_ino), parent: (parent_mount, parent_ino) },
         point,
         state: Mutex::new(State {
             requests: RequestTable::new(),
@@ -462,7 +473,7 @@ fn umount(target: u64, flags: u64) -> Result<(), u64> {
         let mut mounts = MOUNTS.lock();
         let index = mounts
             .iter()
-            .position(|m| m.path() == point.path)
+            .position(|m| matches!(point.target, crate::fs::namei::Target::User { mount, node: ufs_abi::payload::ROOT, .. } if mount == m.id))
             .ok_or(EINVAL as u64)?;
         let mut state = mounts[index].state.lock();
         if !state.dead && state.open_files != 0 {

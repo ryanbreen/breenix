@@ -421,6 +421,7 @@ fn sys_open_write_path(
                 Err(_) => return Err(SyscallResult::Err(5)), // EIO
             }
         }
+        Target::User { .. } => return Err(SyscallResult::Err(super::errno::EOPNOTSUPP as u64)),
         Target::Virtual => return Err(SyscallResult::Err(ENOENT as u64)),
     };
 
@@ -701,6 +702,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
             return SyscallResult::Err(errno as u64);
         }
         Target::Inode { mount, .. } | Target::Absent { mount, .. } => mount,
+        Target::User { .. } => return SyscallResult::Err(super::errno::EOPNOTSUPP as u64),
         Target::Virtual => return SyscallResult::Err(ENOENT as u64),
     };
 
@@ -1850,6 +1852,10 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
         return SyscallResult::Err(EISDIR as u64);
     }
     let mount = match resolved.target {
+        Target::User { mount, node, parent } => {
+            let cred = match current_file_credentials() { Ok(c) => c, Err(e) => return SyscallResult::Err(e) };
+            return ufs_status(crate::fs::ufs::path::remove(mount, node, parent, resolved.final_name(), false, &cred));
+        }
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => return SyscallResult::Err(EPERM as u64),
         Target::Inode { mount, .. } => mount,
@@ -1981,7 +1987,22 @@ fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> 
             Last::Name => {}
         }
     }
+    if old.is_mount_point() || new.is_mount_point() { return SyscallResult::Err(EBUSY as u64); }
+    match (old.target, new.target) {
+        (Target::User { mount, node, parent }, Target::User { mount: dest_mount, parent: dest_parent, .. }) => {
+            if node == 0 { return SyscallResult::Err(ENOENT as u64); }
+            if mount != dest_mount { return SyscallResult::Err(EXDEV as u64); }
+            let (Some(parent), Some(dest_parent)) = (parent, dest_parent) else { return SyscallResult::Err(EBUSY as u64); };
+            let cred = match current_file_credentials() { Ok(c) => c, Err(e) => return SyscallResult::Err(e) };
+            return ufs_status(crate::fs::ufs::path::rename(mount, node, parent, old.final_name(), dest_parent,
+                new.final_name(), old.trailing_slash || new.trailing_slash, &cred));
+        }
+        (Target::User { node: 0, .. }, _) => return SyscallResult::Err(ENOENT as u64),
+        (Target::User { .. }, _) | (_, Target::User { .. }) => return SyscallResult::Err(EXDEV as u64),
+        _ => {}
+    }
     let mount = match old.target {
+        Target::User { .. } => return SyscallResult::Err(EXDEV as u64),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => return SyscallResult::Err(EXDEV as u64),
         Target::Inode { mount, .. } => mount,
@@ -2122,6 +2143,10 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
         return SyscallResult::Err(EBUSY as u64);
     }
     let mount = match resolved.target {
+        Target::User { mount, node, parent } => {
+            let cred = match current_file_credentials() { Ok(c) => c, Err(e) => return SyscallResult::Err(e) };
+            return ufs_status(crate::fs::ufs::path::remove(mount, node, parent, resolved.final_name(), true, &cred));
+        }
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => return SyscallResult::Err(ENOTDIR as u64),
         Target::Inode { mount, .. } => mount,
@@ -2246,7 +2271,11 @@ fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> Sy
     }
     log::debug!("sys_link: oldpath={}, newpath={}", String::from_utf8_lossy(&old.path), String::from_utf8_lossy(&new.path));
 
+    if matches!(old.target, Target::User { .. }) || matches!(new.target, Target::User { .. }) {
+        return SyscallResult::Err(super::errno::EPERM as u64);
+    }
     let mount = match old.target {
+        Target::User { .. } => return SyscallResult::Err(super::errno::EPERM as u64),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => return SyscallResult::Err(EXDEV as u64),
         Target::Inode {
@@ -2402,6 +2431,10 @@ fn sys_mkdir_from(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
         return SyscallResult::Err(EEXIST as u64);
     }
     let mount = match resolved.target {
+        Target::User { mount, node, parent } => {
+            let cred = match current_file_credentials() { Ok(c) => c, Err(e) => return SyscallResult::Err(e) };
+            return ufs_status(crate::fs::ufs::path::mkdir(mount, node, parent, resolved.final_name(), mode, &cred));
+        }
         Target::Inode { .. } => return SyscallResult::Err(EEXIST as u64),
         Target::Virtual if resolved.is_mount_point() => return SyscallResult::Err(EEXIST as u64),
         Target::Virtual => return SyscallResult::Err(EPERM as u64),
@@ -2525,6 +2558,7 @@ fn sys_symlink_from(target: u64, dirfd: i32, linkpath: u64) -> SyscallResult {
         return SyscallResult::Err(EEXIST as u64);
     }
     let mount = match link.target {
+        Target::User { .. } => return SyscallResult::Err(EPERM as u64),
         Target::Inode { .. } => return SyscallResult::Err(EEXIST as u64),
         Target::Virtual if link.is_mount_point() => return SyscallResult::Err(EEXIST as u64),
         Target::Virtual => return SyscallResult::Err(EPERM as u64),
@@ -2663,7 +2697,8 @@ fn sys_readlink_from(dirfd: i32, pathname: u64, buf: u64, bufsize: u64) -> Sysca
             file_type: FileType::SymLink,
         } => (mount, ino),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
-        Target::Inode { .. } | Target::Virtual => return SyscallResult::Err(EINVAL as u64),
+        Target::User { node: 0, .. } => return SyscallResult::Err(ENOENT as u64),
+        Target::User { .. } | Target::Inode { .. } | Target::Virtual => return SyscallResult::Err(EINVAL as u64),
     };
     let target = {
         let fs_guard = match mount.read() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
@@ -2733,6 +2768,11 @@ fn access_resolved(
     use super::errno::{EACCES, EIO, ENOENT};
     use crate::fs::namei::Target;
     let (mount, ino) = match resolved.target {
+        Target::User { mount, node, .. } => return match crate::fs::ufs::path::getattr(mount, node) {
+            Ok(attr) if cred.may(crate::fs::ufs::path::attrs(attr), mode) => SyscallResult::Ok(0),
+            Ok(_) => SyscallResult::Err(EACCES as u64),
+            Err(e) => SyscallResult::Err(e),
+        },
         Target::Inode { mount, ino, .. } => (mount, ino),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => {
@@ -4400,6 +4440,11 @@ pub fn sys_newfstatat(dirfd: i32, pathname: u64, statbuf: u64, flags: u32) -> Sy
     }
 
     let (mount, inode_num) = match resolved.target {
+        Target::User { mount, node, .. } => {
+            let mut stat = Stat::zeroed();
+            if let Err(e) = fill_user_stat(mount, node, &mut stat) { return SyscallResult::Err(e); }
+            return ufs_status(copy_to_user(statbuf as *mut Stat, &stat));
+        }
         Target::Inode { mount, ino, .. } => (mount, ino as u64),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual => {
@@ -4615,6 +4660,7 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
     let now = crate::time::current_unix_time() as u32;
+    let mut user_times = Ok(ufs_abi::payload::SetTimes { atime_ns: Some(now as u64 * 1_000_000_000), mtime_ns: Some(now as u64 * 1_000_000_000) });
     // Who may change the times (POSIX utimensat): setting both to the current
     // time needs ownership, write permission or privilege; any other change
     // needs ownership or privilege.
@@ -4645,6 +4691,14 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
             access = TimesAccess::Owner;
         }
 
+        let ns = |t: &UtimeTimespec| -> Result<Option<u64>, u64> {
+            if t.tv_nsec == UTIME_OMIT { return Ok(None); }
+            if t.tv_nsec == UTIME_NOW { return Ok(Some(now as u64 * 1_000_000_000)); }
+            u64::try_from(t.tv_sec).ok().and_then(|sec| sec.checked_mul(1_000_000_000))
+                .and_then(|v| v.checked_add(t.tv_nsec as u64)).map(Some).ok_or(super::errno::EOVERFLOW as u64)
+        };
+        // Keep conversion errors for UFS; ext2's established seconds ABI is unchanged.
+        user_times = ns(&times[0]).and_then(|atime_ns| ns(&times[1]).map(|mtime_ns| ufs_abi::payload::SetTimes { atime_ns, mtime_ns }));
         let atime = if times[0].tv_nsec == UTIME_NOW {
             Some(now)
         } else if times[0].tv_nsec == UTIME_OMIT {
@@ -4722,6 +4776,10 @@ pub fn sys_utimensat(dirfd: i32, path_ptr: u64, times_ptr: u64, flags: u32) -> S
         Ok(resolved) => resolved,
         Err(errno) => return SyscallResult::Err(errno),
     };
+    if let crate::fs::namei::Target::User { mount, node, .. } = resolved.target {
+        let times = match user_times { Ok(times) => times, Err(e) => return SyscallResult::Err(e) };
+        return ufs_status(crate::fs::ufs::path::utimens(mount, node, times, access == TimesAccess::Owner, &cred));
+    }
     // The resolution holds the inode it found; the update acts on that one.
     match resolved.handle() {
         Some(handle) => update_inode_timestamps(handle, set_atime, set_mtime, &cred, access),
@@ -4929,6 +4987,7 @@ fn virtual_statfs(kind: u64) -> Statfs {
 fn resolved_statfs(resolved: &crate::fs::namei::Resolved<alloc::vec::Vec<u8>>) -> Result<Statfs, u64> {
     use crate::fs::namei::Target;
     match resolved.target {
+        Target::User { mount, node, .. } => user_statfs(mount, node),
         // The mount's options join the filesystem's own read-only flag.
         Target::Inode { mount, .. } => ext2_statfs(mount).map(|mut stat| {
             stat.flags |= crate::fs::vfs::mount::flags_at(&resolved.path).statvfs_bits();
@@ -5209,6 +5268,10 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
         Err(errno) => return SyscallResult::Err(errno),
     };
     let (mount, ino) = match resolved.target {
+        Target::User { mount, node, .. } => {
+            let cred = match current_file_credentials() { Ok(c) => c, Err(e) => return SyscallResult::Err(e) };
+            return ufs_status(crate::fs::ufs::path::truncate(mount, node, length as u64, &cred));
+        }
         Target::Inode { mount, ino, .. } => (mount, ino),
         Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
         Target::Virtual if resolved.is_mount_point() => {
@@ -5264,4 +5327,44 @@ pub(super) fn update_read_atime(ino: u32, mount_id: usize) -> Result<(), u64> {
     use crate::fs::ext2;
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
     ext2::update_read_atime(ino, is_home).map_err(crate::fs::namei::fs_errno)
+}
+
+
+fn ufs_status(result: Result<(), u64>) -> SyscallResult {
+    match result { Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e) }
+}
+
+pub(crate) fn fill_user_stat(mount: u64, node: u64, stat: &mut Stat) -> Result<(), u64> {
+    let attr = crate::fs::ufs::path::getattr(mount, node)?;
+    stat.st_dev = 0x8000_0000_0000_0000 | mount;
+    stat.st_ino = attr.node;
+    stat.st_mode = attr.mode;
+    stat.st_nlink = attr.nlink as _;
+    stat.st_uid = attr.uid;
+    stat.st_gid = attr.gid;
+    stat.st_size = attr.size as i64;
+    stat.st_blksize = 4096;
+    stat.st_blocks = attr.size.div_ceil(512) as i64;
+    stat.st_atime = (attr.atime_ns / 1_000_000_000) as i64;
+    stat.st_atime_nsec = (attr.atime_ns % 1_000_000_000) as i64;
+    stat.st_mtime = (attr.mtime_ns / 1_000_000_000) as i64;
+    stat.st_mtime_nsec = (attr.mtime_ns % 1_000_000_000) as i64;
+    stat.st_ctime = stat.st_mtime;
+    stat.st_ctime_nsec = stat.st_mtime_nsec;
+    Ok(())
+}
+
+fn user_statfs(mount: u64, node: u64) -> Result<Statfs, u64> {
+    let bytes = crate::fs::ufs::path::request(mount, ufs_abi::Op::Statfs, node, &[])?;
+    let mut r = ufs_abi::payload::Reader::new(&bytes);
+    let stat = (|| -> Result<Statfs, ufs_abi::Error> {
+        let bsize = r.u64()?;
+        let stat = Statfs { kind: ufs_abi::payload::MAGIC as u64, bsize,
+            blocks: r.u64()?, bfree: r.u64()?, bavail: r.u64()?, files: r.u64()?, ffree: r.u64()?,
+            namelen: r.u64()?, frsize: bsize, ..Statfs::default() };
+        r.finish()?;
+        Ok(stat)
+    })().map_err(|_| super::errno::EIO as u64)?;
+    if stat.bsize == 0 || stat.namelen > ufs_abi::NAME_MAX as u64 { return Err(super::errno::EIO as u64); }
+    Ok(stat)
 }
