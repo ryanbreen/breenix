@@ -18,3 +18,20 @@ fn watchdog_deadline_and_failure_text() {
     assert!(message.contains("$ echo hello"));
     assert!(message.contains("last row"));
 }
+
+#[test]
+fn finish_requires_expected_exit_or_teardown_kill_for_each_app() {
+    use app::finish_verdict;
+    assert!(finish_verdict(&[(10, Some(0)), (20, None)], &[(10, 0), (20, 9)]).is_ok());
+    assert!(finish_verdict(&[(10, Some(0)), (20, None)], &[(10, 0), (20, 0)]).is_err());
+    assert!(finish_verdict(&[(10, None)], &[]).is_err());
+    assert!(finish_verdict(&[(10, Some(0))], &[(10, 9)]).is_err());
+}
+
+#[test]
+fn wait_node_failure_reports_key_and_last_value() {
+    let message = app::node_timeout_message("query", Some(&serde_json::json!({"text":"last"})));
+    assert!(message.contains("query"));
+    assert!(message.contains("last"));
+    assert!(app::node_timeout_message("missing", None).contains("missing"));
+}
