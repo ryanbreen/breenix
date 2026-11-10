@@ -124,3 +124,79 @@ pub fn search() -> CaseResult {
     }
     Ok(t.finish()?)
 }
+
+struct Blogd(Option<libbreenix::types::Pid>);
+impl Blogd {
+    fn start(dir: &str, state: &str) -> Result<Self, String> {
+        let args: Vec<_> = ["/usr/sbin/blogd", "--dir", dir, "--state", state].iter()
+            .map(|s| std::ffi::CString::new(*s).unwrap()).collect();
+        let mut pointers: Vec<_> = args.iter().map(|s| s.as_ptr() as *const u8).collect();
+        pointers.push(core::ptr::null());
+        let pid = libbreenix::process::spawnv(args[0].as_bytes_with_nul(), pointers.as_ptr()).map_err(|e| e.to_string())?;
+        Ok(Self(Some(pid)))
+    }
+    fn stop(&mut self) -> Result<(), String> {
+        let pid = self.0.take().ok_or("blogd already stopped")?;
+        libbreenix::signal::kill(pid.raw() as i32, libbreenix::signal::SIGKILL).map_err(|e| e.to_string())?;
+        let mut status = 0;
+        libbreenix::process::waitpid(pid.raw() as i32, &mut status, 0).map_err(|e| e.to_string())?;
+        if !libbreenix::process::wifsignaled(status) || libbreenix::process::wtermsig(status) != libbreenix::signal::SIGKILL {
+            return Err(format!("blogd did not die by SIGKILL: {status}"));
+        }
+        Ok(())
+    }
+}
+impl Drop for Blogd {
+    fn drop(&mut self) { if self.0.is_some() { let _ = self.stop(); } }
+}
+
+fn write_records(nonce: &str, range: core::ops::Range<u32>) -> Result<(), String> {
+    let mut kmsg = std::fs::OpenOptions::new().write(true).open("/dev/kmsg").map_err(|e| e.to_string())?;
+    for n in range { writeln!(kmsg, "{nonce}-{n:02}").map_err(|e| e.to_string())?; }
+    Ok(())
+}
+
+fn wait_records(path: &str, nonce: &str, count: usize) -> Result<(), String> {
+    let start = libbreenix::time::now_monotonic().map_err(|e| e.to_string())?.as_nanos();
+    loop {
+        let text = std::fs::read_to_string(path).unwrap_or_default();
+        if text.lines().filter(|line| line.contains(nonce)).count() >= count {
+            let elapsed = libbreenix::time::now_monotonic().map_err(|e| e.to_string())?.as_nanos() - start;
+            println!("blogd wait records={count} elapsed_ms={}", elapsed / 1_000_000);
+            return Ok(());
+        }
+        if libbreenix::time::now_monotonic().map_err(|e| e.to_string())?.as_nanos() - start >= 10_000_000_000 {
+            return Err(format!("blogd records timed out: {text}"));
+        }
+        libbreenix::time::sleep_ms(10).map_err(|e| e.to_string())?;
+    }
+}
+
+fn blogd_case(restart: bool) -> CaseResult {
+    let nonce = format!("blogd-test-{}-{}", std::process::id(), libbreenix::time::now_monotonic().map_err(|e| e.to_string())?.as_nanos());
+    let dir = format!("/tmp/{nonce}");
+    let state = format!("{dir}/cursor");
+    let path = format!("{dir}/kernel.log");
+    std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
+    let mut child = Blogd::start(&dir, &state)?;
+    write_records(&nonce, 0..10)?;
+    wait_records(&path, &nonce, 10)?;
+    if restart { child.stop()?; }
+    write_records(&nonce, 10..20)?;
+    if restart { child = Blogd::start(&dir, &state)?; }
+    wait_records(&path, &nonce, 20)?;
+    child.stop()?;
+    let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+    let boot = std::fs::read_to_string("/run/breenix/boot-id").map_err(|e| e.to_string())?;
+    let header = text.lines().next().ok_or("missing log header")?;
+    if !header.split_whitespace().any(|field| field == format!("boot={}", boot.trim())) { return Err(format!("wrong log header: {header}").into()); }
+    let records: Vec<_> = text.lines().filter(|line| line.contains(&nonce)).collect();
+    let expected: Vec<_> = (0..20).map(|n| format!("{nonce}-{n:02}")).collect();
+    if records.len() != 20 || records.iter().zip(&expected).any(|(line, expected)| !line.ends_with(expected)) {
+        return Err(format!("blogd records differ: {records:?}").into());
+    }
+    std::fs::remove_dir_all(dir).map_err(|e| e.to_string())?;
+    Ok(())
+}
+pub fn blogd_records_once() -> CaseResult { blogd_case(false) }
+pub fn blogd_restart() -> CaseResult { blogd_case(true) }

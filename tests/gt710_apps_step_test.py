@@ -170,7 +170,7 @@ class AppsStep(unittest.TestCase):
         selection_path = ROOT / 'docs/gui/gt710-step-23-2.json'
         selected = json.loads(selection_path.read_text())['cases']
         self.assertEqual(selected, expected)
-        self.assertEqual(NAMES, expected)
+        self.assertEqual(NAMES[:len(expected)], expected)
         target = self.definition / 'docs/gui/gt710-step-23-2.json'
         shutil.copyfile(selection_path, target)
         with patch.dict(globals(), SELECTED=selected):

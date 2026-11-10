@@ -45,6 +45,8 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("navigation", "Navigate log lines", blog::navigation).session(libuitest::supervisor::serve),
         case("search", "Search log lines", blog::search).session(libuitest::supervisor::serve),
         case("missing-file", "Wait for missing file", blog::missing_file).session(libuitest::supervisor::serve),
+        case("blogd-records-once", "Record kernel messages once", blog::blogd_records_once).session(libuitest::supervisor::serve),
+        case("blogd-restart", "Resume kernel messages after restart", blog::blogd_restart).session(libuitest::supervisor::serve),
     ]),
 ]).gui().defer_display();
 

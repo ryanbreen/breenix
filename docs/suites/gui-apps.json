@@ -141,6 +141,14 @@
         {
           "id": "missing-file",
           "title": "Wait for missing file"
+        },
+        {
+          "id": "blogd-records-once",
+          "title": "Record kernel messages once"
+        },
+        {
+          "id": "blogd-restart",
+          "title": "Resume kernel messages after restart"
         }
       ]
     }
