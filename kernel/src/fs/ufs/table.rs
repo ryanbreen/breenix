@@ -51,7 +51,7 @@ impl<Request, Waiter, Reply> RequestTable<Request, Waiter, Reply> {
         if self.entries.len() == QUEUE_CAP {
             return Err(Error::Full);
         }
-        // Never reuse an ID, including after timeout or integer exhaustion.
+        // Exhaustion refuses new IDs; timeouts do not reset the counter.
         let id = self.next_id.ok_or(Error::Full)?;
         self.next_id = id.checked_add(1);
         self.entries.push_back(Entry {
