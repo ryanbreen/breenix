@@ -43,6 +43,60 @@ fn main() {
 }
 """.replace("{PREDICATE}", predicate))
 
+    def test_type_line_survives_a_command_opening_another_window(self):
+        app = (ROOT / "libs/libuitest/src/app.rs").read_text()
+        methods = app[app.index("        pub fn type_line("):app.index("        pub fn tree(")]
+        keyboard = (ROOT / "libs/libuitest/src/input.rs").read_text()
+        chord = keyboard[keyboard.index("    pub fn chord("):keyboard.index("    pub fn type_text(")]
+        execute("""
+type Delivery = ();
+mod key { pub const ENTER: u16 = 28; }
+#[derive(PartialEq)]
+struct Modifier;
+impl Modifier { fn code(&self) -> u16 { 42 } }
+struct Backend { focused: u64, bytes: Vec<u8>, open_window: bool }
+impl Backend {
+    fn text(&mut self, text: &str, window: u64) -> Result<(), String> {
+        if self.focused != window { return Err("text reached another window".into()); }
+        self.bytes.extend_from_slice(text.as_bytes());
+        if text.ends_with('\\n') && self.open_window { self.focused = 15; }
+        Ok(())
+    }
+    fn key(&mut self, code: u16, pressed: bool, window: u64) -> Result<(), String> {
+        if self.focused != window {
+            return Err(format!("key {code} pressed={pressed} reached {} instead of {window}", self.focused));
+        }
+        if pressed && code == key::ENTER {
+            self.bytes.push(b'\\n');
+            if self.open_window { self.focused = 15; }
+        }
+        Ok(())
+    }
+}
+struct Keyboard { backend: Backend }
+impl Keyboard {
+    fn backend_mut(&mut self) -> &mut Backend { &mut self.backend }
+{CHORD}
+}
+struct App { keys: Keyboard, window: u64 }
+impl App {
+{METHODS}
+}
+fn main() {
+    for open_window in [false, true] {
+        let mut app = App { window: 14, keys: Keyboard {
+            backend: Backend { focused: 14, bytes: Vec::new(), open_window }
+        }};
+        app.type_line("launch-helper").expect("command submission must finish across a focus change");
+        assert_eq!(app.keys.backend.bytes, b"launch-helper\\n");
+        assert_eq!(app.keys.backend.focused, if open_window { 15 } else { 14 });
+        // Keep the physical-key API compiled and exercise its stable-focus path.
+        app.keys.backend.focused = 14;
+        app.key(30, &[]).unwrap();
+    }
+}
+""".replace("{CHORD}", chord).replace("{METHODS}", methods))
+
     def test_clipboard_ready_is_after_the_owner_window_is_destroyed(self):
         fixture = ROOT / "userspace/programs/src/clip_set_test.rs"
         execute("""
