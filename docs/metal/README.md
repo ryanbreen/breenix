@@ -1095,16 +1095,26 @@ a new boot archives the previous boot's active file before writing its header.
 `/var` is shared machine state, so the files survive a reboot and an upgrade.
 
 A stream line over 4096 bytes is discarded through its newline and records
-`lost lines=1` with the stream and reason. A failed file write is counted and
-reported on the next successful write. An unavailable log sink does not block
+`lost lines=1` with the stream and reason. init counts failed pipe-log writes and
+reports them on the next successful write. An unavailable log sink does not block
 service startup: init drains the pipes, counts discarded lines and retries the sink.
 blogd uses `/proc/kmsg-sequence`, a
 root-only snapshot carrying absolute raw-byte offsets and a hex payload, to
 append new kernel records to `kernel.log` with the same format and rotation.
 When the ring has overwritten unread bytes it records the exact missing byte
 count and `lost lines=unknown`, because the overwritten newlines are unavailable.
-blogd checkpoints its byte offset and partial line under `/run/breenix`, keyed by
-the boot ID, and finishes a batch before honouring SIGTERM so service restarts
+blogd checkpoints under `/run/breenix`, keyed by the boot ID. Its cursor starts
+with `BREENIX-KMSG-CURSOR 1 boot=ID next=N`, followed by five output-file rows
+(device, inode and committed length, or `-`) and the binary partial-line state.
+Private hard links under `/var/log/.kernel-log-cursor` pin those committed files
+across rotation. Recovery rolls back uncommitted appends before replaying input.
+If only the pins were removed, matching live files rebuild them; missing or
+shortened output records `lost lines=unknown reason=cursor-output-changed` and
+resumes at the saved input cursor rather than abandoning the service.
+On I/O failure blogd retries recovery at 250 ms intervals, reports the failed attempt
+count on recovery, and replays input still present in the kernel ring. Ring loss
+uses the byte-exact overrun record above; these retries do not count discarded
+pipe lines. It finishes a batch before honouring SIGTERM so service restarts
 resume the same stream. The existing `/proc/kmsg` text interface is retained.
 
 ### Orderly reboot and power-off
