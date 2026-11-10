@@ -70,3 +70,11 @@ fn blog_dispatches_input_before_presenting() {
     assert!(source.contains("win.dispatch(|delivered|"));
     assert!(source.contains("Handled::Redraw"));
 }
+
+#[test]
+fn bfontpicker_dispatches_input_before_presenting() {
+    let source = include_str!("../userspace/programs/src/bfontpicker.rs");
+    assert!(!source.contains("win.poll_events()"));
+    assert!(source.contains("win.dispatch(|delivered|"));
+    assert!(source.contains("Handled::Redraw"));
+}
