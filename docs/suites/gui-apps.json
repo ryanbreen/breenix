@@ -170,7 +170,7 @@
         },
         {
           "id": "keeps-unknown",
-          "title": "Comments, blank lines and key order survive a save"
+          "title": "Unknown settings, comments and key order survive a save"
         },
         {
           "id": "live-bterm",

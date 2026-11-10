@@ -15,6 +15,9 @@ use std::process;
 
 use breengel::{Window, Event, Color, Surface, FontConfig, Handled};
 #[path = "bfontpicker/conf.rs"] mod conf;
+#[path = "bfontpicker/save.rs"]
+mod save;
+use save::SaveState;
 #[path = "bfontpicker/meta.rs"] mod meta;
 #[path = "bfontpicker/node.rs"] mod node;
 use libbreenix::fs;
@@ -224,40 +227,6 @@ fn format_size_display(size: f32) -> String {
     }
 }
 
-struct SaveState {
-    path: std::path::PathBuf,
-    save: Option<&'static str>,
-    error: Option<String>,
-}
-
-impl SaveState {
-    fn update(&mut self, key: &str, value: &str) -> bool {
-        let contents = match std::fs::read_to_string(&self.path) {
-            Ok(text) => text,
-            Err(e) => { self.save = Some("failed"); self.error = Some(e.to_string()); return false; }
-        };
-        if let Err(e) = FontConfig::parse(&contents) {
-            self.save = Some("failed"); self.error = Some(format!("Invalid font configuration: {:?}", e)); return false;
-        }
-        let updated = conf::set(&contents, key, value);
-        if let Err(e) = FontConfig::parse(&updated) {
-            self.save = Some("failed"); self.error = Some(format!("Invalid font configuration: {:?}", e)); return false;
-        }
-        match libbreenix::atomic_file::save(&self.path, updated.as_bytes()) {
-            libbreenix::atomic_file::SaveResult::Saved => { self.save = Some("saved"); self.error = None; true }
-            libbreenix::atomic_file::SaveResult::Unconfirmed(e) => { self.save = Some("unconfirmed"); self.error = Some(e.to_string()); true }
-            libbreenix::atomic_file::SaveResult::Failed(e) => { self.save = Some("failed"); self.error = Some(e.to_string()); false }
-        }
-    }
-    fn message(&self) -> String {
-        match (&self.save, &self.error) {
-            (Some("unconfirmed"), Some(e)) => format!("Applied, unconfirmed: {}", e),
-            (_, Some(e)) => e.clone(),
-            _ => "Saved".into(),
-        }
-    }
-}
-
 /// Apply the selected font to the appropriate config key.
 fn apply_font(
     fonts: &[FontEntry],
@@ -265,8 +234,6 @@ fn apply_font(
     selected: usize,
     current_mono: &mut String,
     current_display: &mut String,
-    mono_size: &mut f32,
-    display_size: &mut f32,
     state: &mut SaveState,
 ) -> Option<String> {
     if let ListItem::Font(idx) = list[selected] {
@@ -278,7 +245,6 @@ fn apply_font(
         if state.update(key, &entry.path) {
             if entry.is_mono { *current_mono = entry.path.clone(); } else { *current_display = entry.path.clone(); }
         }
-        let _ = (mono_size, display_size);
         Some(state.message())
     } else {
         None
@@ -580,7 +546,7 @@ fn main() {
                             if let Some(msg) = apply_font(
                                 &fonts, &list, selected,
                                 &mut current_mono, &mut current_display,
-                                &mut mono_size, &mut display_size, &mut state,
+                                &mut state,
                             ) {
                                 status_msg = msg;
                                 status_timer = 40;
@@ -594,7 +560,7 @@ fn main() {
                                 if let Some(msg) = apply_font(
                                     &fonts, &list, selected,
                                     &mut current_mono, &mut current_display,
-                                    &mut mono_size, &mut display_size, &mut state,
+                                    &mut state,
                                 ) {
                                     status_msg = msg;
                                     status_timer = 40;
@@ -640,7 +606,7 @@ fn main() {
                                     if let Some(msg) = apply_font(
                                         &fonts, &list, selected,
                                         &mut current_mono, &mut current_display,
-                                        &mut mono_size, &mut display_size, &mut state,
+                                        &mut state,
                                     ) {
                                         status_msg = msg;
                                         status_timer = 40;

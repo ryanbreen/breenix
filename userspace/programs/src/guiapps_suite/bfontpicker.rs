@@ -61,7 +61,7 @@ pub fn persists() -> CaseResult {
 
 pub fn keeps_unknown() -> CaseResult {
     let mut t = launch()?;
-    let original = format!("# keep this comment\ndisplay.size=17\n\ndisplay.font={FAKE}\nmono.font={FIRST}\n# trailing comment\nmono.size=14\n");
+    let original = format!("# keep this comment\nfuture.setting=keep=this\ndisplay.size=17\n\ndisplay.font={FAKE}\nmono.font={FIRST}\n# trailing comment\nmono.size=14\n");
     let expected = original.replace(FIRST, PLAIN);
     let path = seed(&mut t, &original)?;
     select(&mut t)?;
