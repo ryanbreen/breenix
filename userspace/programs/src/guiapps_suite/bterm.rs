@@ -18,6 +18,8 @@ pub fn exit_status() -> CaseResult {
     let mut t = App::launch(&[b"/usr/bin/bterm"], "Terminal")?;
     t.type_line("exec('false').exitCode")?;
     t.expect_text("1")?;
+    t.type_line("exec('true').exitCode")?;
+    t.expect_text("0")?;
     Ok(t.finish()?)
 }
 
