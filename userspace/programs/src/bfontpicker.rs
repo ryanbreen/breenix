@@ -13,7 +13,10 @@
 
 use std::process;
 
-use breengel::{Window, Event, Color, Surface, FontConfig};
+use breengel::{Window, Event, Color, Surface, FontConfig, Handled};
+#[path = "bfontpicker/conf.rs"] mod conf;
+#[path = "bfontpicker/meta.rs"] mod meta;
+#[path = "bfontpicker/node.rs"] mod node;
 use libbreenix::fs;
 use libbreenix::io;
 use libbreenix::time;
@@ -27,7 +30,6 @@ use libgfx::ttf_font::{self, CachedFont, Font};
 const WIN_W: u32 = 560;
 const WIN_H: u32 = 540;
 const FONT_DIR: &str = "/usr/share/fonts";
-const CONFIG_PATH: &str = "/etc/fonts.conf";
 
 const BG: Color = Color::rgb(30, 30, 40);
 const FG: Color = Color::rgb(204, 204, 204);
@@ -65,6 +67,7 @@ struct FontEntry {
     path: String,
     name: String,
     is_mono: bool,
+    error: Option<String>,
     cached: Option<CachedFont>,
 }
 
@@ -75,21 +78,10 @@ enum ListItem {
 
 // ─── Font classification ────────────────────────────────────────────────────
 
-/// Classify a font as monospace based on its filename.
-/// This avoids loading+parsing every font file at startup (which causes
-/// ~12MB of heap churn and can trigger kernel heap corruption under load).
-fn name_is_mono(name: &str) -> bool {
-    let lower: Vec<u8> = name.bytes().map(|b| if b >= b'A' && b <= b'Z' { b + 32 } else { b }).collect();
-    let s = core::str::from_utf8(&lower).unwrap_or("");
-    s.contains("mono") || s.contains("code") || s.contains("hack")
-        || s.contains("inconsolata") || s.contains("consolas")
-        || s.contains("courier") || s.contains("fixed")
-}
-
-/// Scan /usr/share/fonts/ for all .ttf files, tagged as mono or display.
-fn scan_fonts() -> Vec<FontEntry> {
+/// Scan the font directory and classify readable TTF files by metadata.
+fn scan_fonts(dir: &str) -> Vec<FontEntry> {
     let mut entries = Vec::new();
-    let fd = match fs::open(FONT_DIR, fs::O_RDONLY) {
+    let fd = match fs::open(dir, fs::O_RDONLY) {
         Ok(f) => f,
         Err(_) => return entries,
     };
@@ -112,7 +104,7 @@ fn scan_fonts() -> Vec<FontEntry> {
                     && (ext[3] == b'f' || ext[3] == b'F')
                 {
                     let name_str = core::str::from_utf8(name_bytes).unwrap_or("?");
-                    let path = format!("{}/{}", FONT_DIR, name_str);
+                    let path = format!("{}/{}", dir, name_str);
 
                     let display_name = name_str
                         .trim_end_matches(".ttf")
@@ -120,12 +112,18 @@ fn scan_fonts() -> Vec<FontEntry> {
                         .replace('-', " ")
                         .replace('_', " ");
 
-                    let is_mono = name_is_mono(&display_name);
+                    let result = std::fs::read(&path).map_err(|e| e.to_string()).and_then(|data| {
+                        let mono = meta::is_mono(&data).map_err(str::to_string)?;
+                        Font::parse(&data).map_err(|e| format!("{:?}", e))?;
+                        Ok(mono)
+                    });
+                    let is_mono = result.as_ref().copied().unwrap_or(false);
 
                     entries.push(FontEntry {
                         path,
                         name: display_name,
                         is_mono,
+                        error: result.err(),
                         cached: None,
                     });
                 }
@@ -226,19 +224,38 @@ fn format_size_display(size: f32) -> String {
     }
 }
 
-fn write_full_config(config: &FontConfig) {
-    let content = format!(
-        "# Breenix System Font Configuration\n\
-         # Set by bfontpicker\n\
-         #\n\
-         mono.font={}\n\
-         mono.size={}\n\
-         display.font={}\n\
-         display.size={}\n",
-        config.mono_path, format_size(config.mono_size),
-        config.display_path, format_size(config.display_size),
-    );
-    let _ = std::fs::write(CONFIG_PATH, content);
+struct SaveState {
+    path: std::path::PathBuf,
+    save: Option<&'static str>,
+    error: Option<String>,
+}
+
+impl SaveState {
+    fn update(&mut self, key: &str, value: &str) -> bool {
+        let contents = match std::fs::read_to_string(&self.path) {
+            Ok(text) => text,
+            Err(e) => { self.save = Some("failed"); self.error = Some(e.to_string()); return false; }
+        };
+        if let Err(e) = FontConfig::parse(&contents) {
+            self.save = Some("failed"); self.error = Some(format!("Invalid font configuration: {:?}", e)); return false;
+        }
+        let updated = conf::set(&contents, key, value);
+        if let Err(e) = FontConfig::parse(&updated) {
+            self.save = Some("failed"); self.error = Some(format!("Invalid font configuration: {:?}", e)); return false;
+        }
+        match libbreenix::atomic_file::save(&self.path, updated.as_bytes()) {
+            libbreenix::atomic_file::SaveResult::Saved => { self.save = Some("saved"); self.error = None; true }
+            libbreenix::atomic_file::SaveResult::Unconfirmed(e) => { self.save = Some("unconfirmed"); self.error = Some(e.to_string()); true }
+            libbreenix::atomic_file::SaveResult::Failed(e) => { self.save = Some("failed"); self.error = Some(e.to_string()); false }
+        }
+    }
+    fn message(&self) -> String {
+        match (&self.save, &self.error) {
+            (Some("unconfirmed"), Some(e)) => format!("Applied, unconfirmed: {}", e),
+            (_, Some(e)) => e.clone(),
+            _ => "Saved".into(),
+        }
+    }
 }
 
 /// Apply the selected font to the appropriate config key.
@@ -250,26 +267,19 @@ fn apply_font(
     current_display: &mut String,
     mono_size: &mut f32,
     display_size: &mut f32,
+    state: &mut SaveState,
 ) -> Option<String> {
     if let ListItem::Font(idx) = list[selected] {
         let entry = &fonts[idx];
-        let mut cfg = FontConfig::load();
-        // Enforce minimums on sizes
-        cfg.mono_size = cfg.mono_size.max(MIN_FONT_SIZE);
-        cfg.display_size = cfg.display_size.max(MIN_FONT_SIZE);
-        let msg = if entry.is_mono {
-            cfg.mono_path = entry.path.clone();
-            *current_mono = entry.path.clone();
-            *mono_size = cfg.mono_size;
-            format!("Mono: {} ({})", entry.name, format_size_display(cfg.mono_size))
-        } else {
-            cfg.display_path = entry.path.clone();
-            *current_display = entry.path.clone();
-            *display_size = cfg.display_size;
-            format!("Display: {} ({})", entry.name, format_size_display(cfg.display_size))
-        };
-        write_full_config(&cfg);
-        Some(msg)
+        if let Some(error) = &entry.error {
+            state.save = Some("failed"); state.error = Some(error.clone()); return Some(state.message());
+        }
+        let key = if entry.is_mono { "mono.font" } else { "display.font" };
+        if state.update(key, &entry.path) {
+            if entry.is_mono { *current_mono = entry.path.clone(); } else { *current_display = entry.path.clone(); }
+        }
+        let _ = (mono_size, display_size);
+        Some(state.message())
     } else {
         None
     }
@@ -283,25 +293,13 @@ fn adjust_size(
     delta: f32,
     mono_size: &mut f32,
     display_size: &mut f32,
+    state: &mut SaveState,
 ) -> Option<String> {
     let is_mono = selected_is_mono(fonts, list, selected);
-    let mut cfg = FontConfig::load();
-    // Enforce minimums on both sizes before adjusting
-    cfg.mono_size = cfg.mono_size.max(MIN_FONT_SIZE);
-    cfg.display_size = cfg.display_size.max(MIN_FONT_SIZE);
-    let (new_size, label) = if is_mono {
-        let s = (cfg.mono_size + delta).max(MIN_FONT_SIZE).min(MAX_FONT_SIZE);
-        cfg.mono_size = s;
-        *mono_size = s;
-        (s, "Mono size")
-    } else {
-        let s = (cfg.display_size + delta).max(MIN_FONT_SIZE).min(MAX_FONT_SIZE);
-        cfg.display_size = s;
-        *display_size = s;
-        (s, "Display size")
-    };
-    write_full_config(&cfg);
-    Some(format!("{}: {}", label, format_size_display(new_size)))
+    let size = if is_mono { mono_size } else { display_size };
+    let next = (*size + delta).max(MIN_FONT_SIZE).min(MAX_FONT_SIZE);
+    if state.update(if is_mono { "mono.size" } else { "display.size" }, &format_size(next)) { *size = next; }
+    Some(state.message())
 }
 
 fn ensure_cached_font(entry: &mut FontEntry) {
@@ -312,6 +310,26 @@ fn ensure_cached_font(entry: &mut FontEntry) {
             }
         }
     }
+}
+
+fn publish_tree(win: &mut Window, fonts: &[FontEntry], list: &[ListItem], selected: usize,
+    mono: &str, display: &str, sizes: [f32; 2], state: &SaveState) {
+    use breengel::tree::{Flag, Node, Role, Tree};
+    let rows: Vec<_> = fonts.iter().map(|font| node::Row {
+        name: &font.name, path: &font.path, section: if font.is_mono { "mono" } else { "display" },
+        usable: font.error.is_none(), active: if font.is_mono { font.path == mono } else { font.path == display },
+    }).collect();
+    let selection = match list.get(selected) { Some(ListItem::Font(i)) => Some(*i), _ => None };
+    let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
+    let flags = vec![Flag::Enabled, Flag::Visible];
+    win.set_tree(Tree { root: Node {
+        key: "fonts".into(), parent: None, role: Role::List, name: "Fonts".into(),
+        value: node::fonts(&rows, selection), bounds, clip: bounds, flags: flags.clone(),
+    }, children: vec![Node {
+        key: "status".into(), parent: Some("fonts".into()), role: Role::Status, name: "Status".into(),
+        value: node::status(mono, sizes[0], display, sizes[1], state.save, state.error.as_deref()),
+        bounds, clip: bounds, flags,
+    }] });
 }
 
 // ─── Rendering ──────────────────────────────────────────────────────────────
@@ -388,6 +406,10 @@ fn render(
                 bitmap_font::draw_text(
                     fb, fonts[font_idx].name.as_bytes(), 20, y + 3, name_color,
                 );
+                if let Some(error) = &fonts[font_idx].error {
+                    let label = format!(" - {}", error);
+                    bitmap_font::draw_text(fb, label.as_bytes(), 20 + fonts[font_idx].name.len() * 8, y + 3, FG);
+                }
 
                 if is_active {
                     bitmap_font::draw_text(fb, b"*", 10, y + 3, ACTIVE_FG);
@@ -457,14 +479,31 @@ fn render(
 fn main() {
     println!("[bfontpicker] starting");
 
-    let mut fonts = scan_fonts();
+    let mut args = std::env::args().skip(1);
+    let mut font_dir = FONT_DIR.to_string();
+    while let Some(arg) = args.next() {
+        if arg == "--fonts" {
+            font_dir = args.next().unwrap_or_else(|| { eprintln!("--fonts requires a directory"); process::exit(2) });
+        } else { eprintln!("Unknown argument: {}", arg); process::exit(2); }
+    }
+    let mut fonts = scan_fonts(&font_dir);
     if fonts.is_empty() {
-        println!("[bfontpicker] no fonts found in {}", FONT_DIR);
+        println!("[bfontpicker] no fonts found in {}", font_dir);
         process::exit(1);
     }
 
     let list = build_list(&fonts);
-    let config = FontConfig::load();
+    let path = std::env::var_os("BREENIX_CONFIG_ROOT").map(std::path::PathBuf::from)
+        .unwrap_or_else(|| "/".into()).join("etc/fonts.conf");
+    let mut state = SaveState { path, save: None, error: None };
+    if let Err(e) = libbreenix::atomic_file::remove_stale(&state.path) { state.error = Some(e.to_string()); }
+    let config = match std::fs::read_to_string(&state.path) {
+        Ok(contents) => match FontConfig::parse(&contents) {
+            Ok(c) => c,
+            Err(e) => { state.error = Some(format!("Invalid font configuration: {:?}", e)); FontConfig::default() }
+        },
+        Err(e) => { state.error = Some(e.to_string()); FontConfig::default() }
+    };
     println!("[bfontpicker] config: mono_path='{}' mono_size={} display_path='{}' display_size={}",
              config.mono_path, config.mono_size, config.display_path, config.display_size);
     let mut current_mono = config.mono_path;
@@ -494,7 +533,7 @@ fn main() {
     let list_bottom = WIN_H as usize - PREVIEW_HEIGHT - 24;
     let visible = (list_bottom - LIST_TOP) / ITEM_H;
     let mut scroll: usize = 0;
-    let mut status_msg = String::new();
+    let mut status_msg = state.error.clone().unwrap_or_default();
     let mut status_timer: u32 = 0;
     let mut last_click_ms: u64 = 0;
     let mut last_click_idx: usize = usize::MAX;
@@ -514,17 +553,15 @@ fn main() {
             process::exit(1);
         }
     }
+    publish_tree(&mut win, &fonts, &list, selected, &current_mono, &current_display, [mono_size, display_size], &state);
     match win.present() {
         Ok(()) => println!("[bfontpicker] first frame presented: {}x{}", win.width(), win.height()),
         Err(e) => println!("[bfontpicker] first frame present failed: {}", e),
     }
 
     loop {
-        let events = win.poll_events();
-        let mut needs_redraw = !events.is_empty();
-
-        for event in events {
-            match event {
+        let event_count = win.dispatch(|delivered| {
+            match delivered.event.clone() {
                 Event::KeyPress { ascii, keycode, .. } => {
                     match keycode {
                         KEY_UP => {
@@ -543,7 +580,7 @@ fn main() {
                             if let Some(msg) = apply_font(
                                 &fonts, &list, selected,
                                 &mut current_mono, &mut current_display,
-                                &mut mono_size, &mut display_size,
+                                &mut mono_size, &mut display_size, &mut state,
                             ) {
                                 status_msg = msg;
                                 status_timer = 40;
@@ -557,7 +594,7 @@ fn main() {
                                 if let Some(msg) = apply_font(
                                     &fonts, &list, selected,
                                     &mut current_mono, &mut current_display,
-                                    &mut mono_size, &mut display_size,
+                                    &mut mono_size, &mut display_size, &mut state,
                                 ) {
                                     status_msg = msg;
                                     status_timer = 40;
@@ -565,7 +602,7 @@ fn main() {
                             } else if ascii == b'+' || ascii == b'=' {
                                 if let Some(msg) = adjust_size(
                                     &fonts, &list, selected, SIZE_STEP,
-                                    &mut mono_size, &mut display_size,
+                                    &mut mono_size, &mut display_size, &mut state,
                                 ) {
                                     status_msg = msg;
                                     status_timer = 40;
@@ -573,7 +610,7 @@ fn main() {
                             } else if ascii == b'-' {
                                 if let Some(msg) = adjust_size(
                                     &fonts, &list, selected, -SIZE_STEP,
-                                    &mut mono_size, &mut display_size,
+                                    &mut mono_size, &mut display_size, &mut state,
                                 ) {
                                     status_msg = msg;
                                     status_timer = 40;
@@ -603,7 +640,7 @@ fn main() {
                                     if let Some(msg) = apply_font(
                                         &fonts, &list, selected,
                                         &mut current_mono, &mut current_display,
-                                        &mut mono_size, &mut display_size,
+                                        &mut mono_size, &mut display_size, &mut state,
                                     ) {
                                         status_msg = msg;
                                         status_timer = 40;
@@ -624,12 +661,14 @@ fn main() {
                 }
                 _ => {}
             }
-        }
+            Handled::Redraw
+        }).unwrap_or_else(|e| { eprintln!("[bfontpicker] dispatch: {}", e); process::exit(1) });
+        let mut needs_redraw = event_count != 0;
 
         if status_timer > 0 {
             status_timer -= 1;
             if status_timer == 0 {
-                status_msg.clear();
+                status_msg = state.error.clone().unwrap_or_default();
                 needs_redraw = true;
             }
         }
@@ -641,6 +680,7 @@ fn main() {
                     &current_mono, &current_display, scroll, &status_msg,
                     &[mono_size, display_size],
                 );
+                publish_tree(&mut win, &fonts, &list, selected, &current_mono, &current_display, [mono_size, display_size], &state);
                 let _ = win.present();
             }
         }
