@@ -2,8 +2,11 @@
 use crate::Error;
 use libbreenix::crypto::{hmac::hmac_md5, md4::md4};
 
-const FLAGS: u32 = 0xa088_8215; // Unicode, NTLM, extended security, target info, 128/56-bit
+const FLAGS: u32 = 0xa288_8215; // Unicode, NTLM, extended security, target info, version, 128/56-bit
 const KEY_EXCH: u32 = 0x4000_0000;
+const NEGOTIATE_VERSION: u32 = 0x0200_0000;
+// MS-NLMP 2.2.2.10: product 1.0 build 0, reserved 0, NTLM revision 15.
+const VERSION: [u8; 8] = [1, 0, 0, 0, 0, 0, 0, 15];
 
 fn utf16(s: &str) -> Vec<u8> {
     s.encode_utf16().flat_map(u16::to_le_bytes).collect()
@@ -40,6 +43,7 @@ pub fn negotiate() -> Vec<u8> {
     let mut b = b"NTLMSSP\0\x01\0\0\0".to_vec();
     b.extend_from_slice(&(FLAGS & !KEY_EXCH).to_le_bytes());
     b.extend_from_slice(&[0; 16]);
+    b.extend_from_slice(&VERSION);
     b
 }
 
@@ -197,10 +201,15 @@ pub fn authenticate(
     let domain = utf16(creds.domain);
     let user = utf16(creds.user);
     let workstation = utf16(creds.workstation);
-    let mut b = vec![0; if timestamp.is_some() { 80 } else { 64 }];
+    // MS-NLMP 2.2.1.3: Version occupies 64..72 even when not negotiated;
+    // the optional MIC follows it, before any payload fields.
+    let mut b = vec![0; if timestamp.is_some() { 88 } else { 72 }];
     b[..12].copy_from_slice(b"NTLMSSP\0\x03\0\0\0");
     let flags = challenge.flags & FLAGS & !KEY_EXCH;
     b[60..64].copy_from_slice(&flags.to_le_bytes());
+    if flags & NEGOTIATE_VERSION != 0 {
+        b[64..72].copy_from_slice(&VERSION);
+    }
     for (at, data) in [
         (12, lm.as_slice()),
         (20, nt.as_slice()),
@@ -218,7 +227,7 @@ pub fn authenticate(
         input.extend_from_slice(challenge_message);
         input.extend_from_slice(&b);
         let mic = hmac_md5(&session, &input);
-        b[64..80].copy_from_slice(&mic);
+        b[72..88].copy_from_slice(&mic);
     }
     Ok((b, session))
 }
