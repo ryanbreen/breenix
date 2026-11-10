@@ -501,7 +501,8 @@ fn mount(target: u64, fstype: u64, flags: u64, data: u64) -> Result<(), u64> {
 fn umount(target: u64, flags: u64) -> Result<(), u64> {
     let cred = crate::fs::permissions::Credentials::current(false)?;
     args::require_root(cred.euid)?;
-    if flags != 0 {
+    // MNT_FORCE and MNT_DETACH explicitly invalidate held handles.
+    if flags & !3 != 0 {
         return Err(EINVAL as u64);
     }
     let raw = userptr::copy_path_bytes_from_user(target)?;
@@ -514,6 +515,9 @@ fn umount(target: u64, flags: u64) -> Result<(), u64> {
             .position(|m| matches!(point.target, crate::fs::namei::Target::User { mount, node: ufs_abi::payload::ROOT, .. } if mount == m.id))
             .ok_or(EINVAL as u64)?;
         let mut state = mounts[index].state.lock();
+        if flags == 0 && !state.dead && state.open_files != 0 {
+            return Err(EBUSY as u64);
+        }
         // Detach invalidates existing handles as well as pathname access.
         // FileLease keeps their mount storage alive until the final close.
         state.detached = true;

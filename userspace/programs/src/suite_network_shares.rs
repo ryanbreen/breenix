@@ -658,9 +658,14 @@ fn smb_umount_open_files() -> CaseResult {
     let path = mount.path("open");
     io(fs::write(&path, b"open before unmount"))?;
     let file = io(File::open(&path))?;
+    let target = mount.dir.to_str().ok_or("mount path encoding")?;
+    check(matches!(sysfs::umount2(target, 0), Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EBUSY))),
+        "plain unmount did not refuse the live file")?;
+    check(io(fs::read(&path))? == b"open before unmount",
+        "refused unmount changed the live mount")?;
     // Remove names before detaching, retaining the live file description.
     mount.clean_work()?;
-    sysfs::umount2(mount.dir.to_str().ok_or("mount path encoding")?, 0)?;
+    sysfs::umount2(mount.dir.to_str().ok_or("mount path encoding")?, 1)?;
     mount.mounted = false;
     let mut byte = [0];
     let result = file.read_at(&mut byte, 0);
