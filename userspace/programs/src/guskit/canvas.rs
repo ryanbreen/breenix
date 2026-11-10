@@ -43,6 +43,7 @@ impl Canvas {
             ],
         }
     }
+    pub(crate) fn pixels_mut(&mut self) -> &mut [u8] { &mut self.pixels }
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }

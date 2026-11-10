@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 #[path = "../userspace/programs/src/guskit/canvas.rs"]
 mod canvas;
 #[path = "../userspace/programs/src/guskit/files.rs"]
