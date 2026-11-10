@@ -25,6 +25,17 @@ pub fn exit_input_verdict(disposition: &str, window: u64, wanted: u64, status: i
     Ok(())
 }
 
+/// After a witnessed exit, a release can have no focused client left.
+pub fn exit_release_verdict(disposition: &str, window: u64, reason: &str) -> Result<(), String> {
+    if (disposition == "delivered" && window != 0)
+        || (disposition == "wm-handled" && window == 0)
+        || (disposition == "rejected" && window == 0 && reason == "no-focus") {
+        Ok(())
+    } else {
+        Err(format!("exit release disposition={disposition} window={window} reason={reason}"))
+    }
+}
+
 /// Expected statuses are raw wait statuses already witnessed before teardown.
 pub fn finish_verdict(tracked: &[(u64, Option<i32>)], exits: &[(u64, i32)]) -> Result<(), String> {
     for &(pid, expected) in tracked {
@@ -116,8 +127,18 @@ mod live {
             })();
             // Focus can belong to the launched child by now. A release needs a
             // terminal disposition, not a commit from the destroyed old window.
-            let release = if pointer { live.send_button(code, false) } else { live.send_key(code, false) }
-                .and_then(|event| crate::input::wait_pointer_idle(event.serial));
+            let release = (|| {
+                let event = if pointer { live.send_button(code, false)? } else { live.send_key(code, false)? };
+                let watchdog = Watchdog::new(Wait::InputAck)?;
+                loop {
+                    let ledger = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
+                    if let Some(row) = crate::input::ledger_entry(&ledger, event.serial)? {
+                        return exit_release_verdict(row.disposition, row.window, row.reason);
+                    }
+                    if now()? >= watchdog.deadline_ns() { return Err(format!("exit release missing serial={}", event.serial)); }
+                    time::sleep_ms(1).map_err(|e| e.to_string())?;
+                }
+            })();
             let status = result?;
             release?;
             self.tracked.iter_mut().find(|(id, _)| *id == pid).ok_or("launched app not tracked")?.1 = Some(status);
