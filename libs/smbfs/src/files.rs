@@ -260,8 +260,18 @@ impl<B: Backend> Namespace<B> {
         Ok(a)
     }
     pub fn fsync(&mut self, handle: u64) -> Result<(), i32> {
-        if !self.handles.contains_key(&handle) {
-            return Err(9);
+        let held = self.handles.get(&handle).ok_or(9)?;
+        if held.access & (access::WRITE_DATA | access::APPEND_DATA) == 0 {
+            // MS-SMB2 3.3.5.11 also requires add-file/subdirectory rights on directories.
+            let path = held.path.clone().ok_or(5)?;
+            let options = held.options;
+            return self.with_handle(
+                &path,
+                access::WRITE_DATA | access::SYNCHRONIZE,
+                CreateDisposition::Open,
+                options,
+                |backend, id| backend.flush(id),
+            );
         }
         self.operation(|s| s.backend.flush(s.file_id(handle)?))
     }

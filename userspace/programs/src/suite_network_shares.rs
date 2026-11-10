@@ -663,10 +663,11 @@ fn smb_umount_open_files() -> CaseResult {
         "plain unmount did not refuse the live file")?;
     check(io(fs::read(&path))? == b"open before unmount",
         "refused unmount changed the live mount")?;
-    // Remove names before detaching, retaining the live file description.
-    mount.clean_work()?;
+    let cleanup_name = mount.work.file_name().ok_or("missing work directory name")?.to_os_string();
     sysfs::umount2(mount.dir.to_str().ok_or("mount path encoding")?, 1)?;
     mount.mounted = false;
+    // The remote tree is removed through a fresh mount after its open handles close.
+    mount.work_created = false;
     let mut byte = [0];
     let result = file.read_at(&mut byte, 0);
     check(result.err().and_then(|e| e.raw_os_error()) == Some(107),
@@ -684,5 +685,8 @@ fn smb_umount_open_files() -> CaseResult {
     }
     mount.child.take();
     io(fs::remove_dir(&mount.dir))?;
+    let cleanup = SmbMount::rw()?;
+    io(fs::remove_dir_all(cleanup.dir.join(cleanup_name)))?;
+    cleanup.finish()?;
     Ok(())
 }

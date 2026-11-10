@@ -45,7 +45,7 @@ struct Release {
 pub struct Mount {
     pub id: u64,
     cover: cover::Cover<(crate::fs::namei::Mount, u32)>,
-    point: crate::fs::namei::Resolved<Vec<u8>>,
+    point: Mutex<Option<crate::fs::namei::Resolved<Vec<u8>>>>,
     state: Mutex<State>,
     readers: Arc<WaitQueueHead>,
     callers: WaitQueueHead,
@@ -103,10 +103,6 @@ impl Mount {
             *head = Some(self.clone());
         }
     }
-    pub fn path(&self) -> &[u8] {
-        &self.point.path
-    }
-
     fn wake(&self) {
         self.callers.wake_up();
         self.readers.wake_up();
@@ -475,7 +471,7 @@ fn mount(target: u64, fstype: u64, flags: u64, data: u64) -> Result<(), u64> {
     let mount = Arc::try_new(Mount {
         id,
         cover: cover::Cover { mount: id, covered: (covered_mount, covered_ino), parent: (parent_mount, parent_ino) },
-        point,
+        point: Mutex::new(Some(point)),
         state: Mutex::new(State {
             requests: RequestTable::new(),
             dead: false,
@@ -525,6 +521,9 @@ fn umount(target: u64, flags: u64) -> Result<(), u64> {
         drop(state);
         mounts.remove(index)
     };
+    // Detachment releases namespace custody even if open handles retain storage.
+    let point = mount.point.lock().take();
+    drop(point);
     mount.wake();
     Ok(())
 }
