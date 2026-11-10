@@ -22,6 +22,8 @@ mod catalog;
 mod node;
 #[path = "blauncher/dismiss.rs"]
 mod dismiss;
+#[path = "blauncher/launch.rs"]
+mod launch;
 use libbreenix::process::{fork, execv, ForkResult};
 use libbreenix::time;
 
@@ -421,17 +423,19 @@ fn font_line_height(ttf: Option<&CachedFont>, size: f32) -> i32 {
 // App launching
 // ---------------------------------------------------------------------------
 
-fn launch_app(app: &catalog::Entry) {
+fn launch_app(app: &catalog::Entry) -> bool {
     if app.mode == catalog::Mode::Gui {
-        match fork() {
-            Ok(ForkResult::Child) => {
-                let binary = format!("{}\0", app.argv[0]);
-                let argv: [*const u8; 2] = [binary.as_ptr(), core::ptr::null()];
-                let _ = execv(binary.as_bytes(), argv.as_ptr());
-                libbreenix::process::exit(1);
-            }
-            Ok(ForkResult::Parent(_)) => {}
-            Err(_) => {}
+        let argv = launch::gui_argv(&app.argv);
+        let strings: Result<Vec<_>, _> = argv.iter().map(|field| std::ffi::CString::new(field.as_bytes())).collect();
+        let strings = match strings {
+            Ok(strings) => strings,
+            Err(error) => { eprintln!("[blauncher] argv: {error}"); return false; }
+        };
+        let mut pointers: Vec<_> = strings.iter().map(|field| field.as_ptr().cast::<u8>()).collect();
+        pointers.push(core::ptr::null());
+        match libbreenix::process::spawnv(strings[0].as_bytes_with_nul(), pointers.as_ptr()) {
+            Ok(_) => true,
+            Err(error) => { eprintln!("[blauncher] spawn: {error}"); false }
         }
     } else {
         // CLI app: just launch bterm
@@ -442,8 +446,8 @@ fn launch_app(app: &catalog::Entry) {
                 let _ = execv(path, argv.as_ptr());
                 libbreenix::process::exit(1);
             }
-            Ok(ForkResult::Parent(_)) => {}
-            Err(_) => {}
+            Ok(ForkResult::Parent(_)) => true,
+            Err(_) => false,
         }
     }
 }
@@ -547,8 +551,7 @@ fn main() {
                             let filtered_count = filtered.len();
                             let max_vis = filtered_count.min(MAX_VISIBLE);
                             if max_vis > 0 && state.selected < max_vis {
-                                launch_app(filtered[state.selected]);
-                                process::exit(0);
+                                if launch_app(filtered[state.selected]) { process::exit(0); }
                             }
                         }
                         _ => {
@@ -558,8 +561,7 @@ fn main() {
                                 let filtered_count = filtered.len();
                                 let max_vis = filtered_count.min(MAX_VISIBLE);
                                 if max_vis > 0 && state.selected < max_vis {
-                                    launch_app(filtered[state.selected]);
-                                    process::exit(0);
+                                    if launch_app(filtered[state.selected]) { process::exit(0); }
                                 }
                             } else if ascii == 0x1b {
                                 // Escape via ASCII
@@ -600,8 +602,7 @@ fn main() {
                         {
                             // Double-click -> launch
                             if row < max_vis {
-                                launch_app(filtered[row]);
-                                process::exit(0);
+                                if launch_app(filtered[row]) { process::exit(0); }
                             }
                         } else {
                             // Single click -> select

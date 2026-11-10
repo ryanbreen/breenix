@@ -60,10 +60,10 @@ pub fn launch_gui() -> CaseResult {
     t.wait_node("ack", |v| v["argv"] == expected)?;
     let records = std::fs::read_to_string("/tmp/ack-app.jsonl").map_err(|e| e.to_string())?;
     let lines: Vec<_> = records.lines().collect();
-    if lines.len() != 1 { return Err(format!("expected one acknowledgment: {records:?}")); }
+    if lines.len() != 1 { return Err(format!("expected one acknowledgment: {records:?}").into()); }
     let record: serde_json::Value = serde_json::from_str(lines[0]).map_err(|e| e.to_string())?;
     if record["argv"] != expected {
-        return Err(format!("unexpected acknowledgment: {record}"));
+        return Err(format!("unexpected acknowledgment: {record}").into());
     }
     Ok(t.finish()?)
 }

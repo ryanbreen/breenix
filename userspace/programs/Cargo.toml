@@ -902,3 +902,7 @@ path = "src/vt_script_test.rs"
 [[bin]]
 name = "clip-set_test"
 path = "src/clip_set_test.rs"
+
+[[bin]]
+name = "ack-app_test"
+path = "src/ack_app_test.rs"
