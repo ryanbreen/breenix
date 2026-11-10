@@ -2,7 +2,6 @@
 use breengel::{Color, Event, Handled, Surface, Window};
 use libbui::{InputState, Rect, Theme, shortcut::Shortcut, widget::menu_bar::{Menu, MenuBar, MenuEvent, MenuItem, MENU_BAR_HEIGHT}};
 use libgfx::{bitmap_font, shapes};
-use libbreenix::time;
 use libbui::widget::file_picker::{FileEntry, FilePicker, FilePickerResult};
 use std::path::{Path, PathBuf};
 
@@ -174,6 +173,9 @@ fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) ->
     match delivered.event {
         Event::CloseRequested => app.request_quit(),
         Event::KeyPress { ascii, keycode, modifiers, .. } => {
+            if matches!(keycode, 29 | 42 | 54 | 56 | 97 | 100 | 125 | 126) {
+                return Handled::NoChange;
+            }
             if app.picker.is_some() {
                 use libbui::{Key, KeyInput};
                 let key = match keycode { 1 => Key::Escape, 15 => Key::Tab, 28 => Key::Enter, 14 => Key::Backspace, 103 => Key::Up, 108 => Key::Down, 104 => Key::PageUp, 109 => Key::PageDown, 102 => Key::Home, 107 => Key::End, _ => Key::Char };
@@ -194,10 +196,11 @@ fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) ->
         Event::MouseMove { x,y } if !app.confirm => {
             if let Some(picker) = &mut app.picker { let input = InputState::from_raw(x,y,0,0,delivered.time_ns / 1_000_000); let result = picker.update(&input); app.picker_result(result); }
             else if menu.is_open() { let input = InputState::from_raw(x, y, 0, 0, delivered.time_ns / 1_000_000); menu.update(&input, &Theme::dark()); }
-            else if let Some(point) = app.point(x,y) { if let Some(stroke) = &mut app.stroke { stroke.push(point); } }
+            else if let (Some(point), Some(stroke)) = (app.point(x,y), &mut app.stroke) { stroke.push(point); }
+            else { return Handled::NoChange; }
         },
-        Event::PointerCancel => { app.stroke = None; },
-        _ => {}
+        Event::PointerCancel => { if app.stroke.take().is_none() { return Handled::NoChange; } },
+        _ => return Handled::NoChange,
     }
     menu.set_enabled(UNDO, app.history.undo_depth() > 0);
     menu.set_enabled(REDO, app.history.redo_depth() > 0);
@@ -226,9 +229,18 @@ fn main() {
             publish(&mut win, &app); let _ = win.present();
         }
         if app.quit { break; }
-        let count = win.dispatch(|delivered| handle(&mut app, &mut menu, delivered)).unwrap_or_else(|e| { eprintln!("Gus Kit dispatch: {e}"); std::process::exit(1) });
-        redraw = count != 0;
-        let _ = time::sleep_ms(50);
+        redraw = false;
+        let mut pointer_motion = false;
+        let count = win.wait_dispatch(100_000_000, |delivered| {
+            pointer_motion |= matches!(delivered.event, Event::MouseMove { .. });
+            let handled = handle(&mut app, &mut menu, delivered);
+            redraw |= handled == Handled::Redraw;
+            handled
+        }).unwrap_or_else(|e| { eprintln!("Gus Kit dispatch: {e}"); std::process::exit(1) });
+        // MAP_TREE is passive. Its attach probe needs a freshly sealed tree
+        // page, which is published with a pixel commit, even on idle motion.
+        redraw |= pointer_motion && win.tree_reader_count() != 0;
+        if count != 0 && !redraw { let _ = win.commit_no_change(); }
     }
 }
 
