@@ -260,3 +260,40 @@ fn credits_and_chunks() {
     assert_eq!(plan_chunks(150000, 70000).unwrap(), [70000, 70000, 10000]);
     assert!(plan_chunks(1, 0).is_err());
 }
+
+#[test]
+fn filesystem_full_size_wire_vector() {
+    let request = QueryFsSizeRequest { file_id: id() }
+        .encode(&header())
+        .unwrap();
+    assert_eq!(
+        request,
+        packet(
+            16,
+            false,
+            &[
+                41, 0, 2, 7, 32, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0,
+                0, 0, 0, 0, 0, 2, 0, 0, 0, 0, 0, 0, 0,
+            ]
+        )
+    );
+    let response = packet(
+        16,
+        true,
+        &[
+            9, 0, 72, 0, 32, 0, 0, 0, 100, 0, 0, 0, 0, 0, 0, 0, 40, 0, 0, 0, 0, 0, 0, 0, 50, 0, 0,
+            0, 0, 0, 0, 0, 8, 0, 0, 0, 0, 2, 0, 0,
+        ],
+    );
+    assert_eq!(
+        QueryFsSizeResponse::decode(&response).unwrap().info,
+        FileFsFullSizeInformation {
+            total_allocation_units: 100,
+            caller_available_allocation_units: 40,
+            actual_available_allocation_units: 50,
+            sectors_per_allocation_unit: 8,
+            bytes_per_sector: 512,
+        }
+    );
+    assert!(QueryFsSizeResponse::decode(&response[..response.len() - 1]).is_err());
+}
