@@ -113,6 +113,33 @@ pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
 mod tests {
     use super::*;
 
+    #[test]
+    fn hmac_md5_rfc2104_vectors() {
+        let cases: &[(&[u8], &[u8], &str)] = &[
+            (&[0x0b; 16], b"Hi There", "9294727a3638bb1c13f48ef8158bfc9d"),
+            (b"Jefe", b"what do ya want for nothing?", "750c783e6ab0b503eaa86e310a5db738"),
+            (&[0xaa; 16], &[0xdd; 50], "56be34521d144c88dbb8c733f0e8b3f6"),
+        ];
+        for &(key, message, expected) in cases {
+            let hex = |tag: [u8; 16]| -> String {
+                tag.iter().map(|byte| format!("{byte:02x}")).collect()
+            };
+            assert_eq!(hex(hmac_md5(key, message)), expected);
+            let mut hmac = HmacMd5::new(key);
+            for byte in message {
+                hmac.update(core::slice::from_ref(byte));
+            }
+            assert_eq!(hex(hmac.finalize()), expected);
+        }
+    }
+
+    #[test]
+    fn hmac_md5_hashes_long_keys() {
+        let key = [0xaa; 80];
+        let message = b"long key";
+        assert_eq!(hmac_md5(&key, message), hmac_md5(&super::super::md5::md5(&key), message));
+    }
+
     /// Helper to convert a hex string to a byte array.
     fn hex_to_bytes(hex: &str) -> [u8; 32] {
         let mut result = [0u8; 32];
