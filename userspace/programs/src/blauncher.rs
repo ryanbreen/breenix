@@ -20,6 +20,8 @@ use breengel::{CachedFont, Window, Event, Handled};
 mod catalog;
 #[path = "blauncher/node.rs"]
 mod node;
+#[path = "blauncher/dismiss.rs"]
+mod dismiss;
 use libbreenix::process::{fork, execv, ForkResult};
 use libbreenix::time;
 
@@ -520,6 +522,7 @@ fn main() {
     let mut state = LauncherState::new();
     let start_ms = clock_ms();
     let mut first_frame = true;
+    let mut has_focus = false;
 
     loop {
         win.dispatch(|delivered| {
@@ -607,16 +610,17 @@ fn main() {
                             state.last_click_idx = row;
                         }
                     } else if !point_in_panel(x, y, &layout)
-                        && clock_ms().saturating_sub(start_ms) > 500
+                        && dismiss::should_dismiss(has_focus)
                     {
-                        // Click outside panel -> dismiss (grace period prevents
-                        // accidental dismissal from clicks during spawn)
+                        // Click outside the panel after the window gained focus.
                         process::exit(0);
                     }
                 }
+                Event::FocusGained => {
+                    has_focus = true;
+                }
                 Event::FocusLost => {
-                    // Grace period prevents spurious dismiss during startup
-                    if clock_ms().saturating_sub(start_ms) > 500 {
+                    if dismiss::should_dismiss(has_focus) {
                         process::exit(0);
                     }
                 }

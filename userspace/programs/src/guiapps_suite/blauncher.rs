@@ -2,7 +2,19 @@ use breenix_suite::suite::CaseResult;
 use libuitest::App;
 
 pub fn open() -> CaseResult {
-    Err("not built (E23 23.2)".into())
+    let catalog = std::fs::read_to_string("/usr/share/applications/catalog").map_err(|e| e.to_string())?;
+    let rows: Vec<_> = catalog.lines().filter(|line| !line.is_empty() && !line.starts_with('#')).take(12)
+        .map(|line| {
+            let mut fields = line.split('\t');
+            let name = fields.next().ok_or("catalog name missing")?;
+            let description = fields.next().ok_or("catalog description missing")?;
+            let mode = fields.next().ok_or("catalog mode missing")?;
+            Ok(serde_json::json!({"name": name, "description": description, "mode": mode}))
+        }).collect::<Result<_, &str>>()?;
+    if rows.is_empty() { return Err("shipped catalog is empty".into()); }
+    let mut t = App::hotkey(&[libbreenix::input::key::LEFT_SUPER, libbreenix::input::key::LEFT_SUPER], "\u{1}Launcher")?;
+    t.wait_node("apps", |v| v["focused"] == "query" && v["query"] == "" && v["rows"].as_array() == Some(&rows))?;
+    Ok(t.finish()?)
 }
 
 pub fn filter() -> CaseResult {
@@ -48,5 +60,14 @@ pub fn launch_missing() -> CaseResult {
 }
 
 pub fn close() -> CaseResult {
-    Err("not built (E23 23.2)".into())
+    std::fs::write("/tmp/blauncher-close", "Alpha\tFirst\tgui\t/bin/a\n").map_err(|e| e.to_string())?;
+    let argv: &[&[u8]] = &[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-close"];
+    let mut t = App::launch(argv, "Launcher")?;
+    t.key(1, &[])?;
+    t.wait_exit(0)?;
+    t.finish()?;
+    let mut t = App::launch(argv, "Launcher")?;
+    t.click(0, 0)?;
+    t.wait_exit(0)?;
+    Ok(t.finish()?)
 }
