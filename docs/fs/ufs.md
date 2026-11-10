@@ -107,7 +107,9 @@ A short reply ends the syscall transfer, including a zero-byte reply. An error
 after a transferred prefix returns that prefix. Positioned transfers retain the
 shared cursor; pwrite on an O_APPEND description follows Breenix's Linux ABI
 append behavior. The kernel serializes append size selection and writes against
-other writes and size changes on that mount.
+other writes and size changes to the same node, including through independent
+opens. Other nodes and ordinary opens do not acquire that gate. Create exclusivity
+is decided by the daemon's atomic Create operation.
 
 Directory enumeration keeps dot-entry progress separately from the daemon's
 opaque cookie. Native dirent64 d_off values contain the daemon's next cookie

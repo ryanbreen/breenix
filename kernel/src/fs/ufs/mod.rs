@@ -7,6 +7,7 @@
 mod args;
 pub mod file;
 mod io_split;
+mod node_gates;
 pub mod cover;
 pub mod path;
 pub mod table;
@@ -50,7 +51,7 @@ pub struct Mount {
     callers: WaitQueueHead,
     deferred_next: Mutex<Option<Arc<Mount>>>,
     deferred_queued: AtomicBool,
-    mutations: file::Gate,
+    mutations: Mutex<node_gates::NodeGates<file::Gate>>,
 }
 
 static MOUNTS: Mutex<Vec<Arc<Mount>>> = Mutex::new(Vec::new());
@@ -91,6 +92,10 @@ impl State {
 }
 
 impl Mount {
+    fn mutation_gate(&self, node: u64) -> Result<Arc<file::Gate>, u64> {
+        self.mutations.lock().get_or_insert(node,
+            || Arc::try_new(file::Gate::new()).map_err(|_| ENOMEM as u64), ENOMEM as u64)
+    }
     fn defer(self: &Arc<Self>) {
         let mut head = DEFERRED.lock();
         if !self.deferred_queued.swap(true, Ordering::AcqRel) {
@@ -204,7 +209,7 @@ pub fn call(id: u64, request: ufs_abi::Request<'_>) -> Answer {
 pub struct Endpoint {
     binding: Mutex<Option<Arc<Mount>>>,
     readers: Arc<WaitQueueHead>,
-    read_serial: Mutex<()>,
+    read_serial: file::Gate,
 }
 
 impl core::fmt::Debug for Endpoint {
@@ -219,7 +224,7 @@ impl Endpoint {
         Arc::try_new(Self {
             binding: Mutex::new(None),
             readers,
-            read_serial: Mutex::new(()),
+            read_serial: file::Gate::new(),
         })
         .map_err(|_| ENOMEM as u64)
     }
@@ -247,7 +252,7 @@ impl Endpoint {
             if let Some(mount) = mount {
                 // Serialize readers while allowing timeout, close and replies to
                 // proceed during a potentially faulting userspace copy.
-                let serial = self.read_serial.lock();
+                let serial = self.read_serial.enter()?;
                 let record = (|| {
                     let mut state = mount.state.lock();
                     state.expire();
@@ -478,7 +483,7 @@ fn mount(target: u64, fstype: u64, flags: u64, data: u64) -> Result<(), u64> {
         callers: WaitQueueHead::new(),
         deferred_next: Mutex::new(None),
         deferred_queued: AtomicBool::new(false),
-        mutations: file::Gate::new(),
+        mutations: Mutex::new(node_gates::NodeGates::new()),
     })
     .map_err(|_| ENOMEM as u64)?;
     mounts.push(mount.clone());

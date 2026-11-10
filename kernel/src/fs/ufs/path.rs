@@ -104,7 +104,8 @@ pub fn rename(mount: u64, node: u64, parent: u64, old: &[u8], new_parent: u64, n
 
 pub fn truncate(mount: u64, node: u64, length: u64, cred: &Credentials) -> Result<(), u64> {
     let mounted = super::get(mount)?;
-    let _mutation = mounted.mutations.enter()?;
+    let mutation = mounted.mutation_gate(node)?;
+    let _mutation = mutation.enter()?;
     let attr = getattr(mount, node)?;
     if attrs(attr).is_dir() { return Err(EISDIR as u64); }
     if !cred.may(attrs(attr), 2) { return Err(EACCES as u64); }

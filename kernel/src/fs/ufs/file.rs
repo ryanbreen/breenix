@@ -62,6 +62,7 @@ pub struct UfsFile {
     position: Mutex<u64>,
     dots: Mutex<u8>,
     serial: Gate,
+    mutation: Arc<Gate>,
     lease: FileLease,
     release: Option<Box<Release>>,
 }
@@ -97,7 +98,6 @@ impl UfsFile {
     ) -> Result<Arc<Self>, u64> {
         use crate::syscall::fs::{O_CREAT, O_DIRECTORY, O_EXCL, O_TRUNC};
         let lease = super::open_file(mount)?;
-        let mutation = lease.0.mutations.enter()?;
         let creating = node == 0;
         let mut created = false;
         if flags & O_TRUNC != 0 && flags & 3 == 0 {
@@ -159,6 +159,7 @@ impl UfsFile {
         if !created && !cred.may(path::attrs(attr), access) {
             return Err(EACCES as u64);
         }
+        let mutation = lease.0.mutation_gate(attr.node)?;
         // Allocate the close record before acquiring the daemon handle.
         let pending = Arc::try_new(Pending {
             answer: Mutex::new(None),
@@ -181,7 +182,6 @@ impl UfsFile {
         let mut r = Reader::new(&reply);
         let handle = r.u64().map_err(|_| EIO as u64)?;
         r.finish().map_err(|_| EIO as u64)?;
-        drop(mutation);
         let mut file = Self {
             mount,
             node: attr.node,
@@ -191,6 +191,7 @@ impl UfsFile {
             position: Mutex::new(0),
             dots: Mutex::new(0),
             serial: Gate::new(),
+            mutation,
             lease,
             release: Some(release),
         };
@@ -290,7 +291,7 @@ impl UfsFile {
         self.transfer_read(buf, count, offset)
     }
     pub fn pwrite(&self, buf: u64, count: usize, offset: u64, append: bool) -> Result<u64, u64> {
-        let _mutation = self.lease.0.mutations.enter()?;
+        let _mutation = self.mutation.enter()?;
         let offset = if append {
             path::getattr(self.mount, self.node)?.size
         } else {
@@ -349,7 +350,7 @@ impl IpcFile for UfsFile {
         if self.directory {
             return Err(EISDIR as u64);
         }
-        let _mutation = self.lease.0.mutations.enter()?;
+        let _mutation = self.mutation.enter()?;
         if len > crate::syscall::resource::current_fsize() {
             crate::syscall::resource::signal_fsize();
             return Err(EFBIG as u64);
@@ -370,7 +371,7 @@ impl IpcFile for UfsFile {
     }
     fn write(&self, bytes: &[u8], append: bool) -> Result<u64, u64> {
         let _serial = self.serial.enter()?;
-        let _mutation = self.lease.0.mutations.enter()?;
+        let _mutation = self.mutation.enter()?;
         let pos = if append {
             path::getattr(self.mount, self.node)?.size
         } else {
