@@ -9,10 +9,12 @@ use ufs_abi::{Op, Reply, Request, MAX_MESSAGE};
 
 fn serve() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    if args.is_empty() || args.len() > 2 || (args.len() == 2 && args[1] != "--stall-reads") {
-        return Err("usage: memfsd_test DIR [--stall-reads]".into());
+    if args.is_empty() || args.len() > 2 || (args.len() == 2 && !matches!(args[1].as_str(), "--stall-reads" | "--hold-write-until-open")) {
+        return Err("usage: memfsd_test DIR [--stall-reads|--hold-write-until-open]".into());
     }
-    let stall = args.len() == 2;
+    let stall = args.get(1).is_some_and(|s| s == "--stall-reads");
+    let mut hold_write = args.get(1).is_some_and(|s| s == "--hold-write-until-open");
+    let mut held_reply = None;
     let mut dev = OpenOptions::new().read(true).write(true).open("/dev/ufs")
         .map_err(|e| format!("open /dev/ufs: {e}"))?;
     let fd = dev.as_raw_fd() as u32;
@@ -46,6 +48,12 @@ fn serve() -> Result<(), String> {
         };
         let n = Reply { id: req.id, errno, payload: &payload }.encode(&mut output)
             .map_err(|_| "invalid ufs reply")?;
+        if hold_write && req.op == Op::Write {
+            hold_write = false;
+            held_reply = Some(output[..n].to_vec());
+            writeln!(stdout, "WRITE {}", req.id).and_then(|_| stdout.flush()).map_err(|e| e.to_string())?;
+            continue;
+        }
         let written = loop {
             match dev.write(&output[..n]) {
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
@@ -53,6 +61,12 @@ fn serve() -> Result<(), String> {
             }
         };
         if written != n { return Err("short /dev/ufs reply write".into()); }
+        if req.op == Op::Open {
+            if let Some(reply) = held_reply.take() {
+                let n = dev.write(&reply).map_err(|e| e.to_string())?;
+                if n != reply.len() { return Err("short held write reply".into()); }
+            }
+        }
     }
 }
 fn main() {

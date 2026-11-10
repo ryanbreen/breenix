@@ -3,7 +3,7 @@ use breenix_suite::suite::{case, category, check, suite, CaseResult, Suite};
 use libbreenix::{fs as sysfs, io as sysio, types::Fd};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
@@ -15,6 +15,8 @@ static SUITE: Suite = suite("network-shares", "Network shares", &[
         case("mount-list", "Mount and list", mount_list),
         case("create-write-read", "Create, write and read", create_write_read),
         case("rename-replace", "Rename replaces a file", rename_replace),
+        case("directory-relative", "Working directories and directory-relative operations", directory_relative),
+        case("write-open-progress", "Open proceeds during a chunked write", write_open_progress),
         case("dirs-unlink", "Directories and unlink", dirs_unlink),
         case("statfs", "Filesystem statistics", statfs),
         case("atomic-save", "Atomic file replacement", atomic_save),
@@ -44,10 +46,13 @@ impl Mount {
         Ok(mount)
     }
     fn start(stall: bool) -> Result<Self, String> {
+        Self::start_with(if stall { Some("--stall-reads") } else { None })
+    }
+    fn start_with(flag: Option<&str>) -> Result<Self, String> {
         let mut mount = Self::directory()?;
         let mut cmd = Command::new(DAEMON);
         cmd.arg(&mount.dir).stdout(Stdio::piped());
-        if stall { cmd.arg("--stall-reads"); }
+        if let Some(flag) = flag { cmd.arg(flag); }
         let mut child = io(cmd.spawn())?;
         mount.output = child.stdout.take();
         mount.child = Some(child);
@@ -157,6 +162,83 @@ fn rename_replace() -> CaseResult {
     io(fs::write(&to, b"old"))?;
     io(fs::rename(&from, &to))?;
     check(!io(fs::exists(&from))? && io(fs::read(&to))? == b"new", "rename did not replace destination")?;
+    mount.finish()
+}
+fn write_open_progress() -> CaseResult {
+    let mut mount = Mount::start_with(Some("--hold-write-until-open"))?;
+    let other = mount.dir.join("other");
+    drop(io(File::create(&other))?);
+    let path = mount.dir.join("large");
+    let mut writer = io(File::create(&path))?;
+    let bytes = vec![0x9d; 150_000];
+    let write = std::thread::spawn(move || writer.write_all(&bytes));
+    check(mount.line()?.starts_with("WRITE "), "daemon did not hold the write reply")?;
+    // The daemon releases the pending write only after receiving this Open.
+    let opened = File::open(other);
+    let written = write.join().map_err(|_| "writer panicked")?;
+    drop(io(opened)?);
+    io(written)?;
+    check(io(fs::read(path))? == vec![0x9d; 150_000], "interleaved write bytes differ")?;
+    mount.finish()
+}
+fn directory_relative() -> CaseResult {
+    struct RestoreCwd(PathBuf);
+    impl Drop for RestoreCwd {
+        fn drop(&mut self) { let _ = std::env::set_current_dir(&self.0); }
+    }
+    let mount = Mount::start(false)?;
+    // Search permission is enough for chdir, even without directory read access.
+    use std::os::unix::fs::DirBuilderExt;
+    let search_only = mount.dir.join("search-only");
+    io(fs::DirBuilder::new().mode(0o111).create(&search_only))?;
+    match libbreenix::process::fork()? {
+        libbreenix::process::ForkResult::Child => {
+            let uid = unsafe { libbreenix::syscall::raw::syscall1(libbreenix::syscall::nr::SETUID, 1000) } as i64;
+            let entered = uid == 0 && std::env::set_current_dir(&search_only).is_ok();
+            libbreenix::process::exit(if entered { 0 } else { 1 });
+        }
+        libbreenix::process::ForkResult::Parent(pid) => {
+            let mut status = 0;
+            libbreenix::process::waitpid(pid.raw() as i32, &mut status, 0)?;
+            check(status == 0, &format!("search-only chdir failed: {status:#x}"))?;
+        }
+    }
+    {
+        let restore = RestoreCwd(io(std::env::current_dir())?);
+        let old = mount.dir.join("old");
+        let renamed = mount.dir.join("renamed");
+        io(fs::create_dir(&old))?;
+        let directory = io(File::open(&old))?;
+        io(std::env::set_current_dir(&old))?;
+        io(fs::write("relative", b"from cwd"))?;
+        io(fs::rename(&old, &renamed))?;
+        check(io(std::env::current_dir())? == renamed, "cwd did not follow directory rename")?;
+        let name = b"relative\0";
+        let fd = directory.as_raw_fd() as u64;
+        let raw = unsafe { libbreenix::syscall::raw::syscall4(
+            libbreenix::syscall::nr::OPENAT, fd, name.as_ptr() as u64, 0, 0) } as i64;
+        check(raw >= 0, &format!("openat failed: {raw}"))?;
+        let mut opened = unsafe { File::from_raw_fd(raw as i32) };
+        let mut bytes = Vec::new();
+        io(opened.read_to_end(&mut bytes))?;
+        check(bytes == b"from cwd", "openat opened the wrong object")?;
+        let mut stat = sysfs::Stat::new();
+        let result = unsafe { libbreenix::syscall::raw::syscall4(
+            libbreenix::syscall::nr::NEWFSTATAT, fd, name.as_ptr() as u64, (&mut stat as *mut sysfs::Stat) as u64, 0) } as i64;
+        check(result == 0 && stat.st_size == 8, &format!("fstatat failed: {result}"))?;
+        let result = unsafe { libbreenix::syscall::raw::syscall3(
+            libbreenix::syscall::nr::UNLINKAT, fd, name.as_ptr() as u64, 0) } as i64;
+        check(result == 0, &format!("unlinkat failed: {result}"))?;
+        check(!io(fs::exists("relative"))?, "unlinkat left the cwd entry")?;
+        io(std::env::set_current_dir(&mount.dir))?;
+        let result = unsafe { libbreenix::syscall::raw::syscall1(libbreenix::syscall::nr::FCHDIR, fd) } as i64;
+        check(result == 0 && io(std::env::current_dir())? == renamed, "fchdir lost the directory identity")?;
+        io(std::env::set_current_dir(".."))?;
+        check(io(std::env::current_dir())? == mount.dir, "cwd parent did not reach mount root")?;
+        io(std::env::set_current_dir(".."))?;
+        check(Some(io(std::env::current_dir())?.as_path()) == mount.dir.parent(), "cwd parent did not leave the mount")?;
+        drop(restore);
+    }
     mount.finish()
 }
 fn dirs_unlink() -> CaseResult {

@@ -24,6 +24,14 @@
           "title": "Rename replaces a file"
         },
         {
+          "id": "directory-relative",
+          "title": "Working directories and directory-relative operations"
+        },
+        {
+          "id": "write-open-progress",
+          "title": "Open proceeds during a chunked write"
+        },
+        {
           "id": "dirs-unlink",
           "title": "Directories and unlink"
         },
