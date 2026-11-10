@@ -253,6 +253,47 @@ class AppsStep(unittest.TestCase):
                      original.replace(first, '__swap__').replace(second, first).replace('__swap__', second)]:
             self.assertEqual(record(text), 1)
 
+    def test_step_five_selection_and_order(self):
+        expected = json.loads((ROOT / 'docs/gui/gt710-step-23-4.json').read_text())['cases'] + [
+            'guskit/pencil', 'guskit/shapes', 'guskit/fill', 'guskit/eraser-color',
+            'guskit/undo-redo', 'guskit/save-open', 'guskit/save-fails-cleanly',
+            'guskit/open-malformed', 'guskit/quit-unsaved', 'guskit/shortcuts',
+        ]
+        selection_path = ROOT / 'docs/gui/gt710-step-23-5.json'
+        selected = json.loads(selection_path.read_text())['cases']
+        self.assertEqual(selected, expected)
+        self.assertEqual(NAMES[:len(expected)], expected)
+        shutil.copyfile(selection_path, self.definition / 'docs/gui/gt710-step-23-5.json')
+        with patch.dict(globals(), SELECTED=selected):
+            original = serial()
+        def record(text):
+            (self.path / 'serial.txt').write_text(text)
+            return API['record_apps_capture'](self.path, SHA, 5)
+        # G13 requires a failed case to explain exit 1; this 52/52 capture
+        # has no failed case to explain the driver/scorer failure.
+        self.assertEqual(record(original), 1)
+        (self.path / 'exit-status').write_text('0')
+        events = [dict(event='final-marker'), dict(event='power-off', off=True),
+                  dict(event='closed', status=0, endedBy='driver')]
+        (self.path / 'events.jsonl').write_text('\n'.join(map(json.dumps, events)) + '\n')
+        self.assertEqual(record(original), 0)
+        report = json.loads((self.path / 'gt710-apps-step.json').read_text())
+        self.assertEqual(report['scope'], 'apps-step-selection')
+        self.assertEqual(report['commit'], SHA)
+        self.assertEqual(report['toolsCommit'], SHA)
+        self.assertEqual(report['build'], self.boot['build'])
+        self.assertEqual(report['exitStatus'], 0)
+        self.assertEqual(report['selectedCases'],
+                         [{'id': name, 'result': 'PASS'} for name in selected])
+        self.assertEqual(report['memoryVerdict'],
+                         'SUITE gui-apps MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=48')
+        self.assertEqual(set(report['notMeasured']), {'console-suite', 'gpu-suite'})
+        first, second = selected[-2:]
+        for text in [original.replace(f'SUITE gui-apps CASE {first} PASS ms=1\n', ''),
+                     original.replace(first, 'foreign/case'),
+                     original.replace(first, '__swap__').replace(second, first).replace('__swap__', second)]:
+            self.assertEqual(record(text), 1)
+
     def test_cli(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/metal/gt710-suite'),
                                  '--apps-step', '1', '--capture-directory', str(self.path), '--sha', SHA],
