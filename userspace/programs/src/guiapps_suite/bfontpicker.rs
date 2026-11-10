@@ -9,7 +9,7 @@ const FAKE: &str = "/tmp/bfontpicker-suite-fonts/SansMono-Fake.ttf";
 
 fn launch() -> Result<App, String> {
     std::fs::create_dir_all(DIR).map_err(|e| e.to_string())?;
-    for (source, dest) in [("DejaVuSansMono.ttf", FIRST), ("DejaVuSansMono.ttf", PLAIN), ("DejaVuSans.ttf", FAKE)] {
+    for (source, dest) in [("DejaVuSansMono.ttf", FIRST), ("Hack-Regular.ttf", PLAIN), ("DejaVuSans.ttf", FAKE)] {
         std::fs::copy(format!("/usr/share/fonts/{source}"), dest).map_err(|e| e.to_string())?;
     }
     App::launch(&[PICKER, b"--fonts", DIR.as_bytes()], "Font Picker")
@@ -67,5 +67,54 @@ pub fn keeps_unknown() -> CaseResult {
     select(&mut t)?;
     let actual = std::fs::read(&path).map_err(|e| e.to_string())?;
     if actual != expected.as_bytes() { return Err(format!("fonts.conf changed beyond value: {actual:?}").into()); }
+    Ok(t.finish()?)
+}
+
+fn pixels(window: u64) -> Result<(u32, u32, Vec<u8>), String> {
+    let mut bytes = vec![0; 16 * 1024 * 1024];
+    let captured = libbreenix::window::capture(window, &mut bytes, None).map_err(|e| e.to_string())?;
+    let len = captured.width as usize * captured.height as usize * 4;
+    if len > bytes.len() { return Err("capture exceeds buffer".into()); }
+    bytes.truncate(len);
+    Ok((captured.width, captured.height, bytes))
+}
+
+pub fn live_bterm() -> CaseResult {
+    let mut t = launch()?;
+    seed(&mut t, &format!("mono.font={FIRST}\nmono.size=14\ndisplay.font={FAKE}\ndisplay.size=17\n"))?;
+    t.launch_next(&[b"/usr/bin/bterm"], "Terminal")?;
+    t.type_line("echo Font comparison 12345")?;
+    t.expect_text("Font comparison 12345")?;
+    t.wait_node("grid", |v| v["font"]["path"] == FIRST && v["font"]["size"].as_f64() == Some(14.0))?;
+    let terminal = t.window();
+    let first = pixels(terminal)?;
+    let second = pixels(terminal)?;
+    if first != second { return Err("baseline terminal captures differ".into()); }
+    t.attach("Font Picker")?;
+    select(&mut t)?;
+    t.attach("Terminal")?;
+    t.wait_node("grid", |v| v["font"]["path"] == PLAIN && v["font"]["size"].as_f64() == Some(14.0))?;
+    if pixels(terminal)? == first { return Err("terminal pixels did not change".into()); }
+    Ok(t.finish()?)
+}
+
+pub fn save_fails_cleanly() -> CaseResult {
+    std::fs::create_dir_all(DIR).map_err(|e| e.to_string())?;
+    for (source, dest) in [("DejaVuSansMono.ttf", FIRST), ("Hack-Regular.ttf", PLAIN), ("DejaVuSans.ttf", FAKE)] {
+        std::fs::copy(format!("/usr/share/fonts/{source}"), dest).map_err(|e| e.to_string())?;
+    }
+    let mut t = App::launch_as(&[PICKER, b"--fonts", DIR.as_bytes()], "Font Picker", 1000)?;
+    let etc = format!("{}/etc", t.config_root());
+    let path = format!("{etc}/fonts.conf");
+    let before = std::fs::read(&path).map_err(|e| e.to_string())?;
+    t.wait_node("fonts", |v| v["rows"].as_array().is_some_and(|rows| rows.len() == 3))?;
+    t.key(28, &[])?;
+    t.wait_node("status", |v| v["save"] == "failed" && v["error"].as_str().is_some_and(|e| !e.is_empty()))?;
+    if std::fs::read(&path).map_err(|e| e.to_string())? != before { return Err("failed save changed fonts.conf".into()); }
+    let entries = std::fs::read_dir(&etc).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let name = entry.map_err(|e| e.to_string())?.file_name();
+        if name.to_string_lossy().starts_with(".fonts.conf.atomic-") { return Err(format!("temporary file remains: {name:?}").into()); }
+    }
     Ok(t.finish()?)
 }

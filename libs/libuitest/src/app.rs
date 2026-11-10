@@ -64,9 +64,12 @@ mod live {
     pub struct App { keys: Keyboard<LivePointer<'static>>, launched: Option<u64>, tracked: Vec<(u64, Option<i32>)>, window: u64 }
     impl App {
         pub fn launch(argv: &[&[u8]], title: &str) -> Result<Self, String> {
+            Self::launch_as(argv, title, 0)
+        }
+        pub fn launch_as(argv: &[&[u8]], title: &str, uid: u32) -> Result<Self, String> {
             if argv.is_empty() || argv[0].is_empty() { return Err("app argv is empty".into()); }
             let mut live = LivePointer::owned(Session::desktop()?)?;
-            let pid = live.session().launch_app(argv, 0)?;
+            let pid = live.session().launch_app(argv, uid)?;
             let watchdog = Watchdog::new(Wait::AppOutput)?;
             let window = live.session().wait_window_until(title, watchdog.deadline_ns())?.id;
             live.watch(window)?;
@@ -104,6 +107,7 @@ mod live {
             self.window = window;
             Ok(())
         }
+        pub fn window(&self) -> u64 { self.window }
         pub fn config_root(&mut self) -> &str { self.keys.backend_mut().session().config_root() }
         pub fn type_text(&mut self, text: &str) -> Result<(), String> {
             self.keys.backend_mut().text(text, self.window).map(|_| ())

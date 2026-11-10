@@ -345,6 +345,7 @@ fn main() {
     };
     win.set_font_poll_interval(100); // ~1s at 10ms sleep
 
+    let mut font_config = breengel::FontConfig::try_load().unwrap_or_default();
     let mut font_size = if win.mono_size() >= 6.0 { win.mono_size() } else { 14.0 };
     print!("[bterm] config: mono_size={} font_size={}\n", win.mono_size(), font_size);
 
@@ -582,6 +583,7 @@ fn main() {
         if close_requested { break; }
         // These operations borrow Window, so finish them before acquiring a frame.
         if reload_font {
+            if let Ok(config) = breengel::FontConfig::try_load() { font_config = config; }
             win.put_mono_font(ttf_font.take());
             ttf_font = win.take_mono_font();
             font_size = win.mono_size();
@@ -698,7 +700,7 @@ fn main() {
                 win.set_tree(breengel::tree::Tree { root: breengel::tree::Node {
                     key: "grid".into(), parent: None, role: breengel::tree::Role::Terminal,
                     name: "Terminal".into(),
-                    value: terminal_node::terminal_value(&tab.emu.vt, sel, tabs.len()),
+                    value: terminal_node::terminal_value(&tab.emu.vt, sel, tabs.len(), &font_config.mono_path, font_size),
                     bounds, clip: bounds, flags: vec![breengel::tree::Flag::Enabled, breengel::tree::Flag::Visible],
                 }, children: Vec::new() });
             }

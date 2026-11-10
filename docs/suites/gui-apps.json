@@ -171,6 +171,14 @@
         {
           "id": "keeps-unknown",
           "title": "Comments, blank lines and key order survive a save"
+        },
+        {
+          "id": "live-bterm",
+          "title": "Font change reaches bterm"
+        },
+        {
+          "id": "save-fails-cleanly",
+          "title": "Failed save leaves configuration intact"
         }
       ]
     }
