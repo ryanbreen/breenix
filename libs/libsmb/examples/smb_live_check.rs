@@ -5,9 +5,9 @@
 //! table for the test account and sends NO_SESSIONS on stdin only if absent.
 use libsmb::{
     auth::ntlm::Credentials,
-    client::{Client, Error},
+    client::{Client, DirectTcp, Error},
     msg::*,
-    session::Request,
+    session::{Request, Response, Session},
     DialectCap, SyncHeader,
 };
 use std::{
@@ -56,6 +56,23 @@ fn root() -> CreateRequest<'static> {
         options: create_options::DIRECTORY_FILE,
         contexts: &[],
     }
+}
+fn encrypted_exchange(
+    tcp: &mut DirectTcp,
+    session: &mut Session,
+    request: Request<'_>,
+) -> Result<Response, String> {
+    let wire = session.build(request).map_err(|_| "encrypted build")?;
+    expect(wire.starts_with(b"\xfdSMB"), "enc request is plaintext")?;
+    operation(tcp.send(&wire), "encrypted send")?;
+    let wire = operation(tcp.receive(), "encrypted receive")?;
+    expect(wire.starts_with(b"\xfdSMB"), "enc response is plaintext")?;
+    let response = session
+        .consume(&wire)
+        .map_err(|_| "encrypted integrity")?
+        .ok_or("encrypted response incomplete")?;
+    expect(response.header.status == 0, "encrypted operation failed")?;
+    Ok(response)
 }
 // A timeout, malformed response, or unrelated status is NOT a refusal.
 fn refused(result: Result<Vec<u8>, Error>) -> Check {
@@ -166,7 +183,7 @@ fn run() -> Check {
                 .any(|e| e.name == b),
             "deleted file remains",
         )?;
-        let (_, session) = c.into_parts();
+        let (mut tcp, mut session) = c.into_parts();
         let negotiated = session.negotiated().ok_or("missing negotiation")?;
         println!("NEGOTIATED {share} dialect=0x{:04x}", negotiated.dialect);
         if share == "enc" {
@@ -188,6 +205,22 @@ fn run() -> Check {
                 "AES-128-GCM"
             };
             println!("NEGOTIATED enc cipher=0x{cipher:04x} {name}");
+            // Require actual transforms around file operations on this
+            // connection, in addition to checking the negotiated cipher.
+            let opened = encrypted_exchange(&mut tcp, &mut session, Request::Create(root()))?
+                .decode(CreateResponse::decode)
+                .map_err(|_| "encrypted create response")?;
+            encrypted_exchange(
+                &mut tcp,
+                &mut session,
+                Request::Close(CloseRequest {
+                    file_id: opened.file_id,
+                    postquery_attributes: false,
+                }),
+            )?
+            .decode(CloseResponse::decode)
+            .map_err(|_| "encrypted close response")?;
+            println!("PASS {stage} encrypted CREATE/CLOSE request/response transform-on-wire");
         }
         println!("PASS {stage} list/write/read-exact/rename-replace/read-exact/delete");
     }
@@ -250,7 +283,9 @@ fn run() -> Check {
     let raw = root().encode(&header).map_err(|_| "raw control build")?;
     operation(tcp.send(&raw), "raw control send")?;
     refused(tcp.receive())?;
-    println!("PASS unencrypted enc request refused");
+    // This unsigned control checks refusal only; the transform exchange above
+    // checks encryption independently of this ACCESS_DENIED result.
+    println!("PASS unsigned plaintext enc request refused");
     Ok(())
 }
 fn main() {
