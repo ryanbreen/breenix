@@ -4180,6 +4180,11 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
     tally = (sum(k == 'PASS' for k, _, _ in cases), sum(k == 'FAIL' for k, _, _ in cases), 0, case_count)
     if tuple(map(int, records[case_count + 1][1].groups())) != tally:
         raise ValueError('WM DONE disagrees with cases or contains skips')
+    if (suite == 'gui-apps' and len(suites) == 1
+            and capture['exit_status'] == 1 and tally[1] == 0):
+        # A subset may pass despite failed unselected cases (G13), but an
+        # unexplained driver failure is never completed app acceptance.
+        raise ValueError('gui-apps exit 1 is not a failed-case verdict')
     if (suite == 'window-manager' and len(suites) == 1
             and capture['exit_status'] == 1 and tally[1] == 0):
         # Coordinator ledger 264 admits the planned-empty refusal for a step,
@@ -4321,6 +4326,15 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
     if suite == 'window-manager':
         report.update(scope='wm-step-selection', exitStatus=capture['exit_status'],
                       toolsCommit=boot['toolsCommit'], build=boot['build'])
+    if suite == 'gui-apps':
+        report.update(scope='apps-step-selection', exitStatus=capture['exit_status'],
+                      toolsCommit=boot['toolsCommit'], build=boot['build'],
+                      selectedCases=[dict(id=m[1], result=k) for k, m, _ in cases if m[1] in required],
+                      memoryVerdict=memory_line,
+                      notMeasured={
+                          'console-suite': 'requires a separate completed console capture; gui-apps does not prove console 88/88',
+                          'gpu-suite': 'requires a separate completed GPU capture; gui-apps does not prove selected GPU cases',
+                      })
     return report
 
 
@@ -4336,11 +4350,17 @@ def apps_step_capture(directory, sha, step_number):
     return step_capture(directory, sha, step_number, 'gui-apps', 'gt710-step-23-', 8)
 
 
-def record_step_capture(directory, sha, step_number, suite, prefix, max_step):
+def record_step_capture(directory, sha, step_number, suite, prefix, max_step, scorer_head=None):
     directory = Path(directory)
     kind = {'window-manager': 'wm', 'ui-testing': 'ui', 'gui-apps': 'apps'}[suite]
     try:
+        changed = retained_scorer_changes(sha, scorer_head) if scorer_head is not None else None
         report = step_capture(directory, sha, step_number, suite, prefix, max_step)
+        if scorer_head is not None:
+            report.update(scorerCommit=scorer_head, hostOnlyDiff=changed,
+                          scorerSHA256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                          scorerSources={name: hashlib.sha256((Path(__file__).resolve().parents[2] / name).read_bytes()).hexdigest()
+                                         for name in RETAINED_SCORER_FILES})
     except (OSError, ValueError, KeyError, TypeError) as error:
         report = dict(boot=capture_boot(directory).get('id'), commit=sha,
                       milestone=f'metal-gt710/{kind}-step', selection=f'{prefix}{step_number}.json',
@@ -4359,8 +4379,8 @@ def record_ui_capture(directory, sha, step_number):
     return record_step_capture(directory, sha, step_number, 'ui-testing', 'gt710-step-22-', 7)
 
 
-def record_apps_capture(directory, sha, step_number):
-    return record_step_capture(directory, sha, step_number, 'gui-apps', 'gt710-step-23-', 8)
+def record_apps_capture(directory, sha, step_number, scorer_head=None):
+    return record_step_capture(directory, sha, step_number, 'gui-apps', 'gt710-step-23-', 8, scorer_head)
 
 
 def record_breengel_capture(directory, sha, category):
@@ -4403,16 +4423,28 @@ def record_breengel_capture(directory, sha, category):
     return 0 if passed else 1
 
 
-def rescore_suite_capture(directory, sha, scorer_head):
-    """Save evidence from retained suites without executing guest code or changing its identity."""
+RETAINED_SCORER_FILES = ('scripts/metal/gt710-suite', 'scripts/metal/metal_score.py')
+
+
+def retained_scorer_changes(sha, scorer_head):
+    """Prove a retained runtime is an ancestor with only host scoring changes."""
     import subprocess
     root = Path(__file__).resolve().parents[2]
-    subprocess.run(['git', 'merge-base', '--is-ancestor', sha, scorer_head], cwd=root, check=True)
+    try:
+        subprocess.run(['git', 'merge-base', '--is-ancestor', sha, scorer_head], cwd=root, check=True)
+    except subprocess.CalledProcessError as error:
+        raise ValueError('retained runtime must be an ancestor of the scorer head') from error
     changed = subprocess.check_output(['git', 'diff', '--no-renames', '--name-only', '-z', sha, scorer_head],
                                       cwd=root).decode().split('\0')[:-1]
-    allowed = {'scripts/metal/gt710-suite', 'scripts/metal/metal_score.py'}
-    if any(name not in allowed and not name.startswith('tests/') for name in changed):
+    if any(name not in RETAINED_SCORER_FILES and not name.startswith('tests/') for name in changed):
         raise ValueError('retained suite differs in runtime files: ' + ', '.join(changed))
+    return changed
+
+
+def rescore_suite_capture(directory, sha, scorer_head):
+    """Save evidence from retained suites without executing guest code or changing its identity."""
+    root = Path(__file__).resolve().parents[2]
+    changed = retained_scorer_changes(sha, scorer_head)
     directory = Path(directory)
     capture = completed_suite_capture(directory, sha)
     boot, serial = capture['boot'], capture['serial']
@@ -4477,7 +4509,7 @@ def rescore_suite_capture(directory, sha, scorer_head):
     report['artifacts'] = {p.name: hashlib.sha256(p.read_bytes()).hexdigest() for p in sorted(directory.iterdir())
                            if p.is_file() and (p.name in ('run.json', 'metal-run.json', 'commit', 'dirty', 'ended', 'ended-by',
                                'exit-status', 'serial.txt', 'serial.ts', 'events.jsonl') or p.suffix == '.rle')}
-    report['scorerSources'] = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in allowed}
+    report['scorerSources'] = {name: hashlib.sha256((root / name).read_bytes()).hexdigest() for name in RETAINED_SCORER_FILES}
     (directory / 'suite-acceptance.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps(report, indent=2), flush=True)
     return 0 if report['passed'] else 1
@@ -4767,6 +4799,7 @@ def main():
     breengel.add_argument('--wm-step', type=int, choices=range(1, 8), help='score a cumulative window-manager step (21.1 through 21.7)')
     breengel.add_argument('--ui-step', type=int, choices=range(1, 8), help='score a cumulative ui-testing step (22.1 through 22.7)')
     breengel.add_argument('--apps-step', type=int, choices=range(1, 9), help='score a cumulative gui-apps step (23.1 through 23.8)')
+    parser.add_argument('--scorer-head', help='prove a retained app capture can be reused at this clean local HEAD')
     parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
     parser.add_argument('--isolation', action='store_true', help='score PR 8.5 isolation and preceding selections from the same captures')
     parser.add_argument('--shapes', action='store_true', help='score PR 8.4 shapes and preceding selections from the same captures')
@@ -4777,6 +4810,15 @@ def main():
     parser.add_argument('--pr', type=int, help='open PR whose live head must match --sha for local alpha acceptance')
     parser.add_argument('--core-boot', help='completed --gt710-category core diagnostic boot for row/dispatch')
     args = parser.parse_args()
+    if args.scorer_head is not None:
+        import subprocess
+        root = Path(__file__).resolve().parents[2]
+        if args.apps_step is None or not args.capture_directory or args.wm_step is not None or args.ui_step is not None:
+            parser.error('--scorer-head requires --apps-step and --capture-directory')
+        head = subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=root, text=True).strip()
+        if (args.scorer_head != head
+                or subprocess.check_output(['git', 'status', '--porcelain'], cwd=root, text=True).strip()):
+            raise ValueError('app replay requires the clean requested scorer head')
     if args.watch_acceptance and not args.capture_directory:
         parser.error('--watch-acceptance requires --capture-directory CONSOLE')
     if args.gpu_capture_directory and not args.watch_acceptance:
@@ -4791,7 +4833,7 @@ def main():
                 parser.error('--wm-step needs either --capture-directory or --boot')
             return (record_wm_capture(args.capture_directory, args.sha, args.wm_step) if args.wm_step is not None
                     else record_ui_capture(args.capture_directory, args.sha, args.ui_step) if args.ui_step is not None
-                    else record_apps_capture(args.capture_directory, args.sha, args.apps_step))
+                    else record_apps_capture(args.capture_directory, args.sha, args.apps_step, args.scorer_head))
     if args.capture_directory and any((args.check_manifest, args.boot, args.gpu_boot, args.core_boot,
             args.acceptance_directory, args.pr, args.breengel_fronts, args.breengel_composition,
             args.breengel_stage, args.breengel_full, args.resources, args.alpha, args.shapes,

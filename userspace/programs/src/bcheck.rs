@@ -4,8 +4,15 @@
 //! GPU-rendered progress bars and per-test pass/fail results in a
 //! compositor window.
 
-use breengel::{CachedFont, Window, Event};
-use libbreenix::process::{fork, exec, waitpid, ForkResult};
+use breengel::{CachedFont, Window, Event, Handled};
+use std::time::Duration;
+
+#[path = "bcheck/catalog.rs"] mod catalog;
+#[path = "bcheck/node.rs"] mod node;
+#[path = "bcheck/runner.rs"] mod runner;
+#[path = "bcheck/verdict.rs"] mod verdict;
+use runner::Runner;
+use verdict::Verdict;
 use libbreenix::time;
 
 use libgfx::color::Color;
@@ -22,70 +29,43 @@ use libbui::widget::scroll_bar::ScrollBar;
 // ---------------------------------------------------------------------------
 
 #[derive(Clone, Copy, PartialEq)]
-enum TestStatus {
-    Pending,
-    Running,
-    Pass,
-    Fail,
-    Skip,
-}
+enum TestStatus { Pending, Running, Pass, Fail }
 
 struct TestDef {
-    /// Binary path on ext2 (null-terminated)
-    path: &'static [u8],
-    /// Display name
-    name: &'static str,
-    /// Category for grouping
-    category: &'static str,
-    /// Result
+    name: String,
+    category: String,
+    argv: Vec<String>,
+    deadline_ms: u64,
     status: TestStatus,
-    /// Elapsed time in milliseconds
+    verdict: String,
+    pid: Option<u32>,
     elapsed_ms: u32,
 }
 
-/// The curated test suite — exercises core subsystems without requiring
-/// network, stdin, or interactive TTY.
-fn make_tests() -> Vec<TestDef> {
-    // Test binaries matching *_test or test_* are installed to /usr/libexec/breenix/
-    // by create_ext2_disk.sh.  Everything else goes to /bin/.
-    let tests: &[(&[u8], &str, &str)] = &[
-        // Core / syscall
-        (b"/usr/libexec/breenix/clock_gettime_test\0", "clock_gettime",   "core"),
-        (b"/usr/libexec/breenix/brk_test\0",           "brk",             "core"),
-        (b"/usr/libexec/breenix/test_mmap\0",          "mmap",            "core"),
-        (b"/usr/bin/syscall_enosys\0",                    "syscall_enosys",  "core"),
-        // Filesystem
-        (b"/usr/libexec/breenix/file_read_test\0",     "file_read",       "fs"),
-        (b"/usr/libexec/breenix/lseek_test\0",         "lseek",           "fs"),
-        (b"/usr/libexec/breenix/getdents_test\0",      "getdents",        "fs"),
-        (b"/usr/libexec/breenix/access_test\0",        "access",          "fs"),
-        (b"/usr/libexec/breenix/cwd_test\0",           "cwd",             "fs"),
-        (b"/usr/libexec/breenix/devfs_test\0",         "devfs",           "fs"),
-        (b"/usr/libexec/breenix/fs_write_test\0",      "fs_write",        "fs"),
-        (b"/usr/libexec/breenix/fs_directory_test\0",  "fs_directory",    "fs"),
-        // IPC
-        (b"/usr/libexec/breenix/pipe_test\0",         "pipe",             "ipc"),
-        (b"/usr/libexec/breenix/pipe2_test\0",        "pipe2",            "ipc"),
-        (b"/usr/libexec/breenix/dup_test\0",          "dup",              "ipc"),
-        (b"/usr/libexec/breenix/fcntl_test\0",        "fcntl",            "ipc"),
-        (b"/usr/libexec/breenix/epoll_test\0",        "epoll",            "ipc"),
-        // Process
-        (b"/usr/libexec/breenix/fork_test\0",         "fork",             "proc"),
-        (b"/usr/libexec/breenix/waitpid_test\0",      "waitpid",          "proc"),
-        (b"/usr/libexec/breenix/fork_memory_test\0",  "fork_memory",      "proc"),
-        // Signals
-        (b"/usr/libexec/breenix/signal_handler_test\0", "signal_handler",  "sig"),
-        (b"/usr/libexec/breenix/signal_return_test\0",  "signal_return",   "sig"),
-        // Network
-        (b"/usr/libexec/breenix/net_test\0",            "dns_resolve",     "net"),
-        (b"/usr/libexec/breenix/http_fetch_test\0",     "http_fetch",      "net"),
-    ];
+fn make_tests(path: &str) -> Result<Vec<TestDef>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("{path}: {e}"))?;
+    Ok(catalog::parse(&text).into_iter().map(|entry| match entry {
+        Ok(entry) => TestDef { name: entry.name, category: entry.category, argv: entry.argv,
+            deadline_ms: entry.deadline_ms, status: TestStatus::Pending, verdict: String::new(), pid: None, elapsed_ms: 0 },
+        Err(error) => TestDef { name: format!("line {}", error.line), category: "catalog".into(), argv: vec![],
+            deadline_ms: 0, status: TestStatus::Fail, verdict: format!("invalid catalog: {}", error.reason), pid: None, elapsed_ms: 0 },
+    }).collect())
+}
 
-    tests.iter().map(|&(path, name, cat)| TestDef {
-        path, name, category: cat,
-        status: TestStatus::Pending,
-        elapsed_ms: 0,
-    }).collect()
+fn verdict_text(verdict: &Verdict) -> String {
+    match verdict {
+        Verdict::Pass => "pass".into(), Verdict::Exit(code) => format!("exit {code}"),
+        Verdict::Signal(_, name) => (*name).into(),
+        Verdict::ExecFailed(error) => format!("exec failed: {error}"),
+        Verdict::TimedOut => "timed out".into(), Verdict::Cancelled => "cancelled".into(),
+    }
+}
+
+fn finish_test(test: &mut TestDef, verdict: Verdict, start: u64) {
+    test.status = if verdict.failed() { TestStatus::Fail } else { TestStatus::Pass };
+    test.verdict = verdict_text(&verdict);
+    test.pid = None;
+    test.elapsed_ms = clock_ms().saturating_sub(start) as u32;
 }
 
 // ---------------------------------------------------------------------------
@@ -117,8 +97,6 @@ const COLOR_PASS: Color = Color::rgb(80, 220, 100);
 const COLOR_FAIL: Color = Color::rgb(240, 60, 60);
 const COLOR_RUN: Color = Color::rgb(80, 160, 255);
 const COLOR_PEND: Color = Color::rgb(90, 95, 110);
-const COLOR_SKIP: Color = Color::rgb(180, 160, 60);
-const COLOR_TIME: Color = Color::rgb(120, 125, 140);
 const COLOR_CAT: Color = Color::rgb(100, 110, 140);
 const COLOR_HEADER_LINE: Color = Color::rgb(50, 60, 90);
 
@@ -136,7 +114,7 @@ fn content_height(tests: &[TestDef]) -> i32 {
     let mut last_cat = "";
     for test in tests.iter() {
         if test.category != last_cat {
-            last_cat = test.category;
+            last_cat = &test.category;
             if y > 0 { y += 4; }
             y += 12;
         }
@@ -255,8 +233,8 @@ fn render(fb: &mut Surface, tests: &[TestDef], scroll_offset: i32, ttf: &mut Opt
     for test in tests.iter() {
         // Category header
         if test.category != last_cat {
-            last_cat = test.category;
-            let cat_label = match test.category {
+            last_cat = &test.category;
+            let cat_label = match test.category.as_str() {
                 "core" => "CORE",
                 "fs"   => "FILESYSTEM",
                 "ipc"  => "IPC",
@@ -289,33 +267,24 @@ fn render(fb: &mut Surface, tests: &[TestDef], scroll_offset: i32, ttf: &mut Opt
                 TestStatus::Pass    => ("OK", COLOR_PASS),
                 TestStatus::Fail    => ("!!", COLOR_FAIL),
                 TestStatus::Running => (">>", COLOR_RUN),
-                TestStatus::Skip    => ("--", COLOR_SKIP),
                 TestStatus::Pending => ("..", COLOR_PEND),
             };
             draw_text_scaled(&mut text, icon, MARGIN + 2, y, font_size, icon_color, 1);
 
             // Test name
-            draw_text_scaled(&mut text, test.name, MARGIN + 22, y, font_size, FG, 1);
+            draw_text_scaled(&mut text, &test.name, MARGIN + 22, y, font_size, FG, 1);
 
             // Status label
             let (label, label_color): (&str, Color) = match test.status {
-                TestStatus::Pass    => ("PASS", COLOR_PASS),
-                TestStatus::Fail    => ("FAIL", COLOR_FAIL),
+                TestStatus::Pass    => (test.verdict.as_str(), COLOR_PASS),
+                TestStatus::Fail    => (test.verdict.as_str(), COLOR_FAIL),
                 TestStatus::Running => ("RUN ", COLOR_RUN),
-                TestStatus::Skip    => ("SKIP", COLOR_SKIP),
                 TestStatus::Pending => ("    ", COLOR_PEND),
             };
-            let label_x = w - MARGIN - 80;
+            let label_x = w / 2;
             draw_text_scaled(&mut text, label, label_x, y, font_size, label_color, 1);
 
-            // Elapsed time (for completed tests)
-            if test.status == TestStatus::Pass || test.status == TestStatus::Fail {
-                let mut time_buf = [0u8; 8];
-                let time_len = format_ms(&mut time_buf, test.elapsed_ms);
-                let time_str = core::str::from_utf8(&time_buf[..time_len]).unwrap_or("");
-                let time_x = w - MARGIN - 36;
-                draw_text_scaled(&mut text, time_str, time_x, y, font_size, COLOR_TIME, 1);
-            }
+
         }
 
         y += ROW_H;
@@ -367,18 +336,6 @@ fn format_progress(buf: &mut [u8], done: u32, total: u32, pct: u32) -> usize {
     i
 }
 
-fn format_ms(buf: &mut [u8], ms: u32) -> usize {
-    let mut i = 0;
-    // Right-align in 4 chars
-    if ms < 10 { buf[i] = b' '; i += 1; buf[i] = b' '; i += 1; buf[i] = b' '; i += 1; }
-    else if ms < 100 { buf[i] = b' '; i += 1; buf[i] = b' '; i += 1; }
-    else if ms < 1000 { buf[i] = b' '; i += 1; }
-    i += format_u32(&mut buf[i..], ms);
-    buf[i] = b'm'; i += 1;
-    buf[i] = b's'; i += 1;
-    i
-}
-
 fn format_footer(buf: &mut [u8], passed: u32, failed: u32, pending: u32) -> usize {
     let mut i = 0;
     // "PASS: N  FAIL: N  PEND: N"
@@ -391,117 +348,48 @@ fn format_footer(buf: &mut [u8], passed: u32, failed: u32, pending: u32) -> usiz
     i
 }
 
-// ---------------------------------------------------------------------------
-// Test execution
-// ---------------------------------------------------------------------------
-
-fn run_test(test: &mut TestDef) {
-    let start = clock_ms();
-
-    match fork() {
-        Ok(ForkResult::Child) => {
-            match exec(test.path) {
-                Ok(_) => unreachable!(),
-                Err(_) => {
-                    // exec failed — can't print (might not have stdout)
-                    std::process::exit(126);
-                }
-            }
-        }
-        Ok(ForkResult::Parent(child_pid)) => {
-            let child_raw = child_pid.raw() as i32;
-            let mut status: i32 = 0;
-            match waitpid(child_raw, &mut status as *mut i32, 0) {
-                Ok(_) => {
-                    let exit_code = (status >> 8) & 0xFF;
-                    let elapsed = (clock_ms() - start) as u32;
-                    test.elapsed_ms = elapsed;
-                    test.status = if exit_code == 0 {
-                        TestStatus::Pass
-                    } else {
-                        TestStatus::Fail
-                    };
-                }
-                Err(_) => {
-                    test.elapsed_ms = (clock_ms() - start) as u32;
-                    test.status = TestStatus::Fail;
-                }
-            }
-        }
-        Err(_) => {
-            test.status = TestStatus::Skip;
-        }
-    }
+fn publish_tree(win: &mut Window, tests: &[TestDef], offset: i32) {
+    use breengel::tree::{Flag, Node, Role, Tree};
+    let rows: Vec<_> = tests.iter().map(|test| node::Row { name: &test.name, state: match test.status {
+        TestStatus::Pending => node::State::Pending,
+        TestStatus::Running => node::State::Running { pid: test.pid.expect("running child") },
+        TestStatus::Pass | TestStatus::Fail => node::State::Done { verdict: &test.verdict, failed: test.status == TestStatus::Fail },
+    }}).collect();
+    let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
+    let flags = vec![Flag::Enabled, Flag::Visible];
+    win.set_tree(Tree { root: Node { key: "rows".into(), parent: None, role: Role::List, name: "Rows".into(),
+        value: node::rows(&rows, offset), bounds, clip: bounds, flags: flags.clone() }, children: vec![Node {
+        key: "totals".into(), parent: Some("rows".into()), role: Role::Status, name: "Totals".into(),
+        value: node::totals(&rows), bounds, clip: bounds, flags,
+    }] });
 }
 
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
+fn frame(win: &mut Window, tests: &[TestDef], offset: i32, ttf: &mut Option<CachedFont>, font_size: f32,
+    scroll: Option<(&ScrollBar, &libbui::Theme)>) -> Result<(), libbreenix::error::Error> {
+    publish_tree(win, tests, offset);
+    let fb = win.surface()?;
+    render(fb, tests, offset, ttf, font_size);
+    if let Some((bar, theme)) = scroll { bar.draw(fb, theme); }
+    win.present()
+}
 
 fn main() {
-    println!("[bcheck] Breenix Self-Check starting");
-
-    let mut tests = make_tests();
-    let total = tests.len();
-
-    let mut win = match Window::new(b"Self-Check", WIN_W, WIN_H) {
-        Ok(w) => w,
-        Err(e) => {
-            println!("[bcheck] Window::new failed: {} -- running headless", e);
-            run_headless(&mut tests);
-            return;
-        }
+    let args: Vec<String> = std::env::args().collect();
+    let path = match args.as_slice() {
+        [_] => "/usr/share/bcheck/catalog",
+        [_, flag, path] if flag == "--catalog" => path,
+        _ => { eprintln!("usage: bcheck [--catalog FILE]"); std::process::exit(1); }
     };
-    println!("[bcheck] Window {} ({}x{})", win.id(), WIN_W, WIN_H);
-
-    // Load TTF mono font (falls back to bitmap if unavailable)
-    let mut ttf_font: Option<CachedFont> = win.take_mono_font();
+    let mut tests = make_tests(path).unwrap_or_else(|error| { eprintln!("[bcheck] {error}"); std::process::exit(1) });
+    let mut win = match Window::new(b"Self-Check", WIN_W, WIN_H) {
+        Ok(win) => win,
+        Err(_) => { run_headless(&mut tests); std::process::exit(exit_code(&tests)); }
+    };
+    let mut ttf_font = win.take_mono_font();
     let font_size = if win.mono_size() >= 6.0 { win.mono_size() } else { 10.0 };
-    if ttf_font.is_some() {
-        println!("[bcheck] TTF font loaded, size={}", font_size);
-    } else {
-        println!("[bcheck] TTF font not available, using bitmap fallback");
-    }
-
-    // Initial render — all pending
-    match frame(&mut win, &tests, 0, &mut ttf_font, font_size, None) {
-        Ok(()) => println!("[bcheck] first frame presented: {}x{}", win.width(), win.height()),
-        Err(e) => println!("[bcheck] first frame present failed: {}", e),
-    }
-
-    // Run each test sequentially
-    for i in 0..total {
-        tests[i].status = TestStatus::Running;
-        let _ = frame(&mut win, &tests, 0, &mut ttf_font, font_size, None);
-
-        run_test(&mut tests[i]);
-
-        let status_str = match tests[i].status {
-            TestStatus::Pass => "PASS",
-            TestStatus::Fail => "FAIL",
-            TestStatus::Skip => "SKIP",
-            _ => "????",
-        };
-        println!("[bcheck] {:2}/{} {} {} {}ms",
-                 i + 1, total, tests[i].name, status_str, tests[i].elapsed_ms);
-
-        let _ = frame(&mut win, &tests, 0, &mut ttf_font, font_size, None);
-    }
-
-    // Summary
-    let passed = tests.iter().filter(|t| t.status == TestStatus::Pass).count();
-    let failed = tests.iter().filter(|t| t.status == TestStatus::Fail).count();
-    println!("[bcheck] Complete: {}/{} passed, {} failed", passed, total, failed);
-
-    // Keep displaying results — support scrolling with arrow keys and scroll wheel
     let visible_h = WIN_H as i32 - LIST_START_Y - FOOTER_H;
     let total_h = content_height(&tests);
-    let sleep_ts = libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 50_000_000 }; // 50ms
-
-    // Widget rectangles use logical coordinates, while scroll offsets and content
-    // dimensions remain in the device pixels used by render().
     let ui_scale = win.surface().expect("self-check surface").ui_scale() as i32;
-    // Scrollbar positioned along the right edge of the content area
     let bar_w = ScrollBar::DEFAULT_WIDTH;
     let bar_rect = Rect::new(WIN_W as i32 / ui_scale - bar_w, LIST_START_Y / ui_scale, bar_w, visible_h / ui_scale);
     let mut scroll_bar = ScrollBar::new(bar_rect, total_h, visible_h);
@@ -529,75 +417,72 @@ fn main() {
         }
     }
 
+    let mut active: Option<(usize, Runner, u64)> = None;
+    let mut closing = false;
+    let sleep = libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 50_000_000 };
     loop {
-        let mut need_redraw = false;
-        for event in win.poll_events() {
-            match event {
-                Event::KeyPress { keycode, .. } => {
-                    match keycode {
-                        breengel::keys::UP => { scroll_bar.scroll(1); need_redraw = true; }
-                        breengel::keys::DOWN => { scroll_bar.scroll(-1); need_redraw = true; }
-                        _ => {}
-                    }
+        let mut resize = None;
+        let count = win.dispatch(|delivered| {
+            match delivered.event.clone() {
+                Event::KeyPress { keycode, ascii, .. } => match keycode {
+                    breengel::keys::UP => scroll_bar.scroll(1),
+                    breengel::keys::DOWN => scroll_bar.scroll(-1),
+                    breengel::keys::ESC => closing = true,
+                    _ if ascii == b'q' || ascii == b'Q' => closing = true,
+                    _ => {},
+                },
+                Event::Scroll { delta_y, .. } => scroll_bar.scroll(delta_y),
+                Event::CloseRequested => closing = true,
+                Event::ResizeRequested { width, height } => resize = Some((width, height)),
+                Event::Resized { width, height } => {
+                    let visible = height as i32 - LIST_START_Y - FOOTER_H;
+                    scroll_bar.set_rect(Rect::new(width as i32 / ui_scale - bar_w, LIST_START_Y / ui_scale, bar_w, visible / ui_scale));
+                    scroll_bar.set_dimensions(total_h, visible);
                 }
-                Event::Scroll { delta_y, .. } => {
-                    scroll_bar.scroll(delta_y);
-                    need_redraw = true;
-                }
-                Event::ResizeRequested { width, height } => {
-                    if let Err(e) = win.apply_resize(width, height) {
-                        println!("[bcheck] resize refused: {}x{}: {}", width, height, e);
-                    }
-                }
-                Event::Resized { width: w, height: h } => {
-                    let new_visible_h = h as i32 - LIST_START_Y - FOOTER_H;
-                    let new_bar_rect = Rect::new(
-                        w as i32 / ui_scale - bar_w, LIST_START_Y / ui_scale, bar_w, new_visible_h / ui_scale,
-                    );
-                    scroll_bar.set_rect(new_bar_rect);
-                    scroll_bar.set_dimensions(total_h, new_visible_h);
-                    need_redraw = true;
-                }
-                Event::CloseRequested => std::process::exit(0),
                 _ => {}
             }
+            Handled::Redraw
+        }).unwrap_or_else(|error| { eprintln!("[bcheck] dispatch: {error}"); closing = true; 0 });
+        if let Some((width, height)) = resize { let _ = win.apply_resize(width, height); }
+        let mut changed = count != 0;
+        if closing { if let Some((_, runner, _)) = active.as_mut() { runner.cancel(); } }
+        if let Some((index, runner, start)) = active.as_mut() {
+            if let Some(verdict) = runner.poll() {
+                finish_test(&mut tests[*index], verdict, *start);
+                active = None;
+                changed = true;
+            }
         }
-        if need_redraw {
-            let _ = frame(&mut win, &tests, scroll_bar.offset(), &mut ttf_font, font_size, Some((&scroll_bar, &theme)));
-        } else {
-            let _ = time::nanosleep(&sleep_ts);
+        if closing && active.is_none() { std::process::exit(exit_code(&tests)); }
+        if !closing && active.is_none() {
+            if let Some(index) = tests.iter().position(|test| test.status == TestStatus::Pending) {
+                let start = clock_ms();
+                match Runner::start(&tests[index].argv, Duration::from_millis(tests[index].deadline_ms)) {
+                    Ok(runner) => { tests[index].status = TestStatus::Running; tests[index].pid = Some(runner.pid()); active = Some((index, runner, start)); }
+                    Err(verdict) => finish_test(&mut tests[index], verdict, start),
+                }
+                changed = true;
+            }
         }
+        if changed { let _ = frame(&mut win, &tests, scroll_bar.offset(), &mut ttf_font, font_size, Some((&scroll_bar, &theme))); }
+        else { let _ = time::nanosleep(&sleep); }
     }
 }
 
-/// Draw the results into the window's surface, with the scrollbar on top when there is one,
-/// and commit the frame.
-fn frame(win: &mut Window, tests: &[TestDef], scroll_offset: i32, ttf: &mut Option<CachedFont>, font_size: f32,
-    scroll: Option<(&ScrollBar, &libbui::Theme)>) -> Result<(), libbreenix::error::Error> {
-    let fb = win.surface()?;
-    render(fb, tests, scroll_offset, ttf, font_size);
-    if let Some((bar, theme)) = scroll {
-        bar.draw(fb, theme);
-    }
-    win.present()
-}
+fn exit_code(tests: &[TestDef]) -> i32 { i32::from(tests.iter().any(|test| test.status == TestStatus::Fail)) }
 
-/// Headless fallback — just run tests and report to serial
 fn run_headless(tests: &mut [TestDef]) {
-    let total = tests.len();
-    for i in 0..total {
-        tests[i].status = TestStatus::Running;
-        run_test(&mut tests[i]);
-        let status_str = match tests[i].status {
-            TestStatus::Pass => "PASS",
-            TestStatus::Fail => "FAIL",
-            TestStatus::Skip => "SKIP",
-            _ => "????",
+    for test in tests {
+        if test.status != TestStatus::Pending { continue; }
+        let start = clock_ms();
+        let verdict = match Runner::start(&test.argv, Duration::from_millis(test.deadline_ms)) {
+            Err(verdict) => verdict,
+            Ok(mut runner) => loop {
+                if let Some(verdict) = runner.poll() { break verdict; }
+                std::thread::sleep(Duration::from_millis(50));
+            },
         };
-        println!("[bcheck] {:2}/{} {} {} {}ms",
-                 i + 1, total, tests[i].name, status_str, tests[i].elapsed_ms);
+        finish_test(test, verdict, start);
+        println!("[bcheck] {}: {}", test.name, test.verdict);
     }
-    let passed = tests.iter().filter(|t| t.status == TestStatus::Pass).count();
-    let failed = tests.iter().filter(|t| t.status == TestStatus::Fail).count();
-    println!("[bcheck] Complete: {}/{} passed, {} failed", passed, total, failed);
 }

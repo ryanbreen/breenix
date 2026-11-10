@@ -205,6 +205,7 @@ if [[ "$(uname)" == "Darwin" && "${BREENIX_REPRODUCIBLE_EXT2:-0}" != 1 ]]; then
         -v "$USERSPACE_DIR:/binaries:ro" \
         -v "$PROJECT_ROOT/fonts:/fonts:ro" \
         -v "$PROJECT_ROOT/userspace/programs/share/applications/catalog:/applications-catalog:ro" \
+        -v "$PROJECT_ROOT/userspace/programs/share/bcheck/catalog:/bcheck-catalog:ro" \
         -v "$PROJECT_ROOT/docs/suites/frames:/suite-frames:ro" \
         -v "$SCRIPT_DIR/install-ui-references.sh:/install-ui-references.sh:ro" \
         "${BREENGEL_MOUNTS[@]}" \
@@ -365,6 +366,8 @@ EOF
 
             mkdir -p /mnt/ext2/usr/share/applications
             cp /applications-catalog /mnt/ext2/usr/share/applications/catalog
+            mkdir -p /mnt/ext2/usr/share/bcheck
+            cp /bcheck-catalog /mnt/ext2/usr/share/bcheck/catalog
 
             # Install TrueType fonts
             mkdir -p /mnt/ext2/usr/share/fonts
@@ -687,6 +690,8 @@ EOF
 
     mkdir -p "$MOUNT_DIR/usr/share/applications"
     cp "$PROJECT_ROOT/userspace/programs/share/applications/catalog" "$MOUNT_DIR/usr/share/applications/catalog"
+    mkdir -p "$MOUNT_DIR/usr/share/bcheck"
+    cp "$PROJECT_ROOT/userspace/programs/share/bcheck/catalog" "$MOUNT_DIR/usr/share/bcheck/catalog"
 
     # Create default system font configuration
     cat > "$MOUNT_DIR/etc/fonts.conf" << FONTSCONF

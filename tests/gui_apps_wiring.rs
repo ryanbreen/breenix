@@ -2,7 +2,7 @@
 fn gui_apps_cases_have_sessions_and_no_placeholder() {
     let source = include_str!("../userspace/programs/src/suite_gui_apps.rs");
     let cases: Vec<_> = source.lines().filter(|line| line.trim_start().starts_with("case(")).collect();
-    assert_eq!(cases.len(), 30);
+    assert_eq!(cases.len(), 42);
     for case in cases {
         assert!(case.contains(".session(libuitest::supervisor::serve)"), "missing session: {case}");
         assert!(!case.contains("pending::"), "placeholder: {case}");
@@ -66,6 +66,41 @@ fn both_close_actions_use_the_one_declared_session() {
 #[test]
 fn blog_dispatches_input_before_presenting() {
     let source = include_str!("../userspace/programs/src/blog.rs");
+    assert!(!source.contains("win.poll_events()"));
+    assert!(source.contains("win.dispatch(|delivered|"));
+    assert!(source.contains("Handled::Redraw"));
+}
+
+#[test]
+fn bfontpicker_dispatches_input_before_presenting() {
+    let source = include_str!("../userspace/programs/src/bfontpicker.rs");
+    assert!(!source.contains("win.poll_events()"));
+    assert!(source.contains("win.dispatch(|delivered|"));
+    assert!(source.contains("Handled::Redraw"));
+}
+
+#[test]
+fn app_launch_as_passes_the_requested_uid() {
+    let source = include_str!("../libs/libuitest/src/app.rs");
+    let launch = source.split("pub fn launch_as(").nth(1).expect("launch_as").split("pub fn hotkey(").next().unwrap();
+    assert!(launch.contains("launch_app(argv, uid)"));
+    assert!(source.contains("Self::launch_as(argv, title, 0)"));
+}
+
+#[test]
+fn live_font_change_advances_the_session_clock_before_waiting_for_reload() {
+    let source = include_str!("../userspace/programs/src/guiapps_suite/bfontpicker.rs");
+    let live = source.split("pub fn live_bterm()").nth(1).unwrap()
+        .split("pub fn save_fails_cleanly()").next().unwrap();
+    let after_save = live.split("select(&mut t)?;").nth(1).unwrap();
+    let before_wait = after_save.split("t.wait_node(\"grid\"").next().unwrap();
+    assert!(before_wait.contains("t.step(250)?;"),
+        "font reload is paced at 250 ms of the frozen session clock; wall-clock polling cannot advance it");
+}
+
+#[test]
+fn bcheck_dispatches_input_before_presenting() {
+    let source = include_str!("../userspace/programs/src/bcheck.rs");
     assert!(!source.contains("win.poll_events()"));
     assert!(source.contains("win.dispatch(|delivered|"));
     assert!(source.contains("Handled::Redraw"));

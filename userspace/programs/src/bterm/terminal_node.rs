@@ -1,7 +1,7 @@
 use serde_json::{json, Value};
 use libvt::{TermEmu, FG_COLOR, BG_COLOR};
 
-pub fn terminal_value(vt: &TermEmu, active_tab: usize, tab_count: usize) -> Value {
+pub fn terminal_value(vt: &TermEmu, active_tab: usize, tab_count: usize, font_path: &str, font_size: f32) -> Value {
     let (cols, rows) = vt.size();
     let mut lines = Vec::new();
     let mut runs = Vec::new();
@@ -27,5 +27,5 @@ pub fn terminal_value(vt: &TermEmu, active_tab: usize, tab_count: usize) -> Valu
         runs.push(row);
     }
     let (x, y) = vt.cursor();
-    json!({"active_tab": active_tab, "tab_count": tab_count, "cols": cols, "rows": rows, "cursor": [x, y], "lines": lines, "title": vt.title(), "alt": vt.alternate_screen(), "scrollback": vt.scrollback.lines.len(), "offset": vt.view_offset(), "runs": runs})
+    json!({"font": {"path": font_path, "size": font_size}, "active_tab": active_tab, "tab_count": tab_count, "cols": cols, "rows": rows, "cursor": [x, y], "lines": lines, "title": vt.title(), "alt": vt.alternate_screen(), "scrollback": vt.scrollback.lines.len(), "offset": vt.view_offset(), "runs": runs})
 }

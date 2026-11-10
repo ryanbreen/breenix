@@ -7,6 +7,10 @@ mod bterm;
 mod blauncher;
 #[path = "guiapps_suite/blog.rs"]
 mod blog;
+#[path = "guiapps_suite/bfontpicker.rs"]
+mod bfontpicker;
+#[path = "guiapps_suite/bcheck.rs"]
+mod bcheck;
 use breenix_suite::suite::{case, category, suite, Suite};
 
 static SUITE: Suite = suite("gui-apps", "GUI applications", &[
@@ -47,6 +51,22 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("missing-file", "Wait for missing file", blog::missing_file).session(libuitest::supervisor::serve),
         case("blogd-records-once", "Record kernel messages once", blog::blogd_records_once).session(libuitest::supervisor::serve),
         case("blogd-restart", "Resume kernel messages after restart", blog::blogd_restart).session(libuitest::supervisor::serve),
+    ]),
+    category("bfontpicker", "bfontpicker", &[
+        case("lists-fonts", "List fonts by metadata", bfontpicker::lists_fonts).session(libuitest::supervisor::serve),
+        case("select-apply", "Select and apply a font", bfontpicker::select_apply).session(libuitest::supervisor::serve),
+        case("persists", "Font selection persists", bfontpicker::persists).session(libuitest::supervisor::serve),
+        case("keeps-unknown", "Comments, blank lines and key order survive a save", bfontpicker::keeps_unknown).session(libuitest::supervisor::serve),
+        case("live-bterm", "Font change reaches bterm", bfontpicker::live_bterm).session(libuitest::supervisor::serve),
+        case("save-fails-cleanly", "Failed save leaves configuration intact", bfontpicker::save_fails_cleanly).session(libuitest::supervisor::serve),
+    ]),
+    category("bcheck", "bcheck", &[
+        case("results-truthful", "Truthful results", bcheck::results_truthful).session(libuitest::supervisor::serve),
+        case("hang", "Timeout and reap", bcheck::hang).session(libuitest::supervisor::serve),
+        case("forged-output", "Forged output fails", bcheck::forged_output).session(libuitest::supervisor::serve),
+        case("totals-exit", "Totals and exit status", bcheck::totals_exit).session(libuitest::supervisor::serve),
+        case("responsive", "Scroll and close during a test", bcheck::responsive).session(libuitest::supervisor::serve),
+        case("production-catalog", "Shipped catalog passes", bcheck::production_catalog).session(libuitest::supervisor::serve),
     ]),
 ]).gui().defer_display();
 

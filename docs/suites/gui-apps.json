@@ -151,6 +151,67 @@
           "title": "Resume kernel messages after restart"
         }
       ]
+    },
+    {
+      "id": "bfontpicker",
+      "title": "bfontpicker",
+      "cases": [
+        {
+          "id": "lists-fonts",
+          "title": "List fonts by metadata"
+        },
+        {
+          "id": "select-apply",
+          "title": "Select and apply a font"
+        },
+        {
+          "id": "persists",
+          "title": "Font selection persists"
+        },
+        {
+          "id": "keeps-unknown",
+          "title": "Unknown settings, comments and key order survive a save"
+        },
+        {
+          "id": "live-bterm",
+          "title": "Font change reaches bterm"
+        },
+        {
+          "id": "save-fails-cleanly",
+          "title": "Failed save leaves configuration intact"
+        }
+      ]
+    },
+    {
+      "id": "bcheck",
+      "title": "bcheck",
+      "cases": [
+        {
+          "id": "results-truthful",
+          "title": "Truthful results"
+        },
+        {
+          "id": "hang",
+          "title": "Timeout and reap"
+        },
+        {
+          "id": "forged-output",
+          "title": "Forged output fails"
+        },
+        {
+          "id": "totals-exit",
+          "title": "Totals and exit status"
+        },
+        {
+          "id": "responsive",
+          "title": "Scroll and close during a test"
+        },
+        {
+          "id": "production-catalog",
+          "title": "Shipped catalog passes",
+          "expect": "With outbound network access on the R240 for the example.com and www.duke.edu rows, bcheck launched without arguments completes with every shipped row passed within 60 seconds."
+        }
+      ]
     }
   ]
 }

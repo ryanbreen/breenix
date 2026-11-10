@@ -35,6 +35,8 @@ pub use errno::Errno;
 pub use syscall::raw;
 pub use types::*;
 
+#[cfg(feature = "std")]
+pub mod atomic_file;
 pub mod accounts;
 pub mod argv;
 pub mod audio;

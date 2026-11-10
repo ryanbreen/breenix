@@ -698,7 +698,7 @@ fn main() {
                 win.set_tree(breengel::tree::Tree { root: breengel::tree::Node {
                     key: "grid".into(), parent: None, role: breengel::tree::Role::Terminal,
                     name: "Terminal".into(),
-                    value: terminal_node::terminal_value(&tab.emu.vt, sel, tabs.len()),
+                    value: terminal_node::terminal_value(&tab.emu.vt, sel, tabs.len(), win.mono_path(), font_size),
                     bounds, clip: bounds, flags: vec![breengel::tree::Flag::Enabled, breengel::tree::Flag::Visible],
                 }, children: Vec::new() });
             }

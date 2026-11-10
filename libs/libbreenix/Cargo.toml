@@ -75,3 +75,8 @@ required-features = ["std"]
 name = "service_logs_recovery"
 path = "../../tests/service_logs_recovery.rs"
 required-features = ["std"]
+
+[[test]]
+name = "atomic_file"
+path = "../../tests/atomic_file.rs"
+required-features = ["std"]
