@@ -228,7 +228,25 @@ class AppsStep(unittest.TestCase):
         def record(text):
             (self.path / 'serial.txt').write_text(text)
             return API['record_apps_capture'](self.path, SHA, 4)
+        # G13 admits exit 1 only for failed cases, never an unexplained
+        # driver/scorer failure after all 42 cases passed.
+        self.assertEqual(record(original), 1)
+        (self.path / 'exit-status').write_text('0')
+        events = [dict(event='final-marker'), dict(event='power-off', off=True),
+                  dict(event='closed', status=0, endedBy='driver')]
+        (self.path / 'events.jsonl').write_text('\n'.join(map(json.dumps, events)) + '\n')
         self.assertEqual(record(original), 0)
+        report = json.loads((self.path / 'gt710-apps-step.json').read_text())
+        self.assertEqual(report['scope'], 'apps-step-selection')
+        self.assertEqual(report['commit'], SHA)
+        self.assertEqual(report['toolsCommit'], SHA)
+        self.assertEqual(report['build'], self.boot['build'])
+        self.assertEqual(report['exitStatus'], 0)
+        self.assertEqual(report['selectedCases'],
+                         [{'id': name, 'result': 'PASS'} for name in selected])
+        self.assertEqual(report['memoryVerdict'],
+                         'SUITE gui-apps MEMORY reclaimed=PASS free_before=1000 free_after=1000 allowance=48')
+        self.assertEqual(set(report['notMeasured']), {'console-suite', 'gpu-suite'})
         first, second = selected[-2:]
         for text in [original.replace(f'SUITE gui-apps CASE {first} PASS ms=1\n', ''),
                      original.replace(first, 'foreign/case'),
