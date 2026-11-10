@@ -104,6 +104,7 @@ mod live {
             self.window = window;
             Ok(())
         }
+        pub fn config_root(&mut self) -> &str { self.keys.backend_mut().session().config_root() }
         pub fn type_text(&mut self, text: &str) -> Result<(), String> {
             self.keys.backend_mut().text(text, self.window).map(|_| ())
         }

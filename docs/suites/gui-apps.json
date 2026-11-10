@@ -151,6 +151,28 @@
           "title": "Resume kernel messages after restart"
         }
       ]
+    },
+    {
+      "id": "bfontpicker",
+      "title": "bfontpicker",
+      "cases": [
+        {
+          "id": "lists-fonts",
+          "title": "List fonts by metadata"
+        },
+        {
+          "id": "select-apply",
+          "title": "Select and apply a font"
+        },
+        {
+          "id": "persists",
+          "title": "Font selection persists"
+        },
+        {
+          "id": "keeps-unknown",
+          "title": "Comments, blank lines and key order survive a save"
+        }
+      ]
     }
   ]
 }
