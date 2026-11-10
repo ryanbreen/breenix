@@ -54,8 +54,7 @@ pub fn launch_gui() -> CaseResult {
     let _ = std::fs::remove_file("/tmp/ack-app.jsonl");
     std::fs::write("/tmp/blauncher-gui", format!("Ack\tFixture\tgui\t{ACK}\t--window\tAck\ta\tb c\t--nonce\t{nonce}\n")).map_err(|e| e.to_string())?;
     let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-gui"], "\u{1}Launcher")?;
-    t.key(28, &[])?;
-    t.wait_exit(0)?;
+    t.key_exit(28, 0)?;
     t.attach("Ack")?;
     t.wait_node("ack", |v| v["argv"] == expected)?;
     let records = std::fs::read_to_string("/tmp/ack-app.jsonl").map_err(|e| e.to_string())?;
@@ -71,8 +70,7 @@ pub fn launch_gui() -> CaseResult {
 pub fn launch_terminal() -> CaseResult {
     std::fs::write("/tmp/blauncher-terminal", "Echo\tFixture\tterminal\t/bin/echo\tlaunched-terminal\n").map_err(|e| e.to_string())?;
     let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-terminal"], "\u{1}Launcher")?;
-    t.key(28, &[])?;
-    t.wait_exit(0)?;
+    t.key_exit(28, 0)?;
     t.attach("Terminal")?;
     t.expect_text("launched-terminal")?;
     t.expect_text("[exited 0]")?;
@@ -111,11 +109,9 @@ pub fn close() -> CaseResult {
     std::fs::write("/tmp/blauncher-close", "Alpha\tFirst\tgui\t/bin/a\n").map_err(|e| e.to_string())?;
     let argv: &[&[u8]] = &[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-close"];
     let mut t = App::launch(argv, "\u{1}Launcher")?;
-    t.key(1, &[])?;
-    t.wait_exit(0)?;
+    t.key_exit(1, 0)?;
     t.finish()?;
     let mut t = App::launch(argv, "\u{1}Launcher")?;
-    t.click(0, 0)?;
-    t.wait_exit(0)?;
+    t.click_exit(0, 0, 0)?;
     Ok(t.finish()?)
 }

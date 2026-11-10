@@ -182,6 +182,11 @@ impl<'a> LivePointer<'a> {
         if pressed { self.session.raw_press(code)?; } else { self.session.raw_release(code)?; }
         self.source_event(self.session.input_devices()[0], kind::KEY, code, i32::from(pressed))
     }
+    /// Queue a relative pointer button and retain its kernel source identity.
+    pub fn send_button(&mut self, code: u16, pressed: bool) -> Result<Event, String> {
+        if pressed { self.session.raw_press(code)?; } else { self.session.raw_release(code)?; }
+        self.source_event(self.session.input_devices()[1], kind::KEY, code, i32::from(pressed))
+    }
     pub fn wm_key(&mut self, code: u16, pressed: bool) -> Result<u64, String> {
         let event = self.send_key(code, pressed)?;
         wait_pointer_idle(event.serial)?;

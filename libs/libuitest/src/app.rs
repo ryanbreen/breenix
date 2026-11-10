@@ -14,6 +14,17 @@ pub fn node_timeout_message(key: &str, last: Option<&serde_json::Value>) -> Stri
     format!("wait-node hang watchdog: key={key:?}; last value={last:?}")
 }
 
+/// Closing input has two durable witnesses: targeted delivery and supervised exit.
+pub fn exit_input_verdict(disposition: &str, window: u64, wanted: u64, status: i32, expected: i32) -> Result<(), String> {
+    if disposition != "delivered" || window != wanted {
+        return Err(format!("exit input disposition={disposition} window={window} expected={wanted}"));
+    }
+    if !(0..=255).contains(&expected) || status != expected << 8 {
+        return Err(format!("exit input status={status} expected={expected}"));
+    }
+    Ok(())
+}
+
 /// Expected statuses are raw wait statuses already witnessed before teardown.
 pub fn finish_verdict(tracked: &[(u64, Option<i32>)], exits: &[(u64, i32)]) -> Result<(), String> {
     for &(pid, expected) in tracked {
@@ -77,6 +88,40 @@ mod live {
             live.move_to((x, y))?;
             live.session().raw_press(key::BUTTON_LEFT)?;
             live.session().raw_release(key::BUTTON_LEFT)
+        }
+        /// A key whose action destroys its window. Delivery and exit replace a
+        /// post-action frame; ordinary key() still requires a processed commit.
+        pub fn key_exit(&mut self, code: u16, status: i32) -> Result<(), String> {
+            self.input_exit(code, false, status)
+        }
+        /// Click at content coordinates, including an app's dismissal margin.
+        pub fn click_exit(&mut self, x: i32, y: i32, status: i32) -> Result<(), String> {
+            let live = self.keys.backend_mut();
+            let info = live.info(self.window)?;
+            live.move_to((info.x + x, info.y + y))?;
+            self.input_exit(key::BUTTON_LEFT, true, status)
+        }
+        fn input_exit(&mut self, code: u16, pointer: bool, expected: i32) -> Result<(), String> {
+            let pid = self.launched.ok_or("no launched app")?;
+            let live = self.keys.backend_mut();
+            let press = if pointer { live.send_button(code, true) } else { live.send_key(code, true) };
+            let result: Result<i32, String> = (|| {
+                let event = press?;
+                crate::input::wait_pointer_idle(event.serial)?;
+                let ledger = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
+                let row = crate::input::ledger_entry(&ledger, event.serial)?.ok_or("exit input delivery missing")?;
+                let exit = live.session().wait_exit(pid)?;
+                exit_input_verdict(row.disposition, row.window, self.window, exit.status, expected)?;
+                Ok(exit.status)
+            })();
+            // Focus can belong to the launched child by now. A release needs a
+            // terminal disposition, not a commit from the destroyed old window.
+            let release = if pointer { live.send_button(code, false) } else { live.send_key(code, false) }
+                .and_then(|event| crate::input::wait_pointer_idle(event.serial));
+            let status = result?;
+            release?;
+            self.tracked.iter_mut().find(|(id, _)| *id == pid).ok_or("launched app not tracked")?.1 = Some(status);
+            Ok(())
         }
         pub fn wait_exit(&mut self, status: i32) -> Result<(), String> {
             let pid = self.launched.ok_or("no launched app")?;
