@@ -2,7 +2,7 @@
 fn gui_apps_cases_have_sessions_and_no_placeholder() {
     let source = include_str!("../userspace/programs/src/suite_gui_apps.rs");
     let cases: Vec<_> = source.lines().filter(|line| line.trim_start().starts_with("case(")).collect();
-    assert_eq!(cases.len(), 34);
+    assert_eq!(cases.len(), 36);
     for case in cases {
         assert!(case.contains(".session(libuitest::supervisor::serve)"), "missing session: {case}");
         assert!(!case.contains("pending::"), "placeholder: {case}");
@@ -77,4 +77,12 @@ fn bfontpicker_dispatches_input_before_presenting() {
     assert!(!source.contains("win.poll_events()"));
     assert!(source.contains("win.dispatch(|delivered|"));
     assert!(source.contains("Handled::Redraw"));
+}
+
+#[test]
+fn app_launch_as_passes_the_requested_uid() {
+    let source = include_str!("../libs/libuitest/src/app.rs");
+    let launch = source.split("pub fn launch_as(").nth(1).expect("launch_as").split("pub fn hotkey(").next().unwrap();
+    assert!(launch.contains("launch_app(argv, uid)"));
+    assert!(source.contains("Self::launch_as(argv, title, 0)"));
 }
