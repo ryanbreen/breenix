@@ -9,6 +9,7 @@ use std::collections::BTreeMap;
 struct Fake {
     files: BTreeMap<String, bool>,
     handles: BTreeMap<u64, String>,
+    access: BTreeMap<u64, u32>,
     next: u64,
     queries: usize,
     data: BTreeMap<String, Vec<u8>>,
@@ -57,6 +58,7 @@ impl Backend for Fake {
         assert_eq!(self.deadline, Some(deadline));
         self.reconnects += 1;
         self.handles.clear();
+        self.access.clear();
         Ok(())
     }
     fn read_at(&mut self, id: FileId, offset: u64, length: usize) -> Result<Vec<u8>, u32> {
@@ -83,6 +85,10 @@ impl Backend for Fake {
     }
     fn flush(&mut self, id: FileId) -> Result<(), u32> {
         assert!(self.handles.contains_key(&id.persistent), "stale flush");
+        // MS-SMB2 3.3.5.11 requires write/append or add-file/add-subdirectory rights.
+        if self.access[&id.persistent] & 6 == 0 {
+            return Err(0xc0000022);
+        }
         self.flushes += 1;
         Ok(())
     }
@@ -99,7 +105,7 @@ impl Backend for Fake {
     fn open(
         &mut self,
         path: &str,
-        _: u32,
+        access: u32,
         disposition: CreateDisposition,
         options: u32,
     ) -> Result<FileId, u32> {
@@ -141,6 +147,7 @@ impl Backend for Fake {
         }
         self.next += 1;
         self.handles.insert(self.next, path.into());
+        self.access.insert(self.next, access);
         Ok(FileId {
             persistent: self.next,
             volatile: 0,
@@ -148,6 +155,7 @@ impl Backend for Fake {
     }
     fn close(&mut self, id: FileId) -> Result<(), u32> {
         assert!(self.handles.remove(&id.persistent).is_some(), "stale close");
+        self.access.remove(&id.persistent);
         self.closes += 1;
         Ok(())
     }
@@ -311,6 +319,21 @@ fn mutations_and_rename_rekey_open_subtree() {
     fs.getattr(dir.node, 1).unwrap();
     assert!(fs.backend().queries > count);
     fs.rmdir(ROOT, "target").unwrap();
+}
+
+#[test]
+fn directory_fsync_obtains_flush_rights_without_changing_the_read_handle() {
+    let mut fs = setup();
+    let dir = fs.mkdir(ROOT, "save", 0).unwrap();
+    let handle = fs.open(dir.node, 0).unwrap();
+    let access = fs.backend().access.clone();
+    assert!(access.values().all(|mask| mask & 6 == 0));
+    let closes = fs.backend().closes;
+    fs.fsync(handle).unwrap();
+    assert_eq!(fs.backend().flushes, 1);
+    assert_eq!(fs.backend().access, access);
+    assert_eq!(fs.backend().closes, closes + 1);
+    fs.release(handle).unwrap();
 }
 
 #[test]
