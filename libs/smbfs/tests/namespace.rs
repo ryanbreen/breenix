@@ -1,4 +1,7 @@
-use libsmb::msg::{CreateDisposition, DirectoryEntry, FileAllInformation, FileId, SetInfo};
+use libsmb::msg::{
+    CreateDisposition, DirectoryEntry, FileAllInformation, FileFsFullSizeInformation, FileId,
+    SetInfo,
+};
 use smbfs::{Backend, Namespace, ROOT};
 use std::collections::BTreeMap;
 
@@ -8,6 +11,17 @@ struct Fake {
     handles: BTreeMap<u64, String>,
     next: u64,
     queries: usize,
+    data: BTreeMap<String, Vec<u8>>,
+    closes: usize,
+    flushes: usize,
+    writes: Vec<(u64, usize)>,
+    basic: Option<(u64, u64, u64, u64, u32)>,
+    reconnects: usize,
+    drop_read: bool,
+    fail_reopen: Option<usize>,
+    reopened: usize,
+    fail_retry: bool,
+    deadline: Option<std::time::Instant>,
 }
 fn info(dir: bool) -> FileAllInformation {
     FileAllInformation {
@@ -31,6 +45,57 @@ fn info(dir: bool) -> FileAllInformation {
     }
 }
 impl Backend for Fake {
+    fn set_deadline(&mut self, deadline: std::time::Instant) -> Result<(), u32> {
+        assert!(deadline > std::time::Instant::now());
+        assert!(
+            deadline.duration_since(std::time::Instant::now()) < std::time::Duration::from_secs(5)
+        );
+        self.deadline = Some(deadline);
+        Ok(())
+    }
+    fn reconnect(&mut self, deadline: std::time::Instant) -> Result<(), u32> {
+        assert_eq!(self.deadline, Some(deadline));
+        self.reconnects += 1;
+        self.handles.clear();
+        Ok(())
+    }
+    fn read_at(&mut self, id: FileId, offset: u64, length: usize) -> Result<Vec<u8>, u32> {
+        assert!(self.handles.contains_key(&id.persistent), "stale read");
+        if self.drop_read || (self.reconnects > 0 && self.fail_retry) {
+            self.drop_read = false;
+            return Err(0xffff_ffff);
+        }
+        assert!(length <= ufs_abi::MAX_DATA);
+        let data = self.data.get(&self.handles[&id.persistent]).unwrap();
+        let at = (offset as usize).min(data.len());
+        Ok(data[at..(at + length).min(data.len())].to_vec())
+    }
+    fn write_at(&mut self, id: FileId, offset: u64, bytes: &[u8]) -> Result<(), u32> {
+        assert!(bytes.len() <= ufs_abi::payload::MAX_WRITE);
+        self.writes.push((offset, bytes.len()));
+        let data = self
+            .data
+            .entry(self.handles[&id.persistent].clone())
+            .or_default();
+        data.resize(data.len().max(offset as usize + bytes.len()), 0);
+        data[offset as usize..offset as usize + bytes.len()].copy_from_slice(bytes);
+        Ok(())
+    }
+    fn flush(&mut self, id: FileId) -> Result<(), u32> {
+        assert!(self.handles.contains_key(&id.persistent), "stale flush");
+        self.flushes += 1;
+        Ok(())
+    }
+    fn query_fs_size(&mut self, id: FileId) -> Result<FileFsFullSizeInformation, u32> {
+        assert!(self.handles.contains_key(&id.persistent));
+        Ok(FileFsFullSizeInformation {
+            total_allocation_units: 1000,
+            caller_available_allocation_units: 300,
+            actual_available_allocation_units: 400,
+            sectors_per_allocation_unit: 8,
+            bytes_per_sector: 512,
+        })
+    }
     fn open(
         &mut self,
         path: &str,
@@ -38,14 +103,38 @@ impl Backend for Fake {
         disposition: CreateDisposition,
         _: u32,
     ) -> Result<FileId, u32> {
+        if self.reconnects > 0 {
+            assert!(matches!(disposition, CreateDisposition::Open));
+            self.reopened += 1;
+            if self.fail_reopen == Some(self.reopened) {
+                return Err(0xffff_ffff);
+            }
+        }
         if matches!(disposition, CreateDisposition::Create) {
             if self.files.contains_key(path) {
                 return Err(0xc0000035);
             }
             self.files.insert(path.into(), true);
         }
-        if !self.files.contains_key(path) {
+        if !self.files.contains_key(path)
+            && !matches!(
+                disposition,
+                CreateDisposition::OpenIf | CreateDisposition::OverwriteIf
+            )
+        {
             return Err(0xc0000034);
+        }
+        if matches!(
+            disposition,
+            CreateDisposition::OpenIf | CreateDisposition::OverwriteIf
+        ) {
+            self.files.entry(path.into()).or_insert(false);
+        }
+        if matches!(
+            disposition,
+            CreateDisposition::Overwrite | CreateDisposition::OverwriteIf
+        ) {
+            self.data.insert(path.into(), Vec::new());
         }
         self.next += 1;
         self.handles.insert(self.next, path.into());
@@ -55,12 +144,18 @@ impl Backend for Fake {
         })
     }
     fn close(&mut self, id: FileId) -> Result<(), u32> {
-        self.handles.remove(&id.persistent);
+        assert!(self.handles.remove(&id.persistent).is_some(), "stale close");
+        self.closes += 1;
         Ok(())
     }
     fn query_file(&mut self, id: FileId) -> Result<FileAllInformation, u32> {
         self.queries += 1;
-        Ok(info(self.files[&self.handles[&id.persistent]]))
+        let path = &self.handles[&id.persistent];
+        let mut i = info(self.files[path]);
+        if let Some(data) = self.data.get(path) {
+            i.end_of_file = data.len() as u64;
+        }
+        Ok(i)
     }
     fn list_handle(&mut self, id: FileId) -> Result<Vec<DirectoryEntry>, u32> {
         let path = &self.handles[&id.persistent];
@@ -109,6 +204,11 @@ impl Backend for Fake {
                 replace_if_exists: true,
             } => {
                 self.files.remove(name);
+                for path in self.handles.values_mut() {
+                    if *path == old || path.starts_with(&format!("{old}\\")) {
+                        *path = format!("{name}{}", &path[old.len()..]);
+                    }
+                }
                 let moved: Vec<_> = self
                     .files
                     .iter()
@@ -119,6 +219,24 @@ impl Backend for Fake {
                     self.files.remove(&p);
                     self.files.insert(format!("{name}{}", &p[old.len()..]), d);
                 }
+            }
+            SetInfo::EndOfFile(size) => {
+                self.data.entry(old).or_default().resize(size as usize, 0);
+            }
+            SetInfo::Basic {
+                creation_time,
+                last_access_time,
+                last_write_time,
+                change_time,
+                attributes,
+            } => {
+                self.basic = Some((
+                    creation_time,
+                    last_access_time,
+                    last_write_time,
+                    change_time,
+                    attributes,
+                ));
             }
             _ => unreachable!(),
         }
@@ -186,4 +304,109 @@ fn mutations_and_rename_rekey_open_subtree() {
     fs.getattr(dir.node, 1).unwrap();
     assert!(fs.backend().queries > count);
     fs.rmdir(ROOT, "target").unwrap();
+}
+
+#[test]
+fn file_operations_preserve_bytes_metadata_and_lifetimes() {
+    use smbfs::{O_EXCL, O_RDWR, O_TRUNC};
+    use ufs_abi::payload::{SetTimes, MAX_WRITE};
+    let mut fs = setup();
+    let a = fs.create(ROOT, "file", O_EXCL, 0).unwrap();
+    assert_eq!(fs.create(ROOT, "file", O_EXCL, 0), Err(17));
+    let h = fs.open(a.node, O_RDWR).unwrap();
+    let bytes: Vec<_> = (0..MAX_WRITE * 2 + 37).map(|i| (i % 251) as u8).collect();
+    assert_eq!(fs.write(h, 19, &bytes).unwrap(), bytes.len());
+    assert_eq!(
+        fs.backend().writes,
+        vec![
+            (19, MAX_WRITE),
+            (19 + MAX_WRITE as u64, MAX_WRITE),
+            (19 + 2 * MAX_WRITE as u64, 37)
+        ]
+    );
+    assert_eq!(fs.read(h, 19, bytes.len()).unwrap(), bytes);
+    assert_eq!(fs.read(h, 23, 101).unwrap(), bytes[4..105]);
+    assert!(fs.read(h, 19 + bytes.len() as u64, 1).unwrap().is_empty());
+    fs.fsync(h).unwrap();
+    assert_eq!(fs.backend().flushes, 1);
+    let a = fs
+        .setattr(
+            a.node,
+            Some(7),
+            Some(SetTimes {
+                atime_ns: Some(1200),
+                mtime_ns: None,
+            }),
+            1,
+        )
+        .unwrap();
+    assert_eq!(a.size, 7);
+    assert_eq!(fs.backend().basic, Some((0, 116444736000000012, 0, 0, 0)));
+    fs.setattr(
+        a.node,
+        None,
+        Some(SetTimes {
+            atime_ns: None,
+            mtime_ns: Some(3400),
+        }),
+        2,
+    )
+    .unwrap();
+    assert_eq!(fs.backend().basic, Some((0, 0, 116444736000000034, 0, 0)));
+    let st = fs.statfs(ROOT).unwrap();
+    assert_eq!(
+        (st.bsize, st.blocks, st.bfree, st.bavail, st.namelen),
+        (4096, 1000, 400, 300, 255)
+    );
+    let before = fs.backend().closes;
+    fs.release(h).unwrap();
+    fs.release(h).unwrap();
+    assert_eq!(fs.backend().closes, before + 1);
+    let h = fs.open(a.node, O_RDWR | O_TRUNC).unwrap();
+    assert!(fs.read(h, 0, 10).unwrap().is_empty());
+    fs.release(h).unwrap();
+}
+
+#[test]
+fn reconnect_reopens_held_paths_without_replaying_create_or_truncate() {
+    use smbfs::{O_EXCL, O_RDWR, O_TRUNC};
+    let mut fs = setup();
+    let a = fs.create(ROOT, "file", O_EXCL, 0).unwrap();
+    let h = fs.open(a.node, O_RDWR | O_TRUNC).unwrap();
+    fs.write(h, 0, b"saved bytes").unwrap();
+    let other = fs.open(a.node, 0).unwrap();
+    fs.rename(ROOT, "file", ROOT, "renamed").unwrap();
+    fs.backend_mut().drop_read = true;
+    assert_eq!(fs.read(h, 0, 11).unwrap(), b"saved bytes");
+    assert_eq!(fs.read(other, 6, 5).unwrap(), b"bytes");
+    assert_eq!(fs.backend().reconnects, 1);
+    assert_eq!(fs.backend().reopened, 2);
+    fs.release(h).unwrap();
+    fs.release(other).unwrap();
+    assert!(fs.backend().handles.is_empty());
+}
+
+#[test]
+fn second_connection_failure_invalidates_every_file_id() {
+    for during_reopen in [true, false] {
+        let mut fs = setup();
+        let a = fs.create(ROOT, "file", smbfs::O_EXCL, 0).unwrap();
+        let h = fs.open(a.node, smbfs::O_RDWR).unwrap();
+        let other = fs.open(a.node, 0).unwrap();
+        fs.write(h, 0, b"intact").unwrap();
+        fs.backend_mut().drop_read = true;
+        if during_reopen {
+            fs.backend_mut().fail_reopen = Some(2);
+        } else {
+            fs.backend_mut().fail_retry = true;
+        }
+        assert_eq!(fs.read(h, 0, 6), Err(5));
+        assert_eq!(fs.backend().reconnects, 1);
+        let closes = fs.backend().closes;
+        fs.release(h).unwrap();
+        fs.release(other).unwrap();
+        // Failed-session FileIds must never be sent to close or a later read.
+        assert_eq!(fs.backend().closes, closes);
+        assert_eq!(fs.read(h, 0, 1), Err(9));
+    }
 }
