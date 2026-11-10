@@ -4,6 +4,7 @@ use libbreenix::{fs as sysfs, io as sysio, types::Fd};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::fd::AsRawFd;
+use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
@@ -122,14 +123,30 @@ fn create_write_read() -> CaseResult {
     let bytes: Vec<u8> = (0..150_000).map(|n| (n % 251) as u8).collect();
     io(fs::write(&path, &bytes))?;
     check(io(fs::read(&path))? == bytes, "file bytes differ")?;
-    let mut file = io(OpenOptions::new().write(true).open(&path))?;
+    let exclusive = OpenOptions::new().write(true).create_new(true).open(&path);
+    check(exclusive.err().and_then(|e| e.raw_os_error()) == Some(17), "exclusive create did not refuse existing name")?;
+    let mut file = io(OpenOptions::new().read(true).write(true).open(&path))?;
+    check(io(file.metadata())?.len() == bytes.len() as u64, "fstat size differs")?;
     io(file.seek(SeekFrom::Start(17)))?;
+    check(io(file.write_at(b"positioned", 70_000))? == 10, "positioned write was short")?;
+    let mut positioned = [0; 10];
+    check(io(file.read_at(&mut positioned, 70_000))? == 10 && positioned == *b"positioned", "positioned I/O differs")?;
+    check(io(file.stream_position())? == 17, "positioned I/O moved shared cursor")?;
     io(file.write_all(b"patch"))?;
     io(file.set_len(22))?;
     drop(file);
     let mut expected = bytes[..22].to_vec();
     expected[17..22].copy_from_slice(b"patch");
-    check(io(fs::read(path))? == expected, "offset write or truncate differs")?;
+    check(io(fs::read(&path))? == expected, "offset write or truncate differs")?;
+    let append = io(OpenOptions::new().append(true).open(&path))?;
+    let mut duplicate = io(append.try_clone())?;
+    drop(append);
+    io(duplicate.seek(SeekFrom::Start(0)))?;
+    io(duplicate.write_all(b"tail"))?;
+    io(duplicate.sync_all())?;
+    drop(duplicate);
+    expected.extend_from_slice(b"tail");
+    check(io(fs::read(path))? == expected, "append or duplicate lifetime differs")?;
     mount.finish()
 }
 fn rename_replace() -> CaseResult {

@@ -39,11 +39,15 @@ fn a_copy_racing_expiry_does_not_consume_the_next_record() {
 #[test]
 fn limits_in_flight_requests_until_completion() {
     let mut table = RequestTable::<usize, usize, ()>::new();
+    assert!(table.has_capacity());
     let ids: Vec<_> = (0..QUEUE_CAP).map(|i| table.submit(i, i, 100).unwrap()).collect();
+    assert!(!table.has_capacity());
     assert_eq!(table.submit(99, 99, 100), Err(Error::Full));
     assert_eq!(table.take_next(), Some((ids[0], 0)));
+    assert!(!table.has_capacity());
     assert_eq!(table.submit(99, 99, 100), Err(Error::Full));
     assert_eq!(table.complete(ids[0], ()), Some((0, Ok(()))));
+    assert!(table.has_capacity());
     assert!(table.submit(99, 99, 100).is_ok());
 }
 
