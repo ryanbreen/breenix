@@ -30,8 +30,9 @@ mod live {
             Ok(Self { keys: Keyboard::new(live), pid, window })
         }
         pub fn type_line(&mut self, text: &str) -> Result<(), String> {
-            self.keys.backend_mut().text(text, self.window)?;
-            self.key(key::ENTER, &[])
+            // Submission can open a window and change focus before a physical
+            // Enter release. Keep the newline in the same terminal text source.
+            self.keys.backend_mut().text(&format!("{text}\n"), self.window).map(|_| ())
         }
         pub fn key(&mut self, code: u16, mods: &[Modifier]) -> Result<(), String> {
             self.keys.chord(self.window, mods, code).map(|_| ())
