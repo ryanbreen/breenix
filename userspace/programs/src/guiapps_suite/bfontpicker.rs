@@ -92,6 +92,7 @@ pub fn live_bterm() -> CaseResult {
     if first != second { return Err("baseline terminal captures differ".into()); }
     t.attach("Font Picker")?;
     select(&mut t)?;
+    t.step(250)?;
     t.attach("Terminal")?;
     t.wait_node("grid", |v| v["font"]["path"] == PLAIN && v["font"]["size"].as_f64() == Some(14.0))?;
     if pixels(terminal)? == first { return Err("terminal pixels did not change".into()); }

@@ -109,6 +109,10 @@ mod live {
         }
         pub fn window(&self) -> u64 { self.window }
         pub fn config_root(&mut self) -> &str { self.keys.backend_mut().session().config_root() }
+        /// Advance the frozen UI clock and wait for participant acknowledgments.
+        pub fn step(&mut self, dt_ms: u64) -> Result<(), String> {
+            self.keys.backend_mut().session().step(dt_ms).map(|_| ())
+        }
         pub fn type_text(&mut self, text: &str) -> Result<(), String> {
             self.keys.backend_mut().text(text, self.window).map(|_| ())
         }
