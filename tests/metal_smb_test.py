@@ -5,14 +5,13 @@ import io
 import importlib.machinery
 import importlib.util
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 import unittest
 from types import SimpleNamespace
-from unittest.mock import patch, Mock
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts/metal'))
 import metal_root
@@ -62,6 +61,11 @@ class SmbStagingTest(unittest.TestCase):
                     patch.object(metal_root, 'SMB_CONFIG_PATH', private):
                 runner.configure_smb(env, credential)
                 server.assert_called_once()
+                helper = load_script('smb-restart')
+                def claimed(*args, **kwargs):
+                    return SimpleNamespace(returncode=1 if args[0] == 'test' else 0, stdout='{"status":"claimed"}')
+                self.assertTrue(helper.prepare('20261110T000000Z-metal', claimed, runner.incus, 'fixture-smb'))
+                self.assertEqual(server.call_count, 2)
                 self.assertIn('/srv/smb/rw', server.call_args.args)
                 self.assertIn('-delete', server.call_args.args)
                 self.assertEqual(private.stat().st_mode & 0o777, 0o600)
@@ -105,7 +109,6 @@ class SmbStagingTest(unittest.TestCase):
         helper = load_script('smb-restart')
         for fail in (False, True):
             with self.subTest(fail=fail), tempfile.TemporaryDirectory() as tmp:
-                directory = Path(tmp)
                 chunks = iter([b'SUITE network-shares SMBRESTART smb/server-restart seq=',
                                b'7\r\nSUITE network-shares SMBRESTART smb/server-restart seq=7\n'
                                b'SUITE network-shares SMBRESTART smb/other seq=8\n'

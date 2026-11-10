@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Answer an SMB restart request beside a network-shares boot, without changing server configuration.
+
+metal-run starts this helper on the boot host. It reads serial.txt and writes
+smb-restart.json in the boot's private store. SMB_TEST_INSTANCE is private host
+configuration; credentials are neither needed nor read here.
+"""
+import argparse
+import json
+from pathlib import Path
+import re
+import runpy
+import subprocess
+import time
+
+REQUEST = re.compile(r'SUITE network-shares SMBRESTART smb/server-restart seq=([0-9]{1,20})\r?')
+DONE = re.compile(r'SUITE network-shares DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+\r?')
+
+
+def prepare(boot, remote, incus, instance, minutes=240):
+    """Reset reserved acknowledgments under this boot's lease, before image delivery."""
+    directory = '/var/lib/breenix-metal/boots/' + boot
+    deadline = time.monotonic() + minutes * 60
+    while time.monotonic() < deadline:
+        if remote('test', '-e', directory + '/ended', capture_output=True, timeout=30).returncode == 0:
+            return False
+        claim = remote('cat', directory + '/claim.json', capture_output=True, text=True, timeout=30)
+        if claim.returncode == 0:
+            status = json.loads(claim.stdout)['status']
+            if status == 'claimed':
+                result = incus('exec', instance, '--', 'find', '/srv/smb/rw', '-maxdepth', '1', '-type', 'f',
+                               '-name', '.restarted-*', '-delete', capture_output=True, timeout=30)
+                return result.returncode == 0 and remote('touch', directory + '/smb-restart.ready',
+                                                         capture_output=True, timeout=30).returncode == 0
+            if status != 'waiting':
+                return False
+        time.sleep(0.5)
+    return False
+
+
+def watch(boot, instance, remote, incus, minutes=45):
+    directory = '/var/lib/breenix-metal/boots/' + boot
+    records = dict(boot=boot, requests=[])
+    answered, offset, pending = set(), 0, b''
+    deadline = time.monotonic() + minutes * 60
+
+    def save():
+        result = remote('tee', directory + '/smb-restart.json', stdin=None,
+                        input=json.dumps(records) + '\n', capture_output=True, text=True, timeout=30)
+        if result.returncode:
+            raise SystemExit('smb-restart: cannot store the transcript')
+
+    def execute(*command):
+        try:
+            return incus('exec', instance, '--', *command, capture_output=True, timeout=30).returncode
+        except (OSError, subprocess.TimeoutExpired):
+            return -1
+
+    while time.monotonic() < deadline:
+        chunk = remote('tail', '-c', '+%d' % (offset + 1), directory + '/serial.txt',
+                       capture_output=True, timeout=30)
+        if chunk.returncode == 0:
+            offset += len(chunk.stdout)
+            pending += chunk.stdout
+        *lines, pending = pending.split(b'\n')
+        finished = False
+        for line in (raw.decode('utf-8', errors='replace') for raw in lines):
+            if DONE.fullmatch(line):
+                finished = True
+            request = REQUEST.fullmatch(line)
+            if not request:
+                continue
+            seq = int(request.group(1))
+            if seq in answered:
+                continue
+            answered.add(seq)
+            record = dict(case='smb/server-restart', seq=seq, ok=False)
+            records['requests'].append(record)
+            # Retain the attempt before changing server state. A duplicate serial record
+            # cannot cause a second restart, including when the first command fails.
+            save()
+            record['restartExit'] = execute('systemctl', 'restart', 'smbd')
+            if record['restartExit'] == 0:
+                record['markerExit'] = execute('install', '-m', '0644', '/dev/null', '/srv/smb/rw/.restarted-' + str(seq))
+                record['ok'] = record['markerExit'] == 0
+            save()
+            print('smb-restart: seq=%d %s' % (seq, 'acknowledged' if record['ok'] else 'failed'), flush=True)
+        if finished or remote('test', '-e', directory + '/ended', capture_output=True, timeout=30).returncode == 0:
+            save()
+            return int(any(not record['ok'] for record in records['requests']))
+        time.sleep(0.5)
+    records['error'] = 'boot completion watchdog expired'
+    save()
+    return 1
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--boot', required=True)
+    parser.add_argument('--minutes', type=float, default=45)
+    args = parser.parse_args()
+    if not re.fullmatch(r'\d{8}T\d{6}Z-metal', args.boot):
+        parser.error('--boot ID required')
+    if not 0 < args.minutes <= 240:
+        parser.error('--minutes must be positive and at most 240')
+    runner = runpy.run_path(str(Path(__file__).with_name('metal-run')))
+    env = runner['host_env']()
+    instance = env.get('SMB_TEST_INSTANCE', '')
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]{0,62}', instance):
+        raise SystemExit('smb-restart: private host config needs SMB_TEST_INSTANCE')
+    remote = lambda *cmd, **kw: runner['in_metal'](env, *cmd, **kw)
+    # A retained lock prevents concurrent helpers or a replay from restarting again.
+    result = remote('mkdir', '/var/lib/breenix-metal/boots/' + args.boot + '/smb-restart.lock', capture_output=True)
+    if result.returncode:
+        raise SystemExit('smb-restart: helper already started or boot store unavailable')
+    try:
+        ready = prepare(args.boot, remote, runner['incus'], instance)
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        ready = False
+    if not ready:
+        remote('tee', '/var/lib/breenix-metal/boots/' + args.boot + '/smb-restart.json', stdin=None,
+               input=json.dumps(dict(boot=args.boot, requests=[], error='SMB helper preparation failed')) + '\n',
+               capture_output=True, text=True)
+        remote('touch', '/var/lib/breenix-metal/boots/' + args.boot + '/smb-restart.failed', capture_output=True)
+        return 1
+    return watch(args.boot, instance, remote, runner['incus'], args.minutes)
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())
