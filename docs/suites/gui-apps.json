@@ -181,6 +181,28 @@
           "title": "Failed save leaves configuration intact"
         }
       ]
+    },
+    {
+      "id": "bcheck",
+      "title": "bcheck",
+      "cases": [
+        {
+          "id": "results-truthful",
+          "title": "Truthful results"
+        },
+        {
+          "id": "hang",
+          "title": "Timeout and reap"
+        },
+        {
+          "id": "forged-output",
+          "title": "Forged output fails"
+        },
+        {
+          "id": "totals-exit",
+          "title": "Totals and exit status"
+        }
+      ]
     }
   ]
 }
