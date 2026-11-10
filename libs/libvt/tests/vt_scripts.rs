@@ -42,3 +42,24 @@ fn scripted_screen_waits_for_input_after_output() {
     scripts::write_and_hold(&mut Input, &mut output, bytes).unwrap();
     assert_eq!(output, bytes);
 }
+
+#[test]
+fn scroll_region_script_rejects_noop_operations() {
+    let script = scripts::script("scroll-region").unwrap();
+    let operations: [&[u8]; 6] = [b"\x1b[2;4r", b"\x1bD", b"\x1bM", b"\x1b[1L", b"\x1b[1M", b"\x1b[r"];
+    let screen = |bytes: &[u8]| {
+        let mut vt = TermEmu::new(40, 10);
+        vt.feed(bytes);
+        ((0..10).flat_map(|y| (0..40).map(move |x| (x, y)))
+            .map(|(x, y)| vt.cell(x, y).ch).collect::<String>(), vt.cursor())
+    };
+    let expected = screen(script);
+    for disabled in operations.iter().map(|op| vec![*op]).chain(std::iter::once(operations.to_vec())) {
+        let mut mutated = script.to_vec();
+        for op in &disabled {
+            let at = mutated.windows(op.len()).position(|part| part == *op).unwrap();
+            mutated.drain(at..at + op.len());
+        }
+        assert_ne!(screen(&mutated), expected, "no-op operations: {disabled:?}");
+    }
+}
