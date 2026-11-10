@@ -876,7 +876,13 @@ fn assert_scoped_runner_fixture(root: &Path, binaries: &[String]) {
     let source = fs::read_to_string(root.join("userspace/programs/src/suite_runner_fixture.rs")).unwrap();
     assert!(source.contains("std::env::args()"));
     assert!(source.contains("match selected"));
-    assert!(source.contains("case_limit_ms(3000)"));
+    // Scoped modes keep 3 s; only app-death (SIGKILL, then collection) has 6 s (0fc12d5c),
+    // and the config-isolation sequence has 6 s (2f556424). Pin both, and no other limit.
+    let main_limit = ".case_limit_ms(if selected == \"app-death\" { 6000 } else { 3000 }).run()";
+    let config_limit = ".case_limit_ms(6000).run()";
+    assert_eq!(source.matches(main_limit).count(), 1, "scoped fixture limit changed");
+    assert_eq!(source.matches(config_limit).count(), 1, "config sequence limit changed");
+    assert_eq!(source.matches("case_limit_ms(").count(), 2, "unexpected case limit in the scoped fixture");
     assert!(source.contains(".gui()"));
 }
 
