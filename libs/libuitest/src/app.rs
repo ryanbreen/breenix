@@ -59,7 +59,7 @@ mod live {
     use super::*;
     use crate::{input::{Backend, Keyboard, KeyboardBackend, LivePointer, Modifier}, tree::{self, Query, Role, Tree}, Session};
     use breenix_suite::suite::control::{Wait, Watchdog};
-    use libbreenix::{input::key, process, time};
+    use libbreenix::{input::key, time};
 
     pub struct App { keys: Keyboard<LivePointer<'static>>, launched: Option<u64>, tracked: Vec<(u64, Option<i32>)>, window: u64 }
     impl App {
@@ -106,12 +106,6 @@ mod live {
         }
         pub fn type_text(&mut self, text: &str) -> Result<(), String> {
             self.keys.backend_mut().text(text, self.window).map(|_| ())
-        }
-        pub fn click(&mut self, x: i32, y: i32) -> Result<(), String> {
-            let live = self.keys.backend_mut();
-            live.move_to((x, y))?;
-            live.session().raw_press(key::BUTTON_LEFT)?;
-            live.session().raw_release(key::BUTTON_LEFT)
         }
         /// A key whose action destroys its window. Delivery and exit replace a
         /// post-action frame; ordinary key() still requires a processed commit.
@@ -164,15 +158,6 @@ mod live {
             let status = result?;
             release?;
             self.tracked.iter_mut().find(|(id, _)| *id == pid).ok_or("launched app not tracked")?.1 = Some(status);
-            Ok(())
-        }
-        pub fn wait_exit(&mut self, status: i32) -> Result<(), String> {
-            let pid = self.launched.ok_or("no launched app")?;
-            let exit = self.keys.backend_mut().session().wait_exit(pid)?;
-            if !process::wifexited(exit.status) || process::wexitstatus(exit.status) != status {
-                return Err(format!("app exit pid={pid} status={} expected={status}", exit.status));
-            }
-            self.tracked.iter_mut().find(|(id, _)| *id == pid).ok_or("launched app not tracked")?.1 = Some(exit.status);
             Ok(())
         }
         pub fn wait_node(&mut self, key: &str, predicate: impl Fn(&serde_json::Value) -> bool) -> Result<(), String> {

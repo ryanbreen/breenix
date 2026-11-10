@@ -433,12 +433,14 @@ fn font_line_height(ttf: Option<&CachedFont>, size: f32) -> i32 {
 fn launch_app(app: &catalog::Entry) -> Result<(), String> {
     if app.mode == catalog::Mode::Terminal {
         use std::os::unix::fs::PermissionsExt;
-        let executable = std::fs::metadata(&app.argv[0])
-            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
-            && libbreenix::fs::access(&app.argv[0], libbreenix::fs::X_OK).is_ok();
-        if !executable {
-            return Err(launch::error_text(&app.argv[0], true, ""));
+        let path = &app.argv[0];
+        let metadata = std::fs::metadata(path).map_err(|error|
+            launch::error_text(path, error.kind() == std::io::ErrorKind::NotFound, &error.to_string()))?;
+        if !metadata.is_file() || metadata.permissions().mode() & 0o111 == 0 {
+            return Err(format!("Not executable: {path}"));
         }
+        libbreenix::fs::access(path, libbreenix::fs::X_OK).map_err(|error|
+            launch::error_text(path, matches!(error, Error::Os(Errno::ENOENT)), &error.to_string()))?;
     }
     let argv = if app.mode == catalog::Mode::Gui { launch::gui_argv(&app.argv) }
         else { launch::terminal_argv(&app.argv) };
