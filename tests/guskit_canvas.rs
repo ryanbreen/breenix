@@ -96,3 +96,11 @@ fn history_folds_oldest_into_base() {
     for _ in 0..32 { assert!(h.redo()); }
     assert_eq!(h.canvas().pixels(), &[32, 0, 0]);
 }
+
+#[test]
+fn preview_does_not_change_the_committed_canvas() {
+    let base = Canvas::new(3, 2);
+    let preview = base.preview(&[(0, 0), (2, 0)], |image, points| image.pencil(points, [0, 0, 0]));
+    assert_eq!(base.pixels(), &[255; 18]);
+    assert_eq!(preview.pixels(), &[0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255]);
+}
