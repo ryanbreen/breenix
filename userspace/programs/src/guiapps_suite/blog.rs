@@ -1,6 +1,8 @@
 use breenix_suite::suite::CaseResult;
 use libuitest::App;
 use std::io::Write;
+#[path = "blog_support.rs"]
+mod blog_support;
 
 fn append(path: &str, text: &str) -> Result<(), String> {
     let mut file = std::fs::OpenOptions::new().append(true).open(path).map_err(|e| e.to_string())?;
@@ -152,8 +154,7 @@ impl Drop for Blogd {
 
 fn write_records(nonce: &str, range: core::ops::Range<u32>) -> Result<(), String> {
     let mut kmsg = std::fs::OpenOptions::new().write(true).open("/dev/kmsg").map_err(|e| e.to_string())?;
-    for n in range { writeln!(kmsg, "{nonce}-{n:02}").map_err(|e| e.to_string())?; }
-    Ok(())
+    blog_support::write_records(&mut kmsg, nonce, range).map_err(|e| e.to_string())
 }
 
 fn wait_records(path: &str, nonce: &str, count: usize) -> Result<(), String> {
@@ -173,6 +174,12 @@ fn wait_records(path: &str, nonce: &str, count: usize) -> Result<(), String> {
 }
 
 fn blogd_case(restart: bool) -> CaseResult {
+    // Suite binaries run as PID 1, bypassing init's normal boot-ID publication.
+    let stamp = libbreenix::time::now_realtime().map_err(|e| e.to_string())?;
+    let uptime = libbreenix::time::now_monotonic().map_err(|e| e.to_string())?;
+    let candidate = format!("{:x}-{:x}-{:x}", stamp.tv_sec, stamp.tv_nsec, uptime.tv_nsec);
+    let boot = blog_support::ensure_boot_id(std::path::Path::new("/run/breenix/boot-id"), &candidate)
+        .map_err(|e| e.to_string())?;
     let nonce = format!("blogd-test-{}-{}", std::process::id(), libbreenix::time::now_monotonic().map_err(|e| e.to_string())?.as_nanos());
     let dir = format!("/tmp/{nonce}");
     let state = format!("{dir}/cursor");
@@ -187,7 +194,6 @@ fn blogd_case(restart: bool) -> CaseResult {
     wait_records(&path, &nonce, 20)?;
     child.stop()?;
     let text = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
-    let boot = std::fs::read_to_string("/run/breenix/boot-id").map_err(|e| e.to_string())?;
     let header = text.lines().next().ok_or("missing log header")?;
     if !header.split_whitespace().any(|field| field == format!("boot={}", boot.trim())) { return Err(format!("wrong log header: {header}").into()); }
     let records: Vec<_> = text.lines().filter(|line| line.contains(&nonce)).collect();
