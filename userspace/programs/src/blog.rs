@@ -432,6 +432,7 @@ fn main() {
         Err(e) => println!("[blog] first frame present failed: {}", e),
     }
 
+    let mut last_poll = std::time::Instant::now();
     loop {
         let mut resize_requested = None;
         let mut reload_font = false;
@@ -556,7 +557,8 @@ fn main() {
 
             needs_redraw = true;
         }
-        {
+        if last_poll.elapsed() >= std::time::Duration::from_millis(500) {
+            last_poll = std::time::Instant::now();
             for tab in tabs.iter_mut() {
                 let was_open = tab.is_open();
                 let prev_count = tab.line_count();
