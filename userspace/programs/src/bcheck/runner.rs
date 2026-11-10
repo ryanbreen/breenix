@@ -20,7 +20,10 @@ impl Runner {
         let (program, args) = argv.split_first().ok_or_else(|| Verdict::ExecFailed("empty command".into()))?;
         let child = Command::new(program).args(args)
             .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
-            .process_group(0).spawn().map_err(|error| Verdict::from_spawn_error(&error))?;
+            .process_group(0).spawn().map_err(|error| {
+                if error.raw_os_error() == Some(2) { Verdict::ExecFailed("ENOENT".into()) }
+                else { Verdict::from_spawn_error(&error) }
+            })?;
         Ok(Self { child, deadline: Instant::now() + timeout, stopped: None })
     }
 
