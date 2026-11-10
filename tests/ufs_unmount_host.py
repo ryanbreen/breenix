@@ -10,6 +10,9 @@ source = (ROOT / "kernel/src/fs/ufs/mod.rs").read_text()
 start = source.index("    let mount = {", source.index("fn umount("))
 end = source.index("\n}\n", start)
 body = source[start:end]
+flags_start = source.index("    if flags", source.index("fn umount("))
+flags_end = source.index("    let raw", flags_start)
+flags_check = source[flags_start:flags_end]
 daemon = (ROOT / "userspace/programs/src/smbfsd.rs").read_text()
 reply_start = daemon.index("        let written = loop {")
 reply_end = daemon.index("        if written != n", reply_start)
@@ -37,7 +40,8 @@ struct Mount { id: u64, state: Mutex<State>, woken: AtomicBool }
 impl Mount { fn wake(&self) { self.woken.store(true, Ordering::SeqCst); } }
 struct Point { target: fs::namei::Target }
 static MOUNTS: Mutex<Vec<Arc<Mount>>> = Mutex(StdMutex::new(Vec::new()));
-fn unmount(point: Point) -> Result<(), u64> {
+fn unmount(point: Point, flags: u64) -> Result<(), u64> {
+    FLAGS_CHECK
     BODY
 }
 struct Dev(i32);
@@ -58,20 +62,32 @@ fn daemon_exits_cleanly_if_detach_races_a_reply() {
 }
 #[test]
 fn detach_succeeds_with_a_live_open_file_and_wakes_the_daemon() {
+    for flags in [1, 2] {
     let mount = Arc::new(Mount {
         id: 9, state: Mutex(StdMutex::new(State {
             dead: false, detached: false, open_files: 1,
         })), woken: AtomicBool::new(false),
     });
     MOUNTS.lock().push(mount.clone());
-    assert_eq!(unmount(Point { target: fs::namei::Target::User { mount: 9, node: 1 } }), Ok(()));
+    let point = || Point { target: fs::namei::Target::User { mount: 9, node: 1 } };
+    assert_eq!(unmount(point(), 0), Err(EBUSY as u64));
+    assert_eq!(unmount(point(), 4), Err(EINVAL as u64));
+    assert_eq!(MOUNTS.lock().len(), 1);
+    {
+        let state = mount.state.lock();
+        assert!(!state.dead && !state.detached);
+        assert_eq!(state.open_files, 1);
+    }
+    assert!(!mount.woken.load(Ordering::SeqCst));
+    assert_eq!(unmount(point(), flags), Ok(()));
     assert!(MOUNTS.lock().is_empty(), "later fd calls cannot find the detached mount");
     let state = mount.state.lock();
     assert!(state.dead && state.detached, "endpoint must observe detached EOF");
     assert_eq!(state.open_files, 1, "detach must not consume the open lease");
     assert!(mount.woken.load(Ordering::SeqCst));
+    }
 }
-'''.replace("BODY", body).replace("REPLY", reply)
+'''.replace("BODY", body).replace("REPLY", reply).replace("FLAGS_CHECK", flags_check)
 with tempfile.TemporaryDirectory(prefix="breenix-ufs-unmount-") as temporary:
     path = Path(temporary)
     test = path / "check.rs"
