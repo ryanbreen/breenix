@@ -10,7 +10,12 @@ source = (ROOT / "kernel/src/fs/ufs/mod.rs").read_text()
 start = source.index("    let mount = {", source.index("fn umount("))
 end = source.index("\n}\n", start)
 body = source[start:end]
+daemon = (ROOT / "userspace/programs/src/smbfsd.rs").read_text()
+reply_start = daemon.index("        let written = loop {")
+reply_end = daemon.index("        if written != n", reply_start)
+reply = daemon[reply_start:reply_end]
 harness = r'''
+use std::io;
 use std::sync::{Arc, Mutex as StdMutex, MutexGuard};
 use std::sync::atomic::{AtomicBool, Ordering};
 struct Mutex<T>(StdMutex<T>);
@@ -35,6 +40,22 @@ static MOUNTS: Mutex<Vec<Arc<Mount>>> = Mutex(StdMutex::new(Vec::new()));
 fn unmount(point: Point) -> Result<(), u64> {
     BODY
 }
+struct Dev(i32);
+impl Dev {
+    fn write(&self, _: &[u8]) -> io::Result<usize> { Err(io::Error::from_raw_os_error(self.0)) }
+}
+fn reply_after_detach(dev: Dev) -> Result<(), String> {
+    let output = [0];
+    let n = 1;
+    REPLY
+    assert_eq!(written, n);
+    Ok(())
+}
+#[test]
+fn daemon_exits_cleanly_if_detach_races_a_reply() {
+    assert_eq!(reply_after_detach(Dev(107)), Ok(()));
+    assert!(reply_after_detach(Dev(5)).is_err(), "unrelated reply errors remain failures");
+}
 #[test]
 fn detach_succeeds_with_a_live_open_file_and_wakes_the_daemon() {
     let mount = Arc::new(Mount {
@@ -50,7 +71,7 @@ fn detach_succeeds_with_a_live_open_file_and_wakes_the_daemon() {
     assert_eq!(state.open_files, 1, "detach must not consume the open lease");
     assert!(mount.woken.load(Ordering::SeqCst));
 }
-'''.replace("BODY", body)
+'''.replace("BODY", body).replace("REPLY", reply)
 with tempfile.TemporaryDirectory(prefix="breenix-ufs-unmount-") as temporary:
     path = Path(temporary)
     test = path / "check.rs"
