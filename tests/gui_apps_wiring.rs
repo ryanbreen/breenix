@@ -19,3 +19,12 @@ fn bterm_handles_input_before_publishing_the_watermark() {
     assert!(handler.contains("Event::Text { text }"), "core text input must reach the PTY");
     assert!(handler.contains("Handled::Redraw"), "input must wait for the rendered commit");
 }
+
+#[test]
+fn blauncher_dispatches_input_before_presenting() {
+    let source = include_str!("../userspace/programs/src/blauncher.rs");
+    assert!(!source.contains("win.poll_events()"));
+    assert!(source.contains("win.dispatch(|delivered|"));
+    assert!(source.contains("Handled::Redraw"));
+    assert!(source.contains("Event::Text { text }"));
+}

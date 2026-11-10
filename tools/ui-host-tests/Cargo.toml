@@ -37,3 +37,7 @@ path = "../../tests/ui_retention.rs"
 [[test]]
 name = "gui_apps_shell_output"
 path = "../../tests/gui_apps_shell_output.rs"
+
+[[test]]
+name = "blauncher_node"
+path = "../../tests/blauncher_node.rs"
