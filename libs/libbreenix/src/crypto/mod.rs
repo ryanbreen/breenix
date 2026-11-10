@@ -123,3 +123,53 @@ mod cmac_tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "std"))]
+mod ccm_tests {
+    use super::ccm::AesCcm;
+
+    fn hex(s: &str) -> Vec<u8> {
+        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+    }
+
+    #[test]
+    fn nist_sp800_38c_appendix_c() {
+        let key: [u8; 16] = hex("404142434445464748494a4b4c4d4e4f").try_into().unwrap();
+        let vectors = [
+            ("10111213141516", "0001020304050607", "20212223", "7162015b4dac255d", 4),
+            ("1011121314151617", "000102030405060708090a0b0c0d0e0f", "202122232425262728292a2b2c2d2e2f", "d2a1f0e051ea5f62081a7792073d593d1fc64fbfaccd", 6),
+            ("101112131415161718191a1b", "000102030405060708090a0b0c0d0e0f10111213", "202122232425262728292a2b2c2d2e2f3031323334353637", "e3b201a9f5b71a7a9b1ceaeccd97e70b6176aad9a4428aa5484392fbc1b09951", 8),
+            ("101112131415161718191a1b1c", "", "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f", "69915dad1e84c6376a68c2967e4dab615ae0fd1faec44cc484828529463ccf72b4ac6bec93e8598e7f0dadbcea5b", 14),
+        ];
+        for (index, (nonce, aad, plain, combined, tag_len)) in vectors.into_iter().enumerate() {
+            let nonce = hex(nonce);
+            let aad = if index == 3 { (0..65536).map(|i| i as u8).collect() } else { hex(aad) };
+            let plain = hex(plain);
+            let expected = hex(combined);
+            let ccm = AesCcm::new(&key, tag_len);
+            let mut buf = plain.clone();
+            let tag = ccm.encrypt(&nonce, &aad, &mut buf);
+            assert_eq!(buf, expected[..plain.len()]);
+            assert_eq!(tag, expected[plain.len()..]);
+            assert!(ccm.decrypt(&nonce, &aad, &mut buf, &tag));
+            assert_eq!(buf, plain);
+        }
+    }
+
+    #[test]
+    fn rejects_modified_inputs_and_zeroes_plaintext() {
+        let ccm = AesCcm::new(&[0; 16], 16);
+        let nonce = [0; 12];
+        let aad = [1; 4];
+        let mut ciphertext = [2; 20];
+        let tag = ccm.encrypt(&nonce, &aad, &mut ciphertext);
+        for changed in 0..3 {
+            let mut buf = ciphertext;
+            let mut bad_aad = aad;
+            let mut bad_tag = tag.clone();
+            match changed { 0 => bad_tag[0] ^= 1, 1 => buf[0] ^= 1, _ => bad_aad[0] ^= 1 }
+            assert!(!ccm.decrypt(&nonce, &bad_aad, &mut buf, &bad_tag));
+            assert_eq!(buf, [0; 20]);
+        }
+    }
+}
