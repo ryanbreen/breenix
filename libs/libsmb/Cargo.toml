@@ -5,3 +5,6 @@ edition = "2021"
 
 [dependencies]
 libbreenix = { path = "../libbreenix", features = ["std"] }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))'] }
