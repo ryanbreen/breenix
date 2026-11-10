@@ -21,7 +21,7 @@ fn pages_and_wheel_move_and_clamp() {
 }
 #[test]
 fn top_bottom_and_follow_toggle() {
-    let mut v = View::new(); let l = lines(); v.apply(Command::Top, &l, 2); assert!(!v.follow);
+    let mut v = View::new(); let l = lines(); v.bottom(l.len(), 2); v.apply(Command::Top, &l, 2); assert!(!v.follow);
     v.apply(Command::Bottom, &l, 2); assert_eq!(v.offset, 4); assert!(v.follow);
     v.apply(Command::ToggleFollow, &l, 2); assert!(!v.follow);
     v.apply(Command::ToggleFollow, &l, 2); assert!(v.follow); assert_eq!(v.offset, 4);
@@ -39,6 +39,6 @@ fn search_finds_from_top_and_wraps_both_directions() {
 #[test]
 fn escape_cancels_query_edit() {
     let mut v = View::new(); let l = lines(); v.apply(Command::Search, &l, 2);
-    v.apply(Command::Character(b'x'), &l, 2); v.apply(Command::Escape, &l, 2);
-    assert!(!v.editing); assert!(v.query.is_empty()); assert_eq!(v.matched, None);
+    v.apply(Command::Character(b'x'), &l, 2); assert_eq!(v.draft(), "x"); v.apply(Command::Backspace, &l, 2); v.apply(Command::Escape, &l, 2);
+    v.refresh(&l, 2); assert!(!v.editing); assert!(v.query.is_empty()); assert_eq!(v.matched, None);
 }

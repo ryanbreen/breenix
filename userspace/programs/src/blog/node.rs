@@ -11,3 +11,16 @@ pub fn lines(tail: &Tail, offset: usize, visible: usize) -> Value {
 pub fn status(tab: usize, path: &str, follow: bool, open: bool) -> Value {
     json!({"tab": tab, "path": path, "follow": follow, "state": if open { "open" } else { "waiting" }, "search": null})
 }
+
+pub fn lines_view(tail: &Tail, offset: usize, visible: usize, matched: Option<usize>) -> Value {
+    let mut result = lines(tail, offset, visible);
+    if let Some(rows) = result["rows"].as_array_mut() {
+        for (i, row) in rows.iter_mut().enumerate() { row["match"] = json!(matched == Some(offset + i)); }
+    }
+    result
+}
+pub fn status_view(tab: usize, path: &str, follow: bool, open: bool, query: &str, matched: Option<usize>, matches: usize, tail: &Tail) -> Value {
+    let mut result = status(tab, path, follow, open);
+    if !query.is_empty() { result["search"] = json!({"query": query, "row": matched.map(|i| tail.line_number(i)), "matches": matches}); }
+    result
+}

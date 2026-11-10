@@ -24,6 +24,9 @@ use std::process;
 mod tail;
 #[path = "blog/node.rs"]
 mod node;
+#[path = "blog/view.rs"]
+mod view;
+use view::{Command, View};
 use tail::{Action, Tail};
 
 use breengel::{CachedFont, Event, Handled, InputState, Rect, TabBar, Theme, Window};
@@ -73,8 +76,7 @@ const KEY_END: u32 = breengel::keys::END;
 struct LogTab {
     path: String,
     tail: Tail,
-    scroll_offset: usize,
-    follow: bool,
+    view: View,
     fd: Option<Fd>,
 }
 
@@ -83,8 +85,7 @@ impl LogTab {
         Self {
             path,
             tail: Tail::new(),
-            scroll_offset: 0,
-            follow: true,
+            view: View::new(),
             fd: None,
         }
     }
@@ -121,7 +122,7 @@ impl LogTab {
             if n == 0 { break; }
             self.tail.feed(&buf[..n]);
         }
-        self.scroll_offset = self.scroll_offset.min(self.line_count().saturating_sub(1));
+        self.view.offset = self.view.offset.min(self.tail.line_count().saturating_sub(1));
         action != Action::Read
     }
 
@@ -130,11 +131,7 @@ impl LogTab {
     fn line_count(&self) -> usize { self.tail.line_count() }
 
     fn scroll_to_bottom(&mut self, visible_lines: usize) {
-        if self.line_count() > visible_lines {
-            self.scroll_offset = self.line_count() - visible_lines;
-        } else {
-            self.scroll_offset = 0;
-        }
+        self.view.bottom(self.tail.line_count(), visible_lines);
     }
 
     fn is_open(&self) -> bool {
@@ -236,7 +233,7 @@ fn render(
         text.draw_text(msg, msg_x, msg_y, TEXT_LINE_NUM);
     } else {
         for i in 0..visible_lines {
-            let line_idx = tab.scroll_offset + i;
+            let line_idx = tab.view.offset + i;
             if line_idx >= tab.line_count() {
                 break;
             }
@@ -248,6 +245,7 @@ fn render(
             text.draw_text(&num_buf, 2, y, TEXT_LINE_NUM);
 
             // Line content, truncated to fit
+            if tab.view.matched == Some(line_idx) { shapes::fill_rect(fb, 0, y as i32, w, line_h as i32, Color::rgb(80, 70, 35)); }
             let line = tab.line_bytes(line_idx);
             let max_chars = ((w as usize).saturating_sub(gutter_w)) / char_w;
             let display_len = line.len().min(max_chars);
@@ -261,19 +259,20 @@ fn render(
     let status_y = h - STATUS_BAR_H;
     shapes::fill_rect(fb, 0, status_y, w, STATUS_BAR_H, STATUS_BG);
 
-    let path_bytes = tab.path.as_bytes();
+    let search_text = format!("/{}", tab.view.draft());
+    let path_bytes = if tab.view.editing { search_text.as_bytes() } else { tab.path.as_bytes() };
     text.draw_text(path_bytes, 4, status_y as usize + 2, STATUS_FG);
 
     let mut info_buf = [0u8; 40];
     let info_len = format_line_info(
         &mut info_buf,
-        tab.tail.line_number(tab.scroll_offset),
+        tab.tail.line_number(tab.view.offset),
         tab.tail.line_number(tab.line_count()).saturating_sub(1),
     );
     let info_x = (w as usize / 2).saturating_sub(info_len * char_w / 2);
     text.draw_text(&info_buf[..info_len], info_x, status_y as usize + 2, STATUS_FG);
 
-    if tab.follow {
+    if tab.view.follow {
         let label = b"[FOLLOW]";
         let label_x = w as usize - label.len() * char_w - 4;
         text.draw_text(label, label_x, status_y as usize + 2, FOLLOW_COLOR);
@@ -288,10 +287,10 @@ fn publish_tree(win: &mut Window, tabs: &[LogTab], selected: usize, visible: usi
     let flags = vec![Flag::Enabled, Flag::Visible];
     win.set_tree(Tree { root: Node {
         key: "lines".into(), parent: None, role: Role::List, name: "Lines".into(),
-        value: node::lines(&tab.tail, tab.scroll_offset, visible), bounds, clip: bounds, flags: flags.clone(),
+        value: node::lines_view(&tab.tail, tab.view.offset, visible, tab.view.matched), bounds, clip: bounds, flags: flags.clone(),
     }, children: vec![Node {
         key: "status".into(), parent: Some("lines".into()), role: Role::Status, name: "Status".into(),
-        value: node::status(selected, &tab.path, tab.follow, tab.is_open()), bounds, clip: bounds, flags,
+        value: node::status_view(selected, &tab.path, tab.view.follow, tab.is_open(), &tab.view.query, tab.view.matched, tab.view.matches, &tab.tail), bounds, clip: bounds, flags,
     }] });
 }
 
@@ -416,7 +415,7 @@ fn main() {
     };
 
     for tab in tabs.iter_mut() {
-        if tab.follow {
+        if tab.view.follow {
             tab.scroll_to_bottom(visible_lines);
         }
     }
@@ -440,87 +439,40 @@ fn main() {
             match delivered.event.clone() {
                 Event::KeyPress { ascii, keycode, .. } => {
                     let sel = tab_bar.selected();
-                    match keycode {
-                        KEY_UP => {
-                            if tabs[sel].scroll_offset > 0 {
-                                tabs[sel].scroll_offset -= 1;
-                                tabs[sel].follow = false;
+                    let command = if tabs[sel].view.editing {
+                        match keycode {
+                            breengel::keys::ENTER => Some(Command::Enter),
+                            breengel::keys::ESC => Some(Command::Escape),
+                            breengel::keys::BACKSPACE => Some(Command::Backspace),
+                            _ if ascii != 0 => Some(Command::Character(ascii)),
+                            _ => None,
+                        }
+                    } else {
+                        match keycode {
+                            KEY_UP => Some(Command::Up), KEY_DOWN => Some(Command::Down),
+                            KEY_PAGE_UP => Some(Command::PageUp), KEY_PAGE_DOWN => Some(Command::PageDown),
+                            KEY_HOME => Some(Command::Top), KEY_END => Some(Command::Bottom),
+                            _ => match ascii {
+                                b'k' => Some(Command::Up), b'j' => Some(Command::Down),
+                                b' ' => Some(Command::PageDown), b'g' => Some(Command::Top),
+                                b'G' => Some(Command::Bottom), b'f' => Some(Command::ToggleFollow),
+                                b'/' => Some(Command::Search), b'n' => Some(Command::Next), b'N' => Some(Command::Previous),
+                                b'\t' => { tab_bar.set_selected((sel + 1) % tabs.len()); None },
+                                b'q' | b'Q' => { for tab in &tabs { if let Some(fd) = tab.fd { let _ = io::close(fd); } } process::exit(0); },
+                                _ => None,
                             }
                         }
-                        KEY_DOWN => {
-                            if tabs[sel].scroll_offset + visible_lines < tabs[sel].line_count() {
-                                tabs[sel].scroll_offset += 1;
-                            }
-                        }
-                        KEY_PAGE_UP => {
-                            tabs[sel].scroll_offset =
-                                tabs[sel].scroll_offset.saturating_sub(visible_lines);
-                            tabs[sel].follow = false;
-                        }
-                        KEY_PAGE_DOWN => {
-                            let max = tabs[sel].line_count().saturating_sub(visible_lines);
-                            tabs[sel].scroll_offset =
-                                (tabs[sel].scroll_offset + visible_lines).min(max);
-                        }
-                        KEY_HOME => {
-                            tabs[sel].scroll_offset = 0;
-                            tabs[sel].follow = false;
-                        }
-                        KEY_END => {
-                            tabs[sel].scroll_to_bottom(visible_lines);
-                            tabs[sel].follow = true;
-                        }
-                        _ => {
-                            match ascii {
-                                b'q' | b'Q' => {
-                                    for tab in &tabs {
-                                        if let Some(fd) = tab.fd {
-                                            let _ = io::close(fd);
-                                        }
-                                    }
-                                    process::exit(0);
-                                }
-                                b'k' => {
-                                    if tabs[sel].scroll_offset > 0 {
-                                        tabs[sel].scroll_offset -= 1;
-                                        tabs[sel].follow = false;
-                                    }
-                                }
-                                b'j' => {
-                                    if tabs[sel].scroll_offset + visible_lines
-                                        < tabs[sel].line_count()
-                                    {
-                                        tabs[sel].scroll_offset += 1;
-                                    }
-                                }
-                                b' ' => {
-                                    let max =
-                                        tabs[sel].line_count().saturating_sub(visible_lines);
-                                    tabs[sel].scroll_offset =
-                                        (tabs[sel].scroll_offset + visible_lines).min(max);
-                                }
-                                b'g' => {
-                                    tabs[sel].scroll_offset = 0;
-                                    tabs[sel].follow = false;
-                                }
-                                b'G' => {
-                                    tabs[sel].scroll_to_bottom(visible_lines);
-                                    tabs[sel].follow = true;
-                                }
-                                b'f' => {
-                                    tabs[sel].follow = !tabs[sel].follow;
-                                    if tabs[sel].follow {
-                                        tabs[sel].scroll_to_bottom(visible_lines);
-                                    }
-                                }
-                                b'\t' => {
-                                    let next = (tab_bar.selected() + 1) % tabs.len();
-                                    tab_bar.set_selected(next);
-                                }
-                                _ => {}
-                            }
-                        }
+                    };
+                    if let Some(command) = command {
+                        let tab = &mut tabs[sel];
+                        let lines: Vec<&[u8]> = (0..tab.tail.line_count()).map(|i| tab.tail.line(i)).collect();
+                        tab.view.apply(command, &lines, visible_lines);
                     }
+                }
+                Event::Scroll { delta_y, .. } => {
+                    let tab = &mut tabs[tab_bar.selected()];
+                    let lines: Vec<&[u8]> = (0..tab.tail.line_count()).map(|i| tab.tail.line(i)).collect();
+                    tab.view.apply(Command::Wheel(delta_y as i32), &lines, visible_lines);
                 }
                 Event::MouseMove { x, y } => {
                     mouse_x = x;
@@ -595,7 +547,7 @@ fn main() {
                             1
                         };
                         for tab in tabs.iter_mut() {
-                            if tab.follow {
+                            if tab.view.follow {
                                 tab.scroll_to_bottom(visible_lines);
                             }
                         }
@@ -612,7 +564,9 @@ fn main() {
                 let reset = tab.poll_new_content();
                 if reset || tab.is_open() != was_open || tab.line_count() != prev_count || tab.tail.offset() != prev_offset {
                     needs_redraw = true;
-                    if tab.follow {
+                    let lines: Vec<&[u8]> = (0..tab.tail.line_count()).map(|i| tab.tail.line(i)).collect();
+                    tab.view.refresh(&lines, visible_lines);
+                    if tab.view.follow {
                         tab.scroll_to_bottom(visible_lines);
                     }
                 }
