@@ -21,6 +21,10 @@
 
 use std::process;
 
+#[path = "blog/tail.rs"]
+mod tail;
+use tail::{Action, Tail};
+
 use breengel::{CachedFont, Event, InputState, Rect, TabBar, Theme, Window};
 use libbreenix::fs;
 use libbreenix::io;
@@ -43,7 +47,6 @@ const WIN_H: u32 = 400;
 const TAB_BAR_H: i32 = 20;
 const STATUS_BAR_H: i32 = 18;
 const READ_CHUNK: usize = 4096;
-const MAX_FILE_SIZE: usize = 256 * 1024;
 
 // Colors
 const BG: Color = Color::rgb(30, 30, 40);
@@ -68,135 +71,62 @@ const KEY_END: u32 = breengel::keys::END;
 
 struct LogTab {
     path: &'static str,
-    content: Vec<u8>,
-    lines: Vec<(usize, usize)>,
+    tail: Tail,
     scroll_offset: usize,
     follow: bool,
     fd: Option<Fd>,
-    last_size: usize,
 }
 
 impl LogTab {
     fn new(path: &'static str) -> Self {
         Self {
             path,
-            content: Vec::new(),
-            lines: Vec::new(),
+            tail: Tail::new(),
             scroll_offset: 0,
             follow: true,
             fd: None,
-            last_size: 0,
         }
     }
 
     fn open(&mut self) {
-        match fs::open(self.path, fs::O_RDONLY) {
-            Ok(fd) => {
-                self.fd = Some(fd);
-                self.load_all(fd);
-            }
-            Err(_) => {
-                self.fd = None;
-            }
-        }
+        let _ = self.poll_new_content();
     }
 
-    fn load_all(&mut self, fd: Fd) {
-        let mut buf = [0u8; READ_CHUNK];
-        loop {
-            match io::read(fd, &mut buf) {
-                Ok(n) if n > 0 => {
-                    if self.content.len() + n > MAX_FILE_SIZE {
-                        let drain = (self.content.len() + n) - MAX_FILE_SIZE;
-                        if drain < self.content.len() {
-                            self.content.drain(..drain);
-                        } else {
-                            self.content.clear();
-                        }
-                    }
-                    self.content.extend_from_slice(&buf[..n]);
-                }
-                _ => break,
-            }
-        }
-        self.last_size = self.content.len();
-        self.rebuild_lines();
-    }
-
-    fn poll_new_content(&mut self) {
-        if self.fd.is_none() {
-            match fs::open(self.path, fs::O_RDONLY) {
-                Ok(fd) => {
-                    self.fd = Some(fd);
-                    self.load_all(fd);
-                    return;
-                }
-                Err(_) => return,
-            }
-        }
-
-        let fd = self.fd.unwrap();
-        let current_size = match fs::fstat(fd) {
-            Ok(stat) => stat.st_size as usize,
-            Err(_) => return,
+    fn poll_new_content(&mut self) -> bool {
+        // Opening the path lets us detect rename-rotation without relying on
+        // metadata from the old, still-open file descriptor.
+        let candidate = match fs::open(self.path, fs::O_RDONLY) {
+            Ok(fd) => fd,
+            Err(_) => return false,
         };
-
-        if current_size > self.last_size {
-            let _ = fs::lseek(fd, self.last_size as i64, fs::SEEK_SET);
-            let mut buf = [0u8; READ_CHUNK];
-            loop {
-                match io::read(fd, &mut buf) {
-                    Ok(n) if n > 0 => {
-                        if self.content.len() + n > MAX_FILE_SIZE {
-                            let drain = (self.content.len() + n) - MAX_FILE_SIZE;
-                            if drain < self.content.len() {
-                                self.content.drain(..drain);
-                            } else {
-                                self.content.clear();
-                            }
-                        }
-                        self.content.extend_from_slice(&buf[..n]);
-                    }
-                    _ => break,
-                }
+        let stat = match fs::fstat(candidate) {
+            Ok(stat) => stat,
+            Err(_) => { let _ = io::close(candidate); return false; }
+        };
+        let action = self.tail.observe(stat.st_ino, stat.st_size.max(0) as usize);
+        if self.fd.is_none() || action == Action::Reopen {
+            if let Some(old) = self.fd.replace(candidate) {
+                let _ = io::close(old);
             }
-            self.last_size = current_size;
-            self.rebuild_lines();
-        } else if current_size < self.last_size {
-            let _ = fs::lseek(fd, 0, fs::SEEK_SET);
-            self.content.clear();
-            self.load_all(fd);
+        } else {
+            let _ = io::close(candidate);
         }
+        let fd = self.fd.unwrap();
+        if fs::lseek(fd, self.tail.offset() as i64, fs::SEEK_SET).is_err() {
+            return false;
+        }
+        let mut buf = [0u8; READ_CHUNK];
+        while let Ok(n) = io::read(fd, &mut buf) {
+            if n == 0 { break; }
+            self.tail.feed(&buf[..n]);
+        }
+        self.scroll_offset = self.scroll_offset.min(self.line_count().saturating_sub(1));
+        action != Action::Read
     }
 
-    fn rebuild_lines(&mut self) {
-        self.lines.clear();
-        if self.content.is_empty() {
-            return;
-        }
-        let mut start = 0;
-        for (i, &b) in self.content.iter().enumerate() {
-            if b == b'\n' {
-                self.lines.push((start, i));
-                start = i + 1;
-            }
-        }
-        if start < self.content.len() {
-            self.lines.push((start, self.content.len()));
-        }
-    }
+    fn line_bytes(&self, line: usize) -> &[u8] { self.tail.line(line) }
 
-    fn line_bytes(&self, line: usize) -> &[u8] {
-        if line >= self.lines.len() {
-            return b"";
-        }
-        let (start, end) = self.lines[line];
-        &self.content[start..end]
-    }
-
-    fn line_count(&self) -> usize {
-        self.lines.len()
-    }
+    fn line_count(&self) -> usize { self.tail.line_count() }
 
     fn scroll_to_bottom(&mut self, visible_lines: usize) {
         if self.line_count() > visible_lines {
@@ -312,7 +242,7 @@ fn render(
 
             // Line number
             let mut num_buf = [b' '; 5];
-            format_line_number(&mut num_buf, line_idx + 1);
+            format_line_number(&mut num_buf, tab.tail.line_number(line_idx));
             text.draw_text(&num_buf, 2, y, TEXT_LINE_NUM);
 
             // Line content, truncated to fit
@@ -335,8 +265,8 @@ fn render(
     let mut info_buf = [0u8; 40];
     let info_len = format_line_info(
         &mut info_buf,
-        tab.scroll_offset + 1,
-        tab.line_count(),
+        tab.tail.line_number(tab.scroll_offset),
+        tab.tail.line_number(tab.line_count()).saturating_sub(1),
     );
     let info_x = (w as usize / 2).saturating_sub(info_len * char_w / 2);
     text.draw_text(&info_buf[..info_len], info_x, status_y as usize + 2, STATUS_FG);
@@ -457,7 +387,7 @@ fn main() {
     // Diagnostic: show log file status
     for (i, tab) in tabs.iter().enumerate() {
         println!("[blog] tab[{}] '{}': open={} lines={} bytes={}",
-                 i, tab.path, tab.is_open(), tab.line_count(), tab.content.len());
+                 i, tab.path, tab.is_open(), tab.line_count(), tab.tail.offset());
     }
 
     let content_h = WIN_H as i32 - tab_pixels - STATUS_BAR_H;
@@ -655,8 +585,9 @@ fn main() {
         if poll_counter % 10 == 0 {
             for tab in tabs.iter_mut() {
                 let prev_count = tab.line_count();
-                tab.poll_new_content();
-                if tab.line_count() != prev_count {
+                let prev_offset = tab.tail.offset();
+                let reset = tab.poll_new_content();
+                if reset || tab.line_count() != prev_count || tab.tail.offset() != prev_offset {
                     needs_redraw = true;
                     if tab.follow {
                         tab.scroll_to_bottom(visible_lines);

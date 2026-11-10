@@ -18,6 +18,7 @@ fn truncation_reloads_from_zero() {
     let mut tail = Tail::new();
     assert_eq!(tail.observe(7, 8), Action::Read);
     tail.feed(b"old line\n");
+    assert_eq!(tail.offset(), 9);
     assert_eq!(tail.observe(7, 4), Action::Reload);
     tail.feed(b"new\n");
     assert_eq!(tail.line_count(), 1);
