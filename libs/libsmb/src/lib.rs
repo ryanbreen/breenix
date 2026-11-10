@@ -3,6 +3,7 @@
 pub mod auth;
 
 pub mod msg;
+pub mod security;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Error;
