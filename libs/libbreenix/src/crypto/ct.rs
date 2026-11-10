@@ -1,6 +1,6 @@
 //! Byte comparison without content-dependent early exits.
 
-/// Compare byte slices, examining every byte when their lengths match.
+/// Compare equal-length byte slices without an early exit on mismatch.
 /// The lengths themselves are not concealed.
 pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
     if a.len() != b.len() {
