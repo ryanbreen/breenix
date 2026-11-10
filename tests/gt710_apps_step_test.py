@@ -189,6 +189,28 @@ class AppsStep(unittest.TestCase):
             with self.subTest(text=text[-400:]):
                 self.assertEqual(record(text), 1)
 
+    def test_step_three_selection_and_order(self):
+        expected = json.loads((ROOT / 'docs/gui/gt710-step-23-2.json').read_text())['cases'] + [
+            'blog/tail', 'blog/follow', 'blog/truncate-rotate', 'blog/navigation',
+            'blog/search', 'blog/missing-file', 'blog/blogd-records-once', 'blog/blogd-restart',
+        ]
+        selection_path = ROOT / 'docs/gui/gt710-step-23-3.json'
+        selected = json.loads(selection_path.read_text())['cases']
+        self.assertEqual(selected, expected)
+        self.assertEqual(NAMES[:len(expected)], expected)
+        shutil.copyfile(selection_path, self.definition / 'docs/gui/gt710-step-23-3.json')
+        with patch.dict(globals(), SELECTED=selected):
+            original = serial()
+        def record(text):
+            (self.path / 'serial.txt').write_text(text)
+            return API['record_apps_capture'](self.path, SHA, 3)
+        self.assertEqual(record(original), 0)
+        first, second = selected[-2:]
+        for text in [original.replace(f'SUITE gui-apps CASE {first} PASS ms=1\n', ''),
+                     original.replace(first, 'foreign/case'),
+                     original.replace(first, '__swap__').replace(second, first).replace('__swap__', second)]:
+            self.assertEqual(record(text), 1)
+
     def test_cli(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/metal/gt710-suite'),
                                  '--apps-step', '1', '--capture-directory', str(self.path), '--sha', SHA],
