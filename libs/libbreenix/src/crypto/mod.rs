@@ -78,3 +78,46 @@ mod md_tests {
         }
     }
 }
+
+#[cfg(all(test, feature = "std"))]
+mod cmac_tests {
+    use super::cmac::{aes_cmac, subkeys, AesCmac};
+
+    fn bytes<const N: usize>(s: &str) -> [u8; N] {
+        assert_eq!(s.len(), N * 2);
+        core::array::from_fn(|i| u8::from_str_radix(&s[i * 2..i * 2 + 2], 16).unwrap())
+    }
+
+    #[test]
+    fn rfc_4493_subkeys() {
+        let key = bytes("2b7e151628aed2a6abf7158809cf4f3c");
+        let (k1, k2) = subkeys(&key);
+        assert_eq!(k1, bytes("fbeed618357133667c85e08f7236a8de"));
+        assert_eq!(k2, bytes("f7ddac306ae266ccf90bc11ee46d513b"));
+    }
+
+    #[test]
+    fn rfc_4493_messages() {
+        let key = bytes("2b7e151628aed2a6abf7158809cf4f3c");
+        let message: [u8; 64] = bytes(concat!(
+            "6bc1bee22e409f96e93d7e117393172a",
+            "ae2d8a571e03ac9c9eb76fac45af8e51",
+            "30c81c46a35ce411e5fbc1191a0a52ef",
+            "f69f2445df4f9b17ad2b417be66c3710",
+        ));
+        for (len, expected) in [
+            (0, "bb1d6929e95937287fa37d129b756746"),
+            (16, "070a16b46b4d4144f79bdd9dd04a287c"),
+            (40, "dfa66747de9ae63030ca32611497c827"),
+            (64, "51f0bebf7e3b9d92fc49741779363cfe"),
+        ] {
+            let expected = bytes::<16>(expected);
+            let input = &message[..len];
+            assert_eq!(aes_cmac(&key, input), expected);
+            let mut mac = AesCmac::new(&key);
+            for chunk in input.chunks(7) { mac.update(chunk); }
+            mac.update(&[]);
+            assert_eq!(mac.finalize(), expected);
+        }
+    }
+}
