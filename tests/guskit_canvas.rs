@@ -104,3 +104,12 @@ fn preview_does_not_change_the_committed_canvas() {
     assert_eq!(base.pixels(), &[255; 18]);
     assert_eq!(preview.pixels(), &[0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 255, 255, 255, 255, 255, 255, 255]);
 }
+
+#[test]
+fn canvas_render_runs_preserve_pixels_and_coalesce_adjacent_colors() {
+    let mut image = Canvas::new(4, 2);
+    image.line((1, 0), (2, 0), [0, 0, 0]);
+    let mut runs = Vec::new();
+    image.render_runs(|x, y, width, color| runs.push((x, y, width, color)));
+    assert_eq!(runs, vec![(0,0,1,[255;3]), (1,0,2,[0;3]), (3,0,1,[255;3]), (0,1,4,[255;3])]);
+}
