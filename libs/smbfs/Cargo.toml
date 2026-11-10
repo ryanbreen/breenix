@@ -1,0 +1,8 @@
+[package]
+name = "smbfs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libsmb = { path = "../libsmb" }
+ufs-abi = { path = "../ufs-abi" }
