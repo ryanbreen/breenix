@@ -112,5 +112,7 @@ pub fn close() -> CaseResult {
     t.key_exit(1, 0)?;
     t.launch_next(argv, "\u{1}Launcher")?;
     t.click_exit(0, 0, 0)?;
+    t.launch_next(argv, "\u{1}Launcher")?;
+    t.click_desktop_exit()?;
     Ok(t.finish()?)
 }

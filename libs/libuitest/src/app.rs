@@ -25,6 +25,12 @@ pub fn exit_input_verdict(disposition: &str, window: u64, wanted: u64, status: i
     Ok(())
 }
 
+/// A background press is handled by bwm and must still cause a clean exit.
+pub fn desktop_exit_input_verdict(disposition: &str, window: u64, status: i32) -> Result<(), String> {
+    if disposition == "wm-handled" && window == 0 && status == 0 { Ok(()) }
+    else { Err(format!("desktop exit disposition={disposition} window={window} status={status}")) }
+}
+
 /// After a witnessed exit, a release can have no focused client left.
 pub fn exit_release_verdict(disposition: &str, window: u64, reason: &str) -> Result<(), String> {
     if (disposition == "delivered" && window != 0)
@@ -110,16 +116,24 @@ mod live {
         /// A key whose action destroys its window. Delivery and exit replace a
         /// post-action frame; ordinary key() still requires a processed commit.
         pub fn key_exit(&mut self, code: u16, status: i32) -> Result<(), String> {
-            self.input_exit(code, false, status)
+            self.input_exit(code, false, status, false)
         }
         /// Click at content coordinates, including an app's dismissal margin.
         pub fn click_exit(&mut self, x: i32, y: i32, status: i32) -> Result<(), String> {
             let live = self.keys.backend_mut();
             let info = live.info(self.window)?;
             live.move_to((info.x + x, info.y + y))?;
-            self.input_exit(key::BUTTON_LEFT, true, status)
+            self.input_exit(key::BUTTON_LEFT, true, status, false)
         }
-        fn input_exit(&mut self, code: u16, pointer: bool, expected: i32) -> Result<(), String> {
+        /// Click the desktop to the left of this window, outside its content.
+        pub fn click_desktop_exit(&mut self) -> Result<(), String> {
+            let live = self.keys.backend_mut();
+            let info = live.info(self.window)?;
+            let x = info.x.checked_sub(24).filter(|x| *x >= 0).ok_or("no desktop left of window")?;
+            live.move_to((x, info.y + 80))?;
+            self.input_exit(key::BUTTON_LEFT, true, 0, true)
+        }
+        fn input_exit(&mut self, code: u16, pointer: bool, expected: i32, desktop: bool) -> Result<(), String> {
             let pid = self.launched.ok_or("no launched app")?;
             let live = self.keys.backend_mut();
             let press = if pointer { live.send_button(code, true) } else { live.send_key(code, true) };
@@ -129,7 +143,8 @@ mod live {
                 let ledger = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
                 let row = crate::input::ledger_entry(&ledger, event.serial)?.ok_or("exit input delivery missing")?;
                 let exit = live.session().wait_exit(pid)?;
-                exit_input_verdict(row.disposition, row.window, self.window, exit.status, expected)?;
+                if desktop { desktop_exit_input_verdict(row.disposition, row.window, exit.status)?; }
+                else { exit_input_verdict(row.disposition, row.window, self.window, exit.status, expected)?; }
                 Ok(exit.status)
             })();
             // Focus can belong to the launched child by now. A release needs a

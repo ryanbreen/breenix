@@ -217,6 +217,8 @@ impl Router {
                             },
                             point,
                         ));
+                    } else if content_enabled && code == 0x110 {
+                        out.focus = Some(stack.clear_focus());
                     }
                 }
             }

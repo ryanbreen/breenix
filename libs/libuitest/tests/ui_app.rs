@@ -60,3 +60,12 @@ fn exit_release_requires_a_disposition_and_allows_only_no_focus_rejection() {
     assert!(exit_release_verdict("missing", 0, "none").is_err());
     assert!(exit_release_verdict("client-rejected", 0, "no-focus").is_err());
 }
+
+#[test]
+fn desktop_exit_requires_wm_handling_and_clean_exit() {
+    use app::desktop_exit_input_verdict as verdict;
+    assert!(verdict("wm-handled", 0, 0).is_ok());
+    assert!(verdict("delivered", 12, 0).is_err());
+    assert!(verdict("rejected", 0, 0).is_err());
+    assert!(verdict("wm-handled", 0, 9).is_err());
+}

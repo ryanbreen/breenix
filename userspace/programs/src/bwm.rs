@@ -1000,7 +1000,7 @@ fn pointer_content_enabled(windows: &[Window], stack: &Stack, (x, y): (i32, i32)
     // Chrome and its resize margin occlude lower content as in the existing hit path.
     ordered_windows(windows, stack).rev().filter(|w| !stack.minimized(w.window_id))
         .find(|w| w.hit_any(x, y) || w.hit_resize_edge(x, y).is_some())
-        .is_some_and(|w| w.hit_content(x, y) && w.hit_resize_edge(x, y).is_none())
+        .is_none_or(|w| w.hit_content(x, y) && w.hit_resize_edge(x, y).is_none())
 }
 
 fn send_pointer_notices(notices: Vec<pointer_route::Notice>) {
