@@ -105,3 +105,14 @@ fn bcheck_dispatches_input_before_presenting() {
     assert!(source.contains("win.dispatch(|delivered|"));
     assert!(source.contains("Handled::Redraw"));
 }
+
+#[test]
+fn guskit_uses_window_dispatch_and_publishes_tree() {
+    let source = std::fs::read_to_string("userspace/programs/src/guskit.rs").expect("Gus Kit binary");
+    assert!(source.contains("win.dispatch("));
+    assert!(source.contains("win.set_tree("));
+    for forbidden in ["poll_events", "framebuf", "fb_mmap", "libcollab"] {
+        assert!(!source.contains(forbidden), "unexpected {forbidden}");
+    }
+    assert!(include_str!("../userspace/programs/build.sh").contains("guskit"));
+}
