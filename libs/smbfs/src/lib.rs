@@ -334,3 +334,10 @@ impl<B: Backend> Namespace<B> {
         Ok(())
     }
 }
+
+mod mount_options;
+pub use mount_options::{
+    parse_credentials, parse_mount_options, read_credentials, Credentials, MountOptions,
+};
+
+mod dispatch;

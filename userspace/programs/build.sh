@@ -454,6 +454,8 @@ STD_BINARIES=(
     "suite-gui-apps"
     "suite-network-shares"
     "memfsd_test"
+    "mount"
+    "smbfsd"
     "ui-runner-fixture_test"
     "wm-client_test"
     "gpu-exec-probe"

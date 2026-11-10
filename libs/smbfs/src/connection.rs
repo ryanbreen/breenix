@@ -25,6 +25,12 @@ pub struct Connection {
     dialect: DialectCap,
 }
 impl Connection {
+    pub fn dialect(&self) -> u16 {
+        self.client.dialect()
+    }
+    pub fn encrypted(&self) -> bool {
+        self.client.encrypted()
+    }
     pub fn connect(
         host: &str,
         port: u16,

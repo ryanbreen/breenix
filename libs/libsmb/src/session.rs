@@ -150,6 +150,10 @@ impl Session {
     pub fn is_closed(&self) -> bool {
         self.phase == Phase::Closed
     }
+    pub fn encrypted(&self) -> bool {
+        self.session_encrypt || self.tree_encrypt
+    }
+
     pub fn negotiated(&self) -> Option<&NegotiateResponse> {
         self.negotiated.as_ref()
     }

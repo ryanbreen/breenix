@@ -64,4 +64,6 @@ bin groupadd usr/sbin 0755 0
 bin groupdel usr/sbin 0755 0
 bin *_test usr/libexec/breenix 0755 0
 bin test_* usr/libexec/breenix 0755 0
+bin mount sbin 0755 0
+bin smbfsd sbin 0755 0
 bin * usr/bin 0755 0

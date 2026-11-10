@@ -280,6 +280,10 @@ impl Client {
         Ok(client)
     }
 
+    pub fn encrypted(&self) -> bool {
+        self.session.encrypted()
+    }
+
     pub fn dialect(&self) -> u16 {
         self.session.negotiated().map_or(0, |n| n.dialect)
     }
