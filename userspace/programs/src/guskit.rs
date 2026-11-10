@@ -134,6 +134,7 @@ fn menu() -> MenuBar {
     menu.layout(&Theme::dark()); menu
 }
 fn render(fb: &mut Surface, app: &App, menu: &MenuBar) {
+    fb.batch(|fb| {
     fb.clear(Color::rgb(45, 45, 45));
     for (i, label) in LABELS.iter().enumerate() {
         let x = 2 + i * 38;
@@ -145,17 +146,18 @@ fn render(fb: &mut Surface, app: &App, menu: &MenuBar) {
         shapes::fill_rect(fb, x as i32, 41, 20, 16, if i == app.size { Color::rgb(100,140,220) } else { Color::rgb(60,60,60) });
         bitmap_font::draw_text(fb, *label, x + 3, 42, Color::WHITE);
     }
-    for x in 0..780 { let c = node::hsv_to_rgb(node::hue_at(x, 780), 255, 255); for y in 58..76 { fb.put_pixel(x, y, Color::rgb(c[0], c[1], c[2])); } }
+    for x in 0..780 { let c = node::hsv_to_rgb(node::hue_at(x, 780), 255, 255); shapes::fill_rect(fb, x as i32, 58, 1, 18, Color::rgb(c[0], c[1], c[2])); }
     for y in 0..100 { for x in 0..100 { let (s,v) = node::sv_at(x,y,100); let c = node::hsv_to_rgb(app.hue,s,v); fb.put_pixel(x, y+76, Color::rgb(c[0],c[1],c[2])); } }
     bitmap_font::draw_text(fb, b"Recent:", 108, 78, Color::WHITE);
     for (i, c) in app.recent.iter().enumerate() { shapes::fill_rect(fb, 108 + i as i32 * 18, 90, 16, 16, Color::rgb(c[0], c[1], c[2])); }
     let preview = app.stroke.as_ref().map(|points| app.history.canvas().preview(points, |image, points| app.draw_stroke(image, points)));
-    let pixels = preview.as_ref().unwrap_or_else(|| app.history.canvas()).pixels();
-    for y in 0..app.height.min((fb.height() as usize).saturating_sub(TOP as usize)) { for x in 0..app.width.min(fb.width() as usize) { let i = (y * app.width + x) * 3; fb.put_pixel(x,y+TOP as usize,Color::rgb(pixels[i],pixels[i+1],pixels[i+2])); } }
+    let canvas = preview.as_ref().unwrap_or_else(|| app.history.canvas());
+    canvas.render_runs(|x, y, width, c| shapes::fill_rect(fb, x as i32, y as i32 + TOP, width as i32, 1, Color::rgb(c[0], c[1], c[2])));
     menu.draw(fb, &Theme::dark());
     if !app.message.is_empty() { bitmap_font::draw_text(fb, app.message.as_bytes(), 110, 150, Color::WHITE); }
     if let Some(picker) = &app.picker { picker.draw(fb, &Theme::dark()); }
     if app.confirm { shapes::fill_rect(fb, 180, 220, 440, 64, Color::rgb(30,30,30)); bitmap_font::draw_text(fb, b"Discard changes? D: discard  Esc: cancel", 190, 242, Color::WHITE); }
+    });
 }
 fn publish(win: &mut Window, app: &App) {
     use breengel::tree::{Flag, Node, Role, Tree};

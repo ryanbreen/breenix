@@ -47,6 +47,23 @@ impl Canvas {
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
+    pub fn render_runs(&self, mut emit: impl FnMut(usize, usize, usize, Color)) {
+        for y in 0..self.height {
+            let mut x = 0;
+            while x < self.width {
+                let i = (y * self.width + x) * 3;
+                let color = [self.pixels[i], self.pixels[i + 1], self.pixels[i + 2]];
+                let start = x;
+                x += 1;
+                while x < self.width {
+                    let j = (y * self.width + x) * 3;
+                    if self.pixels[j..j + 3] != color { break; }
+                    x += 1;
+                }
+                emit(start, y, x - start, color);
+            }
+        }
+    }
     pub fn preview(&self, points: &[Point], draw: impl FnOnce(&mut Self, &[Point])) -> Self {
         let mut image = self.clone();
         draw(&mut image, points);
