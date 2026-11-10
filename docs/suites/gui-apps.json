@@ -113,6 +113,28 @@
           "title": "Close launcher"
         }
       ]
+    },
+    {
+      "id": "blog",
+      "title": "blog",
+      "cases": [
+        {
+          "id": "tail",
+          "title": "Tail appended lines"
+        },
+        {
+          "id": "follow",
+          "title": "Follow new lines"
+        },
+        {
+          "id": "truncate-rotate",
+          "title": "Truncate and rotate"
+        },
+        {
+          "id": "missing-file",
+          "title": "Wait for missing file"
+        }
+      ]
     }
   ]
 }
