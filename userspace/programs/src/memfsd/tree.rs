@@ -83,6 +83,18 @@ impl Tree {
                 r.finish().map_err(|_| EINVAL)?;
                 self.attr(self.lookup(req.node, name)?)
             }
+            Op::Parent => {
+                r.finish().map_err(|_| EINVAL)?;
+                let node = self.dir(req.node)?;
+                if req.node == ROOT || !node.linked { return Err(2); }
+                let name = self.dir(node.parent)?.children.iter()
+                    .find_map(|(name, id)| (*id == req.node).then_some(name)).ok_or(2)?;
+                let mut bytes = vec![0; 10 + name.len()];
+                let mut w = Writer::new(&mut bytes);
+                w.u64(node.parent).map_err(|_| EINVAL)?;
+                w.name(name).map_err(|_| EINVAL)?;
+                Ok(bytes)
+            }
             Op::Getattr => { r.finish().map_err(|_| EINVAL)?; self.attr(req.node) }
             Op::Setattr => {
                 if req.payload.len() == ufs_abi::payload::SetTimes::SIZE {

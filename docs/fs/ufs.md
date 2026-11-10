@@ -65,6 +65,13 @@ daemon uses epoch times. ctime may be synthesized from mtime by the bridge.
 | Fsync | node | handle:u64 | empty (files and directories) |
 | Statfs | any node | empty | seven u64: bsize, blocks, bfree, bavail, files, ffree, namelen |
 | Release | node | handle:u64 | empty |
+| Parent (opcode 16) | non-root directory | empty | parent_node:u64, name |
+
+Parent returns the directory's current parent and exact entry name, including
+renames of an open directory. The mount root is supplied by the kernel and
+returns ENOENT to Parent. A directory with no namespace name returns ENOENT.
+The bridge uses this query to rebuild cwd and directory-fd ancestry by identity;
+serving daemons must implement it for directory-relative operations.
 
 The Setattr timestamp form uses mask bit 0 for atime and bit 1 for mtime.
 Other bits are invalid. An unset bit leaves that field unchanged in the daemon;

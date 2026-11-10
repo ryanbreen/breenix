@@ -32,6 +32,7 @@ pub enum Op {
     Fsync,
     Statfs,
     Release,
+    Parent,
 }
 
 impl TryFrom<u16> for Op {
@@ -53,6 +54,7 @@ impl TryFrom<u16> for Op {
             13 => Ok(Self::Fsync),
             14 => Ok(Self::Statfs),
             15 => Ok(Self::Release),
+            16 => Ok(Self::Parent),
             _ => Err(Error),
         }
     }
