@@ -510,7 +510,9 @@ fn main() {
                         binding.key == 0 && binding.modifiers == modifier::SUPER);
                 let mut consumed = released_chord || modifier_tap;
                 if event.value != 0 {
-                    if (key::F1..key::F1 + 5).contains(&event.code) {
+                    if current_mods == modifier::SUPER && (key::F1..key::F1 + 5).contains(&event.code) {
+                        // Window selection uses Super as a chord, so cancel its tap sequence.
+                        hotkey_mgr.key_pressed(current_mods, current_mods, 0, Some(event.value == 2));
                         if let Some(&id) = stack.order().get((event.code - key::F1) as usize) {
                             let transition = stack.raise(id);
                             publish_transition(&windows, &stack, transition);

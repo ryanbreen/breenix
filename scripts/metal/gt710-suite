@@ -4034,7 +4034,7 @@ def completed_suite_capture(directory, sha, suite=None):
             or not any(e.get('event') == 'power-off' and e.get('off') is True for e in events)
             or not driver_closed):
         raise ValueError('native suite requires a complete clean driver-closed capture')
-    serial = ((directory / 'serial.txt').read_text() if suite in ('window-manager', 'ui-testing')
+    serial = ((directory / 'serial.txt').read_text() if suite in ('window-manager', 'ui-testing', 'gui-apps')
               else capture_serial(directory, suite))
     if status == 1 and boot.get('suite') == 'breengel':
         # G13: a completed case verdict must explain a nonzero suite exit.
@@ -4313,7 +4313,7 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
         raise ValueError('WM uploads exceed the per-boot evidence bound')
     if receipts[1]['route'] != receipts[0]['route'] + '/final':
         raise ValueError('WM uploads belong to different routes')
-    kind = 'wm' if suite == 'window-manager' else 'ui'
+    kind = {'window-manager': 'wm', 'ui-testing': 'ui', 'gui-apps': 'apps'}[suite]
     report = dict(boot=boot['id'], commit=sha, milestone=f'metal-gt710/{kind}-step',
                   selection=selection, cases=[dict(id=f'{kind}-step/suite', result='PASS',
                     reason=f'{len(required) - len(failed)}/{len(required)} selected {"WM" if suite == "window-manager" else suite} cases passed; '
@@ -4332,9 +4332,13 @@ def ui_step_capture(directory, sha, step_number):
     return step_capture(directory, sha, step_number, 'ui-testing', 'gt710-step-22-', 7)
 
 
+def apps_step_capture(directory, sha, step_number):
+    return step_capture(directory, sha, step_number, 'gui-apps', 'gt710-step-23-', 8)
+
+
 def record_step_capture(directory, sha, step_number, suite, prefix, max_step):
     directory = Path(directory)
-    kind = 'wm' if suite == 'window-manager' else 'ui'
+    kind = {'window-manager': 'wm', 'ui-testing': 'ui', 'gui-apps': 'apps'}[suite]
     try:
         report = step_capture(directory, sha, step_number, suite, prefix, max_step)
     except (OSError, ValueError, KeyError, TypeError) as error:
@@ -4353,6 +4357,10 @@ def record_wm_capture(directory, sha, step_number):
 
 def record_ui_capture(directory, sha, step_number):
     return record_step_capture(directory, sha, step_number, 'ui-testing', 'gt710-step-22-', 7)
+
+
+def record_apps_capture(directory, sha, step_number):
+    return record_step_capture(directory, sha, step_number, 'gui-apps', 'gt710-step-23-', 8)
 
 
 def record_breengel_capture(directory, sha, category):
@@ -4758,6 +4766,7 @@ def main():
     breengel.add_argument('--breengel-full', action='store_true', help='score full 401-case acceptance against step 9.4')
     breengel.add_argument('--wm-step', type=int, choices=range(1, 8), help='score a cumulative window-manager step (21.1 through 21.7)')
     breengel.add_argument('--ui-step', type=int, choices=range(1, 8), help='score a cumulative ui-testing step (22.1 through 22.7)')
+    breengel.add_argument('--apps-step', type=int, choices=range(1, 9), help='score a cumulative gui-apps step (23.1 through 23.8)')
     parser.add_argument('--resources', action='store_true', help='score PR 8.2 from this console boot and --gpu-boot; retain core/* separately')
     parser.add_argument('--isolation', action='store_true', help='score PR 8.5 isolation and preceding selections from the same captures')
     parser.add_argument('--shapes', action='store_true', help='score PR 8.4 shapes and preceding selections from the same captures')
@@ -4772,7 +4781,7 @@ def main():
         parser.error('--watch-acceptance requires --capture-directory CONSOLE')
     if args.gpu_capture_directory and not args.watch_acceptance:
         parser.error('--gpu-capture-directory requires --watch-acceptance')
-    if args.wm_step is not None or args.ui_step is not None:
+    if args.wm_step is not None or args.ui_step is not None or args.apps_step is not None:
         if any((args.check_manifest, args.watch_acceptance, args.gpu_boot, args.core_boot,
                 args.acceptance_directory, args.pr, args.resources, args.alpha, args.shapes,
                 args.isolation, args.presentation, args.performance)):
@@ -4781,7 +4790,8 @@ def main():
             if args.boot:
                 parser.error('--wm-step needs either --capture-directory or --boot')
             return (record_wm_capture(args.capture_directory, args.sha, args.wm_step) if args.wm_step is not None
-                    else record_ui_capture(args.capture_directory, args.sha, args.ui_step))
+                    else record_ui_capture(args.capture_directory, args.sha, args.ui_step) if args.ui_step is not None
+                    else record_apps_capture(args.capture_directory, args.sha, args.apps_step))
     if args.capture_directory and any((args.check_manifest, args.boot, args.gpu_boot, args.core_boot,
             args.acceptance_directory, args.pr, args.breengel_fronts, args.breengel_composition,
             args.breengel_stage, args.breengel_full, args.resources, args.alpha, args.shapes,
@@ -4848,13 +4858,13 @@ def main():
         return result.stdout
 
     boot = json.loads(read('run.json'))
-    if args.wm_step is not None or args.ui_step is not None:
+    if args.wm_step is not None or args.ui_step is not None or args.apps_step is not None:
         result = runner['in_metal'](env, 'python3', '-c',
             'import runpy,sys;from pathlib import Path;'
             'p=Path(sys.argv[1]);a=runpy.run_path(str(p/"definition/scripts/metal/gt710-suite"));'
             'sys.exit(a[sys.argv[4]](p,sys.argv[2],int(sys.argv[3])))',
-            directory, args.sha, str(args.wm_step if args.wm_step is not None else args.ui_step),
-            'record_wm_capture' if args.wm_step is not None else 'record_ui_capture')
+            directory, args.sha, str(args.wm_step if args.wm_step is not None else args.ui_step if args.ui_step is not None else args.apps_step),
+            'record_wm_capture' if args.wm_step is not None else 'record_ui_capture' if args.ui_step is not None else 'record_apps_capture')
         return result.returncode
     if args.breengel_fronts or args.breengel_composition or args.breengel_stage or args.breengel_full:
         if (not read('ended').strip() or read('exit-status').strip() not in ('0', '1')

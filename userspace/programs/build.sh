@@ -451,6 +451,7 @@ STD_BINARIES=(
     "suite-gpu"
     "suite-window-manager"
     "suite-ui-testing"
+    "suite-gui-apps"
     "ui-runner-fixture_test"
     "wm-client_test"
     "gpu-exec-probe"
@@ -483,6 +484,8 @@ STD_BINARIES=(
 
     # Apps
     "bterm"
+    "vt-script_test"
+    "clip-set_test"
     "blog"
     "bfontpicker"
     "blauncher"

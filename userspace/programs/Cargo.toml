@@ -12,6 +12,8 @@ description = "Userspace programs and utilities for Breenix"
 framebuffer-v1 = []
 
 [dependencies]
+libvt = { path = "../../libs/libvt" }
+libclipboard = { path = "../../libs/libclipboard" }
 serde_json = { version = "=1.0.154", default-features = false, features = ["alloc"] }
 libpixcheck = { path = "../../libs/libpixcheck" }
 libuitest = { path = "../../libs/libuitest" }
@@ -888,3 +890,15 @@ path = "src/suite_runner_fixture.rs"
 [[bin]]
 name = "uitest-app_test"
 path = "src/uitest_app.rs"
+
+[[bin]]
+name = "suite-gui-apps"
+path = "src/suite_gui_apps.rs"
+
+[[bin]]
+name = "vt-script_test"
+path = "src/vt_script_test.rs"
+
+[[bin]]
+name = "clip-set_test"
+path = "src/clip_set_test.rs"

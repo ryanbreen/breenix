@@ -19,6 +19,7 @@ impl Channel {
         Ok(Self { fd, decoder: Decoder::default(), pending: Vec::new(), sent: 0 })
     }
     /// Gate bytes at enqueue, before a partial frame can enter the decoder.
+    #[cfg(target_os = "breenix")]
     pub fn require_root_sender(&self) -> Result<(), String> {
         use libbreenix::{socket::SO_BREENIX_ROOT_ONLY, syscall::{nr, raw}};
         let on = 1i32;

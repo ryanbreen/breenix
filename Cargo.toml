@@ -79,6 +79,8 @@ members = [
     "libs/arm64-boot-contract",
     "libs/breengel-abi",
     "libs/input-abi",
+    "libs/libvt",
+    "libs/libclipboard",
     "libs/gpu-abi"
 ]
 
@@ -97,6 +99,7 @@ kernel = { path = "kernel", artifact = "bin", target = "x86_64-unknown-none" }
 bootloader = { git = "https://github.com/rust-osdev/bootloader.git", rev = "707db11201b19541b7cfef84037866ee03aa0927", default-features = false, features = ["uefi"] }
 
 [dev-dependencies]
+libvt = { path = "libs/libvt" }
 libpixcheck = { path = "libs/libpixcheck" }
 libbreenix = { path = "libs/libbreenix", features = ["std"] }
 gpu-abi = { path = "libs/gpu-abi" }

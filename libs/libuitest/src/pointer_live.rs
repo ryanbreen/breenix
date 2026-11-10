@@ -108,8 +108,22 @@ impl Drop for Mapping {
     }
 }
 
+enum SessionHandle<'a> { Borrowed(&'a mut Session), Owned(Session) }
+impl core::ops::Deref for SessionHandle<'_> {
+    type Target = Session;
+    fn deref(&self) -> &Session { match self { Self::Borrowed(s) => s, Self::Owned(s) => s } }
+}
+impl core::ops::DerefMut for SessionHandle<'_> {
+    fn deref_mut(&mut self) -> &mut Session { match self { Self::Borrowed(s) => s, Self::Owned(s) => s } }
+}
+impl Drop for SessionHandle<'_> {
+    fn drop(&mut self) {
+        if let Self::Owned(session) = self { let _ = session.teardown(); }
+    }
+}
+
 pub struct LivePointer<'a> {
-    session: &'a mut Session,
+    session: SessionHandle<'a>,
     reader: Reader,
     pending: Vec<Event>,
     desktop: Mapping,
@@ -119,6 +133,12 @@ pub struct LivePointer<'a> {
 }
 impl<'a> LivePointer<'a> {
     pub fn new(session: &'a mut Session) -> Result<Self, String> {
+        Self::with_session(SessionHandle::Borrowed(session))
+    }
+    pub(crate) fn owned(session: Session) -> Result<LivePointer<'static>, String> {
+        LivePointer::with_session(SessionHandle::Owned(session))
+    }
+    fn with_session(session: SessionHandle<'a>) -> Result<Self, String> {
         let desktop = Mapping::new(0)?;
         let reader = Reader::open(true).map_err(|e| e.to_string())?;
         let mut live = Self {
@@ -136,7 +156,7 @@ impl<'a> LivePointer<'a> {
         Ok(live)
     }
     pub fn session(&mut self) -> &mut Session {
-        self.session
+        &mut self.session
     }
     pub fn serials(&self) -> &[u64] { &self.serials }
     /// Snapshot the compositor's committed desktop projection at one scene.
@@ -178,7 +198,7 @@ impl<'a> LivePointer<'a> {
             .copied()
             .ok_or_else(|| format!("input target window={id} missing"))
     }
-    fn activate(&mut self, id: u64) -> Result<(), String> {
+    pub(crate) fn activate(&mut self, id: u64) -> Result<(), String> {
         let end = Instant::now() + Duration::from_secs(2);
         loop {
             if self.info(id)?.flags & abi::win_flags::FOCUSED != 0 { return Ok(()); }

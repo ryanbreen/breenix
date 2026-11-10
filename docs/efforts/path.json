@@ -1946,9 +1946,10 @@
       "targets": [
         "arm64-qemu",
         "parallels",
-        "vmware"
+        "vmware",
+        "x86-metal"
       ],
-      "targetsNote": "As of 2026-10-18, x86-64 is measured on bare metal (the x86-metal path), rather than x86 QEMU. x86 hardware-profile milestones remain defined but are measured nowhere on the main path.",
+      "targetsNote": "The R240 leads; ARM64 targets reach parity later.",
       "suite": "gui-apps",
       "subsystems": [
         24,

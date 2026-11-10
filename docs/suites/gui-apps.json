@@ -1,0 +1,80 @@
+{
+  "id": "gui-apps",
+  "title": "GUI applications",
+  "area": "GUI applications",
+  "summary": "bterm, blauncher, bfontpicker, blog with blogd, Gus Kit and bcheck, and the graphics demos do what their users rely on, driven by real input on a real desktop.",
+  "binary": "/sbin/suite-gui-apps",
+  "timingSensitive": true,
+  "needs3dGpu": true,
+  "aggregate": "after E23 23.8",
+  "categories": [
+    {
+      "id": "terminal-emulation",
+      "title": "bterm terminal emulation",
+      "cases": [
+        {
+          "id": "vt-screen",
+          "title": "Scripted terminal screen"
+        },
+        {
+          "id": "scroll-region",
+          "title": "Scroll region"
+        },
+        {
+          "id": "alt-screen",
+          "title": "Alternate screen"
+        },
+        {
+          "id": "utf8",
+          "title": "UTF-8 text"
+        },
+        {
+          "id": "keys",
+          "title": "Terminal keys"
+        }
+      ]
+    },
+    {
+      "id": "bterm",
+      "title": "bterm",
+      "cases": [
+        {
+          "id": "prompt",
+          "title": "Shell prompt"
+        },
+        {
+          "id": "command-output",
+          "title": "Command output"
+        },
+        {
+          "id": "exit-status",
+          "title": "Exit status"
+        },
+        {
+          "id": "ctrl-c",
+          "title": "Interrupt foreground command"
+        },
+        {
+          "id": "tabs",
+          "title": "Tabs"
+        },
+        {
+          "id": "resize",
+          "title": "Resize"
+        },
+        {
+          "id": "scrollback",
+          "title": "Scrollback"
+        },
+        {
+          "id": "exec-tab",
+          "title": "Execute a command in a tab"
+        },
+        {
+          "id": "paste",
+          "title": "Paste"
+        }
+      ]
+    }
+  ]
+}

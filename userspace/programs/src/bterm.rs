@@ -9,13 +9,26 @@
 //!   Ctrl+W       — close the active tab (exits if last tab)
 //!   Ctrl+Plus/=  — increase font size
 //!   Ctrl+Minus   — decrease font size
+//!   Shift+PgUp/PgDn — scroll history by a page; wheel scrolls three rows
+
+#[path = "bterm/terminal_node.rs"]
+mod terminal_node;
+
+#[path = "bterm/exit_row.rs"]
+mod exit_row;
+
+#[path = "bterm/keys.rs"]
+mod keys;
+
+#[path = "bterm/session.rs"]
+mod session;
 
 use std::process;
 
-use breengel::{Window, Event, CachedFont, TabBar, Rect, Theme, Color, Surface};
+use breengel::{Window, Event, Handled, CachedFont, TabBar, Rect, Theme, Color, Surface};
 use libbreenix::io;
 use libbreenix::fs;
-use libbreenix::process::{fork, exec, setsid, ForkResult};
+use libbreenix::process::{fork, execv, setsid, ForkResult};
 use libbreenix::pty;
 use libbreenix::termios;
 use libbreenix::types::Fd;
@@ -41,248 +54,29 @@ const BITMAP_CELL_H: usize = 18;
 /// Tab bar height in logical UI units.
 const TAB_BAR_HEIGHT: i32 = 24;
 
-// Terminal colors
-const BG_COLOR: Color = Color::rgb(30, 30, 40);
-const FG_COLOR: Color = Color::rgb(204, 204, 204);
-
-// ANSI color palette (standard 8 colors)
-const ANSI_COLORS: [Color; 8] = [
-    Color::rgb(0, 0, 0),       // 0: black
-    Color::rgb(205, 49, 49),   // 1: red
-    Color::rgb(13, 188, 121),  // 2: green
-    Color::rgb(229, 229, 16),  // 3: yellow
-    Color::rgb(36, 114, 200),  // 4: blue
-    Color::rgb(188, 63, 188),  // 5: magenta
-    Color::rgb(17, 168, 205),  // 6: cyan
-    Color::rgb(229, 229, 229), // 7: white
-];
-
 // ─── Window dimensions ──────────────────────────────────────────────────────
 
 const WIN_WIDTH: u32 = 750;
 const WIN_HEIGHT: u32 = 550;
 
-// ─── Character Cell ─────────────────────────────────────────────────────────
-
-#[derive(Clone, Copy)]
-struct Cell {
-    ch: u8,
-    fg: Color,
-    bg: Color,
-    bold: bool,
-}
-
-impl Cell {
-    const fn blank() -> Self {
-        Self { ch: b' ', fg: FG_COLOR, bg: BG_COLOR, bold: false }
-    }
-}
-
-// ─── ANSI Parser State Machine ──────────────────────────────────────────────
-
-#[derive(Clone, Copy, PartialEq)]
-enum AnsiState {
-    Normal,
-    Escape,
-    Csi,
-    CsiParam,
-    OscString,
-}
-
-// ─── Terminal Emulator ──────────────────────────────────────────────────────
-
-struct TermEmu {
-    cols: usize,
-    rows: usize,
-    cells: Vec<Cell>,
-    cursor_x: usize,
-    cursor_y: usize,
-    fg: Color,
-    bg: Color,
-    bold: bool,
-    ansi_state: AnsiState,
-    ansi_params: [u16; 8],
-    ansi_param_idx: usize,
-    dirty: bool,
-}
-
+struct TermEmu { vt: libvt::TermEmu, dirty: bool }
 impl TermEmu {
-    fn new(cols: usize, rows: usize) -> Self {
-        Self {
-            cols, rows,
-            cells: vec![Cell::blank(); cols * rows],
-            cursor_x: 0, cursor_y: 0,
-            fg: FG_COLOR, bg: BG_COLOR, bold: false,
-            ansi_state: AnsiState::Normal,
-            ansi_params: [0; 8],
-            ansi_param_idx: 0,
-            dirty: true,
-        }
-    }
-
-    fn cell(&self, x: usize, y: usize) -> &Cell { &self.cells[y * self.cols + x] }
-    fn cell_mut(&mut self, x: usize, y: usize) -> &mut Cell { &mut self.cells[y * self.cols + x] }
-
-    fn resize(&mut self, new_cols: usize, new_rows: usize) {
-        if new_cols == self.cols && new_rows == self.rows {
-            return;
-        }
-        let mut new_cells = vec![Cell::blank(); new_cols * new_rows];
-        let copy_cols = self.cols.min(new_cols);
-        let copy_rows = self.rows.min(new_rows);
-        for y in 0..copy_rows {
-            for x in 0..copy_cols {
-                new_cells[y * new_cols + x] = self.cells[y * self.cols + x];
-            }
-        }
-        self.cols = new_cols;
-        self.rows = new_rows;
-        self.cells = new_cells;
-        self.cursor_x = self.cursor_x.min(new_cols.saturating_sub(1));
-        self.cursor_y = self.cursor_y.min(new_rows.saturating_sub(1));
+    fn new(cols: usize, rows: usize) -> Self { Self { vt: libvt::TermEmu::new(cols, rows), dirty: true } }
+    fn resize(&mut self, cols: usize, rows: usize) { self.vt.resize(cols, rows); self.dirty = true; }
+    fn feed(&mut self, bytes: &[u8], master_fd: Fd) {
+        self.vt.feed(bytes);
         self.dirty = true;
+        self.flush_replies(master_fd);
     }
-
-    fn scroll_up(&mut self) {
-        let cols = self.cols;
-        for y in 1..self.rows {
-            for x in 0..cols {
-                self.cells[(y - 1) * cols + x] = self.cells[y * cols + x];
-            }
-        }
-        let last_row = self.rows - 1;
-        for x in 0..cols { self.cells[last_row * cols + x] = Cell::blank(); }
-        self.dirty = true;
-    }
-
-    fn put_char(&mut self, ch: u8) {
-        if self.cursor_x >= self.cols { self.cursor_x = 0; self.cursor_y += 1; }
-        if self.cursor_y >= self.rows { self.scroll_up(); self.cursor_y = self.rows - 1; }
-        let fg = self.fg; let bg = self.bg; let bold = self.bold;
-        let idx = self.cursor_y * self.cols + self.cursor_x;
-        self.cells[idx] = Cell { ch, fg, bg, bold };
-        self.cursor_x += 1;
-        self.dirty = true;
-    }
-
-    fn feed(&mut self, byte: u8) {
-        match self.ansi_state {
-            AnsiState::Normal => match byte {
-                0x1b => self.ansi_state = AnsiState::Escape,
-                b'\n' => {
-                    self.cursor_x = 0; self.cursor_y += 1;
-                    if self.cursor_y >= self.rows { self.scroll_up(); self.cursor_y = self.rows - 1; }
-                    self.dirty = true;
-                }
-                b'\r' => { self.cursor_x = 0; self.dirty = true; }
-                b'\t' => {
-                    let next_tab = (self.cursor_x + 8) & !7;
-                    while self.cursor_x < next_tab && self.cursor_x < self.cols { self.put_char(b' '); }
-                }
-                0x08 => { if self.cursor_x > 0 { self.cursor_x -= 1; self.dirty = true; } }
-                0x07 => {}
-                ch if ch >= 0x20 => self.put_char(ch),
-                _ => {}
-            },
-            AnsiState::Escape => match byte {
-                b'[' => { self.ansi_state = AnsiState::Csi; self.ansi_params = [0; 8]; self.ansi_param_idx = 0; }
-                b']' => { self.ansi_state = AnsiState::OscString; }
-                _ => { self.ansi_state = AnsiState::Normal; }
-            },
-            AnsiState::Csi | AnsiState::CsiParam => {
-                if byte >= b'0' && byte <= b'9' {
-                    self.ansi_state = AnsiState::CsiParam;
-                    let idx = self.ansi_param_idx;
-                    if idx < 8 {
-                        self.ansi_params[idx] = self.ansi_params[idx].saturating_mul(10).saturating_add((byte - b'0') as u16);
-                    }
-                } else if byte == b';' {
-                    if self.ansi_param_idx < 7 { self.ansi_param_idx += 1; }
-                } else {
-                    let nparams = self.ansi_param_idx + 1;
-                    self.execute_csi(byte, nparams);
-                    self.ansi_state = AnsiState::Normal;
-                }
-            }
-            AnsiState::OscString => {
-                if byte == 0x07 || byte == b'\\' { self.ansi_state = AnsiState::Normal; }
+    fn flush_replies(&mut self, master_fd: Fd) {
+        while !self.vt.replies.is_empty() {
+            let (first, _) = self.vt.replies.as_slices();
+            match io::write(master_fd, first) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => { self.vt.replies.drain(..n); }
             }
         }
     }
-
-    fn execute_csi(&mut self, cmd: u8, nparams: usize) {
-        let p0 = self.ansi_params[0] as usize;
-        let p1 = if nparams > 1 { self.ansi_params[1] as usize } else { 0 };
-        match cmd {
-            b'H' | b'f' => {
-                let row = if p0 > 0 { p0 - 1 } else { 0 };
-                let col = if p1 > 0 { p1 - 1 } else { 0 };
-                self.cursor_y = row.min(self.rows - 1);
-                self.cursor_x = col.min(self.cols - 1);
-                self.dirty = true;
-            }
-            b'A' => { let n = if p0 > 0 { p0 } else { 1 }; self.cursor_y = self.cursor_y.saturating_sub(n); self.dirty = true; }
-            b'B' => { let n = if p0 > 0 { p0 } else { 1 }; self.cursor_y = (self.cursor_y + n).min(self.rows - 1); self.dirty = true; }
-            b'C' => { let n = if p0 > 0 { p0 } else { 1 }; self.cursor_x = (self.cursor_x + n).min(self.cols - 1); self.dirty = true; }
-            b'D' => { let n = if p0 > 0 { p0 } else { 1 }; self.cursor_x = self.cursor_x.saturating_sub(n); self.dirty = true; }
-            b'G' => { let col = if p0 > 0 { p0 - 1 } else { 0 }; self.cursor_x = col.min(self.cols - 1); self.dirty = true; }
-            b'J' => {
-                match p0 {
-                    0 => {
-                        for x in self.cursor_x..self.cols { *self.cell_mut(x, self.cursor_y) = Cell::blank(); }
-                        for y in (self.cursor_y + 1)..self.rows { for x in 0..self.cols { *self.cell_mut(x, y) = Cell::blank(); } }
-                    }
-                    1 => {
-                        for y in 0..self.cursor_y { for x in 0..self.cols { *self.cell_mut(x, y) = Cell::blank(); } }
-                        for x in 0..=self.cursor_x.min(self.cols - 1) { *self.cell_mut(x, self.cursor_y) = Cell::blank(); }
-                    }
-                    2 | 3 => {
-                        for y in 0..self.rows { for x in 0..self.cols { *self.cell_mut(x, y) = Cell::blank(); } }
-                        self.cursor_x = 0; self.cursor_y = 0;
-                    }
-                    _ => {}
-                }
-                self.dirty = true;
-            }
-            b'K' => {
-                match p0 {
-                    0 => { for x in self.cursor_x..self.cols { *self.cell_mut(x, self.cursor_y) = Cell::blank(); } }
-                    1 => { for x in 0..=self.cursor_x.min(self.cols - 1) { *self.cell_mut(x, self.cursor_y) = Cell::blank(); } }
-                    2 => { for x in 0..self.cols { *self.cell_mut(x, self.cursor_y) = Cell::blank(); } }
-                    _ => {}
-                }
-                self.dirty = true;
-            }
-            b'd' => { let row = if p0 > 0 { p0 - 1 } else { 0 }; self.cursor_y = row.min(self.rows - 1); self.dirty = true; }
-            b'r' => { self.cursor_x = 0; self.cursor_y = 0; self.dirty = true; }
-            b'm' => {
-                if nparams == 1 && p0 == 0 { self.fg = FG_COLOR; self.bg = BG_COLOR; self.bold = false; }
-                else {
-                    for i in 0..nparams {
-                        let code = self.ansi_params[i];
-                        match code {
-                            0 => { self.fg = FG_COLOR; self.bg = BG_COLOR; self.bold = false; }
-                            1 => { self.bold = true; }
-                            22 => { self.bold = false; }
-                            30..=37 => { self.fg = ANSI_COLORS[(code - 30) as usize]; }
-                            39 => { self.fg = FG_COLOR; }
-                            40..=47 => { self.bg = ANSI_COLORS[(code - 40) as usize]; }
-                            49 => { self.bg = BG_COLOR; }
-                            90..=97 => {
-                                let mut c = ANSI_COLORS[(code - 90) as usize];
-                                c.r = c.r.saturating_add(60); c.g = c.g.saturating_add(60); c.b = c.b.saturating_add(60);
-                                self.fg = c;
-                            }
-                            _ => {}
-                        }
-                    }
-                }
-            }
-            b'l' | b'h' => {}
-            _ => {}
-        }
-    }
-
     /// Draw the grid: each row's cell backgrounds as runs of one colour, then the characters
     /// at their cells' origins in as few draws as their colours allow, then the cursor's
     /// underline. A cell is drawn only when it lies inside the clip area, edge to edge.
@@ -293,35 +87,39 @@ impl TermEmu {
         self.dirty = false;
         let max_x = (x_off + clip_w).min(fb.width());
         let max_y = (y_off + clip_h).min(fb.height());
-        let rows = self.rows.min(max_y.saturating_sub(y_off) / cell_h.max(1));
-        let cols = self.cols.min(max_x.saturating_sub(x_off) / cell_w.max(1));
-        let fg_of = |cell: &Cell| if cell.bold {
-            Color::rgb(cell.fg.r.saturating_add(40), cell.fg.g.saturating_add(40), cell.fg.b.saturating_add(40))
-        } else { cell.fg };
+        let rows = self.vt.size().1.min(max_y.saturating_sub(y_off) / cell_h.max(1));
+        let cols = self.vt.size().0.min(max_x.saturating_sub(x_off) / cell_w.max(1));
+        let fg_of = |cell: &libvt::Cell| {
+            let c = if cell.inverse { cell.bg } else { cell.fg };
+            if cell.bold { Color::rgb(c.r.saturating_add(40), c.g.saturating_add(40), c.b.saturating_add(40)) }
+            else { Color::rgb(c.r, c.g, c.b) }
+        };
+        let bg_of = |cell: &libvt::Cell| if cell.inverse { cell.fg } else { cell.bg };
         fb.batch(|fb| {
             for row in 0..rows {
                 let py = y_off + row * cell_h;
                 let mut col = 0;
                 while col < cols {
-                    let bg = self.cell(col, row).bg;
+                    let bg = bg_of(self.vt.view_cell(col, row));
                     let start = col;
-                    while col < cols && self.cell(col, row).bg == bg {
+                    while col < cols && bg_of(self.vt.view_cell(col, row)) == bg {
                         col += 1;
                     }
                     shapes::fill_rect(fb, (x_off + start * cell_w) as i32, py as i32,
-                        ((col - start) * cell_w) as i32, cell_h as i32, bg);
+                        ((col - start) * cell_w) as i32, cell_h as i32, Color::rgb(bg.r, bg.g, bg.b));
                 }
             }
         });
         let glyphs: Vec<(usize, usize, Color)> = (0..rows)
             .flat_map(|row| (0..cols).map(move |col| (col, row)))
-            .filter(|&(col, row)| self.cell(col, row).ch != b' ')
-            .map(|(col, row)| (col, row, fg_of(self.cell(col, row))))
+            .filter(|&(col, row)| self.vt.view_cell(col, row).ch != ' ')
+            .map(|(col, row)| (col, row, fg_of(self.vt.view_cell(col, row))))
             .collect();
         if let Some(font) = ttf {
             let clip = libgfx::surface::Rect::new(0, 0, max_x as i32, max_y as i32);
-            let runs: Vec<ttf_font::TextRun<'_>> = glyphs.iter().map(|&(col, row, fg)| ttf_font::TextRun {
-                bytes: core::slice::from_ref(&self.cells[row * self.cols + col].ch),
+            let encoded: Vec<[u8; 4]> = glyphs.iter().map(|&(col, row, _)| { let mut b = [0; 4]; self.vt.view_cell(col, row).ch.encode_utf8(&mut b); b }).collect();
+            let runs: Vec<ttf_font::TextRun<'_>> = glyphs.iter().zip(&encoded).map(|(&(col, row, fg), bytes)| ttf_font::TextRun {
+                bytes: &bytes[..self.vt.view_cell(col, row).ch.len_utf8()],
                 x: (x_off + col * cell_w) as i32,
                 y: (y_off + row * cell_h) as i32,
                 size: font_size,
@@ -335,21 +133,35 @@ impl TermEmu {
             let mut i = 0;
             while i < glyphs.len() {
                 let (col, row, fg) = glyphs[i];
-                let mut text = vec![self.cell(col, row).ch];
+                let mut text = vec![if self.vt.view_cell(col, row).ch.is_ascii() { self.vt.view_cell(col, row).ch as u8 } else { b'?' }];
                 let mut j = i + 1;
                 while j < glyphs.len() && glyphs[j].1 == row && glyphs[j].2 == fg
                     && glyphs[j].0 == col + text.len() && cell_w == bitmap_font::metrics().char_width {
-                    text.push(self.cell(glyphs[j].0, row).ch);
+                    let ch = self.vt.view_cell(glyphs[j].0, row).ch;
+                    text.push(if ch.is_ascii() { ch as u8 } else { b'?' });
                     j += 1;
                 }
                 bitmap_font::draw_text(fb, &text, x_off + col * cell_w, y_off + row * cell_h, fg);
                 i = j;
             }
         }
+        fb.batch(|fb| {
+            for row in 0..rows {
+                for col in 0..cols {
+                    let cell = self.vt.view_cell(col, row);
+                    if cell.underline {
+                        shapes::fill_rect(fb, (x_off + col * cell_w) as i32,
+                            (y_off + (row + 1) * cell_h - 1) as i32,
+                            cell_w as i32, 1, fg_of(cell));
+                    }
+                }
+            }
+        });
         // Cursor underline
-        if self.cursor_y < rows && self.cursor_x < self.cols {
-            let cx = x_off + self.cursor_x * cell_w;
-            let cy = y_off + self.cursor_y * cell_h + cell_h - 2;
+        let (cursor_x, cursor_y) = self.vt.cursor();
+        if self.vt.view_offset() == 0 && self.vt.cursor_visible() && cursor_y < rows && cursor_x < cols {
+            let cx = x_off + cursor_x * cell_w;
+            let cy = y_off + cursor_y * cell_h + cell_h - 2;
             let w = cell_w.min(max_x.saturating_sub(cx));
             let h = 2usize.min(max_y.saturating_sub(cy));
             if w > 0 && h > 0 {
@@ -364,13 +176,58 @@ impl TermEmu {
 struct Tab {
     emu: TermEmu,
     master_fd: Fd,
-    #[allow(dead_code)] // used for future kill/waitpid on tab close
+    pending_input: Vec<u8>,
     child_pid: i64,
+    session_pid: i64,
+    show_exit: bool,
+}
+
+impl Drop for Tab {
+    fn drop(&mut self) {
+        if self.session_pid > 1 {
+            let child = (self.child_pid > 0).then_some(self.child_pid as i32);
+            if let Err(error) = session::hangup_and_reap(self.session_pid as i32, child, self.master_fd.raw() as i32) {
+                eprintln!("[bterm] close tab: {error}");
+            }
+        } else {
+            let _ = io::close(self.master_fd);
+        }
+    }
+}
+
+fn winsize(cols: usize, rows: usize, width: u32, height: u32) -> termios::Winsize {
+    termios::Winsize { ws_row: rows as u16, ws_col: cols as u16,
+        ws_xpixel: width as u16, ws_ypixel: height as u16 }
+}
+
+impl Tab {
+    fn send_input(&mut self, bytes: &[u8]) {
+        self.pending_input.extend_from_slice(bytes);
+        self.flush_input();
+    }
+    fn flush_input(&mut self) {
+        while !self.pending_input.is_empty() {
+            match io::write(self.master_fd, &self.pending_input) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => { self.pending_input.drain(..n); }
+            }
+        }
+    }
+    fn resize(&mut self, cols: usize, rows: usize, width: u32, height: u32) {
+        self.emu.resize(cols, rows);
+        if let Err(error) = termios::set_winsize(self.master_fd, &winsize(cols, rows, width, height)) {
+            eprintln!("[bterm] PTY resize failed: {error}");
+        }
+    }
 }
 
 // ─── Process Spawning ───────────────────────────────────────────────────────
 
-fn spawn_child(path: &[u8]) -> (Fd, i64) {
+fn spawn_child(args: &[String], size: &termios::Winsize) -> (Fd, i64) {
+    let strings: Vec<std::ffi::CString> = args.iter().map(|s| std::ffi::CString::new(s.as_bytes()).expect("argument contains NUL")).collect();
+    let mut argv: Vec<*const u8> = strings.iter().map(|s| s.as_ptr().cast()).collect();
+    argv.push(core::ptr::null());
+    let path = strings[0].as_bytes_with_nul();
     let (master_fd, slave_name) = match pty::openpty() {
         Ok((m, s)) => (m, s),
         Err(_) => {
@@ -378,6 +235,11 @@ fn spawn_child(path: &[u8]) -> (Fd, i64) {
             return (Fd::from_raw(u64::MAX), -1);
         }
     };
+
+    // Initialize the PTY before fork, so even a child that runs first sees its grid.
+    if let Err(error) = termios::set_winsize(master_fd, size) {
+        eprintln!("[bterm] initial PTY size: {error}");
+    }
 
     // Build slave path on the STACK (not heap) to avoid CoW corruption after fork.
     // slave_name is [u8; 32] containing e.g. "/dev/pts/0\0..."
@@ -400,7 +262,7 @@ fn spawn_child(path: &[u8]) -> (Fd, i64) {
             let _ = io::dup2(slave_fd, Fd::from_raw(1));
             let _ = io::dup2(slave_fd, Fd::from_raw(2));
             if slave_fd.raw() > 2 { let _ = io::close(slave_fd); }
-            let _ = exec(path);
+            let _ = execv(path, argv.as_ptr());
             libbreenix::process::exit(127);
         }
         Ok(ForkResult::Parent(child_pid)) => {
@@ -432,17 +294,20 @@ fn make_tab_label() -> &'static [u8] {
     Box::leak(boxed)
 }
 
-fn spawn_tab(cols: usize, rows: usize) -> Tab {
-    spawn_tab_cmd(cols, rows, b"/bin/bsh\0")
+fn spawn_tab(cols: usize, rows: usize, width: u32, height: u32) -> Tab {
+    spawn_tab_cmd(cols, rows, width, height, &["/bin/bsh".into()], false)
 }
 
-fn spawn_tab_cmd(cols: usize, rows: usize, cmd: &[u8]) -> Tab {
-    let (master_fd, child_pid) = spawn_child(cmd);
+fn spawn_tab_cmd(cols: usize, rows: usize, width: u32, height: u32, args: &[String], show_exit: bool) -> Tab {
+    let (master_fd, child_pid) = spawn_child(args, &winsize(cols, rows, width, height));
     let _ = io::fcntl_setfl(master_fd, io::status_flags::O_NONBLOCK);
     Tab {
         emu: TermEmu::new(cols, rows),
         master_fd,
+        pending_input: Vec::new(),
         child_pid,
+        session_pid: child_pid,
+        show_exit,
     }
 }
 
@@ -505,20 +370,29 @@ fn main() {
     let mut cols = (content_w as usize / cell_w).max(1);
     let mut rows = (content_h as usize / cell_h).max(1);
 
-    // Create tab bar
+    // A normal window starts at a shell; -e runs the requested argv directly.
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let exec_args = if args.first().map(String::as_str) == Some("-e") {
+        if args.len() < 2 { eprintln!("bterm: -e requires a program"); process::exit(2); }
+        let mut command = args[1..].to_vec();
+        if !command[0].contains('/') {
+            if let Some(path) = std::env::var_os("PATH") {
+                if let Some(found) = std::env::split_paths(&path).map(|dir| dir.join(&command[0])).find(|p| p.is_file()) {
+                    command[0] = found.to_string_lossy().into_owned();
+                }
+            }
+        }
+        Some(command)
+    } else { None };
     let theme = Theme::dark();
-    let btop_label = make_static_label("btop");
+    let label = if let Some(ref cmd) = exec_args { make_static_label(&cmd[0]) } else { make_tab_label() };
     let mut tab_bar = TabBar::new(
         Rect::new(0, 0, WIN_WIDTH as i32 / ui_scale, TAB_BAR_HEIGHT),
-        vec![btop_label], &theme);
-
-    // Spawn initial tabs: btop (default visible) + shell
-    let mut tabs: Vec<Tab> = vec![spawn_tab_cmd(cols, rows, b"/usr/bin/btop\0")];
-
-    // Add shell in a second tab
-    let shell_label = make_tab_label();
-    tab_bar.add_tab(shell_label);
-    tabs.push(spawn_tab(cols, rows));
+        vec![label], &theme);
+    let mut tabs = vec![match exec_args {
+        Some(ref cmd) => spawn_tab_cmd(cols, rows, content_w, content_h, cmd, true),
+        None => spawn_tab(cols, rows, content_w, content_h),
+    }];
 
     // Mouse state for InputState edge detection
     let mut prev_buttons: u32 = 0;
@@ -530,27 +404,53 @@ fn main() {
     let sleep_ts = libbreenix::types::Timespec { tv_sec: 0, tv_nsec: 10_000_000 };
     let mut first_frame = true;
     let mut first_present = true;
+    let mut last_key_serial = 0;
 
     loop {
-        // ── 1. Poll Breengel events ─────────────────────────────────
-        let events = win.poll_events();
+        // Dispatch input before the rendered commit publishes its watermark.
+        let window_id = win.id();
+        let mut close_requested = false;
+        let mut reload_font = false;
+        let mut resize_requested = None;
         let mut mouse_x: i32 = 0;
         let mut mouse_y: i32 = 0;
         let mut buttons: u32 = prev_buttons;
         let mut font_changed = false;
 
-        for event in &events {
-            match event {
+        let event_count = win.dispatch(|delivered| {
+            match &delivered.event {
                 Event::CloseRequested => {
-                    process::exit(0);
+                    close_requested = true;
+                    return Handled::Redraw;
                 }
                 Event::KeyPress { ascii, keycode, modifiers, text, .. } => {
+                    last_key_serial = delivered.serial;
+                    if modifiers.shift && (*keycode == breengel::keys::PAGE_UP || *keycode == breengel::keys::PAGE_DOWN) {
+                        if let Some(tab) = tabs.get_mut(tab_bar.selected()) {
+                            let page = tab.emu.vt.size().1 as isize;
+                            tab.emu.vt.scroll_view(if *keycode == breengel::keys::PAGE_UP { page } else { -page });
+                            tab.emu.dirty = true;
+                        }
+                        return Handled::Redraw;
+                    }
                     // Debug: log key events for +/- and ctrl
                     if *ascii == b'+' || *ascii == b'=' || *ascii == b'-'
                        || *keycode == breengel::keys::MINUS || *keycode == breengel::keys::EQUAL
                     {
                         print!("[bterm] key: ascii={} keycode=0x{:02X} ctrl={}\n",
                                *ascii, *keycode, modifiers.ctrl);
+                    }
+                    if modifiers.ctrl && modifiers.shift && *keycode == libbreenix::input::key::V as u32 {
+                        if let Some(tab) = tabs.get_mut(tab_bar.selected()) {
+                            if let Ok(data) = libclipboard::get(window_id) {
+                                let mut bytes = Vec::new();
+                                if tab.emu.vt.bracketed_paste() { bytes.extend_from_slice(b"\x1b[200~"); }
+                                bytes.extend_from_slice(&data);
+                                if tab.emu.vt.bracketed_paste() { bytes.extend_from_slice(b"\x1b[201~"); }
+                                tab.send_input(&bytes);
+                            }
+                        }
+                        return Handled::Redraw;
                     }
                     if modifiers.ctrl {
                         // Ctrl+T: new tab
@@ -559,12 +459,12 @@ fn main() {
                         {
                             let label = make_tab_label();
                             let idx = tab_bar.add_tab(label);
-                            tabs.push(spawn_tab(cols, rows));
+                            tabs.push(spawn_tab(cols, rows, content_w, content_h));
                             tab_bar.set_selected(idx);
                             if let Some(tab) = tabs.get_mut(idx) {
                                 tab.emu.dirty = true;
                             }
-                            continue;
+                            return Handled::Redraw;
                         }
                         // Ctrl+W: close tab
                         if *ascii == b'w' - b'a' + 1 || *ascii == b'W' - b'A' + 1
@@ -572,24 +472,24 @@ fn main() {
                         {
                             let sel = tab_bar.selected();
                             if tabs.len() <= 1 {
-                                process::exit(0);
+                                close_requested = true;
+                                return Handled::Redraw;
                             }
-                            let _ = io::close(tabs[sel].master_fd);
                             tabs.remove(sel);
                             tab_bar.remove_tab(sel);
                             let new_sel = tab_bar.selected();
                             if let Some(tab) = tabs.get_mut(new_sel) {
                                 tab.emu.dirty = true;
                             }
-                            continue;
+                            return Handled::Redraw;
                         }
                         // Ctrl+C: send interrupt to PTY
                         if text.as_bytes() == [3] {
                             let sel = tab_bar.selected();
-                            if let Some(tab) = tabs.get(sel) {
-                                let _ = io::write(tab.master_fd, &[3]);
+                            if let Some(tab) = tabs.get_mut(sel) {
+                                tab.send_input(&[3]);
                             }
-                            continue;
+                            return Handled::Redraw;
                         }
                         // Ctrl+= or Ctrl++: increase font size
                         if *ascii == b'+' || *ascii == b'=' || *keycode == breengel::keys::EQUAL {
@@ -601,7 +501,7 @@ fn main() {
                                     font_changed = true;
                                 }
                             }
-                            continue;
+                            return Handled::Redraw;
                         }
                         // Ctrl+-: decrease font size
                         if *ascii == b'-' || *keycode == breengel::keys::MINUS {
@@ -613,27 +513,28 @@ fn main() {
                                     font_changed = true;
                                 }
                             }
-                            continue;
+                            return Handled::Redraw;
                         }
                     }
 
-                    // Arrow keys (Linux key codes); Enter sends a carriage return, as a
-                    // terminal's Enter does; any other key sends its text, control codes
-                    // included.
                     let sel = tab_bar.selected();
-                    if let Some(tab) = tabs.get(sel) {
-                        match *keycode {
-                            breengel::keys::RIGHT => { let _ = io::write(tab.master_fd, b"\x1b[C"); }
-                            breengel::keys::LEFT => { let _ = io::write(tab.master_fd, b"\x1b[D"); }
-                            breengel::keys::DOWN => { let _ = io::write(tab.master_fd, b"\x1b[B"); }
-                            breengel::keys::UP => { let _ = io::write(tab.master_fd, b"\x1b[A"); }
-                            breengel::keys::ENTER => { let _ = io::write(tab.master_fd, b"\r"); }
-                            _ => {
-                                if !text.is_empty() {
-                                    let _ = io::write(tab.master_fd, text.as_bytes());
-                                }
-                            }
-                        }
+                    if let Some(tab) = tabs.get_mut(sel) {
+                        let bytes = keys::encode(*keycode, modifiers.ctrl, text, tab.emu.vt.application_cursor_keys());
+                        if !bytes.is_empty() { tab.send_input(&bytes); }
+                    }
+                }
+                Event::Text { text } => {
+                    if let Some(tab) = tabs.get_mut(tab_bar.selected()) {
+                        let bytes = keys::encode_text(text,
+                            libbreenix::input::abi::derived_source(delivered.serial).map(|(source, _)| source),
+                            last_key_serial);
+                        if !bytes.is_empty() { tab.send_input(&bytes); }
+                    }
+                }
+                Event::Scroll { delta_y, .. } => {
+                    if let Some(tab) = tabs.get_mut(tab_bar.selected()) {
+                        tab.emu.vt.scroll_view((*delta_y as isize).saturating_mul(3));
+                        tab.emu.dirty = true;
                     }
                 }
                 Event::MouseMove { x, y } => {
@@ -652,34 +553,19 @@ fn main() {
                     }
                 }
                 Event::FontChanged => {
-                    // Window loaded the new font internally — swap it in
-                    win.put_mono_font(ttf_font.take());
-                    ttf_font = win.take_mono_font();
-                    font_size = win.mono_size();
-                    print!("[bterm] font changed: {} size={}\n", win.mono_path(), font_size);
+                    reload_font = true;
                     font_changed = true;
                 }
                 Event::ResizeRequested { width, height } => {
-                    if let Err(e) = win.apply_resize(*width, *height) {
-                        print!("[bterm] resize refused: {}x{}: {}\n", width, height, e);
-                    }
+                    resize_requested = Some((*width, *height));
                 }
                 Event::Resized { width, height } => {
                     content_w = *width;
                     content_h = height.saturating_sub(tab_bar_pixels);
-                    let new_cols = (content_w as usize / cell_w).max(1);
-                    let new_rows = (content_h as usize / cell_h).max(1);
-                    if new_cols != cols || new_rows != rows {
-                        cols = new_cols;
-                        rows = new_rows;
-                        for tab in tabs.iter_mut() {
-                            tab.emu.resize(cols, rows);
-                            let size = termios::Winsize { ws_row: rows as u16, ws_col: cols as u16,
-                                ws_xpixel: content_w as u16, ws_ypixel: content_h as u16 };
-                            if let Err(e) = termios::set_winsize(tab.master_fd, &size) {
-                                print!("[bterm] PTY resize failed: {}\n", e);
-                            }
-                        }
+                    cols = (content_w as usize / cell_w).max(1);
+                    rows = (content_h as usize / cell_h).max(1);
+                    for tab in &mut tabs {
+                        tab.resize(cols, rows, content_w, content_h);
                     }
                     tab_bar.set_rect(Rect::new(0, 0, *width as i32 / ui_scale, TAB_BAR_HEIGHT));
                     for tab in tabs.iter_mut() {
@@ -687,6 +573,22 @@ fn main() {
                     }
                 }
                 _ => {}
+            }
+            Handled::Redraw
+        }).unwrap_or_else(|error| {
+            eprintln!("[bterm] event dispatch failed: {error}");
+            process::exit(1);
+        });
+        if close_requested { break; }
+        // These operations borrow Window, so finish them before acquiring a frame.
+        if reload_font {
+            win.put_mono_font(ttf_font.take());
+            ttf_font = win.take_mono_font();
+            font_size = win.mono_size();
+        }
+        if let Some((width, height)) = resize_requested {
+            if let Err(error) = win.apply_resize(width, height) {
+                eprintln!("[bterm] resize refused: {width}x{height}: {error}");
             }
         }
 
@@ -703,7 +605,7 @@ fn main() {
                     cols = new_cols;
                     rows = new_rows;
                     for tab in tabs.iter_mut() {
-                        tab.emu.resize(cols, rows);
+                        tab.resize(cols, rows, content_w, content_h);
                     }
                 } else {
                     // Same grid size but different font — force redraw
@@ -726,15 +628,32 @@ fn main() {
 
         // ── 2. Read PTY output for ALL tabs (non-blocking) ──────────
         for tab in tabs.iter_mut() {
+            tab.flush_input();
             loop {
                 match io::read(tab.master_fd, &mut pty_buf) {
                     Ok(0) => break,
                     Ok(n) => {
-                        for i in 0..n {
-                            tab.emu.feed(pty_buf[i]);
-                        }
+                        tab.emu.feed(&pty_buf[..n], tab.master_fd);
                     }
                     Err(_) => break, // EAGAIN or error
+                }
+            }
+            tab.emu.flush_replies(tab.master_fd);
+            if tab.child_pid > 0 {
+                let mut status = 0;
+                if let Ok(pid) = libbreenix::process::waitpid(tab.child_pid as i32, &mut status, libbreenix::process::WNOHANG) {
+                    if pid.raw() != 0 {
+                        tab.child_pid = -1;
+                        if tab.show_exit {
+                            // The child can write and exit between the earlier read and waitpid.
+                            while let Ok(n) = io::read(tab.master_fd, &mut pty_buf) {
+                                if n == 0 { break; }
+                                tab.emu.feed(&pty_buf[..n], tab.master_fd);
+                            }
+                            let row = format!("\r\n{}", exit_row::exit_row(status));
+                            tab.emu.feed(row.as_bytes(), tab.master_fd);
+                        }
+                    }
                 }
             }
         }
@@ -742,7 +661,7 @@ fn main() {
         // ── 3. Render ───────────────────────────────────────────────
         let sel = tab_bar.selected();
         let any_dirty = tabs.get(sel).map_or(false, |t| t.emu.dirty);
-        let need_redraw = any_dirty || !events.is_empty() || font_changed || first_frame;
+        let need_redraw = any_dirty || event_count != 0 || font_changed || first_frame;
         first_frame = false;
 
         if need_redraw {
@@ -750,6 +669,7 @@ fn main() {
                 Ok(fb) => fb,
                 Err(e) => {
                     print!("[bterm] ERROR: no window surface: {}\n", e);
+                    tabs.clear();
                     process::exit(1);
                 }
             };
@@ -773,6 +693,15 @@ fn main() {
                 );
             }
 
+            if let Some(tab) = tabs.get(sel) {
+                let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
+                win.set_tree(breengel::tree::Tree { root: breengel::tree::Node {
+                    key: "grid".into(), parent: None, role: breengel::tree::Role::Terminal,
+                    name: "Terminal".into(),
+                    value: terminal_node::terminal_value(&tab.emu.vt, sel, tabs.len()),
+                    bounds, clip: bounds, flags: vec![breengel::tree::Flag::Enabled, breengel::tree::Flag::Visible],
+                }, children: Vec::new() });
+            }
             match win.present() {
                 Err(e) => print!("[bterm] present failed: {}\n", e),
                 Ok(()) if first_present => {

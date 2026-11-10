@@ -354,7 +354,7 @@ def boot(args):
         command.append('--ramdisk')
     if args.disk:
         command += ['--disk', args.disk]
-    if payload == 'image' and args.mode == 'suite' and {'console', 'gpu', 'breengel', 'window-manager', 'ui-testing'} & set((args.suite or '').split(',')):
+    if payload == 'image' and args.mode == 'suite' and {'console', 'gpu', 'breengel', 'window-manager', 'ui-testing', 'gui-apps'} & set((args.suite or '').split(',')):
         # Native startup uploads use the machine service's HTTP server, including filtered watches.
         in_metal(env, 'systemctl', 'start', 'breenix-metal-machine.service',
                  check=True, capture_output=True, text=True)

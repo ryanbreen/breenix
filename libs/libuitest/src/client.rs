@@ -1,6 +1,7 @@
 //! One record grammar for outer and contained clients; only the outer mode writes
 //! to the runner's mandatory result pipe.
 use breenix_suite::suite::{self, result::Accounting};
+#[cfg(any(target_os = "breenix", test))]
 use crate::{FailureClass, ScenarioOutcome};
 
 pub struct RecordClient<'a> {
@@ -15,6 +16,7 @@ impl<'a> RecordClient<'a> {
     pub fn outer(suite: &'a str, case: &'a str, checks: &'a [&'a str]) -> Result<Self, String> {
         Self::new(suite, case, checks, true)
     }
+    #[cfg(any(target_os = "breenix", test))]
     pub(crate) fn contained(suite: &'a str, case: &'a str, checks: &'a [&'a str]) -> Result<Self, String> {
         Self::new(suite, case, checks, false)
     }
@@ -37,6 +39,7 @@ impl<'a> RecordClient<'a> {
             Err(error) => { self.error.get_or_insert_with(|| error.clone()); Err(error) },
         }
     }
+    #[cfg(any(target_os = "breenix", test))]
     pub(crate) fn finish(self, mut outcome: ScenarioOutcome) -> ScenarioOutcome {
         let problem = self.error.or_else(|| {
             if matches!(outcome, ScenarioOutcome::Pass { .. }) { self.accounting.problem() } else { None }

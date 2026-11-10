@@ -100,12 +100,14 @@ fn record_client_contains_inner_records_and_refuses_ignored_errors() {
     use client::RecordClient;
     let line = format!("SUITE inner FRAME scenario/one label def=0123abcd ref=formula source=window:main commit=1 epoch=2 w=3 h=4 sha256={} result=match", "a".repeat(64));
     let mut inner = RecordClient::contained("inner", "scenario/one", &["label"]).unwrap();
+    assert!(!inner.is_outer());
     inner.record(&line).unwrap();
     let outcome = inner.finish(ScenarioOutcome::pass());
     assert!(classify(&Expected::Pass, &outcome).accepted());
     assert_eq!(outcome.records(), &[line.clone()]);
     assert!(suite::WRITES.lock().unwrap().is_empty());
     let mut outer = RecordClient::outer("inner", "scenario/one", &["label"]).unwrap();
+    assert!(outer.is_outer());
     outer.record(&line).unwrap();
     assert!(classify(&Expected::Pass, &outer.finish(ScenarioOutcome::pass())).accepted());
     assert_eq!(*suite::WRITES.lock().unwrap(), [line.clone()]);

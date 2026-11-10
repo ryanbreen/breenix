@@ -9,6 +9,8 @@ publish = false
 [dependencies]
 libpixcheck = { path = "../../libs/libpixcheck" }
 libimg = { path = "../../libs/libimg" }
+libvt = { path = "../../libs/libvt" }
+breenish-js = { path = "../../libs/breenish-js" }
 libimg-encode = { path = "../../libs/libimg-encode" }
 serde_json = "=1.0.154"
 
@@ -31,3 +33,7 @@ path = "../../tests/ui_messages.rs"
 [[test]]
 name = "ui_retention"
 path = "../../tests/ui_retention.rs"
+
+[[test]]
+name = "gui_apps_shell_output"
+path = "../../tests/gui_apps_shell_output.rs"

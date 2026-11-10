@@ -286,7 +286,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
                     not isinstance(value, str) or not re.fullmatch('[0-9a-f]{64}', value) for value in digests):
                 raise ValueError('invalid screen-known digest list')
             files['screen-known'] = ''.join(value + '\n' for value in sorted(set(digests)))
-        if gt710_upload and mode == 'suite' and ({'window-manager', 'ui-testing'} | ({'gpu', 'breengel'} if screen_proof else set())).intersection(suite.split(',')):
+        if gt710_upload and mode == 'suite' and ({'window-manager', 'ui-testing', 'gui-apps'} | ({'gpu', 'breengel'} if screen_proof else set())).intersection(suite.split(',')):
             files['evidence-route'] = gt710_upload + '\n'
         for name, text in files.items():
             source = scratch / name
