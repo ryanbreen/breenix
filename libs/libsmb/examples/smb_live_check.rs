@@ -1,6 +1,8 @@
 //! Host integration check. Set SMB_TEST_HOST, optional SMB_TEST_PORT, and
 //! SMB_TEST_ENV_FILE (path containing SMB_TEST_USER / SMB_TEST_PASSWORD and
 //! optional SMB_TEST_DOMAIN). Credential values stay in the env file and are omitted from diagnostics.
+//! At each AUDIT marker, the supervising process checks the server's session
+//! table for the test account and sends NO_SESSIONS on stdin only if absent.
 use libsmb::{
     auth::ntlm::Credentials,
     client::{Client, Error},
@@ -11,7 +13,7 @@ use libsmb::{
 use std::{
     collections::HashMap,
     env, fs,
-    io::ErrorKind,
+    io::{self, ErrorKind, Write},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -29,6 +31,18 @@ fn expect(value: bool, message: &str) -> Check {
     } else {
         Err(message.into())
     }
+}
+fn audit_sessions(stage: &str) -> Check {
+    println!("AUDIT wrong-password {stage}");
+    io::stdout().flush().map_err(|_| "audit output")?;
+    let mut answer = String::new();
+    io::stdin()
+        .read_line(&mut answer)
+        .map_err(|_| "audit input")?;
+    expect(
+        answer.trim() == "NO_SESSIONS",
+        "server session audit failed",
+    )
 }
 fn root() -> CreateRequest<'static> {
     CreateRequest {
@@ -91,6 +105,21 @@ fn run() -> Check {
         domain: fields.get("SMB_TEST_DOMAIN").copied().unwrap_or(""),
         workstation: "",
     };
+    audit_sessions("before")?;
+    let wrong = format!("{password}!wrong");
+    let bad = Credentials {
+        password: &wrong,
+        ..creds
+    };
+    expect(
+        matches!(
+            Client::connect(&host, port, "rw", &bad, DialectCap::Default),
+            Err(Error::Status(NtStatus::LOGON_FAILURE))
+        ),
+        "wrong password did not get LOGON_FAILURE",
+    )?;
+    println!("PASS wrong-password LOGON_FAILURE (0xc000006d)");
+    audit_sessions("after")?;
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "clock")?
@@ -137,7 +166,30 @@ fn run() -> Check {
                 .any(|e| e.name == b),
             "deleted file remains",
         )?;
-        println!("PASS {stage} list/write/read/rename-replace/delete");
+        let (_, session) = c.into_parts();
+        let negotiated = session.negotiated().ok_or("missing negotiation")?;
+        println!("NEGOTIATED {share} dialect=0x{:04x}", negotiated.dialect);
+        if share == "enc" {
+            let cipher = if dialect == 0x0302 {
+                expect(negotiated.capabilities & 0x40 != 0, "CCM not negotiated")?;
+                1
+            } else {
+                match negotiated.contexts.iter().find_map(|c| match c {
+                    libsmb::NegotiateContext::Encryption { ciphers } => Some(ciphers.as_slice()),
+                    _ => None,
+                }) {
+                    Some([cipher @ (1 | 2)]) => *cipher,
+                    _ => return Err("missing selected encryption cipher".into()),
+                }
+            };
+            let name = if cipher == 1 {
+                "AES-128-CCM"
+            } else {
+                "AES-128-GCM"
+            };
+            println!("NEGOTIATED enc cipher=0x{cipher:04x} {name}");
+        }
+        println!("PASS {stage} list/write/read-exact/rename-replace/read-exact/delete");
     }
     let mut ro = operation(
         Client::connect(&host, port, "ro", &creds, DialectCap::Default),
@@ -156,26 +208,12 @@ fn run() -> Check {
     expect(
         matches!(
             ro.write(&a, b"refused"),
-            Err(Error::Status(
-                NtStatus::ACCESS_DENIED | NtStatus::MEDIA_WRITE_PROTECTED
-            ))
+            Err(Error::Status(NtStatus::ACCESS_DENIED))
         ),
-        "ro write was not refused",
+        "ro write did not get ACCESS_DENIED",
     )?;
-    println!("PASS ro list/read/write-refused");
-    let wrong = format!("{password}!wrong");
-    let bad = Credentials {
-        password: &wrong,
-        ..creds
-    };
-    expect(
-        matches!(
-            Client::connect(&host, port, "rw", &bad, DialectCap::Default),
-            Err(Error::Status(NtStatus::LOGON_FAILURE))
-        ),
-        "wrong password did not get LOGON_FAILURE",
-    )?;
-    println!("PASS wrong-password LOGON_FAILURE");
+    println!("NEGOTIATED ro dialect=0x{:04x}", ro.dialect());
+    println!("PASS ro list/README.txt-read/write-ACCESS_DENIED (0xc0000022)");
     let c = operation(
         Client::connect(&host, port, "rw", &creds, DialectCap::Default),
         "signature control connect",
