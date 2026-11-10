@@ -138,3 +138,62 @@ pub fn shortcuts() -> CaseResult {
     t.key(1, &[])?; absent(&mut t, "open")?;
     Ok(t.finish()?)
 }
+
+pub fn save_open() -> CaseResult {
+    for file in ["/tmp/a.bmp", "/tmp/a.png"] {
+        match std::fs::remove_file(file) { Ok(()) => (), Err(e) if e.kind() == std::io::ErrorKind::NotFound => (), Err(e) => return Err(e.to_string().into()) }
+        let mut t = App::launch(&[b"/usr/bin/guskit", b"--canvas", b"200x120", file.as_bytes()], "Gus Kit")?;
+        stroke(&mut t, 10)?;
+        let mut image = Expected::white(); image.horizontal(10, 40, 10);
+        expect(&mut t, &image)?;
+        t.wait_node("status", |v| v["dirty"] == true)?;
+        t.key(31, &[Modifier::Ctrl])?;
+        t.wait_node("status", |v| v["dirty"] == false && v["message"] == "Saved")?;
+        t.finish()?;
+        let mut reopened = App::launch(&[b"/usr/bin/guskit", b"--canvas", b"200x120", file.as_bytes()], "Gus Kit")?;
+        expect(&mut reopened, &image)?;
+        reopened.finish()?;
+    }
+    Ok(())
+}
+
+pub fn save_fails_cleanly() -> CaseResult {
+    use std::os::unix::fs::PermissionsExt;
+    const DIR: &str = "/tmp/guskit-denied";
+    const FILE: &str = "/tmp/guskit-denied/a.png";
+    const PNG: &[u8] = &[137,80,78,71,13,10,26,10,0,0,0,13,73,72,68,82,0,0,0,1,0,0,0,1,8,2,0,0,0,144,119,83,222,0,0,0,12,73,68,65,84,120,156,99,248,255,255,63,0,5,254,2,254,13,239,70,184,0,0,0,0,73,69,78,68,174,66,96,130];
+    match std::fs::remove_dir_all(DIR) { Ok(()) => (), Err(e) if e.kind() == std::io::ErrorKind::NotFound => (), Err(e) => return Err(e.to_string().into()) }
+    std::fs::create_dir_all(DIR).map_err(|e| e.to_string())?;
+    std::fs::set_permissions(DIR, std::fs::Permissions::from_mode(0o755)).map_err(|e| e.to_string())?;
+    std::fs::write(FILE, PNG).map_err(|e| e.to_string())?;
+    let mut t = App::launch_as(&[b"/usr/bin/guskit", b"--canvas", b"200x120", FILE.as_bytes()], "Gus Kit", 1000)?;
+    t.wait_node("status", |v| v["message"] == "" && v["dirty"] == false && v["file"] == FILE)?;
+    stroke(&mut t, 10)?;
+    t.wait_node("status", |v| v["dirty"] == true)?;
+    t.key(31, &[Modifier::Ctrl])?;
+    t.wait_node("status", |v| v["dirty"] == true && v["message"].as_str().is_some_and(|s| !s.is_empty() && s != "Saved"))?;
+    if std::fs::read(FILE).map_err(|e| e.to_string())? != PNG { return Err("failed save changed PNG".into()); }
+    for entry in std::fs::read_dir(DIR).map_err(|e| e.to_string())? {
+        let name = entry.map_err(|e| e.to_string())?.file_name();
+        if name != "a.png" { return Err(format!("unexpected file after failed save: {name:?}").into()); }
+    }
+    Ok(t.finish()?)
+}
+
+pub fn open_malformed() -> CaseResult {
+    const DIR: &str = "/tmp/guskit-malformed";
+    const FILE: &str = "/tmp/guskit-malformed/bad.png";
+    const INITIAL: &str = "/tmp/guskit-malformed/new.png";
+    match std::fs::remove_dir_all(DIR) { Ok(()) => (), Err(e) if e.kind() == std::io::ErrorKind::NotFound => (), Err(e) => return Err(e.to_string().into()) }
+    std::fs::create_dir_all(DIR).map_err(|e| e.to_string())?;
+    std::fs::write(FILE, b"\x89PNG\r\n\x1a\n\0\0").map_err(|e| e.to_string())?;
+    let mut t = App::launch(&[b"/usr/bin/guskit", b"--canvas", b"200x120", INITIAL.as_bytes()], "Gus Kit")?;
+    stroke(&mut t, 10)?;
+    let mut image = Expected::white(); image.horizontal(10, 40, 10);
+    expect(&mut t, &image)?;
+    t.key(24, &[Modifier::Ctrl])?; t.wait_node("open", |_| true)?;
+    t.key(108, &[])?; t.key(28, &[])?;
+    t.wait_node("status", |v| v["message"].as_str().is_some_and(|s| s.starts_with("PNG decode:")))?;
+    expect(&mut t, &image)?;
+    Ok(t.finish()?)
+}
