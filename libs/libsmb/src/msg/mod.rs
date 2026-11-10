@@ -10,11 +10,13 @@ use crate::{u16_at, u32_at, Error, SyncHeader};
 
 mod create;
 mod error;
+mod io_info;
 mod ioctl;
 mod session;
 mod tree;
 pub use create::*;
 pub use error::*;
+pub use io_info::*;
 pub use ioctl::*;
 pub use session::*;
 pub use tree::*;
