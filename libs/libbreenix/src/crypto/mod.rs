@@ -8,6 +8,8 @@ pub mod aes;
 pub mod bignum;
 #[cfg(feature = "std")]
 pub mod cmac;
+#[cfg(feature = "std")]
+pub mod ccm;
 pub mod ct;
 #[cfg(feature = "std")]
 pub mod ed25519;
