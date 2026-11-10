@@ -182,7 +182,7 @@ impl Client {
         }
         let setup = response.decode(SessionSetupResponse::decode)?;
         let challenge = spnego::decode_response(&setup.security_buffer)?;
-        if challenge.state != Some(1) || challenge.mic.is_some() {
+        if !matches!(challenge.state, Some(1 | 3)) || challenge.mic.is_some() {
             return Err(Error::Protocol);
         }
         let challenge = challenge.token.ok_or(Error::Protocol)?;
@@ -202,16 +202,28 @@ impl Client {
             random[51..59].try_into().map_err(|_| Error::Protocol)?,
             time,
         )?;
-        let token = spnego::encode_response(&authenticate);
+        let flags = u32::from_le_bytes(
+            authenticate[60..64]
+                .try_into()
+                .map_err(|_| Error::Protocol)?,
+        );
+        // The mechanism MIC below requires SIGN and extended session security,
+        // and this client does not negotiate NTLM key exchange.
+        if flags & 0x4008_0010 != 0x0008_0010 {
+            return Err(Error::Protocol);
+        }
+        let token = spnego::encode_authenticated_response(&authenticate, &key);
         let response = client.success(Request::SessionSetup {
             token: &token,
             session_key: Some(key),
         })?;
         let setup = response.decode(SessionSetupResponse::decode)?;
         let final_token = spnego::decode_response(&setup.security_buffer)?;
-        // This NTLM-only implementation has no mechanism-list MIC exchange.
         if final_token.state != Some(0)
-            || final_token.mic.is_some()
+            || !final_token
+                .mic
+                .as_ref()
+                .is_some_and(|mic| spnego::verify_server_mic(&key, mic))
             || final_token.token.as_ref().is_some_and(|t| !t.is_empty())
         {
             return Err(Error::Protocol);

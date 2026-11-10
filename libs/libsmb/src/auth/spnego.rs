@@ -1,7 +1,11 @@
 //! DER SPNEGO tokens offering only NTLMSSP (RFC 4178).
 use crate::Error;
+use libbreenix::crypto::{ct::ct_eq, hmac::hmac_md5, md5::Md5};
 const SPNEGO: &[u8] = &[0x2b, 0x06, 0x01, 0x05, 0x05, 0x02];
 const NTLM: &[u8] = &[0x2b, 0x06, 0x01, 0x04, 0x01, 0x82, 0x37, 0x02, 0x02, 0x0a];
+fn mechanism_list() -> Vec<u8> {
+    tlv(0x30, &tlv(0x06, NTLM))
+}
 fn tlv(tag: u8, data: &[u8]) -> Vec<u8> {
     let mut out = vec![tag];
     if data.len() < 128 {
@@ -19,7 +23,7 @@ fn tlv(tag: u8, data: &[u8]) -> Vec<u8> {
     out
 }
 pub fn encode_init(token: &[u8]) -> Vec<u8> {
-    let mut fields = tlv(0xa0, &tlv(0x30, &tlv(0x06, NTLM)));
+    let mut fields = tlv(0xa0, &mechanism_list());
     fields.extend_from_slice(&tlv(0xa2, &tlv(0x04, token)));
     let mut body = tlv(0x06, SPNEGO);
     body.extend_from_slice(&tlv(0xa0, &tlv(0x30, &fields)));
@@ -27,6 +31,38 @@ pub fn encode_init(token: &[u8]) -> Vec<u8> {
 }
 pub fn encode_response(token: &[u8]) -> Vec<u8> {
     tlv(0xa1, &tlv(0x30, &tlv(0xa2, &tlv(0x04, token))))
+}
+
+// RFC 4178 section 5, MS-NLMP 3.4.5.2 and 3.4.4.2. This NTLM-only
+// exchange uses extended security, no KEY_EXCH, and one MIC per direction.
+fn mechanism_mic(key: &[u8; 16], server: bool) -> [u8; 16] {
+    let mut signing = Md5::new();
+    signing.update(key);
+    signing.update(if server {
+        b"session key to server-to-client signing key magic constant\0"
+    } else {
+        b"session key to client-to-server signing key magic constant\0"
+    });
+    let mut input = 0u32.to_le_bytes().to_vec();
+    input.extend_from_slice(&mechanism_list());
+    let checksum = hmac_md5(&signing.finalize(), &input);
+    let mut mic = [0; 16];
+    mic[..4].copy_from_slice(&1u32.to_le_bytes());
+    mic[4..12].copy_from_slice(&checksum[..8]);
+    mic
+}
+
+/// Wrap the last NTLM token with its mechanism-list MIC. The NTLM context
+/// must negotiate SIGN and extended security, with KEY_EXCH disabled.
+pub fn encode_authenticated_response(token: &[u8], key: &[u8; 16]) -> Vec<u8> {
+    let mut fields = tlv(0xa2, &tlv(0x04, token));
+    fields.extend_from_slice(&tlv(0xa3, &tlv(0x04, &mechanism_mic(key, false))));
+    tlv(0xa1, &tlv(0x30, &fields))
+}
+
+/// Verify the server's sequence-0 NTLM mechanism-list MIC.
+pub fn verify_server_mic(key: &[u8; 16], mic: &[u8]) -> bool {
+    ct_eq(&mechanism_mic(key, true), mic)
 }
 
 fn take<'a>(input: &mut &'a [u8], tag: u8) -> Result<&'a [u8], Error> {
