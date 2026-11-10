@@ -4180,6 +4180,11 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
     tally = (sum(k == 'PASS' for k, _, _ in cases), sum(k == 'FAIL' for k, _, _ in cases), 0, case_count)
     if tuple(map(int, records[case_count + 1][1].groups())) != tally:
         raise ValueError('WM DONE disagrees with cases or contains skips')
+    if (suite == 'gui-apps' and len(suites) == 1
+            and capture['exit_status'] == 1 and tally[1] == 0):
+        # A subset may pass despite failed unselected cases (G13), but an
+        # unexplained driver failure is never completed app acceptance.
+        raise ValueError('gui-apps exit 1 is not a failed-case verdict')
     if (suite == 'window-manager' and len(suites) == 1
             and capture['exit_status'] == 1 and tally[1] == 0):
         # Coordinator ledger 264 admits the planned-empty refusal for a step,
@@ -4321,6 +4326,15 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
     if suite == 'window-manager':
         report.update(scope='wm-step-selection', exitStatus=capture['exit_status'],
                       toolsCommit=boot['toolsCommit'], build=boot['build'])
+    if suite == 'gui-apps':
+        report.update(scope='apps-step-selection', exitStatus=capture['exit_status'],
+                      toolsCommit=boot['toolsCommit'], build=boot['build'],
+                      selectedCases=[dict(id=m[1], result=k) for k, m, _ in cases if m[1] in required],
+                      memoryVerdict=memory_line,
+                      notMeasured={
+                          'console-suite': 'requires a separate completed console capture; gui-apps does not prove console 88/88',
+                          'gpu-suite': 'requires a separate completed GPU capture; gui-apps does not prove selected GPU cases',
+                      })
     return report
 
 
