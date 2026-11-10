@@ -84,6 +84,22 @@
         {
           "id": "atomic-save",
           "title": "Atomic save of a large file"
+        },
+        {
+          "id": "read-only-refused",
+          "title": "Read-only share refuses writes"
+        },
+        {
+          "id": "wrong-password",
+          "title": "Wrong password leaves no mount"
+        },
+        {
+          "id": "server-restart",
+          "title": "Server restart recovers or reports EIO"
+        },
+        {
+          "id": "umount-open-files",
+          "title": "Unmount with an open file"
         }
       ]
     }
