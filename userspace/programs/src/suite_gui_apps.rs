@@ -56,7 +56,7 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("lists-fonts", "List fonts by metadata", bfontpicker::lists_fonts).session(libuitest::supervisor::serve),
         case("select-apply", "Select and apply a font", bfontpicker::select_apply).session(libuitest::supervisor::serve),
         case("persists", "Font selection persists", bfontpicker::persists).session(libuitest::supervisor::serve),
-        case("keeps-unknown", "Comments, blank lines and key order survive a save", bfontpicker::keeps_unknown).session(libuitest::supervisor::serve),
+        case("keeps-unknown", "Unknown settings, comments and key order survive a save", bfontpicker::keeps_unknown).session(libuitest::supervisor::serve),
         case("live-bterm", "Font change reaches bterm", bfontpicker::live_bterm).session(libuitest::supervisor::serve),
         case("save-fails-cleanly", "Failed save leaves configuration intact", bfontpicker::save_fails_cleanly).session(libuitest::supervisor::serve),
     ]),
