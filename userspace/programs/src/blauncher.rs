@@ -24,7 +24,7 @@ mod node;
 mod dismiss;
 #[path = "blauncher/launch.rs"]
 mod launch;
-use libbreenix::process::{fork, execv, ForkResult};
+use libbreenix::{errno::Errno, error::Error};
 use libbreenix::time;
 
 use libgfx::bitmap_font;
@@ -214,6 +214,7 @@ fn draw_sinuous_border(fb: &mut Surface, lw: i32, lh: i32, frame: u32) {
 // ---------------------------------------------------------------------------
 
 struct LauncherState {
+    error: Option<String>,
     query: [u8; 64],
     query_len: usize,
     selected: usize,
@@ -227,6 +228,7 @@ struct LauncherState {
 impl LauncherState {
     fn new() -> Self {
         Self {
+            error: None,
             query: [0; 64],
             query_len: 0,
             selected: 0,
@@ -365,6 +367,9 @@ fn render(
     for (i, line) in error_lines.iter().enumerate() {
         text.push(line, layout.x + PADDING, footer_y + 20 + i as i32 * 18, desc_size, DIM_COLOR);
     }
+    if let Some(error) = &state.error {
+        text.push(error, layout.x + PADDING, footer_y + 20 + error_lines.len() as i32 * 18, desc_size, DIM_COLOR);
+    }
     text.finish(fb, ttf.as_mut());
 }
 
@@ -423,32 +428,31 @@ fn font_line_height(ttf: Option<&CachedFont>, size: f32) -> i32 {
 // App launching
 // ---------------------------------------------------------------------------
 
-fn launch_app(app: &catalog::Entry) -> bool {
-    if app.mode == catalog::Mode::Gui {
-        let argv = launch::gui_argv(&app.argv);
-        let strings: Result<Vec<_>, _> = argv.iter().map(|field| std::ffi::CString::new(field.as_bytes())).collect();
-        let strings = match strings {
-            Ok(strings) => strings,
-            Err(error) => { eprintln!("[blauncher] argv: {error}"); return false; }
-        };
-        let mut pointers: Vec<_> = strings.iter().map(|field| field.as_ptr().cast::<u8>()).collect();
-        pointers.push(core::ptr::null());
-        match libbreenix::process::spawnv(strings[0].as_bytes_with_nul(), pointers.as_ptr()) {
-            Ok(_) => true,
-            Err(error) => { eprintln!("[blauncher] spawn: {error}"); false }
+fn launch_app(app: &catalog::Entry) -> Result<(), String> {
+    if app.mode == catalog::Mode::Terminal {
+        use std::os::unix::fs::PermissionsExt;
+        let executable = std::fs::metadata(&app.argv[0])
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+            && libbreenix::fs::access(&app.argv[0], libbreenix::fs::X_OK).is_ok();
+        if !executable {
+            return Err(launch::error_text(&app.argv[0], true, ""));
         }
-    } else {
-        // CLI app: just launch bterm
-        match fork() {
-            Ok(ForkResult::Child) => {
-                let path = b"/usr/bin/bterm\0";
-                let argv: [*const u8; 2] = [path.as_ptr(), core::ptr::null()];
-                let _ = execv(path, argv.as_ptr());
-                libbreenix::process::exit(1);
-            }
-            Ok(ForkResult::Parent(_)) => true,
-            Err(_) => false,
-        }
+    }
+    let argv = if app.mode == catalog::Mode::Gui { launch::gui_argv(&app.argv) }
+        else { launch::terminal_argv(&app.argv) };
+    let strings: Vec<_> = argv.iter().map(|field| std::ffi::CString::new(field.as_bytes()))
+        .collect::<Result<_, _>>().map_err(|error| error.to_string())?;
+    let mut pointers: Vec<_> = strings.iter().map(|field| field.as_ptr().cast::<u8>()).collect();
+    pointers.push(core::ptr::null());
+    libbreenix::process::spawnv(strings[0].as_bytes_with_nul(), pointers.as_ptr())
+        .map(|_| ())
+        .map_err(|error| launch::error_text(&argv[0], matches!(error, Error::Os(Errno::ENOENT)), &error.to_string()))
+}
+
+fn try_launch(app: &catalog::Entry, state: &mut LauncherState) {
+    match launch_app(app) {
+        Ok(()) => process::exit(0),
+        Err(error) => state.error = Some(error),
     }
 }
 
@@ -529,6 +533,14 @@ fn main() {
     let mut has_focus = false;
 
     loop {
+        loop {
+            let mut status = 0;
+            match libbreenix::process::waitpid(-1, &mut status, libbreenix::process::WNOHANG) {
+                Ok(pid) if pid.raw() != 0 => continue,
+                Err(Error::Os(Errno::EINTR)) => continue,
+                _ => break,
+            }
+        }
         win.dispatch(|delivered| {
             match delivered.event.clone() {
                 Event::KeyPress { ascii, keycode, .. } => {
@@ -551,7 +563,7 @@ fn main() {
                             let filtered_count = filtered.len();
                             let max_vis = filtered_count.min(MAX_VISIBLE);
                             if max_vis > 0 && state.selected < max_vis {
-                                if launch_app(filtered[state.selected]) { process::exit(0); }
+                                try_launch(filtered[state.selected], &mut state);
                             }
                         }
                         _ => {
@@ -561,7 +573,7 @@ fn main() {
                                 let filtered_count = filtered.len();
                                 let max_vis = filtered_count.min(MAX_VISIBLE);
                                 if max_vis > 0 && state.selected < max_vis {
-                                    if launch_app(filtered[state.selected]) { process::exit(0); }
+                                    try_launch(filtered[state.selected], &mut state);
                                 }
                             } else if ascii == 0x1b {
                                 // Escape via ASCII
@@ -602,7 +614,7 @@ fn main() {
                         {
                             // Double-click -> launch
                             if row < max_vis {
-                                if launch_app(filtered[row]) { process::exit(0); }
+                                try_launch(filtered[row], &mut state);
                             }
                         } else {
                             // Single click -> select
@@ -647,9 +659,11 @@ fn main() {
         }
         let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
         let query = core::str::from_utf8(&state.query[..state.query_len]).unwrap_or("");
+        let mut value = node::value(&entries, &errors, query, state.selected, MAX_VISIBLE);
+        value["error"] = serde_json::json!(state.error);
         win.set_tree(breengel::tree::Tree { root: breengel::tree::Node {
             key: "apps".into(), parent: None, role: breengel::tree::Role::List,
-            name: "Applications".into(), value: node::value(&entries, &errors, query, state.selected, MAX_VISIBLE),
+            name: "Applications".into(), value,
             bounds, clip: bounds, flags: vec![breengel::tree::Flag::Enabled, breengel::tree::Flag::Visible],
         }, children: Vec::new() });
         let presented = win.present();
