@@ -47,6 +47,11 @@ impl Canvas {
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
     }
+    pub fn preview(&self, points: &[Point], draw: impl FnOnce(&mut Self, &[Point])) -> Self {
+        let mut image = self.clone();
+        draw(&mut image, points);
+        image
+    }
     pub fn digest(&self) -> [u8; 32] {
         libpixcheck::sha256(&self.pixels)
     }

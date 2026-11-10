@@ -24,11 +24,11 @@ const SAVE: u16 = 6;
 struct App {
     width: usize, height: usize, history: History, clean: [u8; 32],
     tool: usize, size: usize, hue: u16, sat: u8, val: u8,
-    stroke: Option<Vec<Point>>, confirm: bool, quit: bool,
+    stroke: Option<Vec<Point>>, selected_color: Option<[u8; 3]>, recent: [[u8; 3]; 8], confirm: bool, quit: bool,
     file: Option<PathBuf>, message: String, picker: Option<FilePicker>, directory: PathBuf,
 }
 impl App {
-    fn color(&self) -> [u8; 3] { node::hsv_to_rgb(self.hue, self.sat, self.val) }
+    fn color(&self) -> [u8; 3] { self.selected_color.unwrap_or_else(|| node::hsv_to_rgb(self.hue, self.sat, self.val)) }
     fn dirty(&self) -> bool { self.history.canvas().digest() != self.clean }
     fn request_quit(&mut self) { if self.dirty() { self.confirm = true; } else { self.quit = true; } }
     fn action(&mut self, action: u16) {
@@ -97,25 +97,32 @@ impl App {
     fn point(&self, x: i32, y: i32) -> Option<Point> {
         if x >= 0 && y >= TOP && (x as usize) < self.width && ((y - TOP) as usize) < self.height { Some((x, y - TOP)) } else { None }
     }
-    fn finish_stroke(&mut self) {
-        let Some(points) = self.stroke.take() else { return };
+    fn draw_stroke(&self, image: &mut Canvas, points: &[Point]) {
         let Some(&last) = points.last() else { return };
-        let mut image = self.history.canvas().clone();
         let color = self.color();
         let radius = match self.size { 0 => Radius::Small, 1 => Radius::Medium, _ => Radius::Large };
         match self.tool {
-            0 => image.pencil(&points, color), 1 => image.brush(&points, radius, color),
+            0 => image.pencil(points, color), 1 => image.brush(points, radius, color),
             2 => image.line(points[0], last, color), 3 => image.rectangle(points[0], last, color),
             4 => image.circle(points[0], last, color), 5 => image.fill(points[0], color),
-            _ => image.erase(&points, radius),
+            _ => image.erase(points, radius),
         }
-        if image.pixels() != self.history.canvas().pixels() { self.history.push(image); }
+    }
+    fn finish_stroke(&mut self) {
+        let Some(points) = self.stroke.take() else { return };
+        let image = self.history.canvas().preview(&points, |image, points| self.draw_stroke(image, points));
+        if image.pixels() != self.history.canvas().pixels() {
+            self.history.push(image);
+            let color = self.color();
+            if color != [255; 3] && !self.recent.contains(&color) { self.recent.copy_within(0..7, 1); self.recent[0] = color; }
+        }
     }
     fn press(&mut self, x: i32, y: i32) {
         if y >= 23 && y < 39 && x >= 2 { let i = ((x - 2) / 38) as usize; if i < 7 && (x - 2) % 38 < 36 { self.tool = i; return; } }
         if y >= 41 && y < 57 && x >= 2 { let i = ((x - 2) / 22) as usize; if i < 3 && (x - 2) % 22 < 20 { self.size = i; return; } }
-        if (58..76).contains(&y) && (0..780).contains(&x) { self.hue = node::hue_at(x as usize, 780); return; }
-        if (76..176).contains(&y) && (0..100).contains(&x) { (self.sat, self.val) = node::sv_at(x as usize, (y - 76) as usize, 100); return; }
+        if (58..76).contains(&y) && (0..780).contains(&x) { self.hue = node::hue_at(x as usize, 780); self.selected_color = None; return; }
+        if (76..176).contains(&y) && (0..100).contains(&x) { (self.sat, self.val) = node::sv_at(x as usize, (y - 76) as usize, 100); self.selected_color = None; return; }
+        if (90..108).contains(&y) && (108..252).contains(&x) { let i = ((x - 108) / 18) as usize; self.selected_color = Some(self.recent[i]); return; }
         if let Some(point) = self.point(x, y) { self.stroke = Some(vec![point]); }
     }
 }
@@ -140,7 +147,10 @@ fn render(fb: &mut Surface, app: &App, menu: &MenuBar) {
     }
     for x in 0..780 { let c = node::hsv_to_rgb(node::hue_at(x, 780), 255, 255); for y in 58..76 { fb.put_pixel(x, y, Color::rgb(c[0], c[1], c[2])); } }
     for y in 0..100 { for x in 0..100 { let (s,v) = node::sv_at(x,y,100); let c = node::hsv_to_rgb(app.hue,s,v); fb.put_pixel(x, y+76, Color::rgb(c[0],c[1],c[2])); } }
-    let pixels = app.history.canvas().pixels();
+    bitmap_font::draw_text(fb, b"Recent:", 108, 78, Color::WHITE);
+    for (i, c) in app.recent.iter().enumerate() { shapes::fill_rect(fb, 108 + i as i32 * 18, 90, 16, 16, Color::rgb(c[0], c[1], c[2])); }
+    let preview = app.stroke.as_ref().map(|points| app.history.canvas().preview(points, |image, points| app.draw_stroke(image, points)));
+    let pixels = preview.as_ref().unwrap_or_else(|| app.history.canvas()).pixels();
     for y in 0..app.height.min((fb.height() as usize).saturating_sub(TOP as usize)) { for x in 0..app.width.min(fb.width() as usize) { let i = (y * app.width + x) * 3; fb.put_pixel(x,y+TOP as usize,Color::rgb(pixels[i],pixels[i+1],pixels[i+2])); } }
     menu.draw(fb, &Theme::dark());
     if !app.message.is_empty() { bitmap_font::draw_text(fb, app.message.as_bytes(), 110, 150, Color::WHITE); }
@@ -169,7 +179,7 @@ fn main() {
     } else { (800, 600 - TOP as usize) };
     if args.next().is_some() { eprintln!("usage: guskit [--canvas WxH] [FILE]"); std::process::exit(2); }
     let image = Canvas::new(width,height); let clean = image.digest();
-    let mut app = App { width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from(".") };
+    let mut app = App { width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from(".") };
     if let Some(path) = app.file.clone() { if path.exists() { app.open_file(path); } }
     let mut win = Window::new(b"Gus Kit", 800, 600).unwrap_or_else(|e| { eprintln!("Gus Kit: {e}"); std::process::exit(1) });
     let mut menu = menu();
