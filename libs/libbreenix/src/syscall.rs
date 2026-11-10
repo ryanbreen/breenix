@@ -50,6 +50,8 @@ pub mod nr {
     pub const CLOSE: u64 = 3;
     pub const FSTAT: u64 = 5;
     pub const FSTATFS: u64 = 138;
+    pub const MOUNT: u64 = 165;
+    pub const UMOUNT2: u64 = 166;
     pub const POLL: u64 = 7;
     pub const LSEEK: u64 = 8;
     pub const MMAP: u64 = 9;
@@ -285,6 +287,8 @@ pub mod nr {
     pub const NEWFSTATAT: u64 = 79;
     pub const FSTAT: u64 = 80;
     pub const FSTATFS: u64 = 44;
+    pub const MOUNT: u64 = 40;
+    pub const UMOUNT2: u64 = 39;
     pub const FSYNC: u64 = 82;
     pub const SYNC: u64 = 81;
     pub const FDATASYNC: u64 = 83;

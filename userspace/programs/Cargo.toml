@@ -12,6 +12,7 @@ description = "Userspace programs and utilities for Breenix"
 framebuffer-v1 = []
 
 [dependencies]
+ufs-abi = { path = "../../libs/ufs-abi" }
 libvt = { path = "../../libs/libvt" }
 libclipboard = { path = "../../libs/libclipboard" }
 serde_json = { version = "=1.0.154", default-features = false, features = ["alloc"] }
@@ -910,3 +911,11 @@ path = "src/ack_app_test.rs"
 [[bin]]
 name = "bcheck-fixture_test"
 path = "src/bcheck_fixture.rs"
+
+[[bin]]
+name = "suite-network-shares"
+path = "src/suite_network_shares.rs"
+
+[[bin]]
+name = "memfsd_test"
+path = "src/memfsd_test.rs"

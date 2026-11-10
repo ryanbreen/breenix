@@ -6,6 +6,8 @@
 //! are opaque to this framing layer.
 #![no_std]
 
+pub mod payload;
+
 pub const MAX_DATA: usize = 64 * 1024;
 pub const REQUEST_HEADER: usize = 22;
 pub const REPLY_HEADER: usize = 16;

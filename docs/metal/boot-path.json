@@ -389,7 +389,7 @@
         "suite": [
           {
             "name": "Suite finished",
-            "marker": "SUITE breengel DONE|SUITE console DONE|SUITE crypto DONE|SUITE directories DONE|SUITE files-io DONE|SUITE filesystem DONE|SUITE gpu DONE|SUITE gt710 DONE|SUITE gui-apps DONE|SUITE ipc DONE|SUITE libc DONE|SUITE memory DONE|SUITE networking DONE|SUITE processes DONE|SUITE rust-std DONE|SUITE sdk DONE|SUITE server DONE|SUITE signals DONE|SUITE smoke DONE|SUITE terminals DONE|SUITE threads DONE|SUITE time DONE|SUITE toolchain DONE|SUITE ui-testing DONE|SUITE users DONE|SUITE utilities DONE|SUITE window-manager DONE"
+            "marker": "SUITE breengel DONE|SUITE console DONE|SUITE crypto DONE|SUITE directories DONE|SUITE files-io DONE|SUITE filesystem DONE|SUITE gpu DONE|SUITE gt710 DONE|SUITE gui-apps DONE|SUITE ipc DONE|SUITE libc DONE|SUITE memory DONE|SUITE network-shares DONE|SUITE networking DONE|SUITE processes DONE|SUITE rust-std DONE|SUITE sdk DONE|SUITE server DONE|SUITE signals DONE|SUITE smoke DONE|SUITE terminals DONE|SUITE threads DONE|SUITE time DONE|SUITE toolchain DONE|SUITE ui-testing DONE|SUITE users DONE|SUITE utilities DONE|SUITE window-manager DONE"
           }
         ]
       },

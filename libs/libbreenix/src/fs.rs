@@ -56,6 +56,45 @@ impl CPath {
     }
 }
 
+/// Mount a filesystem using the Linux-compatible mount ABI.
+///
+/// # Safety
+/// `data` must be null or point to the complete filesystem-specific mount data,
+/// readable until this call returns. For `ufs` it points to a native-endian u32
+/// containing the caller's open `/dev/ufs` descriptor (docs/fs/ufs.md).
+pub unsafe fn mount(
+    source: &str,
+    target: &str,
+    filesystem: &str,
+    flags: u64,
+    data: *const core::ffi::c_void,
+) -> Result<(), Error> {
+    for value in [source, target, filesystem] {
+        if value.as_bytes().contains(&0) {
+            return Err(Error::Os(crate::errno::Errno::from_raw(22)));
+        }
+    }
+    let source = CPath::new(source)?;
+    let target = CPath::new(target)?;
+    let filesystem = CPath::new(filesystem)?;
+    let ret = unsafe {
+        raw::syscall5(nr::MOUNT, source.as_u64(), target.as_u64(), filesystem.as_u64(), flags, data as u64)
+    } as i64;
+    Error::from_syscall(ret)?;
+    Ok(())
+}
+
+/// Unmount a filesystem. Flags are the Linux-compatible umount2 flags.
+pub fn umount2(target: &str, flags: u32) -> Result<(), Error> {
+    if target.as_bytes().contains(&0) {
+        return Err(Error::Os(crate::errno::Errno::from_raw(22)));
+    }
+    let target = CPath::new(target)?;
+    let ret = unsafe { raw::syscall2(nr::UMOUNT2, target.as_u64(), flags as u64) } as i64;
+    Error::from_syscall(ret)?;
+    Ok(())
+}
+
 /// Do not follow the final symlink in pathname metadata requests.
 pub const AT_SYMLINK_NOFOLLOW: u32 = 0x100;
 
