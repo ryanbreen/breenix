@@ -4,6 +4,7 @@
   "area": "Graphics",
   "summary": "The firmware framebuffer belongs to the GT 710, whose PCI resources and firmware display claim are reported.",
   "binary": "scripts/metal/gt710-suite",
+  "timingSensitive": true,
   "hostRunner": true,
   "categories": [
     {
