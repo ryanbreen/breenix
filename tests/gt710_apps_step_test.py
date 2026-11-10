@@ -228,8 +228,8 @@ class AppsStep(unittest.TestCase):
         def record(text):
             (self.path / 'serial.txt').write_text(text)
             return API['record_apps_capture'](self.path, SHA, 4)
-        # G13 admits exit 1 only for failed cases, never an unexplained
-        # driver/scorer failure after all 42 cases passed.
+        # G13 requires a failed case to explain exit 1; this 42/42 capture
+        # has no failed case to explain the driver/scorer failure.
         self.assertEqual(record(original), 1)
         (self.path / 'exit-status').write_text('0')
         events = [dict(event='final-marker'), dict(event='power-off', off=True),
