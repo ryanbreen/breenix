@@ -89,3 +89,21 @@ fn failed_cursor_publish_rolls_back_real_rotation_and_restores_partial_input() {
     assert_eq!(combined.matches(&format!("[kernel] {}\n", "a".repeat(1000))).count(),
         (LIMIT as usize / 1010) - 1);
 }
+
+#[test]
+fn external_log_changes_do_not_strand_the_cursor() {
+    for remove_pins in [false, true] {
+        let f = Fixture::new();
+        f.follower().apply(&snapshot(0, b"one\n")).unwrap();
+        if remove_pins {
+            fs::remove_dir_all(f.0.join(".kernel-log-cursor")).unwrap();
+        } else {
+            fs::write(f.0.join("kernel.log"), b"").unwrap();
+        }
+        f.follower().apply(&snapshot(0, b"one\ntwo\n")).unwrap();
+        let log = f.content();
+        assert_eq!(log.matches("[kernel] two\n").count(), 1);
+        assert!(!log.contains("[kernel] one\n") || remove_pins);
+        if !remove_pins { assert!(log.contains("reason=cursor-output-changed")); }
+    }
+}

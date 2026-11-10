@@ -186,6 +186,7 @@ impl KmsgFollower {
     pub fn restore(directory: &Path, state: &Path, boot: &str) -> io::Result<Self> {
         let mut next = 0;
         let mut lines = Lines::new();
+        let mut output_changed = false;
         match fs::read(state) {
             Ok(bytes) => {
                 let mut parts = bytes.splitn(ARCHIVES + 3, |&b| b == b'\n');
@@ -213,21 +214,33 @@ impl KmsgFollower {
                 let saved_lines = Lines::restore(parts.next().ok_or_else(invalid_cursor)?)
                     .ok_or_else(invalid_cursor)?;
                 if files[0].is_none() { return Err(invalid_cursor()); }
-                // The cursor's hard links survive both rename-rotation and
-                // replacement of an archive. Re-link before replaying input.
-                for (index, saved) in files.into_iter().enumerate() {
+                // Validate the whole family before rolling any file back. An
+                // admin may have removed the pins or truncated a committed log.
+                let mut sources = Vec::new();
+                for (index, saved) in files.iter().enumerate() {
+                    let source = if let Some(saved) = saved {
+                        let anchor = directory.join(".kernel-log-cursor").join(saved.name());
+                        let path = if log_file(&anchor)?.is_some() { anchor } else { log_path(directory, index) };
+                        if log_file(&path)?.is_some_and(|actual| actual.device == saved.device
+                            && actual.inode == saved.inode && actual.length >= saved.length) {
+                            Some(path)
+                        } else { output_changed = true; None }
+                    } else { None };
+                    sources.push(source);
+                }
+                // Pins survive interrupted rotation; matching live files also
+                // suffice when only the private pin directory was removed.
+                for (index, (saved, source)) in files.into_iter().zip(sources).enumerate() {
+                    if output_changed { break; }
                     let target = log_path(directory, index);
                     if let Some(saved) = saved {
-                        let anchor = directory.join(".kernel-log-cursor").join(saved.name());
-                        let actual = log_file(&anchor)?.ok_or_else(invalid_cursor)?;
-                        if actual.device != saved.device || actual.inode != saved.inode
-                            || actual.length < saved.length { return Err(invalid_cursor()); }
-                        let file = OpenOptions::new().write(true).open(&anchor)?;
+                        let source = source.ok_or_else(invalid_cursor)?;
+                        let file = OpenOptions::new().write(true).open(&source)?;
                         file.set_len(saved.length)?;
                         file.sync_all()?;
                         let temporary = directory.join(".kernel.log.restore");
                         remove_log_file(&temporary)?;
-                        fs::hard_link(&anchor, &temporary)?;
+                        fs::hard_link(&source, &temporary)?;
                         fs::rename(&temporary, &target)?;
                         // rename is a no-op when both names already link the inode.
                         remove_log_file(&temporary)?;
@@ -241,6 +254,9 @@ impl KmsgFollower {
         }
         let mut follower = Self { log: Log::new(directory, "kernel", boot)?,
             state: state.to_owned(), boot: boot.to_owned(), next, lines, failed: false };
+        if output_changed {
+            follower.log.append(b"[log] lost lines=unknown reason=cursor-output-changed\n")?;
+        }
         follower.publish()?;
         Ok(follower)
     }
