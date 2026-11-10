@@ -24,13 +24,13 @@ pub fn no_results() -> CaseResult {
 pub fn keys_select() -> CaseResult {
     std::fs::write("/tmp/blauncher-keys", "Alpha\tFirst\tgui\t/bin/a\nBeta\tSecond\tgui\t/bin/b\n").map_err(|e| e.to_string())?;
     let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-keys"], "Launcher")?;
-    t.key(82, &[])?;
+    t.key(103, &[])?;
     t.wait_node("apps", |v| v["selected"] == 0)?;
-    t.key(81, &[])?;
+    t.key(108, &[])?;
     t.wait_node("apps", |v| v["selected"] == 1)?;
-    t.key(81, &[])?;
+    t.key(108, &[])?;
     t.wait_node("apps", |v| v["selected"] == 1)?;
-    t.key(82, &[])?;
+    t.key(103, &[])?;
     t.wait_node("apps", |v| v["selected"] == 0)?;
     Ok(t.finish()?)
 }
