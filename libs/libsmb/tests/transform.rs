@@ -8,8 +8,14 @@ fn header_and_authenticated_round_trips() {
         let mut transform = Transform::new(cipher, key, session, [0x11, 0x22, 0x33]);
         let frame = transform.encrypt(b"hello SMB").unwrap();
         assert_eq!(&frame[..4], b"\xfdSMB");
-        assert_eq!(&frame[20..36], &[0x11, 0x22, 0x33, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(&frame[36..52], &[9, 0, 0, 0, 0, 0, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8]);
+        assert_eq!(
+            &frame[20..36],
+            &[0x11, 0x22, 0x33, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            &frame[36..52],
+            &[9, 0, 0, 0, 0, 0, 1, 0, 1, 2, 3, 4, 5, 6, 7, 8]
+        );
         assert_eq!(transform.decrypt(&frame).unwrap(), b"hello SMB");
         let next = transform.encrypt(b"hello SMB").unwrap();
         assert_ne!(&frame[20..36], &next[20..36]);
