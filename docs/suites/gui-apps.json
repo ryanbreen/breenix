@@ -201,6 +201,15 @@
         {
           "id": "totals-exit",
           "title": "Totals and exit status"
+        },
+        {
+          "id": "responsive",
+          "title": "Scroll and close during a test"
+        },
+        {
+          "id": "production-catalog",
+          "title": "Shipped catalog passes",
+          "expect": "With outbound network access on the R240 for the example.com and www.duke.edu rows, bcheck launched without arguments completes with every shipped row passed within 60 seconds."
         }
       ]
     }

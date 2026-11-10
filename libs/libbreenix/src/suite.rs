@@ -537,6 +537,8 @@ pub const DEFAULT_CASE_LIMIT_MS: u64 = 10_000;
 /// every byte split, the PngSuite fixtures, 100 window churns and 300 timed commits) get
 /// the workload plus the 1.5 s collection reserve, rounded up.
 pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
+    // GUI plan section 18: the shipped bcheck catalog, including network probes.
+    ("gui-apps", "bcheck/production-catalog", 60_000),
     ("time", "clocks/rate-counter", 25_000),
     ("breengel", "font-parser/corpus", 20_000),
     ("breengel", "inflate/byte-split", 20_000),

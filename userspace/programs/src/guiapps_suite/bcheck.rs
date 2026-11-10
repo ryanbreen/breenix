@@ -61,3 +61,57 @@ pub fn totals_exit() -> CaseResult {
     t.key_exit(1, 1)?;
     Ok(t.finish()?)
 }
+
+pub fn responsive() -> CaseResult {
+    let mut catalog = String::new();
+    for n in 0..30 { catalog.push_str(&format!("pass{n} test 5000 {FIXTURE} pass\n")); }
+    catalog.push_str(&format!("hang test 60000 {FIXTURE} hang\n"));
+    let mut t = launch("responsive", &catalog)?;
+    let pid = Cell::new(0);
+    let offset = Cell::new(None);
+    t.wait_node("rows", |v| {
+        let Some(rows) = v["rows"].as_array() else { return false };
+        if rows.len() != 31 || rows[30]["state"] != "running" { return false; }
+        pid.set(rows[30]["pid"].as_u64().unwrap_or(0));
+        offset.set(v["offset"].as_i64());
+        pid.get() != 0 && offset.get().is_some()
+            && rows[..30].iter().all(|r| r["state"] == "done" && r["verdict"] == "pass")
+    })?;
+    t.scroll(-1)?;
+    t.wait_node("rows", |v| v["offset"].as_i64().is_some_and(|n| Some(n) > offset.get())
+        && v["rows"][30]["state"] == "running" && v["rows"][30]["pid"] == pid.get())?;
+    t.key_exit(1, 1)?;
+    let path = format!("/proc/{}/stat", pid.get());
+    match std::fs::read_to_string(&path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
+        other => return Err(format!("cancelled child still present at {path}: {other:?}").into()),
+    }
+    Ok(t.finish()?)
+}
+
+pub fn production_catalog() -> CaseResult {
+    let catalog = std::fs::read_to_string("/usr/share/bcheck/catalog").map_err(|e| e.to_string())?;
+    let names: Vec<_> = catalog.lines().map(str::trim).filter(|s| !s.is_empty() && !s.starts_with('#'))
+        .filter_map(|s| s.split_whitespace().next()).collect();
+    if names.is_empty() { return Err("shipped catalog is empty".into()); }
+    let mut t = App::launch(&[b"/usr/bin/bcheck"], "Self-Check")?;
+    t.wait_node("rows", |v| v["rows"].is_array())?;
+    loop {
+        let tree = t.tree()?;
+        let value = &tree.root.value;
+        let rows = value["rows"].as_array().ok_or("bcheck rows missing")?;
+        if rows.len() != names.len() || rows.iter().zip(&names).any(|(r, name)| r["name"] != *name) {
+            return Err("bcheck rows differ from the shipped catalog".into());
+        }
+        if rows.iter().all(|r| r["state"] == "done") {
+            if rows.iter().any(|r| r["verdict"] != "pass") {
+                return Err(format!("shipped catalog failed: {rows:?}").into());
+            }
+            break;
+        }
+        if breenix_suite::suite::case_ms_left() < 100 { return Err("shipped catalog exceeded case deadline".into()); }
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    t.key_exit(1, 0)?;
+    Ok(t.finish()?)
+}

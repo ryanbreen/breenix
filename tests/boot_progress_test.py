@@ -140,6 +140,7 @@ class ProgressTest(unittest.TestCase):
         self.assertEqual(len(entries), len(allowances), 'allowance names must be unique')
         monitor = runpy.run_path(str(ROOT / 'scripts/boot_progress.py'))
         self.assertEqual(allowances, {
+            ('gui-apps', 'bcheck/production-catalog'): 60_000,
             ('time', 'clocks/rate-counter'): 25_000,
             ('breengel', 'font-parser/corpus'): 20_000,
             ('breengel', 'inflate/byte-split'): 20_000,

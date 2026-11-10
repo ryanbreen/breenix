@@ -65,6 +65,8 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("hang", "Timeout and reap", bcheck::hang).session(libuitest::supervisor::serve),
         case("forged-output", "Forged output fails", bcheck::forged_output).session(libuitest::supervisor::serve),
         case("totals-exit", "Totals and exit status", bcheck::totals_exit).session(libuitest::supervisor::serve),
+        case("responsive", "Scroll and close during a test", bcheck::responsive).session(libuitest::supervisor::serve),
+        case("production-catalog", "Shipped catalog passes", bcheck::production_catalog).session(libuitest::supervisor::serve),
     ]),
 ]).gui().defer_display();
 
