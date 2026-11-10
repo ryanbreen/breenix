@@ -4358,7 +4358,9 @@ def record_step_capture(directory, sha, step_number, suite, prefix, max_step, sc
         report = step_capture(directory, sha, step_number, suite, prefix, max_step)
         if scorer_head is not None:
             report.update(scorerCommit=scorer_head, hostOnlyDiff=changed,
-                          scorerSHA256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest())
+                          scorerSHA256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                          scorerSources={name: hashlib.sha256((Path(__file__).resolve().parents[2] / name).read_bytes()).hexdigest()
+                                         for name in RETAINED_SCORER_FILES})
     except (OSError, ValueError, KeyError, TypeError) as error:
         report = dict(boot=capture_boot(directory).get('id'), commit=sha,
                       milestone=f'metal-gt710/{kind}-step', selection=f'{prefix}{step_number}.json',

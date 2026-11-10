@@ -274,6 +274,8 @@ class AppsStep(unittest.TestCase):
         self.assertEqual(report['hostOnlyDiff'], changes)
         self.assertEqual(report['scorerSHA256'], hashlib.sha256(
             (ROOT / 'scripts/metal/gt710-suite').read_bytes()).hexdigest())
+        self.assertEqual(report['scorerSources'], {name: hashlib.sha256(
+            (ROOT / name).read_bytes()).hexdigest() for name in API['RETAINED_SCORER_FILES']})
         for name, body in original.items():
             self.assertEqual((self.path / name).read_bytes(), body)
         with patch('subprocess.run'), patch('subprocess.check_output',
