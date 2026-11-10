@@ -1,5 +1,5 @@
 //! Acknowledge the process context received from an application launcher.
-use breengel::{Event, Window};
+use breengel::{Event, Handled, Window};
 use std::io::Write;
 
 fn run() -> Result<(), Box<dyn std::error::Error>> {
@@ -31,7 +31,19 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     });
     win.present().map_err(|e| e.to_string())?;
     loop {
-        if win.wait_event().iter().any(|event| matches!(event, Event::CloseRequested)) { break; }
+        let mut close = false;
+        win.wait_dispatch(100_000_000, |delivered| {
+            close |= matches!(delivered.event, Event::CloseRequested);
+            Handled::NoChange
+        }).map_err(|e| e.to_string())?;
+        win.commit_no_change().map_err(|e| e.to_string())?;
+        if close { break; }
+        // A new semantic reader needs a serialization newer than its attach.
+        // Metadata-only acknowledgments retain the old tree publication.
+        if win.tree_reader_count() != 0 {
+            win.surface().map_err(|e| e.to_string())?.clear(libgfx::color::Color::rgb(24, 32, 48));
+            win.present().map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }

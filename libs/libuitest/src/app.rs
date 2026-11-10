@@ -80,6 +80,14 @@ mod live {
             live.activate(window)?;
             Ok(Self { keys: Keyboard::new(live), launched: Some(pid), tracked: vec![(pid, None)], window })
         }
+        /// Start another app without consuming a second per-case session.
+        pub fn launch_next(&mut self, argv: &[&[u8]], title: &str) -> Result<(), String> {
+            if argv.is_empty() || argv[0].is_empty() { return Err("app argv is empty".into()); }
+            let pid = self.keys.backend_mut().session().launch_app(argv, 0)?;
+            self.tracked.push((pid, None));
+            self.launched = Some(pid);
+            self.attach(title)
+        }
         pub fn attach(&mut self, title: &str) -> Result<(), String> {
             let live = self.keys.backend_mut();
             let watchdog = Watchdog::new(Wait::AppOutput)?;

@@ -110,8 +110,7 @@ pub fn close() -> CaseResult {
     let argv: &[&[u8]] = &[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-close"];
     let mut t = App::launch(argv, "\u{1}Launcher")?;
     t.key_exit(1, 0)?;
-    t.finish()?;
-    let mut t = App::launch(argv, "\u{1}Launcher")?;
+    t.launch_next(argv, "\u{1}Launcher")?;
     t.click_exit(0, 0, 0)?;
     Ok(t.finish()?)
 }
