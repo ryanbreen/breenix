@@ -70,3 +70,8 @@ required-features = ["std"]
 name = "ui_settle"
 path = "../../tests/ui_settle.rs"
 required-features = ["std"]
+
+[[test]]
+name = "service_logs_recovery"
+path = "../../tests/service_logs_recovery.rs"
+required-features = ["std"]

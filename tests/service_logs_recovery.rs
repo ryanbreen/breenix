@@ -1,6 +1,4 @@
-#[path = "../libs/libbreenix/src/service_logs.rs"]
-mod service_logs;
-use service_logs::{KmsgFollower, LIMIT};
+use libbreenix::service_logs::{KmsgFollower, LIMIT};
 use std::{fs, path::PathBuf, sync::atomic::{AtomicUsize, Ordering}};
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 struct Fixture(PathBuf);
@@ -62,4 +60,32 @@ fn ring_overrun_is_reported() {
     let log = f.content();
     assert!(log.contains("reason=ring-overrun from=0 to=10"));
     assert!(log.contains("[kernel] new\n"));
+}
+
+#[test]
+fn failed_cursor_publish_rolls_back_real_rotation_and_restores_partial_input() {
+    let f = Fixture::new();
+    let data = format!("{}\n", "a".repeat(1000)).repeat((LIMIT as usize / 1010) - 1);
+    let mut follower = f.follower();
+    follower.apply(&snapshot(0, data.as_bytes())).unwrap();
+    let committed = f.content();
+    let marker = format!("next-{}", "b".repeat(3000));
+    let all = format!("{data}{marker}\npar");
+    // Fail the real cursor open after the real append, without a timing race.
+    fs::create_dir(f.0.join("cursor.new")).unwrap();
+    assert!(follower.apply(&snapshot(0, all.as_bytes())).is_err());
+    assert_eq!(fs::read_to_string(f.0.join("kernel.log.1")).unwrap(), committed);
+    drop(follower);
+    fs::remove_dir(f.0.join("cursor.new")).unwrap();
+    let mut follower = f.follower();
+    assert_eq!(f.content(), committed);
+    follower.apply(&snapshot(0, all.as_bytes())).unwrap();
+    assert!(!f.content().contains("[kernel] par"));
+    drop(follower);
+    f.follower().apply(&snapshot(0, format!("{all}tial\n").as_bytes())).unwrap();
+    let combined = format!("{}{}", fs::read_to_string(f.0.join("kernel.log.1")).unwrap(), f.content());
+    assert_eq!(combined.matches(&format!("[kernel] {marker}\n")).count(), 1);
+    assert_eq!(combined.matches("[kernel] partial\n").count(), 1);
+    assert_eq!(combined.matches(&format!("[kernel] {}\n", "a".repeat(1000))).count(),
+        (LIMIT as usize / 1010) - 1);
 }
