@@ -1621,8 +1621,14 @@ fn metal_stream_is_independent_and_resolves_its_measures() {
     assert_eq!(boot["milestones"][0]["stages"]["x86_64"].as_array().unwrap().iter()
         .filter_map(|s| s["host"].as_str()).collect::<Vec<_>>(),
         ["console-ready", "power-on", "firmware-text", "post", "image-complete"]);
+    // Fatal entries are regular expressions to every scorer (metal_score.py, Vigil). The x86
+    // panic handler prints `KERNEL PANIC: <message>` and `panic location: ...`, never Rust's
+    // `panicked at`, so the metal stream also matches that banner (9d9eb34d).
     assert_eq!(boot["fatal"], serde_json::json!([
-        "panicked at kernel/src/", "!!! SOFT LOCKUP DETECTED !!!"]));
+        "panicked at kernel/src/|KERNEL PANIC[:!]", "!!! SOFT LOCKUP DETECTED !!!"]));
+    let x86_panic = fs::read_to_string(root.join("kernel/src/main.rs")).unwrap();
+    assert!(x86_panic.contains(r#"serial_println!("KERNEL PANIC: {}", info.message());"#),
+        "the x86 panic banner changed; update the metal fatal pattern with it");
 }
 
 #[test]
