@@ -59,8 +59,9 @@ fn is_id(id: &str) -> bool {
 
 /// A category or case as the manifest or the source names it. A case's `checks` are its
 /// declared frame checks, in order: the source's `.checks(&[...])`, the manifest's
-/// `frameChecks` entries for that case. The runner fails a declared check that never ran
-/// and refuses an undeclared one (libbreenix `suite_result`), so the two must agree.
+/// `frameChecks` entries for that case. The runner fails a declared check without a FRAME
+/// record and refuses an undeclared one, so the two must agree.
+/// claim-lint:ok: libs/libbreenix/src/suite_result.rs (Accounting::accept_record, Accounting::problem).
 #[derive(Debug, PartialEq, Default)]
 struct Entry {
     id: String,
@@ -1621,9 +1622,10 @@ fn metal_stream_is_independent_and_resolves_its_measures() {
     assert_eq!(boot["milestones"][0]["stages"]["x86_64"].as_array().unwrap().iter()
         .filter_map(|s| s["host"].as_str()).collect::<Vec<_>>(),
         ["console-ready", "power-on", "firmware-text", "post", "image-complete"]);
-    // Fatal entries are regular expressions to every scorer (metal_score.py, Vigil). The x86
-    // panic handler prints `KERNEL PANIC: <message>` and `panic location: ...`, never Rust's
-    // `panicked at`, so the metal stream also matches that banner (9d9eb34d).
+    // Fatal entries are regular expressions to the two scorers that read this file
+    // (scripts/metal/metal_score.py, Vigil's BreenixBootPath). The x86 panic handler prints
+    // `KERNEL PANIC: <message>` and `panic location: ...` rather than Rust's `panicked at`,
+    // so the metal stream also matches that banner (9d9eb34d).
     assert_eq!(boot["fatal"], serde_json::json!([
         "panicked at kernel/src/|KERNEL PANIC[:!]", "!!! SOFT LOCKUP DETECTED !!!"]));
     let x86_panic = fs::read_to_string(root.join("kernel/src/main.rs")).unwrap();
