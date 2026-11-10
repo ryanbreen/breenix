@@ -25,7 +25,12 @@ become visible again. Unmount after daemon death succeeds even with user file
 handles still open. Daemon endpoint close or process exit marks the mount
 dead, including when an in-flight read retains the endpoint. Closing a duplicate
 of the bound endpoint also disconnects it. Pending callers wake with ENOTCONN; later operations return ENOTCONN
-until unmount. The kernel retains mount state independently of the fd, without
+until unmount. A serving daemon must therefore open its endpoint after any
+launcher fork, keep one descriptor, and avoid fork/dup or helper processes that
+inherit that bound descriptor. NS.4's launcher must leave endpoint creation to
+the serving child. This endpoint restriction does not apply to ordinary UFS file
+descriptors, which share open descriptions across dup/fork.
+The kernel retains mount state independently of the fd, without
 retaining a reference that prevents endpoint death detection.
 
 Requests expire after `payload::REQUEST_TIMEOUT_MS` (5 seconds) with EIO.
