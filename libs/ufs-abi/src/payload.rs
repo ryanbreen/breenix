@@ -103,3 +103,29 @@ impl Attr {
         Ok(attr)
     }
 }
+
+/// Setattr timestamp form. The mask leaves omitted times untouched by the daemon.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SetTimes {
+    pub atime_ns: Option<u64>,
+    pub mtime_ns: Option<u64>,
+}
+impl SetTimes {
+    pub const SIZE: usize = 20;
+    pub fn encode(self, out: &mut [u8]) -> Result<usize, Error> {
+        let mut w = Writer::new(out);
+        w.u32(u32::from(self.atime_ns.is_some()) | (u32::from(self.mtime_ns.is_some()) << 1))?;
+        w.u64(self.atime_ns.unwrap_or(0))?;
+        w.u64(self.mtime_ns.unwrap_or(0))?;
+        Ok(w.len())
+    }
+    pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
+        let mut r = Reader::new(bytes);
+        let mask = r.u32()?;
+        let atime = r.u64()?;
+        let mtime = r.u64()?;
+        r.finish()?;
+        if mask & !3 != 0 { return Err(Error); }
+        Ok(Self { atime_ns: (mask & 1 != 0).then_some(atime), mtime_ns: (mask & 2 != 0).then_some(mtime) })
+    }
+}

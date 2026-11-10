@@ -52,7 +52,7 @@ daemon uses epoch times. ctime may be synthesized from mtime by the bridge.
 |---|---|---|---|
 | Lookup | parent | name | Attr |
 | Getattr | node | empty | Attr |
-| Setattr | node | new_size:u64 | Attr after truncate |
+| Setattr | node | new_size:u64 (8 bytes), or times_mask:u32, atime_ns:u64, mtime_ns:u64 (20 bytes) | Attr after update |
 | Readdir | directory | cookie:u64 (0 initially) | repeated (next_cookie:u64, node:u64, mode:u32, name); empty at EOF |
 | Open | node | flags:u32 (open ABI flags) | handle:u64 |
 | Read | node | handle:u64, offset:u64, count:u32 | raw bytes (empty at EOF), at most count |
@@ -65,6 +65,11 @@ daemon uses epoch times. ctime may be synthesized from mtime by the bridge.
 | Fsync | node | handle:u64 | empty (files and directories) |
 | Statfs | any node | empty | seven u64: bsize, blocks, bfree, bavail, files, ffree, namelen |
 | Release | node | handle:u64 | empty |
+
+The Setattr timestamp form uses mask bit 0 for atime and bit 1 for mtime.
+Other bits are invalid. An unset bit leaves that field unchanged in the daemon;
+the corresponding wire value is ignored. The kernel resolves UTIME_NOW and
+checks ownership/write permission before sending explicit epoch nanoseconds.
 
 Read data is bounded by MAX_DATA. Write data is bounded by `payload::MAX_WRITE`
 (MAX_DATA minus the 16-byte handle/offset prefix); larger user I/O is chunked
