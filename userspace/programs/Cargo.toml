@@ -906,3 +906,7 @@ path = "src/clip_set_test.rs"
 [[bin]]
 name = "ack-app_test"
 path = "src/ack_app_test.rs"
+
+[[bin]]
+name = "bcheck-fixture_test"
+path = "src/bcheck_fixture.rs"

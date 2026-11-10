@@ -28,7 +28,9 @@ fn child_results_and_spawn_failure() {
         ("kill -TERM $$", Verdict::Signal(15, "SIGTERM")), ("exit 0", Verdict::Pass)] {
         let child = shell(script, Duration::from_secs(2));
         let pid = child.pid();
-        assert_eq!(finish(child), expected);
+        let result = finish(child);
+        assert_eq!(result.failed(), result != Verdict::Pass);
+        assert_eq!(result, expected);
         assert_eq!(unsafe { waitpid(pid as i32, std::ptr::null_mut(), 1) }, -1);
     }
     assert!(matches!(Runner::start(&["/no/such/bcheck-program".into()], Duration::from_secs(1)), Err(Verdict::ExecFailed(_))));
@@ -51,6 +53,7 @@ fn deadline_kills_the_group_and_reaps_the_child() {
 fn cancellation_reaps_the_child() {
     let mut child = shell("sleep 10", Duration::from_secs(20));
     let pid = child.pid();
-    assert_eq!(child.cancel(), Verdict::Cancelled);
+    child.cancel();
+    assert_eq!(finish(child), Verdict::Cancelled);
     assert_eq!(unsafe { waitpid(pid as i32, std::ptr::null_mut(), 1) }, -1);
 }

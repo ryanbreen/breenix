@@ -481,6 +481,7 @@ STD_BINARIES=(
 
     # Self-check test runner
     "bcheck"
+    "bcheck-fixture_test"
 
     # Apps
     "bterm"
