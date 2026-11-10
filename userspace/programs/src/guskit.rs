@@ -170,6 +170,39 @@ fn publish(win: &mut Window, app: &App) {
     if app.confirm { children.push(Node { key: "confirm".into(), parent: Some("root".into()), role: Role::Dialog, name: "Discard changes?".into(), value: serde_json::json!({"message":"D discards, Escape cancels"}), bounds: [180,220,440,64], clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }); }
     win.set_tree(Tree { root: Node { key: "root".into(), parent: None, role: Role::Window, name: "Gus Kit".into(), value: serde_json::Value::Null, bounds, clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }, children });
 }
+fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) -> Handled {
+    match delivered.event {
+        Event::CloseRequested => app.request_quit(),
+        Event::KeyPress { ascii, keycode, modifiers, .. } => {
+            if app.picker.is_some() {
+                use libbui::{Key, KeyInput};
+                let key = match keycode { 1 => Key::Escape, 15 => Key::Tab, 28 => Key::Enter, 14 => Key::Backspace, 103 => Key::Up, 108 => Key::Down, 104 => Key::PageUp, 109 => Key::PageDown, 102 => Key::Home, 107 => Key::End, _ => Key::Char };
+                let text = if ascii.is_ascii_graphic() || ascii == b' ' { (ascii as char).to_string() } else { String::new() };
+                let input = KeyInput { key, shift: modifiers.shift, ctrl: modifiers.ctrl, alt: modifiers.alt, text: &text };
+                let result = app.picker.as_mut().unwrap().key(&input); app.picker_result(result);
+            } else if app.confirm { if keycode == 1 { app.confirm = false; } else if ascii.eq_ignore_ascii_case(&b'd') { app.quit = true; } }
+            else if let Some(action) = menu.match_shortcut(if modifiers.ctrl && ascii == 0 { match keycode { 49 => b'N', 16 => b'Q', 44 => b'Z', 24 => b'O', 31 => b'S', _ => ascii } } else { ascii }, modifiers.ctrl, modifiers.shift, modifiers.alt) { app.action(action); }
+            else if !modifiers.ctrl && !modifiers.alt { match ascii.to_ascii_lowercase() { b'p' => app.tool=0, b'b' => app.tool=1, b'l' => app.tool=2, b'r' => app.tool=3, b'c' => app.tool=4, b'f' => app.tool=5, b'e' => app.tool=6, b'1'..=b'3' => app.size=(ascii-b'1') as usize, _ => {} } }
+        },
+        Event::MouseButton { button: breengel::buttons::LEFT, pressed, x, y } if !app.confirm => {
+            let input = InputState::from_raw(x,y, u32::from(pressed), u32::from(!pressed), delivered.time_ns / 1_000_000);
+            if let Some(picker) = &mut app.picker { let result = picker.update(&input); app.picker_result(result); return Handled::Redraw; }
+            let was_open = menu.is_open();
+            if let MenuEvent::Activated(action) = menu.update(&input, &Theme::dark()) { app.action(action); }
+            if !was_open && !menu.is_open() { if pressed { app.press(x,y); } else { if let Some(point) = app.point(x,y) { if let Some(stroke) = &mut app.stroke { stroke.push(point); } } app.finish_stroke(); } }
+        },
+        Event::MouseMove { x,y } if !app.confirm => {
+            if let Some(picker) = &mut app.picker { let input = InputState::from_raw(x,y,0,0,delivered.time_ns / 1_000_000); let result = picker.update(&input); app.picker_result(result); }
+            else if menu.is_open() { let input = InputState::from_raw(x, y, 0, 0, delivered.time_ns / 1_000_000); menu.update(&input, &Theme::dark()); }
+            else if let Some(point) = app.point(x,y) { if let Some(stroke) = &mut app.stroke { stroke.push(point); } }
+        },
+        Event::PointerCancel => { app.stroke = None; },
+        _ => {}
+    }
+    menu.set_enabled(UNDO, app.history.undo_depth() > 0);
+    menu.set_enabled(REDO, app.history.redo_depth() > 0);
+    Handled::Redraw
+}
 fn main() {
     let mut args = std::env::args().skip(1);
     let mut next = args.next();
@@ -193,40 +226,38 @@ fn main() {
             publish(&mut win, &app); let _ = win.present();
         }
         if app.quit { break; }
-        let count = win.dispatch(|delivered| {
-            match delivered.event {
-                Event::CloseRequested => app.request_quit(),
-                Event::KeyPress { ascii, keycode, modifiers, .. } => {
-                    if app.picker.is_some() {
-                        use libbui::{Key, KeyInput};
-                        let key = match keycode { 1 => Key::Escape, 15 => Key::Tab, 28 => Key::Enter, 14 => Key::Backspace, 103 => Key::Up, 108 => Key::Down, 104 => Key::PageUp, 109 => Key::PageDown, 102 => Key::Home, 107 => Key::End, _ => Key::Char };
-                        let text = if ascii.is_ascii_graphic() || ascii == b' ' { (ascii as char).to_string() } else { String::new() };
-                        let input = KeyInput { key, shift: modifiers.shift, ctrl: modifiers.ctrl, alt: modifiers.alt, text: &text };
-                        let result = app.picker.as_mut().unwrap().key(&input); app.picker_result(result);
-                    } else if app.confirm { if keycode == 1 { app.confirm = false; } else if ascii.eq_ignore_ascii_case(&b'd') { app.quit = true; } }
-                    else if let Some(action) = menu.match_shortcut(if modifiers.ctrl && ascii == 0 { match keycode { 49 => b'N', 16 => b'Q', 44 => b'Z', 24 => b'O', 31 => b'S', _ => ascii } } else { ascii }, modifiers.ctrl, modifiers.shift, modifiers.alt) { app.action(action); }
-                    else if !modifiers.ctrl && !modifiers.alt { match ascii.to_ascii_lowercase() { b'p' => app.tool=0, b'b' => app.tool=1, b'l' => app.tool=2, b'r' => app.tool=3, b'c' => app.tool=4, b'f' => app.tool=5, b'e' => app.tool=6, b'1'..=b'3' => app.size=(ascii-b'1') as usize, _ => {} } }
-                },
-                Event::MouseButton { button: breengel::buttons::LEFT, pressed, x, y } if !app.confirm => {
-                    let input = InputState::from_raw(x,y, u32::from(pressed), u32::from(!pressed), delivered.time_ns / 1_000_000);
-                    if let Some(picker) = &mut app.picker { let result = picker.update(&input); app.picker_result(result); return Handled::Redraw; }
-                    let was_open = menu.is_open();
-                    if let MenuEvent::Activated(action) = menu.update(&input, &Theme::dark()) { app.action(action); }
-                    if !was_open && !menu.is_open() { if pressed { app.press(x,y); } else { if let Some(point) = app.point(x,y) { if let Some(stroke) = &mut app.stroke { stroke.push(point); } } app.finish_stroke(); } }
-                },
-                Event::MouseMove { x,y } if !app.confirm => {
-                    if let Some(picker) = &mut app.picker { let input = InputState::from_raw(x,y,0,0,delivered.time_ns / 1_000_000); let result = picker.update(&input); app.picker_result(result); }
-                    else if menu.is_open() { let input = InputState::from_raw(x, y, 0, 0, delivered.time_ns / 1_000_000); menu.update(&input, &Theme::dark()); }
-                    else if let Some(point) = app.point(x,y) { if let Some(stroke) = &mut app.stroke { stroke.push(point); } }
-                },
-                Event::PointerCancel => { app.stroke = None; },
-                _ => {}
-            }
-            menu.set_enabled(UNDO, app.history.undo_depth() > 0);
-            menu.set_enabled(REDO, app.history.redo_depth() > 0);
-            Handled::Redraw
-        }).unwrap_or_else(|e| { eprintln!("Gus Kit dispatch: {e}"); std::process::exit(1) });
+        let count = win.dispatch(|delivered| handle(&mut app, &mut menu, delivered)).unwrap_or_else(|e| { eprintln!("Gus Kit dispatch: {e}"); std::process::exit(1) });
         redraw = count != 0;
         let _ = time::sleep_ms(50);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use breengel::{Delivered, Modifiers};
+
+    #[test]
+    fn passive_events_acknowledge_without_repainting_and_strokes_still_preview() {
+        let image = Canvas::new(200, 120);
+        let mut app = App { width:200,height:120,clean:image.digest(),history:History::new(image),
+            tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
+            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from(".") };
+        let mut menu = menu();
+        let mut event = Delivered { serial:1,time_ns:1,clicks:0,
+            event:Event::KeyRelease { keycode:25,modifiers:Modifiers::default() } };
+        assert_eq!(handle(&mut app, &mut menu, &event), Handled::NoChange);
+        event.event = Event::Text { text:"p".into() };
+        assert_eq!(handle(&mut app, &mut menu, &event), Handled::NoChange);
+        event.event = Event::MouseMove { x:20,y:186 };
+        assert_eq!(handle(&mut app, &mut menu, &event), Handled::NoChange);
+        event.event = Event::MouseButton { button:breengel::buttons::LEFT,pressed:true,x:20,y:186 };
+        assert_eq!(handle(&mut app, &mut menu, &event), Handled::Redraw);
+        event.event = Event::MouseMove { x:40,y:186 };
+        assert_eq!(handle(&mut app, &mut menu, &event), Handled::Redraw);
+        assert_eq!(app.history.undo_depth(), 0, "preview must not commit the stroke");
+        event.event = Event::MouseButton { button:breengel::buttons::LEFT,pressed:false,x:40,y:186 };
+        assert_eq!(handle(&mut app, &mut menu, &event), Handled::Redraw);
+        assert_eq!(app.history.undo_depth(), 1);
     }
 }
