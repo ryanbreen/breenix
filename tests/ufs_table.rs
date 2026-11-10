@@ -11,6 +11,7 @@ fn matches_replies_and_sends_oldest_first() {
     let a = table.submit("first", 10, 100).unwrap();
     let b = table.submit("second", 20, 100).unwrap();
     assert_ne!(a, b);
+    assert_eq!(table.peek_next(), Some((a, &"first")));
     assert_eq!(table.take_next(), Some((a, "first")));
     assert_eq!(table.take_next(), Some((b, "second")));
     assert_eq!(table.take_next(), None);
@@ -18,6 +19,21 @@ fn matches_replies_and_sends_oldest_first() {
     assert_eq!(table.complete(a, "reply a"), Some((10, Ok("reply a"))));
     assert_eq!(table.complete(a, "duplicate"), None);
     assert_eq!(table.complete(u64::MAX, "unknown"), None);
+}
+
+#[test]
+fn a_copy_racing_expiry_does_not_consume_the_next_record() {
+    let mut table = RequestTable::<_, _, ()>::new();
+    let old = table.submit("copying", 1, 10).unwrap();
+    let live = table.submit("queued", 2, 20).unwrap();
+    assert_eq!(table.peek_next(), Some((old, &"copying")));
+    assert_eq!(table.expire(10), vec![(1, Err(Error::Eio))]);
+    table.mark_sent(old);
+    assert_eq!(table.peek_next(), Some((live, &"queued")));
+    table.mark_sent(live);
+    assert_eq!(table.peek_next(), None);
+    table.cancel(live);
+    assert_eq!(table.complete(live, ()), None);
 }
 
 #[test]

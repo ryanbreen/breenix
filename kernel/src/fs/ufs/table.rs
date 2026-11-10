@@ -69,6 +69,27 @@ impl<Request, Waiter, Reply> RequestTable<Request, Waiter, Reply> {
             .find_map(|entry| entry.request.take().map(|request| (entry.id, request)))
     }
 
+    /// Inspect a record before copying it, so a short or faulty read does not
+    /// consume a daemon request.
+    pub fn peek_next(&self) -> Option<(u64, &Request)> {
+        self.entries.iter().find_map(|entry| entry.request.as_ref().map(|r| (entry.id, r)))
+    }
+
+    /// A copied record may have expired while user memory was faulted in.
+    /// Mark the copied id sent, leaving later requests queued.
+    pub fn mark_sent(&mut self, id: u64) {
+        if let Some(entry) = self.entries.iter_mut().find(|entry| entry.id == id) {
+            entry.request = None;
+        }
+    }
+
+    /// Withdraw an interrupted caller's request without manufacturing a reply.
+    pub fn cancel(&mut self, id: u64) {
+        if let Some(index) = self.entries.iter().position(|entry| entry.id == id) {
+            self.entries.remove(index);
+        }
+    }
+
     pub fn complete(&mut self, id: u64, reply: Reply) -> Option<(Waiter, Result<Reply, Error>)> {
         let index = self
             .entries

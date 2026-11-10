@@ -1932,6 +1932,7 @@ pub fn reclaim_deferred_process_resources() {
         return;
     }
     crate::ipc::shmem::drain_signal_pages();
+    crate::fs::ufs::wake_deferred();
     #[cfg(feature = "boot_tests")]
     if BOOT_RECLAIM_TEST_OWNER.load(Ordering::Acquire) != 0 {
         return;

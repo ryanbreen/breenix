@@ -681,7 +681,7 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
                     }
                 }
                 // The screens are read-only.
-                DeviceType::Vcs(_) | DeviceType::Vcsa(_) | DeviceType::InputEvents | DeviceType::Uinput => SyscallResult::Err(22),
+                DeviceType::Vcs(_) | DeviceType::Vcsa(_) | DeviceType::InputEvents | DeviceType::Uinput | DeviceType::Ufs => SyscallResult::Err(22),
             }
         }
         WriteOperation::RegularFile {

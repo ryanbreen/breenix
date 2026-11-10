@@ -21,9 +21,10 @@ message fails without consuming it. An endpoint write submits one complete
 reply; a short write is not a successful reply. Reads block when no work is
 queued; interrupted reads may be retried. Unmount detaches the namespace and
 wakes an idle daemon read with EOF. The directory's underlying ext2 contents
-become visible again. Unmount after daemon death succeeds when user file
-handles have been closed. Daemon endpoint close or process exit marks the mount
-dead, waking pending callers with ENOTCONN; later operations return ENOTCONN
+become visible again. Unmount after daemon death succeeds even with user file
+handles still open. Daemon endpoint close or process exit marks the mount
+dead, including when an in-flight read retains the endpoint. Closing a duplicate
+of the bound endpoint also disconnects it. Pending callers wake with ENOTCONN; later operations return ENOTCONN
 until unmount. The kernel retains mount state independently of the fd, without
 retaining a reference that prevents endpoint death detection.
 

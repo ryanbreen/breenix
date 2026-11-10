@@ -27,4 +27,5 @@ pub mod fault_inject;
 #[cfg(feature = "ext2_lock_race")]
 pub mod ext2_lock_race;
 pub mod procfs;
+pub mod ufs;
 pub mod vfs;

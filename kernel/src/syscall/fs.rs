@@ -2976,6 +2976,23 @@ fn handle_devfs_open(
     if device.device_type == devfs::DeviceType::Ptmx {
         return open_ptmx(flags, native_inode, reserved);
     }
+    if device.device_type == devfs::DeviceType::Ufs {
+        if flags & O_DIRECTORY != 0 { return SyscallResult::Err(super::errno::ENOTDIR as u64); }
+        let object = match crate::fs::ufs::Endpoint::open() {
+            Ok(object) => object, Err(e) => return SyscallResult::Err(e),
+        };
+        let entry = match FileDescriptor::try_opened(FdKind::Ipc(object), flags) {
+            Ok(entry) => entry.with_inode(native_inode), Err(e) => return SyscallResult::Err(e),
+        };
+        let Some(tid) = crate::task::scheduler::current_thread_id() else { return SyscallResult::Err(3); };
+        let mut guard = crate::process::manager();
+        return match guard.as_mut().and_then(|pm| pm.find_process_by_thread_mut(tid)) {
+            Some((_, process)) => match install_descriptor(&mut process.fd_table, reserved, entry) {
+                Ok(fd) => SyscallResult::Ok(fd as u64), Err(e) => SyscallResult::Err(e as u64),
+            },
+            None => SyscallResult::Err(3),
+        };
+    }
     if let devfs::DeviceType::Vcs(n) | devfs::DeviceType::Vcsa(n) = device.device_type {
         let attributes = matches!(device.device_type, devfs::DeviceType::Vcsa(_));
         return open_vcs(usize::from(n), attributes, flags, native_inode, reserved);

@@ -204,6 +204,7 @@ interactive = ["testing"]  # Boot into init_shell instead of running automated t
 disable_x86_prod_init = []
 
 [dependencies]
+ufs-abi = { path = "../libs/ufs-abi" }
 screen-capture = { path = "../libs/screen-capture" }
 input-abi = { path = "../libs/input-abi" }
 gpu-abi = { path = "../libs/gpu-abi", features = ["alloc"] }
