@@ -22,6 +22,7 @@ impl Radius {
     }
 }
 
+#[derive(Clone)]
 pub struct Canvas {
     width: usize,
     height: usize,
@@ -187,6 +188,39 @@ impl Canvas {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Completed canvas states. Push once when an operation is complete, including
+/// a stroke or shape on release, a fill, New, or a successfully opened image.
+pub struct History {
+    base: Canvas,
+    past: Vec<Canvas>,
+    future: Vec<Canvas>,
+}
+impl History {
+    pub fn new(base: Canvas) -> Self {
+        Self { base, past: Vec::new(), future: Vec::new() }
+    }
+    pub fn canvas(&self) -> &Canvas { self.past.last().unwrap_or(&self.base) }
+    pub fn undo_depth(&self) -> usize { self.past.len() }
+    pub fn redo_depth(&self) -> usize { self.future.len() }
+    pub fn push(&mut self, canvas: Canvas) {
+        self.future.clear();
+        self.past.push(canvas);
+        if self.past.len() > 32 { self.base = self.past.remove(0); }
+    }
+    pub fn undo(&mut self) -> bool {
+        match self.past.pop() {
+            Some(canvas) => { self.future.push(canvas); true }
+            None => false,
+        }
+    }
+    pub fn redo(&mut self) -> bool {
+        match self.future.pop() {
+            Some(canvas) => { self.past.push(canvas); true }
+            None => false,
         }
     }
 }
