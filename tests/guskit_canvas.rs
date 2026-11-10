@@ -61,3 +61,38 @@ fn digest_covers_row_major_rgb_bytes() {
     assert_eq!(c.pixels(), bytes);
     assert_eq!(c.digest(), libpixcheck::sha256(&bytes));
 }
+
+#[test]
+fn history_undo_redo_and_branch() {
+    let mut h = canvas::History::new(Canvas::new(2, 1));
+    let mut a = Canvas::new(2, 1);
+    a.pencil(&[(0, 0)], K);
+    h.push(a);
+    let mut b = Canvas::new(2, 1);
+    b.fill((0, 0), K);
+    h.push(b);
+    assert!(h.undo());
+    assert_eq!(h.canvas().pixels(), &[1, 2, 3, 255, 255, 255]);
+    assert!(h.redo());
+    assert_eq!(h.canvas().pixels(), &[1, 2, 3, 1, 2, 3]);
+    assert!(h.undo());
+    h.push(Canvas::new(1, 1));
+    assert_eq!(h.redo_depth(), 0);
+    assert!(!h.redo());
+}
+
+#[test]
+fn history_folds_oldest_into_base() {
+    let mut h = canvas::History::new(Canvas::new(1, 1));
+    for n in 0..33 {
+        let mut c = Canvas::new(1, 1);
+        c.fill((0, 0), [n, 0, 0]);
+        h.push(c);
+    }
+    assert_eq!(h.undo_depth(), 32);
+    for _ in 0..32 { assert!(h.undo()); }
+    assert_eq!(h.canvas().pixels(), &[0, 0, 0]);
+    assert!(!h.undo());
+    for _ in 0..32 { assert!(h.redo()); }
+    assert_eq!(h.canvas().pixels(), &[32, 0, 0]);
+}
