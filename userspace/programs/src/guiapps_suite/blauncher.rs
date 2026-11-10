@@ -69,11 +69,42 @@ pub fn launch_gui() -> CaseResult {
 }
 
 pub fn launch_terminal() -> CaseResult {
-    Err("not built (E23 23.2)".into())
+    std::fs::write("/tmp/blauncher-terminal", "Echo\tFixture\tterminal\t/bin/echo\tlaunched-terminal\n").map_err(|e| e.to_string())?;
+    let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-terminal"], "Launcher")?;
+    t.key(28, &[])?;
+    t.wait_exit(0)?;
+    t.attach("Terminal")?;
+    t.expect_text("launched-terminal")?;
+    t.expect_text("[exited 0]")?;
+    Ok(t.finish()?)
 }
 
 pub fn launch_missing() -> CaseResult {
-    Err("not built (E23 23.2)".into())
+    std::fs::write("/tmp/blauncher-missing", "Missing\tFixture\tgui\t/usr/bin/no-such-app\n").map_err(|e| e.to_string())?;
+    let mut t = App::launch(&[b"/usr/bin/blauncher", b"--catalog", b"/tmp/blauncher-missing"], "Launcher")?;
+    let launcher = std::fs::read_dir("/proc").map_err(|e| e.to_string())?
+        .filter_map(Result::ok).filter_map(|entry| {
+            let pid = entry.file_name().to_str()?.parse::<u64>().ok()?;
+            let stat = std::fs::read_to_string(entry.path().join("stat")).ok()?;
+            if stat.contains("(blauncher)") { Some(pid) } else { None }
+        }).collect::<Vec<_>>();
+    if launcher.len() != 1 { return Err(format!("expected one launcher, found {launcher:?}").into()); }
+    t.key(28, &[])?;
+    t.wait_node("apps", |v| v["error"] == "Missing program: /usr/bin/no-such-app")?;
+    t.attach("Launcher")?;
+    for entry in std::fs::read_dir("/proc").map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if entry.file_name().to_str().and_then(|s| s.parse::<u64>().ok()).is_none() { continue; }
+        let stat = match std::fs::read_to_string(entry.path().join("stat")) {
+            Ok(stat) => stat,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.to_string().into()),
+        };
+        let parent = stat.rsplit_once(") ").and_then(|(_, rest)| rest.split_whitespace().nth(1))
+            .and_then(|s| s.parse::<u64>().ok()).ok_or("invalid proc stat")?;
+        if parent == launcher[0] { return Err(format!("launcher child remains: {stat}").into()); }
+    }
+    Ok(t.finish()?)
 }
 
 pub fn close() -> CaseResult {
