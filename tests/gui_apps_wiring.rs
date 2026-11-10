@@ -36,3 +36,22 @@ fn launcher_cases_wait_for_the_registered_chromeless_title() {
     assert!(launcher.contains(r#"Window::new(b"\x01Launcher""#));
     assert!(!cases.contains(r#""Launcher")?"#), "launcher waits must include the chromeless title prefix");
 }
+
+#[test]
+fn acknowledgment_fixture_publishes_handled_input() {
+    let source = include_str!("../userspace/programs/src/ack_app_test.rs");
+    assert!(!source.contains("win.wait_event()"), "poll-only fixture never acknowledges attach-probe input");
+    assert!(source.contains("win.wait_dispatch("));
+    assert!(source.contains("Handled::NoChange"));
+    assert!(source.contains("win.commit_no_change()"));
+}
+
+#[test]
+fn both_close_actions_use_the_one_declared_session() {
+    let source = include_str!("../userspace/programs/src/guiapps_suite/blauncher.rs");
+    let close = source.split("pub fn close()").nth(1).unwrap();
+    assert_eq!(close.matches("App::launch(").count(), 1,
+        "take_session_control is single-use; relaunch within the existing session");
+    assert_eq!(close.matches("t.finish()").count(), 1);
+    assert!(close.contains("t.launch_next("));
+}
