@@ -268,7 +268,7 @@ impl Client {
         }
         Ok(r)
     }
-    fn open(
+    pub fn open(
         &mut self,
         path: &str,
         access: u32,
@@ -289,7 +289,7 @@ impl Client {
         }))?;
         Ok(response.decode(CreateResponse::decode)?)
     }
-    fn close(&mut self, id: FileId) -> Result<(), Error> {
+    pub fn close(&mut self, id: FileId) -> Result<(), Error> {
         self.success(Request::Close(CloseRequest {
             file_id: id,
             postquery_attributes: false,
@@ -324,6 +324,43 @@ impl Client {
         Ok(size as u32)
     }
 
+    pub fn list_handle(&mut self, id: FileId) -> Result<Vec<DirectoryEntry>, Error> {
+        let mut entries = Vec::new();
+        let mut first = true;
+        loop {
+            let output_length = self
+                .chunk_size(
+                    self.session
+                        .negotiated()
+                        .ok_or(Error::Protocol)?
+                        .max_transact_size,
+                )?
+                .min(65536);
+            let r = self.exchange(Request::QueryDirectory(QueryDirectoryRequest {
+                file_id: id,
+                pattern: "*",
+                output_length,
+                flags: u8::from(first),
+            }))?;
+            if r.header.status == NtStatus::NO_MORE_FILES.0 {
+                break;
+            }
+            if r.header.status != 0 {
+                return Err(Error::Status(NtStatus(r.header.status)));
+            }
+            let batch = r.decode(QueryDirectoryResponse::decode)?.entries;
+            if batch.is_empty() {
+                return Err(Error::Protocol);
+            }
+            entries.extend(
+                batch
+                    .into_iter()
+                    .filter(|e| e.name != "." && e.name != ".."),
+            );
+            first = false;
+        }
+        Ok(entries)
+    }
     pub fn list(&mut self, path: &str) -> Result<Vec<DirectoryEntry>, Error> {
         let opened = self.open(
             path,
@@ -331,43 +368,89 @@ impl Client {
             CreateDisposition::Open,
             create_options::DIRECTORY_FILE,
         )?;
-        self.with_file(opened, |c, opened| {
-            let mut entries = Vec::new();
-            let mut first = true;
-            loop {
-                let output_length = c
-                    .chunk_size(
-                        c.session
-                            .negotiated()
-                            .ok_or(Error::Protocol)?
-                            .max_transact_size,
-                    )?
-                    .min(65536);
-                let r = c.exchange(Request::QueryDirectory(QueryDirectoryRequest {
-                    file_id: opened.file_id,
-                    pattern: "*",
-                    output_length,
-                    flags: u8::from(first),
-                }))?;
-                if r.header.status == NtStatus::NO_MORE_FILES.0 {
-                    break;
-                }
-                if r.header.status != 0 {
-                    return Err(Error::Status(NtStatus(r.header.status)));
-                }
-                let batch = r.decode(QueryDirectoryResponse::decode)?.entries;
-                if batch.is_empty() {
-                    return Err(Error::Protocol);
-                }
-                entries.extend(
-                    batch
-                        .into_iter()
-                        .filter(|e| e.name != "." && e.name != ".."),
-                );
-                first = false;
+        self.with_file(opened, |c, o| c.list_handle(o.file_id))
+    }
+    pub fn read_at(&mut self, id: FileId, offset: u64, length: usize) -> Result<Vec<u8>, Error> {
+        let mut data = Vec::new();
+        while data.len() < length {
+            let size = (self.chunk_size(
+                self.session
+                    .negotiated()
+                    .ok_or(Error::Protocol)?
+                    .max_read_size,
+            )? as usize)
+                .min(length - data.len());
+            let at = offset
+                .checked_add(data.len() as u64)
+                .ok_or(Error::Protocol)?;
+            let r = self.exchange(Request::Read(ReadRequest {
+                file_id: id,
+                offset: at,
+                length: size as u32,
+            }))?;
+            if r.header.status == NtStatus::END_OF_FILE.0 {
+                break;
             }
-            Ok(entries)
-        })
+            if r.header.status != 0 {
+                return Err(Error::Status(NtStatus(r.header.status)));
+            }
+            let part = r.decode(ReadResponse::decode)?.data;
+            if part.is_empty() || part.len() > size {
+                return Err(Error::Protocol);
+            }
+            data.try_reserve(part.len()).map_err(|_| Error::Protocol)?;
+            data.extend_from_slice(&part);
+        }
+        Ok(data)
+    }
+    pub fn write_at(&mut self, id: FileId, offset: u64, data: &[u8]) -> Result<(), Error> {
+        let mut written = 0;
+        while written < data.len() {
+            let size = (self.chunk_size(
+                self.session
+                    .negotiated()
+                    .ok_or(Error::Protocol)?
+                    .max_write_size,
+            )? as usize)
+                .min(data.len() - written);
+            let at = offset.checked_add(written as u64).ok_or(Error::Protocol)?;
+            let r = self.success(Request::Write(WriteRequest {
+                file_id: id,
+                offset: at,
+                data: &data[written..written + size],
+            }))?;
+            let count = r.decode(WriteResponse::decode)?.count as usize;
+            if count == 0 || count > size {
+                return Err(Error::Protocol);
+            }
+            written += count;
+        }
+        Ok(())
+    }
+    pub fn query_file(&mut self, id: FileId) -> Result<FileAllInformation, Error> {
+        Ok(self
+            .success(Request::QueryInfo(QueryInfoRequest {
+                file_id: id,
+                output_length: 65536,
+            }))?
+            .decode(QueryInfoResponse::decode)?
+            .info)
+    }
+    pub fn query_fs_size(&mut self, id: FileId) -> Result<FileFsFullSizeInformation, Error> {
+        Ok(self
+            .success(Request::QueryFsSize(QueryFsSizeRequest { file_id: id }))?
+            .decode(QueryFsSizeResponse::decode)?
+            .info)
+    }
+    pub fn set_info(&mut self, id: FileId, info: SetInfo<'_>) -> Result<(), Error> {
+        self.success(Request::SetInfo(SetInfoRequest { file_id: id, info }))?
+            .decode(decode_set_info_response)?;
+        Ok(())
+    }
+    pub fn flush(&mut self, id: FileId) -> Result<(), Error> {
+        self.success(Request::Flush(id))?
+            .decode(decode_flush_response)?;
+        Ok(())
     }
     pub fn read(&mut self, path: &str) -> Result<Vec<u8>, Error> {
         let opened = self.open(
@@ -376,34 +459,12 @@ impl Client {
             CreateDisposition::Open,
             create_options::NON_DIRECTORY_FILE,
         )?;
-        self.with_file(opened, |c, opened| {
-            let mut data = Vec::new();
-            let mut offset = 0;
-            while offset < opened.attributes.end_of_file {
-                let length = u64::from(
-                    c.chunk_size(c.session.negotiated().ok_or(Error::Protocol)?.max_read_size)?,
-                )
-                .min(opened.attributes.end_of_file - offset) as u32;
-                let r = c.exchange(Request::Read(ReadRequest {
-                    file_id: opened.file_id,
-                    offset,
-                    length,
-                }))?;
-                if r.header.status == NtStatus::END_OF_FILE.0 {
-                    break;
-                }
-                if r.header.status != 0 {
-                    return Err(Error::Status(NtStatus(r.header.status)));
-                }
-                let part = r.decode(ReadResponse::decode)?.data;
-                if part.is_empty() || part.len() > length as usize {
-                    return Err(Error::Protocol);
-                }
-                data.try_reserve(part.len()).map_err(|_| Error::Protocol)?;
-                offset += part.len() as u64;
-                data.extend_from_slice(&part);
-            }
-            Ok(data)
+        self.with_file(opened, |c, o| {
+            c.read_at(
+                o.file_id,
+                0,
+                usize::try_from(o.attributes.end_of_file).map_err(|_| Error::Protocol)?,
+            )
         })
     }
     /// Create or truncate a file, write the supplied bytes, flush, then close it.
@@ -414,30 +475,9 @@ impl Client {
             CreateDisposition::OverwriteIf,
             create_options::NON_DIRECTORY_FILE,
         )?;
-        self.with_file(opened, |c, opened| {
-            let mut offset = 0;
-            while offset < data.len() {
-                let length = (c.chunk_size(
-                    c.session
-                        .negotiated()
-                        .ok_or(Error::Protocol)?
-                        .max_write_size,
-                )? as usize)
-                    .min(data.len() - offset);
-                let r = c.success(Request::Write(WriteRequest {
-                    file_id: opened.file_id,
-                    offset: offset as u64,
-                    data: &data[offset..offset + length],
-                }))?;
-                let count = r.decode(WriteResponse::decode)?.count as usize;
-                if count == 0 || count > length {
-                    return Err(Error::Protocol);
-                }
-                offset += count;
-            }
-            c.success(Request::Flush(opened.file_id))?
-                .decode(decode_flush_response)?;
-            Ok(())
+        self.with_file(opened, |c, o| {
+            c.write_at(o.file_id, 0, data)?;
+            c.flush(o.file_id)
         })
     }
     pub fn rename_replace(&mut self, from: &str, to: &str) -> Result<(), Error> {
@@ -449,15 +489,13 @@ impl Client {
             create_options::NON_DIRECTORY_FILE,
         )?;
         self.with_file(opened, |c, opened| {
-            c.success(Request::SetInfo(SetInfoRequest {
-                file_id: opened.file_id,
-                info: SetInfo::Rename {
+            c.set_info(
+                opened.file_id,
+                SetInfo::Rename {
                     replace_if_exists: true,
                     name: &name,
                 },
-            }))?
-            .decode(decode_set_info_response)?;
-            Ok(())
+            )
         })
     }
     pub fn delete(&mut self, path: &str) -> Result<(), Error> {
@@ -468,12 +506,7 @@ impl Client {
             create_options::NON_DIRECTORY_FILE,
         )?;
         self.with_file(opened, |c, opened| {
-            c.success(Request::SetInfo(SetInfoRequest {
-                file_id: opened.file_id,
-                info: SetInfo::Disposition(true),
-            }))?
-            .decode(decode_set_info_response)?;
-            Ok(())
+            c.set_info(opened.file_id, SetInfo::Disposition(true))
         })
     }
 }
