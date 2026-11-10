@@ -38,6 +38,9 @@ pub(crate) fn mknodat_path(dirfd: i32, raw: impl AsRef<[u8]>, mode: u32, dev: u6
         Ok(r) => r,
         Err(e) => return SyscallResult::Err(e),
     };
+    if matches!(resolved.target, Target::User { .. }) {
+        return SyscallResult::Err(EPERM as u64);
+    }
     if resolved.last != Last::Name || matches!(resolved.target, Target::Inode { .. }) {
         return SyscallResult::Err(EEXIST as u64);
     }

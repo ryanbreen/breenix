@@ -1960,10 +1960,11 @@ pub fn reclaim_deferred_process_resources() {
     #[cfg(feature = "coreproof_mut_reclaim_bracket")]
     reclaim_preempt_disable();
 
-    // Keep deferred socket releases inside the
+    // Keep deferred socket and UFS releases inside the
     // existing preemption/ownership bracket, after PM and scheduler-scope
     // refusal.
     crate::socket::object::drain_release_queue();
+    crate::fs::ufs::wake_deferred();
     reclaim_deferred_process_resources_for_pass(my_pass, false);
     RECLAIM_DRAIN_ACTIVE.store(false, Ordering::Release);
     reclaim_preempt_enable();

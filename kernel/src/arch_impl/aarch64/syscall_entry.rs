@@ -925,6 +925,8 @@ fn dispatch_syscall_enum(
         SyscallNumber::ArchPrctl => (-(crate::syscall::errno::ENOSYS as i64)) as u64,
         SyscallNumber::Sync => result_to_u64(crate::syscall::fs::sys_sync()),
         SyscallNumber::Statfs => result_to_u64(crate::syscall::fs::sys_statfs(arg1, arg2)),
+        SyscallNumber::Mount => result_to_u64(crate::fs::ufs::sys_mount(arg1, arg2, arg3, arg4, arg5)),
+        SyscallNumber::Umount2 => result_to_u64(crate::fs::ufs::sys_umount2(arg1, arg2)),
         SyscallNumber::Fsync => result_to_u64(crate::syscall::fs::sys_fsync(arg1 as i32)),
         SyscallNumber::Fdatasync => result_to_u64(crate::syscall::fs::sys_fsync(arg1 as i32)),
         SyscallNumber::Truncate => result_to_u64(crate::syscall::fs::sys_truncate(arg1, arg2 as i64)),

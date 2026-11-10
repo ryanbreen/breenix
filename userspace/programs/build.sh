@@ -452,6 +452,8 @@ STD_BINARIES=(
     "suite-window-manager"
     "suite-ui-testing"
     "suite-gui-apps"
+    "suite-network-shares"
+    "memfsd_test"
     "ui-runner-fixture_test"
     "wm-client_test"
     "gpu-exec-probe"

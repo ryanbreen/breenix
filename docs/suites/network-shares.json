@@ -1,0 +1,61 @@
+{
+  "id": "network-shares",
+  "title": "Network shares",
+  "area": "Filesystems",
+  "summary": "Mount user-served filesystems and access them through ordinary file operations, with bounded failures and safe unmount.",
+  "binary": "/sbin/suite-network-shares",
+  "timingSensitive": true,
+  "aggregate": "after E23 23.8",
+  "categories": [
+    {
+      "id": "ufs",
+      "title": "User filesystem bridge",
+      "cases": [
+        {
+          "id": "mount-list",
+          "title": "Mount and list"
+        },
+        {
+          "id": "create-write-read",
+          "title": "Create, write and read"
+        },
+        {
+          "id": "rename-replace",
+          "title": "Rename replaces a file"
+        },
+        {
+          "id": "directory-relative",
+          "title": "Working directories and directory-relative operations"
+        },
+        {
+          "id": "write-open-progress",
+          "title": "Open proceeds during a chunked write"
+        },
+        {
+          "id": "dirs-unlink",
+          "title": "Directories and unlink"
+        },
+        {
+          "id": "statfs",
+          "title": "Filesystem statistics"
+        },
+        {
+          "id": "atomic-save",
+          "title": "Atomic file replacement"
+        },
+        {
+          "id": "daemon-death",
+          "title": "Daemon death disconnects and unmount recovers"
+        },
+        {
+          "id": "timeout-eio",
+          "title": "Request timeout returns EIO"
+        },
+        {
+          "id": "non-root-refused",
+          "title": "Non-root mount is refused"
+        }
+      ]
+    }
+  ]
+}

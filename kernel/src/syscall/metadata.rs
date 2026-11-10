@@ -28,8 +28,14 @@ pub(crate) fn directory(fd: i32) -> Result<namei::WorkingDir, u64> {
     directory_of(descriptor(fd)?)
 }
 
-/// The ext2 directory an open descriptor's kind holds; ENOTDIR for any other.
+/// The directory an open descriptor holds; ENOTDIR for a non-directory.
 pub(crate) fn directory_of(kind: FdKind) -> Result<namei::WorkingDir, u64> {
+    if let FdKind::Ipc(ref object) = kind {
+        if let Some(file) = object.as_any().downcast_ref::<crate::fs::ufs::file::UfsFile>() {
+            if !file.directory { return Err(ENOTDIR as u64); }
+            return Ok(namei::WorkingDir::User { mount: file.mount, node: file.node, handle: object.clone() });
+        }
+    }
     let FdKind::Directory(dir) = kind else {
         return Err(ENOTDIR as u64);
     };
@@ -154,7 +160,8 @@ fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -
     let (mount, ino) = match resolved.target {
         namei::Target::Inode { mount, ino, .. } => (mount, ino),
         namei::Target::Absent { .. } => return SyscallResult::Err(ENOENT as u64),
-        namei::Target::Virtual => return SyscallResult::Err(EOPNOTSUPP as u64),
+        namei::Target::User { node: 0, .. } => return SyscallResult::Err(ENOENT as u64),
+        namei::Target::Virtual | namei::Target::User { .. } => return SyscallResult::Err(EOPNOTSUPP as u64),
     };
     let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
     match guard.as_mut() {
@@ -172,7 +179,7 @@ fn by_cwd(change: Change) -> SyscallResult {
     let (mount, handle) = match namei::current_working_dir() {
         namei::WorkingDir::Root => (namei::Mount::Root, None),
         namei::WorkingDir::Ext2 { mount, dir } => (mount, Some(dir)),
-        namei::WorkingDir::Virtual(_) => return SyscallResult::Err(EOPNOTSUPP as u64),
+        namei::WorkingDir::Virtual(_) | namei::WorkingDir::User { .. } => return SyscallResult::Err(EOPNOTSUPP as u64),
     };
     let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
     let Some(fs) = guard.as_mut() else {

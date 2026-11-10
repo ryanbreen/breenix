@@ -183,6 +183,8 @@ pub enum SyscallNumber {
     Fdatasync,
     Sync,
     Statfs,
+    Mount,
+    Umount2,
     Truncate,
     Ftruncate,
     // *at variants (Linux ARM64 has these instead of legacy syscalls)
@@ -320,6 +322,8 @@ impl SyscallNumber {
             72 => Some(Self::Fcntl),
             162 => Some(Self::Sync),
             137 => Some(Self::Statfs),
+            165 => Some(Self::Mount),
+            166 => Some(Self::Umount2),
             74 => Some(Self::Fsync),
             75 => Some(Self::Fdatasync),
             76 => Some(Self::Truncate),
@@ -477,6 +481,8 @@ impl SyscallNumber {
             80 => Some(Self::Fstat),
             81 => Some(Self::Sync),
             43 => Some(Self::Statfs),
+            40 => Some(Self::Mount),
+            39 => Some(Self::Umount2),
             82 => Some(Self::Fsync),
             83 => Some(Self::Fdatasync),
             // Process management

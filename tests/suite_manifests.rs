@@ -1870,3 +1870,18 @@ fn frame_schema_guest_and_host_agree_over_fixtures() {
     frame_cases::schema_version().unwrap();
     frame_cases::structural_vacuous().unwrap();
 }
+
+#[test]
+fn network_shares_manifest_declares_ufs_cases() {
+    let path = repo_root().join("docs/suites/network-shares.json");
+    let value: Value = serde_json::from_str(&fs::read_to_string(&path).expect("network-shares manifest")).unwrap();
+    let mut errors = Vec::new();
+    let manifest = read_manifest(&path, &mut errors).expect("valid manifest");
+    assert!(errors.is_empty(), "{}", errors.join("\n"));
+    assert_eq!(value["binary"], "/sbin/suite-network-shares");
+    assert_eq!(value["aggregate"], "after E23 23.8");
+    assert_eq!(manifest.categories.len(), 1);
+    assert_eq!(manifest.categories[0].entry.id, "ufs");
+    assert_eq!(manifest.categories[0].cases.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        ["mount-list", "create-write-read", "rename-replace", "dirs-unlink", "statfs", "atomic-save", "daemon-death", "timeout-eio", "non-root-refused"]);
+}
