@@ -1,0 +1,13 @@
+# Name, description, mode, and argument vector, separated by tabs.
+Terminal	Terminal emulator	gui	/usr/bin/bterm
+System Check	System health	gui	/usr/bin/bcheck
+Log Viewer	View system logs	gui	/usr/bin/bless
+Bounce	Physics demo	gui	/usr/bin/bounce
+Breenix Log	System log viewer	gui	/usr/bin/blog
+Font Picker	Configure fonts	gui	/usr/bin/bfontpicker
+Shell	Breenix shell	terminal	/bin/bsh
+URL Fetch	Fetch URLs	terminal	/usr/bin/burl
+cat	Display file contents	terminal	/bin/cat
+ls	List directory	terminal	/bin/ls
+echo	Print text	terminal	/bin/echo
+ps	List processes	terminal	/bin/ps

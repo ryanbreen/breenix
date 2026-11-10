@@ -204,6 +204,7 @@ if [[ "$(uname)" == "Darwin" && "${BREENIX_REPRODUCIBLE_EXT2:-0}" != 1 ]]; then
         -v "$TARGET_DIR:/work" \
         -v "$USERSPACE_DIR:/binaries:ro" \
         -v "$PROJECT_ROOT/fonts:/fonts:ro" \
+        -v "$PROJECT_ROOT/userspace/programs/share/applications/catalog:/applications-catalog:ro" \
         -v "$PROJECT_ROOT/docs/suites/frames:/suite-frames:ro" \
         -v "$SCRIPT_DIR/install-ui-references.sh:/install-ui-references.sh:ro" \
         "${BREENGEL_MOUNTS[@]}" \
@@ -361,6 +362,9 @@ Line 13
 Line 14
 Line 15
 EOF
+
+            mkdir -p /mnt/ext2/usr/share/applications
+            cp /applications-catalog /mnt/ext2/usr/share/applications/catalog
 
             # Install TrueType fonts
             mkdir -p /mnt/ext2/usr/share/fonts
@@ -680,6 +684,9 @@ EOF
         fi
         echo "  Installed $(find "$MOUNT_DIR/usr/local/test/share/breengel" -type f | wc -l) breengel test data files in /usr/local/test/share/breengel"
     fi
+
+    mkdir -p "$MOUNT_DIR/usr/share/applications"
+    cp "$PROJECT_ROOT/userspace/programs/share/applications/catalog" "$MOUNT_DIR/usr/share/applications/catalog"
 
     # Create default system font configuration
     cat > "$MOUNT_DIR/etc/fonts.conf" << FONTSCONF
