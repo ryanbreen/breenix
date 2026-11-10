@@ -246,7 +246,6 @@
     {
       "id": "resources",
       "title": "Resources and basic pipelines (M8 PR 8.2)",
-      "hostRunner": true,
       "cases": [
         {
           "id": "row",
@@ -265,7 +264,6 @@
     {
       "id": "alpha",
       "title": "Exact integer profile and alpha (M8 PR 8.3)",
-      "hostRunner": true,
       "cases": [
         {
           "id": "suite",
@@ -276,7 +274,6 @@
     {
       "id": "shapes",
       "title": "Shapes and coverage spans (M8 PR 8.4)",
-      "hostRunner": true,
       "cases": [
         {
           "id": "suite",
@@ -287,7 +284,6 @@
     {
       "id": "presentation",
       "title": "Presentation and scanout isolation (M8 PR 8.6)",
-      "hostRunner": true,
       "cases": [
         {
           "id": "display",
@@ -306,7 +302,6 @@
     {
       "id": "isolation",
       "title": "Isolation, warm-up and recovery (M8 PR 8.5)",
-      "hostRunner": true,
       "cases": [
         {
           "id": "suite",
@@ -317,7 +312,6 @@
     {
       "id": "core",
       "title": "Shared GPU core and native evidence (M8 PR 8.1)",
-      "hostRunner": true,
       "cases": [
         {
           "id": "row",
@@ -354,7 +348,6 @@
     {
       "id": "performance",
       "title": "Full GPU suite and performance (M8 PR 8.7)",
-      "hostRunner": true,
       "cases": [
         {
           "id": "suite",

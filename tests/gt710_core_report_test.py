@@ -353,7 +353,7 @@ class CoreReport(unittest.TestCase):
         manifest=json.loads((ROOT/'docs/suites/gt710.json').read_text()); API['validate_manifest'](manifest)
         category=next(c for c in manifest['categories'] if c['id']=='core')
         self.assertEqual([c['id'] for c in category['cases']],['row','dispatch','producer'])
-        self.assertEqual(category.get('hostRunner'),True)
+        self.assertIs(manifest['hostRunner'],True); self.assertNotIn('hostRunner',category)
         effort=json.loads((ROOT/'docs/efforts/metal.json').read_text())
         milestone=next(m for e in effort['efforts'] if e['id']=='metal-gt710' for m in e['milestones'] if m['id']=='gpu-core')
         self.assertEqual(milestone['measure'],dict(suite='gt710',categories=['core']))

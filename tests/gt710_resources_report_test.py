@@ -163,7 +163,9 @@ class ResourcesReport(unittest.TestCase):
         manifest = json.loads((ROOT / 'docs/suites/gt710.json').read_text())
         API['validate_manifest'](manifest)
         cat = next(c for c in manifest['categories'] if c['id'] == 'resources')
-        self.assertTrue(cat['hostRunner'])
+        # The whole suite is host-run; a per-category flag means server-suite (suite_manifests.rs).
+        self.assertIs(manifest['hostRunner'], True)
+        self.assertNotIn('hostRunner', cat)
         self.assertEqual([c['id'] for c in cat['cases']], ['row', 'suite', 'console'])
 
     def test_admitted_row_and_missing_probe_class_scanout_rejected(self):

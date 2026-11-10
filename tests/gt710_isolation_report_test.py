@@ -37,7 +37,9 @@ class IsolationReport(unittest.TestCase):
         manifest = json.loads((ROOT / 'docs/suites/gt710.json').read_text())
         API['validate_manifest'](manifest)
         category = next(c for c in manifest['categories'] if c['id'] == 'isolation')
-        self.assertTrue(category['hostRunner'])
+        # The whole suite is host-run; a per-category flag means server-suite (suite_manifests.rs).
+        self.assertIs(manifest['hostRunner'], True)
+        self.assertNotIn('hostRunner', category)
         self.assertEqual([c['id'] for c in category['cases']], ['suite'])
         effort = json.loads((ROOT / 'docs/efforts/metal.json').read_text())
         self.assertTrue(any(c['id'] == 'isolation' and c['measure']['categories'] == ['isolation']
