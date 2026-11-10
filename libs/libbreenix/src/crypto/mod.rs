@@ -7,9 +7,9 @@ pub mod aes;
 #[cfg(feature = "std")]
 pub mod bignum;
 #[cfg(feature = "std")]
-pub mod cmac;
-#[cfg(feature = "std")]
 pub mod ccm;
+#[cfg(feature = "std")]
+pub mod cmac;
 pub mod ct;
 #[cfg(feature = "std")]
 pub mod ed25519;
@@ -32,16 +32,23 @@ pub mod rsa;
 #[cfg(feature = "std")]
 pub mod sha256;
 pub mod sha512;
+pub mod sha512_crypt;
 #[cfg(feature = "std")]
 pub mod x25519;
-pub mod sha512_crypt;
 
 #[cfg(all(test, feature = "std"))]
 mod md_tests {
-    use super::{md4::{md4, Md4}, md5::{md5, Md5}};
+    use super::{
+        md4::{md4, Md4},
+        md5::{md5, Md5},
+    };
 
     const INPUTS: [&[u8]; 7] = [
-        b"", b"a", b"abc", b"message digest", b"abcdefghijklmnopqrstuvwxyz",
+        b"",
+        b"a",
+        b"abc",
+        b"message digest",
+        b"abcdefghijklmnopqrstuvwxyz",
         b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789",
         b"12345678901234567890123456789012345678901234567890123456789012345678901234567890",
     ];
@@ -53,15 +60,20 @@ mod md_tests {
     #[test]
     fn md4_rfc_1320_appendix_a5() {
         let expected = [
-            "31d6cfe0d16ae931b73c59d7e0c089c0", "bde52cb31de33e46245e05fbdbd6fb24",
-            "a448017aaf21d8525fc10ae87aa6729d", "d9130a8164549fe818874806e1c7014b",
-            "d79e1c308aa5bbcdeea8ed63df412da9", "043f8582f241db351ce627e153e7f0e4",
+            "31d6cfe0d16ae931b73c59d7e0c089c0",
+            "bde52cb31de33e46245e05fbdbd6fb24",
+            "a448017aaf21d8525fc10ae87aa6729d",
+            "d9130a8164549fe818874806e1c7014b",
+            "d79e1c308aa5bbcdeea8ed63df412da9",
+            "043f8582f241db351ce627e153e7f0e4",
             "e33b4ddc9c38f2199c3e7b164fcc0536",
         ];
         for (input, expected) in INPUTS.into_iter().zip(expected) {
             assert_eq!(hex(md4(input)), expected);
             let mut digest = Md4::new();
-            for byte in input { digest.update(core::slice::from_ref(byte)); }
+            for byte in input {
+                digest.update(core::slice::from_ref(byte));
+            }
             assert_eq!(hex(digest.finalize()), expected);
         }
     }
@@ -69,15 +81,20 @@ mod md_tests {
     #[test]
     fn md5_rfc_1321_appendix_a5() {
         let expected = [
-            "d41d8cd98f00b204e9800998ecf8427e", "0cc175b9c0f1b6a831c399e269772661",
-            "900150983cd24fb0d6963f7d28e17f72", "f96b697d7cb7938d525a2f31aaf161d0",
-            "c3fcd3d76192e4007dfb496cca67e13b", "d174ab98d277d9f5a5611c2c9f419d9f",
+            "d41d8cd98f00b204e9800998ecf8427e",
+            "0cc175b9c0f1b6a831c399e269772661",
+            "900150983cd24fb0d6963f7d28e17f72",
+            "f96b697d7cb7938d525a2f31aaf161d0",
+            "c3fcd3d76192e4007dfb496cca67e13b",
+            "d174ab98d277d9f5a5611c2c9f419d9f",
             "57edf4a22be3c955ac49da2e2107b67a",
         ];
         for (input, expected) in INPUTS.into_iter().zip(expected) {
             assert_eq!(hex(md5(input)), expected);
             let mut digest = Md5::new();
-            for byte in input { digest.update(core::slice::from_ref(byte)); }
+            for byte in input {
+                digest.update(core::slice::from_ref(byte));
+            }
             assert_eq!(hex(digest.finalize()), expected);
         }
     }
@@ -119,7 +136,9 @@ mod cmac_tests {
             let input = &message[..len];
             assert_eq!(aes_cmac(&key, input), expected);
             let mut mac = AesCmac::new(&key);
-            for chunk in input.chunks(7) { mac.update(chunk); }
+            for chunk in input.chunks(7) {
+                mac.update(chunk);
+            }
             mac.update(&[]);
             assert_eq!(mac.finalize(), expected);
         }
@@ -131,7 +150,10 @@ mod ccm_tests {
     use super::ccm::AesCcm;
 
     fn hex(s: &str) -> Vec<u8> {
-        (0..s.len()).step_by(2).map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap()).collect()
+        (0..s.len())
+            .step_by(2)
+            .map(|i| u8::from_str_radix(&s[i..i + 2], 16).unwrap())
+            .collect()
     }
 
     #[test]
@@ -145,7 +167,11 @@ mod ccm_tests {
         ];
         for (index, (nonce, aad, plain, combined, tag_len)) in vectors.into_iter().enumerate() {
             let nonce = hex(nonce);
-            let aad = if index == 3 { (0..65536).map(|i| i as u8).collect() } else { hex(aad) };
+            let aad = if index == 3 {
+                (0..65536).map(|i| i as u8).collect()
+            } else {
+                hex(aad)
+            };
             let plain = hex(plain);
             let expected = hex(combined);
             let ccm = AesCcm::new(&key, tag_len);
@@ -169,7 +195,11 @@ mod ccm_tests {
             let mut buf = ciphertext;
             let mut bad_aad = aad;
             let mut bad_tag = tag.clone();
-            match changed { 0 => bad_tag[0] ^= 1, 1 => buf[0] ^= 1, _ => bad_aad[0] ^= 1 }
+            match changed {
+                0 => bad_tag[0] ^= 1,
+                1 => buf[0] ^= 1,
+                _ => bad_aad[0] ^= 1,
+            }
             assert!(!ccm.decrypt(&nonce, &bad_aad, &mut buf, &bad_tag));
             assert_eq!(buf, [0; 20]);
         }

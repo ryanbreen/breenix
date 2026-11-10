@@ -12,20 +12,28 @@ impl AesCcm {
     /// Create a CCM cipher. Tag lengths must be even and between 4 and 16 bytes.
     pub fn new(key: &[u8; 16], tag_len: usize) -> Self {
         assert!((4..=16).contains(&tag_len) && tag_len % 2 == 0);
-        Self { cipher: Aes128::new(key), tag_len }
+        Self {
+            cipher: Aes128::new(key),
+            tag_len,
+        }
     }
 
     fn check(&self, nonce: &[u8], len: usize) -> usize {
         assert!((7..=13).contains(&nonce.len()));
         let q = 15 - nonce.len();
-        assert!(q >= 8 || (len as u64) < (1u64 << (8 * q)), "message too long for nonce");
+        assert!(
+            q >= 8 || (len as u64) < (1u64 << (8 * q)),
+            "message too long for nonce"
+        );
         q
     }
 
     fn mac(&self, nonce: &[u8], aad: &[u8], plain: &[u8], q: usize) -> [u8; 16] {
         let mut state = [0; 16];
         let mut b0 = [0; 16];
-        b0[0] = (if aad.is_empty() { 0 } else { 0x40 }) | (((self.tag_len - 2) / 2) as u8) << 3 | (q - 1) as u8;
+        b0[0] = (if aad.is_empty() { 0 } else { 0x40 })
+            | (((self.tag_len - 2) / 2) as u8) << 3
+            | (q - 1) as u8;
         b0[1..1 + nonce.len()].copy_from_slice(nonce);
         b0[16 - q..].copy_from_slice(&(plain.len() as u64).to_be_bytes()[8 - q..]);
         self.absorb(&mut state, &b0);
@@ -33,13 +41,16 @@ impl AesCcm {
             let len = aad.len() as u64;
             let mut prefix = [0; 10];
             let n = if len < 0xff00 {
-                prefix[..2].copy_from_slice(&(len as u16).to_be_bytes()); 2
+                prefix[..2].copy_from_slice(&(len as u16).to_be_bytes());
+                2
             } else if len <= u32::MAX as u64 {
                 prefix[..2].copy_from_slice(&[0xff, 0xfe]);
-                prefix[2..6].copy_from_slice(&(len as u32).to_be_bytes()); 6
+                prefix[2..6].copy_from_slice(&(len as u32).to_be_bytes());
+                6
             } else {
                 prefix[..2].copy_from_slice(&[0xff, 0xff]);
-                prefix[2..10].copy_from_slice(&len.to_be_bytes()); 10
+                prefix[2..10].copy_from_slice(&len.to_be_bytes());
+                10
             };
             let mut block = [0; 16];
             block[..n].copy_from_slice(&prefix[..n]);
@@ -53,7 +64,9 @@ impl AesCcm {
     }
 
     fn absorb(&self, state: &mut [u8; 16], block: &[u8; 16]) {
-        for (a, b) in state.iter_mut().zip(block) { *a ^= b; }
+        for (a, b) in state.iter_mut().zip(block) {
+            *a ^= b;
+        }
         self.cipher.encrypt_block(state);
     }
 
@@ -77,7 +90,9 @@ impl AesCcm {
     fn crypt(&self, nonce: &[u8], q: usize, buf: &mut [u8]) {
         for (i, chunk) in buf.chunks_mut(16).enumerate() {
             let stream = self.counter(nonce, q, i as u64 + 1);
-            for (byte, mask) in chunk.iter_mut().zip(stream) { *byte ^= mask; }
+            for (byte, mask) in chunk.iter_mut().zip(stream) {
+                *byte ^= mask;
+            }
         }
     }
 
@@ -98,7 +113,9 @@ impl AesCcm {
         let mac = self.mac(nonce, aad, buf, q);
         let s0 = self.counter(nonce, q, 0);
         let mut expected = [0; 16];
-        for i in 0..self.tag_len { expected[i] = mac[i] ^ s0[i]; }
+        for i in 0..self.tag_len {
+            expected[i] = mac[i] ^ s0[i];
+        }
         if !ct_eq(&expected[..self.tag_len], tag) {
             buf.fill(0);
             return false;
