@@ -70,6 +70,8 @@ fn run() -> Result<(), String> {
         let written = loop {
             match dev.write(&output[..n]) {
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                // A detach can race the operation whose reply we are sending.
+                Err(e) if e.raw_os_error() == Some(107) => return Ok(()),
                 x => break x.map_err(|e| format!("write /dev/ufs: {e}"))?,
             }
         };

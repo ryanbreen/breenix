@@ -2,7 +2,7 @@
 use breenix_suite::suite::{case, category, check, suite, CaseResult, Suite};
 use libbreenix::{fs as sysfs, io as sysio, types::Fd};
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
@@ -10,6 +10,8 @@ use std::process::{Child, ChildStdout, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const DAEMON: &str = "/usr/libexec/breenix/memfsd_test";
+// The runner silences case stdout; retain its original record destination.
+static SMB_RESTART_OUTPUT: std::sync::OnceLock<File> = std::sync::OnceLock::new();
 static SUITE: Suite = suite("network-shares", "Network shares", &[
     category("ufs", "User filesystem bridge", &[
         case("mount-list", "Mount and list", mount_list),
@@ -31,10 +33,18 @@ static SUITE: Suite = suite("network-shares", "Network shares", &[
         case("delete", "Delete a file", smb_delete),
         case("dirs", "Create and remove directories", smb_dirs),
         case("atomic-save", "Atomic save of a large file", smb_atomic_save),
+        case("read-only-refused", "Read-only share refuses writes", smb_read_only_refused),
+        case("wrong-password", "Wrong password leaves no mount", smb_wrong_password),
+        case("server-restart", "Server restart recovers or reports EIO", smb_server_restart),
+        case("umount-open-files", "Unmount with an open file", smb_umount_open_files),
     ]),
 ]).case_limit_ms(30_000);
 
 fn main() {
+    let fd = sysio::fcntl(Fd::STDOUT, sysio::fcntl_cmd::F_DUPFD_CLOEXEC, 3)
+        .unwrap_or_else(|e| { eprintln!("retain SMB restart output: {e}"); std::process::exit(1) });
+    // SAFETY: fcntl returned a fresh owned descriptor; exec must not inherit it.
+    let _ = SMB_RESTART_OUTPUT.set(unsafe { File::from_raw_fd(fd as i32) });
     SUITE.with_evidence_upload().run()
 }
 fn io<T>(r: std::io::Result<T>) -> Result<T, String> { r.map_err(|e| e.to_string()) }
@@ -349,9 +359,10 @@ struct SmbMount {
     work_created: bool,
     mounted: bool,
     ready: String,
+    child: Option<Child>,
 }
 impl SmbMount {
-    fn start(share: &str, smb302: bool) -> Result<Self, String> {
+    fn prepare(share: &str, smb302: bool, credfile: &str) -> Result<(Self, String, String), String> {
         let server = io(fs::read_to_string("/etc/breenix/smb-test-server"))?;
         let fields: Vec<_> = server.split_whitespace().collect();
         if fields.len() != 2 || fields[1].parse::<u16>().ok().filter(|p| *p != 0).is_none() {
@@ -362,12 +373,16 @@ impl SmbMount {
         let name = format!("breenix-suite-{}-{stamp}", std::process::id());
         let dir = PathBuf::from("/tmp").join(&name);
         io(fs::create_dir(&dir))?;
-        let mut mount = Self {
-            work: dir.join(&name), dir, work_created: false, mounted: false, ready: String::new(),
+        let mount = Self {
+            work: dir.join(&name), dir, work_created: false, mounted: false, ready: String::new(), child: None,
         };
         let source = format!("//{}/{share}", fields[0]);
-        let mut options = format!("credfile=/etc/breenix/smb-test.cred,port={}", fields[1]);
+        let mut options = format!("credfile={credfile},port={}", fields[1]);
         if smb302 { options.push_str(",vers=3.0.2"); }
+        Ok((mount, source, options))
+    }
+    fn start(share: &str, smb302: bool) -> Result<Self, String> {
+        let (mut mount, source, options) = Self::prepare(share, smb302, "/etc/breenix/smb-test.cred")?;
         // A failed handshake may follow a successful mount. Drop must detach it.
         mount.mounted = true;
         let output = io(Command::new("/sbin/mount")
@@ -386,6 +401,21 @@ impl SmbMount {
             io(fs::create_dir(&mount.work))?;
             mount.work_created = true;
         }
+        Ok(mount)
+    }
+    fn daemon() -> Result<Self, String> {
+        let (mut mount, source, options) = Self::prepare("rw", false, "/etc/breenix/smb-test.cred")?;
+        let mut child = io(Command::new("/sbin/smbfsd").arg(source).arg(&mount.dir).arg(options)
+            .stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn())?;
+        let output = child.stdout.take().ok_or("missing SMB daemon output")?;
+        mount.child = Some(child);
+        mount.mounted = true;
+        io(BufReader::new(output).read_line(&mut mount.ready))?;
+        if mount.ready != "READY dialect=0x0311 encrypted=0\n" {
+            return Err("SMB daemon did not report READY".into());
+        }
+        io(fs::create_dir(&mount.work))?;
+        mount.work_created = true;
         Ok(mount)
     }
     fn rw() -> Result<Self, String> { Self::start("rw", false) }
@@ -413,6 +443,11 @@ impl Drop for SmbMount {
                 Ok(()) | Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINVAL)) => self.mounted = false,
                 Err(e) => eprintln!("SMB fixture unmount: {e}"),
             }
+        }
+        if let Some(mut child) = self.child.take() {
+            // This child belongs to this fixture, including a failed handshake.
+            if child.try_wait().ok().flatten().is_none() { let _ = child.kill(); }
+            let _ = child.wait();
         }
         // Remove only the local mount point here; recursive cleanup uses work.
         if !self.mounted { let _ = fs::remove_dir(&self.dir); }
@@ -509,4 +544,140 @@ fn smb_atomic_save() -> CaseResult {
     check(size == bytes.len() && digest.finalize() == expected, "SMB atomic save size or SHA-256 differs")?;
     check(smb_names(&mount.work)? == [std::ffi::OsString::from("drawing")], "SMB atomic save left a temporary")?;
     mount.finish()
+}
+
+fn smb_read_only_refused() -> CaseResult {
+    let mount = SmbMount::start("ro", false)?;
+    let readme = mount.dir.join("README.txt");
+    let before = io(fs::read(&readme))?;
+    let created = OpenOptions::new().write(true).create_new(true).open(&mount.work);
+    check(matches!(created.err().and_then(|e| e.raw_os_error()), Some(13 | 30)),
+        "read-only SMB create did not return EACCES or EROFS")?;
+    let written = OpenOptions::new().write(true).open(&readme)
+        .and_then(|mut f| f.write_all(b"must be refused"));
+    check(matches!(written.err().and_then(|e| e.raw_os_error()), Some(13 | 30)),
+        "read-only SMB write did not return EACCES or EROFS")?;
+    check(io(fs::read(&readme))? == before, "read-only README bytes changed")?;
+    check(smb_names(&mount.dir)?.contains(&std::ffi::OsString::from("README.txt")),
+        "read-only mount became unusable")?;
+    mount.finish()
+}
+
+fn smb_wrong_password() -> CaseResult {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    struct Credfile(PathBuf);
+    impl Drop for Credfile { fn drop(&mut self) { let _ = fs::remove_file(&self.0); } }
+    let cred_path = PathBuf::from(format!("/tmp/smb-wrong-{}.cred", std::process::id()));
+    let original = smbfs::read_credentials("/etc/breenix/smb-test.cred")?;
+    let mut wrong = original.password.clone();
+    wrong.push_str("-intentionally-wrong");
+    let mut file = io(OpenOptions::new().write(true).create_new(true).mode(0o600).open(&cred_path))?;
+    let cred = Credfile(cred_path);
+    io(writeln!(file, "username={}\npassword={}\ndomain={}", original.username, wrong, original.domain))?;
+    check(io(file.metadata())?.permissions().mode() & 0o777 == 0o600, "wrong-password credential mode differs")?;
+    drop(file);
+    let (mut mount, source, options) = SmbMount::prepare("rw", false, cred.0.to_str().ok_or("credential path encoding")?)?;
+    io(fs::write(mount.dir.join("sentinel"), b"underlying ext2 sentinel"))?;
+    mount.mounted = true; // Also detach an incorrectly accepted mount on failure.
+    let status = io(Command::new("/sbin/mount").args(["-t", "smb", &source])
+        .arg(&mount.dir).args(["-o", &options]).stdout(Stdio::null()).status())?;
+    check(!status.success(), "wrong-password mount exited successfully")?;
+    check(io(fs::read(mount.dir.join("sentinel")))? == b"underlying ext2 sentinel",
+        "wrong-password mount hid the ext2 sentinel")?;
+    let result = sysfs::umount2(mount.dir.to_str().ok_or("mount path encoding")?, 0);
+    check(matches!(result, Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EINVAL))),
+        "wrong-password left a mounted filesystem")?;
+    mount.mounted = false;
+    for entry in io(fs::read_dir("/proc"))? {
+        let entry = io(entry)?;
+        if entry.file_name().to_str().and_then(|n| n.parse::<u64>().ok()).is_none() { continue; }
+        let cmd = match fs::read(entry.path().join("cmdline")) {
+            Ok(cmd) => cmd,
+            Err(e) if e.raw_os_error() == Some(2) => continue, // Process exited during enumeration.
+            Err(e) => return Err(e.to_string().into()),
+        };
+        let args: Vec<_> = cmd.split(|b| *b == 0).collect();
+        check(!(args.first() == Some(&b"/sbin/smbfsd".as_slice())
+            && args.contains(&mount.dir.as_os_str().as_encoded_bytes())),
+            "wrong-password left smbfsd running for this mount")?;
+    }
+    io(fs::remove_file(mount.dir.join("sentinel")))?;
+    io(fs::remove_dir(&mount.dir))?;
+    Ok(())
+}
+
+fn smb_exact_or_eio(result: std::io::Result<usize>, bytes: &[u8], expected: &[u8]) -> CaseResult {
+    match result {
+        Ok(n) => check(n == expected.len() && bytes.get(..n) == Some(expected), "SMB restart returned wrong or short data"),
+        Err(e) => check(e.raw_os_error() == Some(5), &format!("SMB restart expected exact data or EIO: {e}")),
+    }
+}
+fn smb_server_restart() -> CaseResult {
+    let mount = SmbMount::rw()?;
+    let path = mount.path("restart");
+    let expected: Vec<u8> = (0..4096).map(|n| ((n * 37 + n / 251) % 256) as u8).collect();
+    io(fs::write(&path, &expected))?;
+    let file = io(File::open(&path))?;
+    let seq = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?.as_micros() as u64;
+    let marker = std::ffi::OsString::from(format!(".restarted-{seq}"));
+    let mut before = smb_names(&mount.dir)?;
+    before.sort();
+    check(!before.contains(&marker), "SMB restart marker already exists")?;
+    let mut after = before.clone();
+    after.push(marker);
+    after.sort();
+    let mut output = SMB_RESTART_OUTPUT.get().ok_or("missing SMB restart output")?;
+    io(output.write_all(format!("\nSUITE network-shares SMBRESTART smb/server-restart seq={seq}\n").as_bytes()))?;
+    let deadline = Instant::now() + Duration::from_secs(20); // Hang watchdog, not a latency requirement.
+    loop {
+        let mut bytes = vec![0; expected.len() + 1];
+        let result = file.read_at(&mut bytes, 0);
+        smb_exact_or_eio(result, &bytes, &expected)?;
+        match fs::read_dir(&mount.dir).and_then(|entries| entries.map(|e| e.map(|e| e.file_name())).collect::<Result<Vec<_>, _>>()) {
+            Ok(mut names) => {
+                names.sort();
+                if names == after { break; }
+                check(names == before, "SMB restart returned an incorrect directory listing")?;
+            },
+            Err(e) => check(e.raw_os_error() == Some(5), &format!("SMB restart listing expected success or EIO: {e}"))?,
+        }
+        check(Instant::now() < deadline, "SMB restart acknowledgement watchdog expired")?;
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let mut bytes = vec![0; expected.len() + 1];
+    let result = file.read_at(&mut bytes, 0);
+    smb_exact_or_eio(result, &bytes, &expected)?;
+    check(io(fs::read(&path))? == expected, "fresh open after SMB restart returned wrong data")?;
+    drop(file);
+    mount.finish()
+}
+
+fn smb_umount_open_files() -> CaseResult {
+    let mut mount = SmbMount::daemon()?;
+    let path = mount.path("open");
+    io(fs::write(&path, b"open before unmount"))?;
+    let file = io(File::open(&path))?;
+    // Remove names before detaching, retaining the live file description.
+    mount.clean_work()?;
+    sysfs::umount2(mount.dir.to_str().ok_or("mount path encoding")?, 0)?;
+    mount.mounted = false;
+    let mut byte = [0];
+    let result = file.read_at(&mut byte, 0);
+    check(result.err().and_then(|e| e.raw_os_error()) == Some(107),
+        "detached SMB fd did not fail with ENOTCONN")?;
+    drop(file);
+    let child = mount.child.as_mut().ok_or("missing SMB daemon")?;
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Some(status) = io(child.try_wait())? {
+            check(status.success(), &format!("smbfsd did not exit 0: {status}"))?;
+            break;
+        }
+        check(Instant::now() < deadline, "smbfsd exit watchdog expired")?;
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    mount.child.take();
+    io(fs::remove_dir(&mount.dir))?;
+    Ok(())
 }
