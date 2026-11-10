@@ -48,3 +48,15 @@ fn exit_input_requires_targeted_delivery_and_clean_expected_exit() {
     assert!(exit_input_verdict("delivered", 12, 12, 9, 0).is_err());
     assert!(exit_input_verdict("delivered", 12, 12, 256, 0).is_err());
 }
+
+#[test]
+fn exit_release_requires_a_disposition_and_allows_only_no_focus_rejection() {
+    use app::exit_release_verdict;
+    assert!(exit_release_verdict("delivered", 13, "none").is_ok());
+    assert!(exit_release_verdict("wm-handled", 0, "none").is_ok());
+    assert!(exit_release_verdict("rejected", 0, "no-focus").is_ok());
+    assert!(exit_release_verdict("rejected", 13, "no-focus").is_err());
+    assert!(exit_release_verdict("rejected", 0, "overflow").is_err());
+    assert!(exit_release_verdict("missing", 0, "none").is_err());
+    assert!(exit_release_verdict("client-rejected", 0, "no-focus").is_err());
+}
