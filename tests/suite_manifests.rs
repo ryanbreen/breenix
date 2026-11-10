@@ -57,11 +57,16 @@ fn is_id(id: &str) -> bool {
             .all(|word| !word.is_empty() && word.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()))
 }
 
-/// A category or case as the manifest or the source names it.
-#[derive(Debug, PartialEq)]
+/// A category or case as the manifest or the source names it. A case's `checks` are its
+/// declared frame checks, in order: the source's `.checks(&[...])`, the manifest's
+/// `frameChecks` entries for that case. The runner fails a declared check without a FRAME
+/// record and refuses an undeclared one, so the two must agree.
+/// claim-lint:ok: libs/libbreenix/src/suite_result.rs (Accounting::accept_record, Accounting::problem).
+#[derive(Debug, PartialEq, Default)]
 struct Entry {
     id: String,
     title: String,
+    checks: Vec<String>,
 }
 
 #[derive(Debug, PartialEq)]
@@ -132,7 +137,7 @@ fn entry(value: &Value, at: &str, extra: &[&str], errors: &mut Vec<String>) -> O
         errors.push(format!("{at}: id {id:?} is not lowercase words joined by '-'"));
     }
     let title = text(object, "title", at, errors);
-    Some(Entry { id: id.to_string(), title: title.to_string() })
+    Some(Entry { id: id.to_string(), title: title.to_string(), ..Entry::default() })
 }
 
 /// The runner of host-run categories in a suite whose binary runs the others.
@@ -221,11 +226,13 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
             errors.push(format!("{at}: aggregate must match after E[0-9]+ [0-9]+\\.[0-9]+"));
         }
     }
+    let mut frame_checks: Vec<(String, String)> = Vec::new();
     if let Some(checks) = object.get("frameChecks") {
         expected.push("frameChecks");
         let formulas = if value["id"] == "ui-testing" { frame_cases::FORMULAS } else { &[] };
         match validate_frame_checks(checks, None, formulas) {
             Ok(checks) => for check in checks {
+                frame_checks.push((check.case.to_string(), check.check.to_string()));
                 let bound = value["categories"].as_array().is_some_and(|cats|cats.iter().any(|cat|
                     cat["cases"].as_array().is_some_and(|cases|cases.iter().any(|case|
                         check.case == format!("{}/{}",cat["id"].as_str().unwrap_or(""),case["id"].as_str().unwrap_or(""))))));
@@ -301,7 +308,10 @@ fn read_manifest(path: &Path, errors: &mut Vec<String>) -> Option<Manifest> {
                                     errors.push(format!("{case_at}: collects is true when present"));
                                 }
                             }
-                            if let Some(case) = entry(case_value, &case_at, &extra, errors) {
+                            if let Some(mut case) = entry(case_value, &case_at, &extra, errors) {
+                                let key = format!("{}/{}", category.id, case.id);
+                                case.checks = frame_checks.iter().filter(|(c, _)| *c == key)
+                                    .map(|(_, check)| check.clone()).collect();
                                 if !case_ids.insert(case.id.clone()) {
                                     errors.push(format!("{case_at}: case id {:?} appears twice in {:?}", case.id, category.id));
                                 }
@@ -373,7 +383,7 @@ fn id_and_title(args: &[&syn::Expr], name: &str, arity: usize) -> Result<Entry, 
     if args.len() != arity {
         return Err(table_error(&format!("{name}(...) takes {arity} arguments")));
     }
-    Ok(Entry { id: string(args[0])?, title: string(args[1])? })
+    Ok(Entry { id: string(args[0])?, title: string(args[1])?, ..Entry::default() })
 }
 
 /// Setup may prepare cases, but cannot print or bypass the suite runner.
@@ -539,11 +549,34 @@ fn source_suite_files(files: &[(String, String)]) -> Result<(Entry, Vec<Category
 /// `pictured!("id", "Title", f)`, which expands to a `case` with the same id and title whose
 /// body hands the case's judged frame to the runner.
 fn case_entry(expr: &syn::Expr) -> Result<Entry, String> {
-    // Collection is an optional, argument-free flag after the session callback.
+    // The declaration is `case(...)` then, each optional and at most once in this order,
+    // `.session(libuitest::supervisor::serve)`, `.checks(&["name", ...])` and `.collects()`.
+    // Collection is an optional, argument-free flag after the declared checks.
     let expr = if let syn::Expr::MethodCall(method) = expr {
         if method.method == "collects" {
             if !method.args.is_empty() || !method.attrs.is_empty() || method.turbofish.is_some() {
                 return Err(table_error("collects takes no arguments"));
+            }
+            &*method.receiver
+        } else { expr }
+    } else { expr };
+    // Declared frame checks: a literal list of unique names, kept for comparison with the
+    // manifest's frameChecks so neither side can add or drop one.
+    let mut checks = Vec::new();
+    let expr = if let syn::Expr::MethodCall(method) = expr {
+        if method.method == "checks" {
+            if method.args.len() != 1 || !method.attrs.is_empty() || method.turbofish.is_some() {
+                return Err(table_error("checks takes one slice literal of check names"));
+            }
+            for name in slice(&method.args[0])? {
+                let name = string(name)?;
+                if !is_id(&name) || checks.contains(&name) {
+                    return Err(table_error(&format!("check name {name:?} is not a unique id")));
+                }
+                checks.push(name);
+            }
+            if checks.is_empty() {
+                return Err(table_error("checks declares no check"));
             }
             &*method.receiver
         } else { expr }
@@ -570,11 +603,11 @@ fn case_entry(expr: &syn::Expr) -> Result<Entry, String> {
                 .parse_body_with(syn::punctuated::Punctuated::<syn::Expr, syn::Token![,]>::parse_terminated)
                 .map_err(|error| table_error(&format!("pictured!(...) does not parse: {error}")))?;
             let args: Vec<&syn::Expr> = args.iter().collect();
-            return id_and_title(&args, "pictured!", 3);
+            return Ok(Entry { checks, ..id_and_title(&args, "pictured!", 3)? });
         }
     }
     let case_args = call(expr, "case")?;
-    id_and_title(&case_args, "case", 3)
+    Ok(Entry { checks, ..id_and_title(&case_args, "case", 3)? })
 }
 
 /// The cases of a category's table expression, read in module `module`.
@@ -745,7 +778,11 @@ fn describe(categories: &[Category]) -> String {
         .iter()
         .map(|category| {
             let cases: Vec<String> =
-                category.cases.iter().map(|case| format!("    {} | {}", case.id, case.title)).collect();
+                category.cases.iter().map(|case| if case.checks.is_empty() {
+                    format!("    {} | {}", case.id, case.title)
+                } else {
+                    format!("    {} | {} | checks {}", case.id, case.title, case.checks.join(","))
+                }).collect();
             format!("  {} | {}\n{}", category.entry.id, category.entry.title, cases.join("\n"))
         })
         .collect::<Vec<_>>()
@@ -816,7 +853,7 @@ fn suite_manifests_match_their_binaries() {
                 continue;
             }
         };
-        if suite != (Entry { id: id.clone(), title: manifest.title.clone() }) {
+        if suite != (Entry { id: id.clone(), title: manifest.title.clone(), ..Entry::default() }) {
             errors.push(format!(
                 "{id}: {source_rel} runs suite({:?}, {:?}); the manifest says suite({id:?}, {:?})",
                 suite.id, suite.title, manifest.title
@@ -876,7 +913,13 @@ fn assert_scoped_runner_fixture(root: &Path, binaries: &[String]) {
     let source = fs::read_to_string(root.join("userspace/programs/src/suite_runner_fixture.rs")).unwrap();
     assert!(source.contains("std::env::args()"));
     assert!(source.contains("match selected"));
-    assert!(source.contains("case_limit_ms(3000)"));
+    // Scoped modes keep 3 s; only app-death (SIGKILL, then collection) has 6 s (0fc12d5c),
+    // and the config-isolation sequence has 6 s (2f556424). Pin both, and no other limit.
+    let main_limit = ".case_limit_ms(if selected == \"app-death\" { 6000 } else { 3000 }).run()";
+    let config_limit = ".case_limit_ms(6000).run()";
+    assert_eq!(source.matches(main_limit).count(), 1, "scoped fixture limit changed");
+    assert_eq!(source.matches(config_limit).count(), 1, "config sequence limit changed");
+    assert_eq!(source.matches("case_limit_ms(").count(), 2, "unexpected case limit in the scoped fixture");
     assert!(source.contains(".gui()"));
 }
 
@@ -1111,7 +1154,7 @@ fn the_table_main_runs_is_read() {
         fn main() { S.run() }
     "#;
     let (suite, categories) = source_suite(source).unwrap();
-    assert_eq!(suite, Entry { id: "demo".to_string(), title: "Demo".to_string() });
+    assert_eq!(suite, Entry { id: "demo".to_string(), title: "Demo".to_string(), ..Entry::default() });
     let ids: Vec<(&str, &str, Vec<&str>)> = categories
         .iter()
         .map(|c| (c.entry.id.as_str(), c.entry.title.as_str(), c.cases.iter().map(|k| k.id.as_str()).collect()))
@@ -1579,8 +1622,15 @@ fn metal_stream_is_independent_and_resolves_its_measures() {
     assert_eq!(boot["milestones"][0]["stages"]["x86_64"].as_array().unwrap().iter()
         .filter_map(|s| s["host"].as_str()).collect::<Vec<_>>(),
         ["console-ready", "power-on", "firmware-text", "post", "image-complete"]);
+    // Fatal entries are regular expressions to the two scorers that read this file
+    // (scripts/metal/metal_score.py, Vigil's BreenixBootPath). The x86 panic handler prints
+    // `KERNEL PANIC: <message>` and `panic location: ...` rather than Rust's `panicked at`,
+    // so the metal stream also matches that banner (9d9eb34d).
     assert_eq!(boot["fatal"], serde_json::json!([
-        "panicked at kernel/src/", "!!! SOFT LOCKUP DETECTED !!!"]));
+        "panicked at kernel/src/|KERNEL PANIC[:!]", "!!! SOFT LOCKUP DETECTED !!!"]));
+    let x86_panic = fs::read_to_string(root.join("kernel/src/main.rs")).unwrap();
+    assert!(x86_panic.contains(r#"serial_println!("KERNEL PANIC: {}", info.message());"#),
+        "the x86 panic banner changed; update the metal fatal pattern with it");
 }
 
 #[test]
@@ -1742,6 +1792,20 @@ fn session_case_declarations_preserve_the_case_table() {
     for bad in ["session()", "session(a, b)", "session(|| hidden())", "session(other::serve)", "unknown(libuitest::supervisor::serve)"] {
         assert!(source_suite(&source.replace("session(libuitest::supervisor::serve)", bad)).is_err(), "{bad}");
     }
+    // Declared frame checks sit between the session and collection, are literal and are kept.
+    let serve = "session(libuitest::supervisor::serve)";
+    let checked = source.replace(serve, &format!(r#"{serve}.checks(&["initial", "typed"])"#));
+    let (_, read) = source_suite(&checked).unwrap();
+    assert_eq!(read[0].cases[0].checks, ["initial", "typed"]);
+    assert!(read[0].cases[1].checks.is_empty());
+    let both = source.replace(serve, &format!(r#"{serve}.checks(&["initial"]).collects()"#));
+    assert_eq!(source_suite(&both).unwrap().1[0].cases[0].checks, ["initial"]);
+    for bad in [r#"checks(&[])"#, r#"checks(&["x", "x"])"#, r#"checks(&["Not An Id"])"#, "checks(&[NAME])",
+        "checks(NAMES)", r#"checks(&["x"], &["y"])"#, r#"checks::<u8>(&["x"])"#,
+        r#"checks(&["x"]).checks(&["y"])"#, r#"collects().checks(&["x"])"#] {
+        assert!(source_suite(&source.replace(serve, &format!("{serve}.{bad}"))).is_err(), "{bad}");
+    }
+    assert!(source_suite(&source.replace(serve, &format!(r#"checks(&["x"]).{serve}"#))).is_err(), "checks before session");
     let root = repo_root();
     let (_, files) = suite_files(&root, "ui_testing").unwrap();
     let (_, categories) = source_suite_files(&files).unwrap();

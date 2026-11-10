@@ -87,7 +87,9 @@ class AlphaReport(unittest.TestCase):
         manifest = json.loads((ROOT / 'docs/suites/gt710.json').read_text())
         API['validate_manifest'](manifest)
         category = next(c for c in manifest['categories'] if c['id'] == 'alpha')
-        self.assertTrue(category['hostRunner'])
+        # The whole suite is host-run; a per-category flag means server-suite (suite_manifests.rs).
+        self.assertIs(manifest['hostRunner'], True)
+        self.assertNotIn('hostRunner', category)
         self.assertEqual([c['id'] for c in category['cases']], ['suite'])
         self.assertNotIn('alpha', API['capture_categories'](boot('console')))
         self.assertIn('docs/gui/gt710-step-8-3.json',

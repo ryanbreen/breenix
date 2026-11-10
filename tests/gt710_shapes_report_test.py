@@ -88,7 +88,9 @@ class ShapesReport(unittest.TestCase):
         manifest = json.loads((ROOT / 'docs/suites/gt710.json').read_text())
         API['validate_manifest'](manifest)
         category = next(c for c in manifest['categories'] if c['id'] == 'shapes')
-        self.assertTrue(category['hostRunner'])
+        # The whole suite is host-run; a per-category flag means server-suite (suite_manifests.rs).
+        self.assertIs(manifest['hostRunner'], True)
+        self.assertNotIn('hostRunner', category)
         self.assertEqual([c['id'] for c in category['cases']], ['suite'])
         self.assertIn('docs/gui/gt710-step-8-4.json', (ROOT / 'scripts/metal/metal-build').read_text())
 
