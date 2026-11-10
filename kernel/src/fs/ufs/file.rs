@@ -96,6 +96,20 @@ impl UfsFile {
         mode: u32,
         cred: &crate::fs::permissions::Credentials,
     ) -> Result<Arc<Self>, u64> {
+        Self::open_with_access(mount, node, parent, name, flags, mode, cred, None)
+    }
+
+    pub fn working_directory(
+        mount: u64, node: u64, parent: Option<u64>,
+        cred: &crate::fs::permissions::Credentials,
+    ) -> Result<Arc<Self>, u64> {
+        Self::open_with_access(mount, node, parent, b"", crate::syscall::fs::O_DIRECTORY, 0, cred, Some(1))
+    }
+
+    fn open_with_access(
+        mount: u64, node: u64, parent: Option<u64>, name: &[u8], flags: u32, mode: u32,
+        cred: &crate::fs::permissions::Credentials, access_override: Option<u32>,
+    ) -> Result<Arc<Self>, u64> {
         use crate::syscall::fs::{O_CREAT, O_DIRECTORY, O_EXCL, O_TRUNC};
         let lease = super::open_file(mount)?;
         let creating = node == 0;
@@ -150,12 +164,12 @@ impl UfsFile {
         if !directory && flags & O_DIRECTORY != 0 {
             return Err(ENOTDIR as u64);
         }
-        let access = match flags & 3 {
+        let access = access_override.unwrap_or(match flags & 3 {
             0 => 4,
             1 => 2,
             2 => 6,
             _ => return Err(EINVAL as u64),
-        };
+        });
         if !created && !cred.may(path::attrs(attr), access) {
             return Err(EACCES as u64);
         }

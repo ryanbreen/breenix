@@ -850,6 +850,8 @@ pub enum WorkingDir {
     Ext2 { mount: Mount, dir: FileHandle },
     /// A devfs or procfs directory, named as written.
     Virtual(String),
+    /// A daemon directory kept alive by its open description.
+    User { mount: u64, node: u64, handle: Arc<dyn crate::ipc::object::IpcFile> },
 }
 
 impl Default for WorkingDir {
@@ -964,6 +966,9 @@ fn copy_dir(dir: &WorkingDir) -> Result<WorkingDir, u64> {
             dir: dir.clone(),
         },
         WorkingDir::Virtual(path) => WorkingDir::Virtual(copy_string(path)?),
+        WorkingDir::User { mount, node, handle } => WorkingDir::User {
+            mount: *mount, node: *node, handle: handle.clone(),
+        },
     })
 }
 
@@ -1027,7 +1032,11 @@ pub fn current_working_dir() -> WorkingDir {
 pub fn working_dir<P: AsRef<[u8]>>(resolved: &Resolved<P>) -> Result<WorkingDir, u64> {
     match resolved.target {
         Target::User { node: 0, .. } => Err(ENOENT as u64),
-        Target::User { .. } => Err(crate::syscall::errno::EOPNOTSUPP as u64),
+        Target::User { mount, node, parent } => {
+            let cred = super::permissions::Credentials::current(false)?;
+            let handle = super::ufs::file::UfsFile::working_directory(mount, node, parent, &cred)?;
+            Ok(WorkingDir::User { mount, node, handle })
+        },
         Target::Absent { .. } => Err(ENOENT as u64),
         Target::Virtual => match core::str::from_utf8(resolved.path.as_ref()).ok().and_then(virtual_entry) {
             Some(true) => Ok(WorkingDir::Virtual(copy_string(core::str::from_utf8(resolved.path.as_ref()).map_err(|_| ENOENT as u64)?)?)),
@@ -1055,6 +1064,12 @@ pub(crate) fn may_search(
 ) -> Result<(), u64> {
     let (mount, handle) = match dir {
         WorkingDir::Virtual(_) => return Ok(()),
+        WorkingDir::User { mount, node, .. } => {
+            let attr = super::ufs::path::getattr(*mount, *node)?;
+            if !super::ufs::path::attrs(attr).is_dir() { return Err(ENOTDIR as u64); }
+            return if cred.may(super::ufs::path::attrs(attr), 1) { Ok(()) }
+                else { Err(crate::syscall::errno::EACCES as u64) };
+        },
         WorkingDir::Root => (Mount::Root, None),
         WorkingDir::Ext2 { mount, dir } => (*mount, Some(dir)),
     };
@@ -1119,12 +1134,35 @@ fn frames(dir: &WorkingDir, held: &mut Held) -> Result<Vec<Frame>, u64> {
             }
             Ok(frames)
         }
+        WorkingDir::User { mount, node, .. } => user_frames(*mount, *node, held),
         WorkingDir::Ext2 { mount, dir } => {
             let fs = held.fs(*mount)?;
             let ino = dir.verify(fs).map_err(|_| ENOENT as u64)?;
             ancestry(fs, *mount, ino)
         }
     }
+}
+
+/// Reconstruct daemon ancestry by node id, then attach its covered mount point.
+fn user_frames(mount: u64, mut node: u64, held: &mut Held) -> Result<Vec<Frame>, u64> {
+    held.release();
+    let mut children = Vec::new();
+    let mut length = 0;
+    while node != ufs_abi::payload::ROOT {
+        let (parent, name) = super::ufs::path::parent(mount, node)?;
+        length += name.len() + 1;
+        if length >= PATH_MAX { return Err(ENAMETOOLONG as u64); }
+        children.try_reserve(1).map_err(|_| 12u64)?;
+        children.push(Frame { name, node: Node::User(mount, node) });
+        node = parent;
+    }
+    let (native, ino) = super::ufs::covered_directory(mount)?;
+    let mut stack = ancestry(held.fs(native)?, native, ino)?;
+    let point = stack.last_mut().ok_or(EIO as u64)?;
+    point.node = Node::User(mount, ufs_abi::payload::ROOT);
+    stack.try_reserve(children.len()).map_err(|_| 12u64)?;
+    stack.extend(children.into_iter().rev());
+    Ok(stack)
 }
 
 /// Walk `..` entries from directory `ino` up to its filesystem's root,

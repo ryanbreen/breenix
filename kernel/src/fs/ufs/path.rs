@@ -39,6 +39,20 @@ pub fn lookup(mount: u64, parent: u64, name: &[u8]) -> Result<Attr, u64> {
     attribute(&named(mount, Op::Lookup, parent, name, None)?, None)
 }
 
+/// Resolve a held directory's current name without remembering an old path.
+pub fn parent(mount: u64, node: u64) -> Result<(u64, Vec<u8>), u64> {
+    let bytes = request(mount, Op::Parent, node, &[])?;
+    let mut r = ufs_abi::payload::Reader::new(&bytes);
+    let parent = r.u64().map_err(|_| EIO as u64)?;
+    let name = r.name().map_err(|_| EIO as u64)?;
+    r.finish().map_err(|_| EIO as u64)?;
+    if parent == 0 || parent == node { return Err(EIO as u64); }
+    let mut owned = Vec::new();
+    owned.try_reserve_exact(name.len()).map_err(|_| ENOMEM as u64)?;
+    owned.extend_from_slice(name);
+    Ok((parent, owned))
+}
+
 pub fn parent_access(mount: u64, parent: u64, cred: &Credentials, owner: Option<u32>) -> Result<Attr, u64> {
     let attr = getattr(mount, parent)?;
     if !attrs(attr).is_dir() { return Err(ENOTDIR as u64); }

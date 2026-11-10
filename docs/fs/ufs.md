@@ -137,3 +137,11 @@ avoids scheduler calls in process-manager close contexts. A disconnected or
 detached mount discards the close work. The bridge has no mapped-file path:
 file-backed mmap refuses a UfsFile descriptor with ENODEV, and namei refuses an
 executable from a user mount with EACCES.
+
+## Working directories and directory fds
+
+A UFS directory may be a cwd or a directory fd for openat, unlinkat and fstatat.
+The held open description keeps the daemon node alive; Parent reconstructs its
+current ancestry after a rename, including getcwd and `..` across the mount root.
+Chdir checks search permission; opening a directory for reading checks read
+permission. An unnamed directory has no getcwd pathname and returns ENOENT.

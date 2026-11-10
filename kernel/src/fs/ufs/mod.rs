@@ -118,6 +118,10 @@ pub fn covering(mount: crate::fs::namei::Mount, ino: u32) -> Option<u64> {
     cover::enter(MOUNTS.lock().iter().map(|m| &m.cover), (mount, ino))
 }
 
+pub fn covered_directory(id: u64) -> Result<(crate::fs::namei::Mount, u32), u64> {
+    Ok(get(id)?.cover.covered)
+}
+
 pub fn covered_parent(id: u64) -> Option<(crate::fs::namei::Mount, u32)> {
     cover::leave(MOUNTS.lock().iter().map(|m| &m.cover), id)
 }
