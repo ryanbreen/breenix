@@ -5,6 +5,8 @@
 //! hook links an owned wake record; reclaim delivers it outside PROCESS_MANAGER.
 
 mod args;
+pub mod file;
+mod io_split;
 pub mod cover;
 pub mod path;
 pub mod table;
@@ -15,7 +17,7 @@ use crate::syscall::{errno::*, userptr, SyscallResult};
 use crate::task::waitqueue::WaitQueueHead;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::Mutex;
 use table::{Error, RequestTable};
 
@@ -29,6 +31,13 @@ struct State {
     dead: bool,
     detached: bool,
     open_files: usize,
+    releases: Option<alloc::boxed::Box<Release>>,
+}
+
+struct Release {
+    bytes: Vec<u8>,
+    pending: Arc<Pending>,
+    next: Option<alloc::boxed::Box<Release>>,
 }
 
 /// The id is stable for the mount's lifetime, including daemon death.
@@ -40,6 +49,8 @@ pub struct Mount {
     readers: Arc<WaitQueueHead>,
     callers: WaitQueueHead,
     deferred_next: Mutex<Option<Arc<Mount>>>,
+    deferred_queued: AtomicBool,
+    mutations: file::Gate,
 }
 
 static MOUNTS: Mutex<Vec<Arc<Mount>>> = Mutex::new(Vec::new());
@@ -80,6 +91,13 @@ impl State {
 }
 
 impl Mount {
+    fn defer(self: &Arc<Self>) {
+        let mut head = DEFERRED.lock();
+        if !self.deferred_queued.swap(true, Ordering::AcqRel) {
+            *self.deferred_next.lock() = head.take();
+            *head = Some(self.clone());
+        }
+    }
     pub fn path(&self) -> &[u8] {
         &self.point.path
     }
@@ -175,6 +193,7 @@ pub fn call(id: u64, request: ufs_abi::Request<'_>) -> Answer {
             }
             WaitEnd::Interrupted(errno) => {
                 mount.state.lock().requests.cancel(request_id);
+                mount.wake();
                 return pending.answer.lock().take().unwrap_or(Err(errno));
             }
         }
@@ -216,9 +235,7 @@ impl Endpoint {
             }
             state.disconnect();
         }
-        let mut head = DEFERRED.lock();
-        *mount.deferred_next.lock() = head.take();
-        *head = Some(mount);
+        mount.defer();
     }
 
     fn read_record(&self, buf: u64, count: usize, nonblocking: bool) -> Result<u64, u64> {
@@ -234,6 +251,14 @@ impl Endpoint {
                 let record = (|| {
                     let mut state = mount.state.lock();
                     state.expire();
+                    // Daemon reads move preallocated close records into the
+                    // request table; the close hook only links these records.
+                    while !state.dead && !state.detached && state.requests.has_capacity() {
+                        let Some(mut release) = state.releases.take() else { break; };
+                        state.releases = release.next.take();
+                        let deadline = now_ns().saturating_add(ufs_abi::payload::REQUEST_TIMEOUT_MS * 1_000_000);
+                        let _ = state.requests.submit(release.bytes, release.pending, deadline);
+                    }
                     if state.detached {
                         return Ok(Some((0, Vec::new())));
                     }
@@ -304,7 +329,7 @@ impl IpcFile for Endpoint {
         if state.detached || state.dead {
             return 1 | 0x10;
         } // POLLIN | POLLHUP
-        4 | if state.requests.peek_next().is_some() {
+        4 | if state.requests.peek_next().is_some() || (state.releases.is_some() && state.requests.has_capacity()) {
             1
         } else {
             0
@@ -347,7 +372,7 @@ impl IpcFile for Endpoint {
                 Ok(bytes.len() as u64)
             }
         };
-        mount.callers.wake_up();
+        mount.wake();
         result
     }
 }
@@ -364,6 +389,7 @@ pub fn wake_deferred() {
     let mut next = DEFERRED.lock().take();
     while let Some(mount) = next {
         next = mount.deferred_next.lock().take();
+        mount.deferred_queued.store(false, Ordering::Release);
         mount.wake();
     }
 }
@@ -446,10 +472,13 @@ fn mount(target: u64, fstype: u64, flags: u64, data: u64) -> Result<(), u64> {
             dead: false,
             detached: false,
             open_files: 0,
+            releases: None,
         }),
         readers: endpoint.readers.clone(),
         callers: WaitQueueHead::new(),
         deferred_next: Mutex::new(None),
+        deferred_queued: AtomicBool::new(false),
+        mutations: file::Gate::new(),
     })
     .map_err(|_| ENOMEM as u64)?;
     mounts.push(mount.clone());

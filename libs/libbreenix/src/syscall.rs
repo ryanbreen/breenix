@@ -62,6 +62,8 @@ pub mod nr {
     pub const SIGPROCMASK: u64 = 14;
     pub const SIGRETURN: u64 = 15;
     pub const IOCTL: u64 = 16;
+    pub const PREAD64: u64 = 17;
+    pub const PWRITE64: u64 = 18;
     pub const READV: u64 = 19;
     pub const WRITEV: u64 = 20;
     pub const ACCESS: u64 = 21;
@@ -279,6 +281,8 @@ pub mod nr {
     pub const WRITE: u64 = 64;
     pub const READV: u64 = 65;
     pub const WRITEV: u64 = 66;
+    pub const PREAD64: u64 = 67;
+    pub const PWRITE64: u64 = 68;
 
     // I/O multiplexing
     pub const PSELECT6: u64 = 72;

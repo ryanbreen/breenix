@@ -63,6 +63,10 @@ impl<Request, Waiter, Reply> RequestTable<Request, Waiter, Reply> {
         Ok(id)
     }
 
+    pub fn has_capacity(&self) -> bool {
+        self.next_id.is_some() && self.entries.len() < QUEUE_CAP
+    }
+
     pub fn take_next(&mut self) -> Option<(u64, Request)> {
         self.entries
             .iter_mut()

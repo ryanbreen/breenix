@@ -92,3 +92,34 @@ case waits for that acknowledgement before SIGKILL, so the read is pending
 at the time of death. The timeout case leaves it alive and requires EIO.
 These acknowledgements travel through a private pipe to the suite, separate from
 suite result records. They are test-helper behavior, not kernel test hooks.
+
+## Open descriptions
+
+`UfsFile` shares the daemon handle and cursor across duplicate descriptors and
+fork. The kernel reserves a descriptor before a creating or truncating open.
+Create returns attributes, followed by Open as in the payload table. An Open
+request omits O_TRUNC; the kernel applies the size Setattr after taking ownership
+of the returned handle. A failed truncation therefore still releases the handle.
+The kernel checks access from the daemon's attributes for existing files.
+
+Reads use at most MAX_DATA reply bytes; writes use at most MAX_WRITE data bytes.
+A short reply ends the syscall transfer, including a zero-byte reply. An error
+after a transferred prefix returns that prefix. Positioned transfers retain the
+shared cursor; pwrite on an O_APPEND description follows Breenix's Linux ABI
+append behavior. The kernel serializes append size selection and writes against
+other writes and size changes on that mount.
+
+Directory enumeration keeps dot-entry progress separately from the daemon's
+opaque cookie. Native dirent64 d_off values contain the daemon's next cookie
+without arithmetic encoding. A user-copy failure leaves enumeration progress
+unchanged. Files and directories both send Fsync using their opened handle;
+fstat and fstatfs fetch daemon replies and propagate their errors.
+
+Final object destruction links preallocated Release work into the mount. A
+release waiting for the bounded request table does not wait inside close and
+does not disappear when the table is full. Daemon reads drain that work as
+capacity opens. Wake delivery uses the bridge's deferred reclaim path, which
+avoids scheduler calls in process-manager close contexts. A disconnected or
+detached mount discards the close work. The bridge has no mapped-file path:
+file-backed mmap refuses a UfsFile descriptor with ENODEV, and namei refuses an
+executable from a user mount with EACCES.

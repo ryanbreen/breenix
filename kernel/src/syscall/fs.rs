@@ -649,6 +649,34 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         return handle_procfs_open(path, flags);
     }
 
+    if let Target::User { mount, node, parent } = resolved.target {
+        // Reserve before creating/truncating, with no PM guard across daemon I/O.
+        let reserved = match ReservedSlot::take() {
+            Some(slot) => slot,
+            None => return SyscallResult::Err(EMFILE as u64),
+        };
+        if node == 0 && resolved.trailing_slash { return SyscallResult::Err(ENOENT as u64); }
+        let name = resolved.path.rsplit(|b| *b == b'/').find(|n| !n.is_empty()).unwrap_or(&[]);
+        let file = match crate::fs::ufs::file::UfsFile::open(mount, node, parent, name, flags, mode, &cred) {
+            Ok(file) => file,
+            Err(e) => return SyscallResult::Err(e),
+        };
+        let entry = match FileDescriptor::try_opened(FdKind::Ipc(file), flags) {
+            Ok(entry) => entry,
+            Err(_) => return SyscallResult::Err(super::errno::ENOMEM as u64),
+        };
+        let tid = reserved.thread_id;
+        let mut reserved = Some(reserved);
+        let result = crate::process::with_process_manager(|manager| {
+            manager.find_process_by_thread_mut(tid)
+                .map(|(_, process)| install_descriptor(&mut process.fd_table, reserved.take(), entry))
+        }).flatten();
+        return match result {
+            Some(Ok(fd)) => SyscallResult::Ok(fd as u64),
+            _ => SyscallResult::Err(EMFILE as u64),
+        };
+    }
+
     if let Target::Inode {
         mount,
         ino,
@@ -1271,7 +1299,11 @@ pub fn sys_fstat(fd: i32, statbuf: u64) -> SyscallResult {
     stat.st_blksize = 4096; // Standard block size
 
     match kind {
-        FstatKind::Ipc(object) => object.fill_stat(&mut stat),
+        FstatKind::Ipc(object) => {
+            if let Some(file) = object.as_any().downcast_ref::<crate::fs::ufs::file::UfsFile>() {
+                if let Err(e) = fill_user_stat(file.mount, file.node, &mut stat) { return SyscallResult::Err(e); }
+            } else { object.fill_stat(&mut stat); }
+        },
         FstatKind::Native(handle) => {
             if let Err(e) = fill_handle_stat(&mut stat, &handle) {
                 return SyscallResult::Err(e);
@@ -4894,6 +4926,13 @@ fn ext2_fd_info(
 /// ext2 already wrote both synchronously and only the device flush remains.
 pub fn sys_fsync(fd: i32) -> SyscallResult {
     use crate::fs::ext2;
+    let entry = match super::metadata::descriptor_entry(fd) { Ok(e) => e, Err(e) => return SyscallResult::Err(e) };
+    if let FdKind::Ipc(object) = &entry.kind {
+        if let Some(file) = object.as_any().downcast_ref::<crate::fs::ufs::file::UfsFile>() {
+            return match file.sync() { Ok(()) => SyscallResult::Ok(0), Err(e) => SyscallResult::Err(e) };
+        }
+    }
+    drop(entry);
     let (inode_num, mount_id, handle) = match ext2_fd_info(fd, false) {
         Ok(info) => info,
         Err(errno) => return SyscallResult::Err(errno),
@@ -5056,7 +5095,11 @@ pub fn sys_fstatfs(fd: i32, buf: u64) -> SyscallResult {
         mounted(&handle)
     } else {
         match kind {
-            FdKind::Ipc(object) => Ok(virtual_statfs(object.statfs_magic())),
+            FdKind::Ipc(object) => {
+                if let Some(file) = object.as_any().downcast_ref::<crate::fs::ufs::file::UfsFile>() {
+                    user_statfs(file.mount, file.node)
+                } else { Ok(virtual_statfs(object.statfs_magic())) }
+            },
             FdKind::RegularFile(file) => {
                 let pin = file.lock().handle.clone();
                 mounted(&pin)

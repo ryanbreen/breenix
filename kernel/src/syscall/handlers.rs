@@ -4011,6 +4011,16 @@ pub fn sys_umask(mask: u32) -> SyscallResult {
 /// pread64 - Read from file at given offset without changing file position
 pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallResult {
     use crate::ipc::FdKind;
+    let entry = match super::metadata::descriptor_entry(fd) { Ok(entry) => entry, Err(e) => return SyscallResult::Err(e) };
+    if let FdKind::Ipc(object) = &entry.kind {
+        if let Some(file) = object.as_any().downcast_ref::<crate::fs::ufs::file::UfsFile>() {
+            if !entry.readable() { return SyscallResult::Err(super::errno::EBADF as u64); }
+            if offset < 0 { return SyscallResult::Err(super::errno::EINVAL as u64); }
+            return match file.pread(buf_ptr, count as usize, offset as u64) { Ok(n) => SyscallResult::Ok(n), Err(e) => SyscallResult::Err(e) };
+        }
+    }
+    drop(entry);
+
 
     if buf_ptr == 0 || count == 0 {
         // Linux checks the descriptor before honouring a degenerate transfer
@@ -4119,6 +4129,16 @@ pub fn sys_pread64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRes
 /// pwrite64 - Write to file at given offset without changing file position
 pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallResult {
     use crate::ipc::FdKind;
+    let entry = match super::metadata::descriptor_entry(fd) { Ok(entry) => entry, Err(e) => return SyscallResult::Err(e) };
+    if let FdKind::Ipc(object) = &entry.kind {
+        if let Some(file) = object.as_any().downcast_ref::<crate::fs::ufs::file::UfsFile>() {
+            if !entry.writable() { return SyscallResult::Err(super::errno::EBADF as u64); }
+            if offset < 0 { return SyscallResult::Err(super::errno::EINVAL as u64); }
+            return match file.pwrite(buf_ptr, count as usize, offset as u64, entry.status_flags() & crate::ipc::fd::status_flags::O_APPEND != 0) { Ok(n) => SyscallResult::Ok(n), Err(e) => SyscallResult::Err(e) };
+        }
+    }
+    drop(entry);
+
 
     if buf_ptr == 0 || count == 0 {
         // Linux checks the descriptor before honouring a degenerate transfer
