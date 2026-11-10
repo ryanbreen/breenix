@@ -75,6 +75,44 @@
           "title": "Paste"
         }
       ]
+    },
+    {
+      "id": "blauncher",
+      "title": "blauncher",
+      "cases": [
+        {
+          "id": "open",
+          "title": "Open launcher"
+        },
+        {
+          "id": "filter",
+          "title": "Filter entries"
+        },
+        {
+          "id": "no-results",
+          "title": "No matches"
+        },
+        {
+          "id": "keys-select",
+          "title": "Keyboard selection"
+        },
+        {
+          "id": "launch-gui",
+          "title": "Launch GUI app"
+        },
+        {
+          "id": "launch-terminal",
+          "title": "Launch terminal app"
+        },
+        {
+          "id": "launch-missing",
+          "title": "Missing program"
+        },
+        {
+          "id": "close",
+          "title": "Close launcher"
+        }
+      ]
     }
   ]
 }
