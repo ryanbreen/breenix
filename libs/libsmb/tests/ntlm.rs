@@ -53,19 +53,40 @@ fn timestamp_authentication_has_mic_and_redacted_credentials() {
         u32::from_le_bytes(negotiation[12..16].try_into().unwrap()) & 0x4000_0000,
         0
     );
-    let mut challenge = vec![0; 48];
+    let mut challenge = vec![0; 56];
     challenge[..12].copy_from_slice(b"NTLMSSP\0\x02\0\0\0");
-    challenge[20..24].copy_from_slice(&0x0088_0201u32.to_le_bytes());
+    challenge[20..24].copy_from_slice(&0x0288_0201u32.to_le_bytes());
     challenge[24..32].copy_from_slice(&[1; 8]);
     let target = [7, 0, 8, 0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0, 0, 0];
     challenge[40..42].copy_from_slice(&(target.len() as u16).to_le_bytes());
     challenge[42..44].copy_from_slice(&(target.len() as u16).to_le_bytes());
-    challenge[44..48].copy_from_slice(&48u32.to_le_bytes());
+    challenge[44..48].copy_from_slice(&56u32.to_le_bytes());
+    challenge[48..56].copy_from_slice(&[10, 0, 0, 0, 0, 0, 0, 15]);
     challenge.extend_from_slice(&target);
     let (mut message, key) = authenticate(&creds, &negotiation, &challenge, [2; 8], 0).unwrap();
-    let mic = message[64..80].to_vec();
-    message[64..80].fill(0);
-    let mut transcript = negotiation;
+    // MS-NLMP 2.2.1.3: flags end at 64, Version at 64..72,
+    // MIC at 72..88, then the variable payload.
+    let mut end = 88;
+    for at in [12, 20, 28, 36, 44, 52] {
+        let offset = u32::from_le_bytes(message[at + 4..at + 8].try_into().unwrap());
+        assert_eq!(offset as usize, end, "payload descriptor at {at}");
+        let len = u16::from_le_bytes(message[at..at + 2].try_into().unwrap());
+        end += usize::from(len);
+    }
+    assert_eq!(end, message.len());
+    assert_ne!(
+        u32::from_le_bytes(negotiation[12..16].try_into().unwrap()) & 0x0200_0000,
+        0
+    );
+    assert_eq!(&negotiation[32..40], &[1, 0, 0, 0, 0, 0, 0, 15]);
+    assert_ne!(
+        u32::from_le_bytes(message[60..64].try_into().unwrap()) & 0x0200_0000,
+        0
+    );
+    assert_eq!(&message[64..72], &[1, 0, 0, 0, 0, 0, 0, 15]);
+    let mic = message[72..88].to_vec();
+    message[72..88].fill(0);
+    let mut transcript = negotiation.clone();
     transcript.extend_from_slice(&challenge);
     transcript.extend_from_slice(&message);
     assert_eq!(mic, hmac_md5(&key, &transcript));
@@ -78,4 +99,16 @@ fn timestamp_authentication_has_mic_and_redacted_credentials() {
         pairs.iter().find(|p| p.id == 6).unwrap().value,
         2u32.to_le_bytes()
     );
+    // A peer without NEGOTIATE_VERSION still gets the reserved Version slot.
+    challenge[20..24].copy_from_slice(&0x0088_0201u32.to_le_bytes());
+    challenge[48..56].fill(0);
+    let (mut message, key) = authenticate(&creds, &negotiation, &challenge, [2; 8], 0).unwrap();
+    assert_eq!(&message[64..72], &[0; 8]);
+    assert_eq!(u32::from_le_bytes(message[16..20].try_into().unwrap()), 88);
+    let mic = message[72..88].to_vec();
+    message[72..88].fill(0);
+    let mut transcript = negotiation;
+    transcript.extend_from_slice(&challenge);
+    transcript.extend_from_slice(&message);
+    assert_eq!(mic, hmac_md5(&key, &transcript));
 }
