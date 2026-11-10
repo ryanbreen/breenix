@@ -6,7 +6,6 @@
 //!
 //! Default tabs:
 //!   Tab 0: "Kernel"  — tails /var/log/kernel.log
-//!   Tab 1: "Serial"  — tails /var/log/serial.log
 //!
 //! Navigation:
 //!   Up/k       Scroll up one line
@@ -23,9 +22,11 @@ use std::process;
 
 #[path = "blog/tail.rs"]
 mod tail;
+#[path = "blog/node.rs"]
+mod node;
 use tail::{Action, Tail};
 
-use breengel::{CachedFont, Event, InputState, Rect, TabBar, Theme, Window};
+use breengel::{CachedFont, Event, Handled, InputState, Rect, TabBar, Theme, Window};
 use libbreenix::fs;
 use libbreenix::io;
 use libbreenix::time;
@@ -70,7 +71,7 @@ const KEY_END: u32 = breengel::keys::END;
 // ---------------------------------------------------------------------------
 
 struct LogTab {
-    path: &'static str,
+    path: String,
     tail: Tail,
     scroll_offset: usize,
     follow: bool,
@@ -78,7 +79,7 @@ struct LogTab {
 }
 
 impl LogTab {
-    fn new(path: &'static str) -> Self {
+    fn new(path: String) -> Self {
         Self {
             path,
             tail: Tail::new(),
@@ -95,7 +96,7 @@ impl LogTab {
     fn poll_new_content(&mut self) -> bool {
         // Opening the path lets us detect rename-rotation without relying on
         // metadata from the old, still-open file descriptor.
-        let candidate = match fs::open(self.path, fs::O_RDONLY) {
+        let candidate = match fs::open(&self.path, fs::O_RDONLY) {
             Ok(fd) => fd,
             Err(_) => return false,
         };
@@ -223,13 +224,14 @@ fn render(
     let tab = &tabs[selected];
 
     if !tab.is_open() {
-        let msg = b"File not found";
-        let msg_x = (w as usize - msg.len() * char_w) / 2;
+        let msg = format!("Waiting for {}", tab.path);
+        let msg = msg.as_bytes();
+        let msg_x = (w as usize).saturating_sub(msg.len() * char_w) / 2;
         let msg_y = content_y as usize + content_h as usize / 2;
         text.draw_text(msg, msg_x, msg_y, NOT_FOUND_COLOR);
     } else if tab.line_count() == 0 {
         let msg = b"(empty)";
-        let msg_x = (w as usize - msg.len() * char_w) / 2;
+        let msg_x = (w as usize).saturating_sub(msg.len() * char_w) / 2;
         let msg_y = content_y as usize + content_h as usize / 2;
         text.draw_text(msg, msg_x, msg_y, TEXT_LINE_NUM);
     } else {
@@ -277,6 +279,20 @@ fn render(
         text.draw_text(label, label_x, status_y as usize + 2, FOLLOW_COLOR);
     }
     text.finish(fb, fonts);
+}
+
+fn publish_tree(win: &mut Window, tabs: &[LogTab], selected: usize, visible: usize) {
+    use breengel::tree::{Flag, Node, Role, Tree};
+    let tab = &tabs[selected];
+    let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
+    let flags = vec![Flag::Enabled, Flag::Visible];
+    win.set_tree(Tree { root: Node {
+        key: "lines".into(), parent: None, role: Role::List, name: "Lines".into(),
+        value: node::lines(&tab.tail, tab.scroll_offset, visible), bounds, clip: bounds, flags: flags.clone(),
+    }, children: vec![Node {
+        key: "status".into(), parent: Some("lines".into()), role: Role::Status, name: "Status".into(),
+        value: node::status(selected, &tab.path, tab.follow, tab.is_open()), bounds, clip: bounds, flags,
+    }] });
 }
 
 fn format_line_number(buf: &mut [u8; 5], n: usize) {
@@ -373,12 +389,14 @@ fn main() {
     let ui_scale = win.surface().expect("log surface").ui_scale() as i32;
     let tab_pixels = TAB_BAR_H * ui_scale;
     let tab_rect = Rect::new(0, 0, WIN_W as i32 / ui_scale, TAB_BAR_H);
-    let mut tab_bar = TabBar::new(tab_rect, vec![b"Kernel", b"Serial"], &theme);
-
-    let mut tabs = vec![
-        LogTab::new("/var/log/kernel.log"),
-        LogTab::new("/var/log/serial.log"),
-    ];
+    let paths: Vec<String> = {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        if args.is_empty() { vec!["/var/log/kernel.log".into()] } else { args }
+    };
+    // TabBar retains labels for the lifetime of the process.
+    let labels: Vec<&'static [u8]> = paths.iter().map(|path| &*Box::leak(path.clone().into_bytes().into_boxed_slice())).collect();
+    let mut tab_bar = TabBar::new(tab_rect, labels, &theme);
+    let mut tabs: Vec<LogTab> = paths.into_iter().map(LogTab::new).collect();
 
     for tab in tabs.iter_mut() {
         tab.open();
@@ -406,20 +424,20 @@ fn main() {
     let mut mouse_x: i32 = 0;
     let mut mouse_y: i32 = 0;
     let mut mouse_buttons: u32 = 0;
-    let mut poll_counter: u32 = 0;
+
 
     render(&mut win, &tabs, &tab_bar, &theme, &mut fonts);
+    publish_tree(&mut win, &tabs, tab_bar.selected(), visible_lines);
     match win.present() {
         Ok(()) => println!("[blog] first frame presented: {}x{}", win.width(), win.height()),
         Err(e) => println!("[blog] first frame present failed: {}", e),
     }
 
     loop {
-        let events = win.poll_events();
-        let mut needs_redraw = !events.is_empty();
-
-        for event in events {
-            match event {
+        let mut resize_requested = None;
+        let mut reload_font = false;
+        let event_count = win.dispatch(|delivered| {
+            match delivered.event.clone() {
                 Event::KeyPress { ascii, keycode, .. } => {
                     let sel = tab_bar.selected();
                     match keycode {
@@ -525,9 +543,7 @@ fn main() {
                     tab_bar.update(&input);
                 }
                 Event::ResizeRequested { width, height } => {
-                    if let Err(e) = win.apply_resize(width, height) {
-                        println!("[blog] resize refused: {}x{}: {}", width, height, e);
-                    }
+                    resize_requested = Some((width, height));
                 }
                 Event::Resized { width: w, height: h } => {
                     let new_content_h = h as i32 - tab_pixels - STATUS_BAR_H;
@@ -537,7 +553,6 @@ fn main() {
                         1
                     };
                     tab_bar.set_rect(Rect::new(0, 0, w as i32 / ui_scale, TAB_BAR_H));
-                    needs_redraw = true;
                 }
                 Event::CloseRequested => {
                     for tab in &tabs {
@@ -547,7 +562,18 @@ fn main() {
                     }
                     process::exit(0);
                 }
-                Event::FontChanged => {
+                Event::FontChanged => { reload_font = true; }
+                _ => {}
+            }
+            Handled::Redraw
+        }).unwrap_or_else(|e| { eprintln!("[blog] dispatch: {e}"); process::exit(1) });
+        let mut needs_redraw = event_count != 0;
+        if let Some((width, height)) = resize_requested {
+            if let Err(e) = win.apply_resize(width, height) {
+                println!("[blog] resize refused: {}x{}: {}", width, height, e);
+            }
+        }
+        if reload_font {
                     win.put_mono_font(fonts.ttf.take());
                     let new_font = win.take_mono_font();
                     let new_size = win.mono_size();
@@ -575,19 +601,16 @@ fn main() {
                         }
                     }
                     fonts.ttf = new_font;
-                    needs_redraw = true;
-                }
-                _ => {}
-            }
-        }
 
-        poll_counter += 1;
-        if poll_counter % 10 == 0 {
+            needs_redraw = true;
+        }
+        {
             for tab in tabs.iter_mut() {
+                let was_open = tab.is_open();
                 let prev_count = tab.line_count();
                 let prev_offset = tab.tail.offset();
                 let reset = tab.poll_new_content();
-                if reset || tab.line_count() != prev_count || tab.tail.offset() != prev_offset {
+                if reset || tab.is_open() != was_open || tab.line_count() != prev_count || tab.tail.offset() != prev_offset {
                     needs_redraw = true;
                     if tab.follow {
                         tab.scroll_to_bottom(visible_lines);
@@ -598,9 +621,10 @@ fn main() {
 
         if needs_redraw {
             render(&mut win, &tabs, &tab_bar, &theme, &mut fonts);
+            publish_tree(&mut win, &tabs, tab_bar.selected(), visible_lines);
             let _ = win.present();
         }
 
-        let _ = time::sleep_ms(50);
+        if !needs_redraw { let _ = time::sleep_ms(10); }
     }
 }

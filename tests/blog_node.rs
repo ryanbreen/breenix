@@ -6,7 +6,9 @@ mod node;
 #[test]
 fn visible_lines_have_absolute_numbers_and_offset() {
     let mut tail = tail::Tail::new();
+    assert_eq!(tail.observe(1, 14), tail::Action::Read);
     tail.feed(b"one\ntwo\nthree\n");
+    assert_eq!(tail.offset(), 14);
     assert_eq!(node::lines(&tail, 1, 1), serde_json::json!({"rows":[{"n":2,"text":"two"}],"offset":1,"total":3}));
 }
 
