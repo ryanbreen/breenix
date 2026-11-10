@@ -228,7 +228,11 @@
         {
           "id": "fill",
           "title": "Fill inside an outline"
-        }
+        },
+        { "id": "eraser-color", "title": "Color selection and eraser" },
+        { "id": "undo-redo", "title": "Undo and redo" },
+        { "id": "quit-unsaved", "title": "Confirm quitting unsaved changes" },
+        { "id": "shortcuts", "title": "Tool and file shortcuts" }
       ]
     }
   ]

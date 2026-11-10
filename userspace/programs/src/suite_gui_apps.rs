@@ -74,6 +74,10 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("pencil", "Pencil stroke", guskit::pencil).session(libuitest::supervisor::serve),
         case("shapes", "Line, rectangle and circle", guskit::shapes).session(libuitest::supervisor::serve),
         case("fill", "Fill inside an outline", guskit::fill).session(libuitest::supervisor::serve),
+        case("eraser-color", "Color selection and eraser", guskit::eraser_color).session(libuitest::supervisor::serve),
+        case("undo-redo", "Undo and redo", guskit::undo_redo).session(libuitest::supervisor::serve),
+        case("quit-unsaved", "Confirm quitting unsaved changes", guskit::quit_unsaved).session(libuitest::supervisor::serve),
+        case("shortcuts", "Tool and file shortcuts", guskit::shortcuts).session(libuitest::supervisor::serve),
     ]),
 ]).gui().defer_display();
 

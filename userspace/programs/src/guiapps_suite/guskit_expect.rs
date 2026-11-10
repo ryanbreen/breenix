@@ -11,6 +11,9 @@ impl Expected {
     pub fn horizontal(&mut self, x0: usize, x1: usize, y: usize) {
         for x in x0..=x1 { self.black(x, y); }
     }
+    pub fn colored_horizontal(&mut self, x0: usize, x1: usize, y: usize, color: [u8; 3]) {
+        for x in x0..=x1 { self.0[(y * W + x) * 3..(y * W + x + 1) * 3].copy_from_slice(&color); }
+    }
     pub fn vertical(&mut self, x: usize, y0: usize, y1: usize) {
         for y in y0..=y1 { self.black(x, y); }
     }
