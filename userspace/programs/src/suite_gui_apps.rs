@@ -11,6 +11,8 @@ mod blog;
 mod bfontpicker;
 #[path = "guiapps_suite/bcheck.rs"]
 mod bcheck;
+#[path = "guiapps_suite/guskit.rs"]
+mod guskit;
 use breenix_suite::suite::{case, category, suite, Suite};
 
 static SUITE: Suite = suite("gui-apps", "GUI applications", &[
@@ -67,6 +69,11 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("totals-exit", "Totals and exit status", bcheck::totals_exit).session(libuitest::supervisor::serve),
         case("responsive", "Scroll and close during a test", bcheck::responsive).session(libuitest::supervisor::serve),
         case("production-catalog", "Shipped catalog passes", bcheck::production_catalog).session(libuitest::supervisor::serve),
+    ]),
+    category("guskit", "Gus Kit", &[
+        case("pencil", "Pencil stroke", guskit::pencil).session(libuitest::supervisor::serve),
+        case("shapes", "Line, rectangle and circle", guskit::shapes).session(libuitest::supervisor::serve),
+        case("fill", "Fill inside an outline", guskit::fill).session(libuitest::supervisor::serve),
     ]),
 ]).gui().defer_display();
 

@@ -212,6 +212,24 @@
           "expect": "With outbound network access on the R240 for the example.com and www.duke.edu rows, bcheck launched without arguments completes with every shipped row passed within 60 seconds."
         }
       ]
+    },
+    {
+      "id": "guskit",
+      "title": "Gus Kit",
+      "cases": [
+        {
+          "id": "pencil",
+          "title": "Pencil stroke"
+        },
+        {
+          "id": "shapes",
+          "title": "Line, rectangle and circle"
+        },
+        {
+          "id": "fill",
+          "title": "Fill inside an outline"
+        }
+      ]
     }
   ]
 }
