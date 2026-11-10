@@ -1,7 +1,7 @@
-//! HMAC-SHA256 implementation (RFC 2104)
+//! HMAC-SHA256 and HMAC-MD5 implementations (RFC 2104).
 //!
-//! Keyed-Hash Message Authentication Code using SHA-256 as the underlying
-//! hash function. Supports both incremental and one-shot computation.
+//! Keyed-Hash Message Authentication Code using SHA-256 or MD5 as the underlying
+//! hash function. Both support incremental and one-shot computation.
 
 use super::md5::Md5;
 use super::sha256::Sha256;
@@ -199,6 +199,24 @@ mod tests {
             hmac_md5(&key, message),
             hmac_md5(&super::super::md5::md5(&key), message)
         );
+        // RFC 2202 section 2, cases 6 and 7: independent long-key answers.
+        for (message, expected) in [
+            (
+                b"Test Using Larger Than Block-Size Key - Hash Key First".as_slice(),
+                "6b1ab7fe4bd7bf8f0b62e6ce61b9d0cd",
+            ),
+            (
+                b"Test Using Larger Than Block-Size Key and Larger Than One Block-Size Data"
+                    .as_slice(),
+                "6f630fad67cda0ee1fb1f562db3aa53e",
+            ),
+        ] {
+            let actual: String = hmac_md5(&key, message)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            assert_eq!(actual, expected);
+        }
     }
 
     /// Helper to convert a hex string to a byte array.
