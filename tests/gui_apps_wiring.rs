@@ -88,6 +88,17 @@ fn app_launch_as_passes_the_requested_uid() {
 }
 
 #[test]
+fn live_font_change_advances_the_session_clock_before_waiting_for_reload() {
+    let source = include_str!("../userspace/programs/src/guiapps_suite/bfontpicker.rs");
+    let live = source.split("pub fn live_bterm()").nth(1).unwrap()
+        .split("pub fn save_fails_cleanly()").next().unwrap();
+    let after_save = live.split("select(&mut t)?;").nth(1).unwrap();
+    let before_wait = after_save.split("t.wait_node(\"grid\"").next().unwrap();
+    assert!(before_wait.contains("t.step(250)?;"),
+        "font reload is paced at 250 ms of the frozen session clock; wall-clock polling cannot advance it");
+}
+
+#[test]
 fn bcheck_dispatches_input_before_presenting() {
     let source = include_str!("../userspace/programs/src/bcheck.rs");
     assert!(!source.contains("win.poll_events()"));
