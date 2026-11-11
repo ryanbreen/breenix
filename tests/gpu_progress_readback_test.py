@@ -68,7 +68,8 @@ struct Resource {
     kind: u32, writers: u32, accepted: Vec<Writer>, reading: bool, cpu_reading: bool, progress_context: Option<u32>,
     invalid: bool, lost: bool, backing: (), pitch: u32, epoch: u64, holds: u32,
 }
-struct Sub { published: bool, requests: u32, sent_ns: Option<u64>, written: Vec<u32>, ctx: u32 }
+struct Presenting { id:u32 }
+struct Sub { present:Option<Presenting>, published: bool, requests: u32, sent_ns: Option<u64>, written: Vec<u32>, ctx: u32 }
 struct Ctx { scratch: u32 }
 struct SyncReq {
     upload: Option<(u32,u64)>, created: Option<u32>, ctx: u32, sent_ns: Option<u64>, holds: Vec<u32>, reading: Vec<u32>,
@@ -103,7 +104,7 @@ impl Core {
     }
     fn new() -> Self {
         Self { reset_wanted: false, resetting: false, stalled: false, backlog: VecDeque::new(),
-            subs: BTreeMap::from([(1,Sub { published: false, requests: 1, sent_ns: Some(0), written: vec![7], ctx: 3 })]),
+            subs: BTreeMap::from([(1,Sub { present:None, published: false, requests: 1, sent_ns: Some(0), written: vec![7], ctx: 3 })]),
             resources: BTreeMap::from([(7,Resource { kind: kind::TARGET, writers: 1,
                 accepted: vec![Writer { ctx: 3, ended: false }], reading: false, cpu_reading: false, progress_context: None,
                 invalid: false, lost: false, backing: (), pitch: 256, epoch: 1, holds: 1 })]),
@@ -177,6 +178,17 @@ fn worker_drains_a_render_sent_after_the_waiter_checked() {
     assert!(c.subs[&1].published, "render sent by kgpu still needs the sleeping waiter's 250 ms fallback to queue its drain");
     assert!(c.backlog.is_empty(), "kgpu must send its own drain before blocking");
     assert_eq!(c.flushes, 2);
+}
+#[test]
+fn worker_drains_a_standalone_present_without_another_render() {
+    per_cpu::set(REAPER.load(Ordering::Acquire));
+    let mut c=Core::new();c.pump_model=true;
+    let sub=c.subs.get_mut(&1).unwrap();sub.written.clear();sub.present=Some(Presenting{id:7});
+    assert_eq!(sub.present.as_ref().unwrap().id,7);
+    let resource=c.resources.get_mut(&7).unwrap();resource.writers=0;resource.accepted.clear();
+    c.pump();
+    assert!(c.subs[&1].published,"standalone present still requires unrelated GPU traffic to drain its fence");
+    assert!(c.backlog.is_empty());
 }
 #[test]
 fn ordinary_sync_callers_still_dispatch_their_requests() {
