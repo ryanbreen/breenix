@@ -47,9 +47,12 @@ impl Script {
         for &owner in owners {
             attach(t, owner)?;
             let wanted: Vec<_> = self.0.iter().filter(|s| s.owner == owner).collect();
-            t.wait_node("collab", |v| v["submitted"].as_array().is_some_and(|rows|
-                rows.len() == wanted.len() && rows.iter().all(|row| row.get("global").is_some() || row.get("refused").is_some())))?;
-            self.1.insert(owner.into(), collab(t)?);
+            let tree = t.wait_tree(|tree| {
+                let nodes: Vec<_> = core::iter::once(&tree.root).chain(&tree.children).filter(|node| node.key == "collab").collect();
+                nodes.len() == 1 && nodes[0].value["submitted"].as_array().is_some_and(|rows|
+                    rows.len() == wanted.len() && rows.iter().all(|row| row.get("global").is_some() || row.get("refused").is_some()))
+            })?;
+            self.1.insert(owner.into(), collab_in(&tree)?);
         }
         for (owner, value) in &self.1 {
             let wanted: Vec<_> = self.0.iter().filter(|s| s.owner == owner).collect();
@@ -103,14 +106,21 @@ fn join(t: &mut App, port: u16, name: &str) -> Result<(), String> {
     t.wait_node("collab", |v| v["state"] == "connected" && v["name"] == name)
 }
 fn collab(t: &mut App) -> Result<Value, String> {
-    let tree = t.tree()?;
+    collab_in(&t.tree()?)
+}
+fn collab_in(tree: &libuitest::tree::Tree) -> Result<Value, String> {
     tree.children.iter().find(|n| n.key == "collab").map(|n| n.value.clone()).ok_or("missing collab node".into())
 }
 fn check_peer(t: &mut App, owner: &str, expected: &Expected, globals: &Value) -> Result<(), String> {
     attach(t, owner)?;
-    t.wait_node("collab", |v| v["applied"] == *globals)?;
     let digest = expected.digest();
-    t.wait_node("canvas", |v| v["width"] == 200 && v["height"] == 120 && v["sha256"] == digest)
+    t.wait_tree(|tree| {
+        let matching = |key: &str| core::iter::once(&tree.root).chain(&tree.children).filter(|node| node.key == key).collect::<Vec<_>>();
+        let collab = matching("collab");
+        let canvas = matching("canvas");
+        collab.len() == 1 && canvas.len() == 1 && collab[0].value["applied"] == *globals
+            && canvas[0].value["width"] == 200 && canvas[0].value["height"] == 120 && canvas[0].value["sha256"] == digest
+    }).map(|_| ())
 }
 fn close(t: &mut App, owner: &str) -> Result<(), String> {
     attach(t, owner)?;

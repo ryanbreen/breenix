@@ -138,6 +138,13 @@ mod live {
         pub fn key_exit(&mut self, code: u16, status: i32) -> Result<(), String> {
             self.input_exit(code, false, status, false)
         }
+        /// Ask bwm to close the window and require a clean app exit.
+        pub fn close_exit(&mut self) -> Result<(), String> {
+            self.keys.backend_mut().wm_key(key::LEFT_ALT, true)?;
+            let result = self.input_exit(16, false, 0, true);
+            let release = self.keys.backend_mut().wm_key(key::LEFT_ALT, false);
+            result.and(release.map(|_| ()))
+        }
         /// Click at content coordinates, including an app's dismissal margin.
         pub fn click_exit(&mut self, x: i32, y: i32, status: i32) -> Result<(), String> {
             let live = self.keys.backend_mut();
@@ -185,6 +192,19 @@ mod live {
             release?;
             self.tracked.iter_mut().find(|(id, _)| *id == pid).ok_or("launched app not tracked")?.1 = Some(status);
             Ok(())
+        }
+        /// Wait for related semantic assertions against one committed tree.
+        pub fn wait_tree(&mut self, predicate: impl Fn(&Tree) -> bool) -> Result<Tree, String> {
+            let watchdog = Watchdog::new(Wait::AppOutput)?;
+            let mut last = None;
+            loop {
+                if now()? >= watchdog.deadline_ns() { return Err(format!("wait-tree hang watchdog: last tree={last:?}")); }
+                let tree = self.tree()?;
+                if now()? >= watchdog.deadline_ns() { return Err(format!("wait-tree hang watchdog: last tree={tree:?}")); }
+                if predicate(&tree) { return Ok(tree); }
+                last = Some(tree);
+                time::sleep_ms(10).map_err(|e| e.to_string())?;
+            }
         }
         pub fn wait_node(&mut self, key: &str, predicate: impl Fn(&serde_json::Value) -> bool) -> Result<(), String> {
             let watchdog = Watchdog::new(Wait::AppOutput)?;
@@ -236,6 +256,17 @@ mod live {
                 if release.is_ok() { release = result; }
             }
             result.and(release)
+        }
+        /// Move to a visible node-local point without pressing a button.
+        pub fn hover(&mut self, key: &str, at: (i32, i32)) -> Result<(), String> {
+            let tree = self.tree()?;
+            let node = tree::find(&tree, &Query { key: Some(key), ..Query::default() })?;
+            let point = drag_start(node, at)?;
+            let live = self.keys.backend_mut();
+            let info = live.info(self.window)?;
+            let x = info.x.checked_add(point.0).ok_or("drag x outside pointer range")?;
+            let y = info.y.checked_add(point.1).ok_or("drag y outside pointer range")?;
+            live.move_to((x, y))
         }
         /// Drag from a node-local point using relative device-pixel steps.
         pub fn drag(&mut self, key: &str, from: (i32, i32), steps: &[(i32, i32)]) -> Result<(), String> {
@@ -300,14 +331,13 @@ mod live {
                 let from = if bottom { (info.x + 80, info.y + info.height as i32 + 1) }
                     else { (info.x + info.width as i32 + 1, info.y + 80) };
                 live.move_to(from)?;
-                time::sleep_ms(150).map_err(|e| e.to_string())?;
+                let press = live.send_button(key::BUTTON_LEFT, true);
                 let result = (|| {
-                    live.session().raw_press(key::BUTTON_LEFT)?;
-                    time::sleep_ms(150).map_err(|e| e.to_string())?;
-                    live.session().raw_motion(if bottom { 0 } else { delta }, if bottom { delta } else { 0 })?;
-                    time::sleep_ms(150).map_err(|e| e.to_string())
+                    crate::input::wait_pointer_idle(press?.serial)?;
+                    live.wm_motion((if bottom { 0 } else { delta }, if bottom { delta } else { 0 }))
                 })();
-                let release = live.session().raw_release(key::BUTTON_LEFT);
+                let release = live.send_button(key::BUTTON_LEFT, false)
+                    .and_then(|event| crate::input::wait_pointer_idle(event.serial));
                 result?; release?;
                 let watchdog = Watchdog::new(Wait::AppOutput)?;
                 loop {

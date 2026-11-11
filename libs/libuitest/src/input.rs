@@ -493,8 +493,8 @@ pub struct LedgerEntry<'a> {
     pub window: u64,
     pub reason: &'a str,
 }
-fn parse_ledger(ledger: &str) -> Result<std::collections::BTreeMap<u64, LedgerEntry<'_>>, String> {
-    let mut rows = std::collections::BTreeMap::new();
+fn parse_ledger(ledger: &str) -> Result<Vec<LedgerEntry<'_>>, String> {
+    let mut rows = Vec::with_capacity(ledger.lines().count());
     for line in ledger.lines() {
         let mut fields = line.split_whitespace();
         let invalid = || format!("invalid input ledger row {line:?}");
@@ -506,19 +506,23 @@ fn parse_ledger(ledger: &str) -> Result<std::collections::BTreeMap<u64, LedgerEn
         }
         let window = fields.next().and_then(|s|s.parse().ok()).ok_or_else(invalid)?;
         let reason = fields.next().ok_or_else(invalid)?;
-        if fields.next().is_some() || rows.insert(serial, LedgerEntry {serial,disposition,window,reason}).is_some() {
-            return Err(invalid());
-        }
+        if fields.next().is_some() { return Err(invalid()); }
+        rows.push(LedgerEntry {serial,disposition,window,reason});
+    }
+    rows.sort_unstable_by_key(|row| row.serial);
+    if let Some(pair) = rows.windows(2).find(|pair| pair[0].serial == pair[1].serial) {
+        return Err(format!("invalid input ledger: duplicate serial={}", pair[0].serial));
     }
     Ok(rows)
 }
 pub fn ledger_entry(ledger: &str, serial: u64) -> Result<Option<LedgerEntry<'_>>, String> {
-    Ok(parse_ledger(ledger)?.get(&serial).copied())
+    let rows = parse_ledger(ledger)?;
+    Ok(rows.binary_search_by_key(&serial, |row| row.serial).ok().map(|index| rows[index]))
 }
 
 /// Return the first requested source serial absent from a terminal ledger snapshot.
 /// Requested serials come from the script, since unrelated devices can interleave.
 pub fn first_missing_disposition(ledger: &str, serials: &[u64]) -> Result<Option<u64>, String> {
     let finished = parse_ledger(ledger)?;
-    Ok(serials.iter().copied().find(|serial| !finished.contains_key(serial)))
+    Ok(serials.iter().copied().find(|serial| finished.binary_search_by_key(serial, |row| row.serial).is_err()))
 }

@@ -91,6 +91,12 @@ pub fn wait_pointer_idle(serial: u64) -> Result<(), String> {
         pause()?;
     }
 }
+fn wait_key_release(serial: u64) -> Result<(), String> {
+    dispositions(&[serial])?;
+    let (disposition, window, reason) = outcome(serial)?.ok_or("key release disposition missing")?;
+    crate::app::exit_release_verdict(&disposition, window, &reason)
+}
+
 struct Mapping(abi::MapTree);
 impl Mapping {
     fn new(id: u64) -> Result<Self, String> {
@@ -189,8 +195,13 @@ impl<'a> LivePointer<'a> {
     }
     pub fn wm_key(&mut self, code: u16, pressed: bool) -> Result<u64, String> {
         let event = self.send_key(code, pressed)?;
-        wait_pointer_idle(event.serial)?;
+        if pressed { wait_pointer_idle(event.serial)?; }
+        else { wait_key_release(event.serial)?; }
         Ok(event.serial)
+    }
+    /// Relative motion handled by the window manager, with source receipts.
+    pub fn wm_motion(&mut self, delta: (i32, i32)) -> Result<(), String> {
+        self.move_batch(delta, None).map(|_| ())
     }
     pub fn info(&self, id: u64) -> Result<abi::WinInfo, String> {
         let mut infos = vec![abi::WinInfo::default(); 64];
