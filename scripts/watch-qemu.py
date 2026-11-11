@@ -108,7 +108,8 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
             progress.record()
             return "stalled"
         elif (mode == "suite" or until_desktop_ready) and gate_timeout > 0 and now - started >= gate_timeout:
-            print(f"==> No suite DONE within {gate_timeout:g}s; stopping the VM", flush=True)
+            expected = "desktop-ready" if until_desktop_ready else "suite DONE"
+            print(f"==> No {expected} within {gate_timeout:g}s; stopping the VM", flush=True)
             return "deadline"
         elif not until_desktop_ready and idle_exit > 0 and now - last_output >= idle_exit:
             print(f"==> No serial output for {idle_exit:g}s; stopping the VM", flush=True)
