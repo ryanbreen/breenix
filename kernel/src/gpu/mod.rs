@@ -3419,9 +3419,8 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
     create_context_with_catalogue(tgid, true)
 }
 
-/// Prepare the renderer during window/display setup. QEMU waits only for the
-/// compositor's initial SOLID/COPY pipelines; the rest warms asynchronously.
-/// The prepared context is counted as an ordinary process context;
+/// Initialize the renderer during window/display setup so catalogue compilation is out
+/// of the first frame's path. The prepared context is counted as an ordinary process context;
 /// CONTEXT_CREATE transfers its existing handle to the caller, and exit retires it normally.
 pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32> {
     // QEMU clients retain ordinary context creation: CREATE must reach
@@ -3453,12 +3452,7 @@ pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32>
             if reserved.is_some_and(|reserved| reserved != id) { continue; }
             let Some(ctx) = c.contexts.get(id) else { continue; };
             if !ctx.warm_catalogue || ctx.dropped || ctx.state != CtxState::Live { continue; }
-            // The compositor starts with SOLID and COPY. The remaining catalogue
-            // keeps warming asynchronously (gpu-abi.md, CONTEXT_CREATE/SUBMIT).
-            let required = if platform_config::is_qemu() && reserve_next {
-                (1 << abi::pipeline::SOLID) | (1 << abi::pipeline::COPY)
-            } else { catalogue_mask() };
-            if ctx.warm & required != required { return None; }
+            if ctx.warm != catalogue_mask() { return None; }
         }
         Some(Ok(()))
     }).map_err(|_| EINTR).and_then(|r| r);
