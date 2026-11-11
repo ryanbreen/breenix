@@ -46,6 +46,7 @@ fn advance_carries_fractional_epochs_and_caps_work() {
     assert_eq!(split.spheres, whole.spheres);
     split.advance(1);
     whole.advance(16);
+    assert_eq!(whole.epochs(), 1);
     assert_eq!(split.spheres, whole.spheres);
     let mut capped = Simulation::new(400, 300);
     let mut thousand = Simulation::new(400, 300);

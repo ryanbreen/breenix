@@ -194,11 +194,12 @@ pub struct Simulation {
     speed: i64,
     remainder_ms: u64,
     bounded: bool,
+    epochs: u64,
 }
 
 impl Simulation {
     pub fn new(width: i32, height: i32) -> Self {
-        Self { spheres: make_spheres(width, height), width, height, speed: 10_000, remainder_ms: 0, bounded: true }
+        Self { spheres: make_spheres(width, height), width, height, speed: 10_000, remainder_ms: 0, bounded: true, epochs: 0 }
     }
     pub fn speed_pct(&self) -> i32 { (self.speed / 100) as i32 }
     pub fn change_speed(&mut self, faster: bool) {
@@ -229,11 +230,12 @@ impl Simulation {
         let elapsed = self.remainder_ms.saturating_add(elapsed_ms);
         let epochs = (elapsed / 16).min(1000);
         self.remainder_ms = elapsed % 16;
+        self.epochs = self.epochs.saturating_add(epochs);
         for _ in 0..epochs {
             physics_step(&mut self.spheres, self.width, self.height, 1024);
             self.bounded &= self.spheres.iter().all(|s| s.px() - s.radius >= 0 && s.py() - s.radius >= 0 && s.px() + s.radius < self.width && s.py() + s.radius < self.height);
         }
     }
-    #[cfg(test)]
+    pub fn epochs(&self) -> u64 { self.epochs }
     pub fn all_inside(&self) -> bool { self.bounded }
 }

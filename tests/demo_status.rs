@@ -1,7 +1,7 @@
 extern crate alloc;
 #[path = "../libs/libbui/src/tree.rs"]
-mod tree;
-mod breengel { pub use crate::tree; }
+pub mod tree;
+extern crate self as breengel;
 #[path = "../userspace/programs/src/demos/status.rs"]
 mod status;
 

@@ -9,25 +9,17 @@ use std::process;
 
 #[path = "bounce/sim.rs"]
 mod sim;
+#[path = "demos/status.rs"]
+mod status;
 use sim::Simulation;
 
-use breengel::{CachedFont, Window, Event};
-use libbreenix::time;
+use breengel::{CachedFont, Window, Event, Handled};
 
 use libgfx::color::Color;
 use libgfx::font;
 use libgfx::shapes;
 use libgfx::surface::Surface;
 use libgfx::ttf_font;
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-fn clock_monotonic_ns() -> u64 {
-    let ts = time::now_monotonic().unwrap_or_default();
-    (ts.tv_sec as u64) * 1_000_000_000 + (ts.tv_nsec as u64)
-}
 
 // ---------------------------------------------------------------------------
 // Sphere rendering
@@ -110,7 +102,7 @@ fn draw_sphere(fb: &mut Surface, cx: i32, cy: i32, radius: i32, base_color: Colo
 // ---------------------------------------------------------------------------
 
 struct FpsCounter {
-    last_time_ns: u64,
+    last_time_ms: u64,
     frame_count: u32,
     display_fps: u32,
     speed_pct: i32,
@@ -120,7 +112,7 @@ struct FpsCounter {
 
 impl FpsCounter {
     fn new() -> Self {
-        Self { last_time_ns: clock_monotonic_ns(), frame_count: 0, display_fps: 0, speed_pct: 100, ttf_font: None, font_size: 20.0 }
+        Self { last_time_ms: 0, frame_count: 0, display_fps: 0, speed_pct: 100, ttf_font: None, font_size: 20.0 }
     }
 
     fn with_ttf(mut self, font: Option<CachedFont>, size: f32) -> Self {
@@ -129,16 +121,15 @@ impl FpsCounter {
         self
     }
 
-    fn tick(&mut self) {
+    fn tick(&mut self, now: u64) {
         self.frame_count += 1;
         if self.frame_count >= 16 {
-            let now = clock_monotonic_ns();
-            let elapsed = now.saturating_sub(self.last_time_ns);
+            let elapsed = now.saturating_sub(self.last_time_ms);
             if elapsed > 0 {
-                self.display_fps = (self.frame_count as u64 * 1_000_000_000 / elapsed) as u32;
+                self.display_fps = (self.frame_count as u64 * 1_000 / elapsed) as u32;
             }
             self.frame_count = 0;
-            self.last_time_ns = now;
+            self.last_time_ms = now;
         }
     }
 
@@ -214,14 +205,12 @@ const WIN_W: u32 = 400;
 const WIN_H: u32 = 300;
 
 fn main() {
-    let boot_id = clock_monotonic_ns();
-    println!("Bounce spheres demo starting (for Gus!) [boot_id={:016x}]", boot_id);
+    println!("Bounce spheres demo starting (for Gus!)");
 
     // Try window-buffer mode first: BWM composites us as a floating window
     match Window::new_without_fonts(b"Bounce", WIN_W, WIN_H) {
         Ok(mut win) => {
-            println!("[bounce] Window mode: id={} {}x{} [boot_id={:016x}]",
-                     win.id(), WIN_W, WIN_H, boot_id);
+            println!("[bounce] Window mode: id={} {}x{}", win.id(), WIN_W, WIN_H);
             let mut simulation = Simulation::new(WIN_W as i32, WIN_H as i32);
             run_window_loop(&mut win, &mut simulation);
             return;
@@ -240,43 +229,64 @@ fn run_window_loop(win: &mut Window, simulation: &mut Simulation) {
     let ttf_font_opt = win.take_mono_font();
     let font_size = win.mono_size().max(10.0);
     let mut fps = FpsCounter::new().with_ttf(ttf_font_opt, font_size);
-    let mut last_ns = clock_monotonic_ns();
-
+    let mut last_tick = None;
     let mut first_frame = true;
+    let mut redraw = true;
+    win.set_animating(true);
 
     loop {
-        let now = clock_monotonic_ns();
-        let elapsed_ms = now.saturating_sub(last_ns) / 1_000_000;
-        last_ns += elapsed_ms * 1_000_000;
-
-        // Poll input events — coordinates are already window-local
-        for event in win.poll_events() {
-            match event {
-                Event::MouseButton { button: breengel::buttons::LEFT, pressed: true, x, y } => {
-                    simulation.click(x, y);
-                }
-                Event::KeyPress { ascii, .. } => match ascii {
-                    b'+' | b'=' => simulation.change_speed(true),
-                    b'-' => simulation.change_speed(false),
-                    _ => {}
-                },
-                Event::Scroll { delta_y, .. } => {
-                    for _ in 0..delta_y.unsigned_abs() { simulation.change_speed(delta_y > 0); }
-                }
-                Event::ResizeRequested { width, height } => {
-                    if let Err(e) = win.apply_resize(width, height) {
-                        println!("[bounce] resize refused: {}x{}: {}", width, height, e);
+        if !redraw {
+            let mut close = false;
+            let mut resize = None;
+            let mut handled_input = false;
+            let count = win.wait_dispatch(100_000_000, |delivered| {
+                handled_input |= delivered.serial != 0;
+                match delivered.event {
+                    Event::AnimationTick { time_ms } => {
+                        simulation.advance(last_tick.map_or(1, |last| time_ms.saturating_sub(last)));
+                        last_tick = Some(time_ms);
+                        fps.tick(time_ms);
+                        redraw = true;
                     }
+                    Event::CloseRequested => close = true,
+                    Event::MouseButton { button: breengel::buttons::LEFT, pressed: true, x, y } => {
+                        simulation.click(x, y); redraw = true;
+                    }
+                    Event::KeyPress { ascii, .. } => match ascii {
+                        b'+' | b'=' => { simulation.change_speed(true); redraw = true; }
+                        b'-' => { simulation.change_speed(false); redraw = true; }
+                        _ => {}
+                    },
+                    Event::Scroll { delta_y, .. } => {
+                        for _ in 0..delta_y.unsigned_abs() { simulation.change_speed(delta_y > 0); }
+                        redraw = true;
+                    }
+                    Event::ResizeRequested { width, height } => { resize = Some((width, height)); redraw = true; }
+                    Event::Resized { width, height } => { simulation.resize(width as i32, height as i32); redraw = true; }
+                    _ => {}
                 }
-                Event::Resized { width: w, height: h } => {
-                    simulation.resize(w as i32, h as i32);
+                if redraw { Handled::Redraw } else { Handled::NoChange }
+            }).unwrap_or_else(|e| { println!("[bounce] dispatch failed: {}", e); process::exit(1) });
+            if close { return; }
+            if let Some((width, height)) = resize {
+                match win.apply_resize(width, height) {
+                    Ok(()) => simulation.resize(width as i32, height as i32),
+                    Err(e) => println!("[bounce] resize refused: {}x{}: {}", width, height, e),
                 }
-                _ => {}
+            }
+            if !redraw {
+                if count != 0 && handled_input { let _ = win.commit_no_change(); }
+                continue;
             }
         }
-
-        simulation.advance(elapsed_ms);
+        redraw = false;
         fps.speed_pct = simulation.speed_pct();
+        let objects: Vec<_> = simulation.spheres.iter().map(|s| status::Object {
+            bounds: [(s.px() - s.radius) as i64, (s.py() - s.radius) as i64,
+                (s.radius * 2) as i64, (s.radius * 2) as i64],
+            value: serde_json::json!({"vx": s.vx, "vy": s.vy}),
+        }).collect();
+        win.set_tree(status::build("bounce", simulation.speed_pct(), simulation.epochs(), simulation.all_inside(), win.width(), win.height(), "sphere", &objects));
 
         let fb = match win.surface() {
             Ok(fb) => fb,
@@ -292,7 +302,6 @@ fn run_window_loop(win: &mut Window, simulation: &mut Simulation) {
                 draw_sphere(fb, sphere.px(), sphere.py(), sphere.radius, Color::rgb(r, g, b));
             }
         });
-        fps.tick();
         fps.draw(fb);
 
         let presented = win.present();
