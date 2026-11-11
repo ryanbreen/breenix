@@ -51,3 +51,11 @@ pub fn hsv_to_rgb(hue: u16, sat: u8, val: u8) -> [u8; 3] {
         3 => (p,q,v), 4 => (t,p,v), _ => (v,p,q) };
     [r as u8, g as u8, b as u8]
 }
+
+/// Semantic collaboration state supplied by the session model.
+pub trait Collaboration {
+    fn collab_value(&self) -> Value;
+}
+pub fn collab(bounds: [i64; 4], model: &impl Collaboration) -> Node {
+    node("collab", Role::Status, bounds, model.collab_value())
+}

@@ -16,6 +16,13 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+Gus Kit's host-sequenced collaboration and gesture-scoped Undo land through
+[PR #2881](https://github.com/ryanbreen/breenix/pull/2881).
+The PR records GUI application acceptance and the retained selected UI result;
+validation and observability follow-ups are grouped in
+[#2882](https://github.com/ryanbreen/breenix/issues/2882).
+Laptop-to-laptop collaboration remains in ARM catch-up A.6.
+
 Frozen UI clocks, causal settling, retained failure evidence and application
 scenarios land through [PR #2814](https://github.com/ryanbreen/breenix/pull/2814).
 The PR records the 108-case UI result and the coordinator's dispositions for

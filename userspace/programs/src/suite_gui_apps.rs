@@ -13,6 +13,8 @@ mod bfontpicker;
 mod bcheck;
 #[path = "guiapps_suite/guskit.rs"]
 mod guskit;
+#[path = "guiapps_suite/guskit_collab.rs"]
+mod guskit_collab;
 use breenix_suite::suite::{case, category, suite, Suite};
 
 static SUITE: Suite = suite("gui-apps", "GUI applications", &[
@@ -84,6 +86,14 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("open-malformed", "Malformed image leaves canvas intact", guskit::open_malformed).session(libuitest::supervisor::serve),
         case("quit-unsaved", "Confirm quitting unsaved changes", guskit::quit_unsaved).session(libuitest::supervisor::serve),
         case("shortcuts", "Tool and file shortcuts", guskit::shortcuts).session(libuitest::supervisor::serve),
+    ]),
+    category("guskit-collab", "Gus Kit collaboration", &[
+        case("join-sync", "Join synchronizes the canvas", guskit_collab::join_sync).session(libuitest::supervisor::serve),
+        case("stroke-both-ways", "Strokes travel in both directions", guskit_collab::stroke_both_ways).session(libuitest::supervisor::serve),
+        case("global-order", "Overlapping strokes follow global order", guskit_collab::global_order).session(libuitest::supervisor::serve),
+        case("three-peers", "Three peers converge", guskit_collab::three_peers).session(libuitest::supervisor::serve),
+        case("undo-ownership", "Undo affects only its owner", guskit_collab::undo_ownership).session(libuitest::supervisor::serve),
+        case("peer-leaves", "Peer and host departures are reported", guskit_collab::peer_leaves).session(libuitest::supervisor::serve),
     ]),
 ]).gui().defer_display();
 

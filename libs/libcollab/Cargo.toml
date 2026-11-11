@@ -4,10 +4,12 @@ version = "0.1.0"
 edition = "2021"
 description = "Breenix collaboration protocol library — real-time multi-user session support"
 
-[workspace]
-
 [lib]
 crate-type = ["rlib"]
 
+[features]
+default = []
+net = ["dep:libbreenix"]
+
 [dependencies]
-libbreenix = { path = "../libbreenix", features = ["std"] }
+libbreenix = { path = "../libbreenix", optional = true }
