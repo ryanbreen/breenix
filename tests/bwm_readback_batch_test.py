@@ -53,6 +53,7 @@ const CURSOR_WHITE:u32=0xffffffff;const CURSOR_BLACK:u32=0xff000000;
 fn pointer_bitmap(_:u32)->&'static[&'static[u8]]{&[b"#o",b"o#"]}
 fn hotspot(_:u32)->(i32,i32){HOTSPOTS.fetch_add(1,std::sync::atomic::Ordering::Relaxed);(0,0)}
 fn intersect(a:[i32;4],b:[i32;4])->Option<[i32;4]>{let r=[a[0].max(b[0]),a[1].max(b[1]),a[2].min(b[2]),a[3].min(b[3])];(r[0]<r[2]&&r[1]<r[3]).then_some(r)}
+fn monotonic_ns()->u64{0}
 fn prefaulted_bytes(n:usize)->Vec<u8>{if n>=65536{BUFFERS.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}vec![0;n]}
 #[derive(Debug)]enum CheckError{Failed(String),Moved(String)}
 struct Compositor{sampled:Vec<Sample>,check_first:u64,check_workspace:CheckWorkspace,desktop:Desktop,scale:i32,appbar_top:i32}
