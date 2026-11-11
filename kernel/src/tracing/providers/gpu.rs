@@ -140,8 +140,20 @@ pub fn irq_masked_sites(maximum: u64) -> alloc::string::String {
     gpu_mask::report(maximum)
 }
 
+/// Cold scalar diagnostics do not consume the fixed trace registry's slots.
+pub fn readback_diagnostics() -> alloc::string::String {
+    use core::fmt::Write;
+    let mut out = alloc::string::String::new();
+    for counter in [&GPU_READ_POISON_NS, &GPU_READ_WAIT_NS, &GPU_READ_COMPARE_NS,
+        &GPU_READ_PREPARE_NS, &GPU_READ_OUTPUT_NS, &GPU_WAIT_LONG, &GPU_WAIT_SILENT,
+        &GPU_WAIT_SILENT_FOUND, &GPU_READ_PROBE_NS, &GPU_READ_ALLOC_NS, &GPU_READ_WRITERS_NS] {
+        let _ = writeln!(out, "{}: {}", counter.name, counter.aggregate());
+    }
+    out
+}
+
 pub fn init() {
-    for counter in [&GPU_CONTEXTS, &GPU_RESOURCES, &GPU_RESOURCE_BYTES, &GPU_VRAM_BYTES, &GPU_IRQ_MASKED_MAX_US, &GPU_PRESENTS_SUSPENDED, &GPU_READ_POISON_NS, &GPU_READ_WAIT_NS, &GPU_READ_COMPARE_NS, &GPU_READ_PREPARE_NS, &GPU_READ_OUTPUT_NS, &GPU_WAIT_LONG, &GPU_WAIT_SILENT, &GPU_WAIT_SILENT_FOUND, &GPU_READ_PROBE_NS, &GPU_READ_ALLOC_NS, &GPU_READ_WRITERS_NS] {
+    for counter in [&GPU_CONTEXTS, &GPU_RESOURCES, &GPU_RESOURCE_BYTES, &GPU_VRAM_BYTES, &GPU_IRQ_MASKED_MAX_US, &GPU_PRESENTS_SUSPENDED] {
         assert!(register_counter(counter).is_some(), "trace counter registry overflow while registering the GPU gauges");
     }
 }
