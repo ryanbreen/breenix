@@ -43,6 +43,7 @@ mod per_cpu {
 }
 static SENT: AtomicU64 = AtomicU64::new(0);
 fn wake_reaper() {}
+fn now_ns() -> u64 { 1 }
 enum Tag { Sync(u64) }
 struct Read { tag: Tag, ctx: u32, fence: u64, id: u32 }
 enum Request { Virgl(Read) }
@@ -77,7 +78,7 @@ struct Core {
     reset_wanted: bool, resetting: bool, stalled: bool, backlog: VecDeque<(u64,Request)>,
     subs: BTreeMap<u64,Sub>, resources: BTreeMap<u32,Resource>, dev: Option<Device>,
     syncs: BTreeMap<u64,SyncReq>, done: BTreeMap<u64,()>, canvas: Vec<(u32,())>,
-    epoch: u64, next: u64, next_fence: u64, flushes: u32,
+    epoch: u64, next: u64, next_fence: u64, flushes: u32, pump_model: bool,
     contexts: BTreeMap<u32,Ctx>,
 }
 impl Core {
@@ -86,7 +87,20 @@ impl Core {
     fn device_fence(&mut self) -> u64 { self.next_fence += 1; self.next_fence }
     fn can_queue(&self, req: &Request) -> bool { self.dev.as_ref().is_some_and(|d| d.has_room(req.segment_count())) }
     fn free_if_unused(&mut self, _id: u32) {}
-    fn flush(&mut self) { self.flushes += 1; }
+    fn reap_all(&mut self) {}
+    fn watchdog(&mut self, _now: u64) {}
+    fn flush(&mut self) {
+        self.flushes += 1;
+        if !self.pump_model { return; }
+        // The render was not sent when its waiter last inspected progress.
+        self.subs.get_mut(&1).unwrap().sent_ns = Some(1);
+        while let Some((_, Request::Virgl(read))) = self.backlog.pop_front() {
+            assert_eq!((read.ctx, read.id), (3, 7));
+            // The model host makes the render fence visible only after this
+            // draining transfer, without another waiter or interrupt.
+            self.subs.get_mut(&1).unwrap().published = true;
+        }
+    }
     fn new() -> Self {
         Self { reset_wanted: false, resetting: false, stalled: false, backlog: VecDeque::new(),
             subs: BTreeMap::from([(1,Sub { published: false, requests: 1, sent_ns: Some(0), written: vec![7], ctx: 3 })]),
@@ -94,7 +108,7 @@ impl Core {
                 accepted: vec![Writer { ctx: 3, ended: false }], reading: false, cpu_reading: false, progress_context: None,
                 invalid: false, lost: false, backing: (), pitch: 256, epoch: 1, holds: 1 })]),
             dev: Some(Device { room: 2 }), syncs: BTreeMap::new(), done: BTreeMap::new(), canvas: vec![],
-            epoch: 1, next: 0, next_fence: 0, flushes: 0,
+            epoch: 1, next: 0, next_fence: 0, flushes: 0, pump_model: false,
             contexts: BTreeMap::from([(3,Ctx { scratch: 7 })]) }
     }
 }
@@ -153,6 +167,17 @@ fn worker_cannot_queue_progress_for_itself() {
     assert!(c.backlog.is_empty(), "kgpu cannot wait for work only kgpu can send");
 }
 #[test]
+fn worker_drains_a_render_sent_after_the_waiter_checked() {
+    per_cpu::set(REAPER.load(Ordering::Acquire));
+    let mut c = Core::new();
+    c.pump_model = true;
+    c.subs.get_mut(&1).unwrap().sent_ns = None;
+    c.pump();
+    assert!(c.subs[&1].published, "render sent by kgpu still needs the sleeping waiter's 250 ms fallback to queue its drain");
+    assert!(c.backlog.is_empty(), "kgpu must send its own drain before blocking");
+    assert_eq!(c.flushes, 2);
+}
+#[test]
 fn ordinary_sync_callers_still_dispatch_their_requests() {
     let mut c = Core::new();
     let r = Request::Virgl(Read { tag: Tag::Sync(20), ctx: 3, fence: 9, id: 7 });
@@ -191,7 +216,9 @@ fn drain_reads_the_drawn_target_and_other_contexts_pass_it() {
 }
 '''
         methods = "\n".join(method(name) for name in
-                            ("start_sync", "queue_sync", "progress_readback", "abandon", "unhold", "end_reading"))
+                            ("start_sync", "queue_sync", "progress_readback", "abandon", "unhold", "end_reading", "pump"))
+        if re.search(r"(?m)^    fn queue_progress_readback\(", CORE):
+            methods += "\n" + method("queue_progress_readback")
         source = source.replace("// PRODUCTION", methods)
         blocked = re.search(r"if (written\.iter\(\)\.any\([^\n]*r\.reading[^\n]*\)) \{", CORE)
         self.assertIsNotNone(blocked, "production write/read exclusion predicate is missing")
