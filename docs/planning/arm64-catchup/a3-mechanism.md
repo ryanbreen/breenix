@@ -1,5 +1,50 @@
 # A.3 recovery mechanism analysis — a3-u10-mechanism
 
+## Measurement 20261111T173538Z-qemu-95695: stale suite artifact
+
+The single measurement launch recorded clean checkout `aef5df85`, HVF and
+headless SPICE GL. It finished 79/81: restart-adopts and supervisor-restarts
+failed; stack-restored and frame-floor passed. Memory reclaimed 10 pages against
+the 48-page allowance, READY followed DONE and MEMORY, and the host renderer
+accepted ANGLE/Metal (982 records). Start uptime loads were 9.38 / 14.30 / 17.21;
+end loads were 7.35 / 8.72 / 12.96. No lane build, installer or heavy work ran
+during the boot. The raw Vigil serial SHA-256 is
+`cf85a48bc28289b3e26670768c4a769a4a12d162c5ce03240d638e5cd0518157`.
+
+The checkout commit in the Vigil record does not identify the guest binaries.
+The launcher documents that `--no-build` boots the existing target disk. The
+capture emits `wm-reap ... failed_ns=...` and `wm-reap-status`, matching the
+failure-only code at `b26abb03`, whereas current `Child::stop` emits
+`wm-reap-wait` and unconditional `reap-elapsed`. None of the new observer,
+readback, reap-wait or frame-endpoint exports occurs. Thus this boot used a
+stale suite artifact and cannot answer the instrumentation question.
+
+The old diagnostic measures PID 660's kill return at 245388556875 ns and
+timeout at 245891152708 ns: 502.596 ms, 2.596 ms beyond the 500 ms deadline.
+The leader's stage 17 occurs 893.112 ms after kill return and stage 20 at
+893.139 ms, both after the timeout. This locates the late exit but does not
+explain the delay before it. The required 125 ms positive margin is absent.
+
+Supervisor replacement PID 720 reaches context-ready at 1152.442 ms,
+fonts-ready at 2094.711 ms and frame-pixels-ready at 2156.256 ms after exec;
+the case times out at 2000 ms with EAGAIN reason 0. Exec-relative stamps are
+not the observer wait interval, and the refusal branch and completion receipts
+are unavailable. The 500 ms required headroom is not established. The native
+stack-restored EAGAIN signature remains ambiguous for the same reasons stated
+below; this ARM pass does not identify its native cause.
+
+Frame-floor reports 2444 intervals over 4988.764041 ms, or 489 Hz, within a
+5000.011583 ms measurement window. The combined unobserved endpoints are
+11.247542 ms; individual client endpoint gaps and their 25% headroom cannot be
+calculated from this stale producer. Passing the case is not a mechanism proof.
+
+No failure mechanism is established. Before any further measurement, stage and
+verify the instrumented suite and kernel artifacts against the intended head;
+the unanswered question is which refusal branch and completion state actually
+occur during the observer wait, alongside the reap and endpoint intervals.
+Coordinator line 176 requires stopping here, without a speculative fix or
+another boot.
+
 This is an analysis unit under coordinator ledger line 167, superseding line 154(4).
 The input head is c81001cd; runtime evidence ends at 403f5501. No boot, deployment,
 installer, board change, PR creation or merge was performed in this unit.
