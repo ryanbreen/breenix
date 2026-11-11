@@ -15,6 +15,7 @@
 #   --program PATH       for --mode program: the absolute guest path /sbin/probe runs (probe --run PATH)
 #   --case CATEGORY[/CASE]       for --mode suite: run one category or case (not full-suite evidence; not filed in Vigil)
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
+#                        console selects --gpu-gl for its display-owner and scanout cases
 #   --suite ID,ID,...|all  for --mode suite: several suites in one boot, in order (docs/suites/README.md,
 #                        "Several suites in one boot"); the word all names the ARM64 QEMU effort suites (the GPU suite
 #                        with --gpu-gl); --gate-timeout bounds each suite's wait for DONE
@@ -123,6 +124,9 @@ if [ "$MODE" = suite ]; then
     GPU_3D=()
     [ "$GPU_GL" -eq 0 ] || GPU_3D=(--gpu-3d)
     SUITE=$(python3 "$ROOT/scripts/suite-sequence.py" resolve "$SUITE" --target arm64-qemu ${GPU_3D[@]+"${GPU_3D[@]}"}) || exit 2
+    # Console observes the GPU core's scanout and suspended display-owner work;
+    # the MMIO framebuffer alone cannot provide those operations.
+    if [[ ",$SUITE," == *,console,* ]]; then GPU_GL=1; fi
     if [[ "$SUITE" == *,* ]] && [ -n "$ONLY" ]; then
         echo "--case watches one case of one suite, not a list" >&2; exit 2
     fi

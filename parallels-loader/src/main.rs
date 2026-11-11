@@ -165,6 +165,14 @@ fn main() -> Status {
         );
     }
 
+    // Claim the physical backing of the linked stack before loading the ELF or
+    // letting later firmware allocations use it. VMware maps the linked alias
+    // to RAM at +ram_base_offset. Never overwrite firmware-owned pages.
+    if let Err(e) = reserve_loader_stack(ram_base_offset) {
+        log::error!("Cannot reserve loader boot stack: {:?}", e);
+        halt();
+    }
+
     // Load kernel ELF from ESP (with relocation offset applied to load addresses)
     log::info!("--- Loading Kernel ---");
     let loaded_kernel = match kernel_load::load_kernel(ram_base_offset) {
@@ -436,6 +444,17 @@ fn main() -> Status {
     }
 
     kernel_entry::jump_to_kernel(loaded_kernel.entry_phys, hw_config, page_tables, &pt_config);
+}
+
+/// Allocate the entire fixed stack as loader data until kernel handoff.
+fn reserve_loader_stack(ram_base_offset: u64) -> uefi::Result<()> {
+    let bottom = arm64_boot_contract::LOADER_BOOT_STACK_BOTTOM_PHYS;
+    let top = arm64_boot_contract::LOADER_BOOT_STACK_TOP_PHYS;
+    uefi::boot::allocate_pages(
+        uefi::boot::AllocateType::Address(bottom + ram_base_offset),
+        MemoryType::LOADER_DATA,
+        ((top - bottom) / 4096) as usize,
+    ).map(|_| ())
 }
 
 /// Populate HardwareConfig RAM regions from the UEFI memory map.

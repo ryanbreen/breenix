@@ -663,7 +663,7 @@ use kernel::console::splash::{self, Stage};
 use kernel::serial;
 
 // Enter Rust only after selecting the linked code mapping. The loader's SP is
-// already in its low linked alias (0x42000000, IPA 0x82000000 on VMware).
+// already in its low linked alias (0x43000000, IPA 0x83000000 on VMware).
 // QEMU's boot.S has already selected both high-half code and stack addresses.
 // No Rust frame or callee-saved address survives this non-returning transition.
 #[cfg(target_arch = "aarch64")]
@@ -2319,7 +2319,7 @@ fn init_scheduler() {
 
     // CPU 0 boot stack top address.
     // On QEMU: boot.S sets SP to HHDM_BASE + STACK_REGION_BASE + STACK_SIZE
-    // On Parallels: UEFI loader sets SP to 0x42000000, then HHDM switch adds HHDM_BASE
+    // On Parallels: UEFI loader sets SP to 0x43000000, then HHDM switch adds HHDM_BASE
     // Use platform detection to pick the right boot stack address.
     const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
     let (boot_stack_top, boot_stack_bottom) =
@@ -2329,10 +2329,11 @@ fn init_scheduler() {
                 VirtAddr::new(kernel::arch_impl::aarch64::constants::percpu_kernel_stack_bottom(0)),
             )
         } else {
-            // Parallels: UEFI loader stack at 0x42000000 (phys), now at HHDM
+            // Parallels: UEFI loader stack at 0x43000000 (phys), now at HHDM
             // The loader maps the full 2MB region without overflow protection.
-            const PARALLELS_STACK_TOP_PHYS: u64 = 0x4200_0000;
-            const PARALLELS_STACK_SIZE: u64 = 0x20_0000;
+            const PARALLELS_STACK_TOP_PHYS: u64 = arm64_boot_contract::LOADER_BOOT_STACK_TOP_PHYS;
+            const PARALLELS_STACK_SIZE: u64 = PARALLELS_STACK_TOP_PHYS
+                - arm64_boot_contract::LOADER_BOOT_STACK_BOTTOM_PHYS;
             (
                 VirtAddr::new(HHDM_BASE + PARALLELS_STACK_TOP_PHYS),
                 VirtAddr::new(HHDM_BASE + PARALLELS_STACK_TOP_PHYS - PARALLELS_STACK_SIZE),
