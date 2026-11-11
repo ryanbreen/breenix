@@ -188,13 +188,13 @@ pub(crate) fn local_ttbr0_root() -> u64 {
     local_ttbr0() & TTBR0_ROOT_MASK
 }
 
-/// Return the kernel TTBR0 root, falling back to the boot identity table before
+/// Return the kernel TTBR0 root, falling back to the live root before
 /// per-CPU state has been populated.
 #[inline(always)]
 pub fn kernel_ttbr0() -> u64 {
     let ttbr0 = crate::per_cpu_aarch64::get_kernel_cr3();
     if ttbr0 == 0 {
-        0x4200_0000
+        local_ttbr0_root()
     } else {
         ttbr0
     }
