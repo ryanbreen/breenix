@@ -130,3 +130,16 @@ fn bounce_uses_animation_dispatch_and_publishes_status() {
         assert!(source.contains(required), "missing {required}");
     }
 }
+
+#[test]
+fn particles_and_confetti_use_window_animation_and_status() {
+    for name in ["particles", "confetti"] {
+        let source = std::fs::read_to_string(format!("userspace/programs/src/{name}.rs")).expect("demo source");
+        for forbidden in ["poll_events", "libbreenix::graphics", "libgfx_ref", "fb_mmap", "mouse_pos"] {
+            assert!(!source.contains(forbidden), "{name}: unexpected {forbidden}");
+        }
+        for required in ["Window::new_without_fonts", "Event::CloseRequested", "Event::AnimationTick", "win.set_animating(true)", "win.wait_dispatch(", "win.surface()", "win.set_tree(", "Event::ResizeRequested"] {
+            assert!(source.contains(required), "{name}: missing {required}");
+        }
+    }
+}
