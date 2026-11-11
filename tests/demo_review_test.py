@@ -2,6 +2,7 @@
 from pathlib import Path
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -44,7 +45,8 @@ class Review(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             (path / 'test.rs').write_text(code)
-            result = subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings',
+            result = subprocess.run((['taskpolicy', '-b'] if sys.platform == 'darwin' else []) +
+                                    ['rustc', '--edition=2021', '-Dwarnings',
                                      *(['--test'] if test else []), str(path / 'test.rs'),
                                      '-L', f'dependency={deps}', *args, '-o', str(path / 'test')],
                                     capture_output=True, text=True, env=dict(os.environ, CARGO_BUILD_JOBS='4'))
