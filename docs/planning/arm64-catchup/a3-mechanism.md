@@ -525,3 +525,63 @@ Searched the retained serials for `wm-exit-phase`, `wm-reap`, and raw five-colum
 | E37 | not exported |
 | E38 | not exported |
 | E39 | not exported |
+
+## Line 185 instrumented measurement (2026-11-11)
+
+At 30b39d0a, normal build and disk staging preceded the headless HVF/SPICE GL
+measurement `20261111T180908Z-qemu-89034`. The built suite and disk copy were
+byte-identical (SHA-256 `79dcc01b012df95211610b7d6b2a408c2260afc090843fcc4a68ca247895c490`),
+with all five required label/format strings. The boot kernel SHA-256 was
+`47b0fcdb92f2c1c158a95f0e7c2996b6a73b2358d3b8e51f0c4f9dfd2dc5a636` and contained
+`retained-writer-fallback`; disk SHA-256 was
+`a9268c386f9f4cfdbec1796fd76ce41dd4f583ff449672c34dfb71bf8ad8e89f`.
+The serial SHA-256 is `190e7ee14aeb33721ce80013fdf95dcccc3c85939313ac899bf1f93e847348c5`; the load file is retained alongside the Vigil capture. The
+sampler ran at two-second intervals, with one-minute load ranging 4.62–8.24;
+its first sample was 6.53. Guest monotonic timestamps and host load samples have
+no recorded shared epoch mapping, so exact case-specific loads cannot be asserted.
+
+The serial contains the documented export families, including observer waits,
+readback, buffer counts, startup and detail, reap and exit phases, completion,
+and frame endpoints. The suite reported 78/81: all-minimized failed its 1000 ms
+click acknowledgment; stack-restored and supervisor-restarts hit the outer 10000 ms
+watchdog. Restart-adopts and frame-floor passed. MEMORY reclaimed 10 pages
+(allowance 48), READY followed DONE and MEMORY, and ANGLE/Metal was accepted.
+This is measurement evidence, not an acceptance verdict.
+
+- **Restart-adopts:** PID 708 kill returned at 263790665375 ns and wait returned
+  at 263795930541 ns, 5.265166 ms against 500 ms, margin 494.734834 ms. Leader
+  TID 924 entered stage 17 at 263791795208 ns, 1.129833 ms after kill returned.
+  Other exported group stages include prior thread exits, so they cannot be
+  assumed to have been alive at kill. No captured thread syscall/wait state
+  explains the earlier stale boot's 893 ms pre-stage-17 interval; that cause and
+  its race/slow-path classification remain unknown.
+- **Supervisor-restarts:** client 83 commit 4 observer wait ran from
+  292907243708 to 294914370416 ns, 2007.126708 ms against 2000 ms, margin
+  -7.126708 ms. Refusals include claim-baseline, claimant 801, epoch 133,
+  first/current serial 2315, busy 0 and completed 2315, ack 0. This identifies
+  the admission branch, not why the replacement had not advanced the serial.
+  PID 801 exec was 292903369791 ns; targets ready at 1497.490 ms and fonts ready
+  at 1605.140 ms after exec. The outer watchdog killed the case while diagnostics
+  were still being emitted; its complete observer export and eventual first
+  client receipt are unavailable. No causal attribution to a particular startup
+  phase or diagnostic output cost follows from these observations alone.
+- **Frame-floor:** client 120 interval 419776255250–424776269125 ns had first
+  419778058000 and last 424775316250 ns. Endpoint gaps were 1.802750 ms and
+  0.952875 ms, giving margins 14.863917 ms and 15.713792 ms against 16.666667 ms.
+  3113 intervals in 4997.258250 ms measured 622 Hz against 60 Hz. This one passing
+  interval does not establish the cause of the earlier endpoint failure.
+- **Stack-restored:** PID 756 reap took 0.004917 ms after kill return; the next
+  desktop observer 281703683166–284329208458 ns passed and exported completion
+  receipts for client 81. The 10000 ms case watchdog interrupted subsequent
+  diagnostic output. This ARM observation does not identify the mechanism of
+  the earlier native EAGAIN signature; shared causality is unproven.
+- **All-minimized:** the click was unacknowledged within 1000 ms. The capture
+  does not establish why; a pass/fail timing margin cannot be inferred.
+
+The measurement therefore does not establish the mechanisms required by line
+176. In particular, the question remains which wait or syscall held each live
+bwm thread at SIGKILL in a delayed reap, and why PID 801 remained at its claim
+baseline until the observer deadline. Establish a clock correlation for host
+load and bounded diagnostic export that survives the outer watchdog before
+claiming case-specific loads or a cause. No forcing check, repair, proof boot,
+board update or native boot is justified by this measurement.
