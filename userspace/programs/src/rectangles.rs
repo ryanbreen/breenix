@@ -29,6 +29,7 @@ fn main() {
    let mut close=false; let mut resize=None; let mut input=false; let width=win.width() as i32; let height=win.height() as i32;
    let count=win.wait_dispatch(100_000_000, |d| { input |= d.serial != 0; match d.event {
     Event::AnimationTick { time_ms } => { let elapsed=remainder+last.map_or(0,|t:u64| time_ms.saturating_sub(t)); last=Some(time_ms); remainder=elapsed%16; for _ in 0..(elapsed/16).min(1000) { for r in &mut rects { r.x+=r.vx; r.y+=r.vy; r.clamp(width,height); } epochs=epochs.saturating_add(1); } redraw=true; },
+    Event::MouseMove { .. } => redraw = true,
     Event::CloseRequested => close=true,
     Event::ResizeRequested { width,height } => { resize=Some((width,height)); redraw=true; },
     Event::Resized { .. } => redraw=true, _ => {} }

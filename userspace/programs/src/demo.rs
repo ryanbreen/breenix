@@ -153,6 +153,7 @@ fn main() {
                         for _ in 0..(elapsed / 16).min(1000) { frame = (frame + 1) % 360; epochs = epochs.saturating_add(1); for ball in &mut balls { ball.update(win_width, win_height); } }
                         redraw = true;
                     }
+                    Event::MouseMove { .. } => redraw = true,
                     Event::CloseRequested => close = true,
                     Event::ResizeRequested { width, height } => { resize = Some((width,height)); redraw = true; }
                     Event::Resized { .. } => redraw = true,

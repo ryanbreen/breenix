@@ -248,6 +248,7 @@ fn run_window_loop(win: &mut Window, simulation: &mut Simulation) {
                         fps.tick(time_ms);
                         redraw = true;
                     }
+                    Event::MouseMove { .. } => redraw = true,
                     Event::CloseRequested => close = true,
                     Event::MouseButton { button: breengel::buttons::LEFT, pressed: true, x, y } => {
                         simulation.click(x, y); redraw = true;

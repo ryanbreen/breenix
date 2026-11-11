@@ -17,6 +17,7 @@ fn main() {
                 input |= d.serial != 0;
                 match d.event {
                     Event::AnimationTick { time_ms } => { sim.advance(last.map_or(1, |t: u64| time_ms.saturating_sub(t))); last = Some(time_ms); redraw = true; }
+                    Event::MouseMove { .. } => redraw = true,
                     Event::CloseRequested => close = true,
                     Event::ResizeRequested { width, height } => { resize = Some((width, height)); redraw = true; }
                     Event::Resized { width, height } => { sim.resize(width as i32, height as i32); redraw = true; }
