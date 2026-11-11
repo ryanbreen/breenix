@@ -1,7 +1,7 @@
 """Run the production idle read against a finite kernel timeout.
 
-The diagnostic must identify the path and preserve the failing return value;
-this unit measures the failure and does not change timeout handling.
+A requested finite idle timeout is returned without a failure diagnostic;
+other errors retain the full diagnostic and their original return value.
 """
 from pathlib import Path
 import subprocess
@@ -15,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DispatchDiagnostic(unittest.TestCase):
-    def test_idle_timeout_reports_state_without_changing_the_error(self):
+    def test_idle_timeout_and_other_errors(self):
         source = (ROOT / 'libs/breengel/src/window.rs').read_text()
         read = item(source, '    fn read(')
         diagnostic = item(source, '    fn read_error(') if '    fn read_error(' in source else ''
@@ -34,7 +34,7 @@ mod window {
  use super::*;
  pub fn read_events(id: u64, _: &mut [abi::WindowEvent], block: bool, timeout: u64) -> Result<usize, Error> {
   assert_eq!((id, block, timeout), (42, true, 100_000_000));
-  Err(Error::Os(Errno::ETIMEDOUT))
+  Err(Error::Os(if std::env::args().nth(1).as_deref() == Some("eio") { Errno::EIO } else { Errno::ETIMEDOUT }))
  }
 }
 mod clock {
@@ -62,10 +62,13 @@ impl Window {
  // DIAGNOSTIC
 }
 fn main() {
- std::hint::black_box(Errno::EIO);
  let mut win = Window { id: 42, clock_participant: None, timers: Timers,
   animating: false, clock_redraw: false, ui_stamp: clock::stamp() };
- assert!(matches!(win.read(true, 100_000_000), Err(Error::Os(Errno::ETIMEDOUT))));
+ match std::env::args().nth(1).as_deref() {
+  Some("eio") => assert!(matches!(win.read(true, 100_000_000), Err(Error::Os(Errno::EIO)))),
+  Some("infinite") => assert!(matches!(win.read_error("idle-read-events", true, u64::MAX, Error::Os(Errno::ETIMEDOUT)), Error::Os(Errno::ETIMEDOUT))),
+  _ => assert!(matches!(win.read(true, 100_000_000), Err(Error::Os(Errno::ETIMEDOUT)))),
+ }
 }
 '''.replace('// READ', read).replace('// DIAGNOSTIC', diagnostic)
         with tempfile.TemporaryDirectory(prefix='window-dispatch-diagnostic-') as directory:
@@ -80,12 +83,17 @@ fn main() {
                 fixture = fixture[:start] + fixture[end:]
                 (path / 'check.rs').write_text(fixture)
             subprocess.run(compiler + ['-Dwarnings', str(path / 'check.rs'), '-o', str(path / 'check')], check=True)
-            result = subprocess.run([str(path / 'check')], capture_output=True, text=True, check=True)
-            for field in ['WINDOW_READ_ERROR', 'pid=', 'window=42', 'path=idle-read-events',
-                          'participant=false', 'clock_configured=false',
-                          'next_timer_ms=18446744073709551615', 'animating=false',
-                          'block=true', 'timeout_ns=100000000', 'at_ns=123456789', 'ETIMEDOUT']:
-                self.assertIn(field, result.stderr)
+            timeout = subprocess.run([str(path / 'check')], capture_output=True, text=True, check=True)
+            self.assertNotIn('WINDOW_READ_ERROR', timeout.stderr)
+            for mode, errno, timeout_ns in [('eio', 'EIO', '100000000'),
+                                             ('infinite', 'ETIMEDOUT', '18446744073709551615')]:
+                with self.subTest(mode=mode):
+                    result = subprocess.run([str(path / 'check'), mode], capture_output=True, text=True, check=True)
+                    for field in ['WINDOW_READ_ERROR', 'pid=', 'window=42', 'path=idle-read-events',
+                                  'participant=false', 'clock_configured=false',
+                                  'next_timer_ms=18446744073709551615', 'animating=false',
+                                  'block=true', f'timeout_ns={timeout_ns}', 'at_ns=123456789', errno]:
+                        self.assertIn(field, result.stderr)
 
 
 if __name__ == '__main__':
