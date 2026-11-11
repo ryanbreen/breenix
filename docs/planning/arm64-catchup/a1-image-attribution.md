@@ -80,7 +80,7 @@ new `ufs_abi` (+2,572); the other crates are unchanged. Named function sizes,
 summing monomorphizations and removing hash suffixes, grow most in
 `scheduler::with_scheduler` (+78,552), `process::with_process_manager` (+24,060),
 `gpu::wait_for` (+10,504) and `WaitQueueHead::prepare_to_wait_checked` (+9,920).
-These are attribution totals, not proof that each existing function got larger:
+These are attribution totals and do not establish that each existing function got larger:
 new generic instantiations also add to them.
 
 ## Duplicated constant and follow-up draft
@@ -102,32 +102,32 @@ The source is `pub const CATALOGUE` at
 line 10. It is used by VirGL (`encode.rs:465`) and re-exported at
 `encode.rs:29` for SVGA's `fragment_texts` (`kernel/src/gpu/svga/encode.rs:55`).
 The const table's separate promotions are the likely duplication mechanism;
-the object bytes prove duplication, not which optimization created it.
+the object bytes establish duplication but do not identify the optimization that created it.
 Investigate one shared static catalogue (including its generator at
 `tools/gpu-profile/math.rs`) without changing shader bytes, tokens, features or
 layout bounds. Compare linked maps before/after and run deterministic encoding
 checks plus the suites those GPU paths reach once at the final head. This is a
 separate follow-up, not an A.1 UFS or GPU edit and not a claim that deduplicating
-one blob alone fixes #2849.
+one blob alone resolves issue #2849.
 
 ## QEMU direct-boot ownership
 
 `scripts/boot-interactive.sh:482` loads the kernel directly with `-kernel`;
 it does not execute the Parallels loader. `boot.S:162` and `boot.S:187` use
 `__boot_stack_top` before/after enabling the MMU; `boot.S:1201` reserves its
-64 KiB stack in low `.bss.boot` (all three maps: 0x40406070..0x40416070).
+64 KiB stack in low `.bss.boot` (the three maps: 0x40406070..0x40416070).
 The scheduler's QEMU branch uses per-CPU stacks (`main_aarch64.rs:2326`), whose
 default region begins at 0x43000000 (`constants.rs:509`). The frame allocator
 excludes the entire low fixed reservation through 0x44000000
 (`platform_config.rs:113`, `:219` and `:223`). Thus there is no independent
 QEMU loader-stack occupant at 0x41E00000..0x42000000 to collide with the image.
 
-“Never touches” needs qualification. The current ASSERT keeps successfully
+The claim that the range is untouched needs qualification. The current ASSERT keeps successfully
 linked images below that range, but main's rejected testing BSS reaches
-0x41E98D20 and `boot.S:165-175` would zero it once the ceiling moves. The legacy
+0x41E98D20 and `boot.S:165-175` would clear it once the ceiling moves. The legacy
 test-disk fallback also cache-maintains 0x41000000..0x42000000
 (`kernel/src/boot/test_disk.rs:308-325`). Neither is use of the loader stack.
 The bogus TTBR0 fallback literals at `ttbr0.rs:197` and
 `context_switch.rs:4646` are 0x42000000 (the old stack's exclusive end), and
 remain u4 work. The code supports moving the loader reservation; it does not
-support promising that the old range can never be accessed.
+support promising that the old range is inaccessible.

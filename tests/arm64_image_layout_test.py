@@ -59,7 +59,7 @@ class LayoutTest(unittest.TestCase):
 
     def test_real_maps_cover_production_and_testing_profiles(self):
         fixtures = ROOT / 'tests/fixtures/arm64-image-layout'
-        # These historical maps always use the old ceiling, even after the
+        # These historical maps use the old ceiling, even after the
         # live layout moves: the overflowing testing image must stay refused.
         cases = [
             ('1055dfd2-testing', '+0x156b00', 'text=0x11b24 rodata=0x12e630', False),
