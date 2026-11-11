@@ -3,6 +3,22 @@ pub const WATCHDOG_NS: u64 = 10_000_000_000;
 pub fn matches_row(rows: &[&str], expected: &str) -> bool {
     rows.iter().any(|row| row.trim() == expected)
 }
+/// Convert a node-local point to window coordinates only if it is visible.
+pub fn drag_start(node: &libbui::tree::Node, from: (i32, i32)) -> Result<(i32, i32), String> {
+    use libbui::tree::Flag;
+    let [x, y, w, h] = node.bounds;
+    let [cx, cy, cw, ch] = node.clip;
+    let px = i128::from(x) + i128::from(from.0);
+    let py = i128::from(y) + i128::from(from.1);
+    if !node.flags.contains(&Flag::Visible) || w <= 0 || h <= 0 || cw <= 0 || ch <= 0
+        || from.0 < 0 || from.1 < 0 || i128::from(from.0) >= i128::from(w)
+        || i128::from(from.1) >= i128::from(h) || px < i128::from(cx) || py < i128::from(cy)
+        || px >= i128::from(cx) + i128::from(cw) || py >= i128::from(cy) + i128::from(ch) {
+        return Err(format!("drag start outside visible node {:?}", node.key));
+    }
+    Ok((i32::try_from(px).map_err(|_| "drag x outside pointer range")?,
+        i32::try_from(py).map_err(|_| "drag y outside pointer range")?))
+}
 pub fn deadline_expired(start: u64, now: u64) -> bool {
     now.saturating_sub(start) >= WATCHDOG_NS
 }
@@ -190,6 +206,26 @@ mod live {
         }
         pub fn key(&mut self, code: u16, mods: &[Modifier]) -> Result<(), String> {
             self.keys.chord(self.window, mods, code).map(|_| ())
+        }
+        /// Drag from a node-local point using relative device-pixel steps.
+        pub fn drag(&mut self, key: &str, from: (i32, i32), steps: &[(i32, i32)]) -> Result<(), String> {
+            let tree = self.tree()?;
+            let node = tree::find(&tree, &Query { key: Some(key), ..Query::default() })?;
+            let point = drag_start(node, from)?;
+            let live = self.keys.backend_mut();
+            let info = live.info(self.window)?;
+            let x = info.x.checked_add(point.0).ok_or("drag x outside pointer range")?;
+            let y = info.y.checked_add(point.1).ok_or("drag y outside pointer range")?;
+            live.move_to((x, y))?;
+            let result: Result<(), String> = (|| {
+                live.button(true, self.window)?;
+                for &step in steps { live.motion(step, self.window)?; }
+                Ok(())
+            })();
+            let release = live.button(false, self.window);
+            result?;
+            release?;
+            Ok(())
         }
         pub fn scroll(&mut self, dy: i32) -> Result<(), String> {
             let live = self.keys.backend_mut();

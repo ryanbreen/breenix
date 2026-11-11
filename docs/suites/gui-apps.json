@@ -212,6 +212,31 @@
           "expect": "With outbound network access on the R240 for the example.com and www.duke.edu rows, bcheck launched without arguments completes with every shipped row passed within 60 seconds."
         }
       ]
+    },
+    {
+      "id": "guskit",
+      "title": "Gus Kit",
+      "cases": [
+        {
+          "id": "pencil",
+          "title": "Pencil stroke"
+        },
+        {
+          "id": "shapes",
+          "title": "Line, rectangle and circle"
+        },
+        {
+          "id": "fill",
+          "title": "Fill inside an outline"
+        },
+        { "id": "eraser-color", "title": "Color selection and eraser" },
+        { "id": "undo-redo", "title": "Undo and redo" },
+        { "id": "save-open", "title": "Save and reopen BMP and PNG" },
+        { "id": "save-fails-cleanly", "title": "Failed save leaves file intact" },
+        { "id": "open-malformed", "title": "Malformed image leaves canvas intact" },
+        { "id": "quit-unsaved", "title": "Confirm quitting unsaved changes" },
+        { "id": "shortcuts", "title": "Tool and file shortcuts" }
+      ]
     }
   ]
 }
