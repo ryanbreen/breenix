@@ -1401,10 +1401,14 @@ impl Suite {
         emit(&std::format!("SUITE {} ELAPSED ms={}", self.id, ms));
         finalize();
         feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
-        if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }
-        if !screen.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }
-        if let Some(upload) = &mut evidence {
-            emit(&upload.capture("suite-final-panel", evidence_scanout, evidence_transfer));
+        // A nested runner leaves the outer suite's display alone. The desktop
+        // gui-apps child owns the final panel because init only supervises it.
+        if !scoped || self.id == "gui-apps" {
+            if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }
+            if !screen.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }
+            if let Some(upload) = &mut evidence {
+                emit(&upload.capture("suite-final-panel", evidence_scanout, evidence_transfer));
+            }
         }
         if scoped {
             if place.is_some() {
