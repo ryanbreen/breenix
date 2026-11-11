@@ -130,13 +130,20 @@ mod process {
     impl Pid { pub fn raw(self) -> i32 { self.0 } }
     pub fn getpid() -> Result<Pid, ()> { Ok(Pid(super::PID.load(super::Ordering::Relaxed))) }
 }
-fn records(only: Option<&str>, scoped: bool, pid: i32) -> bool {
+struct Suite { id: &'static str }
+impl Suite {
+fn records(&self, only: Option<&str>, scoped: bool, pid: i32) -> bool {
     PID.store(pid, Ordering::Relaxed);
     let recording = EXPRESSION;
+    assert!(!self.id.is_empty());
     let _ = scoped;
     recording
 }
+}
 #[test] fn ownership_boundary() {
+    let records = |only, scoped, pid| Suite { id: "gui-apps" }.records(only, scoped, pid);
+    assert!(!Suite { id: "runner-fixture" }.records(Some("proof"), true, 9));
+    assert!(!Suite { id: "runner-fixture" }.records(None, true, 9));
     assert!(records(Some("guskit"), true, 9));
     assert!(records(None, true, 9));
     assert!(records(None, false, 1));

@@ -1244,9 +1244,10 @@ impl Suite {
             screen.draw(self, &title, &subtitle, &states, Verdict::Failed(message), &feed, only);
             idle(&mut screen, &feed);
         }
-        // GUI subreapers own and reap their descendants even for a selection.
+        // The desktop gui-apps subreaper owns the boot's GUI workload, even for a selection.
+        // Nested runner fixtures share the machine and cannot own its free-frame delta.
         // Their memory record measures that scope, without claiming a full run.
-        let recording = scoped || only.is_none() && process::getpid().is_ok_and(|pid| pid.raw() == 1);
+        let recording = scoped && self.id == "gui-apps" || only.is_none() && process::getpid().is_ok_and(|pid| pid.raw() == 1);
         screen.prepare();
         // Count the text renderer's persistent font tables and presentation state
         // in both memory samples, just as the GPU and GUI views warm before sampling.
