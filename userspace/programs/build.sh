@@ -356,6 +356,8 @@ STD_BINARIES=(
     "bounce"
     "particles"
     "confetti"
+    "demo"
+    "rectangles"
     "tones"
     "fart"
     "http_test"

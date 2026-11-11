@@ -14,3 +14,5 @@ echo	Print text	terminal	/bin/echo
 ps	List processes	terminal	/bin/ps
 Particles	Particle physics demo	gui	/usr/bin/particles
 Confetti	Confetti demo	gui	/usr/bin/confetti
+Demo	Animated graphics demo	gui	/usr/bin/demo
+Rectangles	Bouncing rectangles demo	gui	/usr/bin/rectangles
