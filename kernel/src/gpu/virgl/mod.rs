@@ -30,6 +30,15 @@ use crate::gpu::dma::{DmaBox, Pages, WordBuf};
 use queue::{Queue, Segment};
 use wire::{cmd, resp};
 
+// Retain the latest refused wire command until the reset worker can report it.
+static ERROR_COMMAND: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static ERROR_DETAIL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static ERROR_SERIAL: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+pub(super) fn take_error() -> [u64; 3] {
+    use core::sync::atomic::Ordering;
+    [ERROR_COMMAND.swap(0, Ordering::AcqRel), ERROR_DETAIL.load(Ordering::Relaxed), ERROR_SERIAL.load(Ordering::Relaxed)]
+}
+
 /// What a request is for, so its completion goes to the right place.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Tag {
@@ -473,6 +482,14 @@ impl Device {
         req.resp.observe();
         self.answered = self.answered.max(self.made_at[head as usize]);
         let answer = req.resp.u32_at(wire::HDR_TYPE);
+        if !ok(answer) {
+            use core::sync::atomic::Ordering;
+            let field = if req.hdr.len() >= wire::HDR + 4 { req.hdr.u32_at(wire::HDR) } else { 0 };
+            ERROR_DETAIL.store((u64::from(req.hdr.u32_at(wire::HDR_CTX)) << 32) | u64::from(field), Ordering::Relaxed);
+            let serial = match req.tag { Tag::Sync(s) | Tag::Submit { serial: s, .. } => s, Tag::Background => 0 };
+            ERROR_SERIAL.store(serial, Ordering::Relaxed);
+            ERROR_COMMAND.store((u64::from(req.command_type()) << 32) | u64::from(answer), Ordering::Release);
+        }
         let echoed = req.resp.u64_at(wire::HDR_FENCE);
         let native_fence = req.fence.map(|_| req.hdr.u64_at(wire::HDR_FENCE));
         let Request { tag, fence, resp, .. } = req;

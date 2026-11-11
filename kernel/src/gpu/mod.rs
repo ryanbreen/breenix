@@ -2143,6 +2143,7 @@ struct Hung {
 // Summaries use a separate node from account lines. If this node is still
 // posted, kgpu retains the new counts and retries them after its next wake.
 static HUNG_LOSS_NODE: crate::log_notice::Node = crate::log_notice::Node::new();
+static RESET_CAUSE_NODE: crate::log_notice::Node = crate::log_notice::Node::new();
 static HUNG_NODES: [crate::log_notice::Node; HUNG_KEPT * HUNG_LINES] =
     [const { crate::log_notice::Node::new() }; HUNG_KEPT * HUNG_LINES];
 
@@ -2849,6 +2850,13 @@ fn reaper() {
 /// everything it holds.
 fn reset_device(tid: u64) {
     let Some(mut dev) = with_core(|c| c.begin_reset()).flatten() else { return };
+    if let Device::Virgl(_) = &dev {
+        use core::fmt::Write;
+        let [command, detail, serial] = virgl::take_error();
+        let mut text = NoticeText { bytes: [0; 80], len: 0 };
+        let _ = write!(text, "[gpu] reset cmd={:x} answer={:x} ctx={} field={} serial={}", command >> 32, command as u32, detail >> 32, detail as u32, serial);
+        let _ = RESET_CAUSE_NODE.post_again(core::str::from_utf8(&text.bytes[..text.len]).unwrap_or("[gpu] reset"));
+    }
     dev.begin_reset();
     let start = now_ns();
     while !dev.reset_done() && now_ns().saturating_sub(start) < RESET_BUDGET_NS {
