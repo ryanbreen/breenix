@@ -167,7 +167,10 @@ class SmbStagingTest(unittest.TestCase):
                         ['boot', '--suite', 'gui-apps'] + (['--case', case] if case else []))
                     self.assertEqual(runner.boot(args), 0)
                     self.assertEqual(configure.call_count, int(needs_smb))
-                    self.assertFalse(any('smb-restart' in call.args[0][1] for call in processes.call_args_list))
+                    self.assertEqual(sum('smb-restart' in call.args[0][1] for call in processes.call_args_list),
+                                     int(needs_smb))
+                    build = next(call.args[0] for call in processes.call_args_list if '_build' in call.args[0])
+                    self.assertEqual('--smb-helper' in build, needs_smb)
         deploy = Path(metal_root.__file__).with_name('metal-deploy').read_text()
         self.assertIn('users-hostssh smb-restart', deploy)
 
@@ -200,6 +203,36 @@ class SmbStagingTest(unittest.TestCase):
                 self.assertEqual(len(transcripts[-1]['requests']), 1)
                 self.assertEqual(transcripts[-1]['requests'][0]['ok'], not fail)
                 self.assertEqual(transcripts[-1]['requests'][0]['seq'], 7)
+
+    def test_gui_stop_start_and_cleanup(self):
+        helper = load_script('smb-restart')
+        for ending in ('done', 'ended'):
+            with self.subTest(ending=ending):
+                chunks = iter([b'SUITE gui-apps SMBSTOP guskit/smb-share-gone seq=1\n'
+                               b'SUITE gui-apps SMBSTOP guskit/smb-share-gone seq=1\n'
+                               b'SUITE gui-apps SMBSTART guskit/smb-share-gone seq=2\n'
+                               b'SUITE gui-apps SMBSTOP guskit/smb-share-gone seq=3\n' +
+                               (b'SUITE gui-apps DONE passed=1 failed=0 skipped=0 total=1\n'
+                                if ending == 'done' else b'')])
+                commands, transcripts = [], []
+                def remote(*cmd, **kwargs):
+                    if cmd[0] == 'tail':
+                        return SimpleNamespace(returncode=0, stdout=next(chunks))
+                    if cmd[0] == 'test':
+                        return SimpleNamespace(returncode=int(ending != 'ended'))
+                    self.assertEqual(cmd[0], 'tee')
+                    transcripts.append(json.loads(kwargs['input']))
+                    return SimpleNamespace(returncode=0)
+                def incus(*cmd, **kwargs):
+                    commands.append(cmd)
+                    return SimpleNamespace(returncode=0)
+                with patch.object(helper.time, 'sleep'), contextlib.redirect_stdout(io.StringIO()):
+                    status = helper.watch('20261110T000000Z-metal', 'fixture-smb', remote, incus, minutes=1)
+                self.assertEqual(status, 0)
+                self.assertEqual([cmd[-2:] for cmd in commands],
+                                 [('stop', 'smbd'), ('start', 'smbd'), ('stop', 'smbd'), ('start', 'smbd')])
+                self.assertEqual([(r['seq'], r['ok']) for r in transcripts[-1]['requests']],
+                                 [(1, True), (2, True), (3, True)])
 
 
 if __name__ == '__main__':
