@@ -597,17 +597,29 @@ impl Compositor {
         while y0 < y1 {
             let rows = band_rows.min(y1 - y0);
             let len = (w * rows * 4) as usize;
-            let began = monotonic_ns();
-            let (r, a) = gpu::readback_why(0, [x0, y0, w, rows], &mut band[..len], w * 4, &mut *record);
-            workspace.costs[2] += monotonic_ns().saturating_sub(began);
-            libuitest::startup::mark("frame-scanout-return");
+            // These immutable sources are independent. Start D's transfer while
+            // reading scanout, then compare only after both observations return.
+            let ((r, a), scanout_ns, (desktop, desktop_ns)) = std::thread::scope(|scope| {
+                let source = &self.desktop;
+                let output = &mut desk[..len];
+                let pending = scope.spawn(move || {
+                    let began = monotonic_ns();
+                    let result = source.read_rect([x0 as usize, y0 as usize, w as usize, rows as usize], output, w as usize * 4);
+                    libuitest::startup::mark("frame-desktop-return");
+                    (result, monotonic_ns().saturating_sub(began))
+                });
+                let began = monotonic_ns();
+                let scanout = gpu::readback_why(0, [x0, y0, w, rows], &mut band[..len], w * 4, &mut *record);
+                let scanout_ns = monotonic_ns().saturating_sub(began);
+                libuitest::startup::mark("frame-scanout-return");
+                let desktop = pending.join().map_err(|_| CheckError::Failed("desktop readback worker panicked".into()))?;
+                Ok::<_, CheckError>((scanout, scanout_ns, desktop))
+            })?;
+            workspace.costs[2] += scanout_ns;
+            workspace.costs[3] += desktop_ns;
             if r != 0 {
                 return Err(CheckError::Failed(format!("readback of rows {}..{}: errno {}, reason {}", y0, y0 + rows, -r, a.reason)));
             }
-            let began = monotonic_ns();
-            let desktop = self.desktop.read_rect([x0 as usize, y0 as usize, w as usize, rows as usize], &mut desk[..len], w as usize * 4);
-            workspace.costs[3] += monotonic_ns().saturating_sub(began);
-            libuitest::startup::mark("frame-desktop-return");
             desktop.map_err(|e| CheckError::Failed(format!("desktop readback of rows {}..{}: errno {}", y0, y0 + rows, -e)))?;
             let began = monotonic_ns();
             for row in 0..rows {
@@ -655,13 +667,28 @@ impl Compositor {
     /// binding: the scanout flag set, a `width` x `height` resource, the same resource each
     /// time. Returns that resource and its size.
     pub fn check_fills(&self, samples: &[(u32, u32, u32)]) -> Result<Scanout, String> {
-        let mut pixel = prefaulted_bytes(4);
+        if samples.is_empty() || samples.iter().any(|&(x, y, _)| x >= self.width || y >= self.height) {
+            return Err(String::from("no samples or sample outside scanout"));
+        }
+        let mut samples = samples.to_vec();
+        samples.sort_by_key(|sample| sample.1);
+        let band_rows = (CHECK_BAND_BYTES / (self.width * 4)).max(1);
+        let mut pixels = Vec::new();
         let mut record = Box::new([0u8; abi::record::SIZE]);
         // SAFETY: the record is one live allocation.
         unsafe { core::ptr::write_volatile(record.as_mut_ptr(), 0) };
         let mut shown: Option<Scanout> = None;
-        for &(x, y, want) in samples {
-            let (r, a) = gpu::readback_why(0, [x, y, 1, 1], &mut pixel, 4, &mut *record);
+        let mut first = 0;
+        while first < samples.len() {
+            let y = samples[first].1;
+            let mut end = first + 1;
+            while end < samples.len() && samples[end].1 - y < band_rows { end += 1; }
+            let group = &samples[first..end];
+            let x = group.iter().map(|p| p.0).min().unwrap();
+            let read_width = group.iter().map(|p| p.0).max().unwrap() - x + 1;
+            let read_height = group.last().unwrap().1 - y + 1;
+            resize_readback(&mut pixels, (read_width * read_height * 4) as usize);
+            let (r, a) = gpu::readback_why(0, [x, y, read_width, read_height], &mut pixels, read_width * 4, &mut *record);
             if r != 0 {
                 return Err(format!("scanout readback of ({}, {}): errno {}, reason {}", x, y, -r, a.reason));
             }
@@ -683,11 +710,15 @@ impl Compositor {
                     return Err(format!("the scanout changed from resource {} to {} during the check", s.resource, resource));
                 }
             }
-            let got = u32::from_le_bytes([pixel[0], pixel[1], pixel[2], pixel[3]]);
-            if got & 0x00FF_FFFF != want & 0x00FF_FFFF {
-                return Err(format!("scanout pixel ({}, {}) is {:#010x}, the desktop has {:#010x}", x, y, got, want));
+            for &(sx, sy, want) in group {
+                let offset = ((sy - y) as usize * read_width as usize + (sx - x) as usize) * 4;
+                let got = u32::from_le_bytes(pixels[offset..offset + 4].try_into().unwrap());
+                if got & 0x00FF_FFFF != want & 0x00FF_FFFF {
+                    return Err(format!("scanout pixel ({}, {}) is {:#010x}, the desktop has {:#010x}", sx, sy, got, want));
+                }
             }
             shown = Some(Scanout { resource, width, height });
+            first = end;
         }
         shown.ok_or_else(|| String::from("no samples"))
     }
