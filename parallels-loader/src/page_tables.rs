@@ -136,8 +136,8 @@ pub const ECAM_REMAP_VA: u64 = 0x2000_0000;
 const MAX_PAGE_TABLES: usize = 12;
 
 /// Fixed loader boot stack region (no overflow protection).
-pub const BOOT_STACK_BOTTOM_PHYS: u64 = 0x41E0_0000;
-pub const BOOT_STACK_TOP_PHYS: u64 = 0x4200_0000;
+pub const BOOT_STACK_BOTTOM_PHYS: u64 = arm64_boot_contract::LOADER_BOOT_STACK_BOTTOM_PHYS;
+pub const BOOT_STACK_TOP_PHYS: u64 = arm64_boot_contract::LOADER_BOOT_STACK_TOP_PHYS;
 
 /// Configuration for platform-specific page table setup.
 pub struct PageTableConfig<'a> {

@@ -41,7 +41,8 @@ def layout(root):
     shared = match(r'^arm64_boot_contract::([A-Za-z_]\w*)$', loader_bottom, 'loader stack bottom contract reference')[1]
     if number(rust_expr(contract, shared)) != boundary:
         raise ValueError('linker ceiling differs from the shared loader stack bottom contract')
-    top = number(rust_expr(loader, 'BOOT_STACK_TOP_PHYS'))
+    top_ref = match(r'^arm64_boot_contract::([A-Za-z_]\w*)$', rust_expr(loader, 'BOOT_STACK_TOP_PHYS'), 'loader stack top contract reference')[1]
+    top = number(rust_expr(contract, top_ref))
     base = number(match(r'^\s*KERNEL_PHYS_BASE\s*=\s*(0x[\da-fA-F_]+)', linker, 'image base')[1])
     stack_base = number(match(r'HHDM_BASE\s*\+\s*(0x[\da-fA-F_]+)', rust_expr(constants, 'PERCPU_STACK_REGION_BASE_DEFAULT'), 'per-CPU base')[1])
     stride = number(rust_expr(constants, 'PERCPU_STACK_STRIDE'))

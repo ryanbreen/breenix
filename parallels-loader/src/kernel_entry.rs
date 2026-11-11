@@ -165,7 +165,7 @@ pub(crate) unsafe fn switch_and_jump(ttbr0: u64, ttbr1: u64, entry: u64, hw_conf
         "mov x0, x3",             // x0 = hw_config_ptr
         "br x2",                   // Jump to kernel_main
 
-        boot_stack_top = const page_tables::BOOT_STACK_TOP_PHYS,
+        boot_stack_top = const arm64_boot_contract::LOADER_BOOT_STACK_TOP_PHYS,
         mair = const page_tables::MAIR_VALUE,
         tcr = const page_tables::TCR_VALUE,
         in("x0") ttbr0,

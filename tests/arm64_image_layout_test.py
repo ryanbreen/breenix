@@ -30,20 +30,17 @@ class LayoutTest(unittest.TestCase):
             linker = root / paths[0]
             loader = root / paths[1]
             contract = root / paths[2]
-            linker.write_text(linker.read_text().replace('KERNEL_PHYS_BASE =', 'IMAGE_CEILING = 0x41E00000;\nKERNEL_PHYS_BASE =').replace('__kernel_writable_phys_end <= 0x41E00000', '__kernel_writable_phys_end <= IMAGE_CEILING'))
-            loader.write_text(loader.read_text().replace('BOOT_STACK_BOTTOM_PHYS: u64 = 0x41E0_0000', 'BOOT_STACK_BOTTOM_PHYS: u64 = arm64_boot_contract::IMAGE_CEILING'))
-            contract.write_text(contract.read_text() + '\npub const IMAGE_CEILING: u64 = 0x41E0_0000;\n')
             check.layout(root)
             original = linker.read_text()
-            linker.write_text(original.replace('IMAGE_CEILING = 0x41E00000', 'IMAGE_CEILING = 0x41F00000'))
+            linker.write_text(original.replace('KERNEL_IMAGE_LIMIT_PHYS = 0x42E00000', 'KERNEL_IMAGE_LIMIT_PHYS = 0x42F00000'))
             with self.assertRaisesRegex(ValueError, 'differs'):
                 check.layout(root)
             linker.write_text(original)
-            original = loader.read_text()
-            loader.write_text(original.replace('BOOT_STACK_TOP_PHYS: u64 = 0x4200_0000', 'BOOT_STACK_TOP_PHYS: u64 = 0x4400_0000'))
+            original = contract.read_text()
+            contract.write_text(original.replace('LOADER_BOOT_STACK_TOP_PHYS: u64 = 0x4300_0000', 'LOADER_BOOT_STACK_TOP_PHYS: u64 = 0x4400_0000'))
             with self.assertRaisesRegex(ValueError, 'overlaps per-CPU stacks'):
                 check.layout(root)
-            loader.write_text(original)
+            contract.write_text(original)
             platform = root / paths[4]
             platform.write_text(platform.read_text().replace('0x5A20_0000', '0x5010_0000'))
             with self.assertRaisesRegex(ValueError, 'DMA block.*leaves'):

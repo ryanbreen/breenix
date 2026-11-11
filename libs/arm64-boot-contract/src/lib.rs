@@ -10,6 +10,19 @@ pub const HHDM_BASE: u64 = 0xffff_0000_0000_0000;
 pub const LINKED_RAM_START: u64 = 0x4000_0000;
 /// The loader remaps this 512 MiB interval; the rest of L1[1] is device space.
 pub const LINKED_RAM_SIZE: u64 = 0x2000_0000;
+/// Fixed loader stack in the linked RAM address space.
+pub const LOADER_BOOT_STACK_BOTTOM_PHYS: u64 = 0x42E0_0000;
+pub const LOADER_BOOT_STACK_TOP_PHYS: u64 = 0x4300_0000;
+/// Exclusive upper bound for the kernel image.
+pub const KERNEL_IMAGE_LIMIT_PHYS: u64 = LOADER_BOOT_STACK_BOTTOM_PHYS;
+
+const _: () = {
+    assert!(LOADER_BOOT_STACK_BOTTOM_PHYS >= LINKED_RAM_START);
+    assert!(LOADER_BOOT_STACK_BOTTOM_PHYS < LOADER_BOOT_STACK_TOP_PHYS);
+    assert!(LOADER_BOOT_STACK_TOP_PHYS <= LINKED_RAM_START + LINKED_RAM_SIZE);
+    assert!(LOADER_BOOT_STACK_TOP_PHYS <= 0x4300_0000);
+};
+
 /// HardwareConfig v5 carries only final-map conventional memory as free RAM.
 /// Earlier versions included boot-services memory before loader allocations.
 /// v6 adds `boot_flags`. v7 adds the boot seed (`boot_seed_source`, `boot_seed`).
