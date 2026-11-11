@@ -57,6 +57,16 @@ mod tests {
     use super::*;
 
     #[test]
+    fn loader_stack_and_image_limit_share_the_reserved_layout() {
+        assert_eq!(LOADER_BOOT_STACK_BOTTOM_PHYS, 0x42e0_0000);
+        assert_eq!(LOADER_BOOT_STACK_TOP_PHYS, 0x4300_0000);
+        assert_eq!(KERNEL_IMAGE_LIMIT_PHYS, LOADER_BOOT_STACK_BOTTOM_PHYS);
+        assert!(LOADER_BOOT_STACK_BOTTOM_PHYS >= LINKED_RAM_START);
+        assert!(LOADER_BOOT_STACK_TOP_PHYS <= LINKED_RAM_START + LINKED_RAM_SIZE);
+        assert!(LOADER_BOOT_STACK_TOP_PHYS <= 0x4300_0000);
+    }
+
+    #[test]
     fn relocated_alias_boundaries_and_direct_addresses() {
         for base in [0, HHDM_BASE] {
             for (va, ipa) in [
