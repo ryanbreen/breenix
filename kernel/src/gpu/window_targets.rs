@@ -217,11 +217,21 @@ impl Target {
     }
 
     pub fn identity(&self) -> Result<(u64, u64, u64), i32> {
-        with_core(|c| {
+        let mut refused = None;
+        let result = with_core(|c| {
             let r = c.resources.get(&self.id).ok_or(EIO)?;
-            if r.lost || r.invalid { return Err(EIO); }
+            if r.lost || r.invalid {
+                refused = Some((r.lost, r.invalid, r.invalidated_by, r.last.map_or(0, |w| w.serial)));
+                return Err(EIO);
+            }
             Ok((r.epoch, r.generation, r.last.map_or(0, |w| w.fence)))
-        }).unwrap_or(Err(ENODEV)).map_err(|e| e as i32)
+        }).unwrap_or(Err(ENODEV));
+        if let Some((lost, invalid, by, last)) = refused {
+            crate::diag_println!("GPU_WINDOW_IDENTITY_FAIL target={} lost={} invalid={} invalidated_by={} last={}", self.id, lost, invalid, by, last);
+        } else if matches!(result, Err(EIO)) {
+            crate::diag_println!("GPU_WINDOW_IDENTITY_FAIL target={} missing=1", self.id);
+        }
+        result.map_err(|e| e as i32)
     }
 
     /// Wait for accepted renders before sampling, replay or capture; invalid contents return EIO.
@@ -330,6 +340,8 @@ impl Target {
             encode::translate(&mut enc,&mut objects,words,&bindings,encode::Extras {
                 vertex_buffer: vb, scratch: [scratch,scratch_texture], data:0,data_width:0,flip_y:FLIP_Y,
                 corrupt:None,suppress:None,swap:None });
+            // Private copies use Sync tags, outside the foreground Submit drain.
+            if platform_config::is_qemu() { enc.completion_read(self.id, (self.width * 4).next_multiple_of(256)); }
             Chunks::Virgl(enc.finish().ok_or(ENOMEM)?)
         };
         with_core(|c| if let Some(x) = c.contexts.get_mut(&ctx) { x.objects = objects; x.dx = dx; });
@@ -499,15 +511,23 @@ pub struct SceneEpoch {
     pub scale: u32,
 }
 pub fn scene_epoch(owner: u64, context: u64) -> Result<SceneEpoch, i32> {
-    with_core(|c| {
+    let mut refused = None;
+    let result = with_core(|c| {
         if !display::owner(owner) { return Err(breengel_abi::errno::EPERM as i64); }
         let id = c.ctx_of(owner, context).ok_or(EINVAL)?;
         let ctx = c.contexts.get(&id).ok_or(EINVAL)?;
-        if ctx.state != CtxState::Live || ctx.dropped { return Err(EIO); }
+        if ctx.state != CtxState::Live || ctx.dropped {
+            refused = Some((id, ctx.state, ctx.dropped, ctx.device_alive, ctx.errors_in_row, ctx.warm_failures));
+            return Err(EIO);
+        }
         let mode = display::MODES[c.display.mode as usize];
         Ok(SceneEpoch { reset: c.epoch, owner_sequence: c.display.owner_sequence,
             width: mode.width, height: mode.height, scale: mode.scale })
-    }).unwrap_or(Err(ENODEV)).map_err(|e| e as i32)
+    }).unwrap_or(Err(ENODEV));
+    if let Some((id, state, dropped, alive, errors, warm)) = refused {
+        crate::diag_println!("GPU_SCENE_EPOCH_FAIL owner={} context={} state={:?} dropped={} alive={} errors={} warm_failures={}", owner, id, state, dropped, alive, errors, warm);
+    }
+    result.map_err(|e| e as i32)
 }
 pub fn scene_handle(owner: u64) -> Result<u64, i32> {
     with_core(|c| if display::owner(owner) { Ok(c.handle()) } else { Err(breengel_abi::errno::EPERM) }).unwrap_or(Err(ENODEV as i32))
