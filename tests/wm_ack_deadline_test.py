@@ -27,6 +27,12 @@ DEADLINE
     assert_eq!(host_ack_time(record.trim_end(), "BXKEY_ACK", 55), None, "partial log line");
     assert_eq!(host_ack_time(record, "BXPTR_ACK", 55), None);
     assert_eq!(host_ack_time(record, "BXKEY_ACK", 54), None);
+    NOW.store(ack, Ordering::Relaxed);
+    let late = until_from(ack, 2000, "blocking observer", || {
+        NOW.store(ack + 2_001_000_000, Ordering::Relaxed);
+        Ok(true)
+    });
+    assert!(late.is_err(), "an observation returning after its deadline cannot establish latency");
     for delay in [0, 100_000_000, 500_000_000] {
         NOW.store(ack + delay, Ordering::Relaxed);
         let result = until_from(ack, 2000, "typed text", || Ok(now() >= ack + 2_005_000_000));
