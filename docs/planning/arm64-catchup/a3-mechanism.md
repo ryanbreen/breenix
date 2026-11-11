@@ -1,5 +1,305 @@
 # A.3 recovery mechanism analysis — a3-u10-mechanism
 
+## A.3 u14 font trace: request serialization is identified; 1921 ms remains unexplained
+
+This analysis answers coordinator ledger line 194(1–4) at source head
+`7eafecbe` (runtime unchanged from `3d9201e8`). **The code and capture identify
+repeated synchronous disk I/O and actual contention for the disk request gate.
+They do not numerically explain the whole 1921.085125 ms interval.** No runtime
+repair or boot is claimed. The remaining measurement is named below.
+
+The [font evidence index](serials/a3-u14-font-trace.txt) retains disk inspection,
+ELF symbols/disassembly and numbered raw serial rows. `F01`–`F11` name its
+hashed captures; `F11:L40954` means physical LF line 40954 of
+`20261111T190334Z-qemu-43440/serial.txt`, not line 40954 of the index. The earlier
+capture inventory's E-keys remain unchanged. All times below use guest
+monotonic stamps, not serial receipt time. <!-- claim-lint:ok: serials/a3-u14-font-trace.txt indexes 11 SHA256-pinned captures with physical LF source lines. -->
+
+### (1) Display-font identity on the shipped image
+
+`FontConfig::load` reads `/etc/fonts.conf` (or its configured root), parses
+`display.font`, and falls back to `/usr/share/fonts/DejaVuSans.ttf` if loading
+fails (`libs/breengel/src/font.rs:7,38–42,60,85–98`). The shipped image's
+`/etc/fonts.conf` explicitly selects that same file, at display size 14.
+The disk inspection in the evidence index reports inode **56687**, size
+**757076 bytes**, ext2 block size **1024**, **740 data blocks** and **4 indirect
+blocks** (1488 sectors including metadata). The last data block has 340 useful
+bytes; the extent reader transfers 757760 data bytes, 684 beyond EOF internally,
+and returns 757076. The raw inode/indirect walk matched the check's physical
+map 740/740. Font SHA-256:
+`7da195a74c55bef988d0d48f9508bd5d849425c1770dba5d7bfc6ce9ed848954`.
+
+The inspected `target/ext2-aarch64.img` hashes
+`feac6807e0e4838e2b86aa5f9b800b9268b8d7b130fb9127dcf77bb64e1dc610`,
+matching the measurement's staging record above. The launcher copies it to a
+writable image (`scripts/boot-interactive.sh:351–352,373`). These are shipped
+image facts, not an inspection of the departed guest's RAM or writable copy.
+The recovery setup has no font-config override or font-selection edit in
+`userspace/programs/src/wm_suite`; both parsed disk configuration and the
+fallback select this path. The snapshot itself has no pathname/FD argument.
+
+### (2) From std::fs::read to ARM virtio-blk
+
+The pinned Rust fork is `666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d`
+(`rust-fork.toml:5`). In that fork, `rust-fork/library/std/src/fs.rs:283–291`
+opens the file, gets metadata, reserves its size, then calls
+`default_read_to_end`. The sized vector supplies room for this whole file;
+the loop's initial limit rounds size+1024 up to its buffer-size multiple
+(`rust-fork/library/std/src/io/mod.rs:418–420,472–484`). With a stable regular
+file and successful metadata, this is:
+
+| File operation | ARM syscall | Content result |
+| --- | --- | --- |
+| open | openat, 56 | descriptor |
+| metadata | fstat, 80 | size 757076 |
+| read into sized vector | read, 63, count 757076 | 757076 bytes |
+| EOF probe | read, 63, normally count 32 | 0 bytes |
+| drop File | close, 57 | descriptor released |
+
+Thus **two read syscalls, five file syscalls**, rather than one syscall per
+sector. The EOF probe is at `io/mod.rs:424–440,455–464`; FileDesc's reads call
+libc once (`rust-fork/library/std/src/sys/fd/unix.rs:96–104,175–188`), and
+metadata calls fstat64 (`rust-fork/library/std/src/sys/fs/unix.rs:1204–1206`).
+Breenix libc maps open/read/fstat64/close to the kernel
+(`libs/libbreenix-libc/src/lib.rs:210–216,262–271,343–355,453–455`). This is the
+code-derived normal pattern, not a measured syscall count: allocator syscalls,
+EINTR retries, failed metadata, or a changing file could add calls. The marks
+also enclose the configuration `print!` before open (`bwm.rs:165–168`).
+
+The kernel path is:
+
+- Namespace resolution/open goes through namei and ext2, installing a regular
+  file handle, mount ID and position (`kernel/src/fs/namei.rs:31–37`,
+  `kernel/src/syscall/fs.rs:332–350,428–436`,
+  `kernel/src/ipc/fd.rs:73–78`). The generic VFS file API is not an intervening
+  data-cache layer on this descriptor's read path.
+- `sys_read` clones the handle/position and releases the process-manager lock,
+  takes the root ext2 read guard, verifies the handle, reloads its inode, then
+  calls `read_file_range_coherent` for the requested count; it copies the
+  returned vector to userspace and advances the position
+  (`kernel/src/syscall/handlers.rs:1373–1387,1418–1463`). No 4 KiB syscall
+  cap is applied here. An inode reload reads the containing 512-byte sector
+  through the mount cache (`kernel/src/fs/ext2/inode.rs:154–181`).
+- `read_file_range_coherent` first reads the range from disk, then overlays any
+  resident mapped pages (`kernel/src/fs/ext2/mod.rs:612–641`). The mapping
+  cache therefore does **not** skip the underlying disk read. Ordinary read
+  does not populate those file-mapping pages; `MapState::overlay` only copies
+  pages already resident (`kernel/src/memory/file_map.rs:642–664`).
+- The extent reader clips EOF, caches the single-indirect pointer array for
+  that invocation, looks up double-indirect pointers, and groups consecutive
+  data blocks into at most 64 KiB calls
+  (`kernel/src/fs/ext2/file.rs:279–331,338–362`). On this disk's seven extents,
+  the 14 run lengths in KiB are
+  `16,16,32,64,64,64,64,64,64,64,64,64,64,36`, totalling 740 KiB.
+- `read_ext2_blocks` converts to 512-byte sectors (`file.rs:31–52`). The
+  mounted device first checks the sector cache; on a partial miss it rereads
+  the **whole requested run**, not just its missing sectors
+  (`kernel/src/fs/ext2/mount_device.rs:75–95`,
+  `kernel/src/fs/ext2/sector_cache.rs:125–149`). The ARM wrapper calls
+  `read_sectors` (`kernel/src/block/virtio.rs:197–205`).
+- ARM virtio-blk splits a miss into transfers of at most 4096 bytes (or a
+  smaller negotiated SIZE_MAX), takes a per-device exclusive request gate,
+  submits one request, waits, copies the result, releases the gate, then
+  proceeds to the next chunk (`kernel/src/drivers/virtio/block_mmio.rs:498,
+  797–808,1057–1111`). There is **one in-flight request per device**, even
+  between unrelated callers. Gate contenders sleep on its waitqueue
+  (`block_mmio.rs:57–105`).
+- Each submitted request synchronously waits for its completion, with a
+  one-second failure-check slice, **not a mandatory one-second sleep**
+  (`block_mmio.rs:405–427`). The block IRQ consumes the used ring and calls
+  `completion.complete`; the completion primitive buffers the waiter wake
+  for scheduler application (`block_mmio.rs:1362–1399`,
+  `kernel/src/task/completion.rs:4–24,367–375`). IRQ arrival, wake processing
+  and redispatch contribute to elapsed wait. No debugger was used.
+
+**Request arithmetic, with conditions.** At a 4096-byte transfer limit,
+`sum(ceil(run_KiB/4)) = 185` data requests. The production reader issues 945
+indirect-block lookups: one single-indirect plus twice for each of 472
+logical blocks beyond 267. With an initially empty, allocated cache and no
+other access interleaving, those become **four** device requests for the four
+unique pointer blocks, yielding **189 content-path requests**. An immediate
+reread in the same isolated fixture makes **188** (185 data + 3 metadata).
+The EOF content call makes **0**; sys_read still reloads the inode first.
+The regular read adds at most one inode-sector read when that sector misses,
+so its cold content+inode count is 190, before any relatime work. Open/fstat
+can also read directory/inode metadata. Conditional relatime refresh can
+acquire an exclusive mount guard and read/write the inode
+(`handlers.rs:1454–1456`, `ext2/mod.rs:2854–2860,1110–1118`).
+
+These are conditional counts, **not 189 measured requests in F11**. A hot
+complete run can remove its data requests; concurrent eviction can increase
+metadata misses, overlapping writes can prevent fills, and allocation failure
+can remove the cache. Without cache, these same content operations issue
+`185 + 945 = 1130` device requests at the 4 KiB limit. A smaller negotiated
+transfer limit also increases counts; the retained initialization rows do not
+export SIZE_MAX. The ring does not record actual request counts or cache hits.
+
+### (3) What a restart can reuse, and what the snapshot identifies
+
+A normal mount enables a **512 KiB**, 8-way set-associative LRU sector cache
+(`kernel/src/fs/ext2/mod.rs:159–164,198`,
+`kernel/src/fs/ext2/sector_cache.rs:25–28,45–65,110–149`). It is shared across
+processes and survives the original bwm's exit. It holds 1024 sectors, whereas
+this font's data alone spans 1480 sectors. Even without intervening traffic,
+reading again from the beginning evicts later cached data before reaching it:
+the production-code fixture gets no whole data-run hits on its immediate
+second pass (185 data requests again). It is incorrect both to promise a
+cache-resident restart and to say Breenix has no data cache here. The original's
+parsed `Font` and Vec are process memory; the replacement creates fresh ones
+and executes the same `std::fs::read` (`userspace/programs/src/bwm.rs:162–188`).
+The original bwm's read does not leave a persistent parsed-font service.
+
+Other intervening I/O includes executable/name lookup and other GUI clients'
+font loads; bterm's window construction loads the system fonts
+(`userspace/programs/src/bterm.rs:338`; `libs/breengel/src/font.rs:130–148,
+190–197`). Cache access order, replacement, concurrent writes and gate
+contention vary with scheduling. The capture has no cache census that would
+assign a precise hit/miss count to F11's font read.
+
+The snapshot is more specific than the earlier report stated:
+
+| F11 row | Recorded state at the supervisor wait midpoint |
+| --- | --- |
+| L52813 | snapshot 279432301125 ns; wait began 278369891583 ns |
+| L52821 | bterm owner PID 772 / TID 1003, syscall **79 = newfstatat**, BlockedOnIO, wait=completion, object `0xffff000040ee6bc0`, off-CPU age **26.718500 ms** |
+| L52827 | replacement leader PID 781 / TID 1014 running in GPU syscall 416 |
+| L52829 | worker owner PID **782** / TID **1016**, syscall 63, BlockedOnIO, wait=waitqueue, object `0xffff000040ee6c10`, off-CPU age **26.712708 ms**, no timer wake |
+
+The PID 782 value is the raw row's owner PID, not a second replacement
+compositor. Clone assigns a child owner PID and separately retains the thread
+group (`kernel/src/syscall/clone.rs:478,541`); the old prose's “PID 781 TID 1016”
+was shorthand for the group and not the literal snapshot. bterm's creation is
+F11:L39603–39612. The snapshot lacks the read FD/path, but its read syscall and
+startup placement are consistent with the font worker's source path.
+
+The inspected kernel ELF hashes
+`bf2c5a822cc849e57052e9a98ce4d97982be4fcb5cc8a826c393a23f812e702c`, matching
+this boot. Its symbols identify `COMPLETIONS` at `0xffff000040ee6bc0` and
+`REQUEST_GATES` at `0xffff000040ee6c10`. The retained gate disassembly shows
+`x1 -> x20 -> x0` passed unchanged to `WaitQueueHead::prepare_to_wait`
+(addresses `0xffff00004083b188,1d8,1e0`); the waitqueue is at gate offset zero.
+These are device 0's objects; root/home mount waitqueues have different
+addresses. `waitqueue.rs:78–83` publishes the object's own address, while
+`completion.rs:373` publishes the completion address. This resolves the
+font worker's wait to **request-gate contention**, with bterm on that device's
+completion at the same snapshot. The producer that should release the font
+worker is the preceding submitter finishing/copying its result and dropping
+its gate guard (`block_mmio.rs:102–104,1104–1110`), ultimately after device IRQ
+completion. A gate wake is distinct from a device completion wake. <!-- claim-lint:ok: docs/planning/arm64-catchup/serials/a3-u14-font-trace.txt retains symbols and the gate-pointer disassembly from the hash-matched ELF. -->
+
+The 26.7 ms figures are recorded off-CPU ages, **not per-request service times
+or syscall durations** (`kernel/src/task/thread.rs:2101–2115`). The header and
+thread rows are sampled sequentially. The bterm completion timer is consistent
+with the one-second completion slice; it does not establish that the hardware was
+still unfinished rather than its wake not yet applied. No read-entry/return,
+LBA, byte count, submit/IRQ/redispatch timestamps or gate-owner history is
+exported for these I/O calls. The wm-readback ring's begin/end fields measure
+SCANOUT_READBACK, not filesystem read or virtio-blk requests; using those
+latencies for this font would measure another operation.
+
+### (4) Arithmetic and today's startup variance
+
+For the latest replacement (F11:L40917,L40954–40956,L40928,L40961):
+
+```text
+font config -> file = (280293164166 - 278372079041) / 1e6 = 1921.085125 ms
+file -> parse       = (280293522250 - 280293164166) / 1e6 =    0.358084 ms
+file -> fonts-ready = (280320528791 - 280293164166) / 1e6 =   27.364625 ms
+exec -> config      = (278372079041 - 278360054583) / 1e6 =   12.024458 ms
+exec -> fonts-ready = 12.024458 + 1921.085125 + 27.364625 = 1960.474208 ms
+exec -> composite   = (280520028541 - 278360054583) / 1e6 = 2159.973958 ms
+observer end -> composite = (280520028541 - 280375564458) / 1e6 = 144.464083 ms
+```
+
+The observer's measured interval is
+`(280375564458 - 278369888166)/1e6 = 2005.676292 ms`
+(F11:L40203); its arm timestamp differs by 3417 ns. The startup stamps therefore
+locate the dominant interval and its consequence, but do not partition it:
+
+```text
+1921.085125 = config-print + open/metadata + allocation/copies/cache CPU
+             + sum(font request gate waits)
+             + sum(font completion/wake/redispatch waits)
+             + conditional relatime + EOF/close + other off-CPU time
+```
+
+If 189 requests alone consumed that interval, their required average would be
+**10.164472 ms/request** (188 gives 10.218538). Neither is a measured latency.
+Subtracting even the observed gate off-CPU age leaves
+`1921.085125 - 26.712708 = 1894.372417 ms` unallocated; this subtraction is an
+illustration of the missing accounting, not a disjoint measured partition.
+The worker's `cpu_ns=199254000` is cumulative lifetime CPU at the midpoint,
+not CPU used between the two font marks. It cannot fill the missing terms.
+
+Here are the retained supervisor-replacement timelines from today's ARM
+captures with phase stamps, through F11. Durations are from absolute ns;
+fonts-ready is relative to exec. Pre-plan includes read/parse and earlier
+startup, including operations other than disk reads. Older captures without font stamps cannot
+supply the file interval. The table excludes the native run and keeps original
+versus replacement distinct in the accompanying indexed rows.
+
+| Capture / replacement | fonts-ready ms | config→file ms | exec→plan ms | plan ms | submit ms | Raw citations |
+| --- | ---: | ---: | ---: | ---: | ---: | --- |
+| F01 120852 / 15 | 1360.123 | unavailable | 975.490 | 8.518 | 373.398 | L377,L388,L398–401 |
+| F02 121843 / 837 | 1384.467 | unavailable | 991.551 | 8.905 | 381.616 | L1989,L2000,L2010–2013 |
+| F03 124428 / 636 | 1384.265 | unavailable | 941.128 | 8.057 | 431.996 | L1872,L1883,L1893–1896 |
+| F04 134512 / 665 | 1809.238 | unavailable | 29.063 | 1144.490 | 633.463 | L1892,L1903,L1913–1916 |
+| F05 142945 / 728 | 2053.970 | unavailable | 1685.614 | 342.459 | 23.696 | L2056,L2067,L2078–2081 |
+| F06 154755 / 731 | 1124.131 | unavailable | 657.841 | 425.362 | 38.735 | L1991,L2002,L2012–2015 |
+| F07 161134 / 736 | 1603.705 | unavailable | 30.546 | 895.329 | 674.799 | L2064,L2077,L2086–2089 |
+| F08 165116 / 728 | 2523.903 | unavailable | 2483.322 | 7.287 | begin absent | L2113,L2124,L2133,L2134,L2138 |
+| F09 173538 / 720 | 2094.712 | 2052.695 | 2062.927 | 4.604 | 23.488 | L1959,L1970,L1979–1982,L1995–1996 |
+| F10 180908 / 801 | 1605.141 | 17.221 | 26.639 | 899.685 | 632.237 | L41186,L41197,L41207–41210,L41223–41224 |
+| F11 190334 / 781 | 1960.474 | 1921.085 | 1933.483 | 2.750 | 22.683 | L40917,L40928,L40938–40941,L40954–40955 |
+
+The often-quoted 1.7–2.5 s is not the full range of these replacement stamps:
+these records span **1124.131–2523.903 ms**, across different commits and
+instrumentation. Font-ready also includes GPU atlas work (`bwm.rs:181–187`).
+F09 was the previously identified stale-suite measurement, retained as evidence,
+not proof of current instrumentation. Most decisively, F10's 17.220584 ms file
+interval coexists with 899.684959 ms planning and 632.236709 ms submit, whereas
+F11's planning/submit are 2.749500/22.682667 ms after a 1921.085125 ms file
+interval. In F11 the original bwm's config→file was also **1962.267000 ms**
+(F11:L40887–40888), not a uniquely cold replacement read.
+
+Source-supported sources of variation are cache residency/interleaving,
+competition for the single disk gate (observed), host/device/IRQ scheduling and
+guest wake/redispatch, plus the separate font/GPU startup work. The fixed
+request-count mechanism alone does **not** explain the run-to-run variance or
+the 1921 ms. There is no measured correlation assigning the missing duration
+to host load, cache misses, lost wakes or starvation. Today's older stamps
+cannot retrospectively supply those measurements.
+
+### Check and stop condition
+
+Check-first commit `126a6dec` adds `tests/a3_font_trace_test.py`. It compiles
+production `read_file_range`, block lookup/read helpers, and the sector cache's
+read/replacement methods against this disk's pointer fixture. Its only device
+substitution counts misses at a 4096-byte DMA boundary; it does not emulate
+latency, scheduling or IRQ correctness. The cold/read-again/EOF assertions pass
+on the existing implementation: **1/1 host check, rustc -Dwarnings**, under
+`taskpolicy -b`, `CARGO_BUILD_JOBS=4`. This is a **U29 regression guard**, not a
+red-first repair. Fixture extraction/comment/visibility errors were corrected
+before that commit; no production code or expected count changed.
+
+**Missing measurement / coordinator line 194 blocker:** one interval accounting
+for this read's actual request count and cache hits, gate enqueue/acquire/release
+with owner, request submit/IRQ/wake/redispatch, and file-syscall entry/return
+(including open/stat/relatime). That would distinguish many ordinary serialized
+requests from a few long device waits or wake/gate delays. The existing ring
+resolves one wait identity and its waker path, not this accounting. No new boot
+or speculative forcing test/fix follows from this analysis. Earlier delayed
+reap and native stack-restored mechanisms remain open under issue #2872.
+
+The unit changes this report, its retained evidence and the host check only.
+Kernel/userspace artifacts were inspected, not rebuilt; the diff reaches no
+runtime suite. No ARM or R240 boot, deployment, PR creation, rebase, force push
+or merge was performed. The existing branch already contains fresh origin/main
+`728da925`. Validation commands: `python3 tests/a3_font_trace_test.py` passed 1/1 before
+the check-first commit; `python3 scripts/claim-lint.py --base 126a6dec` and
+`git diff --check` exit 0 for this report/evidence change. No production
+build or repeated host-test run is needed for the subsequent prose edits.
+
 ## Measurement 20261111T190334Z-qemu-43440: font read interval remains unexplained
 
 At `3d9201e8`, the normal ARM build and disk staging preceded this single
@@ -56,7 +356,7 @@ remaining question is what the font worker's read and its waitqueue were
 waiting for, what should wake them, and whether that condition accounts for the
 observed 1921 ms interval. The earlier slow reap and native stack-restored
 mechanisms remain unclassified. Under coordinator line 190, stop here: no
-forcing check, behavior fix, proof boot, R240 boot or board update is justified.
+forcing check, behavior fix, proof boot, R240 boot or board update is justified. <!-- claim-lint:ok: docs/planning/arm64-catchup/serials/a3-u14-font-trace.txt F11:L52225 retains the ring counts; F11:L52813-L52829 retains the failed supervisor snapshot. -->
 
 ## Measurement 20261111T173538Z-qemu-95695: stale suite artifact
 
