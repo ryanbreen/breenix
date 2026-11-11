@@ -2276,6 +2276,7 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
     #[cfg(target_arch = "x86_64")]
     let _wait = trace.map(|(t, _)| t.phase(false));
     let start = now_ns();
+    let mut silent_wait = false;
     loop {
         #[cfg(target_arch = "x86_64")]
         if let Some((t, _)) = trace { t.poll(); }
@@ -2312,6 +2313,7 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
         })
         .unwrap_or((None, false));
         if let Some(v) = found {
+            if silent_wait { crate::tracing::providers::gpu::GPU_WAIT_SILENT_FOUND.increment(); }
             return Ok(v);
         }
         if deadline.is_some_and(|d| now_ns() >= d) {
@@ -2359,7 +2361,14 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
         let blocked = trace.map(|_| (now_ns(), crate::time::get_ticks()));
         #[cfg(target_arch = "x86_64")]
         let sleeping = submit_trace.map(|t| t.scope(SubmitPhase::AdmissionSleep));
+        let sleeping_at = now_ns();
         let woke = wait_event(seen, wake);
+        silent_wait = now_ns().saturating_sub(sleeping_at) >= 100_000_000
+            && EVENTS.load(Ordering::Acquire) == seen;
+        if now_ns().saturating_sub(sleeping_at) >= 100_000_000 {
+            crate::tracing::providers::gpu::GPU_WAIT_LONG.increment();
+            if silent_wait { crate::tracing::providers::gpu::GPU_WAIT_SILENT.increment(); }
+        }
         #[cfg(target_arch = "x86_64")]
         drop(sleeping);
         #[cfg(target_arch = "x86_64")]
@@ -5992,6 +6001,7 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
     }
     // The argument, record and pixel-row pages are checked for mapping and writability
     // before any device work, serial or count (gpu-abi.md, READBACK's EFAULT).
+    let probe = ReadPhase::begin(&crate::tracing::providers::gpu::GPU_READ_PROBE_NS);
     if let Some(arg) = arg {
         probe_writable(arg, core::mem::size_of::<abi::Readback>())?;
     }
@@ -6018,17 +6028,21 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
         }
         probed = (start + row - 1) / PAGE as u64;
     }
+    drop(probe);
     let refuse = |reason: u32, failed: u64| -> Result<u64, Refused> { Err(Refused::Eio(reason, failed)) };
     match with_core(|c| display::readable(c, tgid, id, window)).ok_or(ENODEV)? {
         Ok(()) => {}
         Err(EIO) => return refuse(readback_reason::BINDING_UNKNOWN, 0),
         Err(e) => return Err(Refused::Errno(e)),
     }
+    let allocation = ReadPhase::begin(&crate::tracing::providers::gpu::GPU_READ_ALLOC_NS);
     let staging = Staging::new(tgid, (row * h) as usize)?;
+    drop(allocation);
     #[cfg(target_arch = "x86_64")]
     drop(cost_prepare);
     // Wait for the target's accepted writes to complete, then take it for reading.
     // The handle is looked up each time: one destroyed meanwhile is target-dropped.
+    let writers = ReadPhase::begin(&crate::tracing::providers::gpu::GPU_READ_WRITERS_NS);
     let taken = wait_for_traced(deadline, true, |c| {
         if a.target == 0 {
             if (!window && !display::owner(tgid))
@@ -6056,6 +6070,7 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
         Some(Ok((r.invalid, r.invalidated_by, r.generation, r.last, composition)))
     }, #[cfg(target_arch = "x86_64")] trace.as_ref().map(|t| (t, 1)),
         #[cfg(target_arch = "x86_64")] true, #[cfg(target_arch = "x86_64")] None);
+    drop(writers);
     let (invalid, invalidated_by, generation, last, composition) = match taken {
         Ok(Ok(t)) => t,
         Ok(Err(reason)) => return refuse(reason, 0),

@@ -59,6 +59,15 @@ pub static GPU_READ_COMPARE_NS: TraceCounter = TraceCounter::new("gpu_read_compa
 pub static GPU_READ_PREPARE_NS: TraceCounter = TraceCounter::new("gpu_read_prepare_ns", "Readback validation and staging preparation nanoseconds");
 pub static GPU_READ_OUTPUT_NS: TraceCounter = TraceCounter::new("gpu_read_output_ns", "Readback user output copy nanoseconds");
 
+/// Long device waits distinguish notification delivery from watchdog polling.
+pub static GPU_WAIT_LONG: TraceCounter = TraceCounter::new("gpu_wait_long", "GPU waits lasting at least 100 milliseconds");
+pub static GPU_WAIT_SILENT: TraceCounter = TraceCounter::new("gpu_wait_silent", "Long GPU waits without an event count change");
+pub static GPU_WAIT_SILENT_FOUND: TraceCounter = TraceCounter::new("gpu_wait_silent_found", "Completion found by first poll after a long silent wait");
+
+pub static GPU_READ_PROBE_NS: TraceCounter = TraceCounter::new("gpu_read_probe_ns", "Readback user-page probing nanoseconds");
+pub static GPU_READ_ALLOC_NS: TraceCounter = TraceCounter::new("gpu_read_alloc_ns", "Readback staging allocation nanoseconds");
+pub static GPU_READ_WRITERS_NS: TraceCounter = TraceCounter::new("gpu_read_writers_ns", "Readback writer exclusion wait nanoseconds");
+
 /// Threads holding a [`GpuPath`]: the masking primitives look no further while it is 0.
 static GPU_PATH_THREADS: AtomicU32 = AtomicU32::new(0);
 
@@ -132,7 +141,7 @@ pub fn irq_masked_sites(maximum: u64) -> alloc::string::String {
 }
 
 pub fn init() {
-    for counter in [&GPU_CONTEXTS, &GPU_RESOURCES, &GPU_RESOURCE_BYTES, &GPU_VRAM_BYTES, &GPU_IRQ_MASKED_MAX_US, &GPU_PRESENTS_SUSPENDED, &GPU_READ_POISON_NS, &GPU_READ_WAIT_NS, &GPU_READ_COMPARE_NS, &GPU_READ_PREPARE_NS, &GPU_READ_OUTPUT_NS] {
+    for counter in [&GPU_CONTEXTS, &GPU_RESOURCES, &GPU_RESOURCE_BYTES, &GPU_VRAM_BYTES, &GPU_IRQ_MASKED_MAX_US, &GPU_PRESENTS_SUSPENDED, &GPU_READ_POISON_NS, &GPU_READ_WAIT_NS, &GPU_READ_COMPARE_NS, &GPU_READ_PREPARE_NS, &GPU_READ_OUTPUT_NS, &GPU_WAIT_LONG, &GPU_WAIT_SILENT, &GPU_WAIT_SILENT_FOUND, &GPU_READ_PROBE_NS, &GPU_READ_ALLOC_NS, &GPU_READ_WRITERS_NS] {
         assert!(register_counter(counter).is_some(), "trace counter registry overflow while registering the GPU gauges");
     }
 }

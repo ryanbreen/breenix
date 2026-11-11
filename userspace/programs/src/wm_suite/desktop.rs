@@ -574,7 +574,7 @@ impl Desktop {
         .map_err(|e| {
             let detail = format!("{}; {}", observation.failure(), self.output());
             if let Ok(counters) = std::fs::read_to_string("/proc/trace/counters") {
-                for line in counters.lines().filter(|line| line.contains("gpu_read_") || line.contains("gpu_irq_masked") || line.contains("GPU_MASKED")) {
+                for line in counters.lines().filter(|line| line.contains("gpu_wait_") || line.contains("gpu_read_") || line.contains("gpu_irq_masked") || line.contains("GPU_MASKED")) {
                     failure_diagnostic("kernel-readback", line);
                 }
             }

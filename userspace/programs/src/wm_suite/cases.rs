@@ -1385,6 +1385,11 @@ pub fn frame_floor() -> CaseResult {
     )
 }
 pub(super) fn failure_pipeline() {
+    if let Ok(counters) = std::fs::read_to_string("/proc/trace/counters") {
+        for line in counters.lines().filter(|line| line.contains("gpu_wait_") || line.contains("gpu_irq_masked")) {
+            failure_diagnostic("gpu-wait", line);
+        }
+    }
     full_pipeline("window-pipeline-failure");
     export_pipeline("/proc/breenix/window-pipeline");
 }
