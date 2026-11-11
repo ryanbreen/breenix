@@ -31,3 +31,11 @@ fn proc_mounts_lines_render_smb_mounts() {
         "disk on / type ext2 (rw)\n//server/my share on /mnt/my share type smb (rw)\nlocal on /mnt/local type ufs (rw)\n"
     );
 }
+
+#[test]
+fn mount_all_skips_mounted_dirs() {
+    let (shares, errors) = parse_shares("//server/one /mnt/one smb credfile=/etc/one\n//server/two /mnt/two smb credfile=/etc/two\n//server/three /mnt/three smb credfile=/etc/three\n");
+    assert!(errors.is_empty());
+    let planned = smbfs::shares::plan_mount_all(&shares, "disk / ext2 rw 0 0\nother /mnt/one ext2 rw 0 0\n//server/two /mnt/two ufs rw 0 0\n");
+    assert_eq!(planned.iter().map(|share| share.directory.as_str()).collect::<Vec<_>>(), ["/mnt/three"]);
+}
