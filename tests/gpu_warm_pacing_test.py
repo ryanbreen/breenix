@@ -27,4 +27,19 @@ const WARM_QUIET_NS:u64=2_000_000;const WARM_GRACE_NS:u64=20_000_000;
  assert_eq!(warm_deadline(100_000_000,100_000_000,10_000_000,None,false),30_000_000);
 }
 '''.replace('@POLICY@',policy))
+ def test_qemu_warm_step_contains_its_own_completion_read(self):
+  source=(ROOT/'kernel/src/gpu/mod.rs').read_text();warm=item(source,'fn warm_next(')
+  start=warm.index('if platform_config::is_parallels()');end=warm.index('enc.finish()',start)
+  run_rust(self,r'''
+use std::sync::atomic::{AtomicUsize,Ordering};
+static PLATFORM:AtomicUsize=AtomicUsize::new(1);
+mod platform_config{pub fn is_qemu()->bool{crate::PLATFORM.load(crate::Ordering::Relaxed)==1}pub fn is_parallels()->bool{crate::PLATFORM.load(crate::Ordering::Relaxed)==2}}
+struct Encoder{drained:bool}impl Encoder{fn completion_read(&mut self,target:u32,pitch:u32){assert_eq!((target,pitch),(17,256));self.drained=true;}}
+fn encode_warm()->bool{let mut enc=Encoder{drained:false};let scratch=17;@TAIL@enc.drained}
+#[test]fn warm_completion_does_not_depend_on_an_unrelated_submission(){
+ assert!(platform_config::is_qemu());assert!(encode_warm(),"QEMU warm Sync requests cannot use progress_readback's foreground Submit drain");
+ PLATFORM.store(2,Ordering::Relaxed);assert!(encode_warm());
+ PLATFORM.store(0,Ordering::Relaxed);assert!(!encode_warm());
+}
+'''.replace('@TAIL@',warm[start:end]))
 if __name__=='__main__':unittest.main()
