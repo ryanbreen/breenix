@@ -81,6 +81,7 @@ members = [
     "libs/input-abi",
     "libs/ufs-abi",
     "libs/libvt",
+    "libs/libcollab",
     "libs/libsmb",
     "libs/smbfs",
     "libs/libclipboard",
