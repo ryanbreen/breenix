@@ -28,8 +28,8 @@ class AttachedOwner(unittest.TestCase):
         verdicts = "\n".join(function(source, "pub fn " + name + "(") for name in [
             "exit_input_verdict", "desktop_exit_input_verdict", "exit_release_verdict", "finish_verdict",
         ])
-        # Only the proc-file transport is redirected; all selection, waiting,
-        # exit recording and finish logic below comes verbatim from App.
+        # The proc-file path points at a fixture; function() copies the method
+        # bodies from App into the deterministic transport harness.
         with tempfile.TemporaryDirectory(prefix="attached-owner-") as directory:
             root = pathlib.Path(directory)
             ledger = root / "ledger"
