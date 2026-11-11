@@ -47,6 +47,12 @@ fn main(){for reaper in [0,1]{for backend in [4,5,abi::backend::GK208]{
   fixture=r'''
 #![allow(dead_code)] // Minimal model for the extracted scheduler functions.
 use std::{cell::{Cell,RefCell},collections::{BTreeMap,VecDeque},sync::atomic::{AtomicU64,Ordering}};
+mod tracing {pub mod providers {pub mod gpu {
+ pub struct Counter;impl Counter {pub fn increment(&self){}}
+ pub static GPU_WAIT_LONG:Counter=Counter;
+ pub static GPU_WAIT_SILENT:Counter=Counter;
+ pub static GPU_WAIT_SILENT_FOUND:Counter=Counter;
+}}}
 const EXAMINE_NS:u64=250_000_000;const POLL_NS:u64=250_000;const SPIN_POLL_NS:u64=1_000_000;const SPIN_POLL_PAUSE:u32=1;
 static EVENTS:AtomicU64=AtomicU64::new(0);static REAPER:AtomicU64=AtomicU64::new(1);
 static SENT:AtomicU64=AtomicU64::new(0);static WAKES:AtomicU64=AtomicU64::new(0);

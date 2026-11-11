@@ -25,6 +25,12 @@ class IconsAdmission(unittest.TestCase):
         caller = item((ROOT / 'libs/bgl/src/lib.rs').read_text(), '    pub fn submit(&mut self)')
         fixture = r'''
 use std::{cell::{Cell,RefCell},collections::{BTreeMap,VecDeque},sync::{Arc,atomic::{AtomicU64,Ordering}}};
+mod tracing {pub mod providers {pub mod gpu {
+ pub struct Counter;impl Counter {pub fn increment(&self){}}
+ pub static GPU_WAIT_LONG:Counter=Counter;
+ pub static GPU_WAIT_SILENT:Counter=Counter;
+ pub static GPU_WAIT_SILENT_FOUND:Counter=Counter;
+}}}
 const SPIN_POLL_NS:u64=1_000_000;
 const SPIN_POLL_PAUSE:u32=1;
 const EXAMINE_NS:u64=250_000_000;

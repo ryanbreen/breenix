@@ -74,6 +74,12 @@ class ReadbackFenceWait(unittest.TestCase):
         pause = item(arch, 'pub(super) fn poll_pause(') if 'pub(super) fn poll_pause(' in arch else ''
         fixture = r'''
 use std::{cell::{Cell,RefCell},collections::VecDeque,sync::atomic::{AtomicU64,Ordering}};
+mod tracing {pub mod providers {pub mod gpu {
+ pub struct Counter;impl Counter {pub fn increment(&self){}}
+ pub static GPU_WAIT_LONG:Counter=Counter;
+ pub static GPU_WAIT_SILENT:Counter=Counter;
+ pub static GPU_WAIT_SILENT_FOUND:Counter=Counter;
+}}}
 const SPIN_POLL_NS:u64=1_000_000;
 const SPIN_POLL_PAUSE:u32=1;
 const EXAMINE_NS:u64=250_000_000;
