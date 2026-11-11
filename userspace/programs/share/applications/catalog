@@ -16,3 +16,4 @@ Particles	Particle physics demo	gui	/usr/bin/particles
 Confetti	Confetti demo	gui	/usr/bin/confetti
 Demo	Animated graphics demo	gui	/usr/bin/demo
 Rectangles	Bouncing rectangles demo	gui	/usr/bin/rectangles
+Breenix Icon Kit	Interactive icon showcase	gui	/usr/bin/biconkit
