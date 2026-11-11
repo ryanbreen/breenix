@@ -27,7 +27,7 @@ fn create_context_with_catalogue(pid:u64,warm:bool)->Result<(u64,u32),i64>{
 }
 fn destroy_context(pid:u64,handle:u64){with_core(|c|{c.proc_mut(pid).contexts.remove(&handle);c.contexts.remove(&1);});}
 fn wait_for<T>(_:Option<u64>,_:bool,mut f:impl FnMut(&mut Core)->Option<T>)->Result<T,()>{
- for _ in 0..2{CHECKS.fetch_add(1,Ordering::Relaxed);if let Some(found)=with_core(|c|f(c)).flatten(){return Ok(found);}with_core(|c|for ctx in c.contexts.values_mut(){ctx.warm=catalogue_mask();});}Err(())
+ for _ in 0..2{CHECKS.fetch_add(1,Ordering::Relaxed);if let Some(found)=with_core(|c|f(c)).flatten(){return Ok(found);}with_core(|c|for(id,ctx)in c.contexts.iter_mut(){if *id!=9{ctx.warm=catalogue_mask();}});}Err(())
 }
 @BODY@
 #[test]fn preparation_waits_and_native_stays_unchanged(){
@@ -42,6 +42,10 @@ fn wait_for<T>(_:Option<u64>,_:bool,mut f:impl FnMut(&mut Core)->Option<T>)->Res
  PLATFORM.store(1,Ordering::Relaxed);*CORE.lock().unwrap()=Core::default();CREATED.store(0,Ordering::Relaxed);CHECKS.store(0,Ordering::Relaxed);
  assert_eq!(prepare_window_renderer(43,false),Ok(()));
  assert_eq!((CREATED.load(Ordering::Relaxed),CHECKS.load(Ordering::Relaxed)),(0,0),"client registration waited on the compositor preparation path");
+ PLATFORM.store(1,Ordering::Relaxed);*CORE.lock().unwrap()=Core::default();
+ with_core(|c|{c.proc_mut(42).contexts.insert(99,9);c.contexts.insert(9,Ctx{warm_catalogue:true,state:CtxState::Live,dropped:false,warm:0});});
+ assert_eq!(prepare_window_renderer(42,true),Ok(()),"an unrelated font renderer blocked the reserved compositor");
+ with_core(|c|assert_eq!(c.contexts[&9].warm,0,"the test must leave the unrelated catalogue cold"));
  PLATFORM.store(0,Ordering::Relaxed);*CORE.lock().unwrap()=Core::default();CREATED.store(0,Ordering::Relaxed);CHECKS.store(0,Ordering::Relaxed);
  assert_eq!(prepare_window_renderer(42,true),Ok(()));assert_eq!((CREATED.load(Ordering::Relaxed),CHECKS.load(Ordering::Relaxed)),(0,0));
 }
