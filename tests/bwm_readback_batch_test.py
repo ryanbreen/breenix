@@ -16,6 +16,7 @@ class ReadbackBatch(unittest.TestCase):
         run_rust(self, r'''
 use std::sync::Mutex;
 static CALLS:Mutex<Vec<[u32;4]>>=Mutex::new(Vec::new());
+static BUFFERS:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
 static PIXELS:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
 static HOTSPOTS:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
 static POINTER:Mutex<bool>=Mutex::new(false);
@@ -49,7 +50,7 @@ const CURSOR_WHITE:u32=0xffffffff;const CURSOR_BLACK:u32=0xff000000;
 fn pointer_bitmap(_:u32)->&'static[&'static[u8]]{&[b"#o",b"o#"]}
 fn hotspot(_:u32)->(i32,i32){HOTSPOTS.fetch_add(1,std::sync::atomic::Ordering::Relaxed);(0,0)}
 fn intersect(_:[i32;4],_:[i32;4])->Option<[i32;4]>{None}
-fn prefaulted_bytes(n:usize)->Vec<u8>{vec![0;n]}
+fn prefaulted_bytes(n:usize)->Vec<u8>{if n>=65536{BUFFERS.fetch_add(1,std::sync::atomic::Ordering::Relaxed);}vec![0;n]}
 #[derive(Debug)]enum CheckError{Failed(String),Moved(String)}
 struct Compositor{sampled:Vec<Sample>,check_first:u64,desktop:Desktop,scale:i32,appbar_top:i32}
 impl Compositor {
@@ -79,6 +80,9 @@ impl Compositor {
  let layers=[Layer{window_id:7,frame:[[0,10,2560,20];3],frame_len:1}];
  assert_eq!(c.check_area(0,&layers,None,[0,0,2560,1600]).unwrap(),4096000);
  assert_eq!(PIXELS.load(std::sync::atomic::Ordering::Relaxed),0,"chrome-only rows used the per-pixel layer oracle");
+ let allocated=BUFFERS.load(std::sync::atomic::Ordering::Relaxed);
+ assert_eq!(c.check_area(0,&layers,None,[0,0,2560,1600]).unwrap(),4096000);
+ assert_eq!(BUFFERS.load(std::sync::atomic::Ordering::Relaxed),allocated,"steady checks allocated fresh readback buffers");
  *BAD.lock().unwrap()=Some((2558,1598));
  assert!(matches!(c.check_area(0,&layers,None,[0,0,2560,1600]),Err(CheckError::Failed(_))),"late desktop corruption escaped with a layer present");
  *BAD.lock().unwrap()=None;*HIGH_X.lock().unwrap()=true;
