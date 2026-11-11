@@ -492,6 +492,8 @@ struct WaitObservation {
 /// Failure records bypass the case verdict's short message field.
 pub fn failure_diagnostic(label: &str, text: &str) {
     use std::io::Write;
+    let case = breenix_suite::suite::running_case().unwrap_or("window-manager");
+    breenix_suite::suite::case_budget("diagnostic-begin", case);
     if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
         for line in text.lines() {
             let chars: Vec<_> = line.chars().collect();
@@ -501,6 +503,7 @@ pub fn failure_diagnostic(label: &str, text: &str) {
             }
         }
     }
+    breenix_suite::suite::case_budget("diagnostic-end", case);
 }
 impl Drop for WaitObservation {
     fn drop(&mut self) { self.export(); }

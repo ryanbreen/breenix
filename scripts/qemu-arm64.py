@@ -14,6 +14,14 @@ def default_accelerator(system=None, machine=None):
     return "hvf" if system == "Darwin" and machine == "arm64" else "tcg"
 
 
+# The log trace backend includes host wall-clock timestamps. Keep the complete
+# request/notify/IRQ path beside a serial capture and its host clocks.
+BLOCK_TRACE_PATTERNS = (
+    "virtio_blk_handle_*", "virtio_blk_req_complete", "virtio_blk_rw_complete",
+    "virtio_queue_notify", "virtio_notify", "virtio_mmio_queue_write", "virtio_mmio_setting_irq",
+)
+
+
 def command(binary, arguments, accelerator, system=None, machine=None):
     system = system or platform.system()
     machine = machine or platform.machine()
@@ -55,6 +63,18 @@ def command(binary, arguments, accelerator, system=None, machine=None):
             index += 1
     if accelerator == "hvf" and not has_cpu:
         result.extend(("-cpu", "host"))
+    serial = next((part.removeprefix("logfile=")
+                   for i, arg in enumerate(arguments[:-1]) if arg == "-chardev"
+                   for part in arguments[i + 1].split(",") if part.startswith("logfile=")), None)
+    if serial:
+        traces = ",".join("trace:" + p for p in BLOCK_TRACE_PATTERNS)
+        if "-d" in result:
+            slot = result.index("-d") + 1
+            result[slot] += "," + traces
+        else:
+            result.extend(("-d", traces))
+        if "-D" not in result:
+            result.extend(("-D", serial + ".qemu-trace.log"))
     return result
 
 
@@ -98,6 +118,12 @@ def main():
     # The QoS library removes its injection environment when it initializes.
     # Run its launcher directly before QEMU, after this Python process.
     argv.insert(0, launcher)
+    # An artifact gate is a wrapper that checks and then execs its arguments.
+    # It runs before the native launcher, keeping interpreters outside QEMU's
+    # DYLD injection. The launcher still validates and execs the real binary.
+    gate = os.environ.get("BREENIX_QEMU_PRE_EXEC_GATE")
+    if gate:
+        argv.insert(0, gate)
     os.execvp(argv[0], argv)
 
 

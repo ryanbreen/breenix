@@ -714,6 +714,7 @@ impl Completion {
 
         let tid = self.waiter.load(Ordering::Acquire);
         if tid != 0 {
+            crate::window::accounting::wake(1, self as *const Self as u64, tid, 1);
             crate::task::scheduler::isr_unblock_for_io(tid);
         }
 

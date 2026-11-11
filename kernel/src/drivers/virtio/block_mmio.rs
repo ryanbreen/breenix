@@ -1377,6 +1377,7 @@ fn report_slow_request(request: u32, waited_ns: u64) {
 ///
 /// Hard IRQ path: no logging, allocation, locks, or unbounded work.
 pub fn handle_interrupt(device_index: usize) {
+    crate::window::accounting::disk_irq_entry(device_index as u64);
     let Ok(state) = block_device_state(device_index) else {
         return;
     };

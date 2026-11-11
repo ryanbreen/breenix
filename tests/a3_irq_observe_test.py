@@ -27,6 +27,12 @@ class IrqObserve(unittest.TestCase):
             'virtio_blk_handle_*', 'virtio_blk_req_complete', 'virtio_blk_rw_complete',
             'virtio_queue_notify', 'virtio_notify', 'virtio_mmio_queue_write', 'virtio_mmio_setting_irq']))
         self.assertEqual(argv[argv.index('-D') + 1], '/tmp/capture.txt.qemu-trace.log')
+        explicit = arm.command('qemu-system-aarch64', [
+            '-chardev', 'stdio,logfile=/tmp/capture.txt', '-d', 'guest_errors', '-D', '/tmp/explicit.log'],
+            'hvf', 'Darwin', 'arm64')
+        self.assertEqual(explicit.count('-d'), 1)
+        self.assertTrue(explicit[explicit.index('-d') + 1].startswith('guest_errors,trace:'))
+        self.assertEqual(explicit[explicit.index('-D') + 1], '/tmp/explicit.log')
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             receipt = path / 'order'
@@ -95,10 +101,18 @@ DISPATCH
  let out=t.text(135);
  assert!(out.contains("disk-irq-entry device=0 ns=130 cpu=3"),"{out}");
  assert!(out.contains("submit_ns=110 irq_ns=0"),"{out}");
+ t.join(115,7,10,88,11,8);
+ t.state(120,7,10,2,3,88);
+ t.wake(140,7,10,9,88,0,1);
+ t.wake(141,0,20,10,99,10,1);
  t.disk_stage(id,3,150); t.end(160,7);
  let out=t.text(170);
  assert!(out.contains("disk-irq-entry device=0 ns=130 cpu=3"),"{out}");
  assert!(out.contains("submit_ns=110 irq_ns=150"),"{out}");
+ assert!(out.contains("name=thread-exit-futex object=88"),"{out}");
+ assert!(out.contains("object=88 blocked_ns=40 name=thread-exit-futex"),"{out}");
+ assert!(out.contains("account-join window=1 ns=115 pid=7 tid=10 object=88 target_tid=11 target_pid=8"),"{out}");
+ assert!(out.contains("name=gpu-events object=99 target=10 count=1"),"{out}");
 }
 ''')
 
@@ -124,6 +138,31 @@ DISPATCH
         desktop = read('userspace/programs/src/wm_suite/desktop.rs')
         self.assertIn('case_budget', item(desktop, 'fn failure_diagnostic('))
         self.assertIn('wait-budget', stall)
+        source = stall.replace('//!', '//').replace('use alloc::', 'use std::')
+        run_rust(self, r'''
+mod spin {
+ pub struct Mutex<T>(std::sync::Mutex<T>);
+ impl<T> Mutex<T>{pub const fn new(t:T)->Self{Self(std::sync::Mutex::new(t))}
+ pub fn lock(&self)->std::sync::MutexGuard<'_,T>{self.0.lock().unwrap()}}
+}
+mod signal { pub fn monotonic_nanos()->u64{300} }
+mod task { pub mod scheduler { pub fn stall_snapshot()->Vec<String>{vec![String::from("thread fixture")]} } }
+''' + source + r'''
+#[test]fn budget_survives_a_killed_diagnostic_writer(){
+ command(7,"budget 100 case-begin recovery/stack-restored");
+ command(7,"budget 110 logic-begin recovery/stack-restored");
+ command(7,"budget 120 diagnostic-begin recovery/stack-restored");
+ command(7,"budget 150 diagnostic-end recovery/stack-restored");
+ command(7,"arm 160 100 positive-click");
+ command(7,"end 160");
+ command(7,"budget 220 diagnostic-begin recovery/stack-restored");
+ let out=text();
+ assert!(out.contains("case-budget tid=7 case=recovery/stack-restored case_begin_ns=100 logic_begin_ns=110 logic_end_ns=0"),"{out}");
+ assert!(out.contains("diagnostic_ns=30 diagnostics=1 diagnostic_begin_ns=220"),"{out}");
+ assert!(out.contains("wait_ns=140 wait_begin_ns=0 last_wait=positive-click"),"{out}");
+ assert!(out.contains("wait-budget tid=7 wait=positive-click begin_ns=160 end_ns=300 deadline_ns=260"),"{out}");
+}
+''')
 
 
 if __name__ == '__main__':

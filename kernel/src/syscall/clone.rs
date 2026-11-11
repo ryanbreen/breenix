@@ -575,6 +575,7 @@ pub fn sys_clone_thread(
     // Set clear_child_tid for thread exit notification
     if flags & CLONE_CHILD_CLEARTID != 0 && child_tidptr != 0 {
         child_process.clear_child_tid = Some(child_tidptr);
+        crate::window::accounting::join(child_tidptr, child_thread_id, child_pid.as_u64());
     }
 
     // Write child TID to child_tidptr (CLONE_CHILD_SETTID), but only after

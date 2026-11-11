@@ -276,6 +276,7 @@ fn ring_doorbell() {
 /// is held with interrupts masked (section 1.16, #2003); `wait_event` publishes a wait
 /// that this order cannot miss.
 fn notify() {
+    crate::window::accounting::wake(10, &WAITERS as *const _ as u64, 0, 0);
     EVENTS.fetch_add(1, Ordering::AcqRel);
     let mut taken = [0u64; 8];
     loop {
@@ -295,6 +296,7 @@ fn notify() {
 fn wake_reaper() {
     let tid = REAPER.load(Ordering::Acquire);
     if tid != 0 {
+        crate::window::accounting::wake(11, &REAPER as *const _ as u64, tid, 1);
         crate::task::scheduler::wake_thread_any_context(tid);
     }
 }
@@ -2424,6 +2426,7 @@ fn wait_event(seen: u64, wake: Option<u64>) -> Result<(), i32> {
     wait_event_prepared(seen, wake, false)
 }
 fn wait_event_prepared(seen: u64, wake: Option<u64>, fine: bool) -> Result<(), i32> {
+    let _wait_site = crate::task::thread::WaitSite::enter(10, &WAITERS as *const _ as u64);
     let Some(tid) = crate::task::scheduler::current_thread_id() else {
         return Err(crate::syscall::errno::ESRCH);
     };
@@ -2724,6 +2727,7 @@ pub fn handle_config_interrupt() {
 
 /// Wake for a used buffer or configuration change, using the ISR byte's bit meanings.
 fn signal(status: u8) {
+    crate::window::accounting::wake(10, &WAITERS as *const _ as u64, 0, 0);
     if status & 2 != 0 {
         CONFIG_CHANGED.store(true, Ordering::Release);
     }
@@ -2783,6 +2787,7 @@ fn ensure_reaper() -> bool {
 /// the device's answers waiting for the next deadline. Once woken it returns without
 /// halting for a further interrupt.
 fn reaper_block(tid: u64, seen: u64, sent: u64, wake: Option<u64>) {
+    let _wait_site = crate::task::thread::WaitSite::enter(11, &REAPER as *const _ as u64);
     // One scheduler section publishes the block and checks for an event since `seen`, so
     // the lock is taken once and waited for with interrupts enabled (section 1.16, #2003).
     crate::task::scheduler::with_scheduler(|sched| {

@@ -51,6 +51,7 @@ impl<const W: usize> Cell<W> {
 }
 
 /// Numeric state modes: 0 runnable, 1 dispatched, 2 blocked, 3 ended.
+/// Mode 4 is off-CPU without a scheduler state publication (idle dispatch).
 /// Wait kinds 1..5 match WaitSite; 6 timer, 7 signal, 8 generic wait.
 pub struct Accounting<const N: usize, const T: usize, const D: usize> {
     // Event: kind, window, time, pid, tid, a, b, c, d, reservation.
@@ -137,6 +138,47 @@ impl<const N: usize, const T: usize, const D: usize> Accounting<N, T, D> {
             }
         }
         self.state_lost.fetch_add(1, Relaxed);
+    }
+    /// Scheduler leaves idle Running when switching away. Close that interval
+    /// at the existing dispatch trace boundary without changing scheduler state.
+    /// Ready/blocked/terminated intervals already have their own publication.
+    pub fn switch_out(&self, ns: u64, tid: u64) {
+        if let Some(slot) = (0..T).map(|p| (tid as usize + p) % T)
+            .find(|&i| self.thread_keys[i].load(Acquire) == tid)
+        {
+            if !self.threads[slot].update(|mut old| {
+                if old[0] == tid && old[3] == 1 {
+                    self.interval(self.active.load(Acquire), old, ns);
+                    old[2] = ns;
+                    old[3] = 4;
+                }
+                Some(old)
+            }) {
+                self.state_lost.fetch_add(1, Relaxed);
+            }
+        }
+    }
+    /// Independent handler entry: no used-ring access or request completion.
+    pub fn disk_irq_entry(&self, ns: u64, device: u64, cpu: u64) {
+        let window = self.active_window();
+        if window != 0 {
+            self.push([7, window, ns, 0, 0, device, cpu, 0, 0, 0]);
+        }
+    }
+    /// A clone's clear-on-exit word names the join object and its producer
+    /// before the worker exits (including a join still blocked at a watchdog).
+    pub fn join(&self, ns: u64, pid: u64, tid: u64, word: u64, target_tid: u64, target_pid: u64) {
+        let window = self.active_window();
+        if window != 0 {
+            self.push([9, window, ns, pid, tid, word, target_tid, target_pid, 0, 0]);
+        }
+    }
+    /// Publication by a named waker, distinct from scheduler application.
+    pub fn wake(&self, ns: u64, pid: u64, tid: u64, kind: u64, object: u64, target: u64, count: u64) {
+        let window = self.active_window();
+        if window != 0 {
+            self.push([8, window, ns, pid, tid, kind, object, target, count, 0]);
+        }
     }
     pub fn begin(&self, ns: u64, pid: u64, vcpus: u64) {
         // A replacement before its predecessor composed keeps a truncated window.
@@ -325,7 +367,10 @@ impl<const N: usize, const T: usize, const D: usize> Accounting<N, T, D> {
                 let _=writeln!(out,"account-thread window={id} pid={pid} tid={tid} on_cpu_ns={} runnable_ns={} blocked_ns={}",t[1],t[0],t[2]);
             }
             for ((pid, tid, kind, object), duration) in waits {
-                let _=writeln!(out,"account-wait window={id} pid={pid} tid={tid} kind={kind} object={object} blocked_ns={duration}");
+                let name = if kind == 3 && rows.iter().any(|r| r[0] == 9 && r[1] == id && r[3] == pid && r[5] == object) {
+                    "thread-exit-futex"
+                } else { wait_name(kind) };
+                let _=writeln!(out,"account-wait window={id} pid={pid} tid={tid} kind={kind} object={object} blocked_ns={duration} name={name}");
             }
             for r in rows
                 .iter()
@@ -334,6 +379,17 @@ impl<const N: usize, const T: usize, const D: usize> Accounting<N, T, D> {
                 if out.len() >= 8 * 1024 * 1024 {
                     out.push_str("account-export-truncated limit_bytes=8388608\n");
                     return out;
+                }
+                if r[0] == 9 {
+                    let _ = writeln!(out, "account-join window={id} ns={} pid={} tid={} object={} target_tid={} target_pid={}",
+                        r[2], r[3], r[4], r[5], r[6], r[7]);
+                }
+                if r[0] == 7 {
+                    let _ = writeln!(out, "disk-irq-entry device={} ns={} cpu={} window={id}", r[5], r[2], r[6]);
+                }
+                if r[0] == 8 {
+                    let _ = writeln!(out, "account-wake window={id} ns={} pid={} tid={} kind={} name={} object={} target={} count={}",
+                        r[2], r[3], r[4], r[5], wait_name(r[5]), r[6], r[7], r[8]);
                 }
                 if r[0] == 6 {
                     let mut bytes = [0u8; 24];
@@ -383,6 +439,14 @@ impl<const N: usize, const T: usize, const D: usize> Accounting<N, T, D> {
             }
         }
         out
+    }
+}
+
+pub fn wait_name(kind: u64) -> &'static str {
+    match kind {
+        1 => "completion", 2 => "waitqueue", 3 => "futex", 4 => "poll-set",
+        5 => "child-selector", 6 => "timer", 7 => "signal", 8 => "syscall-wait",
+        9 => "thread-exit-futex", 10 => "gpu-events", 11 => "gpu-reaper", _ => "none",
     }
 }
 

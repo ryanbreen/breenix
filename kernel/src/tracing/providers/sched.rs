@@ -166,6 +166,9 @@ pub fn init() {
 #[inline(always)]
 #[allow(dead_code)]
 pub fn trace_ctx_switch(old_tid: u64, new_tid: u64) {
+    if old_tid != new_tid {
+        crate::window::accounting::switch_out(old_tid);
+    }
     // Always increment the counter (single atomic add, ~3 cycles)
     CTX_SWITCH_TOTAL.increment();
 

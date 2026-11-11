@@ -1866,6 +1866,7 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
 /// Kill a child that has run too long and reap it. Returns a note for the FAIL
 /// message when it could not be reaped.
 fn stop_child(pid: i32) -> &'static str {
+    case_budget("watchdog-before-kill", &std::format!("child-{pid}"));
     dump_stall_evidence();
     if signal::kill(pid, SIGKILL).is_err() {
         return "; SIGKILL failed, the case may still be running";
@@ -2207,6 +2208,7 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
         }
     } else { None };
     let start = monotonic_ns();
+    case_budget("parent-fork", name);
     HOSTKEY_SEQ.fetch_add(RECORDS_PER_CASE as u64, Ordering::Relaxed);
     match process::fork() {
         Ok(ForkResult::Child) => {
@@ -2232,10 +2234,12 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
             let initial_limit = if window.is_some() { 120_000 } else { logic_limit_ms };
             let deadline = start.map_or(0, |start| (start + initial_limit as i128 * 1_000_000) as u64);
             CASE_DEADLINE_NS.store(deadline, Ordering::Relaxed);
+            case_budget("case-begin", name);
             let _ = CASE_NAME.set(String::from(name));
             keep_record_output(suite, name);
             detach_transcript();
             let ready = if screen.gui && crate::suite_stage::case_takes_display(name) { graphics::take_over_display() } else { Ok(()) };
+            case_budget("logic-begin", name);
             let outcome = match ready.and_then(|()| silence_output()) {
                 Ok(()) => run_inline(case),
                 Err(error) => Outcome::Fail {
@@ -2243,8 +2247,11 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
                     msg: plain(&std::format!("could not send the case's output to /dev/null: {error}")),
                 },
             };
+            case_budget("logic-end", name);
+            case_budget("report-begin", name);
             let line = report(&outcome);
             let _ = io::write(writer, line.as_bytes());
+            case_budget("report-end", name);
             screen::finish();
             hand_over_picture();
             process::exit(0)
@@ -2312,6 +2319,7 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
                     Outcome::Fail { ms: ms_since(start), msg: plain(&std::format!("waitpid failed: {error}{note}")) }
                 }
             };
+            case_budget("parent-outcome", name);
             dump_stall_evidence();
             let outcome = if let Some(session) = session.as_mut() {
                 if case.collects {
@@ -2985,5 +2993,15 @@ fn dump_stall_evidence() {
     sample_stall_evidence();
     if let Ok(rows) = std::fs::read_to_string("/proc/breenix/window-stall") {
         for row in rows.lines() { emit(&std::format!("VALUE wm-{row}")); }
+    }
+}
+
+/// Retain case phase boundaries in the kernel, even if the case is killed in
+/// diagnostics. These are observations; no deadline or verdict uses them.
+pub fn case_budget(phase: &str, label: &str) {
+    if !STALL_EVIDENCE.load(Ordering::Relaxed) { return; }
+    use std::io::Write;
+    if let (Some(ns), Ok(mut evidence)) = (monotonic_ns(), std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence")) {
+        let _ = writeln!(evidence, "WM_STALL budget {ns} {phase} {label}");
     }
 }

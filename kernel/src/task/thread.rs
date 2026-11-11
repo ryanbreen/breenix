@@ -2128,6 +2128,7 @@ impl StallThread {
         let wait = match self.wait_kind {
             1 => "completion", 2 => "waitqueue", 3 => "futex",
             4 => "poll-set", 5 => "child-selector",
+            9 => "thread-exit-futex", 10 => "gpu-events", 11 => "gpu-reaper",
             _ => match self.state {
                 ThreadState::BlockedOnTimer => "timer",
                 ThreadState::BlockedOnChildExit => "child-exit",

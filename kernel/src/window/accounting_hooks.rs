@@ -140,3 +140,27 @@ pub fn disk_stage(id: u64, stage: usize) {
 pub fn text() -> alloc::string::String {
     TRACE.text(now())
 }
+
+/// Called only at a real outgoing dispatch trace, including idle switches.
+pub fn switch_out(tid: u64) {
+    TRACE.switch_out(now(), tid);
+}
+pub fn disk_irq_entry(device: u64) {
+    let ns = now();
+    let cpu = crate::task::scheduler::current_cpu_id_raw() as u64;
+    TRACE.disk_irq_entry(ns, device, cpu);
+}
+pub fn wake(kind: u64, object: u64, target: u64, count: u64) {
+    if TRACE.is_active() {
+        let ns = now();
+        let (pid, tid) = crate::task::thread::current_accounting_identity().unwrap_or((0, 0));
+        TRACE.wake(ns, pid, tid, kind, object, target, count);
+    }
+}
+
+pub fn join(word: u64, target_tid: u64, target_pid: u64) {
+    if TRACE.is_active() {
+        let (pid, tid) = crate::task::thread::current_accounting_identity().unwrap_or((0, 0));
+        TRACE.join(now(), pid, tid, word, target_tid, target_pid);
+    }
+}
