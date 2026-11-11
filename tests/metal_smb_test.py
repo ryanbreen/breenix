@@ -204,6 +204,21 @@ class SmbStagingTest(unittest.TestCase):
                 self.assertEqual(transcripts[-1]['requests'][0]['ok'], not fail)
                 self.assertEqual(transcripts[-1]['requests'][0]['seq'], 7)
 
+    def test_deployed_metal_run_starts(self):
+        import shlex
+        import shutil
+        deploy = Path(metal_root.__file__).with_name("metal-deploy").read_text()
+        line = next(line for line in deploy.splitlines() if line.startswith("pack metal-run "))
+        names = shlex.split(line.rstrip().rstrip(chr(92)))
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in names[1:]:
+                source = Path(metal_root.__file__).parent / name
+                if source.is_file():
+                    shutil.copy(source, tmp)
+            result = subprocess.run([sys.executable, str(Path(tmp) / "metal-run"), "--help"],
+                                    capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_gui_stop_start_and_cleanup(self):
         helper = load_script('smb-restart')
         for ending in ('done', 'ended'):
