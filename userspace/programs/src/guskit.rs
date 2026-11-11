@@ -284,7 +284,7 @@ fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) ->
         Event::PointerCancel => { if app.stroke.take().is_none() { return Handled::NoChange; } },
         _ => return Handled::NoChange,
     }
-    menu.set_enabled(UNDO, app.undo_depth() > 0);
+    menu.set_enabled(UNDO, app.session.is_some() || app.undo_depth() > 0);
     menu.set_enabled(REDO, app.redo_depth() > 0);
     Handled::Redraw
 }
@@ -337,7 +337,7 @@ fn main() {
     let mut menu = menu();
     let mut redraw = true;
     loop {
-        menu.set_enabled(UNDO, app.undo_depth() > 0); menu.set_enabled(REDO, app.redo_depth() > 0);
+        menu.set_enabled(UNDO, app.session.is_some() || app.undo_depth() > 0); menu.set_enabled(REDO, app.redo_depth() > 0);
         if redraw {
             if let Ok(surface) = win.surface() { render(surface, &mut app, &menu); }
             publish(&mut win, &app); let _ = win.present();
