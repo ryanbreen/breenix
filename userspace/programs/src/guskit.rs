@@ -35,7 +35,7 @@ impl App {
         match action {
             OPEN => self.open_picker(),
             SAVE => self.save(),
-            NEW => self.history.push(Canvas::new(self.width, self.height)),
+            NEW => { self.history.push(Canvas::new(self.width, self.height)); self.file = None; self.stroke = None; self.message.clear(); },
             QUIT => self.request_quit(),
             UNDO => { self.history.undo(); },
             REDO => { self.history.redo(); },
@@ -50,15 +50,34 @@ impl App {
         }
     }
     fn save(&mut self) {
-        let path = self.file.clone().unwrap_or_else(|| {
-            let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
-            (1u64..).map(|n| home.join(format!("guskit-{n}.png"))).find(|p| !p.exists()).unwrap()
-        });
-        let result = files::encode(&path.to_string_lossy(), self.history.canvas(), self.width, self.height)
-            .and_then(|bytes| match libbreenix::atomic_file::save(&path, &bytes) {
-                libbreenix::atomic_file::SaveResult::Saved => Ok(()),
-                libbreenix::atomic_file::SaveResult::Failed(e) | libbreenix::atomic_file::SaveResult::Unconfirmed(e) => Err(e.to_string()),
-            });
+        let mut path = self.file.clone().unwrap_or_default();
+        let result = if self.file.is_some() {
+            files::encode(&path.to_string_lossy(), self.history.canvas(), self.width, self.height)
+                .and_then(|bytes| match libbreenix::atomic_file::save(&path, &bytes) {
+                    libbreenix::atomic_file::SaveResult::Saved => Ok(()),
+                    libbreenix::atomic_file::SaveResult::Failed(e) | libbreenix::atomic_file::SaveResult::Unconfirmed(e) => Err(e.to_string()),
+                })
+        } else {
+            // Reserve the first free name atomically; another drawing cannot be
+            // replaced even if it appears between choosing a name and saving.
+            files::encode("untitled.png", self.history.canvas(), self.width, self.height).and_then(|bytes| {
+                use std::io::Write;
+                let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
+                for n in 1u64.. {
+                    path = home.join(format!("untitled-{n}.png"));
+                    let mut file = match std::fs::OpenOptions::new().write(true).create_new(true).open(&path) {
+                        Ok(file) => file,
+                        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                        Err(e) => return Err(e.to_string()),
+                    };
+                    let result = file.write_all(&bytes).and_then(|()| file.sync_all());
+                    drop(file);
+                    if let Err(e) = result { let _ = std::fs::remove_file(&path); return Err(e.to_string()); }
+                    return std::fs::File::open(&home).and_then(|dir| dir.sync_all()).map_err(|e| e.to_string());
+                }
+                Err("no free untitled filename".into())
+            })
+        };
         match result { Ok(()) => { self.clean = self.history.canvas().digest(); self.file = Some(path); self.message = "Saved".into(); }, Err(e) => self.message = e }
     }
     fn entries(path: &Path) -> Result<Vec<FileEntry>, String> {

@@ -129,10 +129,18 @@ pub fn shortcuts() -> CaseResult {
     t.wait_node("status", |v| v["undo"] == 0 && v["redo"] == 1)?;
     redo(&mut t)?; expect(&mut t, &image)?;
     t.wait_node("status", |v| v["undo"] == 1 && v["redo"] == 0)?;
-    t.key(49, &[Modifier::Ctrl])?; expect(&mut t, &Expected::white())?;
     t.key(31, &[Modifier::Ctrl])?;
     t.wait_node("status", |v| v["file"] == FILE && v["message"] == "Saved")?;
-    let bytes = std::fs::read(FILE).map_err(|e| e.to_string())?;
+    let original = std::fs::read(FILE).map_err(|e| e.to_string())?;
+    t.key(49, &[Modifier::Ctrl])?; expect(&mut t, &Expected::white())?;
+    t.wait_node("status", |v| v["file"].is_null())?;
+    stroke(&mut t, 20)?;
+    t.key(31, &[Modifier::Ctrl])?;
+    t.wait_node("status", |v| v["file"].as_str().is_some_and(|p| p != FILE && std::path::Path::new(p).file_name().is_some_and(|n| n.to_string_lossy().starts_with("untitled-"))) && v["message"] == "Saved")?;
+    let tree = t.tree()?;
+    let saved = tree.children.iter().find(|n| n.key == "status").and_then(|n| n.value["file"].as_str()).ok_or("missing untitled path")?;
+    let bytes = std::fs::read(saved).map_err(|e| e.to_string())?;
+    if std::fs::read(FILE).map_err(|e| e.to_string())? != original { return Err("New and Save changed the opened drawing".into()); }
     if !bytes.starts_with(b"\x89PNG\r\n\x1a\n") { return Err("saved file is not PNG".into()); }
     t.key(24, &[Modifier::Ctrl])?; t.wait_node("open", |_| true)?;
     t.key(1, &[])?; absent(&mut t, "open")?;

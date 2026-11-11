@@ -36,7 +36,7 @@ use std::path::PathBuf;
 mod libbreenix { #[allow(dead_code)] #[path = "ATOMIC"] pub mod atomic_file; }
 use canvas::{Canvas, History};
 const NEW:u16=1; const QUIT:u16=2; const UNDO:u16=3; const REDO:u16=4; const OPEN:u16=5; const SAVE:u16=6;
-struct App { width:usize, height:usize, history:History, clean:[u8;32], file:Option<PathBuf>, message:String }
+struct App { width:usize, height:usize, history:History, clean:[u8;32], file:Option<PathBuf>, message:String, stroke:Option<Vec<(i32,i32)>> }
 impl App {
     fn open_picker(&mut self) { panic!("not opening picker"); }
     fn request_quit(&mut self) { panic!("not quitting"); }
@@ -51,7 +51,7 @@ impl App {
     let original=files::encode("photo.png",&image,8,8).unwrap();
     std::fs::write(&path,&original).unwrap();
     std::fs::write(dir.join("untitled-1.png"),b"keep existing drawing").unwrap();
-    let mut app=App { width:8,height:8,clean:image.digest(),history:History::new(image),file:None,message:String::new() };
+    let mut app=App { width:8,height:8,clean:image.digest(),history:History::new(image),file:None,message:String::new(),stroke:None };
     app.open_file(path.clone()); assert!(app.message.is_empty());
     app.action(NEW);
     let drawn=app.history.canvas().preview(&[(5,5),(7,5)],|c,p|c.pencil(p,[7,8,9]));
