@@ -30,6 +30,22 @@ class GuskitRestartTest(unittest.TestCase):
         self.assertNotIn('save_as(', body)
         self.assertNotIn('target already exists', body)
 
+    def test_read_only_save_requires_the_fixed_png_and_exact_listing(self):
+        source = (ROOT / 'userspace/programs/src/guiapps_suite/guskit.rs').read_text()
+        body = source.split('pub fn smb_save_fails_cleanly()', 1)[1].split('pub(super) static', 1)[0]
+        self.assertIn('471226f2710862db5b66577c43497117c6011f58ee90b3449d9d5f31ad69bc93', body)
+        self.assertIn('std::ffi::OsString::from("README.txt")', body)
+        self.assertIn('std::ffi::OsString::from("drawing.png")', body)
+        self.assertEqual(body.count('directory_names("/mnt/guskit-ro")? != names'), 2)
+        self.assertIn('before.len() != 93 || hash(&before) != SHA256', body)
+        self.assertIn('hash(&after) != SHA256 || after != before', body)
+        self.assertIn('v["dirty"] == true', body)
+        self.assertIn('s != "Saved"', body)
+        self.assertIn('[0x1e, 0x6f, 0xd9]', body)
+        self.assertIn('(x / 4 + y / 4) % 2 == 0', body)
+        self.assertLess(body.index('FILE.as_bytes()'), body.index('stroke(&mut t, 10)'))
+        self.assertIn('sha256={SHA256} listing=README.txt,drawing.png', body)
+
     def test_case_is_registered(self):
         manifest = json.loads((ROOT / 'docs/suites/gui-apps.json').read_text())
         step = json.loads((ROOT / 'docs/gui/gt710-step-23-5.json').read_text())

@@ -34,7 +34,8 @@ class SmbStagingTest(unittest.TestCase):
             tree = root / 'tree'
             for name in ('etc/breenix', 'sbin', 'bin', 'mnt'):
                 (tree / name).mkdir(parents=True)
-            for name in ('sbin/suite-gui-apps', 'sbin/init', 'bin/getty', 'bin/login'):
+            for name in ('sbin/suite-gui-apps', 'sbin/suite-console', 'sbin/suite-smoke',
+                         'sbin/init', 'bin/getty', 'bin/login'):
                 (tree / name).write_bytes(b'\x7fELFfixture')
             image = root / 'root.img'
             subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
@@ -68,6 +69,45 @@ class SmbStagingTest(unittest.TestCase):
                     self.assertIn('Mode:  0755', stat)
                     self.assertRegex(stat, r'User:\s+0\s+Group:\s+0')
                 self.assertNotIn(config['SMB_TEST_PASSWORD'], output.getvalue() + json.dumps(facts))
+
+    def test_only_gui_apps_alone_selects_and_stages_guskit_mounts(self):
+        for suite in ('gui-apps,console', 'console,gui-apps', 'console,smoke'):
+            with self.subTest(suite=suite), self.gui_root() as (image, read, config):
+                selected = metal_root.smb_gui_selection('suite', suite)
+                # Inspect the staged image even if the predicate is wrong.
+                facts = metal_root.stage_root(image, 'suite', suite, {}, smb_config=config)
+                self.assertFalse(selected)
+                self.assertEqual(facts['suite'], suite)
+                self.assertEqual(read('cat /etc/breenix/boot-target').stdout.decode(),
+                                 'suite ' + suite.split(',')[0] + ' hostkeys host-channel\n')
+                for path in ('/etc/shares', '/etc/breenix/smb-test.cred',
+                             '/mnt/guskit-rw', '/mnt/guskit-ro'):
+                    self.assertIn(b'File not found', read('stat ' + path).stderr)
+
+    def test_gui_apps_sequence_is_refused_before_staging_or_lease(self):
+        runner = load_script('metal-run')
+        for suite in ('gui-apps,console', 'console,gui-apps', 'console,smoke'):
+            for case in (None, 'guskit') if 'gui-apps' in suite else (None,):
+                with self.subTest(suite=suite, case=case), tempfile.TemporaryDirectory() as tmp, \
+                        patch.object(runner, 'host_env', return_value={}), \
+                        patch.object(runner, 'resolve', return_value='a' * 40), \
+                        patch.object(runner, 'resolve_suites', side_effect=lambda env, sha, suites: suites), \
+                        patch.object(runner, 'configure_smb') as configure, \
+                        patch.object(runner, 'in_metal', return_value=SimpleNamespace(returncode=0, stdout='claimed', stderr='')) as remote, \
+                        patch.object(runner.subprocess, 'Popen') as processes, \
+                        patch.object(runner.Path, 'home', return_value=Path(tmp)):
+                    args = runner.argument_parser().parse_args(
+                        ['boot', '--suite', suite] + (['--case', case] if case else []))
+                    if 'gui-apps' in suite:
+                        with self.assertRaisesRegex(SystemExit, '^boot gui-apps on its own$'):
+                            runner.boot(args)
+                        remote.assert_not_called()
+                        processes.assert_not_called()
+                    else:
+                        self.assertEqual(runner.boot(args), 0)
+                        self.assertTrue(remote.called)
+                        self.assertTrue(processes.called)
+                    configure.assert_not_called()
 
     def test_console_and_other_gui_selection_remove_smb_mounts(self):
         for mode, suite, case in (('console', None, None), ('suite', 'gui-apps', 'bterm')):
