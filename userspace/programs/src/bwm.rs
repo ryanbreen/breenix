@@ -136,37 +136,8 @@ fn main() {
         px(TASKBAR_HEIGHT), px(APPBAR_HEIGHT), mode_index, mode.width, mode.height, mode.scale
     );
 
-    // bwm composes the windows as the compositor (window op 17's claim) and display owner.
-    let claim_epoch = match session::claim() {
-        Ok(epoch) => {
-            print!("[bwm] compositor claim: epoch {}\n", epoch);
-            epoch
-        }
-        Err(e) => {
-            print!("[bwm] ERROR: GPU compositing required: the compositor claim failed: {}\n", e);
-            process::exit(1);
-        }
-    };
-    let scene_fd = match session::scene_fd() {
-        Ok(fd) => fd,
-        Err(e) => {
-            print!("[bwm] ERROR: GPU compositing required: the scene descriptor failed: {}\n", e);
-            process::exit(1);
-        }
-    };
-
-    let mut desktop_tree = match desktop_publish::Publisher::new() {
-        Ok(publisher) => Some(publisher),
-        Err(error) => {
-            eprintln!("[bwm] compositor tree mapping failed: {}", error);
-            None
-        }
-    };
-    libuitest::startup::mark("scene-ready");
     // Clock state
     let mut clock = clock::Clock::new(std::env::var_os("BREENIX_UI_CLOCK").is_some());
-    clock.participate().expect("UI clock participant registration failed");
-    let mut clock_wake = clock_wake::open().expect("UI clock wake setup failed");
     let mut clock_text = [0u8; 11];
     format_clock(clock.wall_sec(), &mut clock_text);
     // Metadata discovery does not paint clients over the verified bare desktop.
@@ -182,7 +153,12 @@ fn main() {
     // The GPU core composes the desktop (`compositor`); there is no CPU-only fallback.
     // Font parsing and cold taskbar atlas coverage do not touch these targets.
     // Prepare the same clock snapshot that draw_taskbar will use.
-    let (opened, mut ui_font) = std::thread::scope(|scope| {
+    // Establish libgfx's context before reserving the compositor's next context.
+    if let Err(error) = libgfx::stage::context() {
+        eprintln!("[bwm] ERROR: font renderer could not be initialized: {error}");
+        process::exit(1);
+    }
+    let (opened, mut ui_font, claim_epoch, scene_fd, mut desktop_tree, mut clock_wake) = std::thread::scope(|scope| {
         let font = scope.spawn(|| {
             libuitest::startup::mark("startup-font-begin");
             let config = FontConfig::load();
@@ -208,6 +184,35 @@ fn main() {
             libuitest::startup::mark("fonts-ready");
             font
         });
+        // bwm composes the windows as the compositor (window op 17's claim) and display owner.
+        let claim_epoch = match session::claim() {
+            Ok(epoch) => {
+                print!("[bwm] compositor claim: epoch {}\n", epoch);
+                epoch
+            }
+            Err(e) => {
+                print!("[bwm] ERROR: GPU compositing required: the compositor claim failed: {}\n", e);
+                process::exit(1);
+            }
+        };
+        clock.participate().expect("UI clock participant registration failed");
+        let clock_wake = clock_wake::open().expect("UI clock wake setup failed");
+        let scene_fd = match session::scene_fd() {
+            Ok(fd) => fd,
+            Err(e) => {
+                print!("[bwm] ERROR: GPU compositing required: the scene descriptor failed: {}\n", e);
+                process::exit(1);
+            }
+        };
+
+        let desktop_tree = match desktop_publish::Publisher::new() {
+            Ok(publisher) => Some(publisher),
+            Err(error) => {
+                eprintln!("[bwm] compositor tree mapping failed: {}", error);
+                None
+            }
+        };
+        libuitest::startup::mark("scene-ready");
         let opened = Compositor::open(screen_w as u32, screen_h as u32, px(APPBAR_HEIGHT) as u32, ui().scale as u32)
             .and_then(|mut gpu| {
                 gpu.paint_background()?;
@@ -215,7 +220,7 @@ fn main() {
                 Ok(gpu)
             });
         libuitest::startup::mark("targets-ready");
-        (opened, font.join().expect("startup font worker panicked"))
+        (opened, font.join().expect("startup font worker panicked"), claim_epoch, scene_fd, desktop_tree, clock_wake)
     });
     let mut gpu = match opened {
         Ok(c) => c,
@@ -225,6 +230,10 @@ fn main() {
         }
     };
     print!("[bwm] GPU compositing mode (GPU core), display: {}x{}\n", screen_w, screen_h);
+
+    clock.begin_epoch();
+    let sec = clock.update_clock().unwrap_or_else(|| clock.wall_sec());
+    format_clock(sec, &mut clock_text);
 
     // The background was painted alongside font preparation; each repaint copies it.
 

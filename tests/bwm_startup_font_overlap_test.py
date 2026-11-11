@@ -13,7 +13,7 @@ class FontOverlap(unittest.TestCase):
         source = subprocess.check_output(['git','show',f'{old}:{rel}'], cwd=ROOT, text=True) if old else (ROOT/rel).read_text()
         block = source[source.index('    // The GPU core composes the desktop'):source.index('    let mut windows:')]
         if source.index('    let claim_epoch = match session::claim()') < source.index('    // The GPU core composes the desktop'):
-            block = 'let claim_epoch=session::claim().unwrap();let scene_fd=0;let mut desktop_tree:Option<desktop_publish::Publisher>=None;\n'+block
+            block = 'let claim_epoch=session::claim().unwrap();let scene_fd=0;let mut desktop_tree:Option<desktop_publish::Publisher>=None;let mut clock_wake:Option<()>=None;let _=clock.participate();\n'+block
         run_rust(self, r'''
 use std::sync::{Mutex,mpsc::{channel,Sender,Receiver}};
 #[path="@PREP@"] pub mod startup_prepare;
@@ -32,6 +32,9 @@ static DEVICE_READY:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool:
 pub mod libgfx{pub mod stage{pub fn context()->Result<u64,String>{super::super::DEVICE_READY.store(true,std::sync::atomic::Ordering::Relaxed);Ok(1)}}}
 mod session{pub fn claim()->Result<u64,String>{super::READY.lock().unwrap().as_ref().unwrap().recv_timeout(std::time::Duration::from_millis(250)).expect("font preparation still begins after the blocking compositor claim");Ok(7)}pub fn scene_fd()->Result<i32,String>{Ok(9)}}
 mod desktop_publish{pub struct Publisher;impl Publisher{pub fn new()->Result<Self,String>{Ok(Self)}}}
+struct Clock;impl Clock{fn participate(&mut self)->Result<(),String>{Ok(())}fn begin_epoch(&mut self){}fn update_clock(&mut self)->Option<i64>{Some(0)}fn wall_sec(&self)->i64{0}}
+fn format_clock(_:i64,out:&mut[u8;11]){*out=*b"00:00:00 ET";}
+mod clock_wake{pub fn open()->Result<Option<()>,String>{Ok(None)}}
 struct Surface;
 fn paint_background(_fb:&mut Surface){RESUME.lock().unwrap().take().unwrap().send(()).unwrap();}
 struct Compositor{background:Surface}
@@ -59,14 +62,16 @@ impl CachedFont {
 #[test]fn targets_and_cold_taskbar_prepare_concurrently(){
  let(tx,rx)=channel();*STARTED.lock().unwrap()=Some(tx);*READY.lock().unwrap()=Some(rx);
  let(tx,rx)=channel();*RESUME.lock().unwrap()=Some(tx);*HELD.lock().unwrap()=Some(rx);
+ let _=Clock::begin_epoch;let _=Clock::update_clock;let _=Clock::wall_sec;let _=format_clock;
+ let mut clock=Clock;let _=clock_wake::open;
  let _ = desktop_publish::Publisher::new;let _=session::scene_fd;let _=libgfx::stage::context;
  let _ = Compositor::paint_background;
  let _ = CachedFont::prepare_subpixel; let _ = ttf_font_size();
- let(screen_w,screen_h)=(2560usize,1600usize);let clock_text=*b"00:00:00 ET";
+ let(screen_w,screen_h)=(2560usize,1600usize);let mut clock_text=*b"00:00:00 ET";
  let startup_titles:Vec<&[u8]>=Vec::new();
  @BLOCK@
  assert!(ui_font.as_mut().unwrap().prepared,"cold taskbar coverage stayed on drawing path");
- let _=&mut gpu;let _=clock_text;let _=&mut desktop_tree;let _=(claim_epoch,scene_fd);
+ let _=&mut gpu;let _=&mut clock_text;let _=&mut desktop_tree;let _=&mut clock_wake;let _=(claim_epoch,scene_fd);
  assert!(TRACE.lock().unwrap().iter().any(|s|s=="fonts-ready"));
 }
 '''.replace('@BLOCK@',block).replace('@PREP@',str(ROOT/'userspace/programs/src/bwm/startup_prepare.rs')))
