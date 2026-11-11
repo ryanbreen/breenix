@@ -2284,7 +2284,11 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
         let (found, polled) = with_core(|c| {
             #[cfg(target_arch = "x86_64")]
             let poll_phase = submit_trace.map(|t| t.scope(SubmitPhase::AdmissionPoll));
+            let before_poll = EVENTS.load(Ordering::Acquire);
             c.poll_traced(#[cfg(target_arch = "x86_64")] submit_trace);
+            if silent_wait && EVENTS.load(Ordering::Acquire) != before_poll {
+                crate::tracing::providers::gpu::GPU_WAIT_SILENT_POLLED.increment();
+            }
             #[cfg(target_arch = "x86_64")]
             drop(poll_phase);
             #[cfg(target_arch = "x86_64")]
@@ -2894,13 +2898,23 @@ fn recover_native_fault() -> bool {
     true
 }
 
+/// QEMU drains the finite catalogue on its completions. The normal pump runs
+/// first and only one warm step can be in flight, so foreground submissions
+/// retain queue order without spreading cold programs across interactive frames.
+fn warm_deadline(now: u64, traffic: u64, held: u64, started: Option<u64>, eager: bool) -> u64 {
+    if eager { return now; }
+    let due = traffic.saturating_add(WARM_QUIET_NS).min(held.saturating_add(WARM_GRACE_NS));
+    started.filter(|&start| traffic >= start)
+        .map_or(due, |start| due.max(start.saturating_add(WARM_GRACE_NS)))
+}
+
 /// On `kgpu`: send the next step of the fixed rendering catalogue's warm-up (ruling 33,
 /// #1725), the lowest-numbered context's first pipeline not yet warmed. One step is on the
 /// device at a time, after the context's process-local grace and while the device is
 /// neither resetting nor suspected hung, so other requests wait behind at most one step.
-/// A step waits for `WARM_QUIET_NS` of send/answer quiet, for at most `WARM_GRACE_NS`.
-/// If other traffic followed the preceding step's start, the next start is also at least
-/// `WARM_GRACE_NS` after it; while held this returns when `kgpu` should look again.
+/// Outside QEMU, a step waits for `WARM_QUIET_NS` of send/answer quiet, for at most
+/// `WARM_GRACE_NS`. If traffic followed the preceding step's start, the next start
+/// is at least `WARM_GRACE_NS` after it; while held this returns the next deadline.
 /// The step takes the context's submission slot while it is encoded and
 /// queued, like a SUBMIT, so its objects and the context's submissions reach the device in
 /// the order their objects were allocated. Its requests are synchronous requests of the
@@ -2922,9 +2936,7 @@ fn warm_next() -> Option<u64> {
         }
         let now = now_ns();
         let held = *c.warm_held.get_or_insert(now);
-        let due = c.traffic_ns.saturating_add(WARM_QUIET_NS).min(held.saturating_add(WARM_GRACE_NS));
-        let due = c.warm_started_ns.filter(|&start| c.traffic_ns >= start)
-            .map_or(due, |start| due.max(start.saturating_add(WARM_GRACE_NS)));
+        let due = warm_deadline(now, c.traffic_ns, held, c.warm_started_ns, platform_config::is_qemu());
         if now < due {
             return Err(Some(due));
         }
@@ -2966,7 +2978,9 @@ fn warm_next() -> Option<u64> {
     } else {
         let mut enc = encode::Enc::new();
         encode::warm_pipeline(&mut enc, &mut objects, vb, scratch, scratch_texture, wire::format::B8G8R8A8_UNORM, FLIP_Y, pipeline);
-        if platform_config::is_parallels() { enc.completion_read(scratch, 256); }
+        // Warm requests are Sync tags, outside progress_readback's Submit
+        // search. Complete their scratch draw without depending on other work.
+        if platform_config::is_parallels() || platform_config::is_qemu() { enc.completion_read(scratch, 256); }
         enc.finish().filter(|v| !v.is_empty()).map(Chunks::Virgl)
     };
     with_core(|c| {

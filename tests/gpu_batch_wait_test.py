@@ -105,7 +105,7 @@ mod dev {
     }
 }
 mod abi { pub mod backend { pub const GK208:u32=6; } }
-mod platform_config { pub fn is_parallels()->bool { false } }
+mod platform_config { pub fn is_parallels()->bool { false } pub fn is_qemu()->bool { false } }
 #[cfg(target_arch = "x86_64")]
 mod gk208 {
     pub mod adapter { pub struct EncodedDraw; }
@@ -190,7 +190,7 @@ fn wait_for<T>(_: Option<u64>, interruptible: bool, mut f: impl FnMut(&mut Core)
         chunks = re.search(r"(?m)^enum Chunks \{[^}]*\}\n", CORE)
         if chunks is None:
             raise AssertionError("production enum Chunks is missing")
-        harness += interval + chunks.group(0) + function("catalogue_mask") + function("attach_all") + function("warm_next")
+        harness += interval + chunks.group(0) + function("catalogue_mask") + function("attach_all") + function("warm_deadline") + function("warm_next")
         readiness = re.search(r"out\.warmed = p\.contexts\.values\(\).*?\.count\(\) as u64;", CORE, re.S)
         self.assertIsNotNone(readiness, "missing process catalogue readiness count")
         harness += """

@@ -52,6 +52,7 @@ mod tracing {pub mod providers {pub mod gpu {
  pub static GPU_WAIT_LONG:Counter=Counter;
  pub static GPU_WAIT_SILENT:Counter=Counter;
  pub static GPU_WAIT_SILENT_FOUND:Counter=Counter;
+ pub static GPU_WAIT_SILENT_POLLED:Counter=Counter;
 }}}
 const EXAMINE_NS:u64=250_000_000;const POLL_NS:u64=250_000;const SPIN_POLL_NS:u64=1_000_000;const SPIN_POLL_PAUSE:u32=1;
 static EVENTS:AtomicU64=AtomicU64::new(0);static REAPER:AtomicU64=AtomicU64::new(1);

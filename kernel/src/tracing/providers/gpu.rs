@@ -63,6 +63,7 @@ pub static GPU_READ_OUTPUT_NS: TraceCounter = TraceCounter::new("gpu_read_output
 pub static GPU_WAIT_LONG: TraceCounter = TraceCounter::new("gpu_wait_long", "GPU waits lasting at least 100 milliseconds");
 pub static GPU_WAIT_SILENT: TraceCounter = TraceCounter::new("gpu_wait_silent", "Long GPU waits without an event count change");
 pub static GPU_WAIT_SILENT_FOUND: TraceCounter = TraceCounter::new("gpu_wait_silent_found", "Completion found by first poll after a long silent wait");
+pub static GPU_WAIT_SILENT_POLLED: TraceCounter = TraceCounter::new("gpu_wait_silent_polled", "State notification from first poll after a long silent wait");
 
 pub static GPU_READ_PROBE_NS: TraceCounter = TraceCounter::new("gpu_read_probe_ns", "Readback user-page probing nanoseconds");
 pub static GPU_READ_ALLOC_NS: TraceCounter = TraceCounter::new("gpu_read_alloc_ns", "Readback staging allocation nanoseconds");
@@ -146,7 +147,7 @@ pub fn readback_diagnostics() -> alloc::string::String {
     let mut out = alloc::string::String::new();
     for counter in [&GPU_READ_POISON_NS, &GPU_READ_WAIT_NS, &GPU_READ_COMPARE_NS,
         &GPU_READ_PREPARE_NS, &GPU_READ_OUTPUT_NS, &GPU_WAIT_LONG, &GPU_WAIT_SILENT,
-        &GPU_WAIT_SILENT_FOUND, &GPU_READ_PROBE_NS, &GPU_READ_ALLOC_NS, &GPU_READ_WRITERS_NS] {
+        &GPU_WAIT_SILENT_FOUND, &GPU_WAIT_SILENT_POLLED, &GPU_READ_PROBE_NS, &GPU_READ_ALLOC_NS, &GPU_READ_WRITERS_NS] {
         let _ = writeln!(out, "{}: {}", counter.name, counter.aggregate());
     }
     out
