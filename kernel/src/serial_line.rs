@@ -160,7 +160,8 @@ fn emit<const TEE: bool, const TERMINAL: bool>(writer: Writer, bytes: &[u8], lev
     if terminal_thread || (TEE && in_thread_context()) {
         write_queued(&mut ownership);
     }
-    uart_owner::write::<Uart, TEE>(writer, bytes, Kind::Plain, &mut ownership);
+    let kind = if writer == Writer::Tty { terminal_kind(bytes) } else { Kind::Plain };
+    uart_owner::write::<Uart, TEE>(writer, bytes, kind, &mut ownership);
     drop(ownership);
     // The kernel log, as the log rings keep it, also goes to the screen console.
     if TEE && writer == Writer::Kernel {
@@ -330,6 +331,12 @@ fn queue_terminal(bytes: &[u8]) -> bool {
     true
 }
 
+/// A completed terminal line must survive a vCPU owner stall as a whole
+/// record. Unterminated prompts retain ordinary fragment behavior.
+fn terminal_kind(bytes: &[u8]) -> Kind {
+    if bytes.ends_with(b"\n") { Kind::Line } else { Kind::Plain }
+}
+
 /// Give the UART the oldest queued terminal record, popped and written under
 /// one ownership, so records keep their order and each goes out whole. Returns
 /// the ring bytes it took, or 0 when the ring was empty.
@@ -344,7 +351,7 @@ fn send_queued_owned(ownership: &mut Ownership) -> usize {
         return 0;
     }
     if let Some(sent) = record.get(..n) {
-        uart_owner::write::<Uart, false>(Writer::Tty, sent, Kind::Plain, ownership);
+        uart_owner::write::<Uart, false>(Writer::Tty, sent, terminal_kind(sent), ownership);
     }
     with_ring(|ring| ring.in_flight -= 1);
     TX_HEADER + n

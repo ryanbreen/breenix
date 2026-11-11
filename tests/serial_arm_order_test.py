@@ -13,7 +13,7 @@ class ArmRecordOrder(unittest.TestCase):
     def test_masked_fallback_keeps_queued_records_first(self):
         source = (ROOT / 'kernel/src/serial_line.rs').read_text()
         ring = source[source.index('struct TxRing {'):source.index('/// Held only around copies')]
-        names = ['fn emit<', 'fn with_ring<', 'fn queue_terminal(',
+        names = ['fn terminal_kind(', 'fn emit<', 'fn with_ring<', 'fn queue_terminal(',
                  'fn send_queued(', 'fn send_queued_owned(', 'fn write_queued(']
         functions = '\n'.join(function(source, name) for name in names)
         harness = r'''
@@ -35,7 +35,7 @@ static TX_STATE: AtomicU8 = AtomicU8::new(TX_RUNNING);
 static TX_STOPPED: AtomicBool = AtomicBool::new(false);
 static WIRE: Lock<Vec<u8>> = Lock::new(Vec::new());
 #[derive(Clone, Copy, PartialEq)] enum Writer { Kernel, Tty }
-enum Kind { Plain }
+enum Kind { Plain, Line }
 mod log { pub enum Level { Info } }
 struct Ownership;
 impl Ownership { fn acquire() -> Self { Self } }
