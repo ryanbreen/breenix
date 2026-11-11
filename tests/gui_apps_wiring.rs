@@ -177,3 +177,12 @@ fn blog_font_change_republishes_the_drawing_font() {
     assert!(reload.contains("needs_redraw = true"));
     assert!(reload.contains("publish_tree(&mut win, &tabs, tab_bar.selected(), visible_lines, &fonts)"));
 }
+
+#[test]
+fn guskit_reloads_and_draws_with_the_display_font() {
+    let source = include_str!("../userspace/programs/src/guskit.rs");
+    assert!(source.contains("Event::FontChanged"));
+    assert!(source.matches("take_display_font()").count() >= 2);
+    assert!(source.contains("ttf_font::draw_text"));
+    assert!(source.contains("display_path()"));
+}
