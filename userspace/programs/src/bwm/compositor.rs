@@ -532,16 +532,27 @@ impl Compositor {
         self.check_area(subject, layers, pointer, [0, 0, self.width, self.height])
     }
 
+    pub fn check_while(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, idle: impl FnMut() -> bool)
+        -> Option<Result<u64, CheckError>> {
+        self.check_area_while(subject, layers, pointer, [0, 0, self.width, self.height], idle)
+    }
+
     /// `check`, for the part of the frame inside `area` (x0, y0, x1, y1) only.
     ///
     /// CAPTURE reads the clients shown in the area. A captured commit differing from the
     /// composite's sample requires retrying the check on a later frame. The comparison
     /// covers the requested rectangle, including other clients' content.
     pub fn check_area(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4]) -> Result<u64, CheckError> {
+        self.check_area_while(subject, layers, pointer, area, || true).expect("uninterruptible frame check")
+    }
+
+    /// New work leaves validation pending; only a complete comparison returns a verdict.
+    pub fn check_area_while(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4], mut idle: impl FnMut() -> bool)
+        -> Option<Result<u64, CheckError>> {
         let mut workspace = core::mem::take(&mut self.check_workspace);
         workspace.costs = [0; 5];
         let began = monotonic_ns();
-        let result = self.check_area_into(subject, layers, pointer, area, &mut workspace);
+        let result = self.check_area_into(subject, layers, pointer, area, &mut workspace, &mut idle);
         let elapsed = monotonic_ns().saturating_sub(began);
         if elapsed >= 100_000_000 {
             use std::io::Write;
@@ -554,10 +565,10 @@ impl Compositor {
         }
         // Retain storage on success, stale-front retry and readback refusal alike.
         self.check_workspace = workspace;
-        result
+        match result { Ok(Some(pixels)) => Some(Ok(pixels)), Ok(None) => None, Err(error) => Some(Err(error)) }
     }
 
-    fn check_area_into(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4], workspace: &mut CheckWorkspace) -> Result<u64, CheckError> {
+    fn check_area_into(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4], workspace: &mut CheckWorkspace, idle: &mut impl FnMut() -> bool) -> Result<Option<u64>, CheckError> {
         let [x0, y_top, x1, y1] = area;
         let w = x1.saturating_sub(x0);
         if w == 0 || y_top >= y1 {
@@ -574,6 +585,7 @@ impl Compositor {
         // clients' readbacks must not systematically make an animating source stale.
         shown.sort_by_key(|(id, _)| (*id != self.check_first, *id != subject));
         for (id, r) in shown {
+            if !idle() { return Ok(None); }
             let s = self.sampled.iter().find(|s| s.id == id).expect("sampled_content found it");
             let (stored_id, stored_rect, stored_width, px) = client_buffer(
                 clients, client_count, s.width as usize * s.height as usize * 4,
@@ -597,6 +609,7 @@ impl Compositor {
                     return Err(CheckError::Failed(format!("CAPTURE of window {}: {}", s.id, e)));
                 }
             };
+            if !idle() { return Ok(None); }
             if c.commit_id != s.commit_id || (c.width, c.height) != (s.width, s.height) {
                 self.check_first = id;
                 return Err(CheckError::Moved(format!(
@@ -623,6 +636,7 @@ impl Compositor {
         let mut compared = 0u64;
         let mut y0 = y_top;
         while y0 < y1 {
+            if !idle() { return Ok(None); }
             let rows = band_rows.min(y1 - y0);
             let len = (w * rows * 4) as usize;
             // These immutable sources are independent. Start D's transfer while
@@ -649,6 +663,7 @@ impl Compositor {
                 return Err(CheckError::Failed(format!("readback of rows {}..{}: errno {}, reason {}", y0, y0 + rows, -r, a.reason)));
             }
             desktop.map_err(|e| CheckError::Failed(format!("desktop readback of rows {}..{}: errno {}", y0, y0 + rows, -e)))?;
+            if !idle() { return Ok(None); }
             let began = monotonic_ns();
             for row in 0..rows {
                 let y = (y0 + row) as i32;
@@ -687,7 +702,7 @@ impl Compositor {
             libuitest::startup::mark("frame-pixels-ready");
             y0 += rows;
         }
-        Ok(compared)
+        Ok(Some(compared))
     }
 
     /// Read the scanout itself (READBACK target 0) at each `(x, y, want)` sample and require

@@ -65,7 +65,14 @@ pub(super) fn run_deferred_check(
     let next = unchecked.iter().copied()
         .min_by_key(|id| windows.iter().find(|w| w.window_id == *id).map_or(0, |w| w.check_moved));
     let id = next.unwrap_or(0);
-    let result = measure_check(|| gpu.check(id, &scene.layers, cursor_pointer(scene.pointer)));
+    let result = measure_check(|| gpu.check_while(id, &scene.layers, cursor_pointer(scene.pointer), || {
+        for fd in poll_fds.iter_mut() { fd.revents = 0; }
+        matches!(io::poll(poll_fds, 0), Ok(0)) && poll_fds.iter().all(|fd| fd.revents == 0)
+    }));
+    let Some(result) = result else {
+        queue.retry(&unchecked);
+        return;
+    };
     if result.is_ok() {
         // Harvested from 097962f6: the full-scene comparison includes the
         // shown sources, so its successful result also serves these clients.

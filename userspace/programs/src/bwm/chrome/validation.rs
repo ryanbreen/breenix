@@ -50,6 +50,12 @@ impl<S> ValidationQueue<S> {
         self.first_frames.retain(|client| client.id != id);
     }
 
+    pub fn retry(&mut self, ids: &[u64]) {
+        for client in &mut self.first_frames {
+            if ids.contains(&client.id) { client.attempted = false; }
+        }
+    }
+
     pub fn invalidate_scene(&mut self) {
         self.scene = None;
     }
