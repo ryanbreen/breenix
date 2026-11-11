@@ -41,7 +41,8 @@ fn main() {
   redraw=false; let width=win.width() as i32; let height=win.height() as i32;
   for r in &mut rects { r.clamp(width,height); }
   let objects:Vec<_>=rects.iter().map(|r| status::Object { bounds:[(r.x/100) as i64,(r.y/100) as i64,r.w.min(width) as i64,r.h.min(height) as i64], value:serde_json::json!({}) }).collect();
-  win.set_tree(status::build("rectangles",100,epochs,true,win.width(),win.height(),"rectangle",&objects));
+  let inside = objects.iter().all(|o| o.bounds[0] >= 0 && o.bounds[1] >= 0 && o.bounds[0]+o.bounds[2] <= width as i64 && o.bounds[1]+o.bounds[3] <= height as i64);
+  win.set_tree(status::build("rectangles",100,epochs,inside,win.width(),win.height(),"rectangle",&objects));
   let fb=win.surface().expect("surface"); fb.clear(Color::rgb(15,15,30));
   for r in &rects { shapes::fill_rect(fb,r.x/100,r.y/100,r.w.min(width),r.h.min(height),r.color); }
   win.present().expect("present");

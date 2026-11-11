@@ -57,22 +57,17 @@ impl Ball {
         self.x += self.vx;
         self.y += self.vy;
 
-        if self.x - self.radius < 0 {
-            self.x = self.radius;
-            self.vx = -self.vx;
-        }
-        if self.x + self.radius >= width {
-            self.x = width - self.radius - 1;
-            self.vx = -self.vx;
-        }
-        if self.y - self.radius < 0 {
-            self.y = self.radius;
-            self.vy = -self.vy;
-        }
-        if self.y + self.radius >= height {
-            self.y = height - self.radius - 1;
-            self.vy = -self.vy;
-        }
+        self.clamp(width, height);
+    }
+
+    fn clamp(&mut self, width: i32, height: i32) {
+        self.radius = self.radius.min((width - 1).min(height - 1).max(0) / 2);
+        let max_x = (width - self.radius - 1).max(self.radius);
+        let max_y = (height - self.radius - 1).max(self.radius);
+        if self.x < self.radius || self.x > max_x { self.vx = -self.vx; }
+        if self.y < self.radius || self.y > max_y { self.vy = -self.vy; }
+        self.x = self.x.clamp(self.radius, max_x);
+        self.y = self.y.clamp(self.radius, max_y);
     }
 
     fn draw(&self, fb: &mut Surface) {
@@ -168,11 +163,14 @@ fn main() {
         redraw = false;
         let width = win.width() as i32; let height = win.height() as i32;
         let cx = width/2; let cy = height/2;
-        let radius = 80.min(cx).min(cy).max(0);
+        let radius = 80.min(cx).min(cy).min(width-1-cx).min(height-1-cy).max(0);
+        for ball in &mut balls { ball.clamp(width, height); }
         let mut objects = Vec::new();
-        for i in 0..12 { let a = frame*2 + i*30; let x = cx + radius*cos(a)/1000; let y = cy + radius*sin(a)/1000; objects.push(status::Object { bounds: [cx.min(x) as i64, cy.min(y) as i64, (cx-x).abs() as i64, (cy-y).abs() as i64], value: serde_json::json!({}) }); }
+        for i in 0..12 { let a = frame*2 + i*30; let x = cx + radius*cos(a)/1000; let y = cy + radius*sin(a)/1000; objects.push(status::Object { bounds: [cx.min(x) as i64, cy.min(y) as i64, ((cx-x).abs()+1) as i64, ((cy-y).abs()+1) as i64], value: serde_json::json!({}) }); }
         for i in 0..5 { let size = 20 + i*15 + (sin(frame*3)+1000)/100; let size = size.min(cx).min(cy).max(0); objects.push(status::Object { bounds: [(cx-size) as i64,(cy-size) as i64,(size*2) as i64,(size*2) as i64], value: serde_json::json!({}) }); }
-        win.set_tree(status::build("demo",100,epochs,true,win.width(),win.height(),"object",&objects));
+        for ball in &balls { objects.push(status::Object { bounds: [(ball.x-ball.radius) as i64, (ball.y-ball.radius) as i64, (ball.radius*2+1) as i64, (ball.radius*2+1) as i64], value: serde_json::json!({"vx":ball.vx,"vy":ball.vy}) }); }
+        let inside = objects.iter().all(|o| o.bounds[0] >= 0 && o.bounds[1] >= 0 && o.bounds[0]+o.bounds[2] <= width as i64 && o.bounds[1]+o.bounds[3] <= height as i64);
+        win.set_tree(status::build("demo",100,epochs,inside,win.width(),win.height(),"object",&objects));
         let fb = win.surface().expect("surface"); fb.clear(Color::rgb(10,20,40));
         draw_rotating_lines(fb,cx,cy,radius,frame*2,12);
         draw_pulsing_rects(fb,cx,cy,frame);
