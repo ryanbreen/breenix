@@ -2,7 +2,7 @@
 fn gui_apps_cases_have_sessions_and_no_placeholder() {
     let source = include_str!("../userspace/programs/src/suite_gui_apps.rs");
     let cases: Vec<_> = source.lines().filter(|line| line.trim_start().starts_with("case(")).collect();
-    assert_eq!(cases.len(), 42);
+    assert_eq!(cases.len(), 52);
     for case in cases {
         assert!(case.contains(".session(libuitest::supervisor::serve)"), "missing session: {case}");
         assert!(!case.contains("pending::"), "placeholder: {case}");
@@ -104,4 +104,15 @@ fn bcheck_dispatches_input_before_presenting() {
     assert!(!source.contains("win.poll_events()"));
     assert!(source.contains("win.dispatch(|delivered|"));
     assert!(source.contains("Handled::Redraw"));
+}
+
+#[test]
+fn guskit_uses_window_dispatch_and_publishes_tree() {
+    let source = std::fs::read_to_string("userspace/programs/src/guskit.rs").expect("Gus Kit binary");
+    assert!(source.contains("win.wait_dispatch("));
+    assert!(source.contains("win.set_tree("));
+    for forbidden in ["poll_events", "framebuf", "fb_mmap", "libcollab"] {
+        assert!(!source.contains(forbidden), "unexpected {forbidden}");
+    }
+    assert!(include_str!("../userspace/programs/build.sh").contains("guskit"));
 }

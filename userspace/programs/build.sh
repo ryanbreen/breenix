@@ -494,6 +494,7 @@ STD_BINARIES=(
     "clip-set_test"
     "blog"
     "bfontpicker"
+    "guskit"
     "blauncher"
     "bsshd"
     "bssh"

@@ -69,3 +69,22 @@ fn desktop_exit_requires_wm_handling_and_clean_exit() {
     assert!(verdict("rejected", 0, 0).is_err());
     assert!(verdict("wm-handled", 0, 9).is_err());
 }
+
+#[test]
+fn drag_start_must_be_inside_visible_node_bounds() {
+    use libbui::tree::{Flag, Node, Role};
+    let mut node = Node { key: "canvas".into(), parent: None, role: Role::Canvas,
+        name: String::new(), value: serde_json::Value::Null, bounds: [10, 20, 8, 6],
+        clip: [12, 21, 5, 4], flags: vec![Flag::Visible] };
+    for point in [(2, 1), (6, 1), (2, 4), (6, 4), (4, 2)] {
+        assert!(app::drag_start(&node, point).is_ok(), "{point:?}");
+    }
+    for point in [(1, 2), (7, 2), (3, 0), (3, 5), (-1, 0), (8, 6)] {
+        assert!(app::drag_start(&node, point).is_err(), "{point:?}");
+    }
+    node.clip = [0, 0, 0, 0];
+    assert!(app::drag_start(&node, (0, 0)).is_err());
+    node.clip = node.bounds;
+    node.flags.clear();
+    assert!(app::drag_start(&node, (0, 0)).is_err());
+}
