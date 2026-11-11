@@ -145,7 +145,7 @@ pub fn stroke_both_ways() -> CaseResult {
     Ok(t.finish()?)
 }
 // The host is a process launched by this case. Hold its sequencing path until
-// both real peer apps have submitted; always release it, including on failure.
+// both real peer apps have submitted; Drop releases it on failure paths too.
 struct SequencingBarrier(i32);
 impl SequencingBarrier {
     fn hold(window: u64) -> Result<Self, String> {
@@ -220,7 +220,7 @@ pub fn undo_ownership() -> CaseResult {
     let value=collab(&mut t)?;
     let rows=value["submitted"].as_array().ok_or("missing gesture answers")?;
     if rows.len()!=64 || rows[3..].iter().any(|row|row.get("global").is_none()) {
-        return Err(format!("brush segments or Undo unanswered: {rows:?}"));
+        return Err(format!("brush segments or Undo unanswered: {rows:?}").into());
     }
     for owner in [HOST,PEER] { check_peer(&mut t,owner,&expected,&value["applied"])?; }
     Ok(t.finish()?)
