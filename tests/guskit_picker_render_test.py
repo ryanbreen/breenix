@@ -26,7 +26,7 @@ impl Surface {
     fn new(width: usize, height: usize, _: libgfx::surface::Format) -> Result<Self, String> {
         Ok(Self { width, height, pixels: vec![Color::WHITE; width*height] })
     }
-    fn batch(&mut self, f: impl FnOnce(&mut Self)) { f(self); }
+    fn batch<R>(&mut self, f: impl FnOnce(&mut Self) -> R) -> R { f(self) }
     fn clear(&mut self, c: Color) { self.pixels.fill(c); }
     fn put_pixel(&mut self, x: usize, y: usize, c: Color) {
         PIXELS.with(|n| n.set(n.get()+1));
@@ -61,17 +61,18 @@ struct MenuBar;
 impl MenuBar { fn draw(&self, _: &mut Surface, _: &Theme) {} }
 struct Picker;
 impl Picker { fn draw(&self, _: &mut Surface, _: &Theme) {} }
-struct Canvas;
+#[derive(Clone)] struct Canvas;
 impl Canvas {
     fn preview(&self, p: &[(i32,i32)], f: impl FnOnce(&mut Self, &[(i32,i32)])) -> Self { let mut c=Self; f(&mut c,p); c }
     fn render_runs(&self, _: impl FnMut(usize,usize,usize,[u8;3])) {}
+    fn render_changes(&self, _: &Self, _: impl FnMut(usize,usize,usize,[u8;3])) -> bool { false }
 }
 struct History;
 impl History { fn canvas(&self) -> &Canvas { &Canvas } }
 struct App {
-    tool: usize, size: usize, hue: u16, recent: [[u8;3];8], stroke: Option<Vec<(i32,i32)>>,
+    width: usize, height: usize, tool: usize, size: usize, hue: u16, recent: [[u8;3];8], stroke: Option<Vec<(i32,i32)>>,
     history: History, message: String, picker: Option<Picker>, confirm: bool,
-    palette: Option<(u16,Surface)>,
+    palette: Option<(u16,Surface)>, canvas_surface: Option<(Canvas,Surface)>,
 }
 impl App { fn draw_stroke(&self, _: &mut Canvas, _: &[(i32,i32)]) {} }
 const LABELS: [&[u8];7]=[b"Pen",b"Brsh",b"Line",b"Rect",b"Circ",b"Fill",b"Ers"];
@@ -79,8 +80,8 @@ const TOP: i32=176;
 mod node { MAPPING }
 RENDER
 #[test] fn picker_pixels_and_reuse() {
-    let mut app=App { tool:0,size:0,hue:0,recent:[[0;3];8],stroke:None,history:History,
-        message:String::new(),picker:None,confirm:false,palette:None };
+    let mut app=App { width:800,height:424,tool:0,size:0,hue:0,recent:[[0;3];8],stroke:None,history:History,
+        message:String::new(),picker:None,confirm:false,palette:None,canvas_surface:None };
     assert!(app.palette.is_none());
     let mut fb=Surface::new(800,600,libgfx::surface::Format::BGRX).unwrap();
     for hue in [0,120,241] {

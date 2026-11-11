@@ -64,6 +64,35 @@ impl Canvas {
             }
         }
     }
+    /// Emit only pixels that differ from the image already on a retained target.
+    pub fn render_changes(&self, previous: &Self, mut emit: impl FnMut(usize, usize, usize, Color)) -> bool {
+        if self.width != previous.width || self.height != previous.height {
+            self.render_runs(emit);
+            return true;
+        }
+        let mut changed = false;
+        for y in 0..self.height {
+            let row = y * self.width * 3;
+            let end = row + self.width * 3;
+            if self.pixels[row..end] == previous.pixels[row..end] { continue; }
+            let mut x = 0;
+            while x < self.width {
+                let i = row + x * 3;
+                if self.pixels[i..i + 3] == previous.pixels[i..i + 3] { x += 1; continue; }
+                let color = [self.pixels[i], self.pixels[i + 1], self.pixels[i + 2]];
+                let start = x;
+                x += 1;
+                while x < self.width {
+                    let j = row + x * 3;
+                    if self.pixels[j..j + 3] != color || self.pixels[j..j + 3] == previous.pixels[j..j + 3] { break; }
+                    x += 1;
+                }
+                emit(start, y, x - start, color);
+                changed = true;
+            }
+        }
+        changed
+    }
     pub fn preview(&self, points: &[Point], draw: impl FnOnce(&mut Self, &[Point])) -> Self {
         let mut image = self.clone();
         draw(&mut image, points);

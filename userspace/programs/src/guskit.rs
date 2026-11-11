@@ -26,6 +26,7 @@ struct App {
     stroke: Option<Vec<Point>>, selected_color: Option<[u8; 3]>, recent: [[u8; 3]; 8], confirm: bool, quit: bool,
     file: Option<PathBuf>, message: String, picker: Option<FilePicker>, directory: PathBuf,
     palette: Option<(u16, Surface)>,
+    canvas_surface: Option<(Canvas, Surface)>,
 }
 impl App {
     fn color(&self) -> [u8; 3] { self.selected_color.unwrap_or_else(|| node::hsv_to_rgb(self.hue, self.sat, self.val)) }
@@ -166,6 +167,23 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar) {
         palette.wait().expect("Gus Kit picker rendering");
         app.palette = Some((app.hue, palette));
     }
+    let preview = app.stroke.as_ref().map(|points| app.history.canvas().preview(points, |image, points| app.draw_stroke(image, points)));
+    let canvas = preview.as_ref().unwrap_or_else(|| app.history.canvas());
+    if let Some((previous, surface)) = &mut app.canvas_surface {
+        let changed = surface.batch(|fb| canvas.render_changes(previous, |x, y, width, c|
+            shapes::fill_rect(fb, x as i32, y as i32, width as i32, 1, Color::rgb(c[0], c[1], c[2]))));
+        if changed {
+            surface.wait().expect("Gus Kit canvas rendering");
+            previous.clone_from(canvas);
+        }
+    } else {
+        let mut surface = Surface::new(app.width, app.height, libgfx::surface::Format::BGRX)
+            .expect("Gus Kit canvas surface");
+        surface.batch(|fb| canvas.render_runs(|x, y, width, c|
+            shapes::fill_rect(fb, x as i32, y as i32, width as i32, 1, Color::rgb(c[0], c[1], c[2]))));
+        surface.wait().expect("Gus Kit canvas rendering");
+        app.canvas_surface = Some((canvas.clone(), surface));
+    }
     fb.batch(|fb| {
     fb.clear(Color::rgb(45, 45, 45));
     for (i, label) in LABELS.iter().enumerate() {
@@ -181,9 +199,7 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar) {
     libgfx::blit::blit(fb, &app.palette.as_ref().expect("picker rendered above").1, 0, 58);
     bitmap_font::draw_text(fb, b"Recent:", 108, 78, Color::WHITE);
     for (i, c) in app.recent.iter().enumerate() { shapes::fill_rect(fb, 108 + i as i32 * 18, 90, 16, 16, Color::rgb(c[0], c[1], c[2])); }
-    let preview = app.stroke.as_ref().map(|points| app.history.canvas().preview(points, |image, points| app.draw_stroke(image, points)));
-    let canvas = preview.as_ref().unwrap_or_else(|| app.history.canvas());
-    canvas.render_runs(|x, y, width, c| shapes::fill_rect(fb, x as i32, y as i32 + TOP, width as i32, 1, Color::rgb(c[0], c[1], c[2])));
+    libgfx::blit::blit(fb, &app.canvas_surface.as_ref().expect("canvas rendered above").1, 0, TOP);
     menu.draw(fb, &Theme::dark());
     if !app.message.is_empty() { bitmap_font::draw_text(fb, app.message.as_bytes(), 110, 150, Color::WHITE); }
     if let Some(picker) = &app.picker { picker.draw(fb, &Theme::dark()); }
@@ -249,7 +265,7 @@ fn main() {
     } else { (800, 600 - TOP as usize) };
     if args.next().is_some() { eprintln!("usage: guskit [--canvas WxH] [FILE]"); std::process::exit(2); }
     let image = Canvas::new(width,height); let clean = image.digest();
-    let mut app = App { width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),palette:None };
+    let mut app = App { width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),palette:None,canvas_surface:None };
     if let Some(path) = app.file.clone() { if path.exists() { app.open_file(path); } }
     let mut win = Window::new(b"Gus Kit", 800, 600).unwrap_or_else(|e| { eprintln!("Gus Kit: {e}"); std::process::exit(1) });
     let mut menu = menu();
@@ -286,7 +302,7 @@ mod tests {
         let image = Canvas::new(200, 120);
         let mut app = App { width:200,height:120,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
-            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),palette:None };
+            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),palette:None,canvas_surface:None };
         let mut menu = menu();
         let mut event = Delivered { serial:1,time_ns:1,clicks:0,
             event:Event::KeyRelease { keycode:25,modifiers:Modifiers::default() } };

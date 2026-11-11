@@ -22,7 +22,7 @@ impl Color { const WHITE:Self=Self([255;3]); fn rgb(r:u8,g:u8,b:u8)->Self { Self
 struct Surface { width:usize,height:usize,pixels:Vec<Color> }
 impl Surface {
     fn new(width:usize,height:usize,_:libgfx::surface::Format)->Result<Self,String> { Ok(Self { width,height,pixels:vec![Color::WHITE;width*height] }) }
-    fn batch(&mut self,f:impl FnOnce(&mut Self)) { f(self); }
+    fn batch<R>(&mut self,f:impl FnOnce(&mut Self)->R)->R { f(self) }
     fn clear(&mut self,c:Color) { PRIMITIVES.with(|n|n.set(n.get()+1)); self.pixels.fill(c); }
     fn put_pixel(&mut self,x:usize,y:usize,c:Color) { PRIMITIVES.with(|n|n.set(n.get()+1)); self.pixels[y*self.width+x]=c; }
     fn wait(&self)->Result<(),String> { Ok(()) }
