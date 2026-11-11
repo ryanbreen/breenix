@@ -14,6 +14,7 @@ class FontOverlap(unittest.TestCase):
         block = source[source.index('    // The GPU core composes the desktop'):source.index('    // Paint the decorative background')]
         run_rust(self, r'''
 use std::sync::{Mutex,mpsc::{channel,Sender,Receiver}};
+#[path="@PREP@"] pub mod startup_prepare;
 static READY:Mutex<Option<Receiver<()>>>=Mutex::new(None);
 static STARTED:Mutex<Option<Sender<()>>>=Mutex::new(None);
 static RESUME:Mutex<Option<Sender<()>>>=Mutex::new(None);
@@ -39,7 +40,7 @@ impl CachedFont {
  fn new(_font:Font,cap:usize)->Self{assert_eq!(cap,256);Self{prepared:false}}
  fn observe_phases(&mut self,observer:fn(&'static str)){observer("font-observed");}
  fn prepare_subpixel(&mut self,texts:&[&[u8]],size:f32)->Result<(),String>{
-  assert_eq!(texts,&[b"Breenix".as_slice(),b"00:00:00 ET".as_slice()]);assert_eq!(size,28.0);
+  assert_eq!(texts,&[b"Breenix".as_slice(),b"00:00:00 ET".as_slice(),b"0123456789: ET".as_slice(),b"x-".as_slice()]);assert_eq!(size,28.0);
   STARTED.lock().unwrap().take().unwrap().send(()).unwrap();
   HELD.lock().unwrap().as_ref().unwrap().recv_timeout(std::time::Duration::from_millis(250)).expect("target work did not overlap font preparation");
   self.prepared=true;Ok(())
@@ -50,11 +51,12 @@ impl CachedFont {
  let(tx,rx)=channel();*RESUME.lock().unwrap()=Some(tx);*HELD.lock().unwrap()=Some(rx);
  let _ = CachedFont::prepare_subpixel; let _ = ttf_font_size();
  let(screen_w,screen_h)=(2560usize,1600usize);let clock_text=*b"00:00:00 ET";
+ let startup_titles:Vec<&[u8]>=Vec::new();
  @BLOCK@
  assert!(ui_font.as_mut().unwrap().prepared,"cold taskbar coverage stayed on drawing path");
  let _=&mut gpu;let _=clock_text;
  assert!(TRACE.lock().unwrap().iter().any(|s|s=="fonts-ready"));
 }
-'''.replace('@BLOCK@',block))
+'''.replace('@BLOCK@',block).replace('@PREP@',str(ROOT/'userspace/programs/src/bwm/startup_prepare.rs')))
 
 if __name__ == '__main__': unittest.main()

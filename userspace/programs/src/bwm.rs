@@ -169,6 +169,16 @@ fn main() {
     let mut clock_wake = clock_wake::open().expect("UI clock wake setup failed");
     let mut clock_text = [0u8; 11];
     format_clock(clock.wall_sec(), &mut clock_text);
+    // Metadata discovery does not paint clients over the verified bare desktop.
+    // Prepare surviving titles in the first atlas batch alongside GPU targets.
+    let mut startup_infos = Vec::new();
+    if let Err(error) = session::list_windows(&mut startup_infos) {
+        eprintln!("[bwm] startup title discovery unavailable: {error}");
+    }
+    let startup_titles: Vec<&[u8]> = startup_infos.iter()
+        .filter(|w| w.flags & libbreenix::window::abi::win_flags::MINIMIZED == 0
+            && !(w.title_len > 0 && w.title[0] == 1))
+        .map(|w| &w.title[..(w.title_len as usize).min(w.title.len())]).collect();
     // The GPU core composes the desktop (`compositor`); there is no CPU-only fallback.
     // Font parsing and cold taskbar atlas coverage do not touch these targets.
     // Prepare the same clock snapshot that draw_taskbar will use.
@@ -190,7 +200,8 @@ fn main() {
                 print!("[bwm] no display font, using bitmap fallback\n");
             }
             if let Some(font) = font.as_mut() {
-                if let Err(error) = font.prepare_subpixel(&[b"Breenix", &clock_text], ttf_font_size() * ui().scale as f32) {
+                let texts = startup_prepare::coverage(&clock_text, &startup_titles);
+                if let Err(error) = font.prepare_subpixel(&texts, ttf_font_size() * ui().scale as f32) {
                     eprintln!("[bwm] taskbar coverage warm-up unavailable: {error}");
                 }
             }

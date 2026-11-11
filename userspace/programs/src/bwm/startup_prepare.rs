@@ -1,5 +1,13 @@
 //! Prepare independent title coverage while validating the bare desktop.
 
+/// Prepare static chrome, the clock alphabet and the titles already registered.
+/// Later title discovery can add newcomers without a second cold restart batch.
+pub fn coverage<'a>(clock: &'a [u8], titles: &[&'a [u8]]) -> Vec<&'a [u8]> {
+    let mut texts: Vec<&[u8]> = vec![b"Breenix", clock, b"0123456789: ET", b"x-"];
+    texts.extend_from_slice(titles);
+    texts
+}
+
 pub fn during<R>(prepare: impl FnOnce() -> Result<(), String> + Send,
     check: impl FnOnce() -> R,
 ) -> (Result<(), String>, R) {
