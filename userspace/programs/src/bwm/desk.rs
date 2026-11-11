@@ -151,6 +151,7 @@ impl Window {
     pub(super) fn hit_resize_edge(&self, mx: i32, my: i32) -> Option<ResizeEdge> {
         // The grab margin expands outside the frame; it must never steal a
         // client's pixels, even when the chrome is scaled and the client isn't.
+        // claim-lint:ok: tests/bwm_resize_content_test.py checks client corners at scales 1 and 2.
         if self.chromeless || self.hit_content(mx, my) { return None; }
 
         let x0 = self.x;

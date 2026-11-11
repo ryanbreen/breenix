@@ -25,6 +25,7 @@ struct App {
     tool: usize, size: usize, hue: u16, sat: u8, val: u8,
     stroke: Option<Vec<Point>>, selected_color: Option<[u8; 3]>, recent: [[u8; 3]; 8], confirm: bool, quit: bool,
     file: Option<PathBuf>, message: String, picker: Option<FilePicker>, directory: PathBuf,
+    palette: Option<(u16, Surface)>,
 }
 impl App {
     fn color(&self) -> [u8; 3] { self.selected_color.unwrap_or_else(|| node::hsv_to_rgb(self.hue, self.sat, self.val)) }
@@ -132,7 +133,20 @@ fn menu() -> MenuBar {
     ]);
     menu.layout(&Theme::dark()); menu
 }
-fn render(fb: &mut Surface, app: &App, menu: &MenuBar) {
+fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar) {
+    // Input acknowledgments wait for this frame. Retain the hue-dependent picker
+    // on the GPU so unchanged input redraws only copy its pixels.
+    if app.palette.as_ref().is_none_or(|(hue, _)| *hue != app.hue) {
+        let mut palette = Surface::new(780, 118, libgfx::surface::Format::BGRX)
+            .expect("Gus Kit picker surface");
+        palette.batch(|fb| {
+            fb.clear(Color::rgb(45, 45, 45));
+            for x in 0..780 { let c = node::hsv_to_rgb(node::hue_at(x, 780), 255, 255); shapes::fill_rect(fb, x as i32, 0, 1, 18, Color::rgb(c[0], c[1], c[2])); }
+            for y in 0..100 { for x in 0..100 { let (s,v) = node::sv_at(x,y,100); let c = node::hsv_to_rgb(app.hue,s,v); fb.put_pixel(x, y+18, Color::rgb(c[0],c[1],c[2])); } }
+        });
+        palette.wait().expect("Gus Kit picker rendering");
+        app.palette = Some((app.hue, palette));
+    }
     fb.batch(|fb| {
     fb.clear(Color::rgb(45, 45, 45));
     for (i, label) in LABELS.iter().enumerate() {
@@ -145,8 +159,7 @@ fn render(fb: &mut Surface, app: &App, menu: &MenuBar) {
         shapes::fill_rect(fb, x as i32, 41, 20, 16, if i == app.size { Color::rgb(100,140,220) } else { Color::rgb(60,60,60) });
         bitmap_font::draw_text(fb, *label, x + 3, 42, Color::WHITE);
     }
-    for x in 0..780 { let c = node::hsv_to_rgb(node::hue_at(x, 780), 255, 255); shapes::fill_rect(fb, x as i32, 58, 1, 18, Color::rgb(c[0], c[1], c[2])); }
-    for y in 0..100 { for x in 0..100 { let (s,v) = node::sv_at(x,y,100); let c = node::hsv_to_rgb(app.hue,s,v); fb.put_pixel(x, y+76, Color::rgb(c[0],c[1],c[2])); } }
+    libgfx::blit::blit(fb, &app.palette.as_ref().expect("picker rendered above").1, 0, 58);
     bitmap_font::draw_text(fb, b"Recent:", 108, 78, Color::WHITE);
     for (i, c) in app.recent.iter().enumerate() { shapes::fill_rect(fb, 108 + i as i32 * 18, 90, 16, 16, Color::rgb(c[0], c[1], c[2])); }
     let preview = app.stroke.as_ref().map(|points| app.history.canvas().preview(points, |image, points| app.draw_stroke(image, points)));
@@ -217,7 +230,7 @@ fn main() {
     } else { (800, 600 - TOP as usize) };
     if args.next().is_some() { eprintln!("usage: guskit [--canvas WxH] [FILE]"); std::process::exit(2); }
     let image = Canvas::new(width,height); let clean = image.digest();
-    let mut app = App { width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from(".") };
+    let mut app = App { width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),palette:None };
     if let Some(path) = app.file.clone() { if path.exists() { app.open_file(path); } }
     let mut win = Window::new(b"Gus Kit", 800, 600).unwrap_or_else(|e| { eprintln!("Gus Kit: {e}"); std::process::exit(1) });
     let mut menu = menu();
@@ -225,7 +238,7 @@ fn main() {
     loop {
         menu.set_enabled(UNDO, app.history.undo_depth() > 0); menu.set_enabled(REDO, app.history.redo_depth() > 0);
         if redraw {
-            if let Ok(surface) = win.surface() { render(surface, &app, &menu); }
+            if let Ok(surface) = win.surface() { render(surface, &mut app, &menu); }
             publish(&mut win, &app); let _ = win.present();
         }
         if app.quit { break; }
@@ -254,7 +267,7 @@ mod tests {
         let image = Canvas::new(200, 120);
         let mut app = App { width:200,height:120,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
-            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from(".") };
+            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),palette:None };
         let mut menu = menu();
         let mut event = Delivered { serial:1,time_ns:1,clicks:0,
             event:Event::KeyRelease { keycode:25,modifiers:Modifiers::default() } };
