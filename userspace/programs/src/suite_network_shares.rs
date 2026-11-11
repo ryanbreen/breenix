@@ -476,17 +476,24 @@ fn smb_mount_list() -> CaseResult {
     }
     Ok(())
 }
+fn smb_writable_profiles(mut run: impl FnMut(SmbMount) -> CaseResult) -> CaseResult {
+    for (share, smb302) in [("rw", false), ("rw302", true), ("enc", false)] {
+        run(SmbMount::start(share, smb302)?).map_err(|e| format!("{share}: {e:?}"))?;
+    }
+    Ok(())
+}
 fn smb_write_read() -> CaseResult {
-    let mount = SmbMount::rw()?;
+    smb_writable_profiles(|mount| {
     let path = mount.path("chunks");
     // Exceed both the UFS payload and SMB single-credit size with varying bytes.
     let bytes: Vec<u8> = (0..(3 * ufs_abi::MAX_DATA + 317)).map(|n| ((n * 37 + n / 251) % 256) as u8).collect();
     io(fs::write(&path, &bytes))?;
     check(io(fs::read(&path))? == bytes, "SMB chunked read differs from written bytes")?;
     mount.finish()
+    })
 }
 fn smb_rename_replace() -> CaseResult {
-    let mount = SmbMount::rw()?;
+    smb_writable_profiles(|mount| {
     let from = mount.path("from");
     let to = mount.path("to");
     io(fs::write(&from, b"replacement contents"))?;
@@ -495,6 +502,7 @@ fn smb_rename_replace() -> CaseResult {
     check(!io(fs::exists(&from))?, "SMB rename left the source name")?;
     check(io(fs::read(&to))? == b"replacement contents", "SMB rename did not replace destination")?;
     mount.finish()
+    })
 }
 fn smb_delete() -> CaseResult {
     let mount = SmbMount::rw()?;
@@ -521,7 +529,7 @@ fn smb_dirs() -> CaseResult {
 }
 fn smb_atomic_save() -> CaseResult {
     use libbreenix::crypto::sha256::{sha256, Sha256};
-    let mount = SmbMount::rw()?;
+    smb_writable_profiles(|mount| {
     let path = mount.path("drawing");
     io(fs::write(&path, b"old drawing"))?;
     let bytes: Vec<u8> = (0..4 * 1024 * 1024).map(|n| ((n * 37 + n / 251) % 256) as u8).collect();
@@ -544,6 +552,7 @@ fn smb_atomic_save() -> CaseResult {
     check(size == bytes.len() && digest.finalize() == expected, "SMB atomic save size or SHA-256 differs")?;
     check(smb_names(&mount.work)? == [std::ffi::OsString::from("drawing")], "SMB atomic save left a temporary")?;
     mount.finish()
+    })
 }
 
 fn smb_read_only_refused() -> CaseResult {
