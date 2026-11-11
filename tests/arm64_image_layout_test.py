@@ -46,6 +46,17 @@ class LayoutTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'DMA block.*leaves'):
                 check.layout(root)
 
+    def test_image_literal_boundaries(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'kernel/src/arch_impl/aarch64/example.rs'
+            source.parent.mkdir(parents=True)
+            source.write_text('const A: u64 = 0x4020_0000;\nconst B: u64 = 0x42df_ffff;\n')
+            with self.assertRaisesRegex(ValueError, r'example.rs:1: 0x4020_0000[\s\S]*example.rs:2: 0x42df_ffff'):
+                check.check_image_literals(root, 0x40200000, 0x42e00000)
+            source.write_text('const A: u64 = 0x401f_ffff;\nconst B: u64 = 0x42e0_0000;\n')
+            check.check_image_literals(root, 0x40200000, 0x42e00000)
+
     def test_real_maps_cover_production_and_testing_profiles(self):
         fixtures = ROOT / 'tests/fixtures/arm64-image-layout'
         # These historical maps always use the old ceiling, even after the

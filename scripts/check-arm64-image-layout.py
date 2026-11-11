@@ -71,8 +71,31 @@ def layout(root):
         for other, lo, hi in regions[i + 1:]:
             if start < hi and lo < end:
                 raise ValueError(f'{name} overlaps {other}')
+    check_image_literals(root, base, boundary)
     return base, boundary
 
+
+
+def check_image_literals(root, base, boundary):
+    """Refuse hard-coded image addresses in ARM Rust source.
+
+    The legacy MMU's kernel/user permission boundary is a range endpoint,
+    not a location of an object or page table; it is the sole exception.
+    Comments and string literals describe addresses rather than use them.
+    """
+    hits = []
+    for path in sorted((root / 'kernel/src/arch_impl/aarch64').glob('*.rs')):
+        for line_no, line in enumerate(path.read_text().splitlines(), 1):
+            code = re.sub(r'"(?:\\.|[^"\\])*"', '""', line.split('//', 1)[0])
+            for literal in re.finditer(r'\b0x[0-9a-fA-F_]+', code):
+                value = number(literal.group())
+                if base <= value < boundary:
+                    if path.name == 'mmu.rs' and re.fullmatch(
+                            r'\s*const KERNEL_REGION_END: u64 = 0x4100_0000;\s*', code):
+                        continue
+                    hits.append(f'{path.relative_to(root)}:{line_no}: {literal.group()}')
+    if hits:
+        raise ValueError('hex literals inside image window:\n' + '\n'.join(hits))
 
 def map_report(text, ceiling):
     # LLD map columns: VMA, LMA, size, alignment, output section.  Only
