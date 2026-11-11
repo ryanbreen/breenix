@@ -43,6 +43,7 @@ fn tree_reports_selection_and_cell_geometry() {
     assert_eq!(value["selection"], serde_json::Value::Null);
     assert_eq!(value["cell"], serde_json::json!({"x": 0, "y": 24, "w": 8, "h": 16}));
     s.press(8, 24, g, vt.size()); s.release(24, 24, g, vt.size());
+    assert!(s.contains(2, 0));
     let value = terminal_node::selection_fields(&vt, &s, g);
     assert_eq!(value["selection"], serde_json::json!({"start": [1, 0], "end": [3, 0], "text": "ell"}));
 }

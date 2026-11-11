@@ -14,6 +14,8 @@ fn drag_selects_rows_in_either_direction() {
     let mut s = Selection::default();
     s.press(18, 20, g, vt.size()); s.release(42, 20, g, vt.size());
     assert_eq!(s.text(&vt).as_deref(), Some("bc d"));
+    assert!(s.contains(1, 0));
+    assert!(!s.contains(0, 0));
     s.press(18, 20, g, vt.size()); s.release(26, 40, g, vt.size());
     assert_eq!(s.text(&vt).as_deref(), Some("bc de\nxy\nlas"));
     s.press(26, 40, g, vt.size()); s.release(18, 20, g, vt.size());
@@ -28,4 +30,16 @@ fn drag_clamps_and_click_clears() {
     assert_eq!(s.text(&vt).as_deref(), Some("abc de\nxy\nlast"));
     s.press(10, 20, g, vt.size()); s.release(10, 20, g, vt.size());
     assert_eq!(s.text(&vt), None);
+}
+
+#[test]
+fn vt_reports_scrolling_even_when_history_is_full() {
+    let mut vt = libvt::TermEmu::new(2, 2);
+    for _ in 0..1001 { vt.feed(b"x\r\n"); }
+    let before = vt.scroll_generation();
+    vt.feed(b"x\r\n");
+    assert_ne!(vt.scroll_generation(), before);
+    let before = vt.scroll_generation();
+    vt.feed(b"a");
+    assert_eq!(vt.scroll_generation(), before);
 }

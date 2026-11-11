@@ -29,3 +29,9 @@ pub fn terminal_value(vt: &TermEmu, active_tab: usize, tab_count: usize, font_pa
     let (x, y) = vt.cursor();
     json!({"font": {"path": font_path, "size": font_size}, "active_tab": active_tab, "tab_count": tab_count, "cols": cols, "rows": rows, "cursor": [x, y], "lines": lines, "title": vt.title(), "alt": vt.alternate_screen(), "scrollback": vt.scrollback.lines.len(), "offset": vt.view_offset(), "runs": runs})
 }
+
+
+pub fn selection_fields(vt: &TermEmu, selection: &super::selection::Selection, cell: super::selection::Geometry) -> Value {
+    let selected = selection.bounds().and_then(|(start, end)| selection.text(vt).map(|text| json!({"start": [start.0, start.1], "end": [end.0, end.1], "text": text})));
+    json!({"selection": selected, "cell": {"x": cell.x, "y": cell.y, "w": cell.w, "h": cell.h}})
+}

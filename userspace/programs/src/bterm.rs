@@ -11,6 +11,9 @@
 //!   Ctrl+Minus   — decrease font size
 //!   Shift+PgUp/PgDn — scroll history by a page; wheel scrolls three rows
 
+#[path = "bterm/selection.rs"]
+mod selection;
+
 #[path = "bterm/terminal_node.rs"]
 mod terminal_node;
 
@@ -59,12 +62,15 @@ const TAB_BAR_HEIGHT: i32 = 24;
 const WIN_WIDTH: u32 = 750;
 const WIN_HEIGHT: u32 = 550;
 
-struct TermEmu { vt: libvt::TermEmu, dirty: bool }
+struct TermEmu { vt: libvt::TermEmu, selection: selection::Selection, dirty: bool }
 impl TermEmu {
-    fn new(cols: usize, rows: usize) -> Self { Self { vt: libvt::TermEmu::new(cols, rows), dirty: true } }
-    fn resize(&mut self, cols: usize, rows: usize) { self.vt.resize(cols, rows); self.dirty = true; }
+    fn new(cols: usize, rows: usize) -> Self { Self { vt: libvt::TermEmu::new(cols, rows), selection: selection::Selection::default(), dirty: true } }
+    fn resize(&mut self, cols: usize, rows: usize) { self.vt.resize(cols, rows); self.selection.clear(); self.dirty = true; }
     fn feed(&mut self, bytes: &[u8], master_fd: Fd) {
+        let generation = self.vt.scroll_generation();
+        let offset = self.vt.view_offset();
         self.vt.feed(bytes);
+        if self.vt.scroll_generation() != generation || self.vt.view_offset() != offset { self.selection.clear(); }
         self.dirty = true;
         self.flush_replies(master_fd);
     }
@@ -89,20 +95,20 @@ impl TermEmu {
         let max_y = (y_off + clip_h).min(fb.height());
         let rows = self.vt.size().1.min(max_y.saturating_sub(y_off) / cell_h.max(1));
         let cols = self.vt.size().0.min(max_x.saturating_sub(x_off) / cell_w.max(1));
-        let fg_of = |cell: &libvt::Cell| {
-            let c = if cell.inverse { cell.bg } else { cell.fg };
+        let fg_of = |cell: &libvt::Cell, selected: bool| {
+            let c = if cell.inverse ^ selected { cell.bg } else { cell.fg };
             if cell.bold { Color::rgb(c.r.saturating_add(40), c.g.saturating_add(40), c.b.saturating_add(40)) }
             else { Color::rgb(c.r, c.g, c.b) }
         };
-        let bg_of = |cell: &libvt::Cell| if cell.inverse { cell.fg } else { cell.bg };
+        let bg_of = |cell: &libvt::Cell, selected: bool| if cell.inverse ^ selected { cell.fg } else { cell.bg };
         fb.batch(|fb| {
             for row in 0..rows {
                 let py = y_off + row * cell_h;
                 let mut col = 0;
                 while col < cols {
-                    let bg = bg_of(self.vt.view_cell(col, row));
+                    let bg = bg_of(self.vt.view_cell(col, row), self.selection.contains(col, row));
                     let start = col;
-                    while col < cols && bg_of(self.vt.view_cell(col, row)) == bg {
+                    while col < cols && bg_of(self.vt.view_cell(col, row), self.selection.contains(col, row)) == bg {
                         col += 1;
                     }
                     shapes::fill_rect(fb, (x_off + start * cell_w) as i32, py as i32,
@@ -113,7 +119,7 @@ impl TermEmu {
         let glyphs: Vec<(usize, usize, Color)> = (0..rows)
             .flat_map(|row| (0..cols).map(move |col| (col, row)))
             .filter(|&(col, row)| self.vt.view_cell(col, row).ch != ' ')
-            .map(|(col, row)| (col, row, fg_of(self.vt.view_cell(col, row))))
+            .map(|(col, row)| (col, row, fg_of(self.vt.view_cell(col, row), self.selection.contains(col, row))))
             .collect();
         if let Some(font) = ttf {
             let clip = libgfx::surface::Rect::new(0, 0, max_x as i32, max_y as i32);
@@ -152,7 +158,7 @@ impl TermEmu {
                     if cell.underline {
                         shapes::fill_rect(fb, (x_off + col * cell_w) as i32,
                             (y_off + (row + 1) * cell_h - 1) as i32,
-                            cell_w as i32, 1, fg_of(cell));
+                            cell_w as i32, 1, fg_of(cell, self.selection.contains(col, row)));
                     }
                 }
             }
@@ -428,6 +434,7 @@ fn main() {
                     if modifiers.shift && (*keycode == breengel::keys::PAGE_UP || *keycode == breengel::keys::PAGE_DOWN) {
                         if let Some(tab) = tabs.get_mut(tab_bar.selected()) {
                             let page = tab.emu.vt.size().1 as isize;
+                            tab.emu.selection.clear();
                             tab.emu.vt.scroll_view(if *keycode == breengel::keys::PAGE_UP { page } else { -page });
                             tab.emu.dirty = true;
                         }
@@ -439,6 +446,12 @@ fn main() {
                     {
                         print!("[bterm] key: ascii={} keycode=0x{:02X} ctrl={}\n",
                                *ascii, *keycode, modifiers.ctrl);
+                    }
+                    if modifiers.ctrl && modifiers.shift && *keycode == 46 {
+                        if let Some(tab) = tabs.get(tab_bar.selected()) {
+                            if let Some(text) = tab.emu.selection.text(&tab.emu.vt) { let _ = libclipboard::set(window_id, text.as_bytes()); }
+                        }
+                        return Handled::Redraw;
                     }
                     if modifiers.ctrl && modifiers.shift && *keycode == libbreenix::input::key::V as u32 {
                         if let Some(tab) = tabs.get_mut(tab_bar.selected()) {
@@ -533,6 +546,7 @@ fn main() {
                 }
                 Event::Scroll { delta_y, .. } => {
                     if let Some(tab) = tabs.get_mut(tab_bar.selected()) {
+                        tab.emu.selection.clear();
                         tab.emu.vt.scroll_view((*delta_y as isize).saturating_mul(3));
                         tab.emu.dirty = true;
                     }
@@ -540,11 +554,23 @@ fn main() {
                 Event::MouseMove { x, y } => {
                     mouse_x = *x;
                     mouse_y = *y;
+                    if buttons & 1 != 0 {
+                        if let Some(tab) = tabs.get_mut(tab_bar.selected()) {
+                            tab.emu.selection.update(*x, *y, selection::Geometry { x: 0, y: tab_bar_pixels as i32, w: cell_w, h: cell_h }, tab.emu.vt.size());
+                            tab.emu.dirty = true;
+                        }
+                    }
                 }
                 Event::MouseButton { button, pressed, x, y } => {
                     mouse_x = *x;
                     mouse_y = *y;
                     if *button == breengel::buttons::LEFT {
+                        if let Some(tab) = tabs.get_mut(tab_bar.selected()) {
+                            let g = selection::Geometry { x: 0, y: tab_bar_pixels as i32, w: cell_w, h: cell_h };
+                            if *pressed && *y >= g.y { tab.emu.selection.press(*x, *y, g, tab.emu.vt.size()); }
+                            if !*pressed { tab.emu.selection.release(*x, *y, g, tab.emu.vt.size()); }
+                            tab.emu.dirty = true;
+                        }
                         if *pressed {
                             buttons |= 1;
                         } else {
@@ -695,10 +721,13 @@ fn main() {
 
             if let Some(tab) = tabs.get(sel) {
                 let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
+                let mut value = terminal_node::terminal_value(&tab.emu.vt, sel, tabs.len(), win.mono_path(), font_size);
+                let fields = terminal_node::selection_fields(&tab.emu.vt, &tab.emu.selection, selection::Geometry { x: 0, y: tab_bar_pixels as i32, w: cell_w, h: cell_h });
+                value.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
                 win.set_tree(breengel::tree::Tree { root: breengel::tree::Node {
                     key: "grid".into(), parent: None, role: breengel::tree::Role::Terminal,
                     name: "Terminal".into(),
-                    value: terminal_node::terminal_value(&tab.emu.vt, sel, tabs.len(), win.mono_path(), font_size),
+                    value,
                     bounds, clip: bounds, flags: vec![breengel::tree::Flag::Enabled, breengel::tree::Flag::Visible],
                 }, children: Vec::new() });
             }
