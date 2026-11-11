@@ -32,17 +32,32 @@ pub struct HostCore {
     connections: BTreeMap<u32, Connection>,
     global: u64,
     host_local: u32,
+    base: Vec<u8>,
+    log: Vec<Message>,
+    next_peer: u16,
 }
 
 impl HostCore {
     pub fn new(width: u16, height: u16) -> Self {
+        Self::with_canvas(width, height, Vec::new())
+    }
+
+    pub fn with_canvas(width: u16, height: u16, base: Vec<u8>) -> Self {
+        assert!(u32::try_from(base.len()).is_ok(), "canvas too large");
         Self {
             width,
             height,
             connections: BTreeMap::new(),
             global: 0,
             host_local: 0,
+            base,
+            log: Vec::new(),
+            next_peer: 1,
         }
+    }
+
+    pub fn log(&self) -> &[Message] {
+        &self.log
     }
 
     pub fn connect(&mut self, conn: u32) -> Vec<Output> {
@@ -92,13 +107,13 @@ impl HostCore {
             .host_local
             .checked_add(1)
             .expect("host local sequence exhausted");
-        if self.valid(&op) {
-            self.admit(0, self.host_local, op, &mut out);
-        } else {
+        if let Some(reason) = self.refusal(0, &op) {
             out.push(Output::Event(Event::Refused {
                 local: self.host_local,
-                reason: b"invalid-coords".to_vec(),
+                reason: reason.to_vec(),
             }));
+        } else {
+            self.admit(0, self.host_local, op, &mut out);
         }
         out
     }
@@ -115,6 +130,7 @@ impl HostCore {
                     .filter(|c| c.peer.is_some())
                     .count()
                     >= 15
+                    || self.next_peer > u16::from(u8::MAX)
                 {
                     Some(&b"full"[..])
                 } else {
@@ -131,9 +147,8 @@ impl HostCore {
                     self.disconnect(conn, reason, true, out);
                     return;
                 }
-                let peer = (1..=15)
-                    .find(|id| !self.connections.values().any(|c| c.peer == Some(*id)))
-                    .unwrap();
+                let peer = self.next_peer as u8;
+                self.next_peer += 1;
                 self.connections.get_mut(&conn).unwrap().peer = Some(peer);
                 Self::frame(
                     conn,
@@ -144,6 +159,20 @@ impl HostCore {
                     },
                     out,
                 );
+                for (index, chunk) in self.base.chunks(65531).enumerate() {
+                    Self::frame(
+                        conn,
+                        Message::SyncChunk {
+                            offset: (index * 65531) as u32,
+                            data: chunk.to_vec(),
+                        },
+                        out,
+                    );
+                }
+                Self::frame(conn, Message::SyncEnd, out);
+                for entry in &self.log {
+                    Self::frame(conn, entry.clone(), out);
+                }
                 self.broadcast_except(conn, Message::PeerJoined { peer, name }, out);
             }
             (Some(peer), Message::Op { local, op }) => {
@@ -152,12 +181,12 @@ impl HostCore {
                     self.disconnect(conn, b"sequence", true, out);
                 } else {
                     c.next_local += 1;
-                    if !self.valid(&op) {
+                    if let Some(reason) = self.refusal(peer, &op) {
                         Self::frame(
                             conn,
                             Message::Refused {
                                 local,
-                                reason: b"invalid-coords".to_vec(),
+                                reason: reason.to_vec(),
                             },
                             out,
                         );
@@ -187,6 +216,7 @@ impl HostCore {
             local,
             op,
         };
+        self.log.push(message.clone());
         for (&conn, c) in &self.connections {
             if c.peer.is_some() {
                 Self::frame(conn, message.clone(), out);
@@ -233,6 +263,20 @@ impl HostCore {
             conn,
             data: wire::encode(&message).expect("host message fits frame"),
         });
+    }
+
+    fn refusal(&self, peer: u8, op: &DrawOp) -> Option<&'static [u8]> {
+        if !self.valid(op) {
+            return Some(b"invalid-coords");
+        }
+        if *op == DrawOp::Undo
+            && !crate::live_ops(&self.log)
+                .iter()
+                .any(|m| matches!(m, Message::Apply { peer: owner, .. } if *owner == peer))
+        {
+            return Some(b"nothing-to-undo");
+        }
+        None
     }
 
     fn valid(&self, op: &DrawOp) -> bool {
