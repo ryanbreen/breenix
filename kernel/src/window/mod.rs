@@ -19,6 +19,7 @@ pub mod policy;
 pub mod pipeline;
 pub mod readback_trace;
 pub mod stall_trace;
+pub mod accounting;
 pub mod pacing;
 pub mod present;
 pub mod scene;
@@ -456,6 +457,12 @@ pub fn row_exit(pid: crate::process::ProcessId) {
 /// The calling thread's group has replaced its program image: its windows are destroyed.
 /// Its address space is new, so nothing is unmapped.
 pub fn exec_done_current() {
+    let bwm = crate::process::with_process_manager(|manager| {
+        let tid = crate::task::thread::current_accounting_identity()?.1;
+        let (pid, process) = manager.find_process_by_thread(tid)?;
+        (process.name.rsplit('/').next() == Some("bwm")).then_some(process.thread_group_id.unwrap_or(pid.as_u64()))
+    }).flatten();
+    if let Some(pid) = bwm { accounting::exec(pid); }
     if let Ok(caller) = Caller::current() {
         ops::group_gone(caller.tgid, false);
     }

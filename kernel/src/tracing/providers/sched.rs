@@ -196,6 +196,7 @@ pub fn trace_switch_to_idle() {
 #[inline(always)]
 #[allow(dead_code)]
 pub fn trace_sched_queue_state(ready_queue_len: u16, chosen_tid: u16) {
+    crate::window::accounting::queue(ready_queue_len as u64);
     if SCHED_PROVIDER.is_enabled() && crate::tracing::is_enabled() {
         crate::tracing::record_event_2(SCHED_QUEUE_STATE, ready_queue_len, chosen_tid);
     }

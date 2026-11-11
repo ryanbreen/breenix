@@ -1874,11 +1874,17 @@ impl Thread {
         self.state == ThreadState::Ready
     }
 
+    /// Publish a scheduler transition to the bounded numeric evidence journal.
+    pub fn set_state(&mut self, state: ThreadState) {
+        crate::window::accounting::thread_state(self, state);
+        self.state = state;
+    }
+
     /// Mark thread as running
     pub fn set_running(&mut self) {
         self.signals.diagnostic_last_cpu.store(crate::task::scheduler::current_cpu_id_raw() as u64, Ordering::Relaxed);
         self.signals.diagnostic_last_run_ns.store(crate::window::events::now_ns(), Ordering::Relaxed);
-        self.state = ThreadState::Running;
+        self.set_state(ThreadState::Running);
         self.signals.cpu_clock.store(
             (crate::signal::monotonic_micros() << 1) | u64::from(self.signals.in_user.load(Ordering::Relaxed)),
             Ordering::Release,
@@ -1889,7 +1895,7 @@ impl Thread {
     pub fn set_ready(&mut self) {
         self.stop_timer_cpu();
         if self.state != ThreadState::Terminated {
-            self.state = ThreadState::Ready;
+            self.set_state(ThreadState::Ready);
         }
     }
 
@@ -1901,7 +1907,7 @@ impl Thread {
         if self.state != ThreadState::Terminated {
             crate::task::scheduler::note_thread_terminated(self);
         }
-        self.state = ThreadState::Terminated;
+        self.set_state(ThreadState::Terminated);
     }
 
     /// Create a new thread with a specific ID (used for fork) - x86_64 only
@@ -2134,3 +2140,11 @@ impl StallThread {
             self.pid, self.tid, self.state, self.object, self.since_run_ns, self.last_cpu, self.cpu_ns, self.queue, self.wake_ns)
     }
 }
+
+/// Identity without a process-manager or scheduler lock, including kernel work.
+pub(crate) fn current_accounting_identity() -> Option<(u64,u64)> {
+    current_cpu_thread().map(|t| (t.owner_pid.unwrap_or(0),t.id()))
+}
+
+/// Borrow the current scheduler owner for numeric evidence only.
+pub(crate) fn current_accounting_thread() -> Option<&'static Thread> { current_cpu_thread() }

@@ -1565,7 +1565,7 @@ pub fn block_current_coreproof_probe() -> Option<Result<DepartureProbe, &'static
             queue.retain(|queued_tid| *queued_tid != tid);
         }
         if let Some(thread) = scheduler.get_thread_mut(tid) {
-            thread.state = restore_state;
+            thread.set_state(restore_state);
             thread.blocked_in_syscall = restore_in_syscall;
         }
 
@@ -3450,6 +3450,7 @@ impl Scheduler {
     }
 
     fn add_thread_inner(&mut self, thread: Box<Thread>, front: bool) -> usize {
+        crate::window::accounting::thread_state(&thread, thread.state);
         let thread_id = thread.id();
         let thread_name = thread.name.clone();
         let is_user = thread.privilege == super::thread::ThreadPrivilege::User;
@@ -3636,7 +3637,7 @@ impl Scheduler {
         let thread_id = thread.id();
         let thread_name = thread.name.clone();
         // Mark thread as running
-        thread.state = ThreadState::Running;
+        thread.set_state(ThreadState::Running);
         thread.has_started = true;
         self.admit_thread(thread);
         let cpu = Self::current_cpu_id();
@@ -5386,7 +5387,7 @@ impl Scheduler {
             current.charge_cpu(crate::time::get_cpu_ticks());
 
             current.stop_timer_cpu();
-            current.state = ThreadState::Blocked;
+            current.set_state(ThreadState::Blocked);
             #[cfg(feature = "coreproof_component_a")]
             crate::proof_point!(BlockAfterStateStore);
             if in_syscall {
@@ -5478,7 +5479,7 @@ impl Scheduler {
         // Restore exactly, before the lock is released.
         self.per_cpu_queues[cpu].retain(|&id| id != tid);
         if let Some(thread) = self.get_thread_mut(tid) {
-            thread.state = restore_state;
+            thread.set_state(restore_state);
             thread.blocked_in_syscall = restore_in_syscall;
         }
         outcome
@@ -5789,7 +5790,7 @@ impl Scheduler {
                     thread.saved_userspace_context = Some(ctx);
                 }
                 thread.stop_timer_cpu();
-                thread.state = ThreadState::BlockedOnSignal;
+                thread.set_state(ThreadState::BlockedOnSignal);
                 // CRITICAL: Mark that this thread is blocked inside a syscall.
                 // When the thread is resumed, we must NOT restore userspace context
                 // because that would return to the pre-syscall location instead of
@@ -5940,7 +5941,7 @@ impl Scheduler {
                 thread.charge_cpu(crate::time::get_cpu_ticks());
 
                 thread.stop_timer_cpu();
-                thread.state = ThreadState::BlockedOnChildExit;
+                thread.set_state(ThreadState::BlockedOnChildExit);
                 // CRITICAL: Mark that this thread is blocked inside a syscall.
                 // When the thread is resumed, we must NOT restore userspace context
                 // because that would return to the pre-syscall location instead of
@@ -6037,7 +6038,7 @@ impl Scheduler {
             return false;
         }
         thread.stop_timer_cpu();
-        thread.state = ThreadState::Blocked;
+        thread.set_state(ThreadState::Blocked);
         for q in self.per_cpu_queues.iter_mut() {
             q.retain(|&id| id != thread_id);
         }
@@ -6081,7 +6082,7 @@ impl Scheduler {
                 thread.charge_cpu(crate::time::get_cpu_ticks());
 
                 thread.stop_timer_cpu();
-                thread.state = ThreadState::BlockedOnTimer;
+                thread.set_state(ThreadState::BlockedOnTimer);
                 thread.wake_time_ns = Some(wake_time_ns);
                 if !already_armed {
                     thread.timer_pop = Some(TimerPopRecord::armed(wake_time_ns));
@@ -6151,7 +6152,7 @@ impl Scheduler {
         thread.charge_cpu(crate::time::get_cpu_ticks());
 
         thread.stop_timer_cpu();
-        thread.state = ThreadState::BlockedOnIO;
+        thread.set_state(ThreadState::BlockedOnIO);
         thread.wake_time_ns = wake_time_ns;
         // The observation belongs to this wait, not to whatever the thread did
         // before it.
@@ -6449,7 +6450,7 @@ impl Scheduler {
                 thread.charge_cpu(crate::time::get_cpu_ticks());
 
                 thread.stop_timer_cpu();
-                thread.state = ThreadState::BlockedOnTimer;
+                thread.set_state(ThreadState::BlockedOnTimer);
                 thread.wake_time_ns = Some(timeout_ns);
                 thread.timer_pop = Some(TimerPopRecord::armed(timeout_ns));
                 thread.blocked_in_syscall = true;
@@ -6725,7 +6726,7 @@ impl Scheduler {
                 // manages this flag itself when it detects the state change.
                 if let Some(thread) = self.get_thread_mut(tid) {
                     let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
-                    thread.state = ThreadState::Ready;
+                    thread.set_state(ThreadState::Ready);
                     WAKE_SITE_TIMER.fetch_add(1, Ordering::Relaxed);
                     record_ready_site(tid, READY_SITE_TIMER);
                     ENQUEUE_DEFERRED.fetch_add(1, Ordering::Relaxed);
@@ -6766,7 +6767,7 @@ impl Scheduler {
 
             if let Some(thread) = self.get_thread_mut(tid) {
                 let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
-                thread.state = ThreadState::Ready;
+                thread.set_state(ThreadState::Ready);
                 WAKE_SITE_TIMER.fetch_add(1, Ordering::Relaxed);
                 record_ready_site(tid, READY_SITE_TIMER);
                 thread.wake_time_ns = None;
@@ -9112,7 +9113,7 @@ impl ExecSchedCommit {
         t.charge_cpu(crate::time::get_cpu_ticks());
         let account = core::mem::replace(&mut t.cpu_account, self.cpu_account.clone());
         let timers = core::mem::replace(&mut t.signal_timers, self.signal_timers.clone());
-        t.state = crate::task::thread::ThreadState::Ready;
+        t.set_state(crate::task::thread::ThreadState::Ready);
         rq::publish_group(t);
         drop(local);
         if let (Some(timers), Some(cpu)) = (&self.signal_timers, &self.cpu_account) {
@@ -9193,7 +9194,7 @@ impl ExecSchedCommit {
                         replaced_timers = core::mem::replace(&mut t.signal_timers, this.signal_timers);
                         #[cfg(target_arch = "x86_64")]
                         rq::publish_group(t);
-                        t.state = crate::task::thread::ThreadState::Ready;
+                        t.set_state(crate::task::thread::ThreadState::Ready);
                         #[cfg(all(target_arch = "aarch64", feature = "ret_zero_pc_oracle_exec"))]
                         crate::task::ret_zero_pc_oracle::record_exec_commit_inline_state(t);
                         applied = true;
@@ -11034,4 +11035,16 @@ pub fn stall_snapshot() -> alloc::vec::Vec<alloc::string::String> {
         }).collect::<alloc::vec::Vec<_>>()
     });
     rows.unwrap_or_default().into_iter().map(super::thread::StallThread::text).collect()
+}
+
+/// Task-context run-queue samples, independent of whether a midpoint is due.
+pub fn sample_accounting_queues() {
+    if !crate::window::accounting::active() { return; }
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() { without_interrupts(rq::accounting_queues); return; }
+    with_scheduler(|scheduler| {
+        for (cpu,queue) in scheduler.per_cpu_queues.iter().enumerate().take(scheduler.online_cpu_count()) {
+            crate::window::accounting::queue_on(cpu as u64,queue.len() as u64);
+        }
+    });
 }

@@ -326,6 +326,9 @@ pub struct ThreadSignals {
     pub in_syscall: AtomicBool,
     /// Always-on numeric stall evidence; no output or locking at publication.
     pub diagnostic_syscall: AtomicU64,
+    pub diagnostic_disk_request: AtomicU64,
+    pub diagnostic_group: AtomicU64,
+    pub diagnostic_accounting_window: AtomicU64,
     pub diagnostic_last_run_ns: AtomicU64,
     pub diagnostic_last_cpu: AtomicU64,
     pub diagnostic_wait_kind: AtomicU64,

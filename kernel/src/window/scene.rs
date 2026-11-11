@@ -625,6 +625,7 @@ fn finish(frame: &mut Admission, result: Result<Composed, i32>, reason: u32) -> 
                 });
             }
             crate::tracing::providers::window::count_composite(c.pixels, c.presented_ns);
+            super::accounting::composite(frame.reservation.owner);
             (c.pixels, 0)
         }
         _ => {

@@ -539,6 +539,10 @@ pub fn sys_clone_thread(
     child_process.inherited_cr3 = Some(parent_cr3);
     child_process.address_space_lifetime = parent.address_space_lifetime.clone();
     child_process.thread_group_id = (flags & CLONE_THREAD != 0).then_some(parent_tg_id);
+    child_thread.signals.diagnostic_group.store(
+        child_process.thread_group_id.unwrap_or(child_pid.as_u64()),
+        core::sync::atomic::Ordering::Relaxed,
+    );
     // A thread shares its process's record locks (POSIX fcntl).
     if flags & CLONE_THREAD != 0 {
         child_process.lock_owner = parent_lock_owner;

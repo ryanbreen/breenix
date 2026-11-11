@@ -2312,6 +2312,7 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
                     Outcome::Fail { ms: ms_since(start), msg: plain(&std::format!("waitpid failed: {error}{note}")) }
                 }
             };
+            dump_stall_evidence();
             let outcome = if let Some(session) = session.as_mut() {
                 if case.collects {
                     // Drain the dead case before choosing collect/discard: a final

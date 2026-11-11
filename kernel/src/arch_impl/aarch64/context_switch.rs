@@ -4901,7 +4901,7 @@ fn dispatch_thread_locked(
                     // drops threads that appear to be running on any CPU.
                     trace_dispatch_redirect(thread_id, TRACE_REDIRECT_TTBR_PM_LOCK_BUSY);
                     if let Some(thread) = sched.get_thread_mut(thread_id) {
-                        thread.state = ThreadState::Ready;
+                        thread.set_state(ThreadState::Ready);
                     }
                     let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                     record_idle_redirect(
@@ -4927,7 +4927,7 @@ fn dispatch_thread_locked(
                     line.text("\n");
                     // Process no longer exists — terminate orphaned thread.
                     if let Some(thread) = sched.get_thread_mut(thread_id) {
-                        thread.state = ThreadState::Terminated;
+                        thread.set_state(ThreadState::Terminated);
                     }
                     let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                     record_idle_redirect(
@@ -4976,7 +4976,7 @@ fn dispatch_thread_locked(
             // into this thread's context slot, compounding the corruption.
             trace_dispatch_redirect(thread_id, TRACE_REDIRECT_RESTORE_FAILED);
             if let Some(thread) = sched.get_thread_mut(thread_id) {
-                thread.state = ThreadState::Terminated;
+                thread.set_state(ThreadState::Terminated);
             }
             let current_before = setup_idle_return_locked(sched, frame, cpu_id);
             record_idle_redirect(
@@ -5051,7 +5051,7 @@ fn dispatch_thread_locked(
         if !restore_ok {
             let _ = crate::task::process_task::defer_fault_sigsegv_exit(thread_id);
             if let Some(thread) = sched.get_thread_mut(thread_id) {
-                thread.state = ThreadState::Terminated;
+                thread.set_state(ThreadState::Terminated);
             }
             let current_before = setup_idle_return_locked(sched, frame, cpu_id);
             record_idle_redirect(
@@ -5097,7 +5097,7 @@ fn dispatch_thread_locked(
                 // would hit the same corrupt context. Termination lets the parent
                 // process (init) detect the exit and respawn if needed.
                 if let Some(thread) = sched.get_thread_mut(thread_id) {
-                    thread.state = ThreadState::Terminated;
+                    thread.set_state(ThreadState::Terminated);
                 }
                 let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                 record_idle_redirect(
@@ -5147,7 +5147,7 @@ fn dispatch_thread_locked(
                 // because requeue checks cpu_state[].current_thread and silently
                 // drops threads that appear to be running on any CPU.
                 if let Some(thread) = sched.get_thread_mut(thread_id) {
-                    thread.state = ThreadState::Ready;
+                    thread.set_state(ThreadState::Ready);
                 }
                 let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                 record_idle_redirect(
@@ -5172,7 +5172,7 @@ fn dispatch_thread_locked(
                 line.text("\n");
                 // Process no longer exists — terminate orphaned thread.
                 if let Some(thread) = sched.get_thread_mut(thread_id) {
-                    thread.state = ThreadState::Terminated;
+                    thread.set_state(ThreadState::Terminated);
                 }
                 let current_before = setup_idle_return_locked(sched, frame, cpu_id);
                 record_idle_redirect(

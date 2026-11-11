@@ -928,9 +928,10 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             let caller = crate::window::Caller::current().map_err(|e| -e)?;
             if !caller.is_root() { return Err(-1); }
             if matches!(entry_type, ProcEntryType::WindowStallSample) {
+                crate::task::scheduler::sample_accounting_queues();
                 crate::window::stall_trace::sample(crate::signal::monotonic_nanos());
                 text(String::new())
-            } else { text(crate::window::stall_trace::text()) }
+            } else { text(crate::window::stall_trace::text() + &crate::window::accounting::text()) }
         }
         ProcEntryType::WindowReadback => {
             let caller = crate::window::Caller::current().map_err(|e| -e)?;

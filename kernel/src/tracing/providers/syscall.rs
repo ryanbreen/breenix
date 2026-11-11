@@ -92,6 +92,8 @@ pub fn trace_entry(syscall_nr: u64) {
         signals.diagnostic_syscall.store(syscall_nr + 1, core::sync::atomic::Ordering::Relaxed);
     }
 
+    crate::window::accounting::file_syscall(syscall_nr, true, 0);
+
     // Only record trace event if tracing is enabled
     if SYSCALL_PROVIDER.is_enabled() && crate::tracing::is_enabled() {
         crate::tracing::record_event(SYSCALL_ENTRY, 0, syscall_nr as u32);
@@ -107,7 +109,8 @@ pub fn trace_entry(syscall_nr: u64) {
 #[allow(dead_code)]
 pub fn trace_exit(result: i64) {
     if let Some(signals) = crate::task::thread::current_thread_signals() {
-        signals.diagnostic_syscall.store(0, core::sync::atomic::Ordering::Relaxed);
+        let nr = signals.diagnostic_syscall.swap(0, core::sync::atomic::Ordering::Relaxed);
+        if nr != 0 { crate::window::accounting::file_syscall(nr - 1, false, result); }
     }
     if SYSCALL_PROVIDER.is_enabled() && crate::tracing::is_enabled() {
         crate::tracing::record_event(SYSCALL_EXIT, 0, result as u32);

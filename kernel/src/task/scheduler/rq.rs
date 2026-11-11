@@ -247,6 +247,7 @@ fn fill(slot: &Slot, thread: &mut Thread, owner: usize) {
 /// its slot, and a lookup sees the thread once its key is stored. The thread
 /// is not queued yet, so nothing else reaches it meanwhile.
 pub(super) fn insert(thread: &mut Thread, owner: usize) {
+    crate::window::accounting::thread_state(thread, thread.state);
     let tid = thread.id();
     if let Some(slot) = find(tid) {
         fill(slot, thread, owner);
@@ -1037,7 +1038,7 @@ fn expire_heap(local: &mut Held, mut source: Option<&mut Held>, now: u64) {
             continue;
         };
         let was_blocked_on_io = thread.state == ThreadState::BlockedOnIO;
-        thread.state = ThreadState::Ready;
+        thread.set_state(ThreadState::Ready);
         WAKE_SITE_TIMER.fetch_add(1, Ordering::Relaxed);
         record_ready_site(tid, READY_SITE_TIMER);
         thread.wake_time_ns = None;
@@ -2062,7 +2063,7 @@ pub(super) fn block_current(local: &mut Held, block: Block) -> bool {
         match block {
             Block::Plain { in_syscall } => {
                 thread.stop_timer_cpu();
-                thread.state = ThreadState::Blocked;
+                thread.set_state(ThreadState::Blocked);
                 if in_syscall {
                     thread.blocked_in_syscall = true;
                 }
@@ -2078,7 +2079,7 @@ pub(super) fn block_current(local: &mut Held, block: Block) -> bool {
                         && record.own_entry == crate::task::thread::TimerPop::NotPopped
                 });
                 thread.stop_timer_cpu();
-                thread.state = ThreadState::BlockedOnTimer;
+                thread.set_state(ThreadState::BlockedOnTimer);
                 thread.wake_time_ns = Some(wake_time_ns);
                 if !already_armed {
                     thread.timer_pop = Some(crate::task::thread::TimerPopRecord::armed(wake_time_ns));
@@ -2088,7 +2089,7 @@ pub(super) fn block_current(local: &mut Held, block: Block) -> bool {
             }
             Block::Io { wake_time_ns } => {
                 thread.stop_timer_cpu();
-                thread.state = ThreadState::BlockedOnIO;
+                thread.set_state(ThreadState::BlockedOnIO);
                 thread.wake_time_ns = wake_time_ns;
                 thread.timer_pop = wake_time_ns.map(crate::task::thread::TimerPopRecord::armed);
                 thread.blocked_in_syscall = thread.owner_pid.is_some();
@@ -2099,12 +2100,12 @@ pub(super) fn block_current(local: &mut Held, block: Block) -> bool {
                     thread.saved_userspace_context = Some(context);
                 }
                 thread.stop_timer_cpu();
-                thread.state = ThreadState::BlockedOnSignal;
+                thread.set_state(ThreadState::BlockedOnSignal);
                 thread.blocked_in_syscall = true;
             }
             Block::ChildExit => {
                 thread.stop_timer_cpu();
-                thread.state = ThreadState::BlockedOnChildExit;
+                thread.set_state(ThreadState::BlockedOnChildExit);
                 thread.blocked_in_syscall = true;
             }
         }
@@ -2939,7 +2940,7 @@ pub(super) fn block_ready_user_thread(held: &mut Held, tid: u64) -> bool {
         return false;
     }
     thread.stop_timer_cpu();
-    thread.state = ThreadState::Blocked;
+    thread.set_state(ThreadState::Blocked);
     held.remove_from_ready_queue(tid);
     true
 }
@@ -2998,4 +2999,12 @@ pub(super) fn stall_rows() -> (alloc::vec::Vec<super::super::thread::StallThread
         }
     });
     (rows, unavailable)
+}
+
+/// Task-context samples; a busy owner returns the unavailable sentinel.
+pub(super) fn accounting_queues() {
+    for cpu in 0..crate::arch_impl::x86_64::smp::cpus_online() as usize {
+        let len=try_remote(cpu).map_or(u64::MAX,|mut held|held.queue().len() as u64);
+        crate::window::accounting::queue_on(cpu as u64,len);
+    }
 }
