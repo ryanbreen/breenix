@@ -15,8 +15,9 @@ class GusKitIdleTimeout(unittest.TestCase):
         end = source.index('\n', start)
         expression = source[start:end]
         program = r'''
-#[derive(Debug)] enum Errno { ETIMEDOUT, EIO }
-#[derive(Debug)] enum Error { Os(Errno) }
+mod libbreenix { pub mod errno { pub use crate::Errno; } pub mod error { pub use crate::Error; } }
+#[derive(Debug)] pub enum Errno { ETIMEDOUT, EIO }
+#[derive(Debug)] pub enum Error { Os(Errno) }
 impl std::fmt::Display for Error {
  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { match self { Self::Os(errno) => write!(f, "{errno:?}") } }
 }
