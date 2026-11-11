@@ -352,12 +352,16 @@ fn run_desktop_mode() -> ! {
 }
 
 /// A newly started compositor may still be admitting the shared GPU device.
-/// Give the terminal the same bounded admission wait as bwm before it creates a window.
+/// Wait for bwm's first composed scene before the terminal creates a window.
+/// Admission alone lets cold client rendering contend with desktop startup.
 fn desktop_gpu_ready() -> bool {
     let mut waited = 0;
     loop {
         let (result, caps) = libbreenix::gpu::caps();
-        if result == 0 && caps.status == libbreenix::gpu::abi::status::ADMITTED {
+        let mut compositor = libbreenix::window::abi::CompositorStatus::default();
+        if result == 0 && caps.status == libbreenix::gpu::abi::status::ADMITTED
+            && libbreenix::window::call(libbreenix::window::abi::op::COMPOSITOR_STATUS, &mut compositor).is_ok()
+            && compositor.presented != 0 {
             return true;
         }
         if waited >= 5000 {
