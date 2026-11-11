@@ -269,6 +269,7 @@
       "id": "desktop",
       "title": "Desktop",
       "cases": [
+        { "id": "init-desktop", "title": "Init starts the desktop" },
         { "id": "launch-each", "title": "Launch every catalog entry" },
         { "id": "copy-paste", "title": "Copy and paste between applications" },
         { "id": "font-everywhere", "title": "Font changes reach every application" },

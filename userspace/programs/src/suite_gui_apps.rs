@@ -108,6 +108,7 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("peer-leaves", "Peer and host departures are reported", guskit_collab::peer_leaves).session(libuitest::supervisor::serve),
     ]),
     category("desktop", "Desktop", &[
+        case("init-desktop", "Init starts the desktop", desktop::init_desktop).session(libuitest::supervisor::serve),
         case("launch-each", "Launch every catalog entry", desktop::launch_each).session(libuitest::supervisor::serve),
         case("copy-paste", "Copy and paste between applications", desktop::copy_paste).session(libuitest::supervisor::serve),
         case("font-everywhere", "Font changes reach every application", desktop::font_everywhere).session(libuitest::supervisor::serve),

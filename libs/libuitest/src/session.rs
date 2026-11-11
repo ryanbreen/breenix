@@ -313,6 +313,7 @@ impl Session {
         }
     }
     pub fn supervisor_pid(&self) -> u64 { self.supervisor }
+    pub fn compositor_pid(&self) -> Option<u64> { self.compositor }
     /// argv[0] is the executable path. env is the complete environment, with no
     /// implicit variables or shell expansion; each entry is KEY=value.
     pub fn launch(&mut self, argv: &[&[u8]], env: &[&[u8]]) -> Result<u64, String> {

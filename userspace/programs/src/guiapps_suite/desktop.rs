@@ -1,6 +1,36 @@
 use breenix_suite::suite::CaseResult;
 use libuitest::{input::Modifier, App};
 
+pub fn init_desktop() -> CaseResult {
+    let mut t = App::init_desktop("Terminal")?;
+    t.wait_node("grid", |v| v["lines"].as_array().is_some_and(|lines|
+        lines.iter().any(|line| line.as_str().is_some_and(|line| line.starts_with("bsh />")))))?;
+    let mut windows = vec![libbreenix::window::abi::WinInfo::default(); 256];
+    let count = libbreenix::window::list(&mut windows).map_err(|e| e.to_string())?;
+    if count > windows.len() { return Err("window list overflow".into()); }
+    let terminal = windows[..count].iter().find(|w| w.id == t.window()).ok_or("terminal window missing")?.owner;
+    let mut compositor = libbreenix::window::abi::CompositorStatus::default();
+    libbreenix::window::call(libbreenix::window::abi::op::COMPOSITOR_STATUS, &mut compositor)
+        .map_err(|e| e.to_string())?;
+    let identity = |pid: u32| -> Result<(String, u32), String> {
+        let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).map_err(|e| e.to_string())?;
+        let (_, rest) = stat.split_once('(').ok_or("bad process stat")?;
+        let (name, rest) = rest.rsplit_once(") ").ok_or("bad process stat")?;
+        let parent = rest.split_whitespace().nth(1).ok_or("missing process parent")?
+            .parse().map_err(|_| "invalid process parent")?;
+        Ok((name.to_string(), parent))
+    };
+    let (name, init) = identity(terminal)?;
+    let (wm_name, wm_parent) = identity(compositor.owner)?;
+    let (init_name, _) = identity(init)?;
+    if name != "bterm" || wm_name != "bwm" || init_name != "init" || wm_parent != init {
+        return Err(format!("desktop process tree: terminal={name} init={init_name} bwm={wm_name} parent={wm_parent} expected={init}").into());
+    }
+    t.type_line("echo desktop-ok")?;
+    t.expect_text("desktop-ok")?;
+    Ok(t.finish()?)
+}
+
 pub fn copy_paste() -> CaseResult {
     let mut t = App::launch(&[b"/usr/bin/bterm"], "Terminal")?;
     t.type_line("echo Picker")?;
