@@ -81,7 +81,8 @@ def main():
         if item['destination'] == 'QEMU-GL.app':
             ssh('rm -rf ' + shell_path(path))
         ssh('mkdir -p ' + shell_path(str(PurePosixPath(path).parent)))
-        subprocess.run(['rsync', '-a', item['path'], host + ':' + path], check=True)
+        source = item['path'] + ('/' if item['destination'] == 'QEMU-GL.app' else '')
+        subprocess.run(['rsync', '-a', source, host + ':' + path], check=True)
     for item in items:
         if digest(remote_path(item)) != item['sha256']:
             raise ValueError('remote artifact hash mismatch: ' + item['destination'])

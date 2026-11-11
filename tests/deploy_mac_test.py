@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise deployment locally with ssh and rsync stand-ins."""
+"""Exercise deployment locally with ssh path translation and real rsync."""
 import json
 import os
 from pathlib import Path
@@ -75,8 +75,10 @@ env = dict(os.environ, HOME=os.environ['REMOTE_HOME'])
 r = subprocess.run(sys.argv[-1], shell=True, env=env, stdin=sys.stdin.buffer)
 sys.exit(r.returncode)
 ''')
+        real_rsync = shutil.which('rsync', path=os.defpath)
+        self.assertIsNotNone(real_rsync)
         self.shim('rsync', '''#!/usr/bin/env python3
-import os, pathlib, shutil, sys
+import os, pathlib, subprocess, sys
 with open(os.environ['CALL_LOG'], 'a') as f: f.write('rsync ' + ' '.join(sys.argv[1:]) + '\\n')
 source, target = sys.argv[-2:]
 if ':' in source:
@@ -85,12 +87,9 @@ if ':' in source:
 else:
     src = pathlib.Path(source.rstrip('/'))
     dst = pathlib.Path(os.environ['REMOTE_HOME']) / target.split(':', 1)[1].removeprefix('~/')
-if src.is_dir(): shutil.copytree(src, dst, dirs_exist_ok=True, symlinks=True)
-else:
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
+subprocess.run([REAL_RSYNC, '-a', str(src) + ('/' if source.endswith('/') else ''), str(dst)], check=True, env=dict(os.environ, PATH=os.defpath))
 if os.environ.get('CORRUPT') and src.name == 'disk': dst.write_bytes(b'corrupt')
-''')
+'''.replace('REAL_RSYNC', repr(real_rsync)))
 
     def shim(self, name, content):
         path = self.bin / name
