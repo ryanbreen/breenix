@@ -1311,10 +1311,11 @@ impl Core {
         if !platform_config::is_qemu() || dev::is_svga() || self.reset_wanted || self.resetting || self.stalled
             || !self.backlog.is_empty() { return false; }
         let target = self.subs.values().filter(|s| !s.published && s.requests > 0 && s.sent_ns.is_some())
-            .find_map(|s| s.written.iter().find_map(|rid| {
+            .find_map(|s| s.written.iter().chain(s.present.as_ref().map(|p| &p.id)).find_map(|rid| {
                 let r = self.resources.get(rid)?;
                 let active = r.accepted.iter().filter(|w| !w.ended()).count();
-                (r.kind == kind::TARGET && r.writers > 0 && active == r.writers as usize
+                let writing = r.writers > 0 || s.present.as_ref().is_some_and(|p| p.id == *rid);
+                (r.kind == kind::TARGET && writing && active == r.writers as usize
                     && r.accepted.iter().filter(|w| !w.ended()).all(|w| w.ctx == s.ctx)
                     && !r.reading && !r.invalid && !r.lost)
                     .then(|| (s.ctx, *rid, r.backing.clone(), r.pitch))
