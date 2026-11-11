@@ -133,6 +133,7 @@ class BootInteractiveGpuGlTest(unittest.TestCase):
         self.executable(scripts / "build-qemu-gl.sh",
                         '#!/bin/sh\n[ "$1" = --print-path ] && [ -n "$STUB_GL" ] || exit 1\necho "$STUB_GL"\n')
         (scripts / "qemu-arm64.py").write_text('print("default")\n')
+        (scripts / "suite-sequence.py").write_text('import sys\nprint(sys.argv[2])\n')
         # The stub VM writes the attestation STUB_RECORD names (none when it is empty) and exits 0.
         (scripts / "watch-qemu.py").write_text(
             "import json, os, pathlib, sys\n"
@@ -140,7 +141,7 @@ class BootInteractiveGpuGlTest(unittest.TestCase):
             "    'argv': sys.argv[sys.argv.index('--') + 1:],\n"
             "    'angle': os.environ.get('ANGLE_DEFAULT_PLATFORM'),\n"
             "    'record': os.environ.get('BREENIX_HOST_RENDERER_JSON')}))\n"
-            "if os.environ.get('STUB_RECORD'):\n"
+            "if os.environ.get('STUB_RECORD') and os.environ.get('BREENIX_HOST_RENDERER_JSON'):\n"
             "    pathlib.Path(os.environ['BREENIX_HOST_RENDERER_JSON']).write_text(os.environ['STUB_RECORD'])\n")
         kernel = self.root / "target/aarch64-breenix-kernel/release/kernel-aarch64"
         kernel.parent.mkdir(parents=True)
@@ -187,6 +188,16 @@ class BootInteractiveGpuGlTest(unittest.TestCase):
         self.assertTrue(spice.startswith("unix=on,addr=/tmp/breenix-spice-"), spice)
         self.assertTrue(spice.endswith(",disable-ticketing=on,gl=es"), spice)
         self.assertIn("virtio-gpu-gl-pci", argv)
+
+    def test_console_selects_its_gpu_without_an_extra_option(self):
+        os.environ["BREENIX_SUITE_ATTEMPT"] = "1"
+        self.addCleanup(os.environ.pop, "BREENIX_SUITE_ATTEMPT")
+        result, launch = self.launch("--mode", "suite", "--suite", "console",
+                                     "--no-display", records=workload())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("virtio-gpu-gl-pci", launch["argv"])
+        self.assertIn("-spice", launch["argv"])
+        self.assertEqual(launch["argv"][launch["argv"].index("-display") + 1], "none")
 
     def test_a_refused_attestation_fails_the_boot(self):
         result, _ = self.launch("--gpu-gl", "--no-display",

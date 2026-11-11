@@ -236,6 +236,29 @@ pub(crate) unsafe fn read(fd: i32, buf: *mut u8, count: usize) -> isize {
     read_impl(false, fd, buf, count)
 }
 
+/// Positioned read; ssize_t/errno and offset semantics follow pread(2).
+/// Reference: https://man7.org/linux/man-pages/man2/pread.2.html
+#[no_mangle]
+pub unsafe extern "C" fn pread(fd: i32, buf: *mut u8, count: usize, offset: i64) -> isize {
+    if buf.is_null() && count > 0 {
+        *__errno_location() = libbreenix::Errno::EFAULT as i32;
+        return -1;
+    }
+    syscall_result_to_c_ssize(io_syscall(true, libbreenix::syscall::nr::PREAD64,
+        [fd as u64, buf as u64, count as u64, offset as u64, 0, 0]))
+}
+
+/// Positioned write; the kernel retains the shared description's cursor.
+#[no_mangle]
+pub unsafe extern "C" fn pwrite(fd: i32, buf: *const u8, count: usize, offset: i64) -> isize {
+    if buf.is_null() && count > 0 {
+        *__errno_location() = libbreenix::Errno::EFAULT as i32;
+        return -1;
+    }
+    syscall_result_to_c_ssize(io_syscall(true, libbreenix::syscall::nr::PWRITE64,
+        [fd as u64, buf as u64, count as u64, offset as u64, 0, 0]))
+}
+
 /// Close a file descriptor: C's close, a cancellation point.
 #[export_name = "close"]
 pub extern "C" fn close_point(fd: i32) -> i32 {

@@ -17,6 +17,7 @@ ENTRY(_start)
 
 /* Physical load base and virtual base for high-half kernel */
 KERNEL_PHYS_BASE = 0x40200000;
+KERNEL_IMAGE_LIMIT_PHYS = 0x42E00000;
 KERNEL_VIRT_BASE = 0xFFFF000000000000; /* HHDM base */
 VMLINUX_OFFSET   = KERNEL_VIRT_BASE;
 L2_BLOCK_SIZE    = 2M;
@@ -137,7 +138,7 @@ SECTIONS
            "kernel rodata W^X boundary must be 2MB aligned")
     ASSERT((__kernel_writable_start & (L2_BLOCK_SIZE - 1)) == 0,
            "kernel writable start must be 2MB aligned")
-    ASSERT(__kernel_writable_phys_end <= 0x41E00000,
+    ASSERT(__kernel_writable_phys_end <= KERNEL_IMAGE_LIMIT_PHYS,
            "kernel writable image overlaps the fixed loader boot stack")
     ASSERT(__kernel_writable_phys_end <= 0x50000000,
            "kernel writable image overlaps the fixed DMA region")

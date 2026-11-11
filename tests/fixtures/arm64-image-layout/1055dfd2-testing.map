@@ -1,0 +1,32 @@
+        40200000                0        0     1 __boot_text_start = .
+        40200000         40200000      598  4096 .text.boot
+        40200800         40200800      808  2048 .text.vectors.boot
+        40400000         40400000        0     1 __boot_text_block_end = .
+        40400000         40400000    16070  4096 .bss.boot
+        40400000         40400000        0     1         __boot_bss_start = .
+        40406070         40406070        0     1                 __boot_stack_bottom
+        40416070         40416070        0     1                 __boot_stack_top
+        40416070         40416070        0     1         __boot_bss_end = .
+        40600000         40600000        0     1 __kernel_phys_start = .
+ffff000040600000 ffff000040600000        0     1 __kernel_virt_start = .
+ffff000040600000 ffff000040600000        0     1 __kernel_text_start = .
+ffff000040600000 ffff000040600000        0     1 __kernel_text_phys_start = __kernel_text_start - VMLINUX_OFFSET
+ffff000040600000         40600000      784  2048 .text.vectors
+ffff000040601000         40601000   3ed4dc    16 .text
+ffff000040a00000         40a00000        0     1 __kernel_text_end = .
+ffff000040a00000         40a00000        0     1 __kernel_text_phys_end = __kernel_text_end - VMLINUX_OFFSET
+ffff000040a00000         40a00000        0     1 __kernel_rodata_start = .
+ffff000040a00000         40a00000   2d19d0     8 .rodata
+ffff000040e00000         40e00000        0     1 __kernel_rodata_end = .
+ffff000040e00000         40e00000        0     1 __kernel_rodata_phys_end = __kernel_rodata_end - VMLINUX_OFFSET
+ffff000040e00000         40e00000        0     1 __kernel_writable_start = .
+ffff000040e00000         40e00000    c0410    64 .data
+ffff000040ec1000         40ec1000        0     1 __bss_start = .
+ffff000040ec1000         40ec1000   dd84f8  4096 .bss
+ffff000041c994f8         41c994f8        0     1 __bss_end = .
+ffff000041c99500         41c99500    10000     1 .bss.stack
+ffff000041c99500         41c99500        0     1         __stack_bottom = .
+ffff000041ca9500         41ca9500        0     1         __stack_top = .
+ffff000041ca9500         41ca9500        0     1 __kernel_writable_end = .
+ffff000041ca9500         41ca9500        0     1 __kernel_writable_phys_end = __kernel_writable_end - VMLINUX_OFFSET
+ffff000050000000         50000000   104000  4096 .dma

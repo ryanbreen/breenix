@@ -103,6 +103,33 @@ class GuiResultVerdictTests(unittest.TestCase):
 
 
 class SuiteVerdictTests(unittest.TestCase):
+    def test_smb_restart_request_preserves_case_and_memory_requirements(self):
+        manifest = json.loads(json.dumps(MANIFEST))
+        manifest['id'] = 'network-shares'
+        manifest['categories'][0]['id'] = 'smb'
+        manifest['categories'][0]['cases'][0]['id'] = 'server-restart'
+        original = (FIXTURES / 'all-pass.txt').read_text().replace(
+            'SUITE fixture ', 'SUITE network-shares ').replace(
+            'first/one', 'smb/server-restart').replace('first/two', 'smb/two')
+        request = 'SUITE network-shares SMBRESTART smb/server-restart seq=1\n'
+        with tempfile.TemporaryDirectory() as directory:
+            serial = Path(directory) / 'serial.txt'
+            first, rest = original.split('\n', 1)
+            serial.write_text(first + '\n' + request + rest)
+            ok, detail = SCORER.verdict(manifest, serial, [serial])
+            self.assertTrue(ok, detail)
+            for bad in (request.replace('seq=1', 'seq=-1'),
+                        request.replace('seq=1', 'seq=' + '1' * 21),
+                        request.replace('smb/server-restart', 'smb/two'),
+                        request.rstrip() + ' extra=1\n'):
+                serial.write_text(first + '\n' + bad + rest)
+                self.assertFalse(SCORER.verdict(manifest, serial, [serial])[0])
+            for broken in (original + request, (first + '\n' + request + rest).replace(
+                    'CASE smb/server-restart PASS ms=1\n', ''),
+                    first + '\n' + request + rest.replace('reclaimed=PASS', 'reclaimed=FAIL')):
+                serial.write_text(broken)
+                self.assertFalse(SCORER.verdict(manifest, serial, [serial])[0])
+
     def test_screen_proof_start_only_for_pictured_suites(self):
         original = (FIXTURES / 'all-pass.txt').read_text()
         with tempfile.TemporaryDirectory() as directory:

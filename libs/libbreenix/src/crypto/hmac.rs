@@ -1,8 +1,9 @@
-//! HMAC-SHA256 implementation (RFC 2104)
+//! HMAC-SHA256 and HMAC-MD5 implementations (RFC 2104).
 //!
-//! Keyed-Hash Message Authentication Code using SHA-256 as the underlying
-//! hash function. Supports both incremental and one-shot computation.
+//! Keyed-Hash Message Authentication Code using SHA-256 or MD5 as the underlying
+//! hash function. Both support incremental and one-shot computation.
 
+use super::md5::Md5;
 use super::sha256::Sha256;
 
 const BLOCK_SIZE: usize = 64;
@@ -109,9 +110,114 @@ pub fn hmac_sha256(key: &[u8], message: &[u8]) -> [u8; 32] {
     hmac.finalize()
 }
 
+/// Incremental HMAC-MD5 for protocol interoperability.
+pub struct HmacMd5 {
+    inner: Md5,
+    outer_key_pad: [u8; BLOCK_SIZE],
+}
+
+impl HmacMd5 {
+    /// Initialize with a key of any length, hashing keys longer than one block.
+    pub fn new(key: &[u8]) -> Self {
+        let mut key_block = [0u8; BLOCK_SIZE];
+        if key.len() > BLOCK_SIZE {
+            let mut hash = Md5::new();
+            hash.update(key);
+            key_block[..16].copy_from_slice(&hash.finalize());
+        } else {
+            key_block[..key.len()].copy_from_slice(key);
+        }
+        let mut inner_key_pad = [0u8; BLOCK_SIZE];
+        let mut outer_key_pad = [0u8; BLOCK_SIZE];
+        for i in 0..BLOCK_SIZE {
+            inner_key_pad[i] = key_block[i] ^ IPAD;
+            outer_key_pad[i] = key_block[i] ^ OPAD;
+        }
+        let mut inner = Md5::new();
+        inner.update(&inner_key_pad);
+        Self {
+            inner,
+            outer_key_pad,
+        }
+    }
+
+    /// Add message bytes to the authentication computation.
+    pub fn update(&mut self, data: &[u8]) {
+        self.inner.update(data);
+    }
+
+    /// Finish the computation and return the 16-byte tag.
+    pub fn finalize(self) -> [u8; 16] {
+        let inner_hash = self.inner.finalize();
+        let mut outer = Md5::new();
+        outer.update(&self.outer_key_pad);
+        outer.update(&inner_hash);
+        outer.finalize()
+    }
+}
+
+/// Compute HMAC-MD5 in one call.
+pub fn hmac_md5(key: &[u8], message: &[u8]) -> [u8; 16] {
+    let mut hmac = HmacMd5::new(key);
+    hmac.update(message);
+    hmac.finalize()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hmac_md5_rfc2104_vectors() {
+        let cases: &[(&[u8], &[u8], &str)] = &[
+            (&[0x0b; 16], b"Hi There", "9294727a3638bb1c13f48ef8158bfc9d"),
+            (
+                b"Jefe",
+                b"what do ya want for nothing?",
+                "750c783e6ab0b503eaa86e310a5db738",
+            ),
+            (&[0xaa; 16], &[0xdd; 50], "56be34521d144c88dbb8c733f0e8b3f6"),
+        ];
+        for &(key, message, expected) in cases {
+            let hex = |tag: [u8; 16]| -> String {
+                tag.iter().map(|byte| format!("{byte:02x}")).collect()
+            };
+            assert_eq!(hex(hmac_md5(key, message)), expected);
+            let mut hmac = HmacMd5::new(key);
+            for byte in message {
+                hmac.update(core::slice::from_ref(byte));
+            }
+            assert_eq!(hex(hmac.finalize()), expected);
+        }
+    }
+
+    #[test]
+    fn hmac_md5_hashes_long_keys() {
+        let key = [0xaa; 80];
+        let message = b"long key";
+        assert_eq!(
+            hmac_md5(&key, message),
+            hmac_md5(&super::super::md5::md5(&key), message)
+        );
+        // RFC 2202 section 2, cases 6 and 7: independent long-key answers.
+        for (message, expected) in [
+            (
+                b"Test Using Larger Than Block-Size Key - Hash Key First".as_slice(),
+                "6b1ab7fe4bd7bf8f0b62e6ce61b9d0cd",
+            ),
+            (
+                b"Test Using Larger Than Block-Size Key and Larger Than One Block-Size Data"
+                    .as_slice(),
+                "6f630fad67cda0ee1fb1f562db3aa53e",
+            ),
+        ] {
+            let actual: String = hmac_md5(&key, message)
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect();
+            assert_eq!(actual, expected);
+        }
+    }
 
     /// Helper to convert a hex string to a byte array.
     fn hex_to_bytes(hex: &str) -> [u8; 32] {

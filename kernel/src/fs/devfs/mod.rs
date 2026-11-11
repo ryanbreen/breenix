@@ -46,6 +46,8 @@ pub enum DeviceType {
     /// E18 input endpoints, instantiated as shared open descriptions.
     InputEvents,
     Uinput,
+    /// User filesystem daemon endpoint; each open starts unbound.
+    Ufs,
     /// /dev/kmsg - bounded, root-only audit messages to the kernel log
     Kmsg,
     /// Root-only suite records sent solely to the evidence UART.
@@ -133,6 +135,7 @@ impl DeviceType {
             DeviceType::Null => "null",
             DeviceType::InputEvents => "input/events",
             DeviceType::Uinput => "uinput",
+            DeviceType::Ufs => "ufs",
             DeviceType::Kmsg => "kmsg",
             DeviceType::ScreenEvidence => "screen-evidence",
             DeviceType::Zero => "zero",
@@ -154,6 +157,7 @@ impl DeviceType {
             DeviceType::Null => 2,
             DeviceType::InputEvents => 41,
             DeviceType::Uinput => 42,
+            DeviceType::Ufs => 44,
             DeviceType::Kmsg => 9,
             DeviceType::ScreenEvidence => 40,
             DeviceType::Zero => 3,
@@ -191,7 +195,7 @@ impl DeviceType {
             DeviceType::Null | DeviceType::Zero | DeviceType::Tty | DeviceType::Ptmx => (0o666, 0),
             DeviceType::Console | DeviceType::Vcs(_) | DeviceType::Vcsa(_) => (0o600, 0),
             DeviceType::Kmsg | DeviceType::ScreenEvidence => (0o200, 0),
-            DeviceType::InputEvents | DeviceType::Uinput => (0o600, 0),
+            DeviceType::InputEvents | DeviceType::Uinput | DeviceType::Ufs => (0o600, 0),
             DeviceType::Tty0 | DeviceType::Vt(_) => return vt_attrs(self.terminal().unwrap_or(0)),
             DeviceType::Rtc => (0o444, 0),
         };
@@ -271,6 +275,7 @@ pub fn init() {
 
     devfs.devices.push(DeviceNode::new(DeviceType::InputEvents, 13, 0));
     devfs.devices.push(DeviceNode::new(DeviceType::Uinput, 13, 1));
+    devfs.devices.push(DeviceNode::new(DeviceType::Ufs, 240, 1));
 
     // Major 5 = TTY devices
     devfs
@@ -370,7 +375,7 @@ pub fn is_initialized() -> bool {
 pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32> {
     match device_type {
         DeviceType::Kmsg | DeviceType::ScreenEvidence => Err(-13), // Audit sink is write-only.
-        DeviceType::InputEvents | DeviceType::Uinput => Err(-22),
+        DeviceType::InputEvents | DeviceType::Uinput | DeviceType::Ufs => Err(-22),
         DeviceType::Rtc => Err(-22), // RTC data is read through RTC_RD_TIME.
         DeviceType::Ptmx => Err(-6), // Opening /dev/ptmx gives a master, never this device.
         DeviceType::Null => {
@@ -404,7 +409,7 @@ pub fn device_read(device_type: DeviceType, buf: &mut [u8]) -> Result<usize, i32
 /// Device file operations - write to device
 pub fn device_write(device_type: DeviceType, buf: &[u8]) -> Result<usize, i32> {
     match device_type {
-        DeviceType::InputEvents | DeviceType::Uinput => Err(22),
+        DeviceType::InputEvents | DeviceType::Uinput | DeviceType::Ufs => Err(22),
         DeviceType::Kmsg => audit_write(buf),
         DeviceType::ScreenEvidence => screen_evidence_write(buf),
         DeviceType::Rtc => Err(13), // EACCES: no clock writes through this device.

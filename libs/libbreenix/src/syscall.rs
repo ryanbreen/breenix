@@ -50,6 +50,8 @@ pub mod nr {
     pub const CLOSE: u64 = 3;
     pub const FSTAT: u64 = 5;
     pub const FSTATFS: u64 = 138;
+    pub const MOUNT: u64 = 165;
+    pub const UMOUNT2: u64 = 166;
     pub const POLL: u64 = 7;
     pub const LSEEK: u64 = 8;
     pub const MMAP: u64 = 9;
@@ -60,6 +62,8 @@ pub mod nr {
     pub const SIGPROCMASK: u64 = 14;
     pub const SIGRETURN: u64 = 15;
     pub const IOCTL: u64 = 16;
+    pub const PREAD64: u64 = 17;
+    pub const PWRITE64: u64 = 18;
     pub const READV: u64 = 19;
     pub const WRITEV: u64 = 20;
     pub const ACCESS: u64 = 21;
@@ -277,6 +281,8 @@ pub mod nr {
     pub const WRITE: u64 = 64;
     pub const READV: u64 = 65;
     pub const WRITEV: u64 = 66;
+    pub const PREAD64: u64 = 67;
+    pub const PWRITE64: u64 = 68;
 
     // I/O multiplexing
     pub const PSELECT6: u64 = 72;
@@ -285,6 +291,8 @@ pub mod nr {
     pub const NEWFSTATAT: u64 = 79;
     pub const FSTAT: u64 = 80;
     pub const FSTATFS: u64 = 44;
+    pub const MOUNT: u64 = 40;
+    pub const UMOUNT2: u64 = 39;
     pub const FSYNC: u64 = 82;
     pub const SYNC: u64 = 81;
     pub const FDATASYNC: u64 = 83;

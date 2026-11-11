@@ -387,6 +387,8 @@ pub extern "C" fn rust_syscall_handler(frame: &mut SyscallFrame) {
         Some(SyscallNumber::Fstat) => super::fs::sys_fstat(args.0 as i32, args.1),
         Some(SyscallNumber::Sync) => super::fs::sys_sync(),
         Some(SyscallNumber::Statfs) => super::fs::sys_statfs(args.0, args.1),
+        Some(SyscallNumber::Mount) => crate::fs::ufs::sys_mount(args.0, args.1, args.2, args.3, args.4),
+        Some(SyscallNumber::Umount2) => crate::fs::ufs::sys_umount2(args.0, args.1),
         Some(SyscallNumber::Fstatfs) => super::fs::sys_fstatfs(args.0 as i32, args.1),
         Some(SyscallNumber::Fsync) => super::fs::sys_fsync(args.0 as i32),
         Some(SyscallNumber::Fdatasync) => super::fs::sys_fsync(args.0 as i32),

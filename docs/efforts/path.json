@@ -2007,6 +2007,20 @@
           }
         },
         {
+          "id": "network-shares",
+          "title": "Mount laptop shares over SMB",
+          "targets": [
+            "x86-metal"
+          ],
+          "measure": {
+            "suite": "network-shares",
+            "categories": [
+              "ufs",
+              "smb"
+            ]
+          }
+        },
+        {
           "id": "guskit",
           "title": "Gus Kit paints & saves",
           "measure": {

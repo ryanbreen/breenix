@@ -354,18 +354,6 @@ pub fn fingerprint_text(blob: &[u8]) -> String {
     format!("SHA256:{}", base64_encode(&sha256(blob), false))
 }
 
-/// Compare two byte strings without stopping at the first difference.
-pub fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for i in 0..a.len() {
-        diff |= a[i] ^ b[i];
-    }
-    diff == 0
-}
-
 // ==========================================================================
 // Signature verification
 // ==========================================================================

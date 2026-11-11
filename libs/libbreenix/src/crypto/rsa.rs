@@ -7,6 +7,7 @@
 //! The implementation follows PKCS#1 v1.5 (RFC 8017, Section 8.2.2).
 
 use super::bignum::BigNum;
+use super::ct::ct_eq;
 use super::sha256::sha256;
 
 /// ASN.1 DER-encoded DigestInfo prefix for SHA-256.
@@ -42,22 +43,6 @@ pub struct RsaPublicKey {
     pub n: BigNum,
     /// Public exponent e (typically 65537)
     pub e: BigNum,
-}
-
-/// Constant-time byte comparison to prevent timing side-channel attacks.
-///
-/// Returns `true` if and only if `a` and `b` have the same length and
-/// identical contents. The comparison always examines every byte regardless
-/// of where the first difference occurs.
-fn ct_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for i in 0..a.len() {
-        diff |= a[i] ^ b[i];
-    }
-    diff == 0
 }
 
 /// Verify an RSA PKCS#1 v1.5 signature with SHA-256.
@@ -327,43 +312,6 @@ mod tests {
         let expected = hex_to_bytes("30 31 30 0d 06 09 60 86 48 01 65 03 04 02 01 05 00 04 20");
         assert_eq!(SHA256_DIGEST_INFO_PREFIX.len(), 19);
         assert_eq!(&SHA256_DIGEST_INFO_PREFIX[..], &expected[..]);
-    }
-
-    #[test]
-    fn test_ct_eq_equal() {
-        let a = [0x01, 0x02, 0x03, 0x04];
-        let b = [0x01, 0x02, 0x03, 0x04];
-        assert!(ct_eq(&a, &b));
-    }
-
-    #[test]
-    fn test_ct_eq_different() {
-        let a = [0x01, 0x02, 0x03, 0x04];
-        let b = [0x01, 0x02, 0x03, 0x05];
-        assert!(!ct_eq(&a, &b));
-    }
-
-    #[test]
-    fn test_ct_eq_different_lengths() {
-        let a = [0x01, 0x02, 0x03];
-        let b = [0x01, 0x02, 0x03, 0x04];
-        assert!(!ct_eq(&a, &b));
-    }
-
-    #[test]
-    fn test_ct_eq_empty() {
-        let a: [u8; 0] = [];
-        let b: [u8; 0] = [];
-        assert!(ct_eq(&a, &b));
-    }
-
-    #[test]
-    fn test_ct_eq_single_bit_difference() {
-        let a = [0xFF; 32];
-        let mut b = [0xFF; 32];
-        // Flip a single bit in the last byte
-        b[31] = 0xFE;
-        assert!(!ct_eq(&a, &b));
     }
 
     /// Construct a valid PKCS#1 v1.5 padded message manually and verify the

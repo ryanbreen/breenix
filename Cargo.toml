@@ -79,7 +79,10 @@ members = [
     "libs/arm64-boot-contract",
     "libs/breengel-abi",
     "libs/input-abi",
+    "libs/ufs-abi",
     "libs/libvt",
+    "libs/libsmb",
+    "libs/smbfs",
     "libs/libclipboard",
     "libs/gpu-abi"
 ]

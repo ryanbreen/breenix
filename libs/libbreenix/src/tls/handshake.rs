@@ -7,6 +7,7 @@
 
 extern crate alloc;
 
+use crate::crypto::ct::ct_eq;
 use alloc::vec::Vec;
 
 use crate::crypto::bignum::BigNum;
@@ -662,7 +663,7 @@ pub fn perform_handshake(
     let expected_verify_data =
         compute_verify_data(&master_secret, b"server finished", &handshake_hash);
 
-    if !constant_time_eq(server_verify_data, &expected_verify_data) {
+    if !ct_eq(server_verify_data, &expected_verify_data) {
         if verbose { eprint!("* TLS: server Finished verify FAILED\n"); }
         return Err(HandshakeError::FinishedVerifyFailed);
     }
@@ -1000,18 +1001,6 @@ fn current_unix_time() -> u64 {
     }
 }
 
-/// Constant-time comparison of two byte slices.
-fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    let mut diff = 0u8;
-    for i in 0..a.len() {
-        diff |= a[i] ^ b[i];
-    }
-    diff == 0
-}
-
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -1093,28 +1082,28 @@ mod tests {
     fn test_constant_time_eq_equal() {
         let a = [1u8, 2, 3, 4, 5];
         let b = [1u8, 2, 3, 4, 5];
-        assert!(constant_time_eq(&a, &b));
+        assert!(ct_eq(&a, &b));
     }
 
     #[test]
     fn test_constant_time_eq_different() {
         let a = [1u8, 2, 3, 4, 5];
         let b = [1u8, 2, 3, 4, 6];
-        assert!(!constant_time_eq(&a, &b));
+        assert!(!ct_eq(&a, &b));
     }
 
     #[test]
     fn test_constant_time_eq_different_lengths() {
         let a = [1u8, 2, 3];
         let b = [1u8, 2, 3, 4];
-        assert!(!constant_time_eq(&a, &b));
+        assert!(!ct_eq(&a, &b));
     }
 
     #[test]
     fn test_constant_time_eq_empty() {
         let a: [u8; 0] = [];
         let b: [u8; 0] = [];
-        assert!(constant_time_eq(&a, &b));
+        assert!(ct_eq(&a, &b));
     }
 
     // -- ClientHello construction --
