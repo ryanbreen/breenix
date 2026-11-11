@@ -135,7 +135,7 @@ fn notify() {}
 fn sweep() {}
 struct Sync { sent_ns: Option<u64>, failed: bool, abandoned: bool, warm: Option<u64> }
 struct Core {
-    contexts: BTreeMap<u32, Ctx>, syncs: BTreeMap<u64, Sync>, done: BTreeMap<u64, Done>,
+    procs: BTreeMap<u64,Process>, contexts: BTreeMap<u32, Ctx>, syncs: BTreeMap<u64, Sync>, done: BTreeMap<u64, Done>,
     dev: Option<()>, reset_wanted: bool, resetting: bool, stalled: bool, quarantined_at: Option<u64>,
     warm_step: Option<WarmStep>, queue_size: usize,
     now: u64, next: u64, traffic_ns: u64, warm_held: Option<u64>, warm_started_ns: Option<u64>,
@@ -156,7 +156,7 @@ impl Core {
     // PRODUCTION_METHODS
 }
 thread_local! { static MODEL: RefCell<Core> = RefCell::new(Core {
-    contexts: BTreeMap::from([(1, ctx())]),
+    procs: BTreeMap::new(), contexts: BTreeMap::from([(1, ctx())]),
     dev: Some(()), reset_wanted: false, resetting: false, stalled: false, quarantined_at: None, warm_step: None, queue_size: 256,
     syncs: BTreeMap::new(), done: BTreeMap::new(), now: 0, next: 0,
     traffic_ns: 0, warm_held: None, warm_started_ns: None,
@@ -190,11 +190,11 @@ fn wait_for<T>(_: Option<u64>, interruptible: bool, mut f: impl FnMut(&mut Core)
         chunks = re.search(r"(?m)^enum Chunks \{[^}]*\}\n", CORE)
         if chunks is None:
             raise AssertionError("production enum Chunks is missing")
-        harness += interval + chunks.group(0) + function("catalogue_mask") + function("attach_all") + function("warm_deadline") + function("warm_next")
+        harness += interval + chunks.group(0) + function("catalogue_mask") + function("attach_all") + function("warm_deadline") + function("warm_context") + function("warm_next")
         readiness = re.search(r"out\.warmed = p\.contexts\.values\(\).*?\.count\(\) as u64;", CORE, re.S)
         self.assertIsNotNone(readiness, "missing process catalogue readiness count")
         harness += """
-struct Process { contexts: BTreeMap<u64,u32> }
+struct Process { contexts: BTreeMap<u64,u32>, prepared_context:Option<u64> }
 struct Counters { warmed: u64 }
 fn ready_count(c: &Core, p: &Process) -> u64 {
     let mut out = Counters { warmed: u64::MAX };
@@ -203,7 +203,7 @@ fn ready_count(c: &Core, p: &Process) -> u64 {
         harness += r'''
 #[test]
 fn readiness_distinguishes_empty_private_catalogue_from_unfinished_rendering() {
-    let p = Process { contexts: BTreeMap::from([(7,1)]) };
+    let p = Process { contexts: BTreeMap::from([(7,1)]), prepared_context:None };
     with_core(|c| {
         assert_eq!(ready_count(c,&p),0);
         c.contexts.get_mut(&1).unwrap().state = CtxState::Live;

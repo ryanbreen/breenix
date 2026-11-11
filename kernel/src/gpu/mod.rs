@@ -2938,8 +2938,21 @@ fn warm_deadline(now: u64, traffic: u64, held: u64, started: Option<u64>, eager:
         .map_or(due, |start| due.max(start.saturating_add(WARM_GRACE_NS)))
 }
 
+/// QEMU gives its finite reserved renderer catalogue priority; other backends keep ID order.
+fn warm_context(c: &Core, warming: impl Fn(&Ctx) -> bool) -> Option<u32> {
+    if !platform_config::is_qemu() {
+        return c.contexts.iter().find(|(_, ctx)| warming(ctx) && !ctx.busy).map(|(&id, _)| id);
+    }
+    c.contexts.iter().filter(|(_, ctx)| warming(ctx) && !ctx.busy)
+        .min_by_key(|(id, ctx)| {
+            let reserved = c.procs.get(&ctx.owner).is_some_and(|p|
+                p.prepared_context.and_then(|handle| p.contexts.get(&handle)) == Some(*id));
+            (!reserved, **id)
+        }).map(|(&id, _)| id)
+}
+
 /// On `kgpu`: send the next step of the fixed rendering catalogue's warm-up (ruling 33,
-/// #1725), the lowest-numbered context's first pipeline not yet warmed. One step is on the
+/// #1725), one context's first pipeline not yet warmed. One step is on the
 /// device at a time, after the context's process-local grace and while the device is
 /// neither resetting nor suspected hung, so other requests wait behind at most one step.
 /// Outside QEMU, a step waits for `WARM_QUIET_NS` of send/answer quiet, for at most
@@ -2983,7 +2996,8 @@ fn warm_next() -> Option<u64> {
         if !ready(c) {
             return None;
         }
-        let ctx = c.contexts.values_mut().find(|x| warming(x) && !x.busy)?;
+        let id = warm_context(c, &warming)?;
+        let ctx = c.contexts.get_mut(&id)?;
         ctx.busy = true;
         let pipeline = (!ctx.warm & catalogue_mask()).trailing_zeros();
         Some((ctx.id, pipeline, ctx.objects.clone(), ctx.dx.clone(), [ctx.vb, ctx.scratch, ctx.scratch_texture]))
@@ -3432,7 +3446,10 @@ pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32>
                 .is_some_and(|ctx| ctx.state == CtxState::Live && !ctx.dropped);
             if !live { return Some(Err(EIO)); }
         }
+        let reserved = (platform_config::is_qemu() && reserve_next)
+            .then(|| p.prepared_context.and_then(|handle| p.contexts.get(&handle))).flatten();
         for id in p.contexts.values() {
+            if reserved.is_some_and(|reserved| reserved != id) { continue; }
             let Some(ctx) = c.contexts.get(id) else { continue; };
             if !ctx.warm_catalogue || ctx.dropped || ctx.state != CtxState::Live { continue; }
             if ctx.warm != catalogue_mask() { return None; }
