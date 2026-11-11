@@ -109,6 +109,7 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
     ]),
     category("desktop", "Desktop", &[
         case("copy-paste", "Copy and paste between applications", desktop::copy_paste).session(libuitest::supervisor::serve),
+        case("font-everywhere", "Font changes reach every application", desktop::font_everywhere).session(libuitest::supervisor::serve),
     ]),
 ]).gui().defer_display();
 

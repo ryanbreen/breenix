@@ -3,11 +3,11 @@ use libuitest::App;
 
 const PICKER: &[u8] = b"/usr/bin/bfontpicker";
 const DIR: &str = "/tmp/bfontpicker-suite-fonts";
-const FIRST: &str = "/tmp/bfontpicker-suite-fonts/First.ttf";
-const PLAIN: &str = "/tmp/bfontpicker-suite-fonts/Plain.ttf";
-const FAKE: &str = "/tmp/bfontpicker-suite-fonts/SansMono-Fake.ttf";
+pub(super) const FIRST: &str = "/tmp/bfontpicker-suite-fonts/First.ttf";
+pub(super) const PLAIN: &str = "/tmp/bfontpicker-suite-fonts/Plain.ttf";
+pub(super) const FAKE: &str = "/tmp/bfontpicker-suite-fonts/SansMono-Fake.ttf";
 
-fn launch() -> Result<App, String> {
+pub(super) fn launch() -> Result<App, String> {
     std::fs::create_dir_all(DIR).map_err(|e| e.to_string())?;
     for (source, dest) in [("DejaVuSansMono.ttf", FIRST), ("Hack-Regular.ttf", PLAIN), ("DejaVuSans.ttf", FAKE)] {
         std::fs::copy(format!("/usr/share/fonts/{source}"), dest).map_err(|e| e.to_string())?;
@@ -20,14 +20,14 @@ fn reopen(t: &mut App) -> Result<(), String> {
     t.launch_next(&[PICKER, b"--fonts", DIR.as_bytes()], "Font Picker")
 }
 
-fn seed(t: &mut App, contents: &str) -> Result<String, String> {
+pub(super) fn seed(t: &mut App, contents: &str) -> Result<String, String> {
     let path = format!("{}/etc/fonts.conf", t.config_root());
     std::fs::write(&path, contents).map_err(|e| e.to_string())?;
     reopen(t)?;
     Ok(path)
 }
 
-fn select(t: &mut App) -> Result<(), String> {
+pub(super) fn select(t: &mut App) -> Result<(), String> {
     t.wait_node("fonts", |v| v["selected"] == 0 && v["rows"][0]["path"] == FIRST && v["rows"][1]["path"] == PLAIN)?;
     t.key(108, &[])?; // Down
     t.wait_node("fonts", |v| v["selected"] == 1 && v["rows"][1]["path"] == PLAIN)?;
@@ -70,7 +70,7 @@ pub fn keeps_unknown() -> CaseResult {
     Ok(t.finish()?)
 }
 
-fn pixels(window: u64) -> Result<(u32, u32, Vec<u8>), String> {
+pub(super) fn pixels(window: u64) -> Result<(u32, u32, Vec<u8>), String> {
     let mut bytes = vec![0; 16 * 1024 * 1024];
     let captured = libbreenix::window::capture(window, &mut bytes, None).map_err(|e| e.to_string())?;
     let len = captured.width as usize * captured.height as usize * 4;

@@ -269,7 +269,8 @@
       "id": "desktop",
       "title": "Desktop",
       "cases": [
-        { "id": "copy-paste", "title": "Copy and paste between applications" }
+        { "id": "copy-paste", "title": "Copy and paste between applications" },
+        { "id": "font-everywhere", "title": "Font changes reach every application" }
       ]
     }
   ]
