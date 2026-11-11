@@ -54,6 +54,7 @@ fn file_identity(info: &FileAllInformation) -> Option<(u64, u64, bool)> {
 impl<B: Backend> Namespace<B> {
     fn disconnect(&mut self) {
         self.connected = false;
+        self.recovery_pending = false;
         self.scans.clear();
         self.invalidate();
         for handle in self.handles.values_mut() {
@@ -97,7 +98,14 @@ impl<B: Backend> Namespace<B> {
             self.handles.get_mut(&key).unwrap().file_id = Some(id);
         }
         self.connected = true;
+        self.recovery_pending = true;
         Ok(())
+    }
+    fn recovered_operation(&mut self) {
+        if self.recovery_pending {
+            self.recoveries += 1;
+            self.recovery_pending = false;
+        }
     }
     pub(super) fn operation<T>(
         &mut self,
@@ -111,7 +119,10 @@ impl<B: Backend> Namespace<B> {
             retried = true;
         }
         match f(self) {
-            Ok(value) => Ok(value),
+            Ok(value) => {
+                self.recovered_operation();
+                Ok(value)
+            },
             Err(status) if disconnected(status) => {
                 self.disconnect();
                 if retried {
@@ -119,7 +130,10 @@ impl<B: Backend> Namespace<B> {
                 }
                 self.recover(deadline)?;
                 match f(self) {
-                    Ok(value) => Ok(value),
+                    Ok(value) => {
+                        self.recovered_operation();
+                        Ok(value)
+                    },
                     Err(status) => {
                         if invalid_session(status) {
                             self.disconnect();

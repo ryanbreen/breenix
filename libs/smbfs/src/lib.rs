@@ -111,6 +111,8 @@ pub struct Namespace<B> {
     handles: BTreeMap<u64, files::Handle>,
     next_handle: u64,
     connected: bool,
+    recoveries: u64,
+    recovery_pending: bool,
     scans: BTreeMap<u64, DirectoryScan>,
 }
 impl<B: Backend> Namespace<B> {
@@ -134,8 +136,13 @@ impl<B: Backend> Namespace<B> {
             handles: BTreeMap::new(),
             next_handle: 1,
             connected: true,
+            recoveries: 0,
+            recovery_pending: false,
             scans: BTreeMap::new(),
         }
+    }
+    pub fn recovery_count(&self) -> u64 {
+        self.recoveries
     }
     pub fn backend(&self) -> &B {
         &self.backend

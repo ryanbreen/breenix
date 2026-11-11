@@ -6,7 +6,7 @@ use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
-use std::process::{Child, ChildStdout, Command, Stdio};
+use std::process::{Child, ChildStdout, ChildStderr, Command, Stdio};
 use std::time::{Duration, Instant};
 
 const DAEMON: &str = "/usr/libexec/breenix/memfsd_test";
@@ -35,7 +35,7 @@ static SUITE: Suite = suite("network-shares", "Network shares", &[
         case("atomic-save", "Atomic save of a large file", smb_atomic_save),
         case("read-only-refused", "Read-only share refuses writes", smb_read_only_refused),
         case("wrong-password", "Wrong password leaves no mount", smb_wrong_password),
-        case("server-restart", "Server restart recovers or reports EIO", smb_server_restart),
+        case("server-restart", "Server restart reconnects and preserves the open file", smb_server_restart),
         case("umount-open-files", "Unmount with an open file", smb_umount_open_files),
     ]),
 ]).case_limit_ms(30_000);
@@ -360,6 +360,7 @@ struct SmbMount {
     mounted: bool,
     ready: String,
     child: Option<Child>,
+    reconnect_output: Option<ChildStderr>,
 }
 impl SmbMount {
     fn prepare(share: &str, smb302: bool, credfile: &str) -> Result<(Self, String, String), String> {
@@ -374,7 +375,7 @@ impl SmbMount {
         let dir = PathBuf::from("/tmp").join(&name);
         io(fs::create_dir(&dir))?;
         let mount = Self {
-            work: dir.join(&name), dir, work_created: false, mounted: false, ready: String::new(), child: None,
+            work: dir.join(&name), dir, work_created: false, mounted: false, ready: String::new(), child: None, reconnect_output: None,
         };
         let source = format!("//{}/{share}", fields[0]);
         let mut options = format!("credfile={credfile},port={}", fields[1]);
@@ -406,7 +407,8 @@ impl SmbMount {
     fn daemon() -> Result<Self, String> {
         let (mut mount, source, options) = Self::prepare("rw", false, "/etc/breenix/smb-test.cred")?;
         let mut child = io(Command::new("/sbin/smbfsd").arg(source).arg(&mount.dir).arg(options)
-            .stdout(Stdio::piped()).stderr(Stdio::inherit()).spawn())?;
+            .stdout(Stdio::piped()).stderr(Stdio::piped()).spawn())?;
+        mount.reconnect_output = child.stderr.take();
         let output = child.stdout.take().ok_or("missing SMB daemon output")?;
         mount.child = Some(child);
         mount.mounted = true;
@@ -479,6 +481,7 @@ fn smb_mount_list() -> CaseResult {
 fn smb_writable_profiles(mut run: impl FnMut(SmbMount) -> CaseResult) -> CaseResult {
     for (share, smb302) in [("rw", false), ("rw302", true), ("enc", false)] {
         run(SmbMount::start(share, smb302)?).map_err(|e| format!("{share}: {e:?}"))?;
+        breenix_suite::suite::value(share, 1, "", None);
     }
     Ok(())
 }
@@ -622,7 +625,11 @@ fn smb_exact_or_eio(result: std::io::Result<usize>, bytes: &[u8], expected: &[u8
     }
 }
 fn smb_server_restart() -> CaseResult {
-    let mount = SmbMount::rw()?;
+    let mut mount = SmbMount::daemon()?;
+    let mut notices = mount.reconnect_output.take().ok_or("missing reconnect diagnostics")?;
+    let notice_fd = Fd::from_raw(notices.as_raw_fd() as u64);
+    let flags = sysio::fcntl_getfl(notice_fd)?;
+    sysio::fcntl_setfl(notice_fd, flags as i32 | sysio::status_flags::O_NONBLOCK)?;
     let path = mount.path("restart");
     let expected: Vec<u8> = (0..4096).map(|n| ((n * 37 + n / 251) % 256) as u8).collect();
     io(fs::write(&path, &expected))?;
@@ -655,8 +662,20 @@ fn smb_server_restart() -> CaseResult {
         std::thread::sleep(Duration::from_millis(100));
     }
     let mut bytes = vec![0; expected.len() + 1];
-    let result = file.read_at(&mut bytes, 0);
-    smb_exact_or_eio(result, &bytes, &expected)?;
+    let count = io(file.read_at(&mut bytes, 0))?;
+    check(count == expected.len() && bytes[..count] == expected,
+        "held file did not recover exact bytes after restart")?;
+    let mut notice_bytes = Vec::new();
+    match notices.read_to_end(&mut notice_bytes) {
+        Ok(_) => {},
+        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {},
+        Err(e) => return Err(e.to_string().into()),
+    }
+    let notice = String::from_utf8(notice_bytes).map_err(|e| e.to_string())?;
+    let reconnects = notice.lines().filter_map(|line| line.strip_prefix("SMB recoveries=")
+        .and_then(|n| n.parse::<i64>().ok())).max().unwrap_or(0);
+    breenix_suite::suite::value("reconnects", reconnects, "", None);
+    check(reconnects > 0, "restart completed without a successful daemon reconnect")?;
     check(io(fs::read(&path))? == expected, "fresh open after SMB restart returned wrong data")?;
     drop(file);
     mount.finish()

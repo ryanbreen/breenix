@@ -442,6 +442,7 @@ fn reconnect_reopens_held_paths_without_replaying_create_or_truncate() {
     assert_eq!(fs.read(h, 0, 11).unwrap(), b"saved bytes");
     assert_eq!(fs.read(other, 6, 5).unwrap(), b"bytes");
     assert_eq!(fs.backend().reconnects, 1);
+    assert_eq!(fs.recovery_count(), 1);
     assert_eq!(fs.backend().reopened, 2);
     fs.release(h).unwrap();
     fs.release(other).unwrap();
@@ -464,6 +465,7 @@ fn second_connection_failure_invalidates_every_file_id() {
         }
         assert_eq!(fs.read(h, 0, 6), Err(5));
         assert_eq!(fs.backend().reconnects, 1);
+        assert_eq!(fs.recovery_count(), 0);
         let closes = fs.backend().closes;
         fs.release(h).unwrap();
         fs.release(other).unwrap();

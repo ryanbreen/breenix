@@ -95,7 +95,7 @@
         },
         {
           "id": "server-restart",
-          "title": "Server restart recovers or reports EIO"
+          "title": "Server restart reconnects and preserves the open file"
         },
         {
           "id": "umount-open-files",

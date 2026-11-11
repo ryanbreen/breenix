@@ -47,6 +47,7 @@ fn run() -> Result<(), String> {
     let start = Instant::now();
     let mut input = vec![0; MAX_MESSAGE];
     let mut output = vec![0; MAX_MESSAGE];
+    let mut reported_recoveries = 0;
     loop {
         let n = match dev.read(&mut input) {
             Ok(0) => return Ok(()),
@@ -60,6 +61,11 @@ fn run() -> Result<(), String> {
             Ok(p) => (0, p),
             Err(e) => (-e, vec![]),
         };
+        let recoveries = fs.recovery_count();
+        if recoveries != reported_recoveries {
+            let _ = writeln!(io::stderr(), "SMB recoveries={recoveries}");
+            reported_recoveries = recoveries;
+        }
         let n = Reply {
             id: req.id,
             errno,
