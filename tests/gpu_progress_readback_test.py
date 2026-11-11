@@ -71,7 +71,7 @@ struct Resource {
 struct Sub { published: bool, requests: u32, sent_ns: Option<u64>, written: Vec<u32>, ctx: u32 }
 struct Ctx { scratch: u32 }
 struct SyncReq {
-    upload: Option<(u32,u64)>, ctx: u32, sent_ns: Option<u64>, holds: Vec<u32>, reading: Vec<u32>,
+    upload: Option<(u32,u64)>, created: Option<u32>, ctx: u32, sent_ns: Option<u64>, holds: Vec<u32>, reading: Vec<u32>,
     abandoned: bool, failed: bool, why: u32, warm: Option<u64>,
 }
 struct Core {
@@ -126,6 +126,7 @@ fn drain_stays_queued_and_pinned_until_its_own_completion() {
     assert!(read.fence > 0);
     let s = &c.syncs[&serial];
     assert_eq!(s.ctx, 3);
+    assert!(s.created.is_none(), "a progress drain is not a resource allocation");
     assert!(s.sent_ns.is_none() && s.upload.is_none() && s.warm.is_none());
     assert!(s.abandoned && !s.failed && s.why == 0);
     assert_eq!((&s.holds, &s.reading), (&vec![7], &vec![7]));

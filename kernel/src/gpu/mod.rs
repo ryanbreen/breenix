@@ -478,6 +478,8 @@ struct SyncReq {
     sent_ns: Option<u64>,
     /// Texture upload and expected fence; completion accounting survives an interrupted waiter.
     upload: Option<(u32, u64)>,
+    /// Internal resource creation; its acknowledgement survives a killed waiter.
+    created: Option<u32>,
     /// Resources it holds until the device returns it.
     holds: Vec<u32>,
     /// The resources whose `reading` mark the request keeps if its waiter leaves: a
@@ -1233,7 +1235,7 @@ impl Core {
         let serial = self.serial();
         req.set_tag(Tag::Sync(serial));
         self.syncs.insert(serial, SyncReq {
-            ctx: 0, sent_ns: None, upload: None, holds: Vec::new(), reading: Vec::new(),
+            ctx: 0, sent_ns: None, upload: None, created: None, holds: Vec::new(), reading: Vec::new(),
             abandoned: true, failed: false, why: 0, warm: None,
         });
         self.backlog.push_back((epoch.min(self.epoch), req));
@@ -1284,7 +1286,7 @@ impl Core {
         }
         let upload = req.is_upload().then(|| holds.first().copied().zip(req.fence())).flatten();
         self.syncs.insert(serial, SyncReq {
-            upload, ctx, sent_ns: None, holds: held, reading: readers, abandoned: warm.is_some(), failed: false,
+            upload, created: None, ctx, sent_ns: None, holds: held, reading: readers, abandoned: warm.is_some(), failed: false,
             why: 0, warm,
         });
         self.backlog.push_back((self.epoch, req));
@@ -1529,6 +1531,13 @@ impl Core {
     /// after a confirmed reset.
     fn sync_ended(&mut self, serial: u64, d: Option<Done>) {
         let Some(s) = self.syncs.remove(&serial) else { return };
+        if let Some(id) = s.created {
+            if d.as_ref().is_some_and(|d| dev::ok(d.answer)) {
+                if let Some(r) = self.resources.get_mut(&id).filter(|r| r.epoch == self.epoch) {
+                    r.lost = false;
+                }
+            }
+        }
         if s.ctx == 0 && d.as_ref().is_some_and(|d| !dev::ok(d.answer)) {
             self.fault();
         }
@@ -3508,6 +3517,11 @@ fn create_context_with_catalogue(tgid: u64, warm_catalogue: bool) -> Result<(u64
                 epoch,
             ),
         );
+        // No device object exists until its creation acknowledgement arrives.
+        // A killed creator must not queue UNREF for the unsent suffix.
+        for rid in [vb, scratch, scratch_texture] {
+            if let Some(r) = c.resources.get_mut(&rid) { r.lost = true; }
+        }
         c.insert_ctx(
             id,
             Ctx {
@@ -3591,6 +3605,21 @@ fn create_context_with_catalogue(tgid: u64, warm_catalogue: bool) -> Result<(u64
     Ok((handle, warmed))
 }
 
+/// Publish internal allocation state from the completion, even if its creator exits.
+fn create_internal_resource(ctx: u32, resource: u32, build: impl FnOnce(Tag) -> Option<Request>) -> Result<(), i64> {
+    let serial = with_core(|c| c.serial()).ok_or(ENODEV)?;
+    let request = build(Tag::Sync(serial)).ok_or(ENOMEM)?;
+    if !ensure_reaper() { return Err(ENOMEM); }
+    with_core(|c| {
+        c.queue_sync(serial, request, ctx, &[], &[], None)?;
+        c.syncs.get_mut(&serial).ok_or(EIO)?.created = Some(resource);
+        c.flush();
+        Ok::<(), i64>(())
+    }).ok_or(ENODEV)??;
+    let done = await_sync(serial).map_err(|(errno, _)| errno)?;
+    if dev::ok(done.answer) { Ok(()) } else { Err(EIO) }
+}
+
 /// Create device context `id` with its internal resources and the process's resources
 /// attached, then send its fixed state and wait for its fence. The catalogue's programs
 /// are warmed afterwards on `kgpu` (`warm_next`), and each `probe_int` routine by its first PROBE. Each
@@ -3614,13 +3643,13 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
             }
         });
     }
-    exec_ok(|t| dev::resource_create(t, vb, kind::BUFFER, format::R8, encode::VERTEX_BUFFER_BYTES, 1, false), 0, &[])?;
+    create_internal_resource(id, vb, |t| dev::resource_create(t, vb, kind::BUFFER, format::R8, encode::VERTEX_BUFFER_BYTES, 1, false))?;
     exec_ok(|t| dev::attach_backing(t, vb, vb_pages.clone()), 0, &[])?;
     exec_ok(|t| dev::ctx_attach(t, id, vb), id, &[])?;
-    exec_ok(|t| dev::resource_create(t, scratch, kind::TARGET, format::B8G8R8A8, 1, 1, false), 0, &[])?;
+    create_internal_resource(id, scratch, |t| dev::resource_create(t, scratch, kind::TARGET, format::B8G8R8A8, 1, 1, false))?;
     exec_ok(|t| dev::attach_backing(t, scratch, scratch_pages.clone()), 0, &[])?;
     exec_ok(|t| dev::ctx_attach(t, id, scratch), id, &[])?;
-    exec_ok(|t| dev::resource_create(t, scratch_texture, kind::TEXTURE, format::B8G8R8A8, 1, 1, false), 0, &[])?;
+    create_internal_resource(id, scratch_texture, |t| dev::resource_create(t, scratch_texture, kind::TEXTURE, format::B8G8R8A8, 1, 1, false))?;
     exec_ok(|t| dev::ctx_attach(t, id, scratch_texture), id, &[])?;
     // The process's live resources, held so none is freed before it is attached.
     let theirs: Vec<u32> = with_core(|c| {
