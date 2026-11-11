@@ -1,4 +1,15 @@
-# A.3 continuation: retained failures at 71c03a24
+# A.3 continuation: corrected ARM acceptance still fails 80/81
+
+Latest runtime head `7dc1a45c5110d1dc82436ce34dcd605d64fdfbc0`, Vigil
+`20261111T154755Z-qemu-92251`: **80 passed, 1 failed, 0 skipped, 81 total**.
+A.3 remains blocked. The sole failure is the unchanged 500 ms reap deadline in
+`recovery/restart-adopts`. The supervisor replacement reaches first composite at
+1.311134 s, below the 1.6 s target. Performance is 7/7.
+[Corrected producer records](serials/a3-acceptance-7dc1a45c.txt) retain the result
+and both supervisor startup timelines; the complete raw capture remains in Vigil.
+The sections below preserve the preceding regression and native result.
+
+## First continuation acceptance
 
 Runtime head `71c03a245b40c0babb2cb14b40804cf42ceaeb24`.
 Vigil `20261111T145221Z-qemu-11150`, standalone window-manager, HVF,
@@ -168,3 +179,54 @@ these are not chased here. The correction commit messages each passed
 `--commit-msg`, and `git diff --check` passes. The lane performs no builds,
 installers or other heavy work during the next acceptance and records its start
 and end load averages, as line 154 requires.
+
+## Corrected-head acceptance
+
+The one correction boot runs standalone window-manager through
+`boot-interactive.sh --mode suite --suite window-manager --gpu-gl --no-display --no-build`.
+Vigil records ARM64 QEMU, display false, clean checkout, runtime `7dc1a45c`, exit 1.
+The retained raw serial was scored once with the unchanged suite-verdict selection
+path; its 81 manifest ids exactly match `docs/gui/gt710-step-21-7.json`.
+
+```text
+SUITE window-manager CASE recovery/restart-adopts FAIL ms=3481 msg=reap owned process: no acknowledgment within 500 ms
+SUITE window-manager DONE passed=80 failed=1 skipped=0 total=81
+SUITE window-manager MEMORY reclaimed=PASS free_before=84635 free_after=84625 allowance=48
+SUITE_SEQUENCE READY window-manager
+```
+
+The selection refuses this failed CASE. It reports no malformed HOSTPOINTER
+record. The generic verdict's refusal is exactly the 12 planned-empty categories
+allowed by coordinator line 143; that exception does not excuse the failed CASE.
+81/81 CASE lines are complete. DONE precedes MEMORY, which precedes standalone
+READY. The launcher's renderer check accepts ANGLE/Metal with 968 records.
+
+`recovery/restart-adopts` calls `content`, freezes its surviving client, then calls
+`Child::stop` on the old compositor before constructing the replacement desktop.
+The failing acknowledgment is `Child::status`/`waitpid(WNOHANG)` in that stop.
+This capture therefore fails before replacement startup. It contains termination
+output for old compositor PID 665, but that output does not establish completion of
+reaping within 500 ms. The ready-band cancellation model exercises an interruptible
+readback loop; it does not establish which remaining exit/teardown stage consumes
+this deadline. That cause remains unresolved in #2872. No threshold was changed.
+
+`recovery/supervisor-restarts` passes. Original PID 718 records first composite at
+3.692832 s; replacement PID 731 records its own exec and first composite at
+1.311134 s. The replacement's five targets are allocated by 0.026663 s, reserved
+context is ready at 0.973158 s, fonts at 1.124130 s, and checks at 1.287849 s.
+The target-allocation overlap is retained and the replacement has the requested
+margin. These are separate process timelines, not the original compositor's stamp
+attributed to its replacement.
+
+Every focus, pointer and lifecycle case passes, including the twelve positive-click
+failures in the preceding run. Frame-floor and the other six performance cases pass.
+Start uptime loads were 6.46 / 6.39 / 9.03; end loads were 6.62 / 6.56 / 8.09.
+The lane ran no builds, installers or other heavy work during this acceptance.
+
+No repeat ARM acceptance follows this failure. The correction after the native
+`71c03a24` run changes ARM-only UART modules and QEMU-only preparation, so coordinator
+line 154 requires no further native boot. The native 80/81 remains failed evidence.
+The ARM board was read and retains older entries; no passing pending cell was set.
+PR #2874 stays draft and unmerged. The ledger and #2872 retain the concrete blocker;
+#2411 retains serial ordering evidence and #2420 the separately reproduced main guard
+failure. This report update changes no runtime code and requires no further boot.
