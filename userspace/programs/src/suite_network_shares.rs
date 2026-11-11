@@ -41,6 +41,7 @@ static SUITE: Suite = suite("network-shares", "Network shares", &[
     category("shares", "Configured shares", &[
         case("boot-mount", "Mount configured shares at boot", shares_boot_mount),
         case("mount-list", "List and unmount configured shares", shares_mount_list),
+        case("ls-cp", "List and copy files with shell applets", shares_ls_cp),
     ]),
 ]).case_limit_ms(30_000);
 
@@ -797,4 +798,41 @@ fn shares_mount_list() -> CaseResult {
     fixture.expect_mounted(true)?;
     fixture.unmount()?;
     fixture.expect_mounted(false)
+}
+
+fn shares_ls_cp() -> CaseResult {
+    struct LocalDir(PathBuf);
+    impl Drop for LocalDir {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+    let rw = SmbMount::rw()?;
+    let ro = SmbMount::start("ro", false)?;
+    let local = LocalDir(PathBuf::from(format!("/tmp/shares-ls-cp-{}", std::process::id())));
+    io(fs::create_dir(&local.0))?;
+    let listed = rw.path("listed");
+    io(fs::write(&listed, b"listed on the share"))?;
+    let output = io(Command::new("/bin/ls").arg(&rw.work).output())?;
+    check(output.status.success(), &format!("ls failed: {}", output.status))?;
+    check(output.stdout.split(|b| *b == b'\n').any(|line| line == b"listed"),
+        "ls did not list the file written on the share")?;
+
+    let bytes: Vec<u8> = (0..(ufs_abi::MAX_DATA + 317))
+        .map(|n| ((n * 37 + n / 251) % 256) as u8).collect();
+    let source = local.0.join("source");
+    let remote = rw.path("copied");
+    let copied_back = local.0.join("copied-back");
+    io(fs::write(&source, &bytes))?;
+    let status = io(Command::new("/bin/cp").arg(&source).arg(&remote).status())?;
+    check(status.success(), &format!("cp to share failed: {status}"))?;
+    let status = io(Command::new("/bin/cp").arg(&remote).arg(&copied_back).status())?;
+    check(status.success(), &format!("cp from share failed: {status}"))?;
+    check(io(fs::read(&copied_back))? == bytes, "cp round trip changed file bytes")?;
+
+    let refused = ro.dir.join(rw.work.file_name().ok_or("missing work directory name")?);
+    check(!io(fs::exists(&refused))?, "read-only destination already exists")?;
+    let status = io(Command::new("/bin/cp").arg(&source).arg(&refused).status())?;
+    check(status.code().is_some_and(|code| code != 0), "cp to read-only share did not exit non-zero")?;
+    check(!io(fs::exists(&refused))?, "cp to read-only share left a file")?;
+    ro.finish()?;
+    rw.finish()
 }
