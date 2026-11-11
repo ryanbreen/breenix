@@ -2,6 +2,7 @@ use breenix_suite::suite::CaseResult;
 use libuitest::{App, input::Modifier};
 #[path = "guskit_expect.rs"] mod guskit_expect;
 use guskit_expect::Expected;
+#[path = "../guskit/save_wait.rs"] mod save_wait;
 
 fn launch() -> Result<App, String> {
     App::launch(&[b"/usr/bin/guskit", b"--canvas", b"200x120"], "Gus Kit")
@@ -342,6 +343,9 @@ pub fn smb_share_gone() -> CaseResult {
         .map_err(|e| e.to_string())?.as_micros() as u64;
     let dir = format!("/mnt/guskit-rw/guskit-{}-{seq}", std::process::id());
     std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
+    struct Folder(String);
+    impl Drop for Folder { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+    let folder = Folder(dir.clone());
     let file = format!("{dir}/drawing.png");
     let mut t = launch()?;
     stroke(&mut t, 10)?;
@@ -354,21 +358,57 @@ pub fn smb_share_gone() -> CaseResult {
     t.wait_node("status", |v| v["file"] == file && v["dirty"] == false)?;
     stroke(&mut t, 20)?;
     t.wait_node("status", |v| v["dirty"] == true)?;
-    smb_request("STOP", seq)?;
     // Always request recovery on an early error; the host helper also restores on exit.
     struct Restart(Option<u64>);
     impl Drop for Restart { fn drop(&mut self) { if let Some(seq) = self.0 { let _ = smb_request("START", seq); } } }
     let mut restart = Restart(Some(seq + 1));
-    wait_share(&dir, true)?;
-    t.key(31, &[Modifier::Ctrl])?;
-    t.wait_node("status", |v| v["dirty"] == true && v["message"].as_str().is_some_and(|s| !s.is_empty() && s != "Saved"))?;
-    smb_request("START", seq + 1)?;
+    let control = std::path::PathBuf::from(format!("/run/breenix/guskit-interrupt-{seq}"));
+    std::fs::create_dir(&control).map_err(|e| e.to_string())?;
+    struct Control(std::path::PathBuf);
+    impl Drop for Control { fn drop(&mut self) {
+        let _ = std::fs::remove_file("/run/breenix/guskit-save-barrier");
+        let _ = std::fs::remove_dir_all(&self.0);
+    } }
+    let control = Control(control);
+    std::fs::write("/run/breenix/guskit-save-barrier", format!("{file}\n{}\n", control.0.display())).map_err(|e| e.to_string())?;
+    let (watch_dir, watch_file, watch_control) = (dir.clone(), file.clone(), control.0.clone());
+    let watch_before = before.clone();
+    let watcher = std::thread::spawn(move || -> Result<(), String> {
+        save_wait::wait(&watch_control, "partial").map_err(|e| e.to_string())?;
+        let partial = std::fs::read_to_string(watch_control.join("partial")).map_err(|e| e.to_string())?;
+        if partial != "16" { return Err(format!("missing partial write witness: {partial}")); }
+        if std::fs::read(&watch_file).map_err(|e| e.to_string())? != watch_before { return Err("partial save replaced old file".into()); }
+        let temps: Vec<_> = std::fs::read_dir(&watch_dir).map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>().map_err(|e| e.to_string())?.into_iter()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".drawing.png.atomic-")).collect();
+        if temps.len() != 1 || temps[0].metadata().map_err(|e| e.to_string())?.len() != 16 {
+            return Err("save has not written a partial temporary".into());
+        }
+        smb_request("STOP", seq)?;
+        wait_share(&watch_dir, true)?;
+        std::fs::write(watch_control.join("stopped"), b"").map_err(|e| e.to_string())?;
+        save_wait::wait(&watch_control, "failed").map_err(|e| e.to_string())?;
+        if std::fs::read_to_string(watch_control.join("failed")).map_err(|e| e.to_string())? != "5" {
+            return Err("interrupted write did not return EIO".into());
+        }
+        smb_request("START", seq + 1)?;
+        wait_share(&watch_dir, false)?;
+        std::fs::write(watch_control.join("recovered"), b"").map_err(|e| e.to_string())?;
+        use std::io::Write;
+        let mut output = SMB_RESTART_OUTPUT.get().ok_or("missing SMB diagnostic output")?;
+        writeln!(output, "GUSKIT_SMB_EVIDENCE guskit/smb-share-gone partial_bytes=16 write_errno=5 recovered=true").map_err(|e| e.to_string())?;
+        Ok(())
+    });
+    let key_result = t.key(31, &[Modifier::Ctrl]);
+    watcher.join().map_err(|_| "save interruption watcher panicked")??;
     restart.0 = None;
-    wait_share(&dir, false)?;
+    key_result?;
+    t.wait_node("status", |v| v["dirty"] == true && v["message"].as_str().is_some_and(|s| !s.is_empty() && s != "Saved"))?;
     // tests/atomic_file.rs exercises faults at each save step; this is the app path.
     if std::fs::read(&file).map_err(|e| e.to_string())? != before { return Err("failed save changed drawing".into()); }
     if directory_names(&dir)? != names { return Err("failed save changed directory entries".into()); }
     t.finish()?;
     std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::mem::forget(folder);
     Ok(())
 }

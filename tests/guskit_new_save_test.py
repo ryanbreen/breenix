@@ -35,10 +35,11 @@ use std::path::PathBuf;
 #[path = "FILES"] mod files;
 mod libbreenix { #[allow(dead_code)] #[path = "ATOMIC"] pub mod atomic_file; }
 use canvas::{Canvas, History};
-const NEW:u16=1; const QUIT:u16=2; const UNDO:u16=3; const REDO:u16=4; const OPEN:u16=5; const SAVE:u16=6;
+use libbreenix::atomic_file as save_barrier;
+const NEW:u16=1; const QUIT:u16=2; const UNDO:u16=3; const REDO:u16=4; const OPEN:u16=5; const SAVE:u16=6; const SAVE_AS:u16=7;
 struct App { width:usize, height:usize, history:History, clean:[u8;32], file:Option<PathBuf>, message:String, stroke:Option<Vec<(i32,i32)>> }
 impl App {
-    fn open_picker(&mut self) { panic!("not opening picker"); }
+    fn open_picker(&mut self, _:bool) { panic!("not opening picker"); }
     fn request_quit(&mut self) { panic!("not quitting"); }
     METHODS
 }

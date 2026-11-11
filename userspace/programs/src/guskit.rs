@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 #[path = "guskit/canvas.rs"] mod canvas;
 #[path = "guskit/node.rs"] mod node;
 #[path = "guskit/files.rs"] mod files;
+#[path = "guskit/save_barrier.rs"] mod save_barrier;
 use canvas::{Canvas, History, Point, Radius};
 
 const TOP: i32 = 176;
@@ -54,7 +55,7 @@ impl App {
     }
     fn save_to(&mut self, path: PathBuf) {
         let result = files::encode(&path.to_string_lossy(), self.history.canvas(), self.width, self.height)
-            .and_then(|bytes| match libbreenix::atomic_file::save(&path, &bytes) {
+            .and_then(|bytes| match save_barrier::save(&path, &bytes) {
                 libbreenix::atomic_file::SaveResult::Saved => Ok(()),
                 libbreenix::atomic_file::SaveResult::Failed(e) | libbreenix::atomic_file::SaveResult::Unconfirmed(e) => Err(e.to_string()),
             });
@@ -64,7 +65,7 @@ impl App {
         let mut path = self.file.clone().unwrap_or_default();
         let result = if self.file.is_some() {
             files::encode(&path.to_string_lossy(), self.history.canvas(), self.width, self.height)
-                .and_then(|bytes| match libbreenix::atomic_file::save(&path, &bytes) {
+                .and_then(|bytes| match save_barrier::save(&path, &bytes) {
                     libbreenix::atomic_file::SaveResult::Saved => Ok(()),
                     libbreenix::atomic_file::SaveResult::Failed(e) | libbreenix::atomic_file::SaveResult::Unconfirmed(e) => Err(e.to_string()),
                 })
