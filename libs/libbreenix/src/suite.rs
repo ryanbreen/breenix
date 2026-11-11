@@ -1399,18 +1399,18 @@ impl Suite {
         let ms = ms_since(suite_start);
         emit(&std::format!("SUITE {} ELAPSED ms={}", self.id, ms));
         finalize();
+        feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
+        if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }
+        if !screen.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }
+        if let Some(upload) = &mut evidence {
+            emit(&upload.capture("suite-final-panel", evidence_scanout, evidence_transfer));
+        }
         if scoped {
             if place.is_some() {
                 emit(&std::format!("SUITE_SEQUENCE READY {}", self.id));
                 sequence::finish();
             }
             process::exit(if counts.failed == 0 && reclaimed { 0 } else { 1 });
-        }
-        feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
-        if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }
-        if !screen.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }
-        if let Some(upload) = &mut evidence {
-            emit(&upload.capture("suite-final-panel", evidence_scanout, evidence_transfer));
         }
         // A one-case boot stops here, before a sequence's next suite.
         if only.is_some() { idle(&mut screen, &feed); }
