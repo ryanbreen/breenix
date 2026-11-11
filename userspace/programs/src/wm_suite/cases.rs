@@ -1573,6 +1573,7 @@ pub fn idle_cpu() -> CaseResult {
     d.shown(&c)?;
     time::sleep_ms(1000)?;
     let pids = [d.wm.pid, a.child.pid, b.child.pid, c.child.pid];
+    let cost_before = d.cpu_costs();
     let before = pids
         .iter()
         .map(|p| cpu_ticks(*p))
@@ -1584,7 +1585,18 @@ pub fn idle_cpu() -> CaseResult {
         .iter()
         .map(|p| cpu_ticks(*p))
         .collect::<Result<Vec<_>, _>>()?;
-    let used = after.iter().zip(before).map(|(a, b)| a - b).sum::<u64>();
+    let used = after.iter().zip(&before).map(|(a, b)| a - b).sum::<u64>();
+    if used * 10_000_000 * 100 > elapsed * 2 {
+        failure_diagnostic("idle-cpu", &format!("elapsed_ns={elapsed} ticks={used} pids={pids:?} before={before:?} after={after:?}"));
+        match (cost_before, d.cpu_costs()) {
+            (Ok(before), Ok(after)) => {
+                for (i, name) in libuitest::startup::CPU_COSTS.iter().enumerate() {
+                    failure_diagnostic("idle-cost", &format!("{name}={}", after[i].saturating_sub(before[i])));
+                }
+            }
+            other => failure_diagnostic("idle-cost", &format!("snapshot={other:?}")),
+        }
+    }
     // proc stat ticks are USER_HZ=100 (the proc ABI); 1 tick is 10 ms of one CPU.
     value(
         "idle-cpu",

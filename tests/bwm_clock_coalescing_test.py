@@ -13,6 +13,7 @@ class ClockCoalescing(unittest.TestCase):
         end = source.index('validation.retain_clients', start)
         block = source[start:end]
         run_rust(self, r'''
+mod libuitest {pub mod startup {pub struct CpuCost;impl CpuCost {pub fn begin(_:usize)->Self {Self}}}}
 struct Clock { due: bool }
 impl Clock {
  fn due(&self)->bool {self.due}

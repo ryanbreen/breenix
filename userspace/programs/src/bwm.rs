@@ -445,6 +445,7 @@ fn main() {
         }
         let mut wait = ShutdownWait { fds: &mut poll_fds, timeout, failed: false };
         if shutdown::boundary(&mut wait).is_none() { return; }
+        let _turn_cpu = libuitest::startup::CpuCost::begin(0);
         signal_wake.drain();
         if let Some(clipboard) = &mut clipboard { clipboard.service(&poll_fds, libbreenix::ui_clock::now_ns()); }
         if let Some(wake) = &clock_wake {
@@ -821,7 +822,9 @@ fn main() {
             let sec = clock.update_clock().expect("due wall-clock update");
             format_clock(sec, &mut clock_text);
             let began = pacing_ns();
+            let clock_cpu = libuitest::startup::CpuCost::begin(1);
             redraw_clock(&mut gpu.desktop, &clock_text, &mut ui_font);
+            drop(clock_cpu);
             let draw_ns = pacing_ns().saturating_sub(began);
             taskbar_prepare_ns = Some(draw_ns);
             clock_pace.reset();
@@ -844,6 +847,7 @@ fn main() {
                 clock_pace.reset();
                 if content_dirty { full_redraw = true; }
             } else if clock_ready {
+                let _compose_cpu = libuitest::startup::CpuCost::begin(2);
                 // Scene work already owns this paced composite. Refresh frozen
                 // session chrome here without scheduling clock-only work.
                 if let Some(sec) = clock.scene_clock() {
@@ -947,6 +951,7 @@ fn main() {
                 process::exit(1);
             }
             clock.acknowledged();
+            let _check_cpu = libuitest::startup::CpuCost::begin(3);
             run_deferred_check(&mut validation, &mut gpu, &mut windows, &mut poll_fds, resizing.is_some());
         }
     }

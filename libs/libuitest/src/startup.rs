@@ -25,6 +25,8 @@ extern "C" {
 }
 pub struct Trace(*mut AtomicU64);
 const TEARDOWN_SLOT: usize = 128;
+const CPU_SLOT: usize = 256;
+pub const CPU_COSTS: &[&str] = &["turn", "clock", "compose", "check", "turns"];
 const TEARDOWN_PHASES: &[&str] = &["unreached", "begin", "children-reaped", "devices-released",
     "display-returned", "root-delete-begin", "root-delete-done", "stopped-sent"];
 // Each slot is published once by atomic compare-exchange in shared mapped memory.
@@ -56,6 +58,14 @@ impl Trace {
     pub fn mark(&self, name: &str) { self.at(name, now()); }
     pub fn snapshot(&self) -> Vec<(&'static str, u64)> {
         PHASES.iter().enumerate().map(|(i, &name)| (name, unsafe { &*self.0.add(i) }.load(Ordering::Acquire))).collect()
+    }
+    pub fn cpu_snapshot(&self) -> [u64; 5] {
+        core::array::from_fn(|i| unsafe { &*self.0.add(CPU_SLOT + i) }.load(Ordering::Acquire))
+    }
+    fn cpu_add(&self, slot: usize, value: u64) {
+        if slot < CPU_COSTS.len() {
+            unsafe { &*self.0.add(CPU_SLOT + slot) }.fetch_add(value, Ordering::Relaxed);
+        }
     }
     pub fn teardown_mark(&self, stage: usize) {
         if stage == 0 || stage >= TEARDOWN_PHASES.len() { return; }
@@ -97,6 +107,24 @@ pub fn at(name: &str, ns: u64) {
 }
 pub fn teardown(stage: usize) {
     if let Some(trace) = configured_trace() { trace.teardown_mark(stage); }
+}
+
+/// CPU time, including synchronous kernel work, retained without printing.
+pub struct CpuCost { slot: usize, begin: u64 }
+fn cpu_ns() -> u64 {
+    let mut time = libbreenix::Timespec::new();
+    libbreenix::time::clock_gettime(2, &mut time).map_or(0, |()| time.as_nanos() as u64)
+}
+impl CpuCost {
+    pub fn begin(slot: usize) -> Self { Self { slot, begin: cpu_ns() } }
+}
+impl Drop for CpuCost {
+    fn drop(&mut self) {
+        if let Some(trace) = configured_trace() {
+            trace.cpu_add(self.slot, cpu_ns().saturating_sub(self.begin));
+            if self.slot == 0 { trace.cpu_add(4, 1); }
+        }
+    }
 }
 
 /// One bounded line in catalog order, including 0 for an unreached phase.
