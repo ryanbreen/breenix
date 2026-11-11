@@ -70,6 +70,55 @@ class SelectedDesktopAcceptance(unittest.TestCase):
         (self.path / 'native-final-upload.json').unlink()
         self.assertEqual(apps.API['record_apps_capture'](self.path, apps.SHA, 5), 1)
 
+    def test_gui_child_publishes_final_panel_before_exit(self):
+        source = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
+        start = source.index('        let ms = ms_since(suite_start);')
+        end = source.index('        // A one-case boot stops here', start)
+        rust = r"""
+use std::sync::Mutex;
+static EVENTS: Mutex<Vec<&str>> = Mutex::new(Vec::new());
+fn event(s: &'static str) { EVENTS.lock().unwrap().push(s); }
+fn emit(s: &str) { if s.contains("ELAPSED") { event("elapsed"); } }
+fn ms_since(_: ()) -> u64 { 1 }
+fn evidence_scanout() {}
+fn evidence_transfer() {}
+mod process { pub fn exit(code: i32) -> ! { assert_eq!(code, 0); crate::event("exit"); panic!("exit") } }
+mod sequence { pub fn finish() { panic!("not in a sequence") } }
+struct Counts { failed: usize }
+struct Feed;
+impl Feed { fn finish(&mut self, _: String) {} }
+struct Screen { gui: bool }
+impl Screen {
+ fn open(_: bool, _: bool) -> Self { Self { gui: false } }
+ fn draw(&mut self, _: &Suite, _: &str, _: &str, _: &(), _: (), _: &Feed, _: Option<&str>) { event("draw"); }
+}
+struct Upload;
+impl Upload { fn capture<A,B>(&mut self, label: &str, _: A, _: B) -> String {
+ assert_eq!(label, "suite-final-panel"); event("upload"); String::new()
+} }
+struct Suite { id: &'static str, defer_display: bool }
+impl Suite {
+ fn finish(&self) {
+  let suite_start = (); let counts = Counts { failed: 0 }; let reclaimed = true;
+  let scoped = true; let place: Option<()> = None;
+  let mut feed = Feed; let mut screen = Screen { gui: false }; let mut evidence = Some(Upload);
+  let (title, subtitle, states, verdict, only) = ("title", "selected", (), (), Some("guskit"));
+  let finalize = || event("finalize");
+  BODY
+ }
+}
+#[test] fn publishes_before_exit() {
+ let _ = std::panic::catch_unwind(|| Suite { id: "gui-apps", defer_display: true }.finish());
+ assert_eq!(*EVENTS.lock().unwrap(), ["elapsed", "finalize", "draw", "upload", "exit"]);
+}
+""".replace('BODY', source[start:end])
+        with tempfile.TemporaryDirectory() as tmp:
+            p = Path(tmp)
+            (p / 'publication.rs').write_text(rust)
+            subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings', '--test',
+                            str(p / 'publication.rs'), '-o', str(p / 'publication')], check=True)
+            subprocess.run([str(p / 'publication')], check=True)
+
     def test_gui_subreaper_records_memory_for_selected_children(self):
         source = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
         expression = source.split('let recording = ', 1)[1].split(';', 1)[0]
