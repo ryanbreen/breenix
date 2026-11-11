@@ -155,6 +155,13 @@ pub fn launch_each() -> CaseResult {
                 v["rows"][selected]["name"] == name)?;
             t.key_exit(28, 0)?;
             t.attach(title)?;
+            if name == "System Check" {
+                // Opening bcheck starts its runner. Observe the result before
+                // closing, since a close during a check truthfully cancels it.
+                t.wait_node("rows", |v| v["rows"].as_array().is_some_and(|rows|
+                    !rows.is_empty() && rows.iter().all(|row|
+                        row["state"] == "done" && row["verdict"] == "pass")))?;
+            }
             match outcome {
                 "exit" => t.expect_text("[exited 0]")?,
                 "shell" => t.expect_text("bsh />")?,
