@@ -937,7 +937,7 @@ fn main() {
                 eprintln!("[bwm] compositor tree publication failed: {}", error);
             }
         }
-        defer_checks_after_activity(&mut windows, monotonic_ms().unwrap_or(0), gpu.validation_delay_ms(), input_ready || scene_changed);
+        defer_checks_after_activity(&mut windows, monotonic_ms().unwrap_or(0), gpu.validation_delay_ms(), input_ready);
         if !full_redraw && !content_dirty && !windows_dirty && !clock_dirty && !display_lost && !frame_failed {
             let mut ack = clock.acknowledgment(claim_epoch);
             ack.handled_serial = input::handled_serial();
