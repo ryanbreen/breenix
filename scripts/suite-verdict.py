@@ -20,7 +20,7 @@ The memory record (docs/suites/README.md, "Memory record") of a full run is one
 allowance=` line whose figures are those two lines' free counts and whose allowance
 equals MEMORY_RECLAIM_ALLOWANCE_PAGES read from libs/libbreenix/src/suite_memory.rs. reclaimed=FAIL,
 or a reclaimed verdict its own figures contradict, fails the suite like a failing
-case. A one-case run (`only`) has no memory record.
+case. Selected runs (`only`) may omit memory; when present, the same memory checks apply.
 
 A manifest with diskChecks also requires --disk: debugfs reads the stopped
 VM image directly and compares the persisted bytes, bypassing the guest cache.
@@ -50,7 +50,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 # The records a case prints while it runs, which do not count.
 RESULT = ("FRAME", "TREE", "INPUT", "COLLECT")
-LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY", "HOSTPOINTER", "HOSTSSH", "SMBRESTART", "SCREEN", "SCREENPERTURB", "EVIDENCE") + RESULT
+LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY", "HOSTPOINTER", "HOSTSSH", "SMBRESTART", "SMBSTOP", "SMBSTART", "SCREEN", "SCREENPERTURB", "EVIDENCE") + RESULT
 # The runner's memory record, around the cases.
 MEMORY = ("MEMORY", "RECLAIMED")
 
@@ -231,6 +231,9 @@ def result_problem(manifest, records, cases):
                     or match['path'] != '/var/uitest/ui-testing/' + case):
                 return "UI bundle record binding, size or slot limit differs"
             bundles.add(case)
+        elif kind in ("SMBSTOP", "SMBSTART"):
+            if not started or done or index >= len(cases) or match.group(1) != cases[index]:
+                return f"a {kind} record is not bound to the running case"
         elif kind in RESULT:
             if not started or done or index >= len(cases) or match.group(1) != cases[index]:
                 return f"a {kind} record is not bound to the running case"
@@ -323,6 +326,10 @@ def verdict(manifest, records_log, logs, only=None, categories=None, disk=None):
         "MEMORY": re.compile(rf"^SUITE {suite} MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+$"),
         "RECLAIMED": re.compile(rf"^SUITE {suite} MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)$"),
     }
+    if suite == "gui-apps":
+        for action in ("SMBSTOP", "SMBSTART"):
+            shapes[action] = re.compile(
+                rf"^SUITE gui-apps {action} (guskit/smb-share-gone) seq=[0-9]{{1,20}}$")
     if suite == "network-shares":
         shapes['SMBRESTART'] = re.compile(
             r"^SUITE network-shares SMBRESTART (smb/server-restart) seq=[0-9]{1,20}$")
@@ -375,7 +382,7 @@ def verdict(manifest, records_log, logs, only=None, categories=None, disk=None):
     done = [i for i, (kind, _, _) in enumerate(records) if kind == "DONE"]
     if elapsed and (len(elapsed) != 1 or len(done) != 1 or elapsed[0] <= done[0]):
         return False, "ELAPSED needs one record after DONE"
-    memory = None if only else memory_problem(records)
+    memory = memory_problem(records) if not only or any(k in MEMORY for k, _, _ in records) else None
     records = [record for record in records if record[0] not in LIVE + MEMORY + ("ELAPSED",)]
     if not records:
         return False, "the records do not begin with exactly one START line"

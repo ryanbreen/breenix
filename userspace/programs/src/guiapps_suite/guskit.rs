@@ -227,11 +227,11 @@ fn require_shares(case: &str) -> Result<(), String> {
         .ok_or("missing shares service record")?;
     let mounts = std::fs::read_to_string("/proc/mounts").map_err(|e| e.to_string())?;
     let mut output = SMB_RESTART_OUTPUT.get().ok_or("missing SMB diagnostic output")?;
-    writeln!(output, "SUITE gui-apps DIAG guskit/{case} {service}").map_err(|e| e.to_string())?;
+    writeln!(output, "GUSKIT_SMB_EVIDENCE guskit/{case} {service}").map_err(|e| e.to_string())?;
     for mount in ["/mnt/guskit-rw", "/mnt/guskit-ro"] {
         let line = mounts.lines().find(|line| line.split_whitespace().nth(1) == Some(mount))
             .ok_or_else(|| format!("missing mount {mount}"))?;
-        writeln!(output, "SUITE gui-apps DIAG guskit/{case} mount {line}").map_err(|e| e.to_string())?;
+        writeln!(output, "GUSKIT_SMB_EVIDENCE guskit/{case} mount {line}").map_err(|e| e.to_string())?;
     }
     Ok(())
 }

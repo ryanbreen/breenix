@@ -50,7 +50,7 @@ class SelectedDesktopAcceptance(unittest.TestCase):
         for bad in (text.replace('seq=1', 'seq=-1'),
                     text.replace('SMBSTOP guskit/smb-share-gone', 'SMBSTOP guskit/pencil'),
                     text.replace('reclaimed=PASS', 'reclaimed=FAIL'),
-                    text.replace('CASE guskit/pencil PASS ms=1\n', '')):
+                    text.replace('SUITE gui-apps CASE guskit/pencil PASS ms=1\n', '')):
             self.assertFalse(score(bad)[0])
 
     def test_step_five_scores_selected_capture_without_full_suite_eligibility(self):
@@ -63,7 +63,7 @@ class SelectedDesktopAcceptance(unittest.TestCase):
         with self.assertRaises(ValueError):
             apps.API['resources_identity'](self.boot, 'gui-apps', apps.SHA)
         for bad in (text.replace('reclaimed=PASS', 'reclaimed=FAIL'),
-                    text.replace('CASE guskit/pencil PASS ms=1\n', '')):
+                    text.replace('SUITE gui-apps CASE guskit/pencil PASS ms=1\n', '')):
             (self.path / 'serial.txt').write_text(bad)
             self.assertEqual(apps.API['record_apps_capture'](self.path, apps.SHA, 5), 1)
         (self.path / 'serial.txt').write_text(text)

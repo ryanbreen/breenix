@@ -18,7 +18,7 @@
 //! scored) as the cases run. When every case has run it leaves the final panel up and
 //! idles: a suite runs as PID 1 and never exits.
 //!
-//! A full run booted as PID 1 also prints its memory record ([`memory_record`]):
+//! A full run booted as PID 1, or a GUI subreaper, also prints its memory record ([`memory_record`]):
 //! `SUITE <id> MEMORY before ...` before its first case, and once DONE is out and
 //! its processes are reaped, `SUITE <id> MEMORY after ...` and
 //! `SUITE <id> MEMORY reclaimed=PASS|FAIL ...`. A suite whose memory was not
@@ -1244,9 +1244,9 @@ impl Suite {
             screen.draw(self, &title, &subtitle, &states, Verdict::Failed(message), &feed, only);
             idle(&mut screen, &feed);
         }
-        // A full run as PID 1 keeps the memory record; a one-case run is not
-        // full-suite evidence, and a suite run from a shell does not reap others.
-        let recording = only.is_none() && process::getpid().is_ok_and(|pid| pid.raw() == 1);
+        // GUI subreapers own and reap their descendants even for a selection.
+        // Their memory record measures that scope, without claiming a full run.
+        let recording = scoped || only.is_none() && process::getpid().is_ok_and(|pid| pid.raw() == 1);
         screen.prepare();
         // Count the text renderer's persistent font tables and presentation state
         // in both memory samples, just as the GPU and GUI views warm before sampling.
@@ -1368,7 +1368,7 @@ impl Suite {
         if screen.gui { feed = Feed::default(); }
         let reclaimed = !recording || {
             // Each case's processes were swept after it; any left since go now.
-            let _ = sweep();
+            let _ = sweep_for_role(self.gui);
             let retired = if screen.gui {
                 crate::suite_stage::memory_owners("finale");
                 let result = crate::suite_stage::retire();
