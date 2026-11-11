@@ -26,7 +26,7 @@ SMB_CONFIG_PATH = Path('/etc/breenix-metal/smb-test.json')
 
 def smb_gui_selection(mode, suite, case=None):
     """Gus Kit uses init's boot-mounted shares, including when selected by case."""
-    return (mode == 'suite' and 'gui-apps' in (suite or '').split(',')
+    return (mode == 'suite' and suite == 'gui-apps'
             and (case is None or case.split('/')[0] == 'guskit'))
 
 

@@ -300,19 +300,37 @@ fn directory_names(path: &str) -> Result<Vec<std::ffi::OsString>, String> {
 pub fn smb_save_fails_cleanly() -> CaseResult {
     require_shares("smb-save-fails-cleanly")?;
     const FILE: &str = "/mnt/guskit-ro/drawing.png";
-    let names = directory_names("/mnt/guskit-ro")?;
+    const SHA256: &str = "471226f2710862db5b66577c43497117c6011f58ee90b3449d9d5f31ad69bc93";
+    let names = vec![std::ffi::OsString::from("README.txt"), std::ffi::OsString::from("drawing.png")];
+    if directory_names("/mnt/guskit-ro")? != names { return Err("unexpected read-only fixture listing".into()); }
+    let hash = |bytes: &[u8]| -> String {
+        libbreenix::crypto::sha256::sha256(bytes).iter().map(|b| format!("{b:02x}")).collect()
+    };
     let before = std::fs::read(FILE).map_err(|e| e.to_string())?;
+    if before.len() != 93 || hash(&before) != SHA256 { return Err("unexpected read-only drawing bytes".into()); }
     let mut t = App::launch(&[b"/usr/bin/guskit", b"--canvas", b"200x120", FILE.as_bytes()], "Gus Kit")?;
     t.wait_node("status", |v| v["file"] == FILE && v["dirty"] == false && v["message"] == "")?;
-    expect(&mut t, &Expected::white())?;
+    // The fixture is a 16x16 blue/white checkerboard, copied onto the white canvas.
+    let mut image = Expected::white();
+    for y in 0..16 {
+        for x in 0..16 {
+            if (x / 4 + y / 4) % 2 == 0 { image.colored_horizontal(x, x, y, [0x1e, 0x6f, 0xd9]); }
+        }
+    }
+    expect(&mut t, &image)?;
     stroke(&mut t, 10)?;
-    let mut image = Expected::white(); image.horizontal(10, 40, 10);
+    image.horizontal(10, 40, 10);
     expect(&mut t, &image)?;
     t.key(31, &[Modifier::Ctrl])?;
-    t.wait_node("status", |v| v["dirty"] == true && v["message"].as_str().is_some_and(|s| !s.is_empty() && s != "Saved"))?;
+    t.wait_node("status", |v| v["file"] == FILE && v["dirty"] == true && v["message"].as_str().is_some_and(|s| !s.is_empty() && s != "Saved"))?;
     expect(&mut t, &image)?;
     if directory_names("/mnt/guskit-ro")? != names { return Err("read-only save changed directory entries".into()); }
-    if std::fs::read(FILE).map_err(|e| e.to_string())? != before { return Err("read-only save changed the overwritten drawing".into()); }
+    let after = std::fs::read(FILE).map_err(|e| e.to_string())?;
+    if hash(&after) != SHA256 || after != before { return Err("read-only save changed the overwritten drawing".into()); }
+    use std::io::Write;
+    let mut output = SMB_RESTART_OUTPUT.get().ok_or("missing SMB diagnostic output")?;
+    writeln!(output, "GUSKIT_SMB_EVIDENCE guskit/smb-save-fails-cleanly bytes={} sha256={SHA256} listing=README.txt,drawing.png", after.len())
+        .map_err(|e| e.to_string())?;
     Ok(t.finish()?)
 }
 
