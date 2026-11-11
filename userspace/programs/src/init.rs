@@ -381,15 +381,27 @@ fn run_desktop_suite(pid: u64, path: &str, args: Vec<String>) -> ! {
     loop {
         let waited_ms = start.elapsed().as_millis() as u64;
         let shares = supervisor.service_state("shares");
-        if desktop_suite_ready(pid, true, shares, waited_ms) {
+        // Keep the production time service, but finish its one initial step before
+        // cases take their realtime baseline. ntp-state is published after the step;
+        // ntp-stepped alone is not a barrier (it is written before clock_settime).
+        let clock_ready = supervisor.service_state("ntp").is_none()
+            || std::fs::read_to_string("/run/breenix/ntp-state").ok()
+                .and_then(|state| state.split_whitespace().next()?.parse::<u64>().ok())
+                .is_some_and(|syncs| syncs > 0);
+        if !clock_ready && waited_ms >= 30_000 {
+            print!("SUITE gui-apps ERROR initial clock synchronization incomplete waited_ms={}\n", waited_ms);
+            supervisor.poweroff();
+            supervisor.run()
+        }
+        if clock_ready && desktop_suite_ready(pid, true, shares, waited_ms) {
             print!("[init] shares startup state={} waited_ms={}{}\n", shares.unwrap_or("missing"),
                 waited_ms, if waited_ms >= 30_000 { " deadline expired; launching suite" } else { "" });
             break;
         }
         let second = waited_ms / 1000;
         if reported_second != Some(second) {
-            print!("[init] waiting for shares state={} waited_ms={} deadline_ms=30000\n",
-                shares.unwrap_or("missing"), waited_ms);
+            print!("[init] waiting for desktop services shares={} clock_ready={} waited_ms={} deadline_ms=30000\n",
+                shares.unwrap_or("missing"), clock_ready, waited_ms);
             reported_second = Some(second);
         }
         supervisor.tick();

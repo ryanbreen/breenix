@@ -70,6 +70,9 @@ fn reconcile_machine_state() { event("state"); }
 fn run_boot_script() { event("script"); }
 fn finish_boot_checks() { event("finish"); }
 mod std {
+ pub mod fs {
+  pub fn read_to_string(_: &str) -> Result<String, String> { Ok("1 0 0 site\n".into()) }
+ }
  pub mod time {
   pub struct Instant(u64);
   impl Instant {
@@ -112,6 +115,7 @@ mod init_services {
             crate::event("tick");
         }
         pub fn service_state(&self, name: &str) -> Option<&str> {
+            if name == "ntp" { return None; }
             assert_eq!(name, "shares"); Some(if self.ticks < 2 || crate::STALLED.load(::std::sync::atomic::Ordering::Relaxed) { "running" } else { "done" })
         }
         pub fn tick_child(&mut self, pid: Option<i32>) -> Option<i32> {
