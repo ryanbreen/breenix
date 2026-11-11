@@ -406,12 +406,36 @@ impl Screen {
     }
 }
 
+struct StartupTrace(std::path::PathBuf);
+impl StartupTrace {
+    fn new() -> Result<Self, String> {
+        let path = std::path::PathBuf::from(format!("/tmp/wm-startup-{}", libuitest::startup::now()));
+        std::fs::create_dir(&path).map_err(|e| format!("startup trace directory: {e}"))?;
+        Ok(Self(path))
+    }
+    fn failure(&self) {
+        let Ok(entries) = std::fs::read_dir(&self.0) else { return };
+        for entry in entries.flatten() {
+            let Ok(trace) = libuitest::startup::Trace::open(&entry.path()) else { continue };
+            let phases = trace.snapshot();
+            let begin = phases.iter().filter(|(_, ns)| *ns != 0).map(|(_, ns)| *ns).min().unwrap_or(0);
+            for (phase, ns) in phases.into_iter().filter(|(_, ns)| *ns != 0) {
+                failure_diagnostic("startup", &format!("pid={} phase={phase} ns={ns} elapsed_us={}", entry.file_name().to_string_lossy(), ns.saturating_sub(begin) / 1000));
+            }
+        }
+    }
+}
+impl Drop for StartupTrace {
+    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+}
+
 pub struct Desktop {
     pub wm: Child,
     log: File,
     pub width: u32,
     pub height: u32,
     pub scale: i32,
+    startup: StartupTrace,
 }
 
 // Retain the last observation without printing or formatting on a successful poll.
@@ -468,7 +492,10 @@ impl Desktop {
     pub fn launch(supervised: bool) -> Result<Self, String> {
         let previous_context = Screen::read().map_or(0, |s| quad(&s.record, 64));
         graphics::take_over_display().map_err(|e| format!("session display: {e}"))?;
+        let startup = StartupTrace::new()?;
         let (r, w) = io::pipe2(io::status_flags::O_NONBLOCK).map_err(|e| e.to_string())?;
+        let previous_trace = std::env::var_os("BREENIX_STARTUP_TRACE_DIR");
+        std::env::set_var("BREENIX_STARTUP_TRACE_DIR", &startup.0);
         let pid = if supervised {
             spawn(
                 &[(w, Fd::STDOUT), (w, Fd::STDERR)],
@@ -480,6 +507,10 @@ impl Desktop {
                 Run::Exec(b"/usr/bin/bwm\0", &[b"bwm\0"]),
             )
         };
+        match previous_trace {
+            Some(value) => std::env::set_var("BREENIX_STARTUP_TRACE_DIR", value),
+            None => std::env::remove_var("BREENIX_STARTUP_TRACE_DIR"),
+        }
         let _ = io::close(w);
         let pid = match pid {
             Ok(p) => p,
@@ -497,6 +528,7 @@ impl Desktop {
             width: mode.width,
             height: mode.height,
             scale: mode.scale as i32,
+            startup,
         };
         let mut observation = WaitObservation::default();
         let ready = until(4000, "bwm first completed desktop", || {
@@ -513,6 +545,7 @@ impl Desktop {
             }))
         });
         ready.map_err(|e| {
+            d.startup.failure();
             let detail = format!("previous context={previous_context}; {}; {}", observation.failure(), d.output());
             failure_diagnostic("ready", &format!("{e}; {detail}"));
             format!("{e}; {detail}")
@@ -585,6 +618,7 @@ impl Desktop {
                     failure_diagnostic("kernel-readback", line);
                 }
             }
+            self.startup.failure();
             failure_diagnostic("shown", &format!("{e}; {detail}"));
             format!("{e}; {detail}")
         })?;
