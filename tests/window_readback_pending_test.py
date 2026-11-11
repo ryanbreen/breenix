@@ -10,6 +10,7 @@ class PendingReadback(unittest.TestCase):
   run_rust(self,r'''
 use std::sync::{Mutex,atomic::{AtomicUsize,Ordering}};
 const EPERM:i32=1;const EINVAL:i32=22;const EAGAIN:i32=11;
+mod breengel_abi{pub mod errno{pub const EAGAIN:i32=crate::EAGAIN;}}
 static GPU_CALLS:AtomicUsize=AtomicUsize::new(0);static OUTPUTS:AtomicUsize=AtomicUsize::new(0);
 #[derive(Clone,Copy)]struct Held{first_serial:u64}
 struct Present{serial:u64,busy:bool}

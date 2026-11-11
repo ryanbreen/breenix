@@ -270,6 +270,14 @@ fn readback(caller: &Caller, arg: u64, rb: &mut Readback) -> Result<u64, i32> {
     {
         return Err(EINVAL);
     }
+    {
+        let reg = REGISTRY.lock();
+        // A new claimant or an in-flight composite has no completed result yet
+        // (§20.1). Refuse before pinning startup scanout and delaying its producer.
+        if reg.present.busy || reg.claim.is_some_and(|claim| reg.present.serial == claim.first_serial) {
+            return Err(breengel_abi::errno::EAGAIN);
+        }
+    }
     match crate::gpu::observe_scanout(rb.dst, rb.dst_len, rb.record) {
         Ok(serial) => {
             rb.serial = serial;
