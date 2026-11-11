@@ -199,7 +199,7 @@ fn kernel_fixed_ranges(ram_base_offset: u64) -> impl Iterator<Item = PhysRange> 
 
 /// Read QEMU's device tree from the start of RAM.
 #[cfg(target_arch = "aarch64")]
-fn frame_pool_from_qemu_dtb() -> Result<RangeSet, FdtError> {
+fn qemu_dtb() -> Result<&'static [u8], FdtError> {
     use crate::arch_impl::aarch64::constants::HHDM_BASE;
     let base = (HHDM_BASE + QEMU_DTB_PHYS) as *const u8;
     // SAFETY: the boot page tables map the first 2 MiB block of RAM. QEMU
@@ -211,7 +211,13 @@ fn frame_pool_from_qemu_dtb() -> Result<RangeSet, FdtError> {
         return Err(FdtError::Truncated);
     }
     // SAFETY: as above; `size` lies inside the mapped block.
-    let blob = unsafe { core::slice::from_raw_parts(base, size) };
+    Ok(unsafe { core::slice::from_raw_parts(base, size) })
+}
+
+#[cfg(target_arch = "aarch64")]
+fn frame_pool_from_qemu_dtb() -> Result<RangeSet, FdtError> {
+    use crate::arch_impl::aarch64::constants::HHDM_BASE;
+    let blob = qemu_dtb()?;
     // The native legacy VirGL buffers need the larger heap. QEMU's GPU core
     // uses frames instead, so its unused heap tail stays in the frame pool.
     let heap = crate::memory::heap::HEAP_START - HHDM_BASE;
@@ -473,20 +479,26 @@ pub fn pci_ecam_base() -> u64 {
 
 /// Configure PCI ECAM for QEMU virt machine.
 ///
-/// QEMU's `virt` machine places the PCI ECAM at physical 0x40_10000000
-/// (from the device tree: `pcie@10000000 { reg = <0x40 0x10000000 ...> }`).
-/// The MMIO window for BARs is at 0x10000000 (within L1[0] device region).
-/// Bus range is 0-255.
+/// Read ECAM from the device tree: `virt` can place it above 4 GiB or in the
+/// low device window, depending on the machine's high-memory settings.
+/// BARs use an advertised identity-mapped 32-bit MMIO window.
 ///
 /// Called from kernel_main when hw_config_ptr == 0 (QEMU boot, not Parallels).
 #[cfg(target_arch = "aarch64")]
 pub fn init_qemu_pci() {
-    // QEMU virt PCI ECAM: physical 0x40_10000000, size 0x10000000 (256 MB)
-    PCI_ECAM_BASE.store(0x40_10000000, Ordering::Relaxed);
-    PCI_ECAM_SIZE.store(0x10000000, Ordering::Relaxed);
-    // MMIO window: 0x10000000 - 0x3efeffff
-    PCI_MMIO_BASE.store(0x10000000, Ordering::Relaxed);
-    PCI_MMIO_SIZE.store(0x2eff0000, Ordering::Relaxed);
+    let Ok(blob) = qemu_dtb() else {
+        return;
+    };
+    let (ecam_base, ecam_size, mmio_base, mmio_size) = match fdt::pci_host(blob) {
+        Ok(Some(host)) => (host.ecam.start, host.ecam.len(), host.mmio.start, host.mmio.len()),
+        // Legacy layout only when a valid tree has no PCI host node.
+        Ok(None) => (0x40_10000000, 0x10000000, 0x10000000, 0x2eff0000),
+        Err(_) => return,
+    };
+    PCI_ECAM_BASE.store(ecam_base, Ordering::Relaxed);
+    PCI_ECAM_SIZE.store(ecam_size, Ordering::Relaxed);
+    PCI_MMIO_BASE.store(mmio_base, Ordering::Relaxed);
+    PCI_MMIO_SIZE.store(mmio_size, Ordering::Relaxed);
     // Bus range 0-1 (QEMU virt only uses bus 0; limit to avoid slow ECAM scans)
     PCI_BUS_START.store(0, Ordering::Relaxed);
     PCI_BUS_END.store(1, Ordering::Relaxed);
