@@ -1,5 +1,6 @@
 """Gus Kit selections enter PID-1 init before the GUI runner is spawned."""
 import subprocess
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -54,17 +55,31 @@ fn launch_decision() {
             subprocess.run([str(path / 'launch')], check=True)
 
     def test_init_keeps_supervising_until_the_suite_exits(self):
-        source = (ROOT / 'userspace/programs/src/init.rs').read_text()
+        rel = 'userspace/programs/src/init.rs'
+        old = os.environ.get('INIT_OLD_COMMIT')
+        source = subprocess.check_output(['git', 'show', f'{old}:{rel}'], text=True) if old else (ROOT / rel).read_text()
         functions = item(source, 'fn desktop_suite_ready(') + item(source, 'fn run_desktop_suite(')
         harness = r'''
 use ::std::sync::Mutex;
 static EVENTS: Mutex<Vec<&str>> = Mutex::new(Vec::new());
+static STALLED: ::std::sync::atomic::AtomicBool = ::std::sync::atomic::AtomicBool::new(false);
+static TICKS: ::std::sync::atomic::AtomicU64 = ::std::sync::atomic::AtomicU64::new(0);
 fn event(name: &'static str) { EVENTS.lock().unwrap().push(name); }
 fn run_boot_checks() { event("checks"); }
 fn reconcile_machine_state() { event("state"); }
 fn run_boot_script() { event("script"); }
 fn finish_boot_checks() { event("finish"); }
-mod std { pub use ::std::time; pub mod process {
+mod std {
+ pub mod time {
+  pub struct Instant(u64);
+  impl Instant {
+   pub fn now() -> Self { Self(crate::TICKS.load(::std::sync::atomic::Ordering::Relaxed) * 50) }
+   pub fn elapsed(&self) -> ::std::time::Duration {
+    ::std::time::Duration::from_millis(crate::TICKS.load(::std::sync::atomic::Ordering::Relaxed) * 50 - self.0)
+   }
+  }
+ }
+ pub mod process {
     pub struct Command;
     pub struct Child;
     impl Command {
@@ -91,9 +106,13 @@ mod init_services {
         pub fn load(_: Scope, publish: bool) -> Self {
             assert!(publish); crate::event("load"); Self { ticks: 0, watched: 0 }
         }
-        pub fn tick(&mut self) { self.ticks += 1; crate::event("tick"); }
+        pub fn tick(&mut self) {
+            self.ticks += 1; assert!(self.ticks < 605, "shares wait never ended");
+            crate::TICKS.store(self.ticks as u64, ::std::sync::atomic::Ordering::Relaxed);
+            crate::event("tick");
+        }
         pub fn service_state(&self, name: &str) -> Option<&str> {
-            assert_eq!(name, "shares"); Some(if self.ticks < 2 { "running" } else { "done" })
+            assert_eq!(name, "shares"); Some(if self.ticks < 2 || crate::STALLED.load(::std::sync::atomic::Ordering::Relaxed) { "running" } else { "done" })
         }
         pub fn tick_child(&mut self, pid: Option<i32>) -> Option<i32> {
             assert_eq!(pid, Some(9)); self.watched += 1; crate::event("supervise");
@@ -106,10 +125,26 @@ mod init_services {
 // FUNCTIONS
 #[test]
 fn desktop_child_lifecycle() {
+    STALLED.store(false, ::std::sync::atomic::Ordering::Relaxed);
+    TICKS.store(0, ::std::sync::atomic::Ordering::Relaxed);
+    EVENTS.lock().unwrap().clear();
     let _ = ::std::panic::catch_unwind(|| run_desktop_suite(1, "/sbin/suite-gui-apps",
         ["--case", "guskit", "--hostkeys", "fixture"].iter().map(|s| s.to_string()).collect()));
     assert_eq!(*EVENTS.lock().unwrap(), ["checks", "state", "script", "load", "tick", "finish",
         "tick", "spawn", "supervise", "supervise", "poweroff"]);
+}
+#[test]
+fn stalled_shares_still_launches_other_cases() {
+    STALLED.store(true, ::std::sync::atomic::Ordering::Relaxed);
+    TICKS.store(0, ::std::sync::atomic::Ordering::Relaxed);
+    EVENTS.lock().unwrap().clear();
+    let _clock = std::time::Instant::now().elapsed();
+    let _ = ::std::panic::catch_unwind(|| run_desktop_suite(1, "/sbin/suite-gui-apps",
+        ["--case", "guskit", "--hostkeys", "fixture"].iter().map(|s| s.to_string()).collect()));
+    let events = EVENTS.lock().unwrap();
+    assert!(events.contains(&"spawn"), "shares held the runner indefinitely");
+    assert!(events.contains(&"supervise"));
+    assert!(events.contains(&"poweroff"));
 }
 '''.replace('// FUNCTIONS', functions)
         with tempfile.TemporaryDirectory() as tmp:
@@ -117,7 +152,7 @@ fn desktop_child_lifecycle() {
             (path / 'lifecycle.rs').write_text(harness)
             subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings', '--test',
                             str(path / 'lifecycle.rs'), '-o', str(path / 'lifecycle')], check=True)
-            subprocess.run([str(path / 'lifecycle')], check=True)
+            subprocess.run([str(path / 'lifecycle'), '--test-threads=1'], check=True)
 
 
 if __name__ == '__main__':
