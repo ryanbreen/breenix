@@ -20,3 +20,14 @@ fn bad_lines_are_reported_and_good_lines_load() {
     assert_eq!(errors.iter().map(|error| error.line).collect::<Vec<_>>(), [4, 5, 6, 7]);
     assert!(errors.iter().all(|error| !error.message.is_empty()));
 }
+
+#[test]
+fn proc_mounts_lines_render_smb_mounts() {
+    let mounts = "disk / ext2 rw 0 0\n\
+                  //server/my\\040share /mnt/my\\040share ufs rw 0 0\n\
+                  local /mnt/local ufs rw 0 0\n";
+    assert_eq!(
+        smbfs::shares::render_proc_mounts(mounts),
+        "disk on / type ext2 (rw)\n//server/my share on /mnt/my share type smb (rw)\nlocal on /mnt/local type ufs (rw)\n"
+    );
+}
