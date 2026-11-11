@@ -795,4 +795,16 @@ mod tests {
             assert!(services.iter().any(|s| s.name == "bsshd" && s.needs == [Need::Entropy]), "{}", arch);
         }
     }
+    #[test]
+    fn shipped_tables_mount_shares_after_network() {
+        for (arch, text) in [("x86_64", include_str!("service-tables/x86_64")), ("aarch64", include_str!("service-tables/aarch64"))] {
+            let (services, problems) = parse(text);
+            assert!(problems.is_empty(), "{}: {:?}", arch, problems);
+            let shares = services.iter().find(|s| s.name == "shares").expect(arch);
+            assert_eq!(shares.command, ["/sbin/mount", "-a"]);
+            assert_eq!(shares.restart, Restart::Never);
+            assert_eq!(shares.needs, [Need::NetworkUp]);
+        }
+    }
+
 }
