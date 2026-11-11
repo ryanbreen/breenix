@@ -1,7 +1,7 @@
 //! Gus Kit drawing window.
 use breengel::{Color, Event, Handled, Surface, Window};
 use libbui::{InputState, Rect, Theme, shortcut::Shortcut, widget::menu_bar::{Menu, MenuBar, MenuEvent, MenuItem, MENU_BAR_HEIGHT}};
-use libgfx::{bitmap_font, shapes};
+use libgfx::{bitmap_font, shapes, ttf_font::{self, CachedFont}, surface::Rect as Clip};
 use libbui::widget::file_picker::{FileEntry, FilePicker, FilePickerResult};
 use std::path::{Path, PathBuf};
 
@@ -180,7 +180,16 @@ fn menu() -> MenuBar {
     ]);
     menu.layout(&Theme::dark()); menu
 }
-fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar) {
+fn draw_label(fb: &mut Surface, font: Option<&mut CachedFont>, size: f32, text: &str, x: i32, y: i32, clip: Clip) {
+    fb.push_clip(clip);
+    if let Some(font) = font {
+        ttf_font::draw_text(fb, font, text, x, y, size, Color::WHITE);
+    } else {
+        bitmap_font::draw_text(fb, text.as_bytes(), x as usize, y as usize, Color::WHITE);
+    }
+    fb.pop_clip();
+}
+fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<CachedFont>, font_size: f32) {
     // Input acknowledgments wait for this frame. Retain the hue-dependent picker
     // on the GPU so unchanged input redraws only copy its pixels.
     if app.palette.as_ref().is_none_or(|(hue, _)| *hue != app.hue) {
@@ -219,28 +228,28 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar) {
     for (i, label) in LABELS.iter().enumerate() {
         let x = 2 + i * 38;
         shapes::fill_rect(fb, x as i32, 23, 36, 16, if i == app.tool { Color::rgb(100,140,220) } else { Color::rgb(60,60,60) });
-        bitmap_font::draw_text(fb, label, x + 2, 25, Color::WHITE);
+        draw_label(fb, font.as_mut(), font_size, core::str::from_utf8(label).unwrap(), (x + 2) as i32, 25, Clip::new(x as i32, 23, 36, 16));
     }
     for (i, label) in [b"S", b"M", b"L"].iter().enumerate() {
         let x = 2 + i * 22;
         shapes::fill_rect(fb, x as i32, 41, 20, 16, if i == app.size { Color::rgb(100,140,220) } else { Color::rgb(60,60,60) });
-        bitmap_font::draw_text(fb, *label, x + 3, 42, Color::WHITE);
+        draw_label(fb, font.as_mut(), font_size, core::str::from_utf8(*label).unwrap(), (x + 3) as i32, 42, Clip::new(x as i32, 41, 20, 16));
     }
     libgfx::blit::blit(fb, &app.palette.as_ref().expect("picker rendered above").1, 0, 58);
-    bitmap_font::draw_text(fb, b"Recent:", 108, 78, Color::WHITE);
+    draw_label(fb, font.as_mut(), font_size, "Recent:", 108, 78, Clip::new(108, 76, 144, 14));
     for (i, c) in app.recent.iter().enumerate() { shapes::fill_rect(fb, 108 + i as i32 * 18, 90, 16, 16, Color::rgb(c[0], c[1], c[2])); }
     libgfx::blit::blit(fb, &app.canvas_surface.as_ref().expect("canvas rendered above").1, 0, TOP);
     menu.draw(fb, &Theme::dark());
-    if !app.status().is_empty() { bitmap_font::draw_text(fb, app.status().as_bytes(), 110, 150, Color::WHITE); }
+    if !app.status().is_empty() { draw_label(fb, font.as_mut(), font_size, app.status(), 110, 150, Clip::new(110, 150, 690, 26)); }
     if let Some(picker) = &app.picker { picker.draw(fb, &Theme::dark()); }
-    if app.confirm { shapes::fill_rect(fb, 180, 220, 440, 64, Color::rgb(30,30,30)); bitmap_font::draw_text(fb, b"Discard changes? D: discard  Esc: cancel", 190, 242, Color::WHITE); }
+    if app.confirm { shapes::fill_rect(fb, 180, 220, 440, 64, Color::rgb(30,30,30)); draw_label(fb, font.as_mut(), font_size, "Discard changes? D: discard  Esc: cancel", 190, 242, Clip::new(180, 220, 440, 64)); }
     });
 }
-fn publish(win: &mut Window, app: &App) {
+fn publish(win: &mut Window, app: &App, font_size: f32) {
     use breengel::tree::{Flag, Node, Role, Tree};
     let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
     let canvas_bounds = [0, TOP as i64, app.width as i64, app.height as i64];
-    let mut children = vec![node::canvas(canvas_bounds, app.width, app.height, app.canvas().digest()), node::status(bounds, &node::Status { tool: NAMES[app.tool], size: ["small", "medium", "large"][app.size], color: app.color(), undo: app.undo_depth(), redo: app.redo_depth(), dirty: app.dirty(), file: app.file.as_ref().and_then(|p| p.to_str()), message: app.status() })];
+    let mut children = vec![node::canvas(canvas_bounds, app.width, app.height, app.canvas().digest()), node::status(bounds, &node::Status { tool: NAMES[app.tool], size: ["small", "medium", "large"][app.size], color: app.color(), undo: app.undo_depth(), redo: app.redo_depth(), dirty: app.dirty(), file: app.file.as_ref().and_then(|p| p.to_str()), message: app.status(), font_path: win.display_path(), font_size })];
     if let Some(session)=&app.session { children.push(node::collab(bounds,&session.core.model)); }
     children.extend(node::tools(core::array::from_fn(|i| [(2 + i * 38) as i64, 23, 36, 16]), NAMES[app.tool]));
     children.push(node::hue([0,58,780,18])); children.push(node::sv([0,76,100,100]));
@@ -337,25 +346,30 @@ fn main() {
     let title=app.session.as_ref().map_or_else(||"Gus Kit".into(),|s|format!("Gus Kit ({})",s.core.model.name));
     let mut win = Window::new(title.as_bytes(), 800, 600).unwrap_or_else(|e| { eprintln!("Gus Kit: {e}"); std::process::exit(1) });
     let mut menu = menu();
+    let mut font = win.take_display_font();
+    let mut font_size = win.display_size();
     let mut redraw = true;
     loop {
         menu.set_enabled(UNDO, app.session.is_some() || app.undo_depth() > 0); menu.set_enabled(REDO, app.redo_depth() > 0);
         if redraw {
-            if let Ok(surface) = win.surface() { render(surface, &mut app, &menu); }
-            publish(&mut win, &app); let _ = win.present();
+            if let Ok(surface) = win.surface() { render(surface, &mut app, &menu, &mut font, font_size); }
+            publish(&mut win, &app, font_size); let _ = win.present();
         }
         if app.quit { break; }
         redraw = false;
         let mut pointer_motion = false;
+        let mut reload_font = false;
         let collaborating=app.session.is_some();
         let mut dispatch = |delivered: &breengel::Delivered| {
             pointer_motion |= matches!(delivered.event, Event::MouseMove { .. });
+            if matches!(delivered.event, Event::FontChanged) { reload_font = true; redraw = true; return Handled::Redraw; }
             let handled = handle(&mut app, &mut menu, delivered);
             redraw |= handled == Handled::Redraw;
             handled
         };
         let result=if collaborating { win.dispatch(&mut dispatch) } else { win.wait_dispatch(100_000_000,&mut dispatch) };
         let count=result.unwrap_or_else(|e| { eprintln!("Gus Kit dispatch: {e}"); std::process::exit(1) });
+        if reload_font { font = win.take_display_font(); font_size = win.display_size(); }
         if let Some(session)=&mut app.session {
             let status=session.core.model.status.clone();
             redraw |= session.poll(10);
