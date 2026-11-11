@@ -98,10 +98,13 @@ impl Model {
             }
             _ => {}
         }
-        let redraw = matches!(msg, Message::Apply { .. } | Message::SyncEnd);
+        let apply = match &msg { Message::Apply { op, .. } => Some(op.clone()), _ => None };
+        let replay = matches!(msg, Message::SyncEnd) || apply == Some(DrawOp::Undo);
         self.peer.receive(msg).map_err(|_| "protocol")?;
-        if redraw {
+        if replay {
             self.replay()?;
+        } else if let Some(op) = apply {
+            draw(&mut self.canvas, &op);
         }
         Ok(())
     }

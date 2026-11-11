@@ -121,3 +121,31 @@ fn undo_removes_a_whole_freehand_gesture_and_preserves_other_peers() {
         assert_eq!(host.model.canvas.pixels(),before.pixels(),"next gesture is independent");
     }
 }
+
+#[test]
+fn long_log_applies_in_place_during_live_drawing_and_late_join() {
+    let mut host=Core::host("Host",Canvas::new(800,424),800,424);
+    let storage=host.model.canvas.pixels().as_ptr();
+    let mut expected=Canvas::new(800,424);
+    for i in 0..4096 {
+        let x=(i%800) as i16;
+        let color=[(i/800) as u8,2,3];
+        host.submit(pencil(x,color));
+        expected.pencil(&[(x as i32,0),(x as i32,3)],color);
+        assert_eq!(host.model.canvas.pixels().as_ptr(),storage,"ordinary Apply must retain canvas storage");
+    }
+    let mut peer=Core::join("Guest");
+    peer.receive(1,&encode(&Message::Welcome {peer:1,width:800,height:424}).unwrap());
+    let base=Canvas::new(800,424);
+    for (i,part) in base.pixels().chunks(65531).enumerate() {
+        peer.receive(1,&encode(&Message::SyncChunk {offset:(i*65531) as u32,data:part.to_vec()}).unwrap());
+    }
+    peer.receive(1,&encode(&Message::SyncEnd).unwrap());
+    let storage=peer.model.canvas.pixels().as_ptr();
+    for batch in host.model.peer.log().chunks(128) {
+        let bytes:Vec<_>=batch.iter().flat_map(|m|encode(m).unwrap()).collect();
+        peer.receive(1,&bytes);
+        assert_eq!(peer.model.canvas.pixels().as_ptr(),storage,"late join log applies in place");
+    }
+    assert_eq!(peer.model.canvas.pixels(),expected.pixels());
+}
