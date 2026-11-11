@@ -11,7 +11,7 @@ class FontOverlap(unittest.TestCase):
         rel = 'userspace/programs/src/bwm.rs'
         old = os.environ.get('UITEST_OLD_COMMIT')
         source = subprocess.check_output(['git','show',f'{old}:{rel}'], cwd=ROOT, text=True) if old else (ROOT/rel).read_text()
-        block = source[source.index('    // The GPU core composes the desktop'):source.index('    // Paint the decorative background')]
+        block = source[source.index('    // The GPU core composes the desktop'):source.index('    let mut windows:')]
         run_rust(self, r'''
 use std::sync::{Mutex,mpsc::{channel,Sender,Receiver}};
 #[path="@PREP@"] pub mod startup_prepare;
@@ -26,12 +26,16 @@ const APPBAR_HEIGHT:usize=36;
 fn px(v:usize)->usize{v*2}
 struct Ui{scale:usize}fn ui()->Ui{Ui{scale:2}}
 fn ttf_font_size()->f32{14.0}
-struct Compositor;
+struct Surface;
+fn paint_background(_fb:&mut Surface){RESUME.lock().unwrap().take().unwrap().send(()).unwrap();}
+struct Compositor{background:Surface}
 impl Compositor{fn open(w:u32,h:u32,appbar:u32,scale:u32)->Result<Self,String>{
  assert_eq!((w,h,appbar,scale),(2560,1600,72,2));
  READY.lock().unwrap().as_ref().unwrap().recv_timeout(std::time::Duration::from_millis(250)).expect("cold font work is still serialized after GPU target creation");
- RESUME.lock().unwrap().take().unwrap().send(()).unwrap();Ok(Self)
-}}
+ Ok(Self{background:Surface})
+}
+fn paint_background(&mut self)->Result<(),String>{paint_background(&mut self.background);Ok(())}
+}
 #[derive(Debug)]struct FontConfig{display_path:String}
 impl FontConfig{fn load()->Self{Self{display_path:"/dev/null".into()}}}
 struct Font;impl Font{fn parse(_bytes:&[u8])->Result<Self,()>{Ok(Self)}}
@@ -42,13 +46,14 @@ impl CachedFont {
  fn prepare_subpixel(&mut self,texts:&[&[u8]],size:f32)->Result<(),String>{
   assert_eq!(texts,&[b"Breenix".as_slice(),b"00:00:00 ET".as_slice(),b"0123456789: ET".as_slice(),b"x-".as_slice()]);assert_eq!(size,28.0);
   STARTED.lock().unwrap().take().unwrap().send(()).unwrap();
-  HELD.lock().unwrap().as_ref().unwrap().recv_timeout(std::time::Duration::from_millis(250)).expect("target work did not overlap font preparation");
+  HELD.lock().unwrap().as_ref().unwrap().recv_timeout(std::time::Duration::from_millis(250)).expect("background preparation remained serialized after the font join");
   self.prepared=true;Ok(())
  }
 }
 #[test]fn targets_and_cold_taskbar_prepare_concurrently(){
  let(tx,rx)=channel();*STARTED.lock().unwrap()=Some(tx);*READY.lock().unwrap()=Some(rx);
  let(tx,rx)=channel();*RESUME.lock().unwrap()=Some(tx);*HELD.lock().unwrap()=Some(rx);
+ let _ = Compositor::paint_background;
  let _ = CachedFont::prepare_subpixel; let _ = ttf_font_size();
  let(screen_w,screen_h)=(2560usize,1600usize);let clock_text=*b"00:00:00 ET";
  let startup_titles:Vec<&[u8]>=Vec::new();
