@@ -790,6 +790,12 @@ impl SharesFixture {
     }
 }
 fn shares_boot_mount() -> CaseResult {
+    let state = io(fs::read_to_string(libbreenix::services::STATE))?;
+    let (_, statuses) = libbreenix::services::parse_state(&state)?;
+    let shares = statuses.iter().find(|service| service.name == "shares")
+        .ok_or("init did not report the shares service")?;
+    check(shares.state == "done" && shares.starts == 1 && shares.last_exit == "code:0",
+        &format!("shares service did not complete once at boot: {shares:?}"))?;
     let mut fixture = SharesFixture::start()?;
     fixture.unmount()
 }
