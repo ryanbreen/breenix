@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Push a built desktop to a Mac; run under deploy-lock.sh run breenix-gus-mac."""
 import json
+from datetime import datetime, timezone
+import re
 import os
 from pathlib import Path, PurePosixPath
 import shlex
@@ -29,9 +31,13 @@ else: print(file_hash(p))
 
 
 def main():
-    if len(sys.argv) != 2 or sys.argv[1].startswith('-'):
-        sys.exit('usage: deploy-mac.sh HOST')
-    host = sys.argv[1]
+    args = sys.argv[1:]
+    push_only = '--push-only' in args
+    if push_only:
+        args.remove('--push-only')
+    if len(args) != 1 or args[0].startswith('-') or '/' in args[0] or args[0] in ('.', '..'):
+        sys.exit('usage: deploy-mac.sh [--push-only] HOST')
+    host = args[0]
     os.chdir(ROOT)
     if subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=normal']):
         sys.exit('deploy-mac: dirty tree')
@@ -83,6 +89,33 @@ def main():
     writer = "import pathlib,sys; p=pathlib.Path.home()/'breenix.incoming'; (p/'.deployed-commit').write_text(sys.argv[1]+'\\n'); (p/'.deployed-artifacts.json').write_text(sys.stdin.read())"
     ssh('python3 -c ' + shlex.quote(writer) + ' ' + shlex.quote(commit), input=data, text=True)
     ssh('rm -rf "$HOME/breenix.prev" && if [ -e "$HOME/breenix" ]; then mv "$HOME/breenix" "$HOME/breenix.prev"; fi && mv "$HOME/breenix.incoming" "$HOME/breenix"')
+    if push_only:
+        return
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')
+    evidence = Path.home() / 'Library/Caches/breenix/deploy-mac' / host / stamp
+    evidence.mkdir(parents=True)
+    print(f'deploy-mac: evidence: {evidence}', flush=True)
+    remote_dir = f'~/breenix-boots/{stamp}'
+    command = ('cd "$HOME/breenix" && scripts/boot-interactive.sh --mode desktop --gpu-gl '
+               '--no-build --no-display --until-desktop-ready --serial-log '
+               + shell_path(remote_dir + '/serial.txt'))
+    boot = subprocess.run(['ssh', '-T', host, command], stdin=subprocess.DEVNULL)
+    copied = True
+    for name in ('serial.txt', 'host-renderer.json'):
+        result = subprocess.run(['rsync', '-a', host + ':' + remote_dir + '/' + name,
+                                 str(evidence / name)])
+        copied = copied and result.returncode == 0
+    marker = subprocess.run(['ssh', '-T', host, 'cat "$HOME/breenix/.deployed-commit"'],
+                            stdin=subprocess.DEVNULL, text=True, capture_output=True)
+    if not copied:
+        raise ValueError('could not copy boot evidence')
+    judgment = subprocess.run(['python3', str(ROOT / 'scripts/check-host-renderer.py'),
+                               str(evidence / 'host-renderer.json'), '--serial', str(evidence / 'serial.txt')])
+    lines = re.findall(r'^==> Commit: (.*)$', (evidence / 'serial.txt').read_text(errors='replace'), re.MULTILINE)
+    if marker.returncode or marker.stdout.strip() != commit or lines != [commit + ' deployed=1']:
+        raise ValueError('boot commit does not match .deployed-commit')
+    if boot.returncode or judgment.returncode:
+        raise ValueError(f'boot exit {boot.returncode}, local renderer judgment exit {judgment.returncode}')
 
 
 if __name__ == '__main__':

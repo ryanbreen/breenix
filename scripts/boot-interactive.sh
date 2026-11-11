@@ -539,6 +539,7 @@ set -e
 [ -z "$HOSTKEYS_SOCKET" ] || rm -f "$HOSTKEYS_SOCKET"
 echo
 echo "==> VM stopped (exit $code)"
+printf '\n==> Commit: %s\n' "$COMMIT_IDENTITY" >> "$SERIAL_LOG"
 if [ "$GPU_GL" -eq 1 ]; then
     [ -z "${SPICE_SOCKET:-}" ] || rm -f "$SPICE_SOCKET"
     if ! python3 "$ROOT/scripts/check-host-renderer.py" "$BREENIX_HOST_RENDERER_JSON" --serial "$SERIAL_LOG"; then
