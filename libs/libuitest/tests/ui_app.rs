@@ -88,3 +88,16 @@ fn drag_start_must_be_inside_visible_node_bounds() {
     node.flags.clear();
     assert!(app::drag_start(&node, (0, 0)).is_err());
 }
+
+#[test]
+fn hover_resolves_visible_node_local_points() {
+    use libbui::tree::{Flag, Node, Role};
+    let mut node = Node { key: "icon".into(), parent: None, role: Role::Button,
+        name: String::new(), value: serde_json::Value::Null, bounds: [10, 20, 8, 6],
+        clip: [12, 21, 5, 4], flags: vec![Flag::Visible] };
+    assert_eq!(app::drag_start(&node, (2, 1)).unwrap(), (12, 21));
+    assert!(app::drag_start(&node, (1, 1)).is_err());
+    assert!(app::drag_start(&node, (8, 1)).is_err());
+    node.flags.clear();
+    assert!(app::drag_start(&node, (2, 1)).is_err());
+}

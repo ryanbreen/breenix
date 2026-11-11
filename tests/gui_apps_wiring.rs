@@ -3,7 +3,7 @@ fn gui_apps_cases_have_sessions_and_no_placeholder() {
     let source = include_str!("../userspace/programs/src/suite_gui_apps.rs");
     let cases: Vec<_> = source.lines().filter(|line| line.trim_start().starts_with("case(")).collect();
     // #2880 corrected the base to 55; collaboration adds six cases.
-    assert_eq!(cases.len(), 61);
+    assert_eq!(cases.len(), 67);
     for case in cases {
         assert!(case.contains(".session(libuitest::supervisor::serve)"), "missing session: {case}");
         assert!(!case.contains("pending::"), "placeholder: {case}");
@@ -118,4 +118,49 @@ fn guskit_uses_window_dispatch_and_publishes_tree() {
         assert!(!source.contains(forbidden), "unexpected {forbidden}");
     }
     assert!(include_str!("../userspace/programs/build.sh").contains("guskit"));
+}
+
+#[test]
+fn bounce_uses_animation_dispatch_and_publishes_status() {
+    let source = include_str!("../userspace/programs/src/bounce.rs");
+    for forbidden in ["poll_events", "clock_monotonic", "libbreenix::graphics", "fb_mmap"] {
+        assert!(!source.contains(forbidden), "unexpected {forbidden}");
+    }
+    for required in ["Event::CloseRequested", "win.set_animating(true)", "win.wait_dispatch(", "win.set_tree("] {
+        assert!(source.contains(required), "missing {required}");
+    }
+}
+
+#[test]
+fn demos_use_window_animation_and_status() {
+    for name in ["particles", "confetti", "demo", "rectangles", "biconkit"] {
+        let source = std::fs::read_to_string(format!("userspace/programs/src/{name}.rs")).expect("demo source");
+        for forbidden in ["poll_events", "libbreenix::graphics", "libgfx_ref", "fb_mmap", "mouse_pos", "clock_monotonic", "now_monotonic"] {
+            assert!(!source.contains(forbidden), "{name}: unexpected {forbidden}");
+        }
+        for required in ["Window::new_without_fonts", "Event::CloseRequested", "Event::AnimationTick", "win.set_animating(true)", "win.wait_dispatch(", "win.surface()", "win.set_tree(", "Event::ResizeRequested"] {
+            assert!(source.contains(required), "{name}: missing {required}");
+        }
+    }
+}
+
+#[test]
+fn app_hover_uses_visible_point_without_button() {
+    let source = include_str!("../libs/libuitest/src/app.rs");
+    let hover = source.split("pub fn hover(").nth(1).expect("hover helper")
+        .split("pub fn ").next().unwrap();
+    assert!(hover.contains("drag_start(node, at)"));
+    assert!(hover.contains("live.move_to("));
+    assert!(!hover.contains(".button("));
+}
+
+#[test]
+fn app_close_uses_alt_and_desktop_exit() {
+    let source = include_str!("../libs/libuitest/src/app.rs");
+    let close = source.split("pub fn close_exit(").nth(1).expect("close helper")
+        .split("pub fn ").next().unwrap();
+    let down = close.find("wm_key(key::LEFT_ALT, true)").expect("Alt down");
+    let exit = close.find("input_exit(16, false, 0, true)").expect("desktop Q exit");
+    let up = close.find("wm_key(key::LEFT_ALT, false)").expect("Alt up");
+    assert!(down < exit && exit < up);
 }

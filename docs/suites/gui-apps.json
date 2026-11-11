@@ -242,6 +242,18 @@
       ]
     },
     {
+      "id": "demos",
+      "title": "Graphics demos",
+      "cases": [
+        { "id": "open-each", "title": "Open and animate every demo" },
+        { "id": "close-each", "title": "Close every demo" },
+        { "id": "resize", "title": "Resize every demo" },
+        { "id": "bounce-input", "title": "Bounce speed and sphere input" },
+        { "id": "bounded", "title": "Bounce and particles stay in bounds" },
+        { "id": "biconkit-interact", "title": "Icon hover click and selection" }
+      ]
+    },
+    {
       "id": "guskit-collab",
       "title": "Gus Kit collaboration",
       "cases": [
