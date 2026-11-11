@@ -51,6 +51,9 @@ static PCI_ECAM_BASE: AtomicU64 = AtomicU64::new(0);
 static PCI_ECAM_SIZE: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_arch = "aarch64")]
+static PCI_ECAM_VIRT: AtomicU64 = AtomicU64::new(0);
+
+#[cfg(target_arch = "aarch64")]
 static PCI_MMIO_BASE: AtomicU64 = AtomicU64::new(0);
 
 #[cfg(target_arch = "aarch64")]
@@ -495,6 +498,21 @@ pub fn init_qemu_pci() {
         Ok(None) => (0x40_10000000, 0x10000000, 0x10000000, 0x2eff0000),
         Err(_) => return,
     };
+    // ECAM covers at least the two buses scanned below. Bound the mapping to
+    // one ECAM segment and the 40-bit PA size configured in boot.S.
+    // BAR accesses still use HHDM, whose QEMU Device block ends at 1 GiB.
+    if ecam_base == 0 || ecam_base & 0xfff != 0 || ecam_size & 0xfff != 0
+        || !(0x20_0000..=0x1000_0000).contains(&ecam_size)
+        || ecam_base.checked_add(ecam_size).is_none_or(|end| end > 1 << 40)
+        || mmio_base == 0 || mmio_size == 0
+        || mmio_base.checked_add(mmio_size).is_none_or(|end| end > 0x4000_0000)
+    {
+        return;
+    }
+    let Some(ecam_virt) = map_qemu_ecam(ecam_base, ecam_size) else {
+        return;
+    };
+    PCI_ECAM_VIRT.store(ecam_virt, Ordering::Relaxed);
     PCI_ECAM_BASE.store(ecam_base, Ordering::Relaxed);
     PCI_ECAM_SIZE.store(ecam_size, Ordering::Relaxed);
     PCI_MMIO_BASE.store(mmio_base, Ordering::Relaxed);
@@ -502,6 +520,55 @@ pub fn init_qemu_pci() {
     // Bus range 0-1 (QEMU virt only uses bus 0; limit to avoid slow ECAM scans)
     PCI_BUS_START.store(0, Ordering::Relaxed);
     PCI_BUS_END.store(1, Ordering::Relaxed);
+}
+
+/// ECAM CPU address: QEMU uses a dedicated Device/NX mapping; firmware
+/// platforms retain their loader-provided direct mapping.
+#[cfg(target_arch = "aarch64")]
+pub fn pci_ecam_virt_base() -> u64 {
+    let mapped = PCI_ECAM_VIRT.load(Ordering::Relaxed);
+    if mapped != 0 {
+        mapped
+    } else {
+        arm64_boot_contract::HHDM_BASE + pci_ecam_base()
+    }
+}
+
+/// Map the ECAM into TTBR1, independently of the boot HHDM block layout.
+/// The reserved 256 MiB interval ends at the dynamic MMIO allocator's base.
+#[cfg(target_arch = "aarch64")]
+fn map_qemu_ecam(base: u64, size: u64) -> Option<u64> {
+    use crate::memory::arch_stub::{Mapper, OffsetPageTable, Page, PageTable,
+                                  PageTableFlags, PhysAddr, PhysFrame, Size4KiB, VirtAddr};
+    use crate::memory::frame_allocator::GlobalFrameAllocator;
+    const VIRT: u64 = crate::arch_impl::aarch64::constants::MMIO_BASE - 0x1000_0000;
+    let root: u64;
+    unsafe {
+        core::arch::asm!("mrs {}, ttbr1_el1", out(reg) root, options(nomem, nostack));
+    }
+    let offset = VirtAddr::new(arm64_boot_contract::HHDM_BASE);
+    let table = (offset.as_u64() + (root & 0x0000_ffff_ffff_f000)) as *mut PageTable;
+    let mut mapper = unsafe { OffsetPageTable::new(&mut *table, offset) };
+    let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE
+        | PageTableFlags::NO_CACHE | PageTableFlags::NO_EXECUTE;
+    for displacement in (0..size).step_by(4096) {
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(VIRT + displacement));
+        let frame = PhysFrame::<Size4KiB>::containing_address(PhysAddr::new(base + displacement));
+        let result = unsafe { mapper.map_to(page, frame, flags, &mut GlobalFrameAllocator) };
+        match result {
+            Ok(flush) => flush.flush(),
+            Err(_) => {
+                for mapped in (0..displacement).step_by(4096) {
+                    let page = Page::<Size4KiB>::containing_address(VirtAddr::new(VIRT + mapped));
+                    if let Ok((_, flush)) = mapper.unmap(page) {
+                        flush.flush();
+                    }
+                }
+                return None;
+            }
+        }
+    }
+    Some(VIRT)
 }
 
 /// PCI ECAM region size in bytes.
