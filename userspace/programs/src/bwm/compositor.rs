@@ -593,8 +593,10 @@ impl Compositor {
         workspace.costs = [0; 5];
         let began = monotonic_ns();
         let result = self.check_area_into(subject, layers, pointer, area, &mut workspace, &mut idle);
+        libuitest::startup::detail("whole-check-return", subject, 0, 0);
         let elapsed = monotonic_ns().saturating_sub(began);
         workspace.last_ns = workspace.last_ns.max(elapsed);
+        libuitest::startup::detail("report-begin", subject, 0, 0);
         if elapsed >= 100_000_000 {
             use std::io::Write;
             let c = workspace.costs;
@@ -604,6 +606,7 @@ impl Compositor {
                 let _ = evidence.write_all(line.as_bytes());
             }
         }
+        libuitest::startup::detail("report-return", subject, 0, 0);
         // Retain storage on success, stale-front retry and readback refusal alike.
         self.check_workspace = workspace;
         match result { Ok(Some(pixels)) => Some(Ok(pixels)), Ok(None) => None, Err(error) => Some(Err(error)) }
@@ -679,6 +682,7 @@ impl Compositor {
         while y0 < y1 {
             if !idle() { return Ok(None); }
             let rows = band_rows.min(y1 - y0);
+            libuitest::startup::detail("band-begin", subject, y0, rows);
             let len = (w * rows * 4) as usize;
             // These immutable sources are independent. Start D's transfer while
             // reading scanout, then compare only after both observations return.
@@ -688,12 +692,14 @@ impl Compositor {
                 let pending = scope.spawn(move || {
                     let began = monotonic_ns();
                     let result = source.read_rect([x0 as usize, y0 as usize, w as usize, rows as usize], output, w as usize * 4);
+                    libuitest::startup::detail("band-desktop", subject, y0, rows);
                     libuitest::startup::mark("frame-desktop-return");
                     (result, monotonic_ns().saturating_sub(began))
                 });
                 let began = monotonic_ns();
                 let scanout = gpu::readback_why(0, [x0, y0, w, rows], &mut band[..len], w * 4, &mut *record);
                 let scanout_ns = monotonic_ns().saturating_sub(began);
+                libuitest::startup::detail("band-scanout", subject, y0, rows);
                 libuitest::startup::mark("frame-scanout-return");
                 let desktop = pending.join().map_err(|_| CheckError::Failed("desktop readback worker panicked".into()))?;
                 Ok::<_, CheckError>((scanout, scanout_ns, desktop))
@@ -740,6 +746,7 @@ impl Compositor {
                 }
             }
             workspace.costs[4] += monotonic_ns().saturating_sub(began);
+            libuitest::startup::detail("band-pixels", subject, y0, rows);
             libuitest::startup::mark("frame-pixels-ready");
             y0 += rows;
         }

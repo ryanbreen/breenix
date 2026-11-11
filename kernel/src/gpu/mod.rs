@@ -6531,9 +6531,19 @@ fn observe(
         // The scanout's binding retains the target after the context that last wrote it
         // ended, and it stays observable (gpu-abi.md, op 22): the transfer runs in the
         // kernel screen's context.
-        (None, true) if a.target == 0 => screen::observation_context(id).map_err(|e| {
-            (e, if e == EIO { readback_reason::DEVICE_ERROR } else { readback_reason::NONE })
-        })?,
+        (None, true) if a.target == 0 => {
+            let begin = crate::window::events::now_ns();
+            let result = screen::observation_context(id);
+            crate::window::readback_trace::record("retained-writer-fallback", [
+                begin, crate::window::events::now_ns(), tgid, u64::from(id),
+                last.map_or(0, |l| u64::from(l.ctx)), last.map_or(0, |l| l.serial),
+                last.map_or(0, |l| l.fence), last.map_or(0, |l| u64::from(l.answer)),
+                0, 0, 0, result.as_ref().err().copied().unwrap_or(0) as u64,
+            ]);
+            result.map_err(|e| {
+                (e, if e == EIO { readback_reason::DEVICE_ERROR } else { readback_reason::NONE })
+            })?
+        },
         (None, _) if a.target == 0 => return Err((EIO, readback_reason::TARGET_LOST)),
         (None, _) => return Err((EINVAL, readback_reason::NONE)),
     };

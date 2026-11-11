@@ -17,6 +17,7 @@ pub mod readers;
 pub mod ops;
 pub mod policy;
 pub mod pipeline;
+pub mod readback_trace;
 pub mod pacing;
 pub mod present;
 pub mod scene;

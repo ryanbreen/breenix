@@ -1071,7 +1071,9 @@ pub fn restart_adopts() -> CaseResult {
     let (mut d, c) = one()?;
     content(&mut d, &c)?;
     c.child.freeze()?;
-    d.wm.stop()?;
+    let stopped = d.wm.stop();
+    value("reap-elapsed", d.wm.reap_ns as i64, "ns", None);
+    stopped?;
     let mut next = Desktop::start()?;
     next.shown(&c)?.client(&c)
 }
@@ -1080,7 +1082,9 @@ pub fn interaction_restart() -> CaseResult {
     d.focus(&mut c)?;
     c.clear()?;
     key(&mut c, "a", 30)?;
-    d.wm.stop()?;
+    let stopped = d.wm.stop();
+    value("reap-elapsed", d.wm.reap_ns as i64, "ns", None);
+    stopped?;
     let mut next = Desktop::start()?;
     next.focus(&mut c)?;
     c.clear()?;
@@ -1092,7 +1096,9 @@ pub fn stack_restored() -> CaseResult {
     d.focus(&mut a)?;
     minimize(&d, &a)?;
     let before = listed()?;
-    d.wm.stop()?;
+    let stopped = d.wm.stop();
+    value("reap-elapsed", d.wm.reap_ns as i64, "ns", None);
+    stopped?;
     let mut next = Desktop::start()?;
     next.shown(&b)?;
     let after = listed()?;
@@ -1371,6 +1377,10 @@ pub fn frame_floor() -> CaseResult {
     value("pipeline-window", c.id as i64, "", None);
     value("measurement-begin", begin as i64, "ns", None);
     value("measurement-end", end as i64, "ns", None);
+    failure_diagnostic("frame-endpoints", &format!(
+        "client={} begin_ns={begin} end_ns={end} first_ns={:?} last_ns={:?}",
+        c.id, times.iter().min(), times.iter().max()
+    ));
     d.shown(&c)?;
     let hz = rate.as_ref().map_or(0, |r| {
         (u128::from(r.intervals) * 1_000_000_000 / u128::from(r.span_ns)) as i64

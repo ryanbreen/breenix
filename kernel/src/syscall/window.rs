@@ -270,14 +270,31 @@ fn readback(caller: &Caller, arg: u64, rb: &mut Readback) -> Result<u64, i32> {
     {
         return Err(EINVAL);
     }
-    {
+    let begin_ns = crate::window::events::now_ns();
+    let mut trace = {
         let reg = REGISTRY.lock();
+        let claim = reg.claim;
+        let last = reg.present.records.iter().rev().find(|r| r.flags == 0);
+        let branch = if reg.present.busy { "busy" }
+            else if claim.is_some_and(|c| reg.present.serial == c.first_serial) { "claim-baseline" }
+            else { "admitted" };
+        let trace = [begin_ns, 0, caller.tgid, caller.tid,
+            claim.map_or(0, |c| c.holder), claim.map_or(0, |c| c.epoch),
+            claim.map_or(0, |c| c.first_serial), reg.present.serial, u64::from(reg.present.busy),
+            last.map_or(0, |r| r.serial), last.map_or(0, |r| u64::from(r.flags)),
+            claim.map_or(0, |c| c.ack.presented)];
         // A new claimant or an in-flight composite has no completed result yet
         // (§20.1). Refuse before pinning startup scanout and delaying its producer.
+        if branch != "admitted" {
+            let mut trace = trace;
+            trace[1] = crate::window::events::now_ns();
+            crate::window::readback_trace::record(branch, trace);
+        }
         if reg.present.busy || reg.claim.is_some_and(|claim| reg.present.serial == claim.first_serial) {
             return Err(breengel_abi::errno::EAGAIN);
         }
-    }
+        trace
+    };
     match crate::gpu::observe_scanout(rb.dst, rb.dst_len, rb.record) {
         Ok(serial) => {
             rb.serial = serial;
@@ -285,6 +302,9 @@ fn readback(caller: &Caller, arg: u64, rb: &mut Readback) -> Result<u64, i32> {
             Ok(0)
         }
         Err((errno, reason)) => {
+            trace[1] = crate::window::events::now_ns();
+            crate::window::readback_trace::record(
+                if errno == gpu_abi::errno::EAGAIN { "gpu-fallback" } else { "gpu-error" }, trace);
             if errno == gpu_abi::errno::EIO {
                 rb.reason = reason;
                 output(arg, rb)?;

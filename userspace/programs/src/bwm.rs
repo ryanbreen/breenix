@@ -162,10 +162,13 @@ fn main() {
         let font = scope.spawn(|| {
             libuitest::startup::mark("startup-font-begin");
             let config = FontConfig::load();
+            libuitest::startup::mark("font-config-ready");
             print!("[bwm] fonts {config:?}\n");
-            let mut font = std::fs::read(&config.display_path).ok()
-                .and_then(|data| Font::parse(&data).ok())
-                .map(|f| {
+            let data = std::fs::read(&config.display_path).ok();
+            libuitest::startup::mark("font-file-ready");
+            let parsed = data.and_then(|data| Font::parse(&data).ok());
+            libuitest::startup::mark("font-parse-ready");
+            let mut font = parsed.map(|f| {
                     let mut font = CachedFont::new(f, 256);
                     font.observe_phases(libuitest::startup::mark);
                     font
@@ -223,7 +226,10 @@ fn main() {
             Ok(gpu)
         });
         libuitest::startup::mark("targets-ready");
-        (opened, font.join().expect("startup font worker panicked"), claim_epoch, scene_fd, desktop_tree, clock_wake)
+        libuitest::startup::mark("font-join-begin");
+        let font = font.join().expect("startup font worker panicked");
+        libuitest::startup::mark("font-join-return");
+        (opened, font, claim_epoch, scene_fd, desktop_tree, clock_wake)
     });
     let mut gpu = match opened {
         Ok(c) => c,
@@ -326,12 +332,16 @@ fn main() {
         let presented = if cursor_pointer(first_pointer).is_some() {
             gpu.present_startup_desktop(cursor_pointer(first_pointer))
         } else { Ok(()) };
-        presented
+        let checked = presented
             .map(|()| {
                 libuitest::startup::mark("pointer-presented");
                 measure_check(|| gpu.check(0, &[], cursor_pointer(first_pointer)))
-            })
+            });
+        libuitest::startup::detail("join-begin", 0, 0, 0);
+        checked
     });
+    libuitest::startup::detail("join-return", 0, 0, 0);
+    libuitest::startup::mark("startup-workers-return");
     if let Err(error) = prepared {
         eprintln!("[bwm] title coverage warm-up unavailable: {error}");
     }
