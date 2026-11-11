@@ -149,3 +149,50 @@ fn main() {{
     std::fs::remove_dir_all(dir).unwrap();
     assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
 }
+
+thread_local! {
+    static COUNT_ALLOCATIONS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static ALLOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+struct CountedAllocator;
+unsafe impl std::alloc::GlobalAlloc for CountedAllocator {
+    unsafe fn alloc(&self, layout: std::alloc::Layout) -> *mut u8 {
+        if COUNT_ALLOCATIONS.try_with(|on| on.get()).unwrap_or(false) {
+            ALLOCATIONS.with(|n| n.set(n.get() + 1));
+        }
+        unsafe { std::alloc::System.alloc(layout) }
+    }
+    unsafe fn dealloc(&self, ptr: *mut u8, layout: std::alloc::Layout) {
+        unsafe { std::alloc::System.dealloc(ptr, layout) }
+    }
+    unsafe fn realloc(&self, ptr: *mut u8, layout: std::alloc::Layout, size: usize) -> *mut u8 {
+        if COUNT_ALLOCATIONS.try_with(|on| on.get()).unwrap_or(false) {
+            ALLOCATIONS.with(|n| n.set(n.get() + 1));
+        }
+        unsafe { std::alloc::System.realloc(ptr, layout, size) }
+    }
+}
+#[global_allocator]
+static ALLOCATOR: CountedAllocator = CountedAllocator;
+
+#[test]
+fn source_lookup_does_not_allocate_per_history_entry() {
+    fn lookup_allocations(rows: usize) -> usize {
+        let ledger: String = (1..=rows).map(|id| format!("{id} delivered 9 none\n")).collect();
+        ALLOCATIONS.with(|n| n.set(0));
+        COUNT_ALLOCATIONS.with(|on| on.set(true));
+        let found = input::ledger_entry(&ledger, rows as u64).unwrap();
+        COUNT_ALLOCATIONS.with(|on| on.set(false));
+        assert_eq!(found.unwrap().serial, rows as u64);
+        ALLOCATIONS.with(|n| n.get())
+    }
+    let small = lookup_allocations(8);
+    let full = lookup_allocations(8192);
+    println!("ledger lookup allocations: eight_rows={small} full_history={full}");
+    assert!(full <= small + 1, "source lookup allocation count grew with history: {small} -> {full}");
+    // Validation still covers rows unrelated to the requested serial.
+    for bad in ["2 delivered 9 none\n", "2 pending 9 none\n", "2 delivered invalid none\n"] {
+        let ledger = format!("1 delivered 9 none\n2 delivered 9 none\n{bad}");
+        assert!(input::ledger_entry(&ledger, 1).is_err());
+    }
+}
