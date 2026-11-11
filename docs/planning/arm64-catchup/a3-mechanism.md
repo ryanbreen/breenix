@@ -196,7 +196,7 @@ mechanism and a deterministic failing check for its repair. A later instrumented
 window-manager boot must answer the questions above in the same capture, not
 provide another recurrence sample. Issue #2872 remains the recovery blocker.
 The capture audit passed: 39 run identities/hashes, 88 CASE records, 650 stamps,
-and 1308 verbatim excerpt lines matched the retained raw captures. The latest
+and 1308 decoded excerpt lines matched the retained raw captures. The latest
 launcher and Vigil serials are byte-identical. `python3 scripts/claim-lint.py`
 exits 0 (88 files checked; 267 existing findings outside changed hunks).
 The explicit whole-file report/test lint also exits 0; `git diff --check` is clean.
@@ -204,7 +204,7 @@ These are document and host checks, not suite acceptance.
 
 ## Capture inventory
 
-Scope: the retained November 11 window-manager run records: ARM QEMU plus the named native shared-path run. Partial and missing-serial records are included. Nov 10 native runs belong to other branches and are outside this comparison. Each E-key names `<boot-id>/serial.txt` in the Vigil boot store; `L` is a physical LF line number, matching `rg -n`. The companion [evidence index](serials/a3-mechanism-captures.txt) retains selected raw records with their original line numbers. `commit:L1` refers to that boot folder's commit file, not a phase timestamp. A missing CASE is **not recorded**, never an inferred FAIL or PASS. Case ms includes setup and cleanup, not just its inner deadline. <!-- claim-lint:ok: Cited code conditions and raw records indexed in docs/planning/arm64-catchup/serials/a3-mechanism-captures.txt; absence is scoped to the hashed capture inputs, not runtime progress. -->
+Scope: the retained November 11 window-manager run records: ARM QEMU plus the named native shared-path run. Partial and missing-serial records are included. Nov 10 native runs belong to other branches and are outside this comparison. Each E-key names `<boot-id>/serial.txt` in the Vigil boot store; `L` is a physical LF line number, matching `rg -n`. The companion [evidence index](serials/a3-mechanism-captures.txt) retains selected records with their original line numbers; each line payload is a JSON string so trailing spaces survive without repository whitespace errors. Decode the payload to compare it with the raw capture. `commit:L1` refers to that boot folder's commit file, not a phase timestamp. A missing CASE is **not recorded**, never an inferred FAIL or PASS. Case ms includes setup and cleanup, not just its inner deadline. <!-- claim-lint:ok: Cited code conditions and raw records indexed in docs/planning/arm64-catchup/serials/a3-mechanism-captures.txt; absence is scoped to the hashed capture inputs, not runtime progress. -->
 
 | Key / boot id | Commit (commit:L1) | Selection (only-case) / dirty | Serial SHA-256 |
 | --- | --- | --- | --- |
