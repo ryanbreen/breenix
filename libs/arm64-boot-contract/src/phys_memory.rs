@@ -259,7 +259,7 @@ pub fn frame_pool_from_fdt(
 pub use fdt::FdtError;
 
 /// A reader for the parts of a flattened device tree (Devicetree
-/// Specification v0.4, chapter 5) that describe physical memory.
+/// Specification v0.4, chapter 5) that describe physical memory and PCI hosts.
 pub mod fdt {
     use super::PhysRange;
 
@@ -404,8 +404,10 @@ pub mod fdt {
         child_size_cells: u32,
         is_memory: bool,
         is_reserved_memory: bool,
+        is_pci_ecam: bool,
         disabled: bool,
         reg: Option<&'a [u8]>,
+        ranges: Option<&'a [u8]>,
     }
 
     impl Node<'_> {
@@ -415,8 +417,10 @@ pub mod fdt {
                 child_size_cells: size_cells,
                 is_memory: false,
                 is_reserved_memory: false,
+                is_pci_ecam: false,
                 disabled: false,
                 reg: None,
+                ranges: None,
             }
         }
     }
@@ -424,6 +428,74 @@ pub mod fdt {
     /// Report the memory and reserved ranges `blob` describes. `blob` must
     /// span the whole tree (`total_size` bytes).
     pub fn walk(blob: &[u8], mut visit: impl FnMut(RegionKind, PhysRange)) -> Result<(), FdtError> {
+        walk_with_pci(blob, &mut visit, None)
+    }
+
+    /// QEMU's generic ECAM host and one identity-mapped 32-bit memory window.
+    /// The BAR allocator uses the same address for PCI and CPU accesses.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct PciHost {
+        pub ecam: PhysRange,
+        pub mmio: PhysRange,
+    }
+
+    /// Read the root PCI host. A present but unsupported host is an error,
+    /// distinct from a tree with no PCI host.
+    pub fn pci_host(blob: &[u8]) -> Result<Option<PciHost>, FdtError> {
+        let mut host = None;
+        let mut duplicate = false;
+        walk_with_pci(blob, &mut |_, _| {}, Some(&mut |value| {
+            duplicate |= host.is_some();
+            host = Some(value);
+        }))?;
+        if duplicate {
+            return Err(FdtError::BadCells);
+        }
+        Ok(host)
+    }
+
+    fn read_pci_host(node: Node<'_>, parent: Node<'_>) -> Result<PciHost, FdtError> {
+        let reg = node.reg.ok_or(FdtError::BadCells)?;
+        let address_cells = parent.child_address_cells;
+        let size_cells = parent.child_size_cells;
+        if !(1..=2).contains(&address_cells) || !(1..=2).contains(&size_cells)
+            || !(1..=2).contains(&node.child_size_cells)
+            || reg.len() != (address_cells + size_cells) as usize * 4 {
+            return Err(FdtError::BadCells);
+        }
+        let base = read_cells(reg, 0, address_cells)?;
+        let size = read_cells(reg, address_cells as usize * 4, size_cells)?;
+        let end = base.checked_add(size).ok_or(FdtError::BadCells)?;
+        if size == 0 || node.child_address_cells != 3 {
+            return Err(FdtError::BadCells);
+        }
+        let ranges = node.ranges.ok_or(FdtError::BadCells)?;
+        let entry_size = (3 + address_cells + node.child_size_cells) as usize * 4;
+        if ranges.len() % entry_size != 0 {
+            return Err(FdtError::BadCells);
+        }
+        let mut mmio = None;
+        for entry in ranges.chunks_exact(entry_size) {
+            let space = (be32(entry, 0)? >> 24) & 3;
+            let pci = be64(entry, 4)?;
+            let cpu = read_cells(entry, 12, address_cells)?;
+            let len = read_cells(entry, 12 + address_cells as usize * 4, node.child_size_cells)?;
+            let limit = cpu.checked_add(len).ok_or(FdtError::BadCells)?;
+            if space == 2 && pci == cpu && len > 0 && limit <= 0x1_0000_0000 && mmio.is_none() {
+                mmio = Some(PhysRange::new(cpu, limit));
+            }
+        }
+        Ok(PciHost {
+            ecam: PhysRange::new(base, end),
+            mmio: mmio.ok_or(FdtError::BadCells)?,
+        })
+    }
+
+    fn walk_with_pci(
+        blob: &[u8],
+        visit: &mut impl FnMut(RegionKind, PhysRange),
+        mut pci: Option<&mut dyn FnMut(PciHost)>,
+    ) -> Result<(), FdtError> {
         let size = total_size(blob)?;
         let blob = blob.get(..size).ok_or(FdtError::Truncated)?;
         let struct_offset = be32(blob, 8)? as usize;
@@ -487,8 +559,13 @@ pub mod fdt {
                                     parent.child_address_cells,
                                     parent.child_size_cells,
                                     kind,
-                                    &mut visit,
+                                    visit,
                                 )?;
+                            }
+                        }
+                        if depth == 2 && node.is_pci_ecam && !node.disabled {
+                            if let Some(visit) = pci.as_mut() {
+                                visit(read_pci_host(node, parent)?);
                             }
                         }
                     }
@@ -518,11 +595,15 @@ pub mod fdt {
                         b"#address-cells" => node.child_address_cells = cells_value(value)?,
                         b"#size-cells" => node.child_size_cells = cells_value(value)?,
                         b"device_type" => node.is_memory = string_value(value) == b"memory",
+                        b"compatible" => node.is_pci_ecam = value
+                            .split(|&b| b == 0)
+                            .any(|name| name == b"pci-host-ecam-generic"),
                         b"status" => {
                             let status = string_value(value);
                             node.disabled = status != b"okay" && status != b"ok";
                         }
                         b"reg" => node.reg = Some(value),
+                        b"ranges" => node.ranges = Some(value),
                         _ => {}
                     }
                 }

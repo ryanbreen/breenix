@@ -685,14 +685,13 @@ pub(crate) fn pci_read_config_dword(bus: u8, device: u8, function: u8, offset: u
         return 0xFFFF_FFFF; // No PCI
     }
 
-    let addr = ecam_base
+    let addr = crate::platform_config::pci_ecam_virt_base()
         + (((bus as u64) << 20)
             | ((device as u64) << 15)
             | ((function as u64) << 12)
             | ((offset & 0xFC) as u64));
 
-    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-    let virt = (HHDM_BASE + addr) as *const u32;
+    let virt = addr as *const u32;
     unsafe { core::ptr::read_volatile(virt) }
 }
 
@@ -722,14 +721,13 @@ pub(crate) fn pci_write_config_dword(bus: u8, device: u8, function: u8, offset: 
         return; // No PCI
     }
 
-    let addr = ecam_base
+    let addr = crate::platform_config::pci_ecam_virt_base()
         + (((bus as u64) << 20)
             | ((device as u64) << 15)
             | ((function as u64) << 12)
             | ((offset & 0xFC) as u64));
 
-    const HHDM_BASE: u64 = 0xFFFF_0000_0000_0000;
-    let virt = (HHDM_BASE + addr) as *mut u32;
+    let virt = addr as *mut u32;
     unsafe { core::ptr::write_volatile(virt, value) }
 }
 
