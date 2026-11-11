@@ -395,6 +395,10 @@ impl Window {
     // Failure-only context: preserve the errno while distinguishing an event
     // timeout from a pending GPU publication failure.
     fn read_error(&self, path: &str, block: bool, timeout_ns: u64, error: Error) -> Error {
+        if path == "idle-read-events" && timeout_ns != u64::MAX
+            && matches!(error, Error::Os(Errno::ETIMEDOUT)) {
+            return error;
+        }
         let at_ns = libbreenix::time::now_monotonic().map(|t| t.as_nanos());
         eprintln!("WINDOW_READ_ERROR pid={} window={} path={path} participant={} clock_configured={} next_timer_ms={} animating={} block={block} timeout_ns={timeout_ns} at_ns={} error={error}",
             std::process::id(), self.id, self.clock_participant.is_some(), crate::clock::configured(),
