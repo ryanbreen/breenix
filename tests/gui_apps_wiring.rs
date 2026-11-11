@@ -133,7 +133,7 @@ fn bounce_uses_animation_dispatch_and_publishes_status() {
 
 #[test]
 fn demos_use_window_animation_and_status() {
-    for name in ["particles", "confetti", "demo", "rectangles"] {
+    for name in ["particles", "confetti", "demo", "rectangles", "biconkit"] {
         let source = std::fs::read_to_string(format!("userspace/programs/src/{name}.rs")).expect("demo source");
         for forbidden in ["poll_events", "libbreenix::graphics", "libgfx_ref", "fb_mmap", "mouse_pos", "clock_monotonic", "now_monotonic"] {
             assert!(!source.contains(forbidden), "{name}: unexpected {forbidden}");
