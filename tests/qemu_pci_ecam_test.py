@@ -1,6 +1,8 @@
 """Run the production QEMU PCI setup against host device-tree fixtures."""
 from pathlib import Path
 import struct
+import runpy
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -39,6 +41,17 @@ def tree(base):
 
 
 class QemuPciEcamTest(unittest.TestCase):
+    def test_launcher_keeps_devices_within_the_m1_address_space(self):
+        harness_type = runpy.run_path(str(ROOT / 'tests/boot_interactive_qmp_test.py'))['BootInteractiveQmpTest']
+        harness = harness_type()
+        harness.setUp()
+        self.addCleanup(harness.doCleanups)
+        shutil.copy(ROOT / 'scripts/boot-commit.sh', harness.root / 'scripts')
+        (harness.root / '.deployed-commit').write_text('1' * 40 + '\n')
+        argv, _ = harness.launch('--no-display', mode=('--mode', 'desktop'))
+        machine = argv[argv.index('-M') + 1]
+        self.assertIn('highmem=off', machine.split(','))
+
     def test_setup_uses_the_advertised_ecam_or_leaves_pci_disabled(self):
         source = (ROOT / 'kernel/src/platform_config.rs').read_text()
         setup = source.split('pub fn init_qemu_pci() {', 1)[1].split('\n}', 1)[0]
