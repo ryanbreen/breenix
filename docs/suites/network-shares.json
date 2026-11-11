@@ -56,6 +56,52 @@
           "title": "Non-root mount is refused"
         }
       ]
+    },
+    {
+      "id": "smb",
+      "title": "SMB shares",
+      "cases": [
+        {
+          "id": "shares-mount-list",
+          "title": "Mount and list shares"
+        },
+        {
+          "id": "write-read",
+          "title": "Write and read"
+        },
+        {
+          "id": "rename-replace",
+          "title": "Rename replaces a file"
+        },
+        {
+          "id": "delete",
+          "title": "Delete a file"
+        },
+        {
+          "id": "dirs",
+          "title": "Create and remove directories"
+        },
+        {
+          "id": "atomic-save",
+          "title": "Atomic save of a large file"
+        },
+        {
+          "id": "read-only-refused",
+          "title": "Read-only share refuses writes"
+        },
+        {
+          "id": "wrong-password",
+          "title": "Wrong password leaves no mount"
+        },
+        {
+          "id": "server-restart",
+          "title": "Server restart reconnects and preserves the open file"
+        },
+        {
+          "id": "umount-open-files",
+          "title": "Unmount with an open file"
+        }
+      ]
     }
   ]
 }

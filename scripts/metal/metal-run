@@ -43,6 +43,7 @@ import metal_prebuilt
 TOOLS = '/opt/breenix-metal'
 STATE = '/var/lib/breenix-metal'
 HERE = Path(__file__).resolve().parent
+SMB_CONFIG_PATH = '/etc/breenix-metal/smb-test.json'
 XHCI_FAULTS = ('xhci-reset-device', 'xhci-short-read')
 # The kernel feature that compiles the xHCI recovery exercise in; production kernels never carry it.
 FAULT_FEATURE = 'xhci_fault_inject'
@@ -87,6 +88,57 @@ def host_env():
             key, _, value = line.partition('=')
             values[key.strip()] = value.strip().strip('"\'')
     return values
+
+
+def configure_smb(env, credential=None):
+    """Pass the host credential file to root staging over stdin, outside boot records."""
+    path = Path(credential) if credential else Path.home() / '.config/breenix-metal/smb-test.env'
+    try:
+        if path.stat().st_mode & 0o777 != 0o600:
+            raise ValueError('credential permissions')
+        values = {}
+        for line in path.read_text().splitlines():
+            if '=' in line and not line.lstrip().startswith('#'):
+                key, _, value = line.partition('=')
+                values[key.strip()] = value.strip().strip("\"'")
+        config = {key: values.get(key, '') for key in ('SMB_TEST_USER', 'SMB_TEST_PASSWORD')}
+        config.update({key: env.get(key, '') for key in ('SMB_TEST_HOST', 'SMB_TEST_PORT')})
+        instance = env.get('SMB_TEST_INSTANCE', '')
+        if (not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]{0,62}', instance)
+                or not config['SMB_TEST_USER'] or not config['SMB_TEST_PASSWORD']
+                or any(c in config['SMB_TEST_USER'] + config['SMB_TEST_PASSWORD'] for c in '\r\n\x00')
+                or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,252}', config['SMB_TEST_HOST'])
+                or not config['SMB_TEST_PORT'].isdecimal() or not 1 <= int(config['SMB_TEST_PORT']) <= 65535):
+            raise ValueError('SMB configuration')
+    except (OSError, ValueError):
+        raise SystemExit('network-shares needs a 0600 smb-test.env and private SMB_TEST_HOST, SMB_TEST_PORT, SMB_TEST_INSTANCE') from None
+    result = incus('exec', instance, '--', 'test', '-d', '/srv/smb/rw', capture_output=True, timeout=30)
+    if result.returncode:
+        raise SystemExit('network-shares: SMB test server unavailable; ask the coordinator')
+    script = ("import json,os,sys,tempfile;from pathlib import Path;"
+              "p=Path(sys.argv[1]);p.parent.mkdir(mode=0o700,parents=True,exist_ok=True);"
+              "fd,tmp=tempfile.mkstemp(dir=p.parent,prefix='.smb-test-');"
+              "f=os.fdopen(fd,'w');json.dump(json.load(sys.stdin),f);f.close();os.replace(tmp,p)")
+    result = in_metal(env, 'python3', '-c', script, SMB_CONFIG_PATH, stdin=None,
+                      input=json.dumps(config), capture_output=True, text=True, timeout=30)
+    if result.returncode:
+        raise SystemExit('network-shares: cannot deliver private SMB credentials')
+
+
+def wait_smb_ready(env, boot_id, suite):
+    """Hold image delivery until the leased helper has removed stale acknowledgments."""
+    if 'network-shares' not in (suite or '').split(','):
+        return
+    directory = f'{STATE}/boots/{boot_id}'
+    deadline = time.monotonic() + 241 * 60
+    while time.monotonic() < deadline:
+        if in_metal(env, 'test', '-e', directory + '/smb-restart.ready', capture_output=True).returncode == 0:
+            return
+        if any(in_metal(env, 'test', '-e', directory + '/' + name, capture_output=True).returncode == 0
+               for name in ('smb-restart.failed', 'ended')):
+            raise ValueError('SMB helper did not prepare this boot')
+        time.sleep(0.5)
+    raise ValueError('SMB helper preparation watchdog expired')
 
 
 def incus(*arguments, **options):
@@ -299,6 +351,9 @@ def boot(args):
         if payload != 'image':
             raise SystemExit('--prebuilt needs an image payload')
         verify_prebuilt(env, prebuilt, sha, args)
+    smb = payload == 'image' and args.mode == 'suite' and 'network-shares' in (args.suite or '').split(',')
+    if smb:
+        configure_smb(env)
     boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
     command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
     command += ['--mode', args.mode, '--wait', str(wait)]
@@ -362,6 +417,12 @@ def boot(args):
     print(result.stdout.strip() or result.stderr.strip(), flush=True)
     if result.returncode != 0:
         return result.returncode
+    if smb:
+        logs = Path.home() / '.local/state/breenix-metal'
+        logs.mkdir(parents=True, exist_ok=True)
+        with (logs / f'{boot_id}-smb-restart.log').open('w') as log:
+            subprocess.Popen([sys.executable, str(HERE / 'smb-restart'), '--boot', boot_id],
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
     if payload == 'linux':
         source = Path(args.linux_directory).resolve()
         stage = f'{STATE}/stage/{boot_id}/inputs'
@@ -485,6 +546,7 @@ def deliver_prebuilt(boot_id, sha, artifact_id, mode, features=None, suite=None,
         sender.stdout.close()
         if sender.wait() or receiver.returncode:
             raise ValueError('prebuilt inputs could not be copied into the service container')
+        wait_smb_ready(env, boot_id, suite)
         in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-ready', boot_id, check=True)
         print(json.dumps(dict(id=boot_id, prebuilt=artifact_id, builder='mac', status='delivered')), flush=True)
         return 0
@@ -560,6 +622,10 @@ def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=F
     preemption.join()
     if preemption_errors:
         return failed('persistent preemption failed: ' + preemption_errors[0])
+    try:
+        wait_smb_ready(env, boot_id, suite)
+    except ValueError as error:
+        return failed(str(error))
     in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-ready', boot_id, check=True)
     print(f'[metal-run] inputs delivered after {time.time() - started:.0f} s', flush=True)
     return 0

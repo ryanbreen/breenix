@@ -82,6 +82,7 @@ members = [
     "libs/ufs-abi",
     "libs/libvt",
     "libs/libsmb",
+    "libs/smbfs",
     "libs/libclipboard",
     "libs/gpu-abi"
 ]

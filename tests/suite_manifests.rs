@@ -1872,7 +1872,7 @@ fn frame_schema_guest_and_host_agree_over_fixtures() {
 }
 
 #[test]
-fn network_shares_manifest_declares_ufs_cases() {
+fn network_shares_manifest_declares_ufs_and_smb_cases() {
     let path = repo_root().join("docs/suites/network-shares.json");
     let value: Value = serde_json::from_str(&fs::read_to_string(&path).expect("network-shares manifest")).unwrap();
     let mut errors = Vec::new();
@@ -1880,8 +1880,16 @@ fn network_shares_manifest_declares_ufs_cases() {
     assert!(errors.is_empty(), "{}", errors.join("\n"));
     assert_eq!(value["binary"], "/sbin/suite-network-shares");
     assert_eq!(value["aggregate"], "after E23 23.8");
-    assert_eq!(manifest.categories.len(), 1);
+    assert_eq!(manifest.categories.len(), 2);
     assert_eq!(manifest.categories[0].entry.id, "ufs");
     assert_eq!(manifest.categories[0].cases.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
-        ["mount-list", "create-write-read", "rename-replace", "dirs-unlink", "statfs", "atomic-save", "daemon-death", "timeout-eio", "non-root-refused"]);
+        ["mount-list", "create-write-read", "rename-replace", "directory-relative", "write-open-progress", "dirs-unlink", "statfs", "atomic-save", "daemon-death", "timeout-eio", "non-root-refused"]);
+    assert_eq!(manifest.categories[1].entry.id, "smb");
+    assert_eq!(manifest.categories[1].cases.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+        ["shares-mount-list", "write-read", "rename-replace", "delete", "dirs", "atomic-save", "read-only-refused", "wrong-password", "server-restart", "umount-open-files"]);
+    let (_, files) = suite_files(&repo_root(), "network_shares").expect("network-shares source");
+    let (suite, categories) = source_suite_files(&files).expect("network-shares case table");
+    assert_eq!(suite.id, manifest.id);
+    assert_eq!(suite.title, manifest.title);
+    assert_eq!(categories, manifest.categories);
 }

@@ -12,6 +12,8 @@ description = "Userspace programs and utilities for Breenix"
 framebuffer-v1 = []
 
 [dependencies]
+smbfs = { path = "../../libs/smbfs" }
+libsmb = { path = "../../libs/libsmb" }
 ufs-abi = { path = "../../libs/ufs-abi" }
 libvt = { path = "../../libs/libvt" }
 libclipboard = { path = "../../libs/libclipboard" }
@@ -919,3 +921,11 @@ path = "src/suite_network_shares.rs"
 [[bin]]
 name = "memfsd_test"
 path = "src/memfsd_test.rs"
+
+[[bin]]
+name = "mount"
+path = "src/mount.rs"
+
+[[bin]]
+name = "smbfsd"
+path = "src/smbfsd.rs"

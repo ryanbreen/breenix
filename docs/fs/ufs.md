@@ -21,8 +21,13 @@ message fails without consuming it. An endpoint write submits one complete
 reply; a short write is not a successful reply. Reads block when no work is
 queued; interrupted reads may be retried. Unmount detaches the namespace and
 wakes an idle daemon read with EOF. The directory's underlying ext2 contents
-become visible again. Unmount after daemon death succeeds even with user file
-handles still open. Daemon endpoint close or process exit marks the mount
+become visible again. Plain unmount of a live mount with open file handles
+returns EBUSY without changing the mount. MNT_FORCE (1) or MNT_DETACH (2)
+permits unmount with open handles, invalidating them: pending and later
+operations fail with ENOTCONN. Detach releases the covered ext2 directory pin;
+open file leases retain mount storage until close. A daemon reply racing detach also
+receives ENOTCONN, which the daemon may treat as a clean shutdown.
+Daemon endpoint close or process exit marks the mount
 dead, including when an in-flight read retains the endpoint. Closing a duplicate
 of the bound endpoint also disconnects it. Pending callers wake with ENOTCONN; later operations return ENOTCONN
 until unmount. A serving daemon must therefore open its endpoint after any

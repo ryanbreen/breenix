@@ -165,6 +165,42 @@ fn run() -> Check {
             operation(c.read(&a), &format!("{stage} read"))? == data,
             "read bytes differ",
         )?;
+        let opened = operation(
+            c.open(
+                &a,
+                access_mask::READ_DATA | access_mask::WRITE_DATA,
+                CreateDisposition::Open,
+                create_options::NON_DIRECTORY_FILE,
+            ),
+            "open for offset I/O",
+        )?;
+        let offset = 65537;
+        let patch = b"offset-check";
+        operation(c.write_at(opened.file_id, offset, patch), "offset write")?;
+        expect(
+            operation(
+                c.read_at(opened.file_id, offset, patch.len()),
+                "offset read",
+            )? == patch,
+            "offset bytes differ",
+        )?;
+        let size = operation(c.query_fs_size(opened.file_id), "filesystem size")?;
+        expect(
+            size.total_allocation_units > 0
+                && size.sectors_per_allocation_unit > 0
+                && size.bytes_per_sector > 0,
+            "invalid filesystem size",
+        )?;
+        operation(
+            c.write_at(
+                opened.file_id,
+                offset,
+                &data[offset as usize..offset as usize + patch.len()],
+            ),
+            "restore offset",
+        )?;
+        operation(c.close(opened.file_id), "close offset handle")?;
+        println!("PASS {stage} offset write/read and filesystem size");
         operation(c.write(&b, b"old destination"), "write destination")?;
         operation(c.rename_replace(&a, &b), "rename-replace")?;
         expect(

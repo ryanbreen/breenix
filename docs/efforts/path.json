@@ -2015,7 +2015,8 @@
           "measure": {
             "suite": "network-shares",
             "categories": [
-              "ufs"
+              "ufs",
+              "smb"
             ]
           }
         },
