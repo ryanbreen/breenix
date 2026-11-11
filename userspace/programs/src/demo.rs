@@ -171,11 +171,12 @@ fn main() {
         for ball in &balls { objects.push(status::Object { bounds: [(ball.x-ball.radius) as i64, (ball.y-ball.radius) as i64, (ball.radius*2+1) as i64, (ball.radius*2+1) as i64], value: serde_json::json!({"vx":ball.vx,"vy":ball.vy}) }); }
         let inside = objects.iter().all(|o| o.bounds[0] >= 0 && o.bounds[1] >= 0 && o.bounds[0]+o.bounds[2] <= width as i64 && o.bounds[1]+o.bounds[3] <= height as i64);
         win.set_tree(status::build("demo",100,epochs,inside,win.width(),win.height(),"object",&objects));
-        let fb = win.surface().expect("surface"); fb.clear(Color::rgb(10,20,40));
+        let fb = win.surface().expect("surface"); fb.batch(|fb| { fb.clear(Color::rgb(10,20,40));
         draw_rotating_lines(fb,cx,cy,radius,frame*2,12);
         draw_pulsing_rects(fb,cx,cy,frame);
         draw_wave(fb,height-30,width,frame*3,Color::rgb(0,150,255));
         for ball in &balls { ball.draw(fb); }
-        win.present().expect("present");
+        });
+        if let Err(error) = win.present() { eprintln!("[demo] present failed: {error}"); std::process::exit(1); }
     }
 }

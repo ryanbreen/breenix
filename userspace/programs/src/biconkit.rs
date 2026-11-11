@@ -50,6 +50,6 @@ fn main() {
         font::draw_text(fb,b"INTERACTIVE PREVIEW",20,235,Color::WHITE,2); preview[input.selected].draw(fb,preview_x,preview_y,80);
         font::draw_text(fb,state(preview[input.selected].state()).as_bytes(),(preview_x-30).max(0) as usize,(preview_y+50) as usize,Color::WHITE,1);
         font::draw_text(fb,b", Prev    . Next    Q Quit",20,450,Color::WHITE,1);
-        win.present().expect("present");
+        if let Err(error) = win.present() { eprintln!("[biconkit] present failed: {error}"); std::process::exit(1); }
     }
 }

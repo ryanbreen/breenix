@@ -45,6 +45,6 @@ fn main() {
   win.set_tree(status::build("rectangles",100,epochs,inside,win.width(),win.height(),"rectangle",&objects));
   let fb=win.surface().expect("surface"); fb.clear(Color::rgb(15,15,30));
   for r in &rects { shapes::fill_rect(fb,r.x/100,r.y/100,r.w.min(width),r.h.min(height),r.color); }
-  win.present().expect("present");
+  if let Err(error) = win.present() { eprintln!("[rectangles] present failed: {error}"); std::process::exit(1); }
  }
 }

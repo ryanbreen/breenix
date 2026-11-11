@@ -204,6 +204,7 @@ impl ConfettiSystem {
     }
 
     fn render(&self, fb: &mut Surface) {
+        fb.batch(|fb| {
         fb.clear(self.bg_color);
 
         for p in self.particles.iter() {
@@ -232,17 +233,14 @@ impl ConfettiSystem {
             let h = p.size;
 
             // Draw the confetti piece
-            for dy in 0..h {
-                for dx in 0..w {
-                    fb.put_pixel((px + dx) as usize, (py + dy) as usize, color);
-                }
-            }
+            libgfx::shapes::fill_rect(fb, px, py, w, h, color);
 
             // Draw a bright highlight on living particles for sparkle
             if alpha > 180 && p.size >= 3 {
                 fb.put_pixel(px as usize, py as usize, Color::WHITE);
             }
         }
+        });
     }
 }
 
@@ -286,6 +284,6 @@ fn main() {
         let inside = objects.iter().all(|o| o.bounds[0] >= 0 && o.bounds[1] >= 0 && o.bounds[0]+o.bounds[2] <= system.bounds_w as i64 && o.bounds[1]+o.bounds[3] <= system.bounds_h as i64);
         win.set_tree(status::build("confetti",100,epochs,inside,win.width(),win.height(),"particle",&objects));
         system.render(win.surface().expect("surface"));
-        win.present().expect("present");
+        if let Err(error) = win.present() { eprintln!("[confetti] present failed: {error}"); std::process::exit(1); }
     }
 }

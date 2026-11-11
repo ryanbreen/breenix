@@ -35,6 +35,6 @@ fn main() {
         let fb = win.surface().expect("surface");
         fb.clear(Color::rgb(15,20,35));
         for p in &sim.particles { shapes::fill_circle(fb,p.px(),p.py(),p.radius,Color::rgb(p.color.r,p.color.g,p.color.b)); if p.radius > 6 { shapes::fill_circle(fb,p.px()-p.radius/3,p.py()-p.radius/3,(p.radius/4).max(2),Color::WHITE); } }
-        win.present().expect("present");
+        if let Err(error) = win.present() { eprintln!("[particles] present failed: {error}"); std::process::exit(1); }
     }
 }

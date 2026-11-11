@@ -23,6 +23,7 @@ pub fn put_pixel(&mut self,_x:usize,_y:usize,_c:Color){self.emit();}
 pub fn emit(&mut self){if !self.batched {self.submissions+=1;}}
 pub fn batch(&mut self,f:impl FnOnce(&mut Self)){self.batched=true;f(self);self.batched=false;self.submissions+=1;}
 }
+pub mod libgfx {pub use super::shapes;}
 pub mod shapes {use super::*;
 pub fn fill_circle(f:&mut Surface,_x:i32,_y:i32,_r:i32,_c:Color){f.emit();}
 pub fn fill_rect(f:&mut Surface,_x:i32,_y:i32,_w:i32,_h:i32,_c:Color){f.emit();}
@@ -91,7 +92,7 @@ for n in t.children {{let [x,y,bw,bh]=n.bounds;assert!(x>=0 && y>=0 && x+bw<=w a
             with self.subTest(app=name):
                 text = source(name)
                 # Run the exact terminal present/error block in a separate process.
-                tail = text[text.rindex('        win.present()'):] if '        win.present()' in text else text[text.rindex('  win.present()'):]
+                tail = text[text.rfind('\n', 0, text.rindex('win.present()')) + 1:]
                 tail = tail[:tail.rfind('}')].rstrip()
                 tail = tail[:tail.rfind('}')].rstrip()
                 code = 'struct Win;impl Win{fn present(&mut self)->Result<(), &str>{Err("latched GPU error")}}\nfn main(){let mut win=Win;\n' + tail + '\n}'
