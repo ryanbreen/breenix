@@ -6,6 +6,7 @@
 //! contract.
 
 mod init_services;
+mod init_bwm_environment;
 
 #[cfg(target_arch = "aarch64")]
 use libbreenix::fs;

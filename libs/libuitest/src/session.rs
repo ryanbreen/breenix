@@ -64,6 +64,15 @@ impl Session {
         }
         Ok(pid)
     }
+    /// Start init's real desktop inside a private session.
+    pub fn init_desktop() -> Result<Self, String> {
+        let mut session = Self::connect()?;
+        session.control.send(&Message::StartInitDesktop)?;
+        let pid = session.await_launch(&[b"/sbin/init", b"desktop"])?;
+        session.compositor = Some(pid);
+        session.wait_compositor_clock()?;
+        Ok(session)
+    }
     /// Include another relative pointer in the compositor's restricted selection.
     /// Its injector remains owned by the case and releases on descriptor close.
     pub fn start_compositor_with_pointer(&mut self, id: u32) -> Result<u64,String> {

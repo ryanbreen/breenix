@@ -169,14 +169,41 @@ fn kill_descendants() -> Result<(), String> {
     }
     Ok(())
 }
-fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mut connected: bool, compositor: Option<u64>, ownership: &mut Ownership, devices: &mut Option<Devices>) -> Result<(), String> {
+fn is_descendant(mut pid: u64, ancestor: u64) -> bool {
+    while pid > 1 && pid != ancestor {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else { return false };
+        let Some(parent) = stat.rsplit_once(") ").and_then(|(_, s)| s.split_whitespace().nth(1)).and_then(|s| s.parse().ok()) else { return false };
+        if parent == pid { return false; }
+        pid = parent;
+    }
+    pid == ancestor
+}
+fn teardown(channel: &mut Channel, outputs_state: &mut BTreeMap<u64, Output>, mut connected: bool, compositor: Option<u64>, init_desktop: bool, ownership: &mut Ownership, devices: &mut Option<Devices>) -> Result<(), String> {
     crate::startup::teardown(1);
     let watchdog = Watchdog::new(Wait::SupervisorTeardown)?;
     let end = watchdog.deadline_ms();
+    if init_desktop {
+        if let Some(pid) = compositor {
+            match signal::kill(pid as i32, signal::SIGKILL) {
+                Ok(()) | Err(Error::Os(Errno::ESRCH)) => {},
+                Err(error) => return Err(error.to_string()),
+            }
+            while outputs_state.get(&pid).is_some_and(|o| o.status.is_none()) {
+                outputs(outputs_state, channel, connected)?;
+                reap(channel, outputs_state, connected, None, ownership, true)?;
+                if now()? >= end { return Err("init outlived SIGKILL".into()); }
+                time::sleep_ms(1).map_err(|e| e.to_string())?;
+            }
+        }
+    }
     loop {
         kill_descendants()?;
         outputs(outputs_state, channel, connected)?;
-        let empty = reap(channel, outputs_state, connected, compositor, ownership, true)?;
+        let empty = reap(channel, outputs_state, connected, if init_desktop { None } else { compositor }, ownership, true)?;
+        if init_desktop && empty && ownership.owner() == Owner::CompositorAlive {
+            ownership.apply(Event::Died, &mut Display)?;
+            ownership.apply(Event::Recover, &mut Display)?;
+        }
         if ownership.owner() == Owner::SupervisorHolds {
             if let Some(pair) = devices.as_mut() {
                 pair.recover(process::getpid().map_err(|e| e.to_string())?.raw())?;
@@ -235,6 +262,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
     let mut environment: Option<SessionEnvironment> = None;
     let mut startup_record = None;
     let mut compositor = None;
+    let mut init_desktop = false;
     let mut devices = None;
     let mut ownership = Ownership::default();
     let result = (|| -> Result<(), String> {
@@ -284,7 +312,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                             .or_else(|| startup_phase_record(&environment, record.is_some())) {
                             let _ = io::write(Fd::STDOUT, line.as_bytes());
                         }
-                        if !stopped { teardown(&mut channel, &mut output, false, compositor, &mut ownership, &mut devices)?; }
+                        if !stopped { teardown(&mut channel, &mut output, false, compositor, init_desktop, &mut ownership, &mut devices)?; }
                         if let Some(config) = environment.take() { std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())?; }
                         evidence.release_remnants();
                         let reply = format!("{}done\n", record.unwrap_or_default());
@@ -306,13 +334,19 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
             if !stopped {
                 // Death is serviced before a queued input request, and re-grab is
                 // completed before Exited can be flushed to the case.
-                reap(&mut channel, &mut output, connected, compositor, &mut ownership, true)?;
+                reap(&mut channel, &mut output, connected, if init_desktop { None } else { compositor }, &mut ownership, true)?;
                 let pair = devices.as_mut().ok_or("session devices missing")?;
                 if ownership.owner() == Owner::SupervisorHolds {
                     pair.recover(process::getpid().map_err(|e| e.to_string())?.raw())?;
                 }
                 let kiosk_ready = compositor.and_then(|pid| output.get(&pid)).is_some_and(|o| o.input_ready);
-                pair.observe(compositor, kiosk_ready)?;
+                let input_compositor = if init_desktop {
+                    super::devices::runtime::status()?.and_then(|s| {
+                        let owner = u64::from(s.owner);
+                        compositor.filter(|&init| is_descendant(owner, init)).map(|_| owner)
+                    })
+                } else { compositor };
+                pair.observe(input_compositor, kiosk_ready)?;
                 pair.drain()?;
                 match if connected { channel.receive() } else { Ok(None) } {
                     Ok(Some(Message::Launch { argv, env })) => match launch(&argv, &env, 0, false) {
@@ -365,7 +399,8 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                             Err(error) => channel.queue(&Message::Error(error))?,
                         }
                     }
-                    Ok(Some(message @ (Message::StartCompositor { .. } | Message::StartCompositorWithPointer(_)))) => {
+                    Ok(Some(message @ (Message::StartCompositor { .. } | Message::StartCompositorWithPointer(_) | Message::StartInitDesktop))) => {
+                        let start_init = matches!(message, Message::StartInitDesktop);
                         let kiosk=matches!(message, Message::StartCompositor {kiosk:true});
                         let extra=if let Message::StartCompositorWithPointer(id)=message {Some(id)} else {None};
                         if compositor.is_some() { return Err("session compositor already started".into()); }
@@ -383,10 +418,13 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                             selection.extend_from_slice(format!(",{id}").as_bytes());
                         }
                         env.push(selection);
-                        let path = if kiosk { "/usr/libexec/breenix/kiosk_test" } else { "/usr/bin/bwm" };
+                        let path = if start_init { "/sbin/init" } else if kiosk { "/usr/libexec/breenix/kiosk_test" } else { "/usr/bin/bwm" };
                         let trace = crate::startup::Trace::open(Path::new(environment.as_ref().unwrap().config_root()))?;
                         trace.mark("compositor-request");
-                        let (pid, pipes) = launch(&[path.as_bytes().to_vec()], &env, 0, kiosk)?;
+                        let mut argv = vec![path.as_bytes().to_vec()];
+                        if start_init { argv.push(b"desktop".to_vec()); }
+                        let (pid, pipes) = launch(&argv, &env, 0, kiosk)?;
+                        init_desktop = start_init;
                         trace.mark("compositor-forked");
                         compositor = Some(pid);
                         ownership.apply(Event::Started, &mut Display)?;
@@ -407,7 +445,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
                         if stderr_request.is_some() || !output.contains_key(&pid) { return Err("invalid app stderr request".into()); }
                         stderr_request = Some(pid);
                     }
-                    Ok(Some(Message::Teardown)) => { teardown(&mut channel, &mut output, true, compositor, &mut ownership, &mut devices)?;
+                    Ok(Some(Message::Teardown)) => { teardown(&mut channel, &mut output, true, compositor, init_desktop, &mut ownership, &mut devices)?;
                         startup_record = startup_record.or_else(|| startup_phase_record(&environment, false));
                         crate::startup::teardown(5);
                         if let Some(config) = environment.take() { std::fs::remove_dir_all(config.config_root()).map_err(|e| e.to_string())?; }
@@ -457,7 +495,7 @@ pub fn serve(control: Fd, collector: Fd) -> i32 {
     })();
     if let Err(error) = &result { let _ = channel.send(&Message::Error(error.clone())); }
     let cleanup = if result.is_err() && !matches!(ownership.owner(), Owner::Initial | Owner::CaseEnd | Owner::RunnerHolds) {
-        teardown(&mut channel, &mut output, false, compositor, &mut ownership, &mut devices)
+        teardown(&mut channel, &mut output, false, compositor, init_desktop, &mut ownership, &mut devices)
     } else { Ok(()) };
     let device_cleanup = if let Some(pair) = devices { pair.destroy() } else { Ok(()) };
     let root_cleanup = if let Some(config) = environment {
