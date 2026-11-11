@@ -80,6 +80,7 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("save-fails-cleanly", "Failed save leaves file intact", guskit::save_fails_cleanly).session(libuitest::supervisor::serve),
         case("smb-save-open", "Save and reopen over SMB", guskit::smb_save_open).session(libuitest::supervisor::serve),
         case("smb-save-fails-cleanly", "Read-only SMB save fails cleanly", guskit::smb_save_fails_cleanly).session(libuitest::supervisor::serve),
+        case("smb-share-gone", "Disconnected SMB save fails cleanly", guskit::smb_share_gone).session(libuitest::supervisor::serve),
         case("open-malformed", "Malformed image leaves canvas intact", guskit::open_malformed).session(libuitest::supervisor::serve),
         case("quit-unsaved", "Confirm quitting unsaved changes", guskit::quit_unsaved).session(libuitest::supervisor::serve),
         case("shortcuts", "Tool and file shortcuts", guskit::shortcuts).session(libuitest::supervisor::serve),
@@ -87,5 +88,11 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
 ]).gui().defer_display();
 
 fn main() {
+    use std::os::fd::FromRawFd;
+    use libbreenix::{io, types::Fd};
+    if let Ok(fd) = io::fcntl(Fd::STDOUT, io::fcntl_cmd::F_DUPFD_CLOEXEC, 3) {
+        // SAFETY: fcntl returned a fresh owned descriptor.
+        let _ = guskit::SMB_RESTART_OUTPUT.set(unsafe { std::fs::File::from_raw_fd(fd as i32) });
+    }
     SUITE.with_evidence_upload().run()
 }

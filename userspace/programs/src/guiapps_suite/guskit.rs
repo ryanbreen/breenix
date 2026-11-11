@@ -297,3 +297,66 @@ pub fn smb_save_fails_cleanly() -> CaseResult {
     if std::fs::read("/mnt/guskit-ro/README.txt").map_err(|e| e.to_string())? != before { return Err("read-only save changed README.txt".into()); }
     Ok(t.finish()?)
 }
+
+pub(super) static SMB_RESTART_OUTPUT: std::sync::OnceLock<std::fs::File> = std::sync::OnceLock::new();
+// The restart helper consumes these serial requests; both actions share one format.
+const SMB_REQUEST: &str = "SUITE gui-apps SMB{} guskit/smb-share-gone seq={}";
+fn smb_request(action: &str, seq: u64) -> Result<(), String> {
+    use std::io::Write;
+    let mut output = SMB_RESTART_OUTPUT.get().ok_or("missing SMB restart output")?;
+    let line = format!("{}\n", SMB_REQUEST.replace("SMB{}", &format!("SMB{action}")).replace("{}", &seq.to_string()));
+    output.write_all(line.as_bytes()).map_err(|e| e.to_string())
+}
+
+fn wait_share(path: &str, stopped: bool) -> Result<(), String> {
+    let path = path.to_owned();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || loop {
+        let result = std::fs::read_dir(&path).and_then(|entries| entries.collect::<Result<Vec<_>, _>>());
+        match result {
+            Ok(_) if !stopped => { let _ = tx.send(Ok(())); return; }
+            Err(e) if stopped && e.raw_os_error() == Some(5) => { let _ = tx.send(Ok(())); return; }
+            Err(e) if e.raw_os_error() != Some(5) => { let _ = tx.send(Err(e.to_string())); return; }
+            _ => ()
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    });
+    rx.recv_timeout(std::time::Duration::from_secs(10)).map_err(|_| "SMB listing hang watchdog expired".to_string())?
+}
+
+pub fn smb_share_gone() -> CaseResult {
+    require_shares()?;
+    let seq = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| e.to_string())?.as_micros() as u64;
+    let dir = format!("/mnt/guskit-rw/guskit-{}-{seq}", std::process::id());
+    std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
+    let file = format!("{dir}/drawing.png");
+    let mut t = launch()?;
+    stroke(&mut t, 10)?;
+    save_as(&mut t, &file)?;
+    t.wait_node("status", |v| v["file"] == file && v["dirty"] == false && v["message"] == "Saved")?;
+    let before = std::fs::read(&file).map_err(|e| e.to_string())?;
+    let names = directory_names(&dir)?;
+    close_saved(&mut t)?;
+    t.launch_next(&[b"/usr/bin/guskit", b"--canvas", b"200x120", file.as_bytes()], "Gus Kit")?;
+    t.wait_node("status", |v| v["file"] == file && v["dirty"] == false)?;
+    stroke(&mut t, 20)?;
+    t.wait_node("status", |v| v["dirty"] == true)?;
+    smb_request("STOP", seq)?;
+    // Always request recovery on an early error; the host helper also restores on exit.
+    struct Restart(Option<u64>);
+    impl Drop for Restart { fn drop(&mut self) { if let Some(seq) = self.0 { let _ = smb_request("START", seq); } } }
+    let mut restart = Restart(Some(seq + 1));
+    wait_share(&dir, true)?;
+    t.key(31, &[Modifier::Ctrl])?;
+    t.wait_node("status", |v| v["dirty"] == true && v["message"].as_str().is_some_and(|s| !s.is_empty() && s != "Saved"))?;
+    smb_request("START", seq + 1)?;
+    restart.0 = None;
+    wait_share(&dir, false)?;
+    // tests/atomic_file.rs exercises faults at each save step; this is the app path.
+    if std::fs::read(&file).map_err(|e| e.to_string())? != before { return Err("failed save changed drawing".into()); }
+    if directory_names(&dir)? != names { return Err("failed save changed directory entries".into()); }
+    t.finish()?;
+    std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(())
+}
