@@ -207,9 +207,8 @@ pub fn undo_ownership() -> CaseResult {
     script.undo(&mut t, HOST, false)?;
     script.converge(&mut t, &[HOST, PEER])?;
     script.undo(&mut t, HOST, true)?;
-    script.converge(&mut t, &[HOST, PEER])?;
-    let (expected, _)=script.replay(&mut t,&[HOST,PEER])?;
-    attach(&mut t,HOST)?;
+    let (expected, globals)=script.replay(&mut t,&[HOST,PEER])?;
+    for owner in [PEER,HOST] { check_peer(&mut t,owner,&expected,&globals)?; }
     t.key(48,&[])?; // Brush: many segments must remain one Undo gesture.
     t.drag("canvas",(10,40),&vec![(1,0);59])?;
     t.wait_node("status",|v|v["undo"]==1)?;
