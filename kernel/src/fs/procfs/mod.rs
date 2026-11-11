@@ -1574,7 +1574,7 @@ fn generate_mounts() -> String {
         out.push_str(&format!("none {} {} {} 0 0\n", mount_path, fs_type, flags.options()));
     }
 
-    // If no mounts are registered yet, return an empty string
+    crate::fs::ufs::append_mounts(&mut out);
     out
 }
 
