@@ -1473,7 +1473,7 @@ negative control: the device reports no resource identity and it is observed as 
   real code paths, disarmed at case end by the suite. Point 34 `launch-fork-fail` refuses the next fork admission for its target process (or any caller when target is zero), once. GPU points 19–31 have the exact
   definitions in `gpu-abi.md`, including point 31's pending-fence depth mode used by the
   render-handoff check. All watchdog and kill bounds remain unchanged.
-- Outside `init suite` launches, `init`, running as PID 1, checks that every op returns ENOSYS and prints
+- Outside `init suite` launches, `init`, running as PID 1, checks that ops 0 through 5 return ENOSYS and prints
   `[init] test controls absent`; run as a child it prints `[init] not PID 1: test-control check skipped`
   and makes no absence claim. `init suite` skips the absence check because suite launches intentionally
   enable test controls.
