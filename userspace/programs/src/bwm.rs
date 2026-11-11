@@ -858,7 +858,7 @@ fn main() {
                         if let Some(draw_ns) = taskbar_prepare_ns.take() {
                             let prepare_ns = gpu.last_timing.prepare_ns;
                             let period_ns = gpu.last_timing.period_ns;
-                            if period_ns != 0 && draw_ns.saturating_add(prepare_ns) >= period_ns {
+                            if draw_ns >= 100_000_000 || (period_ns != 0 && draw_ns.saturating_add(prepare_ns) >= period_ns) {
                                 use std::io::Write;
                                 if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
                                     let _ = writeln!(evidence, "VALUE bwm-taskbar-overrun draw_ns={} prepare_ns={} period_ns={} serial={}", draw_ns, prepare_ns, period_ns, gpu.last_serial);

@@ -1449,6 +1449,7 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
         c.command(ANIMATE, 1, 0)?;
     }
     let mut samples = Vec::new();
+    let mut failure_exported = false;
     let mut receipt_serial = 0;
     let w = c.info()?;
     for n in 0..110 {
@@ -1483,7 +1484,19 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
         }
         check(r.ns >= begin, "completion predates injected input")?;
         if n >= 10 {
-            samples.push((r.ns - begin) / 1000);
+            let elapsed_us = (r.ns - begin) / 1000;
+            samples.push(elapsed_us);
+            // Preserve the offending input before later animation evicts its
+            // pipeline records. Output starts only after this sample has failed.
+            let max_us = if animation { 100000 } else { 50000 };
+            if elapsed_us > max_us && !failure_exported {
+                value("first-slow-sample", n as i64, "index", None);
+                value("first-slow-input", begin as i64, "ns", None);
+                value("first-slow-completion", r.ns as i64, "ns", None);
+                value("first-slow-latency", elapsed_us as i64, "us", None);
+                failure_pipeline();
+                failure_exported = true;
+            }
         }
         let spent = (now() - begin) / 1_000_000;
         if spent < 50 {
@@ -1506,7 +1519,7 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
         Some((0, median_bound)),
     );
     value("latency-max", max as i64, "us", Some((0, max_bound)));
-    if median > median_bound as u64 || max > max_bound as u64 { failure_pipeline(); }
+    if !failure_exported && (median > median_bound as u64 || max > max_bound as u64) { failure_pipeline(); }
     check(
         median <= median_bound as u64 && max <= max_bound as u64,
         "input-to-composited-ack latency exceeds the GUI plan bound",
