@@ -298,6 +298,44 @@ mod tests {
     use breengel::{Delivered, Modifiers};
 
     #[test]
+    fn save_as_navigates_and_rejects_unsupported_names() {
+        let dir = std::env::temp_dir().join(format!("guskit-save-as-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        let image = Canvas::new(8, 8);
+        let mut app = App { width:8,height:8,clean:image.digest(),history:History::new(image),
+            tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
+            confirm:false,quit:false,file:Some(dir.join("a.png")),message:String::new(),picker:None,directory:PathBuf::from("."),palette:None,canvas_surface:None };
+        let mut menu = menu();
+        let key = |app: &mut App, menu: &mut MenuBar, keycode, ascii, modifiers| {
+            let event = Delivered { serial:1,time_ns:1,clicks:0, event:Event::KeyPress {
+                ascii, keycode, modifiers, text:String::new(), repeat:false } };
+            handle(app, menu, &event);
+        };
+        let shortcut = Modifiers { ctrl:true, shift:true, ..Modifiers::default() };
+        key(&mut app, &mut menu, 31, 0, shortcut);
+        assert!(app.picker.is_some(), "Save As opens the picker");
+        key(&mut app, &mut menu, 108, 0, Modifiers::default());
+        key(&mut app, &mut menu, 28, 0, Modifiers::default());
+        assert_eq!(app.directory, dir.join("sub"));
+        key(&mut app, &mut menu, 15, 0, Modifiers::default());
+        for byte in b"/b.png" { key(&mut app, &mut menu, 0, *byte, Modifiers::default()); }
+        key(&mut app, &mut menu, 28, 0, Modifiers::default());
+        let path = dir.join("sub/b.png");
+        assert!(std::fs::read(&path).unwrap().starts_with(b"\x89PNG\r\n\x1a\n"));
+        assert_eq!(app.file.as_ref(), Some(&path));
+        assert_eq!(app.message, "Saved");
+        key(&mut app, &mut menu, 31, 0, shortcut);
+        key(&mut app, &mut menu, 15, 0, Modifiers::default());
+        for byte in b"/bad.txt" { key(&mut app, &mut menu, 0, *byte, Modifiers::default()); }
+        key(&mut app, &mut menu, 28, 0, Modifiers::default());
+        assert!(!dir.join("sub/bad.txt").exists());
+        assert_ne!(app.message, "Saved");
+        assert_eq!(app.file.as_ref(), Some(&path));
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn passive_events_acknowledge_without_repainting_and_strokes_still_preview() {
         let image = Canvas::new(200, 120);
         let mut app = App { width:200,height:120,clean:image.digest(),history:History::new(image),
