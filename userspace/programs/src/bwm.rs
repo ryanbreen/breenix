@@ -155,7 +155,7 @@ fn main() {
     // Prepare the same clock snapshot that draw_taskbar will use.
     // Establish libgfx's context before reserving the compositor's next context.
     if let Err(error) = libgfx::stage::context() {
-        eprintln!("[bwm] ERROR: font renderer could not be initialized: {error}");
+        eprintln!("[bwm] ERROR: font renderer could not be initialized: {error:?}");
         process::exit(1);
     }
     let (opened, mut ui_font, claim_epoch, scene_fd, mut desktop_tree, mut clock_wake) = std::thread::scope(|scope| {

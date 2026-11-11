@@ -10,7 +10,7 @@ class ClockRegion(unittest.TestCase):
   body=item(s,'pub(super) fn redraw_clock(') if 'fn redraw_clock(' in s else 'pub(super) fn redraw_clock(fb:&mut Surface,text:&[u8],font:&mut Option<CachedFont>){draw_taskbar(fb,text,font)}'
   run_rust(self,r'''
 #[derive(Clone,Copy,Debug,PartialEq)]struct Rect{x:i32,y:i32,w:i32,h:i32}impl Rect{fn new(x:i32,y:i32,w:i32,h:i32)->Self{Self{x,y,w,h}}}
-pub mod libgfx{pub use super::Rect;}
+pub mod libgfx{pub mod surface{pub use super::super::Rect;}}
 const TASKBAR_HEIGHT:usize=28;fn px(n:usize)->usize{n*2}
 struct Surface{width:usize,clip:Rect,saved:Vec<Rect>,pixels:Vec<u8>,label_draws:usize,clock_draws:usize}
 impl Surface{fn width(&self)->usize{self.width}fn push_clip(&mut self,r:Rect){self.saved.push(self.clip);self.clip=r}fn pop_clip(&mut self){self.clip=self.saved.pop().unwrap()}}
