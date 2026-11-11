@@ -272,9 +272,12 @@ fn readback(caller: &Caller, arg: u64, rb: &mut Readback) -> Result<u64, i32> {
     }
     {
         let reg = REGISTRY.lock();
-        // A new claimant or an in-flight composite has no completed result yet
-        // (§20.1). Refuse before pinning startup scanout and delaying its producer.
-        if reg.present.busy || reg.claim.is_some_and(|claim| reg.present.serial == claim.first_serial) {
+        // Do not pin raw startup scanout before this claim has a completed frame.
+        // Once it has one, the GPU core serializes observation with writers and
+        // pins the actual binding. Rejecting every busy admission here can starve
+        // observers of a continuously updating desktop despite completed frames.
+        if reg.claim.is_some_and(|claim| !reg.present.records.iter()
+            .any(|record| record.serial > claim.first_serial && record.flags == 0)) {
             return Err(breengel_abi::errno::EAGAIN);
         }
     }

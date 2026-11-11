@@ -1072,6 +1072,7 @@ pub fn restart_adopts() -> CaseResult {
     content(&mut d, &c)?;
     c.child.freeze()?;
     d.wm.stop()?;
+    value("reap-elapsed", d.wm.reap_ns as i64, "ns", None);
     let mut next = Desktop::start()?;
     next.shown(&c)?.client(&c)
 }
@@ -1128,7 +1129,11 @@ pub fn supervisor_restarts() -> CaseResult {
     until(2000, "production desktop supervisor restarts bwm", || {
         Ok(children(d.wm.pid, "bwm")?.iter().any(|p| *p != old))
     })?;
-    content(&mut d, &c)?;
+    let observed = content(&mut d, &c);
+    if observed.is_ok() {
+        value("replacement-observation-elapsed", d.shown_ns as i64, "ns", None);
+    }
+    observed?;
     // Retain both process timelines, including the replacement on a passing
     // run, so startup margin is measured without another boot.
     d.report_startup();
@@ -1379,6 +1384,8 @@ pub fn frame_floor() -> CaseResult {
     value("presentation-span", rate.as_ref().map_or(0, |r| r.span_ns) as i64, "ns", None);
     value("composites-per-second", hz, "hz", Some((60, i64::MAX)));
     if !rate.as_ref().is_some_and(|r| r.passes) {
+        value("first-endpoint-gap", times.iter().min().map_or(0, |first| first.saturating_sub(begin)) as i64, "ns", None);
+        value("last-endpoint-gap", times.iter().max().map_or(0, |last| end.saturating_sub(*last)) as i64, "ns", None);
         failure_pipeline();
         let gap = times.windows(2).map(|w| w[1].saturating_sub(w[0])).max().unwrap_or(0);
         value("presentation-gap-max", gap as i64, "ns", None);

@@ -29,10 +29,12 @@ pub fn until_from(
 ) -> Result<(), String> {
     let end = begin + ms * 1_000_000;
     loop {
-        if test()? {
+        let matched = test()?;
+        let observed = now();
+        if matched && observed <= end {
             return Ok(());
         }
-        if now() >= end || case_ms_left() < 200 {
+        if observed >= end || case_ms_left() < 200 {
             return Err(format!("{what}: no acknowledgment within {ms} ms"));
         }
         pause();
@@ -42,6 +44,7 @@ pub fn until_from(
 pub struct Child {
     pub pid: i32,
     reaped: bool,
+    pub reap_ns: u64,
 }
 impl Child {
     pub fn signal(&self, sig: i32) -> Result<(), String> {
@@ -85,10 +88,9 @@ impl Child {
         #[cfg(target_arch = "aarch64")]
         let requested_ns = now();
         self.signal(signal::SIGKILL)?;
-        #[cfg(target_arch = "aarch64")]
         let returned_ns = now();
         let mut result = None;
-        until(500, "reap owned process", || {
+        until_from(returned_ns, 500, "reap owned process", || {
             result = self.status()?;
             Ok(result.is_some())
         }).map_err(|error| {
@@ -113,6 +115,7 @@ impl Child {
             }
             error
         })?;
+        self.reap_ns = now().saturating_sub(returned_ns);
         let status = result.unwrap();
         if status & 127 != signal::SIGKILL {
             return Err(format!(
@@ -127,6 +130,7 @@ impl From<Pid> for Child {
         Self {
             pid: pid.raw() as i32,
             reaped: false,
+            reap_ns: 0,
         }
     }
 }
@@ -363,13 +367,25 @@ pub struct Screen {
 }
 impl Screen {
     pub fn read() -> Result<Self, String> {
+        let mut screen = None;
+        Self::read_into(&mut screen)?;
+        Ok(screen.unwrap())
+    }
+    fn read_into(screen: &mut Option<Self>) -> Result<&Self, String> {
         let mode = gpu::current_mode().map_err(|e| format!("CURRENT_MODE: {e}"))?;
-        let mut s = Self {
+        let s = screen.get_or_insert_with(|| Self {
             pixels: vec![0; (mode.width * mode.height * 4) as usize],
             record: [0; 1024],
             width: mode.width,
             height: mode.height,
-        };
+        });
+        if (s.width, s.height) != (mode.width, mode.height) {
+            s.pixels.resize((mode.width * mode.height * 4) as usize, 0);
+            (s.width, s.height) = (mode.width, mode.height);
+        }
+        // A refused readback does not publish any pixels or provenance. Reuse
+        // storage, then validate each successful device observation afresh.
+        s.record.fill(0);
         let mut r = abi::Readback::ZERO;
         r.dst = s.pixels.as_mut_ptr() as u64;
         r.dst_len = s.pixels.len() as u64;
@@ -461,12 +477,14 @@ pub struct Desktop {
     pub height: u32,
     pub scale: i32,
     startup: StartupTrace,
+    pub shown_ns: u64,
 }
 
 // Retain the last observation without printing or formatting on a successful poll.
 // A failed wait reports both readback refusal and the last completed binding.
 #[derive(Default)]
 struct WaitObservation {
+    screen: Option<Screen>,
     error: Option<String>,
     record: Option<[u8; 1024]>,
     pixel: Option<u32>,
@@ -486,8 +504,8 @@ pub fn failure_diagnostic(label: &str, text: &str) {
     }
 }
 impl WaitObservation {
-    fn read(&mut self) -> Result<Screen, String> {
-        match Screen::read() {
+    fn read(&mut self) -> Result<&Screen, String> {
+        match Screen::read_into(&mut self.screen) {
             Ok(s) => {
                 self.record = Some(s.record);
                 self.pixel = s.pixel(s.width as i32 / 2, 1).ok();
@@ -560,6 +578,7 @@ impl Desktop {
             height: mode.height,
             scale: mode.scale as i32,
             startup,
+            shown_ns: 0,
         };
         let mut observation = WaitObservation::default();
         let ready = until(4000, "bwm first completed desktop", || {
@@ -621,10 +640,11 @@ impl Desktop {
         self.shown_after(c, c.commit)
     }
     pub fn shown_after(&mut self, c: &Client, commit: u64) -> Result<Screen, String> {
+        let began_ns = now();
         let mut result = None;
         let mut observation = WaitObservation::default();
-        until(
-            2000,
+        until_from(
+            began_ns, 2000,
             &format!("bwm composite of client {} commit {}", c.id, commit),
             || {
                 if let Some(status) = self.wm.status()? {
@@ -633,16 +653,16 @@ impl Desktop {
                         self.output()
                     ));
                 }
-                match observation.read() {
-                    Ok(s) if s.contains(c.id, commit) => {
-                        result = Some(s);
-                        Ok(true)
-                    }
-                    _ => Ok(false),
+                if observation.read().is_ok_and(|s| s.contains(c.id, commit)) {
+                    result = observation.screen.take();
+                    Ok(true)
+                } else {
+                    Ok(false)
                 }
             },
         )
         .map_err(|e| {
+            failure_diagnostic("shown-time", &format!("begin_ns={began_ns} end_ns={} deadline_ns=2000000000", now()));
             let detail = format!("{}; {}", observation.failure(), self.output());
             if let Ok(counters) = std::fs::read_to_string("/proc/trace/counters") {
                 for line in counters.lines().filter(|line| line.contains("gpu_wait_") || line.contains("gpu_read_") || line.contains("gpu_irq_masked") || line.contains("GPU_MASKED")) {
@@ -653,6 +673,7 @@ impl Desktop {
             failure_diagnostic("shown", &format!("{e}; {detail}"));
             format!("{e}; {detail}")
         })?;
+        self.shown_ns = now().saturating_sub(began_ns);
         Ok(result.unwrap())
     }
     pub fn pointer(&self, x: i32, y: i32, buttons: u32, wheel: i32) -> Result<(), String> {

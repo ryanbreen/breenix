@@ -162,10 +162,13 @@ fn main() {
         let font = scope.spawn(|| {
             libuitest::startup::mark("startup-font-begin");
             let config = FontConfig::load();
+            libuitest::startup::mark("font-config-ready");
             print!("[bwm] fonts {config:?}\n");
-            let mut font = std::fs::read(&config.display_path).ok()
-                .and_then(|data| Font::parse(&data).ok())
-                .map(|f| {
+            let data = std::fs::read(&config.display_path).ok();
+            libuitest::startup::mark("font-file-ready");
+            let parsed = data.and_then(|data| Font::parse(&data).ok());
+            libuitest::startup::mark("font-parse-ready");
+            let mut font = parsed.map(|f| {
                     let mut font = CachedFont::new(f, 256);
                     font.observe_phases(libuitest::startup::mark);
                     font
@@ -332,6 +335,7 @@ fn main() {
                 measure_check(|| gpu.check(0, &[], cursor_pointer(first_pointer)))
             })
     });
+    libuitest::startup::mark("startup-workers-return");
     if let Err(error) = prepared {
         eprintln!("[bwm] title coverage warm-up unavailable: {error}");
     }
