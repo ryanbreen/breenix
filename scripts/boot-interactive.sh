@@ -27,6 +27,7 @@
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
 #   --serial-log FILE    also write everything the guest prints to FILE (default: a unique file under $TMPDIR/breenix-boot/)
+#   --until-desktop-ready  stop with a verdict when desktop stages complete (desktop mode only)
 #   --idle-exit SECONDS  stop the VM after this many seconds without new serial output (default 300; 0 turns it off)
 #   --gate-timeout SECONDS  per-suite DONE deadline (default 1800), even with --idle-exit 0
 #   BREENIX_SUITE_HOLD    suite panel hold after a 2 s render delay (default 5 s)
@@ -76,6 +77,7 @@ SCREEN_CAPTURE=
 QMP_SOCKET=
 QMP_REQUESTED=0
 GPU_GL=0
+UNTIL_DESKTOP_READY=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -103,6 +105,7 @@ while [ "$#" -gt 0 ]; do
         --build-only) BUILD_ONLY=1; shift ;;
         --cpus) CPUS="$2"; shift 2 ;;
         --gpu-gl) GPU_GL=1; shift ;;
+        --until-desktop-ready) UNTIL_DESKTOP_READY=1; shift ;;
         -h|--help) sed -n '2,/^# --help/p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
@@ -113,6 +116,7 @@ case "$MODE" in
     tests|probe|shell|desktop|program|suite) ;;
     *) echo "unknown mode: $MODE (expected tests, probe, shell, desktop, program or suite)" >&2; exit 2 ;;
 esac
+[ "$UNTIL_DESKTOP_READY" -eq 0 ] || [ "$MODE" = desktop ] || { echo "--until-desktop-ready requires desktop mode" >&2; exit 2; }
 case "$SCREEN_CHECKPOINTS" in on|off) ;; *) echo "--screen-checkpoints needs on or off" >&2; exit 2 ;; esac
 if [ "$MODE" = program ]; then
     case "$PROGRAM" in
@@ -491,7 +495,9 @@ WATCH_MODE=$MODE
 if [ "$MODE" = program ] && [ -n "$TERMINAL_PROFILE" ]; then
     WATCH_MODE=default
 fi
-python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$WATCH_MODE" \
+WATCH_READY_ARGS=()
+[ "$UNTIL_DESKTOP_READY" -eq 0 ] || WATCH_READY_ARGS=(--until-desktop-ready)
+python3 "$ROOT/scripts/watch-qemu.py" "${WATCH_READY_ARGS[@]}" --serial "$SERIAL_LOG" --mode "$WATCH_MODE" \
     --suite "$SUITE" --case "$ONLY" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
     -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m 512 -smp "$CPUS" \
     -kernel "$KERNEL" \
