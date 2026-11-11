@@ -12,7 +12,7 @@ class FontOverlap(unittest.TestCase):
         old = os.environ.get('UITEST_OLD_COMMIT')
         source = subprocess.check_output(['git','show',f'{old}:{rel}'], cwd=ROOT, text=True) if old else (ROOT/rel).read_text()
         block = source[source.index('    // The GPU core composes the desktop'):source.index('    let mut windows:')]
-        if source.index('    let claim_epoch = match session::claim()') < source.index('    // The GPU core composes the desktop'):
+        if '    let claim_epoch = match session::claim()' in source and source.index('    let claim_epoch = match session::claim()') < source.index('    // The GPU core composes the desktop'):
             block = 'let claim_epoch=session::claim().unwrap();let scene_fd=0;let mut desktop_tree:Option<desktop_publish::Publisher>=None;let mut clock_wake:Option<()>=None;let _=clock.participate();\n'+block
         run_rust(self, r'''
 use std::sync::{Mutex,mpsc::{channel,Sender,Receiver}};
@@ -43,6 +43,7 @@ impl Compositor{fn open(w:u32,h:u32,appbar:u32,scale:u32)->Result<Self,String>{
  assert!(DEVICE_READY.load(std::sync::atomic::Ordering::Relaxed),"font context must exist before reserving the compositor context");
  Ok(Self{background:Surface})
 }
+fn open_during<T>(w:u32,h:u32,appbar:u32,scale:u32,ready:impl FnOnce()->T)->(Result<Self,String>,T){(Self::open(w,h,appbar,scale),ready())}
 fn paint_background(&mut self)->Result<(),String>{paint_background(&mut self.background);Ok(())}
 }
 #[derive(Debug)]struct FontConfig{display_path:String}

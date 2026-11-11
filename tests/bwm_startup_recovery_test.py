@@ -55,7 +55,7 @@ fn warm(prepared:Result<(),&str>){@BLOCK@}
  def test_recovery_retries_only_presentation_errors(self):
   path=ROOT/'userspace/programs/src/bwm/startup_prepare.rs'
   run_rust(self,r'''
-#[path="@PATH@"]mod startup;
+#[path="@PATH@"]pub mod startup;
 #[test]fn strict_session_does_not_retry(){let mut calls=0;let r:Result<Result<u64,&str>,&str>=startup::recover(Err("present"),true,|_|{calls+=1;Ok(Ok(4096000))});assert_eq!(r,Err("present"));assert_eq!(calls,0);}
 #[test]fn persistent_refusal_stops_reopening(){let mut calls=0;let r:Result<(),&str>=startup::recover(Err("not display owner"),false,|_|{calls+=1;assert!(calls<=2,"persistent refusal reopened a third context");Err("still refused")});assert_eq!(r,Err("still refused"));assert_eq!(calls,2);}
 #[test]fn production_retries_then_checks(){let mut calls=0;let r:Result<Result<u64,&str>,&str>=startup::recover(Err("present"),false,|_|{calls+=1;if calls==1{Err("present again")}else{Ok(Ok(4096000))}});assert_eq!(r,Ok(Ok(4096000)));assert_eq!(calls,2);let mut retries=0;let r:Result<Result<u64,&str>,&str>=startup::recover(Ok(Err("pixel mismatch")),false,|_|{retries+=1;Ok(Ok(4096000))});assert_eq!(r,Ok(Err("pixel mismatch")));assert_eq!(retries,0);let(prepared,checked)=startup::during(||Ok(()),||7);assert_eq!((prepared,checked),(Ok(()),7));}

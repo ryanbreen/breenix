@@ -184,17 +184,21 @@ fn main() {
             libuitest::startup::mark("fonts-ready");
             font
         });
-        // bwm composes the windows as the compositor (window op 17's claim) and display owner.
-        let claim_epoch = match session::claim() {
-            Ok(epoch) => {
-                print!("[bwm] compositor claim: epoch {}\n", epoch);
-                epoch
-            }
-            Err(e) => {
-                print!("[bwm] ERROR: GPU compositing required: the compositor claim failed: {}\n", e);
-                process::exit(1);
-            }
-        };
+        // Target storage needs no compositor context. Allocate it while the
+        // claim warms the reserved renderer, then transfer that context once ready.
+        let claim = scope.spawn(session::claim);
+        let (opened, claim_epoch) = Compositor::open_during(
+            screen_w as u32, screen_h as u32, px(APPBAR_HEIGHT) as u32, ui().scale as u32,
+            || match claim.join().expect("compositor claim worker panicked") {
+                Ok(epoch) => {
+                    print!("[bwm] compositor claim: epoch {}\n", epoch);
+                    epoch
+                }
+                Err(e) => {
+                    print!("[bwm] ERROR: GPU compositing required: the compositor claim failed: {}\n", e);
+                    process::exit(1);
+                }
+            });
         clock.participate().expect("UI clock participant registration failed");
         let clock_wake = clock_wake::open().expect("UI clock wake setup failed");
         let scene_fd = match session::scene_fd() {
@@ -213,12 +217,11 @@ fn main() {
             }
         };
         libuitest::startup::mark("scene-ready");
-        let opened = Compositor::open(screen_w as u32, screen_h as u32, px(APPBAR_HEIGHT) as u32, ui().scale as u32)
-            .and_then(|mut gpu| {
-                gpu.paint_background()?;
-                libuitest::startup::mark("background-ready");
-                Ok(gpu)
-            });
+        let opened = opened.and_then(|mut gpu| {
+            gpu.paint_background()?;
+            libuitest::startup::mark("background-ready");
+            Ok(gpu)
+        });
         libuitest::startup::mark("targets-ready");
         (opened, font.join().expect("startup font worker panicked"), claim_epoch, scene_fd, desktop_tree, clock_wake)
     });

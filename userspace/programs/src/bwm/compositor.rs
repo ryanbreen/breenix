@@ -197,7 +197,7 @@ pub struct Compositor {
 impl Drop for Compositor {
     fn drop(&mut self) {
         self.destroy_targets();
-        gpu::context_destroy(self.context);
+        if self.context != 0 { gpu::context_destroy(self.context); }
     }
 }
 
@@ -206,10 +206,28 @@ impl Compositor {
     /// scanout targets, each cleared by a completed GPU clear, and the desktop and background
     /// targets, which the caller draws. The pointer is drawn at `scale` pixels per bitmap cell.
     pub fn open(width: u32, height: u32, appbar_height: u32, scale: u32) -> Result<Self, String> {
+        Self::open_during(width, height, appbar_height, scale, || ()).0
+    }
+
+    /// Allocate context-independent targets while the caller's renderer claim is pending.
+    /// Only after `ready` returns may CONTEXT_CREATE consume the reserved renderer.
+    pub fn open_during<T>(width: u32, height: u32, appbar_height: u32, scale: u32,
+        ready: impl FnOnce() -> T,
+    ) -> (Result<Self, String>, T) {
+        let allocated = Self::allocate(width, height, appbar_height, scale);
+        let ready = ready();
+        let opened = allocated.and_then(|mut c| {
+            libuitest::startup::mark("context-begin");
+            c.context = gpu::context_create().map_err(|e| format!("context: errno {}", -e))?;
+            libuitest::startup::mark("context-ready");
+            c.clear_targets()?;
+            Ok(c)
+        });
+        (opened, ready)
+    }
+
+    fn allocate(width: u32, height: u32, appbar_height: u32, scale: u32) -> Result<Self, String> {
         wait_for_admission()?;
-        libuitest::startup::mark("context-begin");
-        let context = gpu::context_create().map_err(|e| format!("context: errno {}", -e))?;
-        libuitest::startup::mark("context-ready");
         let desktop = Surface::new(width as usize, height as usize, Format::BGRX);
         libuitest::startup::mark("desktop-target-ready");
         let background = Surface::new(width as usize, height as usize, Format::BGRX);
@@ -217,12 +235,11 @@ impl Compositor {
         let (desktop, background) = match (desktop, background) {
             (Ok(d), Ok(b)) => (d, b),
             (d, b) => {
-                gpu::context_destroy(context);
                 return Err(format!("desktop targets: {:?}", d.err().or(b.err())));
             }
         };
         let mut c = Self {
-            context,
+            context: 0,
             width,
             height,
             scene: 0,
@@ -265,6 +282,10 @@ impl Compositor {
         libuitest::startup::mark("scene-target-ready");
         self.next = 0;
         self.full = true;
+        Ok(())
+    }
+
+    fn clear_targets(&mut self) -> Result<(), String> {
         let mut words = Vec::new();
         for t in [self.scanout[0], self.scanout[1], self.scene] {
             encode::begin(&mut words, t);
