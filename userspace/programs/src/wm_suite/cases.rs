@@ -1281,30 +1281,35 @@ pub fn memory_bounded() -> CaseResult {
     for n in 1..=60 {
         receipt_serial = receipt_serial.max(measure::epoch(&mut clock, &mut clients, n, true)?);
     }
-    let before = rss(d.wm.pid)?;
+    let (before, before_status) = rss(d.wm.pid)?;
     for n in 61..=660 {
         receipt_serial = receipt_serial.max(measure::epoch(&mut clock, &mut clients, n, true)?);
     }
     measure::observed(&mut d, &clients.iter().collect::<Vec<_>>(), receipt_serial)?;
-    let after = rss(d.wm.pid)?;
+    let (after, after_status) = rss(d.wm.pid)?;
     value(
         "resident-growth",
         after - before,
         "kb",
         Some((i64::MIN, 64)),
     );
+    if after > before + 64 {
+        failure_diagnostic("rss-before", &before_status);
+        failure_diagnostic("rss-after", &after_status);
+    }
     check(
         after <= before + 64,
         "bwm resident memory grew more than 64 KiB after warmup",
     )
 }
-fn rss(pid: i32) -> Result<i64, String> {
+fn rss(pid: i32) -> Result<(i64, String), String> {
     let text = std::fs::read_to_string(format!("/proc/{pid}/status")).map_err(|e| e.to_string())?;
-    text.lines()
+    let resident = text.lines()
         .find_map(|s| s.strip_prefix("VmRSS:"))
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse().ok())
-        .ok_or("VmRSS is missing".into())
+        .ok_or_else(|| String::from("VmRSS is missing"))?;
+    Ok((resident, text))
 }
 
 pub fn present_latency() -> CaseResult {

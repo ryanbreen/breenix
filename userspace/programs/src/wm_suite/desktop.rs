@@ -355,7 +355,10 @@ impl Screen {
         if !window::validate_scanout_observation(
             &s.record, s.width, s.height, window::ObservationKind::Composed,
         ) {
-            return Err("scanout lacks its complete v2 dimensions, binding, native readback and present completion".into());
+            return Err(format!("invalid scanout: backend={} flags={} context={} serial={} size={}x{} render={:x}/{:x} read={:x}/{:x} present={:x}",
+                word(&s.record, 16), word(&s.record, 24), quad(&s.record, 64), s.serial(),
+                word(&s.record, 40), word(&s.record, 44), word(&s.record, 112), word(&s.record, 116),
+                word(&s.record, 128), word(&s.record, 132), word(&s.record, 192)));
         }
         Ok(s)
     }
@@ -418,6 +421,20 @@ struct WaitObservation {
     error: Option<String>,
     record: Option<[u8; 1024]>,
     pixel: Option<u32>,
+}
+
+/// Failure records bypass the case verdict's short message field.
+pub fn failure_diagnostic(label: &str, text: &str) {
+    use std::io::Write;
+    if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
+        for line in text.lines() {
+            let chars: Vec<_> = line.chars().collect();
+            for chunk in chars.chunks(160) {
+                let chunk: String = chunk.iter().collect();
+                let _ = writeln!(evidence, "VALUE wm-{label} {chunk}");
+            }
+        }
+    }
 }
 impl WaitObservation {
     fn read(&mut self) -> Result<Screen, String> {
@@ -495,7 +512,11 @@ impl Desktop {
                     && s.pixel(d.width as i32 / 2, 1).ok() == Some(0xff14161e)
             }))
         });
-        ready.map_err(|e| format!("{e}; previous context={previous_context}; {}; {}", observation.failure(), d.output()))?;
+        ready.map_err(|e| {
+            let detail = format!("previous context={previous_context}; {}; {}", observation.failure(), d.output());
+            failure_diagnostic("ready", &detail);
+            format!("{e}; {detail}")
+        })?;
         if supervised {
             until(
                 2000,
@@ -550,7 +571,11 @@ impl Desktop {
                 }
             },
         )
-        .map_err(|e| format!("{e}; {}; {}", observation.failure(), self.output()))?;
+        .map_err(|e| {
+            let detail = format!("{}; {}", observation.failure(), self.output());
+            failure_diagnostic("shown", &detail);
+            format!("{e}; {detail}")
+        })?;
         Ok(result.unwrap())
     }
     pub fn pointer(&self, x: i32, y: i32, buttons: u32, wheel: i32) -> Result<(), String> {
