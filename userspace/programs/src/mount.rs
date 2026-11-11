@@ -23,7 +23,11 @@ fn run() -> Result<(), String> {
 }
 
 fn mount_all() -> Result<(), String> {
-    let table = match std::fs::read_to_string("/etc/shares") {
+    mount_all_from(std::path::Path::new("/etc/shares"))
+}
+
+fn mount_all_from(path: &std::path::Path) -> Result<(), String> {
+    let table = match std::fs::read_to_string(path) {
         Ok(table) => table,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(format!("read /etc/shares: {e}")),
