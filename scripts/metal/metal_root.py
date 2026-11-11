@@ -4,6 +4,7 @@ An install boot (docs/metal/README.md, "The disks") also gets the storage record
 image's first sector, which ext2 leaves unused: it asks the kernel to copy the RAM disk onto the machine's disk.
 """
 import base64
+import json
 from pathlib import Path
 import re
 import hashlib
@@ -18,6 +19,9 @@ import secrets
 import sys
 from urllib.parse import urlsplit, urlunsplit
 from metal_probe import PROBE_PATH, PROBE_SHA256
+
+
+SMB_CONFIG_PATH = Path('/etc/breenix-metal/smb-test.json')
 
 
 def require_e2fsprogs(*commands):
@@ -204,7 +208,7 @@ def console_shadow(site, hasher, image_shadow='', account='root'):
 
 
 def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None, idle_minutes=None, replug=False, xhci_fault=None,
-               install_partition=None, operator=None, watchdog_fault=None, power_token=None, gt710_upload=None, screen_proof=False, screen_known=None):
+               install_partition=None, operator=None, watchdog_fault=None, power_token=None, gt710_upload=None, screen_proof=False, screen_known=None, smb_config=None):
     """`operator`, the operator file (operator_account), is written for install-persistent's userland only."""
     if watchdog_fault not in (None, 'feeder-hang', 'health-hang') or (watchdog_fault and mode != 'default'):
         raise ValueError('invalid watchdog fault-test target')
@@ -278,7 +282,34 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         if mode == 'suite' and ',' in suite:
             files['suite-sequence'] = suite + '\n'
         # Clear a prior route when reusing a root for a suite without this facility.
-        commands = ['rm /etc/breenix/evidence-route', 'rm /etc/breenix/screen-proof', 'rm /etc/breenix/screen-known']
+        commands = ['rm /etc/breenix/evidence-route', 'rm /etc/breenix/screen-proof', 'rm /etc/breenix/screen-known',
+                    'rm /etc/breenix/smb-test.cred', 'rm /etc/breenix/smb-test-server']
+        smb_files = {}
+        if mode == 'suite' and 'network-shares' in suite.split(','):
+            if smb_config is None:
+                try:
+                    if SMB_CONFIG_PATH.stat().st_mode & 0o777 != 0o600:
+                        raise ValueError('SMB credential permissions')
+                    smb_config = json.loads(SMB_CONFIG_PATH.read_text())
+                except (OSError, ValueError):
+                    raise ValueError('network-shares needs the private host SMB handoff') from None
+            smb = smb_config
+            user, password, host, port = (smb.get(key, '') for key in
+                ('SMB_TEST_USER', 'SMB_TEST_PASSWORD', 'SMB_TEST_HOST', 'SMB_TEST_PORT'))
+            if (not user or not password or any(c in user + password for c in '\r\n\x00')
+                    or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.-]{0,252}', host)
+                    or not port.isdecimal() or not 1 <= int(port) <= 65535):
+                raise ValueError('network-shares needs private SMB test configuration')
+            smb_files = {'smb-test.cred': f'username={user}\npassword={password}\n',
+                         'smb-test-server': f'{host} {port}\n'}
+            for name, content in smb_files.items():
+                source = scratch / name
+                source.touch(mode=0o600)
+                source.write_text(content)
+                commands.extend([f'write {source} /etc/breenix/{name}',
+                                 f'set_inode_field /etc/breenix/{name} mode 0100600',
+                                 f'set_inode_field /etc/breenix/{name} uid 0',
+                                 f'set_inode_field /etc/breenix/{name} gid 0'])
         if screen_proof:
             files['screen-proof'] = 'on\n'
             digests = (screen_known or {}).get('digests', [])
@@ -351,6 +382,14 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
                                     check=True, capture_output=True)
             if result.stdout != text.encode():
                 raise ValueError('RAM-disk boot configuration readback differs')
+        for name, content in smb_files.items():
+            readback = subprocess.run([debugfs, '-R', f'cat /etc/breenix/{name}', str(image)],
+                                      check=True, capture_output=True).stdout
+            stat = subprocess.run([debugfs, '-R', f'stat /etc/breenix/{name}', str(image)],
+                                  check=True, capture_output=True).stdout
+            if (readback != content.encode() or b'Mode:  0600' not in stat
+                    or not re.search(rb'User:\s+0\s+Group:\s+0', stat)):
+                raise ValueError('staged SMB fixture bytes or permissions differ')
         if shadow is not None:
             home = subprocess.run([debugfs, '-R', 'stat /root', str(image)], check=True, capture_output=True).stdout
             if (b'Type: directory' not in home or b'Mode:  0700' not in home

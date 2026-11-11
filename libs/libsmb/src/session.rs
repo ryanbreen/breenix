@@ -35,6 +35,7 @@ pub enum Request<'a> {
     Flush(FileId),
     QueryDirectory(QueryDirectoryRequest<'a>),
     QueryInfo(QueryInfoRequest),
+    QueryFsSize(QueryFsSizeRequest),
     SetInfo(SetInfoRequest<'a>),
 }
 
@@ -149,6 +150,10 @@ impl Session {
     pub fn is_closed(&self) -> bool {
         self.phase == Phase::Closed
     }
+    pub fn encrypted(&self) -> bool {
+        self.session_encrypt || self.tree_encrypt
+    }
+
     pub fn negotiated(&self) -> Option<&NegotiateResponse> {
         self.negotiated.as_ref()
     }
@@ -277,6 +282,7 @@ impl Session {
                                     Request::Flush(id) => encode_flush_request(&h, id)?,
                                     Request::QueryDirectory(r) => r.encode(&h)?,
                                     Request::QueryInfo(r) => r.encode(&h)?,
+                                    Request::QueryFsSize(r) => r.encode(&h)?,
                                     Request::SetInfo(r) => r.encode(&h)?,
                                     _ => return Err(Error),
                                 }

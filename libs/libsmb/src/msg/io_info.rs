@@ -209,6 +209,49 @@ impl QueryInfoRequest {
         Ok(b)
     }
 }
+/// MS-SMB2 QUERY_INFO for MS-FSCC FileFsFullSizeInformation.
+pub struct QueryFsSizeRequest {
+    pub file_id: FileId,
+}
+impl QueryFsSizeRequest {
+    pub fn encode(&self, h: &SyncHeader) -> Result<Vec<u8>, Error> {
+        let mut b = request(h, 16, 40)?;
+        put16(&mut b, 64, 41);
+        b[66] = 2;
+        b[67] = 7;
+        put32(&mut b, 68, 32);
+        self.file_id.put(&mut b, 88);
+        Ok(b)
+    }
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileFsFullSizeInformation {
+    pub total_allocation_units: u64,
+    pub caller_available_allocation_units: u64,
+    pub actual_available_allocation_units: u64,
+    pub sectors_per_allocation_unit: u32,
+    pub bytes_per_sector: u32,
+}
+#[derive(Debug, PartialEq, Eq)]
+pub struct QueryFsSizeResponse {
+    pub header: SyncHeader,
+    pub info: FileFsFullSizeInformation,
+}
+impl QueryFsSizeResponse {
+    pub fn decode(b: &[u8]) -> Result<Self, Error> {
+        let (header, data) = output_buffer(b, 16)?;
+        Ok(Self {
+            header,
+            info: FileFsFullSizeInformation {
+                total_allocation_units: u64_at(data, 0)?,
+                caller_available_allocation_units: u64_at(data, 8)?,
+                actual_available_allocation_units: u64_at(data, 16)?,
+                sectors_per_allocation_unit: u32_at(data, 24)?,
+                bytes_per_sector: u32_at(data, 28)?,
+            },
+        })
+    }
+}
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FileAllInformation {
     pub creation_time: u64,

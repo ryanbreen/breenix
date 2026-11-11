@@ -50,7 +50,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 # The records a case prints while it runs, which do not count.
 RESULT = ("FRAME", "TREE", "INPUT", "COLLECT")
-LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY", "HOSTPOINTER", "HOSTSSH", "SCREEN", "SCREENPERTURB", "EVIDENCE") + RESULT
+LIVE = ("VALUE", "WAIT", "PULSES", "HOSTKEY", "HOSTPOINTER", "HOSTSSH", "SMBRESTART", "SCREEN", "SCREENPERTURB", "EVIDENCE") + RESULT
 # The runner's memory record, around the cases.
 MEMORY = ("MEMORY", "RECLAIMED")
 
@@ -323,6 +323,9 @@ def verdict(manifest, records_log, logs, only=None, categories=None, disk=None):
         "MEMORY": re.compile(rf"^SUITE {suite} MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+$"),
         "RECLAIMED": re.compile(rf"^SUITE {suite} MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)$"),
     }
+    if suite == "network-shares":
+        shapes['SMBRESTART'] = re.compile(
+            r"^SUITE network-shares SMBRESTART (smb/server-restart) seq=[0-9]{1,20}$")
     if suite in ("gpu", "breengel"):
         # Same wire shape as screen-verdict.py; keep the suite scorer self-contained.
         fields = (r'(?:phase=[1-4] sha256=[0-9a-f]{64} mode=[1-9][0-9]*x[1-9][0-9]*'
