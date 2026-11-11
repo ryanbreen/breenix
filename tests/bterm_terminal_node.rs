@@ -29,3 +29,20 @@ fn history_view_publishes_the_cells_being_drawn() {
     assert_eq!(value["offset"], 0);
     assert_eq!(value["lines"], serde_json::json!(["two", "three!"]));
 }
+
+#[path = "../userspace/programs/src/bterm/selection.rs"]
+mod selection;
+
+#[test]
+fn tree_reports_selection_and_cell_geometry() {
+    let mut vt = libvt::TermEmu::new(6, 2);
+    vt.feed(b"hello");
+    let g = selection::Geometry { x: 0, y: 24, w: 8, h: 16 };
+    let mut s = selection::Selection::default();
+    let value = terminal_node::selection_fields(&vt, &s, g);
+    assert_eq!(value["selection"], serde_json::Value::Null);
+    assert_eq!(value["cell"], serde_json::json!({"x": 0, "y": 24, "w": 8, "h": 16}));
+    s.press(8, 24, g, vt.size()); s.release(24, 24, g, vt.size());
+    let value = terminal_node::selection_fields(&vt, &s, g);
+    assert_eq!(value["selection"], serde_json::json!({"start": [1, 0], "end": [3, 0], "text": "ell"}));
+}
