@@ -37,3 +37,30 @@ fn epochs_remain_bounded_after_resize() {
     for _ in 0..600 { sim.advance(16); }
     assert!(sim.all_inside());
 }
+
+#[test]
+fn advance_carries_fractional_epochs_and_caps_work() {
+    let mut split = Simulation::new(400, 300);
+    let mut whole = Simulation::new(400, 300);
+    split.advance(15);
+    assert_eq!(split.spheres, whole.spheres);
+    split.advance(1);
+    whole.advance(16);
+    assert_eq!(split.spheres, whole.spheres);
+    let mut capped = Simulation::new(400, 300);
+    let mut thousand = Simulation::new(400, 300);
+    capped.advance(16_000_000);
+    thousand.advance(16_000);
+    assert_eq!(capped.spheres, thousand.spheres);
+}
+
+#[test]
+fn bounds_failure_remains_sticky() {
+    let mut sim = Simulation::new(400, 300);
+    sim.resize(10, 10);
+    sim.advance(16);
+    assert!(!sim.all_inside());
+    sim.resize(400, 300);
+    sim.advance(16);
+    assert!(!sim.all_inside());
+}
