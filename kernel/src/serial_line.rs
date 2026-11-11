@@ -156,7 +156,11 @@ fn emit<const TEE: bool, const TERMINAL: bool>(writer: Writer, bytes: &[u8], lev
     if TEE {
         write_notices_from_thread();
     }
-    let mut ownership = Ownership::acquire();
+    // Ordinary output must not revoke a stalled terminal record: replay would
+    // leave its abandoned prefix in the capture. Raw and emergency writers
+    // keep bounded takeover, including panic output with IRQs already masked.
+    let normal = attributed && (terminal_thread || (TEE && in_thread_context()));
+    let mut ownership = if normal { Ownership::acquire_ordered() } else { Ownership::acquire() };
     if terminal_thread || (TEE && in_thread_context()) {
         write_queued(&mut ownership);
     }
@@ -180,7 +184,7 @@ fn in_thread_context() -> bool {
 /// [`write_notices_from_thread`] instead.
 pub fn write_notices() {
     if crate::log_notice::pending() {
-        let mut ownership = Ownership::acquire();
+        let mut ownership = if in_thread_context() { Ownership::acquire_ordered() } else { Ownership::acquire() };
         crate::log_notice::take(|line| {
             uart_owner::write::<Uart, true>(Writer::Kernel, line, Kind::Line, &mut ownership);
             crate::console::log_bytes_at(log::Level::Warn, line);
@@ -341,7 +345,7 @@ fn terminal_kind(bytes: &[u8]) -> Kind {
 /// one ownership, so records keep their order and each goes out whole. Returns
 /// the ring bytes it took, or 0 when the ring was empty.
 fn send_queued() -> usize {
-    send_queued_owned(&mut Ownership::acquire())
+    send_queued_owned(&mut Ownership::acquire_ordered())
 }
 
 fn send_queued_owned(ownership: &mut Ownership) -> usize {
@@ -422,7 +426,7 @@ pub fn drain_output() {
     loop {
         // Take ownership even with an empty ring: a transmitter may have
         // popped its last record but not yet written it to the UART.
-        let mut ownership = Ownership::acquire();
+        let mut ownership = Ownership::acquire_ordered();
         if with_ring(|ring| ring.len == 0 && ring.in_flight == 0) {
             return;
         }

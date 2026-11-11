@@ -215,6 +215,18 @@ impl<P: Port> Ownership<P> {
         }
     }
 
+    /// Ordinary output waits without revoking another record's stalled owner.
+    /// Failed tries restore the caller's interrupt state between attempts;
+    /// fatal output retains `acquire` and its bounded takeover policy.
+    pub fn acquire_ordered() -> Self {
+        loop {
+            if let Some(ownership) = Self::try_acquire() {
+                return ownership;
+            }
+            core::hint::spin_loop();
+        }
+    }
+
     /// Own the UART only if that needs no wait: it is free, or this CPU owns it.
     pub fn try_acquire() -> Option<Self> {
         let state = P::state();
