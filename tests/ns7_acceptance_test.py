@@ -70,6 +70,12 @@ class SelectedDesktopAcceptance(unittest.TestCase):
         (self.path / 'native-final-upload.json').unlink()
         self.assertEqual(apps.API['record_apps_capture'](self.path, apps.SHA, 5), 1)
 
+    def test_selected_step_never_becomes_a_board_milestone(self):
+        self.selected()
+        self.assertEqual(apps.API['record_apps_capture'](self.path, apps.SHA, 5), 0)
+        with self.assertRaisesRegex(ValueError, 'filtered suite boots are not full-suite evidence'):
+            apps.metal_score.score(self.path)
+
     def test_gui_child_publishes_final_panel_before_exit(self):
         source = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
         start = source.index('        let ms = ms_since(suite_start);')
@@ -98,9 +104,9 @@ impl Upload { fn capture<A,B>(&mut self, label: &str, _: A, _: B) -> String {
 } }
 struct Suite { id: &'static str, defer_display: bool }
 impl Suite {
- fn finish(&self) {
+ fn finish(&self, scoped: bool) {
   let suite_start = (); let counts = Counts { failed: 0 }; let reclaimed = true;
-  let scoped = true; let place: Option<()> = None;
+  let place: Option<()> = None;
   let mut feed = Feed; let mut screen = Screen { gui: false }; let mut evidence = Some(Upload);
   let (title, subtitle, states, verdict, only) = ("title", "selected", (), (), Some("guskit"));
   let finalize = || event("finalize");
@@ -108,8 +114,11 @@ impl Suite {
  }
 }
 #[test] fn publishes_before_exit() {
- let _ = std::panic::catch_unwind(|| Suite { id: "gui-apps", defer_display: true }.finish());
+ let _ = std::panic::catch_unwind(|| Suite { id: "gui-apps", defer_display: true }.finish(true));
  assert_eq!(*EVENTS.lock().unwrap(), ["elapsed", "finalize", "draw", "upload", "exit"]);
+ EVENTS.lock().unwrap().clear();
+ let _ = std::panic::catch_unwind(|| Suite { id: "runner-fixture", defer_display: true }.finish(true));
+ assert_eq!(*EVENTS.lock().unwrap(), ["elapsed", "finalize", "exit"]);
 }
 """.replace('BODY', source[start:end])
         with tempfile.TemporaryDirectory() as tmp:
