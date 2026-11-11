@@ -6,6 +6,8 @@ use libbui::widget::file_picker::{FileEntry, FilePicker, FilePickerResult};
 use std::path::{Path, PathBuf};
 
 #[path = "guskit/canvas.rs"] mod canvas;
+#[path = "guskit/collab.rs"] mod collab;
+use libcollab::wire::DrawOp;
 #[path = "guskit/node.rs"] mod node;
 #[path = "guskit/files.rs"] mod files;
 #[path = "guskit/save_barrier.rs"] mod save_barrier;
@@ -29,20 +31,25 @@ struct App {
     file: Option<PathBuf>, message: String, picker: Option<FilePicker>, directory: PathBuf, save_as: bool,
     palette: Option<(u16, Surface)>,
     canvas_surface: Option<(Canvas, Surface)>,
+    session: Option<collab::Session>,
 }
 impl App {
     fn color(&self) -> [u8; 3] { self.selected_color.unwrap_or_else(|| node::hsv_to_rgb(self.hue, self.sat, self.val)) }
-    fn dirty(&self) -> bool { self.history.canvas().digest() != self.clean }
+    fn canvas(&self) -> &Canvas { self.session.as_ref().map_or_else(|| self.history.canvas(), |s| &s.core.model.canvas) }
+    fn undo_depth(&self) -> usize { self.session.as_ref().map_or_else(||self.history.undo_depth(),|s|s.core.model.undo_depth()) }
+    fn redo_depth(&self) -> usize { if self.session.is_some() {0} else {self.history.redo_depth()} }
+    fn status(&self) -> &str { self.session.as_ref().map(|s|s.core.model.status.as_str()).filter(|s|!s.is_empty()).unwrap_or(&self.message) }
+    fn dirty(&self) -> bool { self.canvas().digest() != self.clean }
     fn request_quit(&mut self) { if self.dirty() { self.confirm = true; } else { self.quit = true; } }
     fn action(&mut self, action: u16) {
         match action {
-            OPEN => self.open_picker(false),
+            OPEN => { if self.session.is_none() { self.open_picker(false); } else { self.message="Open an image before starting a session".into(); } },
             SAVE_AS => self.open_picker(true),
             SAVE => self.save(),
-            NEW => { self.history.push(Canvas::new(self.width, self.height)); self.file = None; self.stroke = None; self.message.clear(); },
+            NEW => { if let Some(session)=&mut self.session { session.core.submit(DrawOp::Clear); } else { self.history.push(Canvas::new(self.width, self.height)); } self.file = None; self.stroke = None; self.message.clear(); },
             QUIT => self.request_quit(),
-            UNDO => { self.history.undo(); },
-            REDO => { self.history.redo(); },
+            UNDO => { if let Some(session)=&mut self.session { session.core.submit(DrawOp::Undo); } else { self.history.undo(); } },
+            REDO => { if self.session.is_none() { self.history.redo(); } },
             _ => {}
         }
     }
@@ -54,17 +61,17 @@ impl App {
         }
     }
     fn save_to(&mut self, path: PathBuf) {
-        let result = files::encode(&path.to_string_lossy(), self.history.canvas(), self.width, self.height)
+        let result = files::encode(&path.to_string_lossy(), self.canvas(), self.width, self.height)
             .and_then(|bytes| match save_barrier::save(&path, &bytes) {
                 libbreenix::atomic_file::SaveResult::Saved => Ok(()),
                 libbreenix::atomic_file::SaveResult::Failed(e) | libbreenix::atomic_file::SaveResult::Unconfirmed(e) => Err(e.to_string()),
             });
-        match result { Ok(()) => { self.clean = self.history.canvas().digest(); self.file = Some(path); self.message = "Saved".into(); }, Err(e) => self.message = e }
+        match result { Ok(()) => { self.clean = self.canvas().digest(); self.file = Some(path); self.message = "Saved".into(); }, Err(e) => self.message = e }
     }
     fn save(&mut self) {
         let mut path = self.file.clone().unwrap_or_default();
         let result = if self.file.is_some() {
-            files::encode(&path.to_string_lossy(), self.history.canvas(), self.width, self.height)
+            files::encode(&path.to_string_lossy(), self.canvas(), self.width, self.height)
                 .and_then(|bytes| match save_barrier::save(&path, &bytes) {
                     libbreenix::atomic_file::SaveResult::Saved => Ok(()),
                     libbreenix::atomic_file::SaveResult::Failed(e) | libbreenix::atomic_file::SaveResult::Unconfirmed(e) => Err(e.to_string()),
@@ -72,7 +79,7 @@ impl App {
         } else {
             // Reserve the first free name atomically; another drawing cannot be
             // replaced even if it appears between choosing a name and saving.
-            files::encode("untitled.png", self.history.canvas(), self.width, self.height).and_then(|bytes| {
+            files::encode("untitled.png", self.canvas(), self.width, self.height).and_then(|bytes| {
                 use std::io::Write;
                 let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_else(|| PathBuf::from("."));
                 for n in 1u64.. {
@@ -90,7 +97,7 @@ impl App {
                 Err("no free untitled filename".into())
             })
         };
-        match result { Ok(()) => { self.clean = self.history.canvas().digest(); self.file = Some(path); self.message = "Saved".into(); }, Err(e) => self.message = e }
+        match result { Ok(()) => { self.clean = self.canvas().digest(); self.file = Some(path); self.message = "Saved".into(); }, Err(e) => self.message = e }
     }
     fn entries(path: &Path) -> Result<Vec<FileEntry>, String> {
         let mut result = Vec::new();
@@ -145,8 +152,13 @@ impl App {
     }
     fn finish_stroke(&mut self) {
         let Some(points) = self.stroke.take() else { return };
-        let image = self.history.canvas().preview(&points, |image, points| self.draw_stroke(image, points));
-        if image.pixels() != self.history.canvas().pixels() {
+        let ops=collab::stroke(self.tool,self.size,self.color(),&points);
+        if let Some(session)=&mut self.session {
+            for op in ops { session.core.submit(op); }
+            return;
+        }
+        let image = self.canvas().preview(&points, |image, points| self.draw_stroke(image, points));
+        if image.pixels() != self.canvas().pixels() {
             self.history.push(image);
             let color = self.color();
             if color != [255; 3] && !self.recent.contains(&color) { self.recent.copy_within(0..7, 1); self.recent[0] = color; }
@@ -158,7 +170,7 @@ impl App {
         if (58..76).contains(&y) && (0..780).contains(&x) { self.hue = node::hue_at(x as usize, 780); self.selected_color = None; return; }
         if (76..176).contains(&y) && (0..100).contains(&x) { (self.sat, self.val) = node::sv_at(x as usize, (y - 76) as usize, 100); self.selected_color = None; return; }
         if (90..108).contains(&y) && (108..252).contains(&x) { let i = ((x - 108) / 18) as usize; self.selected_color = Some(self.recent[i]); return; }
-        if let Some(point) = self.point(x, y) { self.stroke = Some(vec![point]); }
+        if self.session.as_ref().is_none_or(|s|s.core.model.state == "connected") { if let Some(point) = self.point(x, y) { self.stroke = Some(vec![point]); } }
     }
 }
 fn menu() -> MenuBar {
@@ -182,8 +194,9 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar) {
         palette.wait().expect("Gus Kit picker rendering");
         app.palette = Some((app.hue, palette));
     }
-    let preview = app.stroke.as_ref().map(|points| app.history.canvas().preview(points, |image, points| app.draw_stroke(image, points)));
-    let canvas = preview.as_ref().unwrap_or_else(|| app.history.canvas());
+    let preview = app.stroke.as_ref().map(|points| app.canvas().preview(points, |image, points| app.draw_stroke(image, points)));
+    let committed = app.canvas().clone();
+    let canvas = preview.as_ref().unwrap_or(&committed);
     if let Some((previous, surface)) = &mut app.canvas_surface {
         let changed = surface.batch(|fb| canvas.render_changes(previous, |x, y, width, c|
             shapes::fill_rect(fb, x as i32, y as i32, width as i32, 1, Color::rgb(c[0], c[1], c[2]))));
@@ -216,7 +229,7 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar) {
     for (i, c) in app.recent.iter().enumerate() { shapes::fill_rect(fb, 108 + i as i32 * 18, 90, 16, 16, Color::rgb(c[0], c[1], c[2])); }
     libgfx::blit::blit(fb, &app.canvas_surface.as_ref().expect("canvas rendered above").1, 0, TOP);
     menu.draw(fb, &Theme::dark());
-    if !app.message.is_empty() { bitmap_font::draw_text(fb, app.message.as_bytes(), 110, 150, Color::WHITE); }
+    if !app.status().is_empty() { bitmap_font::draw_text(fb, app.status().as_bytes(), 110, 150, Color::WHITE); }
     if let Some(picker) = &app.picker { picker.draw(fb, &Theme::dark()); }
     if app.confirm { shapes::fill_rect(fb, 180, 220, 440, 64, Color::rgb(30,30,30)); bitmap_font::draw_text(fb, b"Discard changes? D: discard  Esc: cancel", 190, 242, Color::WHITE); }
     });
@@ -225,12 +238,13 @@ fn publish(win: &mut Window, app: &App) {
     use breengel::tree::{Flag, Node, Role, Tree};
     let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
     let canvas_bounds = [0, TOP as i64, app.width as i64, app.height as i64];
-    let mut children = vec![node::canvas(canvas_bounds, app.width, app.height, app.history.canvas().digest()), node::status(bounds, &node::Status { tool: NAMES[app.tool], size: ["small", "medium", "large"][app.size], color: app.color(), undo: app.history.undo_depth(), redo: app.history.redo_depth(), dirty: app.dirty(), file: app.file.as_ref().and_then(|p| p.to_str()), message: &app.message })];
+    let mut children = vec![node::canvas(canvas_bounds, app.width, app.height, app.canvas().digest()), node::status(bounds, &node::Status { tool: NAMES[app.tool], size: ["small", "medium", "large"][app.size], color: app.color(), undo: app.undo_depth(), redo: app.redo_depth(), dirty: app.dirty(), file: app.file.as_ref().and_then(|p| p.to_str()), message: app.status() })];
+    if let Some(session)=&app.session { children.push(node::collab(bounds,&session.core.model)); }
     children.extend(node::tools(core::array::from_fn(|i| [(2 + i * 38) as i64, 23, 36, 16]), NAMES[app.tool]));
     children.push(node::hue([0,58,780,18])); children.push(node::sv([0,76,100,100]));
     if app.picker.is_some() { children.push(Node { key: if app.save_as { "save-as" } else { "open" }.into(), parent: Some("root".into()), role: Role::Dialog, name: if app.save_as { "Save As" } else { "Open" }.into(), value: serde_json::json!({"directory":app.directory.to_string_lossy()}), bounds: [150,100,500,400], clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }); }
     if app.confirm { children.push(Node { key: "confirm".into(), parent: Some("root".into()), role: Role::Dialog, name: "Discard changes?".into(), value: serde_json::json!({"message":"D discards, Escape cancels"}), bounds: [180,220,440,64], clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }); }
-    win.set_tree(Tree { root: Node { key: "root".into(), parent: None, role: Role::Window, name: "Gus Kit".into(), value: serde_json::Value::Null, bounds, clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }, children });
+    win.set_tree(Tree { root: Node { key: "root".into(), parent: None, role: Role::Window, name: app.session.as_ref().map_or_else(||"Gus Kit".into(),|s|format!("Gus Kit ({})",s.core.model.name)), value: serde_json::Value::Null, bounds, clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }, children });
 }
 fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) -> Handled {
     match delivered.event {
@@ -270,28 +284,60 @@ fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) ->
         Event::PointerCancel => { if app.stroke.take().is_none() { return Handled::NoChange; } },
         _ => return Handled::NoChange,
     }
-    menu.set_enabled(UNDO, app.history.undo_depth() > 0);
-    menu.set_enabled(REDO, app.history.redo_depth() > 0);
+    menu.set_enabled(UNDO, app.undo_depth() > 0);
+    menu.set_enabled(REDO, app.redo_depth() > 0);
     Handled::Redraw
 }
+struct Options {
+    width:usize, height:usize, file:Option<String>, session:Option<(bool,u16,String)>,
+}
+impl Options {
+    fn parse(args:impl Iterator<Item=String>)->Result<Self,&'static str> {
+        let mut options=Self {width:800,height:424,file:None,session:None};
+        let mut mode=None; let mut name=None; let mut args=args;
+        let usage="usage: guskit [--canvas WxH] [--host PORT | --join PORT] [--name NAME] [FILE]";
+        while let Some(arg)=args.next() {
+            match arg.as_str() {
+                "--canvas"=>{
+                    let value=args.next().ok_or(usage)?;
+                    let (w,h)=value.split_once('x').ok_or(usage)?;
+                    options.width=w.parse().map_err(|_|usage)?;options.height=h.parse().map_err(|_|usage)?;
+                    if options.width==0||options.width>800||options.height==0||options.height>424 {return Err(usage);}
+                }
+                "--host"|"--join"=>{
+                    if mode.is_some(){return Err(usage);}
+                    let port=args.next().ok_or(usage)?.parse::<u16>().map_err(|_|usage)?;
+                    if port==0{return Err(usage);}
+                    mode=Some((arg=="--host",port));
+                }
+                "--name"=>{if name.is_some(){return Err(usage);} let value=args.next().ok_or(usage)?;
+                    if value.is_empty()||value.len()>64||value.chars().any(char::is_control){return Err(usage);}
+                    name=Some(value);
+                }
+                _=>{if arg.starts_with('-')||options.file.is_some(){return Err(usage);} options.file=Some(arg);}
+            }
+        }
+        options.session=match (mode,name) { (Some((host,port)),Some(name))=>Some((host,port,name)),(None,None)=>None,_=>return Err(usage) };
+        Ok(options)
+    }
+}
 fn main() {
-    let mut args = std::env::args().skip(1);
-    let mut next = args.next();
-    let (width,height) = if next.as_deref() == Some("--canvas") {
-        let value = args.next().unwrap_or_default();
-        let parsed = value.split_once('x').and_then(|(w,h)| Some((w.parse::<usize>().ok()?, h.parse::<usize>().ok()?)));
-        next = args.next();
-        match parsed { Some((w,h)) if w > 0 && h > 0 && w <= 800 && h <= 600 - TOP as usize => (w,h), _ => { eprintln!("invalid --canvas size"); std::process::exit(2); } }
-    } else { (800, 600 - TOP as usize) };
-    if args.next().is_some() { eprintln!("usage: guskit [--canvas WxH] [FILE]"); std::process::exit(2); }
+    let options=Options::parse(std::env::args().skip(1)).unwrap_or_else(|e| { eprintln!("{e}"); std::process::exit(2) });
+    let (width,height)=(options.width,options.height);
+    let next=options.file;
     let image = Canvas::new(width,height); let clean = image.digest();
-    let mut app = App { width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None };
+    let mut app = App { width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None };
     if let Some(path) = app.file.clone() { if path.exists() { app.open_file(path); } }
-    let mut win = Window::new(b"Gus Kit", 800, 600).unwrap_or_else(|e| { eprintln!("Gus Kit: {e}"); std::process::exit(1) });
+    if let Some((host,port,name))=options.session {
+        let result=if host {collab::Session::host(port,&name,app.canvas().clone(),width,height)} else {collab::Session::join(port,&name)};
+        app.session=Some(result.unwrap_or_else(|e| {eprintln!("Gus Kit session: {e}");std::process::exit(1)}));
+    }
+    let title=app.session.as_ref().map_or_else(||"Gus Kit".into(),|s|format!("Gus Kit ({})",s.core.model.name));
+    let mut win = Window::new(title.as_bytes(), 800, 600).unwrap_or_else(|e| { eprintln!("Gus Kit: {e}"); std::process::exit(1) });
     let mut menu = menu();
     let mut redraw = true;
     loop {
-        menu.set_enabled(UNDO, app.history.undo_depth() > 0); menu.set_enabled(REDO, app.history.redo_depth() > 0);
+        menu.set_enabled(UNDO, app.undo_depth() > 0); menu.set_enabled(REDO, app.redo_depth() > 0);
         if redraw {
             if let Ok(surface) = win.surface() { render(surface, &mut app, &menu); }
             publish(&mut win, &app); let _ = win.present();
@@ -299,12 +345,19 @@ fn main() {
         if app.quit { break; }
         redraw = false;
         let mut pointer_motion = false;
-        let count = win.wait_dispatch(100_000_000, |delivered| {
+        let collaborating=app.session.is_some();
+        let mut dispatch = |delivered: &breengel::Delivered| {
             pointer_motion |= matches!(delivered.event, Event::MouseMove { .. });
             let handled = handle(&mut app, &mut menu, delivered);
             redraw |= handled == Handled::Redraw;
             handled
-        }).unwrap_or_else(|e| { eprintln!("Gus Kit dispatch: {e}"); std::process::exit(1) });
+        };
+        let result=if collaborating { win.dispatch(&mut dispatch) } else { win.wait_dispatch(100_000_000,&mut dispatch) };
+        let count=result.unwrap_or_else(|e| { eprintln!("Gus Kit dispatch: {e}"); std::process::exit(1) });
+        if let Some(session)=&mut app.session {
+            redraw |= session.poll(10);
+            app.width=session.core.model.width(); app.height=session.core.model.height();
+        }
         // MAP_TREE is passive. Its attach probe needs a freshly sealed tree
         // page, which is published with a pixel commit, even on idle motion.
         redraw |= pointer_motion && win.tree_reader_count() != 0;
@@ -325,7 +378,7 @@ mod tests {
         let image = Canvas::new(8, 8);
         let mut app = App { width:8,height:8,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
-            confirm:false,quit:false,file:Some(dir.join("a.png")),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None };
+            confirm:false,quit:false,file:Some(dir.join("a.png")),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None };
         let mut menu = menu();
         let key = |app: &mut App, menu: &mut MenuBar, keycode, ascii, modifiers| {
             let event = Delivered { serial:1,time_ns:1,clicks:0, event:Event::KeyPress {
@@ -369,7 +422,7 @@ mod tests {
         let image = Canvas::new(200, 120);
         let mut app = App { width:200,height:120,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
-            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None };
+            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None };
         let mut menu = menu();
         let mut event = Delivered { serial:1,time_ns:1,clicks:0,
             event:Event::KeyRelease { keycode:25,modifiers:Modifiers::default() } };
@@ -382,9 +435,9 @@ mod tests {
         assert_eq!(handle(&mut app, &mut menu, &event), Handled::Redraw);
         event.event = Event::MouseMove { x:40,y:186 };
         assert_eq!(handle(&mut app, &mut menu, &event), Handled::Redraw);
-        assert_eq!(app.history.undo_depth(), 0, "preview must not commit the stroke");
+        assert_eq!(app.undo_depth(), 0, "preview must not commit the stroke");
         event.event = Event::MouseButton { button:breengel::buttons::LEFT,pressed:false,x:40,y:186 };
         assert_eq!(handle(&mut app, &mut menu, &event), Handled::Redraw);
-        assert_eq!(app.history.undo_depth(), 1);
+        assert_eq!(app.undo_depth(), 1);
     }
 }

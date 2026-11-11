@@ -50,3 +50,6 @@ path = "../../tests/guskit_collab.rs"
 [[test]]
 name = "gui_apps_wiring"
 path = "../../tests/gui_apps_wiring.rs"
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))'] }

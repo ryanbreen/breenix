@@ -12,6 +12,7 @@ description = "Userspace programs and utilities for Breenix"
 framebuffer-v1 = []
 
 [dependencies]
+libcollab = { path = "../../libs/libcollab", features = ["net"] }
 smbfs = { path = "../../libs/smbfs" }
 libsmb = { path = "../../libs/libsmb" }
 ufs-abi = { path = "../../libs/ufs-abi" }

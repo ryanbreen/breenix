@@ -7,11 +7,11 @@ use libbreenix::{
     error::Error,
     io::{self, poll_events, PollFd},
     socket::{self, SockAddrIn},
-    types::{Fd, OwnedFd},
+    types::OwnedFd,
 };
 
 pub struct TcpTransport {
-    listener: OwnedFd,
+    listener: Option<OwnedFd>,
     connections: BTreeMap<u32, OwnedFd>,
     next: u32,
 }
@@ -25,13 +25,17 @@ impl TcpTransport {
         socket::bind_inet(listener.fd(), &SockAddrIn::new([127, 0, 0, 1], port))?;
         socket::listen(listener.fd(), 16)?;
         Ok(Self {
-            listener,
+            listener: Some(listener),
             connections: BTreeMap::new(),
             next: 1,
         })
     }
-    pub fn listener(&self) -> Fd {
-        self.listener.fd()
+    pub fn client() -> Self {
+        Self {
+            listener: None,
+            connections: BTreeMap::new(),
+            next: 1,
+        }
     }
     pub fn connect(&mut self, port: u16) -> Result<u32, Error> {
         let fd = OwnedFd::new(socket::socket(
@@ -49,7 +53,10 @@ impl TcpTransport {
         Ok(id)
     }
     pub fn accept(&mut self) -> Result<u32, Error> {
-        let fd = OwnedFd::new(socket::accept(self.listener.fd(), None)?);
+        let fd = OwnedFd::new(socket::accept(
+            self.listener.as_ref().ok_or(Error::Os(Errno::EBADF))?.fd(),
+            None,
+        )?);
         let flags = io::fcntl_getfl(fd.fd())?;
         io::fcntl_setfl(fd.fd(), flags as i32 | io::status_flags::O_NONBLOCK)?;
         let id = self.next;
@@ -71,7 +78,9 @@ impl TcpTransport {
     }
     pub fn poll_fds(&self, queues: &OutputQueues) -> Vec<(Option<u32>, PollFd)> {
         let mut fds = Vec::new();
-        fds.push((None, PollFd::new(self.listener.fd(), poll_events::POLLIN)));
+        if let Some(listener) = &self.listener {
+            fds.push((None, PollFd::new(listener.fd(), poll_events::POLLIN)));
+        }
         for (&id, fd) in &self.connections {
             let mut events = poll_events::POLLIN;
             if queues.wants_write(id) {

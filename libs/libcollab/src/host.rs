@@ -8,6 +8,7 @@ pub const VERSION: u16 = 1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
     Apply(Message),
+    PeerJoined { peer: u8, name: Vec<u8> },
     PeerLeft { peer: u8, reason: Vec<u8> },
     Refused { local: u32, reason: Vec<u8> },
     Close { conn: u32, reason: Vec<u8> },
@@ -17,10 +18,12 @@ pub enum Event {
 pub enum Output {
     Frame { conn: u32, data: Vec<u8> },
     Event(Event),
+    Sync { conn: u32 },
 }
 
 struct Connection {
     peer: Option<u8>,
+    name: Vec<u8>,
     next_local: u64,
     input: Vec<u8>,
 }
@@ -35,6 +38,7 @@ pub struct HostCore {
     base: Vec<u8>,
     log: Vec<Message>,
     next_peer: u16,
+    session_name: Option<Vec<u8>>,
 }
 
 impl HostCore {
@@ -53,7 +57,19 @@ impl HostCore {
             base,
             log: Vec::new(),
             next_peer: 1,
+            session_name: None,
         }
+    }
+
+    /// Socket sessions defer snapshot and log production to their bounded queues.
+    pub fn session(width: u16, height: u16, base: Vec<u8>, name: Vec<u8>) -> Self {
+        let mut host = Self::with_canvas(width, height, base);
+        host.session_name = Some(name);
+        host
+    }
+
+    pub fn base_canvas(&self) -> &[u8] {
+        &self.base
     }
 
     pub fn log(&self) -> &[Message] {
@@ -63,6 +79,7 @@ impl HostCore {
     pub fn connect(&mut self, conn: u32) -> Vec<Output> {
         self.connections.entry(conn).or_insert_with(|| Connection {
             peer: None,
+            name: Vec::new(),
             next_local: 1,
             input: Vec::new(),
         });
@@ -98,6 +115,12 @@ impl HostCore {
     pub fn close(&mut self, conn: u32) -> Vec<Output> {
         let mut out = Vec::new();
         self.disconnect(conn, b"disconnected", false, &mut out);
+        out
+    }
+
+    pub fn close_with_reason(&mut self, conn: u32, reason: &[u8]) -> Vec<Output> {
+        let mut out = Vec::new();
+        self.disconnect(conn, reason, false, &mut out);
         out
     }
 
@@ -159,20 +182,51 @@ impl HostCore {
                     },
                     out,
                 );
-                for (index, chunk) in self.base.chunks(65531).enumerate() {
+                self.connections.get_mut(&conn).unwrap().name = name.clone();
+                if let Some(host_name) = &self.session_name {
+                    out.push(Output::Sync { conn });
                     Self::frame(
                         conn,
-                        Message::SyncChunk {
-                            offset: (index * 65531) as u32,
-                            data: chunk.to_vec(),
+                        Message::PeerJoined {
+                            peer: 0,
+                            name: host_name.clone(),
                         },
                         out,
                     );
+                    for (&other, c) in &self.connections {
+                        if other != conn {
+                            if let Some(id) = c.peer {
+                                Self::frame(
+                                    conn,
+                                    Message::PeerJoined {
+                                        peer: id,
+                                        name: c.name.clone(),
+                                    },
+                                    out,
+                                );
+                            }
+                        }
+                    }
+                } else {
+                    for (index, chunk) in self.base.chunks(65531).enumerate() {
+                        Self::frame(
+                            conn,
+                            Message::SyncChunk {
+                                offset: (index * 65531) as u32,
+                                data: chunk.to_vec(),
+                            },
+                            out,
+                        );
+                    }
+                    Self::frame(conn, Message::SyncEnd, out);
+                    for entry in &self.log {
+                        Self::frame(conn, entry.clone(), out);
+                    }
                 }
-                Self::frame(conn, Message::SyncEnd, out);
-                for entry in &self.log {
-                    Self::frame(conn, entry.clone(), out);
-                }
+                out.push(Output::Event(Event::PeerJoined {
+                    peer,
+                    name: name.clone(),
+                }));
                 self.broadcast_except(conn, Message::PeerJoined { peer, name }, out);
             }
             (Some(peer), Message::Op { local, op }) => {

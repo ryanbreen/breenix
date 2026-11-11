@@ -108,7 +108,7 @@ fn bcheck_dispatches_input_before_presenting() {
 
 #[test]
 fn guskit_uses_window_dispatch_and_publishes_tree() {
-    let source = std::fs::read_to_string("userspace/programs/src/guskit.rs").expect("Gus Kit binary");
+    let source = include_str!("../userspace/programs/src/guskit.rs");
     assert!(source.contains("win.dispatch("));
     assert!(source.contains("session.poll(10)"));
     assert!(include_str!("../userspace/programs/Cargo.toml").contains("libcollab"));
