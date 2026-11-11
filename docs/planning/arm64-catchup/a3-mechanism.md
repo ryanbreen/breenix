@@ -6,7 +6,7 @@ The single measurement launch recorded clean checkout `aef5df85`, HVF and
 headless SPICE GL. It finished 79/81: restart-adopts and supervisor-restarts
 failed; stack-restored and frame-floor passed. Memory reclaimed 10 pages against
 the 48-page allowance, READY followed DONE and MEMORY, and the host renderer
-accepted ANGLE/Metal (982 records). Start uptime loads were 9.38 / 14.30 / 17.21;
+accepted ANGLE/Metal (982 records). Start uptime loads were 8.32 / 13.91 / 17.04;
 end loads were 7.35 / 8.72 / 12.96. No lane build, installer or heavy work ran
 during the boot. The raw Vigil serial SHA-256 is
 `cf85a48bc28289b3e26670768c4a769a4a12d162c5ce03240d638e5cd0518157`.
