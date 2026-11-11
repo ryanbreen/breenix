@@ -52,6 +52,13 @@ pub static GPU_IRQ_MASKED_MAX_US: TraceCounter =
 pub static GPU_PRESENTS_SUSPENDED: TraceCounter =
     TraceCounter::new("gpu_presents_suspended", "PRESENT calls retained without a device bind or flush");
 
+/// Cumulative readback phase time, retained for failure-only procfs diagnostics.
+pub static GPU_READ_POISON_NS: TraceCounter = TraceCounter::new("gpu_read_poison_ns", "Readback poison and cache clean nanoseconds");
+pub static GPU_READ_WAIT_NS: TraceCounter = TraceCounter::new("gpu_read_wait_ns", "Readback device completion wait nanoseconds");
+pub static GPU_READ_COMPARE_NS: TraceCounter = TraceCounter::new("gpu_read_compare_ns", "Readback invalidate copy and comparison nanoseconds");
+pub static GPU_READ_PREPARE_NS: TraceCounter = TraceCounter::new("gpu_read_prepare_ns", "Readback validation and staging preparation nanoseconds");
+pub static GPU_READ_OUTPUT_NS: TraceCounter = TraceCounter::new("gpu_read_output_ns", "Readback user output copy nanoseconds");
+
 /// Threads holding a [`GpuPath`]: the masking primitives look no further while it is 0.
 static GPU_PATH_THREADS: AtomicU32 = AtomicU32::new(0);
 
@@ -125,7 +132,7 @@ pub fn irq_masked_sites(maximum: u64) -> alloc::string::String {
 }
 
 pub fn init() {
-    for counter in [&GPU_CONTEXTS, &GPU_RESOURCES, &GPU_RESOURCE_BYTES, &GPU_VRAM_BYTES, &GPU_IRQ_MASKED_MAX_US, &GPU_PRESENTS_SUSPENDED] {
+    for counter in [&GPU_CONTEXTS, &GPU_RESOURCES, &GPU_RESOURCE_BYTES, &GPU_VRAM_BYTES, &GPU_IRQ_MASKED_MAX_US, &GPU_PRESENTS_SUSPENDED, &GPU_READ_POISON_NS, &GPU_READ_WAIT_NS, &GPU_READ_COMPARE_NS, &GPU_READ_PREPARE_NS, &GPU_READ_OUTPUT_NS] {
         assert!(register_counter(counter).is_some(), "trace counter registry overflow while registering the GPU gauges");
     }
 }

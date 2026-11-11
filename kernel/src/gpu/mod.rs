@@ -5858,6 +5858,15 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     read_back_impl(tgid, a, observer, arg, None)
 }
 
+/// Scalar phase timing; formatting occurs only when a failing observer reads procfs.
+struct ReadPhase(&'static crate::tracing::counter::TraceCounter, u64);
+impl ReadPhase {
+    fn begin(counter: &'static crate::tracing::counter::TraceCounter) -> Self { Self(counter, now_ns()) }
+}
+impl Drop for ReadPhase {
+    fn drop(&mut self) { self.0.add(now_ns().saturating_sub(self.1)); }
+}
+
 fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u64>,
     crc: Option<abi::screen::CrcRequest<'_>>) -> Result<u64, Refused> {
     #[cfg(target_arch = "x86_64")]
@@ -5865,6 +5874,7 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
         .then(|| crate::gk208::timing::Readback::begin(tgid)).flatten();
     #[cfg(target_arch = "x86_64")]
     let cost_prepare = crate::gk208::cost::phase(crate::gk208::cost::Slot::ReadPrepare);
+    let prepare = ReadPhase::begin(&crate::tracing::providers::gpu::GPU_READ_PREPARE_NS);
     let window = observer != Observer::Owner;
     let deadline = observer.deadline(now_ns());
     // Count owner observation with presentation so a VT release cannot expose the
@@ -6076,6 +6086,7 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
         release();
         return refuse(readback_reason::COMPOSITE_OVERFLOW, 0);
     }
+    drop(prepare);
     let observation = match observe(tgid, id, last, &backing, pitch, fmt, *a, &staging.pages, None,
         #[cfg(target_arch = "x86_64")] trace.as_ref()) {
         Ok(o) => o,
@@ -6197,6 +6208,7 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
     rec[record::RENDERER..record::RENDERER + 64].copy_from_slice(&renderer);
     // Publish pixels after the complete rectangle passed both observations.
     let output = (|| {
+        let _output = ReadPhase::begin(&crate::tracing::providers::gpu::GPU_READ_OUTPUT_NS);
         #[cfg(target_arch = "x86_64")]
         let _copy = trace.as_ref().map(|t| t.phase(true));
         #[cfg(target_arch = "x86_64")]
@@ -6459,6 +6471,7 @@ fn observe(
     let start = |b: &mut Band| -> Result<(), (i64, u32)> {
         #[cfg(target_arch = "x86_64")]
         let cost_poison = crate::gk208::cost::phase(crate::gk208::cost::Slot::Poison);
+        let poison = ReadPhase::begin(&crate::tracing::providers::gpu::GPU_READ_POISON_NS);
         let pattern = if b.pass == 0 { POISON } else { !POISON };
         let at = offset(b);
         for r in 0..b.rows {
@@ -6467,6 +6480,7 @@ fn observe(
         memory(b).maintain(at, (b.rows - 1) * stride + row, false);
         #[cfg(target_arch = "x86_64")]
         drop(cost_poison);
+        drop(poison);
         b.sent = None;
         let skip = crate::test_control::take(test_point::SKIP_TRANSFER, a.target).is_some();
         if skip && dev::backend() != abi::backend::GK208 { return Ok(()); }
@@ -6531,10 +6545,12 @@ fn observe(
     // Take band `b`'s transfer back from the device and check its answer.
     let mut finish = |b: &mut Band| -> Result<(), (i64, u32)> {
         let Some(s) = b.sent.take() else { return Ok(()) };
+        let waiting = ReadPhase::begin(&crate::tracing::providers::gpu::GPU_READ_WAIT_NS);
         let done = await_sync_traced(s.serial, #[cfg(target_arch = "x86_64")] trace,
             #[cfg(target_arch = "x86_64")] true);
         #[cfg(target_arch = "x86_64")]
         drop(s.cost);
+        drop(waiting);
         release_other(s.other);
         let mut d = done.map_err(device_reason)?;
         // Test point 20, `stale-fence`: the answer is taken as echoing the next fence.
@@ -6559,6 +6575,7 @@ fn observe(
     // The first observation lands straight in the staging; the second is compared with it
     // a frame at a time.
     let mut read = |b: &Band| {
+        let _compare = ReadPhase::begin(&crate::tracing::providers::gpu::GPU_READ_COMPARE_NS);
         #[cfg(target_arch = "x86_64")]
         let _copy = trace.map(|t| t.phase(true));
         #[cfg(target_arch = "x86_64")]
