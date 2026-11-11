@@ -1009,7 +1009,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
             require(Operation::KernelLog)?;
             text(generate_kmsg())
         },
-        ProcEntryType::Mounts => text(generate_mounts()),
+        ProcEntryType::Mounts => Ok(generate_mounts()),
         ProcEntryType::XhciDir => {
             let entries = list_xhci_entries();
             text(entries.join("\n") + "\n")
@@ -1564,7 +1564,7 @@ fn generate_cowinfo() -> String {
 }
 
 /// Generate /proc/mounts content (mounted filesystems)
-fn generate_mounts() -> String {
+fn generate_mounts() -> Vec<u8> {
     use alloc::format;
 
     let mounts = crate::fs::vfs::mount::list_mounts();
@@ -1574,6 +1574,7 @@ fn generate_mounts() -> String {
         out.push_str(&format!("none {} {} {} 0 0\n", mount_path, fs_type, flags.options()));
     }
 
+    let mut out = out.into_bytes();
     crate::fs::ufs::append_mounts(&mut out);
     out
 }

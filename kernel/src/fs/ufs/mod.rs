@@ -402,11 +402,12 @@ pub fn wake_deferred() {
 }
 
 /// Append entries for mounts currently attached to the namespace.
-pub fn append_mounts(out: &mut alloc::string::String) {
+#[inline]
+pub fn append_mounts(out: &mut Vec<u8>) {
     let mounts = MOUNTS.lock();
     for mount in mounts.iter() {
         if let Some(point) = mount.point.lock().as_ref() {
-            out.push_str(&mounts_line::format_mount_line(&mount.source, &point.path));
+            out.extend_from_slice(&mounts_line::format_mount_line(&mount.source, &point.path));
         }
     }
 }
