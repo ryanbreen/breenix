@@ -518,12 +518,15 @@ impl Desktop {
             format!("{e}; {detail}")
         })?;
         if supervised {
+            let mut observation = WaitObservation::default();
+            let mut observed_windows = Vec::new();
             until(
                 2000,
                 "init desktop's initial client reached scanout",
                 || {
                     let windows = listed()?;
-                    let s = match Screen::read() {
+                    observed_windows = windows.iter().map(|w| (w.id, w.commit_id)).collect();
+                    let s = match observation.read() {
                         Ok(s) => s,
                         Err(_) => return Ok(false),
                     };
@@ -531,7 +534,11 @@ impl Desktop {
                         .iter()
                         .any(|w| w.commit_id != 0 && s.contains(w.id, w.commit_id)))
                 },
-            )?;
+            ).map_err(|e| {
+                let detail = format!("windows={observed_windows:?}; {}; {}", observation.failure(), d.output());
+                failure_diagnostic("initial-client", &detail);
+                format!("{e}; {detail}")
+            })?;
         }
         Ok(d)
     }

@@ -39,7 +39,10 @@ fn validation_idle(poll_fds: &mut [io::PollFd]) -> bool {
     for fd in poll_fds.iter_mut() {
         fd.revents = 0;
     }
+    // A descriptor can be empty between animation commits. Give that next
+    // frame (or input) an interruptible quiet interval before a long readback.
     matches!(io::poll(poll_fds, 0), Ok(0)) && poll_fds.iter().all(|fd| fd.revents == 0)
+        && matches!(io::poll(poll_fds, 20), Ok(0)) && poll_fds.iter().all(|fd| fd.revents == 0)
 }
 
 pub(super) fn run_deferred_check(
