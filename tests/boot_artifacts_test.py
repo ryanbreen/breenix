@@ -16,7 +16,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class BootArtifactsTest(unittest.TestCase):
     def test_manifest_and_launcher_paths(self):
         with tempfile.TemporaryDirectory() as tmp:
-            root = Path(tmp)
+            root = Path(tmp).resolve()
             (root / 'scripts').mkdir()
             shutil.copy(ROOT / 'scripts/boot-artifacts.py', root / 'scripts')
             kernel = root / 'target/aarch64-breenix-kernel/release/kernel-aarch64'
