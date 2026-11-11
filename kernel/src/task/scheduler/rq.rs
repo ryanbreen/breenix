@@ -2979,3 +2979,23 @@ pub(super) fn spinning_end() {
         SPINNING[me].store(false, Ordering::Release);
     }
 }
+
+/// Diagnostic copies from each thread's revalidated owning run queue.
+pub(super) fn stall_rows() -> (alloc::vec::Vec<super::super::thread::StallThread>, alloc::vec::Vec<u64>) {
+    let mut rows = alloc::vec::Vec::new();
+    let mut unavailable = alloc::vec::Vec::new();
+    each_live(|tid| {
+        let row = try_with_thread(tid, |held, thread| {
+            let cpu = owner(tid).unwrap_or(0);
+            let len = held.queue().len();
+            let queue = held.queue().iter().position(|&t| t == tid).map(|i| (cpu, i, len));
+            thread.owner_pid.map(|_| thread.stall_row(queue))
+        });
+        match row {
+            Some(Some(row)) => rows.push(row),
+            None => unavailable.push(tid),
+            Some(None) => {},
+        }
+    });
+    (rows, unavailable)
+}

@@ -898,6 +898,7 @@ fn futex_wait_until(
     let Some(key) = futex_key(uaddr, private) else {
         return SyscallResult::Err(super::errno::ESRCH as u64);
     };
+    let _wait_site = crate::task::thread::WaitSite::enter(3, uaddr);
     let realtime = matches!(deadline, Deadline::Realtime(_));
 
     let prepared = with_table(|table| {

@@ -27,6 +27,7 @@ pub fn until_from(
     what: &str,
     mut test: impl FnMut() -> Result<bool, String>,
 ) -> Result<(), String> {
+    let _stall = StallWait::new(begin, ms, what);
     let end = begin + ms * 1_000_000;
     loop {
         if test()? {
@@ -161,6 +162,7 @@ pub struct Client {
 }
 fn read_n(file: &mut File, bytes: &mut [u8]) -> Result<(), String> {
     let began = now();
+    let _stall = StallWait::new(began, 2000, "client-reply-startup");
     let end = began + 2_000_000_000;
     let mut done = 0;
     while done < bytes.len() {
@@ -344,7 +346,11 @@ impl Client {
             Ok(found.is_some())
         })
         .map_err(|e| format!("{description}: {e}"))?;
-        Ok(found.unwrap())
+        let event = found.unwrap();
+        if event.kind == abi::event_kind::POINTER_BUTTON {
+            stall_command(&format!("click-observed {} {}", event.serial, self.id));
+        }
+        Ok(event)
     }
 }
 
@@ -721,7 +727,7 @@ impl Desktop {
             buttons,
             wheel,
         )
-        .map(|_| ())
+        .map(|seq| { stall_command(&format!("click-request {seq} {buttons}")); })
     }
     pub fn click(&self, x: i32, y: i32) -> Result<(), String> {
         self.pointer(x, y, 1, 0)?;
@@ -747,5 +753,22 @@ impl Desktop {
                 && e.serial > press.serial
         })?;
         Ok(())
+    }
+}
+
+/// Arming is output-free; the parent samples even while this thread is blocked.
+struct StallWait(u64);
+impl StallWait {
+    fn new(begin: u64, ms: u64, what: &str) -> Self {
+        stall_command(&format!("arm {begin} {} {what}", ms * 1_000_000));
+        Self(begin)
+    }
+}
+impl Drop for StallWait {
+    fn drop(&mut self) { stall_command(&format!("end {}", self.0)); }
+}
+fn stall_command(command: &str) {
+    if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
+        let _ = evidence.write_all(format!("WM_STALL {command}\n").as_bytes());
     }
 }

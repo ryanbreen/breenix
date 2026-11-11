@@ -10345,7 +10345,7 @@ pub fn isr_unblock_for_io(tid: u64) {
 /// data, which both GS bases name in kernel and user mode alike.
 /// Safe to call from ISR context.
 #[inline]
-fn current_cpu_id_raw() -> usize {
+pub(crate) fn current_cpu_id_raw() -> usize {
     #[cfg(target_arch = "aarch64")]
     {
         let mpidr: u64;
@@ -11013,4 +11013,25 @@ pub fn nudge_retirement_grace_for_test() {
         }
     }
     set_need_resched();
+}
+
+/// Scheduler-owned user threads include bwm, clients and the runner even after
+/// reparenting or supervisor restart. Procfs calls this from task context.
+pub fn stall_snapshot() -> alloc::vec::Vec<alloc::string::String> {
+    #[cfg(target_arch = "x86_64")]
+    if rq_live() {
+        let (rows, unavailable) = without_interrupts(rq::stall_rows);
+        let mut out: alloc::vec::Vec<_> = rows.into_iter().map(super::thread::StallThread::text).collect();
+        out.extend(unavailable.into_iter().map(|tid| alloc::format!("tid={tid} snapshot=owner-lock-unavailable")));
+        return out;
+    }
+    let rows = with_scheduler(|scheduler| {
+        scheduler.threads.iter().filter(|t| t.owner_pid.is_some()).map(|thread| {
+            let queue = scheduler.per_cpu_queues.iter().enumerate().find_map(|(cpu, q)| {
+                q.iter().position(|&tid| tid == thread.id()).map(|i| (cpu, i, q.len()))
+            });
+            thread.stall_row(queue)
+        }).collect::<alloc::vec::Vec<_>>()
+    });
+    rows.unwrap_or_default().into_iter().map(super::thread::StallThread::text).collect()
 }

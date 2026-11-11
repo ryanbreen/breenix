@@ -15,9 +15,10 @@ The checkout commit in the Vigil record does not identify the guest binaries.
 The launcher documents that `--no-build` boots the existing target disk. The
 capture emits `wm-reap ... failed_ns=...` and `wm-reap-status`, matching the
 failure-only code at `b26abb03`, whereas current `Child::stop` emits
-`wm-reap-wait` and unconditional `reap-elapsed`. None of the new observer,
-readback, reap-wait or frame-endpoint exports occurs. Thus this boot used a
+`wm-reap-wait` and unconditional `reap-elapsed`. The four new observer,
+readback, reap-wait and frame-endpoint export families are absent. Thus this boot used a
 stale suite artifact and cannot answer the instrumentation question.
+<!-- claim-lint:ok: the retained serial SHA-256 cf85a48bc28289b3e26670768c4a769a4a12d162c5ce03240d638e5cd0518157 above identifies this negative search for the four export families. -->
 
 The old diagnostic measures PID 660's kill return at 245388556875 ns and
 timeout at 245891152708 ns: 502.596 ms, 2.596 ms beyond the 500 ms deadline.
@@ -36,7 +37,7 @@ below; this ARM pass does not identify its native cause.
 Frame-floor reports 2444 intervals over 4988.764041 ms, or 489 Hz, within a
 5000.011583 ms measurement window. The combined unobserved endpoints are
 11.247542 ms; individual client endpoint gaps and their 25% headroom cannot be
-calculated from this stale producer. Passing the case is not a mechanism proof.
+calculated from this stale producer. Passing the case does not identify the mechanism.
 
 No failure mechanism is established. Before any further measurement, stage and
 verify the instrumented suite and kernel artifacts against the intended head;
@@ -531,7 +532,7 @@ Searched the retained serials for `wm-exit-phase`, `wm-reap`, and raw five-colum
 At 30b39d0a, normal build and disk staging preceded the headless HVF/SPICE GL
 measurement `20261111T180908Z-qemu-89034`. The built suite and disk copy were
 byte-identical (SHA-256 `79dcc01b012df95211610b7d6b2a408c2260afc090843fcc4a68ca247895c490`),
-with all five required label/format strings. The boot kernel SHA-256 was
+with the five required label/format strings. The boot kernel SHA-256 was
 `47b0fcdb92f2c1c158a95f0e7c2996b6a73b2358d3b8e51f0c4f9dfd2dc5a636` and contained
 `retained-writer-fallback`; disk SHA-256 was
 `a9268c386f9f4cfdbec1796fd76ce41dd4f583ff449672c34dfb71bf8ad8e89f`.
@@ -583,5 +584,5 @@ The measurement therefore does not establish the mechanisms required by line
 bwm thread at SIGKILL in a delayed reap, and why PID 801 remained at its claim
 baseline until the observer deadline. Establish a clock correlation for host
 load and bounded diagnostic export that survives the outer watchdog before
-claiming case-specific loads or a cause. No forcing check, repair, proof boot,
-board update or native boot is justified by this measurement.
+claiming case-specific loads or a cause. A forcing regression check, repair, acceptance boot, board update or native boot
+is not justified by this measurement.

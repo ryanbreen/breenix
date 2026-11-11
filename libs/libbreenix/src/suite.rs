@@ -1145,7 +1145,9 @@ impl Suite {
     /// a one-case run stops before any suite sequence and is not full-suite
     /// evidence. An unknown case or unusable argv ends in a failed DONE. Does not return.
     pub fn run(&self) -> ! {
+        STALL_EVIDENCE.store(self.id == "window-manager", Ordering::Relaxed);
         self.run_with_finalizer(|| {
+            dump_stall_evidence();
             if let Some(finalize) = self.finalizer { finalize(); }
         })
     }
@@ -1774,6 +1776,7 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
     let mut drawn = last;
     let mut timed_out = false;
     loop {
+        sample_stall_evidence();
         if let Some(results) = results.as_mut() { results.drain(); }
         if awaiting_window {
             let mut bytes = [0u8; 8];
@@ -1863,6 +1866,7 @@ fn wait_exit(pid: i32, mut start: Option<i128>, limit_ms: u64, frame: &mut dyn F
 /// Kill a child that has run too long and reap it. Returns a note for the FAIL
 /// message when it could not be reaped.
 fn stop_child(pid: i32) -> &'static str {
+    dump_stall_evidence();
     if signal::kill(pid, SIGKILL).is_err() {
         return "; SIGKILL failed, the case may still be running";
     }
@@ -2966,4 +2970,19 @@ pub fn screen_before_helper_drop() { screen::before_helper_drop(); }
 /// Offer a whole bound scanout's exact judged bytes for an end checkpoint.
 pub fn screen_judged_readback(pixels: &[u8], record: &[u8; crate::gpu::abi::record::SIZE]) {
     screen::judged_readback(pixels, record);
+}
+
+static STALL_EVIDENCE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
+
+// Reads are root-only and output-free until this parent exports retained rows.
+fn sample_stall_evidence() {
+    if !STALL_EVIDENCE.load(Ordering::Relaxed) { return; }
+    let _ = std::fs::read_to_string("/proc/breenix/window-stall-sample");
+}
+fn dump_stall_evidence() {
+    if !STALL_EVIDENCE.load(Ordering::Relaxed) { return; }
+    sample_stall_evidence();
+    if let Ok(rows) = std::fs::read_to_string("/proc/breenix/window-stall") {
+        for row in rows.lines() { emit(&std::format!("VALUE wm-{row}")); }
+    }
 }

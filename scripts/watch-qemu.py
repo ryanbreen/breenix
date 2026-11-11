@@ -15,6 +15,8 @@ import time
 WallClockCheck = runpy.run_path(str(Path(__file__).with_name("wall_clock.py")))["WallClockCheck"]
 BootProgress = runpy.run_path(str(Path(__file__).with_name("boot_progress.py")))["BootProgress"]
 
+SerialClock = runpy.run_path(str(Path(__file__).with_name("serial-clock.py")))["SerialClock"]
+
 ROOT = Path(__file__).resolve().parents[1]
 DONE = runpy.run_path(str(ROOT / "scripts/wait-boot-done.py"))
 VERDICT = runpy.run_path(str(ROOT / "scripts/suite-verdict.py"))
@@ -43,8 +45,9 @@ def label(mode, suite):
 
 
 def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clock, only=None,
-          until_desktop_ready=False):
+          until_desktop_ready=False, serial_clock=None):
     progress = BootProgress(serial)
+    serial_clock = serial_clock or SerialClock(serial)
     desktop_stages = []
     if until_desktop_ready:
         catalog = json.loads((ROOT / "docs/boot-path.json").read_text())
@@ -59,6 +62,7 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
     text = ""
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     while process.poll() is None:
+        serial_clock.observe()
         now = time.monotonic()
         try:
             size = serial.stat().st_size
@@ -115,6 +119,7 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
             print(f"==> No serial output for {idle_exit:g}s; stopping the VM", flush=True)
             return "idle"
         time.sleep(0.2)
+    serial_clock.observe()
     if until_desktop_ready:
         return "cancelled"
     if mode not in COMPLETING_MODES:
@@ -156,12 +161,14 @@ def main():
     for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(signum, interrupted)
     clock = WallClockCheck(args.serial)
+    serial_clock = SerialClock(args.serial)
     process = subprocess.Popen(command)
     try:
         reason = watch(process, args.serial, args.mode, args.suite, args.idle_exit,
-                       args.gate_timeout, args.suite_hold, clock, args.only, args.until_desktop_ready)
+                       args.gate_timeout, args.suite_hold, clock, args.only, args.until_desktop_ready, serial_clock)
     finally:
         stop(process)
+        serial_clock.observe()
     if args.until_desktop_ready:
         if reason != "done":
             print(f"FAIL: desktop did not become ready ({reason})", flush=True)

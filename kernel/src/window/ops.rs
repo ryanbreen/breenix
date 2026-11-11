@@ -1192,7 +1192,12 @@ pub fn write_events(caller: &Caller, wr: &WriteEvents) -> Result<u64, i32> {
         let w = reg.window(wr.id, caller, who::compositor)?;
         let queued = events.into_iter().take_while(|e| {
             let accepted = w.ring.try_push(*e);
-            if accepted { super::pipeline::record(3, wr.id, 0, e.serial); }
+            if accepted {
+                super::pipeline::record(3, wr.id, 0, e.serial);
+                if e.kind == breengel_abi::event_kind::POINTER_BUTTON {
+                    super::stall_trace::record("click-delivery", wr.id, e.serial, super::events::now_ns());
+                }
+            }
             accepted
         }).count();
         (queued, w.waits.clone())

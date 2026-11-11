@@ -324,6 +324,12 @@ pub struct ThreadSignals {
     pub in_user: AtomicBool,
     /// ARM64 syscall lifetime, distinct from IRQ and EL0 fault accounting.
     pub in_syscall: AtomicBool,
+    /// Always-on numeric stall evidence; no output or locking at publication.
+    pub diagnostic_syscall: AtomicU64,
+    pub diagnostic_last_run_ns: AtomicU64,
+    pub diagnostic_last_cpu: AtomicU64,
+    pub diagnostic_wait_kind: AtomicU64,
+    pub diagnostic_wait_object: AtomicU64,
     /// This thread's CPU time in user and in system mode, in nanoseconds:
     /// CLOCK_THREAD_CPUTIME_ID and getrusage(RUSAGE_THREAD).
     pub user_ns: AtomicU64,

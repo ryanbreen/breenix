@@ -120,6 +120,8 @@ pub enum ProcEntryType {
     WindowPipeline,
     WindowPipelineFull,
     WindowReadback,
+    WindowStall,
+    WindowStallSample,
     InputLedger,
     InputReplay,
     /// /proc/pids - list of all process IDs
@@ -234,6 +236,8 @@ impl ProcEntryType {
             ProcEntryType::WindowPipeline => "window-pipeline",
             ProcEntryType::WindowPipelineFull => "window-pipeline-full",
             ProcEntryType::WindowReadback => "window-readback",
+            ProcEntryType::WindowStall => "window-stall",
+            ProcEntryType::WindowStallSample => "window-stall-sample",
             ProcEntryType::InputLedger => "input-ledger",
             ProcEntryType::InputReplay => "input-replay",
             ProcEntryType::Pids => "pids",
@@ -321,6 +325,8 @@ impl ProcEntryType {
             ProcEntryType::WindowPipeline => "/proc/breenix/window-pipeline",
             ProcEntryType::WindowPipelineFull => "/proc/breenix/window-pipeline-full",
             ProcEntryType::WindowReadback => "/proc/breenix/window-readback",
+            ProcEntryType::WindowStall => "/proc/breenix/window-stall",
+            ProcEntryType::WindowStallSample => "/proc/breenix/window-stall-sample",
             ProcEntryType::InputLedger => "/proc/breenix/input-ledger",
             ProcEntryType::InputReplay => "/proc/breenix/input-replay",
             ProcEntryType::Pids => "/proc/pids",
@@ -409,6 +415,8 @@ impl ProcEntryType {
             ProcEntryType::WindowPipeline => 220,
             ProcEntryType::WindowPipelineFull => 221,
             ProcEntryType::WindowReadback => 224,
+            ProcEntryType::WindowStall => 225,
+            ProcEntryType::WindowStallSample => 226,
             ProcEntryType::InputLedger => 218,
             ProcEntryType::InputReplay => 219,
             ProcEntryType::Pids => 9,
@@ -574,6 +582,8 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::WindowPipeline));
     procfs.entries.push(ProcEntry::new(ProcEntryType::WindowPipelineFull));
     procfs.entries.push(ProcEntry::new(ProcEntryType::WindowReadback));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::WindowStall));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::WindowStallSample));
     procfs.entries.push(ProcEntry::new(ProcEntryType::InputLedger));
     procfs.entries.push(ProcEntry::new(ProcEntryType::InputReplay));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
@@ -731,6 +741,8 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::CompositorStatus
                     | ProcEntryType::Composites
                     | ProcEntryType::WindowPipeline
+                    | ProcEntryType::WindowStall
+                    | ProcEntryType::WindowStallSample
                     | ProcEntryType::WindowReadback
                     | ProcEntryType::WindowPipelineFull
                     | ProcEntryType::InputLedger
@@ -889,7 +901,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::DisplayCrc|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::BootSerialTimed|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::Composites|ProcEntryType::WindowPipeline|ProcEntryType::WindowReadback|ProcEntryType::WindowPipelineFull|ProcEntryType::InputLedger|ProcEntryType::InputReplay))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::DisplayCrc|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::BootSerialTimed|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::Composites|ProcEntryType::WindowPipeline|ProcEntryType::WindowStall|ProcEntryType::WindowStallSample|ProcEntryType::WindowReadback|ProcEntryType::WindowPipelineFull|ProcEntryType::InputLedger|ProcEntryType::InputReplay))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -911,6 +923,14 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::CompositorStatus => {
             let caller = crate::window::Caller::current().map_err(|e| -e)?;
             crate::window::status::text(&caller).map(|s| s.into_bytes()).map_err(|e| -e)
+        }
+        ProcEntryType::WindowStall | ProcEntryType::WindowStallSample => {
+            let caller = crate::window::Caller::current().map_err(|e| -e)?;
+            if !caller.is_root() { return Err(-1); }
+            if matches!(entry_type, ProcEntryType::WindowStallSample) {
+                crate::window::stall_trace::sample(crate::signal::monotonic_nanos());
+                text(String::new())
+            } else { text(crate::window::stall_trace::text()) }
         }
         ProcEntryType::WindowReadback => {
             let caller = crate::window::Caller::current().map_err(|e| -e)?;

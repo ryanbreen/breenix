@@ -148,6 +148,7 @@ impl WaitSet {
     /// first. The signal check runs before it too (#1230): see
     /// `blocking_io::wait_prepared`.
     pub(super) fn park(&self, deadline: u64, ready: impl FnOnce() -> bool) -> Result<(), u64> {
+        let _wait_site = crate::task::thread::WaitSite::enter(4, self as *const Self as u64);
         let wake = if self.notified {
             deadline
         } else {

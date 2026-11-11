@@ -17,6 +17,11 @@ class MeasurementExport(unittest.TestCase):
         report = report.replace('std::fs::read_to_string', 'read_fixture')
         run_rust(self, r'''
 use std::sync::{Mutex,atomic::{AtomicU64,AtomicBool,Ordering}};
+use std::io::Write;
+@STALL_WAIT@
+@STALL_IMPL@
+@STALL_DROP@
+@STALL_COMMAND@
 static NOW:AtomicU64=AtomicU64::new(1);
 static PASS:AtomicBool=AtomicBool::new(false);
 static LINES:Mutex<Vec<String>>=Mutex::new(Vec::new());
@@ -49,7 +54,11 @@ impl Child{
   assert!(!lines.iter().any(|l|l.starts_with("exit-phase ")&&l.contains("tid=99 ")),"unrelated process leaked");
  }
 }
-'''.replace('@STOP@', stop).replace('@UNTIL@', item(source, 'pub fn until('))
+'''.replace('@STALL_WAIT@', 'struct StallWait(u64);')
+           .replace('@STALL_IMPL@', item(source, 'impl StallWait'))
+           .replace('@STALL_DROP@', item(source, 'impl Drop for StallWait'))
+           .replace('@STALL_COMMAND@', item(source, 'fn stall_command('))
+           .replace('@STOP@', stop).replace('@UNTIL@', item(source, 'pub fn until('))
            .replace('@DEADLINE@', item(source, 'pub fn until_from(')).replace('@REPORT@', report))
 
     def test_bounded_payloads_keep_band_times_and_refusal_identity(self):

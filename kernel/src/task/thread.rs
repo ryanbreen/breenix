@@ -1134,7 +1134,12 @@ impl Thread {
 
     pub fn charge_timer_cpu(&self) { self.update_timer_cpu(None, false); }
 
-    pub fn stop_timer_cpu(&self) { self.update_timer_cpu(None, true); }
+    pub fn stop_timer_cpu(&self) {
+        if self.signals.cpu_clock.load(Ordering::Relaxed) != 0 {
+            self.signals.diagnostic_last_run_ns.store(crate::window::events::now_ns(), Ordering::Relaxed);
+        }
+        self.update_timer_cpu(None, true);
+    }
 
     fn switch_timer_mode(&self, user: bool) {
         self.update_timer_cpu(Some(user), false);
@@ -1871,6 +1876,8 @@ impl Thread {
 
     /// Mark thread as running
     pub fn set_running(&mut self) {
+        self.signals.diagnostic_last_cpu.store(crate::task::scheduler::current_cpu_id_raw() as u64, Ordering::Relaxed);
+        self.signals.diagnostic_last_run_ns.store(crate::window::events::now_ns(), Ordering::Relaxed);
         self.state = ThreadState::Running;
         self.signals.cpu_clock.store(
             (crate::signal::monotonic_micros() << 1) | u64::from(self.signals.in_user.load(Ordering::Relaxed)),
@@ -2061,4 +2068,69 @@ fn current_cpu_thread() -> Option<&'static Thread> {
 /// Fatal cancellation check for waits that must unwind their kernel owners.
 pub(crate) fn current_kill_pending() -> bool {
     current_cpu_thread().is_some_and(Thread::kill_pending)
+}
+
+/// Numeric kernel wait identity, restored when a nested wait returns.
+pub struct WaitSite(Option<(&'static crate::signal::ThreadSignals, u64, u64)>);
+impl WaitSite {
+    pub fn enter(kind: u64, object: u64) -> Self {
+        use core::sync::atomic::Ordering::Relaxed;
+        Self(crate::task::thread::current_thread_signals().map(|s| {
+            let previous = (s, s.diagnostic_wait_kind.swap(kind, Relaxed), s.diagnostic_wait_object.swap(object, Relaxed));
+            previous
+        }))
+    }
+}
+impl Drop for WaitSite {
+    fn drop(&mut self) {
+        use core::sync::atomic::Ordering::Relaxed;
+        if let Some((s, kind, object)) = self.0 {
+            s.diagnostic_wait_object.store(object, Relaxed);
+            s.diagnostic_wait_kind.store(kind, Relaxed);
+        }
+    }
+}
+
+/// Copied under the scheduler's owning lock; formatted after that lock drops.
+pub(crate) struct StallThread {
+    tid: u64, pid: u64, state: ThreadState, syscall: u64, wait_kind: u64,
+    object: u64, since_run_ns: u64, last_cpu: u64, cpu_ns: u64,
+    queue: Option<(usize, usize, usize)>, wake_ns: u64,
+}
+impl Thread {
+    pub(crate) fn stall_row(&self, queue: Option<(usize, usize, usize)>) -> StallThread {
+        let now = crate::signal::monotonic_nanos();
+        let s = &self.signals;
+        let stamp = s.cpu_clock.load(Ordering::Acquire);
+        let active = stamp != 0;
+        let cpu_ns = s.user_ns.load(Ordering::Relaxed).saturating_add(s.system_ns.load(Ordering::Relaxed))
+            .saturating_add(if active { now.saturating_sub((stamp >> 1).saturating_mul(1000)) } else { 0 });
+        StallThread {
+            tid: self.id(), pid: self.owner_pid.unwrap_or(0), state: self.state,
+            syscall: s.diagnostic_syscall.load(Ordering::Relaxed),
+            wait_kind: s.diagnostic_wait_kind.load(Ordering::Relaxed),
+            object: s.diagnostic_wait_object.load(Ordering::Relaxed),
+            since_run_ns: if active { 0 } else { now.saturating_sub(s.diagnostic_last_run_ns.load(Ordering::Relaxed)) },
+            last_cpu: s.diagnostic_last_cpu.load(Ordering::Relaxed), cpu_ns, queue,
+            wake_ns: self.wake_time_ns.unwrap_or(0),
+        }
+    }
+}
+impl StallThread {
+    pub(crate) fn text(self) -> alloc::string::String {
+        let syscall = if self.syscall == 0 { alloc::string::String::from("none") } else { alloc::format!("{}", self.syscall - 1) };
+        let wait = match self.wait_kind {
+            1 => "completion", 2 => "waitqueue", 3 => "futex",
+            4 => "poll-set", 5 => "child-selector",
+            _ => match self.state {
+                ThreadState::BlockedOnTimer => "timer",
+                ThreadState::BlockedOnChildExit => "child-exit",
+                ThreadState::BlockedOnSignal => "signal",
+                ThreadState::Blocked | ThreadState::BlockedOnIO => "syscall-wait",
+                _ => "none",
+            },
+        };
+        alloc::format!("pid={} tid={} state={:?} syscall={syscall} wait={wait} object={} since_run_ns={} last_cpu={} cpu_ns={} queue={:?} wake_ns={}",
+            self.pid, self.tid, self.state, self.object, self.since_run_ns, self.last_cpu, self.cpu_ns, self.queue, self.wake_ns)
+    }
 }
