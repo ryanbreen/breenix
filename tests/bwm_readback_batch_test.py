@@ -16,6 +16,7 @@ class ReadbackBatch(unittest.TestCase):
         run_rust(self, r'''
 use std::sync::Mutex;
 static CALLS:Mutex<Vec<[u32;4]>>=Mutex::new(Vec::new());
+static PIXELS:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
 static HOTSPOTS:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
 static POINTER:Mutex<bool>=Mutex::new(false);
 static HIGH_X:Mutex<bool>=Mutex::new(false);
@@ -71,8 +72,17 @@ impl Compositor {
  let calls=CALLS.lock().unwrap();let mut y=7;for r in calls.iter(){assert_eq!((r[0],r[1],r[2]),(13,y,2546));y+=r[3];}assert_eq!(y,1599);drop(calls);
  *BAD.lock().unwrap()=Some((2558,1598));
  match c.check_area(0,&[],None,[13,7,2559,1599]){Err(CheckError::Failed(s))=>assert!(s.contains("pixel (2558, 1598)"),"{s}"),Err(CheckError::Moved(s))=>panic!("{s}"),Ok(n)=>panic!("missed late mismatch after {n}")}
+ *BAD.lock().unwrap()=None;
+ // A chrome-only layer samples the desktop itself. It must retain the full
+ // comparison without sending its other 1590 rows through the pixel oracle.
+ PIXELS.store(0,std::sync::atomic::Ordering::Relaxed);
+ let layers=[Layer{window_id:7,frame:[[0,10,2560,20];3],frame_len:1}];
+ assert_eq!(c.check_area(0,&layers,None,[0,0,2560,1600]).unwrap(),4096000);
+ assert_eq!(PIXELS.load(std::sync::atomic::Ordering::Relaxed),0,"chrome-only rows used the per-pixel layer oracle");
+ *BAD.lock().unwrap()=Some((2558,1598));
+ assert!(matches!(c.check_area(0,&layers,None,[0,0,2560,1600]),Err(CheckError::Failed(_))),"late desktop corruption escaped with a layer present");
  *BAD.lock().unwrap()=None;*HIGH_X.lock().unwrap()=true;
  assert_eq!(c.check_area(0,&[],None,[13,7,2559,1599]).unwrap(),2546*1592);
 }
-'''.replace('CONSTANTS',constants+'\n'+(item(source,'fn equal_row(') if 'fn equal_row(' in source else '')).replace('@CHECK@',item(source,'pub fn check_area(')).replace('@EXPECTED@',item(source,'fn expected(')))
+'''.replace('CONSTANTS',constants+'\n'+(item(source,'fn equal_row(') if 'fn equal_row(' in source else '')).replace('@CHECK@',item(source,'pub fn check_area(')).replace('@EXPECTED@',item(source,'fn expected(').replace('-> u32 {', '-> u32 { PIXELS.fetch_add(1,std::sync::atomic::Ordering::Relaxed);', 1)))
 if __name__=='__main__':unittest.main()
