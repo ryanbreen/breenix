@@ -1570,9 +1570,7 @@ impl Core {
             let d = d.unwrap_or_else(|| Done::none(Tag::Sync(serial)));
             self.done.insert(serial, d);
         }
-        if s.upload.is_some() {
-            self.settle(s.ctx);
-        }
+        self.settle(s.ctx);
         notify();
     }
 
@@ -1808,7 +1806,8 @@ impl Core {
     /// its submissions awaits its result, and forget a dropped context then.
     fn settle(&mut self, id: u32) {
         let Some(c) = self.contexts.get_mut(&id) else { return };
-        if c.busy || !c.inflight.is_empty() || c.state == CtxState::Creating {
+        if c.busy || !c.inflight.is_empty() || c.state == CtxState::Creating
+            || (c.dropped && self.syncs.values().any(|s| s.ctx == id)) {
             return;
         }
         let destroy = c.device_alive && (c.dropped || c.state == CtxState::Quarantined);
