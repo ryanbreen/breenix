@@ -138,6 +138,13 @@ mod live {
         pub fn key_exit(&mut self, code: u16, status: i32) -> Result<(), String> {
             self.input_exit(code, false, status, false)
         }
+        /// Ask bwm to close the window and require a clean app exit.
+        pub fn close_exit(&mut self) -> Result<(), String> {
+            self.keys.backend_mut().wm_key(key::LEFT_ALT, true)?;
+            let result = self.input_exit(16, false, 0, true);
+            let release = self.keys.backend_mut().wm_key(key::LEFT_ALT, false);
+            result.and(release.map(|_| ()))
+        }
         /// Click at content coordinates, including an app's dismissal margin.
         pub fn click_exit(&mut self, x: i32, y: i32, status: i32) -> Result<(), String> {
             let live = self.keys.backend_mut();
@@ -236,6 +243,17 @@ mod live {
                 if release.is_ok() { release = result; }
             }
             result.and(release)
+        }
+        /// Move to a visible node-local point without pressing a button.
+        pub fn hover(&mut self, key: &str, at: (i32, i32)) -> Result<(), String> {
+            let tree = self.tree()?;
+            let node = tree::find(&tree, &Query { key: Some(key), ..Query::default() })?;
+            let point = drag_start(node, at)?;
+            let live = self.keys.backend_mut();
+            let info = live.info(self.window)?;
+            let x = info.x.checked_add(point.0).ok_or("drag x outside pointer range")?;
+            let y = info.y.checked_add(point.1).ok_or("drag y outside pointer range")?;
+            live.move_to((x, y))
         }
         /// Drag from a node-local point using relative device-pixel steps.
         pub fn drag(&mut self, key: &str, from: (i32, i32), steps: &[(i32, i32)]) -> Result<(), String> {
