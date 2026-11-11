@@ -69,4 +69,69 @@ ledger line 154 for this correction. The prior native 80/81 is not a passing ARM
 cell. The required new boot is one headless ARM64 HVF window-manager launch via
 `boot-interactive.sh --mode suite --suite window-manager --gpu-gl --no-display`.
 It must meet coordinator line 143's unchanged 81-case selection, memory, ordered
-READY and ANGLE/Metal requirements. No acceptance result is claimed here yet.
+READY and ANGLE/Metal requirements. The result below remains failed acceptance.
+
+
+## Single final-head result: 80/81, A.3 still blocked
+
+Vigil `20261111T161134Z-qemu-52524`, runtime
+`403f55016063bb8b961016dcbe847c29589bc040`, is a standalone suite launch on ARM64
+QEMU, HVF, display false, watch false, dirty 0, exit 1. The
+[producer excerpts](serials/a3-acceptance-403f5501.txt) retain the 81 CASE records
+and the two supervisor process timelines. The raw serial was passed once to the
+unchanged `suite-verdict.py` selection API, using exactly the categories whose
+81 ids equal `docs/gui/gt710-step-21-7.json`. It refuses only this failed case:
+
+```text
+SUITE window-manager CASE recovery/supervisor-restarts FAIL ms=8857 msg=bwm composite of client 83 commit 4: no acknowledgment within 2000 ms; last readback error=Some("SCANOUT_READBACK: EAGAIN, reason 0"); last completed=None; [ini
+SUITE window-manager DONE passed=80 failed=1 skipped=0 total=81
+SUITE window-manager MEMORY reclaimed=PASS free_before=84635 free_after=84625 allowance=48
+SUITE_SEQUENCE READY window-manager
+```
+
+The generic verdict returns exactly the 12 planned-empty categories permitted
+by coordinator line 143. The selection reports no malformed auxiliary record.
+DONE is raw serial line 2700, MEMORY reclaimed line 2704, READY line 2710.
+The launcher accepts ANGLE/Metal, 988 attestation records. Performance is 7/7;
+`liveness/memory-bounded` also passes. Start uptime load averages are
+4.44 / 9.76 / 9.98, end 5.15 / 9.88 / 10.36. The lane ran no builds, installers
+or heavy work during the boot.
+
+`recovery/restart-adopts` now passes, case total 6217 ms. That total includes
+startup, content, kill and replacement; it is not the reap interval. The unchanged
+500 ms reap check succeeds. No reap-failure diagnostics are emitted, so this run
+does not measure how much the old synchronous walk cost. The deterministic
+check establishes removal of that work from the pre-zombie path.
+
+The sole remaining failure is the supervisor replacement's client-composite
+wait. Original PID 723 reaches first composite at 3.719366 s. Replacement PID 736
+has its own exec origin; it reaches five target allocations by 0.030214 s,
+context ready at 1.051680 s, fonts-ready at 1.603704 s, chrome-ready at 1.872116 s,
+and initial-windows-ready at 2.015147 s. Its frame pixels are ready at 2.057163 s;
+there is no replacement checks-ready or first-composite stamp before failure.
+Those are separate process timelines.
+
+Compared with the previous replacement PID 731 at `7dc1a45c`:
+
+| Phase | Previous passing replacement | This replacement |
+| --- | ---: | ---: |
+| Font planning interval | 425361 us | 895329 us |
+| Font run.send interval | 38735 us | 674799 us |
+| Fonts ready, since exec | 1124130 us | 1603704 us |
+| Initial windows ready, since exec | 1143218 us | 2015147 us |
+| First composite, since exec | 1311134 us | absent |
+
+The source dependency is `bwm.rs`'s font worker preparing coverage, joined before
+initial chrome and client composition. `CachedFont::run_mode` stamps planning
+around lookup/rasterization, and `CachedFont::finish` stamps `run.send()` separately
+from the subsequent fence wait (`libs/libgfx/src/ttf_font.rs`). The send interval
+includes admission/submission work; these stamps do not identify shader compilation
+or host contention as the cause. The capture does not isolate why that interval
+grew, nor establish whether newly deferred reclamation overlapped it. That remains
+source investigation under #2872, not an excuse to lengthen the 2 s bound or rerun.
+
+A.3 is not proven. No second ARM acceptance, R240 boot, passing board cell or
+merge follows this failure. The correction and check are pushed to
+`arm-catchup/a-3` and `metal-arm-catchup/a-3`. PR #2874 remains draft and unmerged;
+its description and #2872 are updated with this result. The R240's prior failed
+80/81 remains recorded in the preceding continuation report.

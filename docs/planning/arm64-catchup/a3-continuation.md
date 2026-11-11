@@ -1,5 +1,8 @@
 # A.3 continuation: corrected ARM acceptance still fails 80/81
 
+Later continuation: [ARM reap-path repair and final-head result](a3-reap.md).
+The later boot passes restart-adopts but fails supervisor-restarts, still 80/81.
+
 Latest runtime head `7dc1a45c5110d1dc82436ce34dcd605d64fdfbc0`, Vigil
 `20261111T154755Z-qemu-92251`: **80 passed, 1 failed, 0 skipped, 81 total**.
 A.3 remains blocked. The sole failure is the unchanged 500 ms reap deadline in
