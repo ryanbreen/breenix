@@ -54,6 +54,7 @@ fn file_identity(info: &FileAllInformation) -> Option<(u64, u64, bool)> {
 impl<B: Backend> Namespace<B> {
     fn disconnect(&mut self) {
         self.connected = false;
+        self.scans.clear();
         self.invalidate();
         for handle in self.handles.values_mut() {
             handle.file_id = None;

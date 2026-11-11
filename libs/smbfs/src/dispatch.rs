@@ -79,24 +79,20 @@ impl<B: Backend> Namespace<B> {
             Op::Readdir => {
                 let cookie = r.u64().map_err(|_| 22)?;
                 r.finish().map_err(|_| 22)?;
-                let entries = self.readdir(req.node)?;
+                let entries = self.directory_page(req.node, cookie)?;
                 let mut b = vec![0; MAX_DATA];
                 let mut w = Writer::new(&mut b);
-                for (i, e) in entries
-                    .iter()
-                    .filter(|e| e.name != "." && e.name != "..")
-                    .enumerate()
-                {
-                    if (i as u64) < cookie {
-                        continue;
-                    }
-                    if w.len() + 22 + e.name.len() > MAX_DATA {
-                        break;
-                    }
-                    let a = self.lookup(req.node, &e.name, now)?;
-                    w.u64(i as u64 + 1).map_err(|_| 22)?;
-                    w.u64(a.node).map_err(|_| 22)?;
-                    w.u32(a.mode).map_err(|_| 22)?;
+                for (i, e) in entries.iter().enumerate() {
+                    let path = self.child(req.node, &e.name)?;
+                    let node = self.node(path, req.node);
+                    let mode = if e.attributes & 16 != 0 {
+                        ufs_abi::payload::S_IFDIR | 0o755
+                    } else {
+                        ufs_abi::payload::S_IFREG | 0o644
+                    };
+                    w.u64(cookie + i as u64 + 1).map_err(|_| 22)?;
+                    w.u64(node).map_err(|_| 22)?;
+                    w.u32(mode).map_err(|_| 22)?;
                     w.name(e.name.as_bytes()).map_err(|_| 22)?;
                 }
                 let n = w.len();
@@ -144,5 +140,41 @@ impl<B: Backend> Namespace<B> {
                 Ok(b)
             }
         }
+    }
+}
+
+impl<B: Backend> Namespace<B> {
+    fn directory_page(&mut self, node: u64, cookie: u64) -> Result<Vec<libsmb::msg::DirectoryEntry>, i32> {
+        let path = self.path(node)?.to_owned();
+        let at = usize::try_from(cookie).map_err(|_| 22)?;
+        self.operation(|s| {
+            if cookie == 0 {
+                if let Some(old) = s.scans.remove(&node).and_then(|scan| scan.id) {
+                    s.backend.close(old)?;
+                }
+                let id = s.backend.open(&path, libsmb::msg::access_mask::LIST_DIRECTORY,
+                    libsmb::msg::CreateDisposition::Open, libsmb::msg::create_options::DIRECTORY_FILE)?;
+                s.scans.insert(node, crate::DirectoryScan { id: Some(id), first: true, entries: Vec::new() });
+            }
+            let scan = s.scans.get_mut(&node).ok_or(0xffff_fffdu32)?;
+            if at > scan.entries.len() { return Err(0xc000_000d); }
+            while at == scan.entries.len() {
+                let Some(id) = scan.id else { break; };
+                let batch = s.backend.list_batch(id, scan.first)?;
+                scan.first = false;
+                if batch.is_empty() {
+                    scan.id = None;
+                    s.backend.close(id)?;
+                    break;
+                }
+                // Unrepresentable names do not prevent listing their siblings.
+                scan.entries.extend(batch.into_iter().filter(|e| crate::validate(&e.name).is_ok()));
+            }
+            let mut size = 0;
+            Ok(scan.entries[at..].iter().take_while(|e| {
+                size += 22 + e.name.len();
+                size <= MAX_DATA
+            }).cloned().collect())
+        })
     }
 }

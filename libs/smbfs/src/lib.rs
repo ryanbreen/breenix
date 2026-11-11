@@ -30,6 +30,7 @@ pub trait Backend {
     ) -> Result<FileId, u32>;
     fn close(&mut self, id: FileId) -> Result<(), u32>;
     fn query_file(&mut self, id: FileId) -> Result<FileAllInformation, u32>;
+    fn list_batch(&mut self, id: FileId, restart: bool) -> Result<Vec<DirectoryEntry>, u32>;
     fn list_handle(&mut self, id: FileId) -> Result<Vec<DirectoryEntry>, u32>;
     fn set_info(&mut self, id: FileId, info: SetInfo<'_>) -> Result<(), u32>;
 }
@@ -96,6 +97,11 @@ struct Node {
     path: String,
     parent: u64,
 }
+struct DirectoryScan {
+    id: Option<FileId>,
+    first: bool,
+    entries: Vec<DirectoryEntry>,
+}
 pub struct Namespace<B> {
     backend: B,
     nodes: BTreeMap<u64, Node>,
@@ -105,6 +111,7 @@ pub struct Namespace<B> {
     handles: BTreeMap<u64, files::Handle>,
     next_handle: u64,
     connected: bool,
+    scans: BTreeMap<u64, DirectoryScan>,
 }
 impl<B: Backend> Namespace<B> {
     pub fn new(backend: B) -> Self {
@@ -127,6 +134,7 @@ impl<B: Backend> Namespace<B> {
             handles: BTreeMap::new(),
             next_handle: 1,
             connected: true,
+            scans: BTreeMap::new(),
         }
     }
     pub fn backend(&self) -> &B {

@@ -373,39 +373,36 @@ impl Client {
         Ok(size as u32)
     }
 
+    /// Fetch one server enumeration batch; an empty result denotes completion.
+    pub fn list_batch(&mut self, id: FileId, restart: bool) -> Result<Vec<DirectoryEntry>, Error> {
+        let output_length = self.chunk_size(
+            self.session.negotiated().ok_or(Error::Protocol)?.max_transact_size,
+        )?.min(65536);
+        let r = self.exchange(Request::QueryDirectory(QueryDirectoryRequest {
+            file_id: id,
+            pattern: "*",
+            output_length,
+            flags: u8::from(restart),
+        }))?;
+        if r.header.status == NtStatus::NO_MORE_FILES.0 {
+            return Ok(Vec::new());
+        }
+        if r.header.status != 0 {
+            return Err(Error::Status(NtStatus(r.header.status)));
+        }
+        let entries = r.decode(QueryDirectoryResponse::decode)?.entries;
+        if entries.is_empty() {
+            return Err(Error::Protocol);
+        }
+        Ok(entries)
+    }
     pub fn list_handle(&mut self, id: FileId) -> Result<Vec<DirectoryEntry>, Error> {
         let mut entries = Vec::new();
         let mut first = true;
         loop {
-            let output_length = self
-                .chunk_size(
-                    self.session
-                        .negotiated()
-                        .ok_or(Error::Protocol)?
-                        .max_transact_size,
-                )?
-                .min(65536);
-            let r = self.exchange(Request::QueryDirectory(QueryDirectoryRequest {
-                file_id: id,
-                pattern: "*",
-                output_length,
-                flags: u8::from(first),
-            }))?;
-            if r.header.status == NtStatus::NO_MORE_FILES.0 {
-                break;
-            }
-            if r.header.status != 0 {
-                return Err(Error::Status(NtStatus(r.header.status)));
-            }
-            let batch = r.decode(QueryDirectoryResponse::decode)?.entries;
-            if batch.is_empty() {
-                return Err(Error::Protocol);
-            }
-            entries.extend(
-                batch
-                    .into_iter()
-                    .filter(|e| e.name != "." && e.name != ".."),
-            );
+            let batch = self.list_batch(id, first)?;
+            if batch.is_empty() { break; }
+            entries.extend(batch.into_iter().filter(|e| e.name != "." && e.name != ".."));
             first = false;
         }
         Ok(entries)

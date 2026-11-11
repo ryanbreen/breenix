@@ -103,6 +103,9 @@ impl Backend for Connection {
     fn query_file(&mut self, id: FileId) -> Result<FileAllInformation, u32> {
         self.client.query_file(id).map_err(client_error)
     }
+    fn list_batch(&mut self, id: FileId, restart: bool) -> Result<Vec<DirectoryEntry>, u32> {
+        self.client.list_batch(id, restart).map_err(client_error)
+    }
     fn list_handle(&mut self, id: FileId) -> Result<Vec<DirectoryEntry>, u32> {
         self.client.list_handle(id).map_err(client_error)
     }

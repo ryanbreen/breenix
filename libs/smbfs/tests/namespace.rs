@@ -13,6 +13,9 @@ struct Fake {
     next: u64,
     queries: usize,
     identities: BTreeMap<String, u64>,
+    phantom: bool,
+    batch_offsets: BTreeMap<u64, usize>,
+    list_calls: usize,
     data: BTreeMap<String, Vec<u8>>,
     closes: usize,
     flushes: usize,
@@ -178,6 +181,16 @@ impl Backend for Fake {
         }
         Ok(i)
     }
+    fn list_batch(&mut self, id: FileId, restart: bool) -> Result<Vec<DirectoryEntry>, u32> {
+        self.list_calls += 1;
+        let entries = self.list_handle(id)?;
+        let at = self.batch_offsets.entry(id.persistent).or_default();
+        if restart { *at = 0; }
+        let end = (*at + 100).min(entries.len());
+        let result = entries[*at..end].to_vec();
+        *at = end;
+        Ok(result)
+    }
     fn list_handle(&mut self, id: FileId) -> Result<Vec<DirectoryEntry>, u32> {
         let path = &self.handles[&id.persistent];
         let prefix = if path.is_empty() {
@@ -185,7 +198,7 @@ impl Backend for Fake {
         } else {
             format!("{path}\\")
         };
-        Ok(self
+        let mut entries: Vec<_> = self
             .files
             .iter()
             .filter_map(|(name, dir)| {
@@ -205,7 +218,13 @@ impl Backend for Fake {
                     attributes: if *dir { 16 } else { 0 },
                 })
             })
-            .collect())
+            .collect();
+        if self.phantom {
+            let mut e = entries[0].clone();
+            e.name = "deleted-after-enumeration".into();
+            entries.push(e);
+        }
+        Ok(entries)
     }
     fn set_info(&mut self, id: FileId, op: SetInfo<'_>) -> Result<(), u32> {
         let old = self.handles[&id.persistent].clone();
@@ -488,4 +507,38 @@ fn reconnect_rejects_a_replaced_file_without_blocking_other_handles() {
     assert!(fs.lookup(ROOT, "target", 1).is_ok());
     fs.release(h).unwrap();
     fs.release(other).unwrap();
+}
+
+#[test]
+fn readdir_uses_enumeration_metadata_and_skips_unrepresentable_names() {
+    use ufs_abi::{Op, Request, payload::Reader};
+    let mut fs = setup();
+    for i in 0..1500 {
+        fs.backend_mut().files.insert(format!("entry-{i:04}-{}", "x".repeat(60)), false);
+    }
+    fs.backend_mut().files.insert("z".repeat(300), false);
+    fs.backend_mut().phantom = true;
+    let queries = fs.backend().queries;
+    let mut cookie = 0u64;
+    let mut names = Vec::new();
+    loop {
+        let payload = cookie.to_le_bytes();
+        let reply = fs.serve(&Request { id: 1, op: Op::Readdir, node: ROOT, payload: &payload }, 0).unwrap();
+        if reply.is_empty() { break; }
+        let mut r = Reader::new(&reply);
+        let mut used = 0;
+        while used < reply.len() {
+            cookie = r.u64().unwrap();
+            r.u64().unwrap();
+            r.u32().unwrap();
+            let name = std::str::from_utf8(r.name().unwrap()).unwrap();
+            used += 22 + name.len();
+            names.push(name.to_owned());
+        }
+    }
+    assert_eq!(fs.backend().queries, queries, "no per-entry open/query/close");
+    assert_eq!(names.len(), 1503);
+    assert_eq!(fs.backend().list_calls, 17, "one pass over server batches");
+    assert!(names.contains(&"deleted-after-enumeration".into()));
+    assert!(names.iter().all(|n| n.len() <= 255));
 }
