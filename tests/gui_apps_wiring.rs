@@ -3,7 +3,7 @@ fn gui_apps_cases_have_sessions_and_no_placeholder() {
     let source = include_str!("../userspace/programs/src/suite_gui_apps.rs");
     let cases: Vec<_> = source.lines().filter(|line| line.trim_start().starts_with("case(")).collect();
     // #2880 corrected the base to 55; collaboration adds six cases.
-    assert_eq!(cases.len(), 72);
+    assert_eq!(cases.len(), 73);
     for case in cases {
         assert!(case.contains(".session(libuitest::supervisor::serve)"), "missing session: {case}");
         assert!(!case.contains("pending::"), "placeholder: {case}");
@@ -185,4 +185,13 @@ fn guskit_reloads_and_draws_with_the_display_font() {
     assert!(source.matches("take_display_font()").count() >= 2);
     assert!(source.contains("ttf_font::draw_text"));
     assert!(source.contains("display_path()"));
+}
+
+#[test]
+fn init_desktop_case_uses_the_real_init_session() {
+    let source = include_str!("../userspace/programs/src/guiapps_suite/desktop.rs");
+    let case = source.split("pub fn init_desktop()").nth(1).expect("init desktop case")
+        .split("pub fn ").next().unwrap();
+    assert!(case.contains("App::init_desktop(\"Terminal\")"));
+    assert!(!case.contains("App::launch("));
 }
