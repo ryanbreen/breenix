@@ -38,3 +38,12 @@ fn navigation_stops_at_ends() {
     assert!(!input.navigate(b'.', 2));
     assert_eq!(input.selected, 1);
 }
+
+#[test]
+fn resized_grid_fits_300_by_200() {
+    for i in 0..5 {
+        let (x, y) = input::grid_center(i);
+        let r = input::HOVER_RADIUS;
+        assert!(x - r >= 0 && y - r >= 0 && x + r <= 300 && y + r <= 200);
+    }
+}
