@@ -97,8 +97,8 @@ static FIRMWARE_CPU_COUNT: AtomicU64 = AtomicU64::new(0);
 // Fixed physical layout, relative to a RAM base of 0x4000_0000 (on VMware the
 // loader moves this layout up by ram_base_offset):
 // DTB (QEMU):     0x4000_0000 - 0x4010_0000 (below the kernel's load address)
-// Kernel image:   0x4020_0000 - 0x41E0_0000 (image + BSS incl. PCI_3D_FRAMEBUFFER)
-// Loader stack:   0x41E0_0000 - 0x4200_0000
+// Kernel image:   0x4020_0000 - 0x42E0_0000 (image + BSS incl. PCI_3D_FRAMEBUFFER)
+// Loader stack:   0x42E0_0000 - 0x4300_0000
 // SMP stacks:     0x4300_0000 - 0x4400_0000 (16 MB, 8 CPUs × 2 MB each)
 // DMA (NC):       0x5000_0000 - 0x501F_FFFF (2 MB, Non-Cacheable for xHCI)
 // Heap:           0x5020_0000 - 0x581F_FFFF (128 MB native, 64 MB QEMU)
@@ -121,6 +121,7 @@ const _: () = {
     };
     let low = KERNEL_FIXED_RANGES[0];
     let high = KERNEL_FIXED_RANGES[1];
+    assert!(arm64_boot_contract::LOADER_BOOT_STACK_TOP_PHYS <= PERCPU_STACK_REGION_BASE_DEFAULT - HHDM_BASE);
     assert!(
         PERCPU_STACK_REGION_BASE_DEFAULT - HHDM_BASE + MAX_CPUS as u64 * PERCPU_STACK_STRIDE
             <= low.end

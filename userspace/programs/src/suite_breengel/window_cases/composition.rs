@@ -797,14 +797,17 @@ fn composition_present_rate() -> CaseResult {
     place(&mut k, w.id(), &p, abi::geometry_flags::VISIBLE)?;
     let mut frame_times=Vec::new();
     // G33: use the event's time, independent of when a procfs poll observes it.
-    let composite_event = || -> Result<(u64, i128), breenix_suite::suite::CaseError> {
+    let composite_snapshot = || -> Result<(u64, u64), breenix_suite::suite::CaseError> {
         let waiting = time::now_monotonic()?.as_nanos();
-        let (previous, _) = loop {
-            if let Some(pair) = composite_clock().cite("18")? { break pair; }
+        loop {
+            if let Some(pair) = composite_clock().cite("18")? { return Ok(pair); }
             ensure(time::now_monotonic()?.as_nanos() - waiting < 2_000_000_000,
                 "18", "a consistent composite clock was unavailable for 2 s")?;
             core::hint::spin_loop();
-        };
+        }
+    };
+    let composite_event = |previous| -> Result<(u64, i128), breenix_suite::suite::CaseError> {
+        let waiting = time::now_monotonic()?.as_nanos();
         loop {
             let sample = composite_clock().cite("18")?;
             let now = time::now_monotonic()?.as_nanos();
@@ -821,15 +824,18 @@ fn composition_present_rate() -> CaseResult {
     let mut end = 0;
     let mut composites1 = 0;
     for i in 0..300u32 {
-        if i == 30 {
-            (composites0, start) = composite_event()?;
-        }
-        if i == 299 {
-            (composites1, end) = composite_event()?;
-        }
+        // Read the baseline before producing work. A compositor may already
+        // have consumed the previous damage; waiting before this commit would
+        // then withhold the only work that could advance its counter.
+        let previous = if i == 29 || i == 298 { Some(composite_snapshot()?.0) } else { None };
         let began=time::now_monotonic()?.as_nanos();
         w.frame(i).cite("17.3")?;
         if i>=236 {frame_times.push(((time::now_monotonic()?.as_nanos()-began)/1000).min(u32::MAX as i128) as u32);}
+        if let Some(previous) = previous {
+            let event = composite_event(previous)?;
+            if i == 29 { (composites0, start) = event; }
+            else { (composites1, end) = event; }
+        }
     }
     let elapsed_ns = end - start;
     let composed = (composites1 - composites0) as i128;
