@@ -92,3 +92,32 @@ fn fragmented_frames_and_close_are_handled() {
     assert!(out.iter().any(|o| matches!(o, Output::Frame { conn: 2, data } if matches!(decode(data), Ok(Some((Message::Apply { global: 1, .. }, _)))))));
     assert!(h.close(1).contains(&frame(2, Message::PeerLeft { peer: 1, reason: b"disconnected".to_vec() })));
 }
+
+#[test]
+fn undo_only_removes_issuers_newest_live_operation() {
+    use libcollab::live_ops;
+    let mut h = HostCore::new(4, 3);
+    join(&mut h, 1); join(&mut h, 2);
+    send(&mut h, 1, op(1, 0));
+    send(&mut h, 2, op(1, 1));
+    send(&mut h, 1, op(2, 2));
+    send(&mut h, 1, Message::Op { local: 3, op: DrawOp::Undo });
+    let live = live_ops(h.log());
+    assert_eq!(live.len(), 2);
+    assert!(matches!(&live[0], Message::Apply { peer: 1, local: 1, .. }));
+    assert!(matches!(&live[1], Message::Apply { peer: 2, local: 1, .. }));
+    send(&mut h, 1, Message::Op { local: 4, op: DrawOp::Undo });
+    assert_eq!(live_ops(h.log()).len(), 1);
+    assert_eq!(send(&mut h, 1, Message::Op { local: 5, op: DrawOp::Undo }), vec![frame(1, Message::Refused { local: 5, reason: b"nothing-to-undo".to_vec() })]);
+}
+
+#[test]
+fn host_undo_cannot_remove_a_peers_operation() {
+    let mut h = HostCore::new(4, 3);
+    join(&mut h, 1);
+    send(&mut h, 1, op(1, 0));
+    assert_eq!(h.submit(DrawOp::Undo), vec![Output::Event(Event::Refused { local: 1, reason: b"nothing-to-undo".to_vec() })]);
+    h.submit(DrawOp::Clear);
+    h.submit(DrawOp::Undo);
+    assert_eq!(libcollab::live_ops(h.log()).len(), 1);
+}
