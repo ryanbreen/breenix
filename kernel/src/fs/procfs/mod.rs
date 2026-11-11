@@ -931,7 +931,12 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
                 crate::task::scheduler::sample_accounting_queues();
                 crate::window::stall_trace::sample(crate::signal::monotonic_nanos());
                 text(String::new())
-            } else { text(crate::window::stall_trace::text() + &crate::window::accounting::text()) }
+            } else {
+                let rows = crate::window::stall_trace::text() + &crate::window::accounting::text();
+                #[cfg(target_arch = "aarch64")]
+                let rows = rows + &crate::window::gpu_command_trace::text();
+                text(rows)
+            }
         }
         ProcEntryType::WindowReadback => {
             let caller = crate::window::Caller::current().map_err(|e| -e)?;

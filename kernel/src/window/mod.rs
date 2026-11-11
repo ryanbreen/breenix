@@ -20,6 +20,8 @@ pub mod pipeline;
 pub mod readback_trace;
 pub mod stall_trace;
 pub mod accounting;
+#[cfg(target_arch = "aarch64")]
+pub mod gpu_command_trace;
 pub mod pacing;
 pub mod present;
 pub mod scene;

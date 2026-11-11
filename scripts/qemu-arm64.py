@@ -2,6 +2,7 @@
 """Select the accelerator for an ARM64 QEMU launch, preserving TCG profiles."""
 
 import os
+import fnmatch
 import platform
 from pathlib import Path
 import subprocess
@@ -22,7 +23,20 @@ BLOCK_TRACE_PATTERNS = (
 )
 
 
-def command(binary, arguments, accelerator, system=None, machine=None):
+def gpu_trace_inventory(binary):
+    """Query the executable selected by the launcher, never a PATH substitute."""
+    listing = subprocess.run([binary, "-trace", "help"], check=True,
+                             capture_output=True, text=True)
+    inventory = listing.stdout + listing.stderr
+    names = [line.split()[0] for line in inventory.splitlines() if line.strip()]
+    patterns = tuple(p for p in ("virtio_gpu_*", "virgl*")
+                     if any(fnmatch.fnmatchcase(name, p) for name in names))
+    if "virtio_gpu_*" not in patterns:
+        raise ValueError("selected GL QEMU has no virtio_gpu trace events")
+    return patterns, inventory
+
+
+def command(binary, arguments, accelerator, system=None, machine=None, gpu_patterns=()):
     system = system or platform.system()
     machine = machine or platform.machine()
     if accelerator not in ("tcg", "hvf"):
@@ -67,7 +81,9 @@ def command(binary, arguments, accelerator, system=None, machine=None):
                    for i, arg in enumerate(arguments[:-1]) if arg == "-chardev"
                    for part in arguments[i + 1].split(",") if part.startswith("logfile=")), None)
     if serial:
-        traces = ",".join("trace:" + p for p in BLOCK_TRACE_PATTERNS)
+        if "-pidfile" not in result:
+            result.extend(("-pidfile", serial + ".qemu.pid"))
+        traces = ",".join("trace:" + p for p in (*BLOCK_TRACE_PATTERNS, *gpu_patterns))
         if "-d" in result:
             slot = result.index("-d") + 1
             result[slot] += "," + traces
@@ -106,7 +122,16 @@ def main():
         if accelerator is None:
             cpus = [arguments[i + 1] for i, arg in enumerate(arguments[:-1]) if arg == "-cpu"]
             accelerator = "tcg" if any(cpu not in ("max", "host") for cpu in cpus) else default_accelerator()
-        argv = command(arguments[0], arguments[1:], accelerator)
+        gpu_patterns = ()
+        if not print_profile and any("virtio-gpu-gl" in arg for arg in arguments[1:]):
+            gpu_patterns, inventory = gpu_trace_inventory(arguments[0])
+            serial = next((part.removeprefix("logfile=")
+                           for i, arg in enumerate(arguments[:-1]) if arg == "-chardev"
+                           for part in arguments[i + 1].split(",") if part.startswith("logfile=")), None)
+            if serial:
+                Path(serial + ".qemu-trace-events.txt").write_text(
+                    f"binary={arguments[0]}\npatterns={','.join(gpu_patterns)}\n" + inventory)
+        argv = command(arguments[0], arguments[1:], accelerator, gpu_patterns=gpu_patterns)
         cpu = argv[argv.index("-cpu") + 1] if "-cpu" in argv else "default"
         if print_profile:
             print(f"{accelerator}-{cpu}")

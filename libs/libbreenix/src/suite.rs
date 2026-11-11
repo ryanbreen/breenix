@@ -2209,6 +2209,7 @@ fn run_case_body(case: &Case, limit_ms: u64, suite: &str, name: &str, gui: bool,
     } else { None };
     let start = monotonic_ns();
     case_budget("parent-fork", name);
+    if suite == "window-manager" { emit(&std::format!("CASE {suite} {name} START")); }
     HOSTKEY_SEQ.fetch_add(RECORDS_PER_CASE as u64, Ordering::Relaxed);
     match process::fork() {
         Ok(ForkResult::Child) => {

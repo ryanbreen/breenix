@@ -420,6 +420,9 @@ if [ -n "$VIGIL_ID" ]; then
     # Keep host receipt clocks discoverable beside Vigil's linked serial capture.
     ln -sf "$SERIAL_LOG.qemu-trace.log" "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/qemu-trace.log"
     ln -sf "$SERIAL_LOG.host-clock.jsonl" "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/serial-host-clock.jsonl"
+    ln -sf "$SERIAL_LOG.qemu-trace-events.txt" "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/qemu-trace-events.txt"
+    ln -sf "$SERIAL_LOG.qemu.pid" "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/qemu.pid"
+    ln -sf "$SERIAL_LOG.qemu-samples" "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/qemu-samples"
 fi
 if [ -n "$VIGIL_ID" ] && [ "$SCREEN_PROOF" -eq 1 ]; then
     VIGIL_HOME=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
