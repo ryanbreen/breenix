@@ -1297,8 +1297,17 @@ impl Core {
     fn progress_readback(&mut self) {
         let reaper = REAPER.load(Ordering::Acquire);
         if reaper == 0 || crate::per_cpu::current_thread().is_none_or(|t| t.id == reaper) { return; }
+        if self.queue_progress_readback() {
+            // Waiters enroll only; kgpu owns device notification.
+            SENT.fetch_add(1, Ordering::AcqRel);
+            wake_reaper();
+        }
+    }
+
+    /// Enroll one drain; the caller must hand it to kgpu or send it in this pump.
+    fn queue_progress_readback(&mut self) -> bool {
         if !platform_config::is_qemu() || dev::is_svga() || self.reset_wanted || self.resetting || self.stalled
-            || !self.backlog.is_empty() { return; }
+            || !self.backlog.is_empty() { return false; }
         let target = self.subs.values().filter(|s| !s.published && s.requests > 0 && s.sent_ns.is_some())
             .find_map(|s| s.written.iter().find_map(|rid| {
                 let r = self.resources.get(rid)?;
@@ -1308,19 +1317,19 @@ impl Core {
                     && !r.reading && !r.invalid && !r.lost)
                     .then(|| (s.ctx, *rid, r.backing.clone(), r.pitch))
             }));
-        let Some((ctx, rid, backing, pitch)) = target else { return; };
+        let Some((ctx, rid, backing, pitch)) = target else { return false; };
         let serial = self.serial();
         let fence = self.device_fence();
         let req = Request::Virgl(virgl::transfer_from_host(Tag::Sync(serial), ctx, fence, rid, backing, 0, 0, 1, 1, 0, pitch));
-        if !self.dev.as_ref().is_some_and(|d| d.has_room(req.segment_count())) { return; }
+        if !self.dev.as_ref().is_some_and(|d| d.has_room(req.segment_count())) { return false; }
         if let Some(r) = self.resources.get_mut(&rid) { r.reading = true; r.progress_context = Some(ctx); }
         if self.queue_sync(serial, req, ctx, &[rid], &[rid], None).is_ok() {
             self.abandon(serial);
-            // Only kgpu acts on the queued transfer; waking the waiters would only make
-            // them scan again. The count reaches a kgpu that has not blocked yet.
-            SENT.fetch_add(1, Ordering::AcqRel);
-            wake_reaper();
-        } else { self.end_reading(rid); }
+            true
+        } else {
+            self.end_reading(rid);
+            false
+        }
     }
 
     /// The waiter of `serial` left: drop its answer if it came, or when it comes.
@@ -1375,6 +1384,10 @@ impl Core {
         self.reap_all();
         self.watchdog(now_ns());
         self.flush();
+        // The first flush can send a render after its waiter last inspected it.
+        // Enroll and send its QEMU drain before this worker blocks; no waiter
+        // timeout or unrelated submission is needed to make that fence visible.
+        if self.queue_progress_readback() { self.flush(); }
     }
 
     /// Take completions and watchdog decisions. Native polling also refills
