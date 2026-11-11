@@ -52,6 +52,16 @@ pub fn parse_shares(text: &str) -> (Vec<Share>, Vec<ShareError>) {
     (entries, errors)
 }
 
+/// Select shares whose directories are not already mounted.
+pub fn plan_mount_all<'a>(shares: &'a [Share], mounts: &str) -> Vec<&'a Share> {
+    let mounted: Vec<_> = mounts.lines().filter_map(|line| {
+        let mut fields = line.split_whitespace();
+        fields.next()?;
+        Some(decode_mount_field(fields.next()?))
+    }).collect();
+    shares.iter().filter(|share| !mounted.contains(&share.directory)).collect()
+}
+
 /// Render the source, directory, type and options from each proc mount entry.
 pub fn render_proc_mounts(text: &str) -> String {
     let mut output = String::new();
