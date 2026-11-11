@@ -108,8 +108,8 @@
       "title": "Configured shares",
       "cases": [
         {
-          "id": "boot-mount",
-          "title": "Mount configured shares at boot"
+          "id": "mount-all",
+          "title": "Mount good entries and report bad lines with mount -a"
         },
         {
           "id": "mount-list",

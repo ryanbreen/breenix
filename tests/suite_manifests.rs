@@ -1889,7 +1889,7 @@ fn network_shares_manifest_declares_ufs_and_smb_cases() {
         ["shares-mount-list", "write-read", "rename-replace", "delete", "dirs", "atomic-save", "read-only-refused", "wrong-password", "server-restart", "umount-open-files"]);
     assert_eq!(manifest.categories[2].entry.id, "shares");
     assert_eq!(manifest.categories[2].cases.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(),
-        ["boot-mount", "mount-list", "ls-cp"]);
+        ["mount-all", "mount-list", "ls-cp"]);
     let (_, files) = suite_files(&repo_root(), "network_shares").expect("network-shares source");
     let (suite, categories) = source_suite_files(&files).expect("network-shares case table");
     assert_eq!(suite.id, manifest.id);
