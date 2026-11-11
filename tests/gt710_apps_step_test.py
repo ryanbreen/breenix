@@ -334,6 +334,31 @@ class AppsStep(unittest.TestCase):
         self.assertIn('gt710-pixels.rle', report['cases'][0]['reason'])
         self.assertFalse(metal_score.score(self.path)['milestones']['metal-gt710/apps-step']['passed'])
 
+    def test_vigil_import_needs_the_original_uploads_and_receipts(self):
+        # Vigil keeps its presentation wrapper beside the driver's run.json.
+        (self.path / 'metal-run.json').write_text(json.dumps(self.boot))
+        wrapper = {name: self.boot[name] for name in
+                   ('id', 'arch', 'mode', 'suite', 'platform')}
+        wrapper.update(checkout='', taskName='metal-' + BOOT)
+        (self.path / 'run.json').write_text(json.dumps(wrapper))
+        artifacts = ('gt710-pixels.rle', 'native-upload.json',
+                     'gt710-final.rle', 'native-final-upload.json')
+        retained = {name: (self.path / name).read_bytes() for name in artifacts}
+        for name in artifacts:
+            (self.path / name).unlink()
+        self.assertEqual(self.record(), 1)
+        report = json.loads((self.path / 'gt710-apps-step.json').read_text())
+        self.assertIn('gt710-pixels.rle', report['cases'][0]['reason'])
+        for name, body in retained.items():
+            (self.path / name).write_bytes(body)
+        self.assertEqual(self.record(), 0)
+        receipt = json.loads((self.path / 'native-final-upload.json').read_text())
+        receipt['sha256'] = '0' * 64
+        (self.path / 'native-final-upload.json').write_text(json.dumps(receipt))
+        self.assertEqual(self.record(), 1)
+        report = json.loads((self.path / 'gt710-apps-step.json').read_text())
+        self.assertIn('digest, receipt or route differs', report['cases'][0]['reason'])
+
     def test_operator_stop_is_not_completed_acceptance(self):
         (self.path / 'exit-status').write_text('143')
         events = [dict(event='final-marker'), dict(event='power-off', off=True),
