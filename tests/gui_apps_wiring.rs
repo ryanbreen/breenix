@@ -164,3 +164,16 @@ fn app_close_uses_alt_and_desktop_exit() {
     let up = close.find("wm_key(key::LEFT_ALT, false)").expect("Alt up");
     assert!(down < exit && exit < up);
 }
+
+#[test]
+fn blog_font_change_republishes_the_drawing_font() {
+    let source = include_str!("../userspace/programs/src/blog.rs");
+    let publish = source.split("fn publish_tree(").nth(1).unwrap().split("fn format_line_number(").next().unwrap();
+    assert!(publish.contains("win.mono_path()"));
+    assert!(publish.contains("fonts.size"));
+    let events = source.split("Event::FontChanged =>").nth(1).unwrap();
+    let reload = events.split("if reload_font {").nth(1).unwrap();
+    assert!(reload.contains("fonts.size = new_size"));
+    assert!(reload.contains("needs_redraw = true"));
+    assert!(reload.contains("publish_tree(&mut win, &tabs, tab_bar.selected(), visible_lines, &fonts)"));
+}
