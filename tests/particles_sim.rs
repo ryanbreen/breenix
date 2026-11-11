@@ -14,6 +14,7 @@ fn epochs_carry_remainder_and_cap_work() {
     let mut a = sim::Simulation::new(400, 300);
     let mut b = sim::Simulation::new(400, 300);
     a.advance(15); a.advance(1); b.advance(16);
+    assert_eq!(a.epochs(), 1);
     assert_eq!(a.particles, b.particles);
     a.advance(16_000_000); b.advance(16_000);
     assert_eq!(a.particles, b.particles);

@@ -12,3 +12,5 @@ cat	Display file contents	terminal	/bin/cat
 ls	List directory	terminal	/bin/ls
 echo	Print text	terminal	/bin/echo
 ps	List processes	terminal	/bin/ps
+Particles	Particle physics demo	gui	/usr/bin/particles
+Confetti	Confetti demo	gui	/usr/bin/confetti

@@ -934,3 +934,11 @@ path = "src/mount.rs"
 [[bin]]
 name = "smbfsd"
 path = "src/smbfsd.rs"
+
+[[bin]]
+name = "particles"
+path = "src/particles.rs"
+
+[[bin]]
+name = "confetti"
+path = "src/confetti.rs"

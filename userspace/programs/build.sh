@@ -354,6 +354,8 @@ STD_BINARIES=(
     "xhci_counters"
     "fbinfo_test"
     "bounce"
+    "particles"
+    "confetti"
     "tones"
     "fart"
     "http_test"
