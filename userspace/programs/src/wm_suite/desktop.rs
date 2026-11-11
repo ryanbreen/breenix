@@ -514,7 +514,7 @@ impl Desktop {
         });
         ready.map_err(|e| {
             let detail = format!("previous context={previous_context}; {}; {}", observation.failure(), d.output());
-            failure_diagnostic("ready", &detail);
+            failure_diagnostic("ready", &format!("{e}; {detail}"));
             format!("{e}; {detail}")
         })?;
         if supervised {
@@ -585,7 +585,7 @@ impl Desktop {
                     failure_diagnostic("kernel-readback", line);
                 }
             }
-            failure_diagnostic("shown", &detail);
+            failure_diagnostic("shown", &format!("{e}; {detail}"));
             format!("{e}; {detail}")
         })?;
         Ok(result.unwrap())
