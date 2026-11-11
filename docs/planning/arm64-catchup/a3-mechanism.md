@@ -1,5 +1,233 @@
 # A.3 recovery mechanism analysis — a3-u10-mechanism
 
+## Coordinator 221 measurement at a3996d06: lock contention observed, acceptance blocked
+
+The single measurement is Vigil `20261111T231422Z-qemu-21633`, at clean runtime
+head `a3996d060fc6b9b1bb18e1d8af1f7bcf4613a06d`. The unchanged 21.7 selection
+scorer reports **79/81 FAIL**: recovery/stack-restored and
+recovery/supervisor-restarts each hit the 10000 ms outer watchdog. This is a
+measurement, not a proof. The board cell is unchanged. No runtime repair, proof
+boot, R240 boot or merge follows: the per-stall mechanism required by coordinator
+line 221 remains incomplete.
+
+### Build, artifacts and transport
+
+Freshly fetched main `ac3cdf6c` was already an ancestor; no merge was needed.
+The normal userspace, disk and production ARM kernel build ran through
+`boot-interactive.sh`, without `--no-build`, with four jobs and background build
+policy. It passed, with the existing G35(2) pinned-core advisory and no other
+compiler warnings/errors; the FP/SIMD guard reported 0 forbidden/32 allowlisted.
+The earlier pre-execution failure at ledger 224 had not executed QEMU. This
+attempt's local gate corrected its architecture error: the two GPU journal labels
+are required in ARM only, matching `window/mod.rs:23-24`; the preceding shared
+x86 label checks are retained. No repository check was changed.
+
+The pre-exec gate checked built/disk-resident suite equality, the existing labels
+and u20 labels, head identity, headless SPICE GL, HVF, tracing, and absence of a
+debugger. It recorded these SHA-256 values and the prediction in the ARM ledger
+before executing QEMU:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Suite, also identical on the boot disk | `c2132c520a01970fb662bdf1f43af7b7c3e45e8627b09a72f79f6da82426cca9` |
+| ARM kernel | `86d622f573af4504daa97374f0f4799b02d5840468bdfe57420946819261ba69` |
+| Disposable disk before execution | `d857a2c8b42c5fe3467e46c06ee1a8b4a91a4c9082d3f3e36bc93005ad81f6da` |
+| Previously built x86 kernel checked by the gate | `634df8b8b1e74a462ef2d7778e5ee13f336ce7908075eb9deedc0829c23f064b` |
+| ARM client | `d978abff9335fe68e44a3031f00db3eb835f446a968a8274a56bc437e042dc0c` |
+
+Load1 was 3.92 at the gate (0.006 s wait). The two-second load sampler covered
+the boot, linked in Vigil as `host-load.jsonl`. Subsequent samples range
+4.33–60.46; recovery case logic intervals have ranges 10.64–11.05
+(clients-notified), 9.77–10.11 (restart-adopts), 9.62–10.02
+(interaction-after-restart), 9.29–9.75 (stack-restored), and 9.68–9.99
+(supervisor-restarts). The transient 60.46 sample was outside recovery. No lane
+build or heavy work ran during QEMU; the load history does not identify competing
+work or establish descheduling.
+
+Before causal analysis, the timestamped GPU records and successful nonempty
+recovery sample call graphs were confirmed and recorded in the ledger. Final
+trace counts include 92941 context submissions, 219291 fence-control and 219291
+fence-response events, plus 74038 read handles, 87230 read/write completions,
+87488 request completions and 175437 MMIO IRQ records. Eight case samples exited
+0, for the three click cases and five recovery cases. The selected executable
+has no `virgl*` family or generic command-finish event; its `virtio_gpu_*` events
+cover the context-submit path. This satisfies line 221's (a)/(b) transport gate;
+it does not supply the missing guest attribution described below.
+
+DONE is 79 passed/2 failed/0 skipped/81 total. MEMORY reclaimed passes at
+10 pages against 48, and standalone READY follows DONE and MEMORY (U19).
+The launcher's renderer check accepted ANGLE/Metal, 987 records. Vigil records
+clean commit a3996d06, ended, exit status 1, display=false, architecture aarch64;
+its serial is byte-identical to the local capture. No window or debugger opened.
+
+Final capture hashes:
+
+- Serial: `18c6801bcc76606e7bacbbf36d964c40918e5630edfd96e89102bcb9aaa2b04a`.
+- QEMU trace: `11780b382266909b38c1e2c7421961907ade5b024d533447ab50f1da8c784989`.
+- Serial receipt-clock sidecar: `acc2a1dc6e3ba0502720583dd19e861b48a9586257e44c243aec8f081ca53875`.
+- Load: `e12d1c139e78fab2d63df171d1d5958dd10fab799c31d25c7ccbd11264a26122`.
+
+The gate, raw files and analysis intermediates are retained locally under
+`/tmp/a3-acceptance-221-a3996d06`, with trace, samples, load and gate linked from
+Vigil. Raw host sample headers are not committed.
+
+### What the stacks establish, and what they cannot establish
+
+The vCPU host threads are 97621931–97621934. QEMU's loop is thread 97621985;
+the macOS application main thread is 97621907. The vCPU stacks explicitly contain
+`hvf_cpu_thread_fn -> hvf_vcpu_exec -> bql_lock_impl -> qemu_mutex_lock_impl ->
+_pthread_mutex_firstfit_lock_wait -> __psynch_mutexwait`. These are observed
+waits for QEMU's global lock, not merely an inference from a trace gap.
+The loop's graphics stacks contain `virtio_gpu_gl_handle_ctrl ->
+virtio_gpu_process_cmdq -> virtio_gpu_virgl_process_cmd ->
+vrend_decode_ctx_submit_cmd -> vrend_draw_vbo`. Its long branches include
+`vrend_select_program -> add_shader_program -> GL_GetProgramiv ->
+gl::Program::resolveLinkImpl -> MainLinkLoadEvent::wait`, and shader-compilation
+waits. This supports the coordinator's GL/global-lock hypothesis during the
+sampled windows, rather than explaining those observed lock waits solely as
+vCPU descheduling.
+
+The counts below are aggregate sampled stacks, **not milliseconds**, lock-held
+durations, or a synchronized per-stall timeline. Split rows for the same loop
+thread/dispatch queue are combined. The reports carry no mutex-owner identity
+or per-stack timestamp. They do not identify which thread owned BQL at each gap.
+
+| Case | Snapshots per vCPU | BQL waits, threads 31/32/33/34 (suffixes above) | Loop VirGL snapshots | Loop program-link / shader-compile waits |
+| --- | ---: | --- | ---: | --- |
+| stacking/click-raises | 97 | 46 / 20 / 12 / 6 | 75 | 49 / 4 |
+| stacking/all-minimized | 95 | 52 / 4 / 14 / 4 | 76 | 42 / 8 |
+| focus/pair-click | 108 | 42 / 29 / 15 / 5 | 82 | 49 / 11 |
+| recovery/clients-notified | 92 | 42 / 6 / 29 / 1 | 52 | 28 / 5 |
+| recovery/restart-adopts | 97 | 61 / 25 / 15 / 7 | 74 | 38 / 6 |
+| recovery/interaction-after-restart | 124 | 84 / 18 / 9 / 5 | 101 | 63 / 11 |
+| recovery/stack-restored | 98 | 57 / 14 / 5 / 14 | 78 | 44 / 8 |
+| recovery/supervisor-restarts | 98 | 76 / 22 / 41 / 12 | 90 | 48 / 10 |
+
+Crucially, sampling starts at CASE START for three seconds, while these recovery
+cases create a second compositor later. Stack-restored's sample child stops at
+host 1794439449.062569, but its replacement exec is bounded by
+1794439450.053318125–1794439450.053330625, already 990.749–990.762 ms later.
+Supervisor's sample child stops at 1794439473.052439, while replacement exec is
+1794439474.935997667–1794439474.936008250, 1883.559–1883.569 ms later. Sampling
+itself ends before child exit/symbolication. Neither sample covers replacement
+startup, so its initial-compositor stacks cannot be assigned to replacement stalls.
+
+### Intervals over 100 ms
+
+[The interval table](serials/a3-u21-lock-stalls.tsv) lists 102 trace gaps over
+100 ms in the eight cases' logic intervals, and 28 retained read-request
+submit-to-used intervals over 100 ms. These are two overlapping observations,
+not 130 independent stalls. Trace gaps alone do not establish a guest stall or
+its cause. Case membership uses the child budget stamps and nearby disk-derived
+clock offsets; offsets drift by milliseconds across the boot, so a single
+boot-wide fixed offset is not assumed. Click-raises uses the nearby
+all-minimized window; this is approximate grouping, not a causal clock bound.
+Killed cases stop at the 10 s watchdog, excluding later diagnostic output.
+
+| Case | Trace gaps >100 ms | Largest trace gap, ms |
+| --- | ---: | ---: |
+| stacking/click-raises | 9 | 398.836 |
+| stacking/all-minimized | 11 | 450.710 |
+| focus/pair-click | 11 | 371.218 |
+| recovery/clients-notified | 10 | 305.453 |
+| recovery/restart-adopts | 14 | 459.246 |
+| recovery/interaction-after-restart | 15 | 412.552 |
+| recovery/stack-restored | 16 | 386.871 |
+| recovery/supervisor-restarts | 16 | 985.906 |
+
+For each row, the table states the preceding/following host events, last GPU
+context/resource and size when the trace provides them, the measured interval,
+and the attribution limits. The `sample_window` column only means enclosure by
+the nominal three seconds after sample launch; it does not assign an aggregate
+stack to that interval. Guest submitter and exact lock owner are marked unknown,
+rather than substituted from the case name or an adjacent sample. Read rows
+also give host handle-to-complete and guest IRQ-entry-to-used time. Retention
+and split serial records prevent claiming an exhaustive inventory of guest stalls.
+
+A particularly direct recurrence of u19's signature is request **67893**:
+
+- Worker PID 759/TID 993, window 67, sector 173764, 4096 bytes.
+- Guest submit 611258402833 ns; used completion 611532669708 ns:
+  **274.266875 ms**. CPU 0 enters IRQ at 611258447000 ns, leaving
+  **274.222708 ms** inside the handler before used completion.
+- Host handle 1794439475.321463, completion 1794439475.321476:
+  **0.013 ms**, then IRQ raise at .321480.
+- Context `0x15b` submits 61572 bytes at .321510, then 19660 bytes at .321567.
+  The next event is its type `0x207` fence-control at .595624:
+  **274.057 ms** without trace events, followed by block IRQ clear at .595701.
+- Sector/length ordered matching gives 228/228 reads in window 67 in monotonic order;
+  causal clock-offset width is 10.583 microseconds. Each of the 28 long read
+  rows has one retained device-0 IRQ entry between submit and used completion.
+
+The handler code at `block_mmio.rs::handle_interrupt` still has status/ACK MMIO,
+a barrier and ring reads, without a blocking lock or polling loop. The trace
+localizes this pause to the graphics submit and delayed MMIO/used observation,
+but there is no sample at .321–.595 to establish its lock owner. Nor is there a
+guest command row identifying the GPU submitter. Context ID alone is insufficient.
+
+### Why the command attribution is missing
+
+Every exported GPU journal snapshot retains the same **six** commands,
+`overwritten=0 lost=0`, spanning guest 43.787041–47.995833 ms, transport 1,
+PID/TID 0/0, types 256, 257, 262, 259, 261 and 260. There is no retained type
+`0x207` (519) or transport-2 command, despite 92941 host context-submit events.
+This is not journal eviction.
+
+The instrumentation is in `drivers/virtio/gpu_mmio.rs` and the legacy
+`drivers/virtio/gpu_pci.rs` submission helpers. The active core path instead
+publishes requests through `gpu/virgl/mod.rs::Device::send` (lines 399–416),
+then uses `Device::doorbell` (449) and `gpu/mod.rs::ring_doorbell` (265).
+`Device::send` has no `gpu_command_trace` call. The u20 presence checks and
+artifact labels therefore did not exercise the path the suite runs.
+A correct future observation needs attribution from the originating GPU request,
+carried through core submission; recording only the service thread would not
+identify its client. No instrumentation or runtime behavior is changed here.
+
+### Deadlines and stop
+
+- Both recovery watchdogs fail at 10000 ms. Supervisor replacement PID 758's
+  userspace first-composite is **2201.362 ms** after exec, **201.362 ms beyond
+  2000 ms**. Its client observer spans 2004.326958 ms and fails; first composite
+  arrives another 190.677375 ms after that observer ends. These have different
+  starting points and are not interchangeable deadlines. Font config-to-file
+  takes 1962.101375 ms. The kernel exec-to-first-composite interval is
+  2204.733291 ms.
+- Restart-adopts reap is **16.976417 ms / 500 ms**, margin **483.023583 ms
+  (96.60%)**. This one observation does not establish the earlier intermittent
+  delay's cause.
+- Animation passes at **15571 ms / 20000 ms**, only **4429 ms (22.145%)**
+  headroom, below 25%. Its internal latency median/max are 17015/30076 us
+  against 33000/100000 us. A passing case is not proof of the required margin.
+- Frame-floor reports 2071 intervals over 4998306500 ns, **414 Hz** against
+  60 Hz. Endpoint stamps are retained. The complete recovery and click margin
+  contract still fails; this faster steady-state rate does not repair startup.
+- Matched delivery-to-observer click intervals reach 183.227750 ms in pair-click
+  and 185.809125 ms in interaction-after-restart. These exclude pre-delivery
+  replay. `click-request` stores the replay sequence/buttons, whereas delivery
+  and observed store window-event serials; equating those serials would invent
+  an end-to-end margin. No end-to-end margin is claimed.
+
+**Stop under coordinator 221.** The observed BQL waits and loop shader work
+support that hypothesis in sampled initial-compositor windows. Its required
+per-stall ownership, active guest command submitter and replacement-startup
+coverage are unproven, so the full hypothesis is neither confirmed nor rejected.
+Host descheduling cannot be excluded for unsampled intervals. A forcing check
+for a chosen repair would encode an incomplete causal assumption.
+
+The coordinator decision requested in the ledger is whether to authorize a new
+observation unit and one measurement after covering the active core submission
+path and replacement startup. Its specific question would be: during each long
+replacement IRQ/MMIO interval, is the loop in the identified client's shader or
+transfer command while the affected vCPU waits for BQL, or is that vCPU not being
+scheduled? It needs interval-correlated stacks/ownership, not an aggregate sample
+from before the replacement exists. No further boot is authorized by this result.
+PR #2874 stays draft/unmerged; issue #2872 stays open; the ARM board is unchanged.
+
+This continuation changes this analysis and its interval table only. No host
+suite or build is repeated for documentation. Claim-lint and whitespace results
+are recorded in the ledger with the report commit.
+
+
 ## Accounting measurement 20261111T202836Z-qemu-17664: completion latency located, cause unresolved
 
 Coordinator line 198 authorized this one measurement. At launch, fetched main
