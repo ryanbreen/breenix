@@ -193,6 +193,19 @@ mod live {
             self.tracked.iter_mut().find(|(id, _)| *id == pid).ok_or("launched app not tracked")?.1 = Some(status);
             Ok(())
         }
+        /// Wait for related semantic assertions against one committed tree.
+        pub fn wait_tree(&mut self, predicate: impl Fn(&Tree) -> bool) -> Result<Tree, String> {
+            let watchdog = Watchdog::new(Wait::AppOutput)?;
+            let mut last = None;
+            loop {
+                if now()? >= watchdog.deadline_ns() { return Err(format!("wait-tree hang watchdog: last tree={last:?}")); }
+                let tree = self.tree()?;
+                if now()? >= watchdog.deadline_ns() { return Err(format!("wait-tree hang watchdog: last tree={tree:?}")); }
+                if predicate(&tree) { return Ok(tree); }
+                last = Some(tree);
+                time::sleep_ms(10).map_err(|e| e.to_string())?;
+            }
+        }
         pub fn wait_node(&mut self, key: &str, predicate: impl Fn(&serde_json::Value) -> bool) -> Result<(), String> {
             let watchdog = Watchdog::new(Wait::AppOutput)?;
             let mut last = None;
@@ -318,14 +331,13 @@ mod live {
                 let from = if bottom { (info.x + 80, info.y + info.height as i32 + 1) }
                     else { (info.x + info.width as i32 + 1, info.y + 80) };
                 live.move_to(from)?;
-                time::sleep_ms(150).map_err(|e| e.to_string())?;
+                let press = live.send_button(key::BUTTON_LEFT, true);
                 let result = (|| {
-                    live.session().raw_press(key::BUTTON_LEFT)?;
-                    time::sleep_ms(150).map_err(|e| e.to_string())?;
-                    live.session().raw_motion(if bottom { 0 } else { delta }, if bottom { delta } else { 0 })?;
-                    time::sleep_ms(150).map_err(|e| e.to_string())
+                    crate::input::wait_pointer_idle(press?.serial)?;
+                    live.wm_motion((if bottom { 0 } else { delta }, if bottom { delta } else { 0 }))
                 })();
-                let release = live.session().raw_release(key::BUTTON_LEFT);
+                let release = live.send_button(key::BUTTON_LEFT, false)
+                    .and_then(|event| crate::input::wait_pointer_idle(event.serial));
                 result?; release?;
                 let watchdog = Watchdog::new(Wait::AppOutput)?;
                 loop {

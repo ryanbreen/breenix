@@ -119,7 +119,7 @@ pub fn collab_in(tree:&Tree)->Result<Value,String>{Ok(tree.children[0].value.clo
 pub fn collab(t:&mut App)->Result<Value,String>{collab_in(&t.tree()?)}
 impl Script{
 ''' + function('userspace/programs/src/guiapps_suite/guskit_collab.rs', 'replay') + '''}
-#[test]fn one_read_per_owner(){let node=Node{key:"collab".into(),parent:Default::default(),role:Role::Status,name:String::new(),value:json!({"submitted":[],"applied":[]}),bounds:[0;4],clip:[0;4],flags:vec![]};let mut t=App{tree:Tree{root:node.clone(),children:vec![node]},reads:0};let mut script=Script(vec![],Default::default());script.replay(&mut t,&["Host","Peer"]).unwrap();assert_eq!(t.reads,2,"answered rows must come from the tree already read by the wait");}
+#[test]fn one_read_per_owner(){let node=Node{key:"collab".into(),parent:Default::default(),role:Role::Status,name:String::new(),value:json!({"submitted":[],"applied":[]}),bounds:[0;4],clip:[0;4],flags:vec![]};let mut root=node.clone();root.key="root".into();let mut t=App{tree:Tree{root,children:vec![node]},reads:0};let mut script=Script(vec![],Default::default());script.replay(&mut t,&["Host","Peer"]).unwrap();assert_eq!(t.reads,2,"answered rows must come from the tree already read by the wait");}
 ''')
 
 
