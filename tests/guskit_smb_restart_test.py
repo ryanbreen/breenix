@@ -1,6 +1,8 @@
 import json
 import pathlib
 import re
+import os
+import subprocess
 import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parents[1]
@@ -16,6 +18,17 @@ class GuskitRestartTest(unittest.TestCase):
             line = template.replace('{}', action, 1).replace('{}', str(seq), 1)
             self.assertIsNotNone(re.fullmatch(pattern, line))
         self.assertEqual(source.count('SMB_REQUEST.replace('), 1)
+
+    def test_read_only_save_overwrites_the_snapshotted_file(self):
+        rel = 'userspace/programs/src/guiapps_suite/guskit.rs'
+        old = os.environ.get('GUSKIT_OLD_COMMIT')
+        source = subprocess.check_output(['git', 'show', f'{old}:{rel}'], text=True) if old else (ROOT / rel).read_text()
+        body = source.split('pub fn smb_save_fails_cleanly()', 1)[1].split('pub(super) static', 1)[0]
+        self.assertEqual(body.count('std::fs::read(FILE)'), 2)
+        self.assertIn('FILE.as_bytes()', body)
+        self.assertIn('t.key(31, &[Modifier::Ctrl])?', body)
+        self.assertNotIn('save_as(', body)
+        self.assertNotIn('target already exists', body)
 
     def test_case_is_registered(self):
         manifest = json.loads((ROOT / 'docs/suites/gui-apps.json').read_text())

@@ -230,7 +230,11 @@ fn require_shares(case: &str) -> Result<(), String> {
     let mut output = SMB_RESTART_OUTPUT.get().ok_or("missing SMB diagnostic output")?;
     writeln!(output, "GUSKIT_SMB_EVIDENCE guskit/{case} {service}").map_err(|e| e.to_string())?;
     for mount in ["/mnt/guskit-rw", "/mnt/guskit-ro"] {
-        let line = mounts.lines().find(|line| line.split_whitespace().nth(1) == Some(mount))
+        let line = mounts.lines().find(|line| {
+            let mut fields = line.split_whitespace();
+            fields.next().is_some_and(|source| source.starts_with("//"))
+                && fields.next() == Some(mount) && fields.next() == Some("ufs")
+        })
             .ok_or_else(|| format!("missing mount {mount}"))?;
         writeln!(output, "GUSKIT_SMB_EVIDENCE guskit/{case} mount {line}").map_err(|e| e.to_string())?;
     }
@@ -295,19 +299,20 @@ fn directory_names(path: &str) -> Result<Vec<std::ffi::OsString>, String> {
 
 pub fn smb_save_fails_cleanly() -> CaseResult {
     require_shares("smb-save-fails-cleanly")?;
-    const FILE: &str = "/mnt/guskit-ro/x.png";
+    const FILE: &str = "/mnt/guskit-ro/drawing.png";
     let names = directory_names("/mnt/guskit-ro")?;
-    let before = std::fs::read("/mnt/guskit-ro/README.txt").map_err(|e| e.to_string())?;
-    if std::path::Path::new(FILE).exists() { return Err("read-only target already exists".into()); }
-    let mut t = launch()?;
+    let before = std::fs::read(FILE).map_err(|e| e.to_string())?;
+    let mut t = App::launch(&[b"/usr/bin/guskit", b"--canvas", b"200x120", FILE.as_bytes()], "Gus Kit")?;
+    t.wait_node("status", |v| v["file"] == FILE && v["dirty"] == false && v["message"] == "")?;
+    expect(&mut t, &Expected::white())?;
     stroke(&mut t, 10)?;
     let mut image = Expected::white(); image.horizontal(10, 40, 10);
     expect(&mut t, &image)?;
-    save_as(&mut t, FILE)?;
+    t.key(31, &[Modifier::Ctrl])?;
     t.wait_node("status", |v| v["dirty"] == true && v["message"].as_str().is_some_and(|s| !s.is_empty() && s != "Saved"))?;
     expect(&mut t, &image)?;
     if directory_names("/mnt/guskit-ro")? != names { return Err("read-only save changed directory entries".into()); }
-    if std::fs::read("/mnt/guskit-ro/README.txt").map_err(|e| e.to_string())? != before { return Err("read-only save changed README.txt".into()); }
+    if std::fs::read(FILE).map_err(|e| e.to_string())? != before { return Err("read-only save changed the overwritten drawing".into()); }
     Ok(t.finish()?)
 }
 
