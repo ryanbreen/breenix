@@ -36,6 +36,7 @@ class GpuLockObserve(unittest.TestCase):
                 self.assertIn('trace:' + p, trace.split(','))
             self.assertEqual(args[args.index('-D') + 1], '/tmp/capture.qemu-trace.log')
             self.assertEqual(args[args.index('-msg') + 1], 'timestamp=on')
+            self.assertEqual(args[args.index('-pidfile') + 1], '/tmp/capture.qemu.pid')
             binary.write_text('#!/bin/sh\nprintf "virtio_gpu_cmd_ctx_submit\\n"\n')
             self.assertEqual(arm.gpu_trace_inventory(str(binary))[0], ('virtio_gpu_*',))
         main = (ROOT / 'scripts/qemu-arm64.py').read_text()
@@ -75,6 +76,20 @@ class GpuLockObserve(unittest.TestCase):
                 watcher.observe('CASE window-manager recovery/supervisor-restarts START\n')
                 watcher.close()
                 self.assertTrue(children[-1].terminated and children[-1].reaped)
+                # QoS unclamping may supervise a different QEMU PID. The native
+                # QEMU pidfile, not its wrapper's Popen PID, is authoritative.
+                pidfile = Path(directory) / 'qemu.pid'
+                pidfile.write_text('31337\n')
+                watcher = sampler.CaseSamples(99999, serial, system='Darwin', pid_file=pidfile)
+                watcher.observe('CASE window-manager recovery/restart-adopts START\n')
+                self.assertEqual(watcher.qemu_pid, 31337)
+                watcher.close()
+                pidfile.unlink()
+                before = len(children)
+                watcher = sampler.CaseSamples(99999, serial, system='Darwin', pid_file=pidfile)
+                watcher.observe('CASE window-manager recovery/restart-adopts START\n')
+                self.assertEqual(len(children), before, 'missing QEMU PID must not sample its supervisor')
+                watcher.close()
             records = (Path(str(serial) + '.qemu-samples') / 'samples.jsonl').read_text()
             self.assertIn('"qemu_pid": 31337', records)
             self.assertIn('"sample_pid": 4242', records)
