@@ -121,6 +121,23 @@ struct Sampled {
     height: u32,
 }
 
+/// Reused CPU observation storage. A check borrows the current scene's pixels;
+/// retaining capacity keeps deferred validation from cycling resident mappings.
+#[derive(Default)]
+struct CheckWorkspace {
+    clients: Vec<(u64, [i32; 4], u32, Vec<u8>)>,
+    band: Vec<u8>,
+    desktop: Vec<u8>,
+}
+
+fn resize_readback(bytes: &mut Vec<u8>, len: usize) {
+    if bytes.capacity() < len {
+        *bytes = prefaulted_bytes(len);
+    } else {
+        bytes.resize(len, 0);
+    }
+}
+
 pub struct Compositor {
     context: u64,
     width: u32,
@@ -138,6 +155,7 @@ pub struct Compositor {
     pub background: Surface,
     sampled: Vec<Sampled>,
     check_first: u64,
+    check_workspace: CheckWorkspace,
     appbar_top: i32,
     /// Pointer pixels per bitmap cell: the UI scale.
     scale: i32,
@@ -185,6 +203,7 @@ impl Compositor {
             background,
             sampled: Vec::new(),
             check_first: 0,
+            check_workspace: CheckWorkspace::default(),
             appbar_top: height.saturating_sub(appbar_height) as i32,
             scale: scale as i32,
             full: true,
@@ -488,6 +507,14 @@ impl Compositor {
     /// composite's sample requires retrying the check on a later frame. The comparison
     /// covers the requested rectangle, including other clients' content.
     pub fn check_area(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4]) -> Result<u64, CheckError> {
+        let mut workspace = core::mem::take(&mut self.check_workspace);
+        let result = self.check_area_into(subject, layers, pointer, area, &mut workspace);
+        // Retain storage on success, stale-front retry and readback refusal alike.
+        self.check_workspace = workspace;
+        result
+    }
+
+    fn check_area_into(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4], workspace: &mut CheckWorkspace) -> Result<u64, CheckError> {
         let [x0, y_top, x1, y1] = area;
         let w = x1.saturating_sub(x0);
         if w == 0 || y_top >= y1 {
@@ -495,7 +522,8 @@ impl Compositor {
         }
         libuitest::startup::mark("frame-check-begin");
         // The clients this area shows, the subject first, with their sampled pixels.
-        let mut clients: Vec<(u64, [i32; 4], u32, Vec<u8>)> = Vec::new();
+        let clients = &mut workspace.clients;
+        let mut client_count = 0;
         let mut shown: Vec<_> = layers.iter().filter_map(|l| self.sampled_content(l).map(|r| (l.window_id, r)))
             .filter(|(_, r)| intersect(*r, [x0 as i32, y_top as i32, x1 as i32, y1 as i32]).is_some()).collect();
         // A source that changed during a previous capture goes first next time. Stable
@@ -503,8 +531,13 @@ impl Compositor {
         shown.sort_by_key(|(id, _)| (*id != self.check_first, *id != subject));
         for (id, r) in shown {
             let s = self.sampled.iter().find(|s| s.id == id).expect("sampled_content found it");
-            let mut px = prefaulted_bytes(s.width as usize * s.height as usize * 4);
-            let c = match window::capture(s.id, &mut px, None) {
+            if client_count == clients.len() {
+                clients.push((0, [0; 4], 0, Vec::new()));
+            }
+            let (stored_id, stored_rect, stored_width, px) = &mut clients[client_count];
+            (*stored_id, *stored_rect, *stored_width) = (id, r, s.width);
+            resize_readback(px, s.width as usize * s.height as usize * 4);
+            let c = match window::capture(s.id, px, None) {
                 Ok(c) => c,
                 Err(e) => {
                     // A concurrent enlarge can make the sampled-size output too small.
@@ -529,11 +562,14 @@ impl Compositor {
                     s.id, c.commit_id, c.width, c.height, s.commit_id, s.width, s.height
                 )));
             }
-            clients.push((id, r, s.width, px));
+            client_count += 1;
         }
         let band_rows = (CHECK_BAND_BYTES / (w * 4)).max(1).min(y1 - y_top);
-        let mut band = prefaulted_bytes((w * band_rows * 4) as usize);
-        let mut desk = prefaulted_bytes((w * band_rows * 4) as usize);
+        let clients = &clients[..client_count];
+        let band = &mut workspace.band;
+        let desk = &mut workspace.desktop;
+        resize_readback(band, (w * band_rows * 4) as usize);
+        resize_readback(desk, (w * band_rows * 4) as usize);
         let mut record = Box::new([0u8; abi::record::SIZE]);
         // SAFETY: the record is one live allocation.
         unsafe { core::ptr::write_volatile(record.as_mut_ptr(), 0) };
@@ -554,7 +590,10 @@ impl Compositor {
             desktop.map_err(|e| CheckError::Failed(format!("desktop readback of rows {}..{}: errno {}", y0, y0 + rows, -e)))?;
             for row in 0..rows {
                 let y = (y0 + row) as i32;
-                let desktop_row = layers.is_empty() && pointer.is_none_or(|(p, bitmap)| {
+                // Frames and uncovered pixels both come from D. Only a sampled
+                // client or the pointer can require another source on this row.
+                let desktop_row = (y >= self.appbar_top || clients.iter().all(|(_, r, _, _)| y < r[1] || y >= r[3]))
+                    && pointer.is_none_or(|(p, bitmap)| {
                     let top = p.y - hotspot(p.shape).1 * self.scale;
                     y < top || y >= top + bitmap.len() as i32 * self.scale
                 });
@@ -571,7 +610,7 @@ impl Compositor {
                     let o = ((row * w) as usize + (x as u32 - x0) as usize) * 4;
                     let got = u32::from_le_bytes([band[o], band[o + 1], band[o + 2], band[o + 3]]);
                     let from_desktop = u32::from_le_bytes([desk[o], desk[o + 1], desk[o + 2], desk[o + 3]]);
-                    let want = self.expected(from_desktop, layers, &clients, pointer, x, y);
+                    let want = self.expected(from_desktop, layers, clients, pointer, x, y);
                     // The X byte is not compared (breengel.md section 2).
                     if got & 0x00FF_FFFF != want & 0x00FF_FFFF {
                         return Err(CheckError::Failed(format!(
