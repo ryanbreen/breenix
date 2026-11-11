@@ -361,8 +361,9 @@ fn run_desktop_mode() -> ! {
 
 /// The suite owns its compositor; PID 1 owns the machine services and mounted shares.
 /// Failed terminal states still launch the suite so its service precondition reports the failure.
-fn desktop_suite_ready(pid: u64, staged: bool, shares: Option<&str>) -> bool {
-    pid == 1 && staged && matches!(shares, Some("done" | "failed" | "stopped" | "crash-loop"))
+fn desktop_suite_ready(pid: u64, staged: bool, shares: Option<&str>, waited_ms: u64) -> bool {
+    pid == 1 && staged && (shares.is_none() || waited_ms >= 30_000
+        || matches!(shares, Some("done" | "failed" | "stopped" | "crash-loop")))
 }
 
 fn run_desktop_suite(pid: u64, path: &str, args: Vec<String>) -> ! {
@@ -374,11 +375,21 @@ fn run_desktop_suite(pid: u64, path: &str, args: Vec<String>) -> ! {
     let mut supervisor = init_services::Supervisor::load(init_services::Scope::Daemons, true);
     supervisor.tick();
     finish_boot_checks();
-    while !desktop_suite_ready(pid, true, supervisor.service_state("shares")) {
-        if supervisor.service_state("shares").is_none() {
-            print!("SUITE gui-apps ERROR shares service is missing\n");
-            supervisor.poweroff();
-            supervisor.run();
+    let start = std::time::Instant::now();
+    let mut reported_second = None;
+    loop {
+        let waited_ms = start.elapsed().as_millis() as u64;
+        let shares = supervisor.service_state("shares");
+        if desktop_suite_ready(pid, true, shares, waited_ms) {
+            print!("[init] shares startup state={} waited_ms={}{}\n", shares.unwrap_or("missing"),
+                waited_ms, if waited_ms >= 30_000 { " deadline expired; launching suite" } else { "" });
+            break;
+        }
+        let second = waited_ms / 1000;
+        if reported_second != Some(second) {
+            print!("[init] waiting for shares state={} waited_ms={} deadline_ms=30000\n",
+                shares.unwrap_or("missing"), waited_ms);
+            reported_second = Some(second);
         }
         supervisor.tick();
         let _ = libbreenix::time::sleep_ms(50);

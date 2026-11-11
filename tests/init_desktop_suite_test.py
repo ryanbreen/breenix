@@ -33,13 +33,16 @@ class DesktopSuiteLaunch(unittest.TestCase):
 // DECISION
 #[test]
 fn launch_decision() {
-    for state in [None, Some("waiting"), Some("running"), Some("backoff"), Some("stopping")] {
-        assert!(!desktop_suite_ready(1, true, state));
+    assert!(desktop_suite_ready(1, true, None, 0));
+    assert!(desktop_suite_ready(1, true, Some("running"), 30_000));
+    assert!(!desktop_suite_ready(1, true, Some("running"), 29_999));
+    for state in [Some("waiting"), Some("running"), Some("backoff"), Some("stopping")] {
+        assert!(!desktop_suite_ready(1, true, state, 0));
     }
     for state in ["done", "failed", "stopped", "crash-loop"] {
-        assert!(desktop_suite_ready(1, true, Some(state)));
-        assert!(!desktop_suite_ready(2, true, Some(state)));
-        assert!(!desktop_suite_ready(1, false, Some(state)));
+        assert!(desktop_suite_ready(1, true, Some(state), 0));
+        assert!(!desktop_suite_ready(2, true, Some(state), 0));
+        assert!(!desktop_suite_ready(1, false, Some(state), 0));
     }
 }
 '''.replace('// DECISION', decision)
@@ -61,7 +64,7 @@ fn run_boot_checks() { event("checks"); }
 fn reconcile_machine_state() { event("state"); }
 fn run_boot_script() { event("script"); }
 fn finish_boot_checks() { event("finish"); }
-mod std { pub mod process {
+mod std { pub use ::std::time; pub mod process {
     pub struct Command;
     pub struct Child;
     impl Command {
