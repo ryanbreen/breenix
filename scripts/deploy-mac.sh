@@ -30,6 +30,22 @@ else: print(file_hash(p))
 '''
 
 
+SWAP = """import pathlib, re, shutil, sys
+home = pathlib.Path.home()
+current, previous = home/'breenix', home/'breenix.prev'
+for path in (current, previous):
+    if not path.exists() and not path.is_symlink(): continue
+    marker, git = path/'.deployed-commit', path/'.git'
+    if (path.is_symlink() or not path.is_dir() or git.exists() or git.is_symlink()
+        or marker.is_symlink() or not marker.is_file()
+        or not re.fullmatch('[0-9a-f]{40}\\n?', marker.read_text())):
+        sys.exit('refuse to replace non-deployment: ' + path.name)
+if previous.exists(): shutil.rmtree(previous)
+if current.exists(): current.rename(previous)
+(home/'breenix.incoming').rename(current)
+"""
+
+
 def main():
     args = sys.argv[1:]
     push_only = '--push-only' in args
@@ -89,7 +105,7 @@ def main():
     data = json.dumps(items, indent=2) + '\n'
     writer = "import pathlib,sys; p=pathlib.Path.home()/'breenix.incoming'; (p/'.deployed-commit').write_text(sys.argv[1]+'\\n'); (p/'.deployed-artifacts.json').write_text(sys.stdin.read())"
     ssh('python3 -c ' + shlex.quote(writer) + ' ' + shlex.quote(commit), input=data, text=True)
-    ssh('rm -rf "$HOME/breenix.prev" && if [ -e "$HOME/breenix" ]; then mv "$HOME/breenix" "$HOME/breenix.prev"; fi && mv "$HOME/breenix.incoming" "$HOME/breenix"')
+    ssh('python3 -c ' + shlex.quote(SWAP))
     if push_only:
         return
     stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')

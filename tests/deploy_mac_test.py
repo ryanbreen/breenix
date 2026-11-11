@@ -137,6 +137,23 @@ if os.environ.get('CORRUPT') and src.name == 'disk': dst.write_bytes(b'corrupt')
                 self.assertTrue((evidence[-1].parent / 'host-renderer.json').exists())
                 self.assertIn('--mode desktop --gpu-gl --no-build --no-display --until-desktop-ready --serial-log', self.log.read_text())
 
+    def test_unowned_trees_survive_deployment(self):
+        for name, contents in (('breenix', {'.git/config': 'clone', 'keep': 'mine'}),
+                               ('breenix.prev', {'keep': 'mine'}),
+                               ('breenix', {'.deployed-commit': '0' * 40, '.git': 'gitdir: elsewhere'})):
+            with self.subTest(name=name, contents=contents):
+                path = self.remote / name
+                for relative, data in contents.items():
+                    file = path / relative
+                    file.parent.mkdir(parents=True, exist_ok=True)
+                    file.write_text(data)
+                result = self.deploy('--push-only')
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('refuse to replace', result.stderr)
+                for relative, data in contents.items():
+                    self.assertEqual((path / relative).read_text(), data)
+                shutil.rmtree(path)
+
     def test_dirty_tree_is_refused(self):
         (self.root / 'dirty').write_text('dirty')
         result = self.deploy()
