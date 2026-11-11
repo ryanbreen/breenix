@@ -19,12 +19,13 @@ const UNDO: u16 = 3;
 const REDO: u16 = 4;
 const OPEN: u16 = 5;
 const SAVE: u16 = 6;
+const SAVE_AS: u16 = 7;
 
 struct App {
     width: usize, height: usize, history: History, clean: [u8; 32],
     tool: usize, size: usize, hue: u16, sat: u8, val: u8,
     stroke: Option<Vec<Point>>, selected_color: Option<[u8; 3]>, recent: [[u8; 3]; 8], confirm: bool, quit: bool,
-    file: Option<PathBuf>, message: String, picker: Option<FilePicker>, directory: PathBuf,
+    file: Option<PathBuf>, message: String, picker: Option<FilePicker>, directory: PathBuf, save_as: bool,
     palette: Option<(u16, Surface)>,
     canvas_surface: Option<(Canvas, Surface)>,
 }
@@ -34,7 +35,8 @@ impl App {
     fn request_quit(&mut self) { if self.dirty() { self.confirm = true; } else { self.quit = true; } }
     fn action(&mut self, action: u16) {
         match action {
-            OPEN => self.open_picker(),
+            OPEN => self.open_picker(false),
+            SAVE_AS => self.open_picker(true),
             SAVE => self.save(),
             NEW => { self.history.push(Canvas::new(self.width, self.height)); self.file = None; self.stroke = None; self.message.clear(); },
             QUIT => self.request_quit(),
@@ -49,6 +51,14 @@ impl App {
             Ok((image, message)) => { self.clean = image.digest(); self.history.push(image); self.file = Some(path); self.message = message.unwrap_or_default(); },
             Err(e) => self.message = e,
         }
+    }
+    fn save_to(&mut self, path: PathBuf) {
+        let result = files::encode(&path.to_string_lossy(), self.history.canvas(), self.width, self.height)
+            .and_then(|bytes| match libbreenix::atomic_file::save(&path, &bytes) {
+                libbreenix::atomic_file::SaveResult::Saved => Ok(()),
+                libbreenix::atomic_file::SaveResult::Failed(e) | libbreenix::atomic_file::SaveResult::Unconfirmed(e) => Err(e.to_string()),
+            });
+        match result { Ok(()) => { self.clean = self.history.canvas().digest(); self.file = Some(path); self.message = "Saved".into(); }, Err(e) => self.message = e }
     }
     fn save(&mut self) {
         let mut path = self.file.clone().unwrap_or_default();
@@ -96,20 +106,24 @@ impl App {
             Err(e) => self.message = e,
         }
     }
-    fn open_picker(&mut self) {
+    fn open_picker(&mut self, save_as: bool) {
         let dir = self.file.as_ref().and_then(|p| p.parent()).filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("." )).to_path_buf();
         match Self::entries(&dir) {
-            Ok(entries) => { self.directory = dir; self.picker = Some(FilePicker::new(Rect::new(150, 100, 500, 400), self.directory.to_string_lossy().as_bytes().to_vec(), entries, &Theme::dark())); },
+            Ok(entries) => { self.save_as = save_as; self.directory = dir; self.picker = Some(FilePicker::new(Rect::new(150, 100, 500, 400), self.directory.to_string_lossy().as_bytes().to_vec(), entries, &Theme::dark())); },
             Err(e) => self.message = e,
         }
     }
     fn picker_result(&mut self, result: FilePickerResult) {
         match result {
             FilePickerResult::Cancelled => self.picker = None,
-            FilePickerResult::NavigatePath(path) => self.navigate(PathBuf::from(String::from_utf8_lossy(&path).into_owned())),
+            FilePickerResult::NavigatePath(path) => {
+                let path = PathBuf::from(String::from_utf8_lossy(&path).into_owned());
+                if self.save_as && !path.is_dir() { self.picker = None; self.save_to(path); }
+                else { self.navigate(path); }
+            },
             FilePickerResult::Selected(_) | FilePickerResult::NavigateDir(_) => {
                 let name = self.picker.as_ref().and_then(|p| p.selected_entry()).map(|e| String::from_utf8_lossy(&e.name).into_owned());
-                if let Some(name) = name { let path = self.directory.join(name); if matches!(result, FilePickerResult::NavigateDir(_)) { self.navigate(path); } else { self.picker = None; self.open_file(path); } }
+                if let Some(name) = name { let path = self.directory.join(name); if matches!(result, FilePickerResult::NavigateDir(_)) { self.navigate(path); } else { self.picker = None; if self.save_as { self.save_to(path); } else { self.open_file(path); } } }
             },
             FilePickerResult::Active => {},
         }
@@ -148,7 +162,7 @@ impl App {
 }
 fn menu() -> MenuBar {
     let mut menu = MenuBar::new(Rect::new(0, 0, 800, MENU_BAR_HEIGHT), vec![
-        Menu { label: b"File", items: vec![MenuItem::new(b"New", NEW, Shortcut::ctrl(b'N')), MenuItem::new(b"Open", OPEN, Shortcut::ctrl(b'O')), MenuItem::new(b"Save", SAVE, Shortcut::ctrl(b'S')), MenuItem::new(b"Quit", QUIT, Shortcut::ctrl(b'Q'))] },
+        Menu { label: b"File", items: vec![MenuItem::new(b"New", NEW, Shortcut::ctrl(b'N')), MenuItem::new(b"Open", OPEN, Shortcut::ctrl(b'O')), MenuItem::new(b"Save", SAVE, Shortcut::ctrl(b'S')), MenuItem::new(b"Save As", SAVE_AS, Shortcut::ctrl_shift(b'S')), MenuItem::new(b"Quit", QUIT, Shortcut::ctrl(b'Q'))] },
         Menu { label: b"Edit", items: vec![MenuItem::disabled(b"Undo", UNDO, Shortcut::ctrl(b'Z')), MenuItem::disabled(b"Redo", REDO, Shortcut::ctrl_shift(b'Z'))] },
     ]);
     menu.layout(&Theme::dark()); menu
@@ -213,7 +227,7 @@ fn publish(win: &mut Window, app: &App) {
     let mut children = vec![node::canvas(canvas_bounds, app.width, app.height, app.history.canvas().digest()), node::status(bounds, &node::Status { tool: NAMES[app.tool], size: ["small", "medium", "large"][app.size], color: app.color(), undo: app.history.undo_depth(), redo: app.history.redo_depth(), dirty: app.dirty(), file: app.file.as_ref().and_then(|p| p.to_str()), message: &app.message })];
     children.extend(node::tools(core::array::from_fn(|i| [(2 + i * 38) as i64, 23, 36, 16]), NAMES[app.tool]));
     children.push(node::hue([0,58,780,18])); children.push(node::sv([0,76,100,100]));
-    if app.picker.is_some() { children.push(Node { key: "open".into(), parent: Some("root".into()), role: Role::Dialog, name: "Open".into(), value: serde_json::json!({"directory":app.directory.to_string_lossy()}), bounds: [150,100,500,400], clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }); }
+    if app.picker.is_some() { children.push(Node { key: if app.save_as { "save-as" } else { "open" }.into(), parent: Some("root".into()), role: Role::Dialog, name: if app.save_as { "Save As" } else { "Open" }.into(), value: serde_json::json!({"directory":app.directory.to_string_lossy()}), bounds: [150,100,500,400], clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }); }
     if app.confirm { children.push(Node { key: "confirm".into(), parent: Some("root".into()), role: Role::Dialog, name: "Discard changes?".into(), value: serde_json::json!({"message":"D discards, Escape cancels"}), bounds: [180,220,440,64], clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }); }
     win.set_tree(Tree { root: Node { key: "root".into(), parent: None, role: Role::Window, name: "Gus Kit".into(), value: serde_json::Value::Null, bounds, clip: bounds, flags: vec![Flag::Enabled, Flag::Visible] }, children });
 }
@@ -265,7 +279,7 @@ fn main() {
     } else { (800, 600 - TOP as usize) };
     if args.next().is_some() { eprintln!("usage: guskit [--canvas WxH] [FILE]"); std::process::exit(2); }
     let image = Canvas::new(width,height); let clean = image.digest();
-    let mut app = App { width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),palette:None,canvas_surface:None };
+    let mut app = App { width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None };
     if let Some(path) = app.file.clone() { if path.exists() { app.open_file(path); } }
     let mut win = Window::new(b"Gus Kit", 800, 600).unwrap_or_else(|e| { eprintln!("Gus Kit: {e}"); std::process::exit(1) });
     let mut menu = menu();
@@ -305,7 +319,7 @@ mod tests {
         let image = Canvas::new(8, 8);
         let mut app = App { width:8,height:8,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
-            confirm:false,quit:false,file:Some(dir.join("a.png")),message:String::new(),picker:None,directory:PathBuf::from("."),palette:None,canvas_surface:None };
+            confirm:false,quit:false,file:Some(dir.join("a.png")),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None };
         let mut menu = menu();
         let key = |app: &mut App, menu: &mut MenuBar, keycode, ascii, modifiers| {
             let event = Delivered { serial:1,time_ns:1,clicks:0, event:Event::KeyPress {
@@ -340,7 +354,7 @@ mod tests {
         let image = Canvas::new(200, 120);
         let mut app = App { width:200,height:120,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
-            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),palette:None,canvas_surface:None };
+            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None };
         let mut menu = menu();
         let mut event = Delivered { serial:1,time_ns:1,clicks:0,
             event:Event::KeyRelease { keycode:25,modifiers:Modifiers::default() } };
