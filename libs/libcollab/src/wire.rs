@@ -12,6 +12,13 @@ pub enum DecodeError {
 pub struct EncodeError;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DrawOp {
+    StrokeSegment {
+        gesture: u32,
+        tool: u8,
+        x0: i16, y0: i16, x1: i16, y1: i16,
+        radius: u8,
+        color: [u8; 3],
+    },
     Pencil {
         x0: i16,
         y0: i16,
@@ -111,6 +118,14 @@ pub enum Message {
 }
 fn put_drawop(v: &DrawOp, b: &mut Vec<u8>) {
     match v {
+        DrawOp::StrokeSegment { gesture, tool, x0, y0, x1, y1, radius, color } => {
+            b.push(10);
+            b.extend_from_slice(&gesture.to_le_bytes());
+            b.push(*tool);
+            for n in [x0, y0, x1, y1] { b.extend_from_slice(&n.to_le_bytes()); }
+            b.push(*radius);
+            b.extend_from_slice(color);
+        }
         DrawOp::Pencil {
             x0,
             y0,
@@ -350,6 +365,12 @@ fn get_drawop(tag: u8, r: &mut Reader<'_>) -> Result<DrawOp, DecodeError> {
         },
         8 => DrawOp::Clear,
         9 => DrawOp::Undo,
+        10 => DrawOp::StrokeSegment {
+            gesture: u32::from_le_bytes(r.array()?), tool: r.u8()?,
+            x0: i16::from_le_bytes(r.array()?), y0: i16::from_le_bytes(r.array()?),
+            x1: i16::from_le_bytes(r.array()?), y1: i16::from_le_bytes(r.array()?),
+            radius: r.u8()?, color: r.array()?,
+        },
         _ => return Err(DecodeError::UnknownType(tag)),
     })
 }

@@ -124,7 +124,9 @@ impl Model {
         libcollab::live_ops(self.peer.log())
             .iter()
             .filter(|msg| matches!(msg,Message::Apply {peer,..} if Some(*peer)==self.id))
-            .count()
+            .filter_map(libcollab::gesture_key)
+            .collect::<BTreeSet<_>>()
+            .len()
     }
     fn disconnect(&mut self, reason: &str) {
         self.state = "disconnected";
@@ -144,6 +146,14 @@ fn radius(value: u8) -> Radius {
 fn draw(c: &mut Canvas, op: &DrawOp) {
     let p = |x: i16, y: i16| (i32::from(x), i32::from(y));
     match *op {
+        DrawOp::StrokeSegment { tool, x0, y0, x1, y1, radius: r, color, .. } => {
+            let points = [p(x0,y0),p(x1,y1)];
+            match tool {
+                0 => c.pencil(&points,color),
+                1 => c.brush(&points,radius(r),color),
+                _ => c.erase(&points,radius(r)),
+            }
+        }
         DrawOp::Pencil {
             x0,
             y0,
@@ -342,6 +352,21 @@ impl Core {
         self.queues.connect(conn);
         if let Some(host) = &mut self.host {
             host.connect(conn);
+        }
+    }
+    pub fn submit_stroke(&mut self, ops: Vec<DrawOp>) {
+        let gesture = self.model.submitted.len() as u32 + 1;
+        for op in ops {
+            let segment = match op {
+                DrawOp::Pencil { x0,y0,x1,y1,color } =>
+                    DrawOp::StrokeSegment { gesture,tool:0,x0,y0,x1,y1,radius:2,color },
+                DrawOp::Brush { x0,y0,x1,y1,radius,color } =>
+                    DrawOp::StrokeSegment { gesture,tool:1,x0,y0,x1,y1,radius,color },
+                DrawOp::Eraser { x0,y0,x1,y1,radius } =>
+                    DrawOp::StrokeSegment { gesture,tool:6,x0,y0,x1,y1,radius,color:[255;3] },
+                other => other,
+            };
+            self.submit(segment);
         }
     }
     pub fn submit(&mut self, op: DrawOp) -> u32 {

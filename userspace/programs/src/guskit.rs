@@ -154,7 +154,7 @@ impl App {
         let Some(points) = self.stroke.take() else { return };
         let ops=collab::stroke(self.tool,self.size,self.color(),&points);
         if let Some(session)=&mut self.session {
-            for op in ops { session.core.submit(op); }
+            session.core.submit_stroke(ops);
             return;
         }
         let image = self.canvas().preview(&points, |image, points| self.draw_stroke(image, points));

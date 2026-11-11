@@ -338,6 +338,10 @@ impl HostCore {
             x >= 0 && y >= 0 && x < i32::from(self.width) && y < i32::from(self.height)
         };
         match *op {
+            DrawOp::StrokeSegment { gesture, tool, x0, y0, x1, y1, radius, .. } => {
+                gesture != 0 && matches!(tool, 0 | 1 | 6) && matches!(radius, 2 | 5 | 10)
+                    && point(x0.into(), y0.into()) && point(x1.into(), y1.into())
+            }
             DrawOp::Pencil { x0, y0, x1, y1, .. }
             | DrawOp::Brush { x0, y0, x1, y1, .. }
             | DrawOp::Eraser { x0, y0, x1, y1, .. }

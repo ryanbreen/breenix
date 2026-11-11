@@ -2,6 +2,7 @@ use libcollab::wire::{decode, encode, DecodeError, DrawOp, Message};
 
 fn messages() -> Vec<Message> {
     let ops = vec![
+        DrawOp::StrokeSegment { gesture:3, tool:1, x0:1,y0:2,x1:3,y1:4,radius:5,color:[6,7,8] },
         DrawOp::Pencil { x0: 1, y0: 2, x1: 3, y1: 4, color: [5, 6, 7] },
         DrawOp::Brush { x0: 1, y0: 2, x1: 3, y1: 4, radius: 5, color: [6, 7, 8] },
         DrawOp::Eraser { x0: 1, y0: 2, x1: 3, y1: 4, radius: 5 },

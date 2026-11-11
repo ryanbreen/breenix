@@ -103,3 +103,21 @@ fn lazy_sync_keeps_live_operations_ordered_and_publishes_peer_identity() {
     assert_eq!(peer.model.status,"disconnected: disconnected");
     assert_eq!(node::collab([0;4],&peer.model).value["submitted"],json!([{"id":1,"refused":"disconnected"}]));
 }
+
+#[test]
+fn undo_removes_a_whole_freehand_gesture_and_preserves_other_peers() {
+    for tool in [0, 1, 6] {
+        let mut host = Core::host("Host", Canvas::new(80,20),80,20);
+        join(&mut host,7,"Guest");
+        remote(&mut host,7,1,pencil(70,[1,2,3]));
+        let before=host.model.canvas.clone();
+        let points: Vec<_>=(0..60).map(|x|(x,10)).collect();
+        host.submit_stroke(collab::stroke(tool,0,[4,5,6],&points));
+        assert_eq!(host.model.undo_depth(),1,"one gesture is one undo entry");
+        host.submit(DrawOp::Undo);
+        assert_eq!(host.model.canvas.pixels(),before.pixels(),"whole gesture undone");
+        host.submit_stroke(collab::stroke(tool,0,[7,8,9],&points));
+        host.submit(DrawOp::Undo);
+        assert_eq!(host.model.canvas.pixels(),before.pixels(),"next gesture is independent");
+    }
+}
