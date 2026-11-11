@@ -78,6 +78,8 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("undo-redo", "Undo and redo", guskit::undo_redo).session(libuitest::supervisor::serve),
         case("save-open", "Save and reopen BMP and PNG", guskit::save_open).session(libuitest::supervisor::serve),
         case("save-fails-cleanly", "Failed save leaves file intact", guskit::save_fails_cleanly).session(libuitest::supervisor::serve),
+        case("smb-save-open", "Save and reopen over SMB", guskit::smb_save_open).session(libuitest::supervisor::serve),
+        case("smb-save-fails-cleanly", "Read-only SMB save fails cleanly", guskit::smb_save_fails_cleanly).session(libuitest::supervisor::serve),
         case("open-malformed", "Malformed image leaves canvas intact", guskit::open_malformed).session(libuitest::supervisor::serve),
         case("quit-unsaved", "Confirm quitting unsaved changes", guskit::quit_unsaved).session(libuitest::supervisor::serve),
         case("shortcuts", "Tool and file shortcuts", guskit::shortcuts).session(libuitest::supervisor::serve),

@@ -7,11 +7,11 @@
   "milestonesCompleted": [
     "guskit"
   ],
-  "added": 10,
+  "added": 12,
   "addedByCategory": {
-    "guskit": 10
+    "guskit": 12
   },
-  "total": 52,
+  "total": 54,
   "cases": [
     "terminal-emulation/vt-screen",
     "terminal-emulation/scroll-region",
@@ -62,6 +62,8 @@
     "guskit/undo-redo",
     "guskit/save-open",
     "guskit/save-fails-cleanly",
+    "guskit/smb-save-open",
+    "guskit/smb-save-fails-cleanly",
     "guskit/open-malformed",
     "guskit/quit-unsaved",
     "guskit/shortcuts"

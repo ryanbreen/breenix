@@ -218,3 +218,82 @@ pub fn open_malformed() -> CaseResult {
     expect(&mut t, &image)?;
     Ok(t.finish()?)
 }
+
+fn require_shares() -> Result<(), String> {
+    let state = std::fs::read_to_string("/run/breenix/services").map_err(|e| e.to_string())?;
+    libbreenix::services::shares_completed_once(&state)
+}
+
+fn save_as(t: &mut App, path: &str) -> Result<(), String> {
+    t.key(31, &[Modifier::Ctrl, Modifier::Shift])?;
+    t.wait_node("save-as", |_| true)?;
+    t.key(15, &[])?; // Focus the path field.
+    t.key(102, &[])?; // Home, then select the existing directory.
+    t.key(107, &[Modifier::Shift])?;
+    t.type_text(path)?;
+    t.key(28, &[])
+}
+
+fn close_saved(t: &mut App) -> Result<(), String> {
+    t.key(49, &[Modifier::Ctrl])?;
+    t.key(16, &[Modifier::Ctrl])?;
+    t.wait_node("confirm", |_| true)?;
+    t.key_exit(32, 0)
+}
+
+pub fn smb_save_open() -> CaseResult {
+    require_shares()?;
+    let dir = format!("/mnt/guskit-rw/guskit-{}-{}", std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos());
+    std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
+    // Always remove the per-run files, including when a case assertion fails.
+    struct Folder(String);
+    impl Drop for Folder { fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); } }
+    let folder = Folder(dir);
+    let mut t = launch()?;
+    stroke(&mut t, 10)?;
+    let mut image = Expected::white(); image.horizontal(10, 40, 10);
+    expect(&mut t, &image)?;
+    for ext in ["png", "bmp"] {
+        let file = format!("{}/drawing.{ext}", folder.0);
+        save_as(&mut t, &file)?;
+        t.wait_node("status", |v| v["file"] == file && v["dirty"] == false && v["message"] == "Saved")?;
+    }
+    close_saved(&mut t)?;
+    for ext in ["png", "bmp"] {
+        let file = format!("{}/drawing.{ext}", folder.0);
+        t.launch_next(&[b"/usr/bin/guskit", b"--canvas", b"200x120", file.as_bytes()], "Gus Kit")?;
+        expect(&mut t, &image)?;
+        close_saved(&mut t)?;
+    }
+    t.finish()?;
+    std::fs::remove_dir_all(&folder.0).map_err(|e| e.to_string())?;
+    std::mem::forget(folder);
+    Ok(())
+}
+
+fn directory_names(path: &str) -> Result<Vec<std::ffi::OsString>, String> {
+    let mut names = std::fs::read_dir(path).map_err(|e| e.to_string())?
+        .map(|entry| entry.map(|e| e.file_name()).map_err(|e| e.to_string()))
+        .collect::<Result<Vec<_>, _>>()?;
+    names.sort();
+    Ok(names)
+}
+
+pub fn smb_save_fails_cleanly() -> CaseResult {
+    require_shares()?;
+    const FILE: &str = "/mnt/guskit-ro/x.png";
+    let names = directory_names("/mnt/guskit-ro")?;
+    let before = std::fs::read("/mnt/guskit-ro/README.txt").map_err(|e| e.to_string())?;
+    if std::path::Path::new(FILE).exists() { return Err("read-only target already exists".into()); }
+    let mut t = launch()?;
+    stroke(&mut t, 10)?;
+    let mut image = Expected::white(); image.horizontal(10, 40, 10);
+    expect(&mut t, &image)?;
+    save_as(&mut t, FILE)?;
+    t.wait_node("status", |v| v["dirty"] == true && v["message"].as_str().is_some_and(|s| !s.is_empty() && s != "Saved"))?;
+    expect(&mut t, &image)?;
+    if directory_names("/mnt/guskit-ro")? != names { return Err("read-only save changed directory entries".into()); }
+    if std::fs::read("/mnt/guskit-ro/README.txt").map_err(|e| e.to_string())? != before { return Err("read-only save changed README.txt".into()); }
+    Ok(t.finish()?)
+}
