@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fixture checks for network-shares boot staging."""
+"""Fixture checks for SMB suite boot staging."""
 import contextlib
 import io
 import importlib.machinery
@@ -26,6 +26,63 @@ def load_script(name):
 
 
 class SmbStagingTest(unittest.TestCase):
+    @contextlib.contextmanager
+    def gui_root(self):
+        mke2fs, debugfs = metal_root.require_e2fsprogs('mke2fs', 'debugfs')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tree = root / 'tree'
+            for name in ('etc/breenix', 'sbin', 'bin', 'mnt'):
+                (tree / name).mkdir(parents=True)
+            for name in ('sbin/suite-gui-apps', 'sbin/init', 'bin/getty', 'bin/login'):
+                (tree / name).write_bytes(b'\x7fELFfixture')
+            image = root / 'root.img'
+            subprocess.run([mke2fs, '-q', '-t', 'ext2', '-d', str(tree), '-F', str(image), '4096'],
+                           check=True, capture_output=True)
+            def read(command):
+                return subprocess.run([debugfs, '-R', command, str(image)], check=True, capture_output=True)
+            config = {'SMB_TEST_USER': 'fixture-user', 'SMB_TEST_PASSWORD': 'fixture-secret-52',
+                      'SMB_TEST_HOST': '192.0.2.42', 'SMB_TEST_PORT': '10445'}
+            yield image, read, config
+
+    def test_gui_apps_guskit_stages_boot_mounts(self):
+        for case in (None, 'guskit', 'guskit/smb-save-open'):
+            with self.subTest(case=case), self.gui_root() as (image, read, config):
+                output = io.StringIO()
+                with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
+                    facts = metal_root.stage_root(image, 'suite', 'gui-apps', {}, smb_config=config,
+                                                  **({'case': case} if case else {}))
+                expected = {
+                    '/etc/breenix/smb-test.cred': ('username=fixture-user\npassword=fixture-secret-52\n', '0600'),
+                    '/etc/breenix/smb-test-server': ('192.0.2.42 10445\n', '0600'),
+                    '/etc/shares': ('//192.0.2.42/rw /mnt/guskit-rw smb credfile=/etc/breenix/smb-test.cred,port=10445\n'
+                                    '//192.0.2.42/ro /mnt/guskit-ro smb credfile=/etc/breenix/smb-test.cred,port=10445\n', '0644')}
+                for path, (content, mode) in expected.items():
+                    self.assertEqual(read('cat ' + path).stdout.decode(), content)
+                    stat = read('stat ' + path).stdout.decode()
+                    self.assertIn('Mode:  ' + mode, stat)
+                    self.assertRegex(stat, r'User:\s+0\s+Group:\s+0')
+                for path in ('/mnt/guskit-rw', '/mnt/guskit-ro'):
+                    stat = read('stat ' + path).stdout.decode()
+                    self.assertIn('Type: directory', stat)
+                    self.assertIn('Mode:  0755', stat)
+                    self.assertRegex(stat, r'User:\s+0\s+Group:\s+0')
+                self.assertNotIn(config['SMB_TEST_PASSWORD'], output.getvalue() + json.dumps(facts))
+
+    def test_console_and_other_gui_selection_remove_smb_mounts(self):
+        for mode, suite, case in (('console', None, None), ('suite', 'gui-apps', 'bterm')):
+            with self.subTest(mode=mode, case=case), self.gui_root() as (image, read, config):
+                metal_root.stage_root(image, 'suite', 'gui-apps', {}, smb_config=config)
+                self.assertIn(b'Inode:', read('stat /etc/shares').stdout)
+                site = {'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture_password_only_12345',
+                        'CONSOLE_IDENTITY_KEY': 'ab' * 32}
+                with patch.object(metal_root, 'console_hash', return_value='$6$fixture$hash'):
+                    metal_root.stage_root(image, mode, suite, site, smb_config=config,
+                                          **({'case': case} if case else {}))
+                for path in ('/etc/breenix/smb-test.cred', '/etc/breenix/smb-test-server',
+                             '/etc/shares', '/mnt/guskit-rw', '/mnt/guskit-ro'):
+                    self.assertIn(b'File not found', read('stat ' + path).stderr)
+
     def test_only_network_shares_receives_private_fixture(self):
         mke2fs, debugfs = metal_root.require_e2fsprogs('mke2fs', 'debugfs')
         with tempfile.TemporaryDirectory() as tmp:
@@ -102,6 +159,15 @@ class SmbStagingTest(unittest.TestCase):
             self.assertEqual(runner.boot(args), 0)
             configure.assert_not_called()
             self.assertFalse(any('smb-restart' in call.args[0][1] for call in processes.call_args_list))
+            for case, needs_smb in ((None, True), ('guskit', True), ('guskit/smb-save-open', True), ('bterm', False)):
+                with self.subTest(case=case):
+                    configure.reset_mock()
+                    processes.reset_mock()
+                    args = runner.argument_parser().parse_args(
+                        ['boot', '--suite', 'gui-apps'] + (['--case', case] if case else []))
+                    self.assertEqual(runner.boot(args), 0)
+                    self.assertEqual(configure.call_count, int(needs_smb))
+                    self.assertFalse(any('smb-restart' in call.args[0][1] for call in processes.call_args_list))
         deploy = Path(metal_root.__file__).with_name('metal-deploy').read_text()
         self.assertIn('users-hostssh smb-restart', deploy)
 
