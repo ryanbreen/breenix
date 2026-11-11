@@ -486,6 +486,9 @@ impl WaitObservation {
     }
 }
 impl Desktop {
+    pub fn report_startup(&self) {
+        self.startup.failure();
+    }
     pub fn cpu_costs(&self) -> Result<[u64; 5], String> {
         Ok(libuitest::startup::Trace::open(&self.startup.0.join(self.wm.pid.to_string()))?.cpu_snapshot())
     }

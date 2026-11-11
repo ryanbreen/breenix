@@ -3419,8 +3419,9 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
     create_context_with_catalogue(tgid, true)
 }
 
-/// Initialize the renderer during window/display setup so catalogue compilation is out
-/// of the first frame's path. The prepared context is counted as an ordinary process context;
+/// Prepare the renderer during window/display setup. QEMU waits only for the
+/// compositor's initial SOLID/COPY pipelines; the rest warms asynchronously.
+/// The prepared context is counted as an ordinary process context;
 /// CONTEXT_CREATE transfers its existing handle to the caller, and exit retires it normally.
 pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32> {
     // QEMU clients retain ordinary context creation: CREATE must reach
@@ -3452,7 +3453,12 @@ pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32>
             if reserved.is_some_and(|reserved| reserved != id) { continue; }
             let Some(ctx) = c.contexts.get(id) else { continue; };
             if !ctx.warm_catalogue || ctx.dropped || ctx.state != CtxState::Live { continue; }
-            if ctx.warm != catalogue_mask() { return None; }
+            // The compositor starts with SOLID and COPY. The remaining catalogue
+            // keeps warming asynchronously (gpu-abi.md, CONTEXT_CREATE/SUBMIT).
+            let required = if platform_config::is_qemu() && reserve_next {
+                (1 << abi::pipeline::SOLID) | (1 << abi::pipeline::COPY)
+            } else { catalogue_mask() };
+            if ctx.warm & required != required { return None; }
         }
         Some(Ok(()))
     }).map_err(|_| EINTR).and_then(|r| r);
@@ -6719,8 +6725,16 @@ fn observe(
             for lane in lanes.iter_mut() {
                 let Some(b) = lane.as_mut() else { continue };
                 active = true;
+                if crate::syscall::check_signals_for_wait().is_some() {
+                    return Err((EINTR, readback_reason::NONE));
+                }
                 finish(b)?;
                 read(b);
+                // A ready completion need not sleep. Check again before the
+                // complement or next band extends syscall kill custody.
+                if crate::syscall::check_signals_for_wait().is_some() {
+                    return Err((EINTR, readback_reason::NONE));
+                }
                 if b.pass == 0 {
                     b.pass = 1;
                     start(b)?;

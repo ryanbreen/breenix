@@ -1128,7 +1128,11 @@ pub fn supervisor_restarts() -> CaseResult {
     until(2000, "production desktop supervisor restarts bwm", || {
         Ok(children(d.wm.pid, "bwm")?.iter().any(|p| *p != old))
     })?;
-    content(&mut d, &c)
+    content(&mut d, &c)?;
+    // Retain both process timelines, including the replacement on a passing
+    // run, so startup margin is measured without another boot.
+    d.report_startup();
+    Ok(())
 }
 pub fn children(parent: i32, name: &str) -> Result<Vec<i32>, String> {
     let mut result = Vec::new();
