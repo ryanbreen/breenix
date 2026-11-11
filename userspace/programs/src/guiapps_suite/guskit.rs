@@ -422,14 +422,22 @@ pub fn smb_share_gone() -> CaseResult {
         writeln!(output, "GUSKIT_SMB_EVIDENCE guskit/smb-share-gone partial_bytes=16 write_errno=5 recovered=true").map_err(|e| e.to_string())?;
         Ok(())
     });
-    let key_result = t.key(31, &[Modifier::Ctrl]);
+    let key_result = t.key_wait_node(31, &[Modifier::Ctrl], "status", |v|
+        v["dirty"] == true && v["message"].as_str().is_some_and(|s| !s.is_empty() && s != "Saved"));
     watcher.join().map_err(|_| "save interruption watcher panicked")??;
     restart.0 = None;
     key_result?;
-    t.wait_node("status", |v| v["dirty"] == true && v["message"].as_str().is_some_and(|s| !s.is_empty() && s != "Saved"))?;
+    // The save-result commit is now visible; a fresh tool key must still be
+    // processed within the normal input deadline.
+    t.key(25, &[])?;
+    t.wait_node("status", |v| v["tool"] == "pencil" && v["dirty"] == true)?;
     // tests/atomic_file.rs exercises faults at each save step; this is the app path.
     if std::fs::read(&file).map_err(|e| e.to_string())? != before { return Err("failed save changed drawing".into()); }
     if directory_names(&dir)? != names { return Err("failed save changed directory entries".into()); }
+    // Witness the app's exit and window destruction before retiring the fixture.
+    t.key(16, &[Modifier::Ctrl])?;
+    t.wait_node("confirm", |_| true)?;
+    t.key_exit(32, 0)?;
     t.finish()?;
     std::fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
     std::mem::forget(folder);
