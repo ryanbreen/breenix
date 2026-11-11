@@ -114,5 +114,5 @@ impl Compositor {
  *BAD.lock().unwrap()=None;*HIGH_X.lock().unwrap()=true;
  assert_eq!(c.check_area(0,&[],None,[13,7,2559,1599]).unwrap(),2546*1592);
 }
-'''.replace('CONSTANTS',constants+'\n'+'#[derive(Default)]'+item(source,'struct CheckWorkspace {')+'\n'+item(source,'fn resize_readback(')+'\n'+(item(source,'fn equal_row(') if 'fn equal_row(' in source else '')).replace('@CHECK@',item(source,'pub fn check_area(')+'\n'+item(source,'fn check_area_into(')).replace('@EXPECTED@',item(source,'fn expected(').replace('-> u32 {', '-> u32 { PIXELS.fetch_add(1,std::sync::atomic::Ordering::Relaxed);', 1)))
+'''.replace('CONSTANTS',constants+'\n'+'#[derive(Default)]'+item(source,'struct CheckWorkspace {')+'\n'+item(source,'fn resize_readback(')+'\n'+item(source,'fn client_buffer(')+'\n'+(item(source,'fn equal_row(') if 'fn equal_row(' in source else '')).replace('@CHECK@',item(source,'pub fn check_area(')+'\n'+item(source,'fn check_area_into(')).replace('@EXPECTED@',item(source,'fn expected(').replace('-> u32 {', '-> u32 { PIXELS.fetch_add(1,std::sync::atomic::Ordering::Relaxed);', 1)))
 if __name__=='__main__':unittest.main()

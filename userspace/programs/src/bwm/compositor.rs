@@ -131,6 +131,35 @@ struct CheckWorkspace {
     costs: [u64; 5],
 }
 
+impl CheckWorkspace {
+    /// Admit capture capacity with the scene, before idle validation can be
+    /// deferred by animation. Reserve sizes individually, largest first.
+    fn prepare_clients(&mut self, sampled: &[Sampled]) {
+        let mut sizes: Vec<_> = sampled.iter().filter(|s| s.sample != 0)
+            .map(|s| s.width as usize * s.height as usize * 4).collect();
+        sizes.sort_unstable_by(|a, b| b.cmp(a));
+        self.clients.sort_unstable_by_key(|c| core::cmp::Reverse(c.3.capacity()));
+        for (index, bytes) in sizes.into_iter().enumerate() {
+            if index == self.clients.len() { self.clients.push((0, [0; 4], 0, Vec::new())); }
+            resize_readback(&mut self.clients[index].3, bytes);
+        }
+    }
+}
+
+/// Match an admitted capacity to the capture order without consuming a large
+/// slot for a smaller client that has a fitting slot of its own.
+fn client_buffer(clients: &mut Vec<(u64, [i32; 4], u32, Vec<u8>)>, index: usize, bytes: usize)
+    -> &mut (u64, [i32; 4], u32, Vec<u8>) {
+    if index == clients.len() { clients.push((0, [0; 4], 0, Vec::new())); }
+    if let Some(best) = clients[index..].iter().enumerate()
+        .filter(|(_, c)| c.3.capacity() >= bytes).min_by_key(|(_, c)| c.3.capacity())
+        .map(|(offset, _)| index + offset) {
+        clients.swap(index, best);
+    }
+    resize_readback(&mut clients[index].3, bytes);
+    &mut clients[index]
+}
+
 fn resize_readback(bytes: &mut Vec<u8>, len: usize) {
     if bytes.capacity() < len {
         *bytes = prefaulted_bytes(len);
@@ -365,6 +394,7 @@ impl Compositor {
                     self.sampled.extend(windows.iter().map(|w| Sampled {
                         id: w.id, sample: w.sample, commit_id: w.commit_id, width: w.width, height: w.height,
                     }));
+                    self.check_workspace.prepare_clients(&self.sampled);
                     return Ok(());
                 }
                 EAGAIN if monotonic_ms() < deadline => {
@@ -545,12 +575,10 @@ impl Compositor {
         shown.sort_by_key(|(id, _)| (*id != self.check_first, *id != subject));
         for (id, r) in shown {
             let s = self.sampled.iter().find(|s| s.id == id).expect("sampled_content found it");
-            if client_count == clients.len() {
-                clients.push((0, [0; 4], 0, Vec::new()));
-            }
-            let (stored_id, stored_rect, stored_width, px) = &mut clients[client_count];
+            let (stored_id, stored_rect, stored_width, px) = client_buffer(
+                clients, client_count, s.width as usize * s.height as usize * 4,
+            );
             (*stored_id, *stored_rect, *stored_width) = (id, r, s.width);
-            resize_readback(px, s.width as usize * s.height as usize * 4);
             let c = match window::capture(s.id, px, None) {
                 Ok(c) => c,
                 Err(e) => {
