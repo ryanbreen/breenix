@@ -143,3 +143,24 @@ fn demos_use_window_animation_and_status() {
         }
     }
 }
+
+#[test]
+fn app_hover_uses_visible_point_without_button() {
+    let source = include_str!("../libs/libuitest/src/app.rs");
+    let hover = source.split("pub fn hover(").nth(1).expect("hover helper")
+        .split("pub fn ").next().unwrap();
+    assert!(hover.contains("drag_start(node, at)"));
+    assert!(hover.contains("live.move_to("));
+    assert!(!hover.contains(".button("));
+}
+
+#[test]
+fn app_close_uses_alt_and_desktop_exit() {
+    let source = include_str!("../libs/libuitest/src/app.rs");
+    let close = source.split("pub fn close_exit(").nth(1).expect("close helper")
+        .split("pub fn ").next().unwrap();
+    let down = close.find("wm_key(key::LEFT_ALT, true)").expect("Alt down");
+    let exit = close.find("input_exit(16, false, 0, true)").expect("desktop Q exit");
+    let up = close.find("wm_key(key::LEFT_ALT, false)").expect("Alt up");
+    assert!(down < exit && exit < up);
+}
