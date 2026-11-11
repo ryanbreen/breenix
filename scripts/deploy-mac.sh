@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Push a built desktop to a Mac; run under deploy-lock.sh run breenix-gus-mac."""
+"""Push a built desktop to a Mac under the site deployment lock."""
 import json
 from datetime import datetime, timezone
 import re
@@ -54,6 +54,9 @@ def main():
     if len(args) != 1 or args[0].startswith('-') or '/' in args[0] or args[0] in ('.', '..'):
         sys.exit('usage: deploy-mac.sh [--push-only] HOST')
     host = args[0]
+    for variable in ('BREENIX_KERNEL_FEATURES', 'BREENIX_QEMU_GL_DIR', 'BREENIX_QEMU_GL_BINARY'):
+        if os.environ.get(variable):
+            sys.exit('deploy-mac: unset ' + variable + ' to deploy the default desktop')
     os.chdir(ROOT)
     if subprocess.check_output(['git', 'status', '--porcelain', '--untracked-files=normal']):
         sys.exit('deploy-mac: dirty tree')
@@ -113,7 +116,8 @@ def main():
     evidence.mkdir(parents=True)
     print(f'deploy-mac: evidence: {evidence}', flush=True)
     remote_dir = f'~/breenix-boots/{stamp}'
-    command = ('cd "$HOME/breenix" && scripts/boot-interactive.sh --mode desktop --gpu-gl '
+    command = ('cd "$HOME/breenix" && env -u BREENIX_KERNEL_FEATURES -u BREENIX_QEMU_GL_DIR '
+               '-u BREENIX_QEMU_GL_BINARY scripts/boot-interactive.sh --mode desktop --gpu-gl '
                '--no-build --no-display --until-desktop-ready --serial-log '
                + shell_path(remote_dir + '/serial.txt'))
     boot = subprocess.run(['ssh', '-T', host, command], stdin=subprocess.DEVNULL)

@@ -154,6 +154,14 @@ if os.environ.get('CORRUPT') and src.name == 'disk': dst.write_bytes(b'corrupt')
                     self.assertEqual((path / relative).read_text(), data)
                 shutil.rmtree(path)
 
+    def test_build_and_bundle_overrides_are_refused(self):
+        for variable in ('BREENIX_KERNEL_FEATURES', 'BREENIX_QEMU_GL_DIR', 'BREENIX_QEMU_GL_BINARY'):
+            with self.subTest(variable=variable):
+                result = self.deploy('--push-only', **{variable: 'custom'})
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(variable, result.stderr)
+                self.assertFalse(self.log.exists())
+
     def test_dirty_tree_is_refused(self):
         (self.root / 'dirty').write_text('dirty')
         result = self.deploy()
