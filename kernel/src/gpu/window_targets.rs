@@ -387,10 +387,17 @@ impl Target {
         }).map_err(|_| EINTR)??;
         let result = (|| {
             let stride = self.width as usize * 4;
-            // CAPTURE keeps one generation pinned, but needs only bounded transfer staging.
-            // In particular a diagnostic capture must fit the memory-limit probes' slack.
-            let rows = (16 * 1024 / stride).max(1).min(self.height as usize);
-            let stage = Staging::new(owner, stride * rows)?;
+            // Keep the generation pinned across larger transfers when quota permits.
+            // Tight-limit captures retain the 16 KiB staging path; both sizes use
+            // the same two poisoned observations before publishing their pixels.
+            let minimum_rows = (16 * 1024 / stride).max(1).min(self.height as usize);
+            let preferred_rows = (4 * 1024 * 1024 / stride).max(1).min(self.height as usize);
+            let (rows, stage) = match Staging::new(owner, stride * preferred_rows) {
+                Ok(stage) => (preferred_rows, stage),
+                Err(ENOMEM) if preferred_rows > minimum_rows =>
+                    (minimum_rows, Staging::new(owner, stride * minimum_rows)?),
+                Err(error) => return Err(error),
+            };
             let mut row = [0u8; 512];
             for first in (0..self.height as usize).step_by(rows) {
                 let count = rows.min(self.height as usize - first);
