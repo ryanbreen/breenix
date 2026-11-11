@@ -259,6 +259,12 @@ fn spawn_child(args: &[String], size: &termios::Winsize) -> (Fd, i64) {
         Ok(ForkResult::Child) => {
             let _ = io::close(master_fd);
             let _ = setsid();
+            // Init ignores HUP while detaching its console. A new tab session
+            // must receive HUP even when another tab still holds its master FD.
+            if libbreenix::signal::sigaction(libbreenix::signal::SIGHUP,
+                Some(&libbreenix::signal::Sigaction::default_action()), None).is_err() {
+                libbreenix::process::exit(126);
+            }
             let slave_fd = match fs::open(slave_path_str, fs::O_RDWR) {
                 Ok(fd) => fd,
                 Err(_) => { libbreenix::process::exit(126); }
