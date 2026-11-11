@@ -12,6 +12,7 @@ struct Fake {
     access: BTreeMap<u64, u32>,
     next: u64,
     queries: usize,
+    identities: BTreeMap<String, u64>,
     data: BTreeMap<String, Vec<u8>>,
     closes: usize,
     flushes: usize,
@@ -168,6 +169,10 @@ impl Backend for Fake {
         self.queries += 1;
         let path = &self.handles[&id.persistent];
         let mut i = info(self.files[path]);
+        let next = self.identities.len() as u64 + 1;
+        i.index_number = *self.identities.entry(path.clone()).or_insert(next);
+        i.creation_time = i.index_number + 100;
+
         if let Some(data) = self.data.get(path) {
             i.end_of_file = data.len() as u64;
         }
@@ -234,6 +239,9 @@ impl Backend for Fake {
                 for (p, d) in moved {
                     self.files.remove(&p);
                     let new = format!("{name}{}", &p[old.len()..]);
+                    if let Some(identity) = self.identities.remove(&p) {
+                        self.identities.insert(new.clone(), identity);
+                    }
                     if let Some(bytes) = self.data.remove(&p) {
                         self.data.insert(new.clone(), bytes);
                     }
@@ -458,4 +466,26 @@ fn protocol_failure_returns_eio_then_recovers_on_the_next_operation() {
     assert_eq!(fs.read(h, 0, 6).unwrap(), b"intact");
     assert_eq!(fs.backend().reconnects, 1);
     fs.release(h).unwrap();
+}
+
+#[test]
+fn reconnect_rejects_a_replaced_file_without_blocking_other_handles() {
+    let mut fs = setup();
+    let a = fs.create(ROOT, "file", smbfs::O_EXCL, 0).unwrap();
+    let h = fs.open(a.node, smbfs::O_RDWR).unwrap();
+    fs.write(h, 0, b"original").unwrap();
+    let b = fs.create(ROOT, "other", smbfs::O_EXCL, 0).unwrap();
+    let other = fs.open(b.node, smbfs::O_RDWR).unwrap();
+    fs.write(other, 0, b"unaffected").unwrap();
+    // Another client atomically replaces this path while the transport is lost.
+    fs.backend_mut().identities.insert("file".into(), 999);
+    fs.backend_mut().data.insert("file".into(), b"replacement".to_vec());
+    fs.backend_mut().drop_read = true;
+    assert_eq!(fs.read(h, 0, 8), Err(5));
+    assert_eq!(fs.write(h, 0, b"corrupt"), Err(5));
+    assert_eq!(fs.backend().data["file"], b"replacement");
+    assert_eq!(fs.read(other, 0, 10).unwrap(), b"unaffected");
+    assert!(fs.lookup(ROOT, "target", 1).is_ok());
+    fs.release(h).unwrap();
+    fs.release(other).unwrap();
 }

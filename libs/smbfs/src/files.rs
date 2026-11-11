@@ -18,7 +18,6 @@ pub(super) fn invalid_session(status: u32) -> bool {
     disconnected(status) || status == PROTOCOL
 }
 
-const BAD_HANDLE: u32 = 0xc000_0008;
 
 pub(super) fn disconnected(status: u32) -> bool {
     matches!(
@@ -31,6 +30,7 @@ pub(super) struct Handle {
     access: u32,
     options: u32,
     pub file_id: Option<FileId>,
+    identity: Option<(u64, u64, bool)>,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Statfs {
@@ -46,6 +46,11 @@ fn filetime(ns: u64) -> u64 {
     ns / 100 + 116_444_736_000_000_000
 }
 
+// MS-FSCC 2.1.9 and 2.4.27: index_number == 0 denotes an unsupported file ID.
+fn file_identity(info: &FileAllInformation) -> Option<(u64, u64, bool)> {
+    (info.index_number != 0).then_some((info.index_number, info.creation_time, info.directory))
+}
+
 impl<B: Backend> Namespace<B> {
     fn disconnect(&mut self) {
         self.connected = false;
@@ -56,27 +61,33 @@ impl<B: Backend> Namespace<B> {
     }
     fn recover(&mut self, deadline: Instant) -> Result<(), i32> {
         self.disconnect();
-        if self.handles.values().any(|h| h.path.is_none()) {
-            return Err(5);
-        }
         self.backend.reconnect(deadline).map_err(|_| 5)?;
         let mut reopened = Vec::new();
         for (&key, handle) in &self.handles {
-            // Unlinked/replaced objects have no path we can safely reopen.
-            let Some(path) = &handle.path else {
-                return Err(5);
+            // No stable identity or surviving path means this handle stays stale.
+            let (Some(path), Some(identity)) = (&handle.path, handle.identity) else {
+                continue;
             };
-            match self
-                .backend
+            let result = self.backend
                 .open(path, handle.access, CreateDisposition::Open, handle.options)
-            {
-                Ok(id) => reopened.push((key, id)),
-                Err(status) => {
-                    if !disconnected(status) {
-                        for (_, id) in reopened {
-                            let _ = self.backend.close(id);
+                .and_then(|id| {
+                    match self.backend.query_file(id) {
+                        Ok(info) if file_identity(&info) == Some(identity) => Ok(Some(id)),
+                        Ok(_) => self.backend.close(id).map(|()| None),
+                        Err(status) => {
+                            if !invalid_session(status) {
+                                let _ = self.backend.close(id);
+                            }
+                            Err(status)
                         }
                     }
+                });
+            match result {
+                Ok(Some(id)) => reopened.push((key, id)),
+                Ok(None) => {},
+                Err(status) if !invalid_session(status) => {},
+                Err(_) => {
+                    // Discard the failed session before publishing reopened handles.
                     return Err(5);
                 }
             }
@@ -128,7 +139,7 @@ impl<B: Backend> Namespace<B> {
         self.handles
             .get(&handle)
             .and_then(|h| h.file_id)
-            .ok_or(BAD_HANDLE)
+            .ok_or(0xffff_fffd)
     }
     pub fn open(&mut self, node: u64, flags: u32) -> Result<u64, i32> {
         let path = self.path(node)?.to_owned();
@@ -158,7 +169,18 @@ impl<B: Backend> Namespace<B> {
         }
         let handle = self.next_handle;
         let next = self.next_handle.checked_add(1).ok_or(24)?;
-        let id = self.operation(|s| s.backend.open(&path, access, disp, opts))?;
+        let (id, identity) = self.operation(|s| {
+            let id = s.backend.open(&path, access, disp, opts)?;
+            match s.backend.query_file(id) {
+                Ok(info) => Ok((id, file_identity(&info))),
+                Err(status) => {
+                    if !invalid_session(status) {
+                        let _ = s.backend.close(id);
+                    }
+                    Err(status)
+                }
+            }
+        })?;
         self.next_handle = next;
         self.handles.insert(
             handle,
@@ -167,6 +189,7 @@ impl<B: Backend> Namespace<B> {
                 access,
                 options: opts,
                 file_id: Some(id),
+                identity,
             },
         );
         Ok(handle)
