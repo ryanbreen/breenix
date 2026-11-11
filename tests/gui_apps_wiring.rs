@@ -119,3 +119,14 @@ fn guskit_uses_window_dispatch_and_publishes_tree() {
     }
     assert!(include_str!("../userspace/programs/build.sh").contains("guskit"));
 }
+
+#[test]
+fn bounce_uses_animation_dispatch_and_publishes_status() {
+    let source = include_str!("../userspace/programs/src/bounce.rs");
+    for forbidden in ["poll_events", "clock_monotonic", "libbreenix::graphics", "fb_mmap"] {
+        assert!(!source.contains(forbidden), "unexpected {forbidden}");
+    }
+    for required in ["Event::CloseRequested", "win.set_animating(true)", "win.wait_dispatch(", "win.set_tree("] {
+        assert!(source.contains(required), "missing {required}");
+    }
+}
