@@ -663,7 +663,7 @@ use kernel::console::splash::{self, Stage};
 use kernel::serial;
 
 // Enter Rust only after selecting the linked code mapping. The loader's SP is
-// already in its low linked alias (0x42000000, IPA 0x82000000 on VMware).
+// already in its low linked alias (0x43000000, IPA 0x83000000 on VMware).
 // QEMU's boot.S has already selected both high-half code and stack addresses.
 // No Rust frame or callee-saved address survives this non-returning transition.
 #[cfg(target_arch = "aarch64")]

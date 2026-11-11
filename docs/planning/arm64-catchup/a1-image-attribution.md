@@ -7,11 +7,10 @@ The shared contract/stack move and TTBR0 repair remain u3/u4 work.
 
 ## Captures and check
 
-Full maps and build logs remain in
-`~/Library/Caches/fastr-rollout/2026-11-10/arm-a1/`.
-The fixtures in `tests/fixtures/arm64-image-layout/` retain verbatim ordered
-output-section and boundary-symbol lines from these captures, without object
-paths. The earlier `1055dfd2.map` was a no-features build too; it was preserved
+The checked-in [map fixtures](../../../tests/fixtures/arm64-image-layout/)
+retain verbatim ordered output-section and boundary-symbol lines from the
+build captures, without object paths. The commands below reproduce the full
+maps; the SHA-256 values identify the original captures. The earlier `1055dfd2.map` was a no-features build too; it was preserved
 as `1055dfd2-no-features.map` before building the actual testing profile.
 Main's already captured builds were reused rather than repeated.
 
