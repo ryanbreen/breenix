@@ -6,3 +6,10 @@ description = "Breenix collaboration protocol library — real-time multi-user s
 
 [lib]
 crate-type = ["rlib"]
+
+[features]
+default = []
+net = ["dep:libbreenix"]
+
+[dependencies]
+libbreenix = { path = "../libbreenix", optional = true }

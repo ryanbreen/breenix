@@ -2,6 +2,9 @@
 
 //! Pure collaboration protocol types and framing.
 pub mod host;
+pub mod queue;
+#[cfg(feature = "net")]
+pub mod net;
 pub mod wire;
 
 extern crate alloc;
