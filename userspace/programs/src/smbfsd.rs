@@ -34,7 +34,7 @@ fn run() -> Result<(), String> {
         .open("/dev/ufs")
         .map_err(|e| format!("open /dev/ufs: {e}"))?;
     let fd = dev.as_raw_fd() as u32;
-    unsafe { libbreenix::fs::mount("smb", &a[1], "ufs", 0, (&fd as *const u32).cast()) }
+    unsafe { libbreenix::fs::mount(&a[0], &a[1], "ufs", 0, (&fd as *const u32).cast()) }
         .map_err(|e| format!("mount: {e}"))?;
     let mut stdout = io::stdout();
     writeln!(

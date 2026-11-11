@@ -13,3 +13,18 @@ before mounting; the printed READY line reports the negotiated dialect and
 whether the connection requires encryption. Unmounting closes the serving
 endpoint and the daemon exits. Credentials are read from the file, not passed
 on the command line.
+
+
+At boot, init runs `mount -a` after the network is up. Put one share per
+line in `/etc/shares`, with four whitespace-separated fields:
+
+```text
+//HOST/SHARE /mnt/share smb credfile=/etc/share.cred,port=445
+```
+
+Blank lines and lines beginning with `#` are ignored. The mount directory must
+already exist. Entries already present in `/proc/mounts` are skipped. Invalid
+lines and failed mounts are reported on standard error; other entries are still
+attempted and the command exits with status 1 if any failed. A missing
+`/etc/shares` is silently accepted. Running `mount` without arguments lists
+current mounts.

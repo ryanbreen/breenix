@@ -102,6 +102,24 @@
           "title": "Unmount with an open file"
         }
       ]
+    },
+    {
+      "id": "shares",
+      "title": "Configured shares",
+      "cases": [
+        {
+          "id": "mount-all",
+          "title": "Mount good entries and report bad lines with mount -a"
+        },
+        {
+          "id": "mount-list",
+          "title": "List and unmount configured shares"
+        },
+        {
+          "id": "ls-cp",
+          "title": "List and copy files with shell applets"
+        }
+      ]
     }
   ]
 }

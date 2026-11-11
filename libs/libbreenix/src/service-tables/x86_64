@@ -27,6 +27,12 @@ command = /usr/sbin/ntp_client
 restart = on-failure
 needs = network-up
 
+# claim-lint:ok: restart is a setting parsed by libs/libbreenix/src/services.rs.
+[shares]
+command = /sbin/mount -a
+restart = never
+needs = network-up
+
 [getty-tty2]
 command = /bin/getty tty2
 

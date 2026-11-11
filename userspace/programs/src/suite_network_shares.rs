@@ -38,6 +38,11 @@ static SUITE: Suite = suite("network-shares", "Network shares", &[
         case("server-restart", "Server restart reconnects and preserves the open file", smb_server_restart),
         case("umount-open-files", "Unmount with an open file", smb_umount_open_files),
     ]),
+    category("shares", "Configured shares", &[
+        case("mount-all", "Mount good entries and report bad lines with mount -a", shares_mount_all),
+        case("mount-list", "List and unmount configured shares", shares_mount_list),
+        case("ls-cp", "List and copy files with shell applets", shares_ls_cp),
+    ]),
 ]).case_limit_ms(30_000);
 
 fn main() {
@@ -717,4 +722,119 @@ fn smb_umount_open_files() -> CaseResult {
     io(fs::remove_dir_all(cleanup.dir.join(cleanup_name)))?;
     cleanup.finish()?;
     Ok(())
+}
+
+
+// Own only the table we created, and detach even after a partially successful command.
+struct SharesFixture {
+    rw: SmbMount,
+    ro: SmbMount,
+    command: Vec<String>,
+}
+struct SharesTable;
+impl Drop for SharesTable {
+    fn drop(&mut self) { let _ = fs::remove_file("/etc/shares"); }
+}
+impl SharesFixture {
+    fn start() -> Result<Self, breenix_suite::suite::CaseError> {
+        let services = io(fs::read_to_string("/etc/breenix/services"))?;
+        let mut parsed = Vec::new();
+        let mut problems = Vec::new();
+        libbreenix::services::parse_into(&services, "/etc/breenix/services", &mut parsed, &mut problems);
+        if !problems.is_empty() { return Err(format!("service table: {problems:?}").into()); }
+        let command = parsed.into_iter().find(|s| s.name == "shares")
+            .ok_or("missing shares service")?.command;
+        let (mut rw, rw_source, rw_options) = SmbMount::prepare("rw", false, "/etc/breenix/smb-test.cred")?;
+        let (mut ro, ro_source, ro_options) = SmbMount::prepare("ro", false, "/etc/breenix/smb-test.cred")?;
+        let mut table = io(OpenOptions::new().write(true).create_new(true).open("/etc/shares"))?;
+        let _table = SharesTable;
+        io(writeln!(table, "{} {} smb {}\n{} {} smb {}\ninvalid line",
+            rw_source, rw.dir.display(), rw_options, ro_source, ro.dir.display(), ro_options))?;
+        drop(table);
+        // A failed invocation can still mount either valid entry.
+        rw.mounted = true;
+        ro.mounted = true;
+        let fixture = Self { rw, ro, command };
+        let first = fixture.run()?;
+        check(first.status.code() == Some(1), &format!("shares command exit: {}", first.status))?;
+        let stderr = String::from_utf8(first.stderr).map_err(|e| e.to_string())?;
+        check(stderr.contains("/etc/shares line 3:"), &format!("bad line not reported: {stderr}"))?;
+        fixture.expect_mounted(true)?;
+        let before = io(fs::read("/proc/mounts"))?;
+        let second = fixture.run()?;
+        check(second.status.code() == Some(1), "second shares command did not report the bad line")?;
+        check(second.stdout.is_empty(), "second shares command mounted a share again")?;
+        check(io(fs::read("/proc/mounts"))? == before, "second shares command changed mounts")?;
+        Ok(fixture)
+    }
+    fn run(&self) -> Result<std::process::Output, String> {
+        io(Command::new(&self.command[0]).args(&self.command[1..]).output())
+    }
+    fn expect_mounted(&self, mounted: bool) -> CaseResult {
+        let output = io(Command::new("/sbin/mount").output())?;
+        check(output.status.success(), "mount listing failed")?;
+        let listing = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
+        for dir in [&self.rw.dir, &self.ro.dir] {
+            let needle = format!(" on {} type smb (", dir.display());
+            let count = listing.lines().filter(|line| line.contains(&needle)).count();
+            check(count == usize::from(mounted), &format!("unexpected mount listing for {}: {listing}", dir.display()))?;
+        }
+        Ok(())
+    }
+    fn unmount(&mut self) -> CaseResult {
+        for mount in [&mut self.rw, &mut self.ro] {
+            sysfs::umount2(mount.dir.to_str().ok_or("mount path encoding")?, 0)?;
+            mount.mounted = false;
+        }
+        Ok(())
+    }
+}
+fn shares_mount_all() -> CaseResult {
+    // The fixture stages /etc/shares and checks good mounts, the bad-line
+    // diagnostic and exit 1. Init's at-boot execution is desktop acceptance.
+    let mut fixture = SharesFixture::start()?;
+    fixture.unmount()
+}
+fn shares_mount_list() -> CaseResult {
+    let mut fixture = SharesFixture::start()?;
+    fixture.expect_mounted(true)?;
+    fixture.unmount()?;
+    fixture.expect_mounted(false)
+}
+
+fn shares_ls_cp() -> CaseResult {
+    struct LocalDir(PathBuf);
+    impl Drop for LocalDir {
+        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+    }
+    let rw = SmbMount::rw()?;
+    let ro = SmbMount::start("ro", false)?;
+    let local = LocalDir(PathBuf::from(format!("/tmp/shares-ls-cp-{}", std::process::id())));
+    io(fs::create_dir(&local.0))?;
+    let listed = rw.path("listed");
+    io(fs::write(&listed, b"listed on the share"))?;
+    let output = io(Command::new("/bin/ls").arg(&rw.work).output())?;
+    check(output.status.success(), &format!("ls failed: {}", output.status))?;
+    check(output.stdout.split(|b| *b == b'\n').any(|line| line == b"listed"),
+        "ls did not list the file written on the share")?;
+
+    let bytes: Vec<u8> = (0..(ufs_abi::MAX_DATA + 317))
+        .map(|n| ((n * 37 + n / 251) % 256) as u8).collect();
+    let source = local.0.join("source");
+    let remote = rw.path("copied");
+    let copied_back = local.0.join("copied-back");
+    io(fs::write(&source, &bytes))?;
+    let status = io(Command::new("/bin/cp").arg(&source).arg(&remote).status())?;
+    check(status.success(), &format!("cp to share failed: {status}"))?;
+    let status = io(Command::new("/bin/cp").arg(&remote).arg(&copied_back).status())?;
+    check(status.success(), &format!("cp from share failed: {status}"))?;
+    check(io(fs::read(&copied_back))? == bytes, "cp round trip changed file bytes")?;
+
+    let refused = ro.dir.join(rw.work.file_name().ok_or("missing work directory name")?);
+    check(!io(fs::exists(&refused))?, "read-only destination already exists")?;
+    let status = io(Command::new("/bin/cp").arg(&source).arg(&refused).status())?;
+    check(status.code().is_some_and(|code| code != 0), "cp to read-only share did not exit non-zero")?;
+    check(!io(fs::exists(&refused))?, "cp to read-only share left a file")?;
+    ro.finish()?;
+    rw.finish()
 }

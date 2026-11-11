@@ -7,6 +7,7 @@
 mod args;
 pub mod file;
 mod io_split;
+mod mounts_line;
 mod node_gates;
 pub mod cover;
 pub mod path;
@@ -44,6 +45,7 @@ struct Release {
 /// The id is stable for the mount's lifetime, including daemon death.
 pub struct Mount {
     pub id: u64,
+    source: Vec<u8>,
     cover: cover::Cover<(crate::fs::namei::Mount, u32)>,
     point: Mutex<Option<crate::fs::namei::Resolved<Vec<u8>>>>,
     state: Mutex<State>,
@@ -399,7 +401,18 @@ pub fn wake_deferred() {
     }
 }
 
-fn mount(target: u64, fstype: u64, flags: u64, data: u64) -> Result<(), u64> {
+/// Append entries for mounts currently attached to the namespace.
+#[inline]
+pub fn append_mounts(out: &mut Vec<u8>) {
+    let mounts = MOUNTS.lock();
+    for mount in mounts.iter() {
+        if let Some(point) = mount.point.lock().as_ref() {
+            out.extend_from_slice(&mounts_line::format_mount_line(&mount.source, &point.path));
+        }
+    }
+}
+
+fn mount(source: u64, target: u64, fstype: u64, flags: u64, data: u64) -> Result<(), u64> {
     let cred = crate::fs::permissions::Credentials::current(false)?;
     args::require_root(cred.euid)?;
     let fstype = userptr::copy_path_bytes_from_user(fstype)?;
@@ -420,6 +433,11 @@ fn mount(target: u64, fstype: u64, flags: u64, data: u64) -> Result<(), u64> {
         .as_any()
         .downcast_ref::<Endpoint>()
         .ok_or(EINVAL as u64)?;
+    let source = if source == 0 {
+        Vec::from(&b"none"[..])
+    } else {
+        userptr::copy_path_bytes_from_user(source)?
+    };
     let raw = userptr::copy_path_bytes_from_user(target)?;
     let point =
         crate::syscall::metadata::resolve_at(crate::syscall::at_path::AT_FDCWD, &raw, true, &cred)
@@ -470,6 +488,7 @@ fn mount(target: u64, fstype: u64, flags: u64, data: u64) -> Result<(), u64> {
         .map_err(|_| ENOSPC as u64)?;
     let mount = Arc::try_new(Mount {
         id,
+        source,
         cover: cover::Cover { mount: id, covered: (covered_mount, covered_ino), parent: (parent_mount, parent_ino) },
         point: Mutex::new(Some(point)),
         state: Mutex::new(State {
@@ -528,8 +547,8 @@ fn umount(target: u64, flags: u64) -> Result<(), u64> {
     Ok(())
 }
 
-pub fn sys_mount(_source: u64, target: u64, fstype: u64, flags: u64, data: u64) -> SyscallResult {
-    match mount(target, fstype, flags, data) {
+pub fn sys_mount(source: u64, target: u64, fstype: u64, flags: u64, data: u64) -> SyscallResult {
+    match mount(source, target, fstype, flags, data) {
         Ok(()) => SyscallResult::Ok(0),
         Err(e) => SyscallResult::Err(e),
     }
