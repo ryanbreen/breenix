@@ -807,4 +807,49 @@ mod tests {
         }
     }
 
+    // This checks the stanza's success record; a suite running as PID 1 cannot
+    // establish that init ran it. Desktop acceptance reads the real state file.
+    fn shares_completed_once(text: &str) -> Result<(), String> {
+        let (_, statuses) = parse_state(text)?;
+        let shares = statuses.iter().find(|service| service.name == "shares")
+            .ok_or("init did not report the shares service")?;
+        if shares.state == "done" && shares.starts == 1 && shares.last_exit == "code:0" {
+            Ok(())
+        } else {
+            Err(format!("shares service did not complete once: {shares:?}"))
+        }
+    }
+
+    fn shares_record(state: &str, exit: &str, starts: u32) -> String {
+        render(&Supervisor::default(), &[Status {
+            name: "shares".into(), state: state.into(), starts,
+            last_exit: exit.into(), ..Default::default()
+        }])
+    }
+
+    #[test]
+    fn shares_success_record() {
+        assert!(shares_completed_once(&shares_record("done", "code:0", 1)).is_ok());
+    }
+
+    #[test]
+    fn shares_missing_record() {
+        assert!(shares_completed_once(&render(&Supervisor::default(), &[])).is_err());
+    }
+
+    #[test]
+    fn shares_failed_record() {
+        assert!(shares_completed_once(&shares_record("done", "code:1", 1)).is_err());
+    }
+
+    #[test]
+    fn shares_running_record() {
+        assert!(shares_completed_once(&shares_record("running", "-", 1)).is_err());
+    }
+
+    #[test]
+    fn shares_repeated_record() {
+        assert!(shares_completed_once(&shares_record("done", "code:0", 2)).is_err());
+    }
+
 }
