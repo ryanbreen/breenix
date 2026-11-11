@@ -114,6 +114,10 @@
         {
           "id": "mount-list",
           "title": "List and unmount configured shares"
+        },
+        {
+          "id": "ls-cp",
+          "title": "List and copy files with shell applets"
         }
       ]
     }
