@@ -93,6 +93,9 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("open-each", "Open and animate every demo", demos::open_each).session(libuitest::supervisor::serve),
         case("close-each", "Close every demo", demos::close_each).session(libuitest::supervisor::serve),
         case("resize", "Resize every demo", demos::resize).session(libuitest::supervisor::serve),
+        case("bounce-input", "Bounce speed and sphere input", demos::bounce_input).session(libuitest::supervisor::serve),
+        case("bounded", "Bounce and particles stay in bounds", demos::bounded).session(libuitest::supervisor::serve),
+        case("biconkit-interact", "Icon hover click and selection", demos::biconkit_interact).session(libuitest::supervisor::serve),
     ]),
     category("guskit-collab", "Gus Kit collaboration", &[
         case("join-sync", "Join synchronizes the canvas", guskit_collab::join_sync).session(libuitest::supervisor::serve),
