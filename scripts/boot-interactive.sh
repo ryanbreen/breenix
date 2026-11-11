@@ -5,7 +5,7 @@
 #
 #   scripts/boot-interactive.sh [--mode MODE] [--program PATH] [--suite ID [--case CATEGORY[/CASE]]] [--serial-log FILE]
 #                               [--idle-exit SECONDS] [--gate-timeout SECONDS] [--display | --no-display]
-#                               [--qmp SOCKET] [--no-build] [--cpus N] [--gpu-gl]
+#                               [--qmp SOCKET] [--no-build | --build-only] [--cpus N] [--gpu-gl]
 #
 #   Suite mode observes DONE, holds the panel briefly, then exits with its verdict.
 #   --mode MODE          tests (default): the testing kernel and its test loader
@@ -27,6 +27,7 @@
 #   --qmp SOCKET         open a QMP socket so another process can screenshot the VM screen:
 #                        scripts/qmp-screendump.py SOCKET out.png (works with --no-display)
 #   --serial-log FILE    also write everything the guest prints to FILE (default: a unique file under $TMPDIR/breenix-boot/)
+#   --until-desktop-ready  stop with a verdict when desktop stages complete (desktop mode only)
 #   --idle-exit SECONDS  stop the VM after this many seconds without new serial output (default 300; 0 turns it off)
 #   --gate-timeout SECONDS  per-suite DONE deadline (default 1800), even with --idle-exit 0
 #   BREENIX_SUITE_HOLD    suite panel hold after a 2 s render delay (default 5 s)
@@ -34,6 +35,7 @@
 #   --no-display         serial only, even for desktop
 #   --no-build           boot the kernel and disk already in target/; tests mode first refuses a disk
 #                        that lacks one of the testing kernel's binaries (scripts/check-test-binaries.py)
+#   --build-only         build the selected mode and exit before starting a VM
 #   --cpus N             guest processors, 1 to 8, the ARM64 kernel's MAX_CPUS (default 4); suite cases
 #                        needing more processors than this fail with their CPU prerequisite
 #   --accel hvf|tcg      ARM64 accelerator (default hvf on Apple Silicon, tcg elsewhere)
@@ -61,6 +63,7 @@ IDLE_EXIT=300
 GATE_TIMEOUT=1800
 DISPLAY_MODE=
 BUILD=1
+BUILD_ONLY=0
 CPUS=4
 CPU=max
 MODE=tests
@@ -74,6 +77,7 @@ SCREEN_CAPTURE=
 QMP_SOCKET=
 QMP_REQUESTED=0
 GPU_GL=0
+UNTIL_DESKTOP_READY=0
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -98,17 +102,21 @@ while [ "$#" -gt 0 ]; do
         --display) DISPLAY_MODE=cocoa; shift ;;
         --no-display) DISPLAY_MODE=none; shift ;;
         --no-build) BUILD=0; shift ;;
+        --build-only) BUILD_ONLY=1; shift ;;
         --cpus) CPUS="$2"; shift 2 ;;
         --gpu-gl) GPU_GL=1; shift ;;
+        --until-desktop-ready) UNTIL_DESKTOP_READY=1; shift ;;
         -h|--help) sed -n '2,/^# --help/p' "$0"; exit 0 ;;
         *) echo "unknown argument: $1" >&2; exit 2 ;;
     esac
 done
+[ "$BUILD_ONLY" -eq 0 ] || [ "$BUILD" -eq 1 ] || { echo "--build-only conflicts with --no-build" >&2; exit 2; }
 [[ "$CPUS" =~ ^[1-8]$ ]] || { echo "--cpus needs 1 to 8 (the ARM64 kernel's MAX_CPUS), got: $CPUS" >&2; exit 2; }
 case "$MODE" in
     tests|probe|shell|desktop|program|suite) ;;
     *) echo "unknown mode: $MODE (expected tests, probe, shell, desktop, program or suite)" >&2; exit 2 ;;
 esac
+[ "$UNTIL_DESKTOP_READY" -eq 0 ] || [ "$MODE" = desktop ] || { echo "--until-desktop-ready requires desktop mode" >&2; exit 2; }
 case "$SCREEN_CHECKPOINTS" in on|off) ;; *) echo "--screen-checkpoints needs on or off" >&2; exit 2 ;; esac
 if [ "$MODE" = program ]; then
     case "$PROGRAM" in
@@ -133,7 +141,7 @@ if [ "$MODE" = suite ]; then
 elif [ -n "$SUITE" ]; then
     echo "--suite is only for --mode suite" >&2; exit 2
 fi
-if [ "$MODE" = suite ] && [ -z "$ONLY" ] && [ -z "${BREENIX_SUITE_ATTEMPT:-}" ]; then
+if [ "$BUILD_ONLY" -eq 0 ] && [ "$MODE" = suite ] && [ -z "$ONLY" ] && [ -z "${BREENIX_SUITE_ATTEMPT:-}" ]; then
     exec python3 "$ROOT/scripts/suite-sequence.py" run "$SUITE" "$SERIAL_LOG" bash "$ROOT/scripts/boot-interactive.sh" "${BOOT_ARGS[@]}"
 fi
 if [ -n "$ONLY" ]; then
@@ -196,7 +204,9 @@ fi
 DISPLAY_ARGS=(-display "$DISPLAY_MODE")
 QEMU=qemu-system-aarch64
 GPU_ARGS=()
-if [ "$GPU_GL" -eq 1 ]; then
+if [ "$BUILD_ONLY" -eq 1 ]; then
+    :
+elif [ "$GPU_GL" -eq 1 ]; then
     QEMU="${BREENIX_QEMU_GL_BINARY:-$("$ROOT/scripts/build-qemu-gl.sh" --print-path)}" || {
         echo "--gpu-gl needs the GL QEMU: run scripts/build-qemu-gl.sh" >&2; exit 1;
     }
@@ -259,7 +269,9 @@ fi
 case "$SERIAL_LOG" in /*) ;; *) SERIAL_LOG="$PWD/$SERIAL_LOG" ;; esac
 
 cd "$ROOT"
-echo "==> Commit: $(git rev-parse HEAD) dirty=$(test -z "$(git status --porcelain)" && echo 0 || echo 1)"
+source "$ROOT/scripts/boot-commit.sh"
+COMMIT_IDENTITY=$(boot_commit) || exit 2
+echo "==> Commit: $COMMIT_IDENTITY"
 KERNEL="$ROOT/target/aarch64-breenix-kernel/release/kernel-aarch64"
 DISK="$ROOT/target/ext2-aarch64.img"
 
@@ -294,6 +306,9 @@ if [ "$BUILD" -eq 1 ]; then
 fi
 [ -f "$KERNEL" ] || { echo "No kernel at $KERNEL" >&2; exit 1; }
 [ -f "$DISK" ] || { echo "No disk at $DISK" >&2; exit 1; }
+if [ "$BUILD_ONLY" -eq 1 ]; then
+    exit 0
+fi
 # These feature-only Rust modules leave names in the kernel ELF's symbol table.
 # Inspect the image also with --no-build: the caller's environment can be stale.
 TERMINAL_PROFILE=$(python3 - "$KERNEL" <<'PYPROFILE'
@@ -480,7 +495,9 @@ WATCH_MODE=$MODE
 if [ "$MODE" = program ] && [ -n "$TERMINAL_PROFILE" ]; then
     WATCH_MODE=default
 fi
-python3 "$ROOT/scripts/watch-qemu.py" --serial "$SERIAL_LOG" --mode "$WATCH_MODE" \
+WATCH_READY_ARGS=()
+[ "$UNTIL_DESKTOP_READY" -eq 0 ] || WATCH_READY_ARGS=(--until-desktop-ready)
+python3 "$ROOT/scripts/watch-qemu.py" "${WATCH_READY_ARGS[@]}" --serial "$SERIAL_LOG" --mode "$WATCH_MODE" \
     --suite "$SUITE" --case "$ONLY" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
     -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m 512 -smp "$CPUS" \
     -kernel "$KERNEL" \
@@ -522,6 +539,7 @@ set -e
 [ -z "$HOSTKEYS_SOCKET" ] || rm -f "$HOSTKEYS_SOCKET"
 echo
 echo "==> VM stopped (exit $code)"
+printf '\n==> Commit: %s\n' "$COMMIT_IDENTITY" >> "$SERIAL_LOG"
 if [ "$GPU_GL" -eq 1 ]; then
     [ -z "${SPICE_SOCKET:-}" ] || rm -f "$SPICE_SOCKET"
     if ! python3 "$ROOT/scripts/check-host-renderer.py" "$BREENIX_HOST_RENDERER_JSON" --serial "$SERIAL_LOG"; then
