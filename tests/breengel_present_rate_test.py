@@ -1,4 +1,4 @@
-"""Run the present-rate measurement source against a periodic compositor (G32).
+"""Run the present-rate measurement against periodic and damage-driven compositors.
 
 The virtual clock and counter use integer nanoseconds; no wall-clock sleeps or
 hardware are involved. Frame production keeps its own cadence, independent of
@@ -67,10 +67,10 @@ fn main() {
         fixture = r'''
 use std::cell::RefCell;
 type CaseResult = Result<(), breenix_suite::suite::CaseError>;
-struct Model { ns: i128, centihz: i128, reported: Option<(i64, String)>, frames: u32, idle_tail: bool, idle_ns: i128, poll_lag: [i128; 2] }
+struct Model { ns: i128, centihz: i128, reported: Option<(i64, String)>, frames: u32, idle_tail: bool, idle_ns: i128, poll_lag: [i128; 2], damage_driven: bool }
 thread_local! {
     static MODEL: RefCell<Model> = const { RefCell::new(Model {
-        ns: 0, centihz: 6002, reported: None, frames: 0, idle_tail: false, idle_ns: 0, poll_lag: [0; 2],
+        ns: 0, centihz: 6002, reported: None, frames: 0, idle_tail: false, idle_ns: 0, poll_lag: [0; 2], damage_driven: false,
     }) };
 }
 fn count(ns: i128, centihz: i128) -> u64 {
@@ -83,7 +83,7 @@ fn counter(name: &str) -> Result<u64, String> {
         if m.idle_tail && m.frames == 300 { m.ns += 230_000_000; m.idle_ns += 230_000_000; m.idle_tail = false; }
         let lag = if m.frames == 30 { m.poll_lag[0] } else if m.frames == 299 { m.poll_lag[1] } else { 0 };
         m.ns += 10_000 + lag; // Counter reads may finish after the event they observe.
-        Ok(count(m.ns - m.idle_ns, m.centihz))
+        Ok(if m.damage_driven { u64::from(m.frames) } else { count(m.ns - m.idle_ns, m.centihz) })
     })
 }
 pub fn composite_clock() -> Result<Option<(u64, u64)>, String> {
@@ -110,7 +110,13 @@ impl<T> Cite<T> for Result<T, String> {
 struct Window;
 impl Window {
     fn frame(&self, _: u32) -> Result<(), String> {
-        MODEL.with(|m| { let mut m = m.borrow_mut(); m.ns += 13_000_000; m.frames += 1; });
+        MODEL.with(|m| { let mut m = m.borrow_mut();
+            m.frames += 1;
+            if m.damage_driven {
+                // Every commit has completed before frame() returns. No damage
+                // remains, so polling alone cannot create another composite.
+                m.ns = (i128::from(m.frames) * 100_000_000_000 + m.centihz - 1) / m.centihz;
+            } else { m.ns += 13_000_000; } });
         Ok(())
     }
 }
@@ -136,7 +142,7 @@ MEASUREMENT
 }
 // The original arbitrary-endpoint, millisecond, integer-floor calculation.
 fn legacy(centihz: i128, phase: i128) -> bool {
-    MODEL.with(|m| *m.borrow_mut() = Model { ns: phase, centihz, reported: None, frames: 0, idle_tail: false, idle_ns: 0, poll_lag: [0; 2] });
+    MODEL.with(|m| *m.borrow_mut() = Model { ns: phase, centihz, reported: None, frames: 0, idle_tail: false, idle_ns: 0, poll_lag: [0; 2], damage_driven: false });
     let start = now_ms();
     let composites0 = counter("composites").unwrap();
     MODEL.with(|m| m.borrow_mut().ns += 270 * 13_000_000);
@@ -157,9 +163,28 @@ fn legacy_flips_on_both_rates() {
     }
 }
 #[test]
+fn completed_damage_does_not_wait_for_unsubmitted_frame() {
+    for centihz in [6002, 5994] {
+        MODEL.with(|m| *m.borrow_mut() = Model {
+            ns: 0, centihz, reported: None, frames: 0, idle_tail: false,
+            idle_ns: 0, poll_lag: [0; 2], damage_driven: true,
+        });
+        let result = measure();
+        MODEL.with(|m| {
+            let m = m.borrow();
+            let (rate, unit) = m.reported.as_ref().expect(
+                "a drained compositor must reach rate judgment, not wait for unsubmitted damage");
+            assert_eq!(unit, "millihertz");
+            assert!((*rate - centihz as i64 * 10).abs() <= 1);
+            assert_eq!(m.frames, 300);
+        });
+        assert_eq!(result.is_ok(), centihz >= 6000, "damage-driven {centihz}/100 Hz: {result:?}");
+    }
+}
+#[test]
 fn stopped_client_does_not_extend_window() {
     MODEL.with(|m| *m.borrow_mut() = Model {
-        ns: 0, centihz: 6002, reported: None, frames: 0, idle_tail: true, idle_ns: 0, poll_lag: [0; 2],
+        ns: 0, centihz: 6002, reported: None, frames: 0, idle_tail: true, idle_ns: 0, poll_lag: [0; 2], damage_driven: false,
     });
     assert!(measure().is_ok(), "idle after the final commit must not enter the measurement");
     MODEL.with(|m| assert!((m.borrow().reported.as_ref().unwrap().0 - 60_020).abs() <= 1));
@@ -171,7 +196,7 @@ fn poll_latency_does_not_change_verdict() {
             for phase in 0..128 {
                 MODEL.with(|m| *m.borrow_mut() = Model {
                     ns: phase * 100_000_000_000 / centihz / 128,
-                    centihz, reported: None, frames: 0, idle_tail: false, idle_ns: 0, poll_lag,
+                    centihz, reported: None, frames: 0, idle_tail: false, idle_ns: 0, poll_lag, damage_driven: false,
                 });
                 assert_eq!(measure().is_ok(), centihz >= 6000,
                     "G33 rate {centihz}/100 phase {phase}, poll lags {poll_lag:?}");
@@ -188,7 +213,7 @@ fn whole_periods_classify_every_phase() {
         for phase in 0..512 {
             MODEL.with(|m| *m.borrow_mut() = Model {
                 ns: phase * 100_000_000_000 / centihz / 512,
-                centihz, reported: None, frames: 0, idle_tail: false, idle_ns: 0, poll_lag: [0; 2],
+                centihz, reported: None, frames: 0, idle_tail: false, idle_ns: 0, poll_lag: [0; 2], damage_driven: false,
             });
             let result = measure();
             passed += usize::from(result.is_ok());
