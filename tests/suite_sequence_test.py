@@ -23,6 +23,12 @@ def skeleton(suite):
 
 
 class ResolveTests(unittest.TestCase):
+    def test_metal_all_excludes_gui_apps_under_construction(self):
+        ids, skipped = SEQUENCE["resolve"]("all", "x86-metal", True)
+        self.assertNotIn("gui-apps", ids)
+        self.assertEqual(dict(skipped)["gui-apps"],
+                         "under construction: run --suite gui-apps explicitly")
+
     def test_ui_testing_joins_metal_aggregate(self):
         expected = "console,directories,processes,signals,time,memory,threads,ipc,terminals,networking,libc,rust-std,utilities,sdk,breengel,ui-testing,files-io".split(",")
         ids, skipped = SEQUENCE["resolve"]("all", "x86-metal", True)
