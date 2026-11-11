@@ -5,8 +5,8 @@ U1/U2/U16/U19/U28/U29/U31, G5/G7/G8, the debugging protocol and the applicable
 repository instructions before deciding the unit's scope.
 
 The retained u1 capture, Vigil `20261111T054423Z-qemu-34249`, has **no failing
-input-core or input-devices cases**: all nine input-core cases and both
-input-devices cases passed (`serials/a3-u1.txt:3-13`). There is consequently
+input-core or input-devices cases**: input-core 9/9 and
+input-devices 2/2 passed (`docs/planning/arm64-catchup/serials/a3-u1.txt:3-13`). There is consequently
 no failing case to attribute to a producing line or repair in this unit.
 The four baseline failures are performance/latency-under-animation,
 recovery/restart-adopts, recovery/supervisor-restarts and
@@ -28,8 +28,8 @@ The existing production path is:
   `kernel/src/test_control/input_replay.rs:43-50`; descriptor reposting does
   not depend on whether publication is suppressed.
 - The suite client already enforces the receipt contract at
-  `userspace/programs/src/wm_suite/input.rs:182-194`: reports are nonzero
-  normally and zero when suppressed, ring is nonzero, and posted equals ring.
+  `userspace/programs/src/wm_suite/input.rs:182-194`: reports are positive
+  normally and 0 when suppressed, ring is positive, and posted equals ring.
 
 Under U29, test-only commit `e6106250` adds one regression guard,
 `tests/input_replay_receipt_test.py`. It compiles the production client's

@@ -10,7 +10,8 @@ The focused host check failed on `qmp` with a temporary predicate implementing
 the old `hostkeys.is_some()` rule, then passed with the production predicate.
 The first commit contains the check; the temporary predicate was not committed.
 
-The A.3 u1 baseline passed all input and pointer cases. No recorded u1 failure
+The A.3 u1 baseline passed input-core 9/9, input-devices 2/2 and pointer 6/6
+(`docs/planning/arm64-catchup/serials/a3-u1.txt:3-13`). No recorded u1 failure
 is shown to be cleared by this change: performance/latency-under-animation,
 recovery/restart-adopts, recovery/supervisor-restarts, and
 liveness/memory-bounded remain unproven here. Acceptance is deferred to the

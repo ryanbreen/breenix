@@ -410,6 +410,40 @@ pub struct Desktop {
     pub height: u32,
     pub scale: i32,
 }
+
+// Retain the last observation without printing or formatting on a successful poll.
+// A failed wait reports both readback refusal and the last completed binding.
+#[derive(Default)]
+struct WaitObservation {
+    error: Option<String>,
+    record: Option<[u8; 1024]>,
+    pixel: Option<u32>,
+}
+impl WaitObservation {
+    fn read(&mut self) -> Result<Screen, String> {
+        match Screen::read() {
+            Ok(s) => {
+                self.record = Some(s.record);
+                self.pixel = s.pixel(s.width as i32 / 2, 1).ok();
+                Ok(s)
+            }
+            Err(e) => {
+                self.error = Some(e.clone());
+                Err(e)
+            }
+        }
+    }
+    fn failure(&self) -> String {
+        let binding = self.record.as_ref().map(|r| {
+            let clients: Vec<_> = (0..(word(r, 196) as usize).min(16))
+                .map(|i| (quad(r, 200 + i * 32), quad(r, 208 + i * 32)))
+                .collect();
+            format!("context={} serial={} clients={clients:?} pixel={:?}",
+                quad(r, 64), quad(r, 176), self.pixel)
+        });
+        format!("last readback error={:?}; last completed={binding:?}", self.error)
+    }
+}
 impl Desktop {
     pub fn start() -> Result<Self, String> {
         Self::launch(false)
@@ -447,6 +481,7 @@ impl Desktop {
             height: mode.height,
             scale: mode.scale as i32,
         };
+        let mut observation = WaitObservation::default();
         let ready = until(4000, "bwm first completed desktop", || {
             if let Some(status) = d.wm.status()? {
                 return Err(format!(
@@ -454,13 +489,13 @@ impl Desktop {
                     d.output()
                 ));
             }
-            Ok(Screen::read().is_ok_and(|s| {
+            Ok(observation.read().is_ok_and(|s| {
                 s.serial() != 0
                     && quad(&s.record, 64) != previous_context
                     && s.pixel(d.width as i32 / 2, 1).ok() == Some(0xff14161e)
             }))
         });
-        ready.map_err(|e| format!("{e}; {}", d.output()))?;
+        ready.map_err(|e| format!("{e}; previous context={previous_context}; {}; {}", observation.failure(), d.output()))?;
         if supervised {
             until(
                 2000,
@@ -495,6 +530,7 @@ impl Desktop {
     }
     pub fn shown_after(&mut self, c: &Client, commit: u64) -> Result<Screen, String> {
         let mut result = None;
+        let mut observation = WaitObservation::default();
         until(
             2000,
             &format!("bwm composite of client {} commit {}", c.id, commit),
@@ -505,7 +541,7 @@ impl Desktop {
                         self.output()
                     ));
                 }
-                match Screen::read() {
+                match observation.read() {
                     Ok(s) if s.contains(c.id, commit) => {
                         result = Some(s);
                         Ok(true)
@@ -514,7 +550,7 @@ impl Desktop {
                 }
             },
         )
-        .map_err(|e| format!("{e}; {}", self.output()))?;
+        .map_err(|e| format!("{e}; {}; {}", observation.failure(), self.output()))?;
         Ok(result.unwrap())
     }
     pub fn pointer(&self, x: i32, y: i32, buttons: u32, wheel: i32) -> Result<(), String> {
