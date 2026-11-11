@@ -30,10 +30,23 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }, children: Vec::new(),
     });
     win.present().map_err(|e| e.to_string())?;
+    let fault_page = if argv.iter().any(|arg| arg == "--fault-key") {
+        use libbreenix::memory::*;
+        let page = mmap(std::ptr::null_mut(), 4096, PROT_READ | PROT_WRITE,
+            MAP_PRIVATE | MAP_ANONYMOUS, -1, 0).map_err(|e| e.to_string())?;
+        Some(page)
+    } else { None };
     loop {
         let mut close = false;
         win.wait_dispatch(100_000_000, |delivered| {
             close |= matches!(delivered.event, Event::CloseRequested);
+            if matches!(delivered.event, Event::KeyPress { keycode: 33, .. }) {
+                if let Some(page) = fault_page {
+                    // Unmap immediately before the write so no allocator can reuse the page.
+                    if libbreenix::memory::munmap(page, 4096).is_err() { return Handled::NoChange; }
+                    unsafe { std::ptr::write_volatile(page, 1); }
+                }
+            }
             Handled::NoChange
         }).map_err(|e| e.to_string())?;
         win.commit_no_change().map_err(|e| e.to_string())?;

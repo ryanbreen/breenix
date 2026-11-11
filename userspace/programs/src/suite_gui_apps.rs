@@ -111,6 +111,8 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("launch-each", "Launch every catalog entry", desktop::launch_each).session(libuitest::supervisor::serve),
         case("copy-paste", "Copy and paste between applications", desktop::copy_paste).session(libuitest::supervisor::serve),
         case("font-everywhere", "Font changes reach every application", desktop::font_everywhere).session(libuitest::supervisor::serve),
+        case("crash-isolated", "A crashed app leaves the desktop responsive", desktop::crash_isolated).session(libuitest::supervisor::serve),
+        case("close-all-baseline", "Closing apps restores the desktop baseline", desktop::close_all_baseline).session(libuitest::supervisor::serve),
     ]),
 ]).gui().defer_display();
 

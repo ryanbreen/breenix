@@ -152,3 +152,77 @@ pub fn launch_each() -> CaseResult {
     }
     Ok(t.finish()?)
 }
+
+fn window_ids() -> Result<std::collections::BTreeSet<u64>, String> {
+    let mut windows = vec![libbreenix::window::abi::WinInfo::default(); 256];
+    let count = libbreenix::window::list(&mut windows).map_err(|e| e.to_string())?;
+    if count > windows.len() { return Err(format!("window list overflow: {count}")); }
+    Ok(windows[..count].iter().map(|w| w.id).collect())
+}
+
+fn processes() -> Result<std::collections::BTreeMap<u32, String>, String> {
+    let mut result = std::collections::BTreeMap::new();
+    for entry in std::fs::read_dir("/proc").map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let Some(pid) = entry.file_name().to_str().and_then(|s| s.parse::<u32>().ok()) else { continue };
+        match std::fs::read_to_string(entry.path().join("stat")) {
+            Ok(stat) => { result.insert(pid, stat); }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e.to_string()),
+        }
+    }
+    Ok(result)
+}
+
+pub fn crash_isolated() -> CaseResult {
+    let mut t = App::launch(&[b"/usr/bin/bterm"], "Terminal")?;
+    t.expect_text("bsh />")?;
+    t.launch_next(&[b"/usr/bin/guskit", b"--canvas", b"200x120"], "Gus Kit")?;
+    t.wait_node("status", |v| v["tool"] == "pencil")?;
+    t.launch_next(&[b"/usr/libexec/breenix/ack-app_test", b"--window", b"Crash", b"--fault-key"], "Crash")?;
+    let crash = t.window();
+    // kernel/src/signal/delivery.rs:1758-1761 and kernel/src/syscall/wait.rs:290-296:
+    // SIGSEGV's core-dump signal is returned as raw wait status 0x80 | 11.
+    t.key_exit(33, 0x8b)?;
+    if window_ids()?.contains(&crash) { return Err("faulted window still registered".into()); }
+    t.attach("Terminal")?;
+    t.type_line("echo alive")?;
+    t.expect_text("alive")?;
+    t.attach("Gus Kit")?;
+    t.key(48, &[])?;
+    t.wait_node("status", |v| v["tool"] == "brush")?;
+    Ok(t.finish()?)
+}
+
+pub fn close_all_baseline() -> CaseResult {
+    let mut t = App::launch(&[b"/usr/libexec/breenix/ack-app_test", b"--window", b"Baseline"], "Baseline")?;
+    t.close_exit()?;
+    let windows = window_ids()?;
+    let baseline = processes()?;
+    t.launch_next(&[b"/usr/bin/bterm"], "Terminal")?;
+    t.expect_text("bsh />")?;
+    t.key(20, &[Modifier::Ctrl])?;
+    t.wait_node("grid", |v| v["tab_count"] == 2)?;
+    t.expect_text("bsh />")?;
+    t.launch_next(&[b"/usr/bin/blog"], "Log Viewer")?;
+    t.launch_next(&[b"/usr/bin/guskit", b"--canvas", b"200x120"], "Gus Kit")?;
+    t.launch_next(&[b"/usr/bin/bfontpicker"], "Font Picker")?;
+    t.launch_next(&[b"/usr/bin/bounce"], "Bounce")?;
+    for title in ["Bounce", "Font Picker", "Gus Kit", "Log Viewer", "Terminal"] {
+        t.attach(title)?;
+        t.close_exit()?;
+    }
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        let current_windows = window_ids()?;
+        let current = processes()?;
+        let missing: Vec<_> = baseline.iter().filter(|(pid, _)| !current.contains_key(pid)).map(|(_, stat)| stat.clone()).collect();
+        let new: Vec<_> = current.iter().filter(|(pid, _)| !baseline.contains_key(pid)).map(|(_, stat)| stat.clone()).collect();
+        if current_windows == windows && missing.is_empty() && new.is_empty() { break; }
+        if std::time::Instant::now() >= deadline {
+            return Err(format!("baseline mismatch windows={current_windows:?} expected={windows:?} missing_pids={missing:?} survivors={new:?}").into());
+        }
+        libbreenix::time::sleep_ms(10).map_err(|e| e.to_string())?;
+    }
+    Ok(t.finish()?)
+}

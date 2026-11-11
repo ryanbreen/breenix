@@ -271,7 +271,9 @@
       "cases": [
         { "id": "launch-each", "title": "Launch every catalog entry" },
         { "id": "copy-paste", "title": "Copy and paste between applications" },
-        { "id": "font-everywhere", "title": "Font changes reach every application" }
+        { "id": "font-everywhere", "title": "Font changes reach every application" },
+        { "id": "crash-isolated", "title": "A crashed app leaves the desktop responsive" },
+        { "id": "close-all-baseline", "title": "Closing apps restores the desktop baseline" }
       ]
     }
   ]

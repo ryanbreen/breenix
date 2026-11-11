@@ -35,7 +35,7 @@ pub fn exit_input_verdict(disposition: &str, window: u64, wanted: u64, status: i
     if disposition != "delivered" || window != wanted {
         return Err(format!("exit input disposition={disposition} window={window} expected={wanted}"));
     }
-    if !(0..=255).contains(&expected) || status != expected << 8 {
+    if status != expected {
         return Err(format!("exit input status={status} expected={expected}"));
     }
     Ok(())
