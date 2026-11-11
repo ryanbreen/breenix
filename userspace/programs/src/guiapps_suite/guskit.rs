@@ -219,9 +219,21 @@ pub fn open_malformed() -> CaseResult {
     Ok(t.finish()?)
 }
 
-fn require_shares() -> Result<(), String> {
+fn require_shares(case: &str) -> Result<(), String> {
+    use std::io::Write;
     let state = std::fs::read_to_string("/run/breenix/services").map_err(|e| e.to_string())?;
-    libbreenix::services::shares_completed_once(&state)
+    libbreenix::services::shares_completed_once(&state)?;
+    let service = state.lines().find(|line| line.starts_with("service shares "))
+        .ok_or("missing shares service record")?;
+    let mounts = std::fs::read_to_string("/proc/mounts").map_err(|e| e.to_string())?;
+    let mut output = SMB_RESTART_OUTPUT.get().ok_or("missing SMB diagnostic output")?;
+    writeln!(output, "SUITE gui-apps DIAG guskit/{case} {service}").map_err(|e| e.to_string())?;
+    for mount in ["/mnt/guskit-rw", "/mnt/guskit-ro"] {
+        let line = mounts.lines().find(|line| line.split_whitespace().nth(1) == Some(mount))
+            .ok_or_else(|| format!("missing mount {mount}"))?;
+        writeln!(output, "SUITE gui-apps DIAG guskit/{case} mount {line}").map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 fn save_as(t: &mut App, path: &str) -> Result<(), String> {
@@ -242,7 +254,7 @@ fn close_saved(t: &mut App) -> Result<(), String> {
 }
 
 pub fn smb_save_open() -> CaseResult {
-    require_shares()?;
+    require_shares("smb-save-open")?;
     let dir = format!("/mnt/guskit-rw/guskit-{}-{}", std::process::id(),
         std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_err(|e| e.to_string())?.as_nanos());
     std::fs::create_dir(&dir).map_err(|e| e.to_string())?;
@@ -281,7 +293,7 @@ fn directory_names(path: &str) -> Result<Vec<std::ffi::OsString>, String> {
 }
 
 pub fn smb_save_fails_cleanly() -> CaseResult {
-    require_shares()?;
+    require_shares("smb-save-fails-cleanly")?;
     const FILE: &str = "/mnt/guskit-ro/x.png";
     let names = directory_names("/mnt/guskit-ro")?;
     let before = std::fs::read("/mnt/guskit-ro/README.txt").map_err(|e| e.to_string())?;
@@ -325,7 +337,7 @@ fn wait_share(path: &str, stopped: bool) -> Result<(), String> {
 }
 
 pub fn smb_share_gone() -> CaseResult {
-    require_shares()?;
+    require_shares("smb-share-gone")?;
     let seq = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
         .map_err(|e| e.to_string())?.as_micros() as u64;
     let dir = format!("/mnt/guskit-rw/guskit-{}-{seq}", std::process::id());
