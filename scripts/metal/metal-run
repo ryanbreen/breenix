@@ -39,6 +39,7 @@ import threading
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_prebuilt
+from metal_root import smb_gui_selection
 
 TOOLS = '/opt/breenix-metal'
 STATE = '/var/lib/breenix-metal'
@@ -352,7 +353,7 @@ def boot(args):
             raise SystemExit('--prebuilt needs an image payload')
         verify_prebuilt(env, prebuilt, sha, args)
     smb = payload == 'image' and args.mode == 'suite' and 'network-shares' in (args.suite or '').split(',')
-    if smb:
+    if smb or (payload == 'image' and smb_gui_selection(args.mode, args.suite, getattr(args, 'case', None))):
         configure_smb(env)
     boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
     command = ['python3', f'{TOOLS}/metal-boot', 'launch', '--id', boot_id, '--payload', payload]
