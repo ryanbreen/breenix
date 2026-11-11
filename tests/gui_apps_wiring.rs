@@ -2,7 +2,8 @@
 fn gui_apps_cases_have_sessions_and_no_placeholder() {
     let source = include_str!("../userspace/programs/src/suite_gui_apps.rs");
     let cases: Vec<_> = source.lines().filter(|line| line.trim_start().starts_with("case(")).collect();
-    assert_eq!(cases.len(), 52);
+    // #2880 corrected the base to 55; collaboration adds six cases.
+    assert_eq!(cases.len(), 61);
     for case in cases {
         assert!(case.contains(".session(libuitest::supervisor::serve)"), "missing session: {case}");
         assert!(!case.contains("pending::"), "placeholder: {case}");
@@ -108,10 +109,12 @@ fn bcheck_dispatches_input_before_presenting() {
 
 #[test]
 fn guskit_uses_window_dispatch_and_publishes_tree() {
-    let source = std::fs::read_to_string("userspace/programs/src/guskit.rs").expect("Gus Kit binary");
-    assert!(source.contains("win.wait_dispatch("));
+    let source = include_str!("../userspace/programs/src/guskit.rs");
+    assert!(source.contains("win.dispatch("));
+    assert!(source.contains("session.poll(10)"));
+    assert!(include_str!("../userspace/programs/Cargo.toml").contains("libcollab"));
     assert!(source.contains("win.set_tree("));
-    for forbidden in ["poll_events", "framebuf", "fb_mmap", "libcollab"] {
+    for forbidden in ["poll_events", "framebuf", "fb_mmap"] {
         assert!(!source.contains(forbidden), "unexpected {forbidden}");
     }
     assert!(include_str!("../userspace/programs/build.sh").contains("guskit"));

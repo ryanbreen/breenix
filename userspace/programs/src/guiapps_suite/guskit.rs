@@ -1,6 +1,6 @@
 use breenix_suite::suite::CaseResult;
 use libuitest::{App, input::Modifier};
-#[path = "guskit_expect.rs"] mod guskit_expect;
+#[path = "guskit_expect.rs"] pub(super) mod guskit_expect;
 use guskit_expect::Expected;
 #[path = "../guskit/save_wait.rs"] mod save_wait;
 

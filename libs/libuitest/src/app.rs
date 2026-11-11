@@ -120,6 +120,7 @@ mod live {
             live.watch(window)?;
             live.activate(window)?;
             if !self.tracked.iter().any(|&(id, _)| id == pid) { self.tracked.push((pid, None)); }
+            self.launched = Some(pid);
             self.window = window;
             Ok(())
         }

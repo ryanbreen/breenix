@@ -240,6 +240,18 @@
         { "id": "quit-unsaved", "title": "Confirm quitting unsaved changes" },
         { "id": "shortcuts", "title": "Tool and file shortcuts" }
       ]
+    },
+    {
+      "id": "guskit-collab",
+      "title": "Gus Kit collaboration",
+      "cases": [
+        { "id": "join-sync", "title": "Join synchronizes the canvas" },
+        { "id": "stroke-both-ways", "title": "Strokes travel in both directions" },
+        { "id": "global-order", "title": "Overlapping strokes follow global order" },
+        { "id": "three-peers", "title": "Three peers converge" },
+        { "id": "undo-ownership", "title": "Undo affects only its owner" },
+        { "id": "peer-leaves", "title": "Peer and host departures are reported" }
+      ]
     }
   ]
 }
