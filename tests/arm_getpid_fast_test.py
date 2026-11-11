@@ -7,6 +7,7 @@ ROOT=Path(__file__).resolve().parents[1]
 class ArmGetpid(unittest.TestCase):
     def test_threads_read_the_shared_immutable_group_without_manager_lookup(self):
         arm=item((ROOT/'kernel/src/arch_impl/aarch64/syscall_entry.rs').read_text(),'fn sys_getpid(')
+        gpu=item((ROOT/'kernel/src/gpu/mod.rs').read_text(),'pub(crate) fn caller(').replace('pub(crate)', 'pub')
         shared=item((ROOT/'kernel/src/syscall/handlers.rs').read_text(),'pub fn sys_getpid(')
         shared=shared[:shared.index('    // Disable interrupts when accessing process manager')]+'''    panic!("caller has no immutable group");
 }'''
@@ -30,7 +31,12 @@ pub mod process {
  pub struct Pid;impl Pid{pub fn as_u64(&self)->u64{42}}
  pub struct Process{pub thread_group_id:Option<u64>}
  pub struct Manager;impl Manager{pub fn find_process_by_thread(&self,_:u64)->Option<(Pid,Process)>{None}}
+ pub fn with_process_manager<R>(_:impl FnOnce(&Manager)->R)->Option<R>{panic!("GPU caller waited for the process manager")}
  pub fn manager()->&'static Option<Manager>{panic!("getpid waited for the process manager")}
+}
+mod gpu {
+ const EINVAL:i64=22;
+ @GPU@
 }
 pub mod syscall {
  #[derive(Debug)]pub enum SyscallResult{Ok(u64),Err(u64)}
@@ -40,7 +46,7 @@ fn result_to_u64(result:syscall::SyscallResult)->u64{match result{syscall::Sysca
 @ARM@
 #[test]fn same_process_from_each_thread_without_manager(){
  let _=result_to_u64;
- for tid in [7,8]{TID.store(tid,Ordering::Relaxed);assert_eq!(sys_getpid(),42);}
+ for tid in [7,8]{TID.store(tid,Ordering::Relaxed);assert_eq!(sys_getpid(),42);assert_eq!(gpu::caller(),Ok(42));}
 }
-'''.replace('@SHARED@',shared).replace('@ARM@',arm))
+'''.replace('@SHARED@',shared).replace('@ARM@',arm).replace('@GPU@',gpu))
 if __name__=='__main__':unittest.main()
