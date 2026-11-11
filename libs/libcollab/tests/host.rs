@@ -79,6 +79,7 @@ fn malformed_bytes_close_and_notify_others() {
     let out = h.bytes(1, &[0]);
     assert!(out.contains(&Output::Event(Event::Close { conn: 1, reason: b"decode".to_vec() })));
     assert!(out.contains(&frame(2, Message::PeerLeft { peer: 1, reason: b"decode".to_vec() })));
+    assert!(out.contains(&Output::Event(Event::PeerLeft { peer: 1, reason: b"decode".to_vec() })));
 }
 
 #[test]
