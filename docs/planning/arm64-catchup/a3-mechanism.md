@@ -1,5 +1,63 @@
 # A.3 recovery mechanism analysis — a3-u10-mechanism
 
+## Measurement 20261111T190334Z-qemu-43440: font read interval remains unexplained
+
+At `3d9201e8`, the normal ARM build and disk staging preceded this single
+headless HVF SPICE GL measurement. The disk suite and build both hashed
+`c3d164308ba510f20f07c763b2c17f6d29112c792e1306b8a759d6ab6a45175d`;
+the client copies both hashed `d978abff9335fe68e44a3031f00db3eb835f446a968a8274a56bc437e042dc0c`.
+The boot kernel hashed `bf2c5a822cc849e57052e9a98ce4d97982be4fcb5cc8a826c393a23f812e702c`
+and the disk `feac6807e0e4838e2b86aa5f9b800b9268b8d7b130fb9127dcf77bb64e1dc610`.
+The required labels were present. The serial SHA-256 is
+`e70921b7b800acb04be7e41c908115cd0499cccfb2ebca48a12a1f2a23e576d5`;
+the two-second load sample file beside the Vigil capture hashes
+`82b773bff23ce1e456e759485a0cc5a7996fcd2d2f9bb2066a08fb732cdb2fe1`.
+The sampler's recorded PID was stopped after the launcher exited. Host load
+started at 6.38 and ranged 4.00–8.67. Serial receipt near the exported failure
+corresponded to 5.53, with a two-second sampling interval and delayed export;
+that is not a precise load measurement at the guest midpoint.
+
+The run completed 80/81, with reclaimed memory PASS (10 of 48 pages), READY
+after DONE and MEMORY, and accepted ANGLE/Metal (994 records). The sole failure
+was supervisor-restarts. Client 83 commit 4 waited 2005.676292 ms against
+2000 ms, margin **-5.676292 ms**. The replacement PID 781 first composed at
+280520028541 ns, 144.464083 ms after the observer had timed out. At the
+midpoint snapshot (279432301125 ns), PID 781 TID 1014 was **running** in GPU
+syscall 416, not recorded as queued; PID 781 TID 1016 was blocked in read
+syscall 63 on waitqueue 18446462599822208016 for 26.713 ms. The observer was
+in its timer sleep, due at 279436633625 ns. The snapshot does not identify the
+read's file or the condition and producer responsible for waking that queue,
+nor the GPU operation's remaining work. It cannot establish scheduler starvation
+or a causal blocked-wait mechanism.
+
+The startup stamps show font-config-ready at 278372079041 ns and
+font-file-ready at 280293164166 ns: **1921.085125 ms** between them. The code
+between those marks prints the configuration and calls `std::fs::read` on the
+display font (`userspace/programs/src/bwm.rs:163–168`); the main thread joins
+the worker before proceeding (`bwm.rs:229–231`). These measurements identify a
+critical interval, not which operation or wait caused it. The whole frame check
+then took 139.827 ms from its first band to return. First composite followed at
+2159.974 ms after exec; this is a startup phase measurement, not the observer
+wait duration. A causal forcing check and repair would be speculative.
+
+Restart-adopts passed: its reap was 21.523333 ms against 500 ms, margin
+478.476667 ms. This fast reap cannot classify the prior 893 ms pre-exit delay.
+Stack-restored passed; one positive-click wait began at 266502958958 ns and
+observed its event at 267266859208 ns, 763.900250 ms against 1000 ms, margin
+236.099750 ms. Its midpoint snapshot and delivery/handling records survive,
+but this pass cannot classify the earlier native failure. Frame-floor passed at
+493 Hz against 60 Hz; endpoint gaps were 0.916916 and 1.937416 ms against
+16.666667 ms, margins 15.749751 and 14.729251 ms. This does not classify the
+earlier frame-floor failure. No outer watchdog failed in this measurement.
+
+The bounded dump retained 512 rows and overwrote 421, but includes the failed
+supervisor snapshot and click records; the measurement is not void. The
+remaining question is what the font worker's read and its waitqueue were
+waiting for, what should wake them, and whether that condition accounts for the
+observed 1921 ms interval. The earlier slow reap and native stack-restored
+mechanisms remain unclassified. Under coordinator line 190, stop here: no
+forcing check, behavior fix, proof boot, R240 boot or board update is justified.
+
 ## Measurement 20261111T173538Z-qemu-95695: stale suite artifact
 
 The single measurement launch recorded clean checkout `aef5df85`, HVF and
