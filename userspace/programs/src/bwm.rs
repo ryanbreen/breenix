@@ -208,7 +208,12 @@ fn main() {
             libuitest::startup::mark("fonts-ready");
             font
         });
-        let opened = Compositor::open(screen_w as u32, screen_h as u32, px(APPBAR_HEIGHT) as u32, ui().scale as u32);
+        let opened = Compositor::open(screen_w as u32, screen_h as u32, px(APPBAR_HEIGHT) as u32, ui().scale as u32)
+            .and_then(|mut gpu| {
+                gpu.paint_background()?;
+                libuitest::startup::mark("background-ready");
+                Ok(gpu)
+            });
         libuitest::startup::mark("targets-ready");
         (opened, font.join().expect("startup font worker panicked"))
     });
@@ -221,9 +226,7 @@ fn main() {
     };
     print!("[bwm] GPU compositing mode (GPU core), display: {}x{}\n", screen_w, screen_h);
 
-    // Paint the decorative background once; each desktop repaint copies it.
-    paint_background(&mut gpu.background);
-    libuitest::startup::mark("background-ready");
+    // The background was painted alongside font preparation; each repaint copies it.
 
     let mut windows: Vec<Window> = Vec::new();
     let mut stack = Stack::new();

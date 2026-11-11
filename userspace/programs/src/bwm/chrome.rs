@@ -192,27 +192,38 @@ pub(super) fn background_row(y: usize, h: usize) -> (u8, u8, u8) {
 /// a full-width line, so the GPU draws `background_pixel`'s colours exactly.
 pub(super) fn paint_background(fb: &mut Surface) {
     let (w, h) = (fb.width(), fb.height());
-    let step = px(64);
-    fb.batch(|fb| {
-        let mut y0 = 0;
-        while y0 < h {
-            let colour = background_row(y0, h);
-            let mut y1 = y0 + 1;
-            while y1 < h && background_row(y1, h) == colour {
-                y1 += 1;
-            }
-            let (r, g, b) = colour;
-            fill_rect(fb, 0, y0 as i32, w, y1 - y0, Color::rgb(r, g, b));
-            let line = Color::rgb(r.saturating_add(6), g.saturating_add(8), b.saturating_add(12));
-            for x in (0..w).step_by(step) {
-                fill_rect(fb, x as i32, y0 as i32, 1, y1 - y0, line);
-            }
-            for y in (y0..y1).filter(|y| y % step == 0) {
-                fill_rect(fb, 0, y as i32, w, 1, line);
-            }
-            y0 = y1;
+    fb.batch(|fb| background_runs(w, h, |colour, rects| {
+        let colour = Color::rgb((colour >> 16) as u8, (colour >> 8) as u8, colour as u8);
+        for &[x0, y0, x1, y1] in rects {
+            fill_rect(fb, x0, y0, (x1 - x0) as usize, (y1 - y0) as usize, colour);
         }
-    });
+    }));
+}
+
+/// Gradient bands and grid overlays, shared by startup and ordinary repainting.
+pub(super) fn background_runs(w: usize, h: usize, mut emit: impl FnMut(u32, &[[i32; 4]])) {
+    let step = px(64);
+    let mut grid = Vec::new();
+    let mut y0 = 0;
+    while y0 < h {
+        let colour = background_row(y0, h);
+        let mut y1 = y0 + 1;
+        while y1 < h && background_row(y1, h) == colour {
+            y1 += 1;
+        }
+        let (r, g, b) = colour;
+        emit(0xff000000 | u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b), &[[0, y0 as i32, w as i32, y1 as i32]]);
+        let line = 0xff000000 | u32::from(r.saturating_add(6)) << 16 | u32::from(g.saturating_add(8)) << 8 | u32::from(b.saturating_add(12));
+        grid.clear();
+        for x in (0..w).step_by(step) {
+            grid.push([x as i32, y0 as i32, x as i32 + 1, y1 as i32]);
+        }
+        for y in (y0..y1).filter(|y| y % step == 0) {
+            grid.push([0, y as i32, w as i32, y as i32 + 1]);
+        }
+        emit(line, &grid);
+        y0 = y1;
+    }
 }
 
 // ─── Taskbar & App Bar ──────────────────────────────────────────────────────

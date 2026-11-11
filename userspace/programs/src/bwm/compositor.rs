@@ -279,6 +279,22 @@ impl Compositor {
         }
     }
 
+    /// Use the compositor context while the font worker owns libgfx's drawing context.
+    pub fn paint_background(&mut self) -> Result<(), String> {
+        let mut words = Vec::new();
+        encode::begin(&mut words, self.background.handle());
+        super::chrome::background_runs(self.width as usize, self.height as usize, |colour, rects| {
+            encode::draw(&mut words, abi::pipeline::SOLID, colour, rects);
+        });
+        let (result, submitted) = gpu::submit(self.context, &words);
+        if result != 0 { return Err(format!("background submit: errno {}", -result)); }
+        let (result, waited) = gpu::wait(self.context, submitted.fence, 2_000_000_000);
+        if result != 0 || waited.status != abi::fence_status::OK {
+            return Err(format!("background wait: errno {}, status {}", -result, waited.status));
+        }
+        Ok(())
+    }
+
     /// Replace the context and its targets after a failed frame (a quarantined context or
     /// a device reset). The caller draws the background and the desktop again.
     pub fn reopen(&mut self) -> Result<(), String> {
