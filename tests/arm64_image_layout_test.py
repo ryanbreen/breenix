@@ -49,23 +49,27 @@ class LayoutTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'DMA block.*leaves'):
                 check.layout(root)
 
-    def test_map_figures_and_padding(self):
-        def lld_map(end):
-            return f'''             VMA              LMA     Size Align Out     In      Symbol
-ffff000040600000         40600000     1000  2048 .text.vectors
-ffff000040601000         40601000   2ef000  4096 .text
-ffff000040a00000         40a00000   180000  4096 .rodata
-ffff000040c00000         40c00000    10000  4096 .data
-ffff000040c10000         40c10000   d00000  4096 .bss
-{0xffff000000000000 + end - 0x10000:x}         {end - 0x10000:x}    10000    16 .bss.stack
-'''
-        output = io.StringIO()
-        with redirect_stdout(output):
-            check.map_report(lld_map(0x41a7a6a0), 0x41e00000)
-        self.assertIn('text=0x110000 rodata=0x80000', output.getvalue())
-        self.assertIn('margin: +0x385960', output.getvalue())
-        with redirect_stdout(io.StringIO()), self.assertRaisesRegex(ValueError, 'exceeds image ceiling'):
-            check.map_report(lld_map(0x41e79a60), 0x41e00000)
+    def test_real_maps_cover_production_and_testing_profiles(self):
+        fixtures = ROOT / 'tests/fixtures/arm64-image-layout'
+        # These historical maps always use the old ceiling, even after the
+        # live layout moves: the overflowing testing image must stay refused.
+        cases = [
+            ('1055dfd2-testing', '+0x156b00', 'text=0x11b24 rodata=0x12e630', False),
+            ('2b967324-production', '+0x186970', 'text=0x1085c rodata=0x1c4328', False),
+            ('2b967324-testing', '-0xa8d20', 'text=0x1d8e28 rodata=0xb9bb0', True),
+        ]
+        for name, margin, padding, overflow in cases:
+            with self.subTest(profile=name):
+                output = io.StringIO()
+                with redirect_stdout(output):
+                    if overflow:
+                        with self.assertRaisesRegex(ValueError, 'exceeds image ceiling'):
+                            check.map_report((fixtures / f'{name}.map').read_text(), 0x41e00000)
+                    else:
+                        check.map_report((fixtures / f'{name}.map').read_text(), 0x41e00000)
+                self.assertIn(f'margin: {margin} bytes', output.getvalue())
+                self.assertIn(f'2 MiB W^X padding: {padding}', output.getvalue())
+
 
 
 if __name__ == '__main__':
