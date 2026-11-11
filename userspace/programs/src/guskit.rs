@@ -346,6 +346,15 @@ mod tests {
         assert!(!dir.join("sub/bad.txt").exists());
         assert_ne!(app.message, "Saved");
         assert_eq!(app.file.as_ref(), Some(&path));
+        key(&mut app, &mut menu, 31, 0, shortcut);
+        key(&mut app, &mut menu, 15, 0, Modifiers::default());
+        key(&mut app, &mut menu, 102, 0, Modifiers::default());
+        key(&mut app, &mut menu, 107, 0, Modifiers { shift:true, ..Modifiers::default() });
+        let target = dir.join("text.png");
+        let event = Delivered { serial:2, time_ns:2, clicks:0, event:Event::Text { text:target.to_string_lossy().into_owned() } };
+        handle(&mut app, &mut menu, &event);
+        key(&mut app, &mut menu, 28, 0, Modifiers::default());
+        assert!(target.exists(), "text input saves to the submitted path");
         std::fs::remove_dir_all(dir).unwrap();
     }
 
