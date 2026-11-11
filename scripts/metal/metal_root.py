@@ -290,6 +290,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
         # Clear a prior route when reusing a root for a suite without this facility.
         commands = ['rm /etc/breenix/evidence-route', 'rm /etc/breenix/screen-proof', 'rm /etc/breenix/screen-known',
                     'rm /etc/breenix/smb-test.cred', 'rm /etc/breenix/smb-test-server',
+                    'rm /etc/breenix/desktop-suite',
                     'rm /etc/shares', 'rmdir /mnt/guskit-rw', 'rmdir /mnt/guskit-ro']
         smb_files = {}
         smb_dirs = ('/mnt/guskit-rw', '/mnt/guskit-ro') if smb_gui_selection(mode, suite, case) else ()
@@ -311,6 +312,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
             smb_files = {'/etc/breenix/smb-test.cred': (f'username={user}\npassword={password}\n', '0600'),
                          '/etc/breenix/smb-test-server': (f'{host} {port}\n', '0600')}
             if smb_dirs:
+                files['desktop-suite'] = 'gui-apps\n'
                 smb_files['/etc/shares'] = (''.join(
                     f'//{host}/{share} /mnt/guskit-{share} smb credfile=/etc/breenix/smb-test.cred,port={port}\n'
                     for share in ('rw', 'ro')), '0644')
@@ -411,6 +413,7 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
                     or not re.search(rb'User:\s+0\s+Group:\s+0', stat)):
                 raise ValueError('staged SMB mount directory or permissions differ')
         for path in ('/etc/breenix/smb-test.cred', '/etc/breenix/smb-test-server',
+                     *(() if 'desktop-suite' in files else ('/etc/breenix/desktop-suite',)),
                      '/etc/shares', '/mnt/guskit-rw', '/mnt/guskit-ro'):
             if path not in smb_files and path not in smb_dirs:
                 stat = subprocess.run([debugfs, '-R', f'stat {path}', str(image)],
@@ -452,6 +455,8 @@ def stage_root(image, mode, suite, site, writer=None, install=None, hasher=None,
             raise ValueError('RAM-disk resolver does not name the live DHCP configuration')
         binaries = [f'/sbin/suite-{each}' for each in suite.split(',')] if mode == 'suite' else \
             [{'probe': '/sbin/probe'}.get(mode, '/sbin/init')]
+        if mode == 'suite' and 'gui-apps' in suite.split(','):
+            binaries.append('/sbin/init')
         for binary in binaries:
             installed = scratch / 'pid1'
             installed.unlink(missing_ok=True)

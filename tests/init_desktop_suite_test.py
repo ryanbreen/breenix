@@ -50,6 +50,72 @@ fn launch_decision() {
                             str(path / 'launch.rs'), '-o', str(path / 'launch')], check=True)
             subprocess.run([str(path / 'launch')], check=True)
 
+    def test_init_keeps_supervising_until_the_suite_exits(self):
+        source = (ROOT / 'userspace/programs/src/init.rs').read_text()
+        functions = item(source, 'fn desktop_suite_ready(') + item(source, 'fn run_desktop_suite(')
+        harness = r'''
+use ::std::sync::Mutex;
+static EVENTS: Mutex<Vec<&str>> = Mutex::new(Vec::new());
+fn event(name: &'static str) { EVENTS.lock().unwrap().push(name); }
+fn run_boot_checks() { event("checks"); }
+fn reconcile_machine_state() { event("state"); }
+fn run_boot_script() { event("script"); }
+fn finish_boot_checks() { event("finish"); }
+mod std { pub mod process {
+    pub struct Command;
+    pub struct Child;
+    impl Command {
+        pub fn new(path: &str) -> Self { assert_eq!(path, "/sbin/suite-gui-apps"); Self }
+        pub fn args(self, args: Vec<String>) -> Self {
+            assert_eq!(args, ["--case", "guskit", "--hostkeys", "fixture"]); Self
+        }
+        pub fn spawn(self) -> Result<Child, String> { crate::event("spawn"); Ok(Child) }
+    }
+    impl Child { pub fn id(&self) -> u32 { 9 } }
+} }
+mod libbreenix {
+    pub mod time { pub fn sleep_ms(_: u64) -> Result<(), ()> { Ok(()) } }
+    pub mod process {
+        pub fn wifexited(status: i32) -> bool { status == 0 }
+        pub fn wtermsig(status: i32) -> i32 { status }
+        pub fn wexitstatus(status: i32) -> i32 { status >> 8 }
+    }
+}
+mod init_services {
+    pub enum Scope { Daemons }
+    pub struct Supervisor { ticks: usize, watched: usize }
+    impl Supervisor {
+        pub fn load(_: Scope, publish: bool) -> Self {
+            assert!(publish); crate::event("load"); Self { ticks: 0, watched: 0 }
+        }
+        pub fn tick(&mut self) { self.ticks += 1; crate::event("tick"); }
+        pub fn service_state(&self, name: &str) -> Option<&str> {
+            assert_eq!(name, "shares"); Some(if self.ticks < 2 { "running" } else { "done" })
+        }
+        pub fn tick_child(&mut self, pid: Option<i32>) -> Option<i32> {
+            assert_eq!(pid, Some(9)); self.watched += 1; crate::event("supervise");
+            if self.watched == 2 { Some(0) } else { None }
+        }
+        pub fn poweroff(&mut self) { crate::event("poweroff"); }
+        pub fn run(self) -> ! { panic!("supervisor loop") }
+    }
+}
+// FUNCTIONS
+#[test]
+fn desktop_child_lifecycle() {
+    let _ = ::std::panic::catch_unwind(|| run_desktop_suite(1, "/sbin/suite-gui-apps",
+        ["--case", "guskit", "--hostkeys", "fixture"].iter().map(|s| s.to_string()).collect()));
+    assert_eq!(*EVENTS.lock().unwrap(), ["checks", "state", "script", "load", "tick", "finish",
+        "tick", "spawn", "supervise", "supervise", "poweroff"]);
+}
+'''.replace('// FUNCTIONS', functions)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp)
+            (path / 'lifecycle.rs').write_text(harness)
+            subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings', '--test',
+                            str(path / 'lifecycle.rs'), '-o', str(path / 'lifecycle')], check=True)
+            subprocess.run([str(path / 'lifecycle')], check=True)
+
 
 if __name__ == '__main__':
     unittest.main()

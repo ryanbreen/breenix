@@ -159,7 +159,10 @@ fn main() {
         std::fs::write("/run/breenix/boot-id", format!("{}\n", boot_id)).expect("publish log boot ID");
         print!("[init] log boot-id={}\n", boot_id);
     }
-    check_test_controls(pid);
+    // Suite launches intentionally have test controls; the ordinary desktop still checks absence.
+    if std::env::args().nth(1).as_deref() != Some("suite") {
+        check_test_controls(pid);
+    }
 
     // Explicit shell and console modes bypass boot checks. PID-1 desktop
     // runs the same checks as the no-argument and `default` paths.
@@ -169,6 +172,11 @@ fn main() {
             use std::os::unix::process::CommandExt;
             let mut args = std::env::args().skip(2);
             let path = args.next().expect("suite path required");
+            if pid == 1 && path == "/sbin/suite-gui-apps"
+                && std::fs::read_to_string("/etc/breenix/desktop-suite").is_ok_and(|s| s == "gui-apps\n")
+            {
+                run_desktop_suite(pid, &path, args.collect());
+            }
             let error = std::process::Command::new(path).args(args).exec();
             panic!("[init] suite exec failed: {}", error);
         }
@@ -348,6 +356,57 @@ fn run_desktop_mode() -> ! {
         print!("[init] desktop services incomplete\n");
         supervisor.fallback_to_console();
     }
+    supervisor.run()
+}
+
+/// The suite owns its compositor; PID 1 owns the machine services and mounted shares.
+/// Failed terminal states still launch the suite so its service precondition reports the failure.
+fn desktop_suite_ready(pid: u64, staged: bool, shares: Option<&str>) -> bool {
+    pid == 1 && staged && matches!(shares, Some("done" | "failed" | "stopped" | "crash-loop"))
+}
+
+fn run_desktop_suite(pid: u64, path: &str, args: Vec<String>) -> ! {
+    print!("[init] mode desktop suite gui-apps\n");
+    run_boot_checks();
+    reconcile_machine_state();
+    run_boot_script();
+    // The per-case session supplies bwm. No production bwm or bterm competes for the display.
+    let mut supervisor = init_services::Supervisor::load(init_services::Scope::Daemons, true);
+    supervisor.tick();
+    finish_boot_checks();
+    while !desktop_suite_ready(pid, true, supervisor.service_state("shares")) {
+        if supervisor.service_state("shares").is_none() {
+            print!("SUITE gui-apps ERROR shares service is missing\n");
+            supervisor.poweroff();
+            supervisor.run();
+        }
+        supervisor.tick();
+        let _ = libbreenix::time::sleep_ms(50);
+    }
+    // Inherit serial directly: service log pipes must not swallow or prefix suite records.
+    let child = std::process::Command::new(path).args(args).spawn();
+    match child {
+        Ok(child) => {
+            let child_pid = child.id() as i32;
+            loop {
+                // The supervisor is the only reaper; do not race Child::try_wait against it.
+                if let Some(status) = supervisor.tick_child(Some(child_pid)) {
+                    print!("[init] desktop suite exited {}\n", status);
+                    if !libbreenix::process::wifexited(status) {
+                        print!("SUITE gui-apps ERROR runner killed by signal {}\n", libbreenix::process::wtermsig(status));
+                    } else if libbreenix::process::wexitstatus(status) != 0 {
+                        print!("SUITE gui-apps ERROR runner exited code {}\n", libbreenix::process::wexitstatus(status));
+                    }
+                    break;
+                }
+                let _ = libbreenix::time::sleep_ms(50);
+            }
+        }
+        Err(error) => print!("SUITE gui-apps ERROR runner launch failed: {}\n", error),
+    }
+    // Scoped GUI runners exit after DONE. Init supplies this launch shape's final marker.
+    print!("SUITE_SEQUENCE READY gui-apps\n");
+    supervisor.poweroff();
     supervisor.run()
 }
 
