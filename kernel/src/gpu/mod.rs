@@ -3365,7 +3365,9 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
 /// of the first frame's path. The prepared context is counted as an ordinary process context;
 /// CONTEXT_CREATE transfers its existing handle to the caller, and exit retires it normally.
 pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32> {
-    if !platform_config::is_parallels() && !platform_config::is_qemu() { return Ok(()); }
+    // QEMU clients retain ordinary context creation: CREATE must reach
+    // registration without waiting for the compositor's whole catalogue.
+    if !platform_config::is_parallels() && !(platform_config::is_qemu() && reserve_next) { return Ok(()); }
     let needs_context = with_core(|c| {
         let Some(p) = c.procs.get(&tgid) else { return true; };
         p.contexts.len() < limits::CONTEXTS && p.prepared_context.is_none() && (reserve_next || !p.contexts.values().any(|id|
