@@ -16,6 +16,16 @@ class ReadbackBatch(unittest.TestCase):
         run_rust(self, r'''
 use std::sync::Mutex;
 static CALLS:Mutex<Vec<[u32;4]>>=Mutex::new(Vec::new());
+static OVERLAP:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+static ENTERED:Mutex<[bool;2]>=Mutex::new([false;2]);
+static READY:std::sync::Condvar=std::sync::Condvar::new();
+fn independent_read(scanout:bool){
+ if !OVERLAP.load(std::sync::atomic::Ordering::Relaxed){return;}
+ let index=usize::from(scanout);let mut entered=ENTERED.lock().unwrap();
+ entered[index]=true;READY.notify_all();
+ let (entered,result)=READY.wait_timeout_while(entered,std::time::Duration::from_secs(3),|s|!s[1-index]).unwrap();
+ assert!(!result.timed_out()&&entered[1-index],"independent desktop and scanout reads were serialized");
+}
 static CLIENT:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
 static BUFFERS:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
 static PIXELS:std::sync::atomic::AtomicUsize=std::sync::atomic::AtomicUsize::new(0);
@@ -42,10 +52,10 @@ fn pixel(x:u32,y:u32)->u32{0xff000000|((y*257+x*3)&0xffffff)}
 fn fill(rect:[u32;4],out:&mut[u8],bad:bool){let[x,y,w,h]=rect;for row in 0..h{for col in 0..w{let mut p=pixel(x+col,y+row);if bad&&*POINTER.lock().unwrap() && (3..7).contains(&(x+col)) && (3..7).contains(&(y+row)) {p=if ((x+col-3)/2+(y+row-3)/2)%2==0{0xff000000}else{0xffffffff};}if bad&&*HIGH_X.lock().unwrap(){p^=0xff000000;}if bad&&*BAD.lock().unwrap()==Some((x+col,y+row)){p^=1;}let at=((row*w+col)*4)as usize;out[at..at+4].copy_from_slice(&p.to_le_bytes());}}}
 mod gpu {
  pub struct Answer{pub reason:u32}
- pub fn readback_why(_:u64,r:[u32;4],out:&mut[u8],stride:u32,_:&mut[u8;1024])->(i64,Answer){assert_eq!(stride,r[2]*4);super::CALLS.lock().unwrap().push(r);super::fill(r,out,true);(0,Answer{reason:0})}
+ pub fn readback_why(_:u64,r:[u32;4],out:&mut[u8],stride:u32,_:&mut[u8;1024])->(i64,Answer){super::independent_read(true);assert_eq!(stride,r[2]*4);super::CALLS.lock().unwrap().push(r);super::fill(r,out,true);(0,Answer{reason:0})}
 }
 struct Desktop;
-impl Desktop{fn read_rect(&self,r:[usize;4],out:&mut[u8],stride:usize)->Result<(),i64>{assert_eq!(stride,r[2]*4);fill(r.map(|x|x as u32),out,false);Ok(())}}
+impl Desktop{fn read_rect(&self,r:[usize;4],out:&mut[u8],stride:usize)->Result<(),i64>{independent_read(false);assert_eq!(stride,r[2]*4);fill(r.map(|x|x as u32),out,false);Ok(())}}
 struct Sample{ id:u64,width:u32,height:u32,commit_id:u64 }
 struct Layer{window_id:u64,frame:[[i32;4];3],frame_len:usize}
 #[derive(Clone,Copy)]struct Pointer{x:i32,y:i32,shape:u32}
@@ -64,6 +74,9 @@ impl Compositor {
 }
 #[test]fn full_frame_and_offset_tail(){
  let mut c=Compositor{sampled:vec![],check_first:0,check_workspace:CheckWorkspace::default(),desktop:Desktop,scale:2,appbar_top:1600};
+ OVERLAP.store(true,std::sync::atomic::Ordering::Relaxed);
+ assert_eq!(c.check_area(0,&[],None,[0,0,64,64]).unwrap(),4096);
+ OVERLAP.store(false,std::sync::atomic::Ordering::Relaxed);CALLS.lock().unwrap().clear();
  *POINTER.lock().unwrap()=true;
  assert_eq!(c.check_area(0,&[],Some(Pointer{x:3,y:3,shape:0}),[0,0,2560,1600]).unwrap(),4096000);
  let hotspots=HOTSPOTS.load(std::sync::atomic::Ordering::Relaxed);
