@@ -33,5 +33,8 @@ fn shipped_catalog_parses_without_errors() {
     let text = std::fs::read_to_string("userspace/programs/share/applications/catalog").unwrap();
     let (entries, errors) = parse(&text);
     assert!(!entries.is_empty());
+    let icon_kit = entries.iter().find(|entry| entry.name == "Breenix Icon Kit").expect("Breenix Icon Kit is installed in the launcher");
+    assert_eq!(icon_kit.mode, Mode::Gui);
+    assert_eq!(icon_kit.argv, ["/usr/bin/biconkit"]);
     assert!(errors.is_empty(), "{errors:?}");
 }
