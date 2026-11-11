@@ -4641,11 +4641,7 @@ fn setup_idle_return_locked(
 
     unsafe {
         Aarch64PerCpu::install_idle_return_sp(idle_stack);
-        let mut kernel_ttbr0 = Aarch64PerCpu::kernel_cr3();
-        if kernel_ttbr0 == 0 {
-            kernel_ttbr0 = 0x4200_0000;
-        }
-        Aarch64PerCpu::set_next_cr3(kernel_ttbr0);
+        Aarch64PerCpu::set_next_cr3(super::ttbr0::kernel_ttbr0());
         Aarch64PerCpu::set_saved_process_cr3(0);
         Aarch64PerCpu::set_current_thread_ptr(core::ptr::null_mut());
         Aarch64PerCpu::clear_preempt_active();
