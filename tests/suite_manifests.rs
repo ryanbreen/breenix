@@ -1896,3 +1896,22 @@ fn network_shares_manifest_declares_ufs_and_smb_cases() {
     assert_eq!(suite.title, manifest.title);
     assert_eq!(categories, manifest.categories);
 }
+
+#[test]
+fn guskit_manifest_includes_smb_save_cases() {
+    let value: Value = serde_json::from_str(&fs::read_to_string(repo_root().join("docs/suites/gui-apps.json")).unwrap()).unwrap();
+    let category = value["categories"].as_array().unwrap().iter().find(|c| c["id"] == "guskit").unwrap();
+    let cases = category["cases"].as_array().unwrap();
+    for id in ["smb-save-open", "smb-save-fails-cleanly", "smb-share-gone"] {
+        assert!(cases.iter().any(|c| c["id"] == id), "missing guskit/{id}");
+    }
+}
+
+#[test]
+fn guskit_step_selects_smb_save_cases() {
+    let value: Value = serde_json::from_str(&fs::read_to_string(repo_root().join("docs/gui/gt710-step-23-5.json")).unwrap()).unwrap();
+    let cases = value["cases"].as_array().unwrap();
+    for id in ["guskit/smb-save-open", "guskit/smb-save-fails-cleanly", "guskit/smb-share-gone"] {
+        assert!(cases.iter().any(|c| c == id), "missing {id}");
+    }
+}

@@ -299,6 +299,10 @@ impl<B: Backend> Namespace<B> {
             self.nodes.remove(&id);
             self.paths.remove(&p);
             self.cache.remove(&id);
+            // Retire scan allocations and the remote handle with their node.
+            if let Some(scan) = self.scans.remove(&id) {
+                if let Some(file) = scan.id { let _ = self.backend.close(file); }
+            }
         }
     }
     pub fn unlink(&mut self, p: u64, n: &str) -> Result<(), i32> {

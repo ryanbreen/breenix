@@ -207,6 +207,35 @@ mod live {
         pub fn key(&mut self, code: u16, mods: &[Modifier]) -> Result<(), String> {
             self.keys.chord(self.window, mods, code).map(|_| ())
         }
+        /// For a blocking action, wait for its committed result before checking
+        /// the initiating key. Subsequent input still has the normal 2 s bound.
+        pub fn key_wait_node(&mut self, code: u16, mods: &[Modifier], node: &str,
+            predicate: impl Fn(&serde_json::Value) -> bool) -> Result<(), String> {
+            if !(1..=255).contains(&code) || mods.iter().enumerate().any(|(i, m)|
+                m.code() == code || mods[..i].contains(m)) {
+                return Err("input chord has invalid or duplicate keys".into());
+            }
+            let mut held = Vec::new();
+            let result = (|| {
+                for key in mods.iter().map(|m| m.code()).chain([code]) {
+                    held.push(key);
+                    let event = self.keys.backend_mut().send_key(key, true)?;
+                    if key == code { self.wait_node(node, &predicate)?; }
+                    let delivery = crate::input::delivered(event.serial)?;
+                    if delivery.window != self.window { return Err("action key reached another window".into()); }
+                }
+                Ok(())
+            })();
+            let mut release = Ok(());
+            for key in held.into_iter().rev() {
+                let result = self.keys.backend_mut().send_key(key, false)
+                    .and_then(|event| crate::input::delivered(event.serial))
+                    .and_then(|delivery| if delivery.window == self.window { Ok(()) }
+                        else { Err("action release reached another window".into()) });
+                if release.is_ok() { release = result; }
+            }
+            result.and(release)
+        }
         /// Drag from a node-local point using relative device-pixel steps.
         pub fn drag(&mut self, key: &str, from: (i32, i32), steps: &[(i32, i32)]) -> Result<(), String> {
             let tree = self.tree()?;

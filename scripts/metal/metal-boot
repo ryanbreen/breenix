@@ -601,7 +601,8 @@ class Driver:
                 xhci_fault=xhci_fault(self.args), power_token=self.shutdown_token,
                 watchdog_fault=self.args.inject.removeprefix('watchdog-') if self.args.inject in WATCHDOG_FAULTS else None,
                 screen_proof=getattr(self.args, 'screen_proof', False),
-                screen_known=getattr(self.args, 'screen_known_json', None), gt710_upload=screen_route)
+                screen_known=getattr(self.args, 'screen_known_json', None), gt710_upload=screen_route,
+                case=getattr(self.args, 'case', None))
             if disk == 'install':
                 write = self.delivery['root']['diskWrite']
                 m.write_json(self.dir / 'disk-write.json', write)
@@ -615,7 +616,7 @@ class Driver:
                 idle_minutes=self.args.idle_minutes if session(self.args) else None,
                 replug=self.args.mode == 'console' and not session(self.args),
                 screen_proof=getattr(self.args, 'screen_proof', False),
-                screen_known=getattr(self.args, 'screen_known_json', None))
+                screen_known=getattr(self.args, 'screen_known_json', None), case=getattr(self.args, 'case', None))
             self.delivery['diskRoot'] = facts
             files.update(suite_files)
             if self.args.mode == 'suite' and m.read_json(manifest).get('diskChecks'):

@@ -18,7 +18,7 @@
 //! scored) as the cases run. When every case has run it leaves the final panel up and
 //! idles: a suite runs as PID 1 and never exits.
 //!
-//! A full run booted as PID 1 also prints its memory record ([`memory_record`]):
+//! A full run booted as PID 1, or a GUI subreaper, also prints its memory record ([`memory_record`]):
 //! `SUITE <id> MEMORY before ...` before its first case, and once DONE is out and
 //! its processes are reaped, `SUITE <id> MEMORY after ...` and
 //! `SUITE <id> MEMORY reclaimed=PASS|FAIL ...`. A suite whose memory was not
@@ -1244,9 +1244,10 @@ impl Suite {
             screen.draw(self, &title, &subtitle, &states, Verdict::Failed(message), &feed, only);
             idle(&mut screen, &feed);
         }
-        // A full run as PID 1 keeps the memory record; a one-case run is not
-        // full-suite evidence, and a suite run from a shell does not reap others.
-        let recording = only.is_none() && process::getpid().is_ok_and(|pid| pid.raw() == 1);
+        // The desktop gui-apps subreaper owns the boot's GUI workload, even for a selection.
+        // Nested runner fixtures share the machine and cannot own its free-frame delta.
+        // Their memory record measures that scope, without claiming a full run.
+        let recording = scoped && self.id == "gui-apps" || only.is_none() && process::getpid().is_ok_and(|pid| pid.raw() == 1);
         screen.prepare();
         // Count the text renderer's persistent font tables and presentation state
         // in both memory samples, just as the GPU and GUI views warm before sampling.
@@ -1368,7 +1369,7 @@ impl Suite {
         if screen.gui { feed = Feed::default(); }
         let reclaimed = !recording || {
             // Each case's processes were swept after it; any left since go now.
-            let _ = sweep();
+            let _ = sweep_for_role(self.gui);
             let retired = if screen.gui {
                 crate::suite_stage::memory_owners("finale");
                 let result = crate::suite_stage::retire();
@@ -1399,18 +1400,22 @@ impl Suite {
         let ms = ms_since(suite_start);
         emit(&std::format!("SUITE {} ELAPSED ms={}", self.id, ms));
         finalize();
+        feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
+        // A nested runner leaves the outer suite's display alone. The desktop
+        // gui-apps child owns the final panel because init only supervises it.
+        if !scoped || self.id == "gui-apps" {
+            if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }
+            if !screen.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }
+            if let Some(upload) = &mut evidence {
+                emit(&upload.capture("suite-final-panel", evidence_scanout, evidence_transfer));
+            }
+        }
         if scoped {
             if place.is_some() {
                 emit(&std::format!("SUITE_SEQUENCE READY {}", self.id));
                 sequence::finish();
             }
             process::exit(if counts.failed == 0 && reclaimed { 0 } else { 1 });
-        }
-        feed.finish(std::format!("DONE {}.{} s", ms / 1000, ms % 1000 / 100));
-        if self.defer_display { screen = Screen::open(false, self.id == "gpu"); }
-        if !screen.gui { screen.draw(self, &title, &subtitle, &states, verdict, &feed, only); }
-        if let Some(upload) = &mut evidence {
-            emit(&upload.capture("suite-final-panel", evidence_scanout, evidence_transfer));
         }
         // A one-case boot stops here, before a sequence's next suite.
         if only.is_some() { idle(&mut screen, &feed); }

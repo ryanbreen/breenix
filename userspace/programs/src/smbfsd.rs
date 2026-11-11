@@ -49,6 +49,16 @@ fn run() -> Result<(), String> {
     let mut output = vec![0; MAX_MESSAGE];
     let mut reported_recoveries = 0;
     loop {
+        // The daemon can wait here indefinitely. Return freed protocol/name
+        // blocks instead of retaining their mappings for the lifetime of a mount.
+        // The preceding iteration's reply payload has already been dropped;
+        // live namespace entries and the reusable I/O buffers remain owned.
+        unsafe {
+            extern "C" {
+                fn __breenix_malloc_release_cached() -> usize;
+            }
+            __breenix_malloc_release_cached();
+        }
         let n = match dev.read(&mut input) {
             Ok(0) => return Ok(()),
             Ok(n) => n,

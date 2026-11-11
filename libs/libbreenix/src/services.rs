@@ -636,6 +636,20 @@ pub fn network_configured(pnp: &str) -> bool {
     pnp.lines().any(|line| line.trim() == "#MANUAL" || line.starts_with("bootserver "))
 }
 
+// This checks the stanza's success record; a suite running as PID 1 cannot
+// establish that init ran it. Desktop acceptance reads the real state file.
+pub fn shares_completed_once(text: &str) -> Result<(), String> {
+    let (_, statuses) = parse_state(text)?;
+    let shares = statuses.iter().find(|service| service.name == "shares")
+        .ok_or("init did not report the shares service")?;
+    if shares.state == "done" && shares.starts == 1 && shares.last_exit == "code:0" {
+        Ok(())
+    } else {
+        Err(format!("shares service did not complete once: {shares:?}"))
+    }
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -804,19 +818,6 @@ mod tests {
             assert_eq!(shares.command, ["/sbin/mount", "-a"]);
             assert_eq!(shares.restart, Restart::Never);
             assert_eq!(shares.needs, [Need::NetworkUp]);
-        }
-    }
-
-    // This checks the stanza's success record; a suite running as PID 1 cannot
-    // establish that init ran it. Desktop acceptance reads the real state file.
-    fn shares_completed_once(text: &str) -> Result<(), String> {
-        let (_, statuses) = parse_state(text)?;
-        let shares = statuses.iter().find(|service| service.name == "shares")
-            .ok_or("init did not report the shares service")?;
-        if shares.state == "done" && shares.starts == 1 && shares.last_exit == "code:0" {
-            Ok(())
-        } else {
-            Err(format!("shares service did not complete once: {shares:?}"))
         }
     }
 

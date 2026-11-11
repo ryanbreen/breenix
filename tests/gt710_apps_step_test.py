@@ -256,6 +256,7 @@ class AppsStep(unittest.TestCase):
         expected = json.loads((ROOT / 'docs/gui/gt710-step-23-4.json').read_text())['cases'] + [
             'guskit/pencil', 'guskit/shapes', 'guskit/fill', 'guskit/eraser-color',
             'guskit/undo-redo', 'guskit/save-open', 'guskit/save-fails-cleanly',
+            'guskit/smb-save-open', 'guskit/smb-save-fails-cleanly', 'guskit/smb-share-gone',
             'guskit/open-malformed', 'guskit/quit-unsaved', 'guskit/shortcuts',
         ]
         selection_path = ROOT / 'docs/gui/gt710-step-23-5.json'
@@ -268,7 +269,7 @@ class AppsStep(unittest.TestCase):
         def record(text):
             (self.path / 'serial.txt').write_text(text)
             return API['record_apps_capture'](self.path, SHA, 5)
-        # G13 requires a failed case to explain exit 1; this 52/52 capture
+        # G13 requires a failed case to explain exit 1; this full-PASS capture
         # has no failed case to explain the driver/scorer failure.
         self.assertEqual(record(original), 1)
         (self.path / 'exit-status').write_text('0')
