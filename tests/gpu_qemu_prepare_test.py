@@ -37,6 +37,11 @@ fn wait_for<T>(_:Option<u64>,_:bool,mut f:impl FnMut(&mut Core)->Option<T>)->Res
   with_core(|c|{assert_eq!(c.procs[&42].prepared_context,Some(11));assert_eq!(c.contexts[&1].warm,catalogue_mask());});
   assert_eq!(prepare_window_renderer(42,false),Ok(()));assert_eq!(CREATED.load(Ordering::Relaxed),1);
  }
+ // A client CREATE must return to registration instead of synchronously
+ // compiling the whole catalogue before its first window becomes visible.
+ PLATFORM.store(1,Ordering::Relaxed);*CORE.lock().unwrap()=Core::default();CREATED.store(0,Ordering::Relaxed);CHECKS.store(0,Ordering::Relaxed);
+ assert_eq!(prepare_window_renderer(43,false),Ok(()));
+ assert_eq!((CREATED.load(Ordering::Relaxed),CHECKS.load(Ordering::Relaxed)),(0,0),"client registration waited on the compositor preparation path");
  PLATFORM.store(0,Ordering::Relaxed);*CORE.lock().unwrap()=Core::default();CREATED.store(0,Ordering::Relaxed);CHECKS.store(0,Ordering::Relaxed);
  assert_eq!(prepare_window_renderer(42,true),Ok(()));assert_eq!((CREATED.load(Ordering::Relaxed),CHECKS.load(Ordering::Relaxed)),(0,0));
 }
