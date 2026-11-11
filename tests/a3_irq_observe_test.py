@@ -27,12 +27,17 @@ class IrqObserve(unittest.TestCase):
             'virtio_blk_handle_*', 'virtio_blk_req_complete', 'virtio_blk_rw_complete',
             'virtio_queue_notify', 'virtio_notify', 'virtio_mmio_queue_write', 'virtio_mmio_setting_irq']))
         self.assertEqual(argv[argv.index('-D') + 1], '/tmp/capture.txt.qemu-trace.log')
+        self.assertIn('-msg', argv, 'QEMU log traces omit timestamps by default')
+        self.assertEqual(argv[argv.index('-msg') + 1], 'timestamp=on')
         explicit = arm.command('qemu-system-aarch64', [
-            '-chardev', 'stdio,logfile=/tmp/capture.txt', '-d', 'guest_errors', '-D', '/tmp/explicit.log'],
+            '-chardev', 'stdio,logfile=/tmp/capture.txt', '-d', 'guest_errors', '-D', '/tmp/explicit.log',
+            '-msg', 'guest-name=on,timestamp=off'],
             'hvf', 'Darwin', 'arm64')
         self.assertEqual(explicit.count('-d'), 1)
         self.assertTrue(explicit[explicit.index('-d') + 1].startswith('guest_errors,trace:'))
         self.assertEqual(explicit[explicit.index('-D') + 1], '/tmp/explicit.log')
+        self.assertEqual(explicit.count('-msg'), 1)
+        self.assertEqual(explicit[explicit.index('-msg') + 1], 'guest-name=on,timestamp=on')
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory)
             receipt = path / 'order'
@@ -55,6 +60,68 @@ class IrqObserve(unittest.TestCase):
             self.assertFalse(receipt.exists(), 'a refused artifact gate must not execute QEMU')
         self.assertIn('qemu-trace.log', read('scripts/boot-interactive.sh'))
         self.assertIn('MH_MAGIC_64', read('scripts/qemu-ui-launch.c'))
+
+    def test_budget_writer_delivers_whole_commands_to_the_device(self):
+        # Keep the production formatting, per-write dispatch and retained ring.
+        # Only the open File is substituted, so write_fmt fragmentation is real.
+        producer = item(read('libs/libbreenix/src/suite.rs'), 'pub fn case_budget(')
+        producer = producer.replace('std::fs::OpenOptions', 'fixture::OpenOptions')
+        dispatch = item(read('kernel/src/fs/devfs/mod.rs'),
+                        'if let Some(command) = buf.strip_prefix(b"WM_STALL ")')
+        ring = read('kernel/src/window/stall_trace.rs').replace('//!', '//').replace('use alloc::', 'use std::')
+        run_rust(self, r'''
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+static STALL_EVIDENCE: AtomicBool = AtomicBool::new(true);
+static NOW: AtomicU64 = AtomicU64::new(100);
+fn monotonic_ns()->Option<u128>{Some(NOW.fetch_add(10,Ordering::Relaxed) as u128)}
+mod spin {
+ pub struct Mutex<T>(std::sync::Mutex<T>);
+ impl<T> Mutex<T>{pub const fn new(t:T)->Self{Self(std::sync::Mutex::new(t))}
+ pub fn lock(&self)->std::sync::MutexGuard<'_,T>{self.0.lock().unwrap()}}
+}
+mod signal { pub fn monotonic_nanos()->u64{300} }
+mod task { pub mod scheduler { pub fn stall_snapshot()->Vec<String>{Vec::new()} } }
+pub mod window { pub mod stall_trace { use crate::spin; RING } }
+static WRITES: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
+fn device_write(buf:&[u8])->Result<usize,i32>{
+ struct Caller {tid:u64} let caller=Caller{tid:7};
+ DISPATCH
+ Ok(buf.len())
+}
+mod fixture {
+ pub struct OpenOptions;
+ impl OpenOptions {
+  pub fn new()->Self{Self}
+  pub fn write(&mut self,enabled:bool)->&mut Self{assert!(enabled);self}
+  pub fn open(&self,path:&str)->std::io::Result<File>{
+   assert_eq!(path,"/dev/screen-evidence");Ok(File)
+  }
+ }
+ pub struct File;
+ impl std::io::Write for File {
+  fn write(&mut self,buf:&[u8])->std::io::Result<usize>{
+   crate::WRITES.lock().unwrap().push(buf.to_vec());
+   crate::device_write(buf).map_err(std::io::Error::from_raw_os_error)
+  }
+  fn flush(&mut self)->std::io::Result<()>{Ok(())}
+ }
+}
+PRODUCER
+#[test]fn formatted_budget_reaches_the_ring_before_watchdog_kill(){
+ let phases=["case-begin","logic-begin","diagnostic-begin","diagnostic-end"];
+ for phase in phases {case_budget(phase,"recovery/stack-restored");}
+ let out=window::stall_trace::text();
+ let writes=WRITES.lock().unwrap();
+ assert!(out.contains("case-budget tid=7 case=recovery/stack-restored case_begin_ns=100 logic_begin_ns=110 logic_end_ns=0"),"missing retained budget after {} device writes: {out}",writes.len());
+ assert_eq!(writes.len(),phases.len(),"each budget command must be one device write");
+ assert!(out.contains("diagnostic_ns=10 diagnostics=1 diagnostic_begin_ns=0"),"{out}");
+ assert!(out.contains("last_ns=130 phase=diagnostic-end"),"{out}");
+ drop(writes);
+ STALL_EVIDENCE.store(false,Ordering::Relaxed);
+ case_budget("report-end","recovery/stack-restored");
+ assert_eq!(WRITES.lock().unwrap().len(),phases.len());
+}
+'''.replace('RING', ring).replace('DISPATCH', dispatch).replace('PRODUCER', producer))
 
     def test_idle_switch_out_does_not_charge_an_entire_window(self):
         source = read('kernel/src/window/accounting.rs').replace('//!', '//').replace('use alloc::', 'use std::')
