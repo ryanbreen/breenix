@@ -1222,7 +1222,7 @@ fn launch_x86_production_init(
             }
         })
     } else { None };
-    if hostkeys.is_some() { kernel::input::host::init()?; }
+    if kernel::input::host::declares_channel(hostkeys.as_deref()) { kernel::input::host::init()?; }
     let (thread, designated_pid_raw, reserved_collisions) = {
         let mut manager_guard = process::manager();
         let manager = manager_guard
