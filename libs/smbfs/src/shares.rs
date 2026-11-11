@@ -51,3 +51,51 @@ pub fn parse_shares(text: &str) -> (Vec<Share>, Vec<ShareError>) {
     }
     (entries, errors)
 }
+
+/// Render the source, directory, type and options from each proc mount entry.
+pub fn render_proc_mounts(text: &str) -> String {
+    let mut output = String::new();
+    for line in text.lines() {
+        let mut fields = line.split_whitespace();
+        let (Some(source), Some(directory), Some(kind), Some(options)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            continue;
+        };
+        let source = decode_mount_field(source);
+        let directory = decode_mount_field(directory);
+        let kind = decode_mount_field(kind);
+        let options = decode_mount_field(options);
+        let kind = if kind == "ufs" && source.starts_with("//") {
+            "smb"
+        } else {
+            &kind
+        };
+        output.push_str(&format!(
+            "{source} on {directory} type {kind} ({options})\n"
+        ));
+    }
+    output
+}
+
+fn decode_mount_field(field: &str) -> String {
+    let bytes = field.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'\\'
+            && i + 3 < bytes.len()
+            && (b'0'..=b'3').contains(&bytes[i + 1])
+            && (b'0'..=b'7').contains(&bytes[i + 2])
+            && (b'0'..=b'7').contains(&bytes[i + 3])
+        {
+            decoded
+                .push((bytes[i + 1] - b'0') * 64 + (bytes[i + 2] - b'0') * 8 + bytes[i + 3] - b'0');
+            i += 4;
+        } else {
+            decoded.push(bytes[i]);
+            i += 1;
+        }
+    }
+    String::from_utf8_lossy(&decoded).into_owned()
+}

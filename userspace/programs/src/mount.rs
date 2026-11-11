@@ -2,6 +2,15 @@ use std::io::{BufRead, BufReader};
 use std::process::{Command, Stdio};
 fn run() -> Result<(), String> {
     let a: Vec<_> = std::env::args().skip(1).collect();
+    if a.is_empty() {
+        let mounts =
+            std::fs::read("/proc/mounts").map_err(|e| format!("read /proc/mounts: {e}"))?;
+        print!(
+            "{}",
+            smbfs::shares::render_proc_mounts(&String::from_utf8_lossy(&mounts))
+        );
+        return Ok(());
+    }
     if a.len() != 6 || a[0] != "-t" || a[1] != "smb" || a[4] != "-o" {
         return Err(
             "usage: mount -t smb //HOST/SHARE DIR -o credfile=PATH[,port=N][,vers=3.0.2]".into(),
