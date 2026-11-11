@@ -12,6 +12,8 @@ class FontOverlap(unittest.TestCase):
         old = os.environ.get('UITEST_OLD_COMMIT')
         source = subprocess.check_output(['git','show',f'{old}:{rel}'], cwd=ROOT, text=True) if old else (ROOT/rel).read_text()
         block = source[source.index('    // The GPU core composes the desktop'):source.index('    let mut windows:')]
+        if source.index('    let claim_epoch = match session::claim()') < source.index('    // The GPU core composes the desktop'):
+            block = 'let claim_epoch=session::claim().unwrap();let scene_fd=0;let mut desktop_tree:Option<desktop_publish::Publisher>=None;\n'+block
         run_rust(self, r'''
 use std::sync::{Mutex,mpsc::{channel,Sender,Receiver}};
 #[path="@PREP@"] pub mod startup_prepare;
@@ -26,12 +28,16 @@ const APPBAR_HEIGHT:usize=36;
 fn px(v:usize)->usize{v*2}
 struct Ui{scale:usize}fn ui()->Ui{Ui{scale:2}}
 fn ttf_font_size()->f32{14.0}
+static DEVICE_READY:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
+pub mod libgfx{pub mod stage{pub fn context()->Result<u64,String>{super::super::DEVICE_READY.store(true,std::sync::atomic::Ordering::Relaxed);Ok(1)}}}
+mod session{pub fn claim()->Result<u64,String>{super::READY.lock().unwrap().as_ref().unwrap().recv_timeout(std::time::Duration::from_millis(250)).expect("font preparation still begins after the blocking compositor claim");Ok(7)}pub fn scene_fd()->Result<i32,String>{Ok(9)}}
+mod desktop_publish{pub struct Publisher;impl Publisher{pub fn new()->Result<Self,String>{Ok(Self)}}}
 struct Surface;
 fn paint_background(_fb:&mut Surface){RESUME.lock().unwrap().take().unwrap().send(()).unwrap();}
 struct Compositor{background:Surface}
 impl Compositor{fn open(w:u32,h:u32,appbar:u32,scale:u32)->Result<Self,String>{
  assert_eq!((w,h,appbar,scale),(2560,1600,72,2));
- READY.lock().unwrap().as_ref().unwrap().recv_timeout(std::time::Duration::from_millis(250)).expect("cold font work is still serialized after GPU target creation");
+ assert!(DEVICE_READY.load(std::sync::atomic::Ordering::Relaxed),"font context must exist before reserving the compositor context");
  Ok(Self{background:Surface})
 }
 fn paint_background(&mut self)->Result<(),String>{paint_background(&mut self.background);Ok(())}
@@ -53,13 +59,14 @@ impl CachedFont {
 #[test]fn targets_and_cold_taskbar_prepare_concurrently(){
  let(tx,rx)=channel();*STARTED.lock().unwrap()=Some(tx);*READY.lock().unwrap()=Some(rx);
  let(tx,rx)=channel();*RESUME.lock().unwrap()=Some(tx);*HELD.lock().unwrap()=Some(rx);
+ let _ = desktop_publish::Publisher::new;let _=session::scene_fd;let _=libgfx::stage::context;
  let _ = Compositor::paint_background;
  let _ = CachedFont::prepare_subpixel; let _ = ttf_font_size();
  let(screen_w,screen_h)=(2560usize,1600usize);let clock_text=*b"00:00:00 ET";
  let startup_titles:Vec<&[u8]>=Vec::new();
  @BLOCK@
  assert!(ui_font.as_mut().unwrap().prepared,"cold taskbar coverage stayed on drawing path");
- let _=&mut gpu;let _=clock_text;
+ let _=&mut gpu;let _=clock_text;let _=&mut desktop_tree;let _=(claim_epoch,scene_fd);
  assert!(TRACE.lock().unwrap().iter().any(|s|s=="fonts-ready"));
 }
 '''.replace('@BLOCK@',block).replace('@PREP@',str(ROOT/'userspace/programs/src/bwm/startup_prepare.rs')))
