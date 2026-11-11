@@ -1,0 +1,174 @@
+{"boot": "20261111T165116Z-qemu-68510", "commit": "b26abb03752f2f0876bbb2110cc267917343e913", "serial_sha256": "22c35eb03f702b83c2c36cd2e1adb51b9f2edba327ef2353ea47d2b123b31358", "encoding": "source line number and JSON payload; CR stripped as by suite-verdict, LF numbered"}
+{"line": 277, "text": "SUITE window-manager MEMORY before free=84635 heap_free_kb=39019 user_stacks=16 user_pages=591 page_tables=11 page_cache=0 kernel_stacks=0 buffers=4218 other=130 receipts=0 settle_ms=201"}
+{"line": 297, "text": "SUITE window-manager CASE input-core/virtual-keyboard PASS ms=3226"}
+{"line": 315, "text": "SUITE window-manager CASE input-core/serials PASS ms=2995"}
+{"line": 332, "text": "SUITE window-manager CASE input-core/time-injected PASS ms=2803"}
+{"line": 352, "text": "SUITE window-manager CASE input-core/ctrl-super-distinct PASS ms=3272"}
+{"line": 371, "text": "SUITE window-manager CASE input-core/text-event PASS ms=2538"}
+{"line": 388, "text": "SUITE window-manager CASE input-core/device-removal PASS ms=3082"}
+{"line": 407, "text": "SUITE window-manager CASE input-core/virtual-pointer PASS ms=3260"}
+{"line": 430, "text": "SUITE window-manager CASE input-core/ledger-complete PASS ms=2610"}
+{"line": 448, "text": "SUITE window-manager CASE input-core/capabilities PASS ms=3211"}
+{"line": 470, "text": "SUITE window-manager CASE input-devices/keyboard-completion-path PASS ms=3175"}
+{"line": 491, "text": "SUITE window-manager CASE input-devices/replay-report-fault PASS ms=3464"}
+{"line": 505, "text": "SUITE window-manager CASE startup/desktop-control PASS ms=2440"}
+{"line": 522, "text": "SUITE window-manager CASE startup/claims-display PASS ms=3285"}
+{"line": 549, "text": "SUITE window-manager CASE startup/first-client PASS ms=3227"}
+{"line": 572, "text": "SUITE window-manager CASE startup/existing-windows PASS ms=3415"}
+{"line": 602, "text": "SUITE window-manager CASE startup/independent-clients PASS ms=4775"}
+{"line": 650, "text": "SUITE window-manager CASE startup/supervisor-starts PASS ms=4762"}
+{"line": 671, "text": "SUITE window-manager CASE composition/chrome-geometry PASS ms=2322"}
+{"line": 699, "text": "SUITE window-manager CASE composition/overlap PASS ms=3786"}
+{"line": 725, "text": "SUITE window-manager CASE composition/cascade PASS ms=3784"}
+{"line": 754, "text": "SUITE window-manager CASE composition/client-update PASS ms=3847"}
+{"line": 784, "text": "SUITE window-manager CASE composition/expose-close PASS ms=4617"}
+{"line": 808, "text": "SUITE window-manager CASE composition/oracle-corruption PASS ms=3438"}
+{"line": 842, "text": "SUITE window-manager CASE stacking/click-raises PASS ms=4542"}
+{"line": 870, "text": "SUITE window-manager CASE stacking/minimize-hides PASS ms=5081"}
+{"line": 899, "text": "SUITE window-manager CASE stacking/restore PASS ms=3741"}
+{"line": 945, "text": "SUITE window-manager CASE stacking/all-minimized PASS ms=5217"}
+{"line": 980, "text": "SUITE window-manager CASE stacking/exit-restacks PASS ms=6177"}
+{"line": 999, "text": "SUITE window-manager CASE focus/initial-focus PASS ms=2548"}
+{"line": 1029, "text": "SUITE window-manager CASE focus/pair-click PASS ms=4910"}
+{"line": 1053, "text": "SUITE window-manager CASE focus/keys-to-focused PASS ms=4633"}
+{"line": 1076, "text": "SUITE window-manager CASE focus/text-exact PASS ms=5198"}
+{"line": 1098, "text": "SUITE window-manager CASE focus/releases PASS ms=3424"}
+{"line": 1125, "text": "SUITE window-manager CASE focus/ctrl-c PASS ms=3649"}
+{"line": 1168, "text": "SUITE window-manager CASE focus/navigation-keys PASS ms=5165"}
+{"line": 1194, "text": "SUITE window-manager CASE focus/escape PASS ms=3623"}
+{"line": 1224, "text": "SUITE window-manager CASE focus/cycle-next PASS ms=5036"}
+{"line": 1248, "text": "SUITE window-manager CASE pointer/local-coords PASS ms=3561"}
+{"line": 1273, "text": "SUITE window-manager CASE pointer/capture PASS ms=2617"}
+{"line": 1309, "text": "SUITE window-manager CASE pointer/right-middle PASS ms=3595"}
+{"line": 1339, "text": "SUITE window-manager CASE pointer/scroll-under-pointer PASS ms=4672"}
+{"line": 1365, "text": "SUITE window-manager CASE pointer/outside-not-delivered PASS ms=3819"}
+{"line": 1392, "text": "SUITE window-manager CASE pointer/press-release-order PASS ms=3532"}
+{"line": 1423, "text": "SUITE window-manager CASE geometry/drag-move PASS ms=3724"}
+{"line": 1450, "text": "SUITE window-manager CASE geometry/resize-right PASS ms=3476"}
+{"line": 1477, "text": "SUITE window-manager CASE geometry/resize-bottom PASS ms=3671"}
+{"line": 1506, "text": "SUITE window-manager CASE geometry/client-refuses PASS ms=3243"}
+{"line": 1537, "text": "SUITE window-manager CASE geometry/resize-cross PASS ms=3685"}
+{"line": 1565, "text": "SUITE window-manager CASE geometry/client-resize PASS ms=2908"}
+{"line": 1590, "text": "SUITE window-manager CASE lifecycle/close-request PASS ms=3909"}
+{"line": 1621, "text": "SUITE window-manager CASE lifecycle/client-exit PASS ms=4214"}
+{"line": 1651, "text": "SUITE window-manager CASE lifecycle/client-crash PASS ms=4445"}
+{"line": 1687, "text": "SUITE window-manager CASE lifecycle/client-exec PASS ms=4812"}
+{"line": 1714, "text": "SUITE window-manager CASE lifecycle/close-unresponsive PASS ms=3646"}
+{"line": 1733, "text": "SUITE window-manager CASE lifecycle/compositor-steal PASS ms=3473"}
+{"line": 1754, "text": "SUITE window-manager CASE lifecycle/inject-denied PASS ms=1801"}
+{"line": 1811, "text": "SUITE window-manager CASE lifecycle/launch-ack PASS ms=4364"}
+{"line": 1864, "text": "SUITE window-manager CASE lifecycle/launch-reaped PASS ms=5155"}
+{"line": 1885, "text": "SUITE window-manager CASE recovery/clients-notified PASS ms=2632"}
+{"line": 1919, "text": "SUITE window-manager CASE recovery/restart-adopts PASS ms=6370"}
+{"line": 1964, "text": "SUITE window-manager CASE recovery/interaction-after-restart PASS ms=7206"}
+{"line": 2011, "text": "SUITE window-manager CASE recovery/stack-restored PASS ms=8153"}
+{"line": 2073, "text": "VALUE wm-startup pid=717 phase=compositor-exec ns=244817480833 elapsed_us=0"}
+{"line": 2074, "text": "VALUE wm-startup pid=717 phase=config-ready ns=244817673791 elapsed_us=192"}
+{"line": 2075, "text": "VALUE wm-startup pid=717 phase=context-begin ns=245139875958 elapsed_us=322395"}
+{"line": 2076, "text": "VALUE wm-startup pid=717 phase=context-ready ns=245139881166 elapsed_us=322400"}
+{"line": 2077, "text": "VALUE wm-startup pid=717 phase=desktop-target-ready ns=244868776791 elapsed_us=51295"}
+{"line": 2078, "text": "VALUE wm-startup pid=717 phase=background-target-ready ns=244874076500 elapsed_us=56595"}
+{"line": 2079, "text": "VALUE wm-startup pid=717 phase=scanout-a-ready ns=244879500708 elapsed_us=62019"}
+{"line": 2080, "text": "VALUE wm-startup pid=717 phase=scanout-b-ready ns=244882986833 elapsed_us=65506"}
+{"line": 2081, "text": "VALUE wm-startup pid=717 phase=scene-target-ready ns=244958655375 elapsed_us=141174"}
+{"line": 2082, "text": "VALUE wm-startup pid=717 phase=targets-ready ns=245398666083 elapsed_us=581185"}
+{"line": 2083, "text": "VALUE wm-startup pid=717 phase=startup-font-begin ns=244865043708 elapsed_us=47562"}
+{"line": 2084, "text": "VALUE wm-startup pid=717 phase=fonts-ready ns=246298739625 elapsed_us=1481258"}
+{"line": 2085, "text": "VALUE wm-startup pid=717 phase=scene-ready ns=245205887958 elapsed_us=388407"}
+{"line": 2086, "text": "VALUE wm-startup pid=717 phase=background-ready ns=245398664250 elapsed_us=581183"}
+{"line": 2087, "text": "VALUE wm-startup pid=717 phase=chrome-blit-ready ns=246299544166 elapsed_us=1482063"}
+{"line": 2088, "text": "VALUE wm-startup pid=717 phase=chrome-taskbar-ready ns=246306999416 elapsed_us=1489518"}
+{"line": 2089, "text": "VALUE wm-startup pid=717 phase=chrome-appbar-ready ns=246307803458 elapsed_us=1490322"}
+{"line": 2090, "text": "VALUE wm-startup pid=717 phase=chrome-ready ns=246307804916 elapsed_us=1490324"}
+{"line": 2091, "text": "VALUE wm-startup pid=717 phase=fills-ready ns=246326651000 elapsed_us=1509170"}
+{"line": 2092, "text": "VALUE wm-startup pid=717 phase=pointer-presented ns=246328876541 elapsed_us=1511395"}
+{"line": 2093, "text": "VALUE wm-startup pid=717 phase=checks-ready ns=246503895500 elapsed_us=1686414"}
+{"line": 2094, "text": "VALUE wm-startup pid=717 phase=font-plan-begin ns=246278841666 elapsed_us=1461360"}
+{"line": 2095, "text": "VALUE wm-startup pid=717 phase=font-plan-return ns=246282024750 elapsed_us=1464543"}
+{"line": 2096, "text": "VALUE wm-startup pid=717 phase=font-submit-begin ns=246282026166 elapsed_us=1464545"}
+{"line": 2097, "text": "VALUE wm-startup pid=717 phase=font-submit-return ns=246297059875 elapsed_us=1479579"}
+{"line": 2098, "text": "VALUE wm-startup pid=717 phase=font-wait-return ns=246298731375 elapsed_us=1481250"}
+{"line": 2099, "text": "VALUE wm-startup pid=717 phase=font-draw-return ns=246306989250 elapsed_us=1489508"}
+{"line": 2100, "text": "VALUE wm-startup pid=717 phase=frame-check-begin ns=246328880083 elapsed_us=1511399VALUE bwm-check-us 21195"}
+{"line": 2102, "text": "VALUE wm-startup pid=717 phase=frame-buffers-ready ns=246335370791 elapsed_us=1517889"}
+{"line": 2103, "text": "VALUE wm-startup pid=717 phase=frame-scanout-return ns=246376000000 elapsed_us=1558519"}
+{"line": 2104, "text": "VALUE wm-startup pid=717 phase=frame-desktop-return ns=246375990708 elapsed_us=1558509"}
+{"line": 2105, "text": "VALUE wm-startup pid=717 phase=frame-pixels-ready ns=246377809166 elapsed_us=1560328"}
+{"line": 2106, "text": "VALUE wm-startup pid=717 phase=initial-windows-ready ns=246326685250 elapsed_us=1509204"}
+{"line": 2107, "text": "VALUE wm-startup pid=717 phase=title-plan-begin ns=246326767916 elapsed_us=1509287"}
+{"line": 2108, "text": "VALUE wm-startup pid=717 phase=title-plan-return ns=246326795458 elapsed_us=1509314"}
+{"line": 2109, "text": "VALUE wm-startup pid=717 phase=client-chrome-ready ns=246505648583 elapsed_us=1688167"}
+{"line": 2110, "text": "VALUE wm-startup pid=717 phase=client-compose-begin ns=246505743541 elapsed_us=1688262"}
+{"line": 2111, "text": "VALUE wm-startup pid=717 phase=desktop-ready ns=246503901333 elapsed_us=1686420"}
+{"line": 2112, "text": "VALUE wm-startup pid=717 phase=first-composite ns=248236963375 elapsed_us=3419482"}
+{"line": 2113, "text": "VALUE wm-startup pid=728 phase=compositor-exec ns=251190675875 elapsed_us=0"}
+{"line": 2114, "text": "VALUE wm-startup pid=728 phase=config-ready ns=251190825666 elapsed_us=149"}
+{"line": 2115, "text": "VALUE wm-startup pid=728 phase=context-begin ns=252524254916 elapsed_us=1333579"}
+{"line": 2116, "text": "VALUE wm-startup pid=728 phase=context-ready ns=252524259250 elapsed_us=1333583"}
+{"line": 2117, "text": "VALUE wm-startup pid=728 phase=desktop-target-ready ns=251203722416 elapsed_us=13046"}
+{"line": 2118, "text": "VALUE wm-startup pid=728 phase=background-target-ready ns=251214964583 elapsed_us=24288"}
+{"line": 2119, "text": "VALUE wm-startup pid=728 phase=scanout-a-ready ns=251222303541 elapsed_us=31627"}
+{"line": 2120, "text": "VALUE wm-startup pid=728 phase=scanout-b-ready ns=251286043416 elapsed_us=95367"}
+{"line": 2121, "text": "VALUE wm-startup pid=728 phase=scene-target-ready ns=251498281375 elapsed_us=307605"}
+{"line": 2122, "text": "VALUE wm-startup pid=728 phase=targets-ready ns=252832009291 elapsed_us=1641333"}
+{"line": 2123, "text": "VALUE wm-startup pid=728 phase=startup-font-begin ns=251198438375 elapsed_us=7762"}
+{"line": 2124, "text": "VALUE wm-startup pid=728 phase=fonts-ready ns=253714579083 elapsed_us=2523903"}
+{"line": 2125, "text": "VALUE wm-startup pid=728 phase=scene-ready ns=252586001250 elapsed_us=1395325"}
+{"line": 2126, "text": "VALUE wm-startup pid=728 phase=background-ready ns=252832007625 elapsed_us=1641331"}
+{"line": 2127, "text": "VALUE wm-startup pid=728 phase=chrome-blit-ready ns=253715161333 elapsed_us=2524485"}
+{"line": 2128, "text": "VALUE wm-startup pid=728 phase=chrome-taskbar-ready ns=253721156125 elapsed_us=2530480"}
+{"line": 2129, "text": "VALUE wm-startup pid=728 phase=chrome-appbar-ready ns=253721806000 elapsed_us=2531130"}
+{"line": 2130, "text": "VALUE wm-startup pid=728 phase=chrome-ready ns=253721808791 elapsed_us=2531132"}
+{"line": 2131, "text": "VALUE wm-startup pid=728 phase=fills-ready ns=253743611583 elapsed_us=2552935"}
+{"line": 2132, "text": "VALUE wm-startup pid=728 phase=pointer-presented ns=253744785083 elapsed_us=2554109"}
+{"line": 2133, "text": "VALUE wm-startup pid=728 phase=font-plan-begin ns=253673998083 elapsed_us=2483322"}
+{"line": 2134, "text": "VALUE wm-startup pid=728 phase=font-plan-return ns=253681285416 elapsed_us=2490609"}
+{"line": 2138, "text": "VALUE wm-startup pid=728 phase=font-submit-return ns=253712608000 elapsed_us=2521932"}
+{"line": 2139, "text": "VALUE wm-startup pid=728 phase=font-wait-return ns=253714570625 elapsed_us=2523894"}
+{"line": 2140, "text": "VALUE wm-startup pid=728 phase=font-draw-return ns=253721144708 elapsed_us=2530468"}
+{"line": 2141, "text": "VALUE wm-startup pid=728 phase=frame-check-begin ns=253744791125 elapsed_us=2554115"}
+{"line": 2142, "text": "VALUE wm-startup pid=728 phase=frame-buffers-ready ns=253748790000 elapsed_us=2558114"}
+{"line": 2143, "text": "VALUE wm-startup pid=728 phase=initial-windows-ready ns=253743659916 elapsed_us=2552984"}
+{"line": 2144, "text": "VALUE wm-startup pid=728 phase=title-plan-begin ns=253743730250 elapsed_us=2553054"}
+{"line": 2145, "text": "VALUE wm-startup pid=728 phase=title-plan-return ns=253743793875 elapsed_us=2553118"}
+{"line": 2175, "text": "SUITE window-manager CASE recovery/supervisor-restarts FAIL ms=9639 msg=bwm composite of client 83 commit 4: no acknowledgment within 2000 ms; last readback error=Some(\"SCANOUT_READBACK: EAGAIN, reason 0\"); last completed=None; [ini"}
+{"line": 2206, "text": "SUITE window-manager CASE clipboard/cross-process PASS ms=6097"}
+{"line": 2235, "text": "SUITE window-manager CASE clipboard/utf8 PASS ms=6390"}
+{"line": 2260, "text": "SUITE window-manager CASE clipboard/large PASS ms=6158"}
+{"line": 2284, "text": "SUITE window-manager CASE clipboard/nul-bytes PASS ms=5759"}
+{"line": 2313, "text": "SUITE window-manager CASE clipboard/replace PASS ms=5649"}
+{"line": 2335, "text": "SUITE window-manager CASE clipboard/owner-exit PASS ms=5343"}
+{"line": 2361, "text": "SUITE window-manager CASE liveness/idle-no-composites PASS ms=4892"}
+{"line": 2395, "text": "SUITE window-manager CASE liveness/hung-client PASS ms=5647"}
+{"line": 2422, "text": "SUITE window-manager CASE liveness/wake-on-registry PASS ms=5824"}
+{"line": 2467, "text": "SUITE window-manager CASE liveness/stress-animation PASS ms=21564"}
+{"line": 2518, "text": "SUITE window-manager CASE liveness/memory-bounded PASS ms=33092"}
+{"line": 2530, "text": "SUITE window-manager VALUE performance/typing-latency latency-median=5072us expect=0..20000us"}
+{"line": 2532, "text": "SUITE window-manager VALUE performance/typing-latency latency-max=11103us expect=0..50000us"}
+{"line": 2543, "text": "SUITE window-manager CASE performance/typing-latency PASS ms=9992"}
+{"line": 2552, "text": "SUITE window-manager VALUE performance/pointer-latency latency-median=4271us expect=0..20000us"}
+{"line": 2556, "text": "SUITE window-manager VALUE performance/pointer-latency latency-max=8511us expect=0..50000us"}
+{"line": 2566, "text": "SUITE window-manager CASE performance/pointer-latency PASS ms=10304"}
+{"line": 2580, "text": "SUITE window-manager VALUE performance/present-latency pipeline-window=119"}
+{"line": 2582, "text": "SUITE window-manager VALUE performance/present-latency present-median=1964us expect=0..16000us"}
+{"line": 2584, "text": "SUITE window-manager VALUE performance/present-latency present-max=4770us expect=0..33000us"}
+{"line": 2596, "text": "SUITE window-manager CASE performance/present-latency PASS ms=7603"}
+{"line": 2617, "text": "SUITE window-manager VALUE performance/frame-floor pipeline-window=120"}
+{"line": 2619, "text": "SUITE window-manager VALUE performance/frame-floor measurement-begin=392042417416ns"}
+{"line": 2621, "text": "SUITE window-manager VALUE performance/frame-floor measurement-end=397042485000ns"}
+{"line": 2623, "text": "SUITE window-manager VALUE performance/frame-floor presentation-intervals=1635intervals"}
+{"line": 2626, "text": "SUITE window-manager VALUE performance/frame-floor presentation-span=4933235000ns"}
+{"line": 2630, "text": "SUITE window-manager VALUE performance/frame-floor composites-per-second=331hz expect=60..9223372036854775807hz"}
+{"line": 2897, "text": "SUITE window-manager VALUE performance/frame-floor presentation-gap-max=8462291ns"}
+{"line": 2907, "text": "SUITE window-manager CASE performance/frame-floor FAIL ms=8951 msg=one client did not receive 60 completed composites per second"}
+{"line": 2929, "text": "SUITE window-manager VALUE performance/idle-cpu idle-cpu=0percent expect=0..2percent"}
+{"line": 2945, "text": "SUITE window-manager CASE performance/idle-cpu PASS ms=12556"}
+{"line": 2980, "text": "SUITE window-manager VALUE performance/latency-under-animation latency-median=30151us expect=0..33000us"}
+{"line": 2983, "text": "SUITE window-manager VALUE performance/latency-under-animation latency-max=62819us expect=0..100000us"}
+{"line": 3000, "text": "SUITE window-manager CASE performance/latency-under-animation PASS ms=16166"}
+{"line": 3012, "text": "SUITE window-manager VALUE performance/clipboard-latency clipboard-max=6627us expect=0..50000us"}
+{"line": 3024, "text": "SUITE window-manager CASE performance/clipboard-latency PASS ms=5347"}
+{"line": 3026, "text": "SUITE window-manager DONE passed=79 failed=2 skipped=0 total=81"}
+{"line": 3028, "text": "SUITE window-manager MEMORY after free=84625 heap_free_kb=38407 user_stacks=15 user_pages=602 page_tables=11 page_cache=0 kernel_stacks=0 buffers=4218 other=130 receipts=0 settle_ms=202"}
+{"line": 3030, "text": "SUITE window-manager MEMORY reclaimed=PASS free_before=84635 free_after=84625 allowance=48"}
+{"line": 3036, "text": "SUITE_SEQUENCE READY window-manager"}

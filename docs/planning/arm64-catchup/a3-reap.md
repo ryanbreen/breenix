@@ -135,3 +135,105 @@ merge follows this failure. The correction and check are pushed to
 `arm-catchup/a-3` and `metal-arm-catchup/a-3`. PR #2874 remains draft and unmerged;
 its description and #2872 are updated with this result. The R240's prior failed
 80/81 remains recorded in the preceding continuation report.
+
+
+## User-directed acceptance at b26abb03: 79/81
+
+The user explicitly directed acceptance before blind review, without another ruling
+or prior review. This run used clean `b26abb03752f2f0876bbb2110cc267917343e913`;
+fresh `origin/main` was already an ancestor. The mechanism investigation and u11
+added no runtime repair after `403f5501`. This acceptance does not establish that
+ledger line 167's unresolved mechanisms were fixed.
+
+Vigil `20261111T165116Z-qemu-68510` records ARM64 QEMU, standalone window-manager,
+watch false, display false, dirty 0 and launcher exit 1. The launcher command was
+`boot-interactive.sh --mode suite --suite window-manager --gpu-gl --no-display --no-build`.
+It used HVF and headless SPICE GL, without a debugger. The prediction precedes the
+boot in the ARM ledger. Start uptime loads were 5.48 / 6.32 / 10.23; end loads were
+7.77 / 6.94 / 8.79. No lane builds, installers or heavy work ran during the boot.
+
+[Producer records](serials/a3-acceptance-b26abb03.txt) retain 81/81 CASE lines,
+startup stamps and performance values as JSON-encoded source lines, preserving
+coalesced diagnostics. The full raw serial remains in Vigil; its SHA-256 is
+`22c35eb03f702b83c2c36cd2e1adb51b9f2edba327ef2353ea47d2b123b31358`.
+The unchanged suite-verdict selection API was invoked once against that raw file;
+the selected manifest ids exactly equal the 81 ids of `gt710-step-21-7.json`.
+It refuses these two failed cases:
+
+```text
+SUITE window-manager CASE recovery/supervisor-restarts FAIL ms=9639 msg=bwm composite of client 83 commit 4: no acknowledgment within 2000 ms; last readback error=Some("SCANOUT_READBACK: EAGAIN, reason 0"); last completed=None; [ini
+SUITE window-manager CASE performance/frame-floor FAIL ms=8951 msg=one client did not receive 60 completed composites per second
+```
+
+All 81 CASE records are complete. DONE is line 3026 (79 passed, 2 failed, 0 skipped),
+MEMORY reclaimed is line 3030 (84635 to 84625 pages, PASS with allowance 48), and
+standalone READY is line 3036. The generic scorer refuses exactly the 12 permitted
+planned-empty categories, with no additional selection refusal. The launcher
+accepts ANGLE/Metal with 983 attestation records. Those conditions do not excuse
+the two failed cases. Performance is 6/7, including passing typing, pointer,
+present, idle CPU, animation latency and clipboard latency.
+
+### Recovery deadlines and source interpretation
+
+| Case | Deadline | Measured evidence | Headroom acceptance |
+| --- | ---: | --- | --- |
+| restart-adopts | 500 ms | PASS, case total 6370 ms; no exported kill, reap-return or exit-stage records | Unresolved: actual reap interval and the required 125 ms headroom cannot be calculated |
+| supervisor-restarts | 2000 ms | Client 83 commit 4 wait fails; replacement PID 728 reaches frame-buffers-ready at 2558.114 ms since exec, with no first-composite stamp | Failed; no passing margin or required 500 ms headroom established |
+
+The source of the reap evidence gap is unchanged: `Child::stop` in
+`wm_suite/desktop.rs` exports requested/kill-return times and exit stages only
+inside its error handler. A passing total is not a reap interval. No synthetic
+margin is inferred from its PASS, especially because `until_from` evaluates its
+predicate before the deadline check.
+
+The replacement and original timelines are distinct. Original PID 717 reaches
+first composite at 3419.482 ms. Replacement PID 728 records:
+
+| Phase | Milliseconds since replacement exec |
+| --- | ---: |
+| Five target allocations complete | 307.605 |
+| Context ready | 1333.583 |
+| Background ready | 1641.331 |
+| Font planning begins | 2483.322 |
+| Font planning returns | 2490.609 |
+| Font submission returns | 2521.932 |
+| Fonts ready | 2523.903 |
+| Chrome ready | 2531.132 |
+| Initial windows ready | 2552.984 |
+| Initial frame check begins | 2554.115 |
+| Frame buffers ready | 2558.114 |
+| Checks ready / first composite | absent |
+
+`bwm.rs` joins the font worker before chrome and the initial whole-frame check;
+that check precedes initial client composition. The interval from startup-font-begin
+at 7.762 ms to font-plan-begin is 2475.560 ms. That interval includes config loading,
+font reading/parsing, cache creation, logging and scheduling before coverage
+planning. These stamps do not isolate those costs. This capture's slow interval
+is before planning, rather than the previous failure's long font-submit interval.
+The EAGAIN readback gate in `kernel/src/syscall/window.rs` still combines busy and
+claim-baseline refusal; GPU fallback is another possible source, as the mechanism
+report explains. These diagnostics do not establish a unique causal refusal or demonstrate
+a mechanism repair. Exact wait-start and
+first-composite times are not exported. The observed exec-to-phase values above
+are not substituted for the 2000 ms wait measurement.
+
+### Frame-floor failure
+
+The producer reports window 120, measurement bounds 392042417416 to 397042485000 ns,
+1635 presentation intervals, span 4933235000 ns, aggregate 331 Hz and maximum
+internal gap 8462291 ns. `wm_suite/rate.rs::measure` also requires the first and
+last receipts to be within one 60 Hz period of the measurement endpoints. The
+window lasts 5000067584 ns, so the combined endpoint gaps are 66832584 ns. Their
+sum exceeds two periods (33333333.333 ns), so at least one endpoint violates
+the unchanged bound even though the interior aggregate rate passes. The capture
+does not export the two endpoint gaps individually. This is failed frame-floor
+evidence, not grounds to weaken or remove its endpoint checks. #2763 tracks ARM
+pacing parity; #2872 retains the recovery issue.
+
+This acceptance is failed and A.3 remains unresolved. No passing pending board
+cell is set. There is no repeat ARM boot. u11 and this acceptance change no
+runtime code, so the brief's conditional new R240 window-manager run is not
+triggered; the earlier native `20261111T150757Z-metal` 80/81 remains failed evidence.
+No R240 access, tool deployment or persistent install occurs in this acceptance.
+The report/excerpt update requires no runtime rebuild or suite rerun. PR #2874
+remains draft and unmerged for the subsequent review.
