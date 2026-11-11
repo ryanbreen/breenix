@@ -12,15 +12,17 @@ class InitialScene(unittest.TestCase):
     def test_empty_desktop_does_not_wait_for_a_client_or_clock(self):
         main = (ROOT / 'userspace/programs/src/bwm.rs').read_text()
         initial = re.search(r'let mut full_redraw = [^;]+;', main).group()
+        dirty = re.search(r'let mut windows_dirty = [^;]+;', main).group().replace('let mut', 'let')
         wake = ROOT / 'userspace/programs/src/bwm/wake.rs'
         source = f'''#[path = "{wake}"] mod wake;
 #[test] fn empty_desktop() {{
     {initial}
+    {dirty}
     // Initial discovery found no clients. No input, wall-clock tick or UI
     // timer will wake this frozen desktop; the scene itself must be pending.
     let initial_windows = false;
     if initial_windows {{ full_redraw = true; }}
-    assert_eq!(wake::timeout(full_redraw, false, 0, 0,
+    assert_eq!(wake::timeout(full_redraw || windows_dirty, false, 0, 0,
         wake::Deadlines::default()), 0, "first scene slept before publishing a receipt");
     assert_eq!(wake::wait_ns(0, 0, None), Some(0));
 }}'''

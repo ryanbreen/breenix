@@ -359,9 +359,7 @@ fn main() {
     let mut display_lost = false;
     // The pointer the last composed frame drew, so a move repaints where it was.
     let mut drawn_pointer = cursor_pointer(first_pointer);
-    // Startup presentation checks the bare pixels but does not publish a scene
-    // receipt. Compose once even without clients or an advancing UI clock.
-    let mut full_redraw = true;
+    let mut full_redraw = false;
     let mut validation: ValidationQueue<PresentedScene> = ValidationQueue::new();
     let mut working_scene = PresentedScene { layers: Vec::new(), pointer: first_pointer };
 
