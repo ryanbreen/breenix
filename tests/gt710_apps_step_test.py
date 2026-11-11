@@ -264,7 +264,7 @@ class AppsStep(unittest.TestCase):
         self.assertEqual(selected, expected)
         self.assertEqual(NAMES[:len(expected)], expected)
         shutil.copyfile(selection_path, self.definition / 'docs/gui/gt710-step-23-5.json')
-        with patch.dict(globals(), SELECTED=selected):
+        with patch.dict(globals(), SELECTED=NAMES):
             original = serial()
         def record(text):
             (self.path / 'serial.txt').write_text(text)
