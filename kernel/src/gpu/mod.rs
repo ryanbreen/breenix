@@ -3074,12 +3074,12 @@ pub fn owner_ended(tgid: u64) {
 // The system call.
 
 pub(crate) fn caller() -> Result<u64, i64> {
-    let tid = crate::task::scheduler::current_thread_id().ok_or(EINVAL)?;
-    crate::process::with_process_manager(|m| {
-        m.find_process_by_thread(tid).map(|(row, p)| p.thread_group_id.unwrap_or(row.as_u64()))
-    })
-    .flatten()
-    .ok_or(EINVAL)
+    // The immutable thread account already names the owning group. GPU caller
+    // identity must not wait for unrelated exec/startup on PROCESS_MANAGER.
+    match crate::syscall::handlers::sys_getpid() {
+        crate::syscall::SyscallResult::Ok(group) if group != 0 => Ok(group),
+        _ => Err(EINVAL),
+    }
 }
 
 fn read_arg<T: Plain>(arg: u64, len: u64) -> Result<T, i64> {
