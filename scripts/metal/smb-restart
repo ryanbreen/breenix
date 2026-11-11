@@ -15,6 +15,8 @@ import time
 
 REQUEST = re.compile(r'SUITE network-shares SMBRESTART smb/server-restart seq=([0-9]{1,20})\r?')
 DONE = re.compile(r'SUITE network-shares DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+\r?')
+GUI_REQUEST = re.compile(r'SUITE gui-apps SMB(STOP|START) guskit/smb-share-gone seq=([0-9]{1,20})\r?')
+GUI_DONE = re.compile(r'SUITE gui-apps DONE\b.*\r?')
 
 
 def prepare(boot, remote, incus, instance, minutes=240):
@@ -42,6 +44,7 @@ def watch(boot, instance, remote, incus, minutes=45):
     directory = '/var/lib/breenix-metal/boots/' + boot
     records = dict(boot=boot, requests=[])
     answered, offset, pending = set(), 0, b''
+    stopped = False
     deadline = time.monotonic() + minutes * 60
 
     def save():
@@ -56,42 +59,60 @@ def watch(boot, instance, remote, incus, minutes=45):
         except (OSError, subprocess.TimeoutExpired):
             return -1
 
-    while time.monotonic() < deadline:
-        chunk = remote('tail', '-c', '+%d' % (offset + 1), directory + '/serial.txt',
-                       capture_output=True, timeout=30)
-        if chunk.returncode == 0:
-            offset += len(chunk.stdout)
-            pending += chunk.stdout
-        *lines, pending = pending.split(b'\n')
-        finished = False
-        for line in (raw.decode('utf-8', errors='replace') for raw in lines):
-            if DONE.fullmatch(line):
-                finished = True
-            request = REQUEST.fullmatch(line)
-            if not request:
-                continue
-            seq = int(request.group(1))
-            if seq in answered:
-                continue
-            answered.add(seq)
-            record = dict(case='smb/server-restart', seq=seq, ok=False)
-            records['requests'].append(record)
-            # Retain the attempt before changing server state. A duplicate serial record
-            # cannot cause a second restart, including when the first command fails.
-            save()
-            record['restartExit'] = execute('systemctl', 'restart', 'smbd')
-            if record['restartExit'] == 0:
-                record['markerExit'] = execute('install', '-m', '0644', '/dev/null', '/srv/smb/rw/.restarted-' + str(seq))
-                record['ok'] = record['markerExit'] == 0
-            save()
-            print('smb-restart: seq=%d %s' % (seq, 'acknowledged' if record['ok'] else 'failed'), flush=True)
-        if finished or remote('test', '-e', directory + '/ended', capture_output=True, timeout=30).returncode == 0:
-            save()
-            return int(any(not record['ok'] for record in records['requests']))
-        time.sleep(0.5)
-    records['error'] = 'boot completion watchdog expired'
+    try:
+        while time.monotonic() < deadline:
+            chunk = remote('tail', '-c', '+%d' % (offset + 1), directory + '/serial.txt',
+                           capture_output=True, timeout=30)
+            if chunk.returncode == 0:
+                offset += len(chunk.stdout)
+                pending += chunk.stdout
+            *lines, pending = pending.split(b'\n')
+            finished = False
+            for line in (raw.decode('utf-8', errors='replace') for raw in lines):
+                if DONE.fullmatch(line) or GUI_DONE.fullmatch(line):
+                    finished = True
+                request = REQUEST.fullmatch(line)
+                gui = GUI_REQUEST.fullmatch(line)
+                if not request and not gui:
+                    continue
+                seq = int(request.group(1) if request else gui.group(2))
+                if seq in answered:
+                    continue
+                answered.add(seq)
+                record = dict(case='smb/server-restart' if request else 'guskit/smb-share-gone', seq=seq, ok=False)
+                if gui:
+                    record['action'] = gui.group(1).lower()
+                records['requests'].append(record)
+                # Retain the attempt before changing server state. A duplicate serial record
+                # cannot cause a second restart, including when the first command fails.
+                save()
+                if request:
+                    record['restartExit'] = execute('systemctl', 'restart', 'smbd')
+                    if record['restartExit'] == 0:
+                        record['markerExit'] = execute('install', '-m', '0644', '/dev/null', '/srv/smb/rw/.restarted-' + str(seq))
+                        record['ok'] = record['markerExit'] == 0
+                else:
+                    action = record['action']
+                    if action == 'stop':
+                        stopped = True
+                    record['exit'] = execute('systemctl', action, 'smbd')
+                    record['ok'] = record['exit'] == 0
+                    if action == 'start' and record['ok']:
+                        stopped = False
+                save()
+                print('smb-restart: seq=%d %s' % (seq, 'acknowledged' if record['ok'] else 'failed'), flush=True)
+            if finished or remote('test', '-e', directory + '/ended', capture_output=True, timeout=30).returncode == 0:
+                break
+            time.sleep(0.5)
+        else:
+            records['error'] = 'boot completion watchdog expired'
+    finally:
+        if stopped:
+            records['cleanupStartExit'] = execute('systemctl', 'start', 'smbd')
+
     save()
-    return 1
+    return int('error' in records or records.get('cleanupStartExit', 0) != 0 or
+               any(not record['ok'] for record in records['requests']))
 
 
 def main():
