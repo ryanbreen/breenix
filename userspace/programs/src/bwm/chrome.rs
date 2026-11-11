@@ -45,6 +45,17 @@ fn validation_idle(poll_fds: &mut [io::PollFd]) -> bool {
         && matches!(io::poll(poll_fds, 20), Ok(0)) && poll_fds.iter().all(|fd| fd.revents == 0)
 }
 
+/// Wait for an idle opportunity that fits the observed cost, rather than repeatedly
+/// beginning a long comparison between the events of an ongoing interaction.
+pub(super) fn defer_checks_after_activity(windows: &mut [Window], now_ms: u64, cost_ms: u64, active: bool) {
+    if active {
+        let until = now_ms.saturating_add(cost_ms);
+        for win in windows.iter_mut().filter(|win| !win.frame_checked) {
+            win.check_after_ms = win.check_after_ms.max(until);
+        }
+    }
+}
+
 pub(super) fn run_deferred_check(
     queue: &mut ValidationQueue<PresentedScene>,
     gpu: &mut Compositor,

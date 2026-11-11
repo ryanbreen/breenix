@@ -129,6 +129,7 @@ struct CheckWorkspace {
     band: Vec<u8>,
     desktop: Vec<u8>,
     costs: [u64; 5],
+    last_ns: u64,
 }
 
 impl CheckWorkspace {
@@ -548,6 +549,8 @@ impl Compositor {
         self.check_area(subject, layers, pointer, [0, 0, self.width, self.height])
     }
 
+    pub fn validation_delay_ms(&self) -> u64 { self.check_workspace.last_ns.div_ceil(1_000_000) }
+
     pub fn check_while(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, idle: impl FnMut() -> bool)
         -> Option<Result<u64, CheckError>> {
         self.check_area_while(subject, layers, pointer, [0, 0, self.width, self.height], idle)
@@ -570,6 +573,7 @@ impl Compositor {
         let began = monotonic_ns();
         let result = self.check_area_into(subject, layers, pointer, area, &mut workspace, &mut idle);
         let elapsed = monotonic_ns().saturating_sub(began);
+        workspace.last_ns = workspace.last_ns.max(elapsed);
         if elapsed >= 100_000_000 {
             use std::io::Write;
             let c = workspace.costs;

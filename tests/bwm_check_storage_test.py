@@ -28,7 +28,7 @@ impl Compositor{fn admit(&mut self,windows:&[Sampled])->Result<(),()>{@ADMIT@}}
  let windows:Vec<_>=(0..8).map(|n|Sampled{id:n+1,sample:1,commit_id:7,width:if n==3{640}else{240},height:if n==3{480}else{160}}).collect();
  let mut scratch=Vec::new();resize_readback(&mut scratch,1);assert_eq!(scratch.len(),1);ALLOCATED.store(0,Ordering::Relaxed);
  let mut c=Compositor{sampled:vec![],check_workspace:CheckWorkspace::default()};
- assert!(c.check_workspace.band.is_empty() && c.check_workspace.desktop.is_empty());assert_eq!(c.check_workspace.costs,[0;5]);
+ assert!(c.check_workspace.band.is_empty() && c.check_workspace.desktop.is_empty());assert_eq!(c.check_workspace.costs,[0;5]);assert_eq!(c.check_workspace.last_ns,0);
  c.admit(&windows).unwrap();
  assert_eq!(c.check_workspace.clients.len(),8,"first deferred check would allocate after steady-state warmup");
  assert_eq!(ALLOCATED.load(Ordering::Relaxed),8);
