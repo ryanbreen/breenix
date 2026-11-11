@@ -39,6 +39,7 @@ import threading
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import metal_prebuilt
+from metal_root import smb_gui_selection
 
 TOOLS = '/opt/breenix-metal'
 STATE = '/var/lib/breenix-metal'
@@ -125,9 +126,9 @@ def configure_smb(env, credential=None):
         raise SystemExit('network-shares: cannot deliver private SMB credentials')
 
 
-def wait_smb_ready(env, boot_id, suite):
+def wait_smb_ready(env, boot_id, suite, smb_helper=False):
     """Hold image delivery until the leased helper has removed stale acknowledgments."""
-    if 'network-shares' not in (suite or '').split(','):
+    if not smb_helper and 'network-shares' not in (suite or '').split(','):
         return
     directory = f'{STATE}/boots/{boot_id}'
     deadline = time.monotonic() + 241 * 60
@@ -266,7 +267,14 @@ def install_persistent(args):
     return status
 
 
+def require_gui_apps_alone(suites):
+    # Desktop ownership across a suite sequence is deferred to #2877.
+    if 'gui-apps' in (suites or '').split(',') and suites != 'gui-apps':
+        raise SystemExit('boot gui-apps on its own')
+
+
 def boot(args):
+    require_gui_apps_alone(args.suite)
     if args.suite and args.mode == 'default':
         args.mode = 'suite'
     if getattr(args, 'persistent', False):
@@ -345,13 +353,15 @@ def boot(args):
             target = 'main' if branch == 'main' else 'branch:' + branch
     if args.suite and payload == 'image':
         args.suite = resolve_suites(env, sha, args.suite)
+        require_gui_apps_alone(args.suite)
         print(f'[metal-run] suites: {args.suite}', file=sys.stderr, flush=True)
     prebuilt = getattr(args, 'prebuilt', None)
     if prebuilt:
         if payload != 'image':
             raise SystemExit('--prebuilt needs an image payload')
         verify_prebuilt(env, prebuilt, sha, args)
-    smb = payload == 'image' and args.mode == 'suite' and 'network-shares' in (args.suite or '').split(',')
+    smb = payload == 'image' and (args.mode == 'suite' and 'network-shares' in (args.suite or '').split(',')
+                                  or smb_gui_selection(args.mode, args.suite, getattr(args, 'case', None)))
     if smb:
         configure_smb(env)
     boot_id = time.strftime('%Y%m%dT%H%M%SZ', time.gmtime()) + '-metal'
@@ -446,7 +456,7 @@ def boot(args):
             build_command = (['_prebuilt', boot_id, sha, prebuilt, '--mode', args.mode] if prebuilt else
                              ['_build', boot_id, sha])
             subprocess.Popen([sys.executable, str(Path(__file__).resolve()), *build_command] + features + suite +
-                             tools_only + (['--catchup'] if catchup else []),
+                             tools_only + (['--smb-helper'] if smb else []) + (['--catchup'] if catchup else []),
                              stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
         print(json.dumps({'id': boot_id, 'build': 'started', 'commit': sha}), flush=True)
     if payload not in ('image', 'disk-readback', 'manager') and '"status": "waiting"' in result.stdout:
@@ -524,7 +534,7 @@ def verify_prebuilt(env, artifact_id, sha, args):
         raise SystemExit('prebuilt refused before staging: ' + str(error)) from None
 
 
-def deliver_prebuilt(boot_id, sha, artifact_id, mode, features=None, suite=None, catchup=False):
+def deliver_prebuilt(boot_id, sha, artifact_id, mode, features=None, suite=None, catchup=False, smb_helper=False):
     """Detached verified handoff; the existing driver owns everything after inputs-ready."""
     validate_id(boot_id)
     env = host_env()
@@ -546,7 +556,7 @@ def deliver_prebuilt(boot_id, sha, artifact_id, mode, features=None, suite=None,
         sender.stdout.close()
         if sender.wait() or receiver.returncode:
             raise ValueError('prebuilt inputs could not be copied into the service container')
-        wait_smb_ready(env, boot_id, suite)
+        wait_smb_ready(env, boot_id, suite, smb_helper)
         in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-ready', boot_id, check=True)
         print(json.dumps(dict(id=boot_id, prebuilt=artifact_id, builder='mac', status='delivered')), flush=True)
         return 0
@@ -561,7 +571,7 @@ def stub_sources(stub):
         str(path.relative_to(stub)) for path in (stub / 'src').rglob('*.rs'))
 
 
-def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=False):
+def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=False, smb_helper=False):
     """Detached: build in the metal build container, stream the inputs into the boot's stage folder, signal the driver."""
     validate_id(boot_id)
     env = host_env()
@@ -623,7 +633,7 @@ def build(boot_id, sha, features=None, suite=None, tools_profile=None, catchup=F
     if preemption_errors:
         return failed('persistent preemption failed: ' + preemption_errors[0])
     try:
-        wait_smb_ready(env, boot_id, suite)
+        wait_smb_ready(env, boot_id, suite, smb_helper)
     except ValueError as error:
         return failed(str(error))
     in_metal(env, 'python3', f'{TOOLS}/metal-boot', 'inputs-ready', boot_id, check=True)
@@ -706,6 +716,7 @@ def argument_parser(automatic=False):
     p.add_argument('--features', choices=(FAULT_FEATURE, FENCE_FEATURE, PANIC_FEATURE, TESTING_FEATURE, 'capture_panic_oracle', 'gt710_core_probe', 'gt710_clock_probe', 'watchdog_fault_inject'))
     p.add_argument('--suite')
     p.add_argument('--tools-profile', choices=('disk-readback', 'boot-manager'))
+    p.add_argument('--smb-helper', action='store_true')
     p.add_argument('--catchup', action='store_true')
     p = sub.add_parser('_prebuilt')
     p.add_argument('id')
@@ -714,6 +725,7 @@ def argument_parser(automatic=False):
     p.add_argument('--mode', required=True)
     p.add_argument('--features')
     p.add_argument('--suite')
+    p.add_argument('--smb-helper', action='store_true')
     p.add_argument('--catchup', action='store_true')
     p = sub.add_parser('_upgrade')
     p.add_argument('id')
@@ -734,9 +746,9 @@ def main():
     if args.command == 'install-persistent':
         return install_persistent(args)
     if args.command == '_build':
-        return build(args.id, args.sha, args.features, args.suite, args.tools_profile, args.catchup)
+        return build(args.id, args.sha, args.features, args.suite, args.tools_profile, args.catchup, args.smb_helper)
     if args.command == '_prebuilt':
-        return deliver_prebuilt(args.id, args.sha, args.prebuilt, args.mode, args.features, args.suite, args.catchup)
+        return deliver_prebuilt(args.id, args.sha, args.prebuilt, args.mode, args.features, args.suite, args.catchup, args.smb_helper)
     env = host_env()
     if args.command == 'follow':
         return follow(env, args.id)

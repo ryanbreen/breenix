@@ -297,6 +297,10 @@ impl Supervisor {
         self.entries.iter().any(|e| e.def.name == name && e.state == State::Running)
     }
 
+    pub fn service_state(&self, name: &str) -> Option<&str> {
+        self.entries.iter().find(|e| e.def.name == name).map(|e| e.state.name())
+    }
+
     /// Read the table and, for the system's init, open `/run/breenix` and the control socket.
     pub fn load(scope: Scope, publish: bool) -> Self {
         let now = now_ms();
@@ -353,9 +357,14 @@ impl Supervisor {
 
     /// One pass: reap, serve requests, update conditions, stop and start.
     pub fn tick(&mut self) {
+        self.tick_child(None);
+    }
+
+    /// Service pass that also returns the watched child's exit status, without a second reaper.
+    pub fn tick_child(&mut self, child: Option<i32>) -> Option<i32> {
         self.prepare_shutdown_nonce();
         self.drain_logs();
-        self.reap();
+        let status = self.reap(child);
         self.serve();
         let now = now_ms();
         self.enforce_stops(now);
@@ -371,6 +380,20 @@ impl Supervisor {
             self.changed = false;
             self.write_state();
         }
+        status
+    }
+
+    /// Finish a desktop suite through the same ordered shutdown as the poweroff command.
+    pub fn poweroff(&mut self) {
+        self.begin_shutdown(0x4321fedc);
+    }
+
+    fn begin_shutdown(&mut self, command: u64) {
+        self.shutdown_restart = self.entries.iter()
+            .filter(|e| matches!(e.state, State::Running | State::Waiting | State::Backoff | State::CrashLoop))
+            .map(|e| e.def.name.clone()).collect();
+        self.shutdown = Some((command, 0, now_ms()));
+        self.changed = true;
     }
 
     /// Admission or terminal startup failed; finish stopping bwm before logins own the tty.
@@ -719,13 +742,18 @@ impl Supervisor {
         }
     }
 
-    fn reap(&mut self) {
+    fn reap(&mut self, watched: Option<i32>) -> Option<i32> {
+        let mut watched_status = None;
         loop {
             let mut status = 0;
             let pid = match process::waitpid(-1, &mut status, process::WNOHANG) {
                 Ok(pid) if pid.raw() != 0 => pid.raw() as i32,
-                _ => return,
+                _ => return watched_status,
             };
+            if watched == Some(pid) {
+                watched_status = Some(status);
+                continue;
+            }
             let now = now_ms();
             let Some(index) = self.entries.iter().position(|e| e.pid == pid && e.state.is_live()) else {
                 if process::wifsignaled(status) {
@@ -882,10 +910,7 @@ impl Supervisor {
             _ if self.shutdown.is_some() => Err("shutdown is in progress".to_string()),
             ["shutdown", action @ ("reboot" | "poweroff")] if self.scope == Scope::All && self.publish => {
                 let command = if *action == "reboot" { 0x01234567 } else { 0x4321fedc };
-                self.shutdown_restart = self.entries.iter()
-                    .filter(|e| matches!(e.state, State::Running | State::Waiting | State::Backoff | State::CrashLoop))
-                    .map(|e| e.def.name.clone()).collect();
-                self.shutdown = Some((command, 0, now));
+                self.begin_shutdown(command);
                 self.notices.alert(&format!("[init] shutdown requested: {}", action));
                 Ok(Some(format!("shutdown {} accepted", action)))
             }

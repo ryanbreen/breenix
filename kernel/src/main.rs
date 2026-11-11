@@ -1230,7 +1230,7 @@ fn launch_x86_production_init(
             .ok_or("process manager not available")?;
 
         let path = alloc::format!("/sbin/{}", name);
-        let mut argv: alloc::vec::Vec<&[u8]> = if name == "suite-users" {
+        let mut argv: alloc::vec::Vec<&[u8]> = if name == "suite-users" || name == "suite-gui-apps" {
             alloc::vec![b"/sbin/init", b"suite", path.as_bytes()]
         } else { alloc::vec![path.as_bytes()] };
         if name == "persistent-install" {
@@ -1492,7 +1492,7 @@ fn read_x86_production_init(
     if let Some(suite) = suite {
         let id = suite.id;
         let path = target::suite_path(&id);
-        match read_init_from_ext2(if id == "users" { "/sbin/init" } else { &path })
+        match read_init_from_ext2(if id == "users" || id == "gui-apps" { "/sbin/init" } else { &path })
             .and_then(|(elf_data, exe_path)| target::check_elf(&elf_data).map(|()| (elf_data, exe_path)))
         {
             Ok((elf_data, exe_path)) => {

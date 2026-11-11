@@ -380,7 +380,7 @@ pub enum Modifier {
     Super,
 }
 impl Modifier {
-    fn code(self) -> u16 {
+    pub(crate) fn code(self) -> u16 {
         match self {
             Self::Shift => 42,
             Self::Ctrl => 29,

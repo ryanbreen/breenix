@@ -2157,9 +2157,15 @@ def resources_row(serial):
         raise ValueError('malformed resources CAPS') from error
 
 
-def resources_identity(boot, suite, sha=None):
+def resources_identity(boot, suite, sha=None, only=None):
     sha = boot.get('bootedCommit') if sha is None else sha
     suites = boot.get('suites') or (boot.get('suite') or '').split(',')
+    selected = only is not None
+    if selected and (suite != 'gui-apps' or suites != [suite]
+            or boot.get('onlyCase') != only or boot.get('watch') is not True):
+        raise ValueError('selected app identity differs')
+    if not selected and boot.get('onlyCase') is not None:
+        raise ValueError('selected run is not full-suite evidence')
     if (not re.fullmatch('[0-9a-f]{40}', sha or '')
             or boot.get('bootedCommit', sha) != sha or boot.get('toolsCommit') != sha
             or boot.get('kind') != 'boot' or boot.get('mode') != 'suite'
@@ -2167,7 +2173,7 @@ def resources_identity(boot, suite, sha=None):
             or boot.get('suite') != (suites[0] if len(suites) == 1 else None)
             or boot.get('suites') not in (None, suites)
             or boot.get('platform') != 'metal' or boot.get('arch') != 'x86_64'
-            or boot.get('evidenceEligible') is not True or boot.get('inject')
+            or boot.get('evidenceEligible') is not (not selected) or boot.get('inject')
             or boot.get('build', {}).get('commit') != sha
             or boot.get('build', {}).get('profile') != 'production'
             or boot.get('build', {}).get('features') != []
@@ -3958,7 +3964,7 @@ def planned_aggregate_refusals(directory, boot):
         raise ValueError('aggregate failure tally differs')
 
 
-def completed_suite_capture(directory, sha, suite=None):
+def completed_suite_capture(directory, sha, suite=None, only=None):
     """Read an authoritative, driver-closed native capture, including bulk pixels."""
     directory = Path(directory)
     read = lambda name: (directory / name).read_text().strip()
@@ -3974,7 +3980,7 @@ def completed_suite_capture(directory, sha, suite=None):
                 or not re.fullmatch(r'\d{8}T\d{6}Z-metal', boot.get('id', ''))):
             raise ValueError('probe requires the recorded production kernel/build/tools')
     else:
-        resources_identity(boot, suite or boot.get('suite'), sha)
+        resources_identity(boot, suite or boot.get('suite'), sha, only=only)
     events = [json.loads(line) for line in read('events.jsonl').splitlines()]
     status = int(read('exit-status'))
     handoffs = [i for i, event in enumerate(events) if event.get('event') == 'cold-readback-next']
@@ -4026,7 +4032,7 @@ def completed_suite_capture(directory, sha, suite=None):
                 and (receipt['passed'] is True or non_disk)
                 and type(receipt.get('bytes')) is int
                 and receipt['bytes'] > 0 and re.fullmatch('[a-f0-9]{64}', receipt.get('sha256', '')) is not None)
-    if (boot.get('onlyCase') is not None or boot.get('session') or not read('ended')
+    if (boot.get('onlyCase') != only or boot.get('session') or not read('ended')
             or read('dirty') != '0' or read('commit') != sha or read('ended-by') != 'driver'
             or status not in (0, 1) or not events
             or any(e.get('event') in ('console-gap', 'fatal') for e in events)
@@ -4097,7 +4103,8 @@ def wm_panel_observation(body):
 def step_capture(directory, sha, step_number, suite, prefix, max_step):
     """Judge a cumulative selection without changing the shared suite verdict."""
     directory = Path(directory)
-    capture = completed_suite_capture(directory, sha, suite)
+    only = capture_boot(directory).get('onlyCase') if suite == 'gui-apps' else None
+    capture = completed_suite_capture(directory, sha, suite, only=only)
     boot, serial = capture['boot'], capture['serial']
     root = Path(__file__).resolve().parents[2]
     if type(step_number) is not int or not 1 <= step_number <= max_step:
@@ -4112,6 +4119,13 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
             or not required or step.get('total') != len(required)
             or required != [name for name in names if name in required]):
         raise ValueError('invalid WM selection or manifest order')
+    if only is not None:
+        selected = [n for n in names if n == only or n.split('/', 1)[0] == only]
+        if not selected or any(n not in required for n in selected):
+            raise ValueError('app selection is outside the requested step')
+        names = required = selected
+        case_count = len(names)
+    suffix = rf' only={re.escape(only)}' if only is not None else ''
     fatal = json.loads((root / 'docs/boot-path.json').read_text())['fatal']
     # U19: launch metadata determines the producer's final record.
     suites = boot.get('suites') or [boot['suite']]
@@ -4145,16 +4159,24 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
            for line in lines[:begin] + lines[ready[0]+1:]):
         raise ValueError('WM records outside the suite boundary')
     shapes = {
-        'START': fr'SUITE {suite} START cases=(\d+)',
+        'START': fr'SUITE {suite} START cases=(\d+){suffix}',
         'PASS': fr'SUITE {suite} CASE ([a-z0-9/-]+) PASS ms=\d+(?: sha256=[a-f0-9]{{64}})?',
         'FAIL': fr'SUITE {suite} CASE ([a-z0-9/-]+) FAIL ms=\d+(?: sha256=[a-f0-9]{{64}})? msg=\S.*',
-        'DONE': fr'SUITE {suite} DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+)',
+        'DONE': fr'SUITE {suite} DONE passed=(\d+) failed=(\d+) skipped=(\d+) total=(\d+){suffix}',
         'ELAPSED': fr'SUITE {suite} ELAPSED ms=(\d+)',
         'MEMORY': fr'SUITE {suite} MEMORY (before|after) free=(\d+) heap_free_kb=\d+(?: [a-z_]+=\d+)+',
         'RECLAIMED': fr'SUITE {suite} MEMORY reclaimed=(PASS|FAIL) free_before=(\d+) free_after=(\d+) allowance=(\d+)',
         'LIVE': fr'SUITE {suite} (?:VALUE|WAIT|PULSES|HOSTKEY|HOSTPOINTER|SCREEN) ([a-z0-9/-]+) \S.*',
     }
     verdict_api = runpy.run_path(str(root / 'scripts/suite-verdict.py'))
+    if only is not None:
+        ok, detail = verdict_api['verdict'](manifest, directory / 'serial.txt',
+                                            [directory / 'serial.txt'], only=only)
+        if not ok:
+            raise ValueError(detail)
+    if suite == 'gui-apps':
+        for action in ('SMBSTOP', 'SMBSTART'):
+            shapes[action] = rf'SUITE gui-apps {action} (guskit/smb-share-gone) seq=[0-9]{{1,20}}'
     if suite == 'ui-testing':
         shapes['EVIDENCE'] = verdict_api['bundle_shape'](suite)
     shapes.update({kind: fr'SUITE {suite} {kind} ([a-z0-9/-]+) .+'
@@ -4327,7 +4349,8 @@ def step_capture(directory, sha, step_number, suite, prefix, max_step):
         report.update(scope='wm-step-selection', exitStatus=capture['exit_status'],
                       toolsCommit=boot['toolsCommit'], build=boot['build'])
     if suite == 'gui-apps':
-        report.update(scope='apps-step-selection', exitStatus=capture['exit_status'],
+        report.update(scope='apps-selected-run' if only is not None else 'apps-step-selection',
+                      onlyCase=only, exitStatus=capture['exit_status'],
                       toolsCommit=boot['toolsCommit'], build=boot['build'],
                       selectedCases=[dict(id=m[1], result=k) for k, m, _ in cases if m[1] in required],
                       memoryVerdict=memory_line,

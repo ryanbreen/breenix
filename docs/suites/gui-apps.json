@@ -233,6 +233,9 @@
         { "id": "undo-redo", "title": "Undo and redo" },
         { "id": "save-open", "title": "Save and reopen BMP and PNG" },
         { "id": "save-fails-cleanly", "title": "Failed save leaves file intact" },
+        { "id": "smb-save-open", "title": "Save and reopen over SMB" },
+        { "id": "smb-save-fails-cleanly", "title": "Read-only SMB save fails cleanly" },
+        { "id": "smb-share-gone", "title": "Disconnected SMB save fails cleanly" },
         { "id": "open-malformed", "title": "Malformed image leaves canvas intact" },
         { "id": "quit-unsaved", "title": "Confirm quitting unsaved changes" },
         { "id": "shortcuts", "title": "Tool and file shortcuts" }
