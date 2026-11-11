@@ -142,19 +142,27 @@ pub fn launch_each() -> CaseResult {
     let mut timings = String::new();
     for (index, &(name, _, title, outcome)) in outcomes.iter().enumerate() {
         let start = libbreenix::time::now_monotonic().map_err(|e| e.to_string())?.as_nanos();
+        let mut operation = "launch-next";
         let result: Result<(), String> = (|| {
             if index != 0 { t.launch_next(launcher, "\u{1}Launcher")?; }
+            operation = "type-query";
             t.type_text(name)?;
+            operation = "wait-query-tree";
             let tree = t.wait_tree(|tree| tree.root.value["query"] == name &&
                 tree.root.value["rows"].as_array().is_some_and(|rows|
                     rows.iter().any(|row| row["name"] == name)))?;
             let rows = tree.root.value["rows"].as_array().ok_or("launcher rows missing")?;
             let selected = rows.iter().position(|row| row["name"] == name).ok_or("entry missing")?;
+            operation = "select-key";
             for _ in 0..selected { t.key(108, &[])?; }
+            operation = "wait-selection";
             t.wait_node("apps", |v| v["selected"].as_u64() == Some(selected as u64) &&
                 v["rows"][selected]["name"] == name)?;
+            operation = "launcher-key-exit";
             t.key_exit(28, 0)?;
+            operation = "attach";
             t.attach(title)?;
+            operation = "wait-outcome";
             if name == "System Check" {
                 // Opening bcheck starts its runner. Observe the result before
                 // closing, since a close during a check truthfully cancels it.
@@ -169,18 +177,35 @@ pub fn launch_each() -> CaseResult {
                 "bless" => t.wait_node("grid", |v| v["lines"].as_array().is_some_and(|lines|
                     lines.iter().any(|line| line.as_str().is_some_and(|line| line.contains("/var/log/kernel.log") && line.contains(" L:")))))?,
                 "cat" => {
+                    operation = "cat-type-line";
                     t.type_line("launch-each-cat")?;
+                    operation = "cat-wait-output";
                     t.wait_node("grid", |v| v["lines"].as_array().is_some_and(|lines|
                         lines.iter().filter(|line| line.as_str() == Some("launch-each-cat")).count() >= 2))?;
                 }
                 _ => {}
             }
+            operation = "close-exit";
             t.close_exit()?;
             Ok(())
         })();
         let elapsed = libbreenix::time::now_monotonic().map_err(|e| e.to_string())?.as_nanos().saturating_sub(start);
         timings.push_str(&format!("{name}\telapsed_ms={}\t{}\n", elapsed / 1_000_000, if result.is_ok() { "ok" } else { "failed" }));
         if result.is_err() || index + 1 == outcomes.len() {
+            if let Err(error) = &result {
+                let at_ns = libbreenix::time::now_monotonic().map_err(|e| e.to_string())?.as_nanos();
+                timings.push_str(&format!("failure\tentry={name}\toperation={operation}\ttracked_window={}\tat_ns={at_ns}\terror={error}\n", t.window()));
+                // Stage 17 records registry removal, including process exit,
+                // on the same monotonic clock as this failure observation.
+                match std::fs::read_to_string("/proc/breenix/window-pipeline-full") {
+                    Ok(trace) => {
+                        let trace = trace.lines().filter(|line| line.starts_with("17 ")).collect::<Vec<_>>().join("\n");
+                        let _ = std::fs::write("/tmp/desktop-launch-each-pipeline", trace.as_bytes());
+                        let _ = breenix_suite::suite::upload_diagnostic("gui-apps", "desktop-launch-each-pipeline", trace.as_bytes());
+                    }
+                    Err(e) => timings.push_str(&format!("pipeline diagnostic unavailable: {e}\n")),
+                }
+            }
             std::fs::write("/tmp/desktop-launch-each-timings", &timings).map_err(|e| e.to_string())?;
             // Selected runs without an evidence route still retain the local file.
             let _ = breenix_suite::suite::upload_diagnostic("gui-apps", "desktop-launch-each-timings", timings.as_bytes());

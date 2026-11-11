@@ -42,8 +42,15 @@ impl App {
 fn outcome(t: &mut App) -> Result<(), String> {
  let name = "System Check";
  let outcome = "";
+ // Preserve the diagnostic operation variable around the production closure.
+ let mut operation = "attach";
+ std::hint::black_box(operation);
+ let result = (|| {
  // PATH
  Ok(())
+ })();
+ std::hint::black_box(operation);
+ result
 }
 fn main() {
  let mut success = App { complete: false, failed: false };

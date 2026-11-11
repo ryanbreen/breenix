@@ -131,9 +131,9 @@ mod live {
             let live = self.keys.backend_mut();
             let watchdog = Watchdog::new(Wait::AppOutput)?;
             let window = live.session().wait_window_until(title, watchdog.deadline_ns())?.id;
-            let pid = u64::from(live.info(window)?.owner);
-            live.watch(window)?;
-            live.activate(window)?;
+            let pid = u64::from(live.info(window).map_err(|e| format!("attach info window={window}: {e}"))?.owner);
+            live.watch(window).map_err(|e| format!("attach watch window={window}: {e}"))?;
+            live.activate(window).map_err(|e| format!("attach activate window={window}: {e}"))?;
             if !self.tracked.iter().any(|&(id, _)| id == pid) { self.tracked.push((pid, None)); }
             self.launched = Some(pid);
             self.window = window;
