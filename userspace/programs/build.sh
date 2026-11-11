@@ -358,6 +358,7 @@ STD_BINARIES=(
     "confetti"
     "demo"
     "rectangles"
+    "biconkit"
     "tones"
     "fart"
     "http_test"
