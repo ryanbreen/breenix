@@ -17,6 +17,8 @@ mod guskit;
 mod demos;
 #[path = "guiapps_suite/guskit_collab.rs"]
 mod guskit_collab;
+#[path = "guiapps_suite/desktop.rs"]
+mod desktop;
 use breenix_suite::suite::{case, category, suite, Suite};
 
 static SUITE: Suite = suite("gui-apps", "GUI applications", &[
@@ -104,6 +106,9 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("three-peers", "Three peers converge", guskit_collab::three_peers).session(libuitest::supervisor::serve),
         case("undo-ownership", "Undo affects only its owner", guskit_collab::undo_ownership).session(libuitest::supervisor::serve),
         case("peer-leaves", "Peer and host departures are reported", guskit_collab::peer_leaves).session(libuitest::supervisor::serve),
+    ]),
+    category("desktop", "Desktop", &[
+        case("copy-paste", "Copy and paste between applications", desktop::copy_paste).session(libuitest::supervisor::serve),
     ]),
 ]).gui().defer_display();
 

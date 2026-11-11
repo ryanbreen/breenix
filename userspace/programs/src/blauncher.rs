@@ -545,9 +545,16 @@ fn main() {
                 _ => break,
             }
         }
+        let window_id = win.id();
         win.dispatch(|delivered| {
             match delivered.event.clone() {
-                Event::KeyPress { ascii, keycode, .. } => {
+                Event::KeyPress { ascii, keycode, modifiers, .. } => {
+                    if modifiers.ctrl && keycode == 47 {
+                        if let Ok(bytes) = libclipboard::get(window_id) {
+                            query::paste(&mut state.query, &mut state.query_len, &mut state.selected, &bytes);
+                        }
+                        return breengel::Handled::Redraw;
+                    }
                     match keycode {
                         KEY_ESCAPE => {
                             process::exit(0);
@@ -586,6 +593,7 @@ fn main() {
                                 // Backspace
                                 if state.query_len > 0 {
                                     state.query_len -= 1;
+                                    while state.query_len > 0 && state.query[state.query_len] & 0xc0 == 0x80 { state.query_len -= 1; }
                                     state.selected = 0;
                                 }
                             }

@@ -264,6 +264,13 @@
         { "id": "undo-ownership", "title": "Undo affects only its owner" },
         { "id": "peer-leaves", "title": "Peer and host departures are reported" }
       ]
+    },
+    {
+      "id": "desktop",
+      "title": "Desktop",
+      "cases": [
+        { "id": "copy-paste", "title": "Copy and paste between applications" }
+      ]
     }
   ]
 }
