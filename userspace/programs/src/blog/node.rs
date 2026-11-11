@@ -19,8 +19,9 @@ pub fn lines_view(tail: &Tail, offset: usize, visible: usize, matched: Option<us
     }
     result
 }
-pub fn status_view(tab: usize, path: &str, follow: bool, open: bool, query: &str, matched: Option<usize>, matches: usize, tail: &Tail) -> Value {
+pub fn status_view(tab: usize, path: &str, follow: bool, open: bool, query: &str, matched: Option<usize>, matches: usize, tail: &Tail, font_path: &str, font_size: f32) -> Value {
     let mut result = status(tab, path, follow, open);
+    result["font"] = json!({"path": font_path, "size": font_size});
     if !query.is_empty() { result["search"] = json!({"query": query, "row": matched.map(|i| tail.line_number(i)), "matches": matches}); }
     result
 }
