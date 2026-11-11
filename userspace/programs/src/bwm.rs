@@ -553,6 +553,8 @@ fn main() {
             }
 
             // Content policy and chrome share one normalized pointer snapshot.
+            // read() releases absolute frames only at SYN; positions assigns
+            // motion to one axis before the buttons without removing source slots.
             if let Some((new_mx, new_my)) = stream.pointer(event, position) {
                 let mouse_moved = new_mx != mouse_x || new_my != mouse_y;
                 mouse_moved_this_frame |= mouse_moved;
