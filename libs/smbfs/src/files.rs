@@ -12,6 +12,12 @@ pub const O_EXCL: u32 = 0x80;
 pub const O_TRUNC: u32 = 0x200;
 pub const O_DIRECTORY: u32 = 0x10000;
 pub(super) const DISCONNECTED: u32 = 0xffff_ffff;
+pub(super) const PROTOCOL: u32 = 0xffff_fffe;
+
+pub(super) fn invalid_session(status: u32) -> bool {
+    disconnected(status) || status == PROTOCOL
+}
+
 const BAD_HANDLE: u32 = 0xc000_0008;
 
 pub(super) fn disconnected(status: u32) -> bool {
@@ -103,14 +109,19 @@ impl<B: Backend> Namespace<B> {
                 match f(self) {
                     Ok(value) => Ok(value),
                     Err(status) => {
-                        if disconnected(status) {
+                        if invalid_session(status) {
                             self.disconnect();
                         }
                         Err(errno(status))
                     }
                 }
             }
-            Err(status) => Err(errno(status)),
+            Err(status) => {
+                if invalid_session(status) {
+                    self.disconnect();
+                }
+                Err(errno(status))
+            },
         }
     }
     fn file_id(&self, handle: u64) -> Result<FileId, u32> {
@@ -311,7 +322,7 @@ impl<B: Backend> Namespace<B> {
         match self.backend.close(id) {
             Ok(()) => Ok(()),
             Err(status) => {
-                if disconnected(status) {
+                if invalid_session(status) {
                     self.disconnect();
                 }
                 Err(errno(status))

@@ -19,6 +19,7 @@ struct Fake {
     basic: Option<(u64, u64, u64, u64, u32)>,
     reconnects: usize,
     drop_read: bool,
+    protocol_read: bool,
     fail_reopen: Option<usize>,
     reopened: usize,
     fail_retry: bool,
@@ -63,6 +64,10 @@ impl Backend for Fake {
     }
     fn read_at(&mut self, id: FileId, offset: u64, length: usize) -> Result<Vec<u8>, u32> {
         assert!(self.handles.contains_key(&id.persistent), "stale read");
+        if self.protocol_read {
+            self.protocol_read = false;
+            return Err(0xffff_fffe);
+        }
         if self.drop_read || (self.reconnects > 0 && self.fail_retry) {
             self.drop_read = false;
             return Err(0xffff_ffff);
@@ -439,4 +444,18 @@ fn second_connection_failure_invalidates_every_file_id() {
         assert_eq!(fs.backend().closes, closes);
         assert_eq!(fs.read(h, 0, 1), Err(9));
     }
+}
+
+#[test]
+fn protocol_failure_returns_eio_then_recovers_on_the_next_operation() {
+    let mut fs = setup();
+    let a = fs.create(ROOT, "file", smbfs::O_EXCL, 0).unwrap();
+    let h = fs.open(a.node, smbfs::O_RDWR).unwrap();
+    fs.write(h, 0, b"intact").unwrap();
+    fs.backend_mut().protocol_read = true;
+    assert_eq!(fs.read(h, 0, 6), Err(5));
+    assert_eq!(fs.backend().reconnects, 0, "do not replay an integrity failure");
+    assert_eq!(fs.read(h, 0, 6).unwrap(), b"intact");
+    assert_eq!(fs.backend().reconnects, 1);
+    fs.release(h).unwrap();
 }

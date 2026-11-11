@@ -37,7 +37,7 @@ fn client_error(e: libsmb::client::Error) -> u32 {
     match e {
         libsmb::client::Error::Status(s) => s.0,
         libsmb::client::Error::Io(_) => files::DISCONNECTED,
-        libsmb::client::Error::Protocol => 0xffff_fffe,
+        libsmb::client::Error::Protocol => files::PROTOCOL,
     }
 }
 pub fn errno(status: u32) -> i32 {
@@ -179,12 +179,12 @@ impl<B: Backend> Namespace<B> {
         self.operation(|s| {
             let id = s.backend.open(path, access, disp, opts)?;
             let result = f(&mut s.backend, id);
-            if result.as_ref().is_err_and(|e| files::disconnected(*e)) {
+            if result.as_ref().is_err_and(|e| files::invalid_session(*e)) {
                 return result;
             }
             let close = s.backend.close(id);
             if let Err(status) = &close {
-                if files::disconnected(*status) {
+                if files::invalid_session(*status) {
                     return Err(*status);
                 }
             }
