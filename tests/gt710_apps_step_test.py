@@ -294,6 +294,25 @@ class AppsStep(unittest.TestCase):
                      original.replace(first, '__swap__').replace(second, first).replace('__swap__', second)]:
             self.assertEqual(record(text), 1)
 
+    def test_step_six_selection_and_order(self):
+        selection_path = ROOT / 'docs/gui/gt710-step-23-6.json'
+        selected = json.loads(selection_path.read_text())['cases']
+        self.assertEqual(NAMES[:67], selected)
+        shutil.copyfile(selection_path, self.definition / 'docs/gui/gt710-step-23-6.json')
+        with patch.dict(globals(), SELECTED=NAMES):
+            original = serial()
+        (self.path / 'exit-status').write_text('0')
+        events = [dict(event='final-marker'), dict(event='power-off', off=True),
+                  dict(event='closed', status=0, endedBy='driver')]
+        (self.path / 'events.jsonl').write_text('\n'.join(map(json.dumps, events)) + '\n')
+        def record(text):
+            (self.path / 'serial.txt').write_text(text)
+            return API['record_apps_capture'](self.path, SHA, 6)
+        self.assertEqual(record(original), 0)
+        first, second = 'demos/bounce-input', 'demos/bounded'
+        swapped = original.replace(first, '__swap__').replace(second, first).replace('__swap__', second)
+        self.assertEqual(record(swapped), 1)
+
     def test_step_seven_selection_and_order(self):
         expected = json.loads((ROOT / 'docs/gui/gt710-step-23-5.json').read_text())['cases'] + [
             'guskit-collab/join-sync', 'guskit-collab/stroke-both-ways',
