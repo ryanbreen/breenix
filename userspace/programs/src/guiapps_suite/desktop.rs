@@ -73,3 +73,82 @@ pub fn font_everywhere() -> CaseResult {
     if bfontpicker::pixels(t.window())? == launcher_before { return Err("launcher pixels did not change".into()); }
     Ok(t.finish()?)
 }
+
+
+pub fn launch_each() -> CaseResult {
+    // Keep this in shipped catalog order; the catalog comparison catches additions,
+    // removals and mode changes that would otherwise silently escape this case.
+    let outcomes = [
+        ("Terminal", "gui", "Terminal", ""),
+        ("System Check", "gui", "Self-Check", ""),
+        ("Log Viewer", "terminal", "Terminal", "bless"),
+        ("Bounce", "gui", "Bounce", ""),
+        ("Breenix Log", "gui", "Log Viewer", ""),
+        ("Font Picker", "gui", "Font Picker", ""),
+        ("Gus Kit", "gui", "Gus Kit", ""),
+        ("Shell", "terminal", "Terminal", "shell"),
+        ("URL Fetch", "terminal", "Terminal", "burl"),
+        ("cat", "terminal", "Terminal", "cat"),
+        ("ls", "terminal", "Terminal", "exit"),
+        ("echo", "terminal", "Terminal", "exit"),
+        ("ps", "terminal", "Terminal", "exit"),
+        ("Particles", "gui", "Particles", ""),
+        ("Confetti", "gui", "Confetti", ""),
+        ("Demo", "gui", "Demo", ""),
+        ("Rectangles", "gui", "Rectangles", ""),
+        ("Breenix Icon Kit", "gui", "Breenix Icon Kit", ""),
+    ];
+    let catalog = std::fs::read_to_string("/usr/share/applications/catalog").map_err(|e| e.to_string())?;
+    let entries: Vec<_> = catalog.lines().filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .map(|line| { let fields: Vec<_> = line.split('\t').collect();
+            if fields.len() < 4 { return Err("malformed shipped catalog"); }
+            Ok((fields[0], fields[2]))
+        }).collect::<Result<_, _>>()?;
+    if entries != outcomes.iter().map(|&(name, mode, _, _)| (name, mode)).collect::<Vec<_>>() {
+        return Err(format!("shipped catalog differs from launch outcomes: {entries:?}").into());
+    }
+    let launcher: &[&[u8]] = &[b"/usr/bin/blauncher"];
+    let mut t = App::launch(launcher, "\u{1}Launcher")?;
+    let mut timings = String::new();
+    for (index, &(name, _, title, outcome)) in outcomes.iter().enumerate() {
+        let start = libbreenix::time::now_monotonic().map_err(|e| e.to_string())?.as_nanos();
+        let result: Result<(), String> = (|| {
+            if index != 0 { t.launch_next(launcher, "\u{1}Launcher")?; }
+            t.type_text(name)?;
+            let tree = t.wait_tree(|tree| tree.root.value["query"] == name &&
+                tree.root.value["rows"].as_array().is_some_and(|rows|
+                    rows.iter().any(|row| row["name"] == name)))?;
+            let rows = tree.root.value["rows"].as_array().ok_or("launcher rows missing")?;
+            let selected = rows.iter().position(|row| row["name"] == name).ok_or("entry missing")?;
+            for _ in 0..selected { t.key(108, &[])?; }
+            t.wait_node("apps", |v| v["selected"].as_u64() == Some(selected as u64) &&
+                v["rows"][selected]["name"] == name)?;
+            t.key_exit(28, 0)?;
+            t.attach(title)?;
+            match outcome {
+                "exit" => t.expect_text("[exited 0]")?,
+                "shell" => t.expect_text("bsh />")?,
+                "burl" => { t.expect_text("Usage: burl [OPTIONS] URL")?; t.expect_text("[exited 1]")?; }
+                "bless" => t.wait_node("grid", |v| v["lines"].as_array().is_some_and(|lines|
+                    lines.iter().any(|line| line.as_str().is_some_and(|line| line.contains("/var/log/kernel.log") && line.contains(" L:")))))?,
+                "cat" => {
+                    t.type_line("launch-each-cat")?;
+                    t.wait_node("grid", |v| v["lines"].as_array().is_some_and(|lines|
+                        lines.iter().filter(|line| line.as_str() == Some("launch-each-cat")).count() >= 2))?;
+                }
+                _ => {}
+            }
+            t.close_exit()?;
+            Ok(())
+        })();
+        let elapsed = libbreenix::time::now_monotonic().map_err(|e| e.to_string())?.as_nanos().saturating_sub(start);
+        timings.push_str(&format!("{name}\telapsed_ms={}\t{}\n", elapsed / 1_000_000, if result.is_ok() { "ok" } else { "failed" }));
+        if result.is_err() || index + 1 == outcomes.len() {
+            std::fs::write("/tmp/desktop-launch-each-timings", &timings).map_err(|e| e.to_string())?;
+            // Selected runs without an evidence route still retain the local file.
+            let _ = breenix_suite::suite::upload_diagnostic("gui-apps", "desktop-launch-each-timings", timings.as_bytes());
+        }
+        result.map_err(|e| format!("{name}: {e}"))?;
+    }
+    Ok(t.finish()?)
+}

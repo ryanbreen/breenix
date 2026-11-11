@@ -540,6 +540,8 @@ pub const NAMED_CASE_ALLOWANCES: &[(&str, &str, u64)] = &[
     // The shipped catalog measured 2.2 s on the R240. 60 s bounds a slow network
     // probe while staying inside the 120 s stall watchdog.
     ("gui-apps", "bcheck/production-catalog", 60_000),
+    // Eighteen sequential launches share a case deadline below the suite stall watchdog.
+    ("gui-apps", "desktop/launch-each", 80_000),
     ("time", "clocks/rate-counter", 25_000),
     ("breengel", "font-parser/corpus", 20_000),
     ("breengel", "inflate/byte-split", 20_000),
