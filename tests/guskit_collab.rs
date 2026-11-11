@@ -149,3 +149,38 @@ fn long_log_applies_in_place_during_live_drawing_and_late_join() {
     }
     assert_eq!(peer.model.canvas.pixels(),expected.pixels());
 }
+
+#[test]
+fn pending_peers_wait_at_the_sequencing_barrier_and_converge() {
+    let mut host=Core::host("Host",Canvas::new(4,4),4,4);
+    let mut a=Core::join("A"); let mut b=Core::join("B");
+    join(&mut host,7,"A"); join(&mut host,8,"B");
+    struct Buffer(Vec<u8>);
+    impl Transport for Buffer {
+        type Error=();
+        fn send(&mut self,_:u32,bytes:&[u8])->Result<usize,SendError<()>> {
+            self.0.extend_from_slice(bytes); Ok(bytes.len())
+        }
+    }
+    for (conn,peer) in [(7,&mut a),(8,&mut b)] {
+        let mut wire=Buffer(Vec::new()); host.flush(conn,&mut wire); peer.receive(1,&wire.0);
+        // Drain the outgoing Hello before submitting the drawing.
+        peer.flush(1,&mut Buffer(Vec::new()));
+    }
+    a.submit(pencil(1,[1,2,3])); b.submit(pencil(1,[4,5,6]));
+    let mut wa=Buffer(Vec::new()); a.flush(1,&mut wa);
+    let mut wb=Buffer(Vec::new()); b.flush(1,&mut wb);
+    for peer in [&a,&b] {
+        assert_eq!(peer.model.canvas.pixels(),Canvas::new(4,4).pixels());
+        assert!(peer.model.peer.response(1).is_none());
+    }
+    // Release both pending submissions in the reverse of their local order.
+    host.receive(8,&wb.0); host.receive(7,&wa.0);
+    for (conn,peer) in [(7,&mut a),(8,&mut b)] {
+        let mut wire=Buffer(Vec::new()); host.flush(conn,&mut wire); peer.receive(1,&wire.0);
+        assert_eq!(peer.model.canvas.pixels(),host.model.canvas.pixels());
+        assert_eq!(peer.model.peer.log(),host.model.peer.log());
+    }
+    assert_eq!(a.model.peer.response(1),Some(&libcollab::peer::Response::Ack {global:2}));
+    assert_eq!(b.model.peer.response(1),Some(&libcollab::peer::Response::Ack {global:1}));
+}

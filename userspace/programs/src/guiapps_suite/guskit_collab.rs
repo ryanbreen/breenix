@@ -144,15 +144,47 @@ pub fn stroke_both_ways() -> CaseResult {
     script.converge(&mut t, &[HOST, PEER])?;
     Ok(t.finish()?)
 }
+// The host is a process launched by this case. Hold its sequencing path until
+// both real peer apps have submitted; always release it, including on failure.
+struct SequencingBarrier(i32);
+impl SequencingBarrier {
+    fn hold(window: u64) -> Result<Self, String> {
+        let mut windows=vec![libbreenix::window::abi::WinInfo::default();64];
+        let n=libbreenix::window::list(&mut windows).map_err(|e|e.to_string())?;
+        let pid=windows[..n].iter().find(|w|w.id==window).ok_or("host window missing")?.owner as i32;
+        libbreenix::signal::kill(pid,libbreenix::signal::SIGSTOP).map_err(|e|e.to_string())?;
+        let barrier=Self(pid);
+        let until=std::time::Instant::now()+std::time::Duration::from_secs(1);
+        loop {
+            let stat=std::fs::read_to_string(format!("/proc/{pid}/stat")).map_err(|e|e.to_string())?;
+            if stat.rsplit_once(") ").is_some_and(|(_,tail)|tail.starts_with("T ")) { return Ok(barrier); }
+            if std::time::Instant::now()>=until { return Err("host did not reach sequencing barrier".into()); }
+            libbreenix::time::sleep_ms(1).map_err(|e|e.to_string())?;
+        }
+    }
+}
+impl Drop for SequencingBarrier {
+    fn drop(&mut self) { let _=libbreenix::signal::kill(self.0,libbreenix::signal::SIGCONT); }
+}
 pub fn global_order() -> CaseResult {
     let mut t = host(23703)?;
     join(&mut t, 23703, PEER)?;
+    join(&mut t, 23703, THIRD)?;
+    attach(&mut t,HOST)?;
+    let barrier=SequencingBarrier::hold(t.window())?;
     let mut script = Script::new();
-    script.stroke(&mut t, HOST, 10, false)?;
-    script.stroke(&mut t, PEER, 10, true)?;
-    // Both strokes cover the same pixels with different colors, so the canvas
-    // comparison distinguishes the order reported by the acknowledgments.
-    script.converge(&mut t, &[HOST, PEER])?;
+    script.stroke(&mut t, PEER, 10, false)?;
+    script.stroke(&mut t, THIRD, 10, true)?;
+    for owner in [PEER,THIRD] {
+        attach(&mut t,owner)?;
+        t.expect_node("collab",|v|v["submitted"]==serde_json::json!([{"id":1}]) && v["applied"]==serde_json::json!([]))?;
+        let white=Expected::white().digest();
+        t.expect_node("canvas",|v|v["sha256"]==white)?;
+    }
+    // Opposite local drawing orders would leave different colors. Both pending
+    // peers must instead paint only the host's order after the shared release.
+    drop(barrier);
+    script.converge(&mut t, &[HOST, PEER, THIRD])?;
     Ok(t.finish()?)
 }
 pub fn three_peers() -> CaseResult {
@@ -176,6 +208,21 @@ pub fn undo_ownership() -> CaseResult {
     script.converge(&mut t, &[HOST, PEER])?;
     script.undo(&mut t, HOST, true)?;
     script.converge(&mut t, &[HOST, PEER])?;
+    let (expected, _)=script.replay(&mut t,&[HOST,PEER])?;
+    attach(&mut t,HOST)?;
+    t.key(48,&[])?; // Brush: many segments must remain one Undo gesture.
+    t.drag("canvas",(10,40),&vec![(1,0);59])?;
+    t.wait_node("status",|v|v["undo"]==1)?;
+    let digest=expected.digest();
+    t.expect_node("canvas",|v|v["sha256"]!=digest)?;
+    t.key(44,&[Modifier::Ctrl])?;
+    t.wait_node("status",|v|v["undo"]==0)?;
+    let value=collab(&mut t)?;
+    let rows=value["submitted"].as_array().ok_or("missing gesture answers")?;
+    if rows.len()!=64 || rows[3..].iter().any(|row|row.get("global").is_none()) {
+        return Err(format!("brush segments or Undo unanswered: {rows:?}"));
+    }
+    for owner in [HOST,PEER] { check_peer(&mut t,owner,&expected,&value["applied"])?; }
     Ok(t.finish()?)
 }
 pub fn peer_leaves() -> CaseResult {
