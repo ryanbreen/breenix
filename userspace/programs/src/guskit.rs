@@ -38,7 +38,7 @@ impl App {
     fn canvas(&self) -> &Canvas { self.session.as_ref().map_or_else(|| self.history.canvas(), |s| &s.core.model.canvas) }
     fn undo_depth(&self) -> usize { self.session.as_ref().map_or_else(||self.history.undo_depth(),|s|s.core.model.undo_depth()) }
     fn redo_depth(&self) -> usize { if self.session.is_some() {0} else {self.history.redo_depth()} }
-    fn status(&self) -> &str { self.session.as_ref().map(|s|s.core.model.status.as_str()).filter(|s|!s.is_empty()).unwrap_or(&self.message) }
+    fn status(&self) -> &str { if !self.message.is_empty() { &self.message } else { self.session.as_ref().map_or("",|s|s.core.model.status.as_str()) } }
     fn dirty(&self) -> bool { self.canvas().digest() != self.clean }
     fn request_quit(&mut self) { if self.dirty() { self.confirm = true; } else { self.quit = true; } }
     fn action(&mut self, action: u16) {
@@ -195,9 +195,10 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar) {
         app.palette = Some((app.hue, palette));
     }
     let preview = app.stroke.as_ref().map(|points| app.canvas().preview(points, |image, points| app.draw_stroke(image, points)));
-    let committed = app.canvas().clone();
-    let canvas = preview.as_ref().unwrap_or(&committed);
-    if let Some((previous, surface)) = &mut app.canvas_surface {
+    let mut cached = app.canvas_surface.take();
+    let canvas = preview.as_ref().unwrap_or_else(||app.canvas());
+    if cached.as_ref().is_some_and(|(_,surface)|surface.width()!=app.width || surface.height()!=app.height) { cached=None; }
+    if let Some((previous, surface)) = &mut cached {
         let changed = surface.batch(|fb| canvas.render_changes(previous, |x, y, width, c|
             shapes::fill_rect(fb, x as i32, y as i32, width as i32, 1, Color::rgb(c[0], c[1], c[2]))));
         if changed {
@@ -210,8 +211,9 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar) {
         surface.batch(|fb| canvas.render_runs(|x, y, width, c|
             shapes::fill_rect(fb, x as i32, y as i32, width as i32, 1, Color::rgb(c[0], c[1], c[2]))));
         surface.wait().expect("Gus Kit canvas rendering");
-        app.canvas_surface = Some((canvas.clone(), surface));
+        cached = Some((canvas.clone(), surface));
     }
+    app.canvas_surface=cached;
     fb.batch(|fb| {
     fb.clear(Color::rgb(45, 45, 45));
     for (i, label) in LABELS.iter().enumerate() {
@@ -355,7 +357,9 @@ fn main() {
         let result=if collaborating { win.dispatch(&mut dispatch) } else { win.wait_dispatch(100_000_000,&mut dispatch) };
         let count=result.unwrap_or_else(|e| { eprintln!("Gus Kit dispatch: {e}"); std::process::exit(1) });
         if let Some(session)=&mut app.session {
+            let status=session.core.model.status.clone();
             redraw |= session.poll(10);
+            if session.core.model.status != status { app.message.clear(); }
             app.width=session.core.model.width(); app.height=session.core.model.height();
         }
         // MAP_TREE is passive. Its attach probe needs a freshly sealed tree
