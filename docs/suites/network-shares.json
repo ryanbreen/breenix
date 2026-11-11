@@ -102,6 +102,20 @@
           "title": "Unmount with an open file"
         }
       ]
+    },
+    {
+      "id": "shares",
+      "title": "Configured shares",
+      "cases": [
+        {
+          "id": "boot-mount",
+          "title": "Mount configured shares at boot"
+        },
+        {
+          "id": "mount-list",
+          "title": "List and unmount configured shares"
+        }
+      ]
     }
   ]
 }
