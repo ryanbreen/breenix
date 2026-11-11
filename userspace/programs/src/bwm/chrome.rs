@@ -266,6 +266,13 @@ pub(super) fn draw_taskbar(fb: &mut Surface, clock_text: &[u8], ui_font: &mut Op
     }
 }
 
+pub(super) fn redraw_clock(fb: &mut Surface, text: &[u8], font: &mut Option<CachedFont>) {
+    let left = fb.width() / 2;
+    fb.push_clip(libgfx::Rect::new(left as i32, 0, (fb.width() - left) as i32, px(TASKBAR_HEIGHT) as i32));
+    draw_taskbar(fb, text, font);
+    fb.pop_clip();
+}
+
 pub(super) fn appbar_button_width(title_len: usize) -> usize {
     let text_w = title_len * ui().cell_w + px(16);
     text_w.max(px(60)).min(px(180))

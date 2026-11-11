@@ -812,7 +812,7 @@ fn main() {
             let sec = clock.update_clock().expect("due wall-clock update");
             format_clock(sec, &mut clock_text);
             let began = pacing_ns();
-            draw_taskbar(&mut gpu.desktop, &clock_text, &mut ui_font);
+            redraw_clock(&mut gpu.desktop, &clock_text, &mut ui_font);
             let draw_ns = pacing_ns().saturating_sub(began);
             taskbar_prepare_ns = Some(draw_ns);
             clock_pace.reset();
@@ -839,7 +839,7 @@ fn main() {
                 // session chrome here without scheduling clock-only work.
                 if let Some(sec) = clock.scene_clock() {
                     format_clock(sec, &mut clock_text);
-                    draw_taskbar(&mut gpu.desktop, &clock_text, &mut ui_font);
+                    redraw_clock(&mut gpu.desktop, &clock_text, &mut ui_font);
                     clock_dirty = true;
                 }
                 let pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
