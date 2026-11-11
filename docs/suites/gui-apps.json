@@ -242,6 +242,15 @@
       ]
     },
     {
+      "id": "demos",
+      "title": "Graphics demos",
+      "cases": [
+        { "id": "open-each", "title": "Open and animate every demo" },
+        { "id": "close-each", "title": "Close every demo" },
+        { "id": "resize", "title": "Resize every demo" }
+      ]
+    },
+    {
       "id": "guskit-collab",
       "title": "Gus Kit collaboration",
       "cases": [

@@ -1,6 +1,6 @@
 use libicon::icon::{Icon, IconMouse};
 
-pub fn grid_center(i: usize) -> (i32, i32) { (80 + (i % 3) as i32 * 120, 75 + (i / 3) as i32 * 80) }
+pub fn grid_center(i: usize) -> (i32, i32) { ((80 + (i % 3) as i32 * 120).min(270), 75 + (i / 3) as i32 * 80) }
 pub const HOVER_RADIUS: i32 = 30;
 
 pub fn icon_mouse_for(x: i32, y: i32, down: bool, click: bool, release: bool, cx: i32, cy: i32, radius: i32) -> IconMouse {
