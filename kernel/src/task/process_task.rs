@@ -617,7 +617,7 @@ fn drain_old_page_tables_counted(
 
 /// Release the leaves of an address space no CPU runs on, under PM. The tables
 /// stay with the row for a receipt (`defer_remaining_tables`).
-#[cfg(target_arch = "aarch64")]
+#[cfg(all(target_arch = "aarch64", feature = "boot_tests"))]
 fn release_process_leaves(process: &mut crate::process::Process) {
     if crate::process::process_manager_held_on_current_cpu() {
         crate::tracing::providers::teardown::record_masked_frames_walked(process.id.as_u64());
@@ -625,11 +625,10 @@ fn release_process_leaves(process: &mut crate::process::Process) {
     process.cleanup_cow_frames();
 }
 
-/// Defer what is left of an address space whose leaves are released: its
-/// tables, and the roots exec superseded, retire through a receipt once the
-/// reclaim pass's root checks show no CPU can still walk them. Returns no
-/// receipt when the row holds neither (a repeat exit, or a row whose first
-/// exit took them).
+/// Defer current and superseded address spaces through a retirement receipt.
+/// The bounded drain releases leaves still held, then their tables, once its
+/// root proofs permit reclamation. Already-released leaves are not released
+/// again. Returns no receipt when a previous exit took the row's tables.
 pub(crate) fn defer_remaining_tables(
     process: &mut crate::process::Process,
 ) -> Option<PendingProcessReclaim> {
@@ -694,59 +693,6 @@ pub(crate) fn release_process_resources(process: &mut crate::process::Process) {
     #[cfg(target_arch = "x86_64")]
     debug_assert!(process.page_table.is_none());
     process.pending_old_page_tables.clear();
-}
-
-#[cfg(target_arch = "aarch64")]
-pub(crate) fn defer_live_process_resources(
-    process: &mut crate::process::Process,
-) -> Option<PendingProcessReclaim> {
-    let snapshot = scheduler::RetirementSnapshot::capture();
-    let root_is_live = process
-        .page_table
-        .iter()
-        .chain(process.pending_old_page_tables.iter())
-        .any(|page_table| {
-            crate::arch_impl::aarch64::ttbr0::is_ttbr0_root_live_in_mask(
-                page_table.level_4_frame().start_address().as_u64(),
-                snapshot.online_mask,
-            )
-        });
-    #[cfg(feature = "boot_tests")]
-    let root_is_live =
-        root_is_live || FORCE_LIVE_RECLAIM_TEST_PID.load(Ordering::Acquire) == process.id.as_u64();
-    if !root_is_live {
-        return None;
-    }
-
-    Some(defer_process_resources(process))
-}
-
-#[cfg(feature = "boot_tests")]
-static FORCE_LIVE_RECLAIM_TEST_PID: AtomicU64 = AtomicU64::new(0);
-
-#[cfg(feature = "boot_tests")]
-pub(crate) struct ForceLiveReclaimTestGuard;
-
-#[cfg(feature = "boot_tests")]
-impl ForceLiveReclaimTestGuard {
-    pub(crate) fn arm(pid: u64) -> Self {
-        #[cfg(target_arch = "aarch64")]
-        FORCE_LIVE_RECLAIM_TEST_PID.store(pid, Ordering::Release);
-        #[cfg(target_arch = "x86_64")]
-        {
-            let _ = pid;
-            let _ = FORCE_LIVE_RECLAIM_TEST_PID.load(Ordering::Relaxed);
-        }
-        Self
-    }
-}
-
-#[cfg(feature = "boot_tests")]
-impl Drop for ForceLiveReclaimTestGuard {
-    fn drop(&mut self) {
-        #[cfg(target_arch = "aarch64")]
-        FORCE_LIVE_RECLAIM_TEST_PID.store(0, Ordering::Release);
-    }
 }
 
 pub(crate) fn defer_process_resources(
@@ -1059,6 +1005,8 @@ impl ProcessScheduler {
     /// with interrupts disabled on all CPUs) combined with logging (which acquires
     /// SERIAL and framebuffer locks) creates an unbreakable deadlock.
     pub fn handle_thread_exit(thread_id: u64, exit_code: i32) {
+        #[cfg(target_arch = "aarch64")]
+        crate::window::pipeline::record(17, thread_id, 0, 0);
         crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_EXIT);
         // The priority-inheritance futexes it owns pass to their waiters, and
         // one it is blocked on stops counting it. Before PM: the futex table
@@ -1069,6 +1017,8 @@ impl ProcessScheduler {
         crate::ipc::sysv::thread_exit(thread_id);
         // So are its windows destroyed, when it is the group's last running thread.
         crate::window::thread_exit(thread_id);
+        #[cfg(target_arch = "aarch64")]
+        crate::window::pipeline::record(18, thread_id, 0, 0);
         // So is the working directory released: rmdir refuses a directory
         // that is anyone's working directory, and a reaped row stays resident
         // until its address space retires (on x86-64, at the next idle pass or
@@ -1088,6 +1038,8 @@ impl ProcessScheduler {
             scheduler::charge_current_cpu();
         }
         // Phase 1: Under PM lock — minimal work only
+        #[cfg(target_arch = "aarch64")]
+        crate::window::pipeline::record(19, thread_id, 0, 0);
         let mut gpu_owner = None;
         let phase1_result = {
             if let Some(ref mut manager) = *crate::process::manager() {
@@ -1143,14 +1095,10 @@ impl ProcessScheduler {
                                 .map(crate::process::RetirementReceipt::from_reclaim)
                         } else {
                             #[cfg(target_arch = "aarch64")]
-                            let receipt = defer_live_process_resources(process)
-                                .or_else(|| {
-                                    // No TTBR0 holds the root: its leaves go back
-                                    // now, and its tables once the reclaim pass's
-                                    // root checks show no CPU can still walk them.
-                                    release_process_leaves(process);
-                                    defer_remaining_tables(process)
-                                })
+                            // Clearing TTBR0 makes a root safe to defer, not cheap
+                            // to walk under PM. Publish the zombie before the
+                            // bounded reclaimer audits/releases its mapped leaves.
+                            let receipt = defer_remaining_tables(process)
                                 .map(crate::process::RetirementReceipt::from_reclaim);
                             #[cfg(target_arch = "x86_64")]
                             let receipt = Some(crate::process::RetirementReceipt::from_reclaim(
@@ -1163,12 +1111,12 @@ impl ProcessScheduler {
                     // None, cleanup_cow_frames() cannot repeat the CoW walk; moving
                     // terminate()/terminate_minimal() earlier breaks that invariant.
                     process.terminate_minimal(exit_code);
+                    #[cfg(target_arch = "aarch64")]
+                    crate::window::pipeline::record(20, thread_id, pid.as_u64(), 0);
                     // P6a condition C2, paths (a) and (b). No receipt means no
-                    // `record_reclaim` will ever arrive for this row: on aarch64
-                    // the root was not live in any TTBR0 and was released
-                    // synchronously, or an earlier `terminate()` already walked
-                    // it under the `already_terminated` arm. Latch here or the
-                    // join strands a tombstone. The latch is refused while a
+                    // `record_reclaim` will ever arrive for this row: it held
+                    // no tables, or an earlier exit already handed them off.
+                    // Latch here or the join strands a tombstone. The latch is refused while a
                     // receipt from this row's first exit is still outstanding,
                     // so a repeat exit cannot retire a row whose resources are
                     // still in flight.
@@ -1246,9 +1194,13 @@ impl ProcessScheduler {
                 None
             }
         }; // PM lock dropped here
+        #[cfg(target_arch = "aarch64")]
+        crate::window::pipeline::record(21, thread_id, 0, 0);
         if let Some(owner) = gpu_owner {
             crate::gpu::owner_ended(owner);
         }
+        #[cfg(target_arch = "aarch64")]
+        crate::window::pipeline::record(22, thread_id, 0, 0);
 
         // Phase 2: No PM lock — safe to do pipe wakeups, scheduler calls, logging
         if let Some((

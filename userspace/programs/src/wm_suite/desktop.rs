@@ -82,11 +82,36 @@ impl Child {
         }
     }
     pub fn stop(&mut self) -> Result<i32, String> {
+        #[cfg(target_arch = "aarch64")]
+        let requested_ns = now();
         self.signal(signal::SIGKILL)?;
+        #[cfg(target_arch = "aarch64")]
+        let returned_ns = now();
         let mut result = None;
         until(500, "reap owned process", || {
             result = self.status()?;
             Ok(result.is_some())
+        }).map_err(|error| {
+            #[cfg(target_arch = "aarch64")]
+            {
+                failure_diagnostic("reap", &format!(
+                    "pid={} requested_ns={requested_ns} kill_returned_ns={returned_ns} failed_ns={}",
+                    self.pid, now(),
+                ));
+                if let Ok(status) = std::fs::read_to_string(format!("/proc/{}/status", self.pid)) {
+                    failure_diagnostic("reap-status", &status);
+                }
+                if let Ok(pipeline) = std::fs::read_to_string("/proc/breenix/window-pipeline-full") {
+                    let rows: Vec<_> = pipeline.lines().filter(|line| {
+                        line.split_whitespace().next().and_then(|s| s.parse::<u64>().ok())
+                            .is_some_and(|stage| (17..=22).contains(&stage))
+                    }).collect();
+                    for row in &rows[rows.len().saturating_sub(36)..] {
+                        failure_diagnostic("exit-phase", row);
+                    }
+                }
+            }
+            error
         })?;
         let status = result.unwrap();
         if status & 127 != signal::SIGKILL {
