@@ -3002,6 +3002,8 @@ pub fn case_budget(phase: &str, label: &str) {
     if !STALL_EVIDENCE.load(Ordering::Relaxed) { return; }
     use std::io::Write;
     if let (Some(ns), Ok(mut evidence)) = (monotonic_ns(), std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence")) {
-        let _ = writeln!(evidence, "WM_STALL budget {ns} {phase} {label}");
+        // The device parses each write as one command; write_fmt splits fields.
+        let command = std::format!("WM_STALL budget {ns} {phase} {label}\n");
+        let _ = evidence.write(command.as_bytes());
     }
 }

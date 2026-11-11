@@ -14,8 +14,8 @@ def default_accelerator(system=None, machine=None):
     return "hvf" if system == "Darwin" and machine == "arm64" else "tcg"
 
 
-# The log trace backend includes host wall-clock timestamps. Keep the complete
-# request/notify/IRQ path beside a serial capture and its host clocks.
+# The log trace backend needs -msg timestamp=on for host wall-clock timestamps.
+# Keep the request/notify/IRQ path beside a serial capture and its host clocks.
 BLOCK_TRACE_PATTERNS = (
     "virtio_blk_handle_*", "virtio_blk_req_complete", "virtio_blk_rw_complete",
     "virtio_queue_notify", "virtio_notify", "virtio_mmio_queue_write", "virtio_mmio_setting_irq",
@@ -75,6 +75,13 @@ def command(binary, arguments, accelerator, system=None, machine=None):
             result.extend(("-d", traces))
         if "-D" not in result:
             result.extend(("-D", serial + ".qemu-trace.log"))
+        if "-msg" in result:
+            slot = result.index("-msg") + 1
+            fields = [part for part in result[slot].split(",")
+                      if part != "timestamp" and not part.startswith("timestamp=")]
+            result[slot] = ",".join(fields + ["timestamp=on"])
+        else:
+            result.extend(("-msg", "timestamp=on"))
     return result
 
 
