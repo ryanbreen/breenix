@@ -1,5 +1,207 @@
 # A.3 recovery mechanism analysis — a3-u10-mechanism
 
+## Accounting measurement 20261111T202836Z-qemu-17664: completion latency located, cause unresolved
+
+Coordinator line 198 authorized this one measurement. At launch, fetched main
+was still `728da925`, already contained in clean runtime head `472b7fc1`.
+The preceding `202257` launch exited before QEMU execution. Its wrapper was rejected
+before execution; renaming that interpreter script would also fail the
+launcher's Mach-O check. This measurement used an external Python command
+shim to check the artifacts **before** the unchanged `qemu-arm64.py` and
+`qemu-ui-launch.sh` executed the real GL QEMU. No launcher policy was bypassed.
+The normal launcher built userspace, disk and production ARM kernel, with four
+jobs and its background build policy; it did not use `--no-build`. The kernel
+guard passed, with no compiler warnings apart from the previously documented
+pinned-core future-compatibility advisory. No lane build ran during QEMU.
+
+The immediate gate verified the disk suite byte-for-byte against the release
+build, the line-185 and u13 stored labels, the u16 labels in both kernel ELFs,
+and the client handling label. The prediction and these hashes were appended
+to the ledger before QEMU execution:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| ARM kernel | `e2d0bd40bcef4b6f63a521ce7dc0b628e78e4078589cc165e383cbfae014628c` |
+| Release suite and disk `/sbin/suite-window-manager` | `acfefbf0b31bc05022fcbc95b008cc72812b7bd8be1fe343044681067ed1a052` |
+| Disposable disk before execution | `b81140fc9cb7224a909d73fb1fe9be6b435886cb84937e49c41bd34b28417b4e` |
+| x86 dependency-artifact kernel | `faf9cfd330f1976044ea4f1d7c5a8436ed84a1bffe9e61e22f54f6c892256b58` |
+| ARM client | `d978abff9335fe68e44a3031f00db3eb835f446a968a8274a56bc437e042dc0c` |
+| Final serial, identical to Vigil's serial | `e06c55190e3f58e3c0b98c0c098d6333e3da84d2c4dac612329efdb8d0f5115a` |
+
+The launch was headless HVF, four vCPUs, SPICE GL, without a window or debugger.
+The load gate passed immediately at 5.79. The sampler retained 399 samples at
+two-second intervals, covering build and boot, with one-minute load 4.26–8.12.
+The load file, artifact gate and serial receipt-clock sidecar are discoverable
+beside the Vigil capture. At receipt of the three failed CASE records, nearby
+load samples were 5.60–5.95 (all-minimized), 7.76 (stack-restored), and 8.12
+(supervisor-restarts). The supervisor observer export's receipt was bracketed
+by load 7.86; its later phase export by 7.86–7.95. These are **receipt-time**
+loads: buffered diagnostics and the watcher's polling interval prevent treating
+them as exact loads at the embedded guest event time.
+
+The selected 21.7 verdict is **78/81 FAIL**, with all 81 CASE records present.
+The generic verdict has exactly the twelve planned-empty category refusals
+permitted by line 143, but the selection has three real failures:
+
+| Case | Measurement |
+| --- | --- |
+| stacking/all-minimized | No click acknowledgment within 1000 ms; case total 4745 ms. No success timestamp supplies a positive margin. |
+| recovery/stack-restored | Outer watchdog at 10000 ms. Its client-81 observation exported `passed=false`; no accepted restored frame. |
+| recovery/supervisor-restarts | Client 83 commit 4 observer 488636877166–490645970791 ns: 2009.093625 ms against 2000 ms, margin **-9.093625 ms**. Refusals are claim-baseline until startup advances. |
+
+DONE reports 78 passed, 3 failed, 0 skipped; MEMORY reclaimed passes at 10 pages
+against 48; standalone READY follows both. The unchanged host-renderer checker
+accepted ANGLE/Metal with 984 records. Vigil has ended/exit-status 1 and the
+complete serial; its cached summary still describes only 16 early cases, so
+that stale summary is not a full-suite verdict. The existing selection scorer
+was applied to the complete, unfiltered serial. Raw accounting families are
+present, so this is not another missing-label or non-executed launch.
+
+### Replacement window and file/request accounting
+
+The [retained telemetry](serials/a3-u16-measurement.txt) includes window 67's
+thread, wait, identity, file-call and disk rows, startup phases, and 81/81 CASE
+outcomes. Its L references use normalized `splitlines()` indices, stated in
+the index. Replacement PID 762's kernel exec boundary is 488628443666 ns and
+first successful composite boundary is 490924054083 ns: **2295.610417 ms**.
+The userspace marks are slightly inside those boundaries: exec 488630134791 ns,
+first composite 490924052750 ns, or **2293.917959 ms**. Neither is substituted
+for the observer's separate deadline interval.
+
+The font read is observed, rather than inferred from the old request model:
+worker owner PID 763/TID 997 enters read(63) at 488646199083 ns and returns
+757076 bytes at 490694642125 ns, **2048.443042 ms**. The next read returns 0 bytes
+in 1.241209 ms; close takes 0.000625 ms. The display-file open takes 6.714209 ms
+and fstat 0.001833 ms. The earlier calls on this worker load the configuration.
+Its config-ready→file-ready interval is **2056.434458 ms**. Planning then takes
+4.886000 ms, submission 20.333000 ms, and fonts-ready is 2093.322875 ms after
+the userspace exec mark. Main joins the font worker from 1290.759709 to
+2093.371375 ms after that mark.
+
+The whole kernel window has this elapsed-time partition:
+
+| Consecutive interval | ms |
+| --- | ---: |
+| Kernel exec→font data-read entry, with parallel target/claim work | 17.755417 |
+| Font data-read syscall | 2048.443042 |
+| Read return→first successful composite, including remaining font/GPU/check work | 229.411958 |
+| Total | 2295.610417 |
+
+The 189 requests enqueued by TID 997 during that data-read syscall transferred
+761856 bytes including metadata. Summing their nonoverlapping request stages
+accounts for that syscall as follows; the residual includes work between
+requests, copying and other syscall work, not an invented cache-hit count:
+
+| Component | ms |
+| --- | ---: |
+| Enqueue→gate acquisition | 332.112746 |
+| Gate acquisition→submit | 0.009043 |
+| Submit→completion IRQ observation | 1710.236915 |
+| IRQ observation→wait return | 3.724877 |
+| Wait return→gate release mark | 0.232628 |
+| Outside those request lifetimes | 2.126833 |
+| Total read | 2048.443042 |
+
+Across the whole window, that worker has 198 requests, 338.336369 ms gate
+wait and 1712.363122 ms submit→IRQ. Competing **bterm PID 751/TID 982** has 17
+requests, 1472.458208 ms gate wait and 333.842331 ms submit→IRQ. The gate delay
+has a named predecessor: font request 68490 waits 331.243167 ms while bterm
+request 68489 is in flight (its submit→IRQ is 277.020917 ms); bterm then has
+further serialized requests before the font gets the gate. In the other
+direction, bterm request 68467 waits 1124.229292 ms behind font requests.
+The font's longest individual submit→IRQ is request 68472, **301.702916 ms**;
+other font requests take 128.777250 and 124.574541 ms. This is not explained by
+189 uniformly cheap transfers. The 198/198 font-worker request rows have the later wake,
+resume and release stamps; missing timestamps are not filled in.
+
+### Scheduler records and their limits
+
+The journal reports four vCPUs, 6602 queue samples in window 67, and maximum
+non-sentinel queue length four. The following are its **reported state
+intervals**, in ms, not independently measured host execution time. Worker
+roles follow the read result/startup source; exported `tgid`/names alone do not
+group them under 762 (the font row says `tgid=763`, `clone-child-997`).
+
+| PID/TID | On-CPU label | Runnable label | Blocked label | Wait breakdown |
+| --- | ---: | ---: | ---: | --- |
+| 762/995, leader | 338.942134 | 2.422115 | 1954.246168 | completion 7.708378; unnamed kind 8/object 0 **1946.537790** |
+| 763/997, font | 941.482589 | 2.664755 | 1141.966406 | completion 799.830492; device gate 336.579125; unnamed 5.556789 |
+| 764/998, startup worker | 57.980293 | 5.500076 | 1050.567256 | unnamed kind 8/object 0 |
+| 765/999 | 0.074833 | 0.011209 | 0 | short-lived worker |
+| 766/1000 | 19.292334 | 0.021541 | 14.971709 | unnamed kind 8/object 0 |
+| 767/1001 | 19.585125 | 0.023667 | 14.902583 | unnamed kind 8/object 0 |
+| 768/1002 | 5.154167 | 0.023958 | 30.425125 | unnamed kind 8/object 0 |
+| 769/1003 | 12.374418 | 0.106624 | 20.639333 | unnamed kind 8/object 0 |
+
+The leader sums exactly to 2295.610417 ms. Workers' intervals start at their
+publication and end at termination; they must not each be extended to the full
+window or added as consecutive wall time. Other named competing work reports
+suite child 741/969: 1410.647189 ms on-CPU, 7.058637 runnable, 877.904591 blocked;
+bterm 751/982: 342.685498/4.849587/1948.075332; kgpu 0/20:
+153.303324/232.907012/1909.400081; render 0/11:
+57.779189/48.743939/2189.087289. All exported identities and wait rows are
+retained in the index. These small compositor runnable totals do not demonstrate
+CPU starvation by that work.
+
+There are material limits to calling this the requested physical CPU and
+blocked-by-object accounting. Each of the four swapper rows reports the entire
+2295.610417 ms as running, alongside the other threads. Including them yields
+12546.724262 ms on-CPU against only **9182.441668 ms** of four-vCPU capacity.
+`scheduler.rs` deliberately skips idle in outgoing state publication; the
+journal observes `Thread::set_state`, rather than physical ownership boundaries
+(`thread.rs`, `accounting_hooks.rs`). Idle CPU cannot be read literally from
+these rows. Most of the leader's blocking is unnamed kind 8/object 0, so its
+join/GPU waits cannot be partitioned by object from this export. Finally,
+`accounting_hooks.rs` explicitly charges host vCPU descheduling and IRQ work
+inside the current dispatch interval to that thread: an on-CPU label does not
+separate actual guest work from host scheduling delay.
+
+At the window-67 export, the fields are `lost=0 state_lost=0 disk_lost=0
+unavailable=0 state_unavailable=0`. Historical event overwrites are 4523075 and
+disk overwrites 64519; window 67's start/end and complete request sequence are
+still retained. Other windows are absent, so global overwrite counts do not
+establish startup coverage. The export-truncated marker count is 0. Producer
+loss counters alone do not repair the accounting limits above.
+
+### Other margins, variance, and the remaining decision
+
+Restart-adopts reaped in 17.561875 ms, margin **482.438125 ms** against 500;
+interaction-after-restart's reap was 5.418916 ms and stack-restored's reap
+6.019875 ms. None explains the older 893 ms pre-exit delay. Frame-floor's
+5000.542625 ms window has first/last gaps 1.632958/1.509542 ms, margins
+15.033709/15.157125 ms against 16.666667 ms. All seven performance cases pass.
+The failed click and stack-restored cases still prevent acceptance, whatever
+their passing counterparts did in older captures.
+
+**Measured lead:** disk-gate serialization and especially long submit→IRQ
+observation intervals account numerically for this replacement's slow font
+read. **Mechanism not established:** those stamps cannot distinguish device/
+host queue service from delayed guest IRQ consumption. `block_mmio.rs` stamps
+submit before publishing the ring and IRQ when software consumes the used
+descriptor; it has no independent device-completed or IRQ-pending timestamp.
+The retained 374498 µs maximum masked-IRQ record is from much earlier guest
+time, not this window, and cannot explain request 68472. Nor do the exported
+state labels identify named CPU starvation or the unnamed blocked objects.
+
+This capture resembles F11's slow-read placement rather than F10's fast-read,
+slow-plan/submit placement. It does **not** explain why the dominant phase
+moved across the earlier 1.12–2.52 s captures: they lack these request stamps,
+and this measurement lacks the independent completion/IRQ and physical CPU
+boundaries needed to make that distinction. A cache resize, request concurrency
+change, or startup reorder would therefore still select a hypothesis rather
+than repair an established cause.
+
+Under line 198(4), stop without a behavior fix, acceptance boot, R240 boot or board
+cell update. The decision for the coordinator is whether to authorize repair
+of the observation gaps and one specifically instrumented measurement:
+**during a long request such as 68472, did QEMU complete the request promptly
+while guest IRQ handling was delayed, or did host/backend service itself take
+the interval?** The same capture needs physical dispatch ownership and named
+join/GPU waits to account for the startup as required. No second boot is
+authorized by this report. PR #2874 stays draft and unmerged; #2872 remains open.
+Main advanced during the measurement and was merged conflict-free afterwards;
+the measurement remains evidence for `472b7fc1`, not for the merged tree.
+
 ## A.3 u14 font trace: request serialization is identified; 1921 ms remains unexplained
 
 This analysis answers coordinator ledger line 194(1–4) at source head
