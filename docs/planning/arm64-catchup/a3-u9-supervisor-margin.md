@@ -1,6 +1,6 @@
 # A.3 u9: overlap replacement target allocation with renderer preparation
 
-This unit continues the existing branch and merges `origin/main` at `78136dfa` without conflicts.
+This unit continues the existing branch and merges `origin/main` at `60e692be` without conflicts.
 It runs no boots and changes no deadline, case, manifest or verdict.
 
 ## Capture evidence and its limit
