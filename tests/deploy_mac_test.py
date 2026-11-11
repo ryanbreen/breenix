@@ -24,7 +24,7 @@ class DeployTest(unittest.TestCase):
         self.bin.mkdir()
         self.log = Path(self.tmp.name) / 'calls'
         self.env = dict(os.environ, PATH=f'{self.bin}:{os.environ["PATH"]}',
-                        REMOTE_HOME=str(self.remote), CALL_LOG=str(self.log))
+                        REMOTE_HOME=str(self.remote), CALL_LOG=str(self.log), HOME=str(self.root))
         self.run_git('init', '-q')
         self.run_git('config', 'user.email', 'test@example.invalid')
         self.run_git('config', 'user.name', 'Test')
@@ -101,6 +101,12 @@ if os.environ.get('CORRUPT') and src.name == 'disk': dst.write_bytes(b'corrupt')
                          subprocess.check_output(['git', 'rev-parse', 'HEAD'], cwd=self.root, text=True).strip())
         self.assertEqual(json.loads((deployed / '.deployed-artifacts.json').read_text()), self.items)
         self.assertTrue((self.remote / 'cache/QEMU-GL.app/Contents/bin').exists())
+        self.log.unlink()
+        result = self.deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        transfers = [line for line in self.log.read_text().splitlines() if line.startswith('rsync ')]
+        self.assertEqual(len(transfers), 2)
+        self.assertFalse(any('QEMU-GL.app' in call for call in transfers))
 
     def test_dirty_tree_is_refused(self):
         (self.root / 'dirty').write_text('dirty')
