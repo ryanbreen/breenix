@@ -213,3 +213,22 @@ fn pacer()->pace::Pacer {
 }
 
 }
+
+#[test]
+fn virtual_completion_uses_median_of_last_eight_intervals() {
+    let mut pacing = pace::Pacer::default();
+    let mut edge = 100 * MS;
+    let virtual_timing = |presented_ns| pace::Timing {
+        presented_ns, period_ns: 0, prepare_ns: 2 * MS, lead_ns: 0,
+    };
+    pacing.presented(virtual_timing(edge));
+    for interval in [90, 10, 10, 10, 10, 10, 10, 10, 30] {
+        edge += interval * MS;
+        pacing.presented(virtual_timing(edge));
+    }
+    pacing.delivered(1, (1, 0));
+    // The oldest 90 ms interval has fallen out; the median is 10 ms.
+    let deadline = edge + 10 * MS - 2 * MS - 1_500_000;
+    assert_eq!(pacing.decision(edge + MS), Decision::WaitUntil(deadline));
+    assert_eq!(pacing.decision(deadline), Decision::Compose);
+}
