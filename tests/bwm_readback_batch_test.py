@@ -12,6 +12,9 @@ class ReadbackBatch(unittest.TestCase):
         path = 'userspace/programs/src/bwm/compositor.rs'
         old = os.environ.get('UITEST_OLD_COMMIT')
         source = subprocess.check_output(['git','show',f'{old}:{path}'],cwd=ROOT,text=True) if old else (ROOT/path).read_text()
+        # The old-revision adapter runs its actual synchronous checker; ignoring
+        # the callback must fail the interruption assertion below.
+        interruptible = item(source,'pub fn check_area_while(') if 'pub fn check_area_while(' in source else 'pub fn check_area_while(&mut self, subject:u64,layers:&[Layer],pointer:Option<Pointer>,area:[u32;4],_:impl FnMut()->bool)->Option<Result<u64,CheckError>>{Some(self.check_area(subject,layers,pointer,area))}'
         constants = '\n'.join(re.findall(r'^const CHECK_BAND_.*?;', source, re.M))
         run_rust(self, r'''
 use std::sync::Mutex;
@@ -113,6 +116,13 @@ impl Compositor {
  assert!(matches!(c.check_area(0,&layers,None,[0,0,2560,1600]),Err(CheckError::Failed(_))),"late desktop corruption escaped with a layer present");
  *BAD.lock().unwrap()=None;*HIGH_X.lock().unwrap()=true;
  assert_eq!(c.check_area(0,&[],None,[13,7,2559,1599]).unwrap(),2546*1592);
+ CALLS.lock().unwrap().clear();let mut polls=0;
+ let interrupted=c.check_area_while(0,&[],None,[0,0,2560,1600],||{polls+=1;polls<2});
+ assert!(interrupted.is_none(),"new scene work remained blocked through the rest of the full frame");
+ assert_eq!(CALLS.lock().unwrap().len(),1,"readback started another band after input arrived");
+ let allocated=BUFFERS.load(std::sync::atomic::Ordering::Relaxed);
+ assert_eq!(c.check_area(0,&[],None,[0,0,2560,1600]).unwrap(),4096000);
+ assert_eq!(BUFFERS.load(std::sync::atomic::Ordering::Relaxed),allocated,"interruption discarded reusable readback storage");
 }
-'''.replace('CONSTANTS',constants+'\n'+'#[derive(Default)]'+item(source,'struct CheckWorkspace {')+'\n'+item(source,'fn resize_readback(')+'\n'+item(source,'fn client_buffer(')+'\n'+(item(source,'fn equal_row(') if 'fn equal_row(' in source else '')).replace('@CHECK@',item(source,'pub fn check_area(')+'\n'+item(source,'fn check_area_into(')).replace('@EXPECTED@',item(source,'fn expected(').replace('-> u32 {', '-> u32 { PIXELS.fetch_add(1,std::sync::atomic::Ordering::Relaxed);', 1)))
+'''.replace('CONSTANTS',constants+'\n'+'#[derive(Default)]'+item(source,'struct CheckWorkspace {')+'\n'+item(source,'fn resize_readback(')+'\n'+item(source,'fn client_buffer(')+'\n'+(item(source,'fn equal_row(') if 'fn equal_row(' in source else '')).replace('@CHECK@',item(source,'pub fn check_area(')+'\n'+interruptible+'\n'+item(source,'fn check_area_into(')).replace('@EXPECTED@',item(source,'fn expected(').replace('-> u32 {', '-> u32 { PIXELS.fetch_add(1,std::sync::atomic::Ordering::Relaxed);', 1)))
 if __name__=='__main__':unittest.main()
