@@ -189,6 +189,11 @@ for x86 and the explicit `aarch64-breenix-kernel.json` production target with
 
 The x86 ELF is Cargo's artifact dependency at
 `target/x86_64-unknown-none/release/deps/artifact/kernel-cb6f47ce5ef18fd1/bin/kernel-cb6f47ce5ef18fd1`,
-not the conventional top-level `release/kernel` left by an older build.
+not the conventional top-level `release/kernel` left by an older build. <!-- claim-lint:ok: Byte inspection of this artifact found 8 of 8 new row suffixes and object names; its SHA-256 is recorded in the artifact table above. -->
 `python3 scripts/claim-lint.py --commit-msg /tmp/a3-u17-implementation-msg.txt`
 exits 0 before the implementation commit.
+
+The final artifact-path paragraph initially triggered claim-lint's universal
+word check. Its inline 8 of 8 ELF-label evidence discharges that finding.
+The implementation commit had already been made, so this correction is
+recorded in a documentation commit.
