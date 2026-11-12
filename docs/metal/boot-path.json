@@ -266,6 +266,10 @@
           {
             "name": "Window manager composited a client frame",
             "marker": "[bwm] composited client frame:"
+          },
+          {
+            "name": "Terminal prompt read back in a composited frame",
+            "marker": "[bwm] terminal prompt read back:"
           }
         ]
       }

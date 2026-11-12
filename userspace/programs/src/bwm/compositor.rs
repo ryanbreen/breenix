@@ -567,7 +567,11 @@ impl Compositor {
     /// last frame composed from `layers` must show, prioritizing the client window `subject`
     /// (0 for the desktop). Returns the number of pixels compared.
     pub fn check(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>) -> Result<u64, CheckError> {
-        self.check_area(subject, layers, pointer, [0, 0, self.width, self.height])
+        self.check_area(subject, layers, pointer, [0, 0, self.width, self.height], false).map(|(count, _)| count)
+    }
+
+    pub fn sampled_commit(&self, id: u64) -> Option<u64> {
+        self.sampled.iter().find(|sample| sample.id == id).map(|sample| sample.commit_id)
     }
 
     pub fn validation_delay_ms(&self) -> u64 { self.check_workspace.last_ns.div_ceil(1_000_000) }
@@ -581,17 +585,23 @@ impl Compositor {
     ///
     /// CAPTURE reads the clients shown in the area. A captured commit differing from the
     /// composite's sample requires retrying the check on a later frame. The comparison
-    /// covers the requested rectangle, including other clients' content.
-    pub fn check_area(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4]) -> Result<u64, CheckError> {
-        self.check_area_while(subject, layers, pointer, area, || true).expect("uninterruptible frame check")
+    /// covers the requested rectangle, including other clients' content. When requested,
+    /// return the subject tree and its commit from the same capture as its pixels.
+    pub fn check_area(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4], want_tree: bool) -> Result<(u64, Option<(u64, Vec<u8>)>), CheckError> {
+        self.check_area_with(subject, layers, pointer, area, want_tree, || true).expect("uninterruptible frame check")
     }
 
     /// New work leaves validation pending; only a complete comparison returns a verdict.
-    pub fn check_area_while(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4], mut idle: impl FnMut() -> bool)
+    pub fn check_area_while(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4], idle: impl FnMut() -> bool)
         -> Option<Result<u64, CheckError>> {
+        self.check_area_with(subject, layers, pointer, area, false, idle).map(|result| result.map(|(count, _)| count))
+    }
+
+    fn check_area_with(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4], want_tree: bool, mut idle: impl FnMut() -> bool)
+        -> Option<Result<(u64, Option<(u64, Vec<u8>)>), CheckError>> {
         let mut workspace = core::mem::take(&mut self.check_workspace);
         let began = monotonic_ns();
-        let result = self.check_area_into(subject, layers, pointer, area, &mut workspace, &mut idle);
+        let result = self.check_area_into(subject, layers, pointer, area, want_tree, &mut workspace, &mut idle);
         let elapsed = monotonic_ns().saturating_sub(began);
         workspace.last_ns = workspace.last_ns.max(elapsed);
         // Retain storage on success, stale-front retry and readback refusal alike.
@@ -599,7 +609,7 @@ impl Compositor {
         match result { Ok(Some(pixels)) => Some(Ok(pixels)), Ok(None) => None, Err(error) => Some(Err(error)) }
     }
 
-    fn check_area_into(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4], workspace: &mut CheckWorkspace, idle: &mut impl FnMut() -> bool) -> Result<Option<u64>, CheckError> {
+    fn check_area_into(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4], want_tree: bool, workspace: &mut CheckWorkspace, idle: &mut impl FnMut() -> bool) -> Result<Option<(u64, Option<(u64, Vec<u8>)>)>, CheckError> {
         let [x0, y_top, x1, y1] = area;
         let w = x1.saturating_sub(x0);
         if w == 0 || y_top >= y1 {
@@ -609,6 +619,7 @@ impl Compositor {
         // The clients this area shows, the subject first, with their sampled pixels.
         let clients = &mut workspace.clients;
         let mut client_count = 0;
+        let mut subject_tree = None;
         let mut shown: Vec<_> = layers.iter().filter_map(|l| self.sampled_content(l).map(|r| (l.window_id, r)))
             .filter(|(_, r)| intersect(*r, [x0 as i32, y_top as i32, x1 as i32, y1 as i32]).is_some()).collect();
         // A source that changed during a previous capture goes first next time. Stable
@@ -621,7 +632,9 @@ impl Compositor {
                 clients, client_count, s.width as usize * s.height as usize * 4,
             );
             (*stored_id, *stored_rect, *stored_width) = (id, r, s.width);
-            let c = match window::capture(s.id, px, None) {
+            let mut tree = (want_tree && id == subject)
+                .then(|| prefaulted_bytes(wabi::limits::MAX_TREE_KIB as usize * 1024));
+            let c = match window::capture(s.id, px, tree.as_deref_mut()) {
                 Ok(c) => c,
                 Err(e) => {
                     // A concurrent enlarge can make the sampled-size output too small.
@@ -647,6 +660,7 @@ impl Compositor {
                     s.id, c.commit_id, c.width, c.height, s.commit_id, s.width, s.height
                 )));
             }
+            if let Some(tree) = tree { subject_tree = Some((c.commit_id, tree)); }
             client_count += 1;
         }
         let band_rows = (CHECK_BAND_BYTES / (w * 4)).max(1).min(y1 - y_top);
@@ -722,7 +736,7 @@ impl Compositor {
             libuitest::startup::mark("frame-pixels-ready");
             y0 += rows;
         }
-        Ok(Some(compared))
+        Ok(Some((compared, subject_tree)))
     }
 
     /// Read the scanout itself (READBACK target 0) at each `(x, y, want)` sample and require

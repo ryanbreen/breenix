@@ -130,6 +130,9 @@ instructions cannot be emulated by this QEMU version.
   where its scale puts them, and requires the read-back's record to name a scanout of the
   size bwm composed, the resource MODES reports bound, at the GPU core's current mode's
   size. The line carries the chosen scale; bwm's `[bwm] UI scale` line says how it was chosen.
+  On x86 metal, the default desktop milestone also requires `[bwm] terminal prompt read back:`
+  with row text starting `bsh />`, bound to the same composited frame and capture commit.
+  A terminal prompt or client frame check failure fails that milestone.
 - `program`: the production kernel runs `/sbin/probe --run PATH` as PID 1 (`--program PATH`,
   an absolute guest path, passed as `-fw_cfg name=opt/breenix/program,string=PATH`). Probe
   runs that one program, relays its output, and prints `RUN PATH START` once the program has

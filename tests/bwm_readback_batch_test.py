@@ -43,10 +43,10 @@ mod libbreenix {
  pub mod errno {#[derive(Debug)]pub enum Errno{EINVAL}}
  pub mod error {#[derive(Debug)]pub enum Error{Os(super::errno::Errno)} impl std::fmt::Display for Error{fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{write!(f,"error")}}}
 }
-mod wabi {pub struct WinInfo{pub id:u64,pub width:u32,pub height:u32} impl WinInfo{pub const ZERO:Self=Self{id:0,width:0,height:0};} impl Clone for WinInfo{fn clone(&self)->Self{Self::ZERO}}}
+mod wabi {pub mod limits{pub const MAX_TREE_KIB:u32=1024;}pub struct WinInfo{pub id:u64,pub width:u32,pub height:u32} impl WinInfo{pub const ZERO:Self=Self{id:0,width:0,height:0};} impl Clone for WinInfo{fn clone(&self)->Self{Self::ZERO}}}
 mod window {
  pub struct Captured{pub commit_id:u64,pub width:u32,pub height:u32}
- pub fn capture(_:u64,out:&mut[u8],_:Option<()>)->Result<Captured,super::libbreenix::error::Error>{
+ pub fn capture(_:u64,out:&mut[u8],_:Option<&mut[u8]>)->Result<Captured,super::libbreenix::error::Error>{
   if super::CLIENT.load(std::sync::atomic::Ordering::Relaxed){super::fill([0,0,256,256],out,false);Ok(Captured{commit_id:7,width:256,height:256})}
   else{Err(super::libbreenix::error::Error::Os(super::libbreenix::errno::Errno::EINVAL))}}
  pub fn list(_:&mut[super::wabi::WinInfo])->Result<usize,()>{Ok(0)}
@@ -78,10 +78,10 @@ impl Compositor {
 #[test]fn full_frame_and_offset_tail(){
  let mut c=Compositor{sampled:vec![],check_first:0,check_workspace:CheckWorkspace::default(),desktop:Desktop,scale:2,appbar_top:1600};
  OVERLAP.store(true,std::sync::atomic::Ordering::Relaxed);
- assert_eq!(c.check_area(0,&[],None,[0,0,64,64]).unwrap(),4096);
+ assert_eq!(c.check_area(0,&[],None,[0,0,64,64],false).unwrap().0,4096);
  OVERLAP.store(false,std::sync::atomic::Ordering::Relaxed);CALLS.lock().unwrap().clear();
  *POINTER.lock().unwrap()=true;
- assert_eq!(c.check_area(0,&[],Some(Pointer{x:3,y:3,shape:0}),[0,0,2560,1600]).unwrap(),4096000);
+ assert_eq!(c.check_area(0,&[],Some(Pointer{x:3,y:3,shape:0}),[0,0,2560,1600],false).unwrap().0,4096000);
  let hotspots=HOTSPOTS.load(std::sync::atomic::Ordering::Relaxed);
  assert!(hotspots<=20000,"cursor geometry evaluated for {hotspots} pixels instead of its rows");
  *POINTER.lock().unwrap()=false;
@@ -89,40 +89,40 @@ impl Compositor {
  assert!(calls.len()<=4,"32-row calls repeated the same transfer setup {} times",calls.len());
  assert!(calls.iter().all(|r| r[2] as usize*r[3] as usize*4<=4*1024*1024));
  CALLS.lock().unwrap().clear();
- assert_eq!(c.check_area(0,&[],None,[13,7,2559,1599]).unwrap(),2546*1592);
+ assert_eq!(c.check_area(0,&[],None,[13,7,2559,1599],false).unwrap().0,2546*1592);
  let calls=CALLS.lock().unwrap();let mut y=7;for r in calls.iter(){assert_eq!((r[0],r[1],r[2]),(13,y,2546));y+=r[3];}assert_eq!(y,1599);drop(calls);
  *BAD.lock().unwrap()=Some((2558,1598));
- match c.check_area(0,&[],None,[13,7,2559,1599]){Err(CheckError::Failed(s))=>assert!(s.contains("pixel (2558, 1598)"),"{s}"),Err(CheckError::Moved(s))=>panic!("{s}"),Ok(n)=>panic!("missed late mismatch after {n}")}
+ match c.check_area(0,&[],None,[13,7,2559,1599],false){Err(CheckError::Failed(s))=>assert!(s.contains("pixel (2558, 1598)"),"{s}"),Err(CheckError::Moved(s))=>panic!("{s}"),Ok((n,_))=>panic!("missed late mismatch after {n}")}
  *BAD.lock().unwrap()=None;
  // A chrome-only layer samples the desktop itself. It must retain the full
  // comparison without sending its other 1590 rows through the pixel oracle.
  PIXELS.store(0,std::sync::atomic::Ordering::Relaxed);
  let layers=[Layer{window_id:7,frame:[[0,10,2560,20];3],frame_len:1}];
- assert_eq!(c.check_area(0,&layers,None,[0,0,2560,1600]).unwrap(),4096000);
+ assert_eq!(c.check_area(0,&layers,None,[0,0,2560,1600],false).unwrap().0,4096000);
  assert_eq!(PIXELS.load(std::sync::atomic::Ordering::Relaxed),0,"chrome-only rows used the per-pixel layer oracle");
  let allocated=BUFFERS.load(std::sync::atomic::Ordering::Relaxed);
- assert_eq!(c.check_area(0,&layers,None,[0,0,2560,1600]).unwrap(),4096000);
+ assert_eq!(c.check_area(0,&layers,None,[0,0,2560,1600],false).unwrap().0,4096000);
  assert_eq!(BUFFERS.load(std::sync::atomic::Ordering::Relaxed),allocated,"steady checks allocated fresh readback buffers");
  CLIENT.store(true,std::sync::atomic::Ordering::Relaxed);
  c.sampled.push(Sample{id:7,width:256,height:256,commit_id:7});
- assert_eq!(c.check_area(0,&layers,None,[0,0,2560,1600]).unwrap(),4096000);
+ assert_eq!(c.check_area(0,&layers,None,[0,0,2560,1600],false).unwrap().0,4096000);
  let allocated=BUFFERS.load(std::sync::atomic::Ordering::Relaxed);
- assert_eq!(c.check_area(0,&layers,None,[0,0,2560,1600]).unwrap(),4096000);
+ assert_eq!(c.check_area(0,&layers,None,[0,0,2560,1600],false).unwrap().0,4096000);
  assert_eq!(BUFFERS.load(std::sync::atomic::Ordering::Relaxed),allocated,"stable client capture allocated another pixel buffer");
  *BAD.lock().unwrap()=Some((100,100));
- assert!(matches!(c.check_area(0,&layers,None,[0,0,2560,1600]),Err(CheckError::Failed(_))),"client corruption escaped the independent capture");
+ assert!(matches!(c.check_area(0,&layers,None,[0,0,2560,1600],false),Err(CheckError::Failed(_))),"client corruption escaped the independent capture");
  CLIENT.store(false,std::sync::atomic::Ordering::Relaxed);
  *BAD.lock().unwrap()=Some((2558,1598));
- assert!(matches!(c.check_area(0,&layers,None,[0,0,2560,1600]),Err(CheckError::Failed(_))),"late desktop corruption escaped with a layer present");
+ assert!(matches!(c.check_area(0,&layers,None,[0,0,2560,1600],false),Err(CheckError::Failed(_))),"late desktop corruption escaped with a layer present");
  *BAD.lock().unwrap()=None;*HIGH_X.lock().unwrap()=true;
- assert_eq!(c.check_area(0,&[],None,[13,7,2559,1599]).unwrap(),2546*1592);
+ assert_eq!(c.check_area(0,&[],None,[13,7,2559,1599],false).unwrap().0,2546*1592);
  CALLS.lock().unwrap().clear();let mut polls=0;
  let interrupted=c.check_area_while(0,&[],None,[0,0,2560,1600],||{polls+=1;polls<2});
  assert!(interrupted.is_none(),"new scene work remained blocked through the rest of the full frame");
  assert_eq!(CALLS.lock().unwrap().len(),1,"readback started another band after input arrived");
  let allocated=BUFFERS.load(std::sync::atomic::Ordering::Relaxed);
- assert_eq!(c.check_area(0,&[],None,[0,0,2560,1600]).unwrap(),4096000);
+ assert_eq!(c.check_area(0,&[],None,[0,0,2560,1600],false).unwrap().0,4096000);
  assert_eq!(BUFFERS.load(std::sync::atomic::Ordering::Relaxed),allocated,"interruption discarded reusable readback storage");
 }
-'''.replace('CONSTANTS',constants+'\n'+'#[derive(Default)]'+item(source,'struct CheckWorkspace {')+'\n'+item(source,'fn resize_readback(')+'\n'+item(source,'fn client_buffer(')+'\n'+(item(source,'fn equal_row(') if 'fn equal_row(' in source else '')).replace('@CHECK@',item(source,'pub fn check_area(')+'\n'+interruptible+'\n'+item(source,'fn check_area_into(')).replace('@EXPECTED@',item(source,'fn expected(').replace('-> u32 {', '-> u32 { PIXELS.fetch_add(1,std::sync::atomic::Ordering::Relaxed);', 1)))
+'''.replace('CONSTANTS',constants+'\n'+'#[derive(Default)]'+item(source,'struct CheckWorkspace {')+'\n'+item(source,'fn resize_readback(')+'\n'+item(source,'fn client_buffer(')+'\n'+(item(source,'fn equal_row(') if 'fn equal_row(' in source else '')).replace('@CHECK@',item(source,'pub fn check_area(')+'\n'+item(source,'fn check_area_with(')+'\n'+interruptible+'\n'+item(source,'fn check_area_into(')).replace('@EXPECTED@',item(source,'fn expected(').replace('-> u32 {', '-> u32 { PIXELS.fetch_add(1,std::sync::atomic::Ordering::Relaxed);', 1)))
 if __name__=='__main__':unittest.main()

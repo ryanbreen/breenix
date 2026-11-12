@@ -391,6 +391,15 @@ fn main() {
     let mut drawn_pointer = cursor_pointer(first_pointer);
     let mut full_redraw = false;
     let mut validation: ValidationQueue<PresentedScene> = ValidationQueue::new();
+    let mut prompt_watchers = chrome::prompt_watch::Watchers::default();
+    if !strict_startup {
+        for win in windows.iter().filter(|w| w.creation_order == 0 && &w.title[..w.title_len] == b"Terminal") {
+            match prompt_watchers.attach(win.window_id) {
+                Ok(()) => validation.request(win.window_id, monotonic_ms().unwrap_or(0)),
+                Err(error) => print!("[bwm] terminal prompt check FAILED: window {}: attach tree reader: {error}\n", win.window_id),
+            }
+        }
+    }
     let mut working_scene = PresentedScene { layers: Vec::new(), pointer: first_pointer };
 
     // The desktop outlives a clipboard that cannot open; clipboard clients then see ENOENT.
@@ -431,10 +440,11 @@ fn main() {
                 repeat: timing.deadline(),
                 launch: children.deadline(),
                 check_after_ms: if resizing.is_none() {
-                    windows.iter().filter(|w| validation.pending(w.window_id)
+                    windows.iter().filter(|w| (validation.pending(w.window_id)
+                        || validation.prompt_ready(w.window_id, gpu.sampled_commit(w.window_id)))
                         && shown.iter().any(|(id, _)| *id == w.window_id))
                         .map(|w| w.check_after_ms).min()
-                } else { None },
+                } else { None }.into_iter().chain(validation.prompt_deadline_ms()).min(),
                 wall: (wall != 0).then_some(wall),
             });
         let timeout = closing.timeout_ms(now, timeout);
@@ -452,6 +462,9 @@ fn main() {
         }
         let mut wait = ShutdownWait { fds: &mut poll_fds, timeout, failed: false };
         if shutdown::boundary(&mut wait).is_none() { return; }
+        // A verdict timeout must run even while input, animation or resize is busy.
+        expire_prompt_checks(&mut validation, monotonic_ms().unwrap_or(0));
+        prompt_watchers.retain(|id| validation.prompt_pending(id));
         signal_wake.drain();
         if let Some(clipboard) = &mut clipboard { clipboard.service(&poll_fds, libbreenix::ui_clock::now_ns()); }
         if let Some(wake) = &clock_wake {
@@ -475,7 +488,17 @@ fn main() {
 
         // ── 1. Discover new/removed client windows, and see client frames ──
         if scene_changed {
+            let first_new_order = next_creation_order;
             if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
+                if !strict_startup {
+                    for win in windows.iter().filter(|w| w.creation_order >= first_new_order
+                        && w.creation_order == 0 && &w.title[..w.title_len] == b"Terminal") {
+                        match prompt_watchers.attach(win.window_id) {
+                            Ok(()) => validation.request(win.window_id, monotonic_ms().unwrap_or(0)),
+                            Err(error) => print!("[bwm] terminal prompt check FAILED: window {}: attach tree reader: {error}\n", win.window_id),
+                        }
+                    }
+                }
                 reconcile_stack(&windows, &mut stack, false);
                 if dragging.as_ref().and_then(|d| d.id()).is_some_and(|id| !windows.iter().any(|w| w.window_id == id))
                     || resizing.as_ref().is_some_and(|r| !windows.iter().any(|w| w.window_id == r.id)) {
@@ -835,7 +858,8 @@ fn main() {
             clock_dirty = true;
         }
 
-        validation.retain_clients(|id| windows.iter().any(|w| w.window_id == id && !w.frame_checked));
+        validation.retain_clients(|id| windows.iter().any(|w| w.window_id == id));
+        prompt_watchers.retain(|id| validation.prompt_pending(id));
         for win in windows.iter().filter(|w| !w.frame_checked) {
             validation.first_frame(win.window_id);
         }
@@ -954,7 +978,8 @@ fn main() {
                 process::exit(1);
             }
             clock.acknowledged();
-            run_deferred_check(&mut validation, &mut gpu, &mut windows, &mut poll_fds, resizing.is_some());
+            run_deferred_check(&mut validation, &mut gpu, &mut windows, &mut poll_fds, resizing.is_some(), strict_startup);
+            prompt_watchers.retain(|id| validation.prompt_pending(id));
         }
     }
 }

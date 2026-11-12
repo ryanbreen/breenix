@@ -116,3 +116,65 @@ fn wait_deadline_only_tracks_a_check_that_can_still_run() {
     queue.complete(7);
     assert!(!queue.pending(7));
 }
+
+#[test]
+fn prompt_reaches_a_verdict_without_another_client_commit() {
+    use validation::PromptCheck;
+    let mut queue = ValidationQueue::new();
+    queue.request(7, 100);
+    queue.presented(1);
+    assert!(queue.next_prompt_if_idle(|_| Some(10), || false).is_none(),
+        "a busy compositor must not reserve the prompt attempt");
+    queue.first_frame(7);
+    // An empty first commit is checked once. Desktop repaints must not turn
+    // the same idle terminal into repeated full-screen GPU readbacks.
+    let (_, id, commit) = queue.next_prompt_if_idle(|_| Some(10), || true).unwrap();
+    assert_eq!((id, commit), (7, 10));
+    assert_eq!(queue.prompt_result(id, commit, PromptCheck::Empty, 200), None);
+    assert!(queue.next_prompt_if_idle(|_| Some(10), || true).is_none(),
+        "an unchanged idle frame must not consume another full-screen readback");
+    queue.complete(7);
+    for scene in 2..=4 {
+        queue.presented(scene);
+        assert!(!queue.pending(7), "an unchanged prompt must not force zero-timeout polling");
+        assert!(queue.next_prompt_if_idle(|_| Some(10), || panic!("no changed client")).is_none());
+    }
+    // Reader attachment/tree publication and shell output advance the client
+    // commit. Each such generation is eligible exactly once.
+    for commit in 11..=12 {
+        assert!(queue.prompt_ready(7, Some(commit)));
+        assert!(queue.next_prompt_if_idle(|_| Some(commit), || true).is_some());
+        assert_eq!(queue.prompt_result(7, commit, PromptCheck::Empty, 200), None);
+        assert!(!queue.prompt_ready(7, Some(commit)));
+    }
+    let deadline = 100 + validation::PROMPT_TIMEOUT_MS;
+    assert_eq!(queue.prompt_deadline_ms(), Some(deadline));
+    assert!(queue.expire_prompts(deadline - 1).is_empty());
+    assert_eq!(queue.expire_prompts(deadline), [7], "idle terminal must reach a verdict without another commit");
+    assert!(queue.expire_prompts(deadline + 1).is_empty(), "only one verdict");
+    assert_eq!(queue.prompt_deadline_ms(), None);
+    assert!(!queue.prompt_pending(7));
+    queue.request(8, 100);
+    assert!(queue.check_prompt(8, 11));
+    assert_eq!(queue.prompt_result(8, 11, PromptCheck::Text, 200), Some(Ok(11)));
+    assert_eq!(queue.prompt_result(8, 11, PromptCheck::Text, 200), None);
+}
+
+#[test]
+fn prompt_limit_fails_once_and_departed_clients_leave_no_work() {
+    use validation::PromptCheck;
+    let mut queue = ValidationQueue::new();
+    queue.request(7, 100);
+    queue.request(8, 100);
+    queue.retain_clients(|id| id == 7);
+    queue.presented(1);
+    assert!(!queue.check_prompt(8, 1));
+    assert!(queue.check_prompt(7, 1));
+    assert_eq!(queue.prompt_result(7, 1, PromptCheck::Moved, 2), None);
+    queue.presented(2);
+    assert!(queue.check_prompt(7, 2));
+    assert_eq!(queue.prompt_result(7, 2, PromptCheck::Empty, 2), Some(Err(())));
+    assert_eq!(queue.prompt_result(7, 2, PromptCheck::Empty, 2), None);
+    queue.presented(3);
+    assert!(!queue.check_prompt(7, 3));
+}
