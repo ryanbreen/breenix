@@ -55,7 +55,8 @@ pub mod op {
     pub const MAP_TREE_READERS: u32 = 33;
     pub const CAPTURE_TREE: u32 = 34;
     pub const FRAME_STAGE: u32 = 35;
-    pub const LAST: u32 = FRAME_STAGE;
+    pub const PRESENTATION_FD: u32 = 36;
+    pub const LAST: u32 = PRESENTATION_FD;
 }
 
 /// Application frame diagnostic boundaries (section 17.1).
@@ -956,7 +957,7 @@ pub const fn arg_size(op: u32) -> Option<usize> {
     Some(match op {
         op::CREATE => size_of::<Create>(),
         op::FRAME_STAGE => size_of::<FrameStage>(),
-        op::DESTROY | op::EVENT_FD | op::HOLD_EVIDENCE | op::RELEASE_REMNANT => size_of::<WinId>(),
+        op::DESTROY | op::EVENT_FD | op::PRESENTATION_FD | op::HOLD_EVIDENCE | op::RELEASE_REMNANT => size_of::<WinId>(),
         op::REGISTER | op::SET_TITLE => size_of::<Title>(),
         op::LIST => size_of::<List>(),
         op::ACQUIRE => size_of::<Acquire>(),

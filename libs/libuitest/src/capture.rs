@@ -36,9 +36,41 @@ pub fn window_result(arena: &mut Arena, check: &str, id: u64) -> Result<Record, 
     });
     result.map_err(|detail| WindowError { syscall, detail })
 }
+/// Retry pending scanout observation on composite completion, under one absolute
+/// monotonic deadline. The retry still requires a valid observation.
+pub fn readback_until(rb: &mut abi::Readback, deadline_ns: u64) -> Result<(), libbreenix::error::Error> {
+    use libbreenix::{errno::Errno, error::Error, io, time, types::{Fd, OwnedFd}};
+    let now = || time::now_monotonic().map(|t| t.as_nanos() as u64);
+    let fd = window::call(abi::op::PRESENTATION_FD, &mut abi::WinId { id: 0 })?;
+    let fd = OwnedFd::new(Fd::from_raw(fd));
+    loop {
+        if now()? >= deadline_ns { return Err(Error::Os(Errno::ETIMEDOUT)); }
+        // Acknowledge before observing: a completion during or after EAGAIN
+        // stays readable, including one published before ppoll registers us.
+        let mut generation = [0u8; 8];
+        io::read(fd.fd(), &mut generation)?;
+        match window::call(abi::op::SCANOUT_READBACK, rb) {
+            Ok(_) => {
+                if now()? >= deadline_ns { return Err(Error::Os(Errno::ETIMEDOUT)); }
+                return Ok(());
+            }
+            Err(Error::Os(Errno::EAGAIN)) => {}
+            Err(e) => return Err(e),
+        }
+        let left = deadline_ns.saturating_sub(now()?);
+        if left == 0 { return Err(Error::Os(Errno::ETIMEDOUT)); }
+        let mut fds = [io::PollFd { fd: fd.fd().raw() as i32, events: io::poll_events::POLLIN, revents: 0 }];
+        match io::poll_ns(&mut fds, Some(left)) {
+            Ok(_) | Err(Error::Os(Errno::EINTR)) => {}
+            Err(e) => return Err(e),
+        }
+    }
+}
 /// Require the caller's observation kind, rather than accepting whatever kind
 /// the device returned. The shared E21 validator judges backend completions.
 pub fn screen(arena: &mut Arena, check: &str, kind: ObservationKind) -> Result<Record, String> {
+    let deadline = libbreenix::time::now_monotonic().map_err(|e| e.to_string())?
+        .as_nanos() as u64 + crate::settle::BOUND_NS;
     let mode = gpu::current_mode().map_err(|e| format!("capture CURRENT_MODE: {e}"))?;
     let len = byte_len(mode.width, mode.height)?;
     let mut writer = arena.begin(Slot::Screen)?;
@@ -47,7 +79,7 @@ pub fn screen(arena: &mut Arena, check: &str, kind: ObservationKind) -> Result<R
     let mut observation = [0; 1024];
     let mut rb = abi::Readback { dst: pixels.as_mut_ptr() as u64, dst_len: len as u64,
         record: observation.as_mut_ptr() as u64, record_len: 1024, ..Default::default() };
-    window::call(abi::op::SCANOUT_READBACK, &mut rb).map_err(|e| format!("screen capture: {e}"))?;
+    readback_until(&mut rb, deadline).map_err(|e| format!("screen capture: {e}"))?;
     if !window::validate_scanout_observation(&observation, mode.width, mode.height, kind) {
         return Err("screen capture: invalid scanout observation".into());
     }

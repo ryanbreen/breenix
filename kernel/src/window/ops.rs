@@ -1175,7 +1175,6 @@ fn end_claim(reg: &mut super::Registry) -> Vec<Arc<Waits>> {
 /// Window 0, for the compositor claimant: the scene descriptor, readable while the scene has
 /// changed since it was last read.
 pub fn event_fd(caller: &Caller, id: u64) -> Result<u64, i32> {
-    use crate::ipc::fd::{FdKind, FileDescriptor};
     let file: Arc<dyn crate::ipc::object::IpcFile> = if id == 0 {
         let queue = super::scene::changes_queue(caller)?;
         Arc::try_new(super::events::SceneFile::new(queue)).map_err(|_| ENOMEM)?
@@ -1186,6 +1185,18 @@ pub fn event_fd(caller: &Caller, id: u64) -> Result<u64, i32> {
         };
         Arc::try_new(super::events::EventFile::new(id, queue)).map_err(|_| ENOMEM)?
     };
+    install_event_file(caller, file)
+}
+
+pub fn presentation_fd(caller: &Caller, id: u64) -> Result<u64, i32> {
+    if id != 0 { return Err(EINVAL); }
+    if !caller.is_root() && !REGISTRY.lock().is_compositor(caller) { return Err(EPERM); }
+    let file = Arc::try_new(super::events::PresentationFile::new()?).map_err(|_| ENOMEM)?;
+    install_event_file(caller, file)
+}
+
+fn install_event_file(caller: &Caller, file: Arc<dyn crate::ipc::object::IpcFile>) -> Result<u64, i32> {
+    use crate::ipc::fd::{FdKind, FileDescriptor};
     let entry = FileDescriptor::try_opened(FdKind::Ipc(file), 0).map_err(|_| ENOMEM)?;
     crate::process::with_process_manager(|manager| {
         let (_, process) = manager.find_process_by_thread_mut(caller.tid).ok_or(breengel_abi::errno::ESRCH)?;
