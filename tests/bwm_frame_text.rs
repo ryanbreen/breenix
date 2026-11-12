@@ -4,9 +4,9 @@ extern crate self as libbui;
 #[path = "../libs/libbui/src/tree.rs"]
 pub mod tree;
 #[path = "../userspace/programs/src/bterm/selection.rs"]
-mod selection;
+pub mod selection;
 #[path = "../userspace/programs/src/bterm/terminal_node.rs"]
-mod terminal_node;
+pub mod terminal_node;
 #[path = "../userspace/programs/src/bwm/chrome/frame_text.rs"]
 mod frame_text;
 
