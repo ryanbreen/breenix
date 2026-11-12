@@ -37,17 +37,77 @@ extern "C" {
     fn mmap(addr: *mut u8, len: usize, prot: i32, flags: i32, fd: i32, offset: i64) -> *mut u8;
     fn munmap(addr: *mut u8, len: usize) -> i32;
 }
+// One fixed table per completed next_checkpoint, emitted before its caller can
+// time out. Nanoseconds are elapsed/thread-CPU; unsupported CPU clocks are
+// explicit and absent calls are '-'. No path or other unbounded text is printed.
+const CALLS: [&str; 14] = [
+    "open", "set_len", "header_write", "mmap_screen", "mmap_frame", "mmap_tree",
+    "rename", "close", "munmap_header_screen", "munmap_header_frame", "munmap_header_tree",
+    "munmap_payload_screen", "munmap_payload_frame", "munmap_payload_tree",
+];
+#[repr(C)]
+struct CpuTimespec { sec: i64, nsec: i64 }
+extern "C" {
+    fn clock_gettime(clock: i32, time: *mut CpuTimespec) -> i32;
+}
+fn thread_cpu_ns() -> Option<u64> {
+    // The Breenix ABI uses 3, as does Linux; Darwin's host-check ABI uses 16.
+    let clock = if cfg!(target_os = "macos") { 16 } else { 3 };
+    let mut time = CpuTimespec { sec: 0, nsec: 0 };
+    if unsafe { clock_gettime(clock, &mut time) } != 0 { return None; }
+    u64::try_from(time.sec).ok()?.checked_mul(1_000_000_000)?
+        .checked_add(u64::try_from(time.nsec).ok()?)
+}
+struct CallTimes { enabled: bool, times: [Option<(u64, Option<u64>)>; 14] }
+impl CallTimes {
+    fn new(enabled: bool) -> Self { Self { enabled, times: [None; 14] } }
+    fn call<T>(&mut self, index: usize, call: impl FnOnce() -> T) -> T {
+        if !self.enabled { return call(); }
+        let start = std::time::Instant::now();
+        let cpu_start = thread_cpu_ns();
+        let result = call();
+        let cpu_end = thread_cpu_ns();
+        let elapsed = start.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+        let cpu = cpu_start.zip(cpu_end).and_then(|(start, end)| end.checked_sub(start));
+        self.times[index] = Some((elapsed, cpu));
+        result
+    }
+    fn report(&self, ok: bool) {
+        use std::io::Write;
+        use std::fmt::Write as _;
+        let mut line = format!("VALUE arena-call-ns {}", if ok { "ok" } else { "error" });
+        for (name, time) in CALLS.iter().zip(self.times) {
+            match time {
+                Some((elapsed, Some(cpu))) => { let _ = write!(line, " {name}={elapsed}/{cpu}"); }
+                Some((elapsed, None)) => { let _ = write!(line, " {name}={elapsed}/unsupported"); }
+                None => { let _ = write!(line, " {name}=-"); }
+            }
+        }
+        line.push('\n');
+        // Fourteen fixed names and u64 values keep the entire line below 1024
+        // bytes, including the unavailable-clock spelling and final newline.
+        if let Ok(mut evidence) = OpenOptions::new().write(true).open("/dev/screen-evidence") {
+            let _ = evidence.write_all(line.as_bytes());
+        }
+    }
+}
 struct Mapping { base: *mut u8, ptr: *mut u8, len: usize }
 impl Mapping {
     fn new(file: &File, offset: usize, len: usize) -> Result<Self, String> {
+        Self::new_timed(file, offset, len, &mut CallTimes::new(false), 0)
+    }
+    fn new_timed(file: &File, offset: usize, len: usize, calls: &mut CallTimes, index: usize) -> Result<Self, String> {
         let page = usize::try_from(unsafe { getpagesize() }).map_err(|_| "invalid mapping page size")?;
         if !page.is_power_of_two() { return Err("invalid mapping page size".into()); }
         let skip = offset % page;
         let len = (skip + len).next_multiple_of(page);
         // File mappings populate resident pages on Breenix. Map only the range
         // needed now; defer unused screen/frame payloads until accessed.
-        let ptr = unsafe { mmap(core::ptr::null_mut(), len, 3, 1, file.as_raw_fd(), (offset - skip) as i64) };
-        if ptr as isize == -1 { return Err(std::io::Error::last_os_error().to_string()); }
+        let ptr = calls.call(index, || {
+            let ptr = unsafe { mmap(core::ptr::null_mut(), len, 3, 1, file.as_raw_fd(), (offset - skip) as i64) };
+            // Capture errno before reading either clock.
+            if ptr as isize == -1 { Err(std::io::Error::last_os_error().to_string()) } else { Ok(ptr) }
+        })?;
         Ok(Self { base: ptr, ptr: unsafe { ptr.add(skip) }, len })
     }
 }
@@ -61,13 +121,16 @@ pub struct Arena {
 }
 impl Arena {
     pub fn create(path: &Path, layout: Layout) -> Result<Self, String> {
-        let mut file = OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(path).map_err(|e| e.to_string())?;
-        file.set_len(layout.len() as u64).map_err(|e| e.to_string())?;
+        Self::create_timed(path, layout, &mut CallTimes::new(false))
+    }
+    fn create_timed(path: &Path, layout: Layout, calls: &mut CallTimes) -> Result<Self, String> {
+        let mut file = calls.call(0, || OpenOptions::new().read(true).write(true).create_new(true).mode(0o600).open(path)).map_err(|e| e.to_string())?;
+        calls.call(1, || file.set_len(layout.len() as u64)).map_err(|e| e.to_string())?;
         use std::io::Write;
         let mut header = [0; 16]; header[..8].copy_from_slice(b"UTARE001");
         header[8..12].copy_from_slice(&layout.width.to_le_bytes()); header[12..16].copy_from_slice(&layout.height.to_le_bytes());
-        file.write_all(&header).map_err(|e| e.to_string())?;
-        Self::map(path, file, layout)
+        calls.call(2, || file.write_all(&header)).map_err(|e| e.to_string())?;
+        Self::map_timed(path, file, layout, calls)
     }
     pub fn open(path: &Path) -> Result<Self, String> {
         use std::{io::Read, os::unix::fs::MetadataExt};
@@ -81,23 +144,41 @@ impl Arena {
         Self::map(path, file, layout)
     }
     fn map(path: &Path, file: File, layout: Layout) -> Result<Self, String> {
+        Self::map_timed(path, file, layout, &mut CallTimes::new(false))
+    }
+    fn map_timed(path: &Path, file: File, layout: Layout, calls: &mut CallTimes) -> Result<Self, String> {
         let headers = [Slot::Screen, Slot::Frame, Slot::Tree].into_iter()
-            .map(|slot| Mapping::new(&file, layout.header_offset(slot), HEADER))
+            .map(|slot| Mapping::new_timed(&file, layout.header_offset(slot), HEADER, calls, 3 + slot.index()))
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self { path: path.into(), file, headers, payloads: [None, None, None], layout })
     }
     pub fn layout(&self) -> Layout { self.layout }
     /// Start another immutable checkpoint; existing mappings retain the old inode.
     pub fn next_checkpoint(&mut self) -> Result<(), String> {
-        let next_path = self.path.with_extension("next");
-        let mut next = Self::create(&next_path, self.layout)?;
-        if let Err(error) = std::fs::rename(&next_path, &self.path) {
-            let _ = std::fs::remove_file(&next_path);
-            return Err(error.to_string());
-        }
-        next.path = self.path.clone();
-        *self = next;
-        Ok(())
+        let mut calls = CallTimes::new(true);
+        let result = (|| {
+            let next_path = self.path.with_extension("next");
+            let mut next = Self::create_timed(&next_path, self.layout, &mut calls)?;
+            if let Err(error) = calls.call(6, || std::fs::rename(&next_path, &self.path)) {
+                let _ = std::fs::remove_file(&next_path);
+                return Err(error.to_string());
+            }
+            next.path = self.path.clone();
+            let old = std::mem::replace(self, next);
+            // Preserve Arena's field-drop order: file, headers, then payloads.
+            // The old mappings continue to own the unlinked inode after close.
+            let Self { file, headers, payloads, .. } = old;
+            calls.call(7, || drop(file));
+            for (index, mapping) in headers.into_iter().enumerate() {
+                calls.call(8 + index, || drop(mapping));
+            }
+            for (index, mapping) in payloads.into_iter().enumerate() {
+                if let Some(mapping) = mapping { calls.call(11 + index, || drop(mapping)); }
+            }
+            Ok(())
+        })();
+        calls.report(result.is_ok());
+        result
     }
     /// The collector opens the active checkpoint after the case has stopped.
     pub fn reopen(&self) -> Result<Self, String> { Self::open(&self.path) }
