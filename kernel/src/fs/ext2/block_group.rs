@@ -119,6 +119,28 @@ impl Ext2BlockGroupDesc {
         superblock: &Ext2Superblock,
         descriptors: &[Self],
     ) -> Result<(), BlockError> {
+        Self::write_table_inner(device, superblock, descriptors, None)
+    }
+
+    /// Publish a namespace plan's changed counts only. The caller holds the
+    /// mount write guard and keeps the previous descriptors until commit;
+    /// undo compares the same two images in reverse, including a failed write.
+    pub(super) fn write_table_changed<B: BlockDevice + ?Sized>(
+        device: &B,
+        superblock: &Ext2Superblock,
+        descriptors: &[Self],
+        previous: &[Self],
+    ) -> Result<(), BlockError> {
+        if descriptors.len() != previous.len() { return Err(BlockError::IoError); }
+        Self::write_table_inner(device, superblock, descriptors, Some(previous))
+    }
+
+    fn write_table_inner<B: BlockDevice + ?Sized>(
+        device: &B,
+        superblock: &Ext2Superblock,
+        descriptors: &[Self],
+        previous: Option<&[Self]>,
+    ) -> Result<(), BlockError> {
         let block_size = superblock.block_size();
         let descriptor_size = mem::size_of::<Ext2BlockGroupDesc>();
 
@@ -136,6 +158,16 @@ impl Ext2BlockGroupDesc {
                 // SAFETY: ext2 descriptors have a packed on-disk representation.
                 let bytes = unsafe { core::slice::from_raw_parts(desc as *const Self as *const u8, descriptor_size) };
                 buffer[index*descriptor_size..(index+1)*descriptor_size].copy_from_slice(bytes);
+            }
+            if let Some(previous) = previous {
+                let start = block_index * (block_size / descriptor_size);
+                let old = &previous[start..start + descriptors.len()];
+                // SAFETY: packed descriptors contain exactly their on-disk
+                // bytes, with no padding, as in serialization above.
+                let bytes = unsafe {
+                    core::slice::from_raw_parts(old.as_ptr() as *const u8, mem::size_of_val(old))
+                };
+                if buffer[..bytes.len()] == *bytes { continue; }
             }
             device.write_blocks(((bgdt_block + block_index) * block_size / device_block_size) as u64,
                 block_size / device_block_size, &buffer[..block_size])?;
