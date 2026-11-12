@@ -135,7 +135,11 @@ pub fn is_member() -> bool {
 }
 
 fn configure(ids: &[String], index: usize) {
-    let hostkeys = super::hostkey_method();
+    // Init owns desktop sequences without entering the suite argument parser.
+    let hostkeys = super::hostkey_method().map(String::from).or_else(|| {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        args.windows(2).find(|pair| pair[0] == "--hostkeys").map(|pair| pair[1].clone())
+    });
     let desktop = std::fs::read_to_string(sequence_paths().list.with_file_name("desktop-suite")).ok();
     let _ = ID.set(ids[index].clone());
     let _ = AFTER.set(ids[index + 1..].iter().map(|id| {
@@ -146,7 +150,7 @@ fn configure(ids: &[String], index: usize) {
         } else {
             (suite.clone(), vec![suite])
         };
-        if let Some(method) = hostkeys {
+        if let Some(method) = &hostkeys {
             args.push(b"--hostkeys\0".to_vec());
             let mut method = method.as_bytes().to_vec();
             method.push(0);

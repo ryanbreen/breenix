@@ -215,6 +215,33 @@ finalize();
             result = subprocess.run([str(binary), '--test-threads=1'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_init_owner_preserves_hostkey_arguments(self):
+        source = (ROOT / 'libs/libbreenix/src/suite_sequence.rs').read_text()
+        source = '\n'.join(line for line in source.splitlines() if not line.startswith('//!'))
+        checks = r'''
+        pub fn owner_handoff() {
+            let root = std::path::PathBuf::from(std::env::var_os("TEST_SEQUENCE_DIR").unwrap());
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_DIR", &root);
+            assert!(super::hostkey_method().is_none(), "init has not run the suite parser");
+            configure(&["gui-apps".into(), "console".into()], 0);
+            hand_off();
+            let calls = crate::CALLS.lock().unwrap();
+            assert_eq!(&calls[0].1[1..], ["--hostkeys", "fixture"]);
+        }
+    }
+}
+fn main() { harness::sequence::owner_handoff(); }
+'''
+        with tempfile.TemporaryDirectory() as scratch:
+            path, binary = Path(scratch) / 'owner.rs', Path(scratch) / 'owner'
+            path.write_text(STUBS + source + checks)
+            subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings', str(path), '-o', str(binary)], check=True)
+            import os
+            env = dict(os.environ, TEST_SEQUENCE_DIR=scratch)
+            env.pop('TEST_HOSTKEYS', None)
+            result = subprocess.run([str(binary), 'suite', '/sbin/suite-gui-apps', '--hostkeys', 'fixture'], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_production_sequence_roles(self):
         source = (ROOT / 'libs/libbreenix/src/suite_sequence.rs').read_text()
         # Comments use inner module docs; the actual implementation is unmodified.
