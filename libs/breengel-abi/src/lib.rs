@@ -53,7 +53,8 @@ pub mod op {
     pub const COMPOSITOR_STATUS: u32 = 31;
     pub const HIT_TEST: u32 = 32;
     pub const MAP_TREE_READERS: u32 = 33;
-    pub const LAST: u32 = MAP_TREE_READERS;
+    pub const CAPTURE_TREE: u32 = 34;
+    pub const LAST: u32 = CAPTURE_TREE;
 }
 
 /// Linux's errno values, which the interface returns negated (section 25).
@@ -369,7 +370,7 @@ pub struct MapBuffers {
     pub reserved: u32,
 }
 
-/// Argument of `CAPTURE` and `READ_REMNANT`. Pixels are copied as BGRX rows of `width * 4`
+/// Argument of `CAPTURE`, `CAPTURE_TREE` and `READ_REMNANT`. Pixels are copied as BGRX rows of `width * 4`
 /// bytes, X normalized to 0xFF.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -941,7 +942,7 @@ pub const fn arg_size(op: u32) -> Option<usize> {
         op::WRITE_EVENTS => size_of::<WriteEvents>(),
         op::SET_GEOMETRY => size_of::<Geometry>(),
         op::MAP_COMMITTED => size_of::<MapBuffers>(),
-        op::CAPTURE | op::READ_REMNANT => size_of::<Capture>(),
+        op::CAPTURE | op::CAPTURE_TREE | op::READ_REMNANT => size_of::<Capture>(),
         op::MAP_TREE | op::MAP_TREE_READERS | op::MAP_COMPOSITOR_TEXTURE => size_of::<MapTree>(),
         op::CLAIM_COMPOSITOR => size_of::<Claim>(),
         op::COMPOSITE => size_of::<Composite>(),

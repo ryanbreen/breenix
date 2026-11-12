@@ -885,6 +885,7 @@ architecture only.
 | 29 | `COMPOSITE_SNAPSHOT` | `SceneSnapshot` (96) | 0 | EPERM, EINVAL, EBUSY, EAGAIN pending render, ENOMEM, ENODEV, EIO |
 | 32 | `HIT_TEST` | `HitTest` (32) | 0 | EPERM, EINVAL flags or reserved |
 | 33 | `MAP_TREE_READERS` | `MapTree` (24) | 0 | owner only; EPERM, ENOENT, ENOMEM, EFAULT |
+| 34 | `CAPTURE_TREE` | `Capture` (56) | 0 | EINVAL missing or short tree destination; ENOENT; EINTR pending-publication wait; EIO failed pending publication |
 
 `MAP_TREE_READERS` maps a window's reader-status page read-only for its owner, with
 `MapTree.addr` and `len` reporting the mapping. Offset 0 is `TreeReaderState.readers`, an
@@ -1031,6 +1032,8 @@ Serialize publication order while one candidate is pending. Another COMMIT or NO
 
 NO_CHANGE retains its 32-byte layout, pixel generation and empty damage. It updates published metadata without new drawing or a sampling hold. A completed frame of the same pixel generation satisfies that later metadata commit's presentation requirement; observation records remain honest about the actual commit sampled, rather than rewriting history.
 
+`CAPTURE_TREE` uses the same authority and pending-publication decision as `CAPTURE`. It requires a nonzero tree destination large enough for one tree page, pins the published front's tree page while copying it, and returns its commit id (zero when there is no front). It ignores the pixel destination and dimensions, takes no pixel buffer pin, and performs no device read. The other `Capture` output fields are unchanged.
+
 A CAPTURE begun while a candidate is pending waits killably for that render decision, then captures the newly published generation or returns EIO for its failed publication; a later CAPTURE after rejection sees the retained previous front. It never copies pending/partially rendered pixels. Existing CAPTURE/tree-output validation, authority, ENOENT-at-start and pinned whole-generation behavior remain in force. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
 
 - **Bases and the damage log.** A buffer's base is the commit id whose pixels it holds: the id it was last
@@ -1089,7 +1092,7 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 | `READ_EVENTS`, `EVENT_FD` | yes | `EVENT_FD` of window 0 only | — | EPERM |
 | `WRITE_EVENTS`, `SET_GEOMETRY` | EPERM | yes | EPERM | EPERM |
 | retired `MAP_COMMITTED`, `MAP_COMPOSITOR_TEXTURE` | ENOSYS | ENOSYS | ENOSYS | ENOSYS |
-| `CAPTURE`, `MAP_TREE`, `READ_META` | yes | yes | yes | EPERM |
+| `CAPTURE`, `CAPTURE_TREE`, `MAP_TREE`, `READ_META` | yes | yes | yes | EPERM |
 | `MAP_TREE_READERS` | yes | no | no | EPERM |
 | `COMPOSITE_SNAPSHOT`, `COMPOSITE` | — | only while also current display owner | EPERM | EPERM |
 | `COMPOSITE_RECORD` | — | yes | yes (read only) | EPERM |

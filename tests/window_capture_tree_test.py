@@ -27,14 +27,14 @@ const EINVAL:i32=22;
 static PIXELS:AtomicUsize=AtomicUsize::new(0);
 static TREES:AtomicUsize=AtomicUsize::new(0);
 static REGISTRY:Mutex<Registry>=Mutex::new(Registry{window:Window{id:7,tree_kib:1,front:Some(1),tree_pins:[0,0],tree:Mem,front_commit:42}});
-struct Caller; struct Mem;
+pub struct Caller; struct Mem;
 impl Clone for Mem {fn clone(&self)->Self{Self}}
 struct Window {id:u64,tree_kib:u32,front:Option<usize>,tree_pins:[usize;2],tree:Mem,front_commit:u64}
 struct Registry {window:Window}
 impl Registry {fn window(&mut self,_:u64,_:&Caller,_:fn(bool,bool,&Caller)->bool)->Result<&mut Window,i32>{Ok(&mut self.window)}}
 mod who {use super::Caller; pub fn owner_compositor_or_root(_:bool,_:bool,_:&Caller)->bool{true}}
 struct TreePin {window:u64,slot:usize}
-struct Capture {id:u64,dst:u64,dst_len:u64,tree_dst:u64,tree_len:u64,commit_id:u64,width:u32,height:u32}
+pub struct Capture {id:u64,dst:u64,dst_len:u64,tree_dst:u64,tree_len:u64,commit_id:u64,width:u32,height:u32}
 fn pending_decision(_:u64,_:&Caller,_:fn(bool,bool,&Caller)->bool,_:bool)->Result<(),i32>{Ok(())}
 mod mem {pub fn probe_writable(_:u64,_:u64)->Result<(),i32>{Ok(())}}
 fn bytes_out(_: &Mem,offset:u64,len:u64,dst:u64)->Result<(),i32>{assert_eq!((offset,len,dst),(1024,1024,5)); TREES.fetch_add(1,Ordering::SeqCst); Ok(())}

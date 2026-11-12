@@ -916,6 +916,32 @@ pub fn capture(caller: &Caller, c: &mut Capture) -> Result<u64, i32> {
     Ok(0)
 }
 
+/// `CAPTURE_TREE`: copy only the published front's tree, without pinning or reading pixels.
+pub fn capture_tree(caller: &Caller, c: &mut Capture) -> Result<u64, i32> {
+    pending_decision(c.id, caller, who::owner_compositor_or_root, true)?;
+    let (tree_pin, tree, tree_offset, tree_len, commit_id) = {
+        let mut reg = REGISTRY.lock();
+        let w = reg.window(c.id, caller, who::owner_compositor_or_root)?;
+        let tree_len = w.tree_kib as u64 * 1024;
+        if c.tree_dst == 0 || c.tree_len < tree_len {
+            return Err(EINVAL);
+        }
+        let (tree_pin, tree_offset, commit_id) = match w.front {
+            Some(f) => {
+                w.tree_pins[f] += 1;
+                (Some(TreePin { window: w.id, slot: f }), f as u64 * tree_len, w.front_commit)
+            }
+            None => (None, 0, 0),
+        };
+        (tree_pin, w.tree.clone(), tree_offset, tree_len, commit_id)
+    };
+    mem::probe_writable(c.tree_dst, tree_len)?;
+    bytes_out(&tree, tree_offset, tree_len, c.tree_dst)?;
+    drop(tree_pin);
+    c.commit_id = commit_id;
+    Ok(0)
+}
+
 /// `RESIZE`: new buffers of the new size, each holding the old front in the intersection.
 /// A refusal tells the window `ResizeFailed` with the old size; success, `Resized` with the
 /// new one, once the buffers have it. The new buffers are mapped read-only until `ACQUIRE`
