@@ -26,8 +26,10 @@ class PromptReport(unittest.TestCase):
             deferred = deferred.replace('    resizing: bool,', '    resizing: bool,\n    _strict_startup: bool,')
         config = source('userspace/programs/src/bwm/config.rs')
         main = source('userspace/programs/src/bwm.rs')
-        start = main.index('    if !strict_startup {\n        for win in &windows')
+        start = main.index('    if !strict_startup {\n        for win in')
         request = item(main[start:], 'if !strict_startup {')
+        discovery = main[main.index('let first_new_order ='): ]
+        later_request = item(discovery, 'if !strict_startup {')
         terminal = subprocess.check_output(['git', 'show', f"{os.environ['BTERM_OLD_COMMIT']}:userspace/programs/src/bterm.rs"], cwd=ROOT, text=True) if 'BTERM_OLD_COMMIT' in os.environ else source('userspace/programs/src/bterm.rs')
         redraw = next(line.strip() for line in terminal.splitlines() if line.strip().startswith('let need_redraw ='))
         watch = ROOT / 'userspace/programs/src/bwm/chrome/prompt_watch.rs'
@@ -67,7 +69,8 @@ use tree::{Tree,Role,Node};
 #[derive(Clone,Copy)] struct Pointer;
 #[derive(Clone)] struct Layer;
 #[derive(Clone)] struct PresentedScene {layers:Vec<Layer>,pointer:Pointer}
-struct Window {window_id:u64,frame_checked:bool,check_after_ms:u64,check_moved:u32}
+struct Window {window_id:u64,frame_checked:bool,check_after_ms:u64,check_moved:u32,creation_order:u32}
+#[allow(dead_code)] impl Window {fn title_str(&self)->&str{"Terminal"}}
 #[derive(Debug)] enum CheckError {Moved(String),Failed(String)}
 mod io {pub struct PollFd;}
 fn monotonic_ms()->Result<u64,()> {Ok(100)}
@@ -110,15 +113,19 @@ fn main(){
   println!("BEGIN {mode}");
   let mut q=ValidationQueue::new();present(&mut q);q.first_frame(8);q.first_frame(7);
   let strict=mode=="strict";
-  let mut windows=[Window{window_id:7,frame_checked:false,check_after_ms:0,check_moved:1},Window{window_id:8,frame_checked:false,check_after_ms:0,check_moved:0}];
+  let mut windows=vec![Window{window_id:7,frame_checked:false,check_after_ms:0,check_moved:1,creation_order:0}];
   let mut gpu=Compositor{commit:1,text:if mode=="prompt"{"Starting shell".into()}else{String::new()},role:if mode=="other"{Role::Window}else{Role::Terminal},moved:mode=="moved",broken:mode=="broken",calls:vec![],desktop:Desktop};
   let mut validation=&mut q;
   let mut prompt_watchers=prompt_watch::Watchers::default();
   let strict_startup=strict;
   @REQUEST@
+  windows.push(Window{window_id:8,frame_checked:false,check_after_ms:0,check_moved:0,creation_order:1});
+  let first_new_order=1;
+  @LATER_REQUEST@
+  assert!(!validation.prompt_pending(8),"a later window must receive no shell prompt check");
   let _ = (&mut validation,&mut prompt_watchers);
   if !strict {
-   assert_eq!(READERS.with(|r|r.get()),2,"default prompt validation must attach semantic readers");
+   assert_eq!(READERS.with(|r|r.get()),1,"default prompt validation must attach semantic readers");
    // The prompt was already rendered before attachment, and there is no new input/output.
    let any_dirty=false;let event_count=0;let font_changed=false;let first_frame=false;
    let tree_reader_attached=READERS.with(|r|r.get())!=0;
@@ -146,7 +153,7 @@ fn main(){
   println!("END {mode}");
  }
 }
-'''.replace('@ROOT@', str(ROOT)).replace('@REPORT@', item(config, 'pub(super) fn report_check(')).replace('@DEFERRED@', deferred).replace('@REQUEST@', request).replace('@REDRAW@', redraw)
+'''.replace('@ROOT@', str(ROOT)).replace('@REPORT@', item(config, 'pub(super) fn report_check(')).replace('@DEFERRED@', deferred).replace('@REQUEST@', request).replace('@LATER_REQUEST@', later_request).replace('@REDRAW@', redraw)
             if 'pub fn prompt_pending(' not in source('userspace/programs/src/bwm/chrome/validation.rs'):
                 program = program.replace('prompt_watchers.retain(|id|q.prompt_pending(id));', 'prompt_watchers.retain(|_|true);')
             # The baseline does not call the compositor's tree API yet.
