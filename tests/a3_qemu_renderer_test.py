@@ -95,10 +95,15 @@ static BRW *w;
 static pthread_t main_thread;
 static BRWJob *reset_to_queue;
 #define renderer_worker w
-static bool qemu_in_coroutine(void) { return false; }
-static Coroutine *qemu_coroutine_self(void) { return NULL; }
-static void qemu_coroutine_yield(void) { g_assert_not_reached(); }
-static void qemu_coroutine_enter(Coroutine *co) { (void)co; g_assert_not_reached(); }
+/* SUBMIT_3D runs in the renderer coroutine. The fixture's yield gives
+ * the unrelated MMIO thread its turn, then retires the queued work. */
+static bool qemu_in_coroutine(void) { return true; }
+static Coroutine *qemu_coroutine_self(void) { return (Coroutine *)active_state; }
+static bool coroutine_resumed;
+static void qemu_coroutine_yield(void);
+static void qemu_coroutine_enter(Coroutine *co) {
+    g_assert(co == (Coroutine *)active_state); coroutine_resumed = true;
+}
 static bool bql_locked(void) {
     if (!pthread_equal(pthread_self(), main_thread)) return false;
     if (pthread_mutex_trylock(&active_state->bql)) return true;
@@ -121,6 +126,11 @@ static void main_loop_wait(bool nonblocking) {
     pthread_mutex_lock(&s->bql);
     brw_complete(w);
 }
+static void qemu_coroutine_yield(void) {
+    while (!coroutine_resumed) main_loop_wait(false);
+}
+static void *iohandler_get_aio_context(void) { return NULL; }
+static void aio_poll(void *ctx, bool blocking) { (void)ctx; main_loop_wait(!blocking); }
 void virtio_gpu_renderer_call(void (*fn)(void *), void *arg);
 static int virgl_renderer_submit_cmd(void *buf, int ctx, int ndw) {
     (void)buf; (void)ctx; (void)ndw;
@@ -135,11 +145,15 @@ static int virgl_renderer_submit_cmd(void *buf, int ctx, int ndw) {
     return 0;
 }
 ''') + rpc
+        adapters += '\n' + '\n'.join(line for line in submit.splitlines()
+                                      if line.startswith('#define BREENIX_ATTEST_MAX_RECORDS')) + '\n'
         program = r'''
+#include "qemu/osdep.h"
 #include <glib.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <assert.h>
+void error_report(const char *format, ...) { (void)format; abort(); }
 ''' + implementation + r'''
 typedef struct {
     pthread_mutex_t bql, gate;
@@ -222,9 +236,19 @@ int main(void) {
             c.write_text(program)
             flags = shlex.split(subprocess.check_output(
                 ['pkg-config', '--cflags', '--libs', 'glib-2.0'], text=True))
-            subprocess.run(['cc', '-std=c11', '-Wall', '-Wextra', '-Werror',
-                            '-I' + str(worker.parent), str(c), '-o', str(exe),
-                            *flags, '-pthread'], check=True)
+            root = Path(__file__).resolve().parents[1]
+            binary = Path(subprocess.check_output(
+                [str(root / 'scripts/build-qemu-gl.sh'), '--print-path'], text=True).strip())
+            frameworks = binary.parents[1] / 'Frameworks'
+            subprocess.run(['cc', '-std=gnu11', '-Wall', '-Wextra', '-Werror',
+                            '-I' + str(worker.parent), '-isystem', str(SOURCE / 'include'),
+                            '-I' + str(SOURCE / 'build-breenix'),
+                            '-I' + str(SOURCE.parents[1] / 'prefix/include'),
+                            str(c), str(SOURCE / 'build-breenix/libqemuutil.a.p/util_qemu-thread-posix.c.o'),
+                            str(SOURCE / 'build-breenix/libqemuutil.a.p/util_notify.c.o'),
+                            '-L' + str(SOURCE.parents[1] / 'prefix/lib'), '-lepoxy',
+                            '-Wl,-dead_strip', '-Wl,-rpath,' + str(frameworks),
+                            '-o', str(exe), *flags, '-pthread'], check=True)
             subprocess.run([str(exe)], check=True, timeout=20)
 
 

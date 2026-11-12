@@ -15,7 +15,7 @@ class QemuForkSource(unittest.TestCase):
         self.assertFalse(list((ROOT / 'scripts/qemu-gl').glob('*.patch')),
                          'QEMU patches belong in the separate fork')
         self.assertNotIn('$ROOT/scripts/qemu-gl/', recipe)
-        self.assertRegex(recipe, r'(?m)^PIN=10\.0\.12-utm-4d73aaf0-b5$')
+        self.assertRegex(recipe, r'(?m)^PIN=10\.0\.12-utm-4d73aaf0-b6$')
 
 
 if __name__ == '__main__':
