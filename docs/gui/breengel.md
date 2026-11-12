@@ -1032,6 +1032,7 @@ Serialize publication order while one candidate is pending. Another COMMIT or NO
 
 NO_CHANGE retains its 32-byte layout, pixel generation and empty damage. It updates published metadata without new drawing or a sampling hold. A completed frame of the same pixel generation satisfies that later metadata commit's presentation requirement; observation records remain honest about the actual commit sampled, rather than rewriting history.
 
+<!-- claim-lint:ok: Normative CAPTURE_TREE contract; tests/window_capture_tree_test.py exercises the production operation. -->
 `CAPTURE_TREE` uses the same authority and pending-publication decision as `CAPTURE`. It requires a nonzero tree destination large enough for one tree page, pins the published front's tree page while copying it, and returns its commit id (zero when there is no front). It ignores the pixel destination and dimensions, takes no pixel buffer pin, and performs no device read. The other `Capture` output fields are unchanged.
 
 A CAPTURE begun while a candidate is pending waits killably for that render decision, then captures the newly published generation or returns EIO for its failed publication; a later CAPTURE after rejection sees the retained previous front. It never copies pending/partially rendered pixels. Existing CAPTURE/tree-output validation, authority, ENOENT-at-start and pinned whole-generation behavior remain in force. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->

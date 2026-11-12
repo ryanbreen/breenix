@@ -820,6 +820,7 @@ pub fn no_change(caller: &Caller, n: &mut NoChange, meta: Meta, out: u64) -> Res
     w.commit_id = n.commit_id;
     w.accepted_id = n.commit_id;
     w.meta = meta;
+    super::pipeline::record(18, n.id, n.commit_id, meta.processed_serial);
     Ok(0)
 }
 
@@ -1252,6 +1253,7 @@ pub fn read_meta(caller: &Caller, id: u64) -> Result<(u64, Meta), i32> {
     publish_ready();
     let mut reg = REGISTRY.lock();
     let w = reg.window(id, caller, who::owner_compositor_or_root)?;
+    super::pipeline::record(19, id, w.commit_id, w.meta.processed_serial);
     Ok((w.commit_id, w.meta))
 }
 

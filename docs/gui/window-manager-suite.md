@@ -82,6 +82,7 @@ The mixed-script case requires exactly one row per source serial, checks the tar
 delivered rows and waits for that client's processed watermark. A later successful
 serial cannot cover a missing earlier one.
 
+<!-- claim-lint:ok: Normative OUTCOME contract; tests/input_outcome_query_test.py exercises query and proc equivalence. -->
 The shared `/dev/input/events` reader also supports the `OUTCOME` ioctl
 (`0x424905`) for a single source serial. Pass a 32-byte `Disposition` with
 `serial` set; the kernel returns that serial's terminal disposition, window and

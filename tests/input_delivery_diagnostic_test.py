@@ -121,7 +121,7 @@ mod ops {
  NO_CHANGE
  READ_META
 }
-fn selected(trace:&str,start:u64)->String { SELECTION trace }
+fn selected(trace:&str,start:i128)->String { SELECTION trace }
 fn main(){
  let mut n=NoChange {reserved:0,id:9,commit_id:0};
  ops::no_change(&Caller,&mut n,Meta{processed_serial:41},0).unwrap();
@@ -135,8 +135,8 @@ fn main(){
         source = source.replace('mod who {', '#[allow(non_upper_case_globals)] mod who {')
         # The selector before instrumentation does not use a time bound.
         if '>= start' not in selection:
-            source = source.replace('fn selected(trace:&str,start:u64)->String {',
-                                    'fn selected(trace:&str,start:u64)->String { std::hint::black_box(start);')
+            source = source.replace('fn selected(trace:&str,start:i128)->String {',
+                                    'fn selected(trace:&str,start:i128)->String { std::hint::black_box(start);')
         result = execute(source)
         self.assertEqual(result.returncode, 0, result.stderr)
 

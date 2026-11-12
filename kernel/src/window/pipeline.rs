@@ -6,6 +6,8 @@
 //! acceptance raster samples (15: native resource, packed counter/line, pixel).
 //! Input trace flags (16): device, derived modifier bits plus SYNTHETIC, source serial.
 //! Window destruction (17): window id, owner pid, reason (0 destroy, 1 exit, 2 exec).
+//! Metadata-only publication (18) and READ_META observation (19): window id,
+//! published commit id, processed watermark (possibly a derived input serial).
 use alloc::{string::String, vec::Vec};
 use core::fmt::Write;
 const CAPACITY: usize = 32768;
