@@ -3,6 +3,7 @@ import hashlib
 import http.client
 import json
 import os
+import socket
 from pathlib import Path
 import subprocess
 import sys
@@ -17,6 +18,50 @@ SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/qemu-evidence.py'
 
 
 class QemuEvidenceTest(unittest.TestCase):
+    def test_http11_wire_framing_for_evidence_slots_and_refusal(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            server = subprocess.Popen([
+                sys.executable, str(SCRIPT), 'serve', '--dir', str(root),
+                '--parent', str(os.getpid()),
+            ], stderr=subprocess.PIPE)
+            try:
+                deadline = time.monotonic() + 10
+                while not (root / 'route.json').exists() and time.monotonic() < deadline and server.poll() is None:
+                    time.sleep(.01)
+                route = json.loads((root / 'route.json').read_text())
+                path = '/gt710-upload/' + route['token']
+                body = b'fixture evidence\n'
+                for suffix, digest, status in (
+                    ('', hashlib.sha256(body).hexdigest(), b'200 OK'),
+                    ('/final', '0' * 64, b'400 display artifact upload failed'),
+                    ('/final', hashlib.sha256(body).hexdigest(), b'200 OK'),
+                    ('/final', hashlib.sha256(body).hexdigest(), b'404 Not Found'),
+                ):
+                    with self.subTest(suffix=suffix, status=status):
+                        with socket.create_connection(('127.0.0.1', route['port']), timeout=3) as sock:
+                            sock.sendall(
+                                f'PUT {path}{suffix} HTTP/1.1\r\nHost: localhost\r\n'
+                                f'Content-Length: {len(body)}\r\nX-Content-SHA256: {digest}\r\n\r\n'.encode() + body)
+                            with sock.makefile('rb') as wire:
+                                line = wire.readline()
+                                headers = {}
+                                while (header := wire.readline()) not in (b'\r\n', b''):
+                                    key, value = header.split(b':', 1)
+                                    headers[key.lower()] = value.strip()
+                                length = int(headers[b'content-length'])
+                                payload = wire.read(length)
+                                self.assertEqual(len(payload), length)
+                                self.assertEqual(headers[b'connection'].lower(), b'close')
+                                self.assertEqual(wire.read(1), b'', 'response must close after its exact body')
+                                self.assertEqual(line, b'HTTP/1.1 ' + status + b'\r\n')
+                self.assertEqual((root / 'gt710-pixels.rle').read_bytes(), body)
+                self.assertEqual((root / 'gt710-final.rle').read_bytes(), body)
+            finally:
+                server.terminate()
+                server.wait(timeout=5)
+                server.stderr.close()
+
     def test_route_staging_receiver_and_parent_lifetime(self):
         mkfs, debugfs = require_e2fsprogs('mke2fs', 'debugfs')
         with tempfile.TemporaryDirectory() as tmp:
