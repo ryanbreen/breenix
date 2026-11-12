@@ -16,6 +16,16 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+ARM window-manager catch-up A.3 landed in
+[PR #2874](https://github.com/ryanbreen/breenix/pull/2874).
+The accepted runtime `0d6a985a` passes the selected window-manager suite 81/81
+on ARM64 QEMU and the R240, plus R240 UI testing 108/108 and console 88/88
+within 295.3/330 seconds. The PR records the b6 host QEMU fork, measured ARM
+margins and blind review dispositions. Remaining Minors are grouped in
+[#2904](https://github.com/ryanbreen/breenix/issues/2904); the separate latency
+observation remains in [#2872](https://github.com/ryanbreen/breenix/issues/2872).
+ARM UI testing is the next catch-up step, A.4.
+
 GUI input polling and terminal repaint cost are addressed by
 [PR #2894](https://github.com/ryanbreen/breenix/pull/2894), closing
 [#2885](https://github.com/ryanbreen/breenix/issues/2885) and
