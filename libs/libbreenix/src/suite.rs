@@ -1498,10 +1498,12 @@ fn evidence_scanout() -> Result<evidence::Observation, String> {
 fn evidence_transfer(route: &evidence::Route, path: &str, data: &[u8], digest: [u8; 32]) -> Result<(), String> {
     use libbreenix::{dns, socket};
     use libbreenix::syscall::{nr, raw};
-    // A staged route may be used before the network lease has completed.
+    // Static policy needs no DHCP lease; DHCP still waits for acquisition.
     let mut ready = false;
     for attempt in 0..=200 {
-        if std::fs::read_to_string("/proc/net/pnp").is_ok_and(|s| s.lines().any(|l| l.starts_with("bootserver "))) {
+        if std::fs::read_to_string("/proc/net/pnp").is_ok_and(|s| {
+            s.lines().any(|l| l == "#MANUAL" || l.starts_with("bootserver "))
+        }) {
             ready = true;
             break;
         }
