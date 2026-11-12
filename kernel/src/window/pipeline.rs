@@ -12,8 +12,6 @@
 //! (35..42), unavailable scheduler sample (43), sampling CPU (44); section 17.1.
 //! Pending-render acceptance (45) and observed seal decision (46): window,
 //! accepted commit, processed watermark. Stage 14 remains front publication.
-//! Process exit (47..=52): thread id, PID at zombie publication (50), thread group.
-//! Stages: entry, windows released, before PM, zombie, after PM, GPU handles released.
 use alloc::{string::String, vec::Vec};
 use core::fmt::Write;
 const CAPACITY: usize = 32768;

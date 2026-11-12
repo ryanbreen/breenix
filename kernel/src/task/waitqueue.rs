@@ -76,10 +76,6 @@ impl WaitQueueHead {
             }
 
             let published = crate::task::scheduler::with_current(|sched| {
-                if let Some(s) = super::thread::current_thread_signals() {
-                    s.diagnostic_wait_kind.store(2, core::sync::atomic::Ordering::Relaxed);
-                    s.diagnostic_wait_object.store(self as *const Self as u64, core::sync::atomic::Ordering::Relaxed);
-                }
                 sched.block_current_for_io_with_timeout(None)
             })
             .unwrap_or(false);
@@ -125,10 +121,6 @@ impl WaitQueueHead {
             }
 
             let published = crate::task::scheduler::with_current(|sched| {
-                if let Some(s) = super::thread::current_thread_signals() {
-                    s.diagnostic_wait_kind.store(2, core::sync::atomic::Ordering::Relaxed);
-                    s.diagnostic_wait_object.store(self as *const Self as u64, core::sync::atomic::Ordering::Relaxed);
-                }
                 sched.block_current_for_io_with_timeout(wake_time_ns)
             })
             .unwrap_or(false);
@@ -157,10 +149,6 @@ impl WaitQueueHead {
     /// Finish a prepared wait using the identity captured before sleeping.
     pub(crate) fn finish_wait_for(&self, tid: u64) {
         self.remove_waiter(tid);
-        if let Some(s) = super::thread::current_thread_signals() {
-            s.diagnostic_wait_object.store(0, core::sync::atomic::Ordering::Relaxed);
-            s.diagnostic_wait_kind.store(0, core::sync::atomic::Ordering::Relaxed);
-        }
         crate::task::scheduler::with_thread_mut(tid, |thread| {
             if thread.state == ThreadState::BlockedOnIO {
                 thread.set_ready();

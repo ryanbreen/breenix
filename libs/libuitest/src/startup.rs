@@ -17,7 +17,6 @@ pub const PHASES: &[&str] = &[
     "font-plan-begin", "font-plan-return", "font-submit-begin", "font-submit-return", "font-wait-return", "font-draw-return",
     "frame-check-begin", "frame-buffers-ready", "frame-scanout-return", "frame-desktop-return", "frame-pixels-ready",
     "initial-windows-ready", "title-plan-begin", "title-plan-return", "client-chrome-ready", "client-compose-begin",
-    "font-config-ready", "font-file-ready", "font-parse-ready", "font-join-begin", "font-join-return", "startup-workers-return",
     "desktop-ready", "app-request", "app-forked", "app-exec", "app-commit", "first-composite",
 ];
 extern "C" {
@@ -26,13 +25,6 @@ extern "C" {
 }
 pub struct Trace(*mut AtomicU64);
 const TEARDOWN_SLOT: usize = 128;
-const CPU_SLOT: usize = 256;
-const DETAIL_COUNT: usize = 271;
-const DETAIL_START: usize = 272;
-const DETAIL_CAPACITY: usize = 48;
-pub const DETAILS: &[&str] = &["band-begin", "band-scanout", "band-desktop", "band-pixels",
-    "whole-check-return", "report-begin", "report-return", "join-begin", "join-return"];
-pub const CPU_COSTS: &[&str] = &["turn", "clock", "compose", "check", "turns"];
 const TEARDOWN_PHASES: &[&str] = &["unreached", "begin", "children-reaped", "devices-released",
     "display-returned", "root-delete-begin", "root-delete-done", "stopped-sent"];
 // Each slot is published once by atomic compare-exchange in shared mapped memory.
@@ -64,38 +56,6 @@ impl Trace {
     pub fn mark(&self, name: &str) { self.at(name, now()); }
     pub fn snapshot(&self) -> Vec<(&'static str, u64)> {
         PHASES.iter().enumerate().map(|(i, &name)| (name, unsafe { &*self.0.add(i) }.load(Ordering::Acquire))).collect()
-    }
-    pub fn detail(&self, name: &str, subject: u64, y: u32, rows: u32) {
-        let Some(kind) = DETAILS.iter().position(|&phase| phase == name) else { return };
-        // Stop collecting details once the startup checks-ready slot is published.
-        let ready = PHASES.iter().position(|&p| p == "checks-ready").expect("startup phase");
-        if unsafe { &*self.0.add(ready) }.load(Ordering::Acquire) != 0 { return; }
-        let slot = unsafe { &*self.0.add(DETAIL_COUNT) }.fetch_add(1, Ordering::Relaxed) as usize;
-        if slot >= DETAIL_CAPACITY { return; }
-        let fields = [kind as u64, subject, u64::from(y), u64::from(rows), now()];
-        for (i, value) in fields.into_iter().enumerate() {
-            unsafe { &*self.0.add(DETAIL_START + slot * 5 + i) }.store(value, Ordering::Release);
-        }
-    }
-    pub fn details(&self) -> Vec<String> {
-        let count = unsafe { &*self.0.add(DETAIL_COUNT) }.load(Ordering::Acquire) as usize;
-        let mut out = vec![format!("events={count} dropped={}", count.saturating_sub(DETAIL_CAPACITY))];
-        for slot in 0..count.min(DETAIL_CAPACITY) {
-            let row: [u64; 5] = core::array::from_fn(|i|
-                unsafe { &*self.0.add(DETAIL_START + slot * 5 + i) }.load(Ordering::Acquire));
-            if row[4] == 0 { continue; }
-            let name = DETAILS.get(row[0] as usize).copied().unwrap_or("invalid");
-            out.push(format!("event={slot} phase={name} subject={} y={} rows={} ns={}", row[1], row[2], row[3], row[4]));
-        }
-        out
-    }
-    pub fn cpu_snapshot(&self) -> [u64; 5] {
-        core::array::from_fn(|i| unsafe { &*self.0.add(CPU_SLOT + i) }.load(Ordering::Acquire))
-    }
-    fn cpu_add(&self, slot: usize, value: u64) {
-        if slot < CPU_COSTS.len() {
-            unsafe { &*self.0.add(CPU_SLOT + slot) }.fetch_add(value, Ordering::Relaxed);
-        }
     }
     pub fn teardown_mark(&self, stage: usize) {
         if stage == 0 || stage >= TEARDOWN_PHASES.len() { return; }
@@ -135,29 +95,8 @@ pub fn mark(name: &str) {
 pub fn at(name: &str, ns: u64) {
     if let Some(trace) = configured_trace() { trace.at(name, ns); }
 }
-pub fn detail(name: &str, subject: u64, y: u32, rows: u32) {
-    if let Some(trace) = configured_trace() { trace.detail(name, subject, y, rows); }
-}
 pub fn teardown(stage: usize) {
     if let Some(trace) = configured_trace() { trace.teardown_mark(stage); }
-}
-
-/// CPU time, including synchronous kernel work, retained without printing.
-pub struct CpuCost { slot: usize, begin: u64 }
-fn cpu_ns() -> u64 {
-    let mut time = libbreenix::Timespec::new();
-    libbreenix::time::clock_gettime(2, &mut time).map_or(0, |()| time.as_nanos() as u64)
-}
-impl CpuCost {
-    pub fn begin(slot: usize) -> Self { Self { slot, begin: cpu_ns() } }
-}
-impl Drop for CpuCost {
-    fn drop(&mut self) {
-        if let Some(trace) = configured_trace() {
-            trace.cpu_add(self.slot, cpu_ns().saturating_sub(self.begin));
-            if self.slot == 0 { trace.cpu_add(4, 1); }
-        }
-    }
 }
 
 /// One bounded line in catalog order, including 0 for an unreached phase.

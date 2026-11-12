@@ -15,10 +15,6 @@ import time
 WallClockCheck = runpy.run_path(str(Path(__file__).with_name("wall_clock.py")))["WallClockCheck"]
 BootProgress = runpy.run_path(str(Path(__file__).with_name("boot_progress.py")))["BootProgress"]
 
-SerialClock = runpy.run_path(str(Path(__file__).with_name("serial-clock.py")))["SerialClock"]
-
-CaseSamples = runpy.run_path(str(Path(__file__).with_name("qemu-case-sample.py")))["CaseSamples"]
-
 ROOT = Path(__file__).resolve().parents[1]
 DONE = runpy.run_path(str(ROOT / "scripts/wait-boot-done.py"))
 VERDICT = runpy.run_path(str(ROOT / "scripts/suite-verdict.py"))
@@ -47,9 +43,8 @@ def label(mode, suite):
 
 
 def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clock, only=None,
-          until_desktop_ready=False, serial_clock=None, case_samples=None):
+          until_desktop_ready=False):
     progress = BootProgress(serial)
-    serial_clock = serial_clock or SerialClock(serial)
     desktop_stages = []
     if until_desktop_ready:
         catalog = json.loads((ROOT / "docs/boot-path.json").read_text())
@@ -64,9 +59,6 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
     text = ""
     decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
     while process.poll() is None:
-        serial_clock.observe()
-        if case_samples:
-            case_samples.tick()
         now = time.monotonic()
         try:
             size = serial.stat().st_size
@@ -82,10 +74,7 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
                 data = source.read()
             last_size += len(data)
             last_output = now
-            chunk = decoder.decode(data)
-            if case_samples:
-                case_samples.observe(chunk)
-            text += chunk
+            text += decoder.decode(data)
             progress.observe(text)
             if until_desktop_ready:
                 fatal = DONE["completion"](text, "desktop", "")
@@ -126,7 +115,6 @@ def watch(process, serial, mode, suite, idle_exit, gate_timeout, suite_hold, clo
             print(f"==> No serial output for {idle_exit:g}s; stopping the VM", flush=True)
             return "idle"
         time.sleep(0.2)
-    serial_clock.observe()
     if until_desktop_ready:
         return "cancelled"
     if mode not in COMPLETING_MODES:
@@ -168,30 +156,12 @@ def main():
     for signum in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
         signal.signal(signum, interrupted)
     clock = WallClockCheck(args.serial)
-    serial_clock = SerialClock(args.serial)
-    # qemu-arm64.py supplies this pidfile. A fresh-task QoS launch keeps the
-    # supervisor's Popen PID while QEMU runs in a different process.
-    pid_file = Path(str(args.serial) + ".qemu.pid")
-    if "-pidfile" in command:
-        pid_file = Path(command[command.index("-pidfile") + 1])
-    pid_file.unlink(missing_ok=True)
-    launch_env = os.environ.copy()
-    if args.mode == "suite" and "window-manager" in args.suite.split(","):
-        launch_env["BREENIX_QEMU_CASE_SAMPLE_SERIAL"] = str(args.serial.resolve())
-    process = subprocess.Popen(command, env=launch_env)
-    case_samples = None
+    process = subprocess.Popen(command)
     try:
-        if args.mode == "suite" and "window-manager" in args.suite.split(","):
-            case_samples = CaseSamples(process.pid, args.serial, pid_file=pid_file)
         reason = watch(process, args.serial, args.mode, args.suite, args.idle_exit,
-                       args.gate_timeout, args.suite_hold, clock, args.only, args.until_desktop_ready, serial_clock, case_samples)
+                       args.gate_timeout, args.suite_hold, clock, args.only, args.until_desktop_ready)
     finally:
-        try:
-            if case_samples:
-                case_samples.close()
-        finally:
-            stop(process)
-            serial_clock.observe()
+        stop(process)
     if args.until_desktop_ready:
         if reason != "done":
             print(f"FAIL: desktop did not become ready ({reason})", flush=True)

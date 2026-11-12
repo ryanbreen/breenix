@@ -40,11 +40,10 @@ class ProofGateTests(unittest.TestCase):
                     '-drive', 'if=none,id=ext2,file=/unused/disk image',
                     '-chardev', 'stdio,logfile=' + serial]
             # Exercise main's argv assembly and environment selection. Only the
-            # unrelated trace-inventory query and final exec are intercepted.
+            # final exec is intercepted.
             with patch.dict(os.environ, BREENIX_QEMU_UI_LAUNCHER=wrapper,
                             BREENIX_QEMU_PRE_EXEC_GATE=str(GATE), BREENIX_ARM64_QEMU_ACCEL='hvf'), \
                     patch.object(sys, 'argv', [str(ROOT / 'scripts/qemu-arm64.py'), qemu, *args]), \
-                    patch.object(arm, 'gpu_trace_inventory', return_value=(('virtio_gpu_*',), 'fixture')), \
                     patch.object(arm.os, 'execvp') as execute:
                 arm.main()
             gate_program, command = execute.call_args.args

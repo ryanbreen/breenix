@@ -43,7 +43,6 @@ struct BlockMmioRequestGate {
 struct BlockMmioRequestGuard<'a> {
     gate: &'a BlockMmioRequestGate,
     release_on_drop: bool,
-    accounting_request: u64,
 }
 
 impl BlockMmioRequestGate {
@@ -66,11 +65,9 @@ impl BlockMmioRequestGate {
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
-                crate::window::accounting::disk_stage(crate::window::accounting::current_request(), 1);
                 return Ok(BlockMmioRequestGuard {
                     gate: self,
                     release_on_drop: true,
-                    accounting_request: crate::window::accounting::current_request(),
                 });
             }
 
@@ -119,7 +116,6 @@ impl BlockMmioRequestGuard<'_> {
 impl Drop for BlockMmioRequestGuard<'_> {
     fn drop(&mut self) {
         if self.release_on_drop {
-            crate::window::accounting::disk_stage(self.accounting_request, 5);
             self.gate.unlock();
         }
     }
@@ -350,7 +346,6 @@ struct BlockMmioCompletion {
     completed_desc: AtomicU32,
     completed_status: AtomicU32,
     last_used_idx: AtomicU32,
-    accounting_request: core::sync::atomic::AtomicU64,
 }
 
 impl BlockMmioCompletion {
@@ -362,7 +357,6 @@ impl BlockMmioCompletion {
             completed_desc: AtomicU32::new(NO_COMPLETED_DESC),
             completed_status: AtomicU32::new(NO_COMPLETED_STATUS),
             last_used_idx: AtomicU32::new(0),
-            accounting_request: core::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -421,7 +415,6 @@ impl BlockMmioCompletion {
                 .completion
                 .wait_timeout_uninterruptible(token, BLOCK_MMIO_WAIT_SLICE_NS)
             {
-                crate::window::accounting::disk_stage(self.accounting_request.load(Ordering::Acquire), 6);
                 return Ok(());
             }
             if device_has_failed(state) {
@@ -458,7 +451,6 @@ impl BlockMmioCompletion {
     }
 
     fn complete(&self, desc: u32, status: u8, token: u32) {
-        crate::window::accounting::disk_stage(self.accounting_request.load(Ordering::Acquire), 3);
         self.completed_status
             .store(status as u32, Ordering::Release);
         self.completed_desc.store(desc, Ordering::Release);
@@ -1009,7 +1001,6 @@ fn submit_read(
         let avail_idx = (*bufs.queue_mem).avail.idx;
         (*bufs.queue_mem).avail.ring[(avail_idx % 16) as usize] = 0; // Head of chain
         fence(Ordering::SeqCst);
-        crate::window::accounting::disk_stage(COMPLETIONS[device_index].accounting_request.load(Ordering::Acquire), 2);
         (*bufs.queue_mem).avail.idx = avail_idx.wrapping_add(1);
         fence(Ordering::SeqCst);
     }
@@ -1101,11 +1092,9 @@ fn read_chunk(
         return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
     }
 
-    let request = crate::window::accounting::disk_enqueue(device_index as u64, request_type::IN as u64, sector, buffer.len() as u64);
     let request_guard = REQUEST_GATES[device_index].lock()?;
     let completion = &COMPLETIONS[device_index];
     let completion_token = completion.prepare_wait();
-    completion.accounting_request.store(request.id(), Ordering::Release);
 
     if let Err(e) = submit_read(device_index, state, sector, buffer.len()) {
         completion.clear();
@@ -1183,7 +1172,6 @@ fn submit_write_sector(
         let avail_idx = (*bufs.queue_mem).avail.idx;
         (*bufs.queue_mem).avail.ring[(avail_idx % 16) as usize] = 0;
         fence(Ordering::SeqCst);
-        crate::window::accounting::disk_stage(COMPLETIONS[device_index].accounting_request.load(Ordering::Acquire), 2);
         (*bufs.queue_mem).avail.idx = avail_idx.wrapping_add(1);
         fence(Ordering::SeqCst);
     }
@@ -1232,11 +1220,9 @@ pub fn write_sector(
         return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
     }
 
-    let request = crate::window::accounting::disk_enqueue(device_index as u64, request_type::OUT as u64, sector, buffer.len() as u64);
     let request_guard = REQUEST_GATES[device_index].lock()?;
     let completion = &COMPLETIONS[device_index];
     let completion_token = completion.prepare_wait();
-    completion.accounting_request.store(request.id(), Ordering::Release);
 
     if let Err(e) = submit_write_sector(device_index, state, sector, buffer) {
         completion.clear();
@@ -1275,12 +1261,10 @@ pub fn flush(device_index: usize) -> Result<(), &'static str> {
     if !irq_completion_available() {
         return Err("Block MMIO IRQ completion unavailable before interrupts are enabled");
     }
-    let request = crate::window::accounting::disk_enqueue(device_index as u64, request_type::FLUSH as u64, 0, 0);
     let request_guard = REQUEST_GATES[device_index].lock()?;
     let device = VirtioMmioDevice::probe(state.base).ok_or("Device disappeared")?;
     let completion = &COMPLETIONS[device_index];
     let completion_token = completion.prepare_wait();
-    completion.accounting_request.store(request.id(), Ordering::Release);
     let bufs = device_buffers(device_index);
     let (_, req_const, _, status_const) = device_buffers_const(device_index);
     // FLUSH has no data descriptor: header -> status. It shares the write
@@ -1307,7 +1291,6 @@ pub fn flush(device_index: usize) -> Result<(), &'static str> {
         let avail_idx = (*bufs.queue_mem).avail.idx;
         (*bufs.queue_mem).avail.ring[(avail_idx % 16) as usize] = 0;
         fence(Ordering::SeqCst);
-        crate::window::accounting::disk_stage(COMPLETIONS[device_index].accounting_request.load(Ordering::Acquire), 2);
         (*bufs.queue_mem).avail.idx = avail_idx.wrapping_add(1);
         fence(Ordering::SeqCst);
     }
@@ -1377,7 +1360,6 @@ fn report_slow_request(request: u32, waited_ns: u64) {
 ///
 /// Hard IRQ path: no logging, allocation, locks, or unbounded work.
 pub fn handle_interrupt(device_index: usize) {
-    crate::window::accounting::disk_irq_entry(device_index as u64);
     let Ok(state) = block_device_state(device_index) else {
         return;
     };

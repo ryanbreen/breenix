@@ -7,7 +7,7 @@ ROOT=Path(__file__).resolve().parents[1]
 class CreationCleanup(unittest.TestCase):
  def test_partial_creation_retires_only_acknowledged_resources(self):
   source=(ROOT/'kernel/src/gpu/mod.rs').read_text()
-  creation=item(source,'fn create_context_with_catalogue(')
+  creation=item(source,'fn create_context_with_requirements(' if 'fn create_context_with_requirements(' in source else 'fn create_context_with_catalogue(')
   start=creation.index('        c.insert_res(\n            vb,')
   registration=creation[start:creation.index('        c.insert_ctx(',start)]
   retire=item(source,'    fn retire_if_unused(')

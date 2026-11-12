@@ -53,11 +53,6 @@ fn run(commands: &mut File, replies: &mut File) -> Result<(), String> {
                 return Err("client event log overflow".into());
             }
             for e in &batch[..n] {
-                if e.kind == abi::event_kind::POINTER_BUTTON {
-                    if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
-                        let _ = evidence.write_all(format!("WM_STALL click-handled {} {}\n", e.serial, c.id).as_bytes());
-                    }
-                }
                 events.push(*e);
                 processed = libbreenix::input::abi::advance_watermark(processed, e.serial);
                 if e.kind == abi::event_kind::RESIZE_REQUESTED && !refuse {

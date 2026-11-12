@@ -17,10 +17,11 @@ class PipelineEvidence(unittest.TestCase):
             body='fn failure_pipeline() { '+item(source,'if let Ok(trace) = std::fs::read_to_string("/proc/breenix/window-pipeline")')+' }'
         with tempfile.TemporaryDirectory(prefix='wm-pipeline-') as directory:
             p=Path(directory); trace=p/'trace'; evidence=p/'evidence'; trace.write_text('1 2 3 4 5\n');evidence.touch()
+            body += '\n' + item((ROOT/'userspace/programs/src/wm_suite/desktop.rs').read_text(), 'pub fn failure_diagnostic(')
             body=body.replace('"/proc/breenix/window-pipeline"',f'"{trace}"').replace('"/dev/screen-evidence"',f'"{evidence}"')
-            (p/'check.rs').write_text('fn value(_: &str, _: i64, _: &str, _: Option<(i64,i64)>) {panic!("unexpected export error");}\n'+body+'\nfn main(){failure_pipeline();}')
+            (p/'check.rs').write_text(body+'\nfn main(){failure_pipeline();}')
             compiler=(['taskpolicy','-b'] if sys.platform=='darwin' else [])+['rustc','--edition=2021','-Dwarnings']
             subprocess.run(compiler+[str(p/'check.rs'),'-o',str(p/'check')],check=True)
             with open('/dev/null','w') as sink:subprocess.run([str(p/'check')],stdout=sink,stderr=sink,check=True)
-            self.assertEqual(evidence.read_text(),'VALUE window-pipeline 1 2 3 4 5\n')
+            self.assertEqual(evidence.read_text(),'VALUE wm-pipeline 1 2 3 4 5\n')
 if __name__=='__main__':unittest.main()

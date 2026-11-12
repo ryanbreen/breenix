@@ -16,7 +16,6 @@ import json
 import os
 from pathlib import Path
 import re
-import runpy
 import shutil
 import subprocess
 import sys
@@ -24,35 +23,8 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 B4_SHA256 = 'e52ce6461a0bad90d7105991d695fd9288485256a568ee0e15ca9f43f3d0c09b'
-SUITE_LABELS = (
-    'observer-wait', 'reap-wait', 'frame-endpoints', 'readback-buffer', 'VALUE wm-',
-    'WM_STALL', 'arm ', 'end ', 'click-request', 'click-observed',
-    '/proc/breenix/window-stall', '/proc/breenix/window-stall-sample',
-    'parent-fork', 'case-begin', 'logic-begin', 'logic-end', 'report-begin',
-    'report-end', 'parent-outcome', 'watchdog-before-kill', 'diagnostic-begin',
-    'diagnostic-end', 'WM_STALL budget ',
-    'input-reset', 'input-begin', 'input-end', 'input-close',
-)
-SHARED_SUITE_LABELS = (
-    'VALUE wm-', '/proc/breenix/window-stall', '/proc/breenix/window-stall-sample',
-    'parent-fork', 'case-begin', 'logic-begin', 'logic-end', 'report-begin',
-    'report-end', 'parent-outcome', 'watchdog-before-kill', 'diagnostic-begin',
-    'diagnostic-end', 'WM_STALL budget ',
-    'input-reset', 'input-begin', 'input-end', 'input-close',
-)
-KERNEL_LABELS = (
-    'retained-writer-fallback', 'click-delivery', 'stall-buffer', 'stall-snapshot',
-    'stall-thread', 'stall-arm-overflow', 'account-buffer', 'account-window',
-    'account-thread', 'account-wait', 'account-runqueue', 'account-identity',
-    'disk-request', 'file-syscall', 'account-export-truncated', 'disk-irq-entry',
-    'account-join', 'account-wake', 'case-budget', 'wait-budget',
-    'thread-exit-futex', 'gpu-events', 'gpu-reaper',
-    'acquire-phase', 'account-input frozen=', 'account-interval',
-)
-ARM_KERNEL_LABELS = (
-    'gpu-command-ring retained=', 'gpu-command seq=', 'gpu-core-command-ring retained=',
-    'gpu-core-command seq=', 'gpu-core-doorbell seq=', 'gpu-core-case-window',
-)
+SUITE_LABELS = ('latency-median', 'latency-max', 'composites-per-second')
+KERNEL_LABELS = ('GPU_WINDOW_IDENTITY_FAIL', 'GPU_SCENE_EPOCH_FAIL')
 
 
 def require(condition, message):
@@ -111,11 +83,6 @@ def check_chain(argv):
     require(not any(arg in ('-s', '-S', '-gdb') or arg.startswith('-gdb=') for arg in argv),
             'debugger options are forbidden')
     require('--no-build' not in argv, 'expected normal build')
-    require('timestamp=on' in option(argv, '-msg').split(','), 'QEMU timestamps absent')
-    traces = option(argv, '-d').split(',')
-    require('trace:virtio_blk_req_complete' in traces and 'trace:virtio_gpu_*' in traces,
-            'QEMU trace not enabled')
-    option(argv, '-D')
     return {'native_launcher': str(native), 'qemu': str(qemu),
             'hashes': {'shell_launcher': sha(wrapper), 'native_launcher': sha(native),
                        'native_library': sha(library), 'unclamp': sha(unclamp), 'qemu': sha(qemu)}}
@@ -146,35 +113,17 @@ def check_artifacts(argv, config):
                             capture_output=True, check=True).stdout
     require(staged == built, 'boot disk suite differs')
     kernel = Path(option(argv, '-kernel'))
-    labels(kernel, KERNEL_LABELS + ARM_KERNEL_LABELS)
+    labels(kernel, KERNEL_LABELS)
     xkernel = Path(config['x86_kernel'])
-    # The command journal is ARM-only (kernel/src/window/mod.rs).
     labels(xkernel, KERNEL_LABELS)
     xsuite = programs / 'x86_64-breenix/release/suite-window-manager'
-    labels(xsuite, SHARED_SUITE_LABELS)
-    labels(suite, SHARED_SUITE_LABELS)
+    labels(xsuite, SUITE_LABELS)
+    labels(suite, SUITE_LABELS)
     client = programs / 'aarch64-breenix/release/wm-client_test'
-    labels(client, ('WM_STALL click-handled',))
+    labels(client, ())
     return {name: sha(path) for name, path in (
         ('suite', suite), ('kernel', kernel), ('boot_disk', disk),
         ('x86_kernel', xkernel), ('x86_suite', xsuite), ('client', client))}
-
-
-def check_observers(argv):
-    # The outer watcher owns sample processes and reads the actual QEMU pidfile.
-    serial = os.environ.get('BREENIX_QEMU_CASE_SAMPLE_SERIAL', '')
-    require(bool(serial), 'window-manager case sampler is not wired by watch-qemu.py')
-    require(Path(option(argv, '-D')).resolve() == Path(serial + '.qemu-trace.log').resolve(),
-            'case sampler serial differs from QEMU trace')
-    require(Path(option(argv, '-pidfile')).resolve() == Path(serial + '.qemu.pid').resolve(),
-            'case sampler pidfile differs from QEMU pidfile')
-    sampler = ROOT / 'scripts/qemu-case-sample.py'
-    observer = runpy.run_path(str(sampler))['CaseSamples']
-    require(observer.continuous('performance/latency-under-animation'),
-            'performance samples must cover the whole case')
-    return {'case_samples': serial + '.qemu-samples', 'case_sampler_sha256': sha(sampler),
-            'watcher_sha256': sha(ROOT / 'scripts/watch-qemu.py'),
-            'host_samples': 'all QEMU threads, including renderer worker'}
 
 
 def check_head(config):
@@ -213,21 +162,10 @@ def read_load():
     return float(raw.split()[1]), raw
 
 
-def cpu_top():
-    raw = output(['/bin/ps', '-axo', 'pid=,pcpu=,time=,comm='])
-    processes = []
-    for line in raw.splitlines():
-        pid, cpu, cpu_time, command = line.strip().split(None, 3)
-        processes.append({'pid': int(pid), 'cpu_percent': float(cpu),
-                          'cpu_time': cpu_time, 'command': command})
-    return sorted(processes, key=lambda p: (-p['cpu_percent'], p['pid']))[:10]
-
-
 def sample_load(parent, path):
     # Keep sampling across the gate's exec, until that same process exits.
     ready = False
-    with Path(path).open('x', buffering=1) as stream, \
-            Path(path).with_name('cpu-top.jsonl').open('x', buffering=1) as top:
+    with Path(path).open('x', buffering=1) as stream:
         while True:
             tick = time.monotonic()
             try:
@@ -236,7 +174,6 @@ def sample_load(parent, path):
                 return
             _, raw = read_load()
             stamp = {'host_unix_ns': time.time_ns(), 'host_monotonic_ns': time.monotonic_ns()}
-            top.write(json.dumps({**stamp, 'processes': cpu_top()}) + '\n')
             stream.write(json.dumps({**stamp, 'vm.loadavg': raw}) + '\n')
             # Readiness is emitted only after the first sample is on disk.
             if not ready:
@@ -271,7 +208,6 @@ def wait_for_load(sampler):
 
 def run(argv, config):
     chain = check_chain(argv)
-    observers = check_observers(argv)
     hashes = {**chain['hashes'], **check_artifacts(argv, config), 'head': config['head']}
     check_warnings(config)
     check_head(config)
@@ -287,21 +223,13 @@ def run(argv, config):
         check_coordinator(config)
         record = {'hashes': hashes, **load, 'argv': argv, 'time_ns': time.time_ns(),
                   'sampler_pid': sampler.pid, 'native_launcher': chain['native_launcher'],
-                  'observers': observers, 'host_cpu_top': str(out / 'cpu-top.jsonl')}
+                  'load_samples': str(out / 'load.jsonl')}
         (out / 'artifact-gate.json').write_text(json.dumps(record, indent=2) + '\n')
         append(config, 'prediction',
-               'A.3 ONE instrumented ARM window-manager measurement at ' + config['head'] +
+               'A.3 ONE ARM window-manager acceptance at ' + config['head'] +
                ': normal build artifact/load gate passed; ' + json.dumps(record) +
-               '. Observation question: which named acquire subphase/dependency consumes '
-               'the slow input, and is the client blocked or runnable/off-CPU? '
-               'Prediction: a host completion dependency accounts for the excess if its '
-               'wait overlaps a stalled renderer worker; guest runnable time instead '
-               'supports scheduling delay. Neither is established by load alone. '
-               'The first input sample over 75 ms freezes phase and CPU/wait intervals. '
-               'Read-only macOS samples cover all QEMU threads throughout performance cases; '
-               'two-second load and CPU top-10 records identify competing host processes. '
-               'This measurement makes no acceptance claim; later proof still requires '
-               '25% headroom on each recovery, click, animation and frame-floor deadline. '
+               '. Predict 81/81 with DONE, MEMORY and READY, ANGLE/Metal accepted, '
+               'and 25% headroom on each recovery, click, animation and frame-floor deadline. '
                'load_timeout=true means the 30-minute wait expired; proceed as line 182 requires.')
         require(sampler.poll() is None, 'load sampler stopped before exec')
         print('A.3 pre-exec artifact/load gate PASS ' + json.dumps(record), flush=True)

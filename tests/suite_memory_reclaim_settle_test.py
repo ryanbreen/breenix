@@ -36,16 +36,6 @@ class ReclaimSettle(unittest.TestCase):
         self.assertIn('manager.outstanding_retirement_receipts()', proc)
         self.assertIn('reclaim outstanding={}', proc)
         run_rust(self, r'''
-mod types { pub type Fd = u32; }
-mod error { pub type Error = std::io::Error; }
-mod fs {
-    pub const O_RDONLY: u32 = 0;
-    pub fn open(_: &str, _: u32) -> Result<crate::types::Fd, crate::error::Error> { Ok(1) }
-}
-mod io {
-    pub fn read(_: crate::types::Fd, _: &mut [u8]) -> Result<usize, crate::error::Error> { Ok(0) }
-    pub fn close(_: crate::types::Fd) -> Result<(), crate::error::Error> { Ok(()) }
-}
 mod time {
     pub struct Stamp(u64);
     impl Stamp { pub fn as_nanos(&self) -> u128 { self.0 as u128 * 1_000_000 } }
@@ -102,7 +92,6 @@ fn exited_root_cannot_disappear_from_settling_while_a_drain_owns_it() {
     assert_eq!(sample.free, 1000,
         "settle sampled 44 user + 12 table pages still owned by the exited process's in-flight receipt");
     assert!(fixture::now() >= 700, "completion must precede the stable interval");
-    assert!(sample.ownership_detail().is_empty());
     assert!(memory::verdict("fixture", Some(&sample), Some(&sample)).1);
 }
 '''.replace('@SOURCE@', source).replace('@METHODS@', methods).replace('@CENSUS@', census))

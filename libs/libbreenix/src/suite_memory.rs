@@ -69,39 +69,9 @@ fn boot_settled() -> bool {
         .map_or(true, |text| !text.lines().any(|line| line.trim() == "boot settled=0"))
 }
 
-/// The kernel owns the immutable open-time snapshot. Keeping just its fd in
-/// userspace adds no observer mappings to the memory sample. Close-on-exec
-/// prevents a case's exec from keeping the baseline alive.
-struct Ownership(Result<crate::types::Fd, crate::error::Error>);
-impl Ownership {
-    fn capture() -> Self {
-        const O_CLOEXEC: u32 = 0x80000;
-        Self(crate::fs::open("/proc/breenix/memory-owners", crate::fs::O_RDONLY | O_CLOEXEC))
-    }
-    fn detail(&self) -> String {
-        let fd = match &self.0 {
-            Ok(fd) => *fd,
-            Err(error) => return std::format!("snapshot unavailable={error}\n"),
-        };
-        let mut text = String::new();
-        let mut buf = [0u8; 4096];
-        loop {
-            match crate::io::read(fd, &mut buf) {
-                Ok(0) => return text,
-                Ok(n) => text.push_str(std::str::from_utf8(&buf[..n]).unwrap_or("snapshot invalid-utf8\n")),
-                Err(error) => { text.push_str(&std::format!("snapshot read-error={error}\n")); return text; }
-            }
-        }
-    }
-}
-impl Drop for Ownership {
-    fn drop(&mut self) { if let Ok(fd) = &self.0 { let _ = crate::io::close(*fd); } }
-}
-
 /// One reading of the kernel's memory figures.
 pub struct Sample {
     pub free: u64,
-    ownership: Ownership,
     heap_free_kb: u64,
     owners: Vec<(String, u64)>,
     receipts: u64,
@@ -112,7 +82,6 @@ pub struct Sample {
 /// MemFree in pages and KernelHeapFree in kB from `/proc/meminfo`, and the owner
 /// rows and queued receipts from `/proc/breenix/frames`.
 fn read() -> Result<Sample, String> {
-    let ownership = Ownership::capture();
     let meminfo = std::fs::read_to_string("/proc/meminfo").map_err(|error| std::format!("reading /proc/meminfo failed: {error}"))?;
     let field = |name: &str| meminfo.lines()
         .find_map(|line| line.strip_prefix(name)?.trim().strip_suffix("kB")?.trim().parse::<u64>().ok())
@@ -144,7 +113,7 @@ fn read() -> Result<Sample, String> {
     }
     let receipts = receipts.ok_or("/proc/breenix/frames has no receipts row")?;
     let reclaim_outstanding = reclaim_outstanding.ok_or("/proc/breenix/frames has no reclaim outstanding row")?;
-    Ok(Sample { free, ownership, heap_free_kb, owners, receipts, reclaim_outstanding, settle_ms: 0 })
+    Ok(Sample { free, heap_free_kb, owners, receipts, reclaim_outstanding, settle_ms: 0 })
 }
 
 /// Give back the free blocks the C library's allocation cache keeps, so a sample
@@ -194,9 +163,6 @@ pub fn settled() -> Result<Sample, String> {
 }
 
 impl Sample {
-    /// Export the exact snapshot paired with this reading.
-    pub fn ownership_detail(&self) -> String { self.ownership.detail() }
-
     /// `SUITE <id> MEMORY <when> ...`.
     pub fn record(&self, id: &str, when: &str) -> String {
         let mut line = std::format!("SUITE {id} MEMORY {when} free={} heap_free_kb={}", self.free, self.heap_free_kb);

@@ -415,15 +415,6 @@ VIGIL_CPUS=
 export BREENIX_VIGIL_DISPLAY=false
 [ "$DISPLAY_MODE" != none ] && export BREENIX_VIGIL_DISPLAY=true
 [ -n "$ONLY" ] || VIGIL_ID=$(BREENIX_VIGIL_CPUS="$VIGIL_CPUS" "$ROOT/scripts/vigil-record.sh" start qemu "$MODE" "$SUITE" "$SERIAL_LOG" "" "$QEMU_PROFILE")
-if [ -n "$VIGIL_ID" ]; then
-    VIGIL_HOME=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
-    # Keep host receipt clocks discoverable beside Vigil's linked serial capture.
-    ln -sf "$SERIAL_LOG.qemu-trace.log" "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/qemu-trace.log"
-    ln -sf "$SERIAL_LOG.host-clock.jsonl" "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/serial-host-clock.jsonl"
-    ln -sf "$SERIAL_LOG.qemu-trace-events.txt" "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/qemu-trace-events.txt"
-    ln -sf "$SERIAL_LOG.qemu.pid" "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/qemu.pid"
-    ln -sf "$SERIAL_LOG.qemu-samples" "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/qemu-samples"
-fi
 if [ -n "$VIGIL_ID" ] && [ "$SCREEN_PROOF" -eq 1 ]; then
     VIGIL_HOME=${VIGIL_TEST_HOME:-$(python3 -c 'import os, pwd; print(pwd.getpwuid(os.getuid()).pw_dir)')}
     python3 - "$VIGIL_HOME/Library/Application Support/Vigil/breenix/boots/$VIGIL_ID/run.json" "$QEMU_PROFILE" "$PACE" <<'PY'

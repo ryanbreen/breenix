@@ -88,11 +88,6 @@ pub fn init() {
 pub fn trace_entry(syscall_nr: u64) {
     // Always increment the counter (single atomic add, ~3 cycles)
     SYSCALL_TOTAL.increment();
-    if let Some(signals) = crate::task::thread::current_thread_signals() {
-        signals.diagnostic_syscall.store(syscall_nr + 1, core::sync::atomic::Ordering::Relaxed);
-    }
-
-    crate::window::accounting::file_syscall(syscall_nr, true, 0);
 
     // Only record trace event if tracing is enabled
     if SYSCALL_PROVIDER.is_enabled() && crate::tracing::is_enabled() {
@@ -108,10 +103,6 @@ pub fn trace_entry(syscall_nr: u64) {
 #[inline(always)]
 #[allow(dead_code)]
 pub fn trace_exit(result: i64) {
-    if let Some(signals) = crate::task::thread::current_thread_signals() {
-        let nr = signals.diagnostic_syscall.swap(0, core::sync::atomic::Ordering::Relaxed);
-        if nr != 0 { crate::window::accounting::file_syscall(nr - 1, false, result); }
-    }
     if SYSCALL_PROVIDER.is_enabled() && crate::tracing::is_enabled() {
         crate::tracing::record_event(SYSCALL_EXIT, 0, result as u32);
     }

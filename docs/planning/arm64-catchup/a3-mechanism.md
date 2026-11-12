@@ -1719,6 +1719,7 @@ The host renderer check accepted ANGLE/Metal. The launcher nevertheless exited
 1: `suite-verdict.py` refused twelve planned `*-remaining` categories with no
 cases. This is a separate acceptance blocker; the scorer was not changed.
 
+<!-- claim-lint:ok: #2872; 20261112T085617Z-qemu-94194; input_latency at 9f665106. -->
 The animation observation was explicitly skipped with
 `diagnostic-route-absent`. The reported animation maximum, 40.181 ms, covers
 only the 100 inputs after the ten warmups: `input_latency` arms observation for
@@ -1744,6 +1745,7 @@ latency fix or acceptance is claimed.
 | Slowest recorded positive click | 138.988 ms | 1000 ms | 86.1% |
 | Slowest recorded click release | 6.025 ms | 1000 ms | 99.4% |
 
+<!-- claim-lint:ok: #2872; retained 20261112T085617Z-qemu-94194, coordinator line 307 supersedes this audit verdict. -->
 These are measurements from the void run, not proof. The artifact hashes and
 prediction are in the ARM ledger; the full serial, host thread samples, load
 and top-10 captures are retained with the Vigil boot and in the local capture.

@@ -44,7 +44,6 @@ mod net;
 mod pid_stat;
 mod pid_path;
 mod status_memory;
-mod memory_owners;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -118,12 +117,8 @@ pub enum ProcEntryType {
     Ext2,
     /// /proc/breenix/frames - allocated physical frames by allocation site
     Frames,
-    MemoryOwners,
     WindowPipeline,
     WindowPipelineFull,
-    WindowReadback,
-    WindowStall,
-    WindowStallSample,
     InputLedger,
     InputReplay,
     /// /proc/pids - list of all process IDs
@@ -235,12 +230,8 @@ impl ProcEntryType {
             ProcEntryType::Ext2 => "ext2",
             ProcEntryType::Filesystems => "filesystems",
             ProcEntryType::Frames => "frames",
-            ProcEntryType::MemoryOwners => "memory-owners",
             ProcEntryType::WindowPipeline => "window-pipeline",
             ProcEntryType::WindowPipelineFull => "window-pipeline-full",
-            ProcEntryType::WindowReadback => "window-readback",
-            ProcEntryType::WindowStall => "window-stall",
-            ProcEntryType::WindowStallSample => "window-stall-sample",
             ProcEntryType::InputLedger => "input-ledger",
             ProcEntryType::InputReplay => "input-replay",
             ProcEntryType::Pids => "pids",
@@ -325,12 +316,8 @@ impl ProcEntryType {
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
             ProcEntryType::Filesystems => "/proc/breenix/filesystems",
             ProcEntryType::Frames => "/proc/breenix/frames",
-            ProcEntryType::MemoryOwners => "/proc/breenix/memory-owners",
             ProcEntryType::WindowPipeline => "/proc/breenix/window-pipeline",
             ProcEntryType::WindowPipelineFull => "/proc/breenix/window-pipeline-full",
-            ProcEntryType::WindowReadback => "/proc/breenix/window-readback",
-            ProcEntryType::WindowStall => "/proc/breenix/window-stall",
-            ProcEntryType::WindowStallSample => "/proc/breenix/window-stall-sample",
             ProcEntryType::InputLedger => "/proc/breenix/input-ledger",
             ProcEntryType::InputReplay => "/proc/breenix/input-replay",
             ProcEntryType::Pids => "/proc/pids",
@@ -416,12 +403,8 @@ impl ProcEntryType {
             ProcEntryType::Ext2 => 202,
             ProcEntryType::Filesystems => 209,
             ProcEntryType::Frames => 203,
-            ProcEntryType::MemoryOwners => 227,
             ProcEntryType::WindowPipeline => 220,
             ProcEntryType::WindowPipelineFull => 221,
-            ProcEntryType::WindowReadback => 224,
-            ProcEntryType::WindowStall => 225,
-            ProcEntryType::WindowStallSample => 226,
             ProcEntryType::InputLedger => 218,
             ProcEntryType::InputReplay => 219,
             ProcEntryType::Pids => 9,
@@ -583,13 +566,9 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::Composites));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
-    procfs.entries.push(ProcEntry::new(ProcEntryType::MemoryOwners));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Filesystems));
     procfs.entries.push(ProcEntry::new(ProcEntryType::WindowPipeline));
     procfs.entries.push(ProcEntry::new(ProcEntryType::WindowPipelineFull));
-    procfs.entries.push(ProcEntry::new(ProcEntryType::WindowReadback));
-    procfs.entries.push(ProcEntry::new(ProcEntryType::WindowStall));
-    procfs.entries.push(ProcEntry::new(ProcEntryType::WindowStallSample));
     procfs.entries.push(ProcEntry::new(ProcEntryType::InputLedger));
     procfs.entries.push(ProcEntry::new(ProcEntryType::InputReplay));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Pids));
@@ -747,15 +726,11 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::CompositorStatus
                     | ProcEntryType::Composites
                     | ProcEntryType::WindowPipeline
-                    | ProcEntryType::WindowStall
-                    | ProcEntryType::WindowStallSample
-                    | ProcEntryType::WindowReadback
                     | ProcEntryType::WindowPipelineFull
                     | ProcEntryType::InputLedger
                     | ProcEntryType::InputReplay
                     | ProcEntryType::Filesystems
                     | ProcEntryType::Frames
-                    | ProcEntryType::MemoryOwners
                     | ProcEntryType::XhciTrace
                     | ProcEntryType::XhciCounters
                     | ProcEntryType::XhciPointers
@@ -908,7 +883,7 @@ pub fn list_breenix_entries() -> Vec<String> {
     procfs
         .entries
         .iter()
-        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::DisplayCrc|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::BootSerialTimed|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::Composites|ProcEntryType::WindowPipeline|ProcEntryType::WindowStall|ProcEntryType::WindowStallSample|ProcEntryType::WindowReadback|ProcEntryType::WindowPipelineFull|ProcEntryType::InputLedger|ProcEntryType::InputReplay))
+        .filter(|e| matches!(e.entry_type, ProcEntryType::BreenixTesting|ProcEntryType::DisplayCrc|ProcEntryType::ScreenProof|ProcEntryType::ScreenCheckpoints|ProcEntryType::ShowcasePace|ProcEntryType::StageControl|ProcEntryType::BootRibbon|ProcEntryType::BootSerial|ProcEntryType::BootSerialTimed|ProcEntryType::StageComposites|ProcEntryType::CompositorStatus|ProcEntryType::Composites|ProcEntryType::WindowPipeline|ProcEntryType::WindowPipelineFull|ProcEntryType::InputLedger|ProcEntryType::InputReplay))
         .map(|e| String::from(e.entry_type.name()))
         .collect()
 }
@@ -930,25 +905,6 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::CompositorStatus => {
             let caller = crate::window::Caller::current().map_err(|e| -e)?;
             crate::window::status::text(&caller).map(|s| s.into_bytes()).map_err(|e| -e)
-        }
-        ProcEntryType::WindowStall | ProcEntryType::WindowStallSample => {
-            let caller = crate::window::Caller::current().map_err(|e| -e)?;
-            if !caller.is_root() { return Err(-1); }
-            if matches!(entry_type, ProcEntryType::WindowStallSample) {
-                crate::task::scheduler::sample_accounting_queues();
-                crate::window::stall_trace::sample(crate::signal::monotonic_nanos());
-                text(String::new())
-            } else {
-                let rows = crate::window::stall_trace::text() + &crate::window::accounting::text();
-                #[cfg(target_arch = "aarch64")]
-                let rows = rows + &crate::window::gpu_command_trace::text();
-                text(rows)
-            }
-        }
-        ProcEntryType::WindowReadback => {
-            let caller = crate::window::Caller::current().map_err(|e| -e)?;
-            if !caller.is_root() { return Err(-1); }
-            text(crate::window::readback_trace::text())
         }
         ProcEntryType::WindowPipelineFull => {
             let caller = crate::window::Caller::current().map_err(|e| -e)?;
@@ -1064,10 +1020,6 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::Ext2 => generate_ext2().map(String::into_bytes),
         ProcEntryType::Filesystems => crate::fs::ext2::filesystem_states().map(String::into_bytes).map_err(|_| -5),
         ProcEntryType::Frames => generate_frames().map(String::into_bytes),
-        ProcEntryType::MemoryOwners => {
-            require(Operation::Trace)?;
-            memory_owners::generate().map(String::into_bytes)
-        },
         ProcEntryType::InputLedger => text(crate::input::stream::ledger()),
         // syscall/fs.rs opens the live input::control descriptor for I/O.
         ProcEntryType::InputReplay => Err(-38),
@@ -1103,7 +1055,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::FbconCheck => crate::console::proc_fbcon_check().map(String::into_bytes),
         ProcEntryType::BreenixDir => {
             // Directory listing
-            text(String::from("testing\next2\nframes\nmemory-owners\nfilesystems\n"))
+            text(String::from("testing\next2\nframes\nfilesystems\n"))
         }
         ProcEntryType::BreenixTesting => {
             #[cfg(feature = "testing")]

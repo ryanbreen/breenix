@@ -57,7 +57,8 @@ mod measure {
     use super::*;
     pub struct Receipt { pub ns: u64, pub serial: u64 }
     pub fn receipts() -> CaseResult { Ok(()) }
-    pub fn completed_commit(_: &Client, _: u64) -> Result<Receipt, String> {
+    pub fn completed_commit(client: &Client, _: u64) -> Result<Receipt, String> {
+        assert_eq!(client.id, 42);
         FIXTURE.with(|f| {
             let mut f = f.borrow_mut(); f.clock = f.begin + f.latency; f.serial += 1;
             Ok(Receipt { ns: f.clock, serial: f.serial })
@@ -67,7 +68,7 @@ mod measure {
         assert_eq!(serial, 110); FIXTURE.with(|f| f.borrow_mut().observed = true); Ok(())
     }
 }
-mod guest_fs {
+pub mod guest_fs {
     use std::io::{self, Write};
     pub struct File;
     impl File {
@@ -111,8 +112,8 @@ mod guest_fs {
         fn flush(&mut self) -> io::Result<()> { Ok(()) }
     }
 }
-mod libbreenix { pub mod crypto { pub mod sha256 { pub fn sha256(_: &[u8]) -> [u8;32] { panic!("no route") } } } }
-mod breenix_suite { pub mod suite {
+pub mod libbreenix { pub mod crypto { pub mod sha256 { pub fn sha256(_: &[u8]) -> [u8;32] { panic!("no route") } } } }
+pub mod breenix_suite { pub mod suite {
     use crate::libbreenix;
     mod evidence {
         pub const MAX_ROUTE: usize = 4096;
@@ -157,4 +158,16 @@ fn passing_cases_keep_serial_exports_below_two_kibibytes() {
             assert!(bytes <= 2048, "passing pointer={pointer} animation={animation} exported {bytes} VALUE wm- bytes (limit 2048)");
         });
     }
+    // A failed case must not turn a useful short diagnostic into another flood.
+    FIXTURE.with(|f| f.borrow_mut().output.clear());
+    for _ in 0..100 {
+        failure_diagnostic("failed-readback", &"é".repeat(1000));
+    }
+    FIXTURE.with(|f| {
+        let f = f.borrow();
+        let output = std::str::from_utf8(&f.output).unwrap();
+        assert!(output.starts_with("VALUE wm-failed-readback "));
+        assert!(output.len() <= 2048, "failure diagnostics exceeded the shared byte budget");
+    });
+
 }

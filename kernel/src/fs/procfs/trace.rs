@@ -260,8 +260,6 @@ pub fn generate_counters() -> String {
     let count = TRACE_COUNTER_COUNT.load(Ordering::Relaxed);
     output.push_str(&format!("# {} registered counters\n\n", count));
 
-    output.push_str(&crate::tracing::providers::gpu::readback_diagnostics());
-
     for counter in list_counters() {
         let composite = core::ptr::eq(counter,
             &crate::tracing::providers::window::WINDOW_COMPOSITES)

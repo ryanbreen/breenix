@@ -464,14 +464,6 @@ pub fn screen_evidence_write(buf: &[u8]) -> Result<usize, i32> {
         return Ok(buf.len());
     }
     if buf.len() > 512 { return Err(22); }
-    if let Some(command) = buf.strip_prefix(b"WM_STALL ") {
-        let command = core::str::from_utf8(command).map_err(|_| 22)?;
-        #[cfg(target_arch = "aarch64")]
-        crate::window::gpu_core_trace::case_boundary(caller.tid, command);
-        crate::window::accounting::input_command(caller.tgid, command);
-        crate::window::stall_trace::command(caller.tid, command);
-        return Ok(buf.len());
-    }
     // x86 CASE and evidence share the serial FIFO; do not wait for the UART
     // while syscall entry has interrupts masked. ARM has a separate TTY queue.
     #[cfg(not(target_arch = "x86_64"))]

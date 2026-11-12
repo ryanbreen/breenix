@@ -164,12 +164,9 @@ fn main() {
         let font = scope.spawn(|| {
             libuitest::startup::mark("startup-font-begin");
             let config = FontConfig::load();
-            libuitest::startup::mark("font-config-ready");
             print!("[bwm] fonts {config:?}\n");
             let data = std::fs::read(&config.display_path).ok();
-            libuitest::startup::mark("font-file-ready");
             let parsed = data.and_then(|data| Font::parse(&data).ok());
-            libuitest::startup::mark("font-parse-ready");
             let mut font = parsed.map(|f| {
                     let mut font = CachedFont::new(f, 256);
                     font.observe_phases(libuitest::startup::mark);
@@ -228,9 +225,7 @@ fn main() {
             Ok(gpu)
         });
         libuitest::startup::mark("targets-ready");
-        libuitest::startup::mark("font-join-begin");
         let font = font.join().expect("startup font worker panicked");
-        libuitest::startup::mark("font-join-return");
         (opened, font, claim_epoch, scene_fd, desktop_tree, clock_wake)
     });
     let mut gpu = match opened {
@@ -339,11 +334,8 @@ fn main() {
                 libuitest::startup::mark("pointer-presented");
                 measure_check(|| gpu.check(0, &[], cursor_pointer(first_pointer)))
             });
-        libuitest::startup::detail("join-begin", 0, 0, 0);
         checked
     });
-    libuitest::startup::detail("join-return", 0, 0, 0);
-    libuitest::startup::mark("startup-workers-return");
     if let Err(error) = prepared {
         eprintln!("[bwm] title coverage warm-up unavailable: {error}");
     }
@@ -460,7 +452,6 @@ fn main() {
         }
         let mut wait = ShutdownWait { fds: &mut poll_fds, timeout, failed: false };
         if shutdown::boundary(&mut wait).is_none() { return; }
-        let _turn_cpu = libuitest::startup::CpuCost::begin(0);
         signal_wake.drain();
         if let Some(clipboard) = &mut clipboard { clipboard.service(&poll_fds, libbreenix::ui_clock::now_ns()); }
         if let Some(wake) = &clock_wake {
@@ -837,9 +828,7 @@ fn main() {
             let sec = clock.update_clock().expect("due wall-clock update");
             format_clock(sec, &mut clock_text);
             let began = pacing_ns();
-            let clock_cpu = libuitest::startup::CpuCost::begin(1);
             redraw_clock(&mut gpu.desktop, &clock_text, &mut ui_font);
-            drop(clock_cpu);
             let draw_ns = pacing_ns().saturating_sub(began);
             taskbar_prepare_ns = Some(draw_ns);
             clock_pace.reset();
@@ -862,7 +851,6 @@ fn main() {
                 clock_pace.reset();
                 if content_dirty { full_redraw = true; }
             } else if clock_ready {
-                let _compose_cpu = libuitest::startup::CpuCost::begin(2);
                 // Scene work already owns this paced composite. Refresh frozen
                 // session chrome here without scheduling clock-only work.
                 if let Some(sec) = clock.scene_clock() {
@@ -966,7 +954,6 @@ fn main() {
                 process::exit(1);
             }
             clock.acknowledged();
-            let _check_cpu = libuitest::startup::CpuCost::begin(3);
             run_deferred_check(&mut validation, &mut gpu, &mut windows, &mut poll_fds, resizing.is_some());
         }
     }

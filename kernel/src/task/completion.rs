@@ -370,7 +370,6 @@ impl Completion {
         timeout_ns: u64,
         wait_mode: WaitMode,
     ) -> Result<bool, i32> {
-        let _wait_site = super::thread::WaitSite::enter(1, self as *const Self as u64);
         // Fast path: already done (e.g., very fast device, or spurious call).
         if self.done.load(Ordering::Acquire) == expected_token {
             let in_syscall = syscall_sleep_path_available();
@@ -714,7 +713,6 @@ impl Completion {
 
         let tid = self.waiter.load(Ordering::Acquire);
         if tid != 0 {
-            crate::window::accounting::wake(1, self as *const Self as u64, tid, 1);
             crate::task::scheduler::isr_unblock_for_io(tid);
         }
 

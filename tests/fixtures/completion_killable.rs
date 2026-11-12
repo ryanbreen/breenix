@@ -107,9 +107,6 @@ pub mod instructions { pub mod interrupts {
 mod task {
     #[path = "@ROOT@/kernel/src/task/completion.rs"] pub mod completion;
     pub mod thread {
-        pub struct WaitSite;
-        impl WaitSite { pub fn enter(_: u64, _: u64) -> Self { Self } }
-
         #[derive(Clone,Copy,Debug,PartialEq)] pub enum ThreadState { Running, BlockedOnIO }
         pub struct Thread {
             pub state:ThreadState,

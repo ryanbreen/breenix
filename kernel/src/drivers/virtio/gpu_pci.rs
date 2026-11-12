@@ -1929,7 +1929,6 @@ fn send_command_with_trace(
     virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
     virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
     virtgpu::trace_wait_completion_enter(cmd_type, resource_id, virtgpu::WAIT_PATH_2DESC);
-    let _command_stamp = crate::window::gpu_command_trace::begin(2, cmd_type, cmd_len, 0);
     state.device.notify_queue_fast(0);
     wait_for_ctrlq_completion(
         state,
@@ -2124,7 +2123,6 @@ fn send_command_3desc_with_trace(
     virtgpu_trace_flush_pre_notify(cmd_type, resource_id);
     virtgpu::trace_q_notify(0, virtgpu_trace_used_idx());
     virtgpu::trace_wait_completion_enter(cmd_type, resource_id, wait_path);
-    let _command_stamp = crate::window::gpu_command_trace::begin(2, cmd_type, hdr_len, payload_len);
     state.device.notify_queue_fast(0);
     let used_len =
         wait_for_ctrlq_completion(state, previous_used_idx, cmd_type, resource_id, wait_path)?;
@@ -3802,8 +3800,6 @@ fn submit_polled<T>(
         resp_len as u32,
     );
     let target = unsafe { read_volatile(&raw const PCI_CTRL_QUEUE.avail.idx) };
-    let cmd_type = unsafe { read_volatile(page as *const u32) };
-    let _command_stamp = crate::window::gpu_command_trace::begin(2, cmd_type, cmd_len as u32, 0);
     state.device.notify_queue_fast(0);
     loop {
         let used_idx = virtgpu_trace_used_idx();

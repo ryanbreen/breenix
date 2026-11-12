@@ -128,7 +128,6 @@ struct CheckWorkspace {
     clients: Vec<(u64, [i32; 4], u32, Vec<u8>)>,
     band: Vec<u8>,
     desktop: Vec<u8>,
-    costs: [u64; 5],
     last_ns: u64,
 }
 
@@ -591,23 +590,10 @@ impl Compositor {
     pub fn check_area_while(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4], mut idle: impl FnMut() -> bool)
         -> Option<Result<u64, CheckError>> {
         let mut workspace = core::mem::take(&mut self.check_workspace);
-        workspace.costs = [0; 5];
         let began = monotonic_ns();
         let result = self.check_area_into(subject, layers, pointer, area, &mut workspace, &mut idle);
-        libuitest::startup::detail("whole-check-return", subject, 0, 0);
         let elapsed = monotonic_ns().saturating_sub(began);
         workspace.last_ns = workspace.last_ns.max(elapsed);
-        libuitest::startup::detail("report-begin", subject, 0, 0);
-        if elapsed >= 100_000_000 {
-            use std::io::Write;
-            let c = workspace.costs;
-            let line = format!("VALUE bwm-check-cost total_ns={elapsed} captures_ns={} buffers_ns={} scanout_ns={} desktop_ns={} pixels_ns={}\n", c[0], c[1], c[2], c[3], c[4]);
-            print!("{line}");
-            if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
-                let _ = evidence.write_all(line.as_bytes());
-            }
-        }
-        libuitest::startup::detail("report-return", subject, 0, 0);
         // Retain storage on success, stale-front retry and readback refusal alike.
         self.check_workspace = workspace;
         match result { Ok(Some(pixels)) => Some(Ok(pixels)), Ok(None) => None, Err(error) => Some(Err(error)) }
@@ -621,7 +607,6 @@ impl Compositor {
         }
         libuitest::startup::mark("frame-check-begin");
         // The clients this area shows, the subject first, with their sampled pixels.
-        let began = monotonic_ns();
         let clients = &mut workspace.clients;
         let mut client_count = 0;
         let mut shown: Vec<_> = layers.iter().filter_map(|l| self.sampled_content(l).map(|r| (l.window_id, r)))
@@ -664,8 +649,6 @@ impl Compositor {
             }
             client_count += 1;
         }
-        workspace.costs[0] = monotonic_ns().saturating_sub(began);
-        let began = monotonic_ns();
         let band_rows = (CHECK_BAND_BYTES / (w * 4)).max(1).min(y1 - y_top);
         let clients = &clients[..client_count];
         let band = &mut workspace.band;
@@ -677,42 +660,32 @@ impl Compositor {
         unsafe { core::ptr::write_volatile(record.as_mut_ptr(), 0) };
         let pointer = pointer.map(|p| (p, pointer_bitmap(p.shape)));
         libuitest::startup::mark("frame-buffers-ready");
-        workspace.costs[1] = monotonic_ns().saturating_sub(began);
         let mut compared = 0u64;
         let mut y0 = y_top;
         while y0 < y1 {
             if !idle() { return Ok(None); }
             let rows = band_rows.min(y1 - y0);
-            libuitest::startup::detail("band-begin", subject, y0, rows);
             let len = (w * rows * 4) as usize;
             // These immutable sources are independent. Start D's transfer while
             // reading scanout, then compare only after both observations return.
-            let ((r, a), scanout_ns, (desktop, desktop_ns)) = std::thread::scope(|scope| {
+            let ((r, a), desktop) = std::thread::scope(|scope| {
                 let source = &self.desktop;
                 let output = &mut desk[..len];
                 let pending = scope.spawn(move || {
-                    let began = monotonic_ns();
                     let result = source.read_rect([x0 as usize, y0 as usize, w as usize, rows as usize], output, w as usize * 4);
-                    libuitest::startup::detail("band-desktop", subject, y0, rows);
                     libuitest::startup::mark("frame-desktop-return");
-                    (result, monotonic_ns().saturating_sub(began))
+                    result
                 });
-                let began = monotonic_ns();
                 let scanout = gpu::readback_why(0, [x0, y0, w, rows], &mut band[..len], w * 4, &mut *record);
-                let scanout_ns = monotonic_ns().saturating_sub(began);
-                libuitest::startup::detail("band-scanout", subject, y0, rows);
                 libuitest::startup::mark("frame-scanout-return");
                 let desktop = pending.join().map_err(|_| CheckError::Failed("desktop readback worker panicked".into()))?;
-                Ok::<_, CheckError>((scanout, scanout_ns, desktop))
+                Ok::<_, CheckError>((scanout, desktop))
             })?;
-            workspace.costs[2] += scanout_ns;
-            workspace.costs[3] += desktop_ns;
             if r != 0 {
                 return Err(CheckError::Failed(format!("readback of rows {}..{}: errno {}, reason {}", y0, y0 + rows, -r, a.reason)));
             }
             desktop.map_err(|e| CheckError::Failed(format!("desktop readback of rows {}..{}: errno {}", y0, y0 + rows, -e)))?;
             if !idle() { return Ok(None); }
-            let began = monotonic_ns();
             for row in 0..rows {
                 let y = (y0 + row) as i32;
                 // Frames and uncovered pixels both come from D. Only a sampled
@@ -746,8 +719,6 @@ impl Compositor {
                     compared += 1;
                 }
             }
-            workspace.costs[4] += monotonic_ns().saturating_sub(began);
-            libuitest::startup::detail("band-pixels", subject, y0, rows);
             libuitest::startup::mark("frame-pixels-ready");
             y0 += rows;
         }

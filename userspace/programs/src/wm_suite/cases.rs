@@ -1135,9 +1135,6 @@ pub fn supervisor_restarts() -> CaseResult {
         Ok(children(d.wm.pid, "bwm")?.iter().any(|p| *p != old))
     })?;
     content(&mut d, &c)?;
-    // Retain both process timelines, including the replacement on a passing
-    // run, so startup margin is measured without another boot.
-    d.report_startup();
     Ok(())
 }
 pub fn children(parent: i32, name: &str) -> Result<Vec<i32>, String> {
@@ -1377,10 +1374,6 @@ pub fn frame_floor() -> CaseResult {
     value("pipeline-window", c.id as i64, "", None);
     value("measurement-begin", begin as i64, "ns", None);
     value("measurement-end", end as i64, "ns", None);
-    failure_diagnostic("frame-endpoints", &format!(
-        "client={} begin_ns={begin} end_ns={end} first_ns={:?} last_ns={:?}",
-        c.id, times.iter().min(), times.iter().max()
-    ));
     d.shown(&c)?;
     let hz = rate.as_ref().map_or(0, |r| {
         (u128::from(r.intervals) * 1_000_000_000 / u128::from(r.span_ns)) as i64
@@ -1404,60 +1397,10 @@ pub(super) fn failure_pipeline() {
             failure_diagnostic("gpu-wait", line);
         }
     }
-    full_pipeline("window-pipeline-failure");
-    export_pipeline("/proc/breenix/window-pipeline");
-}
-fn pipeline_blob(trace: &str) -> Result<Vec<u8>, String> {
-    let mut blob = b"WMPIPE01".to_vec();
-    blob.extend_from_slice(&0u32.to_le_bytes());
-    let mut count = 0u32;
-    for row in trace.lines() {
-        if count == 32768 { return Err("pipeline-row-bound".into()); }
-        let mut fields = row.split_whitespace();
-        for _ in 0..5 {
-            let n = fields.next().ok_or("pipeline-fields")?.parse::<u64>().map_err(|e| e.to_string())?;
-            blob.extend_from_slice(&n.to_le_bytes());
+    if let Ok(pipeline) = std::fs::read_to_string("/proc/breenix/window-pipeline") {
+        for row in pipeline.lines().rev().take(8) {
+            failure_diagnostic("pipeline", row);
         }
-        if fields.next().is_some() { return Err("pipeline-fields".into()); }
-        count += 1;
-    }
-    if count == 0 { return Err("pipeline-empty".into()); }
-    blob[8..12].copy_from_slice(&count.to_le_bytes());
-    Ok(blob)
-}
-fn full_pipeline(label: &str) {
-    use std::io::Write;
-    let result = (|| -> Result<(), String> {
-        let trace = std::fs::read_to_string("/proc/breenix/window-pipeline-full").map_err(|e| e.to_string())?;
-        let blob = pipeline_blob(&trace)?;
-        let receipt = breenix_suite::suite::upload_diagnostic("window-manager", label, &blob)?;
-        let mut evidence = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence").map_err(|e| e.to_string())?;
-        evidence.write_all(format!("VALUE window-pipeline-bulk {label} {receipt}\n").as_bytes()).map_err(|e| e.to_string())
-    })();
-    if let Err(error) = result { value("pipeline-bulk-export-errno", 5, &error, None); }
-}
-fn export_pipeline(path: &str) {
-    use std::io::Write;
-    let result = (|| -> std::io::Result<()> {
-        let trace = std::fs::read_to_string(path)?;
-        let mut evidence = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence")?;
-        for row in trace.lines() {
-            let name = if row.starts_with("fine_wake_requests=") { "timer-wake" } else { "window-pipeline" };
-            evidence.write_all(format!("VALUE {name} {row}\n").as_bytes())?;
-        }
-        Ok(())
-    })();
-    if let Err(error) = result { value("pipeline-export-errno", error.raw_os_error().unwrap_or(5) as i64, "", None); }
-}
-
-fn input_observation(command: &str) {
-    use std::io::Write;
-    let result = (|| -> std::io::Result<()> {
-        let mut evidence = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence")?;
-        evidence.write_all(format!("WM_STALL {command}\n").as_bytes())
-    })();
-    if let Err(error) = result {
-        failure_diagnostic("input-observation", &format!("command={command} skipped={error}"));
     }
 }
 
@@ -1482,16 +1425,9 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
     let mut failure_exported = false;
     let mut receipt_serial = 0;
     let w = c.info()?;
-    struct InputObservation;
-    impl Drop for InputObservation {
-        fn drop(&mut self) { input_observation("input-close"); }
-    }
-    input_observation("input-reset");
-    let _observation = InputObservation;
     for n in 0..110 {
         c.clear()?;
         let begin = now();
-        input_observation(&format!("input-begin {begin}"));
         if pointer {
             let x = (w.x + 20 + (n % 100)) as u64;
             let y = (w.y + 40) as u64;
@@ -1514,7 +1450,6 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
                 }
         })?;
         let r = measure::completed_commit(&c, c.handling_commit)?;
-        input_observation(&format!("input-end {}", r.ns));
         receipt_serial = receipt_serial.max(r.serial);
         if r.ns < begin {
             value("input-time", begin as i64, "ns", None);
@@ -1541,17 +1476,6 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
             time::sleep_ms(50 - spent)?;
         }
     }
-    let label = if animation { "input-animation-observation" }
-        else if pointer { "input-pointer-observation" } else { "input-typing-observation" };
-    let observation = (|| -> Result<String, String> {
-        let trace = std::fs::read_to_string("/proc/breenix/window-stall").map_err(|e| e.to_string())?;
-        breenix_suite::suite::upload_diagnostic("window-manager", label, trace.as_bytes())
-    })();
-    let receipt = match observation {
-        Ok(receipt) => receipt,
-        Err(error) => format!("skipped={error}"),
-    };
-    failure_diagnostic("input-observation", &format!("client_window={} label={label} {receipt}", c.id));
     measure::observed(&mut d, &[&c], receipt_serial)?;
     samples.sort_unstable();
     let median = samples[50];
@@ -1617,7 +1541,6 @@ pub fn idle_cpu() -> CaseResult {
     d.shown(&c)?;
     time::sleep_ms(1000)?;
     let pids = [d.wm.pid, a.child.pid, b.child.pid, c.child.pid];
-    let cost_before = d.cpu_costs();
     let before = pids
         .iter()
         .map(|p| cpu_ticks(*p))
@@ -1632,14 +1555,7 @@ pub fn idle_cpu() -> CaseResult {
     let used = after.iter().zip(&before).map(|(a, b)| a - b).sum::<u64>();
     if used * 10_000_000 * 100 > elapsed * 2 {
         failure_diagnostic("idle-cpu", &format!("elapsed_ns={elapsed} ticks={used} pids={pids:?} before={before:?} after={after:?}"));
-        match (cost_before, d.cpu_costs()) {
-            (Ok(before), Ok(after)) => {
-                for (i, name) in libuitest::startup::CPU_COSTS.iter().enumerate() {
-                    failure_diagnostic("idle-cost", &format!("{name}={}", after[i].saturating_sub(before[i])));
-                }
-            }
-            other => failure_diagnostic("idle-cost", &format!("snapshot={other:?}")),
-        }
+
     }
     // proc stat ticks are USER_HZ=100 (the proc ABI); 1 tick is 10 ms of one CPU.
     value(

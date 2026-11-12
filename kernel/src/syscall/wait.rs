@@ -307,7 +307,6 @@ fn wait_status(event: Event) -> i32 {
 /// group -pid. Returns the child's PID, or 0 under WNOHANG when no child has a
 /// state change to report.
 pub fn sys_waitpid(pid: i64, status_ptr: u64, options: u32) -> SyscallResult {
-    let _wait_site = crate::task::thread::WaitSite::enter(5, pid as u64);
     if options & !WAIT4_OPTIONS != 0 {
         return SyscallResult::Err(EINVAL as u64);
     }

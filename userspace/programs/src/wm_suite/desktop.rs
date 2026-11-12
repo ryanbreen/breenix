@@ -27,7 +27,6 @@ pub fn until_from(
     what: &str,
     mut test: impl FnMut() -> Result<bool, String>,
 ) -> Result<(), String> {
-    let _stall = StallWait::new(begin, ms, what);
     let end = begin + ms * 1_000_000;
     loop {
         if test()? {
@@ -84,7 +83,6 @@ impl Child {
         }
     }
     pub fn stop(&mut self) -> Result<i32, String> {
-        let requested_ns = now();
         self.signal(signal::SIGKILL)?;
         let returned_ns = now();
         let mut result = None;
@@ -94,7 +92,6 @@ impl Child {
         });
         let wait_returned_ns = now();
         self.reap_ns = wait_returned_ns.saturating_sub(returned_ns);
-        report_reap(self.pid, requested_ns, returned_ns, wait_returned_ns, waited.is_ok());
         waited?;
         let status = result.unwrap();
         if status & 127 != signal::SIGKILL {
@@ -105,29 +102,7 @@ impl Child {
         Ok(status)
     }
 }
-// Called after the wait on both outcomes; no output occurs in the polling loop.
-fn report_reap(pid: i32, requested_ns: u64, returned_ns: u64, wait_ns: u64, passed: bool) {
-    failure_diagnostic("reap", &format!(
-        "pid={pid} requested_ns={requested_ns} kill_returned_ns={returned_ns}"
-    ));
-    if let Ok(pipeline) = std::fs::read_to_string("/proc/breenix/window-pipeline-full") {
-        let rows: Vec<Vec<u64>> = pipeline.lines().filter_map(|line| {
-            let row: Vec<u64> = line.split_whitespace().filter_map(|s| s.parse().ok()).collect();
-            (row.len() == 5 && (47..=52).contains(&row[0])).then_some(row)
-        }).collect();
-        // Stage 50 also maps older records whose source column predates group stamps.
-        let tids: Vec<_> = rows.iter().filter(|r| r[3] == pid as u64
-            || (r[0] == 50 && r[2] == pid as u64)).map(|r| r[1]).collect();
-        for row in rows.iter().filter(|r| tids.contains(&r[1])) {
-            failure_diagnostic("exit-phase", &format!(
-                "tgid={pid} tid={} stage={} pid={} ns={}", row[1], row[0], row[2], row[4]
-            ));
-        }
-    }
-    failure_diagnostic("reap-wait", &format!(
-        "pid={pid} wait_returned_ns={wait_ns} elapsed_ns={} passed={passed}", wait_ns.saturating_sub(returned_ns)
-    ));
-}
+
 impl From<Pid> for Child {
     fn from(pid: Pid) -> Self {
         Self {
@@ -162,7 +137,6 @@ pub struct Client {
 }
 fn read_n(file: &mut File, bytes: &mut [u8]) -> Result<(), String> {
     let began = now();
-    let _stall = StallWait::new(began, 2000, "client-reply-startup");
     let end = began + 2_000_000_000;
     let mut done = 0;
     while done < bytes.len() {
@@ -347,9 +321,6 @@ impl Client {
         })
         .map_err(|e| format!("{description}: {e}"))?;
         let event = found.unwrap();
-        if event.kind == abi::event_kind::POINTER_BUTTON {
-            stall_command(&format!("click-observed {} {}", event.serial, self.id));
-        }
         Ok(event)
     }
 }
@@ -452,11 +423,8 @@ impl StartupTrace {
     }
     fn failure(&self) {
         let Ok(entries) = std::fs::read_dir(&self.0) else { return };
-        for entry in entries.flatten() {
+        for entry in entries.flatten().take(8) {
             let Ok(trace) = libuitest::startup::Trace::open(&entry.path()) else { continue };
-            for event in trace.details() {
-                failure_diagnostic("startup-detail", &format!("pid={} {event}", entry.file_name().to_string_lossy()));
-            }
             let phases = trace.snapshot();
             let begin = phases.iter().filter(|(_, ns)| *ns != 0).map(|(_, ns)| *ns).min().unwrap_or(0);
             for (phase, ns) in phases.into_iter().filter(|(_, ns)| *ns != 0) {
@@ -466,7 +434,7 @@ impl StartupTrace {
     }
 }
 impl Drop for StartupTrace {
-    fn drop(&mut self) { self.failure(); let _ = std::fs::remove_dir_all(&self.0); }
+    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
 }
 
 pub struct Desktop {
@@ -482,8 +450,6 @@ pub struct Desktop {
 // A failed wait reports both readback refusal and the last completed binding.
 #[derive(Default)]
 struct WaitObservation {
-    begin_ns: u64,
-    end_ns: u64,
     error: Option<String>,
     record: Option<[u8; 1024]>,
     pixel: Option<u32>,
@@ -492,53 +458,25 @@ struct WaitObservation {
 /// Failure records bypass the case verdict's short message field.
 pub fn failure_diagnostic(label: &str, text: &str) {
     use std::io::Write;
-    let case = breenix_suite::suite::running_case().unwrap_or("window-manager");
-    breenix_suite::suite::case_budget("diagnostic-begin", case);
-    if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
-        for line in text.lines() {
-            let chars: Vec<_> = line.chars().collect();
-            for chunk in chars.chunks(160) {
-                let chunk: String = chunk.iter().collect();
-                let _ = writeln!(evidence, "VALUE wm-{label} {chunk}");
-            }
-        }
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // Each case runs in its own child. Cap cumulative failure records at 2 KiB
+    // to limit their cost on the UART shared with host input ACKs.
+    static BYTES: AtomicUsize = AtomicUsize::new(0);
+    let label: String = label.chars().take(32).collect();
+    let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") else { return };
+    for line in text.lines() {
+        let chunk: String = line.chars().take(160).collect();
+        let record = format!("VALUE wm-{label} {chunk}\n");
+        if BYTES.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n|
+            n.checked_add(record.len()).filter(|&total| total <= 2048)).is_err() { return; }
+        let _ = evidence.write_all(record.as_bytes());
     }
-    breenix_suite::suite::case_budget("diagnostic-end", case);
 }
-impl Drop for WaitObservation {
-    fn drop(&mut self) { self.export(); }
-}
+
 impl WaitObservation {
-    fn export(&self) {
-        if self.begin_ns == 0 { return; }
-        failure_diagnostic("observer", &format!("begin_ns={} end_ns={} completed={}",
-            self.begin_ns, self.end_ns, self.record.is_some()));
-        if let Ok(trace) = std::fs::read_to_string("/proc/breenix/window-readback") {
-            for line in trace.lines() {
-                let begin = line.split_whitespace().find_map(|f| f.strip_prefix("begin_ns=")?.parse::<u64>().ok());
-                if line.starts_with("retained=") {
-                    failure_diagnostic("readback-buffer", line);
-                }
-                if begin.is_some_and(|ns| ns >= self.begin_ns && ns <= self.end_ns) {
-                    failure_diagnostic("readback", line);
-                }
-            }
-        }
-        // Completed render/present/receipt rows have the same monotonic clock.
-        if let Ok(trace) = std::fs::read_to_string("/proc/breenix/window-pipeline-full") {
-            for line in trace.lines() {
-                let row: Vec<u64> = line.split_whitespace().filter_map(|s| s.parse().ok()).collect();
-                if row.len() == 5 && (10..=13).contains(&row[0]) && row[4] >= self.begin_ns && row[4] <= self.end_ns {
-                    failure_diagnostic("completion", line);
-                }
-            }
-        }
-    }
 
     fn read(&mut self) -> Result<Screen, String> {
-        if self.begin_ns == 0 { self.begin_ns = now(); }
         let result = Screen::read();
-        self.end_ns = now();
         match result {
             Ok(s) => {
                 self.record = Some(s.record);
@@ -563,12 +501,7 @@ impl WaitObservation {
     }
 }
 impl Desktop {
-    pub fn report_startup(&self) {
-        self.startup.failure();
-    }
-    pub fn cpu_costs(&self) -> Result<[u64; 5], String> {
-        Ok(libuitest::startup::Trace::open(&self.startup.0.join(self.wm.pid.to_string()))?.cpu_snapshot())
-    }
+
     pub fn start() -> Result<Self, String> {
         Self::launch(false)
     }
@@ -627,8 +560,6 @@ impl Desktop {
                     && s.pixel(d.width as i32 / 2, 1).ok() == Some(0xff14161e)
             }))
         });
-        let ready_end_ns = now();
-        failure_diagnostic("observer-wait", &format!("kind=desktop begin_ns={} end_ns={ready_end_ns} passed={}", observation.begin_ns, ready.is_ok()));
         ready.map_err(|e| {
             d.startup.failure();
             let detail = format!("previous context={previous_context}; {}; {}", observation.failure(), d.output());
@@ -638,7 +569,6 @@ impl Desktop {
         if supervised {
             let mut observation = WaitObservation::default();
             let mut observed_windows = Vec::new();
-            let begin_ns = now();
             let initial = until(
                 2000,
                 "init desktop's initial client reached scanout",
@@ -654,8 +584,6 @@ impl Desktop {
                         .any(|w| w.commit_id != 0 && s.contains(w.id, w.commit_id)))
                 },
             );
-            let end_ns = now();
-            failure_diagnostic("observer-wait", &format!("kind=initial-client begin_ns={begin_ns} end_ns={end_ns} passed={}", initial.is_ok()));
             initial.map_err(|e| {
                 let detail = format!("windows={observed_windows:?}; {}; {}", observation.failure(), d.output());
                 failure_diagnostic("initial-client", &detail);
@@ -681,7 +609,6 @@ impl Desktop {
     pub fn shown_after(&mut self, c: &Client, commit: u64) -> Result<Screen, String> {
         let mut result = None;
         let mut observation = WaitObservation::default();
-        let begin_ns = now();
         let observed = until(
             2000,
             &format!("bwm composite of client {} commit {}", c.id, commit),
@@ -701,8 +628,6 @@ impl Desktop {
                 }
             },
         );
-        let end_ns = now();
-        failure_diagnostic("observer-wait", &format!("kind=client id={} commit={commit} begin_ns={begin_ns} end_ns={end_ns} passed={}", c.id, observed.is_ok()));
         observed.map_err(|e| {
             let detail = format!("{}; {}", observation.failure(), self.output());
             if let Ok(counters) = std::fs::read_to_string("/proc/trace/counters") {
@@ -730,7 +655,7 @@ impl Desktop {
             buttons,
             wheel,
         )
-        .map(|seq| { stall_command(&format!("click-request {seq} {buttons}")); })
+        .map(|_| ())
     }
     pub fn click(&self, x: i32, y: i32) -> Result<(), String> {
         self.pointer(x, y, 1, 0)?;
@@ -756,22 +681,5 @@ impl Desktop {
                 && e.serial > press.serial
         })?;
         Ok(())
-    }
-}
-
-/// Arming is output-free; the parent samples even while this thread is blocked.
-struct StallWait(u64);
-impl StallWait {
-    fn new(begin: u64, ms: u64, what: &str) -> Self {
-        stall_command(&format!("arm {begin} {} {what}", ms * 1_000_000));
-        Self(begin)
-    }
-}
-impl Drop for StallWait {
-    fn drop(&mut self) { stall_command(&format!("end {}", self.0)); }
-}
-fn stall_command(command: &str) {
-    if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
-        let _ = evidence.write_all(format!("WM_STALL {command}\n").as_bytes());
     }
 }

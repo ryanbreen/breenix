@@ -1,11 +1,13 @@
 # A.3 native input acceptance: retained-capture audit
 
+<!-- claim-lint:ok: #2901; retained 20261112T091724Z-metal exit 143. -->
 Boot `20261112T091724Z-metal` is an incomplete, failed x86 native
 window-manager run, not ARM64 QEMU proof. Runtime is `9f665106`, tools
 `f178dd7e`; exit status is 143. No retry was made during this audit.
 
 ## Capture and measured deadlines
 
+<!-- claim-lint:ok: #2901; retained capture digest and counts recorded in this paragraph. -->
 The local Vigil `serial.txt` is exactly 8,388,608 bytes and ends inside a
 `VALUE wm-case-budget` record. The retained boot-host file is 11,270,169
 bytes; the local file is its identical prefix. The full file has SHA-256
@@ -54,6 +56,7 @@ This is failed evidence, with no single-pass or margin-resolution claim.
   Unticketed packets such as packet 11 produce no `HOSTINPUT_ACK` guest
   timestamp. Queue admission, service execution and publication times
   cannot be recovered from the ordinary ACK text.
+<!-- claim-lint:ok: #2901; kernel/src/serial.rs TX_BUFFER_SIZE and init baud configuration, retained capture counts. -->
 - `kernel/src/serial.rs` serializes COM1 writes through `SERIAL1` and its
   65539-byte transmit queue. A full queue makes writers wait for UART room.
   At configured 115200 baud, 8N1, that much wire data takes about 5689 ms.
@@ -91,8 +94,14 @@ without extending deadlines. A forcing deterministic check and a source fix
 follow only an established mechanism; final ARM/native acceptance follows
 only when the runtime fix and coordinator stop conditions permit it.
 
+<!-- claim-lint:ok: #2901; audit at e98c51b8, coordinator lines 307 and 313 distinguish ARM and native evidence. -->
 No build, test, boot, deployment, board update or merge was performed in this
 audit. The retained ARM run remains the separate coordinator-accepted record
 at `9f665106`, `20261112T085617Z-qemu-94194` (ledger line 307); it does not
 turn this native run into proof. PR #2874 remains blocked by native-input
 issue #2901; animation issue #2872 remains separate and open.
+
+Coordinator line 313 supersedes the unresolved-mechanism and measurement-boot
+proposal above: remove the investigation exports from the UART input path.
+See [the removal inventory](a3-scaffolding.md). This audit remains the historical
+record of the failed capture; acceptance belongs to the subsequent unit.

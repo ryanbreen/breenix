@@ -52,7 +52,6 @@ struct BlockRequestGate {
 struct BlockRequestGuard<'a> {
     gate: &'a BlockRequestGate,
     release_on_drop: bool,
-    accounting_request: u64,
 }
 
 impl BlockRequestGate {
@@ -75,11 +74,9 @@ impl BlockRequestGate {
                 .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
             {
-                crate::window::accounting::disk_stage(crate::window::accounting::current_request(), 1);
                 return Ok(BlockRequestGuard {
                     gate: self,
                     release_on_drop: true,
-                    accounting_request: crate::window::accounting::current_request(),
                 });
             }
 
@@ -128,7 +125,6 @@ impl BlockRequestGuard<'_> {
 impl Drop for BlockRequestGuard<'_> {
     fn drop(&mut self) {
         if self.release_on_drop {
-            crate::window::accounting::disk_stage(self.accounting_request, 5);
             self.gate.unlock();
         }
     }
@@ -385,7 +381,6 @@ pub struct VirtioBlockDevice {
     next_token: AtomicU32,
     /// Token currently armed for IRQ completion; 0 means no armed request.
     pending_token: AtomicU32,
-    accounting_request: AtomicU64,
     /// Descriptor head drained by the interrupt handler.
     completed_desc: AtomicU32,
     /// Status byte read by the interrupt handler.
@@ -531,7 +526,6 @@ impl VirtioBlockDevice {
             completion: Completion::new(),
             next_token: AtomicU32::new(0),
             pending_token: AtomicU32::new(0),
-            accounting_request: AtomicU64::new(0),
             completed_desc: AtomicU32::new(NO_COMPLETED_DESC),
             completed_status: AtomicU32::new(NO_COMPLETED_STATUS),
             capacity,
@@ -629,7 +623,6 @@ impl VirtioBlockDevice {
                 .completion
                 .wait_timeout_uninterruptible(token, BLOCK_WAIT_SLICE_NS)
             {
-                crate::window::accounting::disk_stage(self.accounting_request.load(Ordering::Acquire), 6);
                 return Ok(());
             }
             if self.device.has_failed() {
@@ -730,10 +723,8 @@ impl VirtioBlockDevice {
 
         // The DMA header/data/status buffers are shared across callers. Keep
         // one request in flight, but do not make the IRQ handler take this gate.
-        let request = crate::window::accounting::disk_enqueue(self as *const Self as u64, request_type::IN as u64, sector, buffer.len() as u64);
         let request_guard = self.request_gate.lock()?;
         let completion_token = self.prepare_completion_wait();
-        self.accounting_request.store(request.id(), Ordering::Release);
 
         // Use cached DMA buffers (protected by queue mutex)
         let (header_phys, header_virt) = self.dma_buffers.header;
@@ -757,11 +748,7 @@ impl VirtioBlockDevice {
                 (status_phys, 1, true),                // Status: device writes
             ];
 
-            let added = queue.add_chain(&buffers).is_some();
-            if added {
-                crate::window::accounting::disk_stage(self.accounting_request.load(Ordering::Acquire), 2);
-            }
-            added
+            queue.add_chain(&buffers).is_some()
         });
         if !added {
             self.clear_completion_state();
@@ -837,10 +824,8 @@ impl VirtioBlockDevice {
             return Err("Block IRQ completion unavailable before interrupts are enabled");
         }
 
-        let request = crate::window::accounting::disk_enqueue(self as *const Self as u64, request_type::OUT as u64, sector, buffer.len() as u64);
         let request_guard = self.request_gate.lock()?;
         let completion_token = self.prepare_completion_wait();
-        self.accounting_request.store(request.id(), Ordering::Release);
 
         // Use cached DMA buffers (protected by queue mutex)
         let (header_phys, header_virt) = self.dma_buffers.header;
@@ -863,11 +848,7 @@ impl VirtioBlockDevice {
                 (status_phys, 1, true),                 // Status: device writes
             ];
 
-            let added = queue.add_chain(&buffers).is_some();
-            if added {
-                crate::window::accounting::disk_stage(self.accounting_request.load(Ordering::Acquire), 2);
-            }
-            added
+            queue.add_chain(&buffers).is_some()
         });
         if !added {
             self.clear_completion_state();
@@ -927,12 +908,10 @@ impl VirtioBlockDevice {
         if !self.irq_completion_available() {
             return Err("Block IRQ completion unavailable before interrupts are enabled");
         }
-        let request = crate::window::accounting::disk_enqueue(self as *const Self as u64, request_type::FLUSH as u64, 0, 0);
         let request_guard = self.request_gate.lock()?;
         // This check uses the request gate shared by write and flush submission.
         if !self.writes_pending.load(Ordering::Acquire) { return Ok(()); }
         let token = self.prepare_completion_wait();
-        self.accounting_request.store(request.id(), Ordering::Release);
         let (header_phys, header_virt) = self.dma_buffers.header;
         let (status_phys, status_virt) = self.dma_buffers.status;
         let added = self.with_queue(|queue| {
@@ -948,11 +927,7 @@ impl VirtioBlockDevice {
                 core::ptr::write_volatile(status_virt as *mut u8, 0xff);
             }
             let buffers = [(header_phys, 16, false), (status_phys, 1, true)];
-            let added = queue.add_chain(&buffers).is_some();
-            if added {
-                crate::window::accounting::disk_stage(self.accounting_request.load(Ordering::Acquire), 2);
-            }
-            added
+            queue.add_chain(&buffers).is_some()
         });
         if !added {
             self.clear_completion_state();
@@ -1018,7 +993,6 @@ impl VirtioBlockDevice {
                 .store(status as u32, Ordering::Release);
             self.completed_desc
                 .store(completed_desc as u32, Ordering::Release);
-            crate::window::accounting::disk_stage(self.accounting_request.load(Ordering::Acquire), 3);
             self.completion.complete(token);
         }
 

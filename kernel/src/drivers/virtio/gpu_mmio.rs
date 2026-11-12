@@ -628,8 +628,6 @@ fn send_command(
         fence(Ordering::SeqCst);
     }
 
-    let cmd_type = unsafe { read_volatile(&raw const CMD_BUF as *const u32) };
-    let _command_stamp = crate::window::gpu_command_trace::begin(1, cmd_type, cmd_len, 0);
     // Notify device
     device.notify_queue(0);
 

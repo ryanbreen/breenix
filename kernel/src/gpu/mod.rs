@@ -64,9 +64,6 @@
 //! while holding it, and the reset itself runs on `kgpu` outside it; no path here prints
 //! (section 1.4: no kernel output on any path).
 
-#[cfg(target_arch = "aarch64")]
-use crate::window::gpu_core_trace;
-
 pub mod window_targets;
 #[cfg(target_arch = "x86_64")]
 pub mod framebuffer;
@@ -209,7 +206,7 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
         (r, kick)
     };
     if let Some(made) = kick {
-        ring_doorbell(made);
+        ring_doorbell();
         RUNG.fetch_max(made, Ordering::AcqRel);
     }
     crate::per_cpu::preempt_enable();
@@ -265,18 +262,12 @@ pub(crate) fn ownership_census() -> alloc::string::String {
 /// CPU until its device model accepts it; no thread waits for the lock meanwhile. The
 /// requests' descriptors and ring index were published before `KICK` was set, and the
 /// caller claimed that kick while still holding the core's lock.
-fn ring_doorbell(made: u64) {
+fn ring_doorbell() {
     let _access = panic::Access::enter();
     let at = DOORBELL.load(Ordering::Acquire);
     if at != 0 {
-        #[cfg(target_arch = "aarch64")]
-        let stamp = gpu_core_trace::doorbell(made);
-        #[cfg(not(target_arch = "aarch64"))]
-        let _ = made;
         // SAFETY: the control queue's mapped notification address; queue 0.
         unsafe { core::ptr::write_volatile(at as *mut u16, 0) };
-        #[cfg(target_arch = "aarch64")]
-        gpu_core_trace::finish(stamp);
     }
 }
 
@@ -285,7 +276,6 @@ fn ring_doorbell(made: u64) {
 /// is held with interrupts masked (section 1.16, #2003); `wait_event` publishes a wait
 /// that this order cannot miss.
 fn notify() {
-    crate::window::accounting::wake(10, &WAITERS as *const _ as u64, 0, 0);
     EVENTS.fetch_add(1, Ordering::AcqRel);
     let mut taken = [0u64; 8];
     loop {
@@ -305,7 +295,6 @@ fn notify() {
 fn wake_reaper() {
     let tid = REAPER.load(Ordering::Acquire);
     if tid != 0 {
-        crate::window::accounting::wake(11, &REAPER as *const _ as u64, tid, 1);
         crate::task::scheduler::wake_thread_any_context(tid);
     }
 }
@@ -349,8 +338,6 @@ struct Proc {
 }
 
 struct Ctx {
-    #[cfg(target_arch = "aarch64")]
-    trace_origin: (u64, u64),
     id: u32,
     owner: u64,
     /// The fence namespace: a BGL fence is `ns << 32 | n` for the context's `n`th
@@ -1299,16 +1286,6 @@ impl Core {
                 r.holds += 1;
             }
         }
-        #[cfg(target_arch = "aarch64")]
-        let req = {
-            let mut req = req;
-            if let Request::Virgl(r) = &mut req {
-                if r.origin.0 == 0 {
-                    if let Some(context) = self.contexts.get(&ctx) { r.origin = context.trace_origin; }
-                }
-            }
-            req
-        };
         let upload = req.is_upload().then(|| holds.first().copied().zip(req.fence())).flatten();
         self.syncs.insert(serial, SyncReq {
             upload, created: None, ctx, sent_ns: None, holds: held, reading: readers, abandoned: warm.is_some(), failed: false,
@@ -2324,7 +2301,6 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
     #[cfg(target_arch = "x86_64")]
     let _wait = trace.map(|(t, _)| t.phase(false));
     let start = now_ns();
-    let mut silent_wait = false;
     loop {
         #[cfg(target_arch = "x86_64")]
         if let Some((t, _)) = trace { t.poll(); }
@@ -2332,11 +2308,7 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
         let (found, polled) = with_core(|c| {
             #[cfg(target_arch = "x86_64")]
             let poll_phase = submit_trace.map(|t| t.scope(SubmitPhase::AdmissionPoll));
-            let before_poll = EVENTS.load(Ordering::Acquire);
             c.poll_traced(#[cfg(target_arch = "x86_64")] submit_trace);
-            if silent_wait && EVENTS.load(Ordering::Acquire) != before_poll {
-                crate::tracing::providers::gpu::GPU_WAIT_SILENT_POLLED.increment();
-            }
             #[cfg(target_arch = "x86_64")]
             drop(poll_phase);
             #[cfg(target_arch = "x86_64")]
@@ -2365,7 +2337,6 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
         })
         .unwrap_or((None, false));
         if let Some(v) = found {
-            if silent_wait { crate::tracing::providers::gpu::GPU_WAIT_SILENT_FOUND.increment(); }
             return Ok(v);
         }
         if deadline.is_some_and(|d| now_ns() >= d) {
@@ -2413,14 +2384,7 @@ fn wait_for_traced<T>(deadline: Option<u64>, interruptible: bool, mut f: impl Fn
         let blocked = trace.map(|_| (now_ns(), crate::time::get_ticks()));
         #[cfg(target_arch = "x86_64")]
         let sleeping = submit_trace.map(|t| t.scope(SubmitPhase::AdmissionSleep));
-        let sleeping_at = now_ns();
         let woke = wait_event(seen, wake);
-        silent_wait = now_ns().saturating_sub(sleeping_at) >= 100_000_000
-            && EVENTS.load(Ordering::Acquire) == seen;
-        if now_ns().saturating_sub(sleeping_at) >= 100_000_000 {
-            crate::tracing::providers::gpu::GPU_WAIT_LONG.increment();
-            if silent_wait { crate::tracing::providers::gpu::GPU_WAIT_SILENT.increment(); }
-        }
         #[cfg(target_arch = "x86_64")]
         drop(sleeping);
         #[cfg(target_arch = "x86_64")]
@@ -2449,7 +2413,6 @@ fn wait_event(seen: u64, wake: Option<u64>) -> Result<(), i32> {
     wait_event_prepared(seen, wake, false)
 }
 fn wait_event_prepared(seen: u64, wake: Option<u64>, fine: bool) -> Result<(), i32> {
-    let _wait_site = crate::task::thread::WaitSite::enter(10, &WAITERS as *const _ as u64);
     let Some(tid) = crate::task::scheduler::current_thread_id() else {
         return Err(crate::syscall::errno::ESRCH);
     };
@@ -2750,7 +2713,6 @@ pub fn handle_config_interrupt() {
 
 /// Wake for a used buffer or configuration change, using the ISR byte's bit meanings.
 fn signal(status: u8) {
-    crate::window::accounting::wake(10, &WAITERS as *const _ as u64, 0, 0);
     if status & 2 != 0 {
         CONFIG_CHANGED.store(true, Ordering::Release);
     }
@@ -2810,7 +2772,6 @@ fn ensure_reaper() -> bool {
 /// the device's answers waiting for the next deadline. Once woken it returns without
 /// halting for a further interrupt.
 fn reaper_block(tid: u64, seen: u64, sent: u64, wake: Option<u64>) {
-    let _wait_site = crate::task::thread::WaitSite::enter(11, &REAPER as *const _ as u64);
     // One scheduler section publishes the block and checks for an event since `seen`, so
     // the lock is taken once and waited for with interrupts enabled (section 1.16, #2003).
     crate::task::scheduler::with_scheduler(|sched| {
@@ -3582,8 +3543,6 @@ fn create_context_with_requirements(tgid: u64, required: u32) -> Result<(u64, u3
         c.insert_ctx(
             id,
             Ctx {
-                #[cfg(target_arch = "aarch64")]
-                trace_origin: crate::task::thread::current_accounting_identity().unwrap_or((0, 0)),
                 id,
                 owner: tgid,
                 ns,
@@ -5995,15 +5954,6 @@ fn read_back(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u
     read_back_impl(tgid, a, observer, arg, None)
 }
 
-/// Scalar phase timing; formatting occurs only when a failing observer reads procfs.
-struct ReadPhase(&'static crate::tracing::counter::TraceCounter, u64);
-impl ReadPhase {
-    fn begin(counter: &'static crate::tracing::counter::TraceCounter) -> Self { Self(counter, now_ns()) }
-}
-impl Drop for ReadPhase {
-    fn drop(&mut self) { self.0.add(now_ns().saturating_sub(self.1)); }
-}
-
 fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Option<u64>,
     crc: Option<abi::screen::CrcRequest<'_>>) -> Result<u64, Refused> {
     #[cfg(target_arch = "x86_64")]
@@ -6011,7 +5961,6 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
         .then(|| crate::gk208::timing::Readback::begin(tgid)).flatten();
     #[cfg(target_arch = "x86_64")]
     let cost_prepare = crate::gk208::cost::phase(crate::gk208::cost::Slot::ReadPrepare);
-    let prepare = ReadPhase::begin(&crate::tracing::providers::gpu::GPU_READ_PREPARE_NS);
     let window = observer != Observer::Owner;
     let deadline = observer.deadline(now_ns());
     // Count owner observation with presentation so a VT release cannot expose the
@@ -6129,7 +6078,6 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
     }
     // The argument, record and pixel-row pages are checked for mapping and writability
     // before any device work, serial or count (gpu-abi.md, READBACK's EFAULT).
-    let probe = ReadPhase::begin(&crate::tracing::providers::gpu::GPU_READ_PROBE_NS);
     if let Some(arg) = arg {
         probe_writable(arg, core::mem::size_of::<abi::Readback>())?;
     }
@@ -6156,21 +6104,17 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
         }
         probed = (start + row - 1) / PAGE as u64;
     }
-    drop(probe);
     let refuse = |reason: u32, failed: u64| -> Result<u64, Refused> { Err(Refused::Eio(reason, failed)) };
     match with_core(|c| display::readable(c, tgid, id, window)).ok_or(ENODEV)? {
         Ok(()) => {}
         Err(EIO) => return refuse(readback_reason::BINDING_UNKNOWN, 0),
         Err(e) => return Err(Refused::Errno(e)),
     }
-    let allocation = ReadPhase::begin(&crate::tracing::providers::gpu::GPU_READ_ALLOC_NS);
     let staging = Staging::new(tgid, (row * h) as usize)?;
-    drop(allocation);
     #[cfg(target_arch = "x86_64")]
     drop(cost_prepare);
     // Wait for the target's accepted writes to complete, then take it for reading.
     // The handle is looked up each time: one destroyed meanwhile is target-dropped.
-    let writers = ReadPhase::begin(&crate::tracing::providers::gpu::GPU_READ_WRITERS_NS);
     let taken = wait_for_traced(deadline, true, |c| {
         if a.target == 0 {
             if (!window && !display::owner(tgid))
@@ -6198,7 +6142,6 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
         Some(Ok((r.invalid, r.invalidated_by, r.generation, r.last, composition)))
     }, #[cfg(target_arch = "x86_64")] trace.as_ref().map(|t| (t, 1)),
         #[cfg(target_arch = "x86_64")] true, #[cfg(target_arch = "x86_64")] None);
-    drop(writers);
     let (invalid, invalidated_by, generation, last, composition) = match taken {
         Ok(Ok(t)) => t,
         Ok(Err(reason)) => return refuse(reason, 0),
@@ -6229,7 +6172,6 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
         release();
         return refuse(readback_reason::COMPOSITE_OVERFLOW, 0);
     }
-    drop(prepare);
     let observation = match observe(tgid, id, last, &backing, pitch, fmt, *a, &staging.pages, None,
         #[cfg(target_arch = "x86_64")] trace.as_ref()) {
         Ok(o) => o,
@@ -6351,7 +6293,6 @@ fn read_back_impl(tgid: u64, a: &mut abi::Readback, observer: Observer, arg: Opt
     rec[record::RENDERER..record::RENDERER + 64].copy_from_slice(&renderer);
     // Publish pixels after the complete rectangle passed both observations.
     let output = (|| {
-        let _output = ReadPhase::begin(&crate::tracing::providers::gpu::GPU_READ_OUTPUT_NS);
         #[cfg(target_arch = "x86_64")]
         let _copy = trace.as_ref().map(|t| t.phase(true));
         #[cfg(target_arch = "x86_64")]
@@ -6576,19 +6517,9 @@ fn observe(
         // The scanout's binding retains the target after the context that last wrote it
         // ended, and it stays observable (gpu-abi.md, op 22): the transfer runs in the
         // kernel screen's context.
-        (None, true) if a.target == 0 => {
-            let begin = crate::window::events::now_ns();
-            let result = screen::observation_context(id);
-            crate::window::readback_trace::record("retained-writer-fallback", [
-                begin, crate::window::events::now_ns(), tgid, u64::from(id),
-                last.map_or(0, |l| u64::from(l.ctx)), last.map_or(0, |l| l.serial),
-                last.map_or(0, |l| l.fence), last.map_or(0, |l| u64::from(l.answer)),
-                0, 0, 0, result.as_ref().err().copied().unwrap_or(0) as u64,
-            ]);
-            result.map_err(|e| {
-                (e, if e == EIO { readback_reason::DEVICE_ERROR } else { readback_reason::NONE })
-            })?
-        },
+        (None, true) if a.target == 0 => screen::observation_context(id).map_err(|e| {
+            (e, if e == EIO { readback_reason::DEVICE_ERROR } else { readback_reason::NONE })
+        })?,
         (None, _) if a.target == 0 => return Err((EIO, readback_reason::TARGET_LOST)),
         (None, _) => return Err((EINVAL, readback_reason::NONE)),
     };
@@ -6624,7 +6555,6 @@ fn observe(
     let start = |b: &mut Band| -> Result<(), (i64, u32)> {
         #[cfg(target_arch = "x86_64")]
         let cost_poison = crate::gk208::cost::phase(crate::gk208::cost::Slot::Poison);
-        let poison = ReadPhase::begin(&crate::tracing::providers::gpu::GPU_READ_POISON_NS);
         let pattern = if b.pass == 0 { POISON } else { !POISON };
         let at = offset(b);
         for r in 0..b.rows {
@@ -6633,7 +6563,6 @@ fn observe(
         memory(b).maintain(at, (b.rows - 1) * stride + row, false);
         #[cfg(target_arch = "x86_64")]
         drop(cost_poison);
-        drop(poison);
         b.sent = None;
         let skip = crate::test_control::take(test_point::SKIP_TRANSFER, a.target).is_some();
         if skip && dev::backend() != abi::backend::GK208 { return Ok(()); }
@@ -6698,12 +6627,10 @@ fn observe(
     // Take band `b`'s transfer back from the device and check its answer.
     let mut finish = |b: &mut Band| -> Result<(), (i64, u32)> {
         let Some(s) = b.sent.take() else { return Ok(()) };
-        let waiting = ReadPhase::begin(&crate::tracing::providers::gpu::GPU_READ_WAIT_NS);
         let done = await_sync_traced(s.serial, #[cfg(target_arch = "x86_64")] trace,
             #[cfg(target_arch = "x86_64")] true);
         #[cfg(target_arch = "x86_64")]
         drop(s.cost);
-        drop(waiting);
         release_other(s.other);
         let mut d = done.map_err(device_reason)?;
         // Test point 20, `stale-fence`: the answer is taken as echoing the next fence.
@@ -6728,7 +6655,6 @@ fn observe(
     // The first observation lands straight in the staging; the second is compared with it
     // a frame at a time.
     let mut read = |b: &Band| {
-        let _compare = ReadPhase::begin(&crate::tracing::providers::gpu::GPU_READ_COMPARE_NS);
         #[cfg(target_arch = "x86_64")]
         let _copy = trace.map(|t| t.phase(true));
         #[cfg(target_arch = "x86_64")]

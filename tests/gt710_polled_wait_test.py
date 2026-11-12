@@ -47,13 +47,7 @@ fn main(){for reaper in [0,1]{for backend in [4,5,abi::backend::GK208]{
   fixture=r'''
 #![allow(dead_code)] // Minimal model for the extracted scheduler functions.
 use std::{cell::{Cell,RefCell},collections::{BTreeMap,VecDeque},sync::atomic::{AtomicU64,Ordering}};
-mod tracing {pub mod providers {pub mod gpu {
- pub struct Counter;impl Counter {pub fn increment(&self){}}
- pub static GPU_WAIT_LONG:Counter=Counter;
- pub static GPU_WAIT_SILENT:Counter=Counter;
- pub static GPU_WAIT_SILENT_FOUND:Counter=Counter;
- pub static GPU_WAIT_SILENT_POLLED:Counter=Counter;
-}}}
+// COMPLETION_TIMING
 const EXAMINE_NS:u64=250_000_000;const POLL_NS:u64=250_000;const SPIN_POLL_NS:u64=1_000_000;const SPIN_POLL_PAUSE:u32=1;
 static EVENTS:AtomicU64=AtomicU64::new(0);static REAPER:AtomicU64=AtomicU64::new(1);
 static SENT:AtomicU64=AtomicU64::new(0);static WAKES:AtomicU64=AtomicU64::new(0);
@@ -61,7 +55,7 @@ fn wake_reaper(){WAKES.fetch_add(1,Ordering::AcqRel);}
 mod abi {pub mod backend {pub const SVGA3D_DX:u32=5;pub const GK208:u32=6;}}
 mod limits {pub const WATCHDOG_NS:u64=2_000_000_000;}
 thread_local! {static BACKEND:Cell<u32>=const{Cell::new(6)};static CLOCK:Cell<u64>=const{Cell::new(0)};static SLEEPS:Cell<u32>=const{Cell::new(0)};static POLLS:Cell<u32>=const{Cell::new(0)};static CORE:RefCell<Core>=RefCell::new(core());}
-mod dev {pub fn backend()->u32{crate::BACKEND.with(std::cell::Cell::get)} pub fn is_svga()->bool{backend()==5}}
+mod dev {pub fn backend()->u32{crate::BACKEND.with(std::cell::Cell::get)} pub fn is_svga()->bool{backend()==5} pub fn presentation_probe(_:bool)->Option<u64>{None}}
 mod syscall {pub fn check_signals_for_wait()->Option<()>{None}}
 mod time {pub fn get_ticks()->u64{crate::now_ns()/5_000_000}}
 enum SubmitPhase { AdmissionPoll, AdmissionInspect, AdmissionPause, AdmissionSleep }
@@ -82,7 +76,7 @@ mod per_cpu {pub fn preempt_count()->u32{1} pub fn preempt_disable(){} pub fn pr
 struct Device;impl Device{fn outstanding(&self)->usize{1}}
 struct Sub{published:bool,sent_ns:Option<u64>,progress_ns:Option<u64>}struct Sync{failed:bool,sent_ns:Option<u64>}
 #[derive(PartialEq)]enum CtxState{Live}
-struct Ctx{warm_catalogue:bool,state:CtxState,dropped:bool,warm:u32,warm_after:u64}
+struct Ctx{warm_catalogue:bool,state:CtxState,dropped:bool,warm:u32,warm_required:u32,warm_after:u64}
 struct Core{stalled:bool,dev:Option<Device>,subs:BTreeMap<u64,Sub>,syncs:BTreeMap<u64,Sync>,quarantined_at:Option<u64>,last_progress:u64,contexts:BTreeMap<u64,Ctx>,backlog:VecDeque<()>}
 fn catalogue_mask()->u32{31}
 fn core()->Core{Core{stalled:false,dev:Some(Device),subs:BTreeMap::new(),syncs:BTreeMap::new(),quarantined_at:None,last_progress:0,contexts:BTreeMap::new(),backlog:VecDeque::new()}}
@@ -122,7 +116,7 @@ fn main(){
  assert_eq!(SLEEPS.with(Cell::get),0,"bootstrap must keep progressing when kgpu is absent");
  assert_eq!(SENT.load(Ordering::Acquire),0);assert_eq!(WAKES.load(Ordering::Acquire),0);
 }
-'''.replace('// DEADLINE',deadline).replace('// WAIT',wait).replace('// NATIVE_PAUSE',item((ROOT/'kernel/src/gpu/arch.rs').read_text(),'pub(super) fn poll_pause('))
+'''.replace('// DEADLINE',deadline).replace('// COMPLETION_TIMING', f'#[path = "{ROOT / "kernel/src/gpu/completion_timing.rs"}"] mod completion_timing;').replace('// WAIT',wait).replace('// NATIVE_PAUSE',item((ROOT/'kernel/src/gpu/arch.rs').read_text(),'pub(super) fn poll_pause('))
   priority=['taskpolicy','-b'] if sys.platform=='darwin' else []
   with tempfile.TemporaryDirectory() as tmp:
    p=Path(tmp);(p/'wait.rs').write_text(fixture)

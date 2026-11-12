@@ -458,7 +458,6 @@ impl FutexTable {
                 break;
             };
             self.queued_on.remove(&waiter.tid);
-            crate::window::accounting::wake(3, key.1, waiter.tid, 1);
             crate::task::scheduler::wake_waitqueue_thread(waiter.tid);
             woken += 1;
         }
@@ -899,7 +898,6 @@ fn futex_wait_until(
     let Some(key) = futex_key(uaddr, private) else {
         return SyscallResult::Err(super::errno::ESRCH as u64);
     };
-    let _wait_site = crate::task::thread::WaitSite::enter(3, uaddr);
     let realtime = matches!(deadline, Deadline::Realtime(_));
 
     let prepared = with_table(|table| {
@@ -1052,7 +1050,6 @@ fn futex_wait(
     _val3: u32,
     private: bool,
 ) -> SyscallResult {
-    let _wait_site = crate::task::thread::WaitSite::enter(3, uaddr);
     // Arming handshake for the #584 oracle driver. This arm is compiled in only
     // where the oracle seam itself is; a production kernel ignores val3, honours
     // the probe's timeout and returns ETIMEDOUT, which is how the driver learns
@@ -1491,9 +1488,6 @@ pub fn futex_wake_for_thread_group(tg_id: u64, uaddr: u64, max_wake: u32) -> u32
 /// would (a word in a shared mapping is keyed by its page). `tg_id` keys the
 /// word if it cannot be resolved.
 pub fn futex_wake_cleared_tid(tg_id: u64, uaddr: u64) {
-    // This identifies a join word without guessing from its value. The exiting
-    // publisher's TID connects the earlier futex wait to the joined worker.
-    crate::window::accounting::wake(9, uaddr, 0, u32::MAX as u64);
     let key = futex_key(uaddr, false).unwrap_or((tg_id, uaddr));
     with_table(|table| table.wake(key, u32::MAX, FUTEX_BITSET_MATCH_ANY));
 }
