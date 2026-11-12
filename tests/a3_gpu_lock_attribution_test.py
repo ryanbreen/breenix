@@ -1,5 +1,6 @@
 """Check active GPU attribution and replacement sampling without a VM."""
 import json
+import signal
 from pathlib import Path
 import tempfile
 import unittest
@@ -35,7 +36,7 @@ class LockAttribution(unittest.TestCase):
         slots = (ROOT / 'kernel/src/window/gpu_command_trace.rs').read_text()
         slots = slots[slots.index('// Use one CAS'):slots.index('pub struct Commands')]
         run_rust(self, 'mod gpu_command_trace { use core::sync::atomic::{AtomicU64, Ordering::{Acquire,Release,Relaxed,AcqRel}};\n'
-                 + slots + '}\n' + trace + r'''
+                 + slots + '}\nmod gpu_core_trace {\n' + trace + '}\nuse gpu_core_trace::Commands;\n' + r'''
 #[test] fn pending_fence_and_doorbell_have_distinct_boundaries() {
  let ring = Commands::<3>::new();
  let command = ring.submit(100, 758, 995, 347, 0x207, 24, 19660, 921, 921);
@@ -72,8 +73,12 @@ class LockAttribution(unittest.TestCase):
                     self.done = False
                     self.stopped = False
                     self.reaped = False
+                    self.signals = []
                 def poll(self): return 0 if self.done else None
                 def terminate(self): self.stopped = True; self.done = True
+                def send_signal(self, sig):
+                    self.signals.append(sig)
+                    self.stopped = True; self.done = True
                 def wait(self, timeout=None): self.reaped = True; return 0
 
             def spawn(argv, **kwargs):
@@ -103,6 +108,8 @@ class LockAttribution(unittest.TestCase):
                     self.assertFalse(children[-1].stopped)
                     watcher.observe('\n')
                     self.assertTrue(children[-1].stopped and children[-1].reaped)
+                    self.assertEqual(children[-1].signals, [signal.SIGINT],
+                                     "SIGINT retains a partial macOS sample report at CASE END")
                     watcher.tick()
                     self.assertEqual(len(children), before + 3)
                     clock[0] += 1

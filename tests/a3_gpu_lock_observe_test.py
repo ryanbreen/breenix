@@ -48,10 +48,12 @@ class GpuLockObserve(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             serial = Path(directory) / 'serial.txt'
             class Child:
-                pid = 4242
-                def __init__(self): self.terminated = False; self.reaped = False
+                def __init__(self):
+                    self.pid = 4242 + len(children)
+                    self.terminated = False; self.reaped = False
                 def poll(self): return None if not self.terminated else 0
                 def terminate(self): self.terminated = True
+                def send_signal(self, sig): self.terminated = True
                 def wait(self, timeout=None): self.reaped = True; return 0
             children = []
             def spawn(argv, **kwargs):
@@ -71,6 +73,7 @@ class GpuLockObserve(unittest.TestCase):
                 watcher.observe('CASE window-manager recovery/stack-restored START\n')
                 watcher.observe('CASE window-manager focus/pair-click START\n')
                 self.assertEqual(len(children), 2)
+                watcher.observe('CASE window-manager recovery/stack-restored END\n')
                 watcher.tick(float('inf'))
                 self.assertTrue(all(c.terminated and c.reaped for c in children))
                 watcher.observe('CASE window-manager recovery/supervisor-restarts START\n')
