@@ -78,6 +78,46 @@ fn ordered_output_recovers_from_a_cpu_that_never_returns() {
     assert!(STEPS.load(Ordering::Relaxed) < 1000);
 }
 
+#[test]
+fn ordered_takeover_terminates_an_abandoned_line_before_same_writer_records() {
+    static STATE: State = State::new();
+    static CPU: AtomicU32 = AtomicU32::new(1);
+    static STEPS: AtomicUsize = AtomicUsize::new(0);
+    static WIRE: Mutex<Vec<u8>> = Mutex::new(Vec::new());
+    static OPEN: AtomicBool = AtomicBool::new(false);
+    enum Scripted {}
+    impl Port for Scripted {
+        type Writer = u8;
+        fn state() -> &'static State { &STATE }
+        fn cpu_tag() -> u32 { CPU.load(Ordering::Relaxed) }
+        fn counter() -> u64 {
+            let step = STEPS.fetch_add(1, Ordering::Relaxed);
+            assert!(step < 1000, "no waiter may spin forever");
+            step as u64
+        }
+        fn ticks(_: u64) -> u64 { 10 }
+        fn mask_interrupts() -> u64 { Self::counter(); 0 }
+        fn restore_interrupts(_: u64) {}
+        fn ready() -> bool { true }
+        fn write(byte: u8, _: &Ownership<Self>) { WIRE.lock().unwrap().push(byte); }
+        fn capture(_: u8) {}
+        // The same logical writer normally continues its open line.
+        fn lead(_: u8, _: &[u8]) -> &'static [u8] { b"" }
+        fn line_open() -> bool { OPEN.load(Ordering::Relaxed) }
+        fn wrote(_: u8, byte: u8) { OPEN.store(byte != b'\n', Ordering::Relaxed); }
+        fn markers() -> &'static [&'static str] { &[] }
+    }
+    let mut dead = Ownership::<Scripted>::acquire_ordered();
+    uart_owner::write::<Scripted, false>(1, b"abandoned", Kind::Plain, &mut dead);
+    core::mem::forget(dead);
+    for cpu in [2, 3] {
+        CPU.store(cpu, Ordering::Relaxed);
+        uart_owner::write::<Scripted, false>(1, b"intact\n", Kind::Plain,
+            &mut Ownership::acquire_ordered());
+    }
+    assert_eq!(&*WIRE.lock().unwrap(), b"abandoned\r\nintact\nintact\n");
+}
+
 thread_local! {
     static CPU: u32 = NEXT_CPU.fetch_add(1, Ordering::Relaxed);
     /// Bytes this thread has been cleared to write.
