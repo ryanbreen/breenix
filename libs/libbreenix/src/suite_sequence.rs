@@ -112,10 +112,10 @@ static STALL_AT_NS: AtomicU64 = AtomicU64::new(0);
 /// Cases reported so far and the suite's total, for STALLED.
 static REPORTED: AtomicU32 = AtomicU32::new(0);
 static TOTAL: AtomicU32 = AtomicU32::new(0);
-/// This suite's id, and the suites after it as (id, NUL-terminated binary path).
+/// This suite's id and the prepared exec commands for suites after it.
 static ID: OnceLock<String> = OnceLock::new();
-static AFTER: OnceLock<Vec<(String, Vec<u8>)>> = OnceLock::new();
-static HOSTKEYS: OnceLock<Vec<u8>> = OnceLock::new();
+struct Command { id: String, path: Vec<u8>, args: Vec<Vec<u8>> }
+static AFTER: OnceLock<Vec<Command>> = OnceLock::new();
 /// The number of suites in the sequence.
 static COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -135,15 +135,25 @@ pub fn is_member() -> bool {
 }
 
 fn configure(ids: &[String], index: usize) {
-    if let Some(method) = super::hostkey_method() {
-        let mut bytes = method.as_bytes().to_vec();
-        bytes.push(0);
-        let _ = HOSTKEYS.set(bytes);
-    }
+    let hostkeys = super::hostkey_method();
+    let desktop = std::fs::read_to_string(sequence_paths().list.with_file_name("desktop-suite")).ok();
     let _ = ID.set(ids[index].clone());
-    let _ = AFTER.set(ids[index + 1..].iter()
-        .map(|id| (id.clone(), std::format!("{}/suite-{id}\0", sequence_paths().executables.display()).into_bytes()))
-        .collect());
+    let _ = AFTER.set(ids[index + 1..].iter().map(|id| {
+        let suite = std::format!("{}/suite-{id}\0", sequence_paths().executables.display()).into_bytes();
+        let (path, mut args) = if desktop.as_deref().is_some_and(|name| name.trim_end() == id) {
+            let init = b"/sbin/init\0".to_vec();
+            (init.clone(), vec![init, b"sequence\0".to_vec(), suite])
+        } else {
+            (suite.clone(), vec![suite])
+        };
+        if let Some(method) = hostkeys {
+            args.push(b"--hostkeys\0".to_vec());
+            let mut method = method.as_bytes().to_vec();
+            method.push(0);
+            args.push(method);
+        }
+        Command { id: id.clone(), path, args }
+    }).collect());
     COUNT.store(ids.len() as u32, Ordering::Relaxed);
 }
 
@@ -284,10 +294,10 @@ fn hand_off() {
     arm(0);
     ACTIVE.store(false, Ordering::Relaxed);
     let after = AFTER.get().map_or(&[][..], Vec::as_slice);
-    if let Some((next, _)) = after.first() {
+    if let Some(next) = after.first() {
         if !reap_all() {
             let mut line = Line::new();
-            line.text("SUITE_SEQUENCE RESET ").text(next).text(" FAIL processes outlived SIGKILL");
+            line.text("SUITE_SEQUENCE RESET ").text(&next.id).text(" FAIL processes outlived SIGKILL");
             line.emit();
         }
         let default = Sigaction::default();
@@ -302,16 +312,15 @@ fn hand_off() {
         let none = 0u64;
         let _ = signal::sigprocmask(SIG_SETMASK, Some(&none), None);
     }
-    for (id, path) in after {
+    for command in after {
         // Exec returns only when the next suite could not start; try the one after it.
-        let mut argv = [path.as_ptr(), core::ptr::null(), core::ptr::null(), core::ptr::null()];
-        if let Some(method) = HOSTKEYS.get() {
-            argv[1] = b"--hostkeys\0".as_ptr();
-            argv[2] = method.as_ptr();
+        let mut argv = [core::ptr::null(); 6];
+        for (slot, arg) in argv.iter_mut().zip(&command.args) {
+            *slot = arg.as_ptr();
         }
-        let _ = process::execv(path, argv.as_ptr());
+        let _ = process::execv(&command.path, argv.as_ptr());
         let mut line = Line::new();
-        line.text("SUITE_SEQUENCE FAIL exec ").text(id);
+        line.text("SUITE_SEQUENCE FAIL exec ").text(&command.id);
         line.emit();
     }
     let mut line = Line::new();
