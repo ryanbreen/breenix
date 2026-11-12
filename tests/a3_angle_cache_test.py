@@ -1,5 +1,6 @@
 """Measure the production shader catalogue through the installed host GL stack."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -12,6 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 class AngleCache(unittest.TestCase):
     def test_real_catalogue_links_and_persistent_cache_is_used(self):
         with tempfile.TemporaryDirectory(prefix='a3-angle-check-') as directory:
+            directory = os.environ.get('A3_ANGLE_OUTPUT', directory)
             subprocess.run([sys.executable, str(ROOT / 'scripts/measure-angle-cache.py'),
                             '--output', directory], check=True)
             result = json.loads((Path(directory) / 'results.json').read_text())
