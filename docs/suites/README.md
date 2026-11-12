@@ -544,6 +544,25 @@ for a boot of one). `scripts/vigil-record.sh` passes a Mac boot's ordered list t
 which records the boot and its per-suite results over that boot's serial. The retired x86 QEMU
 gate runs one suite per boot.
 
+### Desktop suites in a sequence
+
+Design review check for [#2877](https://github.com/ryanbreen/breenix/issues/2877):
+trace the following orderings through entry, baseline preparation, runner completion
+or stall, service and mount teardown, and the next exec. These are acceptance
+requirements for the implementation, not a claim of sequence support in this revision.
+
+| Ordering | Required ownership and evidence |
+|---|---|
+| `gui-apps,time,files-io` | The kernel starts init as PID 1; init records the baseline before services; the GUI runner is a member; init hands off to time as PID 1. |
+| `time,gui-apps,files-io` | Time's PID 1 execs init; init resets against the original baseline before services; the GUI runner is a member; init hands off to files-io as PID 1. |
+
+For both traces, require one `SUITE_SEQUENCE READY gui-apps` from init after teardown,
+the existing memory and global-sweep contracts, and a stall path that cannot exec a
+suite from the child. Check the decisions for clock, network and mounts separately
+from RESET's file comparison. The implementation's deterministic checks must force
+both orderings, including a stalled member and a live SMB mount, before hardware
+acceptance. Keep files-io last and its disk checks intact.
+
 ## The panel
 
 As cases run, the suite draws libgfx's diagnostics panel in its scored form on the
