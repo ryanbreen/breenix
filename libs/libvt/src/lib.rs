@@ -490,6 +490,7 @@ pub struct TermEmu {
     pub scrollback: Scrollback,
     view_offset: usize,
     scroll_generation: u64,
+    screen_generation: u64,
     pub replies: VecDeque<u8>,
     title: String,
     osc: Vec<u8>,
@@ -512,13 +513,14 @@ impl TermEmu {
             ansi_params: [0; 16],
             ansi_len: 0, ansi_invalid: false, utf8: [0; 4], utf8_len: 0, utf8_expected: 0,
             ansi_param_idx: 0,
-            scrollback: Scrollback::default(), view_offset: 0, scroll_generation: 0,
+            scrollback: Scrollback::default(), view_offset: 0, scroll_generation: 0, screen_generation: 0,
             replies: VecDeque::new(),
             title: String::from("Terminal"), osc: Vec::new(),
         }
     }
 
     pub fn scroll_generation(&self) -> u64 { self.scroll_generation }
+    pub fn screen_generation(&self) -> u64 { self.screen_generation }
     pub fn bracketed_paste(&self) -> bool { self.bracketed_paste }
     pub fn cell(&self, x: usize, y: usize) -> &Cell { &self.cells[y * self.cols + x] }
     /// Rows above the live screen; 0 follows output.
@@ -602,6 +604,7 @@ impl TermEmu {
 
     fn alternate_screen_mode(&mut self, enabled: bool) {
         if enabled == self.alternate { return; }
+        self.screen_generation = self.screen_generation.wrapping_add(1);
         if enabled {
             let cursor = self.cursor_state();
             self.main_screen = Some(MainScreen {
@@ -838,6 +841,12 @@ impl TermEmu {
             b'D' => { let n = if p0 > 0 { p0 } else { 1 }; self.cursor_x = self.cursor_x.saturating_sub(n); }
             b'G' => { let col = if p0 > 0 { p0 - 1 } else { 0 }; self.cursor_x = col.min(self.cols - 1); }
             b'J' => {
+                if matches!(p0, 2 | 3)
+                    || (p0 == 0 && self.cursor_x == 0 && self.cursor_y == 0)
+                    || (p0 == 1 && self.cursor_x == self.cols - 1 && self.cursor_y == self.rows - 1)
+                {
+                    self.screen_generation = self.screen_generation.wrapping_add(1);
+                }
                 match p0 {
                     0 => {
                         for x in self.cursor_x..self.cols { *self.cell_mut(x, self.cursor_y) = Cell::blank(); }

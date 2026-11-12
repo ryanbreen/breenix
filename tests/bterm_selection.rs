@@ -33,6 +33,26 @@ fn drag_clamps_and_click_clears() {
 }
 
 #[test]
+fn tab_bar_release_preserves_selection_and_grid_drag_can_end_there() {
+    let (vt, g) = fixture();
+    let mut s = Selection::default();
+    s.press(18, 20, g, vt.size());
+    s.release(42, 20, g, vt.size());
+    let selected = s.text(&vt);
+    assert_eq!(selected.as_deref(), Some("bc d"));
+    s.release(42, g.y - 1, g, vt.size());
+    assert_eq!(s.text(&vt), selected);
+
+    s.press(26, 30, g, vt.size());
+    s.release(18, g.y - 1, g, vt.size());
+    assert_eq!(s.text(&vt).as_deref(), Some("bc de\nxy"));
+
+    s.press(10, 20, g, vt.size());
+    s.release(10, 20, g, vt.size());
+    assert_eq!(s.text(&vt), None);
+}
+
+#[test]
 fn vt_reports_scrolling_even_when_history_is_full() {
     let mut vt = libvt::TermEmu::new(2, 2);
     for _ in 0..1001 { vt.feed(b"x\r\n"); }

@@ -422,6 +422,10 @@ impl Supervisor {
                 entry.set(State::Stopped, now);
             }
         }
+        if !self.publish {
+            println!("[init] desktop unavailable; child supervisor exiting");
+            std::process::exit(1);
+        }
         self.notices.alert("[init] desktop unavailable; starting login terminals");
         crate::console_text_mode();
         crate::detach_console();
