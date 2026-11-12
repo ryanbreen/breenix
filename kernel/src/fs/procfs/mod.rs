@@ -44,6 +44,7 @@ mod net;
 mod pid_stat;
 mod pid_path;
 mod status_memory;
+mod memory_owners;
 
 use alloc::string::String;
 use alloc::vec::Vec;
@@ -117,6 +118,7 @@ pub enum ProcEntryType {
     Ext2,
     /// /proc/breenix/frames - allocated physical frames by allocation site
     Frames,
+    MemoryOwners,
     WindowPipeline,
     WindowPipelineFull,
     WindowReadback,
@@ -233,6 +235,7 @@ impl ProcEntryType {
             ProcEntryType::Ext2 => "ext2",
             ProcEntryType::Filesystems => "filesystems",
             ProcEntryType::Frames => "frames",
+            ProcEntryType::MemoryOwners => "memory-owners",
             ProcEntryType::WindowPipeline => "window-pipeline",
             ProcEntryType::WindowPipelineFull => "window-pipeline-full",
             ProcEntryType::WindowReadback => "window-readback",
@@ -322,6 +325,7 @@ impl ProcEntryType {
             ProcEntryType::Ext2 => "/proc/breenix/ext2",
             ProcEntryType::Filesystems => "/proc/breenix/filesystems",
             ProcEntryType::Frames => "/proc/breenix/frames",
+            ProcEntryType::MemoryOwners => "/proc/breenix/memory-owners",
             ProcEntryType::WindowPipeline => "/proc/breenix/window-pipeline",
             ProcEntryType::WindowPipelineFull => "/proc/breenix/window-pipeline-full",
             ProcEntryType::WindowReadback => "/proc/breenix/window-readback",
@@ -412,6 +416,7 @@ impl ProcEntryType {
             ProcEntryType::Ext2 => 202,
             ProcEntryType::Filesystems => 209,
             ProcEntryType::Frames => 203,
+            ProcEntryType::MemoryOwners => 227,
             ProcEntryType::WindowPipeline => 220,
             ProcEntryType::WindowPipelineFull => 221,
             ProcEntryType::WindowReadback => 224,
@@ -578,6 +583,7 @@ pub fn init() {
     procfs.entries.push(ProcEntry::new(ProcEntryType::Composites));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Ext2));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Frames));
+    procfs.entries.push(ProcEntry::new(ProcEntryType::MemoryOwners));
     procfs.entries.push(ProcEntry::new(ProcEntryType::Filesystems));
     procfs.entries.push(ProcEntry::new(ProcEntryType::WindowPipeline));
     procfs.entries.push(ProcEntry::new(ProcEntryType::WindowPipelineFull));
@@ -749,6 +755,7 @@ pub fn list_entries() -> Result<Vec<String>, i32> {
                     | ProcEntryType::InputReplay
                     | ProcEntryType::Filesystems
                     | ProcEntryType::Frames
+                    | ProcEntryType::MemoryOwners
                     | ProcEntryType::XhciTrace
                     | ProcEntryType::XhciCounters
                     | ProcEntryType::XhciPointers
@@ -1057,6 +1064,10 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::Ext2 => generate_ext2().map(String::into_bytes),
         ProcEntryType::Filesystems => crate::fs::ext2::filesystem_states().map(String::into_bytes).map_err(|_| -5),
         ProcEntryType::Frames => generate_frames().map(String::into_bytes),
+        ProcEntryType::MemoryOwners => {
+            require(Operation::Trace)?;
+            memory_owners::generate().map(String::into_bytes)
+        },
         ProcEntryType::InputLedger => text(crate::input::stream::ledger()),
         // syscall/fs.rs opens the live input::control descriptor for I/O.
         ProcEntryType::InputReplay => Err(-38),
@@ -1092,7 +1103,7 @@ pub fn read_entry(entry_type: ProcEntryType) -> Result<Vec<u8>, i32> {
         ProcEntryType::FbconCheck => crate::console::proc_fbcon_check().map(String::into_bytes),
         ProcEntryType::BreenixDir => {
             // Directory listing
-            text(String::from("testing\next2\nframes\nfilesystems\n"))
+            text(String::from("testing\next2\nframes\nmemory-owners\nfilesystems\n"))
         }
         ProcEntryType::BreenixTesting => {
             #[cfg(feature = "testing")]

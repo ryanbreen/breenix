@@ -55,7 +55,7 @@ impl Source for Tree {
  let mut small=Snapshot::<2>::new();walk(&Tree,1,17,&mut small);
  assert_eq!(small.rows().len(),2);assert!(small.overflow);
  small.clear();assert!(small.rows().is_empty());assert!(!small.overflow);
- small.push(Row{kind:"process",pid:18,..Row::EMPTY});assert_eq!(small.rows()[0].pid,18);
+ small.push(Row{kind:"process",pid:18,..Row::EMPTY});assert_eq!(small.rows()[0].pid,18);assert_eq!(small.rows()[0].name,[0;32]);
 }
 ''')
 

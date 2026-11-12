@@ -1700,6 +1700,54 @@ impl ProcessPageTable {
         frames
     }
 
+    /// Cold ownership observation under PROCESS_MANAGER, after any fork copy.
+    pub(crate) fn snapshot_ownership<const N: usize>(&self, pid: u64,
+        out: &mut crate::memory::ownership_snapshot::Snapshot<N>) {
+        use crate::memory::ownership_snapshot::{Entry, Row, Source, walk};
+        self.await_copy();
+        struct Tables<'a>(&'a ProcessPageTable);
+        impl Source for Tables<'_> {
+            fn entry(&self, table: u64, index: usize, level: u8) -> Entry {
+                // SAFETY: traversal starts at this owned root and descends only
+                // through its table leases, while PROCESS_MANAGER is held.
+                let raw = unsafe { descriptors(PhysAddr::new(table)) }[index].load(Ordering::Relaxed);
+                let entry = descriptor_entry(raw);
+                let flags = entry.flags();
+                let mut result = Entry::empty();
+                result.nonzero = raw != 0;
+                result.present = flags.contains(PageTableFlags::PRESENT);
+                if !result.present { return result; }
+                if level == 4 && !self.0.owned_root_slots.contains(index) { return result; }
+                let pa = entry.addr().as_u64();
+                if level > 1 && !flags.contains(PageTableFlags::HUGE_PAGE) {
+                    if self.0.tables.leases.iter().any(|l| l.frame().start_address().as_u64() == pa) {
+                        return Entry::table(pa);
+                    }
+                } else if flags.contains(PageTableFlags::USER_ACCESSIBLE) {
+                    return Entry::leaf(pa, flags.bits());
+                }
+                result
+            }
+        }
+        let root = self.level_4_frame.start_address().as_u64();
+        walk(&Tables(self), root, pid, out);
+        // Custody without a reachable parent is also evidence. Do not silently
+        // omit a detached lease or invent a level/VA for it (level 0).
+        for lease in &self.tables.leases {
+            if out.overflow { break; }
+            let pa = lease.frame().start_address().as_u64();
+            if out.rows().iter().any(|r| r.kind == "table" && r.root == root && r.pa == pa) { continue; }
+            let mut row = Row { kind: "detached-table", pid, root, pa, ..Row::EMPTY };
+            // SAFETY: this lease retains the table under PROCESS_MANAGER.
+            for entry in unsafe { descriptors(PhysAddr::new(pa)) } {
+                let raw = entry.load(Ordering::Relaxed);
+                row.nonzero += u16::from(raw != 0);
+                row.present += u16::from(descriptor_entry(raw).flags().contains(PageTableFlags::PRESENT));
+            }
+            out.push(row);
+        }
+    }
+
     /// Walk all mapped user pages in this page table
     ///
     /// This walks the entire page table hierarchy (L4 -> L3 -> L2 -> L1) and calls

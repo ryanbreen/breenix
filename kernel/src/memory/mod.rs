@@ -13,6 +13,7 @@ pub mod layout;
 pub mod paging;
 pub mod per_cpu_stack;
 pub mod process_memory;
+pub mod ownership_snapshot;
 pub mod slab;
 pub mod stack;
 pub mod table_reclaim;
