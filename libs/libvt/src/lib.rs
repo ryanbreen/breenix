@@ -489,6 +489,7 @@ pub struct TermEmu {
     ansi_param_idx: usize,
     pub scrollback: Scrollback,
     view_offset: usize,
+    scroll_generation: u64,
     pub replies: VecDeque<u8>,
     title: String,
     osc: Vec<u8>,
@@ -511,12 +512,13 @@ impl TermEmu {
             ansi_params: [0; 16],
             ansi_len: 0, ansi_invalid: false, utf8: [0; 4], utf8_len: 0, utf8_expected: 0,
             ansi_param_idx: 0,
-            scrollback: Scrollback::default(), view_offset: 0,
+            scrollback: Scrollback::default(), view_offset: 0, scroll_generation: 0,
             replies: VecDeque::new(),
             title: String::from("Terminal"), osc: Vec::new(),
         }
     }
 
+    pub fn scroll_generation(&self) -> u64 { self.scroll_generation }
     pub fn bracketed_paste(&self) -> bool { self.bracketed_paste }
     pub fn cell(&self, x: usize, y: usize) -> &Cell { &self.cells[y * self.cols + x] }
     /// Rows above the live screen; 0 follows output.
@@ -627,6 +629,7 @@ impl TermEmu {
 
     fn scroll_region(&mut self, top: usize, bottom: usize, count: usize, down: bool) {
         let n = count.min(bottom - top + 1);
+        if n != 0 { self.scroll_generation = self.scroll_generation.wrapping_add(1); }
         let start = top * self.cols;
         let end = (bottom + 1) * self.cols;
         let shift = n * self.cols;

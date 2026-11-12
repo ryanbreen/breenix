@@ -60,3 +60,11 @@ fn text_payload_round_trips_with_utf8_boundaries_and_limits() {
     for text in [String::new(),"a".repeat(257)] {assert!(encode(&Message::Text(text)).is_err());}
     assert!(decode(&[22,1,0,0,0,255]).is_err());
 }
+
+#[test]
+fn init_desktop_message_round_trips_and_unknown_opcode_is_refused() {
+    let message = Message::StartInitDesktop;
+    let frame = encode(&message).unwrap();
+    assert_eq!(decode(&frame[4..]).unwrap(), message);
+    assert!(decode(&[255]).is_err());
+}

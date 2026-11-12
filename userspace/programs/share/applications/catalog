@@ -1,7 +1,7 @@
 # Name, description, mode, and argument vector, separated by tabs.
 Terminal	Terminal emulator	gui	/usr/bin/bterm
 System Check	System health	gui	/usr/bin/bcheck
-Log Viewer	View system logs	gui	/usr/bin/bless
+Log Viewer	View system logs	terminal	/usr/bin/bless
 Bounce	Physics demo	gui	/usr/bin/bounce
 Breenix Log	System log viewer	gui	/usr/bin/blog
 Font Picker	Configure fonts	gui	/usr/bin/bfontpicker

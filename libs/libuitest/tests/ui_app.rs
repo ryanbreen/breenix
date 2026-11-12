@@ -42,6 +42,7 @@ fn exit_input_requires_targeted_delivery_and_clean_expected_exit() {
     // The client destroys its window in the callback: the durable delivery
     // record plus its supervised exit must both survive that ordering.
     assert!(exit_input_verdict("delivered", 12, 12, 0, 0).is_ok());
+    assert!(exit_input_verdict("delivered", 12, 12, 0x8b, 0x8b).is_ok());
     assert!(exit_input_verdict("delivered", 13, 12, 0, 0).is_err());
     assert!(exit_input_verdict("wm-handled", 12, 12, 0, 0).is_err());
     assert!(exit_input_verdict("missing", 0, 12, 0, 0).is_err());

@@ -1170,9 +1170,7 @@ fn launch(def: &Service, account: &Account, capture: bool) -> Result<(i32, Vec<O
         environment.push(format!("TERM={}", term));
     }
     if def.name == "bwm" {
-        if let Ok(path) = std::env::var("BREENIX_UI_CLOCK") {
-            environment.push(format!("BREENIX_UI_CLOCK={}", path));
-        }
+        environment.extend(crate::init_bwm_environment::bwm_environment(|key| std::env::var(key).ok()));
     }
     let environment: Vec<CString> =
         environment.into_iter().map(CString::new).collect::<Result<_, _>>().map_err(|_| "environment contains NUL")?;

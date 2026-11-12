@@ -17,6 +17,8 @@ mod guskit;
 mod demos;
 #[path = "guiapps_suite/guskit_collab.rs"]
 mod guskit_collab;
+#[path = "guiapps_suite/desktop.rs"]
+mod desktop;
 use breenix_suite::suite::{case, category, suite, Suite};
 
 static SUITE: Suite = suite("gui-apps", "GUI applications", &[
@@ -104,6 +106,14 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("three-peers", "Three peers converge", guskit_collab::three_peers).session(libuitest::supervisor::serve),
         case("undo-ownership", "Undo affects only its owner", guskit_collab::undo_ownership).session(libuitest::supervisor::serve),
         case("peer-leaves", "Peer and host departures are reported", guskit_collab::peer_leaves).session(libuitest::supervisor::serve),
+    ]),
+    category("desktop", "Desktop", &[
+        case("init-desktop", "Init starts the desktop", desktop::init_desktop).session(libuitest::supervisor::serve),
+        case("launch-each", "Launch every catalog entry", desktop::launch_each).session(libuitest::supervisor::serve),
+        case("copy-paste", "Copy and paste between applications", desktop::copy_paste).session(libuitest::supervisor::serve),
+        case("font-everywhere", "Font changes reach every application", desktop::font_everywhere).session(libuitest::supervisor::serve),
+        case("crash-isolated", "A crashed app leaves the desktop responsive", desktop::crash_isolated).session(libuitest::supervisor::serve),
+        case("close-all-baseline", "Closing apps restores the desktop baseline", desktop::close_all_baseline).session(libuitest::supervisor::serve),
     ]),
 ]).gui().defer_display();
 

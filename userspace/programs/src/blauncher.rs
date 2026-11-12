@@ -520,6 +520,7 @@ fn main() {
     };
 
     // Load display font (TTF) with bitmap fallback
+    let font_path = win.display_path().to_owned();
     let mut ttf_font: Option<CachedFont> = win.take_display_font();
     let font_size = if win.display_size() >= 6.0 { win.display_size() } else { 14.0 };
     if ttf_font.is_some() {
@@ -545,9 +546,16 @@ fn main() {
                 _ => break,
             }
         }
+        let window_id = win.id();
         win.dispatch(|delivered| {
             match delivered.event.clone() {
-                Event::KeyPress { ascii, keycode, .. } => {
+                Event::KeyPress { ascii, keycode, modifiers, .. } => {
+                    if modifiers.ctrl && keycode == 47 {
+                        if let Ok(bytes) = libclipboard::get(window_id) {
+                            query::paste(&mut state.query, &mut state.query_len, &mut state.selected, &bytes);
+                        }
+                        return breengel::Handled::Redraw;
+                    }
                     match keycode {
                         KEY_ESCAPE => {
                             process::exit(0);
@@ -586,6 +594,7 @@ fn main() {
                                 // Backspace
                                 if state.query_len > 0 {
                                     state.query_len -= 1;
+                                    while state.query_len > 0 && state.query[state.query_len] & 0xc0 == 0x80 { state.query_len -= 1; }
                                     state.selected = 0;
                                 }
                             }
@@ -660,7 +669,7 @@ fn main() {
         }
         let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
         let query = core::str::from_utf8(&state.query[..state.query_len]).unwrap_or("");
-        let mut value = node::value(&entries, &errors, query, state.selected, MAX_VISIBLE, has_focus);
+        let mut value = node::value(&entries, &errors, query, state.selected, MAX_VISIBLE, has_focus, &font_path, font_size);
         value["error"] = serde_json::json!(state.error);
         win.set_tree(breengel::tree::Tree { root: breengel::tree::Node {
             key: "apps".into(), parent: None, role: breengel::tree::Role::List,

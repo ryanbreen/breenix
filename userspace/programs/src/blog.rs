@@ -280,7 +280,7 @@ fn render(
     text.finish(fb, fonts);
 }
 
-fn publish_tree(win: &mut Window, tabs: &[LogTab], selected: usize, visible: usize) {
+fn publish_tree(win: &mut Window, tabs: &[LogTab], selected: usize, visible: usize, fonts: &FontState) {
     use breengel::tree::{Flag, Node, Role, Tree};
     let tab = &tabs[selected];
     let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
@@ -290,7 +290,7 @@ fn publish_tree(win: &mut Window, tabs: &[LogTab], selected: usize, visible: usi
         value: node::lines_view(&tab.tail, tab.view.offset, visible, tab.view.matched), bounds, clip: bounds, flags: flags.clone(),
     }, children: vec![Node {
         key: "status".into(), parent: Some("lines".into()), role: Role::Status, name: "Status".into(),
-        value: node::status_view(selected, &tab.path, tab.view.follow, tab.is_open(), &tab.view.query, tab.view.matched, tab.view.matches, &tab.tail), bounds, clip: bounds, flags,
+        value: node::status_view(selected, &tab.path, tab.view.follow, tab.is_open(), &tab.view.query, tab.view.matched, tab.view.matches, &tab.tail, win.mono_path(), fonts.size), bounds, clip: bounds, flags,
     }] });
 }
 
@@ -426,7 +426,7 @@ fn main() {
 
 
     render(&mut win, &tabs, &tab_bar, &theme, &mut fonts);
-    publish_tree(&mut win, &tabs, tab_bar.selected(), visible_lines);
+    publish_tree(&mut win, &tabs, tab_bar.selected(), visible_lines, &fonts);
     match win.present() {
         Ok(()) => println!("[blog] first frame presented: {}x{}", win.width(), win.height()),
         Err(e) => println!("[blog] first frame present failed: {}", e),
@@ -577,7 +577,7 @@ fn main() {
 
         if needs_redraw {
             render(&mut win, &tabs, &tab_bar, &theme, &mut fonts);
-            publish_tree(&mut win, &tabs, tab_bar.selected(), visible_lines);
+            publish_tree(&mut win, &tabs, tab_bar.selected(), visible_lines, &fonts);
             let _ = win.present();
         }
 

@@ -23,7 +23,7 @@ pub fn results_truthful() -> CaseResult {
             && rows[4]["name"] == "exit127" && rows[4]["verdict"] == "exit 127"
     })?;
     t.wait_node("totals", |v| v["passed"] == 1 && v["failed"] == 4 && v["done"] == 5 && v["pending"] == 0)?;
-    t.key_exit(1, 1)?;
+    t.key_exit(1, 1 << 8)?;
     Ok(t.finish()?)
 }
 
@@ -42,7 +42,7 @@ pub fn hang() -> CaseResult {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},
         other => return Err(format!("timed-out child still present at {path}: {other:?}").into()),
     }
-    t.key_exit(1, 1)?;
+    t.key_exit(1, 1 << 8)?;
     Ok(t.finish()?)
 }
 
@@ -50,7 +50,7 @@ pub fn forged_output() -> CaseResult {
     let mut t = launch("forged", &format!("forged test 5000 {FIXTURE} forged\n"))?;
     t.wait_node("rows", |v| v["rows"][0]["name"] == "forged" && v["rows"][0]["state"] == "done" && v["rows"][0]["verdict"] == "exit 1")?;
     t.wait_node("totals", |v| v["passed"] == 0 && v["failed"] == 1 && v["done"] == 1 && v["pending"] == 0)?;
-    t.key_exit(1, 1)?;
+    t.key_exit(1, 1 << 8)?;
     Ok(t.finish()?)
 }
 
@@ -58,7 +58,7 @@ pub fn totals_exit() -> CaseResult {
     let mut t = launch("totals", &format!("pass test 5000 {FIXTURE} pass\nfail test 5000 {FIXTURE} exit 1\n"))?;
     t.wait_node("rows", |v| v["rows"].as_array().is_some_and(|r| r.len() == 2 && r[0]["verdict"] == "pass" && r[1]["verdict"] == "exit 1" && r.iter().all(|row| row["state"] == "done")))?;
     t.wait_node("totals", |v| v["passed"] == 1 && v["failed"] == 1 && v["done"] == 2 && v["pending"] == 0)?;
-    t.key_exit(1, 1)?;
+    t.key_exit(1, 1 << 8)?;
     Ok(t.finish()?)
 }
 
@@ -80,7 +80,7 @@ pub fn responsive() -> CaseResult {
     t.scroll(-1)?;
     t.wait_node("rows", |v| v["offset"].as_i64().is_some_and(|n| Some(n) > offset.get())
         && v["rows"][30]["state"] == "running" && v["rows"][30]["pid"] == pid.get())?;
-    t.key_exit(1, 1)?;
+    t.key_exit(1, 1 << 8)?;
     let path = format!("/proc/{}/stat", pid.get());
     match std::fs::read_to_string(&path) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {},

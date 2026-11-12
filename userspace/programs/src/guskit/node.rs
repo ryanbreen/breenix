@@ -16,10 +16,12 @@ pub struct Status<'a> {
     pub tool: &'a str, pub size: &'a str, pub color: [u8; 3],
     pub undo: usize, pub redo: usize, pub dirty: bool,
     pub file: Option<&'a str>, pub message: &'a str,
+    pub font_path: &'a str, pub font_size: f32,
 }
 pub fn status(bounds: [i64; 4], s: &Status<'_>) -> Node {
     node("status", Role::Status, bounds, json!({"tool":s.tool,"size":s.size,"color":s.color,
-        "undo":s.undo,"redo":s.redo,"dirty":s.dirty,"file":s.file,"message":s.message}))
+        "undo":s.undo,"redo":s.redo,"dirty":s.dirty,"file":s.file,"message":s.message,
+        "font":{"path":s.font_path,"size":s.font_size}}))
 }
 pub fn tools(bounds: [[i64; 4]; 7], selected: &str) -> Vec<Node> {
     ["pencil", "brush", "line", "rectangle", "circle", "fill", "eraser"].iter().enumerate().map(|(i, name)| {

@@ -392,16 +392,32 @@ impl Window {
         self.animating || self.timers.next_deadline() <= stamp.now_ns / 1_000_000
     }
 
+    // Failure-only context: preserve the errno while distinguishing an event
+    // timeout from a pending GPU publication failure.
+    fn read_error(&self, path: &str, block: bool, timeout_ns: u64, error: Error) -> Error {
+        if path == "idle-read-events" && timeout_ns != u64::MAX
+            && matches!(error, Error::Os(Errno::ETIMEDOUT)) {
+            return error;
+        }
+        let at_ns = libbreenix::time::now_monotonic().map(|t| t.as_nanos());
+        eprintln!("WINDOW_READ_ERROR pid={} window={} path={path} participant={} clock_configured={} next_timer_ms={} animating={} block={block} timeout_ns={timeout_ns} at_ns={} error={error}",
+            std::process::id(), self.id, self.clock_participant.is_some(), crate::clock::configured(),
+            self.timers.next_deadline(), self.animating,
+            at_ns.map_or_else(|e| format!("unavailable:{e}"), |ns| ns.to_string()));
+        error
+    }
+
     fn read(&mut self, block: bool, timeout_ns: u64) -> Result<Vec<abi::WindowEvent>, Error> {
         // Complete any prior asynchronous publication before dispatch can mark
         // new timer work dirty.
         if self.animating || self.timers.next_deadline() != u64::MAX || self.clock_redraw {
-            self.finish_pending()?;
+            self.finish_pending().map_err(|e| self.read_error("finish-pending", block, timeout_ns, e))?;
         }
         let mut raw = vec![<abi::WindowEvent as abi::Plain>::ZERO; 64];
         if self.clock_participant.is_none() {
             if self.timers.next_deadline() == u64::MAX && !self.animating {
-                let n = window::read_events(self.id, &mut raw, block, timeout_ns)?;
+                let n = window::read_events(self.id, &mut raw, block, timeout_ns)
+                    .map_err(|e| self.read_error("idle-read-events", block, timeout_ns, e))?;
                 raw.truncate(n);
                 return Ok(raw);
             }
@@ -411,7 +427,7 @@ impl Window {
             let n = match window::read_events(self.id, &mut raw, block, timeout) {
                 Ok(n) => n,
                 Err(Error::Os(Errno::ETIMEDOUT)) => 0, // The timer wait expired normally.
-                Err(error) => return Err(error),
+                Err(error) => return Err(self.read_error("timer-read-events", block, timeout, error)),
             };
             self.ui_stamp = crate::clock::stamp();
             raw.truncate(n);
@@ -423,7 +439,8 @@ impl Window {
             let stamp = crate::clock::stamp();
             let changed = stamp.epoch != self.ui_stamp.epoch;
             self.ui_stamp = stamp;
-            let n = window::read_events(self.id, &mut raw, false, 0)?;
+            let n = window::read_events(self.id, &mut raw, false, 0)
+                .map_err(|e| self.read_error("participant-read-events", false, 0, e))?;
             if n != 0 || changed || !block {
                 raw.truncate(n);
                 return Ok(raw);
