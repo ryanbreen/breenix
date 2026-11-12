@@ -1239,11 +1239,15 @@ fn generate_frames() -> Result<String, i32> {
         text.push_str(&crate::gk208::resource::ownership_census());
     }
     let (pending, parked) = crate::task::process_task::reclaim_queue_lengths();
+    let outstanding = crate::process::with_process_manager(|manager| {
+        manager.outstanding_retirement_receipts()
+    }).ok_or(-3)?;
     let _ = write!(
         text,
         "tables recorded={} returned={} lost={}\n\
          roots retired={} no_proof={} no_arch={} terminated={} undecided={} mid_retire={}\n\
          receipts pending={} parked={}\n\
+         reclaim outstanding={}\n\
          boot settled={}\n",
         teardown::PT_TABLE_FRAMES_RECORDED.aggregate(),
         teardown::PT_TABLE_FRAMES_RETURNED.aggregate(),
@@ -1256,6 +1260,7 @@ fn generate_frames() -> Result<String, i32> {
         teardown::PT_ROOT_DROPPED_MID_RETIRE.aggregate(),
         pending,
         parked,
+        outstanding,
         crate::boot::settled::settled() as u8
     );
     Ok(text)

@@ -18,9 +18,11 @@
 //! - Reclamation is deferred: an exited process's tables, and the image an exec
 //!   replaced, go back through reclaim receipts, and exited threads' stacks from
 //!   an idle CPU. So each sample then waits, up to [`SETTLE_MS`], until no receipt is
-//!   queued or parked and the free count has held still for [`SETTLE_STEP_MS`];
+//!   outstanding (including a receipt owned by the drain) and the free count
+//!   has held still for [`SETTLE_STEP_MS`];
 //!   `receipts` is what was still queued when it stopped waiting, and `settle_ms`
-//!   how long it waited, both waits together.
+//!   how long it waited, both waits together. The proc row `reclaim outstanding`
+//!   includes receipts not yet published and receipts temporarily removed by a drain.
 //! - Live unmap also frees empty page tables. In #2729 the PID-1 runner's malloc
 //!   mapped each block; empty tables for visited 2 MiB windows stayed until exit,
 //!   retaining 29-35 frames per BreenGL run. The shared unmap path now reclaims
@@ -53,7 +55,7 @@ pub const MEMORY_RECLAIM_ALLOWANCE_PAGES: u64 = 48;
 
 /// The longest a sample waits for reclamation to finish.
 pub const SETTLE_MS: u64 = 5000;
-/// How long the free count must hold still, with no receipt queued, for a sample.
+/// How long the free count must hold still, with no receipt outstanding, for a sample.
 pub const SETTLE_STEP_MS: u64 = 100;
 /// The longest a sample waits first for boot's own work to finish: the kernel's
 /// `boot settled=1` row, which on bare-metal x86-64 follows the tick census's
@@ -103,6 +105,7 @@ pub struct Sample {
     heap_free_kb: u64,
     owners: Vec<(String, u64)>,
     receipts: u64,
+    reclaim_outstanding: u64,
     settle_ms: u64,
 }
 
@@ -120,6 +123,7 @@ fn read() -> Result<Sample, String> {
         .map_err(|error| std::format!("reading /proc/breenix/frames failed: {error}"))?;
     let mut owners = Vec::new();
     let mut receipts = None;
+    let mut reclaim_outstanding = None;
     for line in frames.lines() {
         let words: Vec<&str> = line.split_whitespace().collect();
         match words.as_slice() {
@@ -128,6 +132,10 @@ fn read() -> Result<Sample, String> {
                 let count = |word: &str, key: &str| word.strip_prefix(key).and_then(|n| n.parse::<u64>().ok());
                 receipts = count(pending, "pending=").zip(count(parked, "parked=")).map(|(a, b)| a + b);
             }
+            ["reclaim", outstanding] => {
+                reclaim_outstanding = outstanding.strip_prefix("outstanding=")
+                    .and_then(|n| n.parse::<u64>().ok());
+            }
             _ => {}
         }
     }
@@ -135,7 +143,8 @@ fn read() -> Result<Sample, String> {
         return Err(String::from("/proc/breenix/frames has no owner rows"));
     }
     let receipts = receipts.ok_or("/proc/breenix/frames has no receipts row")?;
-    Ok(Sample { free, ownership, heap_free_kb, owners, receipts, settle_ms: 0 })
+    let reclaim_outstanding = reclaim_outstanding.ok_or("/proc/breenix/frames has no reclaim outstanding row")?;
+    Ok(Sample { free, ownership, heap_free_kb, owners, receipts, reclaim_outstanding, settle_ms: 0 })
 }
 
 /// Give back the free blocks the C library's allocation cache keeps, so a sample
@@ -173,7 +182,9 @@ pub fn settled() -> Result<Sample, String> {
         let _ = time::sleep_ms(SETTLE_STEP_MS);
         release_allocation_cache();
         let now = read()?;
-        let still = now.receipts == 0 && last.receipts == 0 && now.free == last.free;
+        let still = now.receipts == 0 && last.receipts == 0
+            && now.reclaim_outstanding == 0 && last.reclaim_outstanding == 0
+            && now.free == last.free;
         last = now;
         if still {
             last.settle_ms = monotonic_ms().saturating_sub(begun);
@@ -183,7 +194,7 @@ pub fn settled() -> Result<Sample, String> {
 }
 
 impl Sample {
-    /// Failure-only export of the exact snapshot paired with this reading.
+    /// Export the exact snapshot paired with this reading.
     pub fn ownership_detail(&self) -> String { self.ownership.detail() }
 
     /// `SUITE <id> MEMORY <when> ...`.

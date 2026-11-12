@@ -1112,6 +1112,12 @@ impl Process {
         self.retirement_receipts = self.retirement_receipts.saturating_add(1);
     }
 
+    /// Resources still owed by this row, including receipts a drain has removed
+    /// from its queue but has not finished reclaiming.
+    pub(crate) fn outstanding_retirement_receipts(&self) -> u32 {
+        self.retirement_receipts
+    }
+
     /// Settle one outstanding retirement receipt for this row, latching
     /// `retired` when the last one is gone.
     ///

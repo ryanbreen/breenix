@@ -1391,14 +1391,14 @@ impl Suite {
             if self.gui { crate::suite_stage::memory_owners("after"); }
             let (line, reclaimed) = memory_record::verdict(self.id, before.as_ref(), after.as_ref());
             emit(&line);
-            if !reclaimed {
-                for (when, sample) in [("before", before.as_ref()), ("after", after.as_ref())] {
-                    if let Some(sample) = sample {
-                        for row in sample.ownership_detail().lines() {
-                            emit(&std::format!("SUITE_MEMORY_OWNERS {} {when} {row}", self.id));
-                        }
+            for (when, sample) in [("before", before.as_ref()), ("after", after.as_ref())] {
+                if let Some(sample) = sample {
+                    for row in sample.ownership_detail().lines() {
+                        emit(&std::format!("SUITE_MEMORY_OWNERS {} {when} {row}", self.id));
                     }
                 }
+            }
+            if !reclaimed {
                 memory_failure_detail(self.id);
             }
             reclaimed
