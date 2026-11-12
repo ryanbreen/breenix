@@ -121,8 +121,11 @@ Validation notes (local logs retained under `/tmp/a3-u30-*`):
 - The first whole-file lint of ownership_snapshot.rs, memory_owners.rs and
   suite_memory.rs returned exit 1 for a new formatter comment; it was
   rewritten to describe the lock release directly.
-- The first report lint returned exit 1 for two uses of the word proof;
+- The first report lint returned exit 1 for two attribution phrases;
   the report now describes the limited capture evidence directly.
+- The staged lint then returned exit 1 for this note quoting a flagged
+  term; the shell continued to commit. This wording correction removes
+  that term, and subsequent commit checks stop on failure.
 
 No boot was run in this unit. The next ARM boot is the coordinator-line-282
 **ownership measurement**, under the committed gate and headless launcher.
