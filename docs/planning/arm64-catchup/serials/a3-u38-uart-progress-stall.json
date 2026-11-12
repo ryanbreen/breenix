@@ -1,0 +1,72 @@
+{
+  "unit": "a3-u38-uart-progress-stall",
+  "base": "bc808a666e1c48e169995841287ed1826ac22c16",
+  "origin_main": "b2ebd47d1d3b8a3e682b33e18818e4c89534fb18",
+  "check_commit": "238d3969",
+  "coordinator": "ARM ledger line 343; fork disposition at line 344 belongs to a separate unit",
+  "red": {
+    "case": "ordered_takeover_terminates_an_abandoned_line_before_same_writer_records",
+    "result": "FAIL at 1000 scripted steps on unchanged UART implementation; ordinary waiter cannot recover"
+  },
+  "green": {
+    "uart_owner": "10/10 PASS, including the retained never-returning-owner reproduction",
+    "serial_normal_order": "2/2 PASS: exact wire for progress every 20 ms beyond STALL_NS total or return after 50 ms; one terminated abandoned prefix followed by two intact records after permanent stall",
+    "serial_terminal_replay": "1/1 PASS"
+  },
+  "design": [
+    "Ordinary writers join the ticket queue rather than retrying opportunistic acquisition",
+    "Stall observation counts transmitted bytes, excluding revoked attempts",
+    "Serving ticket and abandoned-line flag advance atomically; next payload terminates an open abandoned line even for the same writer",
+    "Unused boundary follows a guard that releases without writing; existing crossed-record recovery remains"
+  ],
+  "builds": {
+    "profile": "release",
+    "CARGO_BUILD_JOBS": 4,
+    "taskpolicy": "-b",
+    "arm64": {
+      "command": "cargo build --release --target aarch64-breenix-kernel.json -Z build-std=core,alloc -Z build-std-features=compiler-builtins-mem -p kernel --bin kernel-aarch64",
+      "exit": 0,
+      "new_breenix_warnings": 0,
+      "existing_warning": "Pinned Rust core NEON future-incompatibility report, 4978 entries entirely in the toolchain; tracked in #2353 and #1792. Target and toolchain files unchanged."
+    },
+    "x86": {
+      "command": "cargo build --release --target x86_64-unknown-none -p kernel --bin kernel",
+      "exit": 0,
+      "warnings": 0,
+      "errors": 0
+    }
+  },
+  "claim_lint": [
+    {
+      "command": "python3 scripts/claim-lint.py --base bc808a66",
+      "exit": 0
+    },
+    {
+      "command": "python3 scripts/claim-lint.py",
+      "exit": 0
+    },
+    {
+      "command": "python3 scripts/claim-lint.py --commit-msg /tmp/a3-u38-check-msg.txt",
+      "exit": 0
+    },
+    {
+      "command": "python3 scripts/claim-lint.py --commit-msg /tmp/a3-u38-fix-msg.txt",
+      "exit": 0
+    }
+  ],
+  "logs_sha256": {
+    "a3-u38-uart-red.log": "25e4eae48c0f7870e378c2ed2d41b127e12d3a3a91b5cd96886efd3714800bf3",
+    "a3-u38-uart-green.log": "2fdcedf53549f15d45be7648345dec5e806f5f70ada4962b1565a9ea78196e08",
+    "a3-u38-order.log": "dbf00d8bd4057878b7f4d150caf8ccf9ee8a0e1849d3c4200c76783a4f404a78",
+    "a3-u38-terminal-replay.log": "21995b0c6bbafd6fa3b1d24e8d2b4f728fe07755d997dfdf000fedcb49d94b88",
+    "a3-u38-arm-build.log": "2493563433f5522273dc8938188ccfe2c3ee5cba25ca20fd86bf357a75fc8799",
+    "a3-u38-x86-build.log": "ffb43b61e8ed7907a8c4176e6d72ff8389cf38535dad2836dfef839e7d63efe0",
+    "a3-u38-arm-future-incompat.log": "88e29d3ce3148eeb24cd74c418a6f18862e327802773422a3cfc594c4d26033f"
+  },
+  "artifacts_sha256": {
+    "target/aarch64-breenix-kernel/release/kernel-aarch64": "5b130ba906c4cb8ec571510c49388385a17830fc360a7e741b6a79d6ec4abc12",
+    "target/x86_64-unknown-none/release/kernel": "4e6d66dea405ef6878f932dc5afb6f76f15708b6f08a58ec53675379abd45582"
+  },
+  "boots": 0,
+  "acceptance": "Separate acceptance unit owns final-head guest proofs and landing after the fork review fixes. No PR created or merge performed."
+}

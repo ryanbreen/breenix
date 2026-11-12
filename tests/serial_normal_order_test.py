@@ -1,61 +1,137 @@
-"""A paused ordinary UART record must finish without leaving an abandoned prefix."""
+"""Live UART owners keep exact records; stalled owners leave a terminated line."""
 from pathlib import Path
-import os,subprocess,tempfile,unittest
-ROOT=Path(__file__).resolve().parents[1]
+import os
+import subprocess
+import tempfile
+import unittest
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
 class NormalOrder(unittest.TestCase):
- def test_stalled_request_and_exit_are_each_one_complete_line(self):
-  source=(ROOT/'kernel/src/uart_owner.rs').read_text()
-  normal='Ownership::acquire_ordered()' if 'pub fn acquire_ordered()' in source else 'Ownership::acquire()'
-  harness=(ROOT/'tests/uart_owner.rs').read_text()
-  for name in ['stage_lines','uart_owner']:
-   harness=harness.replace('../kernel/src/'+name+'.rs',str(ROOT/'kernel/src'/(name+'.rs')))
-  harness+=r'''
-static ORDER_STATE:State=State::new();
-static ORDER_STALLED:AtomicBool=AtomicBool::new(false);
-static ORDER_RELEASE:AtomicBool=AtomicBool::new(false);
-static ORDER_TRIES:AtomicUsize=AtomicUsize::new(0);
-static ORDER_TICKS:std::sync::atomic::AtomicU64=std::sync::atomic::AtomicU64::new(0);
-enum OrderedTest{}
-impl Port for OrderedTest{
- type Writer=u8;
- fn state()->&'static State{&ORDER_STATE}
- fn cpu_tag()->u32{Test::cpu_tag()}
- fn counter()->u64{ORDER_TICKS.fetch_add(1_000_000,Ordering::Relaxed)}
- fn ticks(ns:u64)->u64{Test::ticks(ns)}
- fn mask_interrupts()->u64{if SECOND.with(Cell::get){ORDER_TRIES.fetch_add(1,Ordering::Relaxed);}0}
- fn restore_interrupts(_:u64){}
- fn ready()->bool{
-  let n=READIED.with(|n|{n.set(n.get()+1);n.get()});
-  if !SECOND.with(Cell::get)&&n==12{
-   ORDER_STALLED.store(true,Ordering::Release);
-   wait_for(||ORDER_RELEASE.load(Ordering::Acquire));
-  }
-  true
- }
- fn write(byte:u8,owner:&Ownership<Self>){let _=owner;WIRE.lock().unwrap().push(byte);if SECOND.with(Cell::get){SECOND_WROTE.fetch_add(1,Ordering::Release);}}
- fn capture(byte:u8){Test::capture(byte)}
- fn lead(writer:u8,unit:&[u8])->&'static[u8]{Test::lead(writer,unit)}
- fn line_open()->bool{Test::line_open()}
- fn wrote(writer:u8,byte:u8){Test::wrote(writer,byte)}
- fn markers()->&'static[&'static str]{Test::markers()}
+    def test_progress_and_stall_wires(self):
+        harness = (ROOT / 'tests/uart_owner.rs').read_text()
+        for name in ['stage_lines', 'uart_owner']:
+            harness = harness.replace('../kernel/src/' + name + '.rs',
+                                      str(ROOT / 'kernel/src' / (name + '.rs')))
+        harness += r'''
+static ORDER_STATE: State = State::new();
+static ORDER_TICKS: AtomicUsize = AtomicUsize::new(0);
+static ORDER_MODE: AtomicUsize = AtomicUsize::new(0);
+const REQUEST: &[u8] = b"SUITE window-manager HOSTPOINTER focus/ctrl-c seq=409 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0\n";
+const EXIT: &[u8] = b"[signal] Process 381 terminated by signal 9\n";
+const PREFIX: usize = 11;
+thread_local! {
+    static RETURNING: std::cell::RefCell<Option<(Ownership<OrderedTest>, usize)>> =
+        const { std::cell::RefCell::new(None) };
 }
-fn normal()->Ownership<OrderedTest>{@NORMAL@}
-#[test]fn ordinary_uart_wait_does_not_abandon_the_hostpointer_prefix(){
- let _one=SERIAL.lock().unwrap_or_else(|e|e.into_inner());WIRE.lock().unwrap().clear();OPEN.store(0,Ordering::Relaxed);SECOND_WROTE.store(0,Ordering::Relaxed);
- let request=b"SUITE window-manager HOSTPOINTER focus/ctrl-c seq=409 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0\n";
- let exit=b"[signal] Process 381 terminated by signal 9\n";
- let one=thread::spawn(move||uart_owner::write::<OrderedTest,false>(1,request,Kind::Line,&mut normal()));
- wait_for(||ORDER_STALLED.load(Ordering::Acquire));
- let two=thread::spawn(move||{SECOND.with(|s|s.set(true));uart_owner::write::<OrderedTest,false>(2,exit,Kind::Line,&mut normal());});
- // Force the competing writer beyond the old takeover budget without a wall-clock race.
- wait_for(||ORDER_TRIES.load(Ordering::Acquire)>=1000||SECOND_WROTE.load(Ordering::Acquire)>0);
- ORDER_RELEASE.store(true,Ordering::Release);one.join().unwrap();two.join().unwrap();
- let mut expected=request.to_vec();expected.extend_from_slice(exit);
- assert_eq!(*WIRE.lock().unwrap(),expected,"a normal exit split the request and left a malformed prefix before replay");
+enum OrderedTest {}
+impl Port for OrderedTest {
+    type Writer = u8;
+    fn state() -> &'static State { &ORDER_STATE }
+    fn cpu_tag() -> u32 { Test::cpu_tag() }
+    fn counter() -> u64 {
+        let step = ORDER_TICKS.fetch_add(1, Ordering::Relaxed);
+        assert!(step < 10000, "no waiter may spin forever");
+        // The waiter advances a scripted millisecond clock. Interleave the
+        // existing owner's production writes, without host scheduling or sleeps.
+        let mode = ORDER_MODE.load(Ordering::Relaxed);
+        if (mode == 1 && step % 20 == 19) || (mode == 2 && step == 49) {
+            RETURNING.with(|slot| {
+                let mut returning = slot.borrow_mut();
+                if let Some((owner, at)) = returning.as_mut() {
+                    let end = if mode == 1 { *at + 1 } else { REQUEST.len() };
+                    uart_owner::write::<OrderedTest, false>(
+                        1, &REQUEST[*at..end], Kind::Plain, owner);
+                    *at = end;
+                    if end == REQUEST.len() { *returning = None; }
+                }
+            });
+        }
+        step as u64 * 1_000_000
+    }
+    fn ticks(ns: u64) -> u64 { ns }
+    fn mask_interrupts() -> u64 { 0 }
+    fn restore_interrupts(_: u64) {}
+    fn ready() -> bool { true }
+    fn write(byte: u8, _: &Ownership<Self>) { WIRE.lock().unwrap().push(byte); }
+    fn capture(byte: u8) { Test::capture(byte) }
+    fn lead(writer: u8, unit: &[u8]) -> &'static [u8] { Test::lead(writer, unit) }
+    fn line_open() -> bool { Test::line_open() }
+    fn wrote(writer: u8, byte: u8) { Test::wrote(writer, byte) }
+    fn markers() -> &'static [&'static str] { Test::markers() }
 }
-'''.replace('@NORMAL@',normal)
-  with tempfile.TemporaryDirectory(prefix='serial-normal-') as directory:
-   path=Path(directory);(path/'check.rs').write_text(harness)
-   subprocess.run(['taskpolicy','-b',os.environ.get('RUSTC','rustc'),'--edition=2021','--test','-Dwarnings',str(path/'check.rs'),'-o',str(path/'check')],check=True)
-   subprocess.run([str(path/'check'),'--exact','ordinary_uart_wait_does_not_abandon_the_hostpointer_prefix'],check=True)
-if __name__=='__main__':unittest.main()
+
+#[test]
+fn progressing_or_returning_owner_preserves_the_exact_wire() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    for mode in [1, 2] {
+        WIRE.lock().unwrap().clear();
+        OPEN.store(0, Ordering::Relaxed);
+        ORDER_TICKS.store(0, Ordering::Relaxed);
+        ORDER_MODE.store(0, Ordering::Relaxed);
+        let first = thread::spawn(|| {
+            let mut owner = Ownership::<OrderedTest>::acquire_ordered();
+            uart_owner::write::<OrderedTest, false>(
+                1, &REQUEST[..PREFIX], Kind::Line, &mut owner);
+            owner
+        }).join().unwrap();
+        // A different CPU waits while the first progresses every 20 ms, or
+        // returns after 50 ms. The long record takes much more than STALL_NS.
+        RETURNING.with(|slot| *slot.borrow_mut() = Some((first, PREFIX)));
+        ORDER_MODE.store(mode, Ordering::Relaxed);
+        uart_owner::write::<OrderedTest, false>(
+            2, EXIT, Kind::Line, &mut Ownership::acquire_ordered());
+        RETURNING.with(|slot| assert!(slot.borrow().is_none()));
+        if mode == 1 {
+            assert!(ORDER_TICKS.load(Ordering::Relaxed) as u64 * 1_000_000
+                > uart_owner::STALL_NS);
+        }
+        let mut expected = REQUEST.to_vec();
+        expected.extend_from_slice(EXIT);
+        assert_eq!(*WIRE.lock().unwrap(), expected,
+            "a live owner's record was truncated or replayed, mode={mode}");
+    }
+}
+
+#[test]
+fn never_progressing_owner_leaves_one_terminated_line_and_intact_records() {
+    let _one = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
+    let dead = thread::spawn(|| {
+        let mut owner = Ownership::<OrderedTest>::acquire_ordered();
+        uart_owner::write::<OrderedTest, false>(
+            1, &REQUEST[..PREFIX], Kind::Line, &mut owner);
+        owner
+    }).join().unwrap();
+    core::mem::forget(dead);
+    for record in [EXIT, REQUEST] {
+        uart_owner::write::<OrderedTest, false>(
+            2, record, Kind::Line, &mut Ownership::acquire_ordered());
+    }
+    let mut expected = REQUEST[..PREFIX].to_vec();
+    expected.extend_from_slice(b"\r\n");
+    expected.extend_from_slice(EXIT);
+    expected.extend_from_slice(REQUEST);
+    assert_eq!(*WIRE.lock().unwrap(), expected,
+        "takeover must terminate the abandoned prefix before intact records");
+}
+'''
+        with tempfile.TemporaryDirectory(prefix='serial-normal-') as directory:
+            path = Path(directory)
+            (path / 'check.rs').write_text(harness)
+            subprocess.run([
+                'taskpolicy', '-b', os.environ.get('RUSTC', 'rustc'),
+                '--edition=2021', '--test', '-Dwarnings', str(path / 'check.rs'),
+                '-o', str(path / 'check'),
+            ], check=True)
+            # Separate processes give the two scripts fresh static UART state.
+            for case in [
+                'progressing_or_returning_owner_preserves_the_exact_wire',
+                'never_progressing_owner_leaves_one_terminated_line_and_intact_records',
+            ]:
+                subprocess.run([str(path / 'check'), '--exact', case], check=True,
+                               timeout=10)
+
+
+if __name__ == '__main__':
+    unittest.main()
