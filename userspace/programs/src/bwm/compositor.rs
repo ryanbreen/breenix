@@ -479,15 +479,20 @@ impl Compositor {
     /// last frame composed from `layers` must show, prioritizing the client window `subject`
     /// (0 for the desktop). Returns the number of pixels compared.
     pub fn check(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>) -> Result<u64, CheckError> {
-        self.check_area(subject, layers, pointer, [0, 0, self.width, self.height])
+        self.check_area(subject, layers, pointer, [0, 0, self.width, self.height], false).map(|(count, _)| count)
+    }
+
+    pub fn sampled_commit(&self, id: u64) -> Option<u64> {
+        self.sampled.iter().find(|sample| sample.id == id).map(|sample| sample.commit_id)
     }
 
     /// `check`, for the part of the frame inside `area` (x0, y0, x1, y1) only.
     ///
     /// CAPTURE reads the clients shown in the area. A captured commit differing from the
     /// composite's sample requires retrying the check on a later frame. The comparison
-    /// covers the requested rectangle, including other clients' content.
-    pub fn check_area(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4]) -> Result<u64, CheckError> {
+    /// covers the requested rectangle, including other clients' content. When requested,
+    /// return the subject tree and its commit from the same capture as its pixels.
+    pub fn check_area(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4], want_tree: bool) -> Result<(u64, Option<(u64, Vec<u8>)>), CheckError> {
         let [x0, y_top, x1, y1] = area;
         let w = x1.saturating_sub(x0);
         if w == 0 || y_top >= y1 {
@@ -496,6 +501,7 @@ impl Compositor {
         libuitest::startup::mark("frame-check-begin");
         // The clients this area shows, the subject first, with their sampled pixels.
         let mut clients: Vec<(u64, [i32; 4], u32, Vec<u8>)> = Vec::new();
+        let mut subject_tree = None;
         let mut shown: Vec<_> = layers.iter().filter_map(|l| self.sampled_content(l).map(|r| (l.window_id, r)))
             .filter(|(_, r)| intersect(*r, [x0 as i32, y_top as i32, x1 as i32, y1 as i32]).is_some()).collect();
         // A source that changed during a previous capture goes first next time. Stable
@@ -504,7 +510,9 @@ impl Compositor {
         for (id, r) in shown {
             let s = self.sampled.iter().find(|s| s.id == id).expect("sampled_content found it");
             let mut px = prefaulted_bytes(s.width as usize * s.height as usize * 4);
-            let c = match window::capture(s.id, &mut px, None) {
+            let mut tree = (want_tree && id == subject)
+                .then(|| prefaulted_bytes(wabi::limits::MAX_TREE_KIB as usize * 1024));
+            let c = match window::capture(s.id, &mut px, tree.as_deref_mut()) {
                 Ok(c) => c,
                 Err(e) => {
                     // A concurrent enlarge can make the sampled-size output too small.
@@ -529,6 +537,7 @@ impl Compositor {
                     s.id, c.commit_id, c.width, c.height, s.commit_id, s.width, s.height
                 )));
             }
+            if let Some(tree) = tree { subject_tree = Some((c.commit_id, tree)); }
             clients.push((id, r, s.width, px));
         }
         let band_rows = (CHECK_BAND_BYTES / (w * 4)).max(1).min(y1 - y_top);
@@ -585,7 +594,7 @@ impl Compositor {
             libuitest::startup::mark("frame-pixels-ready");
             y0 += rows;
         }
-        Ok(compared)
+        Ok((compared, subject_tree))
     }
 
     /// Read the scanout itself (READBACK target 0) at each `(x, y, want)` sample and require
