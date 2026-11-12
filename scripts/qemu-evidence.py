@@ -54,6 +54,8 @@ def serve(directory, parent):
     if not backend.alive():
         raise ValueError('parent is not alive')
     class Handler(BaseHTTPRequestHandler):
+        protocol_version = 'HTTP/1.1'
+
         def do_HEAD(self):
             gt710_upload.ready(self, backend)
 
