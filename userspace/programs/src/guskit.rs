@@ -369,7 +369,11 @@ fn main() {
         };
         let result=if collaborating { win.dispatch(&mut dispatch) } else { win.wait_dispatch(100_000_000,&mut dispatch) };
         let count=result.unwrap_or_else(|e| { if matches!(e, libbreenix::error::Error::Os(libbreenix::errno::Errno::ETIMEDOUT)) { 0 } else { eprintln!("Gus Kit dispatch: {e}"); std::process::exit(1) } });
-        if reload_font { font = win.take_display_font(); font_size = win.display_size(); }
+        if reload_font {
+            win.put_display_font(font.take());
+            font = win.take_display_font();
+            font_size = win.display_size();
+        }
         if let Some(session)=&mut app.session {
             let status=session.core.model.status.clone();
             redraw |= session.poll(10);
