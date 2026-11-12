@@ -596,7 +596,7 @@ pub fn list_scenario() -> CaseResult {
 
 pub fn wm_focus_scenario() -> CaseResult {
     use libuitest::input::Keyboard;
-    wm_scenario(|mut live, ids, owners, scale, screen| {
+    wm_scenario("focus", |mut live, ids, owners, scale, screen| {
         wm_checkpoint(&mut live, ids, owners, scale, screen, 1, ["", ""])?;
         wm_click(&mut live, ids[0], "entry")?;
         wm_checkpoint(&mut live, ids, owners, scale, screen, 0, ["", ""])?;
@@ -635,7 +635,7 @@ pub fn wm_focus_scenario() -> CaseResult {
 }
 
 pub fn wm_stack_scenario() -> CaseResult {
-    wm_scenario(|mut live, ids, owners, scale, screen| {
+    wm_scenario("stack", |mut live, ids, owners, scale, screen| {
         wm_checkpoint(&mut live, ids, owners, scale, screen, 1, ["", ""])?;
         wm_click(&mut live, ids[0], "entry")?;
         wm_checkpoint(&mut live, ids, owners, scale, screen, 0, ["", ""])?;
@@ -648,8 +648,10 @@ pub fn wm_stack_scenario() -> CaseResult {
 mod wm_checks;
 
 fn wm_scenario(
+    name: &'static str,
     run: impl FnOnce(LivePointer<'_>, [u64; 2], [u64; 2], u32, [u32; 2]) -> Result<(), String>,
 ) -> CaseResult {
+    let _phases = libuitest::phases::Scenario::new(name);
     let mut session = Session::desktop()?;
     let mut owners = [0; 2];
     let result: Result<(), String> = (|| {
@@ -712,41 +714,61 @@ fn wm_checkpoint(
     text: [&str; 2],
 ) -> Result<(), String> {
     use libuitest::input::Backend;
+    use libuitest::phases::{self, Phase};
+    let checkpoint = phases::checkpoint();
+    let phase = Phase::new("park");
     // Park beyond the two frames so hover state cannot color the structural patch.
     live.move_to((1100 * scale as i32, 700 * scale as i32))?;
+    phase.finish();
     // Client capture and scanout are separate observations. A publication between
     // them supersedes the whole snapshot, including its retained trees.
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
     'snapshot: loop {
+        let phase = Phase::new("settle");
         libuitest::settle::settle_session(live.session(), &[(ids[0], 0), (ids[1], 0)], 0, &mut [])?;
+        phase.finish();
+        let phase = Phase::new("desktop-tree");
         wm_checks::desktop(&live.desktop_tree()?, ids, owners, scale, screen, top)?;
+        phase.finish();
         let mut commits = [(0, 0, 0); 2];
         for (index, id) in ids.into_iter().enumerate() {
             let before = wm_window(id)?;
+            let phase = Phase::new("arena");
             live.session().next_checkpoint()?;
+            phase.finish();
+            let phase = Phase::new("client");
             let record = capture::window(live.session().arena_mut(), "wm-client", id)?;
+            phase.finish();
             let after = wm_window(id)?;
             if before.pixel_gen != after.pixel_gen {
                 if std::time::Instant::now() >= deadline {
                     return Err(format!("WM client front did not stabilize window={id}"));
                 }
+                phases::reacquire();
                 continue 'snapshot;
             }
             let generation = after.pixel_gen;
             commits[index] = (id, record.commit, generation);
+            let phase = Phase::new("tree");
             match live.session().arena_mut().read(Slot::Tree)? {
                 SlotRead::Final { bytes, .. } => {
                     wm_checks::entry(&libbui::tree::Tree::parse(&bytes)?, text[index], scale)?
                 }
                 other => return Err(format!("incomplete WM app tree: {other:?}")),
             }
+            phase.finish();
         }
+        let phase = Phase::new("arena");
         live.session().next_checkpoint()?;
+        phase.finish();
+        let phase = Phase::new("screen-capture");
         let record = capture::screen(
             live.session().arena_mut(),
             "wm-screen",
             libbreenix::window::ObservationKind::Composed,
         )?;
+        phase.finish();
+        let phase = Phase::new("screen-fronts");
         let observed = capture::screen_windows(&record)?;
         let entries = wm_composite(record.composite)?;
         for (id, commit, generation) in commits {
@@ -757,6 +779,7 @@ fn wm_checkpoint(
                     observed.iter().find(|row| row.0 == id).map(|row| row.1), entry)
             }) {
                 if std::time::Instant::now() < deadline {
+                    phases::reacquire();
                     continue 'snapshot;
                 }
                 return Err(format!(
@@ -765,7 +788,12 @@ fn wm_checkpoint(
                 ));
             }
         }
-        match live.session().arena_mut().read(Slot::Screen)? {
+        phase.finish();
+        let phase = Phase::new("screen-read-hash");
+        let screen_slot = live.session().arena_mut().read(Slot::Screen)?;
+        phase.finish();
+        let phase = Phase::new("screen-compare");
+        match screen_slot {
             SlotRead::Final { bytes, .. } => wm_checks::screen(
                 Frame::new(
                     &bytes,
@@ -780,7 +808,10 @@ fn wm_checkpoint(
             )?,
             other => return Err(format!("incomplete WM screen: {other:?}")),
         }
-        return libuitest::input::dispositions(live.serials());
+        phase.finish();
+        let result = libuitest::input::dispositions(live.serials());
+        checkpoint.finish();
+        return result;
     }
 }
 

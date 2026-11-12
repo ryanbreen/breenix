@@ -68,6 +68,7 @@ ledger line 377.
 | Memory | **PASS**, free 79997 before / 79987 after, 10 retained / allowance 48 |
 | Completion | DONE, MEMORY after, MEMORY reclaimed, then READY ui-testing |
 | ARM canonical scene | `frames/cross-target` **PASS**, 550 ms |
+| WM focus scenario | `proof/wm-focus-scenario` **PASS**, 18813 ms |
 | Startup panel | `refused=lease-wait-expired` |
 | Final panel | `refused=startup-lease-wait-expired` |
 | u4 upload check | **FAIL**, missing/refused/malformed startup panel |
@@ -79,6 +80,12 @@ retention stamps, panel refusals and completion records. The full serial,
 launcher log, writable disk and receiver state remain in the local
 `/tmp/a4-u7-arm-ui-testing-20261112/` directory. Vigil retains its own serial,
 summary and byte-identical host attestation for this boot.
+
+The focus CASE record at ordered-capture line 116 took **18813 ms** of its
+20000 ms deadline: 1187 ms (5.935%) headroom. That already exceeds the
+15000 ms maximum required for 25% headroom, before `6ed75a22` changed
+snapshot reacquisition. The full retained serial has the same CASE record
+at line 4995. These records do not apportion time among checkpoint phases.
 
 No production fix or second boot was made. This failed capture is not ARM
 acceptance evidence. No R240 boot, PR or PR merge was performed.

@@ -35,6 +35,7 @@ pub mod messages;
 
 pub mod capture_marker;
 pub mod capture;
+pub mod phases;
 
 pub mod capture_race;
 pub mod tree;

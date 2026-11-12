@@ -123,6 +123,7 @@ pub mod breengel_caller {
 '''
         # Adapt only the fixture's namespace for the real raw caller's shared ABI.
         raw = item(scanout, 'fn readback_raw(').replace('super::handoff::Readback::ZERO', 'super_handoff::Readback::default()')
+        code += '\npub mod phases {\n' + (ROOT / 'libs/libuitest/src/phases.rs').read_text().replace('//!', '//') + '\n}\n'
         code = code.replace('DIRECT', direct).replace('SHARED_HELPER', helper if owner == window else '')
         code = code.replace('BYTE_LEN', item(capture, 'fn byte_len(')).replace('HELPER', helper).replace('SCREEN', item(capture, 'pub fn screen(')).replace('RAW', raw)
         # Public data fixtures are intentionally available to both production callers.

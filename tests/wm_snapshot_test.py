@@ -16,6 +16,8 @@ class WmSnapshot(unittest.TestCase):
         binding = function('userspace/programs/src/uitest_suite/proof.rs', 'fn wm_front_matches(')
         front = function('userspace/programs/src/uitest_suite/proof_wm_checks.rs', 'pub fn front_matches(')
         rust = (ROOT / 'tests/fixtures/wm_snapshot.rs').read_text()
+        rust = rust.replace('mod libuitest {', 'mod libuitest { pub use crate::phases;')
+        rust += '\npub mod phases {\n' + (ROOT / 'libs/libuitest/src/phases.rs').read_text().replace('//!', '//') + '\n}\n'
         rust = rust.replace('CHECKPOINT', checkpoint).replace('BINDING', binding).replace('FRONT', front)
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
