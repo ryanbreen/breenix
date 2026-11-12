@@ -182,11 +182,10 @@ mod live {
             let result: Result<i32, String> = (|| {
                 let event = press?;
                 crate::input::wait_pointer_idle(event.serial)?;
-                let ledger = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
-                let row = crate::input::ledger_entry(&ledger, event.serial)?.ok_or("exit input delivery missing")?;
+                let (disposition, window, _) = crate::input::outcome(event.serial)?.ok_or("exit input delivery missing")?;
                 let exit = live.session().wait_exit(pid)?;
-                if desktop { desktop_exit_input_verdict(row.disposition, row.window, exit.status)?; }
-                else { exit_input_verdict(row.disposition, row.window, self.window, exit.status, expected)?; }
+                if desktop { desktop_exit_input_verdict(&disposition, window, exit.status)?; }
+                else { exit_input_verdict(&disposition, window, self.window, exit.status, expected)?; }
                 Ok(exit.status)
             })();
             // Focus can belong to the launched child by now. A release needs a
@@ -195,9 +194,8 @@ mod live {
                 let event = if pointer { live.send_button(code, false)? } else { live.send_key(code, false)? };
                 let watchdog = Watchdog::new(Wait::InputAck)?;
                 loop {
-                    let ledger = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
-                    if let Some(row) = crate::input::ledger_entry(&ledger, event.serial)? {
-                        return exit_release_verdict(row.disposition, row.window, row.reason);
+                    if let Some((disposition, window, reason)) = crate::input::outcome(event.serial)? {
+                        return exit_release_verdict(&disposition, window, &reason);
                     }
                     if now()? >= watchdog.deadline_ns() { return Err(format!("exit release missing serial={}", event.serial)); }
                     time::sleep_ms(1).map_err(|e| e.to_string())?;

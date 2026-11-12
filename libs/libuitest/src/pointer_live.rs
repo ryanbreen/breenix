@@ -26,11 +26,20 @@ fn status() -> Result<abi::CompositorStatus, String> {
 fn pause() -> Result<(), String> {
     libbreenix::time::sleep_ms(1).map_err(|e| e.to_string())
 }
-fn outcome(serial: u64) -> Result<Option<(String, u64, String)>, String> {
-    let ledger =
-        std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
-    Ok(super::ledger_entry(&ledger, serial)?.map(|row|
-        (row.disposition.into(), row.window, row.reason.into())))
+pub(crate) fn outcome(serial: u64) -> Result<Option<(String, u64, String)>, String> {
+    let reader = Reader::open(true).map_err(|e| e.to_string())?;
+    let Some(row) = reader.outcome(serial).map_err(|e| e.to_string())? else { return Ok(None); };
+    // Match the names emitted by the proc ledger, including its fallback names.
+    let name = match row.disposition {
+        1 => "wm-handled", 2 => "delivered", 3 => "rejected",
+        4 => "client-rejected", _ => "lost",
+    };
+    let reason = match row.reason {
+        0 => "none", 1 => "no-focus", 2 => "minimized", 3 => "not-selected",
+        4 => "stale-scene", 5 => "target-gone", 6 => "grab", 7 => "stale-layout",
+        8 => "gesture-cancelled", 9 => "overflow", 10 => "ring-full", _ => "compositor-died",
+    };
+    Ok(Some((name.into(), row.window, reason.into())))
 }
 
 /// Wait for the addressed client's commit, including commit_no_change.

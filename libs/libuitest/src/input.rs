@@ -260,6 +260,8 @@ pub fn exposed_region(content: [i64; 4], screen: [i64; 4], covers: &[[i64; 4]]) 
 mod live;
 #[cfg(target_os = "breenix")]
 pub use live::{delivered, dispositions, wait_pointer_idle, LivePointer};
+#[cfg(target_os = "breenix")]
+pub(crate) use live::outcome;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyStroke {
