@@ -200,13 +200,18 @@ pub fn launch_each() -> CaseResult {
             if let Err(error) = &result {
                 let at_ns = libbreenix::time::now_monotonic().map_err(|e| e.to_string())?.as_nanos();
                 timings.push_str(&format!("failure\tentry={name}\toperation={operation}\ttracked_window={}\tat_ns={at_ns}\terror={error}\n", t.window()));
-                // Stage 17 records registry removal, including process exit,
-                // on the same monotonic clock as this failure observation.
+                // Keep the entry's source/derived delivery, dequeue, acquire,
+                // pixel/no-change publication and metadata observations. Retain
+                // removal history too, to identify an earlier target exit.
                 match std::fs::read_to_string("/proc/breenix/window-pipeline-full") {
                     Ok(trace) => {
-                        let trace = trace.lines().filter(|line| line.starts_with("17 ")).collect::<Vec<_>>().join("\n");
+                        let trace = trace.lines().filter(|line| line.starts_with("17 ")
+                            || line.split_whitespace().nth(4).and_then(|ns| ns.parse::<u64>().ok())
+                                .is_some_and(|ns| i128::from(ns) >= start)).collect::<Vec<_>>().join("\n");
                         let _ = std::fs::write("/tmp/desktop-launch-each-pipeline", trace.as_bytes());
-                        let _ = breenix_suite::suite::upload_diagnostic("gui-apps", "desktop-launch-each-pipeline", trace.as_bytes());
+                        if let Err(e) = breenix_suite::suite::upload_diagnostic("gui-apps", "desktop-launch-each-pipeline", trace.as_bytes()) {
+                            timings.push_str(&format!("pipeline upload unavailable: {e}\n"));
+                        }
                     }
                     Err(e) => timings.push_str(&format!("pipeline diagnostic unavailable: {e}\n")),
                 }

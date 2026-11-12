@@ -11,7 +11,7 @@
 
 use breengel_abi::errno::{EFAULT, EINVAL, ENOSYS, EPERM};
 use breengel_abi::{
-    arg_size, op, Acquire, Capture, Claim, Commit, Composite, CompositeEntry, CompositeRecordHeader,
+    arg_size, FrameStage, op, Acquire, Capture, Claim, Commit, Composite, CompositeEntry, CompositeRecordHeader,
     CompositorAck, CompositorStatus, HitTest, Create, Cursor, Geometry, Give, List, MapTree, Meta, MetaQuery, NoChange, Plain, ReadEvents,
     Readback, RecordQuery, Resize, SceneSnapshot, Title, WinId, WriteEvents, INTERFACE_VERSION,
 };
@@ -103,7 +103,7 @@ fn window(op: u64, arg: u64, len: u64) -> Result<u64, i32> {
     // descriptor, whatever it returned.
     if !matches!(
         op,
-        op::LIST | op::ACQUIRE | op::READ_EVENTS | op::WRITE_EVENTS | op::EVENT_FD | op::CAPTURE | op::MAP_TREE | op::MAP_TREE_READERS
+        op::LIST | op::ACQUIRE | op::READ_EVENTS | op::WRITE_EVENTS | op::EVENT_FD | op::CAPTURE | op::CAPTURE_TREE | op::FRAME_STAGE | op::MAP_TREE | op::MAP_TREE_READERS
             | op::COMPOSITE_SNAPSHOT | op::COMPOSITE_RECORD | op::SCANOUT_READBACK | op::READ_META | op::READ_REMNANT
             | op::MAP_COMMITTED | op::MAP_COMPOSITOR_TEXTURE | op::COMPOSITOR_ACK | op::COMPOSITOR_STATUS
     ) {
@@ -159,6 +159,8 @@ fn dispatch(caller: &Caller, op: u32, arg: u64) -> Result<u64, i32> {
         // GPU resources instead (docs/gui/gpu.md section 2.7).
         op::MAP_COMMITTED => Err(ENOSYS),
         op::CAPTURE => inout::<Capture>(arg, |c| ops::capture(&caller, c)),
+        op::CAPTURE_TREE => inout::<Capture>(arg, |c| ops::capture_tree(&caller, c)),
+        op::FRAME_STAGE => ops::frame_stage(&caller, &input::<FrameStage>(arg)?),
         op::MAP_TREE => committing::<MapTree>(arg, |m, out| ops::map_tree(&caller, m, out)),
         op::MAP_TREE_READERS => committing::<MapTree>(arg, |m, out| ops::map_tree_readers(&caller, m, out)),
         op::CLAIM_COMPOSITOR => committing::<Claim>(arg, |c, out| ops::claim(&caller, c, out)),

@@ -16,6 +16,19 @@ log: `docs/planning/ralph-roadmap.html`.
 
 ## Current Development Status
 
+GUI input polling and terminal repaint cost are addressed by
+[PR #2894](https://github.com/ryanbreen/breenix/pull/2894), closing
+[#2885](https://github.com/ryanbreen/breenix/issues/2885) and
+[#2896](https://github.com/ryanbreen/breenix/issues/2896).
+The GPU milestone scope finding is rebutted because E23 coordinator ledger lines
+184, 347 and 369 explicitly place I2885 in the GUI timing follow-up and require
+GUI apps, UI testing and console proof, satisfied at runtime `abde3fc6` by boots
+`20261112T061824Z-metal` (73/73), `20261112T063557Z-metal` (108/108) and
+`20261112T064600Z-metal` (88/88), rather than the earlier GPU milestone gate.
+Undo ownership completes in 7,041/10,000 ms; retained publication, glyph handling,
+diagnostic cost, capture-harness and overhang concerns remain grouped in
+[#2897](https://github.com/ryanbreen/breenix/issues/2897).
+
 Gus Kit's host-sequenced collaboration and gesture-scoped Undo land through
 [PR #2881](https://github.com/ryanbreen/breenix/pull/2881).
 The PR records GUI application acceptance and the retained selected UI result;

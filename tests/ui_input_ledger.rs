@@ -196,3 +196,69 @@ fn source_lookup_does_not_allocate_per_history_entry() {
         assert!(input::ledger_entry(&ledger, 1).is_err());
     }
 }
+
+#[test]
+fn delivery_waits_do_not_read_the_full_ledger() {
+    fn function(source: &str, signature: &str) -> String {
+        let start = source.find(signature).unwrap();
+        let brace = start + source[start..].find('{').unwrap();
+        let mut depth = 0;
+        let end = source[brace..].bytes().position(|b| {
+            if b == b'{' { depth += 1; }
+            if b == b'}' { depth -= 1; }
+            depth == 0
+        }).unwrap();
+        source[start..=brace + end].replace("std::fs::read_to_string", "stub::read_to_string")
+    }
+    let live = include_str!("../libs/libuitest/src/pointer_live.rs");
+    let outcome = function(live, "fn outcome(");
+    let delivery = function(live, "fn wait_delivery(");
+    let idle = function(live, "pub fn wait_pointer_idle(");
+    let fixture = format!(r#"
+use std::time::{{Duration, Instant}};
+use std::cell::Cell;
+thread_local! {{ static READS: Cell<usize> = const {{ Cell::new(0) }}; static POLLS: Cell<usize> = const {{ Cell::new(0) }}; }}
+mod stub {{ pub fn read_to_string(_: &str) -> Result<String, String> {{ super::READS.with(|v| v.set(v.get()+1)); Ok("41 delivered 9 none\n".into()) }} }}
+struct Query {{ disposition: u32, window: u64, reason: u32 }}
+struct Reader;
+impl Reader {{
+    fn open(_: bool) -> Result<Self, String> {{ Ok(Self) }}
+    fn outcome(&self, _: u64) -> Result<Option<Query>, String> {{
+        let poll = POLLS.with(|v| {{ let n = v.get(); v.set(n + 1); n }});
+        Ok((poll % 2 == 1).then_some(Query {{ disposition: 2, window: 9, reason: 0 }}))
+    }}
+}}
+struct Row {{ disposition: &'static str, window: u64, reason: &'static str }}
+fn ledger_entry(_: &str, _: u64) -> Result<Option<Row>, String> {{ Ok(Some(Row {{ disposition: "delivered", window: 9, reason: "none" }})) }}
+fn client_processed(processed: u64, serial: u64) -> bool {{ processed >= serial }}
+mod messages {{ pub fn input(_: &str, _: u64, _: &str, _: &str) -> String {{ "failure".into() }} }}
+struct Watchdog; enum Wait {{ InputDelivery }}
+impl Watchdog {{ fn new(_: Wait) -> Result<Self,String> {{ Ok(Self) }} }}
+struct Delivery {{ serial: u64, window: u64 }}
+mod window {{ pub struct Meta {{ pub processed_serial: u64 }} pub fn read_meta(_: u64) -> Result<(u64,Meta),String> {{ Ok((1,Meta {{ processed_serial: 41 }})) }} }}
+fn pause() -> Result<(),String> {{ Ok(()) }}
+mod live {{
+    use super::*;
+    {outcome}
+    {delivery}
+    {idle}
+    pub fn run() {{
+        let d = wait_delivery(41, Some(9), false).unwrap(); assert_eq!((d.serial,d.window),(41,9));
+        assert_eq!(READS.with(|v| v.replace(0)), 0, "delivery read full ledger");
+        wait_pointer_idle(41).unwrap();
+        assert_eq!(READS.with(|v| v.get()), 0, "idle read full ledger");
+    }}
+}}
+fn main() {{ live::run(); }}
+"#);
+    let dir = std::env::temp_dir().join(format!("ui-delivery-ledger-{}", std::process::id()));
+    std::fs::create_dir(&dir).unwrap();
+    let path = dir.join("wait.rs"); let binary = dir.join("wait");
+    std::fs::write(&path, fixture).unwrap();
+    let built = std::process::Command::new("rustc").args(["--edition=2021", "-Awarnings"])
+        .arg(&path).arg("-o").arg(&binary).output().unwrap();
+    assert!(built.status.success(), "{}", String::from_utf8_lossy(&built.stderr));
+    let ran = std::process::Command::new(&binary).output().unwrap();
+    std::fs::remove_dir_all(dir).unwrap();
+    assert!(ran.status.success(), "{}", String::from_utf8_lossy(&ran.stderr));
+}

@@ -2,9 +2,9 @@
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 pub const HANG_MS: u64 = 10_000;
 #[derive(Clone, Copy)]
-pub enum Wait { CompositorRegistration, SupervisorReady, Configure, HoldWindow, InputAck, Stderr, Launch, AppOutput, AppExit, Stopped, ChannelSend, SupervisorTeardown, InputGrab, CollectorReply, DiscardReply, ControllerReply, DiagnosticUpload }
-const WAITS: [Wait; 17] = [Wait::CompositorRegistration, Wait::SupervisorReady, Wait::Configure, Wait::HoldWindow, Wait::InputAck, Wait::Stderr, Wait::Launch, Wait::AppOutput, Wait::AppExit, Wait::Stopped, Wait::ChannelSend, Wait::SupervisorTeardown, Wait::InputGrab, Wait::CollectorReply, Wait::DiscardReply, Wait::ControllerReply, Wait::DiagnosticUpload];
-const NAMES: [&str; 17] = ["CompositorRegistration", "SupervisorReady", "Configure", "HoldWindow", "InputAck", "Stderr", "Launch", "AppOutput", "AppExit", "Stopped", "ChannelSend", "SupervisorTeardown", "InputGrab", "CollectorReply", "DiscardReply", "ControllerReply", "DiagnosticUpload"];
+pub enum Wait { CompositorRegistration, SupervisorReady, Configure, HoldWindow, InputAck, Stderr, Launch, AppOutput, AppExit, Stopped, ChannelSend, SupervisorTeardown, InputGrab, CollectorReply, DiscardReply, ControllerReply, DiagnosticUpload, InputDelivery, TreeCapture }
+const WAITS: [Wait; 19] = [Wait::CompositorRegistration, Wait::SupervisorReady, Wait::Configure, Wait::HoldWindow, Wait::InputAck, Wait::Stderr, Wait::Launch, Wait::AppOutput, Wait::AppExit, Wait::Stopped, Wait::ChannelSend, Wait::SupervisorTeardown, Wait::InputGrab, Wait::CollectorReply, Wait::DiscardReply, Wait::ControllerReply, Wait::DiagnosticUpload, Wait::InputDelivery, Wait::TreeCapture];
+const NAMES: [&str; 19] = ["CompositorRegistration", "SupervisorReady", "Configure", "HoldWindow", "InputAck", "Stderr", "Launch", "AppOutput", "AppExit", "Stopped", "ChannelSend", "SupervisorTeardown", "InputGrab", "CollectorReply", "DiscardReply", "ControllerReply", "DiagnosticUpload", "InputDelivery", "TreeCapture"];
 const CELLS: usize = 6;
 static PAGE: AtomicUsize = AtomicUsize::new(0);
 fn now_ms() -> Result<u64, String> {

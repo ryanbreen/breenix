@@ -63,6 +63,13 @@ impl Reader {
         control(self.fd(), abi::ioctl::CAPABILITIES, &mut query as *mut _ as u64)?;
         Ok(query.count as usize)
     }
+    /// Return a terminal source outcome, or None for a pending or unretained serial.
+    /// claim-lint:ok: OUTCOME interface contract in docs/gui/window-manager-suite.md.
+    pub fn outcome(&self, serial: u64) -> Result<Option<Disposition>, Error> {
+        let mut query = Disposition { serial, ..Disposition::default() };
+        control(self.fd(), abi::ioctl::OUTCOME, &mut query as *mut _ as u64)?;
+        Ok((query.disposition != 0).then_some(query))
+    }
     pub fn grab(&self, devices: &[u32]) -> Result<(), Error> {
         let selection = abi::Selection {
             devices: devices.as_ptr() as u64,

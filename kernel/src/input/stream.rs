@@ -524,6 +524,15 @@ impl InputFile {
     pub fn ioctl(&self, request: u64, arg: u64) -> Result<u64, u64> {
         retire_descriptors();
         let reader = self.reader.ok_or(ENOTTY as u64)?;
+        if request == ioctl::OUTCOME {
+            let query = userptr::copy_from_user::<Disposition>(arg as *const _)?;
+            let result = outcome(query.serial).unwrap_or(Disposition {
+                serial: query.serial,
+                ..Disposition::default()
+            });
+            userptr::copy_to_user(arg as *mut Disposition, &result)?;
+            return Ok(0);
+        }
         if request == ioctl::CAPABILITIES {
             let mut query = userptr::copy_from_user::<input_abi::Capabilities>(arg as *const _)?;
             if query.count as usize > MAX_CAPABILITIES {
@@ -1017,6 +1026,23 @@ impl Drop for InputFile {
         }
         wake_service();
     }
+}
+
+/// Return one terminal source outcome, using the same client rejection view as ledger().
+pub fn outcome(serial: u64) -> Option<Disposition> {
+    let mut d = {
+        let mut state = STATE.lock();
+        row_mut(&mut state.ledger, serial)?.outcome?
+    };
+    if d.disposition == disposition::DELIVERED {
+        let reg = crate::window::REGISTRY.lock();
+        if let Some(w) = reg.windows.get(&d.window) {
+            if w.meta.rejected[..(w.meta.rejected_count as usize).min(8)].contains(&serial) {
+                d.disposition = disposition::CLIENT_REJECTED;
+            }
+        }
+    }
+    Some(d)
 }
 
 /// A snapshot of source outcomes; pending gaps are deliberately absent.
