@@ -14,8 +14,6 @@ pub enum PromptCheck {
 
 struct Prompt {
     id: u64,
-    attempted: bool,
-    last_commit: Option<u64>,
     in_flight: Option<u64>,
     attempts: u32,
 }
@@ -40,9 +38,6 @@ impl<S> ValidationQueue<S> {
         for client in &mut self.first_frames {
             client.attempted = false;
         }
-        for prompt in &mut self.prompts {
-            prompt.attempted = false;
-        }
         scene
     }
 
@@ -64,17 +59,19 @@ impl<S> ValidationQueue<S> {
     /// Request a separate prompt check, without replacing an existing request.
     pub fn request(&mut self, id: u64) {
         if !self.prompts.iter().any(|prompt| prompt.id == id) {
-            self.prompts.push(Prompt { id, attempted: false, last_commit: None, in_flight: None, attempts: 0 });
+            self.prompts.push(Prompt { id, in_flight: None, attempts: 0 });
         }
     }
 
-    /// Reserve one check for this sampled commit in the current presentation.
+    pub fn prompt_pending(&self, id: u64) -> bool {
+        self.prompts.iter().any(|prompt| prompt.id == id)
+    }
+
+    /// Reserve one check, including an unchanged commit when the client is idle.
     pub fn check_prompt(&mut self, id: u64, commit: u64) -> bool {
         if self.scene.is_none() { return false; }
         let Some(prompt) = self.prompts.iter_mut().find(|prompt| prompt.id == id) else { return false; };
-        if prompt.attempted || prompt.in_flight.is_some() || prompt.last_commit == Some(commit) { return false; }
-        prompt.attempted = true;
-        prompt.last_commit = Some(commit);
+        if prompt.in_flight.is_some() { return false; }
         prompt.in_flight = Some(commit);
         true
     }
@@ -94,7 +91,7 @@ impl<S> ValidationQueue<S> {
         outcome
     }
 
-    /// Reserve a prompt's next sampled commit only when validation can run.
+    /// Reserve a prompt's sampled commit only when validation can run.
     pub fn next_prompt_if_idle(
         &mut self,
         mut eligible: impl FnMut(u64) -> Option<u64>,
@@ -103,7 +100,7 @@ impl<S> ValidationQueue<S> {
         self.scene.as_ref()?;
         let (id, commit) = self.prompts.iter().find_map(|prompt| {
             let commit = eligible(prompt.id)?;
-            (!prompt.attempted && prompt.in_flight.is_none() && prompt.last_commit != Some(commit))
+            prompt.in_flight.is_none()
                 .then_some((prompt.id, commit))
         })?;
         if !idle() || !self.check_prompt(id, commit) { return None; }
@@ -111,7 +108,8 @@ impl<S> ValidationQueue<S> {
     }
 
     pub fn pending(&self, id: u64) -> bool {
-        self.scene.is_some() && self.first_frames.iter().any(|c| c.id == id && !c.attempted)
+        self.scene.is_some() && (self.first_frames.iter().any(|c| c.id == id && !c.attempted)
+            || self.prompt_pending(id))
     }
 
     pub fn complete(&mut self, id: u64) {

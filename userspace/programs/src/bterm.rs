@@ -428,6 +428,7 @@ fn main() {
     let mut first_present = true;
     let mut last_key_serial = 0;
     let mut frame_id = 0u64;
+    let mut had_tree_readers = false;
 
     loop {
         // Dispatch input before the rendered commit publishes its watermark.
@@ -704,7 +705,12 @@ fn main() {
         // ── 3. Render ───────────────────────────────────────────────
         let sel = tab_bar.selected();
         let any_dirty = tabs.get(sel).map_or(false, |t| t.emu.dirty);
-        let need_redraw = any_dirty || event_count != 0 || font_changed || first_frame;
+        // MAP_TREE is passive. Publish semantic state even when a reader attaches
+        // after the shell's last output and there is no input to redraw the grid.
+        let tree_readers = win.tree_reader_count() != 0;
+        let tree_reader_attached = tree_readers && !had_tree_readers;
+        had_tree_readers = tree_readers;
+        let need_redraw = any_dirty || event_count != 0 || font_changed || first_frame || tree_reader_attached;
         first_frame = false;
 
         if need_redraw {

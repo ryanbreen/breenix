@@ -361,8 +361,14 @@ fn main() {
     let mut drawn_pointer = cursor_pointer(first_pointer);
     let mut full_redraw = false;
     let mut validation: ValidationQueue<PresentedScene> = ValidationQueue::new();
+    let mut prompt_watchers = chrome::prompt_watch::Watchers::default();
     if !strict_startup {
-        for win in &windows { validation.request(win.window_id); }
+        for win in &windows {
+            match prompt_watchers.attach(win.window_id) {
+                Ok(()) => validation.request(win.window_id),
+                Err(error) => print!("[bwm] terminal prompt check FAILED: window {}: attach tree reader: {error}\n", win.window_id),
+            }
+        }
     }
     let mut working_scene = PresentedScene { layers: Vec::new(), pointer: first_pointer };
 
@@ -452,7 +458,10 @@ fn main() {
             if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
                 if !strict_startup {
                     for win in windows.iter().filter(|w| w.creation_order >= first_new_order) {
-                        validation.request(win.window_id);
+                        match prompt_watchers.attach(win.window_id) {
+                            Ok(()) => validation.request(win.window_id),
+                            Err(error) => print!("[bwm] terminal prompt check FAILED: window {}: attach tree reader: {error}\n", win.window_id),
+                        }
                     }
                 }
                 reconcile_stack(&windows, &mut stack, false);
@@ -813,6 +822,7 @@ fn main() {
         }
 
         validation.retain_clients(|id| windows.iter().any(|w| w.window_id == id));
+        prompt_watchers.retain(|id| validation.prompt_pending(id));
         for win in windows.iter().filter(|w| !w.frame_checked) {
             validation.first_frame(win.window_id);
         }
@@ -931,6 +941,7 @@ fn main() {
             }
             clock.acknowledged();
             run_deferred_check(&mut validation, &mut gpu, &mut windows, &mut poll_fds, resizing.is_some(), strict_startup);
+            prompt_watchers.retain(|id| validation.prompt_pending(id));
         }
     }
 }

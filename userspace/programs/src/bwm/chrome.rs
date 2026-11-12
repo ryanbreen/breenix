@@ -5,6 +5,8 @@ mod validation;
 pub(super) use validation::ValidationQueue;
 #[path = "chrome/frame_text.rs"]
 mod frame_text;
+#[path = "chrome/prompt_watch.rs"]
+pub(super) mod prompt_watch;
 
 pub(super) struct PresentedScene {
     pub layers: Vec<Layer>,
@@ -94,11 +96,11 @@ pub(super) fn run_deferred_check(
                         Ok(tree) if tree.root.role != libbui::tree::Role::Terminal =>
                             (validation::PromptCheck::Text, String::new()),
                         Ok(tree) => match frame_text::cursor_row(&tree) {
-                            Some((index, text)) if !text.trim().is_empty() => {
+                            Some((index, text)) if text.starts_with("bsh />") => {
                                 row = Some((pixels, index, serde_json::to_string(text).expect("JSON string")));
                                 (validation::PromptCheck::Text, String::new())
                             }
-                            Some(_) => (validation::PromptCheck::Empty, "terminal cursor row is empty".into()),
+                            Some(_) => (validation::PromptCheck::Empty, "terminal cursor row has no shell prompt".into()),
                             None => (validation::PromptCheck::Empty, "terminal cursor row is unavailable".into()),
                         },
                         Err(reason) => (validation::PromptCheck::Empty, format!("invalid captured tree: {reason}")),
