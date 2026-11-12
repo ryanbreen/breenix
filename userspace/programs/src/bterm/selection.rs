@@ -30,6 +30,7 @@ impl Selection {
         }
     }
     pub fn release(&mut self, x: i32, y: i32, g: Geometry, size: (usize, usize)) {
+        if self.press_pixel.is_none() { return; }
         self.update(x, y, g, size);
         self.press_pixel = None;
         if !self.moved { self.clear(); }
