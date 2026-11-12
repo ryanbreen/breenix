@@ -36,6 +36,9 @@ mod gpu { pub mod dev {
     pub fn backend()->u32 { BACKEND.load(Ordering::Relaxed) }
     pub fn select(b:u32) { BACKEND.store(b,Ordering::Relaxed); }
     SUPPORTED
+    #[cfg(target_arch = "aarch64")]
+    ARM_RESTORE
+    #[cfg(target_arch = "x86_64")]
     pub fn restore_output_perturbation()->Result<(),i32> {
         crate::OUTPUT.lock().restore(&mut *crate::MODEL.lock()).map_err(|_|5)
     }
