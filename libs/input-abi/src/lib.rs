@@ -74,6 +74,7 @@ pub mod ioctl {
     pub const UNGRAB: u64 = 0x424902;
     pub const DISPOSITION: u64 = 0x424903;
     pub const CAPABILITIES: u64 = 0x424904;
+    pub const OUTCOME: u64 = 0x424905;
 }
 pub mod disposition {
     pub const WM_HANDLED: u32 = 1;
