@@ -275,16 +275,8 @@ impl<'a> LivePointer<'a> {
     }
     fn capture(&self, id: u64) -> Result<(Tree, u64), String> {
         let _watchdog = Watchdog::new(Wait::TreeCapture)?;
-        let info = self.info(id)?;
-        let mut pixels = vec![
-            0;
-            (info.width as usize)
-                .checked_mul(info.height as usize)
-                .and_then(|n| n.checked_mul(4))
-                .ok_or("input capture overflow")?
-        ];
         let mut bytes = vec![0; abi::limits::MAX_TREE_KIB as usize * 1024];
-        let c = window::capture(id, &mut pixels, Some(&mut bytes))
+        let c = window::capture_tree(id, &mut bytes)
             .map_err(|e| format!("input capture window={id}: {e}"))?;
         Ok((Tree::parse(&bytes)?, c.commit_id))
     }

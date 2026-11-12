@@ -241,6 +241,16 @@ pub fn capture(id: u64, dst: &mut [u8], tree: Option<&mut [u8]>) -> Result<abi::
     Ok(c)
 }
 
+/// `CAPTURE_TREE` copies the front tree and returns its commit without reading pixels.
+pub fn capture_tree(id: u64, tree: &mut [u8]) -> Result<abi::Capture, Error> {
+    let mut c = abi::Capture::ZERO;
+    c.id = id;
+    c.tree_dst = tree.as_mut_ptr() as u64;
+    c.tree_len = tree.len() as u64;
+    call(op::CAPTURE_TREE, &mut c)?;
+    Ok(c)
+}
+
 /// `CLAIM_COMPOSITOR` (root): returns the claim's epoch.
 pub fn claim_compositor() -> Result<u64, Error> {
     let mut c = abi::Claim::ZERO;
