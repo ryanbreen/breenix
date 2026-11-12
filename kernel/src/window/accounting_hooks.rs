@@ -164,3 +164,53 @@ pub fn join(word: u64, target_tid: u64, target_pid: u64) {
         TRACE.join(now(), pid, tid, word, target_tid, target_pid);
     }
 }
+
+/// Input observation controls arrive through the existing root-only evidence device.
+pub fn input_command(pid: u64, command: &str) {
+    let mut words = command.split_whitespace();
+    match words.next() {
+        Some("input-reset") => TRACE.reset_input(),
+        Some("input-close") => TRACE.close_input(),
+        Some("input-begin") => {
+            if let Some(ns) = words.next().and_then(|w| w.parse().ok()) {
+                #[cfg(target_arch = "aarch64")]
+                let cpus = crate::arch_impl::aarch64::smp::cpus_online();
+                #[cfg(target_arch = "x86_64")]
+                let cpus = crate::arch_impl::x86_64::smp::cpus_online();
+                TRACE.begin_input(ns, pid, cpus);
+            }
+        }
+        Some("input-end") => {
+            if let Some(ns) = words.next().and_then(|w| w.parse().ok()) { TRACE.finish_input(ns); }
+        }
+        _ => (),
+    }
+}
+
+fn phase_code(name: &str) -> u64 {
+    (1..=18).find(|&i| super::acquire_phase_name(i) == name).unwrap_or(0)
+}
+fn phase_at(phase: u64, edge: u64, object: u64) {
+    if !TRACE.is_active() { return; }
+    let ns = now();
+    let (pid, tid) = crate::task::thread::current_accounting_identity().unwrap_or((0, 0));
+    let cpu = crate::task::thread::current_thread_cpu_split_ns()
+        .map_or(u64::MAX, |(user, system)| user.saturating_add(system));
+    TRACE.acquire_phase(ns, pid, tid, phase, edge, object, cpu);
+}
+/// RAII closes error paths too. Only fixed numeric journal writes occur on the path.
+pub struct AcquirePhase { phase: u64, object: u64 }
+impl AcquirePhase {
+    pub fn new(name: &str, object: u64) -> Self {
+        let phase = phase_code(name);
+        phase_at(phase, 1, object);
+        Self { phase, object }
+    }
+}
+impl Drop for AcquirePhase {
+    fn drop(&mut self) { phase_at(self.phase, 0, self.object); }
+}
+/// A predicate refusal names the dependency it found, without changing its decision.
+pub fn acquire_dependency(name: &str, object: u64) {
+    phase_at(phase_code(name), 2, object);
+}

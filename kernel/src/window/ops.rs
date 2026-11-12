@@ -439,6 +439,7 @@ fn replay(window: u64, src: &Target, dst: &Target, rects: &[Rect]) -> Result<(),
 /// is taken as replaying, which no other ACQUIRE or COMMIT can use; it is made writable (its
 /// pixels and its tree page) once the replay is copied, and only then handed out.
 pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
+    let _acquire_phase = super::accounting::AcquirePhase::new("acquire", a.id);
     super::pipeline::record(5, a.id, 0, 0);
     if a.reserved != 0 {
         return Err(EINVAL);
@@ -454,7 +455,7 @@ pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
             core::array::from_fn::<_, 3, _>(|i| w.buffers.get(i).map(|b| b.mem.clone()))
         };
         for target in pool.iter().flatten() { target.available()?; }
-        let waits = {
+        let (waits, reason) = {
             let mut reg = REGISTRY.lock();
             let w = reg.window(a.id, caller, who::owner)?;
             if core::mem::take(&mut w.acquire_error) { return Err(breengel_abi::errno::EIO); }
@@ -479,9 +480,10 @@ pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
                 let base = if source.is_some() || w.front.is_some() { front_commit } else { b.base };
                 break (i, b.uid, b.mem.clone(), base, set, source, width, height, tree, tree_addr, tree_len);
             }
-            w.waits.clone()
+            (w.waits.clone(), if w.pending.is_some() { "pending-front" } else { "free-buffer" })
         };
         let id = a.id;
+        let _phase = super::accounting::AcquirePhase::new(reason, id);
         wait(&waits.acquire, &until, || {
             REGISTRY
                 .lock()
@@ -491,13 +493,21 @@ pub fn acquire(caller: &Caller, a: &mut Acquire) -> Result<u64, i32> {
         })?;
     };
     let rects = set.rects(width, height);
-    let replayed = match source.as_ref() {
-        Some(src) => replay(a.id, src.mem(), &dst, &rects),
-        None => Ok(()),
+    let replayed = {
+        let _phase = super::accounting::AcquirePhase::new("replay-copy", a.id);
+        match source.as_ref() {
+            Some(src) => replay(a.id, src.mem(), &dst, &rects),
+            None => Ok(()),
+        }
     };
     drop(source);
-    let writable = replayed.and_then(|()| dst.seal(false))
-        .and_then(|()| mem::protect_range(&tree, tree_addr, index as u64 * tree_len, tree_len, true));
+    let writable = replayed.and_then(|()| {
+        let _phase = super::accounting::AcquirePhase::new("seal", a.id);
+        dst.seal(false)
+    }).and_then(|()| {
+        let _phase = super::accounting::AcquirePhase::new("tree-protect", a.id);
+        mem::protect_range(&tree, tree_addr, index as u64 * tree_len, tree_len, true)
+    });
     if writable.is_err() { let _ = dst.seal(true); }
     // Hand the buffer out with its new base, unless the window or the buffer went away during
     // the copy.

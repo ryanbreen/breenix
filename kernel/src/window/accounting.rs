@@ -70,6 +70,10 @@ pub struct Accounting<const N: usize, const T: usize, const D: usize> {
     active: AtomicU64,
     owner: AtomicU64,
     exported: AtomicU64,
+    // 0 restart accounting, 1 input observation, 2 first slow input frozen.
+    input_mode: AtomicU64,
+    input_begin: AtomicU64,
+    input_end: AtomicU64,
 }
 impl<const N: usize, const T: usize, const D: usize> Accounting<N, T, D> {
     pub const fn new() -> Self {
@@ -87,6 +91,9 @@ impl<const N: usize, const T: usize, const D: usize> Accounting<N, T, D> {
             active: AtomicU64::new(0),
             owner: AtomicU64::new(0),
             exported: AtomicU64::new(0),
+            input_mode: AtomicU64::new(0),
+            input_begin: AtomicU64::new(0),
+            input_end: AtomicU64::new(0),
         }
     }
     fn push(&self, mut event: [u64; 10]) {
@@ -181,6 +188,10 @@ impl<const N: usize, const T: usize, const D: usize> Accounting<N, T, D> {
         }
     }
     pub fn begin(&self, ns: u64, pid: u64, vcpus: u64) {
+        if self.input_mode.load(Acquire) != 0 { return; }
+        self.begin_window(ns, pid, vcpus);
+    }
+    fn begin_window(&self, ns: u64, pid: u64, vcpus: u64) {
         // A replacement before its predecessor composed keeps a truncated window.
         let previous = self.owner.load(Acquire);
         if self.active.load(Acquire) != 0 {
@@ -212,7 +223,42 @@ impl<const N: usize, const T: usize, const D: usize> Accounting<N, T, D> {
             .ok();
     }
     pub fn end(&self, ns: u64, pid: u64) {
+        if self.input_mode.load(Acquire) != 0 { return; }
         self.finish(ns, pid, true);
+    }
+    /// Reuse the fixed journal for input windows; no allocation or scheduler change.
+    pub fn reset_input(&self) {
+        self.active.store(0, Release);
+        self.input_begin.store(0, Release);
+        self.input_end.store(0, Release);
+        self.input_mode.store(1, Release);
+    }
+    pub fn begin_input(&self, ns: u64, pid: u64, vcpus: u64) {
+        if self.input_mode.load(Acquire) != 1 { return; }
+        // Earlier fast samples are not evidence for the first slow sample.
+        self.exported.store(self.generation.load(Acquire), Release);
+        self.input_begin.store(ns, Release);
+        self.input_end.store(0, Release);
+        self.begin_window(ns, pid, vcpus);
+    }
+    pub fn finish_input(&self, ns: u64) -> bool {
+        if self.input_mode.load(Acquire) != 1 { return false; }
+        self.finish(ns, self.owner.load(Acquire), true);
+        self.input_end.store(ns, Release);
+        let slow = ns.saturating_sub(self.input_begin.load(Acquire)) > 75_000_000;
+        if slow { self.input_mode.store(2, Release); }
+        slow
+    }
+    pub fn close_input(&self) {
+        self.active.store(0, Release);
+        self.input_mode.store(0, Release);
+    }
+    /// Numeric task-context subphase; object names a window, target, context or Sync serial.
+    pub fn acquire_phase(&self, ns: u64, pid: u64, tid: u64, phase: u64, edge: u64, object: u64, cpu_ns: u64) {
+        let window = self.active_window();
+        if window != 0 {
+            self.push([10, window, ns, pid, tid, phase, edge, object, cpu_ns, 0]);
+        }
     }
     pub fn active_window(&self) -> u64 {
         self.active.load(Acquire)
@@ -333,6 +379,11 @@ impl<const N: usize, const T: usize, const D: usize> Accounting<N, T, D> {
         let disk_count = self.disk_next.load(Acquire);
         let mut out=format!("account-buffer events={} overwritten={} lost={} state_lost={} disk_overwritten={} disk_lost={} unavailable={unavailable} state_unavailable={state_unavailable}\n",
             count.min(N as u64),count.saturating_sub(N as u64),self.lost.load(Relaxed),self.state_lost.load(Relaxed),disk_count.saturating_sub(D as u64),self.disk_lost.load(Relaxed));
+        let input_mode = self.input_mode.load(Acquire);
+        if input_mode != 0 {
+            let _ = writeln!(out, "account-input frozen={} begin_ns={} end_ns={}",
+                u64::from(input_mode == 2), self.input_begin.load(Acquire), self.input_end.load(Acquire));
+        }
         for start in windows {
             let id = start[1];
             let begin = start[2];
@@ -354,6 +405,10 @@ impl<const N: usize, const T: usize, const D: usize> Accounting<N, T, D> {
                 let to = r[2].min(end);
                 if to <= from || r[6] > 2 {
                     continue;
+                }
+                if input_mode != 0 {
+                    let _ = writeln!(out, "account-interval window={id} pid={} tid={} begin_ns={from} end_ns={to} mode={} kind={} object={}",
+                        r[3], r[4], r[6], r[7], r[8]);
                 }
                 let duration = to - from;
                 let total = totals.entry((r[3], r[4])).or_default();
@@ -379,6 +434,10 @@ impl<const N: usize, const T: usize, const D: usize> Accounting<N, T, D> {
                 if out.len() >= 8 * 1024 * 1024 {
                     out.push_str("account-export-truncated limit_bytes=8388608\n");
                     return out;
+                }
+                if r[0] == 10 {
+                    let _ = writeln!(out, "acquire-phase window={id} ns={} pid={} tid={} name={} edge={} object={} cpu_ns={}",
+                        r[2], r[3], r[4], acquire_phase_name(r[5]), r[6], r[7], r[8]);
                 }
                 if r[0] == 9 {
                     let _ = writeln!(out, "account-join window={id} ns={} pid={} tid={} object={} target_tid={} target_pid={}",
@@ -439,6 +498,16 @@ impl<const N: usize, const T: usize, const D: usize> Accounting<N, T, D> {
             }
         }
         out
+    }
+}
+
+pub fn acquire_phase_name(phase: u64) -> &'static str {
+    match phase {
+        1 => "acquire", 2 => "pending-front", 3 => "free-buffer", 4 => "source-ready",
+        5 => "dependency", 6 => "replay-copy", 7 => "virgl-copy-completion", 8 => "seal",
+        9 => "tree-protect", 10 => "source-attach", 11 => "context-busy", 12 => "context-inflight",
+        13 => "target-writer", 14 => "target-reader", 15 => "source-writer",
+        16 => "accepted-writer", 17 => "sync-reader", 18 => "copy-completion", _ => "unknown",
     }
 }
 

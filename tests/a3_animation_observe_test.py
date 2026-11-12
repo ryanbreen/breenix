@@ -1,6 +1,7 @@
 """Force retention of the slow acquire and host contention evidence, without a boot."""
 import importlib.util
 import json
+import os
 from pathlib import Path
 import tempfile
 import unittest
@@ -94,7 +95,14 @@ class AnimationObserve(unittest.TestCase):
             gate = load('a3-proof-gate')
             self.assertIn('acquire-phase', gate.KERNEL_LABELS)
             self.assertIn('input-reset', gate.SHARED_SUITE_LABELS)
-            self.assertTrue(callable(gate.check_observers))
+            argv = ['-D', str(serial) + '.qemu-trace.log', '-pidfile', str(serial) + '.qemu.pid']
+            with patch.dict(os.environ, BREENIX_QEMU_CASE_SAMPLE_SERIAL=str(serial)):
+                self.assertEqual(gate.check_observers(argv)['case_samples'], str(serial) + '.qemu-samples')
+                with self.assertRaisesRegex(ValueError, 'pidfile differs'):
+                    gate.check_observers(['-D', str(serial) + '.qemu-trace.log', '-pidfile', '/wrong'])
+            with patch.dict(os.environ, BREENIX_QEMU_CASE_SAMPLE_SERIAL=''):
+                with self.assertRaisesRegex(ValueError, 'not wired'):
+                    gate.check_observers(argv)
 
     def test_load_sampler_writes_timestamped_cpu_top_ten_each_tick(self):
         gate = load('a3-proof-gate')

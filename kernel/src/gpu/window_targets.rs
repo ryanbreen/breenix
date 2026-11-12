@@ -4,12 +4,15 @@
 //! retain the core's DMA holds; dropping a window revokes the handle, then drops its hold.
 
 use super::*;
+use crate::window::accounting::{AcquirePhase, acquire_dependency};
 
 /// Replay and its source attachment share the native receipt wait. Passing an
 /// outstanding draw to the timer-driven worker can delay the next window front
 /// beyond its display period. Virtual backends retain their blocking policy.
 fn replay_request(serial: u64, request: Request, ctx: u32, holds: &[u32], reading: &[u32]) -> Result<Done, i64> {
     send_sync(serial, request, ctx, holds, reading).map_err(|(e, _)| e)?;
+    let _phase = AcquirePhase::new(
+        if platform_config::is_qemu() { "virgl-copy-completion" } else { "copy-completion" }, serial);
     await_sync_traced(serial,
         #[cfg(target_arch = "x86_64")] None,
         #[cfg(target_arch = "x86_64")] true,
@@ -239,8 +242,13 @@ impl Target {
         wait_for(None, true, |c| {
             let Some(r) = c.resources.get(&self.id) else { return Some(Err(EIO)); };
             if r.lost { return Some(Err(EIO)); }
-            if r.writers != 0 || r.accepted.iter().any(|w| !w.ended())
-                || c.syncs.values().any(|s| s.reading.contains(&self.id)) { return None; }
+            if r.writers != 0 { acquire_dependency("source-writer", self.id as u64); return None; }
+            if let Some(writer) = r.accepted.iter().find(|w| !w.ended()) {
+                acquire_dependency("accepted-writer", writer.serial); return None;
+            }
+            if let Some((&serial, _)) = c.syncs.iter().find(|(_, s)| s.reading.contains(&self.id)) {
+                acquire_dependency("sync-reader", serial); return None;
+            }
             Some(if r.invalid { Err(EIO) } else { Ok(()) })
         }).map_err(|_| EINTR).and_then(|r| r).map_err(|e| e as i32)
     }
@@ -253,7 +261,10 @@ impl Target {
     }
 
     pub fn copy_from(&self, source: &Target, rects: &[breengel_abi::Rect]) -> Result<(), i32> {
-        source.ready()?;
+        {
+            let _phase = AcquirePhase::new("source-ready", source.id as u64);
+            source.ready()?;
+        }
         let mut words = Vec::new();
         for r in rects.iter().filter(|r| !r.is_empty()) {
             if r.x < 0 || r.y < 0 || r.x as u32 + r.w as u32 > self.width.min(source.width)
@@ -270,26 +281,37 @@ impl Target {
         if let Some(src) = source {
             let serial = with_core(|c| c.serial()).ok_or(ENODEV)?;
             let request = dev::ctx_attach(Tag::Sync(serial), ctx, src.id).ok_or(ENOMEM)?;
+            let _phase = AcquirePhase::new("source-attach", serial);
             let answer = replay_request(serial, request, ctx, &[src.id], &[])?;
             if !dev::ok(answer.answer) { return Err(EIO); }
         }
+        let dependency = AcquirePhase::new("dependency", ctx as u64);
         wait_for(None, true, |c| {
             let context = c.contexts.get(&ctx)?;
             if context.state != CtxState::Live || context.dropped { return Some(Err(EIO)); }
             let r = c.resources.get(&self.id)?;
-            if context.busy || !context.inflight.is_empty() || r.writers != 0 || r.reading { return None; }
-            if c.syncs.values().any(|s| s.reading.contains(&self.id)) { return None; }
+            if context.busy { acquire_dependency("context-busy", ctx as u64); return None; }
+            if let Some(&n) = context.inflight.front() { acquire_dependency("context-inflight", n as u64); return None; }
+            if r.writers != 0 { acquire_dependency("target-writer", self.id as u64); return None; }
+            if r.reading { acquire_dependency("target-reader", self.id as u64); return None; }
+            if let Some((&serial, _)) = c.syncs.iter().find(|(_, s)| s.reading.contains(&self.id)) {
+                acquire_dependency("sync-reader", serial); return None;
+            }
             if let Some(src) = source {
                 let r = c.resources.get(&src.id)?;
                 if r.lost || r.invalid { return Some(Err(EIO)); }
                 // The copy only reads its source. A concurrent CAPTURE may keep
                 // it pinned for CPU copyout while RESIZE reads the same front.
-                if r.writers != 0 || r.accepted.iter().any(|w| !w.ended()) { return None; }
+                if r.writers != 0 { acquire_dependency("source-writer", src.id as u64); return None; }
+                if let Some(writer) = r.accepted.iter().find(|w| !w.ended()) {
+                    acquire_dependency("accepted-writer", writer.serial); return None;
+                }
             }
             c.contexts.get_mut(&ctx)?.busy = true;
             c.resources.get_mut(&self.id)?.writers += 1;
             Some(Ok(()))
         }).map_err(|_| EINTR)??;
+        drop(dependency);
         let result = self.execute_taken(words, source);
         with_core(|c| {
             if let Some(context) = c.contexts.get_mut(&ctx) { context.busy = false; }

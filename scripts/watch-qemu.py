@@ -175,7 +175,10 @@ def main():
     if "-pidfile" in command:
         pid_file = Path(command[command.index("-pidfile") + 1])
     pid_file.unlink(missing_ok=True)
-    process = subprocess.Popen(command)
+    launch_env = os.environ.copy()
+    if args.mode == "suite" and "window-manager" in args.suite.split(","):
+        launch_env["BREENIX_QEMU_CASE_SAMPLE_SERIAL"] = str(args.serial.resolve())
+    process = subprocess.Popen(command, env=launch_env)
     case_samples = None
     try:
         if args.mode == "suite" and "window-manager" in args.suite.split(","):

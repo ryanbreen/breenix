@@ -8,7 +8,7 @@ import signal
 import subprocess
 import time
 
-# These are the recovery and positive-click cases from the retained measurement.
+# Recovery, positive clicks and performance cases use read-only samples.
 # Verdict lines close the case window.
 CLICK_CASES = frozenset(('stacking/click-raises', 'stacking/all-minimized', 'focus/pair-click'))
 START = re.compile(r'^CASE window-manager ([a-z-]+/[a-z-]+) START$')
@@ -32,6 +32,10 @@ class CaseSamples:
         self.window_counts = {}
         if self.enabled:
             self.directory.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def continuous(case):
+        return case in CONTINUOUS_CASES or case.startswith('performance/')
 
     def record(self, event, **fields):
         with (self.directory / 'samples.jsonl').open('a') as output:
@@ -66,7 +70,7 @@ class CaseSamples:
             if not match:
                 continue
             case = match[1]
-            if case in self.seen or not (case.startswith('recovery/') or case in CLICK_CASES):
+            if case in self.seen or not (case.startswith(('recovery/', 'performance/')) or case in CLICK_CASES):
                 continue
             self.seen.add(case)
             if self.pid_file:
@@ -79,7 +83,7 @@ class CaseSamples:
                     self.qemu_pid = 0
                     self.record('sample-error', case=case, error=str(error))
                     continue
-            if case in CONTINUOUS_CASES:
+            if self.continuous(case):
                 self.active.add(case)
                 self.record('sample-case-start', case=case)
             self.start_window(case)
@@ -89,7 +93,7 @@ class CaseSamples:
     def start_window(self, case):
         window = self.window_counts.get(case, 0) + 1
         self.window_counts[case] = window
-        suffix = f'.{window:04d}' if case in CONTINUOUS_CASES else ''
+        suffix = f'.{window:04d}' if self.continuous(case) else ''
         target = self.directory / (case.replace('/', '-') + suffix + '.sample.txt')
         start_unix, start_mono = time.time_ns(), time.monotonic_ns()
         try:

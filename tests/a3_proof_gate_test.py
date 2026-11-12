@@ -68,7 +68,8 @@ class ProofGateTests(unittest.TestCase):
     def test_prediction_precedes_unchanged_exec_and_refusal_stops_it(self):
         self.assertTrue(GATE.is_file(), 'the reusable A.3 proof gate is missing')
         gate = module(GATE)
-        argv = ['wrapper', 'signed-qemu', '-accel', 'hvf', 'argument with spaces']
+        argv = ['wrapper', 'signed-qemu', '-accel', 'hvf', 'argument with spaces',
+                '-D', '/unused/serial.qemu-trace.log', '-pidfile', '/unused/serial.qemu.pid']
         with tempfile.TemporaryDirectory() as directory:
             config = {'output_dir': directory, 'ledger': str(Path(directory) / 'ledger.jsonl'),
                       'head': 'a' * 40, 'coordinator_line': 266}
@@ -85,7 +86,8 @@ class ProofGateTests(unittest.TestCase):
                 self.assertEqual(prediction['type'], 'prediction')
                 self.assertIn('25%', prediction['text'])
                 self.assertEqual(json.loads((Path(directory) / 'artifact-gate.json').read_text())['argv'], argv)
-            with patch.object(gate, 'check_chain', return_value={'hashes': {}, 'native_launcher': 'native', 'qemu': str(qemu)}), \
+            with patch.dict(os.environ, BREENIX_QEMU_CASE_SAMPLE_SERIAL='/unused/serial'), \
+                    patch.object(gate, 'check_chain', return_value={'hashes': {}, 'native_launcher': 'native', 'qemu': str(qemu)}), \
                     patch.object(gate, 'check_artifacts', return_value={'suite': 'sha'}) as artifacts, \
                     patch.object(gate, 'check_head') as head, \
                     patch.object(gate, 'check_warnings') as warnings, \

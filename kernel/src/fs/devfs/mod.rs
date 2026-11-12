@@ -468,6 +468,7 @@ pub fn screen_evidence_write(buf: &[u8]) -> Result<usize, i32> {
         let command = core::str::from_utf8(command).map_err(|_| 22)?;
         #[cfg(target_arch = "aarch64")]
         crate::window::gpu_core_trace::case_boundary(caller.tid, command);
+        crate::window::accounting::input_command(caller.tgid, command);
         crate::window::stall_trace::command(caller.tid, command);
         return Ok(buf.len());
     }
