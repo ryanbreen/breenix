@@ -10,6 +10,7 @@ struct World {
     stubborn: i32,
     immortal: bool,
     mount_stuck: bool,
+    orphan_holds_file: bool,
     mounted: bool,
     output_stuck: bool,
     interrupted: bool,
@@ -41,7 +42,7 @@ mod std {
 }
 mod libbreenix {
     #[derive(Debug, PartialEq, Eq)]
-    pub enum Errno { ECHILD, EINTR, ESRCH }
+    pub enum Errno { ECHILD, EINTR, ESRCH, EBUSY }
     pub mod error {
         #[derive(Debug)]
         pub enum Error { Os(super::Errno) }
@@ -64,7 +65,12 @@ mod libbreenix {
     }
     pub mod fs {
         pub fn umount2(path: &str, flags: u32) -> Result<(), super::error::Error> {
-            assert_eq!(path, "/shares/data"); assert_eq!(flags, 0);
+            assert_eq!(path, "/shares/data");
+            assert!(flags == 0 || flags == 2);
+            if crate::WORLD.with(|w| w.borrow().orphan_holds_file) {
+                crate::event(format!("unmount flags={flags}"));
+                if flags == 0 { return Err(super::error::Error::Os(super::Errno::EBUSY)); }
+            } else { assert_eq!(flags, 0); }
             crate::event(format!("umount {path}"));
             crate::WORLD.with(|w| { let mut w = w.borrow_mut(); if !w.mount_stuck { w.mounted = false; } });
             Ok(())
@@ -264,4 +270,17 @@ fn sweep_survivors_and_undrained_service_logs_are_named() {
     WORLD.with(|w| w.borrow_mut().output_stuck = true);
     let error = s.stop_for_sequence().unwrap_err();
     assert!(error.contains("leaf") && error.contains("output"), "{error}");
+}
+
+#[test]
+fn stalled_runner_open_file_does_not_prevent_handoff() {
+    let mut s = supervisor();
+    WORLD.with(|w| w.borrow_mut().orphan_holds_file = true);
+    assert_eq!(s.stop_for_sequence(), Ok(()));
+    WORLD.with(|w| {
+        let w = w.borrow();
+        assert!(!w.mounted && w.children.is_empty());
+        assert!(w.events.iter().any(|e| e == "unmount flags=0"));
+        assert!(w.events.iter().any(|e| e == "unmount flags=2"));
+    });
 }

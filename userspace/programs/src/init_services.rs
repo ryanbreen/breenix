@@ -314,7 +314,13 @@ fn unmount_sequence_shares() -> Result<(), String> {
     targets.dedup();
     let mut errors = Vec::new();
     for target in targets {
-        if let Err(e) = libbreenix::fs::umount2(&target, 0) {
+        // A stalled runner can leave orphaned open files. Detach invalidates their
+        // handles before the global sweep, without killing the live share server.
+        let detached = libbreenix::fs::umount2(&target, 0).or_else(|e| match e {
+            libbreenix::error::Error::Os(libbreenix::Errno::EBUSY) => libbreenix::fs::umount2(&target, 2),
+            e => Err(e),
+        });
+        if let Err(e) = detached {
             errors.push(format!("umount {target}: {e}"));
         }
     }
@@ -461,8 +467,6 @@ impl Supervisor {
     }
 
     /// Quiesce PID 1's services and shares for an exec hand-off, without rebooting.
-    // Public sequence-owner API; its caller is wired by the sequence-entry unit.
-    #[allow(dead_code)]
     pub fn stop_for_sequence(&mut self) -> Result<(), String> {
         if std::process::id() != 1 {
             return Err("sequence teardown requires PID 1".into());
