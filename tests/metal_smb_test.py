@@ -70,8 +70,8 @@ class SmbStagingTest(unittest.TestCase):
                     self.assertRegex(stat, r'User:\s+0\s+Group:\s+0')
                 self.assertNotIn(config['SMB_TEST_PASSWORD'], output.getvalue() + json.dumps(facts))
 
-    def test_only_gui_apps_alone_selects_and_stages_guskit_mounts(self):
-        for suite in ('gui-apps,console', 'console,gui-apps', 'console,smoke'):
+    def test_sequences_without_gui_apps_do_not_stage_guskit_mounts(self):
+        for suite in ('console,smoke',):
             with self.subTest(suite=suite), self.gui_root() as (image, read, config):
                 selected = metal_root.smb_gui_selection('suite', suite)
                 # Inspect the staged image even if the predicate is wrong.
@@ -84,7 +84,7 @@ class SmbStagingTest(unittest.TestCase):
                              '/mnt/guskit-rw', '/mnt/guskit-ro'):
                     self.assertIn(b'File not found', read('stat ' + path).stderr)
 
-    def test_gui_apps_sequence_is_refused_before_staging_or_lease(self):
+    def test_gui_apps_sequence_configures_smb_before_boot(self):
         runner = load_script('metal-run')
         for suite in ('gui-apps,console', 'console,gui-apps', 'console,smoke'):
             for case in (None, 'guskit') if 'gui-apps' in suite else (None,):
@@ -98,16 +98,19 @@ class SmbStagingTest(unittest.TestCase):
                         patch.object(runner.Path, 'home', return_value=Path(tmp)):
                     args = runner.argument_parser().parse_args(
                         ['boot', '--suite', suite] + (['--case', case] if case else []))
-                    if 'gui-apps' in suite:
-                        with self.assertRaisesRegex(SystemExit, '^boot gui-apps on its own$'):
+                    if case:
+                        with self.assertRaisesRegex(SystemExit, '--case needs one production suite'):
                             runner.boot(args)
                         remote.assert_not_called()
-                        processes.assert_not_called()
+                        configure.assert_not_called()
+                        continue
+                    self.assertEqual(runner.boot(args), 0)
+                    self.assertTrue(remote.called)
+                    self.assertTrue(processes.called)
+                    if 'gui-apps' in suite:
+                        configure.assert_called_once()
                     else:
-                        self.assertEqual(runner.boot(args), 0)
-                        self.assertTrue(remote.called)
-                        self.assertTrue(processes.called)
-                    configure.assert_not_called()
+                        configure.assert_not_called()
 
     def test_console_and_other_gui_selection_remove_smb_mounts(self):
         for mode, suite, case in (('console', None, None), ('suite', 'gui-apps', 'bterm')):
