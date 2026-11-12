@@ -399,6 +399,14 @@
       "text": "VALUE wm-gpu-core-command seq=123950 submit_ns=592242354333 fence_return_ns=592245559833 pid=744 tid=977 context=315 type=519 cmd_bytes=32 payload_bytes=2528 queue_seq=65632 fence=65632"
     },
     {
+      "line": 1110111,
+      "text": "VALUE wm-gpu-core-command seq=123952 submit_ns=592242358333 fence_return_ns=592245554125 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65633 fence=0"
+    },
+    {
+      "line": 1110115,
+      "text": "VALUE wm-gpu-core-command seq=123954 submit_ns=592245575958 fence_return_ns=592245700000 pid=745 tid=979 context=0 type=262 cmd_bytes=32 payload_bytes=32 queue_seq=65634 fence=0"
+    },
+    {
       "line": 1110119,
       "text": "VALUE wm-gpu-core-command seq=123956 submit_ns=592245588750 fence_return_ns=592248846625 pid=744 tid=977 context=315 type=519 cmd_bytes=32 payload_bytes=2648 queue_seq=65635 fence=65635"
     },
@@ -443,6 +451,14 @@
       "text": "VALUE wm-gpu-core-command seq=123973 submit_ns=592385973041 fence_return_ns=592387706333 pid=746 tid=980 context=316 type=519 cmd_bytes=32 payload_bytes=572 queue_seq=65645 fence=65645"
     },
     {
+      "line": 1110157,
+      "text": "VALUE wm-gpu-core-command seq=123975 submit_ns=592386158458 fence_return_ns=592387703333 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65646 fence=0"
+    },
+    {
+      "line": 1110161,
+      "text": "VALUE wm-gpu-core-command seq=123977 submit_ns=592387722541 fence_return_ns=592387807208 pid=745 tid=979 context=0 type=262 cmd_bytes=32 payload_bytes=1024 queue_seq=65647 fence=0"
+    },
+    {
       "line": 1110165,
       "text": "VALUE wm-gpu-core-command seq=123979 submit_ns=592387729875 fence_return_ns=592388993375 pid=746 tid=980 context=316 type=519 cmd_bytes=32 payload_bytes=820 queue_seq=65648 fence=65648"
     },
@@ -481,6 +497,14 @@
     {
       "line": 1110197,
       "text": "VALUE wm-gpu-core-command seq=123995 submit_ns=592430154000 fence_return_ns=592437914208 pid=746 tid=980 context=316 type=519 cmd_bytes=32 payload_bytes=13388 queue_seq=65657 fence=65657"
+    },
+    {
+      "line": 1110201,
+      "text": "VALUE wm-gpu-core-command seq=123997 submit_ns=592430290875 fence_return_ns=592437909750 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65658 fence=0"
+    },
+    {
+      "line": 1110205,
+      "text": "VALUE wm-gpu-core-command seq=123999 submit_ns=592437932291 fence_return_ns=592437990500 pid=745 tid=979 context=0 type=262 cmd_bytes=32 payload_bytes=1024 queue_seq=65659 fence=0"
     },
     {
       "line": 1110209,
@@ -527,8 +551,16 @@
       "text": "VALUE wm-gpu-core-command seq=124018 submit_ns=592445005083 fence_return_ns=592557355750 pid=744 tid=977 context=315 type=514 cmd_bytes=32 payload_bytes=0 queue_seq=65670 fence=0"
     },
     {
+      "line": 1110247,
+      "text": "VALUE wm-gpu-core-command seq=124020 submit_ns=592557385000 fence_return_ns=592557477125 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65671 fence=0"
+    },
+    {
       "line": 1110251,
       "text": "VALUE wm-gpu-core-command seq=124022 submit_ns=592557427875 fence_return_ns=592599018875 pid=746 tid=980 context=316 type=519 cmd_bytes=32 payload_bytes=7528 queue_seq=65672 fence=65672"
+    },
+    {
+      "line": 1110255,
+      "text": "VALUE wm-gpu-core-command seq=124024 submit_ns=592557488833 fence_return_ns=592599009500 pid=745 tid=979 context=0 type=262 cmd_bytes=32 payload_bytes=32 queue_seq=65673 fence=0"
     },
     {
       "line": 1110259,
@@ -567,6 +599,14 @@
       "text": "VALUE wm-gpu-core-command seq=124040 submit_ns=592641119250 fence_return_ns=592647719708 pid=746 tid=980 context=316 type=519 cmd_bytes=32 payload_bytes=10016 queue_seq=65682 fence=65682"
     },
     {
+      "line": 1110291,
+      "text": "VALUE wm-gpu-core-command seq=124042 submit_ns=592641267416 fence_return_ns=592647712791 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65683 fence=0"
+    },
+    {
+      "line": 1110295,
+      "text": "VALUE wm-gpu-core-command seq=124044 submit_ns=592647729166 fence_return_ns=592647782291 pid=745 tid=979 context=0 type=262 cmd_bytes=32 payload_bytes=64 queue_seq=65684 fence=0"
+    },
+    {
       "line": 1110299,
       "text": "VALUE wm-gpu-core-command seq=124046 submit_ns=592647751750 fence_return_ns=592721472041 pid=746 tid=980 context=316 type=519 cmd_bytes=32 payload_bytes=9748 queue_seq=65685 fence=65685"
     },
@@ -581,6 +621,14 @@
     {
       "line": 1110309,
       "text": "VALUE wm-gpu-core-command seq=124051 submit_ns=592721548875 fence_return_ns=592788403083 pid=746 tid=980 context=316 type=519 cmd_bytes=32 payload_bytes=33048 queue_seq=65688 fence=65688"
+    },
+    {
+      "line": 1110313,
+      "text": "VALUE wm-gpu-core-command seq=124053 submit_ns=592721763250 fence_return_ns=592788393958 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65689 fence=0"
+    },
+    {
+      "line": 1110317,
+      "text": "VALUE wm-gpu-core-command seq=124055 submit_ns=592788432166 fence_return_ns=592788520041 pid=745 tid=979 context=0 type=262 cmd_bytes=32 payload_bytes=128 queue_seq=65690 fence=0"
     },
     {
       "line": 1110321,
@@ -615,6 +663,14 @@
       "text": "VALUE wm-gpu-core-command seq=124069 submit_ns=592849265375 fence_return_ns=592894169291 pid=746 tid=980 context=316 type=518 cmd_bytes=72 payload_bytes=0 queue_seq=65698 fence=65698"
     },
     {
+      "line": 1110349,
+      "text": "VALUE wm-gpu-core-command seq=124071 submit_ns=592884907666 fence_return_ns=592894122333 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65699 fence=0"
+    },
+    {
+      "line": 1110353,
+      "text": "VALUE wm-gpu-core-command seq=124073 submit_ns=592894152791 fence_return_ns=592894233500 pid=745 tid=979 context=0 type=262 cmd_bytes=32 payload_bytes=256 queue_seq=65700 fence=0"
+    },
+    {
       "line": 1110357,
       "text": "VALUE wm-gpu-core-command seq=124075 submit_ns=592894227125 fence_return_ns=592957942583 pid=744 tid=977 context=315 type=519 cmd_bytes=32 payload_bytes=13532 queue_seq=65701 fence=65701"
     },
@@ -647,6 +703,14 @@
       "text": "VALUE wm-gpu-core-command seq=124088 submit_ns=592958143458 fence_return_ns=592995533500 pid=746 tid=980 context=316 type=518 cmd_bytes=72 payload_bytes=0 queue_seq=65708 fence=65708"
     },
     {
+      "line": 1110387,
+      "text": "VALUE wm-gpu-core-command seq=124090 submit_ns=592958984166 fence_return_ns=592995471166 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65709 fence=0"
+    },
+    {
+      "line": 1110391,
+      "text": "VALUE wm-gpu-core-command seq=124092 submit_ns=592995497708 fence_return_ns=592995616083 pid=745 tid=979 context=0 type=262 cmd_bytes=32 payload_bytes=512 queue_seq=65710 fence=0"
+    },
+    {
       "line": 1110395,
       "text": "VALUE wm-gpu-core-command seq=124094 submit_ns=592995606458 fence_return_ns=593048369875 pid=744 tid=977 context=315 type=519 cmd_bytes=32 payload_bytes=10016 queue_seq=65711 fence=65711"
     },
@@ -659,8 +723,16 @@
       "text": "VALUE wm-gpu-core-command seq=124097 submit_ns=592995629791 fence_return_ns=593047747458 pid=745 tid=979 context=315 type=514 cmd_bytes=32 payload_bytes=0 queue_seq=65713 fence=0"
     },
     {
+      "line": 1110405,
+      "text": "VALUE wm-gpu-core-command seq=124099 submit_ns=593048385166 fence_return_ns=593048517875 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65714 fence=0"
+    },
+    {
       "line": 1110409,
       "text": "VALUE wm-gpu-core-command seq=124101 submit_ns=593048472333 fence_return_ns=593091453458 pid=744 tid=977 context=315 type=519 cmd_bytes=32 payload_bytes=9748 queue_seq=65715 fence=65715"
+    },
+    {
+      "line": 1110413,
+      "text": "VALUE wm-gpu-core-command seq=124103 submit_ns=593048538375 fence_return_ns=593091440708 pid=745 tid=979 context=0 type=262 cmd_bytes=32 payload_bytes=16 queue_seq=65716 fence=0"
     },
     {
       "line": 1110417,
@@ -675,6 +747,14 @@
       "text": "VALUE wm-gpu-core-command seq=124108 submit_ns=593091569583 fence_return_ns=593162436166 pid=744 tid=977 context=315 type=519 cmd_bytes=32 payload_bytes=33048 queue_seq=65719 fence=65719"
     },
     {
+      "line": 1110427,
+      "text": "VALUE wm-gpu-core-command seq=124110 submit_ns=593092585791 fence_return_ns=593162364583 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65720 fence=0"
+    },
+    {
+      "line": 1110431,
+      "text": "VALUE wm-gpu-core-command seq=124112 submit_ns=593162381958 fence_return_ns=593162520333 pid=745 tid=979 context=0 type=262 cmd_bytes=32 payload_bytes=128 queue_seq=65721 fence=0"
+    },
+    {
       "line": 1110435,
       "text": "VALUE wm-gpu-core-command seq=124114 submit_ns=593162536583 fence_return_ns=593162700041 pid=745 tid=979 context=316 type=514 cmd_bytes=32 payload_bytes=0 queue_seq=65722 fence=0"
     },
@@ -687,12 +767,24 @@
       "text": "VALUE wm-gpu-core-command seq=124117 submit_ns=593162578458 fence_return_ns=593248634500 pid=744 tid=977 context=315 type=519 cmd_bytes=32 payload_bytes=37912 queue_seq=65724 fence=65724"
     },
     {
+      "line": 1110445,
+      "text": "VALUE wm-gpu-core-command seq=124119 submit_ns=593163519500 fence_return_ns=593248628291 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65725 fence=0"
+    },
+    {
       "line": 1110449,
       "text": "VALUE wm-gpu-core-command seq=124121 submit_ns=593248647125 fence_return_ns=593248764375 pid=745 tid=979 context=315 type=514 cmd_bytes=32 payload_bytes=0 queue_seq=65726 fence=0"
     },
     {
+      "line": 1110453,
+      "text": "VALUE wm-gpu-core-command seq=124123 submit_ns=593248785541 fence_return_ns=593248889333 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65727 fence=0"
+    },
+    {
       "line": 1110457,
       "text": "VALUE wm-gpu-core-command seq=124125 submit_ns=593248897083 fence_return_ns=593248985166 pid=745 tid=979 context=315 type=514 cmd_bytes=32 payload_bytes=0 queue_seq=65728 fence=0"
+    },
+    {
+      "line": 1110461,
+      "text": "VALUE wm-gpu-core-command seq=124127 submit_ns=593248992375 fence_return_ns=593249078541 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65729 fence=0"
     },
     {
       "line": 1110465,
@@ -715,6 +807,10 @@
       "text": "VALUE wm-gpu-core-command seq=124137 submit_ns=593249418000 fence_return_ns=593257389083 pid=744 tid=977 context=315 type=518 cmd_bytes=72 payload_bytes=0 queue_seq=65734 fence=65734"
     },
     {
+      "line": 1110485,
+      "text": "VALUE wm-gpu-core-command seq=124139 submit_ns=593249798041 fence_return_ns=593256947666 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65735 fence=0"
+    },
+    {
       "line": 1110489,
       "text": "VALUE wm-gpu-core-command seq=124141 submit_ns=593249821958 fence_return_ns=593257390500 pid=745 tid=979 context=315 type=518 cmd_bytes=72 payload_bytes=0 queue_seq=65736 fence=65736"
     },
@@ -729,6 +825,10 @@
     {
       "line": 1110499,
       "text": "VALUE wm-gpu-core-command seq=124146 submit_ns=593256973750 fence_return_ns=593257456666 pid=744 tid=977 context=315 type=518 cmd_bytes=72 payload_bytes=0 queue_seq=65739 fence=65739"
+    },
+    {
+      "line": 1110503,
+      "text": "VALUE wm-gpu-core-command seq=124148 submit_ns=593257234583 fence_return_ns=593257431291 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65740 fence=0"
     },
     {
       "line": 1110507,
@@ -751,8 +851,16 @@
       "text": "VALUE wm-gpu-core-command seq=124158 submit_ns=593257710375 fence_return_ns=593289454083 pid=744 tid=977 context=315 type=518 cmd_bytes=72 payload_bytes=0 queue_seq=65745 fence=65745"
     },
     {
+      "line": 1110527,
+      "text": "VALUE wm-gpu-core-command seq=124160 submit_ns=593257797000 fence_return_ns=593289270375 pid=745 tid=979 context=0 type=258 cmd_bytes=32 payload_bytes=0 queue_seq=65746 fence=0"
+    },
+    {
       "line": 1110531,
       "text": "VALUE wm-gpu-core-command seq=124162 submit_ns=593257817250 fence_return_ns=593289455750 pid=744 tid=977 context=315 type=518 cmd_bytes=72 payload_bytes=0 queue_seq=65747 fence=65747"
+    },
+    {
+      "line": 1110535,
+      "text": "VALUE wm-gpu-core-command seq=124164 submit_ns=593258028083 fence_return_ns=593289388291 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65748 fence=0"
     },
     {
       "line": 1110539,
@@ -775,8 +883,16 @@
       "text": "VALUE wm-gpu-core-command seq=124174 submit_ns=593289747250 fence_return_ns=593296729083 pid=744 tid=977 context=315 type=518 cmd_bytes=72 payload_bytes=0 queue_seq=65753 fence=65753"
     },
     {
+      "line": 1110559,
+      "text": "VALUE wm-gpu-core-command seq=124176 submit_ns=593289845000 fence_return_ns=593296522791 pid=745 tid=979 context=0 type=258 cmd_bytes=32 payload_bytes=0 queue_seq=65754 fence=0"
+    },
+    {
       "line": 1110563,
       "text": "VALUE wm-gpu-core-command seq=124178 submit_ns=593289867125 fence_return_ns=593296730541 pid=744 tid=977 context=315 type=518 cmd_bytes=72 payload_bytes=0 queue_seq=65755 fence=65755"
+    },
+    {
+      "line": 1110567,
+      "text": "VALUE wm-gpu-core-command seq=124180 submit_ns=593290100000 fence_return_ns=593296680000 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65756 fence=0"
     },
     {
       "line": 1110571,
@@ -799,8 +915,16 @@
       "text": "VALUE wm-gpu-core-command seq=124190 submit_ns=593297093833 fence_return_ns=593300489916 pid=744 tid=977 context=315 type=518 cmd_bytes=72 payload_bytes=0 queue_seq=65761 fence=65761"
     },
     {
+      "line": 1110591,
+      "text": "VALUE wm-gpu-core-command seq=124192 submit_ns=593297158125 fence_return_ns=593300289458 pid=745 tid=979 context=0 type=258 cmd_bytes=32 payload_bytes=0 queue_seq=65762 fence=0"
+    },
+    {
       "line": 1110595,
       "text": "VALUE wm-gpu-core-command seq=124194 submit_ns=593297178375 fence_return_ns=593300491500 pid=744 tid=977 context=315 type=518 cmd_bytes=72 payload_bytes=0 queue_seq=65763 fence=65763"
+    },
+    {
+      "line": 1110599,
+      "text": "VALUE wm-gpu-core-command seq=124196 submit_ns=593297662125 fence_return_ns=593300414458 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65764 fence=0"
     },
     {
       "line": 1110603,
@@ -821,6 +945,14 @@
     {
       "line": 1110619,
       "text": "VALUE wm-gpu-core-command seq=124206 submit_ns=593300684333 fence_return_ns=593302181125 pid=744 tid=977 context=315 type=518 cmd_bytes=72 payload_bytes=0 queue_seq=65769 fence=65769"
+    },
+    {
+      "line": 1110623,
+      "text": "VALUE wm-gpu-core-command seq=124208 submit_ns=593300744750 fence_return_ns=593302073791 pid=745 tid=979 context=0 type=258 cmd_bytes=32 payload_bytes=0 queue_seq=65770 fence=0"
+    },
+    {
+      "line": 1110627,
+      "text": "VALUE wm-gpu-core-command seq=124210 submit_ns=593300903625 fence_return_ns=593302122041 pid=745 tid=979 context=0 type=516 cmd_bytes=72 payload_bytes=0 queue_seq=65771 fence=0"
     },
     {
       "line": 1110631,
