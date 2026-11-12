@@ -4,6 +4,8 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from gt710_gr_live_unwind_test import item
 import metal_smb_test
@@ -12,6 +14,41 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DesktopSuiteLaunch(unittest.TestCase):
+    def test_sequence_stages_desktop_and_smb_like_standalone(self):
+        import metal_root
+        fixture = metal_smb_test.SmbStagingTest()
+        staged = []
+        for suite in ('gui-apps', 'console,gui-apps,smoke'):
+            with fixture.gui_root() as (image, read, config):
+                metal_root.stage_root(image, 'suite', suite, {}, smb_config=config)
+                files = {}
+                for path in ('/etc/breenix/desktop-suite', '/etc/breenix/smb-test.cred',
+                             '/etc/breenix/smb-test-server', '/etc/shares'):
+                    data = read('cat ' + path).stdout
+                    self.assertTrue(data, path)
+                    files[path] = (data, read('stat ' + path).stdout)
+                for path in ('/mnt/guskit-rw', '/mnt/guskit-ro'):
+                    self.assertIn(b'Type: directory', read('stat ' + path).stdout)
+                staged.append(files)
+        for path in staged[0]:
+            self.assertEqual(staged[0][path][0], staged[1][path][0])
+            for mode in (b'0600', b'0644'):
+                self.assertEqual(mode in staged[0][path][1], mode in staged[1][path][1])
+
+    def test_metal_run_accepts_gui_apps_in_sequence(self):
+        runner = metal_smb_test.load_script('metal-run')
+        with tempfile.TemporaryDirectory() as tmp, \
+                patch.object(runner, 'host_env', return_value={}), \
+                patch.object(runner, 'resolve', return_value='a' * 40), \
+                patch.object(runner, 'resolve_suites', side_effect=lambda env, sha, suites: suites), \
+                patch.object(runner, 'configure_smb'), \
+                patch.object(runner, 'in_metal', return_value=SimpleNamespace(returncode=0, stdout='claimed', stderr='')) as remote, \
+                patch.object(runner.subprocess, 'Popen'), \
+                patch.object(runner.Path, 'home', return_value=Path(tmp)):
+            args = runner.argument_parser().parse_args(['boot', '--suite', 'console,gui-apps,files-io'])
+            self.assertEqual(runner.boot(args), 0)
+            self.assertTrue(remote.called)
+
     def test_staging_selects_init_desktop_only_for_guskit(self):
         fixture = metal_smb_test.SmbStagingTest()
         for case in (None, 'guskit', 'guskit/smb-save-open', 'bterm'):
