@@ -29,6 +29,7 @@ class BootInteractiveQmpTest(unittest.TestCase):
         shutil.copyfile(ROOT / "scripts/boot-interactive.sh", scripts / "boot-interactive.sh")
         shutil.copyfile(ROOT / "scripts/suite-sequence.py", scripts / "suite-sequence.py")
         shutil.copytree(ROOT / "docs", self.root / "docs")
+        (scripts / "boot-commit.sh").write_text("boot_commit() { echo test; }\n")
         self.executable(scripts / "write-boot-target.sh", '#!/bin/sh\nexit 0\n')
         (scripts / "host-slots.sh").write_text("\n".join(
             f"{name}() {{ :; }}" for name in (
@@ -45,11 +46,26 @@ class BootInteractiveQmpTest(unittest.TestCase):
                         f'for id in $(echo "$STUB_VIGIL_ID" | tr , " "); do [ -z "$STUB_BOOT_HOME" ] || mkdir -p "$STUB_BOOT_HOME/{BOOTS}/$id"; done\n'
                         'printf "%s" "$STUB_VIGIL_ID"\n')
         self.executable(scripts / "qemu-1x-app.sh", '#!/bin/sh\necho qemu-system-aarch64\n')
+        (scripts / "qemu-evidence.py").write_text(
+            'import json, os, pathlib, signal, sys, time\n'
+            'args = sys.argv[1:]\n'
+            'if args[0] == "serve":\n'
+            ' d = pathlib.Path(args[args.index("--dir") + 1]); d.mkdir(parents=True)\n'
+            ' pathlib.Path(os.environ["RECEIVER_PID"]).write_text(str(os.getpid()))\n'
+            ' (d / "route.json").write_text(json.dumps({"pid": os.getpid()}))\n'
+            ' while True: time.sleep(1)\n'
+            'else:\n'
+            ' image, d = map(pathlib.Path, args[1:]); route = json.loads((d / "route.json").read_text())\n'
+            ' os.kill(route["pid"], 0); image.write_text("route=" + str(route["pid"]))\n')
+        self.executable(scripts / "check-host-renderer.py", '#!/bin/sh\nexit 0\n')
+        (scripts / "check-host-renderer.py").write_text('')
         (scripts / "qemu-arm64.py").write_text('print("default")\n')
         (scripts / "watch-qemu.py").write_text(
             'import json, os, pathlib, sys\n'
             'pathlib.Path(os.environ["CAPTURE"] + ".watch").write_text(json.dumps(sys.argv))\n'
-            'serial = pathlib.Path(sys.argv[sys.argv.index("--serial") + 1])\n'
+            'disk = pathlib.Path(sys.argv[sys.argv.index("--disk") + 1])\n'
+            'pathlib.Path(os.environ["CAPTURE"] + ".disk").write_bytes(disk.read_bytes())\n'
+            'serial = pathlib.Path(sys.argv[sys.argv.index("--serial") + 1])\n' 
             'suites = sys.argv[sys.argv.index("--suite") + 1]\n'
             'serial.write_text("".join("SUITE " + s + " DONE passed=1 failed=0 skipped=0 total=1\\n" for s in suites.split(",") if s))\n'
             'pathlib.Path(os.environ["CAPTURE"]).write_text(json.dumps(sys.argv[sys.argv.index("--") + 1:]))\n')
@@ -74,7 +90,9 @@ class BootInteractiveQmpTest(unittest.TestCase):
         boot_home = vigil_home if boot_home == "default" else boot_home
         env = {k: v for k, v in os.environ.items() if k not in ("VIGIL_TEST_HOME", "VIGIL_BOOT_ID")}
         env.update(HOME=str(self.home), STUB_VIGIL_ID=boot_id, STUB_BOOT_HOME=str(boot_home or ""),
-                   CALLS=str(self.calls), CAPTURE=str(self.root / "args.json"))
+                   CALLS=str(self.calls), CAPTURE=str(self.root / "args.json"),
+                   RECEIVER_PID=str(self.root / "receiver.pid"), BREENIX_SUITE_ATTEMPT="1",
+                   BREENIX_QEMU_GL_BINARY="qemu-system-aarch64")
         if vigil_home is not None:
             env["VIGIL_TEST_HOME"] = str(vigil_home)
         self.calls.unlink(missing_ok=True)
@@ -86,6 +104,26 @@ class BootInteractiveQmpTest(unittest.TestCase):
         if expected_code:
             return [], result.stderr
         return json.loads((self.root / "args.json").read_text()), result.stdout
+
+    def test_ui_testing_receiver_and_route_are_limited_to_standalone_suite(self):
+        for suite, case in (("ui-testing", None), ("ui-testing", "proof"),
+                            ("window-manager", None), ("gpu", None),
+                            ("console,ui-testing", None)):
+            with self.subTest(suite=suite, case=case):
+                pidfile = self.root / "receiver.pid"
+                pidfile.unlink(missing_ok=True)
+                extra = ("--case", case) if case else ()
+                self.launch(*extra, "--no-display", "--gpu-gl", mode=("--mode", "suite", "--suite", suite))
+                disk = (self.root / "args.json.disk").read_text()
+                if suite == "ui-testing":
+                    self.assertTrue(pidfile.exists(), "receiver must start before QEMU")
+                    pid = int(pidfile.read_text())
+                    self.assertEqual(disk, f"route={pid}")
+                    with self.assertRaises(ProcessLookupError):
+                        os.kill(pid, 0)
+                else:
+                    self.assertFalse(pidfile.exists())
+                    self.assertEqual(disk, "")
 
     def test_terminal_kernel_rejects_completion_modes(self):
         kernel = self.root / "target/aarch64-breenix-kernel/release/kernel-aarch64"
