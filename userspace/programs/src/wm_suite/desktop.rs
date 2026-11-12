@@ -518,10 +518,10 @@ impl WaitObservation {
             let clients: Vec<_> = (0..(word(r, 196) as usize).min(16))
                 .map(|i| (quad(r, 200 + i * 32), quad(r, 208 + i * 32)))
                 .collect();
-            format!("context={} serial={} clients={clients:?} pixel={:?}",
-                quad(r, 64), quad(r, 176), self.pixel)
+            format!("context={} serial={} flags={} pixel={:?} clients={clients:?}",
+                quad(r, 64), quad(r, 176), word(r, 24), self.pixel)
         });
-        format!("last readback error={:?}; last completed={binding:?}", self.error)
+        format!("last completed={binding:?}\nlast readback error={:?}", self.error)
     }
 }
 impl Desktop {
@@ -530,7 +530,7 @@ impl Desktop {
         Self::launch(false)
     }
     pub fn launch(supervised: bool) -> Result<Self, String> {
-        let previous_context = quad(&Screen::read_kind(None)?.record, 64);
+        let previous_serial = Screen::read_kind(None)?.serial();
         graphics::take_over_display().map_err(|e| format!("session display: {e}"))?;
         let startup = StartupTrace::new()?;
         let (r, w) = io::pipe2(io::status_flags::O_NONBLOCK).map_err(|e| e.to_string())?;
@@ -579,15 +579,16 @@ impl Desktop {
                 ));
             }
             Ok(observation.read().is_ok_and(|s| {
-                s.serial() != 0
-                    && quad(&s.record, 64) != previous_context
+                // read() validates Composed flags=3. Native readback contexts
+                // name a shared channel, so freshness comes from composition.
+                s.serial() > previous_serial
                     && s.pixel(d.width as i32 / 2, 1).ok() == Some(0xff14161e)
             }))
         });
         ready.map_err(|e| {
+            let detail = format!("{}; previous serial={previous_serial}; {}", observation.failure(), d.output());
+            failure_diagnostic("ready", &detail);
             d.startup.failure();
-            let detail = format!("previous context={previous_context}; {}; {}", observation.failure(), d.output());
-            failure_diagnostic("ready", &format!("{e}; {detail}"));
             format!("{e}; {detail}")
         })?;
         if supervised {
