@@ -12,6 +12,7 @@ STUBS = r'''
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 static PID: AtomicU64 = AtomicU64::new(40);
 static EXECS: AtomicUsize = AtomicUsize::new(0);
+static CALLS: std::sync::Mutex<Vec<(String, Vec<String>)>> = std::sync::Mutex::new(Vec::new());
 static ARMS: AtomicUsize = AtomicUsize::new(0);
 static OUTPUT: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 static SWEEPS: AtomicUsize = AtomicUsize::new(0);
@@ -29,7 +30,15 @@ mod process {
     pub fn getpid() -> Result<Pid, ()> { Ok(Pid(crate::PID.load(crate::Ordering::Relaxed))) }
     pub fn waitpid(_: i32, _: &mut i32, _: u32) -> Result<Pid, ()> { Err(()) }
     pub fn yield_now() -> Result<(), ()> { Ok(()) }
-    pub fn execv(_: &[u8], _: *const *const u8) -> Result<(), ()> { crate::EXECS.fetch_add(1, crate::Ordering::Relaxed); Err(()) }
+    pub fn execv(path: &[u8], argv: *const *const u8) -> Result<(), ()> {
+        crate::EXECS.fetch_add(1, crate::Ordering::Relaxed);
+        let path = std::ffi::CStr::from_bytes_with_nul(path).unwrap().to_str().unwrap().to_owned();
+        let mut args = Vec::new();
+        unsafe { let mut p = argv; while !(*p).is_null() {
+            args.push(std::ffi::CStr::from_ptr(*p as *const i8).to_str().unwrap().to_owned()); p = p.add(1);
+        } }
+        crate::CALLS.lock().unwrap().push((path, args)); Err(())
+    }
     pub fn exit(code: i32) -> ! { use std::io::Write; std::io::stdout().write_all(&crate::OUTPUT.lock().unwrap()).unwrap(); std::process::exit(code) }
 }
 mod signal {
@@ -58,7 +67,7 @@ mod time {
     pub fn sleep_ms(_: u64) -> Result<(), ()> { Ok(()) }
 }
 mod harness {
-    pub fn hostkey_method() -> Option<&'static str> { None }
+    pub fn hostkey_method() -> Option<&'static str> { if std::env::var_os("TEST_HOSTKEYS").is_some() { Some("fixture") } else { None } }
     pub mod descendants {
         pub fn sweep_descendants() -> Option<&'static str> {
             crate::SWEEPS.fetch_add(1, crate::Ordering::Relaxed); None
@@ -67,6 +76,26 @@ mod harness {
     pub mod sequence {
 '''
 CHECKS = r'''
+        #[test] fn handoff_routes() {
+            let root = std::path::PathBuf::from(std::env::var_os("TEST_SEQUENCE_DIR").unwrap());
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_DIR", &root);
+            let ids = vec!["console".into(), "gui-apps".into(), "files-io".into()];
+            configure(&ids, 0);
+            hand_off();
+            let suite = |id: &str| root.join(format!("suite-{id}")).to_str().unwrap().to_owned();
+            let mut gui = vec![suite("gui-apps")];
+            let mut files = vec![suite("files-io")];
+            let desktop = std::env::var_os("TEST_DESKTOP").is_some();
+            let gui_path = if desktop {
+                gui = vec!["/sbin/init".into(), "sequence".into(), suite("gui-apps")];
+                "/sbin/init".to_owned()
+            } else { suite("gui-apps") };
+            if std::env::var_os("TEST_HOSTKEYS").is_some() {
+                gui.extend(["--hostkeys".into(), "fixture".into()]);
+                files.extend(["--hostkeys".into(), "fixture".into()]);
+            }
+            assert_eq!(*crate::CALLS.lock().unwrap(), vec![(gui_path, gui), (suite("files-io"), files)]);
+        }
         #[test] fn member_prepare_and_finish() {
             std::env::set_var("BREENIX_SUITE_SEQUENCE_MEMBER", "1");
             std::env::set_var("BREENIX_SUITE_SEQUENCE_DIR", std::env::temp_dir().join("missing-sequence-role"));
@@ -201,6 +230,20 @@ finalize();
                          'sequence_reap_uses_the_descendant_sweep', 'member_prepare_and_finish', 'member_finish']:
                 result = subprocess.run([str(binary), '--exact', f'harness::sequence::{name}'], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            import os
+            for desktop in (False, True):
+                for hostkeys in (False, True):
+                    directory = Path(scratch) / f"route-{desktop}-{hostkeys}"
+                    directory.mkdir()
+                    if desktop:
+                        (directory / 'desktop-suite').write_text('gui-apps\n')
+                    env = os.environ.copy()
+                    env['TEST_SEQUENCE_DIR'] = str(directory)
+                    if desktop: env['TEST_DESKTOP'] = '1'
+                    if hostkeys: env['TEST_HOSTKEYS'] = '1'
+                    result = subprocess.run([str(binary), '--exact', 'harness::sequence::handoff_routes'], capture_output=True, text=True, env=env)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
             result = subprocess.run([str(binary), '--exact', 'harness::sequence::member_alarm_exits'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
