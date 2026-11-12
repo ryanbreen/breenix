@@ -103,6 +103,8 @@ const REAP_MS: u64 = 2000;
 /// an orphan's FIN_WAIT2 each last 60 seconds.
 pub const TCP_DRAIN_MS: u64 = 70_000;
 
+static MEMBER: AtomicBool = AtomicBool::new(false);
+static RUNNER_PID: AtomicU64 = AtomicU64::new(0);
 /// Set once this suite is part of a sequence: cases' children then reset SIGALRM.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// When the watchdog may end the suite, in monotonic nanoseconds.
@@ -126,9 +128,13 @@ pub fn read(id: &str) -> Option<(Vec<String>, usize)> {
     Some((ids, index))
 }
 
-/// Before the suite's START: record the baseline (the first suite) or put the root back
-/// to it (any later one), then arm the watchdog for a suite of `total` cases.
-pub fn prepare(ids: &[String], index: usize, total: usize) {
+/// True for the runner explicitly marked by its PID 1 sequence owner.
+pub fn is_member() -> bool {
+    process::getpid().is_ok_and(|pid| pid.raw() != 1)
+        && std::env::var_os("BREENIX_SUITE_SEQUENCE_MEMBER").is_some_and(|value| value == "1")
+}
+
+fn configure(ids: &[String], index: usize) {
     if let Some(method) = super::hostkey_method() {
         let mut bytes = method.as_bytes().to_vec();
         bytes.push(0);
@@ -139,10 +145,11 @@ pub fn prepare(ids: &[String], index: usize, total: usize) {
         .map(|id| (id.clone(), std::format!("{}/suite-{id}\0", sequence_paths().executables.display()).into_bytes()))
         .collect());
     COUNT.store(ids.len() as u32, Ordering::Relaxed);
-    TOTAL.store(total as u32, Ordering::Relaxed);
-    ACTIVE.store(true, Ordering::Relaxed);
-    let _ = signal::sigaction(SIGALRM, Some(&Sigaction::new(on_alarm)), None);
-    progress();
+}
+
+/// Prepare the filesystem as the PID 1 owner, before starting services.
+pub fn prepare_owner(ids: &[String], index: usize) {
+    configure(ids, index);
     if index == 0 {
         let entries = record_baseline("/");
         emit(&std::format!("SUITE_SEQUENCE BEGIN suites={} baseline={}{}", ids.join(","), entries, memory()));
@@ -158,6 +165,19 @@ pub fn prepare(ids: &[String], index: usize, total: usize) {
         });
         frames(&ids[index]);
     }
+}
+
+/// Arm the case watchdog and prepare the owner filesystem unless this is a member.
+pub fn prepare(ids: &[String], index: usize, total: usize) {
+    let member = is_member();
+    MEMBER.store(member, Ordering::Relaxed);
+    RUNNER_PID.store(process::getpid().map_or(0, |pid| pid.raw()), Ordering::Relaxed);
+    configure(ids, index);
+    TOTAL.store(total as u32, Ordering::Relaxed);
+    ACTIVE.store(true, Ordering::Relaxed);
+    let _ = signal::sigaction(SIGALRM, Some(&Sigaction::new(on_alarm)), None);
+    progress();
+    if !member { prepare_owner(ids, index); }
     // The walk is not the suite's progress: its own watchdog period starts at START.
     progress();
 }
@@ -223,13 +243,19 @@ pub fn in_child() {
 /// After the suite's DONE: run the next suite in PID 1. Returns only after the last suite,
 /// once DONE for the whole sequence is printed.
 pub fn finish() {
+    if MEMBER.load(Ordering::Relaxed) {
+        arm(0);
+        ACTIVE.store(false, Ordering::Relaxed);
+        return;
+    }
     hand_off();
 }
 
 extern "C" fn on_alarm(_: i32) {
     // A case's child before it reset SIGALRM, or a SIGALRM some case sent PID 1, is
     // not the watchdog.
-    if !process::getpid().is_ok_and(|pid| pid.raw() == 1) {
+    if !process::getpid().is_ok_and(|pid| pid.raw() == RUNNER_PID.load(Ordering::Relaxed)
+        && (pid.raw() == 1 || MEMBER.load(Ordering::Relaxed))) {
         return;
     }
     let now = monotonic_ns();
@@ -242,6 +268,7 @@ extern "C" fn on_alarm(_: i32) {
     line.text("SUITE_SEQUENCE STALLED ").text(ID.get().map_or("", String::as_str)).text(" cases=")
         .number(REPORTED.load(Ordering::Relaxed) as u64).text("/").number(TOTAL.load(Ordering::Relaxed) as u64);
     line.emit();
+    if MEMBER.load(Ordering::Relaxed) { process::exit(1); }
     hand_off();
     // The last suite stalled: DONE is out, and PID 1 stays, reaping.
     loop {
