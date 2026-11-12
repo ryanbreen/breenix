@@ -24,6 +24,12 @@ def module(path):
 
 
 class ProofGateTests(unittest.TestCase):
+    def test_recipe_and_gate_require_b6(self):
+        recipe = (ROOT / 'scripts/build-qemu-gl.sh').read_text()
+        self.assertIn('PIN=10.0.12-utm-4d73aaf0-b6', recipe)
+        gate = GATE.read_text()
+        self.assertIn("qemu.parents[3].name == '10.0.12-utm-4d73aaf0-b6'", gate)
+
     def test_dry_gate_accepts_the_production_wrapper_chain(self):
         self.assertTrue(GATE.is_file(), 'the reusable A.3 proof gate is missing')
         arm = module(ROOT / 'scripts/qemu-arm64.py')
