@@ -11,13 +11,16 @@ STUBS = r'''
 #![allow(dead_code)]
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 static PID: AtomicU64 = AtomicU64::new(40);
+static EXECS: AtomicUsize = AtomicUsize::new(0);
+static ARMS: AtomicUsize = AtomicUsize::new(0);
+static OUTPUT: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 static SWEEPS: AtomicUsize = AtomicUsize::new(0);
 mod types { #[derive(Clone, Copy)] pub struct Fd; impl Fd {
     pub const STDOUT: Self = Self;
     pub fn from_raw(_: u64) -> Self { Self }
 } }
 mod io {
-    pub fn write(_: crate::types::Fd, b: &[u8]) -> Result<usize, ()> { Ok(b.len()) }
+    pub fn write(_: crate::types::Fd, b: &[u8]) -> Result<usize, ()> { crate::OUTPUT.lock().unwrap().extend_from_slice(b); Ok(b.len()) }
     pub fn close(_: crate::types::Fd) -> Result<(), ()> { Ok(()) }
 }
 mod process {
@@ -26,7 +29,8 @@ mod process {
     pub fn getpid() -> Result<Pid, ()> { Ok(Pid(crate::PID.load(crate::Ordering::Relaxed))) }
     pub fn waitpid(_: i32, _: &mut i32, _: u32) -> Result<Pid, ()> { Err(()) }
     pub fn yield_now() -> Result<(), ()> { Ok(()) }
-    pub fn execv(_: &[u8], _: *const *const u8) -> Result<(), ()> { Err(()) }
+    pub fn execv(_: &[u8], _: *const *const u8) -> Result<(), ()> { crate::EXECS.fetch_add(1, crate::Ordering::Relaxed); Err(()) }
+    pub fn exit(code: i32) -> ! { use std::io::Write; std::io::stdout().write_all(&crate::OUTPUT.lock().unwrap()).unwrap(); std::process::exit(code) }
 }
 mod signal {
     pub const ITIMER_REAL: i32 = 0;
@@ -44,6 +48,7 @@ mod signal {
         assert_ne!(pid, -1, "scoped sequence would kill non-descendants"); Ok(())
     }
     pub fn setitimer(_: i32, t: &Itimerval, _: Option<&mut Itimerval>) -> Result<(), ()> {
+        crate::ARMS.fetch_add(1, crate::Ordering::Relaxed);
         let _ = t.it_interval.tv_sec + t.it_interval.tv_usec + t.it_value.tv_sec + t.it_value.tv_usec; Ok(())
     }
 }
@@ -62,6 +67,31 @@ mod harness {
     pub mod sequence {
 '''
 CHECKS = r'''
+        #[test] fn member_prepare_and_finish() {
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_MEMBER", "1");
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_DIR", std::env::temp_dir().join("missing-sequence-role"));
+            let ids = vec!["before".into(), "gui-apps".into(), "after".into()];
+            prepare(&ids, 1, 7);
+            assert!(crate::ARMS.load(crate::Ordering::Relaxed) > 0, "member watchdog was not armed");
+            assert!(crate::OUTPUT.lock().unwrap().is_empty(), "member attempted owner reset");
+        }
+        #[test] fn member_finish() {
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_MEMBER", "1");
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_DIR", std::env::temp_dir().join("missing-sequence-role"));
+            let ids = vec!["before".into(), "gui-apps".into(), "after".into()];
+            prepare(&ids, 1, 7);
+            finish();
+            assert_eq!(crate::EXECS.load(crate::Ordering::Relaxed), 0, "member tried to exec the next suite");
+        }
+        #[test] fn member_alarm_exits() {
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_MEMBER", "1");
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_DIR", std::env::temp_dir().join("missing-sequence-role"));
+            let ids = vec!["before".into(), "gui-apps".into(), "after".into()];
+            prepare(&ids, 1, 7);
+            STALL_AT_NS.store(0, Ordering::Relaxed);
+            on_alarm(14);
+            panic!("member ignored its alarm");
+        }
         #[test] fn private_list_and_baseline() {
             let root = std::env::temp_dir().join(format!("sequence-role-{}", std::process::id()));
             std::fs::create_dir(&root).unwrap();
@@ -93,9 +123,10 @@ class SequenceRoles(unittest.TestCase):
         from suite_runner_roles_test import item
         source = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
         run = item(source, 'pub fn run_with_finalizer(')
-        completion = run[run.index('        finalize();'):run.index('        feed.finish(')]
+        completion = run[run.index('        if scoped {', run.index('        feed.finish(')):run.index('        // A one-case boot')]
         setup = item(source, 'fn start_scoped_runner(')
-        harness = r'''use std::sync::{Mutex, atomic::{AtomicI32, Ordering}};
+        harness = r'''#![allow(dead_code, unused_variables)]
+use std::sync::{Mutex, atomic::{AtomicI32, Ordering}};
 static TRANSCRIPT_FD: AtomicI32 = AtomicI32::new(1);
 static FLAGS: AtomicI32 = AtomicI32::new(1);
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -114,7 +145,7 @@ mod process {
     pub fn set_child_subreaper(value:bool)->Result<(),String> {assert!(value);Ok(())}
     pub fn exit(code:i32)->! {panic!("exit:{code}")}
 }
-mod sequence { pub fn finish() { super::EVENTS.lock().unwrap().push("finish".into()); } }
+mod sequence { pub fn finish() { super::EVENTS.lock().unwrap().push("finish".into()); } pub fn is_member() -> bool { std::env::var_os("BREENIX_SUITE_SEQUENCE_MEMBER").is_some() } }
 fn emit(line:&str) {EVENTS.lock().unwrap().push(line.into());}
 struct Counts { failed:usize }
 struct Suite { id:&'static str }
@@ -123,6 +154,7 @@ impl Suite { fn complete(&self) {
     let place=Some(());
     let _ = (&place,self.id,emit as fn(&str),sequence::finish as fn()); // Inputs also exist in the old early-exit branch.
     let finalize=|| EVENTS.lock().unwrap().push("finalize".into());
+finalize();
 ''' + completion + r'''
 } }
 ''' + setup + r'''
@@ -130,6 +162,14 @@ impl Suite { fn complete(&self) {
     let result=std::panic::catch_unwind(|| Suite{id:"runner-fixture"}.complete());
     assert!(result.is_err());
     assert_eq!(*EVENTS.lock().unwrap(), ["finalize","SUITE_SEQUENCE READY runner-fixture","finish"]);
+}
+#[test] fn member_completion_has_no_ready_or_handoff() {
+    EVENTS.lock().unwrap().clear();
+    std::env::set_var("BREENIX_SUITE_SEQUENCE_MEMBER", "1");
+    let result=std::panic::catch_unwind(|| Suite{id:"gui-apps"}.complete());
+    std::env::remove_var("BREENIX_SUITE_SEQUENCE_MEMBER");
+    assert!(result.is_err());
+    assert_eq!(*EVENTS.lock().unwrap(), ["finalize"]);
 }
 #[test] fn stdout_survives_exec_private_transcript_does_not() {
     std::env::set_var("BREENIX_SUITE_TRANSCRIPT_FD","1");
@@ -158,9 +198,13 @@ impl Suite { fn complete(&self) {
             self.assertEqual(result.returncode, 0, result.stderr)
             # The host invokes read/load and reap entry points, without calling prepare or walking /.
             for name in ['private_list_and_baseline', 'pid_one_ignores_the_private_directory',
-                         'sequence_reap_uses_the_descendant_sweep']:
+                         'sequence_reap_uses_the_descendant_sweep', 'member_prepare_and_finish', 'member_finish']:
                 result = subprocess.run([str(binary), '--exact', f'harness::sequence::{name}'], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            result = subprocess.run([str(binary), '--exact', 'harness::sequence::member_alarm_exits'], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn('SUITE_SEQUENCE STALLED gui-apps cases=0/7', result.stdout)
 
 if __name__ == '__main__':
     unittest.main()
