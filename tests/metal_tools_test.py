@@ -1113,6 +1113,51 @@ class RootStagingTest(unittest.TestCase):
 
 
 class MilestoneScoreTest(StateTest):
+    def test_default_desktop_requires_composited_terminal_prompt(self):
+        import metal_score
+        root = TOOLS.parents[1]
+        directory = m.STATE / 'boot'
+        for name in ('docs/metal/boot-path.json',
+                     'tools/breenix-runs/Sources/BreenixRuns/Resources/boot-stages-x86_64.json'):
+            dest = directory / 'definition' / name
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(root / name, dest)
+        definition_path = directory / 'definition/docs/metal/boot-path.json'
+        definition = json.loads(definition_path.read_text())
+        desktop = next(item for item in definition['milestones'] if item['id'] == 'desktop')
+        stages = desktop['stages']['default']
+        marker = '[bwm] terminal prompt read back:'
+        if not any(stage.get('marker') == marker for stage in stages):
+            stages.append({'name': 'Terminal prompt read back in a composited frame', 'marker': marker})
+        m.write_json(definition_path, definition)
+        m.write_json(directory / 'run.json', {'mode': 'default'})
+        (directory / 'events.jsonl').write_text('')
+        # Selected guest lines from retained boot 20261112T022539Z-metal.
+        capture = [
+            '[init] desktop services started',
+            '[bwm] Breenix Window Manager starting... (v2-chromeless-skip)',
+            '[bterm] starting',
+            '[bterm] first frame presented: 750x550',
+            '[bwm] first frame read back: 4096000 pixels exact',
+            '[bwm] desktop fills the scanout: resource 286 2560x1600 bound (GPU core mode 1, 2560x1600), composed 2560x1600, UI scale 2; taskbar rows 0..56 at (0,0) and (2559,55), background at (2559,56); app bar rows 1528..1600 at (0,1528) and (2559,1599), background at (2559,1527); 6 pixels exact',
+            '[bwm] composited client frame: window 1 on screen, 4096000 pixels exact',
+        ]
+        prompt = marker + ' window 1, commit 2, 4096000 pixels exact, row 0 text "bsh /> "'
+        cases = [
+            ([], False, 'no terminal prompt evidence'),
+            ([prompt], True, None),
+            ([prompt.replace('bsh />', 'wrong')], False, 'no terminal prompt evidence'),
+            ([prompt, '[bwm] terminal prompt check FAILED: window 1: empty'], False, 'desktop startup self-check failed'),
+            ([prompt, '[bwm] client frame check FAILED: window 1: mismatch'], False, 'desktop startup self-check failed'),
+            ([prompt, '[bwm] first frame check FAILED: mismatch'], False, 'desktop startup self-check failed'),
+        ]
+        for extra, passed, reason in cases:
+            with self.subTest(extra=extra):
+                (directory / 'serial.txt').write_text('\n'.join(capture + extra))
+                result = metal_score.score(directory)['milestones']['desktop']
+                self.assertEqual(result['passed'], passed)
+                self.assertEqual(result.get('reason'), reason)
+
     def test_scores_only_measurable_shapes_and_still_rejects_missing_stages(self):
         import metal_score
         root = TOOLS.parents[1]
