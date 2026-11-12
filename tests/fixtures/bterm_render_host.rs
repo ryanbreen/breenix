@@ -78,9 +78,13 @@ mod ttf_font {
     fn visible(_: &Surface,_:&mut CachedFont,g:Vec<u16>,_:i32,_:i32,_:f32)->(Vec<(u16,i64)>,i32){(g.into_iter().enumerate().map(|(i,g)|(g,i as i64*6)).collect(),0)}
     fn draw_text_bytes(_: &mut Surface,_:&mut CachedFont,_:&[u8],_:i32,_:i32,_:f32,_:Color){panic!("unexpected eviction");}
     fn draw_glyphs_subpixel(_: &mut Surface,_:&mut CachedFont,_:Vec<u16>,_:i32,_:i32,_:f32,_:Color)->i32{panic!("grayscale fixture used LCD");}
+    fn draw_char(fb:&mut Surface,font:&mut CachedFont,ch:char,x:i32,y:i32,size:f32,fg:Color)->i32 {
+        let mut bytes=[0;4];let bytes=ch.encode_utf8(&mut bytes).as_bytes();
+        draw_runs(fb,font,&[TextRun{bytes,x,y,size,fg,clip:fb.clip_box()}]);0
+    }
     // FONT_CODE
     pub fn errors(){let e=[Error::Device(1),Error::Other];assert_eq!(e.len(),2);}
-    pub fn exercise_run(){CachedFont::new().run(&[],640, |_|{});}
+    pub fn exercise_run(){let mut font=CachedFont::new();font.run(&[],640, |_|{});draw_runs(&mut Surface::new(),&mut font,&[]);let _=draw_char(&mut Surface::new(),&mut font,'a',0,0,10.,Color::WHITE);}
     pub fn glyph_id(){assert_eq!(CachedFont::new().glyph_index('a'),97);}
 }
 use ttf_font::CachedFont;
@@ -119,8 +123,11 @@ fn main(){
     let expected=full(&mut term,&mut font);assert_eq!(fb.pixels,expected.pixels,"erased cells or old cursor survived");
     term.resize(125,38);
     term.selection.press(0,48,selection::Geometry{x:0,y:48,w:6,h:13},(125,38));term.selection.release(24,48,selection::Geometry{x:0,y:48,w:6,h:13},(125,38));term.dirty=true;draw(&mut term,&mut fb,&mut font);
+    assert_ne!(fb.pixels,expected.pixels,"selection was not painted");
     term.selection.clear();term.dirty=true;draw(&mut term,&mut fb,&mut font);
     let expected=full(&mut term,&mut font);assert_eq!(fb.pixels,expected.pixels,"selection damage survived clearing");
+    fb.pixels.fill(0);term.invalidate();draw(&mut term,&mut fb,&mut font);
+    assert_eq!(fb.pixels,expected.pixels,"tab/font invalidation did not repaint retained pixels");
     assert!(allocations<512,"cold terminal frame allocates per cell: {allocations}");
     assert_eq!(unchanged,(0,0),"unchanged output must not repaint the grid");
     // Exercise the remaining production selection methods without suppressions.

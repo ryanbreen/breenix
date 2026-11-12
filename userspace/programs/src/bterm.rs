@@ -26,6 +26,9 @@ mod keys;
 #[path = "bterm/session.rs"]
 mod session;
 
+#[path = "bterm/paint.rs"]
+mod paint;
+
 use libbreenix::window::abi::frame_stage;
 use std::process;
 
@@ -63,10 +66,11 @@ const TAB_BAR_HEIGHT: i32 = 24;
 const WIN_WIDTH: u32 = 750;
 const WIN_HEIGHT: u32 = 550;
 
-struct TermEmu { vt: libvt::TermEmu, selection: selection::Selection, dirty: bool }
+struct TermEmu { vt: libvt::TermEmu, selection: selection::Selection, dirty: bool, paint: paint::Paint }
 impl TermEmu {
-    fn new(cols: usize, rows: usize) -> Self { Self { vt: libvt::TermEmu::new(cols, rows), selection: selection::Selection::default(), dirty: true } }
-    fn resize(&mut self, cols: usize, rows: usize) { self.vt.resize(cols, rows); self.selection.clear(); self.dirty = true; }
+    fn new(cols: usize, rows: usize) -> Self { Self { vt: libvt::TermEmu::new(cols, rows), selection: selection::Selection::default(), dirty: true, paint: paint::Paint::default() } }
+    fn invalidate(&mut self) { self.paint.invalidate(); self.dirty = true; }
+    fn resize(&mut self, cols: usize, rows: usize) { self.vt.resize(cols, rows); self.selection.clear(); self.invalidate(); }
     fn feed(&mut self, bytes: &[u8], master_fd: Fd) {
         let generation = self.vt.scroll_generation();
         let offset = self.vt.view_offset();
@@ -84,7 +88,7 @@ impl TermEmu {
             }
         }
     }
-    /// Draw the grid: each row's cell backgrounds as runs of one colour, then the characters
+    /// Paint changed cells: backgrounds as runs of one colour, then the characters
     /// at their cells' origins in as few draws as their colours allow, then the cursor's
     /// underline. A cell is drawn only when it lies inside the clip area, edge to edge.
     fn render(&mut self, fb: &mut Surface, x_off: usize, y_off: usize,
@@ -96,6 +100,9 @@ impl TermEmu {
         let max_y = (y_off + clip_h).min(fb.height());
         let rows = self.vt.size().1.min(max_y.saturating_sub(y_off) / cell_h.max(1));
         let cols = self.vt.size().0.min(max_x.saturating_sub(x_off) / cell_w.max(1));
+        let changed = self.paint.changes(&self.vt, &self.selection,
+            (x_off, y_off, cols, rows, cell_w, cell_h, font_size.to_bits()));
+        if !changed.iter().any(|&cell| cell) { return; }
         let fg_of = |cell: &libvt::Cell, selected: bool| {
             let c = if cell.inverse ^ selected { cell.bg } else { cell.fg };
             if cell.bold { Color::rgb(c.r.saturating_add(40), c.g.saturating_add(40), c.b.saturating_add(40)) }
@@ -107,9 +114,10 @@ impl TermEmu {
                 let py = y_off + row * cell_h;
                 let mut col = 0;
                 while col < cols {
+                    if !changed[row * cols + col] { col += 1; continue; }
                     let bg = bg_of(self.vt.view_cell(col, row), self.selection.contains(col, row));
                     let start = col;
-                    while col < cols && bg_of(self.vt.view_cell(col, row), self.selection.contains(col, row)) == bg {
+                    while col < cols && changed[row * cols + col] && bg_of(self.vt.view_cell(col, row), self.selection.contains(col, row)) == bg {
                         col += 1;
                     }
                     shapes::fill_rect(fb, (x_off + start * cell_w) as i32, py as i32,
@@ -119,21 +127,20 @@ impl TermEmu {
         });
         let glyphs: Vec<(usize, usize, Color)> = (0..rows)
             .flat_map(|row| (0..cols).map(move |col| (col, row)))
-            .filter(|&(col, row)| self.vt.view_cell(col, row).ch != ' ')
+            .filter(|&(col, row)| changed[row * cols + col] && self.vt.view_cell(col, row).ch != ' ')
             .map(|(col, row)| (col, row, fg_of(self.vt.view_cell(col, row), self.selection.contains(col, row))))
             .collect();
         if let Some(font) = ttf {
-            let clip = libgfx::surface::Rect::new(0, 0, max_x as i32, max_y as i32);
-            let encoded: Vec<[u8; 4]> = glyphs.iter().map(|&(col, row, _)| { let mut b = [0; 4]; self.vt.view_cell(col, row).ch.encode_utf8(&mut b); b }).collect();
-            let runs: Vec<ttf_font::TextRun<'_>> = glyphs.iter().zip(&encoded).map(|(&(col, row, fg), bytes)| ttf_font::TextRun {
-                bytes: &bytes[..self.vt.view_cell(col, row).ch.len_utf8()],
+            let cells: Vec<_> = glyphs.iter().map(|&(col, row, fg)| ttf_font::CellGlyph {
+                ch: self.vt.view_cell(col, row).ch,
                 x: (x_off + col * cell_w) as i32,
                 y: (y_off + row * cell_h) as i32,
-                size: font_size,
                 fg,
-                clip,
             }).collect();
-            ttf_font::draw_runs(fb, font, &runs);
+            fb.push_clip(libgfx::surface::Rect::new(x_off as i32, y_off as i32,
+                (max_x - x_off) as i32, (max_y - y_off) as i32));
+            ttf_font::draw_cells(fb, font, &cells, font_size, cell_w, cell_h);
+            fb.pop_clip();
         } else {
             // The bitmap font's advance is the cell width: a row's characters of one colour
             // in a run are one draw.
@@ -156,7 +163,7 @@ impl TermEmu {
             for row in 0..rows {
                 for col in 0..cols {
                     let cell = self.vt.view_cell(col, row);
-                    if cell.underline {
+                    if changed[row * cols + col] && cell.underline {
                         shapes::fill_rect(fb, (x_off + col * cell_w) as i32,
                             (y_off + (row + 1) * cell_h - 1) as i32,
                             cell_w as i32, 1, fg_of(cell, self.selection.contains(col, row)));
@@ -166,7 +173,8 @@ impl TermEmu {
         });
         // Cursor underline
         let (cursor_x, cursor_y) = self.vt.cursor();
-        if self.vt.view_offset() == 0 && self.vt.cursor_visible() && cursor_y < rows && cursor_x < cols {
+        if self.vt.view_offset() == 0 && self.vt.cursor_visible() && cursor_y < rows && cursor_x < cols
+            && changed[cursor_y * cols + cursor_x] {
             let cx = x_off + cursor_x * cell_w;
             let cy = y_off + cursor_y * cell_h + cell_h - 2;
             let w = cell_w.min(max_x.saturating_sub(cx));
@@ -500,7 +508,7 @@ fn main() {
                             tab_bar.remove_tab(sel);
                             let new_sel = tab_bar.selected();
                             if let Some(tab) = tabs.get_mut(new_sel) {
-                                tab.emu.dirty = true;
+                                tab.emu.invalidate();
                             }
                             return Handled::Redraw;
                         }
@@ -644,7 +652,7 @@ fn main() {
                 } else {
                     // Same grid size but different font — force redraw
                     for tab in tabs.iter_mut() {
-                        tab.emu.dirty = true;
+                        tab.emu.invalidate();
                     }
                 }
             }
@@ -655,7 +663,7 @@ fn main() {
         if let WidgetEvent::ValueChanged(_) = tab_bar.update(&input) {
             let sel = tab_bar.selected();
             if let Some(tab) = tabs.get_mut(sel) {
-                tab.emu.dirty = true;
+                tab.emu.invalidate();
             }
         }
         prev_buttons = buttons;
