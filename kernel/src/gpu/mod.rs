@@ -64,6 +64,9 @@
 //! while holding it, and the reset itself runs on `kgpu` outside it; no path here prints
 //! (section 1.4: no kernel output on any path).
 
+#[cfg(target_arch = "aarch64")]
+use crate::window::gpu_core_trace;
+
 pub mod window_targets;
 #[cfg(target_arch = "x86_64")]
 pub mod framebuffer;
@@ -206,7 +209,7 @@ fn with_core<R>(f: impl FnOnce(&mut Core) -> R) -> Option<R> {
         (r, kick)
     };
     if let Some(made) = kick {
-        ring_doorbell();
+        ring_doorbell(made);
         RUNG.fetch_max(made, Ordering::AcqRel);
     }
     crate::per_cpu::preempt_enable();
@@ -262,12 +265,18 @@ pub(crate) fn ownership_census() -> alloc::string::String {
 /// CPU until its device model accepts it; no thread waits for the lock meanwhile. The
 /// requests' descriptors and ring index were published before `KICK` was set, and the
 /// caller claimed that kick while still holding the core's lock.
-fn ring_doorbell() {
+fn ring_doorbell(made: u64) {
     let _access = panic::Access::enter();
     let at = DOORBELL.load(Ordering::Acquire);
     if at != 0 {
+        #[cfg(target_arch = "aarch64")]
+        let stamp = gpu_core_trace::doorbell(made);
+        #[cfg(not(target_arch = "aarch64"))]
+        let _ = made;
         // SAFETY: the control queue's mapped notification address; queue 0.
         unsafe { core::ptr::write_volatile(at as *mut u16, 0) };
+        #[cfg(target_arch = "aarch64")]
+        gpu_core_trace::finish(stamp);
     }
 }
 
@@ -340,6 +349,8 @@ struct Proc {
 }
 
 struct Ctx {
+    #[cfg(target_arch = "aarch64")]
+    trace_origin: (u64, u64),
     id: u32,
     owner: u64,
     /// The fence namespace: a BGL fence is `ns << 32 | n` for the context's `n`th
@@ -1286,6 +1297,16 @@ impl Core {
                 r.holds += 1;
             }
         }
+        #[cfg(target_arch = "aarch64")]
+        let req = {
+            let mut req = req;
+            if let Request::Virgl(r) = &mut req {
+                if r.origin.0 == 0 {
+                    if let Some(context) = self.contexts.get(&ctx) { r.origin = context.trace_origin; }
+                }
+            }
+            req
+        };
         let upload = req.is_upload().then(|| holds.first().copied().zip(req.fence())).flatten();
         self.syncs.insert(serial, SyncReq {
             upload, created: None, ctx, sent_ns: None, holds: held, reading: readers, abandoned: warm.is_some(), failed: false,
@@ -3548,6 +3569,8 @@ fn create_context_with_catalogue(tgid: u64, warm_catalogue: bool) -> Result<(u64
         c.insert_ctx(
             id,
             Ctx {
+                #[cfg(target_arch = "aarch64")]
+                trace_origin: crate::task::thread::current_accounting_identity().unwrap_or((0, 0)),
                 id,
                 owner: tgid,
                 ns,

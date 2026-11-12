@@ -15,6 +15,9 @@
 //! device's use of it (sections 2.4 and 2.7.13); a device whose reset is not confirmed
 //! keeps them. The device object lives under the GPU core's lock; nothing here blocks.
 
+#[cfg(target_arch = "aarch64")]
+use crate::window::gpu_core_trace;
+
 pub mod encode;
 pub mod queue;
 pub mod wire;
@@ -59,6 +62,10 @@ enum Payload {
 
 /// A command in the device's hands, with every buffer it uses.
 pub struct Request {
+    #[cfg(target_arch = "aarch64")]
+    pub(super) origin: (u64, u64),
+    #[cfg(target_arch = "aarch64")]
+    trace_seq: u64,
     pub tag: Tag,
     /// Admission identity of a fenced command. The native number is assigned at send.
     pub fence: Option<u64>,
@@ -97,7 +104,12 @@ impl Request {
             hdr.put_u64(wire::HDR_FENCE, f);
         }
         hdr.put_u32(wire::HDR_CTX, ctx);
-        Request { tag, fence, hdr, payload: Payload::None, resp: DmaBox::new(resp_len), keep: None }
+        Request {
+            #[cfg(target_arch = "aarch64")]
+            origin: crate::task::thread::current_accounting_identity().unwrap_or((0, 0)),
+            #[cfg(target_arch = "aarch64")]
+            trace_seq: 0,
+            tag, fence, hdr, payload: Payload::None, resp: DmaBox::new(resp_len), keep: None }
     }
 
     fn field(mut self, at: usize, v: u32) -> Request {
@@ -409,6 +421,17 @@ impl Device {
             req.hdr.put_u64(wire::HDR_FENCE, self.made + 1);
         }
         req.publish();
+        #[cfg(target_arch = "aarch64")]
+        {
+            let payload_bytes = match &req.payload {
+                Payload::None => 0,
+                Payload::Words(w) => w.len() * 4,
+                Payload::Pages(_, len) => *len,
+            };
+            req.trace_seq = gpu_core_trace::submit(req.origin, req.hdr.u32_at(wire::HDR_CTX),
+                req.command_type(), req.hdr.len(), payload_bytes, self.made + 1,
+                req.fence.map_or(0, |_| req.hdr.u64_at(wire::HDR_FENCE)));
+        }
         let Some(head) = self.queue.add(&segs) else { return Err(req) };
         self.inflight[head as usize] = Some(req);
         self.made += 1;
@@ -480,6 +503,8 @@ impl Device {
             return Reap::Fault;
         }
         req.resp.observe();
+        #[cfg(target_arch = "aarch64")]
+        gpu_core_trace::finish(req.trace_seq);
         self.answered = self.answered.max(self.made_at[head as usize]);
         let answer = req.resp.u32_at(wire::HDR_TYPE);
         if !ok(answer) {

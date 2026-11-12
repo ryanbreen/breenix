@@ -22,6 +22,8 @@ pub mod stall_trace;
 pub mod accounting;
 #[cfg(target_arch = "aarch64")]
 pub mod gpu_command_trace;
+#[cfg(target_arch = "aarch64")]
+pub mod gpu_core_trace;
 pub mod pacing;
 pub mod present;
 pub mod scene;

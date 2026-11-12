@@ -4,15 +4,15 @@ use core::fmt::Write;
 use core::sync::atomic::{AtomicU64, Ordering::{Acquire, Release, Relaxed, AcqRel}};
 
 // Use one CAS attempt per update and count contention instead of waiting.
-struct Slot {
+pub(crate) struct Slot<const W: usize = 9> {
     version: AtomicU64,
-    words: [AtomicU64; 9],
+    words: [AtomicU64; W],
 }
-impl Slot {
-    const fn new() -> Self {
-        Self { version: AtomicU64::new(0), words: [const { AtomicU64::new(0) }; 9] }
+impl<const W: usize> Slot<W> {
+    pub(crate) const fn new() -> Self {
+        Self { version: AtomicU64::new(0), words: [const { AtomicU64::new(0) }; W] }
     }
-    fn update(&self, f: impl FnOnce([u64; 9]) -> Option<[u64; 9]>) -> bool {
+    pub(crate) fn update(&self, f: impl FnOnce([u64; W]) -> Option<[u64; W]>) -> bool {
         let version = self.version.load(Acquire);
         if version & 1 != 0 || self.version.compare_exchange(version, version.wrapping_add(1), AcqRel, Relaxed).is_err() {
             return false;
@@ -25,7 +25,7 @@ impl Slot {
         self.version.store(version.wrapping_add(2), Release);
         next.is_some()
     }
-    fn read(&self) -> Option<[u64; 9]> {
+    pub(crate) fn read(&self) -> Option<[u64; W]> {
         let version = self.version.load(Acquire);
         if version & 1 != 0 { return None; }
         let words = core::array::from_fn(|i| self.words[i].load(Relaxed));
@@ -93,4 +93,8 @@ pub fn begin(transport: u64, kind: u32, cmd_bytes: u32, payload_bytes: u32) -> S
 impl Drop for Stamp {
     fn drop(&mut self) { COMMANDS.finish(self.seq, crate::signal::monotonic_nanos()); }
 }
-pub fn text() -> String { COMMANDS.text() }
+pub fn text() -> String {
+    let mut out = COMMANDS.text();
+    out.push_str(&super::gpu_core_trace::text());
+    out
+}
