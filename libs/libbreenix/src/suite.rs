@@ -1413,7 +1413,7 @@ impl Suite {
             }
         }
         if scoped {
-            if place.is_some() {
+            if place.is_some() && !sequence::is_member() {
                 emit(&std::format!("SUITE_SEQUENCE READY {}", self.id));
                 sequence::finish();
             }

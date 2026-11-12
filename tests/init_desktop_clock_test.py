@@ -18,11 +18,14 @@ use ::std::sync::atomic::{AtomicU64, Ordering};
 static NOW: AtomicU64 = AtomicU64::new(0);
 static CLOCK_AT: AtomicU64 = AtomicU64::new(200);
 static SPAWN_AT: AtomicU64 = AtomicU64::new(0);
+fn publish_log_boot_id(_: bool) { panic!("standalone log identity already prepared") }
 fn run_boot_checks() {}
 fn reconcile_machine_state() {}
 fn run_boot_script() {}
 fn finish_boot_checks() {}
+pub fn reap_forever() -> ! { panic!("teardown failed") }
 pub mod std {
+ pub use ::std::env;
  pub mod time {
   pub struct Instant(u64);
   impl Instant {
@@ -45,8 +48,9 @@ pub mod std {
   pub struct Child;
   impl Command {
    pub fn new(_: &str) -> Self { Self }
-   pub fn args(self, _: Vec<String>) -> Self { self }
-   pub fn spawn(self) -> Result<Child, String> {
+   pub fn args(&mut self, _: Vec<String>) -> &mut Self { self }
+   pub fn env(&mut self, _: &str, _: &str) -> &mut Self { panic!("standalone member") }
+   pub fn spawn(&mut self) -> Result<Child, String> {
     crate::SPAWN_AT.store(crate::NOW.load(crate::Ordering::Relaxed), crate::Ordering::Relaxed);
     Ok(Child)
    }
@@ -54,7 +58,13 @@ pub mod std {
   impl Child { pub fn id(&self) -> u32 { 9 } }
  }
 }
-mod libbreenix {
+pub mod breenix_suite { pub use crate::libbreenix::suite; }
+pub mod libbreenix {
+ pub mod suite { pub mod sequence {
+  pub fn read(_: &str) -> Option<(Vec<String>, usize)> { None }
+  pub fn prepare_owner(_: &[String], _: usize) { panic!("standalone owner") }
+  pub fn finish() { panic!("standalone handoff") }
+ } }
  pub mod time { pub fn sleep_ms(_: u64) -> Result<(), ()> { Ok(()) } }
  pub mod process {
   pub fn wifexited(_: i32) -> bool { true }
@@ -62,7 +72,7 @@ mod libbreenix {
   pub fn wexitstatus(status: i32) -> i32 { status >> 8 }
  }
 }
-mod init_services {
+pub mod init_services {
  pub enum Scope { Daemons }
  pub struct Supervisor;
  impl Supervisor {
@@ -72,6 +82,7 @@ mod init_services {
    match name { "shares" => Some("done"), "ntp" => Some("running"), _ => panic!("unknown service") }
   }
   pub fn tick_child(&mut self, _: Option<i32>) -> Option<i32> { Some(0) }
+  pub fn stop_for_sequence(&mut self) -> Result<(), String> { panic!("standalone stop") }
   pub fn poweroff(&mut self) {}
   pub fn run(self) -> ! { panic!("end of init loop") }
  }

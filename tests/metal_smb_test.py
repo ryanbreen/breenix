@@ -70,8 +70,8 @@ class SmbStagingTest(unittest.TestCase):
                     self.assertRegex(stat, r'User:\s+0\s+Group:\s+0')
                 self.assertNotIn(config['SMB_TEST_PASSWORD'], output.getvalue() + json.dumps(facts))
 
-    def test_only_gui_apps_alone_selects_and_stages_guskit_mounts(self):
-        for suite in ('gui-apps,console', 'console,gui-apps', 'console,smoke'):
+    def test_sequences_without_gui_apps_do_not_stage_guskit_mounts(self):
+        for suite in ('console,smoke',):
             with self.subTest(suite=suite), self.gui_root() as (image, read, config):
                 selected = metal_root.smb_gui_selection('suite', suite)
                 # Inspect the staged image even if the predicate is wrong.
@@ -84,7 +84,7 @@ class SmbStagingTest(unittest.TestCase):
                              '/mnt/guskit-rw', '/mnt/guskit-ro'):
                     self.assertIn(b'File not found', read('stat ' + path).stderr)
 
-    def test_gui_apps_sequence_is_refused_before_staging_or_lease(self):
+    def test_gui_apps_sequence_configures_smb_before_boot(self):
         runner = load_script('metal-run')
         for suite in ('gui-apps,console', 'console,gui-apps', 'console,smoke'):
             for case in (None, 'guskit') if 'gui-apps' in suite else (None,):
@@ -98,16 +98,19 @@ class SmbStagingTest(unittest.TestCase):
                         patch.object(runner.Path, 'home', return_value=Path(tmp)):
                     args = runner.argument_parser().parse_args(
                         ['boot', '--suite', suite] + (['--case', case] if case else []))
-                    if 'gui-apps' in suite:
-                        with self.assertRaisesRegex(SystemExit, '^boot gui-apps on its own$'):
+                    if case:
+                        with self.assertRaisesRegex(SystemExit, '--case needs one production suite'):
                             runner.boot(args)
                         remote.assert_not_called()
-                        processes.assert_not_called()
+                        configure.assert_not_called()
+                        continue
+                    self.assertEqual(runner.boot(args), 0)
+                    self.assertTrue(remote.called)
+                    self.assertTrue(processes.called)
+                    if 'gui-apps' in suite:
+                        configure.assert_called_once()
                     else:
-                        self.assertEqual(runner.boot(args), 0)
-                        self.assertTrue(remote.called)
-                        self.assertTrue(processes.called)
-                    configure.assert_not_called()
+                        configure.assert_not_called()
 
     def test_console_and_other_gui_selection_remove_smb_mounts(self):
         for mode, suite, case in (('console', None, None), ('suite', 'gui-apps', 'bterm')):
@@ -258,6 +261,81 @@ class SmbStagingTest(unittest.TestCase):
             result = subprocess.run([sys.executable, str(Path(tmp) / "metal-run"), "--help"],
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_gui_request_after_long_sequence_is_answered(self):
+        helper = load_script('smb-restart')
+        clock = [0.0]
+        chunks = iter([b'', b'SUITE gui-apps START cases=73\n'
+                       b'SUITE gui-apps SMBSTOP guskit/smb-share-gone seq=1\n'
+                       b'SUITE gui-apps SMBSTART guskit/smb-share-gone seq=2\n'
+                       b'SUITE gui-apps DONE passed=73 failed=0 skipped=0 total=73\n'])
+        commands, transcripts = [], []
+        def remote(*cmd, **kwargs):
+            if cmd[0] == 'tail':
+                return SimpleNamespace(returncode=0, stdout=next(chunks))
+            if cmd[0] == 'test':
+                return SimpleNamespace(returncode=1)
+            self.assertEqual(cmd[0], 'tee')
+            transcripts.append(json.loads(kwargs['input']))
+            return SimpleNamespace(returncode=0)
+        def incus(*cmd, **kwargs):
+            commands.append(cmd)
+            return SimpleNamespace(returncode=0)
+        def advance(_):
+            clock[0] += 2701
+        with patch.object(helper.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(helper.time, 'sleep', side_effect=advance), contextlib.redirect_stdout(io.StringIO()):
+            result = helper.watch('20261110T000000Z-metal', 'fixture-smb', remote, incus, minutes=45)
+        self.assertEqual(result, 0)
+        self.assertEqual([cmd[-2:] for cmd in commands], [('stop', 'smbd'), ('start', 'smbd')])
+        self.assertEqual([r['ok'] for r in transcripts[-1]['requests']], [True, True])
+
+    def test_both_sequence_smb_suites_are_served(self):
+        for order in [('network-shares', 'gui-apps'), ('gui-apps', 'network-shares')]:
+            helper = load_script('smb-restart')
+            clock = [0.0]
+            chunks = [f'SUITE_SEQUENCE BEGIN suites={",".join(order)} baseline=1\n'.encode()]
+            for suite in order:
+                request = ('SUITE network-shares SMBRESTART smb/server-restart seq=1\n' if suite == 'network-shares' else
+                           'SUITE gui-apps SMBSTOP guskit/smb-share-gone seq=1\nSUITE gui-apps SMBSTART guskit/smb-share-gone seq=2\n')
+                chunks.extend([f'SUITE {suite} START cases=1\n'.encode(),
+                               (request + f'SUITE {suite} DONE passed=1 failed=0 skipped=0 total=1\n').encode(), b''])
+            chunks.append(b'SUITE_SEQUENCE DONE suites=2\n')
+            commands, transcripts = [], []
+            def remote(*cmd, **kwargs):
+                if cmd[0] == 'tail':
+                    return SimpleNamespace(returncode=0, stdout=chunks.pop(0))
+                if cmd[0] == 'test': return SimpleNamespace(returncode=1)
+                transcripts.append(json.loads(kwargs['input']))
+                return SimpleNamespace(returncode=0)
+            def incus(*cmd, **kwargs):
+                commands.append(cmd)
+                return SimpleNamespace(returncode=0)
+            def advance(_):
+                # Idle gaps between relevant suites do not spend their active budget.
+                clock[0] += 2701 if chunks and b' START ' in chunks[0] else 0.5
+            with patch.object(helper.time, 'monotonic', side_effect=lambda: clock[0]), \
+                    patch.object(helper.time, 'sleep', side_effect=advance), contextlib.redirect_stdout(io.StringIO()):
+                result = helper.watch('20261110T000000Z-metal', 'fixture-smb', remote, incus)
+            self.assertEqual(result, 0)
+            self.assertEqual(sum('systemctl' in cmd for cmd in commands), 3)
+            self.assertEqual(len(transcripts[-1]['requests']), 3)
+            self.assertTrue(all(r['ok'] for r in transcripts[-1]['requests']))
+
+    def test_helper_stops_when_boot_ends_before_suite(self):
+        helper = load_script('smb-restart')
+        transcripts = []
+        def remote(*cmd, **kwargs):
+            if cmd[0] == 'tail':
+                return SimpleNamespace(returncode=0, stdout=b'')
+            if cmd[0] == 'test':
+                return SimpleNamespace(returncode=0)
+            transcripts.append(json.loads(kwargs['input']))
+            return SimpleNamespace(returncode=0)
+        with patch.object(helper.time, 'sleep'):
+            result = helper.watch('20261110T000000Z-metal', 'fixture-smb', remote, lambda *a, **k: None)
+        self.assertEqual(result, 0)
+        self.assertEqual(transcripts[-1]['requests'], [])
 
     def test_gui_stop_start_and_cleanup(self):
         helper = load_script('smb-restart')

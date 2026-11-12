@@ -23,16 +23,16 @@ def skeleton(suite):
 
 
 class ResolveTests(unittest.TestCase):
-    def test_metal_all_excludes_gui_apps_under_construction(self):
+    def test_metal_all_includes_gui_apps_before_files_io(self):
         ids, skipped = SEQUENCE["resolve"]("all", "x86-metal", True)
-        self.assertNotIn("gui-apps", ids)
-        self.assertEqual(dict(skipped)["gui-apps"],
-                         "under construction: run --suite gui-apps explicitly")
+        self.assertEqual(ids[-3:], ["ui-testing", "gui-apps", "files-io"])
+        self.assertNotIn("gui-apps", dict(skipped))
+        self.assertNotIn("sequence", json.loads((ROOT / "docs/suites/gui-apps.json").read_text()))
 
     def test_ui_testing_joins_metal_aggregate(self):
-        expected = "console,directories,processes,signals,time,memory,threads,ipc,terminals,networking,libc,rust-std,utilities,sdk,breengel,ui-testing,files-io".split(",")
+        expected = "console,directories,processes,signals,time,memory,threads,ipc,terminals,networking,libc,rust-std,utilities,sdk,breengel,ui-testing,gui-apps,files-io".split(",")
         ids, skipped = SEQUENCE["resolve"]("all", "x86-metal", True)
-        self.assertEqual(len(ids), 17)
+        self.assertEqual(len(ids), 18)
         self.assertEqual(ids, expected)
         self.assertNotIn("ui-testing", dict(skipped))
         self.assertEqual(SEQUENCE["resolve"]("ui-testing", "x86-metal", True)[0], ["ui-testing"])

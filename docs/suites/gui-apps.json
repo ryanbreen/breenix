@@ -6,7 +6,6 @@
   "binary": "/sbin/suite-gui-apps",
   "timingSensitive": true,
   "needs3dGpu": true,
-  "aggregate": "after E23 23.8",
   "categories": [
     {
       "id": "terminal-emulation",
