@@ -283,6 +283,55 @@ fn exit_text(status: i32) -> String {
     }
 }
 
+/// Detach configured shares while their independently spawned servers still run.
+fn unmount_sequence_shares() -> Result<(), String> {
+    let table = match std::fs::read_to_string("/etc/shares") {
+        Ok(table) => table,
+        Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(format!("read /etc/shares: {e}")),
+    };
+    let (shares, errors) = smbfs::shares::parse_shares(&table);
+    if !errors.is_empty() {
+        return Err(errors.iter().map(|e| format!("/etc/shares line {}: {}", e.line, e.message))
+            .collect::<Vec<_>>().join("; "));
+    }
+    let mounted = |text: &str| -> Vec<String> {
+        text.lines().filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            fields.next()?;
+            let directory = fields.next()?;
+            if fields.next()? != "ufs" { return None; }
+            // kernel/src/fs/ufs/mounts_line.rs escapes these four bytes.
+            let directory = directory.replace("\\040", " ").replace("\\011", "\t")
+                .replace("\\012", "\n").replace("\\134", "\\");
+            shares.iter().any(|s| s.directory == directory).then_some(directory)
+        }).collect()
+    };
+    let mounts = std::fs::read_to_string("/proc/mounts").map_err(|e| format!("read /proc/mounts: {e}"))?;
+    let mut targets = mounted(&mounts);
+    // Nested shares must detach before their parents.
+    targets.sort_by_key(|path| core::cmp::Reverse(path.len()));
+    targets.dedup();
+    let mut errors = Vec::new();
+    for target in targets {
+        if let Err(e) = libbreenix::fs::umount2(&target, 0) {
+            errors.push(format!("umount {target}: {e}"));
+        }
+    }
+    let mounts = std::fs::read_to_string("/proc/mounts").map_err(|e| format!("read back /proc/mounts: {e}"))?;
+    for target in mounted(&mounts) {
+        errors.push(format!("mount {target} remains"));
+    }
+    if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
+}
+
+fn sequence_processes() -> String {
+    match std::fs::read_to_string("/proc/pids") {
+        Ok(text) => text.split_whitespace().filter(|pid| *pid != "1").collect::<Vec<_>>().join(","),
+        Err(e) => format!("inventory unavailable: {e}"),
+    }
+}
+
 fn in_scope(scope: Scope, service: &Service) -> bool {
     match scope {
         Scope::All => service.name != "bwm",
@@ -408,6 +457,94 @@ impl Supervisor {
         self.begin_shutdown(0x4321fedc);
     }
 
+    /// Quiesce PID 1's services and shares for an exec hand-off, without rebooting.
+    // Public sequence-owner API; its caller is wired by the sequence-entry unit.
+    #[allow(dead_code)]
+    pub fn stop_for_sequence(&mut self) -> Result<(), String> {
+        if std::process::id() != 1 {
+            return Err("sequence teardown requires PID 1".into());
+        }
+        // Do not serve control requests, start due services, or resume pending restarts.
+        for entry in &mut self.entries {
+            entry.after_stop = AfterStop::Stay;
+            if !entry.state.is_live() {
+                entry.set(State::Stopped, now_ms());
+            }
+        }
+        self.changed = true;
+        loop {
+            let (now, _) = self.sequence_poll()?;
+            if self.entries.iter().any(|e| e.state == State::Stopping) {
+                if let Some(entry) = self.entries.iter().find(|e| e.state == State::Stopping
+                    && now >= e.stop_deadline_ms.saturating_add(10_000)) {
+                    return Err(format!("service {} process {} did not exit after SIGKILL", entry.def.name, entry.pid));
+                }
+            } else if let Some(index) = self.next_shutdown_service() {
+                Self::stop(&mut self.entries[index], AfterStop::Stay, now);
+                self.changed = true;
+                continue;
+            } else {
+                let live: Vec<_> = self.entries.iter().filter(|e| e.state.is_live())
+                    .map(|e| format!("{} process {}", e.def.name, e.pid)).collect();
+                if !live.is_empty() {
+                    return Err(format!("service dependency cycle: {}", live.join(", ")));
+                }
+                break;
+            }
+            libbreenix::time::sleep_ms(TICK_MS).map_err(|e| format!("service stop wait: {e}"))?;
+        }
+        unmount_sequence_shares()?;
+        // SSH jobs and share servers can outlive their service's leader.
+        signal::kill(-1, signal::SIGTERM).or_else(|e| match e {
+            libbreenix::error::Error::Os(libbreenix::Errno::ESRCH) => Ok(()),
+            e => Err(e),
+        }).map_err(|e| format!("SIGTERM processes {}: {e}", sequence_processes()))?;
+        let (now, _) = self.sequence_poll()?;
+        let term_deadline = now.saturating_add(2_000);
+        loop {
+            let (now, _) = self.sequence_poll()?;
+            if now >= term_deadline { break; }
+            libbreenix::time::sleep_ms(TICK_MS).map_err(|e| format!("SIGTERM wait: {e}"))?;
+        }
+        signal::kill(-1, signal::SIGKILL).or_else(|e| match e {
+            libbreenix::error::Error::Os(libbreenix::Errno::ESRCH) => Ok(()),
+            e => Err(e),
+        }).map_err(|e| format!("SIGKILL processes {}: {e}", sequence_processes()))?;
+        let (now, _) = self.sequence_poll()?;
+        let deadline = now.saturating_add(10_000);
+        loop {
+            let (now, empty) = self.sequence_poll()?;
+            let outputs: Vec<_> = self.entries.iter().filter(|e| !e.outputs.is_empty())
+                .map(|e| e.def.name.clone()).collect();
+            if empty && outputs.is_empty() {
+                for entry in &mut self.entries { entry.set(State::Stopped, now); }
+                self.write_state();
+                return Ok(());
+            }
+            if now >= deadline {
+                return Err(format!("sequence teardown incomplete: processes [{}], service output [{}]",
+                    sequence_processes(), outputs.join(", ")));
+            }
+            libbreenix::time::sleep_ms(TICK_MS).map_err(|e| format!("process/log drain wait: {e}"))?;
+        }
+    }
+
+    /// Reuse the supervisor's reaper so stopped leaders update their service states.
+    fn sequence_poll(&mut self) -> Result<(u64, bool), String> {
+        let now = libbreenix::time::now_monotonic()
+            .map_err(|e| format!("sequence teardown clock: {e}"))?.as_nanos() / 1_000_000;
+        let now = now as u64;
+        let (_, empty) = self.reap_children(None);
+        let empty = empty.map_err(|e| format!("reap processes {}: {e}", sequence_processes()))?;
+        self.enforce_stops(now);
+        self.drain_logs();
+        if self.changed {
+            self.changed = false;
+            self.write_state();
+        }
+        Ok((now, empty))
+    }
+
     fn begin_shutdown(&mut self, command: u64) {
         self.shutdown_restart = self.entries.iter()
             .filter(|e| matches!(e.state, State::Running | State::Waiting | State::Backoff | State::CrashLoop))
@@ -480,16 +617,20 @@ impl Supervisor {
 
     /// Stop leaves of the service dependency graph, one at a time. Keep the
     /// kernel logger until the other services have ended; do not restart any.
+    fn next_shutdown_service(&self) -> Option<usize> {
+        self.entries.iter().enumerate().rev().find(|(_, entry)| {
+            entry.state == State::Running
+                && (entry.def.name != "blogd" || !self.entries.iter().any(|e| e.state == State::Running && e.def.name != "blogd"))
+                && !self.entries.iter().any(|dependent| dependent.state == State::Running
+                    && dependent.def.needs.iter().any(|n| matches!(n, Need::Service(name) if name == &entry.def.name)))
+        }).map(|(index, _)| index)
+    }
+
     fn shutdown_tick(&mut self, now: u64) {
         let (command, phase, deadline) = self.shutdown.unwrap();
         if phase == 0 {
             if self.entries.iter().any(|e| e.state == State::Stopping) { return; }
-            let next = self.entries.iter().enumerate().rev().find(|(_, entry)| {
-                entry.state == State::Running
-                    && (entry.def.name != "blogd" || !self.entries.iter().any(|e| e.state == State::Running && e.def.name != "blogd"))
-                    && !self.entries.iter().any(|dependent| dependent.state == State::Running
-                        && dependent.def.needs.iter().any(|n| matches!(n, Need::Service(name) if name == &entry.def.name)))
-            }).map(|(index, _)| index);
+            let next = self.next_shutdown_service();
             if let Some(index) = next {
                 self.notices.alert(&format!("[shutdown] stopping {}", self.entries[index].def.name));
                 Self::stop(&mut self.entries[index], AfterStop::Stay, now);
@@ -753,12 +894,20 @@ impl Supervisor {
     }
 
     fn reap(&mut self, watched: Option<i32>) -> Option<i32> {
+        self.reap_children(watched).0
+    }
+
+    /// The boolean is true only after waitpid reports ECHILD, not on other errors.
+    fn reap_children(&mut self, watched: Option<i32>) -> (Option<i32>, Result<bool, libbreenix::error::Error>) {
         let mut watched_status = None;
         loop {
             let mut status = 0;
             let pid = match process::waitpid(-1, &mut status, process::WNOHANG) {
                 Ok(pid) if pid.raw() != 0 => pid.raw() as i32,
-                _ => return watched_status,
+                Ok(_) => return (watched_status, Ok(false)),
+                Err(libbreenix::error::Error::Os(libbreenix::Errno::ECHILD)) => return (watched_status, Ok(true)),
+                Err(libbreenix::error::Error::Os(libbreenix::Errno::EINTR)) => continue,
+                Err(e) => return (watched_status, Err(e)),
             };
             if watched == Some(pid) {
                 watched_status = Some(status);
