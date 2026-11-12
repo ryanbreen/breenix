@@ -73,9 +73,10 @@ impl TermEmu {
     fn resize(&mut self, cols: usize, rows: usize) { self.vt.resize(cols, rows); self.selection.clear(); self.invalidate(); }
     fn feed(&mut self, bytes: &[u8], master_fd: Fd) {
         let generation = self.vt.scroll_generation();
+        let screen = self.vt.screen_generation();
         let offset = self.vt.view_offset();
         self.vt.feed(bytes);
-        if self.vt.scroll_generation() != generation || self.vt.view_offset() != offset { self.selection.clear(); }
+        if self.vt.scroll_generation() != generation || self.vt.screen_generation() != screen || self.vt.view_offset() != offset { self.selection.clear(); }
         self.dirty = true;
         self.flush_replies(master_fd);
     }
