@@ -132,7 +132,8 @@ class SequenceReset(unittest.TestCase):
             assert_eq!(entries[&mount].kind, 'm');
             assert!(!entries.contains_key(&format!("{mount}/keep")));
             let result = reset(&root).unwrap();
-            assert!(result.changed.contains(&format!("{mount}(mounted)")));
+            assert!(result.changed.is_empty(), "baseline mount was reported changed: {:?}", result.changed);
+            assert!(std::path::Path::new(&format!("{mount}/keep")).exists());
         }
     }
 }

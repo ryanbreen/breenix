@@ -608,7 +608,10 @@ fn reset(root: &str) -> Result<Reset, String> {
     walk(root, &mut |path, meta, mounted| {
         if mounted {
             seen.insert(String::from(path));
-            result.changed.push(std::format!("{path}(mounted)"));
+            let current = meta.as_ref().map(|meta| Entry { kind: 'm', ..describe(Path::new(path), meta) });
+            if baseline.get(path).is_none_or(|recorded| current.as_ref() != Some(recorded)) {
+                result.changed.push(std::format!("{path}(mounted)"));
+            }
             return false;
         }
         let Some(recorded) = baseline.get(path) else {
