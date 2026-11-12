@@ -112,3 +112,40 @@ fn wait_deadline_only_tracks_a_check_that_can_still_run() {
     queue.complete(7);
     assert!(!queue.pending(7));
 }
+
+#[test]
+fn prompt_waits_for_text_at_a_new_presented_commit() {
+    use validation::PromptCheck;
+    let mut queue = ValidationQueue::new();
+    queue.request(7);
+    queue.presented(1);
+    assert!(queue.check_prompt(7, 10));
+    assert_eq!(queue.prompt_result(7, 10, PromptCheck::Empty, 3), None);
+    assert!(!queue.check_prompt(7, 11), "retry requires presentation");
+    queue.presented(2);
+    assert!(!queue.check_prompt(7, 10), "unchanged commit must not be checked again");
+    assert!(queue.check_prompt(7, 11));
+    assert_eq!(queue.prompt_result(7, 11, PromptCheck::Text, 3), Some(Ok(11)));
+    assert_eq!(queue.prompt_result(7, 11, PromptCheck::Text, 3), None);
+    queue.presented(3);
+    assert!(!queue.check_prompt(7, 12));
+}
+
+#[test]
+fn prompt_limit_fails_once_and_departed_clients_leave_no_work() {
+    use validation::PromptCheck;
+    let mut queue = ValidationQueue::new();
+    queue.request(7);
+    queue.request(8);
+    queue.retain_clients(|id| id == 7);
+    queue.presented(1);
+    assert!(!queue.check_prompt(8, 1));
+    assert!(queue.check_prompt(7, 1));
+    assert_eq!(queue.prompt_result(7, 1, PromptCheck::Moved, 2), None);
+    queue.presented(2);
+    assert!(queue.check_prompt(7, 2));
+    assert_eq!(queue.prompt_result(7, 2, PromptCheck::Empty, 2), Some(Err(())));
+    assert_eq!(queue.prompt_result(7, 2, PromptCheck::Empty, 2), None);
+    queue.presented(3);
+    assert!(!queue.check_prompt(7, 3));
+}
