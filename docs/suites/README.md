@@ -259,8 +259,6 @@ SUITE <id> MEMORY reclaimed=PASS|FAIL free_before=<pages> free_after=<pages> all
   `settle_ms` how long the sample waited, both waits together. The proc row
   `reclaim outstanding` reports the row-owned receipt count, including reaped tombstones, receipts awaiting
   publication and receipts temporarily removed from the queues by a drain.
-  Both samples' bounded ownership snapshots are exported as `SUITE_MEMORY_OWNERS`
-  rows on PASS and FAIL, after the verdict, without moving either sample boundary.
 - The verdict is PASS when `free_after` is at most `allowance` pages below `free_before`.
   The allowance is `MEMORY_RECLAIM_ALLOWANCE_PAGES` in `libs/libbreenix/src/suite_memory.rs`,
   set from the measurement below; only the operator loosens it.
