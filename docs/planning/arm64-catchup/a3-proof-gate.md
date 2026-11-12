@@ -3,9 +3,9 @@
 Coordinator ledger line 266(1)–(2) moves the attempt-local checks into
 `scripts/a3-proof-gate.py`. The host-lock library exports the shell wrapper
 as `BREENIX_QEMU_UI_LAUNCHER`; that wrapper is gate argv 0. Its printed
-source-keyed native helper is checked separately. The recipe's signed b4
+source-keyed native helper is checked separately. The recipe's signed b5
 QEMU is argv 1, with SHA-256
-`e52ce6461a0bad90d7105991d695fd9288485256a568ee0e15ca9f43f3d0c09b`.
+`5f5fdaf5e785a0ca59787e425ccbe038387ec0fad2431cf9be8065969c5f620b`.
 The gate passes its original argv to `os.execvp` after the checks.
 
 For acceptance, set `BREENIX_QEMU_PRE_EXEC_GATE` to the gate's absolute path
@@ -25,7 +25,7 @@ Use the normal `boot-interactive.sh` build path for the standalone
 window-manager suite, with `--gpu-gl --no-display`. The pre-exec checks
 compare the disk's suite with the built ARM suite and inspect the retained
 suite, kernel and client labels on both architectures. They check the
-build log and expected clean head, verify b4's hash and codesign signature,
+build log and expected clean head, verify b5's hash and codesign signature,
 and reject an unreviewed coordinator entry. The two-second load sampler
 writes `load.jsonl` and follows the gate PID through exec, including the
 native launcher's supervised path. Load below 9 releases the wait; after
@@ -35,7 +35,7 @@ native launcher's supervised path. Load below 9 releases the wait; after
 `--dry-run WRAPPER QEMU ...` validates the chain and launch options only;
 it does not execute the guest or claim full artifact/load acceptance.
 `tests/a3_proof_gate_test.py` drives the production ARM launcher's argv
-assembly with the host-lock export and runs this dry path against b4.
+assembly with the host-lock export and runs this dry path against b5.
 It also checks prediction-before-exec, refusal-before-exec, argument
 preservation and the load boundary/timeout.
 

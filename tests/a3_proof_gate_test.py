@@ -55,7 +55,7 @@ class ProofGateTests(unittest.TestCase):
             record = json.loads(result.stdout)
             self.assertEqual(record['argv'], command[1:])
             self.assertEqual(record['hashes']['qemu'],
-                             'e52ce6461a0bad90d7105991d695fd9288485256a568ee0e15ca9f43f3d0c09b')
+                             '5f5fdaf5e785a0ca59787e425ccbe038387ec0fad2431cf9be8065969c5f620b')
             native = subprocess.check_output([wrapper], text=True).strip()
             self.assertEqual(record['native_launcher'], native)
             self.assertNotEqual(native, wrapper)

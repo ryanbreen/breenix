@@ -22,7 +22,7 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-B4_SHA256 = 'e52ce6461a0bad90d7105991d695fd9288485256a568ee0e15ca9f43f3d0c09b'
+B5_SHA256 = '5f5fdaf5e785a0ca59787e425ccbe038387ec0fad2431cf9be8065969c5f620b'
 SUITE_LABELS = ('latency-median', 'latency-max', 'composites-per-second')
 KERNEL_LABELS = ('GPU_WINDOW_IDENTITY_FAIL', 'GPU_SCENE_EPOCH_FAIL')
 
@@ -55,8 +55,8 @@ def check_chain(argv):
     require(Path(exported).resolve() == wrapper, 'unexpected exported shell launcher')
     qemu = Path(output([str(ROOT / 'scripts/build-qemu-gl.sh'), '--print-path']))
     require(Path(argv[1]).resolve() == qemu.resolve(), 'unexpected QEMU executable at argv 1')
-    require(qemu.parents[3].name == '10.0.12-utm-4d73aaf0-b4', 'expected b4 bundle')
-    require(sha(qemu) == B4_SHA256, 'QEMU identity mismatch')
+    require(qemu.parents[3].name == '10.0.12-utm-4d73aaf0-b5', 'expected b5 bundle')
+    require(sha(qemu) == B5_SHA256, 'QEMU identity mismatch')
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(qemu.parents[2])], check=True)
 
     # The wrapper prints the helper it will exec; its cache key is the hash
