@@ -1071,16 +1071,23 @@ pub fn restart_adopts() -> CaseResult {
     let (mut d, c) = one()?;
     content(&mut d, &c)?;
     c.child.freeze()?;
-    d.wm.stop()?;
+    let stopped = d.wm.stop();
+    value("reap-elapsed", d.wm.reap_ns as i64, "ns", None);
+    stopped?;
     let mut next = Desktop::start()?;
-    next.shown(&c)?.client(&c)
+    let begin = now();
+    let composite = next.shown(&c);
+    elapsed("first-composite", now().saturating_sub(begin), 2_000_000_000);
+    composite?.client(&c)
 }
 pub fn interaction_restart() -> CaseResult {
     let (mut d, mut c) = one()?;
     d.focus(&mut c)?;
     c.clear()?;
     key(&mut c, "a", 30)?;
-    d.wm.stop()?;
+    let stopped = d.wm.stop();
+    value("reap-elapsed", d.wm.reap_ns as i64, "ns", None);
+    stopped?;
     let mut next = Desktop::start()?;
     next.focus(&mut c)?;
     c.clear()?;
@@ -1092,9 +1099,14 @@ pub fn stack_restored() -> CaseResult {
     d.focus(&mut a)?;
     minimize(&d, &a)?;
     let before = listed()?;
-    d.wm.stop()?;
+    let stopped = d.wm.stop();
+    value("reap-elapsed", d.wm.reap_ns as i64, "ns", None);
+    stopped?;
     let mut next = Desktop::start()?;
-    next.shown(&b)?;
+    let begin = now();
+    let composite = next.shown(&b);
+    elapsed("first-composite", now().saturating_sub(begin), 2_000_000_000);
+    composite?;
     let after = listed()?;
     check(
         before.iter().all(|w| {
@@ -1125,10 +1137,17 @@ pub fn supervisor_restarts() -> CaseResult {
         .copied()
         .ok_or("desktop supervisor has no bwm child")?;
     signal::kill(old, signal::SIGKILL)?;
-    until(2000, "production desktop supervisor restarts bwm", || {
+    let begin = now();
+    let restarted = until(2000, "production desktop supervisor restarts bwm", || {
         Ok(children(d.wm.pid, "bwm")?.iter().any(|p| *p != old))
-    })?;
-    content(&mut d, &c)
+    });
+    elapsed("supervisor-restart", now().saturating_sub(begin), 2_000_000_000);
+    restarted?;
+    let begin = now();
+    let composite = content(&mut d, &c);
+    elapsed("first-composite", now().saturating_sub(begin), 2_000_000_000);
+    composite?;
+    Ok(())
 }
 pub fn children(parent: i32, name: &str) -> Result<Vec<i32>, String> {
     let mut result = Vec::new();
@@ -1281,30 +1300,35 @@ pub fn memory_bounded() -> CaseResult {
     for n in 1..=60 {
         receipt_serial = receipt_serial.max(measure::epoch(&mut clock, &mut clients, n, true)?);
     }
-    let before = rss(d.wm.pid)?;
+    let (before, before_status) = rss(d.wm.pid)?;
     for n in 61..=660 {
         receipt_serial = receipt_serial.max(measure::epoch(&mut clock, &mut clients, n, true)?);
     }
     measure::observed(&mut d, &clients.iter().collect::<Vec<_>>(), receipt_serial)?;
-    let after = rss(d.wm.pid)?;
+    let (after, after_status) = rss(d.wm.pid)?;
     value(
         "resident-growth",
         after - before,
         "kb",
         Some((i64::MIN, 64)),
     );
+    if after > before + 64 {
+        failure_diagnostic("rss-before", &before_status);
+        failure_diagnostic("rss-after", &after_status);
+    }
     check(
         after <= before + 64,
         "bwm resident memory grew more than 64 KiB after warmup",
     )
 }
-fn rss(pid: i32) -> Result<i64, String> {
+fn rss(pid: i32) -> Result<(i64, String), String> {
     let text = std::fs::read_to_string(format!("/proc/{pid}/status")).map_err(|e| e.to_string())?;
-    text.lines()
+    let resident = text.lines()
         .find_map(|s| s.strip_prefix("VmRSS:"))
         .and_then(|s| s.split_whitespace().next())
         .and_then(|s| s.parse().ok())
-        .ok_or("VmRSS is missing".into())
+        .ok_or_else(|| String::from("VmRSS is missing"))?;
+    Ok((resident, text))
 }
 
 pub fn present_latency() -> CaseResult {
@@ -1328,12 +1352,14 @@ pub fn present_latency() -> CaseResult {
         }
     }
     value("pipeline-window", c.id as i64, "", None);
-    measure::observed(&mut d, &[&c], receipt_serial)?;
     samples.sort_unstable();
     let median = samples[samples.len() / 2];
     let max = *samples.last().unwrap();
+    elapsed("present-median", median * 1000, 16_000_000);
+    elapsed("present-max", max * 1000, 33_000_000);
     value("present-median", median as i64, "us", Some((0, 16000)));
     value("present-max", max as i64, "us", Some((0, 33000)));
+    measure::observed(&mut d, &[&c], receipt_serial)?;
     if median > 16000 || max > 33000 { failure_pipeline(); }
     check(
         median <= 16000 && max <= 33000,
@@ -1362,13 +1388,19 @@ pub fn frame_floor() -> CaseResult {
     value("pipeline-window", c.id as i64, "", None);
     value("measurement-begin", begin as i64, "ns", None);
     value("measurement-end", end as i64, "ns", None);
-    d.shown(&c)?;
     let hz = rate.as_ref().map_or(0, |r| {
         (u128::from(r.intervals) * 1_000_000_000 / u128::from(r.span_ns)) as i64
     });
     value("presentation-intervals", rate.as_ref().map_or(0, |r| r.intervals) as i64, "intervals", None);
     value("presentation-span", rate.as_ref().map_or(0, |r| r.span_ns) as i64, "ns", None);
+    // Express the frame floor as an average completed-frame interval. Report
+    // the edge intervals too: the existing rate check judges both coverage and Hz.
+    let frame_ns = rate.as_ref().map_or(end - begin, |r| r.span_ns.div_ceil(r.intervals));
+    elapsed("frame-interval", frame_ns, 1_000_000_000 / 60);
+    elapsed("frame-first", times.iter().min().map_or(end - begin, |t| t - begin), 1_000_000_000 / 60);
+    elapsed("frame-last", times.iter().max().map_or(end - begin, |t| end - t), 1_000_000_000 / 60);
     value("composites-per-second", hz, "hz", Some((60, i64::MAX)));
+    d.shown(&c)?;
     if !rate.as_ref().is_some_and(|r| r.passes) {
         failure_pipeline();
         let gap = times.windows(2).map(|w| w[1].saturating_sub(w[0])).max().unwrap_or(0);
@@ -1380,50 +1412,16 @@ pub fn frame_floor() -> CaseResult {
     )
 }
 pub(super) fn failure_pipeline() {
-    full_pipeline("window-pipeline-failure");
-    export_pipeline("/proc/breenix/window-pipeline");
-}
-fn pipeline_blob(trace: &str) -> Result<Vec<u8>, String> {
-    let mut blob = b"WMPIPE01".to_vec();
-    blob.extend_from_slice(&0u32.to_le_bytes());
-    let mut count = 0u32;
-    for row in trace.lines() {
-        if count == 32768 { return Err("pipeline-row-bound".into()); }
-        let mut fields = row.split_whitespace();
-        for _ in 0..5 {
-            let n = fields.next().ok_or("pipeline-fields")?.parse::<u64>().map_err(|e| e.to_string())?;
-            blob.extend_from_slice(&n.to_le_bytes());
+    if let Ok(counters) = std::fs::read_to_string("/proc/trace/counters") {
+        for line in counters.lines().filter(|line| line.contains("gpu_wait_") || line.contains("gpu_irq_masked")) {
+            failure_diagnostic("gpu-wait", line);
         }
-        if fields.next().is_some() { return Err("pipeline-fields".into()); }
-        count += 1;
     }
-    if count == 0 { return Err("pipeline-empty".into()); }
-    blob[8..12].copy_from_slice(&count.to_le_bytes());
-    Ok(blob)
-}
-fn full_pipeline(label: &str) {
-    use std::io::Write;
-    let result = (|| -> Result<(), String> {
-        let trace = std::fs::read_to_string("/proc/breenix/window-pipeline-full").map_err(|e| e.to_string())?;
-        let blob = pipeline_blob(&trace)?;
-        let receipt = breenix_suite::suite::upload_diagnostic("window-manager", label, &blob)?;
-        let mut evidence = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence").map_err(|e| e.to_string())?;
-        evidence.write_all(format!("VALUE window-pipeline-bulk {label} {receipt}\n").as_bytes()).map_err(|e| e.to_string())
-    })();
-    if let Err(error) = result { value("pipeline-bulk-export-errno", 5, &error, None); }
-}
-fn export_pipeline(path: &str) {
-    use std::io::Write;
-    let result = (|| -> std::io::Result<()> {
-        let trace = std::fs::read_to_string(path)?;
-        let mut evidence = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence")?;
-        for row in trace.lines() {
-            let name = if row.starts_with("fine_wake_requests=") { "timer-wake" } else { "window-pipeline" };
-            evidence.write_all(format!("VALUE {name} {row}\n").as_bytes())?;
+    if let Ok(pipeline) = std::fs::read_to_string("/proc/breenix/window-pipeline") {
+        for row in pipeline.lines().rev().take(8) {
+            failure_diagnostic("pipeline", row);
         }
-        Ok(())
-    })();
-    if let Err(error) = result { value("pipeline-export-errno", error.raw_os_error().unwrap_or(5) as i64, "", None); }
+    }
 }
 
 fn input_latency(pointer: bool, animation: bool) -> CaseResult {
@@ -1444,6 +1442,7 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
         c.command(ANIMATE, 1, 0)?;
     }
     let mut samples = Vec::new();
+    let mut failure_exported = false;
     let mut receipt_serial = 0;
     let w = c.info()?;
     for n in 0..110 {
@@ -1478,14 +1477,25 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
         }
         check(r.ns >= begin, "completion predates injected input")?;
         if n >= 10 {
-            samples.push((r.ns - begin) / 1000);
+            let elapsed_us = (r.ns - begin) / 1000;
+            samples.push(elapsed_us);
+            // Preserve the offending input before later animation evicts its
+            // pipeline records. Output starts only after this sample has failed.
+            let max_us = if animation { 100000 } else { 50000 };
+            if elapsed_us > max_us && !failure_exported {
+                value("first-slow-sample", n as i64, "index", None);
+                value("first-slow-input", begin as i64, "ns", None);
+                value("first-slow-completion", r.ns as i64, "ns", None);
+                value("first-slow-latency", elapsed_us as i64, "us", None);
+                failure_pipeline();
+                failure_exported = true;
+            }
         }
         let spent = (now() - begin) / 1_000_000;
         if spent < 50 {
             time::sleep_ms(50 - spent)?;
         }
     }
-    measure::observed(&mut d, &[&c], receipt_serial)?;
     samples.sort_unstable();
     let median = samples[50];
     let max = *samples.last().unwrap();
@@ -1500,8 +1510,11 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
         "us",
         Some((0, median_bound)),
     );
+    elapsed("latency-median", median * 1000, median_bound as u64 * 1000);
+    elapsed("latency-max", max * 1000, max_bound as u64 * 1000);
     value("latency-max", max as i64, "us", Some((0, max_bound)));
-    if median > median_bound as u64 || max > max_bound as u64 { failure_pipeline(); }
+    measure::observed(&mut d, &[&c], receipt_serial)?;
+    if !failure_exported && (median > median_bound as u64 || max > max_bound as u64) { failure_pipeline(); }
     check(
         median <= median_bound as u64 && max <= max_bound as u64,
         "input-to-composited-ack latency exceeds the GUI plan bound",
@@ -1532,6 +1545,7 @@ pub fn clipboard_latency() -> CaseResult {
             maximum = maximum.max(now() - begin);
         }
     }
+    elapsed("clipboard-max", maximum, 50_000_000);
     value(
         "clipboard-max",
         (maximum / 1000) as i64,
@@ -1561,7 +1575,11 @@ pub fn idle_cpu() -> CaseResult {
         .iter()
         .map(|p| cpu_ticks(*p))
         .collect::<Result<Vec<_>, _>>()?;
-    let used = after.iter().zip(before).map(|(a, b)| a - b).sum::<u64>();
+    let used = after.iter().zip(&before).map(|(a, b)| a - b).sum::<u64>();
+    if used * 10_000_000 * 100 > elapsed * 2 {
+        failure_diagnostic("idle-cpu", &format!("elapsed_ns={elapsed} ticks={used} pids={pids:?} before={before:?} after={after:?}"));
+
+    }
     // proc stat ticks are USER_HZ=100 (the proc ABI); 1 tick is 10 ms of one CPU.
     value(
         "idle-cpu",

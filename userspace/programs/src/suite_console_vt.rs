@@ -948,7 +948,7 @@ fn observe_foreground() -> Verdict<Vec<u8>> {
     arg.dst_len = pixels.len() as u64;
     arg.record = record.as_mut_ptr() as u64;
     arg.record_len = record.len() as u32;
-    window::call(abi::op::SCANOUT_READBACK, &mut arg).map_err(|e| format!("foreground observation: {e}"))?;
+    window::readback(&mut arg).map_err(|e| format!("foreground observation: {e}"))?;
     for p in pixels.chunks_exact_mut(4) { p[3] = 0xFF; }
     Ok(pixels)
 }

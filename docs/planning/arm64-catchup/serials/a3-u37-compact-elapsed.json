@@ -1,0 +1,64 @@
+{
+  "unit": "a3-u37-compact-elapsed",
+  "issue": 2903,
+  "base": "d63ea7ced8dd9682cd3975adf03ab02c1a38df48",
+  "origin_main": "b2ebd47d1d3b8a3e682b33e18818e4c89534fb18",
+  "merge_commit": "ec368f54",
+  "check_commit": "5ddf9e52",
+  "red": {
+    "command": "python3 tests/wm_elapsed_test.py",
+    "head": "ec368f54",
+    "result": "FAIL; all three production wait checks found zero wm-elapsed records on passing paths"
+  },
+  "green": {
+    "wm_elapsed": "PASS; production supervisor restart, replacement observation, focus press/release and reap, success and timeout/error paths; deterministic clock; exact elapsed and unchanged deadline fields; <=2048 bytes including saturated failure diagnostics",
+    "latency_budget": "PASS; production typing, pointer and animation bodies, passing and threshold-failing workloads, exact median/max timing lines and <=2048 VALUE wm- bytes",
+    "focus_order": "PASS; production focus/click/await_event/press_order; FIFO delayed releases unchanged",
+    "proof_gate": "3/3 PASS; no guest started",
+    "merge_resolution": "readback-batch and capture-tree host checks PASS; preserve late corruption, interruption, buffer reuse, independent readback and same-capture tree assertions"
+  },
+  "reporting": {
+    "format": "VALUE wm-elapsed <case> <wait> <ms> <deadline_ms>",
+    "timings": "supervisor-restart, first-composite, positive-click, click-release, reap, latency-median/max, present-median/max, clipboard-max, frame-interval/first/last",
+    "precision": "milliseconds with three fractional digits; elapsed rounds up, deadline rounds down to microseconds",
+    "frame_interval": "receipt span / completed intervals; first/last coverage reported against 1 second / 60; original rate checks unchanged",
+    "failure_diagnostic_reserve_bytes": 1024,
+    "emission": "after measured wait or workload, before propagating the wait failure; aggregate values precede final independent observation"
+  },
+  "builds": {
+    "policy": {
+      "CARGO_BUILD_JOBS": 4,
+      "taskpolicy": "-b",
+      "profile": "release"
+    },
+    "bins": [
+      "bwm (merge resolution)",
+      "suite-window-manager"
+    ],
+    "architectures": [
+      "aarch64-breenix",
+      "x86_64-breenix"
+    ],
+    "result": "PASS; no warnings or errors in all four scoped release logs"
+  },
+  "claim_lint": "exit 0; 157 files, changed hunks against origin/main",
+  "artifact_labels": "all proof-gate SUITE_LABELS present in both suite artifacts",
+  "artifacts_sha256": {
+    "userspace/programs/target/aarch64-breenix/release/suite-window-manager": "d4285a40595aec6a4793397fc784defeb20c1c6d8ecb4ebf5a93677378d7bedf",
+    "userspace/programs/target/x86_64-breenix/release/suite-window-manager": "c9c1581bd9f806fb60b98149d1b25a8c1ee631c3bc56007e1d5dbcb5290c0fa7"
+  },
+  "logs_sha256": {
+    "a3-u37-red.log": "e9c3d395e35e373b962930a363c893949d71aea4fb031d54c5438ef44067ba1c",
+    "a3-u37-green.log": "972cdcf97f4179aba6b1cb6545ac6d361362788a408d2b2c944dd07464aeda21",
+    "a3-u37-exports.log": "1e72cf37767d01eec876fab627d8e069366df5ca13263741bf8022ea2eb33bf4",
+    "a3-u37-focus.log": "2e2c5cc28c73de838d474666cfdd9fb56d657205115f208f64e6ec8f87491d1f",
+    "a3-u37-gate.log": "71d054c881d1da3b842ce6aeb7a23de3ade35802b63215e95e8fb8f258f74205",
+    "a3-u37-merge-arm.log": "f7a32f23cfd45454d6c67537e58cdd548724ac176433edf53114f4e0247fa1a6",
+    "a3-u37-merge-x86.log": "847ab720a8231002a2e77dd315ed3054037fa06593422f7011e36581d53ff5ff",
+    "a3-u37-suite-arm.log": "ea2162f1259673114aac4978f42a75ec9e7feafa5734482e4f37d20d5fbf19d6",
+    "a3-u37-suite-x86.log": "c4ba9f170154e79b412966b4ef8cd4829260b52daafe6f3dc58e4abcc915c8df",
+    "a3-u37-claim-lint.log": "faf06d06b53648e8a04344db5e49880496fc4681d742ef2affdb6d05e239afe0"
+  },
+  "boots": 0,
+  "acceptance": "Separate acceptance unit owns boots, PR review/landing, board update and closing #2903 when landed."
+}

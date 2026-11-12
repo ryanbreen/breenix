@@ -254,9 +254,11 @@ SUITE <id> MEMORY reclaimed=PASS|FAIL free_before=<pages> free_after=<pages> all
   program itself, so it reports 1 from the start).
 - Reclamation is deferred: an exited process's tables and the image an exec replaced go back
   through reclaim receipts, and an exited thread's kernel stack from an idle CPU. So each
-  sample then waits, up to 5 seconds, until no receipt is queued or parked and MemFree has held
+  sample then waits, up to 5 seconds, until no receipt is outstanding and MemFree has held
   still for 100 ms. `receipts` is what was still queued when it stopped waiting, and
-  `settle_ms` how long the sample waited, both waits together.
+  `settle_ms` how long the sample waited, both waits together. The proc row
+  `reclaim outstanding` reports the row-owned receipt count, including reaped tombstones, receipts awaiting
+  publication and receipts temporarily removed from the queues by a drain.
 - The verdict is PASS when `free_after` is at most `allowance` pages below `free_before`.
   The allowance is `MEMORY_RECLAIM_ALLOWANCE_PAGES` in `libs/libbreenix/src/suite_memory.rs`,
   set from the measurement below; only the operator loosens it.

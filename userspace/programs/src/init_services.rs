@@ -1181,6 +1181,9 @@ fn launch(def: &Service, account: &Account, capture: bool) -> Result<(i32, Vec<O
     }
     if def.name == "bwm" {
         environment.extend(crate::init_bwm_environment::bwm_environment(|key| std::env::var(key).ok()));
+        if let Some(path) = std::env::var_os("BREENIX_STARTUP_TRACE_DIR") {
+            environment.push(format!("BREENIX_STARTUP_TRACE_DIR={}", path.to_string_lossy()));
+        }
     }
     let environment: Vec<CString> =
         environment.into_iter().map(CString::new).collect::<Result<_, _>>().map_err(|_| "environment contains NUL")?;

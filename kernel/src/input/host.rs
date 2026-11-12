@@ -2,6 +2,11 @@
 //! BXKEY keeps the original HID 1.11 wire format, sequencing and IEEE CRC-32.
 //! BXPTR carries exact pixel coordinates and the mode that gives them meaning.
 
+/// Whether the declared host-key transport uses the serial host channel.
+pub fn declares_channel(value: Option<&str>) -> bool {
+    value.is_some_and(|value| value.split(';').next() == Some("host-channel"))
+}
+
 /// Bytes in one HID boot keyboard report.
 pub const REPORT_LEN: usize = 8;
 /// Reports one line may carry: a chord holding the six modifiers, pressed and

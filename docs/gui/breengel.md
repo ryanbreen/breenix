@@ -887,6 +887,7 @@ architecture only.
 | 33 | `MAP_TREE_READERS` | `MapTree` (24) | 0 | owner only; EPERM, ENOENT, ENOMEM, EFAULT |
 | 34 | `CAPTURE_TREE` | `Capture` (56) | 0 | EINVAL missing or short tree destination; ENOENT; EINTR pending-publication wait; EIO failed pending publication |
 | 35 | `FRAME_STAGE` | `FrameStage` (24) | 0 | owner only; EPERM, ENOENT; EINVAL stage or reserved |
+| 36 | `PRESENTATION_FD` | `WinId` (8), id must be 0 | completion descriptor (section 20.1) | EPERM, EINVAL, ENOMEM, EMFILE |
 
 <!-- claim-lint:ok: Normative FRAME_STAGE diagnostic contract, exercised by tests/window_frame_diagnostic_test.py. -->
 `FrameStage` is `{ id: u64, frame: u64, stage: u32, reserved: u32 }` at offsets
@@ -969,7 +970,10 @@ Argument structures (offsets in bytes):
   `tree_len: u64 @32`, *out* `commit_id: u64 @40`, *out* `width: u32 @48`, *out* `height: u32 @52`. Pixels are
   copied as BGRX rows of `width × 4` bytes.
 - `MapTree`: `id: u64 @0`, *out* `addr: u64 @8`, *out* `len: u64 @16`.
-- `Claim`: `flags: u32 @0`, reserved `@4`, *out* `epoch: u64 @8`.
+- `Claim`: `flags: u32 @0`, reserved `@4`, *out* `epoch: u64 @8`. Flags 0 retain full
+  renderer preparation; bit 31 plus a nonempty GPU rendering-pipeline mask selects explicit
+  preparation for the reserved context (`gpu-abi.md`, `CONTEXT_CREATE`). The subsequent
+  context creation must request that same set to reuse the reservation. Invalid masks are EINVAL.
 - `SceneSnapshot` (96): in `context:u64 @0`, `windows:u64 @8`, `window_capacity:u32 @16`,
   out `window_count:u32 @20`; in `damage:u64 @24`, `damage_capacity:u32 @32`, out `damage_count:u32 @36`,
   `snapshot:u64 @40`, `width:u32 @48`, `height:u32 @52`, `scale:u32 @56`, `flags:u32 @60`,
@@ -1124,7 +1128,7 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 | `COMPOSITE_RECORD` | — | yes | yes (read only) | EPERM |
 | `SET_CURSOR` | — | yes | EPERM | EPERM |
 | `CLAIM_COMPOSITOR` | — | — | yes if no live claim, else EBUSY | EPERM |
-| `SCANOUT_READBACK` | — | yes | yes | EPERM |
+| `SCANOUT_READBACK`, `PRESENTATION_FD` | — | yes | yes | EPERM |
 | `HOLD_EVIDENCE`, `READ_REMNANT`, `RELEASE_REMNANT` | EPERM | EPERM | yes (EBUSY if another holder) | EPERM |
 
 `LIST` filters both its output and its returned count by the window owner's current effective uid.
@@ -1400,6 +1404,17 @@ render-failure event: late EIO is delivered once by ACQUIRE, with WindowEvent st
 ## 20. Scanout observation
 
 ### 20.1 `SCANOUT_READBACK`
+
+`PRESENTATION_FD` is available to root or the compositor, with `WinId.id=0`.
+It returns a pollable completion descriptor whose initial generation is sampled
+at creation. After a composite releases its in-flight reservation, the descriptor
+reports POLLIN until an eight-byte read acknowledges the current completion
+generation. A failed composite also advances that generation; readiness is a
+reason to retry observation, not evidence of successful presentation. Open the
+descriptor before attempting readback, acknowledge it before each attempt, and
+on EAGAIN wait with the remaining absolute deadline. This ordering retains a
+completion between the attempt and the wait. EAGAIN does not publish pixels or
+an observation and does not reset the caller's deadline.
 
 <!-- claim-lint:ok: Normative contract, not lane acceptance; docs/gui/breengel-gpu-rulings.md B1-B8 and docs/gui/gpu-abi.md specify these requirements. -->
 Root or the current claimant observes the whole composed destination produced by the userspace GPU

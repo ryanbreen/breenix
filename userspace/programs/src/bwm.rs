@@ -12,6 +12,8 @@
 mod compositor;
 #[path = "bwm/startup_prepare.rs"]
 mod startup_prepare;
+#[path = "bwm/render_requirements.rs"]
+mod render_requirements;
 #[path = "bwm/placement.rs"]
 mod placement;
 #[path = "bwm/session.rs"]
@@ -136,50 +138,36 @@ fn main() {
         px(TASKBAR_HEIGHT), px(APPBAR_HEIGHT), mode_index, mode.width, mode.height, mode.scale
     );
 
-    // bwm composes the windows as the compositor (window op 17's claim) and display owner.
-    let claim_epoch = match session::claim() {
-        Ok(epoch) => {
-            print!("[bwm] compositor claim: epoch {}\n", epoch);
-            epoch
-        }
-        Err(e) => {
-            print!("[bwm] ERROR: GPU compositing required: the compositor claim failed: {}\n", e);
-            process::exit(1);
-        }
-    };
-    let scene_fd = match session::scene_fd() {
-        Ok(fd) => fd,
-        Err(e) => {
-            print!("[bwm] ERROR: GPU compositing required: the scene descriptor failed: {}\n", e);
-            process::exit(1);
-        }
-    };
-
-    let mut desktop_tree = match desktop_publish::Publisher::new() {
-        Ok(publisher) => Some(publisher),
-        Err(error) => {
-            eprintln!("[bwm] compositor tree mapping failed: {}", error);
-            None
-        }
-    };
-    libuitest::startup::mark("scene-ready");
     // Clock state
     let mut clock = clock::Clock::new(std::env::var_os("BREENIX_UI_CLOCK").is_some());
-    clock.participate().expect("UI clock participant registration failed");
-    let mut clock_wake = clock_wake::open().expect("UI clock wake setup failed");
     let mut clock_text = [0u8; 11];
     format_clock(clock.wall_sec(), &mut clock_text);
+    // Metadata discovery does not paint clients over the verified bare desktop.
+    // Prepare surviving titles in the first atlas batch alongside GPU targets.
+    let mut startup_infos = Vec::new();
+    if let Err(error) = session::list_windows(&mut startup_infos) {
+        eprintln!("[bwm] startup title discovery unavailable: {error}");
+    }
+    let startup_titles: Vec<&[u8]> = startup_infos.iter()
+        .filter(|w| w.flags & libbreenix::window::abi::win_flags::MINIMIZED == 0
+            && !(w.title_len > 0 && w.title[0] == 1))
+        .map(|w| &w.title[..(w.title_len as usize).min(w.title.len())]).collect();
     // The GPU core composes the desktop (`compositor`); there is no CPU-only fallback.
     // Font parsing and cold taskbar atlas coverage do not touch these targets.
     // Prepare the same clock snapshot that draw_taskbar will use.
-    let (opened, mut ui_font) = std::thread::scope(|scope| {
+    // Establish libgfx's context before reserving the compositor's next context.
+    if let Err(error) = libgfx::stage::context_for(render_requirements::CHROME_PIPELINES) {
+        eprintln!("[bwm] ERROR: font renderer could not be initialized: {error:?}");
+        process::exit(1);
+    }
+    let (opened, mut ui_font, claim_epoch, scene_fd, mut desktop_tree, mut clock_wake) = std::thread::scope(|scope| {
         let font = scope.spawn(|| {
             libuitest::startup::mark("startup-font-begin");
             let config = FontConfig::load();
             print!("[bwm] fonts {config:?}\n");
-            let mut font = std::fs::read(&config.display_path).ok()
-                .and_then(|data| Font::parse(&data).ok())
-                .map(|f| {
+            let data = std::fs::read(&config.display_path).ok();
+            let parsed = data.and_then(|data| Font::parse(&data).ok());
+            let mut font = parsed.map(|f| {
                     let mut font = CachedFont::new(f, 256);
                     font.observe_phases(libuitest::startup::mark);
                     font
@@ -190,16 +178,55 @@ fn main() {
                 print!("[bwm] no display font, using bitmap fallback\n");
             }
             if let Some(font) = font.as_mut() {
-                if let Err(error) = font.prepare_subpixel(&[b"Breenix", &clock_text], ttf_font_size() * ui().scale as f32) {
+                let texts = startup_prepare::coverage(&clock_text, &startup_titles);
+                if let Err(error) = font.prepare_subpixel(&texts, ttf_font_size() * ui().scale as f32) {
                     eprintln!("[bwm] taskbar coverage warm-up unavailable: {error}");
                 }
             }
             libuitest::startup::mark("fonts-ready");
             font
         });
-        let opened = Compositor::open(screen_w as u32, screen_h as u32, px(APPBAR_HEIGHT) as u32, ui().scale as u32);
+        // Target storage needs no compositor context. Allocate it while the
+        // claim warms the reserved renderer, then transfer that context once ready.
+        let claim = scope.spawn(session::claim);
+        let (opened, claim_epoch) = Compositor::open_during(
+            screen_w as u32, screen_h as u32, px(APPBAR_HEIGHT) as u32, ui().scale as u32,
+            || match claim.join().expect("compositor claim worker panicked") {
+                Ok(epoch) => {
+                    print!("[bwm] compositor claim: epoch {}\n", epoch);
+                    epoch
+                }
+                Err(e) => {
+                    print!("[bwm] ERROR: GPU compositing required: the compositor claim failed: {}\n", e);
+                    process::exit(1);
+                }
+            });
+        clock.participate().expect("UI clock participant registration failed");
+        let clock_wake = clock_wake::open().expect("UI clock wake setup failed");
+        let scene_fd = match session::scene_fd() {
+            Ok(fd) => fd,
+            Err(e) => {
+                print!("[bwm] ERROR: GPU compositing required: the scene descriptor failed: {}\n", e);
+                process::exit(1);
+            }
+        };
+
+        let desktop_tree = match desktop_publish::Publisher::new() {
+            Ok(publisher) => Some(publisher),
+            Err(error) => {
+                eprintln!("[bwm] compositor tree mapping failed: {}", error);
+                None
+            }
+        };
+        libuitest::startup::mark("scene-ready");
+        let opened = opened.and_then(|mut gpu| {
+            gpu.paint_background()?;
+            libuitest::startup::mark("background-ready");
+            Ok(gpu)
+        });
         libuitest::startup::mark("targets-ready");
-        (opened, font.join().expect("startup font worker panicked"))
+        let font = font.join().expect("startup font worker panicked");
+        (opened, font, claim_epoch, scene_fd, desktop_tree, clock_wake)
     });
     let mut gpu = match opened {
         Ok(c) => c,
@@ -210,9 +237,11 @@ fn main() {
     };
     print!("[bwm] GPU compositing mode (GPU core), display: {}x{}\n", screen_w, screen_h);
 
-    // Paint the decorative background once; each desktop repaint copies it.
-    paint_background(&mut gpu.background);
-    libuitest::startup::mark("background-ready");
+    clock.begin_epoch();
+    let sec = clock.update_clock().unwrap_or_else(|| clock.wall_sec());
+    format_clock(sec, &mut clock_text);
+
+    // The background was painted alongside font preparation; each repaint copies it.
 
     let mut windows: Vec<Window> = Vec::new();
     let mut stack = Stack::new();
@@ -300,11 +329,12 @@ fn main() {
         let presented = if cursor_pointer(first_pointer).is_some() {
             gpu.present_startup_desktop(cursor_pointer(first_pointer))
         } else { Ok(()) };
-        presented
+        let checked = presented
             .map(|()| {
                 libuitest::startup::mark("pointer-presented");
                 measure_check(|| gpu.check(0, &[], cursor_pointer(first_pointer)))
-            })
+            });
+        checked
     });
     if let Err(error) = prepared {
         eprintln!("[bwm] title coverage warm-up unavailable: {error}");
@@ -576,6 +606,8 @@ fn main() {
             }
 
             // Content policy and chrome share one normalized pointer snapshot.
+            // read() releases absolute frames only at SYN; positions assigns
+            // motion to one axis before the buttons without removing source slots.
             if let Some((new_mx, new_my)) = stream.pointer(event, position) {
                 let mouse_moved = new_mx != mouse_x || new_my != mouse_y;
                 mouse_moved_this_frame |= mouse_moved;
@@ -819,7 +851,7 @@ fn main() {
             let sec = clock.update_clock().expect("due wall-clock update");
             format_clock(sec, &mut clock_text);
             let began = pacing_ns();
-            draw_taskbar(&mut gpu.desktop, &clock_text, &mut ui_font);
+            redraw_clock(&mut gpu.desktop, &clock_text, &mut ui_font);
             let draw_ns = pacing_ns().saturating_sub(began);
             taskbar_prepare_ns = Some(draw_ns);
             clock_pace.reset();
@@ -847,7 +879,7 @@ fn main() {
                 // session chrome here without scheduling clock-only work.
                 if let Some(sec) = clock.scene_clock() {
                     format_clock(sec, &mut clock_text);
-                    draw_taskbar(&mut gpu.desktop, &clock_text, &mut ui_font);
+                    redraw_clock(&mut gpu.desktop, &clock_text, &mut ui_font);
                     clock_dirty = true;
                 }
                 let pointer = Pointer { x: mouse_x, y: mouse_y, shape: active_cursor_shape };
@@ -878,7 +910,7 @@ fn main() {
                         if let Some(draw_ns) = taskbar_prepare_ns.take() {
                             let prepare_ns = gpu.last_timing.prepare_ns;
                             let period_ns = gpu.last_timing.period_ns;
-                            if period_ns != 0 && draw_ns.saturating_add(prepare_ns) >= period_ns {
+                            if draw_ns >= 100_000_000 || (period_ns != 0 && draw_ns.saturating_add(prepare_ns) >= period_ns) {
                                 use std::io::Write;
                                 if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
                                     let _ = writeln!(evidence, "VALUE bwm-taskbar-overrun draw_ns={} prepare_ns={} period_ns={} serial={}", draw_ns, prepare_ns, period_ns, gpu.last_serial);
@@ -932,6 +964,7 @@ fn main() {
                 eprintln!("[bwm] compositor tree publication failed: {}", error);
             }
         }
+        defer_checks_after_activity(&mut windows, monotonic_ms().unwrap_or(0), gpu.validation_delay_ms(), input_ready);
         if !full_redraw && !content_dirty && !windows_dirty && !clock_dirty && !display_lost && !frame_failed {
             let mut ack = clock.acknowledgment(claim_epoch);
             ack.handled_serial = input::handled_serial();

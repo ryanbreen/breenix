@@ -4,6 +4,9 @@ use std::collections::BTreeMap;
 pub enum Decision { Compose, WaitUntil(u64) }
 // Reserve dispatch time beyond the observed complete composition cost.
 const GUARD_NS: u64 = 1_500_000;
+// Work-driven completions include idle time and do not measure a refresh
+// period. With no display period, coalesce for at most one 60 Hz frame.
+const MAX_INFERRED_PERIOD_NS: u64 = 1_000_000_000 / 60;
 /// W20: bound the response hold by the first reachable observed presentation edge.
 pub fn decide(now: u64, pending: bool, edge: u64, period: u64, work: u64) -> Decision {
     if !pending || period == 0 { return Decision::Compose; }
@@ -35,6 +38,10 @@ pub struct Pacer {
     waiting: Option<u64>,
     recent: [u64; 8],
     next: usize,
+    reported_period: Option<u64>,
+    intervals: [u64; 8],
+    interval_count: usize,
+    interval_next: usize,
 }
 impl Pacer {
     pub fn delivered(&mut self, window: u64, serial: Serial) {
@@ -61,11 +68,27 @@ impl Pacer {
         decision
     }
     pub fn presented(&mut self, timing: Timing) {
-        if self.period!=Some(timing.period_ns) { self.recent=[0;8];self.next=0; }
+        if self.reported_period!=Some(timing.period_ns) {
+            self.recent=[0;8];self.next=0;
+            self.intervals=[0;8];self.interval_count=0;self.interval_next=0;
+        } else if timing.period_ns == 0 {
+            if let Some(interval) = self.edge.and_then(|edge| timing.presented_ns.checked_sub(edge)).filter(|&n| n > 0) {
+                self.intervals[self.interval_next % self.intervals.len()] = interval;
+                self.interval_next = self.interval_next.wrapping_add(1);
+                self.interval_count = (self.interval_count + 1).min(self.intervals.len());
+            } else {
+                self.intervals=[0;8];self.interval_count=0;self.interval_next=0;
+            }
+        }
         self.recent[self.next%self.recent.len()]=timing.prepare_ns;
         self.next=self.next.wrapping_add(1);
         self.work=Some(self.recent.iter().copied().max().unwrap_or(0).saturating_add(timing.lead_ns));
-        self.period=Some(timing.period_ns);
+        self.period=Some(if timing.period_ns == 0 && self.interval_count == self.intervals.len() {
+            let mut sorted = self.intervals;
+            sorted.sort_unstable();
+            (sorted[3] + (sorted[4] - sorted[3]) / 2).min(MAX_INFERRED_PERIOD_NS)
+        } else { timing.period_ns });
+        self.reported_period=Some(timing.period_ns);
         self.edge=Some(timing.presented_ns);
         self.routed.clear();
         self.waiting=None;

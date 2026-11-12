@@ -213,3 +213,52 @@ fn pacer()->pace::Pacer {
 }
 
 }
+
+#[test]
+fn virtual_completion_uses_median_of_last_eight_intervals() {
+    let mut pacing = pace::Pacer::default();
+    let mut edge = 100 * MS;
+    let virtual_timing = |presented_ns| pace::Timing {
+        presented_ns, period_ns: 0, prepare_ns: 2 * MS, lead_ns: 0,
+    };
+    pacing.presented(virtual_timing(edge));
+    for interval in [90, 10, 10, 10, 10, 10, 10, 10, 30] {
+        edge += interval * MS;
+        pacing.presented(virtual_timing(edge));
+    }
+    pacing.delivered(1, (1, 0));
+    // The oldest 90 ms interval has fallen out; the median is 10 ms.
+    let deadline = edge + 10 * MS - 2 * MS - 1_500_000;
+    assert_eq!(pacing.decision(edge + MS), Decision::WaitUntil(deadline));
+    assert_eq!(pacing.decision(deadline), Decision::Compose);
+}
+
+#[test]
+fn idle_clock_cannot_train_a_one_second_input_hold() {
+    let mut pacing = pace::Pacer::default();
+    let mut edge = 0;
+    for _ in 0..10 {
+        edge += 1_000 * MS;
+        pacing.presented(pace::Timing { presented_ns: edge, period_ns: 0,
+            prepare_ns: 2 * MS, lead_ns: 0 });
+    }
+    // Start with the very first input after idle; no warm-up samples discarded.
+    for serial in 1..=10 {
+        pacing.delivered(1, (serial, 0));
+        let now = edge + MS;
+        let done = match pacing.decision(now) {
+            Decision::Compose => now,
+            Decision::WaitUntil(deadline) => {
+                assert!(deadline - now <= 16_666_667, "idle cadence held input: {} ns", deadline - now);
+                deadline
+            }
+        };
+        let mut maintenance = pace::Maintenance::default();
+        if !maintenance.ready(now, false, &pacing) {
+            assert!(maintenance.deadline().unwrap() - now <= 16_666_667);
+        }
+        edge = done + 2 * MS;
+        pacing.presented(pace::Timing { presented_ns: edge, period_ns: 0,
+            prepare_ns: 2 * MS, lead_ns: 0 });
+    }
+}

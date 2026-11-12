@@ -1,0 +1,262 @@
+SUITE window-manager START cases=81
+SUITE window-manager MEMORY before free=84640 heap_free_kb=39073 user_stacks=16 user_pages=586 page_tables=11 page_cache=0 kernel_stacks=0 buffers=4218 other=130 receipts=0 settle_ms=201
+SUITE window-manager CASE input-core/virtual-keyboard PASS ms=3520
+SUITE window-manager CASE input-core/serials PASS ms=3239
+SUITE window-manager CASE input-core/time-injected PASS ms=3013
+SUITE window-manager CASE input-core/ctrl-super-distinct PASS ms=3403
+SUITE window-manager CASE input-core/text-event PASS ms=2962
+SUITE window-manager CASE input-core/device-removal PASS ms=3709
+SUITE window-manager CASE input-core/virtual-pointer PASS ms=3652
+SUITE window-manager CASE input-core/ledger-complete PASS ms=2993
+SUITE window-manager CASE input-core/capabilities PASS ms=4220
+SUITE window-manager CASE input-devices/keyboard-completion-path PASS ms=3266
+SUITE window-manager CASE input-devices/replay-report-fault PASS ms=4107
+SUITE window-manager CASE startup/desktop-control PASS ms=3034
+SUITE window-manager CASE startup/claims-display PASS ms=3407
+SUITE window-manager HOSTPOINTER startup/first-client seq=168 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE startup/first-client PASS ms=3423
+SUITE window-manager CASE startup/existing-windows PASS ms=4396
+SUITE window-manager HOSTPOINTER startup/independent-clients seq=192 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE startup/independent-clients PASS ms=4172
+SUITE window-manager HOSTPOINTER startup/supervisor-starts seq=204 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE startup/supervisor-starts PASS ms=5743
+SUITE window-manager HOSTPOINTER composition/chrome-geometry seq=216 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE composition/chrome-geometry PASS ms=3207
+SUITE window-manager HOSTPOINTER composition/overlap seq=228 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE composition/overlap PASS ms=4150
+SUITE window-manager CASE composition/cascade PASS ms=3847
+SUITE window-manager HOSTPOINTER composition/client-update seq=252 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER composition/client-update seq=253 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE composition/client-update PASS ms=4519
+SUITE window-manager HOSTPOINTER composition/expose-close seq=264 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER composition/expose-close seq=265 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE composition/expose-close PASS ms=4504
+SUITE window-manager HOSTPOINTER composition/oracle-corruption seq=276 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE composition/oracle-corruption PASS ms=3117
+SUITE window-manager HOSTPOINTER stacking/click-raises seq=288 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER stacking/click-raises seq=289 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER stacking/click-raises seq=290 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE stacking/click-raises PASS ms=4603
+SUITE window-manager HOSTPOINTER stacking/minimize-hides seq=300 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER stacking/minimize-hides seq=301 x=326 y=212 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER stacking/minimize-hides seq=302 x=326 y=212 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE stacking/minimize-hides PASS ms=4929
+SUITE window-manager HOSTPOINTER stacking/restore seq=312 x=226 y=112 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER stacking/restore seq=313 x=226 y=112 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER stacking/restore seq=314 x=160 y=1564 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER stacking/restore seq=315 x=160 y=1564 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER stacking/restore seq=316 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTKEY stacking/restore seq=317 keys=a
+SUITE window-manager CASE stacking/restore PASS ms=4907
+SUITE window-manager HOSTPOINTER stacking/all-minimized seq=324 x=184 y=264 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER stacking/all-minimized seq=325 x=184 y=264 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTKEY stacking/all-minimized seq=326 keys=a
+SUITE window-manager HOSTPOINTER stacking/all-minimized seq=327 x=326 y=212 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER stacking/all-minimized seq=328 x=326 y=212 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER stacking/all-minimized seq=329 x=226 y=112 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER stacking/all-minimized seq=330 x=226 y=112 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTKEY stacking/all-minimized seq=331 keys=a
+SUITE window-manager CASE stacking/all-minimized PASS ms=5344
+SUITE window-manager HOSTPOINTER stacking/exit-restacks seq=336 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE stacking/exit-restacks PASS ms=6227
+SUITE window-manager CASE focus/initial-focus PASS ms=3285
+SUITE window-manager HOSTPOINTER focus/pair-click seq=360 x=184 y=264 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER focus/pair-click seq=361 x=184 y=264 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER focus/pair-click seq=362 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER focus/pair-click seq=363 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE focus/pair-click PASS ms=5023
+SUITE window-manager HOSTPOINTER focus/keys-to-focused seq=372 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER focus/keys-to-focused seq=373 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTKEY focus/keys-to-focused seq=374 keys=a
+SUITE window-manager CASE focus/keys-to-focused PASS ms=4837
+SUITE window-manager HOSTPOINTER focus/text-exact seq=384 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER focus/text-exact seq=385 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTKEY focus/text-exact seq=386 keys=shift-h,e,l,l,o,space,shift-w,o,r,l,d
+SUITE window-manager CASE focus/text-exact PASS ms=6743
+SUITE window-manager HOSTPOINTER focus/releases seq=396 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER focus/releases seq=397 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTKEY focus/releases seq=398 keys=a
+SUITE window-manager CASE focus/releases PASS ms=3888
+SUITE window-manager HOSTPOINTER focus/ctrl-c seq=408 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER focus/ctrl-c seq=409 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTKEY focus/ctrl-c seq=410 keys=ctrl-c
+SUITE window-manager CASE focus/ctrl-c PASS ms=3815
+SUITE window-manager HOSTPOINTER focus/navigation-keys seq=420 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER focus/navigation-keys seq=421 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTKEY focus/navigation-keys seq=422 keys=home
+SUITE window-manager HOSTKEY focus/navigation-keys seq=423 keys=end
+SUITE window-manager HOSTKEY focus/navigation-keys seq=424 keys=delete
+SUITE window-manager HOSTKEY focus/navigation-keys seq=425 keys=pageup
+SUITE window-manager HOSTKEY focus/navigation-keys seq=426 keys=pagedown
+SUITE window-manager HOSTKEY focus/navigation-keys seq=427 keys=left
+SUITE window-manager HOSTKEY focus/navigation-keys seq=428 keys=right
+SUITE window-manager HOSTKEY focus/navigation-keys seq=429 keys=up
+SUITE window-manager HOSTKEY focus/navigation-keys seq=430 keys=down
+SUITE window-manager CASE focus/navigation-keys PASS ms=5747
+SUITE window-manager HOSTPOINTER focus/escape seq=432 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER focus/escape seq=433 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTKEY focus/escape seq=434 keys=esc
+SUITE window-manager CASE focus/escape PASS ms=2877
+SUITE window-manager HOSTPOINTER focus/cycle-next seq=444 x=184 y=264 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER focus/cycle-next seq=445 x=184 y=264 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTKEY focus/cycle-next seq=446 keys=alt-tab
+SUITE window-manager HOSTKEY focus/cycle-next seq=447 keys=alt-tab
+SUITE window-manager CASE focus/cycle-next PASS ms=4891
+SUITE window-manager HOSTPOINTER pointer/local-coords seq=456 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER pointer/local-coords seq=457 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER pointer/local-coords seq=458 x=137 y=225 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE pointer/local-coords PASS ms=3796
+SUITE window-manager HOSTPOINTER pointer/capture seq=468 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER pointer/capture seq=469 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER pointer/capture seq=470 x=104 y=184 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER pointer/capture seq=471 x=404 y=184 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER pointer/capture seq=472 x=404 y=184 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE pointer/capture PASS ms=4256
+SUITE window-manager HOSTPOINTER pointer/right-middle seq=480 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER pointer/right-middle seq=481 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER pointer/right-middle seq=482 x=124 y=204 width=2560 height=1600 buttons=2 wheel=0
+SUITE window-manager HOSTPOINTER pointer/right-middle seq=483 x=124 y=204 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER pointer/right-middle seq=484 x=124 y=204 width=2560 height=1600 buttons=4 wheel=0
+SUITE window-manager HOSTPOINTER pointer/right-middle seq=485 x=124 y=204 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE pointer/right-middle PASS ms=4476
+SUITE window-manager HOSTPOINTER pointer/scroll-under-pointer seq=492 x=184 y=264 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER pointer/scroll-under-pointer seq=493 x=184 y=264 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER pointer/scroll-under-pointer seq=494 x=84 y=164 width=2560 height=1600 buttons=0 wheel=1
+SUITE window-manager CASE pointer/scroll-under-pointer PASS ms=4478
+SUITE window-manager HOSTPOINTER pointer/outside-not-delivered seq=504 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER pointer/outside-not-delivered seq=505 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER pointer/outside-not-delivered seq=506 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE pointer/outside-not-delivered PASS ms=4438
+SUITE window-manager HOSTPOINTER pointer/press-release-order seq=516 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER pointer/press-release-order seq=517 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER pointer/press-release-order seq=518 x=104 y=184 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER pointer/press-release-order seq=519 x=124 y=204 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER pointer/press-release-order seq=520 x=124 y=204 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE pointer/press-release-order PASS ms=4291
+SUITE window-manager HOSTPOINTER geometry/drag-move seq=528 x=114 y=112 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER geometry/drag-move seq=529 x=114 y=112 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER geometry/drag-move seq=530 x=204 y=182 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER geometry/drag-move seq=531 x=204 y=182 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER geometry/drag-move seq=532 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE geometry/drag-move PASS ms=3844
+SUITE window-manager HOSTPOINTER geometry/resize-right seq=540 x=305 y=224 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER geometry/resize-right seq=541 x=305 y=224 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER geometry/resize-right seq=542 x=385 y=224 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER geometry/resize-right seq=543 x=385 y=224 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER geometry/resize-right seq=544 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE geometry/resize-right PASS ms=4511
+SUITE window-manager HOSTPOINTER geometry/resize-bottom seq=552 x=144 y=305 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER geometry/resize-bottom seq=553 x=144 y=305 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER geometry/resize-bottom seq=554 x=144 y=365 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER geometry/resize-bottom seq=555 x=144 y=365 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER geometry/resize-bottom seq=556 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE geometry/resize-bottom PASS ms=3976
+SUITE window-manager HOSTPOINTER geometry/client-refuses seq=564 x=305 y=224 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER geometry/client-refuses seq=565 x=305 y=224 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER geometry/client-refuses seq=566 x=385 y=224 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER geometry/client-refuses seq=567 x=385 y=224 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER geometry/client-refuses seq=568 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE geometry/client-refuses PASS ms=4153
+SUITE window-manager HOSTPOINTER geometry/resize-cross seq=576 x=305 y=224 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER geometry/resize-cross seq=577 x=305 y=224 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER geometry/resize-cross seq=578 x=44 y=224 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER geometry/resize-cross seq=579 x=44 y=224 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER geometry/resize-cross seq=580 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE geometry/resize-cross PASS ms=3947
+SUITE window-manager HOSTPOINTER geometry/client-resize seq=588 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE geometry/client-resize PASS ms=4471
+SUITE window-manager HOSTPOINTER lifecycle/close-request seq=600 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER lifecycle/close-request seq=601 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER lifecycle/close-request seq=602 x=274 y=112 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER lifecycle/close-request seq=603 x=274 y=112 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER lifecycle/close-request seq=604 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE lifecycle/close-request PASS ms=4537
+SUITE window-manager HOSTPOINTER lifecycle/client-exit seq=612 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER lifecycle/client-exit seq=613 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE lifecycle/client-exit PASS ms=5014
+SUITE window-manager HOSTPOINTER lifecycle/client-crash seq=624 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER lifecycle/client-crash seq=625 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE lifecycle/client-crash PASS ms=4664
+SUITE window-manager HOSTPOINTER lifecycle/client-exec seq=636 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER lifecycle/client-exec seq=637 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE lifecycle/client-exec PASS ms=4936
+SUITE window-manager HOSTPOINTER lifecycle/close-unresponsive seq=648 x=274 y=112 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER lifecycle/close-unresponsive seq=649 x=274 y=112 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER lifecycle/close-unresponsive seq=650 x=274 y=112 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER lifecycle/close-unresponsive seq=651 x=274 y=112 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE lifecycle/close-unresponsive PASS ms=4198
+SUITE window-manager CASE lifecycle/compositor-steal PASS ms=3443
+SUITE window-manager CASE lifecycle/inject-denied PASS ms=3302
+SUITE window-manager HOSTPOINTER lifecycle/launch-ack seq=684 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER lifecycle/launch-ack seq=685 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTKEY lifecycle/launch-ack seq=686 keys=super-enter
+SUITE window-manager CASE lifecycle/launch-ack PASS ms=4057
+SUITE window-manager HOSTPOINTER lifecycle/launch-reaped seq=696 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER lifecycle/launch-reaped seq=697 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTKEY lifecycle/launch-reaped seq=698 keys=super-enter
+SUITE window-manager CASE lifecycle/launch-reaped PASS ms=4801
+SUITE window-manager CASE recovery/clients-notified PASS ms=2903
+SUITE window-manager HOSTPOINTER recovery/restart-adopts seq=720 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE recovery/restart-adopts FAIL ms=6388 msg=bwm first completed desktop: no acknowledgment within 4000 ms; [bwm] settings font.size=14 clock.visible=true [bwm] Breenix Window Manager starting... (v2-chrom
+SUITE window-manager HOSTPOINTER recovery/interaction-after-restart seq=732 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER recovery/interaction-after-restart seq=733 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTKEY recovery/interaction-after-restart seq=734 keys=a
+SUITE window-manager HOSTPOINTER recovery/interaction-after-restart seq=735 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER recovery/interaction-after-restart seq=736 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTKEY recovery/interaction-after-restart seq=737 keys=b
+SUITE window-manager HOSTPOINTER recovery/interaction-after-restart seq=738 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE recovery/interaction-after-restart PASS ms=7442
+SUITE window-manager HOSTPOINTER recovery/stack-restored seq=744 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER recovery/stack-restored seq=745 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTPOINTER recovery/stack-restored seq=746 x=226 y=112 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER recovery/stack-restored seq=747 x=226 y=112 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE recovery/stack-restored PASS ms=8605
+SUITE window-manager HOSTPOINTER recovery/supervisor-restarts seq=756 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE recovery/supervisor-restarts FAIL ms=9209 msg=bwm composite of client 83 commit 4: no acknowledgment within 2000 ms; [init] Breenix init starting (PID 345) [init] not PID 1: test-control check skipped [init
+SUITE window-manager CASE clipboard/cross-process PASS ms=5173
+SUITE window-manager CASE clipboard/utf8 PASS ms=4430
+SUITE window-manager CASE clipboard/large PASS ms=4868
+SUITE window-manager CASE clipboard/nul-bytes PASS ms=4945
+SUITE window-manager CASE clipboard/replace PASS ms=4647
+SUITE window-manager CASE clipboard/owner-exit PASS ms=4615
+SUITE window-manager VALUE liveness/idle-no-composites idle-composites=0 expect=0..0
+SUITE window-manager CASE liveness/idle-no-composites PASS ms=4621
+SUITE window-manager HOSTPOINTER liveness/hung-client seq=852 x=84 y=164 width=2560 height=1600 buttons=1 wheel=0
+SUITE window-manager HOSTPOINTER liveness/hung-client seq=853 x=84 y=164 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager HOSTKEY liveness/hung-client seq=854 keys=a
+SUITE window-manager HOSTPOINTER liveness/hung-client seq=855 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE liveness/hung-client PASS ms=4149
+SUITE window-manager HOSTPOINTER liveness/wake-on-registry seq=864 x=2520 y=1500 width=2560 height=1600 buttons=0 wheel=0
+SUITE window-manager CASE liveness/wake-on-registry PASS ms=4902
+SUITE window-manager CASE liveness/stress-animation PASS ms=21267
+SUITE window-manager VALUE liveness/memory-bounded resident-growth=9248kb expect=-9223372036854775808..64kb
+SUITE window-manager CASE liveness/memory-bounded FAIL ms=32857 msg=bwm resident memory grew more than 64 KiB after warmup
+SUITE window-manager VALUE performance/typing-latency latency-median=10785us expect=0..20000us
+SUITE window-manager VALUE performance/typing-latency latency-max=16050us expect=0..50000us
+SUITE window-manager CASE performance/typing-latency PASS ms=9845
+SUITE window-manager VALUE performance/pointer-latency latency-median=6958us expect=0..20000us
+SUITE window-manager VALUE performance/pointer-latency latency-max=11695us expect=0..50000us
+SUITE window-manager CASE performance/pointer-latency PASS ms=9830
+SUITE window-manager VALUE performance/present-latency pipeline-window=119
+SUITE window-manager VALUE performance/present-latency present-median=2118us expect=0..16000us
+SUITE window-manager VALUE performance/present-latency present-max=3630us expect=0..33000us
+SUITE window-manager CASE performance/present-latency PASS ms=7895
+SUITE window-manager VALUE performance/frame-floor pipeline-window=120
+SUITE window-manager VALUE performance/frame-floor measurement-begin=406811606500ns
+SUITE window-manager VALUE performance/frame-floor measurement-end=411811969833ns
+SUITE window-manager VALUE performance/frame-floor presentation-intervals=1881intervals
+SUITE window-manager VALUE performance/frame-floor presentation-span=4996026333ns
+SUITE window-manager VALUE performance/frame-floor composites-per-second=376hz expect=60..9223372036854775807hz
+SUITE window-manager CASE performance/frame-floor PASS ms=9156
+SUITE window-manager VALUE performance/idle-cpu idle-cpu=0percent expect=0..2percent
+SUITE window-manager CASE performance/idle-cpu PASS ms=10889
+SUITE window-manager VALUE performance/latency-under-animation latency-median=12873us expect=0..33000us
+SUITE window-manager VALUE performance/latency-under-animation latency-max=281547us expect=0..100000us
+SUITE window-manager CASE performance/latency-under-animation FAIL ms=13964 msg=input-to-composited-ack latency exceeds the GUI plan bound
+SUITE window-manager VALUE performance/clipboard-latency clipboard-max=6606us expect=0..50000us
+SUITE window-manager CASE performance/clipboard-latency PASS ms=4254
+SUITE window-manager DONE passed=77 failed=4 skipped=0 total=81
+SUITE window-manager MEMORY after free=84630 heap_free_kb=38270 user_stacks=15 user_pages=597 page_tables=11 page_cache=0 kernel_stacks=0 buffers=4218 other=130 receipts=0 settle_ms=201
+SUITE window-manager MEMORY reclaimed=PASS free_before=84640 free_after=84630 allowance=48
+SUITE window-manager ELAPSED ms=440026
+SUITE_SEQUENCE READY window-manager

@@ -17,7 +17,7 @@ class CatalogueWarmup(unittest.TestCase):
 use std::collections::BTreeMap;
 mod encode { pub const ALL_WARM:u32=(1<<16)-1; }
 #[derive(PartialEq)] enum CtxState { Live, Quarantined }
-struct Ctx { state:CtxState, warm:u32, warm_failures:u32, native_warm_scratch:Option<()> }
+struct Ctx { state:CtxState, warm:u32, warm_required:u32, warm_failures:u32, native_warm_scratch:Option<()> }
 struct WarmStep { ctx:u32, pipeline:u32, left:u32, refused:bool, lost:bool }
 struct Core { contexts:BTreeMap<u32,Ctx>, warm_step:Option<WarmStep> }
 fn notify() {}
@@ -27,7 +27,7 @@ impl Core {
  // RETURNED
 }
 fn main() {
- let mut c=Core { contexts:BTreeMap::from([(1,Ctx { state:CtxState::Live, warm:0, warm_failures:0, native_warm_scratch:Some(()) })]),warm_step:None };
+ let mut c=Core { contexts:BTreeMap::from([(1,Ctx { state:CtxState::Live, warm:0, warm_required:0xffff, warm_failures:0, native_warm_scratch:Some(()) })]),warm_step:None };
  assert_eq!(catalogue_mask(),(1<<gpu_abi::pipeline::PROBE_INT)-1);
  for pipe in 0..gpu_abi::pipeline::PROBE_INT {
   let snapshot=gpu_abi::draw::blended(pipe);

@@ -16,6 +16,9 @@ static NOW: AtomicU64 = AtomicU64::new(123);
 static ACKS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 #[macro_export]
 macro_rules! serial_println { ($($arg:tt)*) => { $crate::ACKS.lock().unwrap().push(format!($($arg)*)) }; }
+// Diagnostic records use a separate sink from the protocol's wire ACKs.
+#[macro_export]
+macro_rules! diag_println { ($($arg:tt)*) => { eprintln!($($arg)*) }; }
 pub mod input {
     #[derive(Clone, Copy, Debug)] pub enum Device { HostKeyboard }
     pub mod pointer { pub fn screen() -> Option<(u32,u32)> { Some((2560,1600)) } }

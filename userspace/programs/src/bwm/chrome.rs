@@ -43,7 +43,21 @@ fn validation_idle(poll_fds: &mut [io::PollFd]) -> bool {
     for fd in poll_fds.iter_mut() {
         fd.revents = 0;
     }
+    // A descriptor can be empty between animation commits. Give that next
+    // frame (or input) an interruptible quiet interval before a long readback.
     matches!(io::poll(poll_fds, 0), Ok(0)) && poll_fds.iter().all(|fd| fd.revents == 0)
+        && matches!(io::poll(poll_fds, 20), Ok(0)) && poll_fds.iter().all(|fd| fd.revents == 0)
+}
+
+/// Wait for an idle opportunity that fits the observed cost, rather than repeatedly
+/// beginning a long comparison between the events of an ongoing interaction.
+pub(super) fn defer_checks_after_activity(windows: &mut [Window], now_ms: u64, cost_ms: u64, active: bool) {
+    if active {
+        let until = now_ms.saturating_add(cost_ms);
+        for win in windows.iter_mut().filter(|win| !win.frame_checked) {
+            win.check_after_ms = win.check_after_ms.max(until);
+        }
+    }
 }
 
 pub(super) fn run_deferred_check(
@@ -129,7 +143,14 @@ pub(super) fn run_deferred_check(
     let next = unchecked.iter().copied()
         .min_by_key(|id| windows.iter().find(|w| w.window_id == *id).map_or(0, |w| w.check_moved));
     let id = next.unwrap_or(0);
-    let result = measure_check(|| gpu.check(id, &scene.layers, cursor_pointer(scene.pointer)));
+    let result = measure_check(|| gpu.check_while(id, &scene.layers, cursor_pointer(scene.pointer), || {
+        for fd in poll_fds.iter_mut() { fd.revents = 0; }
+        matches!(io::poll(poll_fds, 0), Ok(0)) && poll_fds.iter().all(|fd| fd.revents == 0)
+    }));
+    let Some(result) = result else {
+        queue.retry(&unchecked);
+        return;
+    };
     if result.is_ok() {
         // Harvested from 097962f6: the full-scene comparison includes the
         // shown sources, so its successful result also serves these clients.
@@ -255,27 +276,38 @@ pub(super) fn background_row(y: usize, h: usize) -> (u8, u8, u8) {
 /// a full-width line, so the GPU draws `background_pixel`'s colours exactly.
 pub(super) fn paint_background(fb: &mut Surface) {
     let (w, h) = (fb.width(), fb.height());
-    let step = px(64);
-    fb.batch(|fb| {
-        let mut y0 = 0;
-        while y0 < h {
-            let colour = background_row(y0, h);
-            let mut y1 = y0 + 1;
-            while y1 < h && background_row(y1, h) == colour {
-                y1 += 1;
-            }
-            let (r, g, b) = colour;
-            fill_rect(fb, 0, y0 as i32, w, y1 - y0, Color::rgb(r, g, b));
-            let line = Color::rgb(r.saturating_add(6), g.saturating_add(8), b.saturating_add(12));
-            for x in (0..w).step_by(step) {
-                fill_rect(fb, x as i32, y0 as i32, 1, y1 - y0, line);
-            }
-            for y in (y0..y1).filter(|y| y % step == 0) {
-                fill_rect(fb, 0, y as i32, w, 1, line);
-            }
-            y0 = y1;
+    fb.batch(|fb| background_runs(w, h, |colour, rects| {
+        let colour = Color::rgb((colour >> 16) as u8, (colour >> 8) as u8, colour as u8);
+        for &[x0, y0, x1, y1] in rects {
+            fill_rect(fb, x0, y0, (x1 - x0) as usize, (y1 - y0) as usize, colour);
         }
-    });
+    }));
+}
+
+/// Gradient bands and grid overlays, shared by startup and ordinary repainting.
+pub(super) fn background_runs(w: usize, h: usize, mut emit: impl FnMut(u32, &[[i32; 4]])) {
+    let step = px(64);
+    let mut grid = Vec::new();
+    let mut y0 = 0;
+    while y0 < h {
+        let colour = background_row(y0, h);
+        let mut y1 = y0 + 1;
+        while y1 < h && background_row(y1, h) == colour {
+            y1 += 1;
+        }
+        let (r, g, b) = colour;
+        emit(0xff000000 | u32::from(r) << 16 | u32::from(g) << 8 | u32::from(b), &[[0, y0 as i32, w as i32, y1 as i32]]);
+        let line = 0xff000000 | u32::from(r.saturating_add(6)) << 16 | u32::from(g.saturating_add(8)) << 8 | u32::from(b.saturating_add(12));
+        grid.clear();
+        for x in (0..w).step_by(step) {
+            grid.push([x as i32, y0 as i32, x as i32 + 1, y1 as i32]);
+        }
+        for y in (y0..y1).filter(|y| y % step == 0) {
+            grid.push([0, y as i32, w as i32, y as i32 + 1]);
+        }
+        emit(line, &grid);
+        y0 = y1;
+    }
 }
 
 // ─── Taskbar & App Bar ──────────────────────────────────────────────────────
@@ -305,6 +337,13 @@ pub(super) fn draw_taskbar(fb: &mut Surface, clock_text: &[u8], ui_font: &mut Op
             draw_text_at(fb, clock_text, clock_x, label_y, TASKBAR_TEXT, None);
         }
     }
+}
+
+pub(super) fn redraw_clock(fb: &mut Surface, text: &[u8], font: &mut Option<CachedFont>) {
+    let left = fb.width() / 2;
+    fb.push_clip(libgfx::surface::Rect::new(left as i32, 0, (fb.width() - left) as i32, px(TASKBAR_HEIGHT) as i32));
+    draw_taskbar(fb, text, font);
+    fb.pop_clip();
 }
 
 pub(super) fn appbar_button_width(title_len: usize) -> usize {

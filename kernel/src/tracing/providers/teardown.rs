@@ -2249,8 +2249,8 @@ pub fn fork_exit_defer_reclaim_pairing_test() -> crate::test_framework::registry
         let site_class = ADAPTED_SITE_CLASSES[iteration % ADAPTED_SITE_CLASSES.len()];
         if site_class == 3 {
             {
-                let _force_live =
-                    crate::task::process_task::ForceLiveReclaimTestGuard::arm(child.0.as_u64());
+                // Normal exit now defers both live and quiescent roots;
+                // no forced-live injection is needed to exercise this site.
                 crate::task::process_task::ProcessScheduler::handle_thread_exit(child.1, 0);
             }
             // Preserve the gate's first/repeat accounting workload without

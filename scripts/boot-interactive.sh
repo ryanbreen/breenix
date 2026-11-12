@@ -497,7 +497,7 @@ if [ "$MODE" = program ] && [ -n "$TERMINAL_PROFILE" ]; then
 fi
 WATCH_READY_ARGS=()
 [ "$UNTIL_DESKTOP_READY" -eq 0 ] || WATCH_READY_ARGS=(--until-desktop-ready)
-python3 "$ROOT/scripts/watch-qemu.py" "${WATCH_READY_ARGS[@]}" --serial "$SERIAL_LOG" --mode "$WATCH_MODE" \
+python3 "$ROOT/scripts/watch-qemu.py" ${WATCH_READY_ARGS[@]+"${WATCH_READY_ARGS[@]}"} --serial "$SERIAL_LOG" --mode "$WATCH_MODE" \
     --suite "$SUITE" --case "$ONLY" --idle-exit "$IDLE_EXIT" --gate-timeout "$GATE_TIMEOUT" --disk "$WRITABLE" -- python3 "$ROOT/scripts/qemu-arm64.py" "$QEMU" \
     -rtc base=utc "${QEMU_PROFILE_ARGS[@]}" -m 512 -smp "$CPUS" \
     -kernel "$KERNEL" \

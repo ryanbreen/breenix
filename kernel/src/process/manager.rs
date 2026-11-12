@@ -2185,6 +2185,15 @@ impl ProcessManager {
             .count()
     }
 
+    /// Receipts whose resources have not retired, including reaped tombstones.
+    /// Queue lengths alone omit receipts temporarily owned by the drain and
+    /// receipts created under PM before their publisher can enqueue them.
+    pub(crate) fn outstanding_retirement_receipts(&self) -> u64 {
+        self.processes.values()
+            .map(|row| u64::from(row.outstanding_retirement_receipts()))
+            .sum()
+    }
+
     /// Iterate over all processes (for diagnostics). Tombstone-blind.
     pub fn iter_processes(&self) -> impl Iterator<Item = (ProcessId, &Process)> {
         self.processes

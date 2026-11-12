@@ -121,6 +121,8 @@ class BootInteractiveGpuGlTest(unittest.TestCase):
         scripts.mkdir()
         shutil.copyfile(ROOT / "scripts/boot-interactive.sh", scripts / "boot-interactive.sh")
         shutil.copyfile(CHECK, scripts / "check-host-renderer.py")
+        shutil.copyfile(ROOT / "scripts/boot-commit.sh", scripts / "boot-commit.sh")
+        (self.root / ".deployed-commit").write_text("a" * 40 + "\n")
         (scripts / "host-slots.sh").write_text("\n".join(
             f"{name}() {{ :; }}" for name in (
                 "host_slots_start", "host_slot_acquire", "host_slot_serial",
@@ -153,12 +155,12 @@ class BootInteractiveGpuGlTest(unittest.TestCase):
         path.write_text(text)
         path.chmod(0o755)
 
-    def launch(self, *args, gl="/stub/QEMU-GL.app/Contents/MacOS/qemu-system-aarch64", records=None):
+    def launch(self, *args, interpreter="bash", gl="/stub/QEMU-GL.app/Contents/MacOS/qemu-system-aarch64", records=None):
         env = {k: v for k, v in os.environ.items() if k not in ("ANGLE_DEFAULT_PLATFORM", "BREENIX_QEMU_NOGUI")}
         env.update(CAPTURE=str(self.root / "launch.json"), STUB_GL=gl or "",
                    STUB_RECORD=json.dumps({"format": 1, "pid": 1, "records": records}) if records is not None else "")
         result = subprocess.run(
-            ["bash", str(self.root / "scripts/boot-interactive.sh"), "--no-build", "--mode", "probe",
+            [interpreter, str(self.root / "scripts/boot-interactive.sh"), "--no-build", "--mode", "probe",
              "--serial-log", str(self.root / "run/serial.txt"), *args],
             cwd=self.root, env=env, capture_output=True, text=True, timeout=20)
         launch = json.loads((self.root / "launch.json").read_text()) if (self.root / "launch.json").exists() else None
@@ -198,6 +200,14 @@ class BootInteractiveGpuGlTest(unittest.TestCase):
         self.assertIn("virtio-gpu-gl-pci", launch["argv"])
         self.assertIn("-spice", launch["argv"])
         self.assertEqual(launch["argv"][launch["argv"].index("-display") + 1], "none")
+
+    def test_selected_headless_watch_runs_with_system_bash(self):
+        result, launch = self.launch("--mode", "suite", "--suite", "console",
+                                     "--case", "console/basic", "--no-display",
+                                     interpreter="/bin/bash", records=workload())
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(launch["argv"][launch["argv"].index("-display") + 1], "none")
+        self.assertIn("host renderer: accepted", result.stdout)
 
     def test_a_refused_attestation_fails_the_boot(self):
         result, _ = self.launch("--gpu-gl", "--no-display",

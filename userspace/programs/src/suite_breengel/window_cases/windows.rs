@@ -1338,12 +1338,12 @@ pub(crate) fn readback() -> Result<Vec<u8>, String> {
     let (width,height)=super::composition::screen_size().map_err(|e|format!("{e:?}"))?;
     let mut px = vec![0u8; width * height * 4];
     let mut rec = [0u8; 1024];
-    let mut rb = super::handoff::Readback::ZERO;
+    let mut rb = libbreenix::window::abi::Readback::ZERO;
     rb.dst = px.as_mut_ptr() as u64;
     rb.dst_len = px.len() as u64;
     rb.record = rec.as_mut_ptr() as u64;
     rb.record_len = 1024;
-    let r = call(op::SCANOUT_READBACK, &mut rb);
+    let r = match libbreenix::window::readback(&mut rb) { Ok(()) => 0, Err(libbreenix::error::Error::Os(e)) => -(e as i64) };
     if r < 0 {
         return Err(format!("gpu-display: B13 SCANOUT_READBACK {} reason {}", outcome(r), rb.reason));
     }

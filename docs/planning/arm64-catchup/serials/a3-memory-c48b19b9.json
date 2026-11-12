@@ -1,0 +1,386 @@
+{
+  "schema": 1,
+  "boot": "20261112T051028Z-qemu-76740",
+  "commit": "c48b19b96022dba6f87d6ee8c0025b40d33b442f",
+  "serial_sha256": "4026450b815cc7b6099e1f6a1cd6f64c9e4c8d3d7228a2723c12f75b3f223114",
+  "records": [
+    {
+      "line": 277,
+      "text": "SUITE window-manager MEMORY before free=84631 heap_free_kb=38980 user_stacks=16 user_pages=595 page_tables=11 page_cache=0 kernel_stacks=0 buffers=4218 other=130 receipts=0 settle_ms=202"
+    },
+    {
+      "line": 974445,
+      "text": "VALUE wm-startup pid=707 phase=compositor-exec ns=581831373500 elapsed_us=0"
+    },
+    {
+      "line": 974489,
+      "text": "VALUE wm-startup pid=707 phase=first-composite ns=582522929750 elapsed_us=691556"
+    },
+    {
+      "line": 974583,
+      "text": "VALUE wm-startup pid=707 phase=compositor-exec ns=581831373500 elapsed_us=0"
+    },
+    {
+      "line": 974627,
+      "text": "VALUE wm-startup pid=707 phase=first-composite ns=582522929750 elapsed_us=691556"
+    },
+    {
+      "line": 1275385,
+      "text": "SUITE window-manager DONE passed=81 failed=0 skipped=0 total=81"
+    },
+    {
+      "line": 1275387,
+      "text": "SUITE window-manager MEMORY after free=84576 heap_free_kb=34945 user_stacks=15 user_pages=639 page_tables=23 page_cache=0 kernel_stacks=0 buffers=4218 other=130 receipts=0 settle_ms=202"
+    },
+    {
+      "line": 1275389,
+      "text": "SUITE window-manager MEMORY reclaimed=FAIL free_before=84631 free_after=84576 allowance=48"
+    },
+    {
+      "line": 1275391,
+      "text": "SUITE_MEMORY_DETAIL window-manager after used 5039"
+    },
+    {
+      "line": 1275393,
+      "text": "SUITE_MEMORY_DETAIL window-manager after allocated 5039"
+    },
+    {
+      "line": 1275395,
+      "text": "SUITE_MEMORY_DETAIL window-manager after lost 0"
+    },
+    {
+      "line": 1275397,
+      "text": "SUITE_MEMORY_DETAIL window-manager after free_list 34925"
+    },
+    {
+      "line": 1275399,
+      "text": "SUITE_MEMORY_DETAIL window-manager after owner user_stacks 15"
+    },
+    {
+      "line": 1275401,
+      "text": "SUITE_MEMORY_DETAIL window-manager after owner user_pages 653"
+    },
+    {
+      "line": 1275403,
+      "text": "SUITE_MEMORY_DETAIL window-manager after owner page_tables 23"
+    },
+    {
+      "line": 1275405,
+      "text": "SUITE_MEMORY_DETAIL window-manager after owner page_cache 0"
+    },
+    {
+      "line": 1275407,
+      "text": "SUITE_MEMORY_DETAIL window-manager after owner kernel_stacks 0"
+    },
+    {
+      "line": 1275409,
+      "text": "SUITE_MEMORY_DETAIL window-manager after owner buffers 4218"
+    },
+    {
+      "line": 1275411,
+      "text": "SUITE_MEMORY_DETAIL window-manager after owner other 130"
+    },
+    {
+      "line": 1275413,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 4000 mapped=0 external=0 gpu/screen.rs:258"
+    },
+    {
+      "line": 1275415,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 383 mapped=383 external=0 arch_impl/aarch64/elf.rs:564"
+    },
+    {
+      "line": 1275417,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 235 mapped=235 external=0 memory/anon_map.rs:234"
+    },
+    {
+      "line": 1275419,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 154 mapped=0 external=0 gpu/dma.rs:583"
+    },
+    {
+      "line": 1275421,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 130 mapped=0 external=0 memory/arch_stub.rs:1093"
+    },
+    {
+      "line": 1275423,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 35 mapped=0 external=0 gpu/console.rs:169"
+    },
+    {
+      "line": 1275425,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 33 mapped=33 external=0 syscall/memory_common.rs:229"
+    },
+    {
+      "line": 1275427,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 24 mapped=0 external=0 gpu/mod.rs:3518"
+    },
+    {
+      "line": 1275429,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 21 mapped=0 external=0 memory/process_memory.rs:625"
+    },
+    {
+      "line": 1275431,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 15 mapped=15 external=0 memory/process_memory.rs:3915"
+    },
+    {
+      "line": 1275433,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 2 mapped=0 external=0 gpu/mod.rs:3519"
+    },
+    {
+      "line": 1275435,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 2 mapped=0 external=0 memory/process_memory.rs:768"
+    },
+    {
+      "line": 1275437,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 1 mapped=0 external=0 gpu/virgl/queue.rs:53"
+    },
+    {
+      "line": 1275439,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 1 mapped=0 external=0 gpu/virgl/queue.rs:52"
+    },
+    {
+      "line": 1275441,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 1 mapped=0 external=0 gpu/virgl/queue.rs:51"
+    },
+    {
+      "line": 1275443,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 1 mapped=1 external=0 memory/process_memory.rs:2567"
+    },
+    {
+      "line": 1275445,
+      "text": "SUITE_MEMORY_DETAIL window-manager after site 1 mapped=1 external=0 process/manager.rs:356"
+    },
+    {
+      "line": 1275447,
+      "text": "SUITE_MEMORY_DETAIL window-manager after gpu-core counts=Some((11, 2, 1, 0, 0, 0)) omitted=0"
+    },
+    {
+      "line": 1275449,
+      "text": "SUITE_MEMORY_DETAIL window-manager after gpu-core resource=256 owner=0 handle=0 owner_present=true pages=12 backing_refs=1 holds=0 writers=0 dropped=false reading=false cpu_reading=false width=0 height=0 last_ctx=0 window_hold=false sync_holds=0 submit_holds=0 display_holds=0 context_holds=0 lost=false invalid=false epoch=0"
+    },
+    {
+      "line": 1275451,
+      "text": "SUITE_MEMORY_DETAIL window-manager after gpu-core resource=257 owner=0 handle=0 owner_present=true pages=1 backing_refs=1 holds=0 writers=0 dropped=false reading=false cpu_reading=false width=1 height=1 last_ctx=0 window_hold=false sync_holds=0 submit_holds=0 display_holds=0 context_holds=0 lost=false invalid=false epoch=0"
+    },
+    {
+      "line": 1275453,
+      "text": "SUITE_MEMORY_DETAIL window-manager after gpu-core resource=258 owner=0 handle=0 owner_present=true pages=0 backing_refs=1 holds=0 writers=0 dropped=false reading=false cpu_reading=false width=1 height=1 last_ctx=0 window_hold=false sync_holds=0 submit_holds=0 display_holds=0 context_holds=0 lost=false invalid=false epoch=0"
+    },
+    {
+      "line": 1275455,
+      "text": "SUITE_MEMORY_DETAIL window-manager after gpu-core resource=259 owner=0 handle=0 owner_present=true pages=4000 backing_refs=3 holds=2 writers=0 dropped=false reading=false cpu_reading=false width=2560 height=1600 last_ctx=1 window_hold=false sync_holds=0 submit_holds=0 display_holds=1 context_holds=0 lost=false invalid=false epoch=0"
+    },
+    {
+      "line": 1275457,
+      "text": "SUITE_MEMORY_DETAIL window-manager after gpu-core resource=260 owner=0 handle=0 owner_present=true pages=12 backing_refs=1 holds=0 writers=0 dropped=false reading=false cpu_reading=false width=0 height=0 last_ctx=0 window_hold=false sync_holds=0 submit_holds=0 display_holds=0 context_holds=0 lost=false invalid=false epoch=0"
+    },
+    {
+      "line": 1275459,
+      "text": "SUITE_MEMORY_DETAIL window-manager after gpu-core resource=261 owner=0 handle=0 owner_present=true pages=1 backing_refs=1 holds=0 writers=0 dropped=false reading=false cpu_reading=false width=1 height=1 last_ctx=0 window_hold=false sync_holds=0 submit_holds=0 display_holds=0 context_holds=0 lost=false invalid=false epoch=0"
+    },
+    {
+      "line": 1275461,
+      "text": "SUITE_MEMORY_DETAIL window-manager after gpu-core resource=262 owner=0 handle=0 owner_present=true pages=0 backing_refs=1 holds=0 writers=0 dropped=false reading=false cpu_reading=false width=1 height=1 last_ctx=0 window_hold=false sync_holds=0 submit_holds=0 display_holds=0 context_holds=0 lost=false invalid=false epoch=0"
+    },
+    {
+      "line": 1275463,
+      "text": "SUITE_MEMORY_DETAIL window-manager after gpu-core resource=263 owner=0 handle=0 owner_present=true pages=0 backing_refs=1 holds=1 writers=0 dropped=false reading=false cpu_reading=false width=2560 height=1600 last_ctx=2 window_hold=false sync_holds=0 submit_holds=0 display_holds=0 context_holds=0 lost=false invalid=false epoch=0"
+    },
+    {
+      "line": 1275465,
+      "text": "SUITE_MEMORY_DETAIL window-manager after gpu-core resource=264 owner=0 handle=0 owner_present=true pages=3 backing_refs=1 holds=1 writers=0 dropped=false reading=false cpu_reading=false width=665 height=16 last_ctx=0 window_hold=false sync_holds=0 submit_holds=0 display_holds=0 context_holds=0 lost=false invalid=false epoch=0"
+    },
+    {
+      "line": 1275467,
+      "text": "SUITE_MEMORY_DETAIL window-manager after gpu-core resource=265 owner=0 handle=0 owner_present=true pages=0 backing_refs=1 holds=1 writers=0 dropped=false reading=false cpu_reading=false width=2560 height=1600 last_ctx=0 window_hold=false sync_holds=0 submit_holds=0 display_holds=0 context_holds=0 lost=false invalid=false epoch=0"
+    },
+    {
+      "line": 1275469,
+      "text": "SUITE_MEMORY_DETAIL window-manager after gpu-core resource=266 owner=0 handle=0 owner_present=true pages=32 backing_refs=1 holds=1 writers=0 dropped=false reading=false cpu_reading=false width=131072 height=1 last_ctx=0 window_hold=false sync_holds=0 submit_holds=0 display_holds=0 context_holds=0 lost=false invalid=false epoch=0"
+    },
+    {
+      "line": 1275471,
+      "text": "SUITE_MEMORY_DETAIL window-manager after window-owners counts=(0, 0, None, 0) omitted_buffers=0 omitted_remnants=0"
+    },
+    {
+      "line": 1275473,
+      "text": "SUITE_MEMORY_DETAIL window-manager after tables recorded=25373 returned=25869 lost=0"
+    },
+    {
+      "line": 1275475,
+      "text": "SUITE_MEMORY_DETAIL window-manager after roots retired=517 no_proof=0 no_arch=0 terminated=0 undecided=0 mid_retire=0"
+    },
+    {
+      "line": 1275477,
+      "text": "SUITE_MEMORY_DETAIL window-manager after receipts pending=0 parked=0"
+    },
+    {
+      "line": 1275479,
+      "text": "SUITE_MEMORY_DETAIL window-manager after boot settled=1"
+    },
+    {
+      "line": 1280641,
+      "text": "SUITE_SEQUENCE READY window-manager"
+    }
+  ],
+  "waits": {
+    "positive click delivery to target client": {
+      "count": 23,
+      "worst": {
+        "tid": 387,
+        "label": "positive click delivery to target client",
+        "begin_ns": 202943965375,
+        "case": "stacking/all-minimized",
+        "line": 375923,
+        "end_ns": 203167028666,
+        "deadline_ns": 203943965375,
+        "elapsed_ms": 223.063291,
+        "budget_ms": 1000.0,
+        "margin_ms": 776.936709,
+        "headroom_pct": 77.6936709
+      }
+    },
+    "focus click release delivery to target client": {
+      "count": 23,
+      "worst": {
+        "tid": 893,
+        "label": "focus click release delivery to target client",
+        "begin_ns": 531516976541,
+        "case": "recovery/stack-restored",
+        "line": 935345,
+        "end_ns": 531531093375,
+        "deadline_ns": 532516976541,
+        "elapsed_ms": 14.116834,
+        "budget_ms": 1000.0,
+        "margin_ms": 985.883166,
+        "headroom_pct": 98.5883166
+      }
+    },
+    "production desktop supervisor restarts bwm": {
+      "count": 1,
+      "worst": {
+        "tid": 917,
+        "label": "production desktop supervisor restarts bwm",
+        "begin_ns": 580698741666,
+        "case": "recovery/supervisor-restarts",
+        "line": 975627,
+        "end_ns": 581827744583,
+        "deadline_ns": 582698741666,
+        "elapsed_ms": 1129.002917,
+        "budget_ms": 2000.0,
+        "margin_ms": 870.997083,
+        "headroom_pct": 43.54985415
+      }
+    },
+    "reap owned process": {
+      "count": 4,
+      "worst": {
+        "tid": 893,
+        "label": "reap owned process",
+        "begin_ns": 531732143166,
+        "case": "recovery/stack-restored",
+        "line": 935379,
+        "end_ns": 531744895708,
+        "deadline_ns": 532232143166,
+        "elapsed_ms": 12.752542,
+        "budget_ms": 500.0,
+        "margin_ms": 487.247458,
+        "headroom_pct": 97.4494916
+      }
+    }
+  },
+  "captured_waits": {
+    "started": 3686,
+    "completed": 3686,
+    "minimum_headroom_pct": 43.54985415,
+    "final_ring_overwritten": 49862
+  },
+  "performance": [
+    {
+      "line": 856959,
+      "text": "VALUE wm-reap-wait pid=618 wait_returned_ns=485484075583 elapsed_ns=24375 passed=true"
+    },
+    {
+      "line": 873168,
+      "text": "VALUE wm-reap-wait pid=628 wait_returned_ns=496182152416 elapsed_ns=5779208 passed=true"
+    },
+    {
+      "line": 902242,
+      "text": "VALUE wm-reap-wait pid=650 wait_returned_ns=513633684875 elapsed_ns=36167 passed=true"
+    },
+    {
+      "line": 933642,
+      "text": "VALUE wm-reap-wait pid=671 wait_returned_ns=531744900458 elapsed_ns=12757708 passed=true"
+    },
+    {
+      "line": 1172596,
+      "text": "SUITE window-manager VALUE performance/typing-latency latency-median=6775us expect=0..20000us"
+    },
+    {
+      "line": 1172599,
+      "text": "SUITE window-manager VALUE performance/typing-latency latency-max=15260us expect=0..50000us"
+    },
+    {
+      "line": 1187289,
+      "text": "SUITE window-manager VALUE performance/pointer-latency latency-median=4861us expect=0..20000us"
+    },
+    {
+      "line": 1187291,
+      "text": "SUITE window-manager VALUE performance/pointer-latency latency-max=13662us expect=0..50000us"
+    },
+    {
+      "line": 1201821,
+      "text": "SUITE window-manager VALUE performance/present-latency pipeline-window=119"
+    },
+    {
+      "line": 1201826,
+      "text": "SUITE window-manager VALUE performance/present-latency present-median=998us expect=0..16000us"
+    },
+    {
+      "line": 1201829,
+      "text": "SUITE window-manager VALUE performance/present-latency present-max=3854us expect=0..33000us"
+    },
+    {
+      "line": 1216481,
+      "text": "SUITE window-manager VALUE performance/frame-floor pipeline-window=120"
+    },
+    {
+      "line": 1216483,
+      "text": "SUITE window-manager VALUE performance/frame-floor measurement-begin=781578407458ns"
+    },
+    {
+      "line": 1216485,
+      "text": "SUITE window-manager VALUE performance/frame-floor measurement-end=786578544625ns"
+    },
+    {
+      "line": 1216486,
+      "text": "VALUE wm-frame-endpoints client=120 begin_ns=781578407458 end_ns=786578544625 first_ns=Some(781578470500) last_ns=Some(786578286666)"
+    },
+    {
+      "line": 1216491,
+      "text": "SUITE window-manager VALUE performance/frame-floor presentation-intervals=2643intervals"
+    },
+    {
+      "line": 1216494,
+      "text": "SUITE window-manager VALUE performance/frame-floor presentation-span=4999816166ns"
+    },
+    {
+      "line": 1216497,
+      "text": "SUITE window-manager VALUE performance/frame-floor composites-per-second=528hz expect=60..9223372036854775807hz"
+    },
+    {
+      "line": 1231106,
+      "text": "SUITE window-manager VALUE performance/idle-cpu idle-cpu=0percent expect=0..2percent"
+    },
+    {
+      "line": 1245826,
+      "text": "SUITE window-manager VALUE performance/latency-under-animation latency-median=11943us expect=0..33000us"
+    },
+    {
+      "line": 1245829,
+      "text": "SUITE window-manager VALUE performance/latency-under-animation latency-max=19435us expect=0..100000us"
+    },
+    {
+      "line": 1260476,
+      "text": "SUITE window-manager VALUE performance/clipboard-latency clipboard-max=10266us expect=0..50000us"
+    }
+  ]
+}

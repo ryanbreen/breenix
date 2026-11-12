@@ -11,6 +11,44 @@ use abi::{op, Plain};
 use crate::error::Error;
 use crate::syscall::raw;
 
+/// Observe a completed scanout within the device's ordinary two-second bound.
+/// Callers with an existing deadline use `readback_until` instead.
+pub fn readback(rb: &mut abi::Readback) -> Result<(), Error> {
+    let deadline = crate::time::now_monotonic()?.as_nanos() as u64;
+    readback_until(rb, deadline.saturating_add(2_000_000_000))
+}
+
+/// Retry pending scanout observation on composite completion, under one absolute
+/// monotonic deadline. The retry still requires a valid observation.
+pub fn readback_until(rb: &mut abi::Readback, deadline_ns: u64) -> Result<(), crate::error::Error> {
+    use crate::{errno::Errno, error::Error, io, time, types::{Fd, OwnedFd}};
+    use crate::window;
+    let now = || time::now_monotonic().map(|t| t.as_nanos() as u64);
+    let fd = window::call(abi::op::PRESENTATION_FD, &mut abi::WinId { id: 0 })?;
+    let fd = OwnedFd::new(Fd::from_raw(fd));
+    loop {
+        if now()? >= deadline_ns { return Err(Error::Os(Errno::ETIMEDOUT)); }
+        // Acknowledge before observing: a completion during or after EAGAIN
+        // stays readable, including one published before ppoll registers us.
+        let mut generation = [0u8; 8];
+        io::read(fd.fd(), &mut generation)?;
+        match window::call(abi::op::SCANOUT_READBACK, rb) {
+            Ok(_) => {
+                if now()? >= deadline_ns { return Err(Error::Os(Errno::ETIMEDOUT)); }
+                return Ok(());
+            }
+            Err(Error::Os(Errno::EAGAIN)) => {}
+            Err(e) => return Err(e),
+        }
+        let left = deadline_ns.saturating_sub(now()?);
+        if left == 0 { return Err(Error::Os(Errno::ETIMEDOUT)); }
+        let mut fds = [io::PollFd { fd: fd.fd().raw() as i32, events: io::poll_events::POLLIN, revents: 0 }];
+        match io::poll_ns(&mut fds, Some(left)) {
+            Ok(_) | Err(Error::Os(Errno::EINTR)) => {}
+            Err(e) => return Err(e),
+        }
+    }
+}
 /// A read-only view of the tree-reader count; it does not attach a tree reader.
 pub fn map_tree_readers(id: u64) -> Result<abi::MapTree, Error> {
     let mut mapping = abi::MapTree { id, ..Default::default() };
@@ -253,7 +291,15 @@ pub fn capture_tree(id: u64, tree: &mut [u8]) -> Result<abi::Capture, Error> {
 
 /// `CLAIM_COMPOSITOR` (root): returns the claim's epoch.
 pub fn claim_compositor() -> Result<u64, Error> {
-    let mut c = abi::Claim::ZERO;
+    claim_compositor_for(0)
+}
+
+/// Claim with the next renderer's GPU pipeline preparation bits (0: full catalogue).
+pub fn claim_compositor_for(pipelines: u32) -> Result<u64, Error> {
+    use crate::gpu::abi::context_flags;
+    if pipelines & !context_flags::ALL != 0 { return Err(crate::errno::Errno::EINVAL.into()); }
+    let flags = if pipelines == 0 { 0 } else { context_flags::PREPARE | pipelines };
+    let mut c = abi::Claim { flags, ..abi::Claim::ZERO };
     call(op::CLAIM_COMPOSITOR, &mut c)?;
     Ok(c.epoch)
 }

@@ -36,9 +36,12 @@ pub fn window_result(arena: &mut Arena, check: &str, id: u64) -> Result<Record, 
     });
     result.map_err(|detail| WindowError { syscall, detail })
 }
+pub use libbreenix::window::readback_until;
 /// Require the caller's observation kind, rather than accepting whatever kind
 /// the device returned. The shared E21 validator judges backend completions.
 pub fn screen(arena: &mut Arena, check: &str, kind: ObservationKind) -> Result<Record, String> {
+    let deadline = libbreenix::time::now_monotonic().map_err(|e| e.to_string())?
+        .as_nanos() as u64 + crate::settle::BOUND_NS;
     let mode = gpu::current_mode().map_err(|e| format!("capture CURRENT_MODE: {e}"))?;
     let len = byte_len(mode.width, mode.height)?;
     let mut writer = arena.begin(Slot::Screen)?;
@@ -47,7 +50,7 @@ pub fn screen(arena: &mut Arena, check: &str, kind: ObservationKind) -> Result<R
     let mut observation = [0; 1024];
     let mut rb = abi::Readback { dst: pixels.as_mut_ptr() as u64, dst_len: len as u64,
         record: observation.as_mut_ptr() as u64, record_len: 1024, ..Default::default() };
-    window::call(abi::op::SCANOUT_READBACK, &mut rb).map_err(|e| format!("screen capture: {e}"))?;
+    readback_until(&mut rb, deadline).map_err(|e| format!("screen capture: {e}"))?;
     if !window::validate_scanout_observation(&observation, mode.width, mode.height, kind) {
         return Err("screen capture: invalid scanout observation".into());
     }

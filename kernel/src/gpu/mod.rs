@@ -372,7 +372,7 @@ struct Ctx {
     #[cfg(target_arch = "x86_64")]
     native_probe_mask: u32,
     /// The rendering pipelines whose warm-up step completed, one bit each
-    /// (`catalogue_mask()` when the catalogue's warm-up is complete).
+    /// (`warm_required` records the set this renderer prepares).
     warm: u32,
     /// Initial grace deadline; later resource creations do not postpone it.
     warm_after: u64,
@@ -380,6 +380,8 @@ struct Ctx {
     warm_failures: u32,
     /// Private clear/copy contexts do not use the rendering catalogue.
     warm_catalogue: bool,
+    /// Programs requested by this renderer, independent of device/backend.
+    warm_required: u32,
     /// Device errors in a row, in fence order.
     errors_in_row: u32,
     /// Test point 31's fence-depth mode on this context.
@@ -478,6 +480,8 @@ struct SyncReq {
     sent_ns: Option<u64>,
     /// Texture upload and expected fence; completion accounting survives an interrupted waiter.
     upload: Option<(u32, u64)>,
+    /// Internal resource creation; its acknowledgement survives a killed waiter.
+    created: Option<u32>,
     /// Resources it holds until the device returns it.
     holds: Vec<u32>,
     /// The resources whose `reading` mark the request keeps if its waiter leaves: a
@@ -1233,7 +1237,7 @@ impl Core {
         let serial = self.serial();
         req.set_tag(Tag::Sync(serial));
         self.syncs.insert(serial, SyncReq {
-            ctx: 0, sent_ns: None, upload: None, holds: Vec::new(), reading: Vec::new(),
+            ctx: 0, sent_ns: None, upload: None, created: None, holds: Vec::new(), reading: Vec::new(),
             abandoned: true, failed: false, why: 0, warm: None,
         });
         self.backlog.push_back((epoch.min(self.epoch), req));
@@ -1284,7 +1288,7 @@ impl Core {
         }
         let upload = req.is_upload().then(|| holds.first().copied().zip(req.fence())).flatten();
         self.syncs.insert(serial, SyncReq {
-            upload, ctx, sent_ns: None, holds: held, reading: readers, abandoned: warm.is_some(), failed: false,
+            upload, created: None, ctx, sent_ns: None, holds: held, reading: readers, abandoned: warm.is_some(), failed: false,
             why: 0, warm,
         });
         self.backlog.push_back((self.epoch, req));
@@ -1297,30 +1301,40 @@ impl Core {
     fn progress_readback(&mut self) {
         let reaper = REAPER.load(Ordering::Acquire);
         if reaper == 0 || crate::per_cpu::current_thread().is_none_or(|t| t.id == reaper) { return; }
+        if self.queue_progress_readback() {
+            // Waiters enroll only; kgpu owns device notification.
+            SENT.fetch_add(1, Ordering::AcqRel);
+            wake_reaper();
+        }
+    }
+
+    /// Enroll one drain; the caller must hand it to kgpu or send it in this pump.
+    fn queue_progress_readback(&mut self) -> bool {
         if !platform_config::is_qemu() || dev::is_svga() || self.reset_wanted || self.resetting || self.stalled
-            || !self.backlog.is_empty() { return; }
+            || !self.backlog.is_empty() { return false; }
         let target = self.subs.values().filter(|s| !s.published && s.requests > 0 && s.sent_ns.is_some())
-            .find_map(|s| s.written.iter().find_map(|rid| {
+            .find_map(|s| s.written.iter().chain(s.present.as_ref().map(|p| &p.id)).find_map(|rid| {
                 let r = self.resources.get(rid)?;
                 let active = r.accepted.iter().filter(|w| !w.ended()).count();
-                (r.kind == kind::TARGET && r.writers > 0 && active == r.writers as usize
+                let writing = r.writers > 0 || s.present.as_ref().is_some_and(|p| p.id == *rid);
+                (r.kind == kind::TARGET && writing && active == r.writers as usize
                     && r.accepted.iter().filter(|w| !w.ended()).all(|w| w.ctx == s.ctx)
                     && !r.reading && !r.invalid && !r.lost)
                     .then(|| (s.ctx, *rid, r.backing.clone(), r.pitch))
             }));
-        let Some((ctx, rid, backing, pitch)) = target else { return; };
+        let Some((ctx, rid, backing, pitch)) = target else { return false; };
         let serial = self.serial();
         let fence = self.device_fence();
         let req = Request::Virgl(virgl::transfer_from_host(Tag::Sync(serial), ctx, fence, rid, backing, 0, 0, 1, 1, 0, pitch));
-        if !self.dev.as_ref().is_some_and(|d| d.has_room(req.segment_count())) { return; }
+        if !self.dev.as_ref().is_some_and(|d| d.has_room(req.segment_count())) { return false; }
         if let Some(r) = self.resources.get_mut(&rid) { r.reading = true; r.progress_context = Some(ctx); }
         if self.queue_sync(serial, req, ctx, &[rid], &[rid], None).is_ok() {
             self.abandon(serial);
-            // Only kgpu acts on the queued transfer; waking the waiters would only make
-            // them scan again. The count reaches a kgpu that has not blocked yet.
-            SENT.fetch_add(1, Ordering::AcqRel);
-            wake_reaper();
-        } else { self.end_reading(rid); }
+            true
+        } else {
+            self.end_reading(rid);
+            false
+        }
     }
 
     /// The waiter of `serial` left: drop its answer if it came, or when it comes.
@@ -1359,7 +1373,7 @@ impl Core {
                 ctx.warm |= 1 << step.pipeline;
                 ctx.warm_failures = 0;
                 #[cfg(target_arch = "x86_64")]
-                if ctx.warm == catalogue_mask() { ctx.native_warm_scratch = None; }
+                if (ctx.warm & ctx.warm_required) == ctx.warm_required { ctx.native_warm_scratch = None; }
             }
         }
         self.settle(step.ctx);
@@ -1375,6 +1389,10 @@ impl Core {
         self.reap_all();
         self.watchdog(now_ns());
         self.flush();
+        // The first flush can send a render after its waiter last inspected it.
+        // Enroll and send its QEMU drain before this worker blocks; no waiter
+        // timeout or unrelated submission is needed to make that fence visible.
+        if self.queue_progress_readback() { self.flush(); }
     }
 
     /// Take completions and watchdog decisions. Native polling also refills
@@ -1516,6 +1534,13 @@ impl Core {
     /// after a confirmed reset.
     fn sync_ended(&mut self, serial: u64, d: Option<Done>) {
         let Some(s) = self.syncs.remove(&serial) else { return };
+        if let Some(id) = s.created {
+            if d.as_ref().is_some_and(|d| dev::ok(d.answer)) {
+                if let Some(r) = self.resources.get_mut(&id).filter(|r| r.epoch == self.epoch) {
+                    r.lost = false;
+                }
+            }
+        }
         if s.ctx == 0 && d.as_ref().is_some_and(|d| !dev::ok(d.answer)) {
             self.fault();
         }
@@ -1557,9 +1582,7 @@ impl Core {
             let d = d.unwrap_or_else(|| Done::none(Tag::Sync(serial)));
             self.done.insert(serial, d);
         }
-        if s.upload.is_some() {
-            self.settle(s.ctx);
-        }
+        self.settle(s.ctx);
         notify();
     }
 
@@ -1795,7 +1818,8 @@ impl Core {
     /// its submissions awaits its result, and forget a dropped context then.
     fn settle(&mut self, id: u32) {
         let Some(c) = self.contexts.get_mut(&id) else { return };
-        if c.busy || !c.inflight.is_empty() || c.state == CtxState::Creating {
+        if c.busy || !c.inflight.is_empty() || c.state == CtxState::Creating
+            || (c.dropped && self.syncs.values().any(|s| s.ctx == id)) {
             return;
         }
         let destroy = c.device_alive && (c.dropped || c.state == CtxState::Quarantined);
@@ -1966,7 +1990,7 @@ impl Core {
         let presentation = dev::presentation_probe(false).map(|at| if at > now { at } else { now.saturating_add(100_000) });
         // Grace deadlines are independent across processes.
         let grace = self.contexts.values()
-            .filter(|x| x.warm_catalogue && x.state == CtxState::Live && !x.dropped && x.warm != catalogue_mask())
+            .filter(|x| x.warm_catalogue && x.state == CtxState::Live && !x.dropped && (x.warm & x.warm_required) != x.warm_required)
             .map(|x| x.warm_after).filter(|&g| g > now).min();
         let watchdog = hangs.chain(waits).chain(progress).min().map(|at| (at + limits::WATCHDOG_NS).min(now + EXAMINE_NS));
         watchdog.into_iter().chain(grace).chain(poll).chain(presentation).min()
@@ -2131,6 +2155,7 @@ struct Hung {
 // Summaries use a separate node from account lines. If this node is still
 // posted, kgpu retains the new counts and retries them after its next wake.
 static HUNG_LOSS_NODE: crate::log_notice::Node = crate::log_notice::Node::new();
+static RESET_CAUSE_NODE: crate::log_notice::Node = crate::log_notice::Node::new();
 static HUNG_NODES: [crate::log_notice::Node; HUNG_KEPT * HUNG_LINES] =
     [const { crate::log_notice::Node::new() }; HUNG_KEPT * HUNG_LINES];
 
@@ -2824,6 +2849,13 @@ fn reaper() {
 /// everything it holds.
 fn reset_device(tid: u64) {
     let Some(mut dev) = with_core(|c| c.begin_reset()).flatten() else { return };
+    if let Device::Virgl(_) = &dev {
+        use core::fmt::Write;
+        let [command, detail, serial] = virgl::take_error();
+        let mut text = NoticeText { bytes: [0; 80], len: 0 };
+        let _ = write!(text, "[gpu] reset cmd={:x} answer={:x} ctx={} field={} serial={}", command >> 32, command as u32, detail >> 32, detail as u32, serial);
+        let _ = RESET_CAUSE_NODE.post_again(core::str::from_utf8(&text.bytes[..text.len]).unwrap_or("[gpu] reset"));
+    }
     dev.begin_reset();
     let start = now_ns();
     while !dev.reset_done() && now_ns().saturating_sub(start) < RESET_BUDGET_NS {
@@ -2885,13 +2917,36 @@ fn recover_native_fault() -> bool {
     true
 }
 
+/// QEMU drains the finite catalogue on its completions. The normal pump runs
+/// first and only one warm step can be in flight, so foreground submissions
+/// retain queue order without spreading cold programs across interactive frames.
+fn warm_deadline(now: u64, traffic: u64, held: u64, started: Option<u64>, eager: bool) -> u64 {
+    if eager { return now; }
+    let due = traffic.saturating_add(WARM_QUIET_NS).min(held.saturating_add(WARM_GRACE_NS));
+    started.filter(|&start| traffic >= start)
+        .map_or(due, |start| due.max(start.saturating_add(WARM_GRACE_NS)))
+}
+
+/// QEMU gives its finite reserved renderer catalogue priority; other backends keep ID order.
+fn warm_context(c: &Core, warming: impl Fn(&Ctx) -> bool) -> Option<u32> {
+    if !platform_config::is_qemu() {
+        return c.contexts.iter().find(|(_, ctx)| warming(ctx) && !ctx.busy).map(|(&id, _)| id);
+    }
+    c.contexts.iter().filter(|(_, ctx)| warming(ctx) && !ctx.busy)
+        .min_by_key(|(id, ctx)| {
+            let reserved = c.procs.get(&ctx.owner).is_some_and(|p|
+                p.prepared_context.and_then(|handle| p.contexts.get(&handle)) == Some(*id));
+            (!reserved, **id)
+        }).map(|(&id, _)| id)
+}
+
 /// On `kgpu`: send the next step of the fixed rendering catalogue's warm-up (ruling 33,
-/// #1725), the lowest-numbered context's first pipeline not yet warmed. One step is on the
+/// #1725), one context's first pipeline not yet warmed. One step is on the
 /// device at a time, after the context's process-local grace and while the device is
 /// neither resetting nor suspected hung, so other requests wait behind at most one step.
-/// A step waits for `WARM_QUIET_NS` of send/answer quiet, for at most `WARM_GRACE_NS`.
-/// If other traffic followed the preceding step's start, the next start is also at least
-/// `WARM_GRACE_NS` after it; while held this returns when `kgpu` should look again.
+/// Outside QEMU, a step waits for `WARM_QUIET_NS` of send/answer quiet, for at most
+/// `WARM_GRACE_NS`. If traffic followed the preceding step's start, the next start
+/// is at least `WARM_GRACE_NS` after it; while held this returns the next deadline.
 /// The step takes the context's submission slot while it is encoded and
 /// queued, like a SUBMIT, so its objects and the context's submissions reach the device in
 /// the order their objects were allocated. Its requests are synchronous requests of the
@@ -2905,7 +2960,7 @@ fn warm_next() -> Option<u64> {
             && !c.stalled
             && c.quarantined_at.is_none()
     };
-    let warming = |x: &Ctx| x.warm_catalogue && x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != catalogue_mask() && now_ns() >= x.warm_after;
+    let warming = |x: &Ctx| x.warm_catalogue && x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && (x.warm & x.warm_required) != x.warm_required && now_ns() >= x.warm_after;
     let due = with_core(|c| {
         if !(ready(c) && c.contexts.values().any(warming)) {
             c.warm_held = None;
@@ -2913,9 +2968,7 @@ fn warm_next() -> Option<u64> {
         }
         let now = now_ns();
         let held = *c.warm_held.get_or_insert(now);
-        let due = c.traffic_ns.saturating_add(WARM_QUIET_NS).min(held.saturating_add(WARM_GRACE_NS));
-        let due = c.warm_started_ns.filter(|&start| c.traffic_ns >= start)
-            .map_or(due, |start| due.max(start.saturating_add(WARM_GRACE_NS)));
+        let due = warm_deadline(now, c.traffic_ns, held, c.warm_started_ns, platform_config::is_qemu());
         if now < due {
             return Err(Some(due));
         }
@@ -2932,9 +2985,10 @@ fn warm_next() -> Option<u64> {
         if !ready(c) {
             return None;
         }
-        let ctx = c.contexts.values_mut().find(|x| warming(x) && !x.busy)?;
+        let id = warm_context(c, &warming)?;
+        let ctx = c.contexts.get_mut(&id)?;
         ctx.busy = true;
-        let pipeline = (!ctx.warm & catalogue_mask()).trailing_zeros();
+        let pipeline = (!ctx.warm & ctx.warm_required).trailing_zeros();
         Some((ctx.id, pipeline, ctx.objects.clone(), ctx.dx.clone(), [ctx.vb, ctx.scratch, ctx.scratch_texture]))
     })
     .flatten();
@@ -2957,7 +3011,9 @@ fn warm_next() -> Option<u64> {
     } else {
         let mut enc = encode::Enc::new();
         encode::warm_pipeline(&mut enc, &mut objects, vb, scratch, scratch_texture, wire::format::B8G8R8A8_UNORM, FLIP_Y, pipeline);
-        if platform_config::is_parallels() { enc.completion_read(scratch, 256); }
+        // Warm requests are Sync tags, outside progress_readback's Submit
+        // search. Complete their scratch draw without depending on other work.
+        if platform_config::is_parallels() || platform_config::is_qemu() { enc.completion_read(scratch, 256); }
         enc.finish().filter(|v| !v.is_empty()).map(Chunks::Virgl)
     };
     with_core(|c| {
@@ -3074,12 +3130,12 @@ pub fn owner_ended(tgid: u64) {
 // The system call.
 
 pub(crate) fn caller() -> Result<u64, i64> {
-    let tid = crate::task::scheduler::current_thread_id().ok_or(EINVAL)?;
-    crate::process::with_process_manager(|m| {
-        m.find_process_by_thread(tid).map(|(row, p)| p.thread_group_id.unwrap_or(row.as_u64()))
-    })
-    .flatten()
-    .ok_or(EINVAL)
+    // The immutable thread account already names the owning group. GPU caller
+    // identity must not wait for unrelated exec/startup on PROCESS_MANAGER.
+    match crate::syscall::handlers::sys_getpid() {
+        crate::syscall::SyscallResult::Ok(group) if group != 0 => Ok(group),
+        _ => Err(EINVAL),
+    }
 }
 
 fn read_arg<T: Plain>(arg: u64, len: u64) -> Result<T, i64> {
@@ -3314,11 +3370,12 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
 
 fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
     let mut a: abi::ContextCreate = read_arg(arg, len)?;
-    if a.flags != 0 || a.handle != 0 || a.warmed != 0 || a.reserved != [0; 2] {
+    let required = abi::context_flags::requirements(a.flags).ok_or(EINVAL)?;
+    if a.handle != 0 || a.warmed != 0 || a.reserved != [0; 2] {
         return Err(EINVAL);
     }
     let tgid = caller()?;
-    let (handle, warmed) = create_context(tgid)?;
+    let (handle, warmed) = create_context_for(tgid, required)?;
     a.handle = handle;
     a.warmed = warmed;
     if let Err(e) = write_arg(arg, &a) {
@@ -3334,14 +3391,15 @@ fn create_kernel_context() -> Result<(u64, u32), i64> {
     #[cfg(target_arch = "x86_64")]
     { create_context_with_catalogue(0, false) }
     #[cfg(target_arch = "aarch64")]
-    { create_context(0) }
+    { create_context_for(0, catalogue_mask()) }
 }
 
-fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
+fn create_context_for(tgid: u64, required: u32) -> Result<(u64, u32), i64> {
     let prepared = with_core(|c| {
         let handle = c.procs.get_mut(&tgid)?.prepared_context.take()?;
         let warmed = c.ctx_of(tgid, handle).and_then(|id| c.contexts.get(&id))
-            .filter(|ctx| ctx.state == CtxState::Live && !ctx.dropped && ctx.device_alive)
+            .filter(|ctx| ctx.state == CtxState::Live && !ctx.dropped && ctx.device_alive
+                && ctx.warm_required == required)
             .map(|ctx| ctx.warmed());
         Some((handle, warmed))
     }).flatten();
@@ -3349,21 +3407,28 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
         if let Some(warmed) = ready { return Ok((handle, warmed)); }
         destroy_context(tgid, handle);
     }
-    create_context_with_catalogue(tgid, true)
+    create_context_with_requirements(tgid, required)
 }
 
 /// Initialize the renderer during window/display setup so catalogue compilation is out
 /// of the first frame's path. The prepared context is counted as an ordinary process context;
 /// CONTEXT_CREATE transfers its existing handle to the caller, and exit retires it normally.
 pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32> {
-    if !platform_config::is_parallels() { return Ok(()); }
+    prepare_window_renderer_for(tgid, reserve_next, catalogue_mask())
+}
+
+/// Reserve and complete only the renderer's declared preparation requirements.
+pub fn prepare_window_renderer_for(tgid: u64, reserve_next: bool, required: u32) -> Result<(), i32> {
+    // QEMU clients retain ordinary context creation: CREATE must reach
+    // registration without waiting for the compositor's whole catalogue.
+    if !platform_config::is_parallels() && !(platform_config::is_qemu() && reserve_next) { return Ok(()); }
     let needs_context = with_core(|c| {
         let Some(p) = c.procs.get(&tgid) else { return true; };
         p.contexts.len() < limits::CONTEXTS && p.prepared_context.is_none() && (reserve_next || !p.contexts.values().any(|id|
             c.contexts.get(id).is_some_and(|ctx| ctx.warm_catalogue && ctx.state == CtxState::Live && !ctx.dropped)))
     }).ok_or(ENODEV as i32)?;
     let made = if needs_context {
-        let (handle, _) = create_context_with_catalogue(tgid, true).map_err(|e| e as i32)?;
+        let (handle, _) = create_context_with_requirements(tgid, required).map_err(|e| e as i32)?;
         let kept = with_core(|c| {
             let p = c.proc_mut(tgid);
             if p.prepared_context.is_some() { false } else { p.prepared_context = Some(handle); true }
@@ -3377,10 +3442,13 @@ pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32>
                 .is_some_and(|ctx| ctx.state == CtxState::Live && !ctx.dropped);
             if !live { return Some(Err(EIO)); }
         }
+        let reserved = (platform_config::is_qemu() && reserve_next)
+            .then(|| p.prepared_context.and_then(|handle| p.contexts.get(&handle))).flatten();
         for id in p.contexts.values() {
+            if reserved.is_some_and(|reserved| reserved != id) { continue; }
             let Some(ctx) = c.contexts.get(id) else { continue; };
             if !ctx.warm_catalogue || ctx.dropped || ctx.state != CtxState::Live { continue; }
-            if ctx.warm != catalogue_mask() { return None; }
+            if (ctx.warm & ctx.warm_required) != ctx.warm_required { return None; }
         }
         Some(Ok(()))
     }).map_err(|_| EINTR).and_then(|r| r);
@@ -3398,6 +3466,10 @@ pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32>
 }
 
 fn create_context_with_catalogue(tgid: u64, warm_catalogue: bool) -> Result<(u64, u32), i64> {
+    create_context_with_requirements(tgid, if warm_catalogue { catalogue_mask() } else { 0 })
+}
+
+fn create_context_with_requirements(tgid: u64, required: u32) -> Result<(u64, u32), i64> {
     let _creation = CreationGuard::acquire(tgid)?;
     sweep();
     if !ensure_reaper() {
@@ -3463,6 +3535,11 @@ fn create_context_with_catalogue(tgid: u64, warm_catalogue: bool) -> Result<(u64
                 epoch,
             ),
         );
+        // No device object exists until its creation acknowledgement arrives.
+        // A killed creator must not queue UNREF for the unsent suffix.
+        for rid in [vb, scratch, scratch_texture] {
+            if let Some(r) = c.resources.get_mut(&rid) { r.lost = true; }
+        }
         c.insert_ctx(
             id,
             Ctx {
@@ -3493,7 +3570,8 @@ fn create_context_with_catalogue(tgid: u64, warm_catalogue: bool) -> Result<(u64
                 warm: 0,
                 warm_after: 0,
                 warm_failures: 0,
-                warm_catalogue,
+                warm_catalogue: required != 0,
+                warm_required: required,
                 errors_in_row: 0,
                 depth: None,
                 flushes: present_answers::Answers::new(),
@@ -3546,6 +3624,21 @@ fn create_context_with_catalogue(tgid: u64, warm_catalogue: bool) -> Result<(u64
     Ok((handle, warmed))
 }
 
+/// Publish internal allocation state from the completion, even if its creator exits.
+fn create_internal_resource(ctx: u32, resource: u32, build: impl FnOnce(Tag) -> Option<Request>) -> Result<(), i64> {
+    let serial = with_core(|c| c.serial()).ok_or(ENODEV)?;
+    let request = build(Tag::Sync(serial)).ok_or(ENOMEM)?;
+    if !ensure_reaper() { return Err(ENOMEM); }
+    with_core(|c| {
+        c.queue_sync(serial, request, ctx, &[], &[], None)?;
+        c.syncs.get_mut(&serial).ok_or(EIO)?.created = Some(resource);
+        c.flush();
+        Ok::<(), i64>(())
+    }).ok_or(ENODEV)??;
+    let done = await_sync(serial).map_err(|(errno, _)| errno)?;
+    if dev::ok(done.answer) { Ok(()) } else { Err(EIO) }
+}
+
 /// Create device context `id` with its internal resources and the process's resources
 /// attached, then send its fixed state and wait for its fence. The catalogue's programs
 /// are warmed afterwards on `kgpu` (`warm_next`), and each `probe_int` routine by its first PROBE. Each
@@ -3569,13 +3662,13 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
             }
         });
     }
-    exec_ok(|t| dev::resource_create(t, vb, kind::BUFFER, format::R8, encode::VERTEX_BUFFER_BYTES, 1, false), 0, &[])?;
+    create_internal_resource(id, vb, |t| dev::resource_create(t, vb, kind::BUFFER, format::R8, encode::VERTEX_BUFFER_BYTES, 1, false))?;
     exec_ok(|t| dev::attach_backing(t, vb, vb_pages.clone()), 0, &[])?;
     exec_ok(|t| dev::ctx_attach(t, id, vb), id, &[])?;
-    exec_ok(|t| dev::resource_create(t, scratch, kind::TARGET, format::B8G8R8A8, 1, 1, false), 0, &[])?;
+    create_internal_resource(id, scratch, |t| dev::resource_create(t, scratch, kind::TARGET, format::B8G8R8A8, 1, 1, false))?;
     exec_ok(|t| dev::attach_backing(t, scratch, scratch_pages.clone()), 0, &[])?;
     exec_ok(|t| dev::ctx_attach(t, id, scratch), id, &[])?;
-    exec_ok(|t| dev::resource_create(t, scratch_texture, kind::TEXTURE, format::B8G8R8A8, 1, 1, false), 0, &[])?;
+    create_internal_resource(id, scratch_texture, |t| dev::resource_create(t, scratch_texture, kind::TEXTURE, format::B8G8R8A8, 1, 1, false))?;
     exec_ok(|t| dev::ctx_attach(t, id, scratch_texture), id, &[])?;
     // The process's live resources, held so none is freed before it is attached.
     let theirs: Vec<u32> = with_core(|c| {
@@ -3657,10 +3750,13 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
     }
     #[cfg(target_arch = "x86_64")]
     if dev::backend() == abi::backend::GK208 {
-        let catalogue = with_core(|c| c.contexts.get(&id).is_some_and(|ctx| ctx.warm_catalogue)).ok_or(ENODEV)?;
+        let required = with_core(|c| c.contexts.get(&id).map(|ctx| ctx.warm_required))
+            .flatten().ok_or(ENODEV)?;
         // A tiny CE upload is fixed input setup, not catalogue warm-up. Do it on
         // the creating caller's killable wait, avoiding a kgpu self-wait.
-        let inputs = if catalogue { Some(native_warm_scratch(tgid)?) } else { None };
+        let inputs = if required & !(1 << abi::pipeline::SOLID) != 0 {
+            Some(native_warm_scratch(tgid)?)
+        } else { None };
         with_core(|c| {
             let ctx = c.contexts.get_mut(&id).ok_or(EIO)?;
             if ctx.state != CtxState::Creating || !ctx.device_alive { return Err(EIO); }
@@ -6604,8 +6700,16 @@ fn observe(
             for lane in lanes.iter_mut() {
                 let Some(b) = lane.as_mut() else { continue };
                 active = true;
+                if crate::syscall::check_signals_for_wait().is_some() {
+                    return Err((EINTR, readback_reason::NONE));
+                }
                 finish(b)?;
                 read(b);
+                // A ready completion need not sleep. Check again before the
+                // complement or next band extends syscall kill custody.
+                if crate::syscall::check_signals_for_wait().is_some() {
+                    return Err((EINTR, readback_reason::NONE));
+                }
                 if b.pass == 0 {
                     b.pass = 1;
                     start(b)?;
@@ -6709,7 +6813,7 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
                 // Contexts ready after catalogue setup: private clear/copy contexts have no
                 // catalogue work; rendering contexts require native completion of each step.
                 out.warmed = p.contexts.values()
-                    .filter(|id| c.contexts.get(*id).is_some_and(|x| x.state == CtxState::Live && (!x.warm_catalogue || x.warm == catalogue_mask())))
+                    .filter(|id| c.contexts.get(*id).is_some_and(|x| x.state == CtxState::Live && (!x.warm_catalogue || (x.warm & x.warm_required) == x.warm_required)))
                     .count() as u64;
                 out.resources = p.resources.len() as u64;
                 out.resource_bytes = p.quota.resource_bytes();
@@ -6722,7 +6826,7 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             out.state = match ctx.state {
                 CtxState::Quarantined => abi::context_state::QUARANTINED,
                 CtxState::Reset => abi::context_state::RESET,
-                _ if !ctx.warm_catalogue || ctx.warm == catalogue_mask() => abi::context_state::LIVE,
+                _ if !ctx.warm_catalogue || (ctx.warm & ctx.warm_required) == ctx.warm_required => abi::context_state::LIVE,
                 _ => abi::context_state::WARMING,
             };
             out.warmed = ctx.warmed() as u64;

@@ -232,3 +232,55 @@ impl crate::ipc::object::IpcFile for EventFile {
         Some(self.queue.clone())
     }
 }
+
+/// Observer notifications when a composite's reservation is released.
+static COMPLETIONS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+static COMPLETION_QUEUE: spin::Once<Arc<WaitQueueHead>> = spin::Once::new();
+
+pub fn completed() {
+    COMPLETIONS.fetch_add(1, core::sync::atomic::Ordering::Release);
+    if let Some(queue) = COMPLETION_QUEUE.get() { queue.wake_up(); }
+}
+
+pub struct PresentationFile {
+    queue: Arc<WaitQueueHead>,
+    read: core::sync::atomic::AtomicU64,
+}
+impl core::fmt::Debug for PresentationFile {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PresentationFile").finish()
+    }
+}
+impl PresentationFile {
+    pub fn new() -> Result<Self, i32> {
+        let queue = if let Some(queue) = COMPLETION_QUEUE.get() { queue.clone() } else {
+            let queue = Arc::try_new(WaitQueueHead::new()).map_err(|_| breengel_abi::errno::ENOMEM)?;
+            COMPLETION_QUEUE.call_once(|| queue).clone()
+        };
+        Ok(Self { queue, read: core::sync::atomic::AtomicU64::new(
+            COMPLETIONS.load(core::sync::atomic::Ordering::Acquire)) })
+    }
+}
+impl crate::ipc::object::IpcFile for PresentationFile {
+    fn as_any(&self) -> &dyn core::any::Any { self }
+    fn fill_stat(&self, st: &mut crate::syscall::fs::Stat) {
+        st.st_mode = 0o600;
+        st.st_nlink = 1;
+        st.st_blksize = 4096;
+    }
+    fn poll_events(&self) -> i16 {
+        if COMPLETIONS.load(core::sync::atomic::Ordering::Acquire)
+            != self.read.load(core::sync::atomic::Ordering::Acquire) {
+            crate::ipc::poll::events::POLLIN
+        } else { 0 }
+    }
+    fn poll_queue(&self) -> Option<Arc<WaitQueueHead>> { Some(self.queue.clone()) }
+    fn read(&self, buf: u64, count: usize) -> Result<u64, u64> {
+        if count < 8 { return Err(breengel_abi::errno::EINVAL as u64); }
+        let generation = COMPLETIONS.load(core::sync::atomic::Ordering::Acquire);
+        crate::syscall::userptr::copy_to_user(buf as *mut u64, &generation)
+            .map_err(|_| breengel_abi::errno::EFAULT as u64)?;
+        self.read.store(generation, core::sync::atomic::Ordering::Release);
+        Ok(8)
+    }
+}

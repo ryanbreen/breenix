@@ -4,7 +4,7 @@
     scripts/check-host-renderer.py ATTESTATION [--serial LOG]
 
 ATTESTATION is the host-renderer.json the GL QEMU wrote for the run (the
-BREENIX_HOST_RENDERER_JSON file of scripts/qemu-gl/host-renderer-attestation.patch).
+BREENIX_HOST_RENDERER_JSON file of the pinned external QEMU fork).
 The run is refused, with the reason, when:
 
   - the file is missing, is not format 1, or records no renderer context;

@@ -229,6 +229,7 @@ pub(super) fn send_keys(windows: &[Window], stack: &super::Stack, source: Event,
 pub(super) struct Stream {
     capabilities: BTreeMap<u32, Vec<core_input::Capability>>,
     read_buffer: Vec<u8>,
+    absolute_frames: BTreeMap<u32, Vec<(Event, Vec<u8>)>>,
     x: i32,
     y: i32,
     pub(super) modifiers: u8,
@@ -247,6 +248,7 @@ impl Stream {
         Self {
             capabilities: BTreeMap::new(),
             read_buffer: vec![0; core_input::abi::READER_EVENTS * (32 + 256)],
+            absolute_frames: BTreeMap::new(),
             x: 0,
             y: 0,
             modifiers: 0,
@@ -262,14 +264,31 @@ impl Stream {
             Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::ENODEV)))
     }
     pub(super) fn read(&mut self) -> Vec<(Event, Vec<u8>)> {
-        match READER.get().unwrap().read(&mut self.read_buffer) {
+        let records = match READER.get().unwrap().read(&mut self.read_buffer) {
             Ok(records) => records
                 .map(|r| r.map(|r| (r.event, r.payload.to_vec())))
                 .collect::<Result<Vec<_>, _>>()
                 .expect("valid input batches"),
             Err(libbreenix::error::Error::Os(libbreenix::errno::Errno::EAGAIN)) => Vec::new(),
             Err(e) => panic!("input stream: {}", e),
+        };
+        let mut ready = Vec::new();
+        for (event, payload) in records {
+            if event.kind == kind::ABS && event.code <= axis::Y {
+                self.absolute_frames.entry(event.device).or_default();
+            }
+            if let Some(frame) = self.absolute_frames.get_mut(&event.device) {
+                frame.push((event, payload));
+                if event.kind == kind::SYN && matches!(event.code, syn::REPORT | syn::DROPPED) {
+                    // Retain source records on a drop too: positions suppresses
+                    // the unfinished motion, while begin/finish accounts for it.
+                    ready.extend(self.absolute_frames.remove(&event.device).unwrap());
+                }
+            } else {
+                ready.push((event, payload));
+            }
         }
+        ready
     }
     fn absolute(&mut self, event: Event, extent: usize) -> Option<i32> {
         if !self.capabilities.contains_key(&event.device) {
@@ -296,7 +315,8 @@ impl Stream {
             .find(|c| c.kind == kind::ABS && c.code == event.code)?;
         Some(input_keys::normalize(event.value, *cap, extent))
     }
-    /// Normalize axes once, then route contiguous same-device axes at their final position.
+    /// read() retains absolute frames through SYN, including across read batches.
+    /// Route one completed position before that frame's buttons; retain source slots.
     pub(super) fn positions(
         &mut self, records: &[(Event, Vec<u8>)], width: usize, height: usize,
     ) -> Vec<Option<(i32, i32)>> {
@@ -311,7 +331,48 @@ impl Stream {
             };
             (event.device, axis.unwrap_or(Axis::Boundary))
         }).collect();
-        batch_positions(&samples, (self.x, self.y), (width, height))
+        let mut positions = vec![None; records.len()];
+        let mut point = (self.x, self.y);
+        let mut at = 0;
+        while at < samples.len() {
+            match samples[at].1 {
+                Axis::AbsoluteX(_) | Axis::AbsoluteY(_) => {
+                    let device = samples[at].0;
+                    let end = (at..records.len()).find(|&i| {
+                        let event = records[i].0;
+                        event.device == device && event.kind == kind::SYN
+                            && matches!(event.code, syn::REPORT | syn::DROPPED)
+                    }).expect("read retains complete absolute frames");
+                    if records[end].0.code == syn::REPORT {
+                        for &(_, axis) in &samples[at..end] {
+                            match axis {
+                                Axis::AbsoluteX(x) => point.0 = x,
+                                Axis::AbsoluteY(y) => point.1 = y,
+                                _ => {}
+                            }
+                        }
+                        positions[at] = Some(point);
+                    }
+                    at = end + 1;
+                    continue;
+                }
+                Axis::RelativeX(_) | Axis::RelativeY(_) => {
+                    let start = at;
+                    let device = samples[at].0;
+                    while at < samples.len() && samples[at].0 == device
+                        && matches!(samples[at].1, Axis::RelativeX(_) | Axis::RelativeY(_)) {
+                        at += 1;
+                    }
+                    let relative = batch_positions(&samples[start..at], point, (width, height));
+                    point = relative[0].expect("relative position");
+                    positions[start..at].copy_from_slice(&relative);
+                    continue;
+                }
+                Axis::Boundary => {}
+            }
+            at += 1;
+        }
+        positions
     }
     /// Feed the normalized snapshot to content routing and the existing chrome policy.
     pub(super) fn pointer(

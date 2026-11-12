@@ -45,7 +45,14 @@ pub fn caps() -> (i64, abi::Caps) {
 
 /// `CONTEXT_CREATE`: the handle, or the negated errno.
 pub fn context_create() -> Result<u64, i64> {
-    let mut a = abi::ContextCreate::ZERO;
+    context_create_for(0)
+}
+
+/// Create a renderer preparing the indicated pipeline bits; 0 requests the full catalogue.
+pub fn context_create_for(pipelines: u32) -> Result<u64, i64> {
+    if pipelines & !abi::context_flags::ALL != 0 { return Err(-abi::errno::EINVAL); }
+    let flags = if pipelines == 0 { 0 } else { abi::context_flags::PREPARE | pipelines };
+    let mut a = abi::ContextCreate { flags, ..abi::ContextCreate::ZERO };
     match call_with(op::CONTEXT_CREATE, &mut a) {
         0 => Ok(a.handle),
         e => Err(e),

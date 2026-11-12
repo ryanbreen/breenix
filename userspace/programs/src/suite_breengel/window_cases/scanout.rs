@@ -28,7 +28,7 @@ pub(crate) const SCANOUT: &[Case] = &[
 
 use super::composition::{screen_size, compose, compositor, formula, place, screen, screen_is, show, Placed};
 use super::kit::*;
-use abi::{op, Plain};
+use abi::op;
 use super::handoff::{word, quad, entries};
 
 /// A one-window scene, composed: the compositor, the window and its composite serial.
@@ -45,12 +45,20 @@ fn readback_raw() -> Result<(i64, Vec<u8>, [u8; 1024]),String> {
     let (width,height)=screen_size().map_err(|e|format!("{e:?}"))?;
     let mut px = vec![0u8; width * height * 4];
     let mut rec = [0u8; 1024];
-    let mut rb = super::handoff::Readback::ZERO;
+    let mut rb = abi::Readback::default();
     rb.dst = px.as_mut_ptr() as u64;
     rb.dst_len = px.len() as u64;
     rb.record = rec.as_mut_ptr() as u64;
     rb.record_len = 1024;
-    let r = call(op::SCANOUT_READBACK, &mut rb);
+    let deadline = libbreenix::time::now_monotonic().map_err(|e| e.to_string())?
+        .as_nanos() as u64 + 1_000_000_000;
+    let mut r = call(op::SCANOUT_READBACK, &mut rb);
+    if r == -(EAGAIN as i64) {
+        r = match libuitest::capture::readback_until(&mut rb, deadline) {
+            Ok(()) => 0,
+            Err(libbreenix::error::Error::Os(errno)) => -(errno as i64),
+        };
+    }
     Ok((r, px, rec))
 }
 

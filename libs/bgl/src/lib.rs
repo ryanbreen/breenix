@@ -37,8 +37,12 @@ impl Fence {
 }
 impl Context {
     pub fn new() -> Result<Self, i64> {
+        Self::for_pipelines(0)
+    }
+    /// Prepare only these pipeline bits (0 retains general-purpose preparation).
+    pub fn for_pipelines(pipelines: u32) -> Result<Self, i64> {
         Ok(Self {
-            handle: gpu::context_create()?,
+            handle: gpu::context_create_for(pipelines)?,
             words: Vec::new(),
             handed: core::cell::Cell::new(false),
             clips: Vec::new(),
