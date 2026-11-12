@@ -97,6 +97,47 @@ fn failed_compositor_opens_login_scope() {
             subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings',
                             '--test', str(path / 'fallback.rs'), '-o', str(path / 'fallback')], check=True)
             subprocess.run([str(path / 'fallback'), '--test-threads=1'], check=True)
+            child_harness = harness.split('#[test]')[0].replace(
+                'fn console_text_mode() { TEXT.fetch_add(1, Ordering::Relaxed); }',
+                'fn console_text_mode() { println!("TEXT-MODE"); TEXT.fetch_add(1, Ordering::Relaxed); }'
+            ).replace(
+                'fn detach_console() { DETACH.fetch_add(1, Ordering::Relaxed); }',
+                'fn detach_console() { println!("DETACH"); DETACH.fetch_add(1, Ordering::Relaxed); }'
+            ).replace(
+                'impl Notices { fn alert(&mut self, _: &str) {} }',
+                'impl Notices { fn alert(&mut self, message: &str) { println!("{message}"); } }'
+            ).replace(
+                'pub fn load(_: &std::path::Path) -> (Vec<crate::Service>, Vec<String>) {',
+                'pub fn load(_: &std::path::Path) -> (Vec<crate::Service>, Vec<String>) { println!("LOAD-LOGINS");'
+            ) + r'''
+fn main() {
+    let mut s = supervisor(State::Stopping);
+    s.publish = false;
+    s.fallback_to_console();
+    s.recover_desktop(0);
+    assert!(s.scope == Scope::Desktop);
+    assert!(s.entries[0].state == State::Stopping);
+    assert_eq!(s.entries.len(), 2);
+    assert_eq!(TEXT.load(Ordering::Relaxed), 0);
+    assert_eq!(DETACH.load(Ordering::Relaxed), 0);
+    println!("STOPPING-WAITS");
+    s.entries[0].state = State::Failed;
+    s.recover_desktop(1);
+    println!("RETURNED scope={} logins={}", s.scope == Scope::Logins,
+             s.entries.iter().filter(|e| login_terminal(&e.def).is_some()).count());
+}
+'''
+            (path / 'child.rs').write_text(child_harness)
+            subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings',
+                            str(path / 'child.rs'), '-o', str(path / 'child')], check=True)
+            child = subprocess.run([str(path / 'child')], capture_output=True, text=True)
+            self.assertEqual(child.returncode, 1, child.stdout)
+            self.assertIn('STOPPING-WAITS', child.stdout)
+            self.assertIn('[init] desktop unavailable', child.stdout)
+            self.assertNotIn('TEXT-MODE', child.stdout)
+            self.assertNotIn('DETACH', child.stdout)
+            self.assertNotIn('LOAD-LOGINS', child.stdout)
+            self.assertNotIn('RETURNED', child.stdout)
 
 
 if __name__ == '__main__':
