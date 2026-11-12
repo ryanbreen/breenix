@@ -59,6 +59,7 @@ fn launch_decision() {
         old = os.environ.get('INIT_OLD_COMMIT')
         source = subprocess.check_output(['git', 'show', f'{old}:{rel}'], text=True) if old else (ROOT / rel).read_text()
         functions = (item(source, 'fn main()').replace('fn main()', 'fn init_main()', 1)
+                     + (item(source, 'fn publish_log_boot_id(') if 'fn publish_log_boot_id(' in source else '')
                      + item(source, 'fn desktop_suite_ready(') + item(source, 'fn run_desktop_suite('))
         harness = r'''
 use ::std::sync::Mutex;
@@ -66,6 +67,7 @@ use ::std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static ARGS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 static IDS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+static BOOT_ID: AtomicBool = AtomicBool::new(false);
 static STALLED: AtomicBool = AtomicBool::new(false);
 static STOP_FAIL: AtomicBool = AtomicBool::new(false);
 static TICKS: AtomicU64 = AtomicU64::new(0);
@@ -102,13 +104,14 @@ pub mod std {
   pub fn read_to_string(path: &str) -> Result<String, String> {
    match path {
     "/etc/breenix/desktop-suite" => Ok("gui-apps\n".into()),
+    "/run/breenix/boot-id" => if crate::BOOT_ID.load(crate::Ordering::Relaxed) { Ok("original\n".into()) } else { Err("missing".into()) },
     "/run/breenix/ntp-state" => Ok("1 0 0 site\n".into()),
     _ => panic!("unexpected read {path}"),
    }
   }
   pub fn create_dir_all(_: &str) -> Result<(), String> { Ok(()) }
   pub fn write(path: &str, _: String) -> Result<(), String> {
-   assert_eq!(path, "/run/breenix/boot-id"); crate::event("boot-id"); Ok(())
+   assert_eq!(path, "/run/breenix/boot-id"); crate::event("boot-id"); crate::BOOT_ID.store(true, crate::Ordering::Relaxed); Ok(())
   }
  }
  pub mod time {
@@ -137,6 +140,7 @@ pub mod std {
   impl Child { pub fn id(&self) -> u32 { 9 } }
  }
 }
+pub mod breenix_suite { pub use crate::libbreenix::suite; }
 pub mod libbreenix {
  pub mod etc_reconcile {
   pub fn prepare(_: &::std::path::Path) -> Result<Vec<String>, String> { crate::event("prepare"); Ok(vec![]) }
@@ -164,8 +168,8 @@ pub mod libbreenix {
    crate::event(if index == 0 { "owner-begin" } else { "owner-reset" });
   }
   pub fn finish() {
-   let ids = crate::IDS.lock().unwrap();
-   if ids.last().unwrap() == "gui-apps" { crate::event("done"); }
+   let last = crate::IDS.lock().unwrap().last().unwrap() == "gui-apps";
+   if last { crate::event("done"); }
    else { crate::event("hand-off-pid1"); panic!("exec next suite"); }
   }
  } }
@@ -204,9 +208,13 @@ pub mod init_services {
 fn run(mode: &str, ids: &[&str], entry: fn()) -> Vec<String> {
  TICKS.store(0, Ordering::Relaxed);
  EVENTS.lock().unwrap().clear();
+ // The last-entry fixture retains a boot identity; the middle entry has none.
+ BOOT_ID.store(mode == "suite" || ids.last() == Some(&"gui-apps"), Ordering::Relaxed);
  *IDS.lock().unwrap() = ids.iter().map(|s| s.to_string()).collect();
- *ARGS.lock().unwrap() = ["/sbin/init", mode, "/sbin/suite-gui-apps", "--hostkeys", "fixture"]
+ let mut args: Vec<String> = ["/sbin/init", mode, "/sbin/suite-gui-apps", "--hostkeys", "fixture"]
   .iter().map(|s| s.to_string()).collect();
+ if ids.is_empty() { args.splice(3..3, ["--case".into(), "guskit".into()]); }
+ *ARGS.lock().unwrap() = args;
  let _ = ::std::panic::catch_unwind(entry);
  EVENTS.lock().unwrap().clone()
 }
@@ -216,7 +224,7 @@ fn check_orderings(entry: fn()) {
   ("suite", vec!["gui-apps", "time", "files-io"], vec!["prepare", "boot-id", "checks", "state", "script",
    "owner-begin", "load", "tick", "finish", "tick", "member", "spawn", "supervise", "supervise",
    "stop", "SUITE_SEQUENCE READY gui-apps", "hand-off-pid1"]),
-  ("sequence", vec!["time", "gui-apps", "files-io"], vec!["owner-reset", "load", "tick", "tick",
+  ("sequence", vec!["time", "gui-apps", "files-io"], vec!["owner-reset", "boot-id", "load", "tick", "tick",
    "member", "spawn", "supervise", "supervise", "stop", "SUITE_SEQUENCE READY gui-apps", "hand-off-pid1"]),
   ("sequence", vec!["time", "gui-apps"], vec!["owner-reset", "load", "tick", "tick", "member", "spawn",
    "supervise", "supervise", "stop", "SUITE_SEQUENCE READY gui-apps", "done", "poweroff"]),
@@ -224,7 +232,7 @@ fn check_orderings(entry: fn()) {
    "tick", "spawn", "supervise", "supervise", "SUITE_SEQUENCE READY gui-apps", "poweroff"]),
  ] {
   let actual = run(mode, &ids, entry);
-  let expected = if entry as usize == desktop_entry as usize {
+  let expected = if entry as usize == desktop_entry as usize && mode == "suite" {
    expected.into_iter().filter(|name| !matches!(*name, "prepare" | "boot-id")).collect()
   } else { expected };
   if actual != expected { mismatches.push((mode, ids, actual, expected)); }
@@ -243,7 +251,7 @@ fn refused_teardown_cannot_emit_ready_or_hand_off() {
  STOP_FAIL.store(true, Ordering::Relaxed);
  let actual = run("sequence", &["time", "gui-apps", "files-io"], init_main);
  STOP_FAIL.store(false, Ordering::Relaxed);
- assert_eq!(actual, ["owner-reset", "load", "tick", "tick", "member", "spawn", "supervise", "supervise",
+ assert_eq!(actual, ["owner-reset", "boot-id", "load", "tick", "tick", "member", "spawn", "supervise", "supervise",
   "stop", "failure", "blocked"]);
 }
 #[test]

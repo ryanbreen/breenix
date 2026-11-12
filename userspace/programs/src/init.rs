@@ -136,12 +136,14 @@ fn main() {
         run_bssh_pubkey_oracle();
         return;
     }
+    let mode = std::env::args().nth(1);
+    let sequence_entry = mode.as_deref() == Some("sequence");
     let pid = getpid().map(|p| p.raw()).unwrap_or(0);
     print!("[init] Breenix init starting (PID {})\n", pid);
     // Emptying /tmp and /run and reconciling /etc is boot work, done by the system's init
     // alone. An init started as a child (the console suite runs `init console`) shares the
     // running system's /tmp, /run and /etc, so it leaves them as they are.
-    if pid == 1 {
+    if pid == 1 && !sequence_entry {
         match libbreenix::etc_reconcile::prepare(std::path::Path::new("/")) {
             Ok(conflicts) => for name in conflicts {
                 println!("[etc-reconcile] kept local /etc/{}; wrote .factory sibling", name);
@@ -150,29 +152,29 @@ fn main() {
         }
     }
 
-    if pid == 1 {
+    if pid == 1 && !sequence_entry {
         // Boot scripts may start blogd before the service supervisor exists.
         // Publish once, after /run is cleared, for each init mode and architecture.
-        std::fs::create_dir_all("/run/breenix").expect("log state directory");
-        let stamp = libbreenix::time::now_realtime().expect("log boot clock");
-        let uptime = libbreenix::time::now_monotonic().expect("log boot uptime");
-        let boot_id = format!("{:x}-{:x}-{:x}", stamp.tv_sec, stamp.tv_nsec, uptime.tv_nsec);
-        std::fs::write("/run/breenix/boot-id", format!("{}\n", boot_id)).expect("publish log boot ID");
-        print!("[init] log boot-id={}\n", boot_id);
+        publish_log_boot_id(true);
     }
     // Suite launches intentionally have test controls; the ordinary desktop still checks absence.
-    if std::env::args().nth(1).as_deref() != Some("suite") {
+    if !matches!(mode.as_deref(), Some("suite" | "sequence")) {
         check_test_controls(pid);
     }
 
     // Explicit shell and console modes bypass boot checks. PID-1 desktop
     // runs the same checks as the no-argument and `default` paths.
-    let mode = std::env::args().nth(1);
     match mode.as_deref() {
-        Some("suite") => {
+        Some("suite" | "sequence") => {
             use std::os::unix::process::CommandExt;
             let mut args = std::env::args().skip(2);
             let path = args.next().expect("suite path required");
+            if sequence_entry {
+                assert!(pid == 1 && path == "/sbin/suite-gui-apps"
+                    && std::fs::read_to_string("/etc/breenix/desktop-suite").is_ok_and(|s| s == "gui-apps\n")
+                    && breenix_suite::suite::sequence::read("gui-apps").is_some_and(|(_, index)| index > 0),
+                    "[init] invalid desktop sequence entry");
+            }
             if pid == 1 && path == "/sbin/suite-gui-apps"
                 && std::fs::read_to_string("/etc/breenix/desktop-suite").is_ok_and(|s| s == "gui-apps\n")
             {
@@ -202,6 +204,18 @@ fn main() {
     supervisor.tick();
     finish_boot_checks();
     supervisor.run()
+}
+
+fn publish_log_boot_id(fresh: bool) {
+    // A sequence may have started in a suite binary, without init's log identity.
+    // Preserve an existing identity; create missing service state after RESET.
+    if !fresh && std::fs::read_to_string("/run/breenix/boot-id").is_ok() { return; }
+    std::fs::create_dir_all("/run/breenix").expect("log state directory");
+    let stamp = libbreenix::time::now_realtime().expect("log boot clock");
+    let uptime = libbreenix::time::now_monotonic().expect("log boot uptime");
+    let boot_id = format!("{:x}-{:x}-{:x}", stamp.tv_sec, stamp.tv_nsec, uptime.tv_nsec);
+    std::fs::write("/run/breenix/boot-id", format!("{}\n", boot_id)).expect("publish log boot ID");
+    print!("[init] log boot-id={}\n", boot_id);
 }
 
 /// Boot checks shared by the default and PID-1 desktop paths.
@@ -371,14 +385,24 @@ fn desktop_suite_ready(pid: u64, staged: bool, shares: Option<&str>, waited_ms: 
 }
 
 fn run_desktop_suite(pid: u64, path: &str, args: Vec<String>) -> ! {
+    use breenix_suite::suite::sequence;
     print!("[init] mode desktop suite gui-apps\n");
-    run_boot_checks();
-    reconcile_machine_state();
-    run_boot_script();
+    let boot = std::env::args().nth(1).as_deref() != Some("sequence");
+    // Match the runner: a selected case is not a sequence participant.
+    let place = if args.iter().any(|arg| arg == "--case") { None } else { sequence::read("gui-apps") };
+    if boot {
+        run_boot_checks();
+        reconcile_machine_state();
+        run_boot_script();
+    }
+    if let Some((ids, index)) = &place {
+        sequence::prepare_owner(ids, *index);
+    }
+    if !boot { publish_log_boot_id(false); }
     // The per-case session supplies bwm. No production bwm or bterm competes for the display.
     let mut supervisor = init_services::Supervisor::load(init_services::Scope::Daemons, true);
     supervisor.tick();
-    finish_boot_checks();
+    if boot { finish_boot_checks(); }
     let start = std::time::Instant::now();
     let mut reported_second = None;
     loop {
@@ -411,7 +435,12 @@ fn run_desktop_suite(pid: u64, path: &str, args: Vec<String>) -> ! {
         let _ = libbreenix::time::sleep_ms(50);
     }
     // Inherit serial directly: service log pipes must not swallow or prefix suite records.
-    let child = std::process::Command::new(path).args(args).spawn();
+    let mut command = std::process::Command::new(path);
+    command.args(args);
+    if place.is_some() {
+        command.env("BREENIX_SUITE_SEQUENCE_MEMBER", "1");
+    }
+    let child = command.spawn();
     match child {
         Ok(child) => {
             let child_pid = child.id() as i32;
@@ -431,8 +460,15 @@ fn run_desktop_suite(pid: u64, path: &str, args: Vec<String>) -> ! {
         }
         Err(error) => print!("SUITE gui-apps ERROR runner launch failed: {}\n", error),
     }
-    // Scoped GUI runners exit after DONE. Init supplies this launch shape's final marker.
+    if place.is_some() {
+        if let Err(error) = supervisor.stop_for_sequence() {
+            print!("SUITE_SEQUENCE RESET gui-apps FAIL teardown: {}\n", error);
+            reap_forever();
+        }
+    }
+    // The member exits after DONE; PID 1 emits READY after services and shares stop.
     print!("SUITE_SEQUENCE READY gui-apps\n");
+    if place.is_some() { sequence::finish(); }
     supervisor.poweroff();
     supervisor.run()
 }
