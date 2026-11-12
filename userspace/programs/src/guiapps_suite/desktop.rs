@@ -84,6 +84,11 @@ pub fn font_everywhere() -> CaseResult {
     t.key_exit(1, 0)?;
     t.attach("Font Picker")?;
     bfontpicker::select(&mut t)?;
+    t.step(250)?;
+    t.attach("Gus Kit")?;
+    t.wait_node("status", |v| v["font"]["path"] == FIRST && v["font"]["size"].as_f64() == Some(17.0))?;
+    if bfontpicker::pixels(guskit)? != guskit_before { return Err("mono-only change altered Gus Kit display pixels".into()); }
+    t.attach("Font Picker")?;
     t.key(108, &[])?;
     t.wait_node("fonts", |v| v["selected"] == 2 && v["rows"][2]["path"] == FAKE)?;
     t.key(28, &[])?;
