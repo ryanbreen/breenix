@@ -24,6 +24,7 @@ class HostProgramCache(unittest.TestCase):
 #include <epoxy/egl.h>
 static EGLSetBlobFuncANDROID cache_set;
 static EGLGetBlobFuncANDROID cache_get;
+static PFNEGLSETBLOBCACHEFUNCSANDROIDPROC real_install;
 static uint64_t stats[4];
 static void record_set(const void *key, EGLsizeiANDROID n,
                          const void *value, EGLsizeiANDROID size) {
@@ -39,10 +40,18 @@ static EGLsizeiANDROID record_get(const void *key, EGLsizeiANDROID n,
 static void record_install(EGLDisplay display, EGLSetBlobFuncANDROID set,
                             EGLGetBlobFuncANDROID get) {
     cache_set = set; cache_get = get;
-    epoxy_eglSetBlobCacheFuncsANDROID(display, record_set, record_get);
+    real_install(display, record_set, record_get);
 }
-#undef eglSetBlobCacheFuncsANDROID
-#define eglSetBlobCacheFuncsANDROID record_install
+static __eglMustCastToProperFunctionPointerType record_proc(const char *name) {
+    __eglMustCastToProperFunctionPointerType proc = epoxy_eglGetProcAddress(name);
+    if (strcmp(name, "eglSetBlobCacheFuncsANDROID") == 0 && proc) {
+        real_install = (PFNEGLSETBLOBCACHEFUNCSANDROIDPROC)proc;
+        return (__eglMustCastToProperFunctionPointerType)record_install;
+    }
+    return proc;
+}
+#undef eglGetProcAddress
+#define eglGetProcAddress record_proc
 #include "breenix-blob-cache.h"
 void a3_cache_install(EGLDisplay display, const char *pin) {
     breenix_blob_cache_install(display, pin);

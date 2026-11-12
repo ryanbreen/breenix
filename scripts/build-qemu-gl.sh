@@ -53,7 +53,7 @@ VIRGL_COMMIT=451505ad0aa449290f2c0672da6877d57ee770e5
 DTC_REPO=https://gitlab.com/qemu-project/dtc.git
 DTC_COMMIT=b6910bec11614980a21e46fbccc35934b671bd81
 # Bump the suffix whenever the recipe or the Breenix patch changes, so a stale build is not reused.
-PIN=10.0.12-utm-4d73aaf0-b3
+PIN=10.0.12-utm-4d73aaf0-b4
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE="${BREENIX_QEMU_GL_DIR:-$HOME/Library/Caches/breenix/qemu-gl}"

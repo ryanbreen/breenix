@@ -60,8 +60,11 @@ int main(int argc, char **argv) {
     assert(setrlimit(RLIMIT_CORE, &core) == 0);
     assert(argc == 2);
     assert(eglGetCurrentDisplay() == EGL_NO_DISPLAY);
-    real_proc = epoxy_eglGetProcAddress;
     if (strcmp(argv[1], "missing") == 0) {
+        /* Resolve the lazy core thunk before wrapping its pointer: an
+         * unresolved thunk forwards through the pointer we replace. */
+        assert(eglGetProcAddress("eglSetBlobCacheFuncsANDROID") != NULL);
+        real_proc = epoxy_eglGetProcAddress;
         epoxy_eglGetProcAddress = missing_blob;
     }
     assert(qemu_egl_init_dpy_cocoa(MODE_ES) == 0);

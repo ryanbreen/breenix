@@ -1,6 +1,6 @@
 --- a/ui/breenix-blob-cache.h
 +++ b/ui/breenix-blob-cache.h
-@@ -0,0 +1,247 @@
+@@ -0,0 +1,257 @@
 +/* SPDX-License-Identifier: MIT */
 +#ifndef BREENIX_BLOB_CACHE_H
 +#define BREENIX_BLOB_CACHE_H
@@ -219,7 +219,17 @@
 +    char base[4096];
 +    struct stat st;
 +    char *identity, *hash, *lock_path;
++    PFNEGLSETBLOBCACHEFUNCSANDROIDPROC set_blob_cache_funcs;
 +    if (bbc_directory || !epoxy_has_egl_extension(display, "EGL_ANDROID_blob_cache")) {
++        return;
++    }
++    /* Epoxy's extension dispatch checks the current display, but no context
++     * is current during display initialization. Resolve against EGL after
++     * checking this initialized display's extension support instead. */
++    set_blob_cache_funcs = (PFNEGLSETBLOBCACHEFUNCSANDROIDPROC)
++        eglGetProcAddress("eglSetBlobCacheFuncsANDROID");
++    if (!set_blob_cache_funcs) {
++        g_message("egl: eglSetBlobCacheFuncsANDROID unavailable; program cache disabled");
 +        return;
 +    }
 +    if (confstr(_CS_DARWIN_USER_CACHE_DIR, base, sizeof(base)) == 0) {
@@ -245,7 +255,7 @@
 +        g_clear_pointer(&bbc_directory, g_free);
 +        return;
 +    }
-+    eglSetBlobCacheFuncsANDROID(display, bbc_set, bbc_get);
++    set_blob_cache_funcs(display, bbc_set, bbc_get);
 +}
 +#endif
 --- a/ui/egl-helpers.c
