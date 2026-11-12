@@ -12,9 +12,10 @@
 # server. UTM builds QEMU as a library for its app; this builds the same patched source
 # as a command-line executable with Cocoa enabled, so one binary serves headless runs
 # (-spice gl=es with -display none) and the interactive window (-display cocoa,gl=es).
-# Breenix patches add renderer attestation, a single-owner EGL renderer worker
+# The external QEMU fork adds renderer attestation, a single-owner EGL renderer worker
 # outside BQL, and a bounded persistent ANGLE program cache.
-# claim-lint:ok: scripts/qemu-gl/renderer-worker.patch and scripts/qemu-gl/angle-blob-cache.patch define the host-only additions tracked by #2890.
+# claim-lint:ok: QEMU_COMMIT pins the host-only additions tracked by #2890; their source and licensing live in QEMU_REPO.
+# Fetching the private fork requires authenticated GitHub git access.
 #
 # Libraries UTM also builds from source that carry no graphics code (glib, pixman,
 # libslirp, OpenSSL, libjpeg, Opus, libpng) come from Homebrew at build time and are
@@ -36,9 +37,8 @@
 set -euo pipefail
 
 UTM_COMMIT=4d73aaf0d284f1c22e3e1c1072e729988e134268
-QEMU_URL=https://github.com/utmapp/qemu/releases/download/v10.0.12-utm/qemu-10.0.12-utm.tar.xz
-QEMU_SHA256=7c9605290b34152debb842e965a55d2e4fbba4793e536ab677b4027e5dc0ba1a
-QEMU_PATCH_SHA256=84eee5ca4a512571478029c75bf31f89a3768f476b0f79457e2445c002ed4c13
+QEMU_REPO=https://github.com/ryanbreen/breenix-qemu.git
+QEMU_COMMIT=fc43bd4cc6483ee30a6150d5524dbde62e25647b
 SPICE_PROTOCOL_URL=https://www.spice-space.org/download/releases/spice-protocol-0.14.4.tar.xz
 SPICE_PROTOCOL_SHA256=04ffba610d9fd441cfc47dfaa135d70096e60b1046d2119d8db2f8ea0d17d912
 SPICE_SERVER_URL=https://www.spice-space.org/download/releases/spice-server/spice-0.14.3.tar.bz2
@@ -52,10 +52,9 @@ VIRGL_REPO=https://github.com/utmapp/virglrenderer.git
 VIRGL_COMMIT=451505ad0aa449290f2c0672da6877d57ee770e5
 DTC_REPO=https://gitlab.com/qemu-project/dtc.git
 DTC_COMMIT=b6910bec11614980a21e46fbccc35934b671bd81
-# Bump the suffix whenever the recipe or the Breenix patch changes, so a stale build is not reused.
-PIN=10.0.12-utm-4d73aaf0-b4
+# Bump the suffix whenever the recipe or pinned source changes, so a stale build is not reused.
+PIN=10.0.12-utm-4d73aaf0-b5
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE="${BREENIX_QEMU_GL_DIR:-$HOME/Library/Caches/breenix/qemu-gl}"
 DEST="$CACHE/$PIN/QEMU-GL.app"
 BIN="$DEST/Contents/MacOS/qemu-system-aarch64"
@@ -126,6 +125,8 @@ git_pin() {
     local repo="$1" commit="$2" dir="$3"
     shift 3
     git init -q "$dir"
+    # Preserve release-archive line endings in the fork, regardless of user defaults.
+    git -C "$dir" config core.autocrlf false
     git -C "$dir" remote add origin "$repo"
     [ $# -eq 0 ] || git -C "$dir" sparse-checkout set --cone "$@"
     git -C "$dir" fetch -q --depth 1 --filter=blob:none origin "$commit"
@@ -156,10 +157,8 @@ rm -rf /tmp/breenix-qemu-gl-build
 mkdir -p "$SRC" "$PREFIX/lib" "$PREFIX/include" "$DOWNLOADS"
 
 step "fetching pinned sources"
-fetch "$QEMU_URL" "$QEMU_SHA256"
 fetch "$SPICE_PROTOCOL_URL" "$SPICE_PROTOCOL_SHA256"
 fetch "$SPICE_SERVER_URL" "$SPICE_SERVER_SHA256"
-utm_patch qemu-10.0.12-utm.patch "$QEMU_PATCH_SHA256"
 utm_patch spice-0.14.3.patch "$SPICE_PATCH_SHA256"
 git_pin "$WEBKIT_REPO" "$WEBKIT_COMMIT" "$SRC/WebKit" Source/ThirdParty/ANGLE Configurations Tools/ccache
 git_pin "$EPOXY_REPO" "$EPOXY_COMMIT" "$SRC/libepoxy"
@@ -199,11 +198,8 @@ patch -s -d "$SPICE_DIR" -p1 < "$DOWNLOADS/spice-0.14.3.patch"
 meson_build "$SPICE_DIR" -Dlz4=false -Dsasl=false -Dmanual=false -Dgstreamer=no -Dsmartcard=disabled
 
 step "building qemu-system-aarch64"
-QEMU_DIR="$(unpack "$DOWNLOADS/qemu-10.0.12-utm.tar.xz")"
-patch -s -d "$QEMU_DIR" -p1 < "$DOWNLOADS/qemu-10.0.12-utm.patch"
-for patch in host-renderer-attestation renderer-worker angle-blob-cache; do
-    patch -s -d "$QEMU_DIR" -p1 < "$ROOT/scripts/qemu-gl/$patch.patch"
-done
+QEMU_DIR="$SRC/qemu-10.0.12-utm"
+git_pin "$QEMU_REPO" "$QEMU_COMMIT" "$QEMU_DIR"
 printf '#define BREENIX_QEMU_GL_PIN "%s"\n' "$PIN" > "$QEMU_DIR/include/breenix-qemu-gl-pin.h"
 # libfdt from the revision QEMU's own wrap pins; the release tarball does not carry it.
 git_pin "$DTC_REPO" "$DTC_COMMIT" "$QEMU_DIR/subprojects/dtc"
@@ -327,11 +323,7 @@ done
 cat > "$LICENSES/PINS" <<PINS
 pin $PIN
 utm $UTM_COMMIT
-qemu $QEMU_URL sha256:$QEMU_SHA256
-qemu-patch qemu-10.0.12-utm.patch sha256:$QEMU_PATCH_SHA256
-breenix-patch host-renderer-attestation.patch sha256:$(shasum -a 256 "$ROOT/scripts/qemu-gl/host-renderer-attestation.patch" | cut -d' ' -f1)
-breenix-patch renderer-worker.patch sha256:$(shasum -a 256 "$ROOT/scripts/qemu-gl/renderer-worker.patch" | cut -d' ' -f1)
-breenix-patch angle-blob-cache.patch sha256:$(shasum -a 256 "$ROOT/scripts/qemu-gl/angle-blob-cache.patch" | cut -d' ' -f1)
+qemu $QEMU_REPO $QEMU_COMMIT
 angle $WEBKIT_REPO $WEBKIT_COMMIT
 libepoxy $EPOXY_REPO $EPOXY_COMMIT
 virglrenderer $VIRGL_REPO $VIRGL_COMMIT

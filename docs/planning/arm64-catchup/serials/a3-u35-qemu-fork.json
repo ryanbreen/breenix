@@ -1,0 +1,84 @@
+{
+  "base_breenix_commit": "cd314bb7c7c7a0790bf8329ab69e7ed9aedd9f86",
+  "repository": "https://github.com/ryanbreen/breenix-qemu",
+  "qemu_commit": "fc43bd4cc6483ee30a6150d5524dbde62e25647b",
+  "b4_binary_sha256": "e52ce6461a0bad90d7105991d695fd9288485256a568ee0e15ca9f43f3d0c09b",
+  "b4_pins": "pin 10.0.12-utm-4d73aaf0-b4\nutm 4d73aaf0d284f1c22e3e1c1072e729988e134268\nqemu https://github.com/utmapp/qemu/releases/download/v10.0.12-utm/qemu-10.0.12-utm.tar.xz sha256:7c9605290b34152debb842e965a55d2e4fbba4793e536ab677b4027e5dc0ba1a\nqemu-patch qemu-10.0.12-utm.patch sha256:84eee5ca4a512571478029c75bf31f89a3768f476b0f79457e2445c002ed4c13\nbreenix-patch host-renderer-attestation.patch sha256:d9db2fecc9469b879f759294018fe5b6187a3b15960c0aaf44bb889762c19c50\nbreenix-patch renderer-worker.patch sha256:da162759ab1bc9a4ed8c5b09c31ad1a10b44cad9b2f136d4ff5dab7cd288d0fe\nbreenix-patch angle-blob-cache.patch sha256:2ff015f01c20e7eb4ae541ec1cc04280527350429372b1a0cb9918a1ca0e440e\nangle https://github.com/utmapp/WebKit.git ed78ab6e1a37f4f11583a0bd038f22ec91f3ff10\nlibepoxy https://github.com/utmapp/libepoxy.git bf98587477fe68d07b93319ece7b40a7d0e2eabe\nvirglrenderer https://github.com/utmapp/virglrenderer.git 451505ad0aa449290f2c0672da6877d57ee770e5\ndtc https://gitlab.com/qemu-project/dtc.git b6910bec11614980a21e46fbccc35934b671bd81\nspice-protocol https://www.spice-space.org/download/releases/spice-protocol-0.14.4.tar.xz sha256:04ffba610d9fd441cfc47dfaa135d70096e60b1046d2119d8db2f8ea0d17d912\nspice-server https://www.spice-space.org/download/releases/spice-server/spice-0.14.3.tar.bz2 sha256:551d4be4a07667cf0543f3c895beb6da8a93ef5a9829f2ae47817be5e616a114\nspice-patch spice-0.14.3.patch sha256:251638a358cd65529a349f3a33d14bb2cb64d8631ea73521f0be2720b3e39a09\nhomebrew pixman 0.46.4 libpixman-1.0.dylib\nhomebrew libpng 1.6.59 libpng16.16.dylib\nhomebrew libslirp 4.9.3 libslirp.0.dylib\nhomebrew glib 2.90.1 libglib-2.0.0.dylib\nhomebrew glib 2.90.1 libgio-2.0.0.dylib\nhomebrew glib 2.90.1 libgobject-2.0.0.dylib\nhomebrew openssl@3 3.6.3 libssl.3.dylib\nhomebrew openssl@3 3.6.3 libcrypto.3.dylib\nhomebrew opus 1.6.1 libopus.0.dylib\nhomebrew jpeg-turbo 3.2.0 libjpeg.8.dylib\nhomebrew glib 2.90.1 libgmodule-2.0.0.dylib\nhomebrew gettext 1.0 libintl.8.dylib\nhomebrew pcre2 10.49 libpcre2-8.0.dylib\n",
+  "comparison_excludes": [
+    ".git",
+    "build-breenix",
+    "subprojects/dtc",
+    "**/__pycache__",
+    "include/breenix-qemu-gl-pin.h"
+  ],
+  "b4_tree": "a6c184b577321747e70e7d7d9bfadc8d288fd6af",
+  "fork_tree": "a6c184b577321747e70e7d7d9bfadc8d288fd6af",
+  "b5_tree": "a6c184b577321747e70e7d7d9bfadc8d288fd6af",
+  "tracked_entries": 79663,
+  "b5_binary_sha256": "5f5fdaf5e785a0ca59787e425ccbe038387ec0fad2431cf9be8065969c5f620b",
+  "b5_pins": "pin 10.0.12-utm-4d73aaf0-b5\nutm 4d73aaf0d284f1c22e3e1c1072e729988e134268\nqemu https://github.com/ryanbreen/breenix-qemu.git fc43bd4cc6483ee30a6150d5524dbde62e25647b\nangle https://github.com/utmapp/WebKit.git ed78ab6e1a37f4f11583a0bd038f22ec91f3ff10\nlibepoxy https://github.com/utmapp/libepoxy.git bf98587477fe68d07b93319ece7b40a7d0e2eabe\nvirglrenderer https://github.com/utmapp/virglrenderer.git 451505ad0aa449290f2c0672da6877d57ee770e5\ndtc https://gitlab.com/qemu-project/dtc.git b6910bec11614980a21e46fbccc35934b671bd81\nspice-protocol https://www.spice-space.org/download/releases/spice-protocol-0.14.4.tar.xz sha256:04ffba610d9fd441cfc47dfaa135d70096e60b1046d2119d8db2f8ea0d17d912\nspice-server https://www.spice-space.org/download/releases/spice-server/spice-0.14.3.tar.bz2 sha256:551d4be4a07667cf0543f3c895beb6da8a93ef5a9829f2ae47817be5e616a114\nspice-patch spice-0.14.3.patch sha256:251638a358cd65529a349f3a33d14bb2cb64d8631ea73521f0be2720b3e39a09\nhomebrew pixman 0.46.4 libpixman-1.0.dylib\nhomebrew libpng 1.6.59 libpng16.16.dylib\nhomebrew libslirp 4.9.3 libslirp.0.dylib\nhomebrew glib 2.90.1 libglib-2.0.0.dylib\nhomebrew glib 2.90.1 libgio-2.0.0.dylib\nhomebrew glib 2.90.1 libgobject-2.0.0.dylib\nhomebrew openssl@3 3.6.3 libssl.3.dylib\nhomebrew openssl@3 3.6.3 libcrypto.3.dylib\nhomebrew opus 1.6.1 libopus.0.dylib\nhomebrew jpeg-turbo 3.2.0 libjpeg.8.dylib\nhomebrew glib 2.90.1 libgmodule-2.0.0.dylib\nhomebrew gettext 1.0 libintl.8.dylib\nhomebrew pcre2 10.49 libpcre2-8.0.dylib\n",
+  "build_seconds": 660,
+  "build_exit": 0,
+  "new_warning_lines_vs_b4": 0,
+  "fork_private": true,
+  "checks": {
+    "fork_contract": {
+      "red_commit": "cd314bb7",
+      "red_reason": "recipe lacks external QEMU_REPO pin",
+      "check_commit": "21f1e52c",
+      "after_relocation": "PASS"
+    },
+    "egl_init": {
+      "exit": 0,
+      "available": "QEMU_EGL_INIT_OK",
+      "missing_optional_entrypoint": "QEMU_EGL_INIT_OK; cache disabled"
+    },
+    "blob_cache": {
+      "exit": 0,
+      "runs": [
+        {
+          "cache": {
+            "gets": 0,
+            "hits": 0,
+            "puts": 0,
+            "bytes_written": 0
+          },
+          "context_program_counts": [
+            16,
+            16
+          ],
+          "all_programs_linked": true,
+          "mode": "disabled"
+        },
+        {
+          "cache": {
+            "gets": 48,
+            "hits": 16,
+            "puts": 16,
+            "bytes_written": 236334
+          },
+          "context_program_counts": [
+            16,
+            16
+          ],
+          "all_programs_linked": true,
+          "mode": "populate"
+        },
+        {
+          "cache": {
+            "gets": 64,
+            "hits": 32,
+            "puts": 0,
+            "bytes_written": 0
+          },
+          "context_program_counts": [
+            16,
+            16
+          ],
+          "all_programs_linked": true,
+          "mode": "persistent"
+        }
+      ]
+    }
+  }
+}

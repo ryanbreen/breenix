@@ -13,6 +13,12 @@ library for its app; the script builds the same patched source as a command-line
 `qemu-system-aarch64` with HVF, Cocoa, OpenGL, VirGL and SPICE. Every source is pinned by commit
 or SHA-256 in the script, and the bundle's `PINS` file lists them.
 
+QEMU itself comes from the private [breenix-qemu repository](https://github.com/ryanbreen/breenix-qemu),
+at the full `QEMU_COMMIT` in the recipe. It contains the UTM release and patch set, renderer
+attestation, renderer worker and ANGLE blob cache. Authenticated GitHub git access is required
+to build it. QEMU's `COPYING`, `COPYING.LIB`, `LICENSE` and per-file GPL-2.0-or-later and
+LGPL-2.1-or-later notices stay in that repository; Breenix carries the fetching recipe.
+
 - **Install:** `scripts/build-qemu-gl.sh` (about 9 minutes from clean at background priority with
   4 jobs; ANGLE is about half of it). It installs `QEMU-GL.app` under
   `~/Library/Caches/breenix/qemu-gl/<pin>/`, ad-hoc signed with the hypervisor entitlement, with
@@ -46,9 +52,8 @@ beside the usual `virtio-gpu-device`. One binary serves both frontends:
 
 ## Host renderer attestation
 
-Nothing in the device protocol lets the guest tell a GPU from a software renderer, so the run
-carries host evidence. `scripts/qemu-gl/host-renderer-attestation.patch`, applied on top of UTM's
-patches, makes QEMU's VirGL glue write `host-renderer.json` beside the serial log: the GL vendor,
+The run records host renderer evidence. The pinned fork's renderer attestation makes QEMU's VirGL glue write
+`host-renderer.json` beside the serial log: the GL vendor,
 renderer and version of the context that executes the guest's commands, read in the QEMU process
 after each renderer context is created and after its first `SUBMIT_3D`.
 
