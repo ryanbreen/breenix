@@ -144,11 +144,11 @@ pub fn prepare(ids: &[String], index: usize, total: usize) {
     let _ = signal::sigaction(SIGALRM, Some(&Sigaction::new(on_alarm)), None);
     progress();
     if index == 0 {
-        let entries = record_baseline();
+        let entries = record_baseline("/");
         emit(&std::format!("SUITE_SEQUENCE BEGIN suites={} baseline={}{}", ids.join(","), entries, memory()));
         frames(&ids[index]);
     } else {
-        emit(&match reset() {
+        emit(&match reset("/") {
             Ok(reset) => {
                 // The wait is bounded below the watchdog's period, which restarts first.
                 progress();
@@ -463,10 +463,11 @@ fn skipped(path: &str) -> bool {
     path == "/proc" || path == "/dev" || Path::new(path) == sequence_paths().baseline
 }
 
-/// Visit each path under `/`, `/dev/shm` and `/dev/mqueue`; `visit` returns whether to
-/// descend into a directory.
-fn walk(visit: &mut dyn FnMut(&str, Option<std::fs::Metadata>) -> bool) {
-    fn under(dir: &str, visit: &mut dyn FnMut(&str, Option<std::fs::Metadata>) -> bool) {
+/// Visit each path beneath the root, leaving foreign filesystems at their mount point.
+/// The IPC directories are walked separately when the root is `/`.
+fn walk(root: &str, visit: &mut dyn FnMut(&str, Option<std::fs::Metadata>, bool) -> bool) {
+    fn under(dir: &str, device: u64,
+             visit: &mut dyn FnMut(&str, Option<std::fs::Metadata>, bool) -> bool) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         let mut names: Vec<String> = entries.filter_map(|entry| entry.ok())
             .filter_map(|entry| entry.file_name().into_string().ok())
@@ -474,32 +475,35 @@ fn walk(visit: &mut dyn FnMut(&str, Option<std::fs::Metadata>) -> bool) {
         names.sort();
         for name in names {
             let path = if dir == "/" { std::format!("/{name}") } else { std::format!("{dir}/{name}") };
-            if skipped(&path) {
-                continue;
-            }
+            if skipped(&path) { continue; }
             let meta = std::fs::symlink_metadata(&path).ok();
             let is_dir = meta.as_ref().is_some_and(|meta| meta.is_dir());
-            if visit(&path, meta) && is_dir {
-                under(&path, visit);
+            let mounted = meta.as_ref().is_some_and(|meta| is_dir && meta.dev() != device);
+            if visit(&path, meta, mounted) && is_dir && !mounted {
+                under(&path, device, visit);
             }
         }
     }
-    for root in ["/", "/dev/shm", "/dev/mqueue"] {
-        under(root, visit);
+    let roots: &[&str] = if root == "/" { &[root, "/dev/shm", "/dev/mqueue"] } else { &[root] };
+    for root in roots {
+        if let Ok(meta) = std::fs::symlink_metadata(root) {
+            under(root, meta.dev(), visit);
+        }
     }
 }
 
 /// Write the baseline; returns how many paths it holds.
-fn record_baseline() -> usize {
+fn record_baseline(root: &str) -> usize {
     let mut text = String::new();
     let mut count = 0;
-    walk(&mut |path, meta| {
+    walk(root, &mut |path, meta, mounted| {
         // A name that cannot be written on one line is not part of the image.
         if path.contains(['\n', '\r']) {
             return false;
         }
         let entry = meta.map_or(Entry { kind: '?', mode: 0, uid: 0, gid: 0, size: 0, stamp: 0 },
                                 |meta| describe(Path::new(path), &meta));
+        let entry = if mounted { Entry { kind: 'm', ..entry } } else { entry };
         text.push_str(&std::format!("{} {:o} {} {} {} {:x} {path}\n",
             entry.kind, entry.mode, entry.uid, entry.gid, entry.size, entry.stamp));
         count += 1;
@@ -556,17 +560,23 @@ impl Reset {
 }
 
 /// Remove what earlier suites created; name recorded paths that are missing or differ.
-fn reset() -> Result<Reset, String> {
+fn reset(root: &str) -> Result<Reset, String> {
     let baseline = load_baseline()?;
     let mut seen = std::collections::BTreeSet::new();
     let mut result = Reset { removed: 0, changed: Vec::new(), appended: Vec::new() };
-    walk(&mut |path, meta| {
+    let mut new_dirs = Vec::new();
+    walk(root, &mut |path, meta, mounted| {
+        if mounted {
+            seen.insert(String::from(path));
+            result.changed.push(std::format!("{path}(mounted)"));
+            return false;
+        }
         let Some(recorded) = baseline.get(path) else {
-            let removed = match &meta {
-                Some(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
-                _ => std::fs::remove_file(path),
-            };
-            match removed {
+            if meta.as_ref().is_some_and(|meta| meta.is_dir()) {
+                new_dirs.push(String::from(path));
+                return true;
+            }
+            match std::fs::remove_file(path) {
                 Ok(()) => result.removed += 1,
                 Err(_) => result.changed.push(std::format!("{path}(left)")),
             }
@@ -580,9 +590,17 @@ fn reset() -> Result<Reset, String> {
         }
         true
     });
+    for path in new_dirs.iter().rev() {
+        match std::fs::remove_dir(path) {
+            Ok(()) => result.removed += 1,
+            Err(_) => result.changed.push(std::format!("{path}(left)")),
+        }
+    }
     for path in baseline.keys() {
-        // A path under a directory that changed type was not walked; the directory is named.
-        if !seen.contains(path) && !result.changed.iter().any(|changed| path.starts_with(changed.as_str())) {
+        if !seen.contains(path) && !result.changed.iter().any(|changed| {
+            let ancestor = changed.strip_suffix("(mounted)").unwrap_or(changed);
+            path.strip_prefix(ancestor).is_some_and(|rest| rest.starts_with('/'))
+        }) {
             result.changed.push(std::format!("{path}(missing)"));
         }
     }
