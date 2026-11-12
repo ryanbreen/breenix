@@ -4,6 +4,9 @@ use std::collections::BTreeMap;
 pub enum Decision { Compose, WaitUntil(u64) }
 // Reserve dispatch time beyond the observed complete composition cost.
 const GUARD_NS: u64 = 1_500_000;
+// Work-driven completions include idle time and do not measure a refresh
+// period. With no display period, coalesce for at most one 60 Hz frame.
+const MAX_INFERRED_PERIOD_NS: u64 = 1_000_000_000 / 60;
 /// W20: bound the response hold by the first reachable observed presentation edge.
 pub fn decide(now: u64, pending: bool, edge: u64, period: u64, work: u64) -> Decision {
     if !pending || period == 0 { return Decision::Compose; }
@@ -83,7 +86,7 @@ impl Pacer {
         self.period=Some(if timing.period_ns == 0 && self.interval_count == self.intervals.len() {
             let mut sorted = self.intervals;
             sorted.sort_unstable();
-            sorted[3] + (sorted[4] - sorted[3]) / 2
+            (sorted[3] + (sorted[4] - sorted[3]) / 2).min(MAX_INFERRED_PERIOD_NS)
         } else { timing.period_ns });
         self.reported_period=Some(timing.period_ns);
         self.edge=Some(timing.presented_ns);
