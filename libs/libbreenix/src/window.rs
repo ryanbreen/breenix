@@ -280,3 +280,9 @@ pub fn read_meta(id: u64) -> Result<(u64, abi::Meta), Error> {
     call(op::READ_META, &mut query)?;
     Ok((query.commit_id, meta))
 }
+
+/// Record an owner frame boundary in the bounded failure diagnostic pipeline.
+pub fn frame_stage(id: u64, frame: u64, stage: u32) -> Result<(), Error> {
+    let mut sample = abi::FrameStage { id, frame, stage, reserved: 0 };
+    call(op::FRAME_STAGE, &mut sample).map(|_| ())
+}

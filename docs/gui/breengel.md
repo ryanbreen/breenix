@@ -886,6 +886,31 @@ architecture only.
 | 32 | `HIT_TEST` | `HitTest` (32) | 0 | EPERM, EINVAL flags or reserved |
 | 33 | `MAP_TREE_READERS` | `MapTree` (24) | 0 | owner only; EPERM, ENOENT, ENOMEM, EFAULT |
 | 34 | `CAPTURE_TREE` | `Capture` (56) | 0 | EINVAL missing or short tree destination; ENOENT; EINTR pending-publication wait; EIO failed pending publication |
+| 35 | `FRAME_STAGE` | `FrameStage` (24) | 0 | owner only; EPERM, ENOENT; EINVAL stage or reserved |
+
+<!-- claim-lint:ok: Normative FRAME_STAGE diagnostic contract, exercised by tests/window_frame_diagnostic_test.py. -->
+`FrameStage` is `{ id: u64, frame: u64, stage: u32, reserved: u32 }` at offsets
+0, 8, 16 and 20. `FRAME_STAGE` accepts an owner-supplied frame identity and stage
+0 through 6 (begin, acquired, tab draw finished, terminal render finished, tree
+built, present begin, present end); `reserved` must be zero. It only records
+observations in the existing bounded window-pipeline ring, without waking the
+compositor, changing a watermark or advancing a frame. It is available in
+production and has no per-boot enable switch. Diagnostic failure does not change
+an application's rendering verdict.
+
+Pipeline rows 20 through 26 contain window, frame, cumulative calling-thread CPU
+nanoseconds (or `u64::MAX` if unavailable), and monotonic timestamp. Stage 44
+contains window, frame, sampling CPU, timestamp. A nonblocking scheduler snapshot
+adds rows 27 through 34 for CPU 0 through 7 queue lengths and rows 35 through 42
+for their current thread identities, with the same window, frame and timestamp;
+43 records an unavailable snapshot instead of reporting an empty queue. These are
+boundary samples, not a context-switch trace. Rows 45 and 46 contain window,
+accepted commit, processed watermark and timestamp at pending-render acceptance
+and the observed seal decision, respectively; stage 14 remains actual front
+publication. Acceptance-to-decision includes the time until a publication caller
+observes device completion. Failed seals also get a decision row and do not get
+a front-publication row. The launcher retains these records only on failure
+using its existing entry-time pipeline capture.
 
 `MAP_TREE_READERS` maps a window's reader-status page read-only for its owner, with
 `MapTree.addr` and `len` reporting the mapping. Offset 0 is `TreeReaderState.readers`, an

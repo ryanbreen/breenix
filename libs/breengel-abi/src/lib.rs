@@ -54,7 +54,29 @@ pub mod op {
     pub const HIT_TEST: u32 = 32;
     pub const MAP_TREE_READERS: u32 = 33;
     pub const CAPTURE_TREE: u32 = 34;
-    pub const LAST: u32 = CAPTURE_TREE;
+    pub const FRAME_STAGE: u32 = 35;
+    pub const LAST: u32 = FRAME_STAGE;
+}
+
+/// Application frame diagnostic boundaries (section 17.1).
+pub mod frame_stage {
+    pub const BEGIN: u32 = 0;
+    pub const ACQUIRED: u32 = 1;
+    pub const TABS: u32 = 2;
+    pub const TERMINAL: u32 = 3;
+    pub const TREE: u32 = 4;
+    pub const PRESENT_BEGIN: u32 = 5;
+    pub const PRESENT_END: u32 = 6;
+}
+
+/// Owner-supplied frame identity and diagnostic boundary (section 17.1).
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FrameStage {
+    pub id: u64,
+    pub frame: u64,
+    pub stage: u32,
+    pub reserved: u32,
 }
 
 /// Linux's errno values, which the interface returns negated (section 25).
@@ -897,6 +919,7 @@ layout!(ReadEvents, 40, id @ 0, ptr @ 8, capacity @ 16, flags @ 20, timeout_ns @
 layout!(WriteEvents, 24, id @ 0, ptr @ 8, count @ 16, reserved @ 20);
 layout!(Geometry, 24, id @ 0, x @ 8, y @ 12, z @ 16, flags @ 20);
 layout!(MapBuffers, 40, id @ 0, buffer @ 8, stride @ 32, reserved @ 36);
+layout!(FrameStage, 24, id @ 0, frame @ 8, stage @ 16, reserved @ 20);
 layout!(Capture, 56, id @ 0, dst @ 8, dst_len @ 16, tree_dst @ 24, tree_len @ 32, commit_id @ 40, width @ 48,
     height @ 52);
 layout!(MapTree, 24, id @ 0, addr @ 8, len @ 16);
@@ -931,6 +954,7 @@ pub const fn arg_size(op: u32) -> Option<usize> {
     use core::mem::size_of;
     Some(match op {
         op::CREATE => size_of::<Create>(),
+        op::FRAME_STAGE => size_of::<FrameStage>(),
         op::DESTROY | op::EVENT_FD | op::HOLD_EVIDENCE | op::RELEASE_REMNANT => size_of::<WinId>(),
         op::REGISTER | op::SET_TITLE => size_of::<Title>(),
         op::LIST => size_of::<List>(),

@@ -704,6 +704,7 @@ pub fn commit(caller: &Caller, c: &mut Commit, meta: Meta, out: u64) -> Result<u
         w.accepted_pixel_gen = c.pixel_gen;
         w.pending = Some(Pending { uid, commit_id: c.commit_id, pixel_gen: c.pixel_gen,
             damage, meta, seal });
+        super::pipeline::record(45, c.id, c.commit_id, meta.processed_serial);
     }
     drop(gate);
     publish_ready();
@@ -730,6 +731,7 @@ pub fn publish_ready() {
             let Some(w) = reg.windows.get_mut(&id) else { continue; };
             if w.gate || !w.pending.as_ref().is_some_and(|p| p.uid == pending.uid && p.commit_id == pending.commit_id) { continue; }
             let Some(index) = w.buffers.iter().position(|b| b.uid == pending.uid) else { continue; };
+            super::pipeline::record(46, w.id, pending.commit_id, pending.meta.processed_serial);
             w.pending = None;
             if outcome.is_err() {
                 w.buffers[index].draining = true;
@@ -1247,8 +1249,20 @@ pub fn set_geometry(caller: &Caller, g: &Geometry) -> Result<u64, i32> {
     Ok(0)
 }
 
-/// `READ_META` (owner, compositor or root): the newest commit's id and the metadata it
-/// published.
+/// Record an owner frame boundary without keeping REGISTRY during scheduler sampling.
+pub fn frame_stage(caller: &Caller, sample: &breengel_abi::FrameStage) -> Result<u64, i32> {
+    if sample.reserved != 0 || sample.stage > breengel_abi::frame_stage::PRESENT_END {
+        return Err(EINVAL);
+    }
+    {
+        let mut reg = REGISTRY.lock();
+        reg.window(sample.id, caller, who::owner)?;
+    }
+    super::pipeline::frame_stage(sample);
+    Ok(0)
+}
+
+/// `READ_META`: the published commit and watermark.
 pub fn read_meta(caller: &Caller, id: u64) -> Result<(u64, Meta), i32> {
     publish_ready();
     let mut reg = REGISTRY.lock();

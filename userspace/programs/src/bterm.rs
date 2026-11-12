@@ -26,6 +26,7 @@ mod keys;
 #[path = "bterm/session.rs"]
 mod session;
 
+use libbreenix::window::abi::frame_stage;
 use std::process;
 
 use breengel::{Window, Event, Handled, CachedFont, TabBar, Rect, Theme, Color, Surface};
@@ -417,6 +418,7 @@ fn main() {
     let mut first_frame = true;
     let mut first_present = true;
     let mut last_key_serial = 0;
+    let mut frame_id = 0u64;
 
     loop {
         // Dispatch input before the rendered commit publishes its watermark.
@@ -697,6 +699,9 @@ fn main() {
         first_frame = false;
 
         if need_redraw {
+            frame_id = frame_id.wrapping_add(1);
+            let trace = |stage| { let _ = libbreenix::window::frame_stage(window_id, frame_id, stage); };
+            trace(frame_stage::BEGIN);
             let fb = match win.surface() {
                 Ok(fb) => fb,
                 Err(e) => {
@@ -706,8 +711,11 @@ fn main() {
                 }
             };
 
+            trace(frame_stage::ACQUIRED);
+
             // Draw tab bar
             tab_bar.draw(fb, &theme);
+            trace(frame_stage::TABS);
 
             // Render active tab's terminal emulator into content area. The surface holds
             // the newest committed frame, so a tab whose grid is unchanged is not redrawn.
@@ -725,6 +733,8 @@ fn main() {
                 );
             }
 
+            trace(frame_stage::TERMINAL);
+
             if let Some(tab) = tabs.get(sel) {
                 let bounds = [0, 0, i64::from(win.width()), i64::from(win.height())];
                 let mut value = terminal_node::terminal_value(&tab.emu.vt, sel, tabs.len(), win.mono_path(), font_size);
@@ -737,7 +747,11 @@ fn main() {
                     bounds, clip: bounds, flags: vec![breengel::tree::Flag::Enabled, breengel::tree::Flag::Visible],
                 }, children: Vec::new() });
             }
-            match win.present() {
+            trace(frame_stage::TREE);
+            trace(frame_stage::PRESENT_BEGIN);
+            let presented = win.present();
+            trace(frame_stage::PRESENT_END);
+            match presented {
                 Err(e) => print!("[bterm] present failed: {}\n", e),
                 Ok(()) if first_present => {
                     first_present = false;
