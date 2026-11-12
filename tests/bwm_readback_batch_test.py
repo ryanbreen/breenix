@@ -27,10 +27,10 @@ mod libbreenix {
  pub mod errno {#[derive(Debug)]pub enum Errno{EINVAL}}
  pub mod error {#[derive(Debug)]pub enum Error{Os(super::errno::Errno)} impl std::fmt::Display for Error{fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{write!(f,"error")}}}
 }
-mod wabi {pub struct WinInfo{pub id:u64,pub width:u32,pub height:u32} impl WinInfo{pub const ZERO:Self=Self{id:0,width:0,height:0};} impl Clone for WinInfo{fn clone(&self)->Self{Self::ZERO}}}
+mod wabi {pub mod limits {pub const MAX_TREE_KIB:u32=1024;} pub struct WinInfo{pub id:u64,pub width:u32,pub height:u32} impl WinInfo{pub const ZERO:Self=Self{id:0,width:0,height:0};} impl Clone for WinInfo{fn clone(&self)->Self{Self::ZERO}}}
 mod window {
  pub struct Captured{pub commit_id:u64,pub width:u32,pub height:u32}
- pub fn capture(_:u64,_:&mut[u8],_:Option<()>)->Result<Captured,super::libbreenix::error::Error>{Err(super::libbreenix::error::Error::Os(super::libbreenix::errno::Errno::EINVAL))}
+ pub fn capture(_:u64,_:&mut[u8],_:Option<&mut[u8]>)->Result<Captured,super::libbreenix::error::Error>{Err(super::libbreenix::error::Error::Os(super::libbreenix::errno::Errno::EINVAL))}
  pub fn list(_:&mut[super::wabi::WinInfo])->Result<usize,()>{Ok(0)}
 }
 fn pixel(x:u32,y:u32)->u32{0xff000000|((y*257+x*3)&0xffffff)}
@@ -59,7 +59,7 @@ impl Compositor {
 #[test]fn full_frame_and_offset_tail(){
  let mut c=Compositor{sampled:vec![],check_first:0,desktop:Desktop,scale:2,appbar_top:1600};
  *POINTER.lock().unwrap()=true;
- assert_eq!(c.check_area(0,&[],Some(Pointer{x:3,y:3,shape:0}),[0,0,2560,1600]).unwrap(),4096000);
+ assert_eq!(c.check_area(0,&[],Some(Pointer{x:3,y:3,shape:0}),[0,0,2560,1600],false).unwrap().0,4096000);
  let hotspots=HOTSPOTS.load(std::sync::atomic::Ordering::Relaxed);
  assert!(hotspots<=20000,"cursor geometry evaluated for {hotspots} pixels instead of its rows");
  *POINTER.lock().unwrap()=false;
@@ -67,12 +67,12 @@ impl Compositor {
  assert!(calls.len()<=4,"32-row calls repeated the same transfer setup {} times",calls.len());
  assert!(calls.iter().all(|r| r[2] as usize*r[3] as usize*4<=4*1024*1024));
  CALLS.lock().unwrap().clear();
- assert_eq!(c.check_area(0,&[],None,[13,7,2559,1599]).unwrap(),2546*1592);
+ assert_eq!(c.check_area(0,&[],None,[13,7,2559,1599],false).unwrap().0,2546*1592);
  let calls=CALLS.lock().unwrap();let mut y=7;for r in calls.iter(){assert_eq!((r[0],r[1],r[2]),(13,y,2546));y+=r[3];}assert_eq!(y,1599);drop(calls);
  *BAD.lock().unwrap()=Some((2558,1598));
- match c.check_area(0,&[],None,[13,7,2559,1599]){Err(CheckError::Failed(s))=>assert!(s.contains("pixel (2558, 1598)"),"{s}"),Err(CheckError::Moved(s))=>panic!("{s}"),Ok(n)=>panic!("missed late mismatch after {n}")}
+ match c.check_area(0,&[],None,[13,7,2559,1599],false){Err(CheckError::Failed(s))=>assert!(s.contains("pixel (2558, 1598)"),"{s}"),Err(CheckError::Moved(s))=>panic!("{s}"),Ok((n,_))=>panic!("missed late mismatch after {n}")}
  *BAD.lock().unwrap()=None;*HIGH_X.lock().unwrap()=true;
- assert_eq!(c.check_area(0,&[],None,[13,7,2559,1599]).unwrap(),2546*1592);
+ assert_eq!(c.check_area(0,&[],None,[13,7,2559,1599],false).unwrap().0,2546*1592);
 }
 '''.replace('CONSTANTS',constants+'\n'+(item(source,'fn equal_row(') if 'fn equal_row(' in source else '')).replace('@CHECK@',item(source,'pub fn check_area(')).replace('@EXPECTED@',item(source,'fn expected(')))
 if __name__=='__main__':unittest.main()

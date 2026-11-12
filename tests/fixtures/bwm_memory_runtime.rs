@@ -34,7 +34,7 @@ pub mod gpu {
 pub mod window {
     pub use breengel_abi as abi;
     use abi::Plain;
-    pub fn capture(_: u64, _: &mut [u8], _: Option<u64>) -> Result<abi::Capture, super::error::Error> { panic!("no capture") }
+    pub fn capture(_: u64, _: &mut [u8], _: Option<&mut [u8]>) -> Result<abi::Capture, super::error::Error> { panic!("no capture") }
     pub fn list(_: &mut [abi::WinInfo]) -> Result<usize, super::error::Error> { panic!("no list") }
     pub unsafe fn raw_call(op: u32, p: *mut u8, _: usize) -> i64 {
         match op {
