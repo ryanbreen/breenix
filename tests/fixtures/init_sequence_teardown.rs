@@ -15,6 +15,7 @@ struct World {
     interrupted: bool,
 }
 thread_local! { static WORLD: RefCell<World> = RefCell::new(World::default()); }
+macro_rules! print { ($($arg:tt)*) => { crate::event(format!($($arg)*)) }; }
 fn event(text: String) { WORLD.with(|w| w.borrow_mut().events.push(text)); }
 fn now_ms() -> u64 { WORLD.with(|w| w.borrow().now) }
 mod std {
@@ -218,7 +219,8 @@ fn dependency_stop_mount_readback_sweep_reap_and_log_drain() {
         assert!(at("reap 10") < at("umount /shares/data"));
         let unmount = at("umount /shares/data");
         assert_eq!(w.events[unmount + 1], "read /proc/mounts");
-        assert!(unmount + 1 < at("signal -1 15 at 200"));
+        let receipt = at("[init] sequence shares readback pid=1 configured=3 mounted=0\n");
+        assert!(unmount + 1 < receipt && receipt < at("signal -1 15 at 200"));
         assert!(at("reap 99") < w.events.iter().rposition(|e| e == "ECHILD").unwrap());
         assert!(w.children.is_empty());
     });
@@ -238,7 +240,11 @@ fn mount_left_after_successful_umount_is_an_error_before_sweep() {
     WORLD.with(|w| w.borrow_mut().mount_stuck = true);
     let error = s.stop_for_sequence().unwrap_err();
     assert!(error.contains("/shares/data"), "{error}");
-    WORLD.with(|w| assert!(!w.borrow().events.iter().any(|e| e.starts_with("signal -1"))));
+    WORLD.with(|w| {
+        let w = w.borrow();
+        assert!(w.events.iter().any(|e| e == "[init] sequence shares readback pid=1 configured=3 mounted=1\n"));
+        assert!(!w.events.iter().any(|e| e.starts_with("signal -1")));
+    });
 }
 #[test]
 fn service_that_outlives_sigkill_is_named_without_killing_share_server() {
