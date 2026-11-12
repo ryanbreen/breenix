@@ -11,8 +11,8 @@ import subprocess
 import tempfile
 import unittest
 
-ROOT = Path(__file__).resolve().parents[1]
-SOURCE = Path(os.environ['QEMU_GL_SOURCE'])
+SOURCE = Path(os.environ.get('QEMU_GL_SOURCE',
+                 '/tmp/breenix-qemu-gl-build/src/qemu-10.0.12-utm'))
 
 
 class RendererIsolation(unittest.TestCase):
@@ -23,11 +23,34 @@ class RendererIsolation(unittest.TestCase):
         self.assertIn('virgl_renderer_submit_cmd(buf, cs.hdr.ctx_id, cs.size / 4)',
                       submit[start:end])
         worker = SOURCE / 'hw/display/breenix-render-worker.h'
-        # These are the real dispatch alternatives, not timing simulations.
+        # The fixed case compiles the production RPC wrapper and call adapter.
+        rpc = ''
+        if worker.exists():
+            header = (worker.parent / 'breenix-virgl-rpc.h').read_text()
+            gl = (worker.parent / 'virtio-gpu-gl.c').read_text()
+            self.assertIn('#include "breenix-virgl-rpc.h"', submit)
+            self.assertIn('#define virgl_renderer_submit_cmd brpc_submit_cmd', header)
+            args_start = header.index('} brpc_submit_cmd_args;')
+            args_start = header.rfind('typedef struct {', 0, args_start)
+            args_end = header.index('\n}', header.index('static inline int brpc_submit_cmd(', args_start)) + 2
+            rpc = header[args_start:args_end] + '\n#define virgl_renderer_submit_cmd brpc_submit_cmd\n'
+            call_start = gl.index('typedef struct RendererCall {')
+            call_end = gl.index('} RendererCall;', call_start) + len('} RendererCall;')
+            rpc = gl[call_start:call_end] + '\n' + rpc
+            for name in ('renderer_run_call', 'renderer_retire_call', 'virtio_gpu_renderer_call'):
+                marker = ('void ' if name == 'virtio_gpu_renderer_call' else 'static void ') + name + '('
+                begin = gl.index(marker)
+                finish = gl.index('\n}', begin) + 2
+                body = gl[begin:finish]
+                if name == 'renderer_retire_call':
+                    body = body.replace('renderer_retire_call(', 'observed_retire_call(', 1)
+                    body += '\nstatic void renderer_retire_call(void *arg) { observed_retire_call(arg); retire(active_state); }'
+                rpc += '\n' + body
+
         implementation = '#include "breenix-render-worker.h"' if worker.exists() else ''
         dispatch = 'virgl_cmd_submit_3d(&gpu, &cmd);'
         drain = '''
-            brw_submit(w, &last);
+            g_assert(reset_to_queue == NULL);
             brw_stop(w);
             brw_complete(w);
             g_assert_cmpint(state.retired, ==, 2);
@@ -35,8 +58,10 @@ class RendererIsolation(unittest.TestCase):
             brw_free(w);
         ''' if worker.exists() else ''
         setup = '''
+            main_thread = pthread_self();
             w = brw_new(notify, NULL);
             BRWJob last = { .run = reset, .complete = retired_reset, .opaque = &state };
+            reset_to_queue = &last;
         ''' if worker.exists() else ''
         adapters = r'''
 #include <stdint.h>
@@ -65,13 +90,41 @@ static GHashTable *breenix_attest_submitted;
 static void breenix_attest(const char *event, uint32_t id) { (void)event; (void)id; }
 static State *active_state;
 ''' + (r'''
+typedef void Coroutine;
 static BRW *w;
-static void submit_complete(void *opaque) { retire(opaque); }
+static pthread_t main_thread;
+static BRWJob *reset_to_queue;
+#define renderer_worker w
+static bool qemu_in_coroutine(void) { return false; }
+static Coroutine *qemu_coroutine_self(void) { return NULL; }
+static void qemu_coroutine_yield(void) { g_assert_not_reached(); }
+static void qemu_coroutine_enter(Coroutine *co) { (void)co; g_assert_not_reached(); }
+static bool bql_locked(void) {
+    if (!pthread_equal(pthread_self(), main_thread)) return false;
+    if (pthread_mutex_trylock(&active_state->bql)) return true;
+    pthread_mutex_unlock(&active_state->bql); return false;
+}
+static void main_loop_wait(bool nonblocking) {
+    (void)nonblocking;
+    State *s = active_state;
+    pthread_mutex_unlock(&s->bql);
+    pthread_mutex_lock(&s->gate);
+    if (reset_to_queue) {
+        // Queue reset before the blocked render can finish: FIFO/drain owns it.
+        brw_submit(w, reset_to_queue);
+        reset_to_queue = NULL;
+    }
+    s->main_ready = true;
+    pthread_cond_broadcast(&s->cv);
+    while (!s->release) pthread_cond_wait(&s->cv, &s->gate);
+    pthread_mutex_unlock(&s->gate);
+    pthread_mutex_lock(&s->bql);
+    brw_complete(w);
+}
+void virtio_gpu_renderer_call(void (*fn)(void *), void *arg);
 static int virgl_renderer_submit_cmd(void *buf, int ctx, int ndw) {
     (void)buf; (void)ctx; (void)ndw;
-    static BRWJob job;
-    job = (BRWJob){ .run = render, .complete = submit_complete, .opaque = active_state };
-    brw_submit(w, &job);
+    render(active_state);
     return 0;
 }
 ''' if worker.exists() else r'''
@@ -81,11 +134,12 @@ static int virgl_renderer_submit_cmd(void *buf, int ctx, int ndw) {
     render(active_state);
     return 0;
 }
-''')
+''') + rpc
         program = r'''
 #include <glib.h>
 #include <pthread.h>
 #include <stdbool.h>
+#include <assert.h>
 ''' + implementation + r'''
 typedef struct {
     pthread_mutex_t bql, gate;

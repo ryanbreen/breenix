@@ -12,7 +12,9 @@
 # server. UTM builds QEMU as a library for its app; this builds the same patched source
 # as a command-line executable with Cocoa enabled, so one binary serves headless runs
 # (-spice gl=es with -display none) and the interactive window (-display cocoa,gl=es).
-# On top of UTM's patches it applies scripts/qemu-gl/host-renderer-attestation.patch.
+# Breenix patches add renderer attestation, a single-owner EGL renderer worker
+# outside BQL, and a bounded persistent ANGLE program cache.
+# claim-lint:ok: scripts/qemu-gl/renderer-worker.patch and scripts/qemu-gl/angle-blob-cache.patch define the host-only additions tracked by #2890.
 #
 # Libraries UTM also builds from source that carry no graphics code (glib, pixman,
 # libslirp, OpenSSL, libjpeg, Opus, libpng) come from Homebrew at build time and are
@@ -51,7 +53,7 @@ VIRGL_COMMIT=451505ad0aa449290f2c0672da6877d57ee770e5
 DTC_REPO=https://gitlab.com/qemu-project/dtc.git
 DTC_COMMIT=b6910bec11614980a21e46fbccc35934b671bd81
 # Bump the suffix whenever the recipe or the Breenix patch changes, so a stale build is not reused.
-PIN=10.0.12-utm-4d73aaf0-b2
+PIN=10.0.12-utm-4d73aaf0-b3
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CACHE="${BREENIX_QEMU_GL_DIR:-$HOME/Library/Caches/breenix/qemu-gl}"
@@ -199,7 +201,10 @@ meson_build "$SPICE_DIR" -Dlz4=false -Dsasl=false -Dmanual=false -Dgstreamer=no 
 step "building qemu-system-aarch64"
 QEMU_DIR="$(unpack "$DOWNLOADS/qemu-10.0.12-utm.tar.xz")"
 patch -s -d "$QEMU_DIR" -p1 < "$DOWNLOADS/qemu-10.0.12-utm.patch"
-patch -s -d "$QEMU_DIR" -p1 < "$ROOT/scripts/qemu-gl/host-renderer-attestation.patch"
+for patch in host-renderer-attestation renderer-worker angle-blob-cache; do
+    patch -s -d "$QEMU_DIR" -p1 < "$ROOT/scripts/qemu-gl/$patch.patch"
+done
+printf '#define BREENIX_QEMU_GL_PIN "%s"\n' "$PIN" > "$QEMU_DIR/include/breenix-qemu-gl-pin.h"
 # libfdt from the revision QEMU's own wrap pins; the release tarball does not carry it.
 git_pin "$DTC_REPO" "$DTC_COMMIT" "$QEMU_DIR/subprojects/dtc"
 grep -q "^revision = $DTC_COMMIT\$" "$QEMU_DIR/subprojects/dtc.wrap" || die "QEMU's dtc.wrap no longer pins $DTC_COMMIT"
@@ -325,6 +330,8 @@ utm $UTM_COMMIT
 qemu $QEMU_URL sha256:$QEMU_SHA256
 qemu-patch qemu-10.0.12-utm.patch sha256:$QEMU_PATCH_SHA256
 breenix-patch host-renderer-attestation.patch sha256:$(shasum -a 256 "$ROOT/scripts/qemu-gl/host-renderer-attestation.patch" | cut -d' ' -f1)
+breenix-patch renderer-worker.patch sha256:$(shasum -a 256 "$ROOT/scripts/qemu-gl/renderer-worker.patch" | cut -d' ' -f1)
+breenix-patch angle-blob-cache.patch sha256:$(shasum -a 256 "$ROOT/scripts/qemu-gl/angle-blob-cache.patch" | cut -d' ' -f1)
 angle $WEBKIT_REPO $WEBKIT_COMMIT
 libepoxy $EPOXY_REPO $EPOXY_COMMIT
 virglrenderer $VIRGL_REPO $VIRGL_COMMIT

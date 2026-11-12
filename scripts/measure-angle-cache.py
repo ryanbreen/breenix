@@ -50,7 +50,7 @@ def function(lib, name, result, *args):
     return fn
 
 
-def worker(bundle, output, mode):
+def worker(bundle, output, mode, host_cache_library=None):
     frameworks = bundle / 'Contents/Frameworks'
     egl = C.CDLL(str(frameworks / 'EGL.framework/EGL'), mode=C.RTLD_GLOBAL)
     gles = C.CDLL(str(frameworks / 'GLESv2.framework/GLESv2'), mode=C.RTLD_GLOBAL)
@@ -112,7 +112,12 @@ def worker(bundle, output, mode):
             cache['hits'] += 1
         return len(data)
 
-    if mode != 'disabled':
+    host_cache = None
+    if mode != 'disabled' and host_cache_library:
+        host_cache = C.CDLL(str(host_cache_library))
+        install = function(host_cache, 'a3_cache_install', None, P, C.c_char_p)
+        install(display, ('a3-host-check-' + output.name).encode())
+    elif mode != 'disabled':
         setter = C.CFUNCTYPE(None, P, SET, GET)(proc(b'eglSetBlobCacheFuncsANDROID'))
         setter(display, put, get)
     callbacks += [put, get]
@@ -246,6 +251,9 @@ def worker(bundle, output, mode):
     current(display, None, None, None)
     destroy(display, root)
     function(egl, 'eglTerminate', U, P)(display)
+    if host_cache:
+        stat = function(host_cache, 'a3_cache_stat', C.c_uint64, U)
+        cache = {name: stat(index) for index, name in enumerate(cache)}
     return {'mode': mode, 'renderer': renderer, 'cache': cache,
             'contexts': contexts, 'glsl': glsl}
 
@@ -255,10 +263,11 @@ def main():
     parser.add_argument('--output', required=True, type=Path)
     parser.add_argument('--worker', choices=['disabled', 'populate', 'persistent'])
     parser.add_argument('--bundle', type=Path)
+    parser.add_argument('--host-cache-library', type=Path)
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
     if args.worker:
-        result = worker(args.bundle, args.output, args.worker)
+        result = worker(args.bundle, args.output, args.worker, args.host_cache_library)
         (args.output / (args.worker + '.json')).write_text(json.dumps(result, indent=2) + '\n')
         return
     binary = Path(subprocess.check_output([str(ROOT / 'scripts/build-qemu-gl.sh'),
@@ -271,8 +280,11 @@ def main():
         raise SystemExit('use a new output directory: persistent cache must start empty')
     runs = []
     for mode in ('disabled', 'populate', 'persistent'):
-        subprocess.run([sys.executable, __file__, '--worker', mode, '--bundle', str(bundle),
-                        '--output', str(args.output)], env=env, check=True)
+        command = [sys.executable, __file__, '--worker', mode, '--bundle', str(bundle),
+                   '--output', str(args.output)]
+        if args.host_cache_library:
+            command += ['--host-cache-library', str(args.host_cache_library.resolve())]
+        subprocess.run(command, env=env, check=True)
         runs.append(json.loads((args.output / (mode + '.json')).read_text()))
     _, shaders = catalogue()
     pins = (bundle / 'Contents/Resources/licenses/PINS').read_text()

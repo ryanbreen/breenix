@@ -1,0 +1,991 @@
+--- a/hw/display/breenix-render-worker.h
++++ b/hw/display/breenix-render-worker.h
+@@ -0,0 +1,82 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef BREENIX_RENDER_WORKER_H
++#define BREENIX_RENDER_WORKER_H
++#include <glib.h>
++
++typedef struct BRWJob {
++    void (*run)(void *);
++    void (*complete)(void *);
++    void *opaque;
++} BRWJob;
++
++typedef struct BRW {
++    GAsyncQueue *pending, *completed;
++    GThread *thread;
++    void (*notify)(void *);
++    void (*execute)(void (*)(void *), void *);
++    void *opaque;
++} BRW;
++
++static inline gpointer brw_thread(gpointer opaque)
++{
++    BRW *w = opaque;
++    for (;;) {
++        BRWJob *job = g_async_queue_pop(w->pending);
++        if ((void *)job == (void *)w) {
++            return NULL;
++        }
++        if (w->execute) {
++            w->execute(job->run, job->opaque);
++        } else {
++            job->run(job->opaque);
++        }
++        g_async_queue_push(w->completed, job);
++        w->notify(w->opaque);
++    }
++}
++
++static inline BRW *brw_new(void (*notify)(void *), void *opaque)
++{
++    BRW *w = g_new0(BRW, 1);
++    w->pending = g_async_queue_new();
++    w->completed = g_async_queue_new();
++    w->notify = notify;
++    w->opaque = opaque;
++    w->thread = g_thread_new("virgl-renderer", brw_thread, w);
++    return w;
++}
++
++/* The submitter retains each job and all of its arguments until complete. */
++static inline void brw_submit(BRW *w, BRWJob *job)
++{
++    g_assert(w->thread != NULL);
++    g_async_queue_push(w->pending, job);
++}
++
++/* Only the main loop retires jobs; no renderer callback touches device state. */
++static inline void brw_complete(BRW *w)
++{
++    BRWJob *job;
++    while ((job = g_async_queue_try_pop(w->completed))) {
++        job->complete(job->opaque);
++    }
++}
++
++/* A FIFO barrier: all earlier calls finish before the thread exits. */
++static inline void brw_stop(BRW *w)
++{
++    g_async_queue_push(w->pending, w);
++    g_thread_join(w->thread);
++    w->thread = NULL;
++}
++
++static inline void brw_free(BRW *w)
++{
++    g_assert(w->thread == NULL);
++    g_assert(g_async_queue_length(w->pending) == 0);
++    g_assert(g_async_queue_length(w->completed) == 0);
++    g_async_queue_unref(w->pending);
++    g_async_queue_unref(w->completed);
++    g_free(w);
++}
++#endif
+--- a/hw/display/breenix-render-call.h
++++ b/hw/display/breenix-render-call.h
+@@ -0,0 +1,5 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef BREENIX_RENDER_CALL_H
++#define BREENIX_RENDER_CALL_H
++void breenix_renderer_invoke(void (*fn)(void *), void *arg);
++#endif
+--- a/hw/display/breenix-render-call.m
++++ b/hw/display/breenix-render-call.m
+@@ -0,0 +1,11 @@
++/* SPDX-License-Identifier: MIT */
++#include "qemu/osdep.h"
++#import <Foundation/Foundation.h>
++#include "breenix-render-call.h"
++
++void breenix_renderer_invoke(void (*fn)(void *), void *arg)
++{
++    @autoreleasepool {
++        fn(arg);
++    }
++}
+--- a/hw/display/meson.build
++++ b/hw/display/meson.build
+@@ -80,6 +80,9 @@
+     virtio_gpu_gl_ss = ss.source_set()
+     virtio_gpu_gl_ss.add(when: ['CONFIG_VIRTIO_GPU', virgl, opengl],
+                          if_true: [files('virtio-gpu-gl.c', 'virtio-gpu-virgl.c'), pixman, virgl])
++    if host_os == 'darwin'
++      virtio_gpu_gl_ss.add(files('breenix-render-call.m'))
++    endif
+     hw_display_modules += {'virtio-gpu-gl': virtio_gpu_gl_ss}
+   endif
+ 
+--- a/hw/display/breenix-virgl-rpc.h
++++ b/hw/display/breenix-virgl-rpc.h
+@@ -0,0 +1,335 @@
++/* SPDX-License-Identifier: MIT */
++#ifndef BREENIX_VIRGL_RPC_H
++#define BREENIX_VIRGL_RPC_H
++void virtio_gpu_renderer_call(void (*fn)(void *), void *arg);
++void virtio_gpu_renderer_flush(void);
++void virtio_gpu_renderer_release_handle(enum virgl_renderer_native_handle_type type, virgl_renderer_native_handle handle);
++typedef struct { void *cookie; } brpc_cleanup_args;
++static inline void brpc_cleanup_run(void *opaque) {
++    brpc_cleanup_args *a = opaque;
++    virgl_renderer_cleanup(a->cookie);
++}
++static inline void brpc_cleanup(void *cookie) {
++    brpc_cleanup_args a = { .cookie = cookie };
++    virtio_gpu_renderer_call(brpc_cleanup_run, &a);
++
++}
++typedef struct { uint32_t handle; uint32_t nlen; const char *name; int result; } brpc_context_create_args;
++static inline void brpc_context_create_run(void *opaque) {
++    brpc_context_create_args *a = opaque;
++    a->result = virgl_renderer_context_create(a->handle, a->nlen, a->name);
++}
++static inline int brpc_context_create(uint32_t handle, uint32_t nlen, const char *name) {
++    brpc_context_create_args a = { .handle = handle, .nlen = nlen, .name = name };
++    virtio_gpu_renderer_call(brpc_context_create_run, &a);
++    return a.result;
++}
++typedef struct { uint32_t ctx_id; uint32_t flags; uint32_t ring_idx; uint64_t fence_id; int result; } brpc_context_create_fence_args;
++static inline void brpc_context_create_fence_run(void *opaque) {
++    brpc_context_create_fence_args *a = opaque;
++    a->result = virgl_renderer_context_create_fence(a->ctx_id, a->flags, a->ring_idx, a->fence_id);
++}
++static inline int brpc_context_create_fence(uint32_t ctx_id, uint32_t flags, uint32_t ring_idx, uint64_t fence_id) {
++    brpc_context_create_fence_args a = { .ctx_id = ctx_id, .flags = flags, .ring_idx = ring_idx, .fence_id = fence_id };
++    virtio_gpu_renderer_call(brpc_context_create_fence_run, &a);
++    return a.result;
++}
++typedef struct { uint32_t ctx_id; uint32_t ctx_flags; uint32_t nlen; const char *name; int result; } brpc_context_create_with_flags_args;
++static inline void brpc_context_create_with_flags_run(void *opaque) {
++    brpc_context_create_with_flags_args *a = opaque;
++    a->result = virgl_renderer_context_create_with_flags(a->ctx_id, a->ctx_flags, a->nlen, a->name);
++}
++static inline int brpc_context_create_with_flags(uint32_t ctx_id, uint32_t ctx_flags, uint32_t nlen, const char *name) {
++    brpc_context_create_with_flags_args a = { .ctx_id = ctx_id, .ctx_flags = ctx_flags, .nlen = nlen, .name = name };
++    virtio_gpu_renderer_call(brpc_context_create_with_flags_run, &a);
++    return a.result;
++}
++typedef struct { uint32_t handle; } brpc_context_destroy_args;
++static inline void brpc_context_destroy_run(void *opaque) {
++    brpc_context_destroy_args *a = opaque;
++    virgl_renderer_context_destroy(a->handle);
++}
++static inline void brpc_context_destroy(uint32_t handle) {
++    brpc_context_destroy_args a = { .handle = handle };
++    virtio_gpu_renderer_call(brpc_context_destroy_run, &a);
++
++}
++typedef struct { int client_fence_id; uint32_t ctx_id; int result; } brpc_create_fence_args;
++static inline void brpc_create_fence_run(void *opaque) {
++    brpc_create_fence_args *a = opaque;
++    a->result = virgl_renderer_create_fence(a->client_fence_id, a->ctx_id);
++}
++static inline int brpc_create_fence(int client_fence_id, uint32_t ctx_id) {
++    brpc_create_fence_args a = { .client_fence_id = client_fence_id, .ctx_id = ctx_id };
++    virtio_gpu_renderer_call(brpc_create_fence_run, &a);
++    return a.result;
++}
++typedef struct { uint32_t res_id; uint32_t width; uint32_t height; uint32_t virgl_format; uint32_t padding; uint32_t stride; uint32_t offset; virgl_renderer_native_handle *handle; enum virgl_renderer_native_handle_type result; } brpc_create_handle_for_scanout_args;
++static inline void brpc_create_handle_for_scanout_run(void *opaque) {
++    brpc_create_handle_for_scanout_args *a = opaque;
++    a->result = virgl_renderer_create_handle_for_scanout(a->res_id, a->width, a->height, a->virgl_format, a->padding, a->stride, a->offset, a->handle);
++}
++static inline enum virgl_renderer_native_handle_type brpc_create_handle_for_scanout(uint32_t res_id, uint32_t width, uint32_t height, uint32_t virgl_format, uint32_t padding, uint32_t stride, uint32_t offset, virgl_renderer_native_handle *handle) {
++    brpc_create_handle_for_scanout_args a = { .res_id = res_id, .width = width, .height = height, .virgl_format = virgl_format, .padding = padding, .stride = stride, .offset = offset, .handle = handle };
++    virtio_gpu_renderer_call(brpc_create_handle_for_scanout_run, &a);
++    return a.result;
++}
++typedef struct { int ctx_id; int res_handle; } brpc_ctx_attach_resource_args;
++static inline void brpc_ctx_attach_resource_run(void *opaque) {
++    brpc_ctx_attach_resource_args *a = opaque;
++    virgl_renderer_ctx_attach_resource(a->ctx_id, a->res_handle);
++}
++static inline void brpc_ctx_attach_resource(int ctx_id, int res_handle) {
++    brpc_ctx_attach_resource_args a = { .ctx_id = ctx_id, .res_handle = res_handle };
++    virtio_gpu_renderer_call(brpc_ctx_attach_resource_run, &a);
++
++}
++typedef struct { int ctx_id; int res_handle; } brpc_ctx_detach_resource_args;
++static inline void brpc_ctx_detach_resource_run(void *opaque) {
++    brpc_ctx_detach_resource_args *a = opaque;
++    virgl_renderer_ctx_detach_resource(a->ctx_id, a->res_handle);
++}
++static inline void brpc_ctx_detach_resource(int ctx_id, int res_handle) {
++    brpc_ctx_detach_resource_args a = { .ctx_id = ctx_id, .res_handle = res_handle };
++    virtio_gpu_renderer_call(brpc_ctx_detach_resource_run, &a);
++
++}
++typedef struct { uint32_t set; uint32_t version; void *caps; } brpc_fill_caps_args;
++static inline void brpc_fill_caps_run(void *opaque) {
++    brpc_fill_caps_args *a = opaque;
++    virgl_renderer_fill_caps(a->set, a->version, a->caps);
++}
++static inline void brpc_fill_caps(uint32_t set, uint32_t version, void *caps) {
++    brpc_fill_caps_args a = { .set = set, .version = version, .caps = caps };
++    virtio_gpu_renderer_call(brpc_fill_caps_run, &a);
++
++}
++typedef struct { char unused; } brpc_force_ctx_0_args;
++static inline void brpc_force_ctx_0_run(void *opaque) {
++    brpc_force_ctx_0_args *a = opaque;
++    (void)a; virgl_renderer_force_ctx_0();
++}
++static inline void brpc_force_ctx_0(void) {
++    brpc_force_ctx_0_args a = { 0 };
++    virtio_gpu_renderer_call(brpc_force_ctx_0_run, &a);
++
++}
++typedef struct { uint32_t set; uint32_t *max_ver; uint32_t *max_size; } brpc_get_cap_set_args;
++static inline void brpc_get_cap_set_run(void *opaque) {
++    brpc_get_cap_set_args *a = opaque;
++    virgl_renderer_get_cap_set(a->set, a->max_ver, a->max_size);
++}
++static inline void brpc_get_cap_set(uint32_t set, uint32_t *max_ver, uint32_t *max_size) {
++    brpc_get_cap_set_args a = { .set = set, .max_ver = max_ver, .max_size = max_size };
++    virtio_gpu_renderer_call(brpc_get_cap_set_run, &a);
++
++}
++typedef struct { uint32_t resource_id; uint32_t *width; uint32_t *height; void * result; } brpc_get_cursor_data_args;
++static inline void brpc_get_cursor_data_run(void *opaque) {
++    brpc_get_cursor_data_args *a = opaque;
++    a->result = virgl_renderer_get_cursor_data(a->resource_id, a->width, a->height);
++}
++static inline void * brpc_get_cursor_data(uint32_t resource_id, uint32_t *width, uint32_t *height) {
++    brpc_get_cursor_data_args a = { .resource_id = resource_id, .width = width, .height = height };
++    virtio_gpu_renderer_call(brpc_get_cursor_data_run, &a);
++    return a.result;
++}
++typedef struct { void *cookie; int flags; struct virgl_renderer_callbacks *cb; int result; } brpc_init_args;
++static inline void brpc_init_run(void *opaque) {
++    brpc_init_args *a = opaque;
++    a->result = virgl_renderer_init(a->cookie, a->flags, a->cb);
++}
++static inline int brpc_init(void *cookie, int flags, struct virgl_renderer_callbacks *cb) {
++    brpc_init_args a = { .cookie = cookie, .flags = flags, .cb = cb };
++    virtio_gpu_renderer_call(brpc_init_run, &a);
++    return a.result;
++}
++typedef struct { char unused; } brpc_poll_args;
++static inline void brpc_poll_run(void *opaque) {
++    brpc_poll_args *a = opaque;
++    (void)a; virgl_renderer_poll();
++}
++static inline void brpc_poll(void) {
++    brpc_poll_args a = { 0 };
++    virtio_gpu_renderer_call(brpc_poll_run, &a);
++
++}
++typedef struct { enum virgl_renderer_native_handle_type type; virgl_renderer_native_handle handle; } brpc_release_handle_for_scanout_args;
++static inline void brpc_release_handle_for_scanout_run(void *opaque) {
++    brpc_release_handle_for_scanout_args *a = opaque;
++    virgl_renderer_release_handle_for_scanout(a->type, a->handle);
++}
++static inline void brpc_release_handle_for_scanout(enum virgl_renderer_native_handle_type type, virgl_renderer_native_handle handle) {
++    virtio_gpu_renderer_release_handle(type, handle);
++}
++typedef struct { char unused; } brpc_reset_args;
++static inline void brpc_reset_run(void *opaque) {
++    brpc_reset_args *a = opaque;
++    (void)a; virgl_renderer_reset();
++}
++static inline void brpc_reset(void) {
++    brpc_reset_args a = { 0 };
++    virtio_gpu_renderer_call(brpc_reset_run, &a);
++
++}
++typedef struct { int res_handle; struct iovec *iov; int num_iovs; int result; } brpc_resource_attach_iov_args;
++static inline void brpc_resource_attach_iov_run(void *opaque) {
++    brpc_resource_attach_iov_args *a = opaque;
++    a->result = virgl_renderer_resource_attach_iov(a->res_handle, a->iov, a->num_iovs);
++}
++static inline int brpc_resource_attach_iov(int res_handle, struct iovec *iov, int num_iovs) {
++    brpc_resource_attach_iov_args a = { .res_handle = res_handle, .iov = iov, .num_iovs = num_iovs };
++    virtio_gpu_renderer_call(brpc_resource_attach_iov_run, &a);
++    return a.result;
++}
++typedef struct { struct virgl_renderer_resource_create_args *args; struct iovec *iov; uint32_t num_iovs; int result; } brpc_resource_create_args;
++static inline void brpc_resource_create_run(void *opaque) {
++    brpc_resource_create_args *a = opaque;
++    a->result = virgl_renderer_resource_create(a->args, a->iov, a->num_iovs);
++}
++static inline int brpc_resource_create(struct virgl_renderer_resource_create_args *args, struct iovec *iov, uint32_t num_iovs) {
++    brpc_resource_create_args a = { .args = args, .iov = iov, .num_iovs = num_iovs };
++    virtio_gpu_renderer_call(brpc_resource_create_run, &a);
++    return a.result;
++}
++typedef struct { const struct virgl_renderer_resource_create_blob_args *args; int result; } brpc_resource_create_blob_args;
++static inline void brpc_resource_create_blob_run(void *opaque) {
++    brpc_resource_create_blob_args *a = opaque;
++    a->result = virgl_renderer_resource_create_blob(a->args);
++}
++static inline int brpc_resource_create_blob(const struct virgl_renderer_resource_create_blob_args *args) {
++    brpc_resource_create_blob_args a = { .args = args };
++    virtio_gpu_renderer_call(brpc_resource_create_blob_run, &a);
++    return a.result;
++}
++typedef struct { int res_handle; struct iovec **iov; int *num_iovs; } brpc_resource_detach_iov_args;
++static inline void brpc_resource_detach_iov_run(void *opaque) {
++    brpc_resource_detach_iov_args *a = opaque;
++    virgl_renderer_resource_detach_iov(a->res_handle, a->iov, a->num_iovs);
++}
++static inline void brpc_resource_detach_iov(int res_handle, struct iovec **iov, int *num_iovs) {
++    brpc_resource_detach_iov_args a = { .res_handle = res_handle, .iov = iov, .num_iovs = num_iovs };
++    virtio_gpu_renderer_call(brpc_resource_detach_iov_run, &a);
++
++}
++typedef struct { int res_handle; struct virgl_renderer_resource_info *info; int result; } brpc_resource_get_info_args;
++static inline void brpc_resource_get_info_run(void *opaque) {
++    brpc_resource_get_info_args *a = opaque;
++    a->result = virgl_renderer_resource_get_info(a->res_handle, a->info);
++}
++static inline int brpc_resource_get_info(int res_handle, struct virgl_renderer_resource_info *info) {
++    brpc_resource_get_info_args a = { .res_handle = res_handle, .info = info };
++    virtio_gpu_renderer_call(brpc_resource_get_info_run, &a);
++    return a.result;
++}
++typedef struct { int res_handle; struct virgl_renderer_resource_info_ext *info; int result; } brpc_resource_get_info_ext_args;
++static inline void brpc_resource_get_info_ext_run(void *opaque) {
++    brpc_resource_get_info_ext_args *a = opaque;
++    a->result = virgl_renderer_resource_get_info_ext(a->res_handle, a->info);
++}
++static inline int brpc_resource_get_info_ext(int res_handle, struct virgl_renderer_resource_info_ext *info) {
++    brpc_resource_get_info_ext_args a = { .res_handle = res_handle, .info = info };
++    virtio_gpu_renderer_call(brpc_resource_get_info_ext_run, &a);
++    return a.result;
++}
++typedef struct { uint32_t res_handle; uint32_t *map_info; int result; } brpc_resource_get_map_info_args;
++static inline void brpc_resource_get_map_info_run(void *opaque) {
++    brpc_resource_get_map_info_args *a = opaque;
++    a->result = virgl_renderer_resource_get_map_info(a->res_handle, a->map_info);
++}
++static inline int brpc_resource_get_map_info(uint32_t res_handle, uint32_t *map_info) {
++    brpc_resource_get_map_info_args a = { .res_handle = res_handle, .map_info = map_info };
++    virtio_gpu_renderer_call(brpc_resource_get_map_info_run, &a);
++    return a.result;
++}
++typedef struct { uint32_t res_handle; void **map; uint64_t *out_size; int result; } brpc_resource_map_args;
++static inline void brpc_resource_map_run(void *opaque) {
++    brpc_resource_map_args *a = opaque;
++    a->result = virgl_renderer_resource_map(a->res_handle, a->map, a->out_size);
++}
++static inline int brpc_resource_map(uint32_t res_handle, void **map, uint64_t *out_size) {
++    brpc_resource_map_args a = { .res_handle = res_handle, .map = map, .out_size = out_size };
++    virtio_gpu_renderer_call(brpc_resource_map_run, &a);
++    return a.result;
++}
++typedef struct { uint32_t res_handle; int result; } brpc_resource_unmap_args;
++static inline void brpc_resource_unmap_run(void *opaque) {
++    brpc_resource_unmap_args *a = opaque;
++    a->result = virgl_renderer_resource_unmap(a->res_handle);
++}
++static inline int brpc_resource_unmap(uint32_t res_handle) {
++    brpc_resource_unmap_args a = { .res_handle = res_handle };
++    virtio_gpu_renderer_call(brpc_resource_unmap_run, &a);
++    return a.result;
++}
++typedef struct { uint32_t res_handle; } brpc_resource_unref_args;
++static inline void brpc_resource_unref_run(void *opaque) {
++    brpc_resource_unref_args *a = opaque;
++    virgl_renderer_resource_unref(a->res_handle);
++}
++static inline void brpc_resource_unref(uint32_t res_handle) {
++    brpc_resource_unref_args a = { .res_handle = res_handle };
++    virtio_gpu_renderer_call(brpc_resource_unref_run, &a);
++
++}
++typedef struct { void *buffer; int ctx_id; int ndw; int result; } brpc_submit_cmd_args;
++static inline void brpc_submit_cmd_run(void *opaque) {
++    brpc_submit_cmd_args *a = opaque;
++    a->result = virgl_renderer_submit_cmd(a->buffer, a->ctx_id, a->ndw);
++}
++static inline int brpc_submit_cmd(void *buffer, int ctx_id, int ndw) {
++    brpc_submit_cmd_args a = { .buffer = buffer, .ctx_id = ctx_id, .ndw = ndw };
++    virtio_gpu_renderer_call(brpc_submit_cmd_run, &a);
++    return a.result;
++}
++typedef struct { uint32_t handle; uint32_t ctx_id; uint32_t level; uint32_t stride; uint32_t layer_stride; struct virgl_box *box; uint64_t offset; struct iovec *iov; int iovec_cnt; int result; } brpc_transfer_read_iov_args;
++static inline void brpc_transfer_read_iov_run(void *opaque) {
++    brpc_transfer_read_iov_args *a = opaque;
++    a->result = virgl_renderer_transfer_read_iov(a->handle, a->ctx_id, a->level, a->stride, a->layer_stride, a->box, a->offset, a->iov, a->iovec_cnt);
++}
++static inline int brpc_transfer_read_iov(uint32_t handle, uint32_t ctx_id, uint32_t level, uint32_t stride, uint32_t layer_stride, struct virgl_box *box, uint64_t offset, struct iovec *iov, int iovec_cnt) {
++    brpc_transfer_read_iov_args a = { .handle = handle, .ctx_id = ctx_id, .level = level, .stride = stride, .layer_stride = layer_stride, .box = box, .offset = offset, .iov = iov, .iovec_cnt = iovec_cnt };
++    virtio_gpu_renderer_call(brpc_transfer_read_iov_run, &a);
++    return a.result;
++}
++typedef struct { uint32_t handle; uint32_t ctx_id; int level; uint32_t stride; uint32_t layer_stride; struct virgl_box *box; uint64_t offset; struct iovec *iovec; unsigned int iovec_cnt; int result; } brpc_transfer_write_iov_args;
++static inline void brpc_transfer_write_iov_run(void *opaque) {
++    brpc_transfer_write_iov_args *a = opaque;
++    a->result = virgl_renderer_transfer_write_iov(a->handle, a->ctx_id, a->level, a->stride, a->layer_stride, a->box, a->offset, a->iovec, a->iovec_cnt);
++}
++static inline int brpc_transfer_write_iov(uint32_t handle, uint32_t ctx_id, int level, uint32_t stride, uint32_t layer_stride, struct virgl_box *box, uint64_t offset, struct iovec *iovec, unsigned int iovec_cnt) {
++    brpc_transfer_write_iov_args a = { .handle = handle, .ctx_id = ctx_id, .level = level, .stride = stride, .layer_stride = layer_stride, .box = box, .offset = offset, .iovec = iovec, .iovec_cnt = iovec_cnt };
++    virtio_gpu_renderer_call(brpc_transfer_write_iov_run, &a);
++    return a.result;
++}
++#define virgl_renderer_cleanup brpc_cleanup
++#define virgl_renderer_context_create brpc_context_create
++#define virgl_renderer_context_create_fence brpc_context_create_fence
++#define virgl_renderer_context_create_with_flags brpc_context_create_with_flags
++#define virgl_renderer_context_destroy brpc_context_destroy
++#define virgl_renderer_create_fence brpc_create_fence
++#define virgl_renderer_create_handle_for_scanout brpc_create_handle_for_scanout
++#define virgl_renderer_ctx_attach_resource brpc_ctx_attach_resource
++#define virgl_renderer_ctx_detach_resource brpc_ctx_detach_resource
++#define virgl_renderer_fill_caps brpc_fill_caps
++#define virgl_renderer_force_ctx_0 brpc_force_ctx_0
++#define virgl_renderer_get_cap_set brpc_get_cap_set
++#define virgl_renderer_get_cursor_data brpc_get_cursor_data
++#define virgl_renderer_init brpc_init
++#define virgl_renderer_poll brpc_poll
++#define virgl_renderer_release_handle_for_scanout brpc_release_handle_for_scanout
++#define virgl_renderer_reset brpc_reset
++#define virgl_renderer_resource_attach_iov brpc_resource_attach_iov
++#define virgl_renderer_resource_create brpc_resource_create
++#define virgl_renderer_resource_create_blob brpc_resource_create_blob
++#define virgl_renderer_resource_detach_iov brpc_resource_detach_iov
++#define virgl_renderer_resource_get_info brpc_resource_get_info
++#define virgl_renderer_resource_get_info_ext brpc_resource_get_info_ext
++#define virgl_renderer_resource_get_map_info brpc_resource_get_map_info
++#define virgl_renderer_resource_map brpc_resource_map
++#define virgl_renderer_resource_unmap brpc_resource_unmap
++#define virgl_renderer_resource_unref brpc_resource_unref
++#define virgl_renderer_submit_cmd brpc_submit_cmd
++#define virgl_renderer_transfer_read_iov brpc_transfer_read_iov
++#define virgl_renderer_transfer_write_iov brpc_transfer_write_iov
++#endif
+--- a/hw/display/virtio-gpu-gl.c
++++ b/hw/display/virtio-gpu-gl.c
+@@ -23,8 +23,177 @@
+ #include "hw/virtio/virtio-gpu-pixman.h"
+ #include "hw/qdev-properties.h"
+ 
++#define VIRGL_RENDERER_UNSTABLE_APIS
+ #include <virglrenderer.h>
++#include "qemu/main-loop.h"
++#include "qemu/coroutine.h"
++#include "system/cpus.h"
++#include "ui/egl-helpers.h"
++#include "breenix-render-worker.h"
++#include "breenix-render-call.h"
++#include "breenix-virgl-rpc.h"
++
++/* One GL device is permitted. Device/display state remains on the main loop;
++ * the worker owns only VirGL/EGL calls and never acquires BQL. */
++static BRW *renderer_worker;
++static QEMUBH *renderer_done_bh;
++static Coroutine *renderer_co;
++static GQueue renderer_events = G_QUEUE_INIT;
++static bool renderer_quiescing;
++EGLContext breenix_renderer_share;
++
++typedef struct RendererCall {
++    BRWJob job;
++    Coroutine *co;
++    bool done;
++    void (*fn)(void *);
++    void *arg;
++} RendererCall;
++
++typedef struct RendererEvent {
++    void (*fn)(void *);
++    void *arg;
++} RendererEvent;
++
++static void renderer_notify(void *opaque)
++{
++    qemu_bh_schedule(opaque);
++}
++
++static void renderer_done(void *opaque G_GNUC_UNUSED)
++{
++    brw_complete(renderer_worker);
++}
++
++static void renderer_run_call(void *opaque)
++{
++    RendererCall *call = opaque;
++    assert(!bql_locked());
++    call->fn(call->arg);
++}
++
++static void renderer_retire_call(void *opaque)
++{
++    RendererCall *call = opaque;
++    call->done = true;
++    if (call->co) {
++        qemu_coroutine_enter(call->co);
++    }
++}
++
++void virtio_gpu_renderer_call(void (*fn)(void *), void *arg)
++{
++    RendererCall call = { .fn = fn, .arg = arg };
++    if (!renderer_worker || g_thread_self() == renderer_worker->thread) {
++        fn(arg);
++        return;
++    }
++    assert(bql_locked());
++    call.job = (BRWJob){ renderer_run_call, renderer_retire_call, &call };
++    call.co = qemu_in_coroutine() ? qemu_coroutine_self() : NULL;
++    brw_submit(renderer_worker, &call.job);
++    if (call.co) {
++        qemu_coroutine_yield();
++    } else {
++        /* Initialization, native texture release and drained teardown only.
++         * Dispatching the main loop also releases BQL around its poll. */
++        while (!call.done) {
++            main_loop_wait(false);
++        }
++    }
++    assert(call.done);
++}
++
++typedef struct RendererRelease {
++    BRWJob job;
++    brpc_release_handle_for_scanout_args args;
++} RendererRelease;
++
++static void renderer_release_done(void *opaque)
++{
++    g_free(opaque);
++}
++
++static void renderer_release_run(void *opaque)
++{
++    RendererRelease *release = opaque;
++    brpc_release_handle_for_scanout_run(&release->args);
++}
++
++void virtio_gpu_renderer_release_handle(enum virgl_renderer_native_handle_type type,
++                                        virgl_renderer_native_handle handle)
++{
++    if (!renderer_worker) {
++        brpc_release_handle_for_scanout_args args = { type, handle };
++        brpc_release_handle_for_scanout_run(&args);
++    } else {
++        RendererRelease *release = g_new0(RendererRelease, 1);
++        release->args = (brpc_release_handle_for_scanout_args){ type, handle };
++        release->job = (BRWJob){ renderer_release_run, renderer_release_done, release };
++        brw_submit(renderer_worker, &release->job);
++    }
++}
++
++static void renderer_flush(void *opaque G_GNUC_UNUSED)
++{
++    glFlush();
++}
++
++void virtio_gpu_renderer_flush(void)
++{
++    virtio_gpu_renderer_call(renderer_flush, NULL);
++}
++
++static void coroutine_fn renderer_dispatch(void *opaque G_GNUC_UNUSED)
++{
++    RendererEvent *event;
++    while ((event = g_queue_pop_head(&renderer_events))) {
++        event->fn(event->arg);
++        g_free(event);
++    }
++    renderer_co = NULL;
++}
++
++void virtio_gpu_gl_schedule(VirtIOGPU *g G_GNUC_UNUSED, void (*fn)(void *), void *arg)
++{
++    RendererEvent *event;
++    GList *entry;
++    assert(bql_locked());
++    if (renderer_quiescing) {
++        return;
++    }
++    /* Queue notifications and poll ticks are level-triggered. Bound pending
++     * work by coalescing each source, just as its original bottom half did. */
++    for (entry = renderer_events.head; entry; entry = entry->next) {
++        event = entry->data;
++        if (event->fn == fn && event->arg == arg) {
++            return;
++        }
++    }
++    event = g_new(RendererEvent, 1);
++    *event = (RendererEvent){ fn, arg };
++    g_queue_push_tail(&renderer_events, event);
++    if (!renderer_co) {
++        renderer_co = qemu_coroutine_create(renderer_dispatch, NULL);
++        qemu_coroutine_enter(renderer_co);
++    }
++}
+ 
++static void renderer_quiesce(void)
++{
++    renderer_quiescing = true;
++    while (renderer_co) {
++        main_loop_wait(false);
++    }
++}
++
++static void renderer_destroy_share(void *opaque G_GNUC_UNUSED)
++{
++    eglDestroyContext(qemu_egl_display, breenix_renderer_share);
++    breenix_renderer_share = EGL_NO_CONTEXT;
++}
++
++
+ static void virtio_gpu_gl_update_cursor_data(VirtIOGPU *g,
+                                              struct virtio_gpu_scanout *s,
+                                              uint32_t resource_id)
+@@ -53,15 +222,22 @@
+     free(data);
+ }
+ 
++static void renderer_process_cmdq(void *opaque)
++{
++    virtio_gpu_process_cmdq(opaque);
++}
++
+ static void virtio_gpu_gl_flushed(VirtIOGPUBase *b)
+ {
+     VirtIOGPU *g = VIRTIO_GPU(b);
+ 
+-    virtio_gpu_process_cmdq(g);
++    virtio_gpu_gl_schedule(g, renderer_process_cmdq, g);
+ }
+ 
+-static void virtio_gpu_gl_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
++static void virtio_gpu_gl_ctrl_work(void *opaque)
+ {
++    VirtIODevice *vdev = VIRTIO_DEVICE(opaque);
++    VirtQueue *vq = VIRTIO_GPU(opaque)->ctrl_vq;
+     VirtIOGPU *g = VIRTIO_GPU(vdev);
+     VirtIOGPUGL *gl = VIRTIO_GPU_GL(vdev);
+     struct virtio_gpu_ctrl_command *cmd;
+@@ -99,11 +275,35 @@
+     virtio_gpu_virgl_fence_poll(g);
+ }
+ 
+-static void virtio_gpu_gl_reset(VirtIODevice *vdev)
++static void virtio_gpu_gl_handle_ctrl(VirtIODevice *vdev, VirtQueue *vq)
++{
++    VirtIOGPU *g = VIRTIO_GPU(vdev);
++    if (!renderer_worker && qemu_egl_display) {
++        QEMUGLParams params = { .major_ver = 3, .minor_ver = 0 };
++        breenix_renderer_share = dpy_gl_ctx_create(g->parent_obj.scanout[0].con,
++                                                  &params);
++        if (!breenix_renderer_share) {
++            VIRTIO_GPU_GL(g)->renderer_state = RS_INIT_FAILED;
++            return;
++        }
++        /* This uncurrent shared context belongs to the worker. The display's
++         * own root context and surfaces remain on their existing thread. */
++        renderer_done_bh = qemu_bh_new(renderer_done, NULL);
++        renderer_worker = brw_new(renderer_notify, renderer_done_bh);
++#ifdef CONFIG_DARWIN
++        renderer_worker->execute = breenix_renderer_invoke;
++#endif
++    }
++    virtio_gpu_gl_schedule(g, virtio_gpu_gl_ctrl_work, g);
++}
++
++static void virtio_gpu_gl_reset_main(void *opaque)
+ {
++    VirtIODevice *vdev = opaque;
+     VirtIOGPU *g = VIRTIO_GPU(vdev);
+     VirtIOGPUGL *gl = VIRTIO_GPU_GL(vdev);
+ 
++    renderer_quiesce();
+     virtio_gpu_reset(vdev);
+ 
+     /*
+@@ -116,6 +316,38 @@
+     }
+ }
+ 
++typedef struct RendererReset {
++    VirtIODevice *vdev;
++    QemuCond cond;
++    bool done;
++} RendererReset;
++
++static void renderer_reset_bh(void *opaque)
++{
++    RendererReset *reset = opaque;
++    virtio_gpu_gl_reset_main(reset->vdev);
++    reset->done = true;
++    renderer_quiescing = false;
++    qemu_cond_signal(&reset->cond);
++}
++
++static void virtio_gpu_gl_reset(VirtIODevice *vdev)
++{
++    if (qemu_in_vcpu_thread()) {
++        RendererReset reset = { .vdev = vdev };
++        renderer_quiescing = true;
++        qemu_cond_init(&reset.cond);
++        aio_bh_schedule_oneshot(qemu_get_aio_context(), renderer_reset_bh, &reset);
++        while (!reset.done) {
++            qemu_cond_wait_bql(&reset.cond);
++        }
++        qemu_cond_destroy(&reset.cond);
++    } else {
++        virtio_gpu_gl_reset_main(vdev);
++        renderer_quiescing = false;
++    }
++}
++
+ static void virtio_gpu_gl_device_realize(DeviceState *qdev, Error **errp)
+ {
+     ERRP_GUARD();
+@@ -166,7 +398,11 @@
+     VirtIOGPU *g = VIRTIO_GPU(qdev);
+     VirtIOGPUGL *gl = VIRTIO_GPU_GL(qdev);
+ 
++    renderer_quiesce();
+     if (gl->renderer_state >= RS_INITED) {
++        virtio_gpu_virgl_reset_scanout(g);
++        /* Stop renderer fence producers while their BHs are still alive. */
++        virgl_renderer_cleanup(NULL);
+ #if VIRGL_VERSION_MAJOR >= 1
+         qemu_bh_delete(gl->cmdq_resume_bh);
+ 
+@@ -179,9 +415,18 @@
+             timer_free(gl->print_stats);
+         }
+         timer_free(gl->fence_poll);
+-        virgl_renderer_cleanup(NULL);
+     }
+ 
++    if (renderer_worker) {
++        virtio_gpu_renderer_call(renderer_destroy_share, NULL);
++        brw_stop(renderer_worker);
++        brw_complete(renderer_worker);
++        qemu_bh_delete(renderer_done_bh);
++        brw_free(renderer_worker);
++        renderer_worker = NULL;
++        renderer_done_bh = NULL;
++    }
++    renderer_quiescing = false;
+     gl->renderer_state = RS_START;
+ 
+     g_array_unref(g->capset_ids);
+@@ -195,6 +440,7 @@
+     VirtIOGPUClass *vgc = VIRTIO_GPU_CLASS(klass);
+ 
+     vbc->gl_flushed = virtio_gpu_gl_flushed;
++    vgc->schedule = virtio_gpu_gl_schedule;
+     vgc->handle_ctrl = virtio_gpu_gl_handle_ctrl;
+     vgc->process_cmd = virtio_gpu_virgl_process_cmd;
+     vgc->update_cursor_data = virtio_gpu_gl_update_cursor_data;
+--- a/hw/display/virtio-gpu-virgl.c
++++ b/hw/display/virtio-gpu-virgl.c
+@@ -24,6 +24,8 @@
+ 
+ #define VIRGL_RENDERER_UNSTABLE_APIS
+ #include <virglrenderer.h>
++#include "breenix-virgl-rpc.h"
++extern EGLContext breenix_renderer_share;
+ 
+ #define NATIVE_HANDLE_SUPPORT_VERSION (1)
+ 
+@@ -174,7 +176,7 @@
+     g_free(cmd);
+ }
+ 
+-static void virtio_gpu_virgl_resume_cmdq_bh(void *opaque)
++static void virtio_gpu_virgl_resume_cmdq_bh_work(void *opaque)
+ {
+     VirtIOGPU *g = opaque;
+     VirtIOGPUGL *gl = VIRTIO_GPU_GL(g);
+@@ -185,6 +187,11 @@
+     }
+ 
+     virtio_gpu_process_cmdq(g);
++}
++
++static void virtio_gpu_virgl_resume_cmdq_bh(void *opaque)
++{
++    virtio_gpu_gl_schedule(opaque, virtio_gpu_virgl_resume_cmdq_bh_work, opaque);
+ }
+ 
+ /*
+@@ -594,8 +601,12 @@
+     g_string_append_c(out, '"');
+ }
+ 
+-static void breenix_attest(const char *event, uint32_t ctx_id)
++typedef struct BreenixAttest { const char *event; uint32_t ctx_id; } BreenixAttest;
++static void breenix_attest_job(void *opaque)
+ {
++    BreenixAttest *arg = opaque;
++    const char *event = arg->event;
++    uint32_t ctx_id = arg->ctx_id;
+     const char *path = getenv("BREENIX_HOST_RENDERER_JSON");
+     const char *vendor = NULL, *renderer = NULL, *version = NULL;
+     const char *egl_vendor = NULL, *egl_version = NULL;
+@@ -643,7 +654,13 @@
+         error_report("virtio-gpu: cannot write %s", path);
+     }
+ }
++static void breenix_attest(const char *event, uint32_t ctx_id)
++{
++    BreenixAttest arg = { event, ctx_id };
++    virtio_gpu_renderer_call(breenix_attest_job, &arg);
++}
+ 
++
+ static void virgl_cmd_context_create(VirtIOGPU *g,
+                                      struct virtio_gpu_ctrl_command *cmd)
+ {
+@@ -697,6 +714,7 @@
+         return;
+     }
+ 
++    virtio_gpu_renderer_flush();
+     dpy_gl_update(g->parent_obj.scanout[idx].con, x, y, width, height);
+ }
+ 
+@@ -784,9 +802,10 @@
+             cmd->error = VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID;
+             return;
+         }
++        virgl_renderer_force_ctx_0();
++        virtio_gpu_renderer_flush();
+         qemu_console_resize(g->parent_obj.scanout[ss.scanout_id].con,
+                             ss.r.width, ss.r.height);
+-        virgl_renderer_force_ctx_0();
+         dpy_gl_scanout_texture(
+             g->parent_obj.scanout[ss.scanout_id].con, info.tex_id,
+             info.flags & VIRTIO_GPU_RESOURCE_FLAG_Y_0_TOP,
+@@ -1241,6 +1260,7 @@
+             .type = SCANOUT_TEXTURE_NATIVE_TYPE_METAL,
+             .handle = handle,
+         };
++        virtio_gpu_renderer_flush();
+         qemu_console_resize(scanout->con,
+                             ss->r.width, ss->r.height);
+         dpy_gl_scanout_texture(
+@@ -1545,7 +1565,7 @@
+ }
+ 
+ #if VIRGL_CHECK_VERSION(1, 1, 2)
+-static void virtio_gpu_virgl_async_fence_bh(void *opaque)
++static void virtio_gpu_virgl_async_fence_bh_work(void *opaque)
+ {
+     QSLIST_HEAD(, virtio_gpu_virgl_context_fence) async_fenceq;
+     struct virtio_gpu_virgl_context_fence *f;
+@@ -1583,6 +1603,11 @@
+     }
+ }
+ 
++static void virtio_gpu_virgl_async_fence_bh(void *opaque)
++{
++    virtio_gpu_gl_schedule(opaque, virtio_gpu_virgl_async_fence_bh_work, opaque);
++}
++
+ static void
+ virtio_gpu_virgl_push_async_fence(VirtIOGPU *g, uint32_t ctx_id,
+                                   uint32_t ring_idx, uint64_t fence_id)
+@@ -1624,6 +1649,14 @@
+     QEMUGLContext ctx;
+     QEMUGLParams qparams;
+ 
++    if (breenix_renderer_share) {
++        EGLint attrs[] = { EGL_CONTEXT_MAJOR_VERSION, params->major_ver,
++                           EGL_CONTEXT_MINOR_VERSION, params->minor_ver, EGL_NONE };
++        eglBindAPI(qemu_egl_mode == DISPLAY_GL_MODE_ES ? EGL_OPENGL_ES_API :
++                                                        EGL_OPENGL_API);
++        return eglCreateContext(qemu_egl_display, qemu_egl_config,
++                                breenix_renderer_share, attrs);
++    }
+     qparams.major_ver = params->major_ver;
+     qparams.minor_ver = params->minor_ver;
+ 
+@@ -1636,6 +1669,10 @@
+     VirtIOGPU *g = opaque;
+     QEMUGLContext qctx = (QEMUGLContext)ctx;
+ 
++    if (breenix_renderer_share) {
++        eglDestroyContext(qemu_egl_display, ctx);
++        return;
++    }
+     dpy_gl_ctx_destroy(g->parent_obj.scanout[0].con, qctx);
+ }
+ 
+@@ -1645,6 +1682,10 @@
+     VirtIOGPU *g = opaque;
+     QEMUGLContext qctx = (QEMUGLContext)ctx;
+ 
++    if (breenix_renderer_share) {
++        return eglMakeCurrent(qemu_egl_display, EGL_NO_SURFACE, EGL_NO_SURFACE,
++                               ctx) ? 0 : -1;
++    }
+     return dpy_gl_ctx_make_current(g->parent_obj.scanout[scanout_idx].con,
+                                    qctx);
+ }
+@@ -1685,7 +1726,7 @@
+     timer_mod(gl->print_stats, qemu_clock_get_ms(QEMU_CLOCK_VIRTUAL) + 1000);
+ }
+ 
+-static void virtio_gpu_fence_poll(void *opaque)
++static void virtio_gpu_fence_poll_work(void *opaque)
+ {
+     VirtIOGPU *g = opaque;
+     VirtIOGPUGL *gl = VIRTIO_GPU_GL(g);
+@@ -1729,6 +1770,11 @@
+     }
+ }
+ 
++static void virtio_gpu_fence_poll(void *opaque)
++{
++    virtio_gpu_gl_schedule(opaque, virtio_gpu_fence_poll_work, opaque);
++}
++
+ void virtio_gpu_virgl_fence_poll(VirtIOGPU *g)
+ {
+     virtio_gpu_fence_poll(g);
+--- a/hw/display/virtio-gpu.c
++++ b/hw/display/virtio-gpu.c
+@@ -1186,12 +1186,23 @@
+     }
+ }
+ 
+-static void virtio_gpu_cursor_bh(void *opaque)
++static void virtio_gpu_cursor_work(void *opaque)
+ {
+     VirtIOGPU *g = opaque;
+     virtio_gpu_handle_cursor(&g->parent_obj.parent_obj, g->cursor_vq);
+ }
+ 
++static void virtio_gpu_cursor_bh(void *opaque)
++{
++    VirtIOGPU *g = opaque;
++    VirtIOGPUClass *vgc = VIRTIO_GPU_GET_CLASS(g);
++    if (vgc->schedule) {
++        vgc->schedule(g, virtio_gpu_cursor_work, g);
++    } else {
++        virtio_gpu_cursor_work(g);
++    }
++}
++
+ static bool scanout_vmstate_after_v2(void *opaque, int version)
+ {
+     struct VirtIOGPUBase *base = container_of(opaque, VirtIOGPUBase, scanout);
+--- a/include/hw/virtio/virtio-gpu.h
++++ b/include/hw/virtio/virtio-gpu.h
+@@ -261,6 +261,7 @@
+     void (*resource_destroy)(VirtIOGPU *g,
+                              struct virtio_gpu_simple_resource *res,
+                              Error **errp);
++    void (*schedule)(VirtIOGPU *g, void (*fn)(void *), void *arg);
+ };
+ 
+ struct virtio_gpu_virgl_context_fence {
+@@ -429,6 +430,8 @@
+                                struct virtio_gpu_rect *r);
+ void virtio_gpu_disable_scanout(VirtIOGPU *g, int scanout_id);
+ 
++void virtio_gpu_gl_schedule(VirtIOGPU *g, void (*fn)(void *), void *arg);
++
+ /* virtio-gpu-3d.c */
+ void virtio_gpu_virgl_process_cmd(VirtIOGPU *g,
+                                   struct virtio_gpu_ctrl_command *cmd);
