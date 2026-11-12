@@ -1450,11 +1450,15 @@ fn export_pipeline(path: &str) {
     if let Err(error) = result { value("pipeline-export-errno", error.raw_os_error().unwrap_or(5) as i64, "", None); }
 }
 
-fn input_observation(command: &str) -> Result<(), String> {
+fn input_observation(command: &str) {
     use std::io::Write;
-    let mut evidence = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence")
-        .map_err(|e| e.to_string())?;
-    evidence.write_all(format!("WM_STALL {command}\n").as_bytes()).map_err(|e| e.to_string())
+    let result = (|| -> std::io::Result<()> {
+        let mut evidence = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence")?;
+        evidence.write_all(format!("WM_STALL {command}\n").as_bytes())
+    })();
+    if let Err(error) = result {
+        failure_diagnostic("input-observation", &format!("command={command} skipped={error}"));
+    }
 }
 
 fn input_latency(pointer: bool, animation: bool) -> CaseResult {
@@ -1480,14 +1484,14 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
     let w = c.info()?;
     struct InputObservation;
     impl Drop for InputObservation {
-        fn drop(&mut self) { let _ = input_observation("input-close"); }
+        fn drop(&mut self) { input_observation("input-close"); }
     }
-    input_observation("input-reset")?;
+    input_observation("input-reset");
     let _observation = InputObservation;
     for n in 0..110 {
         c.clear()?;
         let begin = now();
-        input_observation(&format!("input-begin {begin}"))?;
+        input_observation(&format!("input-begin {begin}"));
         if pointer {
             let x = (w.x + 20 + (n % 100)) as u64;
             let y = (w.y + 40) as u64;
@@ -1510,7 +1514,7 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
                 }
         })?;
         let r = measure::completed_commit(&c, c.handling_commit)?;
-        input_observation(&format!("input-end {}", r.ns))?;
+        input_observation(&format!("input-end {}", r.ns));
         receipt_serial = receipt_serial.max(r.serial);
         if r.ns < begin {
             value("input-time", begin as i64, "ns", None);
@@ -1537,10 +1541,16 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
             time::sleep_ms(50 - spent)?;
         }
     }
-    let trace = std::fs::read_to_string("/proc/breenix/window-stall").map_err(|e| e.to_string())?;
     let label = if animation { "input-animation-observation" }
         else if pointer { "input-pointer-observation" } else { "input-typing-observation" };
-    let receipt = breenix_suite::suite::upload_diagnostic("window-manager", label, trace.as_bytes())?;
+    let observation = (|| -> Result<String, String> {
+        let trace = std::fs::read_to_string("/proc/breenix/window-stall").map_err(|e| e.to_string())?;
+        breenix_suite::suite::upload_diagnostic("window-manager", label, trace.as_bytes())
+    })();
+    let receipt = match observation {
+        Ok(receipt) => receipt,
+        Err(error) => format!("skipped={error}"),
+    };
     failure_diagnostic("input-observation", &format!("client_window={} label={label} {receipt}", c.id));
     measure::observed(&mut d, &[&c], receipt_serial)?;
     samples.sort_unstable();
