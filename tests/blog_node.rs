@@ -25,6 +25,13 @@ fn search_publishes_match_and_absolute_row() {
     assert_eq!(node::lines_view(&tail, 1, 2, Some(1))["rows"], serde_json::json!([
         {"n":2,"text":"two","match":true}, {"n":3,"text":"three","match":false}
     ]));
-    assert_eq!(node::status_view(0, "/log", false, true, "two", Some(1), 1, &tail)["search"],
+    assert_eq!(node::status_view(0, "/log", false, true, "two", Some(1), 1, &tail, "/fonts/mono.ttf", 16.0)["search"],
         serde_json::json!({"query":"two","row":2,"matches":1}));
+}
+
+#[test]
+fn status_reports_the_drawing_font() {
+    let tail = tail::Tail::new();
+    let value = node::status_view(0, "/log", true, true, "", None, 0, &tail, "/fonts/mono.ttf", 16.0);
+    assert_eq!(value["font"], serde_json::json!({"path":"/fonts/mono.ttf", "size":16.0}));
 }

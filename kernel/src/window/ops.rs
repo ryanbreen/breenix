@@ -269,6 +269,7 @@ pub fn destroy(caller: &Caller, id: u64) -> Result<u64, i32> {
         let mut reg = REGISTRY.lock();
         reg.window(id, caller, who::owner)?;
         let w = reg.windows.remove(&id).ok_or(ENOENT)?;
+        super::pipeline::record(23, w.id, w.owner, 0);
         if w.registered { reg.geometry_changed(); }
         reg.present.uncover(w.present.shown);
         w
@@ -1452,6 +1453,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
         let ids: Vec<u64> = reg.windows.values().filter(|w| w.owner == tgid).map(|w| w.id).collect();
         for id in ids {
             if let Some(w) = reg.windows.remove(&id) {
+                super::pipeline::record(23, w.id, w.owner, if at_exit { 1 } else { 2 });
                 if w.registered { reg.geometry_changed(); }
                 reg.present.uncover(w.present.shown);
                 if at_exit {

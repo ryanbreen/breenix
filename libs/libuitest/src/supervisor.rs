@@ -16,6 +16,7 @@ pub enum Message {
     Configured,
     LaunchApp { argv: Vec<Vec<u8>>, uid: u32 },
     StartCompositor { kiosk: bool },
+    StartInitDesktop,
     StartCompositorWithPointer(u32),
     ReadStderr(u64),
     Stderr { pid: u64, dropped: u64, bytes: Vec<u8>, done: bool },
@@ -73,6 +74,7 @@ pub fn encode(message: &Message) -> Result<Vec<u8>, String> {
             if !valid_launch(argv, &[]) || !matches!(uid, 0 | 1000) { return Err("invalid app launch".into()); }
             out.push(11); out.extend_from_slice(&uid.to_le_bytes()); strings(&mut out, argv);
         }
+        Message::StartInitDesktop => out.push(23),
         Message::StartCompositor { kiosk } => { out.push(14); out.push(u8::from(*kiosk)); }
         Message::StartCompositorWithPointer(id) => {
             if *id == 0 { return Err("invalid auxiliary pointer".into()); }
@@ -157,6 +159,7 @@ pub fn decode(payload: &[u8]) -> Result<Message, String> {
             if !valid_launch(&argv, &[]) || !matches!(uid, 0 | 1000) { return Err("invalid app launch".into()); }
             Message::LaunchApp { argv, uid }
         }
+        23 => Message::StartInitDesktop,
         22 => {
             let text = String::from_utf8(cur.bytes()?).map_err(|_| "invalid session UTF-8")?;
             if text.is_empty() || text.len() > 256 { return Err("invalid session text length".into()); }

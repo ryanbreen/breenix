@@ -3,8 +3,8 @@
 This unit addresses ARM coordinator ledger line 254(1)–(2), following the
 pre-guest abort in `20261112T025722Z-qemu-45699`. Issue #2890 tracks the host
 graphics changes; #2872 retains window-manager acceptance. This unit changes
-the optional host program-cache installation and its check, with no Breenix
-runtime change or boot.
+the optional host program-cache installation and its check. The cache repair
+changes no Breenix runtime code, and this unit runs no Breenix boot.
 
 ## Cause
 
@@ -87,7 +87,7 @@ wraps the resolved procedure instead of the old direct-dispatch call. Its
 populate, fresh-process hit, no-fresh-write, record integrity and successful
 link assertions are unchanged.
 
-This host-only diff does not reach a guest kernel or userspace binary, so its
+The dispatch repair does not reach a guest kernel or userspace binary, so its
 build scope is the GL QEMU recipe. It changes no renderer worker code and does
 not repeat that unit's BQL test. The acceptance unit retains the boot and
 review obligations in coordinator line 254(3)–(4), including diagnostic cleanup;
@@ -120,3 +120,35 @@ CARGO_BUILD_JOBS=4 taskpolicy -b python3 tests/a3_qemu_blob_cache_test.py
 The ARM ledger records claim-lint invocations, commits and push status. The
 freshness check requires merging newer origin/main before pushing; that merge
 does not change this host recipe or its shader inputs.
+
+## Required freshness merge
+
+The freshness redirect requires merging origin/main `032a81b1`, which added
+42 commits while the unit was running. Two conflicts are resolved separately
+from the host repair commit:
+
+- `kernel/src/window/pipeline.rs`: retain process-exit stages 17–22 and main's
+  window-destruction record. The two destruction producers in `ops.rs` use the
+  next unused stage, 23, so they cannot be confused with exit stage 17 by the
+  existing reap diagnostic reader.
+- `userspace/programs/src/init_services.rs`: use main's compositor environment
+  helper for its five session settings and retain A.3's startup-trace directory.
+  `BREENIX_UI_CLOCK` is forwarded by the helper rather than duplicated.
+
+The post-conflict x86 release and ARM64 kernel builds pass. The x86 build has
+no warnings; ARM64 emits only the recorded pinned-core future-compatibility
+advisory. Scoped x86 and ARM64 `init` builds pass without warnings, and the
+existing `init_bwm_environment.rs` host test passes 1/1 with `-D warnings`.
+The host result record contains these build/check log hashes. This merge does not
+rerun the already passing host graphics checks: their source inputs are
+unchanged. Guest acceptance and the diagnostic inventory remain with the
+acceptance unit.
+
+Claim-lint of the changed hunks before the host repair commit exits 0
+(`--base c2cc48ba`); lint of the merge hunks exits 0 (`--base HEAD` before the
+merge commit). Check, repair and merge commit-message lint invocations exit 0.
+Whole-file probes also reported pre-existing claims outside the edits: four
+in the build script and eight in `ops.rs`. Those comments are unchanged.
+The patch and JSON are outside claim-lint's extension set; the build applies
+the patch and the host record checks its header payload. Staged diff whitespace
+checks exit 0. Invocation details and final push identity are in the ARM ledger.

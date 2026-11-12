@@ -13,9 +13,9 @@ fn builders_publish_canvas_status_tools_and_controls() {
     let canvas = node::canvas(bounds, 2, 3, [0xab; 32]);
     assert_eq!(canvas.role, Role::Canvas);
     assert_eq!(canvas.value, json!({"width":2,"height":3,"sha256":"ab".repeat(32)}));
-    let status = node::status(bounds, &node::Status { tool: "brush", size: "medium", color: [1,2,3], undo: 2, redo: 1, dirty: true, file: Some("a.bmp"), message: "saved" });
+    let status = node::status(bounds, &node::Status { tool: "brush", size: "medium", color: [1,2,3], undo: 2, redo: 1, dirty: true, file: Some("a.bmp"), message: "saved", font_path: "/fonts/display.ttf", font_size: 16.0 });
     assert_eq!(status.role, Role::Status);
-    assert_eq!(status.value, json!({"tool":"brush","size":"medium","color":[1,2,3],"undo":2,"redo":1,"dirty":true,"file":"a.bmp","message":"saved"}));
+    assert_eq!(status.value, json!({"tool":"brush","size":"medium","color":[1,2,3],"undo":2,"redo":1,"dirty":true,"file":"a.bmp","message":"saved","font":{"path":"/fonts/display.ttf","size":16.0}}));
     let tools = node::tools([bounds; 7], "brush");
     assert_eq!(tools.len(), 7);
     assert_eq!(tools.iter().filter(|n| n.flags.contains(&Flag::Selected)).map(|n| n.key.as_str()).collect::<Vec<_>>(), ["tool-brush"]);

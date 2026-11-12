@@ -141,6 +141,7 @@ class ProgressTest(unittest.TestCase):
         monitor = runpy.run_path(str(ROOT / 'scripts/boot_progress.py'))
         self.assertEqual(allowances, {
             ('gui-apps', 'bcheck/production-catalog'): 60_000,
+            ('gui-apps', 'desktop/launch-each'): 80_000,
             ('time', 'clocks/rate-counter'): 25_000,
             ('breengel', 'font-parser/corpus'): 20_000,
             ('breengel', 'inflate/byte-split'): 20_000,

@@ -35,7 +35,7 @@ pub fn exit_input_verdict(disposition: &str, window: u64, wanted: u64, status: i
     if disposition != "delivered" || window != wanted {
         return Err(format!("exit input disposition={disposition} window={window} expected={wanted}"));
     }
-    if !(0..=255).contains(&expected) || status != expected << 8 {
+    if status != expected {
         return Err(format!("exit input status={status} expected={expected}"));
     }
     Ok(())
@@ -104,6 +104,21 @@ mod live {
             live.watch(window)?;
             Ok(Self { keys: Keyboard::new(live), launched: Some(pid), tracked: vec![(pid, None)], window })
         }
+        pub fn init_desktop(title: &str) -> Result<Self, String> {
+            let mut live = LivePointer::owned(Session::init_desktop()?)?;
+            let init = live.session().compositor_pid().ok_or("init desktop missing")?;
+            let mut status = libbreenix::window::abi::CompositorStatus::default();
+            libbreenix::window::call(libbreenix::window::abi::op::COMPOSITOR_STATUS, &mut status)
+                .map_err(|e| e.to_string())?;
+            let bwm = u64::from(status.owner);
+            if bwm <= 1 || bwm == init { return Err("init desktop compositor missing".into()); }
+            let watchdog = Watchdog::new(Wait::AppOutput)?;
+            let window = live.session().wait_window_until(title, watchdog.deadline_ns())?.id;
+            let pid = u64::from(live.info(window)?.owner);
+            live.watch(window)?;
+            Ok(Self { keys: Keyboard::new(live), launched: Some(pid),
+                tracked: vec![(init, None), (bwm, None), (pid, None)], window })
+        }
         /// Start another app without consuming a second per-case session.
         pub fn launch_next(&mut self, argv: &[&[u8]], title: &str) -> Result<(), String> {
             if argv.is_empty() || argv[0].is_empty() { return Err("app argv is empty".into()); }
@@ -116,9 +131,9 @@ mod live {
             let live = self.keys.backend_mut();
             let watchdog = Watchdog::new(Wait::AppOutput)?;
             let window = live.session().wait_window_until(title, watchdog.deadline_ns())?.id;
-            let pid = u64::from(live.info(window)?.owner);
-            live.watch(window)?;
-            live.activate(window)?;
+            let pid = u64::from(live.info(window).map_err(|e| format!("attach info window={window}: {e}"))?.owner);
+            live.watch(window).map_err(|e| format!("attach watch window={window}: {e}"))?;
+            live.activate(window).map_err(|e| format!("attach activate window={window}: {e}"))?;
             if !self.tracked.iter().any(|&(id, _)| id == pid) { self.tracked.push((pid, None)); }
             self.launched = Some(pid);
             self.window = window;

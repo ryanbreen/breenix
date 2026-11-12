@@ -1170,9 +1170,7 @@ fn launch(def: &Service, account: &Account, capture: bool) -> Result<(i32, Vec<O
         environment.push(format!("TERM={}", term));
     }
     if def.name == "bwm" {
-        if let Ok(path) = std::env::var("BREENIX_UI_CLOCK") {
-            environment.push(format!("BREENIX_UI_CLOCK={}", path));
-        }
+        environment.extend(crate::init_bwm_environment::bwm_environment(|key| std::env::var(key).ok()));
         if let Some(path) = std::env::var_os("BREENIX_STARTUP_TRACE_DIR") {
             environment.push(format!("BREENIX_STARTUP_TRACE_DIR={}", path.to_string_lossy()));
         }

@@ -7,6 +7,7 @@
 //! Input trace flags (16): device, derived modifier bits plus SYNTHETIC, source serial.
 //! Process exit (17..=22): thread id, PID at zombie publication (20), thread group.
 //! Stages: entry, windows released, before PM, zombie, after PM, GPU handles released.
+//! Window destruction (23): window id, owner pid, reason (0 destroy, 1 exit, 2 exec).
 use alloc::{string::String, vec::Vec};
 use core::fmt::Write;
 const CAPACITY: usize = 32768;

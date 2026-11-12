@@ -3,7 +3,7 @@ fn gui_apps_cases_have_sessions_and_no_placeholder() {
     let source = include_str!("../userspace/programs/src/suite_gui_apps.rs");
     let cases: Vec<_> = source.lines().filter(|line| line.trim_start().starts_with("case(")).collect();
     // #2880 corrected the base to 55; collaboration adds six cases.
-    assert_eq!(cases.len(), 67);
+    assert_eq!(cases.len(), 73);
     for case in cases {
         assert!(case.contains(".session(libuitest::supervisor::serve)"), "missing session: {case}");
         assert!(!case.contains("pending::"), "placeholder: {case}");
@@ -163,4 +163,35 @@ fn app_close_uses_alt_and_desktop_exit() {
     let exit = close.find("input_exit(16, false, 0, true)").expect("desktop Q exit");
     let up = close.find("wm_key(key::LEFT_ALT, false)").expect("Alt up");
     assert!(down < exit && exit < up);
+}
+
+#[test]
+fn blog_font_change_republishes_the_drawing_font() {
+    let source = include_str!("../userspace/programs/src/blog.rs");
+    let publish = source.split("fn publish_tree(").nth(1).unwrap().split("fn format_line_number(").next().unwrap();
+    assert!(publish.contains("win.mono_path()"));
+    assert!(publish.contains("fonts.size"));
+    let events = source.split("Event::FontChanged =>").nth(1).unwrap();
+    let reload = events.split("if reload_font {").nth(1).unwrap();
+    assert!(reload.contains("fonts.size = new_size"));
+    assert!(reload.contains("needs_redraw = true"));
+    assert!(reload.contains("publish_tree(&mut win, &tabs, tab_bar.selected(), visible_lines, &fonts)"));
+}
+
+#[test]
+fn guskit_reloads_and_draws_with_the_display_font() {
+    let source = include_str!("../userspace/programs/src/guskit.rs");
+    assert!(source.contains("Event::FontChanged"));
+    assert!(source.matches("take_display_font()").count() >= 2);
+    assert!(source.contains("ttf_font::draw_text"));
+    assert!(source.contains("display_path()"));
+}
+
+#[test]
+fn init_desktop_case_uses_the_real_init_session() {
+    let source = include_str!("../userspace/programs/src/guiapps_suite/desktop.rs");
+    let case = source.split("pub fn init_desktop()").nth(1).expect("init desktop case")
+        .split("pub fn ").next().unwrap();
+    assert!(case.contains("App::init_desktop(\"Terminal\")"));
+    assert!(!case.contains("App::launch("));
 }

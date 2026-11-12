@@ -20,6 +20,11 @@ fn require(ok: bool, why: &str) -> Result<(), String> {
         Err(why.into())
     }
 }
+fn now_ns() -> Result<u64, String> {
+    time::now_monotonic()
+        .map(|t| t.as_nanos() as u64)
+        .map_err(|e| e.to_string())
+}
 fn pause() -> Result<(), String> {
     time::sleep_ms(1).map_err(|e| e.to_string())
 }
@@ -152,6 +157,10 @@ fn release_in_settle(
     )
 }
 fn run(which: u8) -> Result<(), String> {
+    let began_ns = now_ns()?;
+    let case_deadline_ns =
+        began_ns.saturating_add(breenix_suite::suite::case_ms_left().saturating_mul(1_000_000));
+    let mut wm_trace = String::new();
     let mut session = Session::desktop()?;
     let result: Result<(), String> = (|| {
         let (mut control, id) = launch(&mut session, false)?;
@@ -247,11 +256,44 @@ fn run(which: u8) -> Result<(), String> {
                         .is_some_and(|r| r.disposition == "wm-handled" && r.window == 0),
                     "hotkey lacks its WM-handled disposition",
                 )?;
+                let wait_begin_ns = now_ns()?;
+                wm_trace.push_str(&format!(
+                    "registration-wait source_serial={last} begin_ns={wait_begin_ns} deadline_ns={case_deadline_ns}\n",
+                ));
+                // LIST uses the raw chromeless title, including its marker.
+                let registration = live
+                    .session()
+                    .wait_window_until("\u{1}Launcher", case_deadline_ns);
+                wm_trace.push_str(&format!(
+                    "registration-wait end_ns={} result={registration:?}\n",
+                    now_ns()?,
+                ));
+                let launcher = registration?;
+                // This is an observation bound, not a producer registration stamp.
+                // WindowReady retains the kernel's completed-composite timestamp.
+                wm_trace.push_str(&format!(
+                    "registered-observation at_ns={} window={} registry={:?} presented_ns={}\n",
+                    now_ns()?,
+                    launcher.id,
+                    live.info(launcher.id).map(|w| w.owner),
+                    launcher.presented_ns,
+                ));
+                wm_trace.push_str(&format!("snapshot begin_ns={}\n", now_ns()?));
+                let desktop = live.desktop_tree();
+                wm_trace.push_str(&format!(
+                    "snapshot end_ns={} scene_and_children={:?}\n",
+                    now_ns()?,
+                    desktop.as_ref().map(|tree| (
+                        &tree.root.value,
+                        tree.children
+                            .iter()
+                            .take(64)
+                            .map(|n| n.key.as_str())
+                            .collect::<Vec<_>>()
+                    )),
+                ));
                 require(
-                    live.desktop_tree()?
-                        .children
-                        .iter()
-                        .any(|n| n.name == "Launcher"),
+                    desktop?.children.iter().any(|n| n.name == "Launcher"),
                     "hotkey did not open launcher",
                 )?;
                 require(
@@ -333,6 +375,9 @@ fn run(which: u8) -> Result<(), String> {
         }
         Ok(())
     })();
+    if result.is_err() && which == 3 {
+        eprintln!("WM_HANDLED_ORDERING\n{wm_trace}");
+    }
     let teardown = session.teardown();
     result?;
     teardown?;
