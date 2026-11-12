@@ -24,6 +24,7 @@ class WmEvidenceRoute(StateTest):
         tree = self.inputs / 'tree'
         (tree / 'etc/breenix').mkdir(parents=True)
         (tree / 'sbin').mkdir()
+        (tree / 'sbin/init').write_bytes(b'\x7fELFfixture')
         for suite in ('window-manager', 'console', 'gpu', 'breengel', 'gui-apps', 'time'):
             (tree / ('sbin/suite-' + suite)).write_bytes(b'\x7fELFfixture')
         self.image = self.inputs / 'ext2.img'
@@ -33,6 +34,13 @@ class WmEvidenceRoute(StateTest):
                      'CONSOLE_USER': 'root', 'CONSOLE_PASSWORD': 'fixture_password_only_12345',
                      'CONSOLE_IDENTITY_KEY': 'ab' * 32}
         self.build = {'ext2': {'sha256': hashlib.sha256(self.image.read_bytes()).hexdigest()}}
+        handoff = self.inputs / 'smb-test.json'
+        handoff.write_text(json.dumps({'SMB_TEST_USER': 'fixture-user',
+                                      'SMB_TEST_PASSWORD': 'fixture-secret-52',
+                                      'SMB_TEST_HOST': '192.0.2.42',
+                                      'SMB_TEST_PORT': '10445'}))
+        handoff.chmod(0o600)
+        self.enterContext(patch.object(metal_root, 'SMB_CONFIG_PATH', handoff))
         upload.m.write_json(upload.m.STATE / 'disk.json',
                             dict(installedBy='prior', bytes=4096, sha256AfterRecord='a' * 64))
 
