@@ -714,68 +714,74 @@ fn wm_checkpoint(
     use libuitest::input::Backend;
     // Park beyond the two frames so hover state cannot color the structural patch.
     live.move_to((1100 * scale as i32, 700 * scale as i32))?;
-    libuitest::settle::settle_session(live.session(), &[(ids[0], 0), (ids[1], 0)], 0, &mut [])?;
-    wm_checks::desktop(&live.desktop_tree()?, ids, owners, scale, screen, top)?;
-    let mut commits = [(0, 0, 0); 2];
-    for (index, id) in ids.into_iter().enumerate() {
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        let (record, generation) = loop {
+    // Client capture and scanout are separate observations. A publication between
+    // them supersedes the whole snapshot, including its retained trees.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    'snapshot: loop {
+        libuitest::settle::settle_session(live.session(), &[(ids[0], 0), (ids[1], 0)], 0, &mut [])?;
+        wm_checks::desktop(&live.desktop_tree()?, ids, owners, scale, screen, top)?;
+        let mut commits = [(0, 0, 0); 2];
+        for (index, id) in ids.into_iter().enumerate() {
             let before = wm_window(id)?;
             live.session().next_checkpoint()?;
             let record = capture::window(live.session().arena_mut(), "wm-client", id)?;
             let after = wm_window(id)?;
-            if before.pixel_gen == after.pixel_gen {
-                break (record, after.pixel_gen);
+            if before.pixel_gen != after.pixel_gen {
+                if std::time::Instant::now() >= deadline {
+                    return Err(format!("WM client front did not stabilize window={id}"));
+                }
+                continue 'snapshot;
             }
-            if std::time::Instant::now() >= deadline {
-                return Err(format!("WM client front did not stabilize window={id}"));
+            let generation = after.pixel_gen;
+            commits[index] = (id, record.commit, generation);
+            match live.session().arena_mut().read(Slot::Tree)? {
+                SlotRead::Final { bytes, .. } => {
+                    wm_checks::entry(&libbui::tree::Tree::parse(&bytes)?, text[index], scale)?
+                }
+                other => return Err(format!("incomplete WM app tree: {other:?}")),
             }
-        };
-        commits[index] = (id, record.commit, generation);
-        match live.session().arena_mut().read(Slot::Tree)? {
-            SlotRead::Final { bytes, .. } => {
-                wm_checks::entry(&libbui::tree::Tree::parse(&bytes)?, text[index], scale)?
-            }
-            other => return Err(format!("incomplete WM app tree: {other:?}")),
         }
-    }
-    live.session().next_checkpoint()?;
-    let record = capture::screen(
-        live.session().arena_mut(),
-        "wm-screen",
-        libbreenix::window::ObservationKind::Composed,
-    )?;
-    let observed = capture::screen_windows(&record)?;
-    let entries = wm_composite(record.composite)?;
-    for (id, commit, generation) in commits {
-        let after = wm_window(id)?;
-        let projected = entries.iter().find(|entry| entry.id == id);
-        if !projected.is_some_and(|entry| {
-            wm_front_matches(commit, generation, after.pixel_gen,
-                observed.iter().find(|row| row.0 == id).map(|row| row.1), entry)
-        }) {
-            return Err(format!(
-                "WM screen missing compared window={id} commit={commit} generation={generation} current={} composite={} observed={observed:?} projected={projected:?}",
-                after.pixel_gen, record.composite
-            ));
+        live.session().next_checkpoint()?;
+        let record = capture::screen(
+            live.session().arena_mut(),
+            "wm-screen",
+            libbreenix::window::ObservationKind::Composed,
+        )?;
+        let observed = capture::screen_windows(&record)?;
+        let entries = wm_composite(record.composite)?;
+        for (id, commit, generation) in commits {
+            let after = wm_window(id)?;
+            let projected = entries.iter().find(|entry| entry.id == id);
+            if !projected.is_some_and(|entry| {
+                wm_front_matches(commit, generation, after.pixel_gen,
+                    observed.iter().find(|row| row.0 == id).map(|row| row.1), entry)
+            }) {
+                if std::time::Instant::now() < deadline {
+                    continue 'snapshot;
+                }
+                return Err(format!(
+                    "WM screen missing compared window={id} commit={commit} generation={generation} current={} composite={} observed={observed:?} projected={projected:?}",
+                    after.pixel_gen, record.composite
+                ));
+            }
         }
+        match live.session().arena_mut().read(Slot::Screen)? {
+            SlotRead::Final { bytes, .. } => wm_checks::screen(
+                Frame::new(
+                    &bytes,
+                    record.width as usize,
+                    record.height as usize,
+                    record.width as usize * 4,
+                    Format::Bgrx,
+                )
+                .map_err(|e| format!("WM screen frame: {e:?}"))?,
+                scale,
+                top,
+            )?,
+            other => return Err(format!("incomplete WM screen: {other:?}")),
+        }
+        return libuitest::input::dispositions(live.serials());
     }
-    match live.session().arena_mut().read(Slot::Screen)? {
-        SlotRead::Final { bytes, .. } => wm_checks::screen(
-            Frame::new(
-                &bytes,
-                record.width as usize,
-                record.height as usize,
-                record.width as usize * 4,
-                Format::Bgrx,
-            )
-            .map_err(|e| format!("WM screen frame: {e:?}"))?,
-            scale,
-            top,
-        )?,
-        other => return Err(format!("incomplete WM screen: {other:?}")),
-    }
-    libuitest::input::dispositions(live.serials())
 }
 
 fn wm_front_matches(captured: u64, before: u64, after: u64, observed: Option<u64>,
