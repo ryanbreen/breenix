@@ -114,23 +114,31 @@ fn wait_deadline_only_tracks_a_check_that_can_still_run() {
 }
 
 #[test]
-fn prompt_waits_for_text_at_a_new_presented_commit() {
+fn prompt_reaches_a_verdict_without_another_client_commit() {
     use validation::PromptCheck;
     let mut queue = ValidationQueue::new();
     queue.request(7);
     queue.presented(1);
     assert!(queue.next_prompt_if_idle(|_| Some(10), || false).is_none(),
         "a busy compositor must not reserve the prompt attempt");
-    assert!(queue.check_prompt(7, 10));
-    assert_eq!(queue.prompt_result(7, 10, PromptCheck::Empty, 3), None);
-    assert!(!queue.check_prompt(7, 11), "retry requires presentation");
-    queue.presented(2);
-    assert!(!queue.check_prompt(7, 10), "unchanged commit must not be checked again");
-    assert!(queue.check_prompt(7, 11));
-    assert_eq!(queue.prompt_result(7, 11, PromptCheck::Text, 3), Some(Ok(11)));
-    assert_eq!(queue.prompt_result(7, 11, PromptCheck::Text, 3), None);
-    queue.presented(3);
-    assert!(!queue.check_prompt(7, 12));
+    queue.first_frame(7);
+    // The committed tree is empty and the client remains idle forever. There
+    // must still be a failure after the unchanged 200-attempt allowance.
+    for attempt in 1..=200 {
+        assert!(queue.pending(7), "pending prompt must keep the event loop runnable");
+        let (_, id, commit) = queue.next_prompt_if_idle(|_| Some(10), || true)
+            .expect("an idle source must not strand validation waiting for a new presentation");
+        assert_eq!((id, commit), (7, 10));
+        let result = queue.prompt_result(id, commit, PromptCheck::Empty, 200);
+        queue.complete(7); // Successful pixel comparison has retired first-frame work.
+        assert_eq!(result, (attempt == 200).then_some(Err(())));
+    }
+    assert!(!queue.pending(7));
+    assert!(queue.next_prompt_if_idle(|_| Some(10), || true).is_none());
+    queue.request(8);
+    assert!(queue.check_prompt(8, 11));
+    assert_eq!(queue.prompt_result(8, 11, PromptCheck::Text, 200), Some(Ok(11)));
+    assert_eq!(queue.prompt_result(8, 11, PromptCheck::Text, 200), None);
 }
 
 #[test]
