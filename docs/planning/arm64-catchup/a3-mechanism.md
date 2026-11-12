@@ -1709,3 +1709,43 @@ commit (exit 0). No boot, PR creation, merge, rebase, force push, deployment
 or board update was performed in this unit.
 
 CONFIRMED BUT CONTEXT UNMAPPED
+
+## Replacement measurement at 9f665106: observation unavailable
+
+The normal-build measurement `20261112T085617Z-qemu-94194` passed the
+artifact gate at host load 7.8. Its guest reported 81/81, memory retained
+10 of the allowed 48 pages, and the standalone READY followed DONE and MEMORY.
+The host renderer check accepted ANGLE/Metal. The launcher nevertheless exited
+1: `suite-verdict.py` refused twelve planned `*-remaining` categories with no
+cases. This is a separate acceptance blocker; the scorer was not changed.
+
+The animation observation was explicitly skipped with
+`diagnostic-route-absent`. The reported animation maximum, 40.181 ms, covers
+only the 100 inputs after the ten warmups: `input_latency` arms observation for
+all 110, but adds to the measured sample vector only when `n >= 10`. Thus the
+capture cannot establish whether a warmup exceeded 75 ms, nor identify its
+acquire subphase, dependency, client wait, or host worker state. Three host
+animation samples, the two-second load series and CPU top-10 series exist, but
+without the frozen guest observation they do not establish a mechanism. The
+measurement is void under the coordinator's observation requirement. No
+latency fix or acceptance is claimed.
+
+| Measurement | Observed | Bound | Headroom |
+| --- | ---: | ---: | ---: |
+| Animation median | 13.533 ms | 33 ms | 59.0% |
+| Animation measured max, excluding warmups | 40.181 ms | 100 ms | 59.8% |
+| Typing median / max | 7.327 / 28.665 ms | 20 / 50 ms | 63.4% / 42.7% |
+| Pointer median / max | 8.179 / 25.149 ms | 20 / 50 ms | 59.1% / 49.7% |
+| Present median / max | 1.453 / 11.826 ms | 16 / 33 ms | 90.9% / 64.2% |
+| Frame floor | 448 Hz | 60 Hz minimum | 7.47 times minimum |
+| Supervisor restart wait | 1113.678 ms | 2000 ms | 44.3% |
+| Replacement first composite | 386.787 ms | 2000 ms | 80.7% |
+| Slowest reap | 5.471 ms | 500 ms | 98.9% |
+| Slowest recorded positive click | 138.988 ms | 1000 ms | 86.1% |
+| Slowest recorded click release | 6.025 ms | 1000 ms | 99.4% |
+
+These are measurements from the void run, not proof. The artifact hashes and
+prediction are in the ARM ledger; the full serial, host thread samples, load
+and top-10 captures are retained with the Vigil boot and in the local capture.
+A coordinator ruling is needed on the missing observation and scorer refusal
+before further boots.
