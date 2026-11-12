@@ -563,6 +563,96 @@ from RESET's file comparison. The implementation's deterministic checks must for
 both orderings, including a stalled member and a live SMB mount, before hardware
 acceptance. Keep files-io last and its disk checks intact.
 
+**Entry and baseline ownership.** PID 1 init owns the gui-apps sequence entry in
+both orderings. When gui-apps is later in the list, `suite_sequence::hand_off`
+must exec `/sbin/init sequence gui-apps`, forwarding the host-key selection, instead
+of execing `/sbin/suite-gui-apps` directly. When gui-apps is first, the kernel boots
+`/sbin/init` as PID 1 and init enters the same sequence lifecycle. The kernel's
+existing gui-apps selection and argv construction are in `kernel/src/main.rs`
+(`read_x86_production_init` and `launch_x86_production_init`); this must remain an init launch.
+The sequence mode must validate its id and membership before starting services.
+
+Init calls the owner's sequence preparation before any service or boot-check
+helper starts: record the baseline at index 0, or RESET against that original
+baseline at a later index, including TCP drain, memory and FRAMES records.
+Do not replace the baseline with a snapshot of the running desktop. Cold-boot
+filesystem preparation belongs before the first baseline. A mid-sequence
+`init sequence` skips `etc_reconcile::prepare`, including its `/tmp` and `/run`
+cleanup, and does not repeat boot-only reconciliation and boot scripts. Required
+service runtime records are created after RESET; an existing boot identity is not
+replaced. A path changed by service startup is still subject to the next RESET's
+comparison, rather than being silently adopted into the baseline.
+
+**Runner membership.** Init starts the normal daemon supervisor and waits for
+the existing shares and initial-clock barriers, then spawns the GUI runner as a
+sequence member. The member does not call `sequence::prepare`, reset files,
+emit READY, call `sequence::finish`, or exec another suite. It keeps its scoped
+subreaper, descendant cleanup, case deadlines, memory checks and final panel,
+reports its result and exits. Init remains the sole reaper of the runner while
+supervising services. Later suites are execed by PID 1, so their full memory
+recording, global sweep and PID-1-only stall handler remain applicable.
+
+<!-- claim-lint:ok: #2877's proposed watchdog ownership contract; suite_sequence.rs currently restricts on_alarm to PID 1. -->
+Membership needs a stall action distinct from the current PID-1-only `on_alarm`:
+the member's watchdog reports `STALLED` with its case count and exits nonzero.
+It must not return silently because it is not PID 1, or call `hand_off`. Only case
+progress advances the stall deadline; supervisor ticks are not progress. Separate
+the owner's baseline/reset preparation from arming a case-progress alarm: while
+the member runs, its watchdog owns that deadline and init must not run a competing
+case timer. Init retains the bounded service startup and teardown checks in its
+normal supervisor loop; a timeout there is a failure, never permission to exec
+past live services or mounts. Ordinary PID 1 suites retain their `on_alarm`
+hand-off path. Keep the existing stall and teardown limits, and retain a failure
+if cleanup cannot finish within them.
+
+**Quiescence and hand-off.** A completed, failed or stalled runner enters the
+same init-owned transition: stop service consumers in dependency order without
+restarts; unmount the shares while their SMB daemons can still service detach;
+then drain and reap the remaining daemons and service output, keeping the logger
+until its producers stop. A `shares` service in `done` state is not evidence of
+unmount: `/sbin/mount -a` exits after starting independent `smbfsd` processes.
+Init owns the mount inventory and the detach results, not the GUI member.
+
+Use the supervisor's ordered stop/drain machinery (`init_services.rs`,
+`shutdown_tick`), with a quiesce completion result for sequence mode instead of
+its final reboot/poweroff syscall. Do not call `poweroff()` to advance a sequence.
+Services must be stopped and desktop shares unmounted before PID 1's global
+sweep and hand-off. Refused or incomplete teardown is an explicit sequence failure
+and prevents hand-off; it cannot be converted to success by killing a daemon and
+leaving its mount behind. After quiescence init emits exactly one
+`SUITE_SEQUENCE READY gui-apps`, then invokes the owner's hand-off: global kill
+and reap, descriptor/signal/timer cleanup and exec of the next suite as PID 1.
+The member emits no READY. A failed or stalled result remains failed or stalled
+even when init can clean up and advance.
+
+**Machine state outside RESET.** The file comparison is not a machine rollback.
+These decisions are part of desktop sequence isolation:
+
+| State init leaves | Decision |
+|---|---|
+| Realtime clock step, slew and RTC update | Keep the synchronized clock as boot-wide state; do not step it back. Wait for a successful post-step `ntp-state` synchronization before starting cases (`ntp-stepped` alone precedes the syscall). Stop NTP during teardown so no live service adjusts time in the next suite. RESET does not restore the clock or RTC, and file cleanup does not undo a step. |
+| Network configuration and connections | Keep boot-wide link, address, routes and resolver configuration. Stop service clients and close their sockets; retain the existing TCP drain and its NOT-ISOLATED verdict for leftover connections. RESET does not undo network configuration, UDP traffic or remote peer state. Configuration files still undergo the ordinary baseline comparison. |
+| SMB/UFS mounts and remote share contents | Snapshot the pre-service mount inventory and track mounts created by this desktop entry. Detach those mounts and verify the inventory is back before the sweep. Preserve the boot's static mounts; an unexpected dynamic mount or a refused detach fails isolation and prevents the filesystem walk or hand-off. Neither baseline recording nor RESET may traverse a live SMB/UFS tree, or hide it by adding a skipped subtree. The baseline owns the underlying local mount-point directories, not remote files; application fixtures own cleanup of their remote files. |
+
+The source boundaries for these decisions are `suite_sequence.rs` (`prepare`,
+`on_alarm`, `hand_off`, `walk`, `reset`), `suite.rs` (sequence participation and
+scoped runner completion), and `init.rs` (boot preparation and
+`run_desktop_suite`). The clock barrier is in `run_desktop_suite`; the step and
+RTC writes are in `userspace/programs/src/ntp_client.rs`. This design does not
+claim RESET already handles those machine states.
+
+<!-- claim-lint:ok: #2877 specifies future acceptance; `all` is the resolver flag in scripts/suite-sequence.py, not a completed test result. -->
+**Ordering and admission.** Give gui-apps no `sequence` placement constraint:
+it needs neither `first` nor `last`. Keep files-io last, with its five post-boot
+`/tmp` disk checks; neither a later RESET nor another init cleanup may follow it.
+`scripts/suite-sequence.py` scores disk checks only for the last suite, so moving
+files-io earlier would also lose scoring. Leave gui-apps' aggregate marker and
+`test_metal_all_excludes_gui_apps_under_construction` in place during design and
+implementation. Remove the marker and update that guard together only when the
+PID 1 ownership repair lands. Acceptance is one final-head `all` sequence including
+gui-apps, after deterministic reproduction of both orderings; this design-only
+unit runs no boot.
+
 ## The panel
 
 As cases run, the suite draws libgfx's diagnostics panel in its scored form on the
