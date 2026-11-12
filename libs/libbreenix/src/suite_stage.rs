@@ -199,7 +199,7 @@ pub(crate) fn observe(pixels: &mut Vec<u8>) -> Result<Seen, String> {
     rb.dst_len = pixels.len() as u64;
     rb.record = rec.as_mut_ptr() as u64;
     rb.record_len = rec.len() as u32;
-    if let Err(e) = win::call(op::SCANOUT_READBACK, &mut rb) {
+    if let Err(e) = win::readback(&mut rb) {
         return Err(std::format!("stage readback: {e}, reason {}", rb.reason));
     }
     let (width, height) = (word(&rec, record::WIDTH) as usize, word(&rec, record::HEIGHT) as usize);

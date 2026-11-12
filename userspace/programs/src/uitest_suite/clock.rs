@@ -173,7 +173,7 @@ fn taskbar(expected: &[u8; 11]) -> Result<(), String> {
     let mut record = [0; 1024];
     let mut readback = window::abi::Readback { dst: got.as_mut_ptr() as u64, dst_len: got.len() as u64,
         record: record.as_mut_ptr() as u64, record_len: 1024, ..Default::default() };
-    window::call(window::abi::op::SCANOUT_READBACK, &mut readback).map_err(|e| e.to_string())?;
+    window::readback(&mut readback).map_err(|e| e.to_string())?;
     if !window::validate_scanout_observation(&record, mode.width, mode.height, window::ObservationKind::Composed) {
         return Err("taskbar capture lacks a completed compositor observation".into());
     }

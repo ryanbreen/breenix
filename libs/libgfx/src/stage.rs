@@ -497,6 +497,13 @@ pub fn context() -> Result<u64, StageError> {
     crate::device::with(|d| Ok(d.context.handle())).map_err(StageError::Device)
 }
 
+/// Select preparation requirements before the first libgfx operation. A later
+/// conflicting selection is refused rather than discarding live surfaces.
+pub fn context_for(pipelines: u32) -> Result<u64, StageError> {
+    crate::device::with_requirements(Some(pipelines), |d| Ok(d.context.handle()))
+        .map_err(StageError::Device)
+}
+
 /// The bytes that context uploaded from declared tables and crossing geometry, the only
 /// uploads libgfx makes there.
 pub fn declared_bytes() -> Result<u64, StageError> {

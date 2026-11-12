@@ -88,3 +88,14 @@ fn serial_transports_use_the_shared_irq_safe_entry() {
     assert!(host.contains("hid_boot::report::Keyboard"));
     assert!(!host.contains("target_arch"));
 }
+
+#[test]
+fn only_host_channel_declarations_arm_serial_input() {
+    for value in ["host-channel", "host-channel;missing=keyboard"] {
+        assert!(host::declares_channel(Some(value)), "{value}");
+    }
+    for value in ["qmp", "prlsdk", "vnc", "", "host-channel-extra"] {
+        assert!(!host::declares_channel(Some(value)), "{value}");
+    }
+    assert!(!host::declares_channel(None));
+}

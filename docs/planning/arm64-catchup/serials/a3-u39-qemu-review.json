@@ -1,0 +1,179 @@
+{
+  "unit": "a3-u39-qemu-fork-fixes",
+  "coordinatorLine": 344,
+  "baselineForkCommit": "fc43bd4cc6483ee30a6150d5524dbde62e25647b",
+  "forkCommits": [
+    "c5c70a1c98d10003493d1dcd46837fe194907605",
+    "160f45890824de1270a2f1e84b9d02a12b2219d2",
+    "da559b0338250a51a1a422b241e2beffdbbe7923"
+  ],
+  "sourcePin": "160f45890824de1270a2f1e84b9d02a12b2219d2",
+  "sourceTree": "49e6548b83f022de622f5980f561f0f696984d17",
+  "bundlePin": "10.0.12-utm-4d73aaf0-b6",
+  "binarySha256": "22d535323fa9ea1621c05b810d217818d58e3fed01178b68b5487ae8dcb60877",
+  "cleanClone": true,
+  "trackedSourceEditsAfterBuild": false,
+  "buildExit": 0,
+  "buildSeconds": 652,
+  "backgroundPriority": true,
+  "jobs": 4,
+  "signatureVerification": "passed builder and dry gate",
+  "warningComparison": {
+    "baselineLog": "/tmp/a3-u35-b5-build.log",
+    "buildLog": "/tmp/a3-u39-b6-build.log",
+    "uniqueWarningLines": 81,
+    "newWarningLines": []
+  },
+  "checks": {
+    "fork_lifetime": {
+      "methods": 2,
+      "status": "pass",
+      "baselineFailingCases": 5,
+      "baselineSupportedApi": "pass"
+    },
+    "fork_cache": {
+      "methods": 1,
+      "status": "pass",
+      "baselineFailingCases": 5
+    },
+    "qemu_egl_init": {
+      "methods": 1,
+      "status": "pass",
+      "modes": [
+        "available",
+        "missing"
+      ]
+    },
+    "qemu_cache": {
+      "methods": 1,
+      "status": "pass"
+    },
+    "renderer_isolation": {
+      "methods": 1,
+      "status": "pass"
+    },
+    "proof_gate": {
+      "methods": 4,
+      "status": "pass",
+      "initial_b6_pin_check": "fail against b5"
+    },
+    "fork_contract": {
+      "methods": 1,
+      "status": "pass"
+    },
+    "shell_syntax": "pass",
+    "whitespace": "pass",
+    "claim_lint_changed_hunks": {
+      "exit": 0,
+      "log": "/tmp/a3-u39-claim-lint.log"
+    },
+    "claim_lint_pr_body": {
+      "exit": 0,
+      "log": "/tmp/a3-u39-pr-claim-lint.log"
+    }
+  },
+  "cacheRuns": [
+    {
+      "mode": "disabled",
+      "cache": {
+        "gets": 0,
+        "hits": 0,
+        "puts": 0,
+        "bytes_written": 0
+      },
+      "contexts": [
+        {
+          "programs": 16,
+          "linked": 16
+        },
+        {
+          "programs": 16,
+          "linked": 16
+        }
+      ]
+    },
+    {
+      "mode": "populate",
+      "cache": {
+        "gets": 48,
+        "hits": 16,
+        "puts": 16,
+        "bytes_written": 236332
+      },
+      "contexts": [
+        {
+          "programs": 16,
+          "linked": 16
+        },
+        {
+          "programs": 16,
+          "linked": 16
+        }
+      ]
+    },
+    {
+      "mode": "persistent",
+      "cache": {
+        "gets": 64,
+        "hits": 32,
+        "puts": 0,
+        "bytes_written": 0
+      },
+      "contexts": [
+        {
+          "programs": 16,
+          "linked": 16
+        },
+        {
+          "programs": 16,
+          "linked": 16
+        }
+      ]
+    }
+  ],
+  "librarySha256": {
+    "EGL": "bc6e8e6cdfbb28b50f525d6e4f74e6320f3b6ec0e2ddb16459ba8e4dfc133fe8",
+    "GLESv2": "2dde80c4ab9abab9107abcfa01563135907e6a513e17fb134c091171f3263b80",
+    "virglrenderer": "2e8d3c82eae78286b8ec950e560a14cd2cc4c69e39b633aba85e30f87c5b884f"
+  },
+  "pins": [
+    "pin 10.0.12-utm-4d73aaf0-b6",
+    "utm 4d73aaf0d284f1c22e3e1c1072e729988e134268",
+    "qemu https://github.com/ryanbreen/breenix-qemu.git 160f45890824de1270a2f1e84b9d02a12b2219d2",
+    "angle https://github.com/utmapp/WebKit.git ed78ab6e1a37f4f11583a0bd038f22ec91f3ff10",
+    "libepoxy https://github.com/utmapp/libepoxy.git bf98587477fe68d07b93319ece7b40a7d0e2eabe",
+    "virglrenderer https://github.com/utmapp/virglrenderer.git 451505ad0aa449290f2c0672da6877d57ee770e5",
+    "dtc https://gitlab.com/qemu-project/dtc.git b6910bec11614980a21e46fbccc35934b671bd81",
+    "spice-protocol https://www.spice-space.org/download/releases/spice-protocol-0.14.4.tar.xz sha256:04ffba610d9fd441cfc47dfaa135d70096e60b1046d2119d8db2f8ea0d17d912",
+    "spice-server https://www.spice-space.org/download/releases/spice-server/spice-0.14.3.tar.bz2 sha256:551d4be4a07667cf0543f3c895beb6da8a93ef5a9829f2ae47817be5e616a114",
+    "spice-patch spice-0.14.3.patch sha256:251638a358cd65529a349f3a33d14bb2cb64d8631ea73521f0be2720b3e39a09",
+    "homebrew pixman 0.46.4 libpixman-1.0.dylib",
+    "homebrew libpng 1.6.59 libpng16.16.dylib",
+    "homebrew libslirp 4.9.3 libslirp.0.dylib",
+    "homebrew glib 2.90.1 libglib-2.0.0.dylib",
+    "homebrew glib 2.90.1 libgio-2.0.0.dylib",
+    "homebrew glib 2.90.1 libgobject-2.0.0.dylib",
+    "homebrew openssl@3 3.6.3 libssl.3.dylib",
+    "homebrew openssl@3 3.6.3 libcrypto.3.dylib",
+    "homebrew opus 1.6.1 libopus.0.dylib",
+    "homebrew jpeg-turbo 3.2.0 libjpeg.8.dylib",
+    "homebrew glib 2.90.1 libgmodule-2.0.0.dylib",
+    "homebrew gettext 1.0 libintl.8.dylib",
+    "homebrew pcre2 10.49 libpcre2-8.0.dylib"
+  ],
+  "remainingForkIssue": "https://github.com/ryanbreen/breenix-qemu/issues/1",
+  "guestBoots": [],
+  "logs": [
+    "/tmp/a3-u39-renderer-red.log",
+    "/tmp/a3-u39-cache-red.log",
+    "/tmp/a3-u39-lifetime-expanded-red.log",
+    "/tmp/a3-u39-lifetime-expanded-green.log",
+    "/tmp/a3-u39-cache-green.log",
+    "/tmp/a3-u39-b6-build.log",
+    "/tmp/a3-u39-egl.log",
+    "/tmp/a3-u39-cache.log",
+    "/tmp/a3-u39-isolation.log",
+    "/tmp/a3-u39-gate.log",
+    "/tmp/a3-u39-fork-contract.log"
+  ]
+}

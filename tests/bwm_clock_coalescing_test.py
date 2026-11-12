@@ -26,7 +26,7 @@ impl Background {
 struct Gpu { desktop: bool }
 fn format_clock(_sec:i64,_text:&mut [u8;11]) {}
 fn pacing_ns()->u64 {666_000_000_000}
-fn draw_taskbar(desktop:&mut bool,_text:&[u8;11],_font:&mut ()) {*desktop=true;}
+fn redraw_clock(desktop:&mut bool,_text:&[u8;11],_font:&mut ()) {*desktop=true;}
 fn px(n:usize)->usize {n}
 const TASKBAR_HEIGHT:usize=28;
 fn update(urgent:bool)->(bool,bool,Option<u64>) {

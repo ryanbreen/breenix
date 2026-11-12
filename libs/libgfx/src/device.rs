@@ -12,6 +12,7 @@ use libbreenix::process;
 
 pub(crate) struct Device {
     pub(crate) context: Context,
+    requirements: u32,
     /// Textures holding a declared table, by `Table`.
     tables: [Option<Table>; TABLES],
     /// The bytes this context uploaded from declared tables and crossing geometry, its only
@@ -51,6 +52,12 @@ pub(crate) fn pid() -> u64 {
 /// Run `f` with this process's device, creating its context on first use (or first use
 /// after `fork`). A context that the core no longer runs (EIO) is replaced on the next call.
 pub(crate) fn with<R>(f: impl FnOnce(&mut Device) -> Result<R, i64>) -> Result<R, i64> {
+    with_requirements(None, f)
+}
+
+pub(crate) fn with_requirements<R>(requirements: Option<u32>,
+    f: impl FnOnce(&mut Device) -> Result<R, i64>,
+) -> Result<R, i64> {
     let me = pid();
     if me == 0 { return Err(-libbreenix::gpu::abi::errno::EIO); }
     let inherited = acquire(&SLOT.owner, me);
@@ -67,9 +74,14 @@ pub(crate) fn with<R>(f: impl FnOnce(&mut Device) -> Result<R, i64>) -> Result<R
     // SAFETY: the PID-tagged lock is held for the rest of this call.
     let slot = unsafe { &mut *SLOT.device.get() };
     if slot.is_none() {
-        *slot = Some(Device { context: Context::new()?, tables: [None; TABLES], declared: 0 });
+        let requirements = requirements.unwrap_or(0);
+        *slot = Some(Device { context: Context::for_pipelines(requirements)?, requirements,
+            tables: [None; TABLES], declared: 0 });
     }
     let device = slot.as_mut().expect("device created above");
+    if requirements.is_some_and(|r| r != device.requirements) {
+        return Err(-libbreenix::gpu::abi::errno::EINVAL);
+    }
     let result = f(device);
     if result.as_ref().err() == Some(&-libbreenix::gpu::abi::errno::EIO) {
         *slot = None;

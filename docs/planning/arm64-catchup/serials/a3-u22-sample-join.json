@@ -1,0 +1,4961 @@
+{
+  "boot": "20261112T000736Z-qemu-70293",
+  "hashes": {
+    "serial.txt": "6b11155144993a5a536eccf3993363465bf0a5b039246f78dd44ef06e0f40707",
+    "qemu-trace.log": "bc36a91e8c208a337666294ceaf6499ae1ddb9a9a0b854549fe8b01f9e165eee",
+    "serial-host-clock.jsonl": "0fd81ffd6712678238ffe8e0d5a1fff634d4abd14351a69d24a6cca80f6bc773"
+  },
+  "samples": [
+    {
+      "id": "focus-pair-click.sample.txt",
+      "case": "focus/pair-click",
+      "begin_ns": 1794442398583000000,
+      "end_ns": 1794442401966065000,
+      "nominal_end_ns": 1794442401583000000,
+      "record_line": 6,
+      "returncode": 0,
+      "sha256": "200f6819c9578c08fcd7e9ba974b9d7dada7bb6dde8bb0d873e94c96c9ee8155",
+      "threads": {
+        "98089331": {
+          "role": "vcpu",
+          "total": 97,
+          "states": {
+            "bql": 69,
+            "guest": 10,
+            "idle": 8,
+            "other": 10
+          },
+          "lines": [
+            [
+              77,
+              69,
+              "bql"
+            ],
+            [
+              81,
+              10,
+              "guest"
+            ],
+            [
+              85,
+              8,
+              "idle"
+            ],
+            [
+              98,
+              7,
+              "other"
+            ],
+            [
+              102,
+              3,
+              "other"
+            ]
+          ]
+        },
+        "98089332": {
+          "role": "vcpu",
+          "total": 97,
+          "states": {
+            "idle": 65,
+            "guest": 10,
+            "bql": 22
+          },
+          "lines": [
+            [
+              112,
+              65,
+              "idle"
+            ],
+            [
+              115,
+              10,
+              "guest"
+            ],
+            [
+              121,
+              22,
+              "bql"
+            ]
+          ]
+        },
+        "98089333": {
+          "role": "vcpu",
+          "total": 97,
+          "states": {
+            "idle": 71,
+            "guest": 17,
+            "bql": 8,
+            "other": 1
+          },
+          "lines": [
+            [
+              131,
+              71,
+              "idle"
+            ],
+            [
+              134,
+              17,
+              "guest"
+            ],
+            [
+              140,
+              8,
+              "bql"
+            ],
+            [
+              143,
+              1,
+              "other"
+            ]
+          ]
+        },
+        "98089334": {
+          "role": "vcpu",
+          "total": 97,
+          "states": {
+            "idle": 59,
+            "guest": 13,
+            "bql": 25
+          },
+          "lines": [
+            [
+              153,
+              59,
+              "idle"
+            ],
+            [
+              156,
+              13,
+              "guest"
+            ],
+            [
+              162,
+              25,
+              "bql"
+            ]
+          ]
+        },
+        "98089364": {
+          "role": "loop",
+          "total": 97,
+          "states": {
+            "link": 46,
+            "draw": 1,
+            "compile": 19,
+            "transfer": 12,
+            "other": 19
+          },
+          "lines": [
+            [
+              717,
+              46,
+              "link"
+            ],
+            [
+              722,
+              1,
+              "draw"
+            ],
+            [
+              732,
+              5,
+              "compile"
+            ],
+            [
+              751,
+              7,
+              "compile"
+            ],
+            [
+              766,
+              6,
+              "compile"
+            ],
+            [
+              768,
+              1,
+              "compile"
+            ],
+            [
+              771,
+              1,
+              "transfer"
+            ],
+            [
+              783,
+              1,
+              "transfer"
+            ],
+            [
+              799,
+              1,
+              "transfer"
+            ],
+            [
+              801,
+              1,
+              "transfer"
+            ],
+            [
+              806,
+              1,
+              "transfer"
+            ],
+            [
+              809,
+              19,
+              "other"
+            ],
+            [
+              886,
+              4,
+              "transfer"
+            ],
+            [
+              887,
+              3,
+              "transfer"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "id": "recovery-stack-restored.0002.sample.txt",
+      "case": "recovery/stack-restored",
+      "begin_ns": 1794442798675000000,
+      "end_ns": 1794442802736189000,
+      "nominal_end_ns": 1794442801675000000,
+      "record_line": 17,
+      "returncode": 0,
+      "sha256": "c2a96b386d4340f6d7bce6d96040d7e64820a04182af59c6274ffeff00205e80",
+      "threads": {
+        "98089331": {
+          "role": "vcpu",
+          "total": 93,
+          "states": {
+            "bql": 59,
+            "idle": 27,
+            "guest": 5,
+            "other": 2
+          },
+          "lines": [
+            [
+              77,
+              59,
+              "bql"
+            ],
+            [
+              82,
+              27,
+              "idle"
+            ],
+            [
+              85,
+              5,
+              "guest"
+            ],
+            [
+              97,
+              1,
+              "other"
+            ],
+            [
+              113,
+              1,
+              "other"
+            ]
+          ]
+        },
+        "98089332": {
+          "role": "vcpu",
+          "total": 93,
+          "states": {
+            "idle": 54,
+            "guest": 11,
+            "bql": 28
+          },
+          "lines": [
+            [
+              123,
+              54,
+              "idle"
+            ],
+            [
+              126,
+              11,
+              "guest"
+            ],
+            [
+              132,
+              28,
+              "bql"
+            ]
+          ]
+        },
+        "98089333": {
+          "role": "vcpu",
+          "total": 93,
+          "states": {
+            "idle": 73,
+            "guest": 14,
+            "bql": 6
+          },
+          "lines": [
+            [
+              142,
+              73,
+              "idle"
+            ],
+            [
+              145,
+              14,
+              "guest"
+            ],
+            [
+              151,
+              6,
+              "bql"
+            ]
+          ]
+        },
+        "98089334": {
+          "role": "vcpu",
+          "total": 93,
+          "states": {
+            "idle": 50,
+            "guest": 31,
+            "bql": 12
+          },
+          "lines": [
+            [
+              161,
+              50,
+              "idle"
+            ],
+            [
+              164,
+              31,
+              "guest"
+            ],
+            [
+              170,
+              12,
+              "bql"
+            ]
+          ]
+        },
+        "98089364": {
+          "role": "loop",
+          "total": 93,
+          "states": {
+            "link": 45,
+            "compile": 14,
+            "transfer": 12,
+            "virgl-other": 1,
+            "other": 21
+          },
+          "lines": [
+            [
+              744,
+              45,
+              "link"
+            ],
+            [
+              754,
+              6,
+              "compile"
+            ],
+            [
+              774,
+              3,
+              "compile"
+            ],
+            [
+              785,
+              1,
+              "compile"
+            ],
+            [
+              800,
+              1,
+              "compile"
+            ],
+            [
+              814,
+              3,
+              "compile"
+            ],
+            [
+              827,
+              1,
+              "transfer"
+            ],
+            [
+              838,
+              2,
+              "transfer"
+            ],
+            [
+              843,
+              1,
+              "transfer"
+            ],
+            [
+              857,
+              1,
+              "virgl-other"
+            ],
+            [
+              860,
+              21,
+              "other"
+            ],
+            [
+              933,
+              6,
+              "transfer"
+            ],
+            [
+              934,
+              2,
+              "transfer"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "id": "recovery-supervisor-restarts.0002.sample.txt",
+      "case": "recovery/supervisor-restarts",
+      "begin_ns": 1794442833082000000,
+      "end_ns": 1794442837685596000,
+      "nominal_end_ns": 1794442836082000000,
+      "record_line": 37,
+      "returncode": 0,
+      "sha256": "b80f444fbb96143a14203815b28e98e6c3644434e0545eb81f3b82b789e34bbd",
+      "threads": {
+        "98089331": {
+          "role": "vcpu",
+          "total": 98,
+          "states": {
+            "idle": 45,
+            "guest": 7,
+            "bql": 46
+          },
+          "lines": [
+            [
+              76,
+              45,
+              "idle"
+            ],
+            [
+              79,
+              7,
+              "guest"
+            ],
+            [
+              85,
+              46,
+              "bql"
+            ]
+          ]
+        },
+        "98089332": {
+          "role": "vcpu",
+          "total": 98,
+          "states": {
+            "idle": 55,
+            "guest": 10,
+            "bql": 33
+          },
+          "lines": [
+            [
+              95,
+              55,
+              "idle"
+            ],
+            [
+              98,
+              10,
+              "guest"
+            ],
+            [
+              104,
+              33,
+              "bql"
+            ]
+          ]
+        },
+        "98089333": {
+          "role": "vcpu",
+          "total": 98,
+          "states": {
+            "idle": 76,
+            "guest": 8,
+            "bql": 14
+          },
+          "lines": [
+            [
+              114,
+              76,
+              "idle"
+            ],
+            [
+              117,
+              8,
+              "guest"
+            ],
+            [
+              123,
+              14,
+              "bql"
+            ]
+          ]
+        },
+        "98089334": {
+          "role": "vcpu",
+          "total": 98,
+          "states": {
+            "idle": 65,
+            "guest": 8,
+            "bql": 25
+          },
+          "lines": [
+            [
+              133,
+              65,
+              "idle"
+            ],
+            [
+              136,
+              8,
+              "guest"
+            ],
+            [
+              142,
+              25,
+              "bql"
+            ]
+          ]
+        },
+        "98089364": {
+          "role": "loop",
+          "total": 98,
+          "states": {
+            "link": 31,
+            "compile": 17,
+            "virgl-other": 2,
+            "transfer": 10,
+            "other": 38
+          },
+          "lines": [
+            [
+              854,
+              29,
+              "link"
+            ],
+            [
+              864,
+              10,
+              "compile"
+            ],
+            [
+              883,
+              3,
+              "compile"
+            ],
+            [
+              898,
+              3,
+              "compile"
+            ],
+            [
+              906,
+              1,
+              "virgl-other"
+            ],
+            [
+              922,
+              3,
+              "transfer"
+            ],
+            [
+              933,
+              1,
+              "virgl-other"
+            ],
+            [
+              950,
+              2,
+              "link"
+            ],
+            [
+              969,
+              1,
+              "compile"
+            ],
+            [
+              972,
+              37,
+              "other"
+            ],
+            [
+              986,
+              1,
+              "other"
+            ],
+            [
+              1066,
+              4,
+              "transfer"
+            ],
+            [
+              1069,
+              2,
+              "transfer"
+            ],
+            [
+              1070,
+              1,
+              "transfer"
+            ]
+          ]
+        }
+      }
+    },
+    {
+      "id": "recovery-supervisor-restarts.0003.sample.txt",
+      "case": "recovery/supervisor-restarts",
+      "begin_ns": 1794442837747000000,
+      "end_ns": 1794442841281459000,
+      "nominal_end_ns": 1794442840747000000,
+      "record_line": 39,
+      "returncode": 0,
+      "sha256": "7677a403f58c92c5688a8423eb055a85a9154d8558411d5a73e2adb98c5610b2",
+      "threads": {
+        "98089331": {
+          "role": "vcpu",
+          "total": 103,
+          "states": {
+            "guest": 57,
+            "idle": 35,
+            "bql": 7,
+            "other": 4
+          },
+          "lines": [
+            [
+              79,
+              57,
+              "guest"
+            ],
+            [
+              83,
+              35,
+              "idle"
+            ],
+            [
+              89,
+              7,
+              "bql"
+            ],
+            [
+              104,
+              3,
+              "other"
+            ],
+            [
+              106,
+              1,
+              "other"
+            ]
+          ]
+        },
+        "98089332": {
+          "role": "vcpu",
+          "total": 103,
+          "states": {
+            "guest": 87,
+            "bql": 7,
+            "other": 9
+          },
+          "lines": [
+            [
+              115,
+              87,
+              "guest"
+            ],
+            [
+              121,
+              7,
+              "bql"
+            ],
+            [
+              134,
+              4,
+              "other"
+            ],
+            [
+              138,
+              3,
+              "other"
+            ],
+            [
+              143,
+              1,
+              "other"
+            ],
+            [
+              145,
+              1,
+              "other"
+            ]
+          ]
+        },
+        "98089333": {
+          "role": "vcpu",
+          "total": 103,
+          "states": {
+            "guest": 55,
+            "idle": 13,
+            "other": 35
+          },
+          "lines": [
+            [
+              154,
+              55,
+              "guest"
+            ],
+            [
+              158,
+              13,
+              "idle"
+            ],
+            [
+              173,
+              23,
+              "other"
+            ],
+            [
+              175,
+              12,
+              "other"
+            ]
+          ]
+        },
+        "98089334": {
+          "role": "vcpu",
+          "total": 103,
+          "states": {
+            "guest": 50,
+            "idle": 33,
+            "other": 18,
+            "bql": 2
+          },
+          "lines": [
+            [
+              184,
+              50,
+              "guest"
+            ],
+            [
+              188,
+              33,
+              "idle"
+            ],
+            [
+              201,
+              11,
+              "other"
+            ],
+            [
+              205,
+              5,
+              "other"
+            ],
+            [
+              211,
+              2,
+              "bql"
+            ],
+            [
+              213,
+              1,
+              "other"
+            ],
+            [
+              216,
+              1,
+              "other"
+            ]
+          ]
+        },
+        "98089364": {
+          "role": "loop",
+          "total": 103,
+          "states": {
+            "other": 97,
+            "transfer": 6
+          },
+          "lines": [
+            [
+              403,
+              97,
+              "other"
+            ],
+            [
+              429,
+              1,
+              "transfer"
+            ],
+            [
+              432,
+              1,
+              "transfer"
+            ],
+            [
+              468,
+              3,
+              "transfer"
+            ],
+            [
+              469,
+              1,
+              "transfer"
+            ]
+          ]
+        }
+      }
+    }
+  ],
+  "windows": [
+    {
+      "name": "window-65",
+      "guest_begin_ns": 741425177375,
+      "guest_end_ns": 743732410875,
+      "serial_line": 1066717,
+      "host_begin_ns": 1794442799584289292,
+      "host_end_ns": 1794442801890981459,
+      "clock_anchors": [
+        {
+          "guest_ns": 741425231708,
+          "low": 1794442058159089542,
+          "high": 1794442058159134292,
+          "kind": "disk",
+          "request": 63673,
+          "serial_line": 1083642,
+          "trace_lines": [
+            694560,
+            694562
+          ]
+        },
+        {
+          "guest_ns": 743718572416,
+          "low": 1794442058158555584,
+          "high": 1794442058158585584,
+          "kind": "disk",
+          "request": 63943,
+          "serial_line": 1084184,
+          "trace_lines": [
+            697290,
+            697292
+          ]
+        }
+      ],
+      "gaps": [
+        {
+          "begin_ns": 1794442800250909000,
+          "end_ns": 1794442800502439000,
+          "duration_ns": 251530000,
+          "before": {
+            "ns": 1794442800250909000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x153, size 19660",
+            "line": 695226
+          },
+          "after": {
+            "ns": 1794442800502439000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0xe26d, type 0x207",
+            "line": 695227
+          },
+          "gpu": {
+            "ns": 1794442800250909000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x153, size 19660",
+            "line": 695226
+          },
+          "gpu_line": 695226,
+          "samples": [
+            "recovery-stack-restored.0002.sample.txt"
+          ],
+          "nominal_samples": [
+            "recovery-stack-restored.0002.sample.txt"
+          ],
+          "overlap_samples": [
+            "recovery-stack-restored.0002.sample.txt"
+          ],
+          "command_fence": {
+            "ns": 1794442800502439000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0xe26d, type 0x207",
+            "line": 695227
+          },
+          "command_response": {
+            "ns": 1794442800502548000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0xe26d",
+            "line": 695230
+          },
+          "guest_command": null,
+          "context": 339,
+          "context_create": {
+            "ns": 1794442799609844000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x153, name breenix",
+            "line": 694959
+          },
+          "creator": null,
+          "origins": [
+            {
+              "pid": "722",
+              "tid": "949",
+              "line": 1084202,
+              "names": {
+                "suite-window-manager_mai": 1072818
+              }
+            },
+            {
+              "pid": "724",
+              "tid": "952",
+              "line": 1084208,
+              "names": {
+                "clone-child-952": 1073419
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442800780572000,
+          "end_ns": 1794442800900498000,
+          "duration_ns": 119926000,
+          "before": {
+            "ns": 1794442800780572000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x153, size 37912",
+            "line": 695326
+          },
+          "after": {
+            "ns": 1794442800900498000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0xe274, type 0x207",
+            "line": 695327
+          },
+          "gpu": {
+            "ns": 1794442800780572000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x153, size 37912",
+            "line": 695326
+          },
+          "gpu_line": 695326,
+          "samples": [
+            "recovery-stack-restored.0002.sample.txt"
+          ],
+          "nominal_samples": [
+            "recovery-stack-restored.0002.sample.txt"
+          ],
+          "overlap_samples": [
+            "recovery-stack-restored.0002.sample.txt"
+          ],
+          "command_fence": {
+            "ns": 1794442800900498000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0xe274, type 0x207",
+            "line": 695327
+          },
+          "command_response": {
+            "ns": 1794442800900589000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0xe274",
+            "line": 695328
+          },
+          "guest_command": null,
+          "context": 339,
+          "context_create": {
+            "ns": 1794442799609844000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x153, name breenix",
+            "line": 694959
+          },
+          "creator": null,
+          "origins": [
+            {
+              "pid": "722",
+              "tid": "949",
+              "line": 1084202,
+              "names": {
+                "suite-window-manager_mai": 1072818
+              }
+            },
+            {
+              "pid": "724",
+              "tid": "952",
+              "line": 1084208,
+              "names": {
+                "clone-child-952": 1073419
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442800948977000,
+          "end_ns": 1794442801234729000,
+          "duration_ns": 285752000,
+          "before": {
+            "ns": 1794442800948977000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x152, size 19660",
+            "line": 695372
+          },
+          "after": {
+            "ns": 1794442801234729000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0xe27b, type 0x207",
+            "line": 695373
+          },
+          "gpu": {
+            "ns": 1794442800948977000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x152, size 19660",
+            "line": 695372
+          },
+          "gpu_line": 695372,
+          "samples": [
+            "recovery-stack-restored.0002.sample.txt"
+          ],
+          "nominal_samples": [
+            "recovery-stack-restored.0002.sample.txt"
+          ],
+          "overlap_samples": [
+            "recovery-stack-restored.0002.sample.txt"
+          ],
+          "command_fence": {
+            "ns": 1794442801234729000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0xe27b, type 0x207",
+            "line": 695373
+          },
+          "command_response": {
+            "ns": 1794442801234902000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0xe27b",
+            "line": 695379
+          },
+          "guest_command": null,
+          "context": 338,
+          "context_create": {
+            "ns": 1794442799590610000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x152, name breenix",
+            "line": 694847
+          },
+          "creator": null,
+          "origins": [
+            {
+              "pid": "722",
+              "tid": "949",
+              "line": 1084380,
+              "names": {
+                "suite-window-manager_mai": 1072818
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442801507423000,
+          "end_ns": 1794442801637732000,
+          "duration_ns": 130309000,
+          "before": {
+            "ns": 1794442801507423000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x152, size 37912",
+            "line": 695467
+          },
+          "after": {
+            "ns": 1794442801637732000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0xe286, type 0x207",
+            "line": 695468
+          },
+          "gpu": {
+            "ns": 1794442801507423000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x152, size 37912",
+            "line": 695467
+          },
+          "gpu_line": 695467,
+          "samples": [
+            "recovery-stack-restored.0002.sample.txt"
+          ],
+          "nominal_samples": [
+            "recovery-stack-restored.0002.sample.txt"
+          ],
+          "overlap_samples": [
+            "recovery-stack-restored.0002.sample.txt"
+          ],
+          "command_fence": {
+            "ns": 1794442801637732000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0xe286, type 0x207",
+            "line": 695468
+          },
+          "command_response": {
+            "ns": 1794442801637818000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0xe286",
+            "line": 695469
+          },
+          "guest_command": null,
+          "context": 338,
+          "context_create": {
+            "ns": 1794442799590610000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x152, name breenix",
+            "line": 694847
+          },
+          "creator": null,
+          "origins": [
+            {
+              "pid": "722",
+              "tid": "949",
+              "line": 1084380,
+              "names": {
+                "suite-window-manager_mai": 1072818
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "window-67",
+      "guest_begin_ns": 777366017958,
+      "guest_end_ns": 779932516458,
+      "serial_line": 1121021,
+      "host_begin_ns": 1794442835525413625,
+      "host_end_ns": 1794442838091826500,
+      "clock_anchors": [
+        {
+          "guest_ns": 777366066458,
+          "low": 1794442058159374792,
+          "high": 1794442058159416542,
+          "kind": "disk",
+          "request": 66516,
+          "serial_line": 1144173,
+          "trace_lines": [
+            945093,
+            945095
+          ]
+        },
+        {
+          "guest_ns": 779932171791,
+          "low": 1794442058159160875,
+          "high": 1794442058159459209,
+          "kind": "gpu-fence",
+          "seq": "199819",
+          "fence": 111301,
+          "serial_line": 1148017,
+          "trace_lines": [
+            948712,
+            948714
+          ]
+        }
+      ],
+      "gaps": [
+        {
+          "begin_ns": 1794442835928052000,
+          "end_ns": 1794442836171954000,
+          "duration_ns": 243902000,
+          "before": {
+            "ns": 1794442835928052000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x15c, size 19660",
+            "line": 945960
+          },
+          "after": {
+            "ns": 1794442836171954000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x1b1b8, type 0x207",
+            "line": 945961
+          },
+          "gpu": {
+            "ns": 1794442835928052000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x15c, size 19660",
+            "line": 945960
+          },
+          "gpu_line": 945960,
+          "samples": [
+            "recovery-supervisor-restarts.0002.sample.txt"
+          ],
+          "nominal_samples": [],
+          "overlap_samples": [
+            "recovery-supervisor-restarts.0002.sample.txt"
+          ],
+          "command_fence": {
+            "ns": 1794442836171954000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x1b1b8, type 0x207",
+            "line": 945961
+          },
+          "command_response": {
+            "ns": 1794442836172068000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x1b1b8",
+            "line": 945964
+          },
+          "guest_command": {
+            "seq": "199301",
+            "submit_ns": "777768566583",
+            "fence_return_ns": "778012743833",
+            "pid": "753",
+            "tid": "987",
+            "context": "348",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "19660",
+            "queue_seq": "111032",
+            "fence": "111032",
+            "serial_line": 1146981
+          },
+          "context": 348,
+          "context_create": {
+            "ns": 1794442835555297000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x15c, name breenix",
+            "line": 945616
+          },
+          "creator": {
+            "pid": "753",
+            "tid": "987",
+            "line": 1119126
+          },
+          "origins": [
+            {
+              "pid": "753",
+              "tid": "987",
+              "line": 1119126,
+              "names": {
+                "clone-child-987": 1114461
+              }
+            },
+            {
+              "pid": "751",
+              "tid": "984",
+              "line": 1119202,
+              "names": {
+                "/sbin/init_main": 1113324
+              }
+            },
+            {
+              "pid": "752",
+              "tid": "986",
+              "line": 1119468,
+              "names": {
+                "clone-child-986": 1114435
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442836441359000,
+          "end_ns": 1794442836566982000,
+          "duration_ns": 125623000,
+          "before": {
+            "ns": 1794442836441359000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x15c, size 37912",
+            "line": 946053
+          },
+          "after": {
+            "ns": 1794442836566982000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x1b1bf, type 0x207",
+            "line": 946054
+          },
+          "gpu": {
+            "ns": 1794442836441359000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x15c, size 37912",
+            "line": 946053
+          },
+          "gpu_line": 946053,
+          "samples": [
+            "recovery-supervisor-restarts.0002.sample.txt"
+          ],
+          "nominal_samples": [],
+          "overlap_samples": [
+            "recovery-supervisor-restarts.0002.sample.txt"
+          ],
+          "command_fence": {
+            "ns": 1794442836566982000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x1b1bf, type 0x207",
+            "line": 946054
+          },
+          "command_response": {
+            "ns": 1794442836567077000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x1b1bf",
+            "line": 946055
+          },
+          "guest_command": {
+            "seq": "199315",
+            "submit_ns": "778281897750",
+            "fence_return_ns": "778407744291",
+            "pid": "753",
+            "tid": "987",
+            "context": "348",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "37912",
+            "queue_seq": "111039",
+            "fence": "111039",
+            "serial_line": 1147009
+          },
+          "context": 348,
+          "context_create": {
+            "ns": 1794442835555297000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x15c, name breenix",
+            "line": 945616
+          },
+          "creator": {
+            "pid": "753",
+            "tid": "987",
+            "line": 1119126
+          },
+          "origins": [
+            {
+              "pid": "753",
+              "tid": "987",
+              "line": 1119126,
+              "names": {
+                "clone-child-987": 1114461
+              }
+            },
+            {
+              "pid": "751",
+              "tid": "984",
+              "line": 1119202,
+              "names": {
+                "/sbin/init_main": 1113324
+              }
+            },
+            {
+              "pid": "752",
+              "tid": "986",
+              "line": 1119468,
+              "names": {
+                "clone-child-986": 1114435
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442836824759000,
+          "end_ns": 1794442837095425000,
+          "duration_ns": 270666000,
+          "before": {
+            "ns": 1794442836824759000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x15b, size 19660",
+            "line": 946162
+          },
+          "after": {
+            "ns": 1794442837095425000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x1b1ce, type 0x207",
+            "line": 946163
+          },
+          "gpu": {
+            "ns": 1794442836824759000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x15b, size 19660",
+            "line": 946162
+          },
+          "gpu_line": 946162,
+          "samples": [
+            "recovery-supervisor-restarts.0002.sample.txt"
+          ],
+          "nominal_samples": [],
+          "overlap_samples": [
+            "recovery-supervisor-restarts.0002.sample.txt"
+          ],
+          "command_fence": {
+            "ns": 1794442837095425000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x1b1ce, type 0x207",
+            "line": 946163
+          },
+          "command_response": {
+            "ns": 1794442837095547000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x1b1ce",
+            "line": 946167
+          },
+          "guest_command": {
+            "seq": "199343",
+            "submit_ns": "778665247916",
+            "fence_return_ns": "778936219333",
+            "pid": "751",
+            "tid": "984",
+            "context": "347",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "19660",
+            "queue_seq": "111054",
+            "fence": "111054",
+            "serial_line": 1147065
+          },
+          "context": 347,
+          "context_create": {
+            "ns": 1794442835536459000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x15b, name breenix",
+            "line": 945399
+          },
+          "creator": {
+            "pid": "751",
+            "tid": "984",
+            "line": 1119034
+          },
+          "origins": [
+            {
+              "pid": "751",
+              "tid": "984",
+              "line": 1119034,
+              "names": {
+                "/sbin/init_main": 1113324
+              }
+            },
+            {
+              "pid": "752",
+              "tid": "986",
+              "line": 1119470,
+              "names": {
+                "clone-child-986": 1114435
+              }
+            },
+            {
+              "pid": "755",
+              "tid": "989",
+              "line": 1119963,
+              "names": {
+                "clone-child-989": 1113213
+              }
+            },
+            {
+              "pid": "756",
+              "tid": "990",
+              "line": 1147611,
+              "names": {
+                "clone-child-990": 1139341
+              }
+            },
+            {
+              "pid": "757",
+              "tid": "991",
+              "line": 1147627,
+              "names": {
+                "clone-child-991": 1139539
+              }
+            },
+            {
+              "pid": "758",
+              "tid": "992",
+              "line": 1147643,
+              "names": {
+                "clone-child-992": 1139721
+              }
+            },
+            {
+              "pid": "759",
+              "tid": "993",
+              "line": 1148121,
+              "names": {}
+            },
+            {
+              "pid": "760",
+              "tid": "994",
+              "line": 1148137,
+              "names": {}
+            },
+            {
+              "pid": "761",
+              "tid": "995",
+              "line": 1148153,
+              "names": {}
+            },
+            {
+              "pid": "762",
+              "tid": "996",
+              "line": 1148169,
+              "names": {}
+            },
+            {
+              "pid": "740",
+              "tid": "971",
+              "line": 1148855,
+              "names": {
+                "bterm": 1113974
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442837357828000,
+          "end_ns": 1794442837457933000,
+          "duration_ns": 100105000,
+          "before": {
+            "ns": 1794442837357828000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x15b, size 37912",
+            "line": 946256
+          },
+          "after": {
+            "ns": 1794442837457933000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x1b1d5, type 0x207",
+            "line": 946257
+          },
+          "gpu": {
+            "ns": 1794442837357828000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x15b, size 37912",
+            "line": 946256
+          },
+          "gpu_line": 946256,
+          "samples": [
+            "recovery-supervisor-restarts.0002.sample.txt"
+          ],
+          "nominal_samples": [],
+          "overlap_samples": [
+            "recovery-supervisor-restarts.0002.sample.txt"
+          ],
+          "command_fence": {
+            "ns": 1794442837457933000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x1b1d5, type 0x207",
+            "line": 946257
+          },
+          "command_response": {
+            "ns": 1794442837458014000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x1b1d5",
+            "line": 946258
+          },
+          "guest_command": {
+            "seq": "199357",
+            "submit_ns": "779198401375",
+            "fence_return_ns": "779298695708",
+            "pid": "751",
+            "tid": "984",
+            "context": "347",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "37912",
+            "queue_seq": "111061",
+            "fence": "111061",
+            "serial_line": 1147093
+          },
+          "context": 347,
+          "context_create": {
+            "ns": 1794442835536459000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x15b, name breenix",
+            "line": 945399
+          },
+          "creator": {
+            "pid": "751",
+            "tid": "984",
+            "line": 1119034
+          },
+          "origins": [
+            {
+              "pid": "751",
+              "tid": "984",
+              "line": 1119034,
+              "names": {
+                "/sbin/init_main": 1113324
+              }
+            },
+            {
+              "pid": "752",
+              "tid": "986",
+              "line": 1119470,
+              "names": {
+                "clone-child-986": 1114435
+              }
+            },
+            {
+              "pid": "755",
+              "tid": "989",
+              "line": 1119963,
+              "names": {
+                "clone-child-989": 1113213
+              }
+            },
+            {
+              "pid": "756",
+              "tid": "990",
+              "line": 1147611,
+              "names": {
+                "clone-child-990": 1139341
+              }
+            },
+            {
+              "pid": "757",
+              "tid": "991",
+              "line": 1147627,
+              "names": {
+                "clone-child-991": 1139539
+              }
+            },
+            {
+              "pid": "758",
+              "tid": "992",
+              "line": 1147643,
+              "names": {
+                "clone-child-992": 1139721
+              }
+            },
+            {
+              "pid": "759",
+              "tid": "993",
+              "line": 1148121,
+              "names": {}
+            },
+            {
+              "pid": "760",
+              "tid": "994",
+              "line": 1148137,
+              "names": {}
+            },
+            {
+              "pid": "761",
+              "tid": "995",
+              "line": 1148153,
+              "names": {}
+            },
+            {
+              "pid": "762",
+              "tid": "996",
+              "line": 1148169,
+              "names": {}
+            },
+            {
+              "pid": "740",
+              "tid": "971",
+              "line": 1148855,
+              "names": {
+                "bterm": 1113974
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442837747922000,
+          "end_ns": 1794442837955760000,
+          "duration_ns": 207838000,
+          "before": {
+            "ns": 1794442837747922000,
+            "event": "virtio_mmio_setting_irq",
+            "line": 948072
+          },
+          "after": {
+            "ns": 1794442837955760000,
+            "event": "virtio_queue_notify",
+            "line": 948073
+          },
+          "gpu": {
+            "ns": 1794442837724430000,
+            "event": "virtio_gpu_cmd_res_xfer_fromh_3d",
+            "detail": "res 0xf31",
+            "line": 948041
+          },
+          "gpu_line": 948041,
+          "samples": [
+            "recovery-supervisor-restarts.0003.sample.txt"
+          ],
+          "nominal_samples": [
+            "recovery-supervisor-restarts.0003.sample.txt"
+          ],
+          "overlap_samples": [
+            "recovery-supervisor-restarts.0003.sample.txt"
+          ],
+          "command_fence": {
+            "ns": 1794442837739490000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x1b268, type 0x206",
+            "line": 948042
+          },
+          "command_response": {
+            "ns": 1794442837739552000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x1b268",
+            "line": 948043
+          },
+          "guest_command": {
+            "seq": "199638",
+            "submit_ns": "779564979875",
+            "fence_return_ns": "779580521791",
+            "pid": "751",
+            "tid": "984",
+            "context": "348",
+            "type": "518",
+            "cmd_bytes": "72",
+            "payload_bytes": "0",
+            "queue_seq": "111208",
+            "fence": "111208",
+            "serial_line": 1147655
+          },
+          "context": null,
+          "context_create": null,
+          "creator": null,
+          "origins": []
+        }
+      ]
+    },
+    {
+      "name": "focus/pair-click",
+      "guest_begin_ns": 340174592333,
+      "guest_end_ns": 345596444125,
+      "serial_line": 506644,
+      "host_begin_ns": 1794442398330403291,
+      "host_end_ns": 1794442403752417229,
+      "clock_anchors": [
+        {
+          "guest_ns": 340118619500,
+          "low": 1794442058155653417,
+          "high": 1794442058155968500,
+          "kind": "gpu-fence",
+          "seq": "49803",
+          "fence": 26409,
+          "serial_line": 524308,
+          "trace_lines": [
+            314874,
+            314875
+          ]
+        },
+        {
+          "guest_ns": 345545826500,
+          "low": 1794442058155921709,
+          "high": 1794442058156024500,
+          "kind": "gpu-fence",
+          "seq": "51146",
+          "fence": 27125,
+          "serial_line": 545647,
+          "trace_lines": [
+            323700,
+            323721
+          ]
+        }
+      ],
+      "gaps": [
+        {
+          "begin_ns": 1794442399070970000,
+          "end_ns": 1794442399353804000,
+          "duration_ns": 282834000,
+          "before": {
+            "ns": 1794442399070970000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9c, size 19660",
+            "line": 318563
+          },
+          "after": {
+            "ns": 1794442399353804000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x675e, type 0x207",
+            "line": 318564
+          },
+          "gpu": {
+            "ns": 1794442399070970000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9c, size 19660",
+            "line": 318563
+          },
+          "gpu_line": 318563,
+          "samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "nominal_samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "overlap_samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "command_fence": {
+            "ns": 1794442399353804000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x675e, type 0x207",
+            "line": 318564
+          },
+          "command_response": {
+            "ns": 1794442399353961000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x675e",
+            "line": 318570
+          },
+          "guest_command": {
+            "seq": "49908",
+            "submit_ns": "340914964000",
+            "fence_return_ns": "341198086666",
+            "pid": "346",
+            "tid": "463",
+            "context": "156",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "19660",
+            "queue_seq": "26462",
+            "fence": "26462",
+            "serial_line": 524518
+          },
+          "context": 156,
+          "context_create": {
+            "ns": 1794442398639393000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x9c, name breenix",
+            "line": 318360
+          },
+          "creator": {
+            "pid": "346",
+            "tid": "463",
+            "line": 524376
+          },
+          "origins": [
+            {
+              "pid": "346",
+              "tid": "463",
+              "line": 524376,
+              "names": {
+                "suite-window-manager_mai": 506772
+              }
+            },
+            {
+              "pid": "347",
+              "tid": "465",
+              "line": 524712,
+              "names": {
+                "clone-child-465": 507388
+              }
+            },
+            {
+              "pid": "350",
+              "tid": "468",
+              "line": 525128,
+              "names": {
+                "clone-child-468": 520744
+              }
+            },
+            {
+              "pid": "351",
+              "tid": "469",
+              "line": 525144,
+              "names": {
+                "clone-child-469": 521062
+              }
+            },
+            {
+              "pid": "352",
+              "tid": "470",
+              "line": 525160,
+              "names": {
+                "clone-child-470": 521308
+              }
+            },
+            {
+              "pid": "353",
+              "tid": "471",
+              "line": 525172,
+              "names": {
+                "clone-child-471": 521612
+              }
+            },
+            {
+              "pid": "354",
+              "tid": "472",
+              "line": 525486,
+              "names": {}
+            },
+            {
+              "pid": "355",
+              "tid": "474",
+              "line": 525712,
+              "names": {}
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442399802086000,
+          "end_ns": 1794442400112856000,
+          "duration_ns": 310770000,
+          "before": {
+            "ns": 1794442399802086000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9d, size 19660",
+            "line": 318746
+          },
+          "after": {
+            "ns": 1794442400112856000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x677c, type 0x207",
+            "line": 318747
+          },
+          "gpu": {
+            "ns": 1794442399802086000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9d, size 19660",
+            "line": 318746
+          },
+          "gpu_line": 318746,
+          "samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "nominal_samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "overlap_samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "command_fence": {
+            "ns": 1794442400112856000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x677c, type 0x207",
+            "line": 318747
+          },
+          "command_response": {
+            "ns": 1794442400112994000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x677c",
+            "line": 318750
+          },
+          "guest_command": {
+            "seq": "49963",
+            "submit_ns": "341646041000",
+            "fence_return_ns": "341957120166",
+            "pid": "348",
+            "tid": "466",
+            "context": "157",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "19660",
+            "queue_seq": "26492",
+            "fence": "26492",
+            "serial_line": 524628
+          },
+          "context": 157,
+          "context_create": {
+            "ns": 1794442398979280000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x9d, name breenix",
+            "line": 318512
+          },
+          "creator": {
+            "pid": "348",
+            "tid": "466",
+            "line": 524480
+          },
+          "origins": [
+            {
+              "pid": "348",
+              "tid": "466",
+              "line": 524480,
+              "names": {
+                "clone-child-466": 507394
+              }
+            },
+            {
+              "pid": "346",
+              "tid": "463",
+              "line": 524570,
+              "names": {
+                "suite-window-manager_mai": 506772
+              }
+            },
+            {
+              "pid": "347",
+              "tid": "465",
+              "line": 524714,
+              "names": {
+                "clone-child-465": 507388
+              }
+            },
+            {
+              "pid": "345",
+              "tid": "461",
+              "line": 525250,
+              "names": {
+                "suite-window-manager_mai": 507562
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442400329959000,
+          "end_ns": 1794442400434211000,
+          "duration_ns": 104252000,
+          "before": {
+            "ns": 1794442400329959000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9d, size 33048",
+            "line": 318820
+          },
+          "after": {
+            "ns": 1794442400434211000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6782, type 0x207",
+            "line": 318821
+          },
+          "gpu": {
+            "ns": 1794442400329959000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9d, size 33048",
+            "line": 318820
+          },
+          "gpu_line": 318820,
+          "samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "nominal_samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "overlap_samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "command_fence": {
+            "ns": 1794442400434211000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6782, type 0x207",
+            "line": 318821
+          },
+          "command_response": {
+            "ns": 1794442400434325000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6782",
+            "line": 318822
+          },
+          "guest_command": {
+            "seq": "49975",
+            "submit_ns": "342173982041",
+            "fence_return_ns": "342278453375",
+            "pid": "348",
+            "tid": "466",
+            "context": "157",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "33048",
+            "queue_seq": "26498",
+            "fence": "26498",
+            "serial_line": 524652
+          },
+          "context": 157,
+          "context_create": {
+            "ns": 1794442398979280000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x9d, name breenix",
+            "line": 318512
+          },
+          "creator": {
+            "pid": "348",
+            "tid": "466",
+            "line": 524480
+          },
+          "origins": [
+            {
+              "pid": "348",
+              "tid": "466",
+              "line": 524480,
+              "names": {
+                "clone-child-466": 507394
+              }
+            },
+            {
+              "pid": "346",
+              "tid": "463",
+              "line": 524570,
+              "names": {
+                "suite-window-manager_mai": 506772
+              }
+            },
+            {
+              "pid": "347",
+              "tid": "465",
+              "line": 524714,
+              "names": {
+                "clone-child-465": 507388
+              }
+            },
+            {
+              "pid": "345",
+              "tid": "461",
+              "line": 525250,
+              "names": {
+                "suite-window-manager_mai": 507562
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442400434540000,
+          "end_ns": 1794442400574390000,
+          "duration_ns": 139850000,
+          "before": {
+            "ns": 1794442400434540000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9d, size 37912",
+            "line": 318838
+          },
+          "after": {
+            "ns": 1794442400574390000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6783, type 0x207",
+            "line": 318839
+          },
+          "gpu": {
+            "ns": 1794442400434540000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9d, size 37912",
+            "line": 318838
+          },
+          "gpu_line": 318838,
+          "samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "nominal_samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "overlap_samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "command_fence": {
+            "ns": 1794442400574390000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6783, type 0x207",
+            "line": 318839
+          },
+          "command_response": {
+            "ns": 1794442400574482000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6783",
+            "line": 318840
+          },
+          "guest_command": {
+            "seq": "49977",
+            "submit_ns": "342278543458",
+            "fence_return_ns": "342418614083",
+            "pid": "348",
+            "tid": "466",
+            "context": "157",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "37912",
+            "queue_seq": "26499",
+            "fence": "26499",
+            "serial_line": 524656
+          },
+          "context": 157,
+          "context_create": {
+            "ns": 1794442398979280000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x9d, name breenix",
+            "line": 318512
+          },
+          "creator": {
+            "pid": "348",
+            "tid": "466",
+            "line": 524480
+          },
+          "origins": [
+            {
+              "pid": "348",
+              "tid": "466",
+              "line": 524480,
+              "names": {
+                "clone-child-466": 507394
+              }
+            },
+            {
+              "pid": "346",
+              "tid": "463",
+              "line": 524570,
+              "names": {
+                "suite-window-manager_mai": 506772
+              }
+            },
+            {
+              "pid": "347",
+              "tid": "465",
+              "line": 524714,
+              "names": {
+                "clone-child-465": 507388
+              }
+            },
+            {
+              "pid": "345",
+              "tid": "461",
+              "line": 525250,
+              "names": {
+                "suite-window-manager_mai": 507562
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442400648152000,
+          "end_ns": 1794442400751392000,
+          "duration_ns": 103240000,
+          "before": {
+            "ns": 1794442400648152000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9c, size 33048",
+            "line": 318883
+          },
+          "after": {
+            "ns": 1794442400751392000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6789, type 0x207",
+            "line": 318884
+          },
+          "gpu": {
+            "ns": 1794442400648152000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9c, size 33048",
+            "line": 318883
+          },
+          "gpu_line": 318883,
+          "samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "nominal_samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "overlap_samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "command_fence": {
+            "ns": 1794442400751392000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6789, type 0x207",
+            "line": 318884
+          },
+          "command_response": {
+            "ns": 1794442400751602000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6789",
+            "line": 318888
+          },
+          "guest_command": {
+            "seq": "49989",
+            "submit_ns": "342492137208",
+            "fence_return_ns": "342595707458",
+            "pid": "346",
+            "tid": "463",
+            "context": "156",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "33048",
+            "queue_seq": "26505",
+            "fence": "26505",
+            "serial_line": 524680
+          },
+          "context": 156,
+          "context_create": {
+            "ns": 1794442398639393000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x9c, name breenix",
+            "line": 318360
+          },
+          "creator": {
+            "pid": "346",
+            "tid": "463",
+            "line": 524376
+          },
+          "origins": [
+            {
+              "pid": "346",
+              "tid": "463",
+              "line": 524376,
+              "names": {
+                "suite-window-manager_mai": 506772
+              }
+            },
+            {
+              "pid": "347",
+              "tid": "465",
+              "line": 524712,
+              "names": {
+                "clone-child-465": 507388
+              }
+            },
+            {
+              "pid": "350",
+              "tid": "468",
+              "line": 525128,
+              "names": {
+                "clone-child-468": 520744
+              }
+            },
+            {
+              "pid": "351",
+              "tid": "469",
+              "line": 525144,
+              "names": {
+                "clone-child-469": 521062
+              }
+            },
+            {
+              "pid": "352",
+              "tid": "470",
+              "line": 525160,
+              "names": {
+                "clone-child-470": 521308
+              }
+            },
+            {
+              "pid": "353",
+              "tid": "471",
+              "line": 525172,
+              "names": {
+                "clone-child-471": 521612
+              }
+            },
+            {
+              "pid": "354",
+              "tid": "472",
+              "line": 525486,
+              "names": {}
+            },
+            {
+              "pid": "355",
+              "tid": "474",
+              "line": 525712,
+              "names": {}
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442400751839000,
+          "end_ns": 1794442400889527000,
+          "duration_ns": 137688000,
+          "before": {
+            "ns": 1794442400751839000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9c, size 37912",
+            "line": 318909
+          },
+          "after": {
+            "ns": 1794442400889527000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x678c, type 0x207",
+            "line": 318910
+          },
+          "gpu": {
+            "ns": 1794442400751839000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9c, size 37912",
+            "line": 318909
+          },
+          "gpu_line": 318909,
+          "samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "nominal_samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "overlap_samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "command_fence": {
+            "ns": 1794442400889527000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x678c, type 0x207",
+            "line": 318910
+          },
+          "command_response": {
+            "ns": 1794442400891298000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x678c",
+            "line": 318915
+          },
+          "guest_command": {
+            "seq": "49995",
+            "submit_ns": "342595826083",
+            "fence_return_ns": "342735441375",
+            "pid": "346",
+            "tid": "463",
+            "context": "156",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "37912",
+            "queue_seq": "26508",
+            "fence": "26508",
+            "serial_line": 524692
+          },
+          "context": 156,
+          "context_create": {
+            "ns": 1794442398639393000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x9c, name breenix",
+            "line": 318360
+          },
+          "creator": {
+            "pid": "346",
+            "tid": "463",
+            "line": 524376
+          },
+          "origins": [
+            {
+              "pid": "346",
+              "tid": "463",
+              "line": 524376,
+              "names": {
+                "suite-window-manager_mai": 506772
+              }
+            },
+            {
+              "pid": "347",
+              "tid": "465",
+              "line": 524712,
+              "names": {
+                "clone-child-465": 507388
+              }
+            },
+            {
+              "pid": "350",
+              "tid": "468",
+              "line": 525128,
+              "names": {
+                "clone-child-468": 520744
+              }
+            },
+            {
+              "pid": "351",
+              "tid": "469",
+              "line": 525144,
+              "names": {
+                "clone-child-469": 521062
+              }
+            },
+            {
+              "pid": "352",
+              "tid": "470",
+              "line": 525160,
+              "names": {
+                "clone-child-470": 521308
+              }
+            },
+            {
+              "pid": "353",
+              "tid": "471",
+              "line": 525172,
+              "names": {
+                "clone-child-471": 521612
+              }
+            },
+            {
+              "pid": "354",
+              "tid": "472",
+              "line": 525486,
+              "names": {}
+            },
+            {
+              "pid": "355",
+              "tid": "474",
+              "line": 525712,
+              "names": {}
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442401269814000,
+          "end_ns": 1794442401704471000,
+          "duration_ns": 434657000,
+          "before": {
+            "ns": 1794442401269814000,
+            "event": "virtio_mmio_setting_irq",
+            "line": 320960
+          },
+          "after": {
+            "ns": 1794442401704471000,
+            "event": "virtio_queue_notify",
+            "line": 320961
+          },
+          "gpu": {
+            "ns": 1794442401244444000,
+            "event": "virtio_gpu_cmd_res_xfer_fromh_3d",
+            "detail": "res 0x736",
+            "line": 320941
+          },
+          "gpu_line": 320941,
+          "samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "nominal_samples": [],
+          "overlap_samples": [
+            "focus-pair-click.sample.txt"
+          ],
+          "command_fence": {
+            "ns": 1794442401259198000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6822, type 0x206",
+            "line": 320942
+          },
+          "command_response": {
+            "ns": 1794442401259323000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6822",
+            "line": 320945
+          },
+          "guest_command": {
+            "seq": "50280",
+            "submit_ns": "343069688125",
+            "fence_return_ns": "343103436625",
+            "pid": "345",
+            "tid": "461",
+            "context": "157",
+            "type": "518",
+            "cmd_bytes": "72",
+            "payload_bytes": "0",
+            "queue_seq": "26658",
+            "fence": "26658",
+            "serial_line": 525262
+          },
+          "context": null,
+          "context_create": null,
+          "creator": null,
+          "origins": []
+        },
+        {
+          "begin_ns": 1794442402054702000,
+          "end_ns": 1794442402324881000,
+          "duration_ns": 270179000,
+          "before": {
+            "ns": 1794442402054702000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9f, size 19660",
+            "line": 322619
+          },
+          "after": {
+            "ns": 1794442402324881000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x68fe, type 0x207",
+            "line": 322620
+          },
+          "gpu": {
+            "ns": 1794442402054702000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9f, size 19660",
+            "line": 322619
+          },
+          "gpu_line": 322619,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442402324881000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x68fe, type 0x207",
+            "line": 322620
+          },
+          "command_response": {
+            "ns": 1794442402325674000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x68fe",
+            "line": 322631
+          },
+          "guest_command": {
+            "seq": "50705",
+            "submit_ns": "343898317041",
+            "fence_return_ns": "344169765166",
+            "pid": "354",
+            "tid": "472",
+            "context": "159",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "19660",
+            "queue_seq": "26878",
+            "fence": "26878",
+            "serial_line": 526112
+          },
+          "context": 159,
+          "context_create": {
+            "ns": 1794442401714823000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x9f, name breenix",
+            "line": 321808
+          },
+          "creator": {
+            "pid": "354",
+            "tid": "472",
+            "line": 525366
+          },
+          "origins": [
+            {
+              "pid": "354",
+              "tid": "472",
+              "line": 525366,
+              "names": {}
+            },
+            {
+              "pid": "355",
+              "tid": "474",
+              "line": 525938,
+              "names": {}
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442402592359000,
+          "end_ns": 1794442402715273000,
+          "duration_ns": 122914000,
+          "before": {
+            "ns": 1794442402592359000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9f, size 37912",
+            "line": 322794
+          },
+          "after": {
+            "ns": 1794442402715273000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6923, type 0x207",
+            "line": 322795
+          },
+          "gpu": {
+            "ns": 1794442402592359000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9f, size 37912",
+            "line": 322794
+          },
+          "gpu_line": 322794,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442402715273000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6923, type 0x207",
+            "line": 322795
+          },
+          "command_response": {
+            "ns": 1794442402715578000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6923",
+            "line": 322807
+          },
+          "guest_command": {
+            "seq": "50778",
+            "submit_ns": "344436346416",
+            "fence_return_ns": "344559680458",
+            "pid": "354",
+            "tid": "472",
+            "context": "159",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "37912",
+            "queue_seq": "26915",
+            "fence": "26915",
+            "serial_line": 526258
+          },
+          "context": 159,
+          "context_create": {
+            "ns": 1794442401714823000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x9f, name breenix",
+            "line": 321808
+          },
+          "creator": {
+            "pid": "354",
+            "tid": "472",
+            "line": 525366
+          },
+          "origins": [
+            {
+              "pid": "354",
+              "tid": "472",
+              "line": 525366,
+              "names": {}
+            },
+            {
+              "pid": "355",
+              "tid": "474",
+              "line": 525938,
+              "names": {}
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442403030270000,
+          "end_ns": 1794442403261566000,
+          "duration_ns": 231296000,
+          "before": {
+            "ns": 1794442403030270000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa1, size 19660",
+            "line": 323022
+          },
+          "after": {
+            "ns": 1794442403261566000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6952, type 0x207",
+            "line": 323023
+          },
+          "gpu": {
+            "ns": 1794442403030270000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa1, size 19660",
+            "line": 323022
+          },
+          "gpu_line": 323022,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442403261566000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6952, type 0x207",
+            "line": 323023
+          },
+          "command_response": {
+            "ns": 1794442403261868000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6952",
+            "line": 323034
+          },
+          "guest_command": {
+            "seq": "50865",
+            "submit_ns": "344874131666",
+            "fence_return_ns": "345105940791",
+            "pid": "355",
+            "tid": "474",
+            "context": "161",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "19660",
+            "queue_seq": "26962",
+            "fence": "26962",
+            "serial_line": 526432
+          },
+          "context": 161,
+          "context_create": {
+            "ns": 1794442401739458000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0xa1, name breenix",
+            "line": 322325
+          },
+          "creator": {
+            "pid": "355",
+            "tid": "474",
+            "line": 525852
+          },
+          "origins": [
+            {
+              "pid": "355",
+              "tid": "474",
+              "line": 525852,
+              "names": {}
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442403541573000,
+          "end_ns": 1794442403678834000,
+          "duration_ns": 137261000,
+          "before": {
+            "ns": 1794442403541573000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa1, size 37912",
+            "line": 323252
+          },
+          "after": {
+            "ns": 1794442403678834000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x697f, type 0x207",
+            "line": 323253
+          },
+          "gpu": {
+            "ns": 1794442403541573000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa1, size 37912",
+            "line": 323252
+          },
+          "gpu_line": 323252,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442403678834000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x697f, type 0x207",
+            "line": 323253
+          },
+          "command_response": {
+            "ns": 1794442403679415000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x697f",
+            "line": 323262
+          },
+          "guest_command": {
+            "seq": "50955",
+            "submit_ns": "345385134541",
+            "fence_return_ns": "345523541541",
+            "pid": "355",
+            "tid": "474",
+            "context": "161",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "37912",
+            "queue_seq": "27007",
+            "fence": "27007",
+            "serial_line": 526612
+          },
+          "context": 161,
+          "context_create": {
+            "ns": 1794442401739458000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0xa1, name breenix",
+            "line": 322325
+          },
+          "creator": {
+            "pid": "355",
+            "tid": "474",
+            "line": 525852
+          },
+          "origins": [
+            {
+              "pid": "355",
+              "tid": "474",
+              "line": 525852,
+              "names": {}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "focus/keys-to-focused",
+      "guest_begin_ns": 354864261416,
+      "guest_end_ns": 359963623666,
+      "serial_line": 528707,
+      "host_begin_ns": 1794442413020349416,
+      "host_end_ns": 1794442418119728333,
+      "clock_anchors": [
+        {
+          "guest_ns": 354818583125,
+          "low": 1794442058155960125,
+          "high": 1794442058156215875,
+          "kind": "gpu-fence",
+          "seq": "51786",
+          "fence": 27445,
+          "serial_line": 546927,
+          "trace_lines": [
+            325950,
+            325951
+          ]
+        },
+        {
+          "guest_ns": 359913445166,
+          "low": 1794442058156035500,
+          "high": 1794442058156173834,
+          "kind": "gpu-fence",
+          "seq": "53112",
+          "fence": 28139,
+          "serial_line": 549579,
+          "trace_lines": [
+            334732,
+            334744
+          ]
+        }
+      ],
+      "gaps": [
+        {
+          "begin_ns": 1794442413671369000,
+          "end_ns": 1794442413958272000,
+          "duration_ns": 286903000,
+          "before": {
+            "ns": 1794442413671369000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa2, size 19660",
+            "line": 329658
+          },
+          "after": {
+            "ns": 1794442413958272000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6b67, type 0x207",
+            "line": 329659
+          },
+          "gpu": {
+            "ns": 1794442413671369000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa2, size 19660",
+            "line": 329658
+          },
+          "gpu_line": 329658,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442413958272000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6b67, type 0x207",
+            "line": 329659
+          },
+          "command_response": {
+            "ns": 1794442413958434000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6b67",
+            "line": 329665
+          },
+          "guest_command": {
+            "seq": "51885",
+            "submit_ns": "355515216583",
+            "fence_return_ns": "355803847291",
+            "pid": "357",
+            "tid": "478",
+            "context": "162",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "19660",
+            "queue_seq": "27495",
+            "fence": "27495",
+            "serial_line": 547125
+          },
+          "context": 162,
+          "context_create": {
+            "ns": 1794442413275554000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0xa2, name breenix",
+            "line": 329416
+          },
+          "creator": {
+            "pid": "357",
+            "tid": "478",
+            "line": 546979
+          },
+          "origins": [
+            {
+              "pid": "357",
+              "tid": "478",
+              "line": 546979,
+              "names": {
+                "suite-window-manager_mai": 541629
+              }
+            },
+            {
+              "pid": "358",
+              "tid": "480",
+              "line": 547317,
+              "names": {
+                "clone-child-480": 542443
+              }
+            },
+            {
+              "pid": "361",
+              "tid": "483",
+              "line": 547731,
+              "names": {
+                "clone-child-483": 540209
+              }
+            },
+            {
+              "pid": "362",
+              "tid": "484",
+              "line": 547751,
+              "names": {
+                "clone-child-484": 540475
+              }
+            },
+            {
+              "pid": "363",
+              "tid": "485",
+              "line": 547767,
+              "names": {
+                "clone-child-485": 540771
+              }
+            },
+            {
+              "pid": "364",
+              "tid": "486",
+              "line": 547783,
+              "names": {
+                "clone-child-486": 541033
+              }
+            },
+            {
+              "pid": "365",
+              "tid": "487",
+              "line": 547969,
+              "names": {}
+            },
+            {
+              "pid": "366",
+              "tid": "489",
+              "line": 548303,
+              "names": {}
+            },
+            {
+              "pid": "0",
+              "tid": "20",
+              "line": 549643,
+              "names": {
+                "swapper/0": 1077,
+                "kttysig": 1117,
+                "render": 1209,
+                "swapper/2": 1217,
+                "swapper/1": 1229,
+                "kgpu": 1455,
+                "swapper/3": 1463,
+                "console": 2309,
+                "kreclaimd": 4709,
+                "ext2-writeback": 31996,
+                "kptyhup": 133870,
+                "ktty_tx": 1113804,
+                "input-releases": 1113920
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442414266377000,
+          "end_ns": 1794442414544460000,
+          "duration_ns": 278083000,
+          "before": {
+            "ns": 1794442414266377000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa3, size 19660",
+            "line": 329775
+          },
+          "after": {
+            "ns": 1794442414544460000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6b75, type 0x207",
+            "line": 329776
+          },
+          "gpu": {
+            "ns": 1794442414266377000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa3, size 19660",
+            "line": 329775
+          },
+          "gpu_line": 329775,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442414544460000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6b75, type 0x207",
+            "line": 329776
+          },
+          "command_response": {
+            "ns": 1794442414544692000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6b75",
+            "line": 329782
+          },
+          "guest_command": {
+            "seq": "51911",
+            "submit_ns": "356110248208",
+            "fence_return_ns": "356388690333",
+            "pid": "359",
+            "tid": "481",
+            "context": "163",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "19660",
+            "queue_seq": "27509",
+            "fence": "27509",
+            "serial_line": 547177
+          },
+          "context": 163,
+          "context_create": {
+            "ns": 1794442413351064000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0xa3, name breenix",
+            "line": 329542
+          },
+          "creator": {
+            "pid": "359",
+            "tid": "481",
+            "line": 547055
+          },
+          "origins": [
+            {
+              "pid": "359",
+              "tid": "481",
+              "line": 547055,
+              "names": {
+                "clone-child-481": 542449
+              }
+            },
+            {
+              "pid": "357",
+              "tid": "478",
+              "line": 547143,
+              "names": {
+                "suite-window-manager_mai": 541629
+              }
+            },
+            {
+              "pid": "358",
+              "tid": "480",
+              "line": 547319,
+              "names": {
+                "clone-child-480": 542443
+              }
+            },
+            {
+              "pid": "356",
+              "tid": "476",
+              "line": 547817,
+              "names": {
+                "suite-window-manager_mai": 541639
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442414824044000,
+          "end_ns": 1794442414952711000,
+          "duration_ns": 128667000,
+          "before": {
+            "ns": 1794442414824044000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa3, size 37912",
+            "line": 329880
+          },
+          "after": {
+            "ns": 1794442414952711000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6b88, type 0x207",
+            "line": 329881
+          },
+          "gpu": {
+            "ns": 1794442414824044000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa3, size 37912",
+            "line": 329880
+          },
+          "gpu_line": 329880,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442414952711000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6b88, type 0x207",
+            "line": 329881
+          },
+          "command_response": {
+            "ns": 1794442414952791000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6b88",
+            "line": 329882
+          },
+          "guest_command": {
+            "seq": "51946",
+            "submit_ns": "356667973583",
+            "fence_return_ns": "356796787291",
+            "pid": "359",
+            "tid": "481",
+            "context": "163",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "37912",
+            "queue_seq": "27528",
+            "fence": "27528",
+            "serial_line": 547247
+          },
+          "context": 163,
+          "context_create": {
+            "ns": 1794442413351064000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0xa3, name breenix",
+            "line": 329542
+          },
+          "creator": {
+            "pid": "359",
+            "tid": "481",
+            "line": 547055
+          },
+          "origins": [
+            {
+              "pid": "359",
+              "tid": "481",
+              "line": 547055,
+              "names": {
+                "clone-child-481": 542449
+              }
+            },
+            {
+              "pid": "357",
+              "tid": "478",
+              "line": 547143,
+              "names": {
+                "suite-window-manager_mai": 541629
+              }
+            },
+            {
+              "pid": "358",
+              "tid": "480",
+              "line": 547319,
+              "names": {
+                "clone-child-480": 542443
+              }
+            },
+            {
+              "pid": "356",
+              "tid": "476",
+              "line": 547817,
+              "names": {
+                "suite-window-manager_mai": 541639
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442415232509000,
+          "end_ns": 1794442415363040000,
+          "duration_ns": 130531000,
+          "before": {
+            "ns": 1794442415232509000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa2, size 37912",
+            "line": 329991
+          },
+          "after": {
+            "ns": 1794442415363040000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6b97, type 0x207",
+            "line": 329992
+          },
+          "gpu": {
+            "ns": 1794442415232509000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa2, size 37912",
+            "line": 329991
+          },
+          "gpu_line": 329991,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442415363040000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6b97, type 0x207",
+            "line": 329992
+          },
+          "command_response": {
+            "ns": 1794442415363126000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6b97",
+            "line": 329993
+          },
+          "guest_command": {
+            "seq": "51975",
+            "submit_ns": "357076437291",
+            "fence_return_ns": "357207135041",
+            "pid": "357",
+            "tid": "478",
+            "context": "162",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "37912",
+            "queue_seq": "27543",
+            "fence": "27543",
+            "serial_line": 547305
+          },
+          "context": 162,
+          "context_create": {
+            "ns": 1794442413275554000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0xa2, name breenix",
+            "line": 329416
+          },
+          "creator": {
+            "pid": "357",
+            "tid": "478",
+            "line": 546979
+          },
+          "origins": [
+            {
+              "pid": "357",
+              "tid": "478",
+              "line": 546979,
+              "names": {
+                "suite-window-manager_mai": 541629
+              }
+            },
+            {
+              "pid": "358",
+              "tid": "480",
+              "line": 547317,
+              "names": {
+                "clone-child-480": 542443
+              }
+            },
+            {
+              "pid": "361",
+              "tid": "483",
+              "line": 547731,
+              "names": {
+                "clone-child-483": 540209
+              }
+            },
+            {
+              "pid": "362",
+              "tid": "484",
+              "line": 547751,
+              "names": {
+                "clone-child-484": 540475
+              }
+            },
+            {
+              "pid": "363",
+              "tid": "485",
+              "line": 547767,
+              "names": {
+                "clone-child-485": 540771
+              }
+            },
+            {
+              "pid": "364",
+              "tid": "486",
+              "line": 547783,
+              "names": {
+                "clone-child-486": 541033
+              }
+            },
+            {
+              "pid": "365",
+              "tid": "487",
+              "line": 547969,
+              "names": {}
+            },
+            {
+              "pid": "366",
+              "tid": "489",
+              "line": 548303,
+              "names": {}
+            },
+            {
+              "pid": "0",
+              "tid": "20",
+              "line": 549643,
+              "names": {
+                "swapper/0": 1077,
+                "kttysig": 1117,
+                "render": 1209,
+                "swapper/2": 1217,
+                "swapper/1": 1229,
+                "kgpu": 1455,
+                "swapper/3": 1463,
+                "console": 2309,
+                "kreclaimd": 4709,
+                "ext2-writeback": 31996,
+                "kptyhup": 133870,
+                "ktty_tx": 1113804,
+                "input-releases": 1113920
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442415650074000,
+          "end_ns": 1794442416043652000,
+          "duration_ns": 393578000,
+          "before": {
+            "ns": 1794442415650074000,
+            "event": "virtio_mmio_setting_irq",
+            "line": 331975
+          },
+          "after": {
+            "ns": 1794442416043652000,
+            "event": "virtio_queue_notify",
+            "line": 331976
+          },
+          "gpu": {
+            "ns": 1794442415631631000,
+            "event": "virtio_gpu_cmd_res_xfer_fromh_3d",
+            "detail": "res 0x770",
+            "line": 331904
+          },
+          "gpu_line": 331904,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442415646430000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6c21, type 0x206",
+            "line": 331905
+          },
+          "command_response": {
+            "ns": 1794442415646531000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6c21",
+            "line": 331906
+          },
+          "guest_command": {
+            "seq": "52237",
+            "submit_ns": "357464147416",
+            "fence_return_ns": "357490507458",
+            "pid": "356",
+            "tid": "476",
+            "context": "163",
+            "type": "518",
+            "cmd_bytes": "72",
+            "payload_bytes": "0",
+            "queue_seq": "27681",
+            "fence": "27681",
+            "serial_line": 547829
+          },
+          "context": null,
+          "context_create": null,
+          "creator": null,
+          "origins": []
+        },
+        {
+          "begin_ns": 1794442416393747000,
+          "end_ns": 1794442416664996000,
+          "duration_ns": 271249000,
+          "before": {
+            "ns": 1794442416393747000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa5, size 19660",
+            "line": 333589
+          },
+          "after": {
+            "ns": 1794442416664996000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6cf8, type 0x207",
+            "line": 333590
+          },
+          "gpu": {
+            "ns": 1794442416393747000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa5, size 19660",
+            "line": 333589
+          },
+          "gpu_line": 333589,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442416664996000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6cf8, type 0x207",
+            "line": 333590
+          },
+          "command_response": {
+            "ns": 1794442416665112000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6cf8",
+            "line": 333597
+          },
+          "guest_command": {
+            "seq": "52647",
+            "submit_ns": "358236506791",
+            "fence_return_ns": "358509102291",
+            "pid": "365",
+            "tid": "487",
+            "context": "165",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "19660",
+            "queue_seq": "27896",
+            "fence": "27896",
+            "serial_line": 548649
+          },
+          "context": 165,
+          "context_create": {
+            "ns": 1794442416054294000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0xa5, name breenix",
+            "line": 332823
+          },
+          "creator": {
+            "pid": "365",
+            "tid": "487",
+            "line": 547933
+          },
+          "origins": [
+            {
+              "pid": "365",
+              "tid": "487",
+              "line": 547933,
+              "names": {}
+            },
+            {
+              "pid": "357",
+              "tid": "478",
+              "line": 548175,
+              "names": {
+                "suite-window-manager_mai": 541629
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442416934818000,
+          "end_ns": 1794442417055730000,
+          "duration_ns": 120912000,
+          "before": {
+            "ns": 1794442416934818000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa5, size 37912",
+            "line": 333801
+          },
+          "after": {
+            "ns": 1794442417055730000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6d23, type 0x207",
+            "line": 333802
+          },
+          "gpu": {
+            "ns": 1794442416934818000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa5, size 37912",
+            "line": 333801
+          },
+          "gpu_line": 333801,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442417055730000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6d23, type 0x207",
+            "line": 333802
+          },
+          "command_response": {
+            "ns": 1794442417055972000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6d23",
+            "line": 333813
+          },
+          "guest_command": {
+            "seq": "52730",
+            "submit_ns": "358778526958",
+            "fence_return_ns": "358899946041",
+            "pid": "365",
+            "tid": "487",
+            "context": "165",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "37912",
+            "queue_seq": "27939",
+            "fence": "27939",
+            "serial_line": 548815
+          },
+          "context": 165,
+          "context_create": {
+            "ns": 1794442416054294000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0xa5, name breenix",
+            "line": 332823
+          },
+          "creator": {
+            "pid": "365",
+            "tid": "487",
+            "line": 547933
+          },
+          "origins": [
+            {
+              "pid": "365",
+              "tid": "487",
+              "line": 547933,
+              "names": {}
+            },
+            {
+              "pid": "357",
+              "tid": "478",
+              "line": 548175,
+              "names": {
+                "suite-window-manager_mai": 541629
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442417384034000,
+          "end_ns": 1794442417666527000,
+          "duration_ns": 282493000,
+          "before": {
+            "ns": 1794442417384034000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa7, size 19660",
+            "line": 334105
+          },
+          "after": {
+            "ns": 1794442417666527000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6d63, type 0x207",
+            "line": 334106
+          },
+          "gpu": {
+            "ns": 1794442417384034000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa7, size 19660",
+            "line": 334105
+          },
+          "gpu_line": 334105,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442417666527000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6d63, type 0x207",
+            "line": 334106
+          },
+          "command_response": {
+            "ns": 1794442417666927000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6d63",
+            "line": 334118
+          },
+          "guest_command": {
+            "seq": "52852",
+            "submit_ns": "359227694958",
+            "fence_return_ns": "359510907250",
+            "pid": "366",
+            "tid": "489",
+            "context": "167",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "19660",
+            "queue_seq": "28003",
+            "fence": "28003",
+            "serial_line": 549059
+          },
+          "context": 167,
+          "context_create": {
+            "ns": 1794442416080917000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0xa7, name breenix",
+            "line": 333317
+          },
+          "creator": {
+            "pid": "366",
+            "tid": "489",
+            "line": 548405
+          },
+          "origins": [
+            {
+              "pid": "366",
+              "tid": "489",
+              "line": 548405,
+              "names": {}
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442417947483000,
+          "end_ns": 1794442418048308000,
+          "duration_ns": 100825000,
+          "before": {
+            "ns": 1794442417947483000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa7, size 37912",
+            "line": 334291
+          },
+          "after": {
+            "ns": 1794442418048308000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6d87, type 0x207",
+            "line": 334292
+          },
+          "gpu": {
+            "ns": 1794442417947483000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa7, size 37912",
+            "line": 334291
+          },
+          "gpu_line": 334291,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442418048308000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6d87, type 0x207",
+            "line": 334292
+          },
+          "command_response": {
+            "ns": 1794442418049256000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6d87",
+            "line": 334300
+          },
+          "guest_command": {
+            "seq": "52923",
+            "submit_ns": "359791225000",
+            "fence_return_ns": "359893248958",
+            "pid": "366",
+            "tid": "489",
+            "context": "167",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "37912",
+            "queue_seq": "28039",
+            "fence": "28039",
+            "serial_line": 549201
+          },
+          "context": 167,
+          "context_create": {
+            "ns": 1794442416080917000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0xa7, name breenix",
+            "line": 333317
+          },
+          "creator": {
+            "pid": "366",
+            "tid": "489",
+            "line": 548405
+          },
+          "origins": [
+            {
+              "pid": "366",
+              "tid": "489",
+              "line": 548405,
+              "names": {}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "performance/frame-floor",
+      "guest_begin_ns": 1059198302625,
+      "guest_end_ns": 1068686517208,
+      "serial_line": 1436078,
+      "host_begin_ns": 1794443117360016979,
+      "host_end_ns": 1794443126847921000,
+      "clock_anchors": [
+        {
+          "guest_ns": 1068033765083,
+          "low": 1794442058161687792,
+          "high": 1794442058161740917,
+          "kind": "gpu-fence",
+          "seq": "446532",
+          "fence": 242306,
+          "serial_line": 1436098,
+          "trace_lines": [
+            1616560,
+            1616563
+          ]
+        },
+        {
+          "guest_ns": 1068311519500,
+          "low": 1794442058160947084,
+          "high": 1794442058161860500,
+          "kind": "gpu-fence",
+          "seq": "448476",
+          "fence": 243363,
+          "serial_line": 1439986,
+          "trace_lines": [
+            1621137,
+            1621138
+          ]
+        }
+      ],
+      "gaps": [
+        {
+          "begin_ns": 1794443117975636000,
+          "end_ns": 1794443118248273000,
+          "duration_ns": 272637000,
+          "before": {
+            "ns": 1794443117975636000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x1d1, size 19660",
+            "line": 1506604
+          },
+          "after": {
+            "ns": 1794443118248273000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x35070, type 0x207",
+            "line": 1506605
+          },
+          "gpu": {
+            "ns": 1794443117975636000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x1d1, size 19660",
+            "line": 1506604
+          },
+          "gpu_line": 1506604,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794443118248273000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x35070, type 0x207",
+            "line": 1506605
+          },
+          "command_response": {
+            "ns": 1794443118248371000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x35070",
+            "line": 1506608
+          },
+          "guest_command": null,
+          "context": 465,
+          "context_create": {
+            "ns": 1794443117643507000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x1d1, name breenix",
+            "line": 1505456
+          },
+          "creator": null,
+          "origins": [
+            {
+              "pid": "994",
+              "tid": "1293",
+              "line": 1436114,
+              "names": {}
+            },
+            {
+              "pid": "996",
+              "tid": "1296",
+              "line": 1436118,
+              "names": {}
+            },
+            {
+              "pid": "1002",
+              "tid": "1302",
+              "line": 1436990,
+              "names": {}
+            },
+            {
+              "pid": "993",
+              "tid": "1291",
+              "line": 1439970,
+              "names": {}
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794443118520277000,
+          "end_ns": 1794443118651373000,
+          "duration_ns": 131096000,
+          "before": {
+            "ns": 1794443118520277000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x1d1, size 37912",
+            "line": 1506691
+          },
+          "after": {
+            "ns": 1794443118651373000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x35077, type 0x207",
+            "line": 1506692
+          },
+          "gpu": {
+            "ns": 1794443118520277000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x1d1, size 37912",
+            "line": 1506691
+          },
+          "gpu_line": 1506691,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794443118651373000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x35077, type 0x207",
+            "line": 1506692
+          },
+          "command_response": {
+            "ns": 1794443118651480000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x35077",
+            "line": 1506693
+          },
+          "guest_command": null,
+          "context": 465,
+          "context_create": {
+            "ns": 1794443117643507000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x1d1, name breenix",
+            "line": 1505456
+          },
+          "creator": null,
+          "origins": [
+            {
+              "pid": "994",
+              "tid": "1293",
+              "line": 1436114,
+              "names": {}
+            },
+            {
+              "pid": "996",
+              "tid": "1296",
+              "line": 1436118,
+              "names": {}
+            },
+            {
+              "pid": "1002",
+              "tid": "1302",
+              "line": 1436990,
+              "names": {}
+            },
+            {
+              "pid": "993",
+              "tid": "1291",
+              "line": 1439970,
+              "names": {}
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794443118967679000,
+          "end_ns": 1794443119244107000,
+          "duration_ns": 276428000,
+          "before": {
+            "ns": 1794443118967679000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x1d0, size 19660",
+            "line": 1506819
+          },
+          "after": {
+            "ns": 1794443119244107000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x35087, type 0x207",
+            "line": 1506820
+          },
+          "gpu": {
+            "ns": 1794443118967679000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x1d0, size 19660",
+            "line": 1506819
+          },
+          "gpu_line": 1506819,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794443119244107000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x35087, type 0x207",
+            "line": 1506820
+          },
+          "command_response": {
+            "ns": 1794443119244202000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x35087",
+            "line": 1506823
+          },
+          "guest_command": null,
+          "context": 464,
+          "context_create": {
+            "ns": 1794443117638769000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x1d0, name breenix",
+            "line": 1505374
+          },
+          "creator": null,
+          "origins": [
+            {
+              "pid": "1003",
+              "tid": "1304",
+              "line": 1439990,
+              "names": {}
+            },
+            {
+              "pid": "1004",
+              "tid": "1305",
+              "line": 1440014,
+              "names": {}
+            },
+            {
+              "pid": "1005",
+              "tid": "1306",
+              "line": 1440034,
+              "names": {}
+            },
+            {
+              "pid": "1006",
+              "tid": "1307",
+              "line": 1440050,
+              "names": {}
+            },
+            {
+              "pid": "994",
+              "tid": "1293",
+              "line": 1440096,
+              "names": {}
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794443119513286000,
+          "end_ns": 1794443119638241000,
+          "duration_ns": 124955000,
+          "before": {
+            "ns": 1794443119513286000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x1d0, size 37912",
+            "line": 1506906
+          },
+          "after": {
+            "ns": 1794443119638241000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x3508e, type 0x207",
+            "line": 1506907
+          },
+          "gpu": {
+            "ns": 1794443119513286000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x1d0, size 37912",
+            "line": 1506906
+          },
+          "gpu_line": 1506906,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794443119638241000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x3508e, type 0x207",
+            "line": 1506907
+          },
+          "command_response": {
+            "ns": 1794443119638327000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x3508e",
+            "line": 1506908
+          },
+          "guest_command": null,
+          "context": 464,
+          "context_create": {
+            "ns": 1794443117638769000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x1d0, name breenix",
+            "line": 1505374
+          },
+          "creator": null,
+          "origins": [
+            {
+              "pid": "1003",
+              "tid": "1304",
+              "line": 1439990,
+              "names": {}
+            },
+            {
+              "pid": "1004",
+              "tid": "1305",
+              "line": 1440014,
+              "names": {}
+            },
+            {
+              "pid": "1005",
+              "tid": "1306",
+              "line": 1440034,
+              "names": {}
+            },
+            {
+              "pid": "1006",
+              "tid": "1307",
+              "line": 1440050,
+              "names": {}
+            },
+            {
+              "pid": "994",
+              "tid": "1293",
+              "line": 1440096,
+              "names": {}
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794443119910361000,
+          "end_ns": 1794443120163277000,
+          "duration_ns": 252916000,
+          "before": {
+            "ns": 1794443119910361000,
+            "event": "virtio_mmio_setting_irq",
+            "line": 1507924
+          },
+          "after": {
+            "ns": 1794443120163277000,
+            "event": "virtio_queue_notify",
+            "line": 1507925
+          },
+          "gpu": {
+            "ns": 1794443119891626000,
+            "event": "virtio_gpu_cmd_res_xfer_fromh_3d",
+            "detail": "res 0x1322",
+            "line": 1507853
+          },
+          "gpu_line": 1507853,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794443119906320000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x3511c, type 0x206",
+            "line": 1507854
+          },
+          "command_response": {
+            "ns": 1794443119906445000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x3511c",
+            "line": 1507855
+          },
+          "guest_command": null,
+          "context": null,
+          "context_create": null,
+          "creator": null,
+          "origins": []
+        },
+        {
+          "begin_ns": 1794443120169426000,
+          "end_ns": 1794443120389624000,
+          "duration_ns": 220198000,
+          "before": {
+            "ns": 1794443120169426000,
+            "event": "virtio_notify",
+            "line": 1507986
+          },
+          "after": {
+            "ns": 1794443120389624000,
+            "event": "virtio_queue_notify",
+            "line": 1507987
+          },
+          "gpu": {
+            "ns": 1794443120169351000,
+            "event": "virtio_gpu_cmd_res_xfer_fromh_3d",
+            "detail": "res 0x1323",
+            "line": 1507983
+          },
+          "gpu_line": 1507983,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794443120169376000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x35129, type 0x206",
+            "line": 1507984
+          },
+          "command_response": {
+            "ns": 1794443120169420000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x35129",
+            "line": 1507985
+          },
+          "guest_command": null,
+          "context": null,
+          "context_create": null,
+          "creator": null,
+          "origins": []
+        },
+        {
+          "begin_ns": 1794443120745701000,
+          "end_ns": 1794443121029900000,
+          "duration_ns": 284199000,
+          "before": {
+            "ns": 1794443120745701000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x1d3, size 19660",
+            "line": 1509493
+          },
+          "after": {
+            "ns": 1794443121029900000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x351de, type 0x207",
+            "line": 1509494
+          },
+          "gpu": {
+            "ns": 1794443120745701000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x1d3, size 19660",
+            "line": 1509493
+          },
+          "gpu_line": 1509493,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794443121029900000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x351de, type 0x207",
+            "line": 1509494
+          },
+          "command_response": {
+            "ns": 1794443121030371000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x351de",
+            "line": 1509502
+          },
+          "guest_command": null,
+          "context": 467,
+          "context_create": {
+            "ns": 1794443120401776000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x1d3, name breenix",
+            "line": 1508834
+          },
+          "creator": null,
+          "origins": [
+            {
+              "pid": "1002",
+              "tid": "1302",
+              "line": 1436098,
+              "names": {}
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794443121307966000,
+          "end_ns": 1794443121436371000,
+          "duration_ns": 128405000,
+          "before": {
+            "ns": 1794443121307966000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x1d3, size 37912",
+            "line": 1509641
+          },
+          "after": {
+            "ns": 1794443121436371000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x35209, type 0x207",
+            "line": 1509642
+          },
+          "gpu": {
+            "ns": 1794443121307966000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x1d3, size 37912",
+            "line": 1509641
+          },
+          "gpu_line": 1509641,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794443121436371000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x35209, type 0x207",
+            "line": 1509642
+          },
+          "command_response": {
+            "ns": 1794443121436715000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x35209",
+            "line": 1509649
+          },
+          "guest_command": null,
+          "context": 467,
+          "context_create": {
+            "ns": 1794443120401776000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x1d3, name breenix",
+            "line": 1508834
+          },
+          "creator": null,
+          "origins": [
+            {
+              "pid": "1002",
+              "tid": "1302",
+              "line": 1436098,
+              "names": {}
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794443126662079000,
+          "end_ns": 1794443126782793000,
+          "duration_ns": 120714000,
+          "before": {
+            "ns": 1794443126662079000,
+            "event": "virtio_mmio_setting_irq",
+            "line": 1621243
+          },
+          "after": {
+            "ns": 1794443126782793000,
+            "event": "virtio_queue_notify",
+            "line": 1621244
+          },
+          "gpu": {
+            "ns": 1794443126646301000,
+            "event": "virtio_gpu_cmd_res_xfer_fromh_3d",
+            "detail": "res 0x1322",
+            "line": 1621224
+          },
+          "gpu_line": 1621224,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794443126653447000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x3b6b5, type 0x206",
+            "line": 1621225
+          },
+          "command_response": {
+            "ns": 1794443126653573000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x3b6b5",
+            "line": 1621228
+          },
+          "guest_command": {
+            "seq": "448512",
+            "submit_ns": "1068477447750",
+            "fence_return_ns": "1068492000458",
+            "pid": "994",
+            "tid": "1293",
+            "context": "465",
+            "type": "518",
+            "cmd_bytes": "72",
+            "payload_bytes": "0",
+            "queue_seq": "243381",
+            "fence": "243381",
+            "serial_line": 1440058
+          },
+          "context": null,
+          "context_create": null,
+          "creator": null,
+          "origins": []
+        }
+      ]
+    },
+    {
+      "name": "click-wait-461",
+      "guest_begin_ns": 344425664333,
+      "guest_end_ns": 345428878416,
+      "serial_line": 506624,
+      "host_begin_ns": 1794442402581710208,
+      "host_end_ns": 1794442403584961562,
+      "clock_anchors": [
+        {
+          "guest_ns": 344435226666,
+          "low": 1794442058155884417,
+          "high": 1794442058156207334,
+          "kind": "gpu-fence",
+          "seq": "50766",
+          "fence": 26909,
+          "serial_line": 526234,
+          "trace_lines": [
+            322772,
+            322780
+          ]
+        },
+        {
+          "guest_ns": 345385071041,
+          "low": 1794442058155861334,
+          "high": 1794442058156304959,
+          "kind": "gpu-fence",
+          "seq": "50951",
+          "fence": 27005,
+          "serial_line": 526604,
+          "trace_lines": [
+            323239,
+            323246
+          ]
+        }
+      ],
+      "gaps": [
+        {
+          "begin_ns": 1794442402592359000,
+          "end_ns": 1794442402715273000,
+          "duration_ns": 122914000,
+          "before": {
+            "ns": 1794442402592359000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9f, size 37912",
+            "line": 322794
+          },
+          "after": {
+            "ns": 1794442402715273000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6923, type 0x207",
+            "line": 322795
+          },
+          "gpu": {
+            "ns": 1794442402592359000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x9f, size 37912",
+            "line": 322794
+          },
+          "gpu_line": 322794,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442402715273000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6923, type 0x207",
+            "line": 322795
+          },
+          "command_response": {
+            "ns": 1794442402715578000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6923",
+            "line": 322807
+          },
+          "guest_command": {
+            "seq": "50778",
+            "submit_ns": "344436346416",
+            "fence_return_ns": "344559680458",
+            "pid": "354",
+            "tid": "472",
+            "context": "159",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "37912",
+            "queue_seq": "26915",
+            "fence": "26915",
+            "serial_line": 526258
+          },
+          "context": 159,
+          "context_create": {
+            "ns": 1794442401714823000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x9f, name breenix",
+            "line": 321808
+          },
+          "creator": {
+            "pid": "354",
+            "tid": "472",
+            "line": 525366
+          },
+          "origins": [
+            {
+              "pid": "354",
+              "tid": "472",
+              "line": 525366,
+              "names": {}
+            },
+            {
+              "pid": "355",
+              "tid": "474",
+              "line": 525938,
+              "names": {}
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442403030270000,
+          "end_ns": 1794442403261566000,
+          "duration_ns": 231296000,
+          "before": {
+            "ns": 1794442403030270000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa1, size 19660",
+            "line": 323022
+          },
+          "after": {
+            "ns": 1794442403261566000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6952, type 0x207",
+            "line": 323023
+          },
+          "gpu": {
+            "ns": 1794442403030270000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa1, size 19660",
+            "line": 323022
+          },
+          "gpu_line": 323022,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442403261566000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6952, type 0x207",
+            "line": 323023
+          },
+          "command_response": {
+            "ns": 1794442403261868000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6952",
+            "line": 323034
+          },
+          "guest_command": {
+            "seq": "50865",
+            "submit_ns": "344874131666",
+            "fence_return_ns": "345105940791",
+            "pid": "355",
+            "tid": "474",
+            "context": "161",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "19660",
+            "queue_seq": "26962",
+            "fence": "26962",
+            "serial_line": 526432
+          },
+          "context": 161,
+          "context_create": {
+            "ns": 1794442401739458000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0xa1, name breenix",
+            "line": 322325
+          },
+          "creator": {
+            "pid": "355",
+            "tid": "474",
+            "line": 525852
+          },
+          "origins": [
+            {
+              "pid": "355",
+              "tid": "474",
+              "line": 525852,
+              "names": {}
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442403541573000,
+          "end_ns": 1794442403678834000,
+          "duration_ns": 137261000,
+          "before": {
+            "ns": 1794442403541573000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa1, size 37912",
+            "line": 323252
+          },
+          "after": {
+            "ns": 1794442403678834000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x697f, type 0x207",
+            "line": 323253
+          },
+          "gpu": {
+            "ns": 1794442403541573000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa1, size 37912",
+            "line": 323252
+          },
+          "gpu_line": 323252,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442403678834000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x697f, type 0x207",
+            "line": 323253
+          },
+          "command_response": {
+            "ns": 1794442403679415000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x697f",
+            "line": 323262
+          },
+          "guest_command": {
+            "seq": "50955",
+            "submit_ns": "345385134541",
+            "fence_return_ns": "345523541541",
+            "pid": "355",
+            "tid": "474",
+            "context": "161",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "37912",
+            "queue_seq": "27007",
+            "fence": "27007",
+            "serial_line": 526612
+          },
+          "context": 161,
+          "context_create": {
+            "ns": 1794442401739458000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0xa1, name breenix",
+            "line": 322325
+          },
+          "creator": {
+            "pid": "355",
+            "tid": "474",
+            "line": 525852
+          },
+          "origins": [
+            {
+              "pid": "355",
+              "tid": "474",
+              "line": 525852,
+              "names": {}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "click-wait-476",
+      "guest_begin_ns": 358710808916,
+      "guest_end_ns": 359714885291,
+      "serial_line": 528683,
+      "host_begin_ns": 1794442416867111104,
+      "host_end_ns": 1794442417871165020,
+      "clock_anchors": [
+        {
+          "guest_ns": 358683860208,
+          "low": 1794442058155919584,
+          "high": 1794442058156684792,
+          "kind": "gpu-fence",
+          "seq": "52714",
+          "fence": 27931,
+          "serial_line": 548783,
+          "trace_lines": [
+            333760,
+            333767
+          ]
+        },
+        {
+          "guest_ns": 359693293041,
+          "low": 1794442058156051500,
+          "high": 1794442058156507959,
+          "kind": "gpu-fence",
+          "seq": "52915",
+          "fence": 28035,
+          "serial_line": 549185,
+          "trace_lines": [
+            334266,
+            334273
+          ]
+        }
+      ],
+      "gaps": [
+        {
+          "begin_ns": 1794442416934818000,
+          "end_ns": 1794442417055730000,
+          "duration_ns": 120912000,
+          "before": {
+            "ns": 1794442416934818000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa5, size 37912",
+            "line": 333801
+          },
+          "after": {
+            "ns": 1794442417055730000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6d23, type 0x207",
+            "line": 333802
+          },
+          "gpu": {
+            "ns": 1794442416934818000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa5, size 37912",
+            "line": 333801
+          },
+          "gpu_line": 333801,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442417055730000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6d23, type 0x207",
+            "line": 333802
+          },
+          "command_response": {
+            "ns": 1794442417055972000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6d23",
+            "line": 333813
+          },
+          "guest_command": {
+            "seq": "52730",
+            "submit_ns": "358778526958",
+            "fence_return_ns": "358899946041",
+            "pid": "365",
+            "tid": "487",
+            "context": "165",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "37912",
+            "queue_seq": "27939",
+            "fence": "27939",
+            "serial_line": 548815
+          },
+          "context": 165,
+          "context_create": {
+            "ns": 1794442416054294000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0xa5, name breenix",
+            "line": 332823
+          },
+          "creator": {
+            "pid": "365",
+            "tid": "487",
+            "line": 547933
+          },
+          "origins": [
+            {
+              "pid": "365",
+              "tid": "487",
+              "line": 547933,
+              "names": {}
+            },
+            {
+              "pid": "357",
+              "tid": "478",
+              "line": 548175,
+              "names": {
+                "suite-window-manager_mai": 541629
+              }
+            }
+          ]
+        },
+        {
+          "begin_ns": 1794442417384034000,
+          "end_ns": 1794442417666527000,
+          "duration_ns": 282493000,
+          "before": {
+            "ns": 1794442417384034000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa7, size 19660",
+            "line": 334105
+          },
+          "after": {
+            "ns": 1794442417666527000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6d63, type 0x207",
+            "line": 334106
+          },
+          "gpu": {
+            "ns": 1794442417384034000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0xa7, size 19660",
+            "line": 334105
+          },
+          "gpu_line": 334105,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794442417666527000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x6d63, type 0x207",
+            "line": 334106
+          },
+          "command_response": {
+            "ns": 1794442417666927000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x6d63",
+            "line": 334118
+          },
+          "guest_command": {
+            "seq": "52852",
+            "submit_ns": "359227694958",
+            "fence_return_ns": "359510907250",
+            "pid": "366",
+            "tid": "489",
+            "context": "167",
+            "type": "519",
+            "cmd_bytes": "32",
+            "payload_bytes": "19660",
+            "queue_seq": "28003",
+            "fence": "28003",
+            "serial_line": 549059
+          },
+          "context": 167,
+          "context_create": {
+            "ns": 1794442416080917000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0xa7, name breenix",
+            "line": 333317
+          },
+          "creator": {
+            "pid": "366",
+            "tid": "489",
+            "line": 548405
+          },
+          "origins": [
+            {
+              "pid": "366",
+              "tid": "489",
+              "line": 548405,
+              "names": {}
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "frame-floor-measurement",
+      "guest_begin_ns": 1063256757375,
+      "guest_end_ns": 1068256814750,
+      "serial_line": 1434681,
+      "host_begin_ns": 1794443121418471729,
+      "host_end_ns": 1794443126418528625,
+      "clock_anchors": [
+        {
+          "guest_ns": 1068033765083,
+          "low": 1794442058161687792,
+          "high": 1794442058161740917,
+          "kind": "gpu-fence",
+          "seq": "446532",
+          "fence": 242306,
+          "serial_line": 1436098,
+          "trace_lines": [
+            1616560,
+            1616563
+          ]
+        },
+        {
+          "guest_ns": 1068256733250,
+          "low": 1794442058161682000,
+          "high": 1794442058161745750,
+          "kind": "gpu-fence",
+          "seq": "448425",
+          "fence": 243336,
+          "serial_line": 1439884,
+          "trace_lines": [
+            1621015,
+            1621017
+          ]
+        }
+      ],
+      "gaps": [
+        {
+          "begin_ns": 1794443121307966000,
+          "end_ns": 1794443121436371000,
+          "duration_ns": 128405000,
+          "before": {
+            "ns": 1794443121307966000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x1d3, size 37912",
+            "line": 1509641
+          },
+          "after": {
+            "ns": 1794443121436371000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x35209, type 0x207",
+            "line": 1509642
+          },
+          "gpu": {
+            "ns": 1794443121307966000,
+            "event": "virtio_gpu_cmd_ctx_submit",
+            "detail": "ctx 0x1d3, size 37912",
+            "line": 1509641
+          },
+          "gpu_line": 1509641,
+          "samples": [],
+          "nominal_samples": [],
+          "overlap_samples": [],
+          "command_fence": {
+            "ns": 1794443121436371000,
+            "event": "virtio_gpu_fence_ctrl",
+            "detail": "fence 0x35209, type 0x207",
+            "line": 1509642
+          },
+          "command_response": {
+            "ns": 1794443121436715000,
+            "event": "virtio_gpu_fence_resp",
+            "detail": "fence 0x35209",
+            "line": 1509649
+          },
+          "guest_command": null,
+          "context": 467,
+          "context_create": {
+            "ns": 1794443120401776000,
+            "event": "virtio_gpu_cmd_ctx_create",
+            "detail": "ctx 0x1d3, name breenix",
+            "line": 1508834
+          },
+          "creator": null,
+          "origins": [
+            {
+              "pid": "1002",
+              "tid": "1302",
+              "line": 1436098,
+              "names": {}
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "serial_evidence": [
+    {
+      "line": 505047,
+      "text": "CASE window-manager focus/pair-click START"
+    },
+    {
+      "line": 527022,
+      "text": "SUITE window-manager CASE focus/pair-click FAIL ms=5421 msg=positive click delivery to target client: positive click delivery to target client: no acknowledgment within 1000 ms"
+    },
+    {
+      "line": 527024,
+      "text": "CASE window-manager focus/keys-to-focused START"
+    },
+    {
+      "line": 549704,
+      "text": "SUITE window-manager CASE focus/keys-to-focused FAIL ms=5099 msg=positive click delivery to target client: positive click delivery to target client: no acknowledgment within 1000 ms"
+    },
+    {
+      "line": 1434206,
+      "text": "CASE window-manager performance/frame-floor START"
+    },
+    {
+      "line": 1434681,
+      "text": "VALUE wm-frame-endpoints client=120 begin_ns=1063256757375 end_ns=1068256814750 first_ns=Some(1063285804041) last_ns=Some(1068253781875)"
+    },
+    {
+      "line": 1440194,
+      "text": "SUITE window-manager CASE performance/frame-floor FAIL ms=9488 msg=one client did not receive 60 completed composites per second"
+    }
+  ],
+  "receipts": [
+    {
+      "host_unix_ns": 1794442398500511000,
+      "host_monotonic_ns": 694209929289541,
+      "offset": 28788477,
+      "line": "CASE window-manager focus/pair-click START\r",
+      "sidecar_line": 505047
+    },
+    {
+      "host_unix_ns": 1794442414271610000,
+      "host_monotonic_ns": 694225700263708,
+      "offset": 30030604,
+      "line": "SUITE window-manager CASE focus/pair-click FAIL ms=5421 msg=positive click delivery to target client: positive click delivery to target client: no acknowledgment within 1000 ms\r",
+      "sidecar_line": 527022
+    },
+    {
+      "host_unix_ns": 1794442414271610000,
+      "host_monotonic_ns": 694225700263708,
+      "offset": 30030784,
+      "line": "CASE window-manager focus/keys-to-focused START\r",
+      "sidecar_line": 527024
+    },
+    {
+      "host_unix_ns": 1794442427779908000,
+      "host_monotonic_ns": 694239208452833,
+      "offset": 31303495,
+      "line": "SUITE window-manager CASE focus/keys-to-focused FAIL ms=5099 msg=positive click delivery to target client: positive click delivery to target client: no acknowledgment within 1000 ms\r",
+      "sidecar_line": 549704
+    },
+    {
+      "host_unix_ns": 1794443118366586000,
+      "host_monotonic_ns": 694929789640625,
+      "offset": 82344838,
+      "line": "CASE window-manager performance/frame-floor START\r",
+      "sidecar_line": 1434206
+    },
+    {
+      "host_unix_ns": 1794443130961865000,
+      "host_monotonic_ns": 694942384819791,
+      "offset": 82807646,
+      "line": "SUITE window-manager CASE performance/frame-floor FAIL ms=9488 msg=one client did not receive 60 completed composites per second\r",
+      "sidecar_line": 1440194
+    }
+  ]
+}

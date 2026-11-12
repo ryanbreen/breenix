@@ -121,6 +121,53 @@ struct Sampled {
     height: u32,
 }
 
+/// Reused CPU observation storage. A check borrows the current scene's pixels;
+/// retaining capacity keeps deferred validation from cycling resident mappings.
+#[derive(Default)]
+struct CheckWorkspace {
+    clients: Vec<(u64, [i32; 4], u32, Vec<u8>)>,
+    band: Vec<u8>,
+    desktop: Vec<u8>,
+    last_ns: u64,
+}
+
+impl CheckWorkspace {
+    /// Admit capture capacity with the scene, before idle validation can be
+    /// deferred by animation. Reserve sizes individually, largest first.
+    fn prepare_clients(&mut self, sampled: &[Sampled]) {
+        let mut sizes: Vec<_> = sampled.iter().filter(|s| s.sample != 0)
+            .map(|s| s.width as usize * s.height as usize * 4).collect();
+        sizes.sort_unstable_by(|a, b| b.cmp(a));
+        self.clients.sort_unstable_by_key(|c| core::cmp::Reverse(c.3.capacity()));
+        for (index, bytes) in sizes.into_iter().enumerate() {
+            if index == self.clients.len() { self.clients.push((0, [0; 4], 0, Vec::new())); }
+            resize_readback(&mut self.clients[index].3, bytes);
+        }
+    }
+}
+
+/// Match an admitted capacity to the capture order without consuming a large
+/// slot for a smaller client that has a fitting slot of its own.
+fn client_buffer(clients: &mut Vec<(u64, [i32; 4], u32, Vec<u8>)>, index: usize, bytes: usize)
+    -> &mut (u64, [i32; 4], u32, Vec<u8>) {
+    if index == clients.len() { clients.push((0, [0; 4], 0, Vec::new())); }
+    if let Some(best) = clients[index..].iter().enumerate()
+        .filter(|(_, c)| c.3.capacity() >= bytes).min_by_key(|(_, c)| c.3.capacity())
+        .map(|(offset, _)| index + offset) {
+        clients.swap(index, best);
+    }
+    resize_readback(&mut clients[index].3, bytes);
+    &mut clients[index]
+}
+
+fn resize_readback(bytes: &mut Vec<u8>, len: usize) {
+    if bytes.capacity() < len {
+        *bytes = prefaulted_bytes(len);
+    } else {
+        bytes.resize(len, 0);
+    }
+}
+
 pub struct Compositor {
     context: u64,
     width: u32,
@@ -138,6 +185,7 @@ pub struct Compositor {
     pub background: Surface,
     sampled: Vec<Sampled>,
     check_first: u64,
+    check_workspace: CheckWorkspace,
     appbar_top: i32,
     /// Pointer pixels per bitmap cell: the UI scale.
     scale: i32,
@@ -148,7 +196,7 @@ pub struct Compositor {
 impl Drop for Compositor {
     fn drop(&mut self) {
         self.destroy_targets();
-        gpu::context_destroy(self.context);
+        if self.context != 0 { gpu::context_destroy(self.context); }
     }
 }
 
@@ -157,10 +205,29 @@ impl Compositor {
     /// scanout targets, each cleared by a completed GPU clear, and the desktop and background
     /// targets, which the caller draws. The pointer is drawn at `scale` pixels per bitmap cell.
     pub fn open(width: u32, height: u32, appbar_height: u32, scale: u32) -> Result<Self, String> {
+        Self::open_during(width, height, appbar_height, scale, || ()).0
+    }
+
+    /// Allocate context-independent targets while the caller's renderer claim is pending.
+    /// Only after `ready` returns may CONTEXT_CREATE consume the reserved renderer.
+    pub fn open_during<T>(width: u32, height: u32, appbar_height: u32, scale: u32,
+        ready: impl FnOnce() -> T,
+    ) -> (Result<Self, String>, T) {
+        let allocated = Self::allocate(width, height, appbar_height, scale);
+        let ready = ready();
+        let opened = allocated.and_then(|mut c| {
+            libuitest::startup::mark("context-begin");
+            c.context = gpu::context_create_for(super::render_requirements::SCENE_PIPELINES)
+                .map_err(|e| format!("context: errno {}", -e))?;
+            libuitest::startup::mark("context-ready");
+            c.clear_targets()?;
+            Ok(c)
+        });
+        (opened, ready)
+    }
+
+    fn allocate(width: u32, height: u32, appbar_height: u32, scale: u32) -> Result<Self, String> {
         wait_for_admission()?;
-        libuitest::startup::mark("context-begin");
-        let context = gpu::context_create().map_err(|e| format!("context: errno {}", -e))?;
-        libuitest::startup::mark("context-ready");
         let desktop = Surface::new(width as usize, height as usize, Format::BGRX);
         libuitest::startup::mark("desktop-target-ready");
         let background = Surface::new(width as usize, height as usize, Format::BGRX);
@@ -168,12 +235,11 @@ impl Compositor {
         let (desktop, background) = match (desktop, background) {
             (Ok(d), Ok(b)) => (d, b),
             (d, b) => {
-                gpu::context_destroy(context);
                 return Err(format!("desktop targets: {:?}", d.err().or(b.err())));
             }
         };
         let mut c = Self {
-            context,
+            context: 0,
             width,
             height,
             scene: 0,
@@ -185,6 +251,7 @@ impl Compositor {
             background,
             sampled: Vec::new(),
             check_first: 0,
+            check_workspace: CheckWorkspace::default(),
             appbar_top: height.saturating_sub(appbar_height) as i32,
             scale: scale as i32,
             full: true,
@@ -215,6 +282,10 @@ impl Compositor {
         libuitest::startup::mark("scene-target-ready");
         self.next = 0;
         self.full = true;
+        Ok(())
+    }
+
+    fn clear_targets(&mut self) -> Result<(), String> {
         let mut words = Vec::new();
         for t in [self.scanout[0], self.scanout[1], self.scene] {
             encode::begin(&mut words, t);
@@ -228,6 +299,22 @@ impl Compositor {
             (0, _) => Ok(()),
             (r, w) => Err(format!("clear: errno {}, status {}", -r, w.status)),
         }
+    }
+
+    /// Use the compositor context while the font worker owns libgfx's drawing context.
+    pub fn paint_background(&mut self) -> Result<(), String> {
+        let mut words = Vec::new();
+        encode::begin(&mut words, self.background.handle());
+        super::chrome::background_runs(self.width as usize, self.height as usize, |colour, rects| {
+            encode::draw(&mut words, abi::pipeline::SOLID, colour, rects);
+        });
+        let (result, submitted) = gpu::submit(self.context, &words);
+        if result != 0 { return Err(format!("background submit: errno {}", -result)); }
+        let (result, waited) = gpu::wait(self.context, submitted.fence, 2_000_000_000);
+        if result != 0 || waited.status != abi::fence_status::OK {
+            return Err(format!("background wait: errno {}, status {}", -result, waited.status));
+        }
+        Ok(())
     }
 
     /// Replace the context and its targets after a failed frame (a quarantined context or
@@ -345,6 +432,7 @@ impl Compositor {
                     self.sampled.extend(windows.iter().map(|w| Sampled {
                         id: w.id, sample: w.sample, commit_id: w.commit_id, width: w.width, height: w.height,
                     }));
+                    self.check_workspace.prepare_clients(&self.sampled);
                     return Ok(());
                 }
                 EAGAIN if monotonic_ms() < deadline => {
@@ -486,6 +574,13 @@ impl Compositor {
         self.sampled.iter().find(|sample| sample.id == id).map(|sample| sample.commit_id)
     }
 
+    pub fn validation_delay_ms(&self) -> u64 { self.check_workspace.last_ns.div_ceil(1_000_000) }
+
+    pub fn check_while(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, idle: impl FnMut() -> bool)
+        -> Option<Result<u64, CheckError>> {
+        self.check_area_while(subject, layers, pointer, [0, 0, self.width, self.height], idle)
+    }
+
     /// `check`, for the part of the frame inside `area` (x0, y0, x1, y1) only.
     ///
     /// CAPTURE reads the clients shown in the area. A captured commit differing from the
@@ -493,6 +588,28 @@ impl Compositor {
     /// covers the requested rectangle, including other clients' content. When requested,
     /// return the subject tree and its commit from the same capture as its pixels.
     pub fn check_area(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4], want_tree: bool) -> Result<(u64, Option<(u64, Vec<u8>)>), CheckError> {
+        self.check_area_with(subject, layers, pointer, area, want_tree, || true).expect("uninterruptible frame check")
+    }
+
+    /// New work leaves validation pending; only a complete comparison returns a verdict.
+    pub fn check_area_while(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4], idle: impl FnMut() -> bool)
+        -> Option<Result<u64, CheckError>> {
+        self.check_area_with(subject, layers, pointer, area, false, idle).map(|result| result.map(|(count, _)| count))
+    }
+
+    fn check_area_with(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4], want_tree: bool, mut idle: impl FnMut() -> bool)
+        -> Option<Result<(u64, Option<(u64, Vec<u8>)>), CheckError>> {
+        let mut workspace = core::mem::take(&mut self.check_workspace);
+        let began = monotonic_ns();
+        let result = self.check_area_into(subject, layers, pointer, area, want_tree, &mut workspace, &mut idle);
+        let elapsed = monotonic_ns().saturating_sub(began);
+        workspace.last_ns = workspace.last_ns.max(elapsed);
+        // Retain storage on success, stale-front retry and readback refusal alike.
+        self.check_workspace = workspace;
+        match result { Ok(Some(pixels)) => Some(Ok(pixels)), Ok(None) => None, Err(error) => Some(Err(error)) }
+    }
+
+    fn check_area_into(&mut self, subject: u64, layers: &[Layer], pointer: Option<Pointer>, area: [u32; 4], want_tree: bool, workspace: &mut CheckWorkspace, idle: &mut impl FnMut() -> bool) -> Result<Option<(u64, Option<(u64, Vec<u8>)>)>, CheckError> {
         let [x0, y_top, x1, y1] = area;
         let w = x1.saturating_sub(x0);
         if w == 0 || y_top >= y1 {
@@ -500,7 +617,8 @@ impl Compositor {
         }
         libuitest::startup::mark("frame-check-begin");
         // The clients this area shows, the subject first, with their sampled pixels.
-        let mut clients: Vec<(u64, [i32; 4], u32, Vec<u8>)> = Vec::new();
+        let clients = &mut workspace.clients;
+        let mut client_count = 0;
         let mut subject_tree = None;
         let mut shown: Vec<_> = layers.iter().filter_map(|l| self.sampled_content(l).map(|r| (l.window_id, r)))
             .filter(|(_, r)| intersect(*r, [x0 as i32, y_top as i32, x1 as i32, y1 as i32]).is_some()).collect();
@@ -508,11 +626,15 @@ impl Compositor {
         // clients' readbacks must not systematically make an animating source stale.
         shown.sort_by_key(|(id, _)| (*id != self.check_first, *id != subject));
         for (id, r) in shown {
+            if !idle() { return Ok(None); }
             let s = self.sampled.iter().find(|s| s.id == id).expect("sampled_content found it");
-            let mut px = prefaulted_bytes(s.width as usize * s.height as usize * 4);
+            let (stored_id, stored_rect, stored_width, px) = client_buffer(
+                clients, client_count, s.width as usize * s.height as usize * 4,
+            );
+            (*stored_id, *stored_rect, *stored_width) = (id, r, s.width);
             let mut tree = (want_tree && id == subject)
                 .then(|| prefaulted_bytes(wabi::limits::MAX_TREE_KIB as usize * 1024));
-            let c = match window::capture(s.id, &mut px, tree.as_deref_mut()) {
+            let c = match window::capture(s.id, px, tree.as_deref_mut()) {
                 Ok(c) => c,
                 Err(e) => {
                     // A concurrent enlarge can make the sampled-size output too small.
@@ -530,6 +652,7 @@ impl Compositor {
                     return Err(CheckError::Failed(format!("CAPTURE of window {}: {}", s.id, e)));
                 }
             };
+            if !idle() { return Ok(None); }
             if c.commit_id != s.commit_id || (c.width, c.height) != (s.width, s.height) {
                 self.check_first = id;
                 return Err(CheckError::Moved(format!(
@@ -538,11 +661,14 @@ impl Compositor {
                 )));
             }
             if let Some(tree) = tree { subject_tree = Some((c.commit_id, tree)); }
-            clients.push((id, r, s.width, px));
+            client_count += 1;
         }
         let band_rows = (CHECK_BAND_BYTES / (w * 4)).max(1).min(y1 - y_top);
-        let mut band = prefaulted_bytes((w * band_rows * 4) as usize);
-        let mut desk = prefaulted_bytes((w * band_rows * 4) as usize);
+        let clients = &clients[..client_count];
+        let band = &mut workspace.band;
+        let desk = &mut workspace.desktop;
+        resize_readback(band, (w * band_rows * 4) as usize);
+        resize_readback(desk, (w * band_rows * 4) as usize);
         let mut record = Box::new([0u8; abi::record::SIZE]);
         // SAFETY: the record is one live allocation.
         unsafe { core::ptr::write_volatile(record.as_mut_ptr(), 0) };
@@ -551,19 +677,35 @@ impl Compositor {
         let mut compared = 0u64;
         let mut y0 = y_top;
         while y0 < y1 {
+            if !idle() { return Ok(None); }
             let rows = band_rows.min(y1 - y0);
             let len = (w * rows * 4) as usize;
-            let (r, a) = gpu::readback_why(0, [x0, y0, w, rows], &mut band[..len], w * 4, &mut *record);
-            libuitest::startup::mark("frame-scanout-return");
+            // These immutable sources are independent. Start D's transfer while
+            // reading scanout, then compare only after both observations return.
+            let ((r, a), desktop) = std::thread::scope(|scope| {
+                let source = &self.desktop;
+                let output = &mut desk[..len];
+                let pending = scope.spawn(move || {
+                    let result = source.read_rect([x0 as usize, y0 as usize, w as usize, rows as usize], output, w as usize * 4);
+                    libuitest::startup::mark("frame-desktop-return");
+                    result
+                });
+                let scanout = gpu::readback_why(0, [x0, y0, w, rows], &mut band[..len], w * 4, &mut *record);
+                libuitest::startup::mark("frame-scanout-return");
+                let desktop = pending.join().map_err(|_| CheckError::Failed("desktop readback worker panicked".into()))?;
+                Ok::<_, CheckError>((scanout, desktop))
+            })?;
             if r != 0 {
                 return Err(CheckError::Failed(format!("readback of rows {}..{}: errno {}, reason {}", y0, y0 + rows, -r, a.reason)));
             }
-            let desktop = self.desktop.read_rect([x0 as usize, y0 as usize, w as usize, rows as usize], &mut desk[..len], w as usize * 4);
-            libuitest::startup::mark("frame-desktop-return");
             desktop.map_err(|e| CheckError::Failed(format!("desktop readback of rows {}..{}: errno {}", y0, y0 + rows, -e)))?;
+            if !idle() { return Ok(None); }
             for row in 0..rows {
                 let y = (y0 + row) as i32;
-                let desktop_row = layers.is_empty() && pointer.is_none_or(|(p, bitmap)| {
+                // Frames and uncovered pixels both come from D. Only a sampled
+                // client or the pointer can require another source on this row.
+                let desktop_row = (y >= self.appbar_top || clients.iter().all(|(_, r, _, _)| y < r[1] || y >= r[3]))
+                    && pointer.is_none_or(|(p, bitmap)| {
                     let top = p.y - hotspot(p.shape).1 * self.scale;
                     y < top || y >= top + bitmap.len() as i32 * self.scale
                 });
@@ -580,7 +722,7 @@ impl Compositor {
                     let o = ((row * w) as usize + (x as u32 - x0) as usize) * 4;
                     let got = u32::from_le_bytes([band[o], band[o + 1], band[o + 2], band[o + 3]]);
                     let from_desktop = u32::from_le_bytes([desk[o], desk[o + 1], desk[o + 2], desk[o + 3]]);
-                    let want = self.expected(from_desktop, layers, &clients, pointer, x, y);
+                    let want = self.expected(from_desktop, layers, clients, pointer, x, y);
                     // The X byte is not compared (breengel.md section 2).
                     if got & 0x00FF_FFFF != want & 0x00FF_FFFF {
                         return Err(CheckError::Failed(format!(
@@ -594,7 +736,7 @@ impl Compositor {
             libuitest::startup::mark("frame-pixels-ready");
             y0 += rows;
         }
-        Ok((compared, subject_tree))
+        Ok(Some((compared, subject_tree)))
     }
 
     /// Read the scanout itself (READBACK target 0) at each `(x, y, want)` sample and require
@@ -602,13 +744,28 @@ impl Compositor {
     /// binding: the scanout flag set, a `width` x `height` resource, the same resource each
     /// time. Returns that resource and its size.
     pub fn check_fills(&self, samples: &[(u32, u32, u32)]) -> Result<Scanout, String> {
-        let mut pixel = prefaulted_bytes(4);
+        if samples.is_empty() || samples.iter().any(|&(x, y, _)| x >= self.width || y >= self.height) {
+            return Err(String::from("no samples or sample outside scanout"));
+        }
+        let mut samples = samples.to_vec();
+        samples.sort_by_key(|sample| sample.1);
+        let band_rows = (CHECK_BAND_BYTES / (self.width * 4)).max(1);
+        let mut pixels = Vec::new();
         let mut record = Box::new([0u8; abi::record::SIZE]);
         // SAFETY: the record is one live allocation.
         unsafe { core::ptr::write_volatile(record.as_mut_ptr(), 0) };
         let mut shown: Option<Scanout> = None;
-        for &(x, y, want) in samples {
-            let (r, a) = gpu::readback_why(0, [x, y, 1, 1], &mut pixel, 4, &mut *record);
+        let mut first = 0;
+        while first < samples.len() {
+            let y = samples[first].1;
+            let mut end = first + 1;
+            while end < samples.len() && samples[end].1 - y < band_rows { end += 1; }
+            let group = &samples[first..end];
+            let x = group.iter().map(|p| p.0).min().unwrap();
+            let read_width = group.iter().map(|p| p.0).max().unwrap() - x + 1;
+            let read_height = group.last().unwrap().1 - y + 1;
+            resize_readback(&mut pixels, (read_width * read_height * 4) as usize);
+            let (r, a) = gpu::readback_why(0, [x, y, read_width, read_height], &mut pixels, read_width * 4, &mut *record);
             if r != 0 {
                 return Err(format!("scanout readback of ({}, {}): errno {}, reason {}", x, y, -r, a.reason));
             }
@@ -630,11 +787,15 @@ impl Compositor {
                     return Err(format!("the scanout changed from resource {} to {} during the check", s.resource, resource));
                 }
             }
-            let got = u32::from_le_bytes([pixel[0], pixel[1], pixel[2], pixel[3]]);
-            if got & 0x00FF_FFFF != want & 0x00FF_FFFF {
-                return Err(format!("scanout pixel ({}, {}) is {:#010x}, the desktop has {:#010x}", x, y, got, want));
+            for &(sx, sy, want) in group {
+                let offset = ((sy - y) as usize * read_width as usize + (sx - x) as usize) * 4;
+                let got = u32::from_le_bytes(pixels[offset..offset + 4].try_into().unwrap());
+                if got & 0x00FF_FFFF != want & 0x00FF_FFFF {
+                    return Err(format!("scanout pixel ({}, {}) is {:#010x}, the desktop has {:#010x}", sx, sy, got, want));
+                }
             }
             shown = Some(Scanout { resource, width, height });
+            first = end;
         }
         shown.ok_or_else(|| String::from("no samples"))
     }

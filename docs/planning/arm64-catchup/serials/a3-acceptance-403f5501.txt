@@ -1,0 +1,182 @@
+Vigil 20261111T161134Z-qemu-52524
+Runtime 403f55016063bb8b961016dcbe847c29589bc040
+Producer excerpts; full unfiltered capture retained in Vigil.
+
+SUITE window-manager START cases=81
+SUITE window-manager MEMORY before free=84635 heap_free_kb=39019 user_stacks=16 user_pages=591 page_tables=11 page_cache=0 kernel_stacks=0 buffers=4218 other=130 receipts=0 settle_ms=202
+SUITE window-manager CASE input-core/virtual-keyboard PASS ms=3461
+SUITE window-manager CASE input-core/serials PASS ms=3412
+SUITE window-manager CASE input-core/time-injected PASS ms=2707
+SUITE window-manager CASE input-core/ctrl-super-distinct PASS ms=3532
+SUITE window-manager CASE input-core/text-event PASS ms=3300
+SUITE window-manager CASE input-core/device-removal PASS ms=3719
+SUITE window-manager CASE input-core/virtual-pointer PASS ms=3896
+SUITE window-manager CASE input-core/ledger-complete PASS ms=3888
+SUITE window-manager CASE input-core/capabilities PASS ms=3833
+SUITE window-manager CASE input-devices/keyboard-completion-path PASS ms=3884
+SUITE window-manager CASE input-devices/replay-report-fault PASS ms=2987
+SUITE window-manager CASE startup/desktop-control PASS ms=2872
+SUITE window-manager CASE startup/claims-display PASS ms=3584
+SUITE window-manager CASE startup/first-client PASS ms=2889
+SUITE window-manager CASE startup/existing-windows PASS ms=3592
+SUITE window-manager CASE startup/independent-clients PASS ms=4613
+SUITE window-manager CASE startup/supervisor-starts PASS ms=5481
+SUITE window-manager CASE composition/chrome-geometry PASS ms=2868
+SUITE window-manager CASE composition/overlap PASS ms=3929
+SUITE window-manager CASE composition/cascade PASS ms=3707
+SUITE window-manager CASE composition/client-update PASS ms=3660
+SUITE window-manager CASE composition/expose-close PASS ms=3920
+SUITE window-manager CASE composition/oracle-corruption PASS ms=2935
+SUITE window-manager CASE stacking/click-raises PASS ms=4695
+SUITE window-manager CASE stacking/minimize-hides PASS ms=4881
+SUITE window-manager CASE stacking/restore PASS ms=2977
+SUITE window-manager CASE stacking/all-minimized PASS ms=5406
+SUITE window-manager CASE stacking/exit-restacks PASS ms=6130
+SUITE window-manager CASE focus/initial-focus PASS ms=2704
+SUITE window-manager CASE focus/pair-click PASS ms=4997
+SUITE window-manager CASE focus/keys-to-focused PASS ms=4635
+SUITE window-manager CASE focus/text-exact PASS ms=6253
+SUITE window-manager CASE focus/releases PASS ms=3931
+SUITE window-manager CASE focus/ctrl-c PASS ms=3930
+SUITE window-manager CASE focus/navigation-keys PASS ms=5414
+SUITE window-manager CASE focus/escape PASS ms=4118
+SUITE window-manager CASE focus/cycle-next PASS ms=5501
+SUITE window-manager CASE pointer/local-coords PASS ms=4075
+SUITE window-manager CASE pointer/capture PASS ms=4102
+SUITE window-manager CASE pointer/right-middle PASS ms=3933
+SUITE window-manager CASE pointer/scroll-under-pointer PASS ms=5038
+SUITE window-manager CASE pointer/outside-not-delivered PASS ms=3996
+SUITE window-manager CASE pointer/press-release-order PASS ms=4016
+SUITE window-manager CASE geometry/drag-move PASS ms=4109
+SUITE window-manager CASE geometry/resize-right PASS ms=4001
+SUITE window-manager CASE geometry/resize-bottom PASS ms=3960
+SUITE window-manager CASE geometry/client-refuses PASS ms=3839
+SUITE window-manager CASE geometry/resize-cross PASS ms=3867
+SUITE window-manager CASE geometry/client-resize PASS ms=4765
+SUITE window-manager CASE lifecycle/close-request PASS ms=3838
+SUITE window-manager CASE lifecycle/client-exit PASS ms=4237
+SUITE window-manager CASE lifecycle/client-crash PASS ms=4635
+SUITE window-manager CASE lifecycle/client-exec PASS ms=5229
+SUITE window-manager CASE lifecycle/close-unresponsive PASS ms=3063
+SUITE window-manager CASE lifecycle/compositor-steal PASS ms=2884
+SUITE window-manager CASE lifecycle/inject-denied PASS ms=2586
+SUITE window-manager CASE lifecycle/launch-ack PASS ms=4928
+SUITE window-manager CASE lifecycle/launch-reaped PASS ms=4963
+SUITE window-manager CASE recovery/clients-notified PASS ms=2686
+SUITE window-manager CASE recovery/restart-adopts PASS ms=6217
+SUITE window-manager CASE recovery/interaction-after-restart PASS ms=6606
+SUITE window-manager CASE recovery/stack-restored PASS ms=6337
+VALUE wm-startup pid=723 phase=compositor-exec ns=257966586541 elapsed_us=0
+VALUE wm-startup pid=723 phase=config-ready ns=257966679875 elapsed_us=93
+VALUE wm-startup pid=723 phase=context-begin ns=259017713375 elapsed_us=1051126
+VALUE wm-startup pid=723 phase=context-ready ns=259017717958 elapsed_us=1051131
+VALUE wm-startup pid=723 phase=desktop-target-ready ns=257975102875 elapsed_us=8516
+VALUE wm-startup pid=723 phase=background-target-ready ns=257984604416 elapsed_us=18017
+VALUE wm-startup pid=723 phase=scanout-a-ready ns=257987686458 elapsed_us=21099
+VALUE wm-startup pid=723 phase=scanout-b-ready ns=257990794416 elapsed_us=24207
+VALUE wm-startup pid=723 phase=scene-target-ready ns=257995790625 elapsed_us=29204
+VALUE wm-startup pid=723 phase=targets-ready ns=259394989500 elapsed_us=1428402
+VALUE wm-startup pid=723 phase=startup-font-begin ns=257971964083 elapsed_us=5377
+VALUE wm-startup pid=723 phase=fonts-ready ns=259468879958 elapsed_us=1502293
+VALUE wm-startup pid=723 phase=scene-ready ns=259069551166 elapsed_us=1102964
+VALUE wm-startup pid=723 phase=background-ready ns=259394987750 elapsed_us=1428401
+VALUE wm-startup pid=723 phase=chrome-blit-ready ns=259664298916 elapsed_us=1697712
+VALUE wm-startup pid=723 phase=chrome-taskbar-ready ns=259714213125 elapsed_us=1747626
+VALUE wm-startup pid=723 phase=chrome-appbar-ready ns=259715645916 elapsed_us=1749059
+VALUE wm-startup pid=723 phase=chrome-ready ns=259715647541 elapsed_us=1749061
+VALUE wm-startup pid=723 phase=fills-ready ns=259973035333 elapsed_us=2006448
+VALUE wm-startup pid=723 phase=pointer-presented ns=259975249458 elapsed_us=2008662
+VALUE wm-startup pid=723 phase=checks-ready ns=260118560750 elapsed_us=2151974
+VALUE wm-startup pid=723 phase=font-plan-begin ns=257992071875 elapsed_us=25485
+VALUE wm-startup pid=723 phase=font-plan-return ns=258895062791 elapsed_us=928476
+VALUE wm-startup pid=723 phase=font-submit-begin ns=258895064416 elapsed_us=928477
+VALUE wm-startup pid=723 phase=font-submit-return ns=259467124208 elapsed_us=1500537
+VALUE wm-startup pid=723 phase=font-wait-return ns=259468872916 elapsed_us=1502286
+VALUE wm-startup pid=723 phase=font-draw-return ns=259714204041 elapsed_us=1747617
+VALUE wm-startup pid=723 phase=frame-check-begin ns=259975251833 elapsed_us=2008665
+VALUE wm-startup pid=723 phase=frame-buffers-ready ns=259978687916 elapsed_us=2012101
+VALUE wm-startup pid=723 phase=frame-scanout-return ns=260005919458 elapsed_us=2039332
+VALUE wm-startup pid=723 phase=frame-desktop-return ns=260013207625 elapsed_us=2046621
+VALUE wm-startup pid=723 phase=frame-pixels-ready ns=260014688583 elapsed_us=2048102
+VALUE wm-startup pid=723 phase=initial-windows-ready ns=259973054250 elapsed_us=2006467
+VALUE wm-startup pid=723 phase=title-plan-begin ns=259973114916 elapsed_us=2006528
+VALUE wm-startup pid=723 phase=title-plan-return ns=259973141916 elapsed_us=2006555
+VALUE wm-startup pid=723 phase=client-chrome-ready ns=260119892750 elapsed_us=2153306
+VALUE wm-startup pid=723 phase=client-compose-begin ns=260122921583 elapsed_us=2156335
+VALUE wm-startup pid=723 phase=desktop-ready ns=260118564666 elapsed_us=2151978
+VALUE wm-startup pid=723 phase=first-composite ns=261685953250 elapsed_us=3719366
+VALUE wm-startup pid=736 phase=compositor-exec ns=264222406416 elapsed_us=0
+VALUE wm-startup pid=736 phase=config-ready ns=264222632208 elapsed_us=225
+VALUE wm-startup pid=736 phase=context-begin ns=265274083250 elapsed_us=1051676
+VALUE wm-startup pid=736 phase=context-ready ns=265274086625 elapsed_us=1051680
+VALUE wm-startup pid=736 phase=desktop-target-ready ns=264234998125 elapsed_us=12591
+VALUE wm-startup pid=736 phase=background-target-ready ns=264239729458 elapsed_us=17323
+VALUE wm-startup pid=736 phase=scanout-a-ready ns=264243170041 elapsed_us=20763
+VALUE wm-startup pid=736 phase=scanout-b-ready ns=264246619416 elapsed_us=24213
+VALUE wm-startup pid=736 phase=scene-target-ready ns=264252620458 elapsed_us=30214
+VALUE wm-startup pid=736 phase=targets-ready ns=265393298166 elapsed_us=1170891
+VALUE wm-startup pid=736 phase=startup-font-begin ns=264229690000 elapsed_us=7283VALUE bwm-check-cost total_ns=140857083 captures_ns=2084 buffers_ns=2868583 scanout_ns=127254708 desktop_ns=126614042 pixels_ns=3652584
+VALUE wm-startup pid=736 phase=fonts-ready ns=265826110958 elapsed_us=1603704
+VALUE wm-startup pid=736 phase=scene-ready ns=265324597541 elapsed_us=1102191
+VALUE wm-startup pid=736 phase=background-ready ns=265393296625 elapsed_us=1170890
+VALUE wm-startup pid=736 phase=chrome-blit-ready ns=265946889625 elapsed_us=1724483
+VALUE wm-startup pid=736 phase=chrome-taskbar-ready ns=266093529291 elapsed_us=1871122
+VALUE wm-startup pid=736 phase=chrome-appbar-ready ns=266094522000 elapsed_us=1872115
+VALUE wm-startup pid=736 phase=chrome-ready ns=266094523125 elapsed_us=1872116
+VALUE wm-startup pid=736 phase=fills-ready ns=266237524875 elapsed_us=2015118
+VALUE wm-startup pid=736 phase=pointer-presented ns=266241112500 elapsed_us=2018706
+VALUE wm-startup pid=736 phase=font-plan-begin ns=264252951958 elapsed_us=30545
+VALUE wm-startup pid=736 phase=font-plan-return ns=265148281208 elapsed_us=925874
+VALUE wm-startup pid=736 phase=font-submit-begin ns=265148282416 elapsed_us=925876
+VALUE wm-startup pid=736 phase=font-submit-return ns=265823081583 elapsed_us=1600675
+VALUE wm-startup pid=736 phase=font-wait-return ns=265826104625 elapsed_us=1603698
+VALUE wm-startup pid=736 phase=font-draw-return ns=266093520791 elapsed_us=1871114
+VALUE wm-startup pid=736 phase=frame-check-begin ns=266241118916 elapsed_us=2018712
+VALUE wm-startup pid=736 phase=frame-buffers-ready ns=266243992833 elapsed_us=2021586
+VALUE wm-startup pid=736 phase=frame-scanout-return ns=266278149083 elapsed_us=2055742
+VALUE wm-startup pid=736 phase=frame-desktop-return ns=266278142083 elapsed_us=2055735
+VALUE wm-startup pid=736 phase=frame-pixels-ready ns=266279569458 elapsed_us=2057163
+VALUE wm-startup pid=736 phase=initial-windows-ready ns=266237554166 elapsed_us=2015147
+VALUE wm-startup pid=736 phase=title-plan-begin ns=266237619250 elapsed_us=2015212
+VALUE wm-startup pid=736 phase=title-plan-return ns=266237669958 elapsed_us=2015263
+VALUE wm-shown bwm composite of client 83 commit 4: no acknowledgment within 2000 ms; last readback error=Some("SCANOUT_READBACK: EAGAIN, reason 0"); last completed=None; [ini
+VALUE wm-shown t] Breenix init starting (PID 722) [init] not PID 1: test-control check skipped [init] mode desktop [init] supervising 1 services from /etc/breenix/services [in
+VALUE wm-shown it] bwm started (PID 723) [bwm] settings font.size=14 clock.visible=true [bwm] Breenix Window Manager starting... (v2-chromeless-skip) [bwm] UI scale 2: font 32
+VALUE wm-shown  px (14x36 cells, text grid 182x44), taskbar 56 px, app bar 72 px; the GPU core's mode 1 (2560x1600) publishes scale 2 [bwm] fonts FontConfig { mono_path: "/usr
+VALUE wm-shown /share/fonts/DejaVuSansMono.ttf", mono_size: 10.0, display_path: "/usr/share/fonts/DejaVuSans.ttf", display_size: 14.0 } [bwm] display font loaded: /usr/share/f
+VALUE wm-shown onts/DejaVuSans.ttf [bwm] compositor claim: epoch 131 [bwm] GPU compositing mode (GPU core), display: 2560x1600 [bwm] hotkeys: loaded /etc/hotkeys.conf sha256=c
+VALUE wm-shown e0cb75b22891c595e8c3f65719088de11371e7da26372ace8ddaff86d5f746c bindings=5 VALUE bwm-check-us 257153 VALUE bwm-check-cost total_ns=142149958 captures_ns=833 buf
+VALUE wm-shown fers_ns=3434625 scanout_ns=113461207 desktop_ns=134416501 pixels_ns=3840126 VALUE bwm-check-us 143105 [bwm] first frame read back: 4096000 pixels exact [bwm] de
+VALUE wm-shown sktop fills the scanout: resource 3853 2560x1600 bound (GPU core mode 1, 2560x1600), composed 2560x1600, UI scale 2; taskbar rows 0..56 at (0,0) and (2559,55), 
+VALUE wm-shown background at (2559,56); app bar rows 1528..1600 at (0,1528) and (2559,1599), background at (2559,1527); 6 pixels exact [init] desktop services started [bwm] Di
+VALUE wm-shown scovered window 'Terminal' (id=82, 750x550) at (60,76) z=0 VALUE bwm-check-cost total_ns=121407708 captures_ns=48938333 buffers_ns=4959 scanout_ns=48815751 desk
+VALUE wm-shown top_ns=64121916 pixels_ns=8103708 VALUE bwm-check-us 122645 [bwm] Discovered window 'WM client 11' (id=83, 240x160) at (160,176) z=0 [init] bwm killed by signal
+VALUE wm-shown  9 [init] bwm restarts in 1000 ms [init] bwm started (PID 736) [bwm] settings font.size=14 clock.visible=true [bwm] Breenix Window Manager starting... (v2-chrom
+VALUE wm-shown eless-skip) [bwm] UI scale 2: font 32 px (14x36 cells, text grid 182x44), taskbar 56 px, app bar 72 px; the GPU core's mode 1 (2560x1600) publishes scale 2 [bwm
+VALUE wm-shown ] fonts FontConfig { mono_path: "/usr/share/fonts/DejaVuSansMono.ttf", mono_size: 10.0, display_path: "/usr/share/fonts/DejaVuSans.ttf", display_size: 14.0 } [b
+VALUE wm-shown wm] display font loaded: /usr/share/fonts/DejaVuSans.ttf [bwm] compositor claim: epoch 133 [bwm] GPU compositing mode (GPU core), display: 2560x1600 [bwm] hotke
+VALUE wm-shown ys: loaded /etc/hotkeys.conf sha256=ce0cb75b22891c595e8c3f65719088de11371e7da26372ace8ddaff86d5f746c bindings=5 
+SUITE window-manager CASE recovery/supervisor-restarts FAIL ms=8857 msg=bwm composite of client 83 commit 4: no acknowledgment within 2000 ms; last readback error=Some("SCANOUT_READBACK: EAGAIN, reason 0"); last completed=None; [ini
+SUITE window-manager CASE clipboard/cross-process PASS ms=4095
+SUITE window-manager CASE clipboard/utf8 PASS ms=4934
+SUITE window-manager CASE clipboard/large PASS ms=4361
+SUITE window-manager CASE clipboard/nul-bytes PASS ms=4160
+SUITE window-manager CASE clipboard/replace PASS ms=4707
+SUITE window-manager CASE clipboard/owner-exit PASS ms=4569
+SUITE window-manager CASE liveness/idle-no-composites PASS ms=3857
+SUITE window-manager CASE liveness/hung-client PASS ms=4667
+SUITE window-manager CASE liveness/wake-on-registry PASS ms=5119
+SUITE window-manager CASE liveness/stress-animation PASS ms=17228
+SUITE window-manager CASE liveness/memory-bounded PASS ms=24897
+SUITE window-manager CASE performance/typing-latency PASS ms=9403
+SUITE window-manager CASE performance/pointer-latency PASS ms=9361
+SUITE window-manager CASE performance/present-latency PASS ms=6625
+SUITE window-manager CASE performance/frame-floor PASS ms=8744
+SUITE window-manager CASE performance/idle-cpu PASS ms=11653
+SUITE window-manager CASE performance/latency-under-animation PASS ms=13994
+SUITE window-manager CASE performance/clipboard-latency PASS ms=4830
+SUITE window-manager DONE passed=80 failed=1 skipped=0 total=81
+SUITE window-manager MEMORY after free=84625 heap_free_kb=38343 user_stacks=15 user_pages=602 page_tables=11 page_cache=0 kernel_stacks=0 buffers=4218 other=130 receipts=0 settle_ms=202
+SUITE window-manager MEMORY reclaimed=PASS free_before=84635 free_after=84625 allowance=48
+SUITE window-manager ELAPSED ms=412950
+SUITE_SEQUENCE READY window-manager

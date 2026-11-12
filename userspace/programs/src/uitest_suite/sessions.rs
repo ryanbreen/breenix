@@ -221,7 +221,7 @@ pub(crate) fn screen_pixels() -> Result<Vec<u8>, String> {
     let mut record = [0; 1024];
     let mut rb = abi::Readback { dst: pixels.as_mut_ptr() as u64, dst_len: pixels.len() as u64,
         record: record.as_mut_ptr() as u64, record_len: record.len() as u32, ..Default::default() };
-    window::call(abi::op::SCANOUT_READBACK, &mut rb).map_err(|e| format!("screen readback: {e}"))?;
+    window::readback(&mut rb).map_err(|e| format!("screen readback: {e}"))?;
     let kind = if u32::from_le_bytes(record[24..28].try_into().unwrap()) == 3 {
         window::ObservationKind::Composed
     } else { window::ObservationKind::Plain };

@@ -98,6 +98,9 @@ def main():
     # The QoS library removes its injection environment when it initializes.
     # Run its launcher directly before QEMU, after this Python process.
     argv.insert(0, launcher)
+    gate = os.environ.get("BREENIX_QEMU_PRE_EXEC_GATE")
+    if gate:
+        argv.insert(0, gate)
     os.execvp(argv[0], argv)
 
 

@@ -1,0 +1,83 @@
+{
+  "unit": "a3-u36-capture-eagain",
+  "check_commit": "9e64ce3e",
+  "baseline": "cd314bb7",
+  "red": {
+    "command": "UITEST_OLD_COMMIT=cd314bb7 python3 tests/uitest_capture_busy_test.py",
+    "at_check_commit": true,
+    "result": "FAIL",
+    "reason": "capture must survive present.busy: Err(\"screen capture: Os(EAGAIN)\")"
+  },
+  "green": {
+    "capture_and_breengel_ratio": "PASS; production screen and raw readback callers, forced busy completion, >=10/20 ratio, completion-before-poll, fixed deadline timeout and fatal EIO",
+    "completion_descriptor": "PASS; production descriptor and Admission::drop, readiness before poll, acknowledgement, failed copy and failed admission",
+    "abi": "2/2 PASS; rustc --edition=2021 --test -Dwarnings libs/breengel-abi/src/lib.rs"
+  },
+  "runtime": {
+    "wait": "PRESENTATION_FD completion generation, acknowledged before readback; ppoll with remaining absolute deadline on EAGAIN",
+    "screen_bound_ns": 2000000000,
+    "screen_bound_source": "existing settle::BOUND_NS; outer scenario watchdog unchanged",
+    "breengel_readback_bound_ns": 1000000000,
+    "breengel_ratio_requirement": "unchanged: checked >= 10 of 20, seen.len() >= 5",
+    "kernel_readback_gate": "unchanged"
+  },
+  "build_policy": {
+    "CARGO_BUILD_JOBS": 4,
+    "taskpolicy": "-b",
+    "profile": "release",
+    "userspace_bins": [
+      "suite-window-manager",
+      "suite-ui-testing",
+      "suite-breengel"
+    ],
+    "rust_fork": "666252fd61839b9e9b1bc9e777a0c84c5cf3dc6d"
+  },
+  "builds": {
+    "kernel_arm64": "PASS; no changed-source warnings; pinned toolchain core future-incompatibility notice for neon ABI (#134375)",
+    "kernel_x86_64": "PASS; no warnings",
+    "userspace_arm64": "PASS; window-manager and ui-testing from initial build, BreenGL from final scoped rebuild, no final warnings",
+    "userspace_x86_64": "PASS; no warnings",
+    "corrected_attempts": [
+      "Initial ARM64 suite-breengel compile rejected local handoff::Readback vs shared ABI Readback; changed caller to shared ABI type.",
+      "Following BreenGL compile warned about obsolete Plain import; removed it and final scoped build was warning-free."
+    ]
+  },
+  "build_logs": {
+    "kernel_arm64": {
+      "local_path": "/tmp/a3-u36-kernel-arm.log",
+      "sha256": "0ef370c6abaed18ac920a02396de605ba218a17ca252b851df829c95ae83f612"
+    },
+    "kernel_x86_64": {
+      "local_path": "/tmp/a3-u36-kernel-x86.log",
+      "sha256": "2078e3d676be57d02375e9efafda31ddaa7b9aac273823fab4aa853a701fdeac"
+    },
+    "userspace_arm64_initial": {
+      "local_path": "/tmp/a3-u36-userspace-arm.log",
+      "sha256": "26ebf5a8db510993bdf5b62488317d8d8a9de5803d8aa8ec96b1c403ef05a192"
+    },
+    "breengel_arm64_type_fix": {
+      "local_path": "/tmp/a3-u36-userspace-arm-fix.log",
+      "sha256": "92d73095b643f0adc913c5fd2b18667b0d9b9bbc66b8fff6b419dfd1714a7c0d"
+    },
+    "breengel_arm64_final": {
+      "local_path": "/tmp/a3-u36-userspace-arm-final.log",
+      "sha256": "5adbb1851bc40105f278cf9db5d03db652d1f62e7cb5376178a9d0520d1106cf"
+    },
+    "userspace_x86_64": {
+      "local_path": "/tmp/a3-u36-userspace-x86.log",
+      "sha256": "6b6601f68aa053b44a45cdac50bec81205c811985747fa9b5b264a893adf46d3"
+    }
+  },
+  "artifacts_sha256": {
+    "target/aarch64-breenix-kernel/release/kernel-aarch64": "f07a7f1a6a29ae7307b4e43313d48ed645ef5b3254936ab12042426646dc4643",
+    "target/x86_64-unknown-none/release/kernel": "8866e9bb23b93027b70ebac80ca04e468a12b565f9f3ceaf85f67e6553255c81",
+    "userspace/programs/target/aarch64-breenix/release/suite-window-manager": "3dbfc9e80e420367a73d98a582d5e4c1a7b8274ade78b0083fa04e00b9b0dccf",
+    "userspace/programs/target/aarch64-breenix/release/suite-ui-testing": "f279ec15b50b6db9c6473217fcbf5155c1a3758bf0a83e720e240f1a62464422",
+    "userspace/programs/target/aarch64-breenix/release/suite-breengel": "e1e29f690b2849b49ab16bce7ec284f63a7dd530e9099e377526e70e19f4ec73",
+    "userspace/programs/target/x86_64-breenix/release/suite-window-manager": "e01ee9c8edba5ac470d520fe07b7d4bb0d8a98bcaa3498c045e12dfa87bf8c90",
+    "userspace/programs/target/x86_64-breenix/release/suite-ui-testing": "230ace2029bfbc950746a88d7b75fd4a775330bd9c47c3b3ad565fd5f9cdd16a",
+    "userspace/programs/target/x86_64-breenix/release/suite-breengel": "d7c6542d5ff42ad8ea19dc318334c1dffdc62e17c6015193e75481cb1febf433"
+  },
+  "boots": 0,
+  "acceptance": "Deferred to the separate acceptance unit; this result is host/build evidence only."
+}

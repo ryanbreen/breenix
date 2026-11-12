@@ -1051,19 +1051,7 @@ fn sys_get_time() -> u64 {
 
 /// sys_getpid - Get the current process ID (ARM64)
 fn sys_getpid() -> u64 {
-    let thread_id = crate::task::scheduler::current_thread_id().unwrap_or(0);
-    if thread_id == 0 {
-        return 0;
-    }
-
-    if let Some(ref manager) = *crate::process::manager() {
-        // Every thread of a process has its ID: the thread group's.
-        if let Some((pid, process)) = manager.find_process_by_thread(thread_id) {
-            return process.thread_group_id.unwrap_or(pid.as_u64());
-        }
-    }
-
-    0
+    result_to_u64(crate::syscall::handlers::sys_getpid())
 }
 
 /// sys_getppid - Get the parent process ID (ARM64)

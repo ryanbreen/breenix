@@ -6,7 +6,7 @@ use libbreenix::{gpu, graphics, io, process, signal, time, window};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
-use window::abi::{self, op, Plain};
+use window::abi::{self, Plain};
 
 pub fn now() -> u64 {
     time::now_monotonic().map_or(0, |v| v.as_nanos() as u64)
@@ -42,6 +42,7 @@ pub fn until_from(
 pub struct Child {
     pub pid: i32,
     reaped: bool,
+    pub reap_ns: u64,
 }
 impl Child {
     pub fn signal(&self, sig: i32) -> Result<(), String> {
@@ -83,11 +84,16 @@ impl Child {
     }
     pub fn stop(&mut self) -> Result<i32, String> {
         self.signal(signal::SIGKILL)?;
+        let returned_ns = now();
         let mut result = None;
-        until(500, "reap owned process", || {
+        let waited = until(500, "reap owned process", || {
             result = self.status()?;
             Ok(result.is_some())
-        })?;
+        });
+        let wait_returned_ns = now();
+        self.reap_ns = wait_returned_ns.saturating_sub(returned_ns);
+        elapsed("reap", self.reap_ns, 500_000_000);
+        waited?;
         let status = result.unwrap();
         if status & 127 != signal::SIGKILL {
             return Err(format!(
@@ -97,11 +103,13 @@ impl Child {
         Ok(status)
     }
 }
+
 impl From<Pid> for Child {
     fn from(pid: Pid) -> Self {
         Self {
             pid: pid.raw() as i32,
             reaped: false,
+            reap_ns: 0,
         }
     }
 }
@@ -313,7 +321,8 @@ impl Client {
             Ok(found.is_some())
         })
         .map_err(|e| format!("{description}: {e}"))?;
-        Ok(found.unwrap())
+        let event = found.unwrap();
+        Ok(event)
     }
 }
 
@@ -338,6 +347,11 @@ pub struct Screen {
 }
 impl Screen {
     pub fn read() -> Result<Self, String> {
+        Self::read_kind(Some(window::ObservationKind::Composed))
+    }
+    // Before takeover the retained screen may be the kernel console. Accept
+    // its plain observation and propagate failed captures to the caller.
+    fn read_kind(required: Option<window::ObservationKind>) -> Result<Self, String> {
         let mode = gpu::current_mode().map_err(|e| format!("CURRENT_MODE: {e}"))?;
         let mut s = Self {
             pixels: vec![0; (mode.width * mode.height * 4) as usize],
@@ -350,12 +364,18 @@ impl Screen {
         r.dst_len = s.pixels.len() as u64;
         r.record = s.record.as_mut_ptr() as u64;
         r.record_len = 1024;
-        window::call(op::SCANOUT_READBACK, &mut r)
+        window::readback(&mut r)
             .map_err(|e| format!("SCANOUT_READBACK: {e}, reason {}", r.reason))?;
+        let kind = required.unwrap_or_else(|| if word(&s.record, 24) == 3 {
+            window::ObservationKind::Composed
+        } else { window::ObservationKind::Plain });
         if !window::validate_scanout_observation(
-            &s.record, s.width, s.height, window::ObservationKind::Composed,
+            &s.record, s.width, s.height, kind,
         ) {
-            return Err("scanout lacks its complete v2 dimensions, binding, native readback and present completion".into());
+            return Err(format!("invalid scanout: backend={} flags={} context={} serial={} size={}x{} render={:x}/{:x} read={:x}/{:x} present={:x}",
+                word(&s.record, 16), word(&s.record, 24), quad(&s.record, 64), s.serial(),
+                word(&s.record, 40), word(&s.record, 44), word(&s.record, 112), word(&s.record, 116),
+                word(&s.record, 128), word(&s.record, 132), word(&s.record, 192)));
         }
         Ok(s)
     }
@@ -403,21 +423,119 @@ impl Screen {
     }
 }
 
+struct StartupTrace(std::path::PathBuf);
+impl StartupTrace {
+    fn new() -> Result<Self, String> {
+        let path = std::path::PathBuf::from(format!("/tmp/wm-startup-{}", libuitest::startup::now()));
+        std::fs::create_dir(&path).map_err(|e| format!("startup trace directory: {e}"))?;
+        Ok(Self(path))
+    }
+    fn failure(&self) {
+        let Ok(entries) = std::fs::read_dir(&self.0) else { return };
+        for entry in entries.flatten().take(8) {
+            let Ok(trace) = libuitest::startup::Trace::open(&entry.path()) else { continue };
+            let phases = trace.snapshot();
+            let begin = phases.iter().filter(|(_, ns)| *ns != 0).map(|(_, ns)| *ns).min().unwrap_or(0);
+            for (phase, ns) in phases.into_iter().filter(|(_, ns)| *ns != 0) {
+                failure_diagnostic("startup", &format!("pid={} phase={phase} ns={ns} elapsed_us={}", entry.file_name().to_string_lossy(), ns.saturating_sub(begin) / 1000));
+            }
+        }
+    }
+}
+impl Drop for StartupTrace {
+    fn drop(&mut self) { let _ = std::fs::remove_dir_all(&self.0); }
+}
+
 pub struct Desktop {
     pub wm: Child,
     log: File,
     pub width: u32,
     pub height: u32,
     pub scale: i32,
+    startup: StartupTrace,
+}
+
+// Retain the last observation without printing or formatting on a successful poll.
+// A failed wait reports both readback refusal and the last completed binding.
+#[derive(Default)]
+struct WaitObservation {
+    error: Option<String>,
+    record: Option<[u8; 1024]>,
+    pixel: Option<u32>,
+}
+
+/// Compact case timing, emitted only after the measured interval has ended.
+/// Nanoseconds become milliseconds with microsecond precision, rounded upward
+/// for elapsed time and downward for the deadline so reporting cannot add margin.
+pub fn elapsed(wait: &str, ns: u64, deadline_ns: u64) {
+    use std::io::Write;
+    let Some(case) = breenix_suite::suite::running_case() else { return };
+    let us = ns.div_ceil(1000);
+    let deadline_us = deadline_ns / 1000;
+    let record = format!("VALUE wm-elapsed {case} {wait} {}.{:03} {}.{:03}\n",
+        us / 1000, us % 1000, deadline_us / 1000, deadline_us % 1000);
+    if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
+        let _ = evidence.write_all(record.as_bytes());
+    }
+}
+
+/// Failure records bypass the case verdict's short message field.
+pub fn failure_diagnostic(label: &str, text: &str) {
+    use std::io::Write;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    // Each case runs in its own child. Reserve 1 KiB of the 2 KiB serial
+    // budget for compact elapsed reports, including waits that end in failure.
+    static BYTES: AtomicUsize = AtomicUsize::new(0);
+    let label: String = label.chars().take(32).collect();
+    let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") else { return };
+    for line in text.lines() {
+        let chunk: String = line.chars().take(160).collect();
+        let record = format!("VALUE wm-{label} {chunk}\n");
+        if BYTES.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n|
+            n.checked_add(record.len()).filter(|&total| total <= 1024)).is_err() { return; }
+        let _ = evidence.write_all(record.as_bytes());
+    }
+}
+
+impl WaitObservation {
+
+    fn read(&mut self) -> Result<Screen, String> {
+        let result = Screen::read();
+        match result {
+            Ok(s) => {
+                self.record = Some(s.record);
+                self.pixel = s.pixel(s.width as i32 / 2, 1).ok();
+                Ok(s)
+            }
+            Err(e) => {
+                self.error = Some(e.clone());
+                Err(e)
+            }
+        }
+    }
+    fn failure(&self) -> String {
+        let binding = self.record.as_ref().map(|r| {
+            let clients: Vec<_> = (0..(word(r, 196) as usize).min(16))
+                .map(|i| (quad(r, 200 + i * 32), quad(r, 208 + i * 32)))
+                .collect();
+            format!("context={} serial={} flags={} pixel={:?} clients={clients:?}",
+                quad(r, 64), quad(r, 176), word(r, 24), self.pixel)
+        });
+        format!("last completed={binding:?}\nlast readback error={:?}", self.error)
+    }
 }
 impl Desktop {
+
     pub fn start() -> Result<Self, String> {
         Self::launch(false)
     }
     pub fn launch(supervised: bool) -> Result<Self, String> {
-        let previous_context = Screen::read().map_or(0, |s| quad(&s.record, 64));
+        let previous_serial = Screen::read_kind(None)?.serial();
         graphics::take_over_display().map_err(|e| format!("session display: {e}"))?;
+        let startup = StartupTrace::new()?;
         let (r, w) = io::pipe2(io::status_flags::O_NONBLOCK).map_err(|e| e.to_string())?;
+        let previous_trace = std::env::var_os("BREENIX_STARTUP_TRACE_DIR");
+        std::env::set_var("BREENIX_STARTUP_TRACE_DIR", &startup.0);
         let pid = if supervised {
             spawn(
                 &[(w, Fd::STDOUT), (w, Fd::STDERR)],
@@ -429,6 +547,10 @@ impl Desktop {
                 Run::Exec(b"/usr/bin/bwm\0", &[b"bwm\0"]),
             )
         };
+        match previous_trace {
+            Some(value) => std::env::set_var("BREENIX_STARTUP_TRACE_DIR", value),
+            None => std::env::remove_var("BREENIX_STARTUP_TRACE_DIR"),
+        }
         let _ = io::close(w);
         let pid = match pid {
             Ok(p) => p,
@@ -446,7 +568,9 @@ impl Desktop {
             width: mode.width,
             height: mode.height,
             scale: mode.scale as i32,
+            startup,
         };
+        let mut observation = WaitObservation::default();
         let ready = until(4000, "bwm first completed desktop", || {
             if let Some(status) = d.wm.status()? {
                 return Err(format!(
@@ -454,20 +578,29 @@ impl Desktop {
                     d.output()
                 ));
             }
-            Ok(Screen::read().is_ok_and(|s| {
-                s.serial() != 0
-                    && quad(&s.record, 64) != previous_context
+            Ok(observation.read().is_ok_and(|s| {
+                // read() validates Composed flags=3. Native readback contexts
+                // name a shared channel, so freshness comes from composition.
+                s.serial() > previous_serial
                     && s.pixel(d.width as i32 / 2, 1).ok() == Some(0xff14161e)
             }))
         });
-        ready.map_err(|e| format!("{e}; {}", d.output()))?;
+        ready.map_err(|e| {
+            let detail = format!("{}; previous serial={previous_serial}; {}", observation.failure(), d.output());
+            failure_diagnostic("ready", &detail);
+            d.startup.failure();
+            format!("{e}; {detail}")
+        })?;
         if supervised {
-            until(
+            let mut observation = WaitObservation::default();
+            let mut observed_windows = Vec::new();
+            let initial = until(
                 2000,
                 "init desktop's initial client reached scanout",
                 || {
                     let windows = listed()?;
-                    let s = match Screen::read() {
+                    observed_windows = windows.iter().map(|w| (w.id, w.commit_id)).collect();
+                    let s = match observation.read() {
                         Ok(s) => s,
                         Err(_) => return Ok(false),
                     };
@@ -475,7 +608,12 @@ impl Desktop {
                         .iter()
                         .any(|w| w.commit_id != 0 && s.contains(w.id, w.commit_id)))
                 },
-            )?;
+            );
+            initial.map_err(|e| {
+                let detail = format!("windows={observed_windows:?}; {}; {}", observation.failure(), d.output());
+                failure_diagnostic("initial-client", &detail);
+                format!("{e}; {detail}")
+            })?;
         }
         Ok(d)
     }
@@ -495,7 +633,8 @@ impl Desktop {
     }
     pub fn shown_after(&mut self, c: &Client, commit: u64) -> Result<Screen, String> {
         let mut result = None;
-        until(
+        let mut observation = WaitObservation::default();
+        let observed = until(
             2000,
             &format!("bwm composite of client {} commit {}", c.id, commit),
             || {
@@ -505,7 +644,7 @@ impl Desktop {
                         self.output()
                     ));
                 }
-                match Screen::read() {
+                match observation.read() {
                     Ok(s) if s.contains(c.id, commit) => {
                         result = Some(s);
                         Ok(true)
@@ -513,8 +652,18 @@ impl Desktop {
                     _ => Ok(false),
                 }
             },
-        )
-        .map_err(|e| format!("{e}; {}", self.output()))?;
+        );
+        observed.map_err(|e| {
+            let detail = format!("{}; {}", observation.failure(), self.output());
+            if let Ok(counters) = std::fs::read_to_string("/proc/trace/counters") {
+                for line in counters.lines().filter(|line| line.contains("gpu_wait_") || line.contains("gpu_read_") || line.contains("gpu_irq_masked") || line.contains("GPU_MASKED")) {
+                    failure_diagnostic("kernel-readback", line);
+                }
+            }
+            self.startup.failure();
+            failure_diagnostic("shown", &format!("{e}; {detail}"));
+            format!("{e}; {detail}")
+        })?;
         Ok(result.unwrap())
     }
     pub fn pointer(&self, x: i32, y: i32, buttons: u32, wheel: i32) -> Result<(), String> {
@@ -547,15 +696,21 @@ impl Desktop {
         c.clear()?;
         let w = c.info()?;
         self.click(w.x + 20, w.y + 20)?;
+        let begin = now();
         let press = c.await_event("positive click delivery to target client", |e| {
             e.kind == abi::event_kind::POINTER_BUTTON && e.pressed == 1
-        })?;
-        c.await_event("focus click release delivery to target client", |e| {
+        });
+        elapsed("positive-click", now().saturating_sub(begin), 1_000_000_000);
+        let press = press?;
+        let begin = now();
+        let released = c.await_event("focus click release delivery to target client", |e| {
             e.kind == abi::event_kind::POINTER_BUTTON
                 && e.pressed == 0
                 && e.button == press.button
                 && e.serial > press.serial
-        })?;
+        });
+        elapsed("click-release", now().saturating_sub(begin), 1_000_000_000);
+        released?;
         Ok(())
     }
 }

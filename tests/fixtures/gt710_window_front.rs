@@ -1,5 +1,7 @@
 #![allow(dead_code)] // Production records expose fields covered by other host harnesses.
 extern crate alloc;
+#[macro_export] macro_rules! diag_println { ($($arg:tt)*) => { eprintln!($($arg)*); } }
+mod platform_config { pub fn is_qemu()->bool { false } }
 use std::{cell::RefCell, collections::{BTreeMap, VecDeque}, sync::{Arc, Mutex, MutexGuard, atomic::Ordering}};
 use gpu_abi::{self as abi, fence_status, format, stream::{self, Resolver, TargetInfo}};
 use breengel_abi::{Plain, Rect};
@@ -142,7 +144,7 @@ mod encode {
     pub struct SourceRes{pub id:u32,pub format:u32,pub width:u32,pub height:u32}
     pub trait Bindings{fn target(&self,h:u64)->Option<TargetRes>;fn source(&self,h:u64)->Option<SourceRes>;fn buffer_rect(&self,h:u64,o:u64)->[i32;4];fn buffer_word(&self,h:u64,o:u64)->u32;}
     pub struct Enc;
-    impl Enc{pub fn new()->Self{Self}pub fn finish(self)->Option<Vec<()>>{Some(vec![()])}}
+    impl Enc{pub fn new()->Self{Self}pub fn finish(self)->Option<Vec<()>>{Some(vec![()])}pub fn completion_read(&mut self,_:u32,_:u32){panic!("native fixture entered a QEMU completion drain")}}
     pub struct Extras{pub vertex_buffer:u32,pub scratch:[u32;2],pub data:u32,pub data_width:u32,pub flip_y:bool,pub corrupt:Option<u64>,pub suppress:Option<u64>,pub swap:Option<(usize,u64)>}
     pub fn translate(_: &mut Enc,_:&mut Objects,_:&[u32],_:&impl Bindings,_:Extras){}
 }

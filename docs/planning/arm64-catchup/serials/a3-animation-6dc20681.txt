@@ -1,0 +1,84 @@
+876455: SUITE window-manager VALUE recovery/restart-adopts reap-elapsed=5420667ns
+904396: SUITE window-manager VALUE recovery/interaction-after-restart reap-elapsed=5333500ns
+933761: SUITE window-manager VALUE recovery/stack-restored reap-elapsed=5418583ns
+935467: VALUE wm-wait-budget tid=919 wait=positive click delivery to target client begin_ns=515203519583 end_ns=515263168708 deadline_ns=516203519583
+975152: VALUE wm-startup pid=733 phase=first-composite ns=546935120666 elapsed_us=451513
+976306: VALUE wm-wait-budget tid=943 wait=production desktop supervisor restarts bwm begin_ns=545373149666 end_ns=546480898708 deadline_ns=547373149666
+1081843: VALUE wm-wait-budget tid=943 wait=production desktop supervisor restarts bwm begin_ns=545373149666 end_ns=546480898708 deadline_ns=547373149666
+1169909: SUITE window-manager VALUE performance/typing-latency latency-median=10452us expect=0..20000us
+1169912: SUITE window-manager VALUE performance/typing-latency latency-max=16364us expect=0..50000us
+1184287: SUITE window-manager VALUE performance/pointer-latency latency-median=4961us expect=0..20000us
+1184290: SUITE window-manager VALUE performance/pointer-latency latency-max=12528us expect=0..50000us
+1199169: SUITE window-manager VALUE performance/present-latency present-median=1391us expect=0..16000us
+1199172: SUITE window-manager VALUE performance/present-latency present-max=4533us expect=0..33000us
+1214143: SUITE window-manager VALUE performance/frame-floor composites-per-second=546hz expect=60..9223372036854775807hz
+1228670: SUITE window-manager VALUE performance/idle-cpu idle-cpu=0percent expect=0..2percent
+1243104: SUITE window-manager VALUE performance/latency-under-animation first-slow-sample=39index
+1243107: SUITE window-manager VALUE performance/latency-under-animation first-slow-input=763619704375ns
+1243110: SUITE window-manager VALUE performance/latency-under-animation first-slow-completion=763730249708ns
+1243113: SUITE window-manager VALUE performance/latency-under-animation first-slow-latency=110545us
+1243313: VALUE window-pipeline 1 1037 763619704375 2687 763619725166
+1243314: VALUE window-pipeline 1 1037 763619704375 2688 763619725666
+1243315: VALUE window-pipeline 1 1037 763619704375 2689 763619725708
+1243316: VALUE window-pipeline 2 1037 125 2687 763620635666
+1243317: VALUE window-pipeline 2 1037 125 2688 763620635666
+1243318: VALUE window-pipeline 2 1037 125 2689 763620635666
+1243319: VALUE window-pipeline 3 127 0 2687 763620646541
+1243320: VALUE window-pipeline 3 127 0 13835058066552258561 763620659583
+1243321: VALUE window-pipeline 3 127 0 2688 763620670750
+1243322: VALUE window-pipeline 6 127 431 0 763629321250
+1243323: VALUE window-pipeline 9 127 431 11710 763629897000
+1243324: VALUE window-pipeline 10 11710 5062 0 763636612041
+1243325: VALUE window-pipeline 7 127 1 2685 763636661250
+1243326: VALUE window-pipeline 14 127 432 2685 763636666333
+1243327: VALUE window-pipeline 8 127 432 2685 763636667041
+1243328: VALUE window-pipeline 4 127 0 2687 763636673791
+1243329: VALUE window-pipeline 4 127 0 13835058066552258561 763636673833
+1243330: VALUE window-pipeline 4 127 0 2688 763636673833
+1243331: VALUE window-pipeline 5 127 0 0 763636675416
+1243332: VALUE window-pipeline 11 11710 5062 1928440316942 763641095250
+1243333: VALUE window-pipeline 12 11710 5062 1928440316942 763641095333
+1243334: VALUE window-pipeline 13 127 431 11710 763641100291
+1243335: VALUE window-pipeline 9 127 432 11711 763641920000
+1243336: VALUE window-pipeline 10 11711 5061 0 763645901791
+1243337: VALUE window-pipeline 11 11711 5061 1928440316944 763646913791
+1243338: VALUE window-pipeline 12 11711 5061 1928440316944 763646913875
+1243339: VALUE window-pipeline 13 127 432 11711 763646924125
+1243340: VALUE window-pipeline 9 127 432 11712 763660264875
+1243341: VALUE window-pipeline 10 11712 5062 0 763666350791
+1243342: VALUE window-pipeline 11 11712 5062 1928440316946 763667647875
+1243343: VALUE window-pipeline 12 11712 5062 1928440316946 763667648083
+1243344: VALUE window-pipeline 13 127 432 11712 763667657375
+1243345: VALUE window-pipeline 9 127 432 11713 763668507416
+1243346: VALUE window-pipeline 10 11713 5061 0 763674378291
+1243347: VALUE window-pipeline 11 11713 5061 1928440316948 763675526166
+1243348: VALUE window-pipeline 12 11713 5061 1928440316948 763675526208
+1243349: VALUE window-pipeline 13 127 432 11713 763675531166
+1243350: VALUE window-pipeline 9 127 432 11714 763679624666
+1243351: VALUE window-pipeline 10 11714 5062 0 763684994083
+1243352: VALUE window-pipeline 11 11714 5062 1928440316950 763686207125
+1243353: VALUE window-pipeline 12 11714 5062 1928440316950 763686207250
+1243354: VALUE window-pipeline 13 127 432 11714 763686209916
+1243355: VALUE window-pipeline 9 127 432 11715 763697430416
+1243356: VALUE window-pipeline 10 11715 5061 0 763702826958
+1243357: VALUE window-pipeline 11 11715 5061 1928440316952 763705156250
+1243358: VALUE window-pipeline 12 11715 5061 1928440316952 763705156333
+1243359: VALUE window-pipeline 13 127 432 11715 763705163666
+1243360: VALUE window-pipeline 6 127 432 0 763708574166
+1243361: VALUE window-pipeline 7 127 2 2688 763723357083
+1243362: VALUE window-pipeline 14 127 433 2688 763723391708
+1243363: VALUE window-pipeline 8 127 433 2688 763723394541
+1243364: VALUE window-pipeline 5 127 0 0 763723398666
+1243365: VALUE window-pipeline 9 127 433 11716 763723627458
+1243366: VALUE window-pipeline 10 11716 5062 0 763729555125
+1243367: VALUE window-pipeline 11 11716 5062 1928440316954 763730249708
+1243368: VALUE window-pipeline 12 11716 5062 1928440316954 763730249708
+1243369: VALUE window-pipeline 13 127 433 11716 763730254958
+1243454: SUITE window-manager VALUE performance/latency-under-animation latency-median=12703us expect=0..33000us
+1243457: SUITE window-manager VALUE performance/latency-under-animation latency-max=110545us expect=0..100000us
+1244585: VALUE wm-account-window id=84 pid=984 begin_ns=759499441583 end_ns=759840632791 complete=1 vcpus=4
+1257880: SUITE window-manager VALUE performance/clipboard-latency clipboard-max=6898us expect=0..50000us
+1259005: VALUE wm-account-window id=85 pid=997 begin_ns=778666113541 end_ns=779013115916 complete=1 vcpus=4
+1272519: SUITE window-manager DONE passed=80 failed=1 skipped=0 total=81
+1272523: SUITE window-manager MEMORY reclaimed=PASS free_before=84631 free_after=84621 allowance=48
+1281057: SUITE_SEQUENCE READY window-manager

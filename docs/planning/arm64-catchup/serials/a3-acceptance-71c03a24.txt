@@ -1,0 +1,118 @@
+SUITE window-manager START cases=81
+SUITE window-manager MEMORY before free=84635 heap_free_kb=39020 user_stacks=16 user_pages=591 page_tables=11 page_cache=0 kernel_stacks=0 buffers=4218 other=130 receipts=0 settle_ms=202
+SUITE window-manager CASE input-core/virtual-keyboard PASS ms=2861
+SUITE window-manager CASE input-core/serials PASS ms=3704
+SUITE window-manager CASE input-core/time-injected PASS ms=3398
+SUITE window-manager CASE input-core/ctrl-super-distinct PASS ms=3660
+SUITE window-manager CASE input-core/text-event PASS ms=2645
+SUITE window-manager CASE input-core/device-removal PASS ms=2882
+SUITE window-manager CASE input-core/virtual-pointer PASS ms=3779
+SUITE window-manager CASE input-core/ledger-complete PASS ms=3543
+SUITE window-manager CASE input-core/capabilities PASS ms=3729
+SUITE window-manager CASE input-devices/keyboard-completion-path PASS ms=2986
+SUITE window-manager CASE input-devices/replay-report-fault PASS ms=3914
+SUITE window-manager CASE startup/desktop-control PASS ms=2816
+SUITE window-manager CASE startup/claims-display PASS ms=3864
+SUITE window-manager CASE startup/first-client PASS ms=3983
+SUITE window-manager CASE startup/existing-windows PASS ms=4464
+SUITE window-manager CASE startup/independent-clients PASS ms=5295
+SUITE window-manager CASE startup/supervisor-starts PASS ms=5746
+SUITE window-manager CASE composition/chrome-geometry PASS ms=3063
+SUITE window-manager CASE composition/overlap PASS ms=5040
+SUITE window-manager CASE composition/cascade PASS ms=4038
+SUITE window-manager CASE composition/client-update PASS ms=3970
+SUITE window-manager CASE composition/expose-close PASS ms=5174
+SUITE window-manager CASE composition/oracle-corruption PASS ms=3309
+SUITE window-manager CASE stacking/click-raises PASS ms=5492
+SUITE window-manager CASE stacking/minimize-hides PASS ms=7402
+SUITE window-manager CASE stacking/restore PASS ms=5546
+SUITE window-manager CASE stacking/all-minimized FAIL ms=6927 msg=positive click delivery to target client: positive click delivery to target client: no acknowledgment within 1000 ms
+SUITE window-manager CASE stacking/exit-restacks PASS ms=9110
+SUITE window-manager CASE focus/initial-focus PASS ms=4971
+SUITE window-manager CASE focus/pair-click PASS ms=7158
+SUITE window-manager CASE focus/keys-to-focused FAIL ms=6841 msg=positive click delivery to target client: positive click delivery to target client: no acknowledgment within 1000 ms
+SUITE window-manager CASE focus/text-exact FAIL ms=5148 msg=positive click delivery to target client: positive click delivery to target client: no acknowledgment within 1000 ms
+SUITE window-manager CASE focus/releases FAIL ms=5341 msg=positive click delivery to target client: positive click delivery to target client: no acknowledgment within 1000 ms
+SUITE window-manager CASE focus/ctrl-c FAIL ms=5422 msg=positive click delivery to target client: positive click delivery to target client: no acknowledgment within 1000 ms
+SUITE window-manager CASE focus/navigation-keys FAIL ms=5380 msg=positive click delivery to target client: positive click delivery to target client: no acknowledgment within 1000 ms
+SUITE window-manager CASE focus/escape PASS ms=4453
+SUITE window-manager CASE focus/cycle-next FAIL ms=6958 msg=positive click delivery to target client: positive click delivery to target client: no acknowledgment within 1000 ms
+SUITE window-manager CASE pointer/local-coords PASS ms=5464
+SUITE window-manager CASE pointer/capture PASS ms=4992
+SUITE window-manager CASE pointer/right-middle PASS ms=2935
+SUITE window-manager CASE pointer/scroll-under-pointer FAIL ms=4838 msg=positive click delivery to target client: positive click delivery to target client: no acknowledgment within 1000 ms
+SUITE window-manager CASE pointer/outside-not-delivered PASS ms=4102
+SUITE window-manager CASE pointer/press-release-order FAIL ms=5301 msg=positive click delivery to target client: positive click delivery to target client: no acknowledgment within 1000 ms
+SUITE window-manager CASE geometry/drag-move PASS ms=5680
+SUITE window-manager CASE geometry/resize-right PASS ms=4393
+SUITE window-manager CASE geometry/resize-bottom PASS ms=5428
+SUITE window-manager CASE geometry/client-refuses PASS ms=5433
+SUITE window-manager CASE geometry/resize-cross PASS ms=5339
+SUITE window-manager CASE geometry/client-resize PASS ms=5208
+SUITE window-manager CASE lifecycle/close-request FAIL ms=5349 msg=positive click delivery to target client: positive click delivery to target client: no acknowledgment within 1000 ms
+SUITE window-manager CASE lifecycle/client-exit PASS ms=6095
+SUITE window-manager CASE lifecycle/client-crash PASS ms=7279
+SUITE window-manager CASE lifecycle/client-exec PASS ms=7181
+SUITE window-manager CASE lifecycle/close-unresponsive PASS ms=5331
+SUITE window-manager CASE lifecycle/compositor-steal PASS ms=5372
+SUITE window-manager CASE lifecycle/inject-denied PASS ms=2771
+SUITE window-manager CASE lifecycle/launch-ack PASS ms=6011
+SUITE window-manager CASE lifecycle/launch-reaped PASS ms=5095
+SUITE window-manager CASE recovery/clients-notified PASS ms=2640
+SUITE window-manager CASE recovery/restart-adopts PASS ms=6944
+SUITE window-manager CASE recovery/interaction-after-restart PASS ms=8005
+SUITE window-manager CASE recovery/stack-restored FAIL ms=6825 msg=positive click delivery to target client: positive click delivery to target client: no acknowledgment within 1000 ms
+VALUE wm-initial-client windows=[(82, 0)]; last readback error=None; last completed=Some("context=342 serial=487 clients=[(82, 0)] pixel=Some(4279506462)"); [init] Breenix init startin
+VALUE wm-initial-client g (PID 704) [init] not PID 1: test-control check skipped [init] mode desktop [init] supervising 1 services from /etc/breenix/services [init] bwm started (PID 70
+VALUE wm-initial-client 5) [bwm] settings font.size=14 clock.visible=true [bwm] Breenix Window Manager starting... (v2-chromeless-skip) [bwm] UI scale 2: font 32 px (14x36 cells, text 
+VALUE wm-initial-client grid 182x44), taskbar 56 px, app bar 72 px; the GPU core's mode 1 (2560x1600) publishes scale 2 [bwm] fonts FontConfig { mono_path: "/usr/share/fonts/DejaVuSans
+VALUE wm-initial-client Mono.ttf", mono_size: 10.0, display_path: "/usr/share/fonts/DejaVuSans.ttf", display_size: 14.0 } [bwm] display font loaded: /usr/share/fonts/DejaVuSans.ttf [bw
+VALUE wm-initial-client m] compositor claim: epoch 129 [bwm] GPU compositing mode (GPU core), display: 2560x1600 [bwm] hotkeys: loaded /etc/hotkeys.conf sha256=ce0cb75b22891c595e8c3f65
+VALUE wm-initial-client 719088de11371e7da26372ace8ddaff86d5f746c bindings=5 VALUE bwm-check-us 25085 VALUE bwm-check-cost total_ns=209514417 captures_ns=1959 buffers_ns=5604042 scanout
+VALUE wm-initial-client _ns=188006000 desktop_ns=197658582 pixels_ns=5521417 VALUE bwm-check-us 211107 [bwm] first frame read back: 4096000 pixels exact [bwm] desktop fills the scanout
+VALUE wm-initial-client : resource 3837 2560x1600 bound (GPU core mode 1, 2560x1600), composed 2560x1600, UI scale 2; taskbar rows 0..56 at (0,0) and (2559,55), background at (2559,56)
+VALUE wm-initial-client ; app bar rows 1528..1600 at (0,1528) and (2559,1599), background at (2559,1527); 6 pixels exact [init] desktop services started [bwm] Discovered window 'Termin
+VALUE wm-initial-client al' (id=82, 750x550) at (60,76) z=0 
+SUITE window-manager CASE recovery/supervisor-restarts FAIL ms=6194 msg=init desktop's initial client reached scanout: no acknowledgment within 2000 ms; windows=[(82, 0)]; last readback error=None; last completed=Some("context=342 s
+SUITE window-manager CASE clipboard/cross-process PASS ms=5265
+SUITE window-manager CASE clipboard/utf8 PASS ms=5247
+SUITE window-manager CASE clipboard/large PASS ms=4314
+SUITE window-manager CASE clipboard/nul-bytes PASS ms=4978
+SUITE window-manager CASE clipboard/replace PASS ms=4840
+SUITE window-manager CASE clipboard/owner-exit PASS ms=4137
+SUITE window-manager VALUE liveness/idle-no-composites idle-composites=0 expect=0..0
+SUITE window-manager CASE liveness/idle-no-composites PASS ms=5066
+SUITE window-manager CASE liveness/hung-client FAIL ms=6485 msg=positive click delivery to target client: positive click delivery to target client: no acknowledgment within 1000 ms
+SUITE window-manager CASE liveness/wake-on-registry PASS ms=7508
+SUITE window-manager CASE liveness/stress-animation PASS ms=23073
+SUITE window-manager VALUE liveness/memory-bounded resident-growth=4kb expect=-9223372036854775808..64kb
+SUITE window-manager CASE liveness/memory-bounded PASS ms=33325
+SUITE window-manager VALUE performance/typing-latency latency-median=8770us expect=0..20000us
+SUITE window-manager VALUE performance/typing-latency latency-max=14628us expect=0..50000us
+SUITE window-manager CASE performance/typing-latency PASS ms=11255
+SUITE window-manager VALUE performance/pointer-latency latency-median=4679us expect=0..20000us
+SUITE window-manager VALUE performance/pointer-latency latency-max=9239us expect=0..50000us
+SUITE window-manager CASE performance/pointer-latency PASS ms=10281
+SUITE window-manager VALUE performance/present-latency pipeline-window=118
+SUITE window-manager VALUE performance/present-latency present-median=1188us expect=0..16000us
+SUITE window-manager VALUE performance/present-latency present-max=3135us expect=0..33000us
+SUITE window-manager CASE performance/present-latency PASS ms=6951
+SUITE window-manager VALUE performance/frame-floor pipeline-window=119
+SUITE window-manager VALUE performance/frame-floor measurement-begin=452252473208ns
+SUITE window-manager VALUE performance/frame-floor measurement-end=457252718625ns
+SUITE window-manager VALUE performance/frame-floor presentation-intervals=2133intervals
+SUITE window-manager VALUE performance/frame-floor presentation-span=4974687750ns
+SUITE window-manager VALUE performance/frame-floor composites-per-second=428hz expect=60..9223372036854775807hz
+SUITE window-manager VALUE performance/frame-floor presentation-gap-max=7799583ns
+SUITE window-manager CASE performance/frame-floor FAIL ms=8976 msg=one client did not receive 60 completed composites per second
+SUITE window-manager VALUE performance/idle-cpu idle-cpu=0percent expect=0..2percent
+SUITE window-manager CASE performance/idle-cpu PASS ms=13321
+SUITE window-manager VALUE performance/latency-under-animation latency-median=16004us expect=0..33000us
+SUITE window-manager VALUE performance/latency-under-animation latency-max=33247us expect=0..100000us
+SUITE window-manager CASE performance/latency-under-animation PASS ms=17278
+SUITE window-manager VALUE performance/clipboard-latency clipboard-max=6666us expect=0..50000us
+SUITE window-manager CASE performance/clipboard-latency PASS ms=5090
+SUITE window-manager DONE passed=67 failed=14 skipped=0 total=81
+SUITE window-manager MEMORY after free=84625 heap_free_kb=38347 user_stacks=15 user_pages=602 page_tables=11 page_cache=0 kernel_stacks=0 buffers=4218 other=130 receipts=0 settle_ms=201
+SUITE window-manager MEMORY reclaimed=PASS free_before=84635 free_after=84625 allowance=48
+SUITE_SEQUENCE READY window-manager

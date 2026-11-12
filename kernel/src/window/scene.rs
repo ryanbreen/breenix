@@ -428,6 +428,8 @@ impl Drop for Admission {
         if self.serial != 0 {
             reg.present.request_full();
         }
+        drop(reg);
+        super::events::completed();
     }
 }
 
@@ -553,6 +555,7 @@ pub fn submit(caller: &Caller, a: &mut Composite, out: u64) -> Result<u64, i32> 
                 Ok(pin) => Some(pin),
                 Err(_) => {
                     REGISTRY.lock().present.busy = false;
+                    super::events::completed();
                     return Err(ENOMEM);
                 }
             },

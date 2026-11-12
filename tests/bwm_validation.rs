@@ -45,6 +45,10 @@ fn ready_input_or_scene_defers_work_and_idle_takes_one_check() {
     let (scene, clients) = queue.next_if_idle(|_| true, || { polls += 1; true }).unwrap();
     assert_eq!((*scene, clients), (42, vec![1, 2]));
     assert_eq!(polls, 1);
+    queue.retry(&[1, 2]);
+    assert!(queue.pending(1) && queue.pending(2), "interrupted comparisons must remain pending");
+    let (scene, clients) = queue.next_if_idle(|_| true, || true).unwrap();
+    assert_eq!((*scene, clients), (42, vec![1, 2]), "a quiet retry does not require another presentation");
     // One successful full-scene comparison serves both clients.
     queue.complete(1);
     queue.complete(2);

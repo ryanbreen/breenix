@@ -1112,6 +1112,12 @@ impl Process {
         self.retirement_receipts = self.retirement_receipts.saturating_add(1);
     }
 
+    /// Resources still owed by this row, including receipts a drain has removed
+    /// from its queue but has not finished reclaiming.
+    pub(crate) fn outstanding_retirement_receipts(&self) -> u32 {
+        self.retirement_receipts
+    }
+
     /// Settle one outstanding retirement receipt for this row, latching
     /// `retired` when the last one is gone.
     ///
@@ -1124,20 +1130,22 @@ impl Process {
     /// then latches, so the fail-closed property holds only while every producer
     /// of a receipt counts one. In production it does: `defer_process_resources`
     /// is the sole producer, it holds `&mut Process` and calls
-    /// `note_receipt_created`, and the aarch64 `defer_live_process_resources`
+    /// `note_receipt_created`, and the aarch64 `defer_remaining_tables`
     /// route goes through it. `boot_test_reclaim` builds reclaims directly and
     /// is deliberately uncounted, which is safe only because every row it names
     /// is removed by the unconditional destructor rather than by the join. What
     /// guards the gap is structural, exactly as condition C4 asks: the
     /// `RECLAIM_ENQUEUE_CALLS` census makes any new receipt producer a `+` row
     /// rather than a silent early removal.
+    /// claim-lint:ok: this existing receipt contract is exercised for the
+    /// ARM exit branch by tests/arm_exit_deferral_test.py (1 receipt, 0 on repeat).
     pub(crate) fn settle_retirement_receipt(&mut self) -> bool {
         self.retirement_receipts = self.retirement_receipts.saturating_sub(1);
         self.latch_retired_if_settled()
     }
 
     /// Record that this row's resources ended without ever producing a receipt
-    /// (P6a condition **C2**: the aarch64 synchronous-release arm and the
+    /// (P6a condition **C2**: the no-tables and
     /// `already_terminated` exit arms). The latch is still refused while a
     /// receipt from an earlier exit of the same row is outstanding.
     pub(crate) fn note_resources_absent(&mut self) {

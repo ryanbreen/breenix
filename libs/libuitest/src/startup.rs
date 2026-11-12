@@ -78,8 +78,16 @@ pub fn now() -> u64 { libbreenix::time::now_monotonic().map_or(0, |t| t.as_nanos
 /// Process-local handle; no path lookup or allocation at subsequent stamps.
 fn configured_trace() -> Option<&'static Trace> {
     static TRACE: OnceLock<Option<Trace>> = OnceLock::new();
-    TRACE.get_or_init(|| std::env::var_os("BREENIX_CONFIG_ROOT")
-        .and_then(|root| Trace::open(Path::new(&root)).ok())).as_ref()
+    TRACE.get_or_init(|| {
+        if let Some(root) = std::env::var_os("BREENIX_CONFIG_ROOT") {
+            return Trace::open(Path::new(&root)).ok();
+        }
+        let root = std::env::var_os("BREENIX_STARTUP_TRACE_DIR")?;
+        let pid = libbreenix::process::getpid().ok()?.raw();
+        let path = Path::new(&root).join(pid.to_string());
+        std::fs::create_dir_all(&path).ok()?;
+        Trace::create(&path).ok()
+    }).as_ref()
 }
 pub fn mark(name: &str) {
     if let Some(trace) = configured_trace() { trace.mark(name); }

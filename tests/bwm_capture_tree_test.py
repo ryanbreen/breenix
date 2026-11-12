@@ -20,6 +20,10 @@ class CaptureTree(unittest.TestCase):
         self.old_check_area(subject,layers,pointer,area).map(|n|(n,None))
     }
 '''
+        workspace = ''
+        if 'fn check_area_with(' in source:
+            workspace = '#[derive(Default)]' + item(source, 'struct CheckWorkspace {') + '\n' + item(source, 'fn resize_readback(') + '\n' + item(source, 'fn client_buffer(')
+            check += '\n' + item(source, 'fn check_area_with(') + '\n' + item(source, 'fn check_area_into(')
         run_rust(self, r'''
 use std::sync::Mutex;
 static CALLS:Mutex<Vec<[u32;4]>>=Mutex::new(Vec::new());
@@ -56,9 +60,10 @@ const CURSOR_WHITE:u32=0xffffffff;const CURSOR_BLACK:u32=0xff000000;
 fn pointer_bitmap(_:u32)->&'static[&'static[u8]]{&[b"#o",b"o#"]}
 fn hotspot(_:u32)->(i32,i32){HOTSPOTS.fetch_add(1,std::sync::atomic::Ordering::Relaxed);(0,0)}
 fn intersect(a:[i32;4],b:[i32;4])->Option<[i32;4]>{let r=[a[0].max(b[0]),a[1].max(b[1]),a[2].min(b[2]),a[3].min(b[3])];(r[0]<r[2]&&r[1]<r[3]).then_some(r)}
+fn monotonic_ns()->u64{0}
 fn prefaulted_bytes(n:usize)->Vec<u8>{vec![0;n]}
 #[derive(Debug)]enum CheckError{Failed(String),Moved(String)}
-struct Compositor{sampled:Vec<Sample>,check_first:u64,desktop:Desktop,scale:i32,appbar_top:i32}
+struct Compositor{sampled:Vec<Sample>,check_first:u64,check_workspace:CheckWorkspace,desktop:Desktop,scale:i32,appbar_top:i32}
 impl Compositor {
  fn sampled_content(&self,l:&Layer)->Option<[i32;4]>{Some(if l.window_id==7 {[0,0,2,2]} else {[2,0,4,2]})}
  @EXPECTED@
@@ -68,7 +73,7 @@ impl Compositor {
  let _ = libbreenix::error::Error::Os(libbreenix::errno::Errno::EINVAL);
  let _ = wabi::limits::MAX_TREE_KIB;
  let describe = |e:CheckError| match e {CheckError::Failed(s)|CheckError::Moved(s)=>s};
- let mut c=Compositor{sampled:vec![Sample{id:7,width:2,height:2,commit_id:42},Sample{id:8,width:2,height:2,commit_id:42}],check_first:0,desktop:Desktop,scale:1,appbar_top:2};
+ let mut c=Compositor{sampled:vec![Sample{id:7,width:2,height:2,commit_id:42},Sample{id:8,width:2,height:2,commit_id:42}],check_first:0,check_workspace:CheckWorkspace::default(),desktop:Desktop,scale:1,appbar_top:2};
  let layers=[Layer{window_id:7,frame:[[0;4];3],frame_len:0},Layer{window_id:8,frame:[[0;4];3],frame_len:0}];
  let (count,tree)=c.check_area(7,&layers,None,[0,0,4,2],true).unwrap_or_else(|e|panic!("{}",describe(e)));
  assert_eq!(count,8);
@@ -79,5 +84,5 @@ impl Compositor {
  let (_,tree)=c.check_area(7,&layers,None,[0,0,4,2],false).unwrap_or_else(|e|panic!("{}",describe(e)));
  assert!(tree.is_none());assert_eq!(*CAPTURES.lock().unwrap(),vec![(7,0),(8,0)]);
 }
-'''.replace('CONSTANTS',constants+'\n'+(item(source,'fn equal_row(') if 'fn equal_row(' in source else '')).replace('@CHECK@',check).replace('@EXPECTED@',item(source,'fn expected(')))
+'''.replace('CONSTANTS',constants+'\n'+workspace+'\n'+(item(source,'fn equal_row(') if 'fn equal_row(' in source else '')).replace('@CHECK@',check).replace('@EXPECTED@',item(source,'fn expected(')))
 if __name__=='__main__':unittest.main()

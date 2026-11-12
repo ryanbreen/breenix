@@ -13,12 +13,12 @@ class ArmRecordOrder(unittest.TestCase):
     def test_masked_fallback_keeps_queued_records_first(self):
         source = (ROOT / 'kernel/src/serial_line.rs').read_text()
         ring = source[source.index('struct TxRing {'):source.index('/// Held only around copies')]
-        names = ['fn emit<', 'fn with_ring<', 'fn queue_terminal(',
+        names = ['fn terminal_kind(', 'fn emit<', 'fn with_ring<', 'fn queue_terminal(',
                  'fn send_queued(', 'fn send_queued_owned(', 'fn write_queued(']
         functions = '\n'.join(function(source, name) for name in names)
         harness = r'''
 #![allow(dead_code)] // Unused hardware branches of the extracted production functions.
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, AtomicUsize, Ordering};
 struct Lock<T>(std::sync::Mutex<T>);
 impl<T> Lock<T> {
     const fn new(value: T) -> Self { Self(std::sync::Mutex::new(value)) }
@@ -35,10 +35,11 @@ static TX_STATE: AtomicU8 = AtomicU8::new(TX_RUNNING);
 static TX_STOPPED: AtomicBool = AtomicBool::new(false);
 static WIRE: Lock<Vec<u8>> = Lock::new(Vec::new());
 #[derive(Clone, Copy, PartialEq)] enum Writer { Kernel, Tty }
-enum Kind { Plain }
+enum Kind { Plain, Line }
 mod log { pub enum Level { Info } }
+static ORDERED: AtomicUsize = AtomicUsize::new(0);
 struct Ownership;
-impl Ownership { fn acquire() -> Self { Self } }
+impl Ownership { fn acquire() -> Self { Self } fn acquire_ordered() -> Self { ORDERED.fetch_add(1, Ordering::Relaxed); Self } }
 struct Uart;
 impl Uart {
     fn mask_interrupts() -> u64 { 0 }
@@ -57,23 +58,35 @@ mod per_cpu {
     pub fn in_interrupt() -> bool { false }
 }
 mod task { pub mod scheduler { pub fn wake_thread_any_context(_: u64) {} } }
-fn in_thread_context() -> bool { false } // A terminal producer holding its IRQ mask.
+static THREAD: AtomicBool = AtomicBool::new(false);
+fn in_thread_context() -> bool { THREAD.load(Ordering::Relaxed) }
 fn write_notices_from_thread() {}
 RING
 FUNCTIONS
 fn scenario(full: bool) {
     WIRE.lock().clear();
+    ORDERED.store(0, Ordering::Relaxed);
     let old = [b'a'; 1000];
     let copies = if full { 8 } else { 1 };
     for _ in 0..copies { assert!(queue_terminal(&old)); }
     let new = vec![b'b'; if full { 1000 } else { 2049 }];
     emit::<false, true>(Writer::Tty, &new, log::Level::Info, true);
+    assert_eq!(ORDERED.load(Ordering::Relaxed), 1, "normal terminal output can revoke a stalled record");
     let wire = WIRE.lock();
     let mut expected = old.repeat(copies);
     expected.extend_from_slice(&new);
     assert_eq!(*wire, expected, "masked terminal fallback overtook older records");
 }
-fn main() { scenario(false); scenario(true); }
+fn main() {
+ scenario(false); scenario(true);
+ THREAD.store(true, Ordering::Relaxed);
+ for attributed in [true,false] {
+  ORDERED.store(0, Ordering::Relaxed);WIRE.lock().clear();
+  emit::<true,false>(Writer::Kernel,b"exit\n",log::Level::Info,attributed);
+  assert_eq!(ORDERED.load(Ordering::Relaxed), usize::from(attributed), "normal logs wait; emergency output may take over");
+  assert_eq!(*WIRE.lock(), b"exit\n");
+ }
+}
 '''.replace('RING', ring).replace('FUNCTIONS', functions)
         with tempfile.TemporaryDirectory(prefix='serial-arm-order-') as temporary:
             path = Path(temporary)

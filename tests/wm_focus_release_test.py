@@ -15,6 +15,8 @@ prelude=r'''
 use std::sync::Mutex;
 use breengel_abi::{self as abi, event_kind as kind, WindowEvent, Plain};
 type CaseResult=Result<(),String>;
+fn now()->u64 {STATE.lock().unwrap().now*1_000_000}
+fn elapsed(_: &str, _:u64, _:u64){}
 fn check(b:bool, s:&str)->CaseResult { if b {Ok(())} else {Err(s.into())} }
 struct State { now:u64, focus_release:u64, packet:usize, pending:Vec<(u64,WindowEvent)>, history:Vec<WindowEvent>, delivered:Vec<u64> }
 static STATE:Mutex<State>=Mutex::new(State { now:0,focus_release:0,packet:0,pending:Vec::new(),history:Vec::new(),delivered:Vec::new() });
