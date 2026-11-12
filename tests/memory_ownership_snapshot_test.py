@@ -7,15 +7,16 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class Ownership(unittest.TestCase):
-    def test_sample_captures_before_allocating_reads_and_exports_both_on_failure(self):
+    def test_sample_captures_before_allocating_reads_and_exports_both_outcomes(self):
         sample = (ROOT / 'libs/libbreenix/src/suite_memory.rs').read_text()
         read = sample.split('fn read()')[1].split('fn release_allocation_cache')[0]
         self.assertIn('Ownership::capture()', read)
         self.assertLess(read.index('Ownership::capture()'), read.index('std::fs::read_to_string'))
         suite = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
-        failure = suite.split('if !reclaimed {')[1].split('reclaimed\n')[0]
-        self.assertIn('sample.ownership_detail()', failure)
-        self.assertIn('[("before", before.as_ref()), ("after", after.as_ref())]', failure)
+        verdict = suite.split('let (line, reclaimed) = memory_record::verdict')[1].split('reclaimed\n')[0]
+        export = verdict.index('sample.ownership_detail()')
+        self.assertLess(export, verdict.index('if !reclaimed {'))
+        self.assertIn('[("before", before.as_ref()), ("after", after.as_ref())]', verdict[:export])
 
     def test_production_walk_retains_empty_tables_ranges_and_overflow_without_allocating(self):
         path = ROOT / 'kernel/src/memory/ownership_snapshot.rs'
