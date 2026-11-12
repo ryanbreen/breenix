@@ -63,6 +63,7 @@ mod window {
     pub fn read_meta(_:u64)->Result<(u64,Meta),String>{Ok((1,Meta{processed_serial:1}))}
     pub struct Capture {pub commit_id:u64}
     pub fn capture(_:u64,_:&mut [u8],_:Option<&mut [u8]>)->Result<Capture,String>{Ok(Capture{commit_id:1})}
+    pub fn capture_tree(_:u64,_:&mut [u8])->Result<Capture,String>{Ok(Capture{commit_id:1})}
 }
 mod messages {pub fn input(_: &str,_:u64,_:&str,_:&str)->String{"error".into()}}
 mod input {pub mod kind {pub const SYN:u16=0;}}
@@ -96,6 +97,53 @@ fn info(&self,_:u64)->Result<Info,String>{Ok(Info{width:1,height:1})}
     let rows=scope.report("suite","case");
     assert!(rows.iter().any(|r|r.contains("wait=InputDelivery started=4 completed=4")),"{rows:?}");
     assert!(rows.iter().any(|r|r.contains("wait=TreeCapture started=1 completed=1")),"{rows:?}");
+}
+""")
+
+    def test_tree_capture_avoids_pixels_but_frame_capture_keeps_them(self):
+        pointer = 'libs/libuitest/src/pointer_live.rs'
+        api = 'libs/libbreenix/src/window.rs'
+        api_text = (ROOT / api).read_text()
+        # Before the wrapper exists, provide only its stub so the old production
+        # pointer body can demonstrate the unwanted pixel request at runtime.
+        tree_wrapper = (function(api, 'capture_tree') if 'fn capture_tree(' in api_text else
+                        'pub fn capture_tree(id:u64,tree:&mut [u8])->Result<abi::Capture,Error>{let mut c=abi::Capture::ZERO;c.id=id;c.tree_dst=tree.as_mut_ptr() as u64;c.tree_len=tree.len() as u64;call(op::CAPTURE_TREE,&mut c)?;Ok(c)}')
+        self.execute(r"""
+#![allow(dead_code, unused_imports)]
+use std::sync::Mutex;
+static REQUESTS:Mutex<Vec<(u32,u64,u64,u64,u64)>>=Mutex::new(Vec::new());
+#[derive(Debug,Clone,Copy)] struct Error;
+impl std::fmt::Display for Error {fn fmt(&self,f:&mut std::fmt::Formatter<'_>)->std::fmt::Result{write!(f,"error")}}
+mod abi {
+    pub mod limits {pub const MAX_TREE_KIB:u32=1;}
+    #[derive(Clone,Copy)] pub struct Capture {pub id:u64,pub dst:u64,pub dst_len:u64,pub tree_dst:u64,pub tree_len:u64,pub commit_id:u64,pub width:u32,pub height:u32}
+    impl Capture {pub const ZERO:Self=Self{id:0,dst:0,dst_len:0,tree_dst:0,tree_len:0,commit_id:0,width:0,height:0};}
+}
+mod op {pub const CAPTURE:u32=1;pub const CAPTURE_TREE:u32=34;}
+mod window {
+    use super::{abi,op,Error,REQUESTS};
+    fn call(op:u32,c:&mut abi::Capture)->Result<u64,Error>{
+        REQUESTS.lock().unwrap().push((op,c.id,c.dst,c.dst_len,c.tree_len));
+        assert_ne!(c.tree_dst,0); c.commit_id=42;c.width=7;c.height=5;Ok(0)
+    }
+""" + function(api, 'capture') + tree_wrapper + r"""
+}
+struct Tree;impl Tree {fn parse(bytes:&[u8])->Result<Self,String>{assert_eq!(bytes.len(),1024);Ok(Self)}}
+enum Wait {TreeCapture} struct Watchdog;impl Watchdog {fn new(_:Wait)->Result<Self,String>{Ok(Self)}}
+struct Info {width:u32,height:u32} struct Live;
+impl Live {fn info(&self,_:u64)->Result<Info,String>{Ok(Info{width:7,height:5})}
+""" + function(pointer, 'capture') + r"""
+}
+#[derive(Default)] pub struct Record {check:String,window:u64,commit:u64,width:u32,height:u32}
+pub struct Arena;impl Arena {fn write_frame_tree(&mut self,f:impl FnOnce(&mut [u8],&mut [u8])->Result<(Record,usize),String>)->Result<Record,String>{let mut p=vec![0;7*5*4];let mut t=vec![0;1024];let (r,n)=f(&mut p,&mut t)?;assert_eq!(n,140);Ok(r)}}
+#[derive(Debug)] pub struct WindowError {syscall:Option<Error>,detail:String}
+""" + function('libs/libuitest/src/capture.rs', 'byte_len') + function('libs/libuitest/src/capture.rs', 'window_result').replace('libbreenix::error::Error','Error') + r"""
+#[test] fn requests() {
+    let (_,commit)=Live.capture(9).unwrap();assert_eq!(commit,42);
+    let record=window_result(&mut Arena,"frame",9).unwrap();assert_eq!(record.commit,42);
+    let requests=REQUESTS.lock().unwrap();
+    assert_eq!(requests[0],(op::CAPTURE_TREE,9,0,0,1024),"tree capture must request no pixels and carry its tree buffer");
+    assert_eq!(requests[1].0,op::CAPTURE);assert_eq!(requests[1].1,9);assert_ne!(requests[1].2,0);assert_eq!(requests[1].3,7*5*4);assert_eq!(requests[1].4,1024);
 }
 """)
 
