@@ -11,13 +11,17 @@ STUBS = r'''
 #![allow(dead_code)]
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 static PID: AtomicU64 = AtomicU64::new(40);
+static EXECS: AtomicUsize = AtomicUsize::new(0);
+static CALLS: std::sync::Mutex<Vec<(String, Vec<String>)>> = std::sync::Mutex::new(Vec::new());
+static ARMS: AtomicUsize = AtomicUsize::new(0);
+static OUTPUT: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new());
 static SWEEPS: AtomicUsize = AtomicUsize::new(0);
 mod types { #[derive(Clone, Copy)] pub struct Fd; impl Fd {
     pub const STDOUT: Self = Self;
     pub fn from_raw(_: u64) -> Self { Self }
 } }
 mod io {
-    pub fn write(_: crate::types::Fd, b: &[u8]) -> Result<usize, ()> { Ok(b.len()) }
+    pub fn write(_: crate::types::Fd, b: &[u8]) -> Result<usize, ()> { crate::OUTPUT.lock().unwrap().extend_from_slice(b); Ok(b.len()) }
     pub fn close(_: crate::types::Fd) -> Result<(), ()> { Ok(()) }
 }
 mod process {
@@ -26,7 +30,16 @@ mod process {
     pub fn getpid() -> Result<Pid, ()> { Ok(Pid(crate::PID.load(crate::Ordering::Relaxed))) }
     pub fn waitpid(_: i32, _: &mut i32, _: u32) -> Result<Pid, ()> { Err(()) }
     pub fn yield_now() -> Result<(), ()> { Ok(()) }
-    pub fn execv(_: &[u8], _: *const *const u8) -> Result<(), ()> { Err(()) }
+    pub fn execv(path: &[u8], argv: *const *const u8) -> Result<(), ()> {
+        crate::EXECS.fetch_add(1, crate::Ordering::Relaxed);
+        let path = std::ffi::CStr::from_bytes_with_nul(path).unwrap().to_str().unwrap().to_owned();
+        let mut args = Vec::new();
+        unsafe { let mut p = argv; while !(*p).is_null() {
+            args.push(std::ffi::CStr::from_ptr(*p as *const i8).to_str().unwrap().to_owned()); p = p.add(1);
+        } }
+        crate::CALLS.lock().unwrap().push((path, args)); Err(())
+    }
+    pub fn exit(code: i32) -> ! { use std::io::Write; std::io::stdout().write_all(&crate::OUTPUT.lock().unwrap()).unwrap(); std::process::exit(code) }
 }
 mod signal {
     pub const ITIMER_REAL: i32 = 0;
@@ -44,6 +57,7 @@ mod signal {
         assert_ne!(pid, -1, "scoped sequence would kill non-descendants"); Ok(())
     }
     pub fn setitimer(_: i32, t: &Itimerval, _: Option<&mut Itimerval>) -> Result<(), ()> {
+        crate::ARMS.fetch_add(1, crate::Ordering::Relaxed);
         let _ = t.it_interval.tv_sec + t.it_interval.tv_usec + t.it_value.tv_sec + t.it_value.tv_usec; Ok(())
     }
 }
@@ -53,7 +67,7 @@ mod time {
     pub fn sleep_ms(_: u64) -> Result<(), ()> { Ok(()) }
 }
 mod harness {
-    pub fn hostkey_method() -> Option<&'static str> { None }
+    pub fn hostkey_method() -> Option<&'static str> { if std::env::var_os("TEST_HOSTKEYS").is_some() { Some("fixture") } else { None } }
     pub mod descendants {
         pub fn sweep_descendants() -> Option<&'static str> {
             crate::SWEEPS.fetch_add(1, crate::Ordering::Relaxed); None
@@ -62,6 +76,51 @@ mod harness {
     pub mod sequence {
 '''
 CHECKS = r'''
+        #[test] fn handoff_routes() {
+            let root = std::path::PathBuf::from(std::env::var_os("TEST_SEQUENCE_DIR").unwrap());
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_DIR", &root);
+            let ids = vec!["console".into(), "gui-apps".into(), "files-io".into()];
+            configure(&ids, 0);
+            hand_off();
+            let suite = |id: &str| root.join(format!("suite-{id}")).to_str().unwrap().to_owned();
+            let mut gui = vec![suite("gui-apps")];
+            let mut files = vec![suite("files-io")];
+            let desktop = std::env::var_os("TEST_DESKTOP").is_some();
+            let gui_path = if desktop {
+                gui = vec!["/sbin/init".into(), "sequence".into(), suite("gui-apps")];
+                "/sbin/init".to_owned()
+            } else { suite("gui-apps") };
+            if std::env::var_os("TEST_HOSTKEYS").is_some() {
+                gui.extend(["--hostkeys".into(), "fixture".into()]);
+                files.extend(["--hostkeys".into(), "fixture".into()]);
+            }
+            assert_eq!(*crate::CALLS.lock().unwrap(), vec![(gui_path, gui), (suite("files-io"), files)]);
+        }
+        #[test] fn member_prepare_and_finish() {
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_MEMBER", "1");
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_DIR", std::env::temp_dir().join("missing-sequence-role"));
+            let ids = vec!["before".into(), "gui-apps".into(), "after".into()];
+            prepare(&ids, 1, 7);
+            assert!(crate::ARMS.load(crate::Ordering::Relaxed) > 0, "member watchdog was not armed");
+            assert!(crate::OUTPUT.lock().unwrap().is_empty(), "member attempted owner reset");
+        }
+        #[test] fn member_finish() {
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_MEMBER", "1");
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_DIR", std::env::temp_dir().join("missing-sequence-role"));
+            let ids = vec!["before".into(), "gui-apps".into(), "after".into()];
+            prepare(&ids, 1, 7);
+            finish();
+            assert_eq!(crate::EXECS.load(crate::Ordering::Relaxed), 0, "member tried to exec the next suite");
+        }
+        #[test] fn member_alarm_exits() {
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_MEMBER", "1");
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_DIR", std::env::temp_dir().join("missing-sequence-role"));
+            let ids = vec!["before".into(), "gui-apps".into(), "after".into()];
+            prepare(&ids, 1, 7);
+            STALL_AT_NS.store(0, Ordering::Relaxed);
+            on_alarm(14);
+            panic!("member ignored its alarm");
+        }
         #[test] fn private_list_and_baseline() {
             let root = std::env::temp_dir().join(format!("sequence-role-{}", std::process::id()));
             std::fs::create_dir(&root).unwrap();
@@ -93,9 +152,10 @@ class SequenceRoles(unittest.TestCase):
         from suite_runner_roles_test import item
         source = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
         run = item(source, 'pub fn run_with_finalizer(')
-        completion = run[run.index('        finalize();'):run.index('        feed.finish(')]
+        completion = run[run.index('        if scoped {', run.index('        feed.finish(')):run.index('        // A one-case boot')]
         setup = item(source, 'fn start_scoped_runner(')
-        harness = r'''use std::sync::{Mutex, atomic::{AtomicI32, Ordering}};
+        harness = r'''#![allow(dead_code, unused_variables)]
+use std::sync::{Mutex, atomic::{AtomicI32, Ordering}};
 static TRANSCRIPT_FD: AtomicI32 = AtomicI32::new(1);
 static FLAGS: AtomicI32 = AtomicI32::new(1);
 static EVENTS: Mutex<Vec<String>> = Mutex::new(Vec::new());
@@ -114,7 +174,7 @@ mod process {
     pub fn set_child_subreaper(value:bool)->Result<(),String> {assert!(value);Ok(())}
     pub fn exit(code:i32)->! {panic!("exit:{code}")}
 }
-mod sequence { pub fn finish() { super::EVENTS.lock().unwrap().push("finish".into()); } }
+mod sequence { pub fn finish() { super::EVENTS.lock().unwrap().push("finish".into()); } pub fn is_member() -> bool { std::env::var_os("BREENIX_SUITE_SEQUENCE_MEMBER").is_some() } }
 fn emit(line:&str) {EVENTS.lock().unwrap().push(line.into());}
 struct Counts { failed:usize }
 struct Suite { id:&'static str }
@@ -123,6 +183,7 @@ impl Suite { fn complete(&self) {
     let place=Some(());
     let _ = (&place,self.id,emit as fn(&str),sequence::finish as fn()); // Inputs also exist in the old early-exit branch.
     let finalize=|| EVENTS.lock().unwrap().push("finalize".into());
+finalize();
 ''' + completion + r'''
 } }
 ''' + setup + r'''
@@ -130,6 +191,14 @@ impl Suite { fn complete(&self) {
     let result=std::panic::catch_unwind(|| Suite{id:"runner-fixture"}.complete());
     assert!(result.is_err());
     assert_eq!(*EVENTS.lock().unwrap(), ["finalize","SUITE_SEQUENCE READY runner-fixture","finish"]);
+}
+#[test] fn member_completion_has_no_ready_or_handoff() {
+    EVENTS.lock().unwrap().clear();
+    std::env::set_var("BREENIX_SUITE_SEQUENCE_MEMBER", "1");
+    let result=std::panic::catch_unwind(|| Suite{id:"gui-apps"}.complete());
+    std::env::remove_var("BREENIX_SUITE_SEQUENCE_MEMBER");
+    assert!(result.is_err());
+    assert_eq!(*EVENTS.lock().unwrap(), ["finalize"]);
 }
 #[test] fn stdout_survives_exec_private_transcript_does_not() {
     std::env::set_var("BREENIX_SUITE_TRANSCRIPT_FD","1");
@@ -146,6 +215,77 @@ impl Suite { fn complete(&self) {
             result = subprocess.run([str(binary), '--test-threads=1'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_desktop_share_table_is_scoped_to_its_entry(self):
+        source = (ROOT / 'libs/libbreenix/src/suite_sequence.rs').read_text()
+        source = '\n'.join(line for line in source.splitlines() if not line.startswith('//!'))
+        # Redirect only the root walk; paths and reset are the production implementation.
+        source = source.replace('record_baseline("/")', 'record_baseline(std::env::var("TEST_SEQUENCE_DIR").unwrap().as_str())')
+        if 'pub fn activate_desktop_shares(' not in source:
+            source += '\npub fn activate_desktop_shares() -> Result<(), String> { Err("activation absent".into()) }\n'
+        checks = r'''
+        #[test] fn desktop_table_lifetime() {
+            use std::os::unix::fs::PermissionsExt;
+            let root = std::path::PathBuf::from(std::env::var_os("TEST_SEQUENCE_DIR").unwrap());
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_DIR", &root);
+            let table = root.join("shares");
+            let contents = b"//fixture/rw /mnt/gui smb fixture\n";
+            std::fs::write(&table, contents).unwrap();
+            std::fs::set_permissions(&table, std::fs::Permissions::from_mode(0o640)).unwrap();
+            std::fs::write(root.join("desktop-suite"), "gui-apps\n").unwrap();
+            prepare_owner(&["network-shares".into(), "gui-apps".into(), "window-manager".into()], 0);
+            assert!(!table.exists(), "desktop configuration collides with network suite's create_new table");
+            // Network-shares can own the normal path exclusively before GUI startup.
+            let owned = std::fs::OpenOptions::new().write(true).create_new(true).open(&table).unwrap();
+            drop(owned);
+            std::fs::remove_file(&table).unwrap();
+            activate_desktop_shares().unwrap();
+            assert_eq!(std::fs::read(&table).unwrap(), contents);
+            assert_eq!(std::fs::metadata(&table).unwrap().mode() & 0o777, 0o640);
+            let result = reset(root.to_str().unwrap()).unwrap();
+            assert!(result.changed.is_empty(), "{:?}", result.changed);
+            assert!(!table.exists(), "active GUI configuration survived RESET");
+            // A later desktop entry can activate the identical parked table again.
+            activate_desktop_shares().unwrap();
+            assert_eq!(std::fs::read(&table).unwrap(), contents);
+        }
+    }
+}
+'''
+        with tempfile.TemporaryDirectory() as scratch:
+            path, binary = Path(scratch) / 'table.rs', Path(scratch) / 'table'
+            path.write_text(STUBS + source + checks)
+            subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings', '--test', str(path), '-o', str(binary)], check=True)
+            import os
+            result = subprocess.run([str(binary), '--exact', 'harness::sequence::desktop_table_lifetime'], env=dict(os.environ, TEST_SEQUENCE_DIR=scratch), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_init_owner_preserves_hostkey_arguments(self):
+        source = (ROOT / 'libs/libbreenix/src/suite_sequence.rs').read_text()
+        source = '\n'.join(line for line in source.splitlines() if not line.startswith('//!'))
+        checks = r'''
+        pub fn owner_handoff() {
+            let root = std::path::PathBuf::from(std::env::var_os("TEST_SEQUENCE_DIR").unwrap());
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_DIR", &root);
+            assert!(super::hostkey_method().is_none(), "init has not run the suite parser");
+            configure(&["gui-apps".into(), "console".into()], 0);
+            hand_off();
+            let calls = crate::CALLS.lock().unwrap();
+            assert_eq!(&calls[0].1[1..], ["--hostkeys", "fixture"]);
+        }
+    }
+}
+fn main() { harness::sequence::owner_handoff(); }
+'''
+        with tempfile.TemporaryDirectory() as scratch:
+            path, binary = Path(scratch) / 'owner.rs', Path(scratch) / 'owner'
+            path.write_text(STUBS + source + checks)
+            subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings', str(path), '-o', str(binary)], check=True)
+            import os
+            env = dict(os.environ, TEST_SEQUENCE_DIR=scratch)
+            env.pop('TEST_HOSTKEYS', None)
+            result = subprocess.run([str(binary), 'suite', '/sbin/suite-gui-apps', '--hostkeys', 'fixture'], env=env, capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_production_sequence_roles(self):
         source = (ROOT / 'libs/libbreenix/src/suite_sequence.rs').read_text()
         # Comments use inner module docs; the actual implementation is unmodified.
@@ -158,9 +298,27 @@ impl Suite { fn complete(&self) {
             self.assertEqual(result.returncode, 0, result.stderr)
             # The host invokes read/load and reap entry points, without calling prepare or walking /.
             for name in ['private_list_and_baseline', 'pid_one_ignores_the_private_directory',
-                         'sequence_reap_uses_the_descendant_sweep']:
+                         'sequence_reap_uses_the_descendant_sweep', 'member_prepare_and_finish', 'member_finish']:
                 result = subprocess.run([str(binary), '--exact', f'harness::sequence::{name}'], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            import os
+            for desktop in (False, True):
+                for hostkeys in (False, True):
+                    directory = Path(scratch) / f"route-{desktop}-{hostkeys}"
+                    directory.mkdir()
+                    if desktop:
+                        (directory / 'desktop-suite').write_text('gui-apps\n')
+                    env = os.environ.copy()
+                    env['TEST_SEQUENCE_DIR'] = str(directory)
+                    if desktop: env['TEST_DESKTOP'] = '1'
+                    if hostkeys: env['TEST_HOSTKEYS'] = '1'
+                    result = subprocess.run([str(binary), '--exact', 'harness::sequence::handoff_routes'], capture_output=True, text=True, env=env)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            result = subprocess.run([str(binary), '--exact', 'harness::sequence::member_alarm_exits'], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+            self.assertIn('SUITE_SEQUENCE STALLED gui-apps cases=0/7', result.stdout)
 
 if __name__ == '__main__':
     unittest.main()

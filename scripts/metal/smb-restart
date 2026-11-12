@@ -17,6 +17,8 @@ REQUEST = re.compile(r'SUITE network-shares SMBRESTART smb/server-restart seq=([
 DONE = re.compile(r'SUITE network-shares DONE passed=\d+ failed=\d+ skipped=\d+ total=\d+\r?')
 GUI_REQUEST = re.compile(r'SUITE gui-apps SMB(STOP|START) guskit/smb-share-gone seq=([0-9]{1,20})\r?')
 GUI_DONE = re.compile(r'SUITE gui-apps DONE\b.*\r?')
+START = re.compile(r'SUITE (network-shares|gui-apps) START\b.*\r?')
+BEGIN = re.compile(r'SUITE_SEQUENCE BEGIN suites=([^ ]+) .*\r?')
 
 
 def prepare(boot, remote, incus, instance, minutes=240):
@@ -45,7 +47,10 @@ def watch(boot, instance, remote, incus, minutes=45):
     records = dict(boot=boot, requests=[])
     answered, offset, pending = set(), 0, b''
     stopped = False
-    deadline = time.monotonic() + minutes * 60
+    remaining = None
+    # The boot driver owns the pre-suite lifetime (build, earlier suites and
+    # its own ceiling). Bound this helper's active work from suite START.
+    deadline = None
 
     def save():
         result = remote('tee', directory + '/smb-restart.json', stdin=None,
@@ -60,7 +65,7 @@ def watch(boot, instance, remote, incus, minutes=45):
             return -1
 
     try:
-        while time.monotonic() < deadline:
+        while deadline is None or time.monotonic() < deadline:
             chunk = remote('tail', '-c', '+%d' % (offset + 1), directory + '/serial.txt',
                            capture_output=True, timeout=30)
             if chunk.returncode == 0:
@@ -69,16 +74,27 @@ def watch(boot, instance, remote, incus, minutes=45):
             *lines, pending = pending.split(b'\n')
             finished = False
             for line in (raw.decode('utf-8', errors='replace') for raw in lines):
+                begin = BEGIN.fullmatch(line)
+                if begin:
+                    remaining = set(begin.group(1).split(',')) & {'network-shares', 'gui-apps'}
+                if START.fullmatch(line):
+                    deadline = time.monotonic() + minutes * 60
                 if DONE.fullmatch(line) or GUI_DONE.fullmatch(line):
-                    finished = True
+                    if remaining is not None:
+                        remaining.discard('network-shares' if DONE.fullmatch(line) else 'gui-apps')
+                    finished = remaining is None or not remaining
+                    deadline = None
                 request = REQUEST.fullmatch(line)
                 gui = GUI_REQUEST.fullmatch(line)
                 if not request and not gui:
                     continue
+                if deadline is None:
+                    deadline = time.monotonic() + minutes * 60
                 seq = int(request.group(1) if request else gui.group(2))
-                if seq in answered:
+                key = ('network-shares' if request else 'gui-apps', seq)
+                if key in answered:
                     continue
-                answered.add(seq)
+                answered.add(key)
                 record = dict(case='smb/server-restart' if request else 'guskit/smb-share-gone', seq=seq, ok=False)
                 if gui:
                     record['action'] = gui.group(1).lower()

@@ -67,6 +67,8 @@ struct SequencePaths {
     list: std::path::PathBuf,
     baseline: std::path::PathBuf,
     executables: std::path::PathBuf,
+    shares: std::path::PathBuf,
+    desktop_shares: std::path::PathBuf,
 }
 
 fn sequence_paths() -> &'static SequencePaths {
@@ -78,11 +80,14 @@ fn sequence_paths() -> &'static SequencePaths {
                 return SequencePaths {
                     list: directory.join("suite-sequence"),
                     baseline: directory.join("suite-baseline"),
+                    shares: directory.join("shares"),
+                    desktop_shares: directory.join("desktop-shares"),
                     executables: directory,
                 };
             }
         }
-        SequencePaths { list: LIST.into(), baseline: BASELINE.into(), executables: "/sbin".into() }
+        SequencePaths { list: LIST.into(), baseline: BASELINE.into(), executables: "/sbin".into(),
+            shares: "/etc/shares".into(), desktop_shares: "/etc/breenix/desktop-shares".into() }
     })
 }
 
@@ -103,6 +108,8 @@ const REAP_MS: u64 = 2000;
 /// an orphan's FIN_WAIT2 each last 60 seconds.
 pub const TCP_DRAIN_MS: u64 = 70_000;
 
+static MEMBER: AtomicBool = AtomicBool::new(false);
+static RUNNER_PID: AtomicU64 = AtomicU64::new(0);
 /// Set once this suite is part of a sequence: cases' children then reset SIGALRM.
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 /// When the watchdog may end the suite, in monotonic nanoseconds.
@@ -110,10 +117,10 @@ static STALL_AT_NS: AtomicU64 = AtomicU64::new(0);
 /// Cases reported so far and the suite's total, for STALLED.
 static REPORTED: AtomicU32 = AtomicU32::new(0);
 static TOTAL: AtomicU32 = AtomicU32::new(0);
-/// This suite's id, and the suites after it as (id, NUL-terminated binary path).
+/// This suite's id and the prepared exec commands for suites after it.
 static ID: OnceLock<String> = OnceLock::new();
-static AFTER: OnceLock<Vec<(String, Vec<u8>)>> = OnceLock::new();
-static HOSTKEYS: OnceLock<Vec<u8>> = OnceLock::new();
+struct Command { id: String, path: Vec<u8>, args: Vec<Vec<u8>> }
+static AFTER: OnceLock<Vec<Command>> = OnceLock::new();
 /// The number of suites in the sequence.
 static COUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -126,29 +133,78 @@ pub fn read(id: &str) -> Option<(Vec<String>, usize)> {
     Some((ids, index))
 }
 
-/// Before the suite's START: record the baseline (the first suite) or put the root back
-/// to it (any later one), then arm the watchdog for a suite of `total` cases.
-pub fn prepare(ids: &[String], index: usize, total: usize) {
-    if let Some(method) = super::hostkey_method() {
-        let mut bytes = method.as_bytes().to_vec();
-        bytes.push(0);
-        let _ = HOSTKEYS.set(bytes);
-    }
+/// True for the runner explicitly marked by its PID 1 sequence owner.
+pub fn is_member() -> bool {
+    process::getpid().is_ok_and(|pid| pid.raw() != 1)
+        && std::env::var_os("BREENIX_SUITE_SEQUENCE_MEMBER").is_some_and(|value| value == "1")
+}
+
+fn configure(ids: &[String], index: usize) {
+    // Init owns desktop sequences without entering the suite argument parser.
+    let hostkeys = super::hostkey_method().map(String::from).or_else(|| {
+        let args: Vec<String> = std::env::args().skip(1).collect();
+        args.windows(2).find(|pair| pair[0] == "--hostkeys").map(|pair| pair[1].clone())
+    });
+    let desktop = std::fs::read_to_string(sequence_paths().list.with_file_name("desktop-suite")).ok();
     let _ = ID.set(ids[index].clone());
-    let _ = AFTER.set(ids[index + 1..].iter()
-        .map(|id| (id.clone(), std::format!("{}/suite-{id}\0", sequence_paths().executables.display()).into_bytes()))
-        .collect());
+    let _ = AFTER.set(ids[index + 1..].iter().map(|id| {
+        let suite = std::format!("{}/suite-{id}\0", sequence_paths().executables.display()).into_bytes();
+        let (path, mut args) = if desktop.as_deref().is_some_and(|name| name.trim_end() == id) {
+            let init = b"/sbin/init\0".to_vec();
+            (init.clone(), vec![init, b"sequence\0".to_vec(), suite])
+        } else {
+            (suite.clone(), vec![suite])
+        };
+        if let Some(method) = &hostkeys {
+            args.push(b"--hostkeys\0".to_vec());
+            let mut method = method.as_bytes().to_vec();
+            method.push(0);
+            args.push(method);
+        }
+        Command { id: id.clone(), path, args }
+    }).collect());
     COUNT.store(ids.len() as u32, Ordering::Relaxed);
-    TOTAL.store(total as u32, Ordering::Relaxed);
-    ACTIVE.store(true, Ordering::Relaxed);
-    let _ = signal::sigaction(SIGALRM, Some(&Sigaction::new(on_alarm)), None);
-    progress();
+}
+
+// A staged desktop table belongs to its entry, not to the other suites' baseline.
+fn park_desktop_shares() -> Result<(), String> {
+    let paths = sequence_paths();
+    if !std::fs::read_to_string(paths.list.with_file_name("desktop-suite"))
+        .is_ok_and(|id| id.trim_end() == "gui-apps") { return Ok(()); }
+    if paths.desktop_shares.exists() {
+        return Err("desktop shares parking path already exists".into());
+    }
+    match std::fs::rename(&paths.shares, &paths.desktop_shares) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(std::format!("park desktop shares: {e}")),
+    }
+}
+
+/// Activate the parked table after owner baseline/reset and before desktop services.
+/// RESET removes this entry's copy; the parked baseline remains available.
+pub fn activate_desktop_shares() -> Result<(), String> {
+    let paths = sequence_paths();
+    if !paths.desktop_shares.try_exists().map_err(|e| std::format!("desktop shares: {e}"))? {
+        return Ok(());
+    }
+    std::fs::copy(&paths.desktop_shares, &paths.shares).map(|_| ())
+        .map_err(|e| std::format!("activate desktop shares: {e}"))
+}
+
+/// Prepare the filesystem as the PID 1 owner, before starting services.
+pub fn prepare_owner(ids: &[String], index: usize) {
+    configure(ids, index);
     if index == 0 {
-        let entries = record_baseline();
+        if let Err(error) = park_desktop_shares() {
+            emit(&std::format!("SUITE_SEQUENCE RESET {} FAIL {error}", ids[index]));
+            return;
+        }
+        let entries = record_baseline("/");
         emit(&std::format!("SUITE_SEQUENCE BEGIN suites={} baseline={}{}", ids.join(","), entries, memory()));
         frames(&ids[index]);
     } else {
-        emit(&match reset() {
+        emit(&match reset("/") {
             Ok(reset) => {
                 // The wait is bounded below the watchdog's period, which restarts first.
                 progress();
@@ -158,6 +214,19 @@ pub fn prepare(ids: &[String], index: usize, total: usize) {
         });
         frames(&ids[index]);
     }
+}
+
+/// Arm the case watchdog and prepare the owner filesystem unless this is a member.
+pub fn prepare(ids: &[String], index: usize, total: usize) {
+    let member = is_member();
+    MEMBER.store(member, Ordering::Relaxed);
+    RUNNER_PID.store(process::getpid().map_or(0, |pid| pid.raw()), Ordering::Relaxed);
+    configure(ids, index);
+    TOTAL.store(total as u32, Ordering::Relaxed);
+    ACTIVE.store(true, Ordering::Relaxed);
+    let _ = signal::sigaction(SIGALRM, Some(&Sigaction::new(on_alarm)), None);
+    progress();
+    if !member { prepare_owner(ids, index); }
     // The walk is not the suite's progress: its own watchdog period starts at START.
     progress();
 }
@@ -223,13 +292,19 @@ pub fn in_child() {
 /// After the suite's DONE: run the next suite in PID 1. Returns only after the last suite,
 /// once DONE for the whole sequence is printed.
 pub fn finish() {
+    if MEMBER.load(Ordering::Relaxed) {
+        arm(0);
+        ACTIVE.store(false, Ordering::Relaxed);
+        return;
+    }
     hand_off();
 }
 
 extern "C" fn on_alarm(_: i32) {
     // A case's child before it reset SIGALRM, or a SIGALRM some case sent PID 1, is
     // not the watchdog.
-    if !process::getpid().is_ok_and(|pid| pid.raw() == 1) {
+    if !process::getpid().is_ok_and(|pid| pid.raw() == RUNNER_PID.load(Ordering::Relaxed)
+        && (pid.raw() == 1 || MEMBER.load(Ordering::Relaxed))) {
         return;
     }
     let now = monotonic_ns();
@@ -242,6 +317,7 @@ extern "C" fn on_alarm(_: i32) {
     line.text("SUITE_SEQUENCE STALLED ").text(ID.get().map_or("", String::as_str)).text(" cases=")
         .number(REPORTED.load(Ordering::Relaxed) as u64).text("/").number(TOTAL.load(Ordering::Relaxed) as u64);
     line.emit();
+    if MEMBER.load(Ordering::Relaxed) { process::exit(1); }
     hand_off();
     // The last suite stalled: DONE is out, and PID 1 stays, reaping.
     loop {
@@ -257,10 +333,10 @@ fn hand_off() {
     arm(0);
     ACTIVE.store(false, Ordering::Relaxed);
     let after = AFTER.get().map_or(&[][..], Vec::as_slice);
-    if let Some((next, _)) = after.first() {
+    if let Some(next) = after.first() {
         if !reap_all() {
             let mut line = Line::new();
-            line.text("SUITE_SEQUENCE RESET ").text(next).text(" FAIL processes outlived SIGKILL");
+            line.text("SUITE_SEQUENCE RESET ").text(&next.id).text(" FAIL processes outlived SIGKILL");
             line.emit();
         }
         let default = Sigaction::default();
@@ -275,16 +351,15 @@ fn hand_off() {
         let none = 0u64;
         let _ = signal::sigprocmask(SIG_SETMASK, Some(&none), None);
     }
-    for (id, path) in after {
+    for command in after {
         // Exec returns only when the next suite could not start; try the one after it.
-        let mut argv = [path.as_ptr(), core::ptr::null(), core::ptr::null(), core::ptr::null()];
-        if let Some(method) = HOSTKEYS.get() {
-            argv[1] = b"--hostkeys\0".as_ptr();
-            argv[2] = method.as_ptr();
+        let mut argv = [core::ptr::null(); 6];
+        for (slot, arg) in argv.iter_mut().zip(&command.args) {
+            *slot = arg.as_ptr();
         }
-        let _ = process::execv(path, argv.as_ptr());
+        let _ = process::execv(&command.path, argv.as_ptr());
         let mut line = Line::new();
-        line.text("SUITE_SEQUENCE FAIL exec ").text(id);
+        line.text("SUITE_SEQUENCE FAIL exec ").text(&command.id);
         line.emit();
     }
     let mut line = Line::new();
@@ -463,10 +538,11 @@ fn skipped(path: &str) -> bool {
     path == "/proc" || path == "/dev" || Path::new(path) == sequence_paths().baseline
 }
 
-/// Visit each path under `/`, `/dev/shm` and `/dev/mqueue`; `visit` returns whether to
-/// descend into a directory.
-fn walk(visit: &mut dyn FnMut(&str, Option<std::fs::Metadata>) -> bool) {
-    fn under(dir: &str, visit: &mut dyn FnMut(&str, Option<std::fs::Metadata>) -> bool) {
+/// Visit each path beneath the root, leaving foreign filesystems at their mount point.
+/// The IPC directories are walked separately when the root is `/`.
+fn walk(root: &str, visit: &mut dyn FnMut(&str, Option<std::fs::Metadata>, bool) -> bool) {
+    fn under(dir: &str, device: u64,
+             visit: &mut dyn FnMut(&str, Option<std::fs::Metadata>, bool) -> bool) {
         let Ok(entries) = std::fs::read_dir(dir) else { return };
         let mut names: Vec<String> = entries.filter_map(|entry| entry.ok())
             .filter_map(|entry| entry.file_name().into_string().ok())
@@ -474,32 +550,35 @@ fn walk(visit: &mut dyn FnMut(&str, Option<std::fs::Metadata>) -> bool) {
         names.sort();
         for name in names {
             let path = if dir == "/" { std::format!("/{name}") } else { std::format!("{dir}/{name}") };
-            if skipped(&path) {
-                continue;
-            }
+            if skipped(&path) { continue; }
             let meta = std::fs::symlink_metadata(&path).ok();
             let is_dir = meta.as_ref().is_some_and(|meta| meta.is_dir());
-            if visit(&path, meta) && is_dir {
-                under(&path, visit);
+            let mounted = meta.as_ref().is_some_and(|meta| is_dir && meta.dev() != device);
+            if visit(&path, meta, mounted) && is_dir && !mounted {
+                under(&path, device, visit);
             }
         }
     }
-    for root in ["/", "/dev/shm", "/dev/mqueue"] {
-        under(root, visit);
+    let roots: &[&str] = if root == "/" { &[root, "/dev/shm", "/dev/mqueue"] } else { &[root] };
+    for root in roots {
+        if let Ok(meta) = std::fs::symlink_metadata(root) {
+            under(root, meta.dev(), visit);
+        }
     }
 }
 
 /// Write the baseline; returns how many paths it holds.
-fn record_baseline() -> usize {
+fn record_baseline(root: &str) -> usize {
     let mut text = String::new();
     let mut count = 0;
-    walk(&mut |path, meta| {
+    walk(root, &mut |path, meta, mounted| {
         // A name that cannot be written on one line is not part of the image.
         if path.contains(['\n', '\r']) {
             return false;
         }
         let entry = meta.map_or(Entry { kind: '?', mode: 0, uid: 0, gid: 0, size: 0, stamp: 0 },
                                 |meta| describe(Path::new(path), &meta));
+        let entry = if mounted { Entry { kind: 'm', ..entry } } else { entry };
         text.push_str(&std::format!("{} {:o} {} {} {} {:x} {path}\n",
             entry.kind, entry.mode, entry.uid, entry.gid, entry.size, entry.stamp));
         count += 1;
@@ -556,17 +635,26 @@ impl Reset {
 }
 
 /// Remove what earlier suites created; name recorded paths that are missing or differ.
-fn reset() -> Result<Reset, String> {
+fn reset(root: &str) -> Result<Reset, String> {
     let baseline = load_baseline()?;
     let mut seen = std::collections::BTreeSet::new();
     let mut result = Reset { removed: 0, changed: Vec::new(), appended: Vec::new() };
-    walk(&mut |path, meta| {
+    let mut new_dirs = Vec::new();
+    walk(root, &mut |path, meta, mounted| {
+        if mounted {
+            seen.insert(String::from(path));
+            let current = meta.as_ref().map(|meta| Entry { kind: 'm', ..describe(Path::new(path), meta) });
+            if baseline.get(path).is_none_or(|recorded| current.as_ref() != Some(recorded)) {
+                result.changed.push(std::format!("{path}(mounted)"));
+            }
+            return false;
+        }
         let Some(recorded) = baseline.get(path) else {
-            let removed = match &meta {
-                Some(meta) if meta.is_dir() => std::fs::remove_dir_all(path),
-                _ => std::fs::remove_file(path),
-            };
-            match removed {
+            if meta.as_ref().is_some_and(|meta| meta.is_dir()) {
+                new_dirs.push(String::from(path));
+                return true;
+            }
+            match std::fs::remove_file(path) {
                 Ok(()) => result.removed += 1,
                 Err(_) => result.changed.push(std::format!("{path}(left)")),
             }
@@ -580,9 +668,17 @@ fn reset() -> Result<Reset, String> {
         }
         true
     });
+    for path in new_dirs.iter().rev() {
+        match std::fs::remove_dir(path) {
+            Ok(()) => result.removed += 1,
+            Err(_) => result.changed.push(std::format!("{path}(left)")),
+        }
+    }
     for path in baseline.keys() {
-        // A path under a directory that changed type was not walked; the directory is named.
-        if !seen.contains(path) && !result.changed.iter().any(|changed| path.starts_with(changed.as_str())) {
+        if !seen.contains(path) && !result.changed.iter().any(|changed| {
+            let ancestor = changed.strip_suffix("(mounted)").unwrap_or(changed);
+            path.strip_prefix(ancestor).is_some_and(|rest| rest.starts_with('/'))
+        }) {
             result.changed.push(std::format!("{path}(missing)"));
         }
     }

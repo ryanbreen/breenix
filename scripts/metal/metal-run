@@ -267,14 +267,7 @@ def install_persistent(args):
     return status
 
 
-def require_gui_apps_alone(suites):
-    # Desktop ownership across a suite sequence is deferred to #2877.
-    if 'gui-apps' in (suites or '').split(',') and suites != 'gui-apps':
-        raise SystemExit('boot gui-apps on its own')
-
-
 def boot(args):
-    require_gui_apps_alone(args.suite)
     if args.suite and args.mode == 'default':
         args.mode = 'suite'
     if getattr(args, 'persistent', False):
@@ -353,7 +346,6 @@ def boot(args):
             target = 'main' if branch == 'main' else 'branch:' + branch
     if args.suite and payload == 'image':
         args.suite = resolve_suites(env, sha, args.suite)
-        require_gui_apps_alone(args.suite)
         print(f'[metal-run] suites: {args.suite}', file=sys.stderr, flush=True)
     prebuilt = getattr(args, 'prebuilt', None)
     if prebuilt:
