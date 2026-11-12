@@ -160,6 +160,12 @@ pub(super) fn run_deferred_check(
     }
 }
 
+pub(super) fn expire_prompt_checks(queue: &mut ValidationQueue<PresentedScene>, now_ms: u64) {
+    for id in queue.expire_prompts(now_ms) {
+        print!("[bwm] terminal prompt check FAILED: window {id}: no prompt verdict within {} ms\n", validation::PROMPT_TIMEOUT_MS);
+    }
+}
+
 // ─── Drawing Helpers ─────────────────────────────────────────────────────────
 
 pub(super) fn fill_rect(fb: &mut Surface, x: i32, y: i32, w: usize, h: usize, color: Color) {

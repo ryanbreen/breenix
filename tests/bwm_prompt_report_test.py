@@ -69,8 +69,7 @@ use tree::{Tree,Role,Node};
 #[derive(Clone,Copy)] struct Pointer;
 #[derive(Clone)] struct Layer;
 #[derive(Clone)] struct PresentedScene {layers:Vec<Layer>,pointer:Pointer}
-struct Window {window_id:u64,frame_checked:bool,check_after_ms:u64,check_moved:u32,creation_order:u32}
-#[allow(dead_code)] impl Window {fn title_str(&self)->&str{"Terminal"}}
+struct Window {window_id:u64,frame_checked:bool,check_after_ms:u64,check_moved:u32,creation_order:u32,title:[u8;8],title_len:usize}
 #[derive(Debug)] enum CheckError {Moved(String),Failed(String)}
 mod io {pub struct PollFd;}
 fn monotonic_ms()->Result<u64,()> {Ok(100)}
@@ -109,17 +108,17 @@ fn main(){
  tree_commit::serialize_for_commit(0,&mut serializations,||{page[0]=1;Ok(())}).unwrap();
  assert_eq!(serializations,0);assert_eq!(page[0],0);
  let _ = frame_text::cursor_row;
- for mode in ["prompt","empty","moved","broken","other","strict"] {
+ for mode in ["prompt","empty","moved","broken","other","strict","idle"] {
   println!("BEGIN {mode}");
   let mut q=ValidationQueue::new();present(&mut q);q.first_frame(8);q.first_frame(7);
   let strict=mode=="strict";
-  let mut windows=vec![Window{window_id:7,frame_checked:false,check_after_ms:0,check_moved:1,creation_order:0}];
+  let mut windows=vec![Window{window_id:7,frame_checked:false,check_after_ms:0,check_moved:1,creation_order:0,title:*b"Terminal",title_len:8}];
   let mut gpu=Compositor{commit:1,text:if mode=="prompt"{"Starting shell".into()}else{String::new()},role:if mode=="other"{Role::Window}else{Role::Terminal},moved:mode=="moved",broken:mode=="broken",calls:vec![],desktop:Desktop};
   let mut validation=&mut q;
   let mut prompt_watchers=prompt_watch::Watchers::default();
   let strict_startup=strict;
   @REQUEST@
-  windows.push(Window{window_id:8,frame_checked:false,check_after_ms:0,check_moved:0,creation_order:1});
+  windows.push(Window{window_id:8,frame_checked:false,check_after_ms:0,check_moved:0,creation_order:1,title:*b"Terminal",title_len:8});
   let first_new_order=1;
   @LATER_REQUEST@
   assert!(!validation.prompt_pending(8),"a later window must receive no shell prompt check");
@@ -146,6 +145,16 @@ fn main(){
   }
   if !strict {assert_eq!(gpu.calls[0],(7,true),"pending prompt must be the subject and request its tree");}
   assert!(first>0);
+  if mode=="idle" {
+   let calls=gpu.calls.len();
+   chrome::run_deferred_check(&mut q,&mut gpu,&mut windows,&mut [],false,strict);
+   assert_eq!(gpu.calls.len(),calls,"idle prompt must not read back again");
+   assert_eq!(q.prompt_deadline_ms(),Some(100 + validation::PROMPT_TIMEOUT_MS));
+   chrome::expire_prompt_checks(&mut q,99 + validation::PROMPT_TIMEOUT_MS);
+   assert!(q.prompt_pending(7),"deadline must not expire early");
+  }
+  chrome::expire_prompt_checks(&mut q,100 + validation::PROMPT_TIMEOUT_MS);
+  chrome::expire_prompt_checks(&mut q,101 + validation::PROMPT_TIMEOUT_MS);
   let _ = q.pending(7);q.invalidate_scene();
   prompt_watchers.retain(|id|q.prompt_pending(id));
   drop(prompt_watchers);
@@ -172,7 +181,7 @@ fn main(){
             self.assertEqual(prompt.count(marker), 1, prompt)
             self.assertIn('[bwm] composited client frame: window 7 on screen, 12 pixels exact\n' + marker, prompt)
             self.assertNotIn('FAILED', prompt)
-            for mode in ['empty', 'moved', 'broken']:
+            for mode in ['empty', 'moved', 'broken', 'idle']:
                 self.assertEqual(section(mode).count('[bwm] terminal prompt check FAILED: window 7:'), 1, section(mode))
                 self.assertNotIn('terminal prompt read back:', section(mode))
             for mode in ['other', 'strict']:

@@ -1,3 +1,7 @@
+/// Prompt evidence must finish inside the desktop mode's 300-second window.
+/// This is a verdict deadline, independent of client commits or readback count.
+pub const PROMPT_TIMEOUT_MS: u64 = 60_000;
+
 /// Pending validation shares the most recently presented scene. Client requests
 /// are IDs, so replacing a scene does not accumulate snapshots per client.
 pub struct ValidationQueue<S> {
@@ -16,6 +20,8 @@ struct Prompt {
     id: u64,
     in_flight: Option<u64>,
     attempts: u32,
+    last_commit: Option<u64>,
+    deadline_ms: u64,
 }
 
 struct FirstFrame {
@@ -57,9 +63,10 @@ impl<S> ValidationQueue<S> {
     }
 
     /// Request a separate prompt check, without replacing an existing request.
-    pub fn request(&mut self, id: u64) {
+    pub fn request(&mut self, id: u64, now_ms: u64) {
         if !self.prompts.iter().any(|prompt| prompt.id == id) {
-            self.prompts.push(Prompt { id, in_flight: None, attempts: 0 });
+            self.prompts.push(Prompt { id, in_flight: None, attempts: 0, last_commit: None,
+                deadline_ms: now_ms.saturating_add(PROMPT_TIMEOUT_MS) });
         }
     }
 
@@ -67,12 +74,32 @@ impl<S> ValidationQueue<S> {
         self.prompts.iter().any(|prompt| prompt.id == id)
     }
 
-    /// Reserve one check, including an unchanged commit when the client is idle.
+    pub fn prompt_deadline_ms(&self) -> Option<u64> {
+        self.prompts.iter().map(|prompt| prompt.deadline_ms).min()
+    }
+
+    /// Expiration needs neither a presented scene nor an idle readback slot.
+    pub fn expire_prompts(&mut self, now_ms: u64) -> Vec<u64> {
+        let expired = self.prompts.iter().filter(|prompt| now_ms >= prompt.deadline_ms)
+            .map(|prompt| prompt.id).collect();
+        self.prompts.retain(|prompt| now_ms < prompt.deadline_ms);
+        expired
+    }
+
+    /// A reader attach or tree publication becomes visible through a new commit.
+    /// Desktop repaints alone cannot change the client's captured prompt.
+    pub fn prompt_ready(&self, id: u64, commit: Option<u64>) -> bool {
+        self.scene.is_some() && commit.is_some() && self.prompts.iter().any(|prompt|
+            prompt.id == id && prompt.in_flight.is_none() && prompt.last_commit != commit)
+    }
+
+    /// Reserve at most one readback of each sampled client commit.
     pub fn check_prompt(&mut self, id: u64, commit: u64) -> bool {
-        if self.scene.is_none() { return false; }
+        if !self.prompt_ready(id, Some(commit)) { return false; }
         let Some(prompt) = self.prompts.iter_mut().find(|prompt| prompt.id == id) else { return false; };
         if prompt.in_flight.is_some() { return false; }
         prompt.in_flight = Some(commit);
+        prompt.last_commit = Some(commit);
         true
     }
 
@@ -100,8 +127,7 @@ impl<S> ValidationQueue<S> {
         self.scene.as_ref()?;
         let (id, commit) = self.prompts.iter().find_map(|prompt| {
             let commit = eligible(prompt.id)?;
-            prompt.in_flight.is_none()
-                .then_some((prompt.id, commit))
+            self.prompt_ready(prompt.id, Some(commit)).then_some((prompt.id, commit))
         })?;
         if !idle() || !self.check_prompt(id, commit) { return None; }
         Some((self.scene()?, id, commit))
@@ -109,7 +135,7 @@ impl<S> ValidationQueue<S> {
 
     pub fn pending(&self, id: u64) -> bool {
         self.scene.is_some() && (self.first_frames.iter().any(|c| c.id == id && !c.attempted)
-            || self.prompt_pending(id))
+            || self.prompts.iter().any(|prompt| prompt.id == id && prompt.last_commit.is_none()))
     }
 
     pub fn complete(&mut self, id: u64) {
