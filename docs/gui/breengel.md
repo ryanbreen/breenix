@@ -885,6 +885,32 @@ architecture only.
 | 29 | `COMPOSITE_SNAPSHOT` | `SceneSnapshot` (96) | 0 | EPERM, EINVAL, EBUSY, EAGAIN pending render, ENOMEM, ENODEV, EIO |
 | 32 | `HIT_TEST` | `HitTest` (32) | 0 | EPERM, EINVAL flags or reserved |
 | 33 | `MAP_TREE_READERS` | `MapTree` (24) | 0 | owner only; EPERM, ENOENT, ENOMEM, EFAULT |
+| 34 | `CAPTURE_TREE` | `Capture` (56) | 0 | EINVAL missing or short tree destination; ENOENT; EINTR pending-publication wait; EIO failed pending publication |
+| 35 | `FRAME_STAGE` | `FrameStage` (24) | 0 | owner only; EPERM, ENOENT; EINVAL stage or reserved |
+
+<!-- claim-lint:ok: Normative FRAME_STAGE diagnostic contract, exercised by tests/window_frame_diagnostic_test.py. -->
+`FrameStage` is `{ id: u64, frame: u64, stage: u32, reserved: u32 }` at offsets
+0, 8, 16 and 20. `FRAME_STAGE` accepts an owner-supplied frame identity and stage
+0 through 6 (begin, acquired, tab draw finished, terminal render finished, tree
+built, present begin, present end); `reserved` must be zero. It only records
+observations in the existing bounded window-pipeline ring, without waking the
+compositor, changing a watermark or advancing a frame. It is available in
+production and has no per-boot enable switch. Diagnostic failure does not change
+an application's rendering verdict.
+
+Pipeline rows 20 through 26 contain window, frame, cumulative calling-thread CPU
+nanoseconds (or `u64::MAX` if unavailable), and monotonic timestamp. Stage 44
+contains window, frame, sampling CPU, timestamp. A nonblocking scheduler snapshot
+adds rows 27 through 34 for CPU 0 through 7 queue lengths and rows 35 through 42
+for their current thread identities, with the same window, frame and timestamp;
+43 records an unavailable snapshot instead of reporting an empty queue. These are
+boundary samples, not a context-switch trace. Rows 45 and 46 contain window,
+accepted commit, processed watermark and timestamp at pending-render acceptance
+and the observed seal decision, respectively; stage 14 remains actual front
+publication. Acceptance-to-decision includes the time until a publication caller
+observes device completion. Failed seals also get a decision row and do not get
+a front-publication row. The launcher retains these records only on failure
+using its existing entry-time pipeline capture.
 
 `MAP_TREE_READERS` maps a window's reader-status page read-only for its owner, with
 `MapTree.addr` and `len` reporting the mapping. Offset 0 is `TreeReaderState.readers`, an
@@ -1034,6 +1060,9 @@ Serialize publication order while one candidate is pending. Another COMMIT or NO
 
 NO_CHANGE retains its 32-byte layout, pixel generation and empty damage. It updates published metadata without new drawing or a sampling hold. A completed frame of the same pixel generation satisfies that later metadata commit's presentation requirement; observation records remain honest about the actual commit sampled, rather than rewriting history.
 
+<!-- claim-lint:ok: Normative CAPTURE_TREE contract; tests/window_capture_tree_test.py exercises the production operation. -->
+`CAPTURE_TREE` uses the same authority and pending-publication decision as `CAPTURE`. It requires a nonzero tree destination large enough for one tree page, pins the published front's tree page while copying it, and returns its commit id (zero when there is no front). It ignores the pixel destination and dimensions, takes no pixel buffer pin, and performs no device read. The other `Capture` output fields are unchanged.
+
 A CAPTURE begun while a candidate is pending waits killably for that render decision, then captures the newly published generation or returns EIO for its failed publication; a later CAPTURE after rejection sees the retained previous front. It never copies pending/partially rendered pixels. Existing CAPTURE/tree-output validation, authority, ENOENT-at-start and pinned whole-generation behavior remain in force. <!-- claim-lint:ok: Normative requirement adopted by B13 in docs/gui/breengel-gpu-rulings.md, not measured implementation acceptance. -->
 
 - **Bases and the damage log.** A buffer's base is the commit id whose pixels it holds: the id it was last
@@ -1092,7 +1121,7 @@ Principals: the **owner** (by kernel identity, never by PID number, so PID reuse
 | `READ_EVENTS`, `EVENT_FD` | yes | `EVENT_FD` of window 0 only | — | EPERM |
 | `WRITE_EVENTS`, `SET_GEOMETRY` | EPERM | yes | EPERM | EPERM |
 | retired `MAP_COMMITTED`, `MAP_COMPOSITOR_TEXTURE` | ENOSYS | ENOSYS | ENOSYS | ENOSYS |
-| `CAPTURE`, `MAP_TREE`, `READ_META` | yes | yes | yes | EPERM |
+| `CAPTURE`, `CAPTURE_TREE`, `MAP_TREE`, `READ_META` | yes | yes | yes | EPERM |
 | `MAP_TREE_READERS` | yes | no | no | EPERM |
 | `COMPOSITE_SNAPSHOT`, `COMPOSITE` | — | only while also current display owner | EPERM | EPERM |
 | `COMPOSITE_RECORD` | — | yes | yes (read only) | EPERM |

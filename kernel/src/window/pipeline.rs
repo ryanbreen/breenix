@@ -5,9 +5,15 @@
 //! physical/virtual presentation, and receipt publication (1 through 13), front publication (14), and driver
 //! acceptance raster samples (15: native resource, packed counter/line, pixel).
 //! Input trace flags (16): device, derived modifier bits plus SYNTHETIC, source serial.
-//! Process exit (17..=22): thread id, PID at zombie publication (20), thread group.
+//! Window destruction (17): window id, owner pid, reason (0 destroy, 1 exit, 2 exec).
+//! Metadata-only publication (18) and READ_META observation (19): window id,
+//! published commit id, processed watermark (possibly a derived input serial).
+//! App frame boundaries (20..26), per-CPU queue lengths (27..34), current threads
+//! (35..42), unavailable scheduler sample (43), sampling CPU (44); section 17.1.
+//! Pending-render acceptance (45) and observed seal decision (46): window,
+//! accepted commit, processed watermark. Stage 14 remains front publication.
+//! Process exit (47..=52): thread id, PID at zombie publication (50), thread group.
 //! Stages: entry, windows released, before PM, zombie, after PM, GPU handles released.
-//! Window destruction (23): window id, owner pid, reason (0 destroy, 1 exit, 2 exec).
 use alloc::{string::String, vec::Vec};
 use core::fmt::Write;
 const CAPACITY: usize = 32768;
@@ -25,6 +31,26 @@ pub fn at(stage: u64, object: u64, related: u64, source: u64, ns: u64) {
     ring.rows[slot] = [stage, object, related, source, ns];
     ring.count += 1;
 }
+/// Boundary observations only: no scheduler hot-path hooks and no formatted output.
+pub(super) fn frame_stage(sample: &breengel_abi::FrameStage) {
+    let ns = super::events::now_ns();
+    let cpu_ns = crate::task::thread::current_thread_cpu_split_ns()
+        .map_or(u64::MAX, |(user, system)| user.saturating_add(system));
+    let cpu = crate::task::scheduler::current_cpu();
+    let snapshot = crate::task::scheduler::try_liveness_snapshot(cpu);
+    at(20 + u64::from(sample.stage), sample.id, sample.frame, cpu_ns, ns);
+    at(44, sample.id, sample.frame, cpu as u64, ns);
+    if let Some(snapshot) = snapshot {
+        for (cpu, (&ready, &current)) in snapshot.per_cpu_ready_len.iter()
+            .zip(snapshot.per_cpu_current.iter()).enumerate() {
+            at(27 + cpu as u64, sample.id, sample.frame, ready, ns);
+            at(35 + cpu as u64, sample.id, sample.frame, current, ns);
+        }
+    } else {
+        at(43, sample.id, sample.frame, cpu as u64, ns);
+    }
+}
+
 fn snapshot() -> Vec<Row> {
     // Copy a bounded tail before formatting; no formatter holds the writer lock.
     let mut rows = Vec::with_capacity(CAPACITY);

@@ -241,6 +241,16 @@ pub fn capture(id: u64, dst: &mut [u8], tree: Option<&mut [u8]>) -> Result<abi::
     Ok(c)
 }
 
+/// `CAPTURE_TREE` copies the front tree and returns its commit without reading pixels.
+pub fn capture_tree(id: u64, tree: &mut [u8]) -> Result<abi::Capture, Error> {
+    let mut c = abi::Capture::ZERO;
+    c.id = id;
+    c.tree_dst = tree.as_mut_ptr() as u64;
+    c.tree_len = tree.len() as u64;
+    call(op::CAPTURE_TREE, &mut c)?;
+    Ok(c)
+}
+
 /// `CLAIM_COMPOSITOR` (root): returns the claim's epoch.
 pub fn claim_compositor() -> Result<u64, Error> {
     claim_compositor_for(0)
@@ -277,4 +287,10 @@ pub fn read_meta(id: u64) -> Result<(u64, abi::Meta), Error> {
     let mut query = abi::MetaQuery { id, meta: &mut meta as *mut abi::Meta as u64, commit_id: 0 };
     call(op::READ_META, &mut query)?;
     Ok((query.commit_id, meta))
+}
+
+/// Record an owner frame boundary in the bounded failure diagnostic pipeline.
+pub fn frame_stage(id: u64, frame: u64, stage: u32) -> Result<(), Error> {
+    let mut sample = abi::FrameStage { id, frame, stage, reserved: 0 };
+    call(op::FRAME_STAGE, &mut sample).map(|_| ())
 }

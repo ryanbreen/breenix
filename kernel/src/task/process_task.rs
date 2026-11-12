@@ -1009,7 +1009,7 @@ impl ProcessScheduler {
             manager.find_process_by_thread(thread_id)
                 .map(|(pid, process)| process.thread_group_id.unwrap_or(pid.as_u64()))
         }).flatten().unwrap_or(0);
-        crate::window::pipeline::record(17, thread_id, 0, exit_group);
+        crate::window::pipeline::record(47, thread_id, 0, exit_group);
         crate::trace_count!(crate::tracing::providers::teardown::TEARDOWN_ENTRY_EXIT);
         // The priority-inheritance futexes it owns pass to their waiters, and
         // one it is blocked on stops counting it. Before PM: the futex table
@@ -1020,7 +1020,7 @@ impl ProcessScheduler {
         crate::ipc::sysv::thread_exit(thread_id);
         // So are its windows destroyed, when it is the group's last running thread.
         crate::window::thread_exit(thread_id);
-        crate::window::pipeline::record(18, thread_id, 0, exit_group);
+        crate::window::pipeline::record(48, thread_id, 0, exit_group);
         // So is the working directory released: rmdir refuses a directory
         // that is anyone's working directory, and a reaped row stays resident
         // until its address space retires (on x86-64, at the next idle pass or
@@ -1040,7 +1040,7 @@ impl ProcessScheduler {
             scheduler::charge_current_cpu();
         }
         // Phase 1: Under PM lock — minimal work only
-        crate::window::pipeline::record(19, thread_id, 0, exit_group);
+        crate::window::pipeline::record(49, thread_id, 0, exit_group);
         let mut gpu_owner = None;
         let phase1_result = {
             if let Some(ref mut manager) = *crate::process::manager() {
@@ -1112,7 +1112,7 @@ impl ProcessScheduler {
                     // None, cleanup_cow_frames() cannot repeat the CoW walk; moving
                     // terminate()/terminate_minimal() earlier breaks that invariant.
                     process.terminate_minimal(exit_code);
-                    crate::window::pipeline::record(20, thread_id, pid.as_u64(), exit_group);
+                    crate::window::pipeline::record(50, thread_id, pid.as_u64(), exit_group);
                     // P6a condition C2, paths (a) and (b). No receipt means no
                     // `record_reclaim` will ever arrive for this row: it held
                     // no tables, or an earlier exit already handed them off.
@@ -1194,11 +1194,11 @@ impl ProcessScheduler {
                 None
             }
         }; // PM lock dropped here
-        crate::window::pipeline::record(21, thread_id, 0, exit_group);
+        crate::window::pipeline::record(51, thread_id, 0, exit_group);
         if let Some(owner) = gpu_owner {
             crate::gpu::owner_ended(owner);
         }
-        crate::window::pipeline::record(22, thread_id, 0, exit_group);
+        crate::window::pipeline::record(52, thread_id, 0, exit_group);
 
         // Phase 2: No PM lock — safe to do pipe wakeups, scheduler calls, logging
         if let Some((

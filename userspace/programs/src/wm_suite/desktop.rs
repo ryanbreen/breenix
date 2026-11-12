@@ -113,11 +113,11 @@ fn report_reap(pid: i32, requested_ns: u64, returned_ns: u64, wait_ns: u64, pass
     if let Ok(pipeline) = std::fs::read_to_string("/proc/breenix/window-pipeline-full") {
         let rows: Vec<Vec<u64>> = pipeline.lines().filter_map(|line| {
             let row: Vec<u64> = line.split_whitespace().filter_map(|s| s.parse().ok()).collect();
-            (row.len() == 5 && (17..=22).contains(&row[0])).then_some(row)
+            (row.len() == 5 && (47..=52).contains(&row[0])).then_some(row)
         }).collect();
-        // Stage 20 also maps older records whose source column predates group stamps.
+        // Stage 50 also maps older records whose source column predates group stamps.
         let tids: Vec<_> = rows.iter().filter(|r| r[3] == pid as u64
-            || (r[0] == 20 && r[2] == pid as u64)).map(|r| r[1]).collect();
+            || (r[0] == 50 && r[2] == pid as u64)).map(|r| r[1]).collect();
         for row in rows.iter().filter(|r| tids.contains(&r[1])) {
             failure_diagnostic("exit-phase", &format!(
                 "tgid={pid} tid={} stage={} pid={} ns={}", row[1], row[0], row[2], row[4]

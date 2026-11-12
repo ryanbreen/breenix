@@ -876,6 +876,91 @@ pub fn draw_runs(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>]) 
     draw_runs_mode(fb, font, runs, false);
 }
 
+/// A terminal cell's positioned glyph. Coverage belongs to `CachedFont`, so its
+/// font instance, glyph mapping and size identify the cached image.
+pub struct CellGlyph {
+    pub ch: char,
+    pub x: i32,
+    pub y: i32,
+    pub fg: Color,
+}
+
+/// Draw fixed cells from the glyph atlas without allocating a text layout per cell.
+/// Each glyph is clipped to its cell, so damage to a neighbour cannot erase an
+/// overhang. The atlas prepares the frame together; page/colour groups share draws.
+pub fn draw_cells(fb: &mut Surface, font: &mut CachedFont, cells: &[CellGlyph],
+    size: f32, cell_w: usize, cell_h: usize) {
+    if cells.is_empty() { return; }
+    let Ok(size26) = Font::size26(size) else { return; };
+    let before = font.cache_stats();
+    let placed: Vec<_> = cells.iter().enumerate()
+        .map(|(i, cell)| (font.glyph_index(cell.ch), i as i64)).collect();
+    let mut images = Vec::with_capacity(cells.len());
+    font.run(&placed, size26, |got| match got {
+        Ok(image) => images.push(image),
+        Err(Error::Device(e)) => fb.fail(e),
+        Err(_) => {},
+    });
+    let after = font.cache_stats();
+    if before.entries + (after.misses - before.misses) as usize > after.entries {
+        // A small atlas may reuse a slot from earlier in this frame. Draw each
+        // cell while its image is live, as the general text path does on eviction.
+        for cell in cells {
+            fb.push_clip(crate::surface::Rect::new(cell.x, cell.y, cell_w as i32, cell_h as i32));
+            draw_char(fb, font, cell.ch, cell.x, cell.y, size, cell.fg);
+            fb.pop_clip();
+        }
+        return;
+    }
+    let mut done = vec![false; images.len()];
+    for first in 0..images.len() {
+        if done[first] { continue; }
+        let Some(page) = images[first].0.region.as_ref().map(|r| r.target.handle()) else {
+            done[first] = true;
+            continue;
+        };
+        let colour = cells[images[first].1 as usize].fg;
+        let mut instances = Vec::new();
+        let mut work = 0u64;
+        for (i, (image, index)) in images.iter().enumerate().skip(first) {
+            if done[i] { continue; }
+            let Some(atlas) = &image.region else { done[i] = true; continue; };
+            let cell = &cells[*index as usize];
+            if atlas.target.handle() != page || cell.fg != colour { continue; }
+            done[i] = true;
+            let whole = Box64::wide(cell.x as i64 + image.x_offset as i64,
+                cell.y as i64 + image.y_offset as i64, image.width as i64, image.height as i64);
+            let clip = Box64::wide(cell.x as i64, cell.y as i64, cell_w as i64, cell_h as i64)
+                .intersect(&fb.clip_box());
+            let visible = whole.intersect(&clip);
+            if visible.is_empty() { continue; }
+            let [x0, y0, x1, y1] = visible.corners();
+            let cost = 257 * ((x1 - x0) as u64) * ((y1 - y0) as u64);
+            if cost > abi::limits::WORK / 2 {
+                // The scalar path bands an oversized glyph within the same budget.
+                fb.push_clip(crate::surface::Rect::new(cell.x, cell.y, cell_w as i32, cell_h as i32));
+                draw_char(fb, font, cell.ch, cell.x, cell.y, size, colour);
+                fb.pop_clip();
+                continue;
+            }
+            if !instances.is_empty() && work + cost > abi::limits::WORK / 2 {
+                fb.submit(|c| c.draw(pipeline::COVERAGE, word(colour), page, 0, 0, &instances));
+                instances.clear();
+                work = 0;
+            }
+            let params = [x0, y0, atlas.x as i32 + (visible.x0 - whole.x0) as i32,
+                atlas.y as i32 + (visible.y0 - whole.y0) as i32, 1];
+            instances.push(instance([x0, y0, x1, y1], &params));
+            work += cost;
+            work::add(1);
+            fb.mark(visible);
+        }
+        if !instances.is_empty() {
+            fb.submit(|c| c.draw(pipeline::COVERAGE, word(colour), page, 0, 0, &instances));
+        }
+    }
+}
+
 /// Batched LCD text, preserving `draw_text_subpixel` coverage and overlap order.
 /// As with `draw_runs`, separate runs must not overlap one another.
 pub fn draw_runs_subpixel(fb: &mut Surface, font: &mut CachedFont, runs: &[TextRun<'_>]) {

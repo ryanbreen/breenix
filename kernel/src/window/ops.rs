@@ -269,7 +269,7 @@ pub fn destroy(caller: &Caller, id: u64) -> Result<u64, i32> {
         let mut reg = REGISTRY.lock();
         reg.window(id, caller, who::owner)?;
         let w = reg.windows.remove(&id).ok_or(ENOENT)?;
-        super::pipeline::record(23, w.id, w.owner, 0);
+        super::pipeline::record(17, w.id, w.owner, 0);
         if w.registered { reg.geometry_changed(); }
         reg.present.uncover(w.present.shown);
         w
@@ -704,6 +704,7 @@ pub fn commit(caller: &Caller, c: &mut Commit, meta: Meta, out: u64) -> Result<u
         w.accepted_pixel_gen = c.pixel_gen;
         w.pending = Some(Pending { uid, commit_id: c.commit_id, pixel_gen: c.pixel_gen,
             damage, meta, seal });
+        super::pipeline::record(45, c.id, c.commit_id, meta.processed_serial);
     }
     drop(gate);
     publish_ready();
@@ -730,6 +731,7 @@ pub fn publish_ready() {
             let Some(w) = reg.windows.get_mut(&id) else { continue; };
             if w.gate || !w.pending.as_ref().is_some_and(|p| p.uid == pending.uid && p.commit_id == pending.commit_id) { continue; }
             let Some(index) = w.buffers.iter().position(|b| b.uid == pending.uid) else { continue; };
+            super::pipeline::record(46, w.id, pending.commit_id, pending.meta.processed_serial);
             w.pending = None;
             if outcome.is_err() {
                 w.buffers[index].draining = true;
@@ -820,6 +822,7 @@ pub fn no_change(caller: &Caller, n: &mut NoChange, meta: Meta, out: u64) -> Res
     w.commit_id = n.commit_id;
     w.accepted_id = n.commit_id;
     w.meta = meta;
+    super::pipeline::record(18, n.id, n.commit_id, meta.processed_serial);
     Ok(0)
 }
 
@@ -913,6 +916,32 @@ pub fn capture(caller: &Caller, c: &mut Capture) -> Result<u64, i32> {
     c.commit_id = commit_id;
     c.width = width;
     c.height = height;
+    Ok(0)
+}
+
+/// `CAPTURE_TREE`: copy only the published front's tree, without pinning or reading pixels.
+pub fn capture_tree(caller: &Caller, c: &mut Capture) -> Result<u64, i32> {
+    pending_decision(c.id, caller, who::owner_compositor_or_root, true)?;
+    let (tree_pin, tree, tree_offset, tree_len, commit_id) = {
+        let mut reg = REGISTRY.lock();
+        let w = reg.window(c.id, caller, who::owner_compositor_or_root)?;
+        let tree_len = w.tree_kib as u64 * 1024;
+        if c.tree_dst == 0 || c.tree_len < tree_len {
+            return Err(EINVAL);
+        }
+        let (tree_pin, tree_offset, commit_id) = match w.front {
+            Some(f) => {
+                w.tree_pins[f] += 1;
+                (Some(TreePin { window: w.id, slot: f }), f as u64 * tree_len, w.front_commit)
+            }
+            None => (None, 0, 0),
+        };
+        (tree_pin, w.tree.clone(), tree_offset, tree_len, commit_id)
+    };
+    mem::probe_writable(c.tree_dst, tree_len)?;
+    bytes_out(&tree, tree_offset, tree_len, c.tree_dst)?;
+    drop(tree_pin);
+    c.commit_id = commit_id;
     Ok(0)
 }
 
@@ -1225,12 +1254,25 @@ pub fn set_geometry(caller: &Caller, g: &Geometry) -> Result<u64, i32> {
     Ok(0)
 }
 
-/// `READ_META` (owner, compositor or root): the newest commit's id and the metadata it
-/// published.
+/// Record an owner frame boundary without keeping REGISTRY during scheduler sampling.
+pub fn frame_stage(caller: &Caller, sample: &breengel_abi::FrameStage) -> Result<u64, i32> {
+    if sample.reserved != 0 || sample.stage > breengel_abi::frame_stage::PRESENT_END {
+        return Err(EINVAL);
+    }
+    {
+        let mut reg = REGISTRY.lock();
+        reg.window(sample.id, caller, who::owner)?;
+    }
+    super::pipeline::frame_stage(sample);
+    Ok(0)
+}
+
+/// `READ_META`: the published commit and watermark.
 pub fn read_meta(caller: &Caller, id: u64) -> Result<(u64, Meta), i32> {
     publish_ready();
     let mut reg = REGISTRY.lock();
     let w = reg.window(id, caller, who::owner_compositor_or_root)?;
+    super::pipeline::record(19, id, w.commit_id, w.meta.processed_serial);
     Ok((w.commit_id, w.meta))
 }
 
@@ -1454,7 +1496,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
         let ids: Vec<u64> = reg.windows.values().filter(|w| w.owner == tgid).map(|w| w.id).collect();
         for id in ids {
             if let Some(w) = reg.windows.remove(&id) {
-                super::pipeline::record(23, w.id, w.owner, if at_exit { 1 } else { 2 });
+                super::pipeline::record(17, w.id, w.owner, if at_exit { 1 } else { 2 });
                 if w.registered { reg.geometry_changed(); }
                 reg.present.uncover(w.present.shown);
                 if at_exit {

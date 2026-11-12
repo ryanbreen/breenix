@@ -82,6 +82,15 @@ The mixed-script case requires exactly one row per source serial, checks the tar
 delivered rows and waits for that client's processed watermark. A later successful
 serial cannot cover a missing earlier one.
 
+<!-- claim-lint:ok: Normative OUTCOME contract; tests/input_outcome_query_test.py exercises query and proc equivalence. -->
+The shared `/dev/input/events` reader also supports the `OUTCOME` ioctl
+(`0x424905`) for a single source serial. Pass a 32-byte `Disposition` with
+`serial` set; the kernel returns that serial's terminal disposition, window and
+reason, including the same client-rejected rewrite as the proc ledger. A zero
+`disposition` means the serial is pending, evicted or unknown. This read-only
+query is available to any input reader and does not require the compositor grab.
+The proc ledger's format and snapshot behavior are unchanged.
+
 `/proc/breenix/input-replay` is a root-only test-control descriptor governed by
 [plan section 3.4](plan.md#34-suite-mode-test-controls). Suite-latched means enabled
 only by the kernel's first exec of a suite as PID 1, immutable for that boot;
