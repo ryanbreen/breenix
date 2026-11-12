@@ -243,7 +243,15 @@ pub fn capture(id: u64, dst: &mut [u8], tree: Option<&mut [u8]>) -> Result<abi::
 
 /// `CLAIM_COMPOSITOR` (root): returns the claim's epoch.
 pub fn claim_compositor() -> Result<u64, Error> {
-    let mut c = abi::Claim::ZERO;
+    claim_compositor_for(0)
+}
+
+/// Claim with the next renderer's GPU pipeline preparation bits (0: full catalogue).
+pub fn claim_compositor_for(pipelines: u32) -> Result<u64, Error> {
+    use crate::gpu::abi::context_flags;
+    if pipelines & !context_flags::ALL != 0 { return Err(crate::errno::Errno::EINVAL.into()); }
+    let flags = if pipelines == 0 { 0 } else { context_flags::PREPARE | pipelines };
+    let mut c = abi::Claim { flags, ..abi::Claim::ZERO };
     call(op::CLAIM_COMPOSITOR, &mut c)?;
     Ok(c.epoch)
 }

@@ -414,6 +414,7 @@ pub struct MapTree {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Claim {
+    /// GPU pipeline preparation bits for the reserved renderer; 0: full catalogue.
     pub flags: u32,
     pub reserved: u32,
     /// Out: the claim's epoch.

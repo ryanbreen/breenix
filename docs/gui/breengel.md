@@ -943,7 +943,10 @@ Argument structures (offsets in bytes):
   `tree_len: u64 @32`, *out* `commit_id: u64 @40`, *out* `width: u32 @48`, *out* `height: u32 @52`. Pixels are
   copied as BGRX rows of `width × 4` bytes.
 - `MapTree`: `id: u64 @0`, *out* `addr: u64 @8`, *out* `len: u64 @16`.
-- `Claim`: `flags: u32 @0`, reserved `@4`, *out* `epoch: u64 @8`.
+- `Claim`: `flags: u32 @0`, reserved `@4`, *out* `epoch: u64 @8`. Flags 0 retain full
+  renderer preparation; bit 31 plus a nonempty GPU rendering-pipeline mask selects explicit
+  preparation for the reserved context (`gpu-abi.md`, `CONTEXT_CREATE`). The subsequent
+  context creation must request that same set to reuse the reservation. Invalid masks are EINVAL.
 - `SceneSnapshot` (96): in `context:u64 @0`, `windows:u64 @8`, `window_capacity:u32 @16`,
   out `window_count:u32 @20`; in `damage:u64 @24`, `damage_capacity:u32 @32`, out `damage_count:u32 @36`,
   `snapshot:u64 @40`, `width:u32 @48`, `height:u32 @52`, `scale:u32 @56`, `flags:u32 @60`,

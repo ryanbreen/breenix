@@ -24,12 +24,13 @@ static HELD:Mutex<Option<Receiver<()>>>=Mutex::new(None);
 static TRACE:Mutex<Vec<String>>=Mutex::new(Vec::new());
 pub mod libuitest {pub mod startup {pub fn mark(name:&str){super::super::TRACE.lock().unwrap().push(name.into());}}}
 pub mod process {pub fn exit(_code:i32)->!{panic!("startup exited")}}
+mod render_requirements{pub const CHROME_PIPELINES:u32=0x38b;}
 const APPBAR_HEIGHT:usize=36;
 fn px(v:usize)->usize{v*2}
 struct Ui{scale:usize}fn ui()->Ui{Ui{scale:2}}
 fn ttf_font_size()->f32{14.0}
 static DEVICE_READY:std::sync::atomic::AtomicBool=std::sync::atomic::AtomicBool::new(false);
-pub mod libgfx{pub mod stage{pub fn context()->Result<u64,String>{super::super::DEVICE_READY.store(true,std::sync::atomic::Ordering::Relaxed);Ok(1)}}}
+pub mod libgfx{pub mod stage{pub fn context_for(pipelines:u32)->Result<u64,String>{assert_eq!(pipelines,0x38b);super::super::DEVICE_READY.store(true,std::sync::atomic::Ordering::Relaxed);Ok(1)}}}
 mod session{pub fn claim()->Result<u64,String>{super::READY.lock().unwrap().as_ref().unwrap().recv_timeout(std::time::Duration::from_millis(250)).expect("font preparation still begins after the blocking compositor claim");Ok(7)}pub fn scene_fd()->Result<i32,String>{Ok(9)}}
 mod desktop_publish{pub struct Publisher;impl Publisher{pub fn new()->Result<Self,String>{Ok(Self)}}}
 struct Clock;impl Clock{fn participate(&mut self)->Result<(),String>{Ok(())}fn begin_epoch(&mut self){}fn update_clock(&mut self)->Option<i64>{Some(0)}fn wall_sec(&self)->i64{0}}
@@ -65,7 +66,7 @@ impl CachedFont {
  let(tx,rx)=channel();*RESUME.lock().unwrap()=Some(tx);*HELD.lock().unwrap()=Some(rx);
  let _=Clock::begin_epoch;let _=Clock::update_clock;let _=Clock::wall_sec;let _=format_clock;
  let mut clock=Clock;let _=clock_wake::open;
- let _ = desktop_publish::Publisher::new;let _=session::scene_fd;let _=libgfx::stage::context;
+ let _ = desktop_publish::Publisher::new;let _=session::scene_fd;let _=libgfx::stage::context_for;
  let _ = Compositor::paint_background;
  let _ = CachedFont::prepare_subpixel; let _ = ttf_font_size();
  let(screen_w,screen_h)=(2560usize,1600usize);let mut clock_text=*b"00:00:00 ET";

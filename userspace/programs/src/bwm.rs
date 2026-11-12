@@ -12,6 +12,8 @@
 mod compositor;
 #[path = "bwm/startup_prepare.rs"]
 mod startup_prepare;
+#[path = "bwm/render_requirements.rs"]
+mod render_requirements;
 #[path = "bwm/placement.rs"]
 mod placement;
 #[path = "bwm/session.rs"]
@@ -154,7 +156,7 @@ fn main() {
     // Font parsing and cold taskbar atlas coverage do not touch these targets.
     // Prepare the same clock snapshot that draw_taskbar will use.
     // Establish libgfx's context before reserving the compositor's next context.
-    if let Err(error) = libgfx::stage::context() {
+    if let Err(error) = libgfx::stage::context_for(render_requirements::CHROME_PIPELINES) {
         eprintln!("[bwm] ERROR: font renderer could not be initialized: {error:?}");
         process::exit(1);
     }

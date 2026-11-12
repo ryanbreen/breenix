@@ -25,7 +25,7 @@ pub struct WindowInfo {
 
 /// Claim the compositor role: returns the claim's epoch.
 pub fn claim() -> Result<u64, Error> {
-    window::claim_compositor()
+    window::claim_compositor_for(super::render_requirements::SCENE_PIPELINES)
 }
 
 /// The scene descriptor (`EVENT_FD` of window 0): readable when what the next composite shows

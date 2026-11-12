@@ -26,9 +26,10 @@ static TARGETS:AtomicUsize=AtomicUsize::new(0);
 static CONTEXTS:AtomicUsize=AtomicUsize::new(0);
 static CLEARS:AtomicUsize=AtomicUsize::new(0);
 static DROPPED:AtomicUsize=AtomicUsize::new(0);
+mod render_requirements{pub const SCENE_PIPELINES:u32=3;}
 mod abi{pub mod format{pub const B8G8R8A8:u32=1;}}
 mod gpu{
- pub fn context_create()->Result<u64,i64>{super::CONTEXTS.fetch_add(1,super::Ordering::SeqCst);Ok(7)}
+ pub fn context_create_for(pipelines:u32)->Result<u64,i64>{assert_eq!(pipelines,3);super::CONTEXTS.fetch_add(1,super::Ordering::SeqCst);Ok(7)}
  pub fn context_destroy(_:u64){}
  pub fn resource_destroy(_:u64){super::DROPPED.fetch_add(1,super::Ordering::SeqCst);}
  pub fn scanout_target_create(_:u32,_:u32,_:u32)->Result<u64,i64>{Ok(10+super::TARGETS.fetch_add(1,super::Ordering::SeqCst) as u64)}
@@ -61,7 +62,7 @@ impl Compositor{@METHODS@}
  drop(Compositor::open(2560,1600,72,2).unwrap());
  assert_eq!(CLEARS.load(Ordering::SeqCst),2);
 }
-'''.replace('@METHODS@', '\n'.join(methods).replace('super::pace::', 'crate::pace::')).replace(
+'''.replace('@METHODS@', '\n'.join(methods).replace('super::pace::', 'crate::pace::').replace('super::render_requirements::', 'crate::render_requirements::')).replace(
             '@DROP@', item(source, 'impl Drop for Compositor')).replace('@CALL@', call))
         main = (ROOT / 'userspace/programs/src/bwm.rs').read_text()
         start = main.index('let claim = scope.spawn(session::claim)')

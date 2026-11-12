@@ -299,7 +299,15 @@ and 415 (`652a4494`) was reverted (`0f53872e`) and is not reapplied.
   draw while other pipelines warm. `WAIT` and fence ordering and completion retain their existing rules.
   The context reports progress through `COUNTERS`: state 3 is live with catalogue warm-up in progress;
   state 0 is live with catalogue warm-up complete. Quarantined and reset states keep their meanings
-  (`docs/gui/gpu-abi.md`). Performance bounds, including `performance/first-draw-latency`, measure draws
+  (`docs/gui/gpu-abi.md`). A renderer may explicitly select preparation requirements with
+  `CONTEXT_CREATE.flags`: `PREPARE` (bit 31) plus a nonempty rendering-pipeline mask.
+  For that context the worker and readiness state cover only those programs. Zero flags retain
+  full-catalogue preparation. Programs outside an explicit set can still be drawn on demand;
+  renderers should include their later interactions as well as their initial frame so preparation
+  does not transfer required compilation into interactive work. Bwm selects SOLID/COPY for its
+  scene and SOLID/COPY/NEAREST_SCALED/COVERAGE/COVERAGE_SPANS/BITMAP_TEXT for chrome, including
+  the bitmap font fallback. `CLAIM_COMPOSITOR` may reserve the same explicit set for transfer
+  to a matching context creation. Performance bounds, including `performance/first-draw-latency`, measure draws
   issued after that context reports warm-up complete, excluding application startup and warm-up.
   The profile-only `probe_int` measuring programs are excluded from catalogue warm-up; each compiles and
   warms on its routine's first PROBE in that context. That first-use cost is excluded from performance bounds;

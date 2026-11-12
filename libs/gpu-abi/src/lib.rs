@@ -430,13 +430,30 @@ impl Caps {
     }
 }
 
+/// Renderer preparation requirements, one bit per rendering pipeline. Flags 0
+/// retain the general-purpose full catalogue; profile programs are not included.
+pub mod context_flags {
+    pub const ALL: u32 = (1 << super::pipeline::PROBE_INT) - 1;
+    /// Opt in to a nonempty preparation mask in the low pipeline bits.
+    pub const PREPARE: u32 = 1 << 31;
+
+    pub const fn requirements(flags: u32) -> Option<u32> {
+        if flags == 0 { return Some(ALL); }
+        if flags & !(PREPARE | ALL) != 0 || flags & PREPARE == 0 || flags & ALL == 0 {
+            None
+        } else {
+            Some(flags & ALL)
+        }
+    }
+}
+
 /// `CONTEXT_CREATE` (32 bytes).
 #[repr(C)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ContextCreate {
     /// Out: the new context's handle.
     pub handle: u64,
-    /// In: 0.
+    /// In: preparation requirements (`context_flags`), or 0 for the full catalogue.
     pub flags: u32,
     /// Out: how many fixed rendering-catalogue programs had warmed when creation returned;
     /// a progress snapshot, not the completion signal (`Counters::state`).

@@ -135,12 +135,16 @@ Pipelines are numbered in the catalogue table's order (`docs/gui/gpu.md` section
 `gradient_v` 14, `triangle` 15, `probe_int` 16. Formats: 0 B8G8R8A8, 1 R8G8B8A8, 2 R8 (record v2's
 `format` uses the same numbers).
 
-**`CONTEXT_CREATE` (32 bytes):** `handle: u64` out, `flags: u32` (0), `warmed: u32` out (the
+**`CONTEXT_CREATE` (32 bytes):** `handle: u64` out, `flags: u32`, `warmed: u32` out (the
 number of fixed rendering-catalogue programs warmed at the time of the result, excluding `probe_int`),
 16 reserved. EAGAIN past 8 contexts per process. Creation queues catalogue compilation and warm-up on the
 GPU worker and returns without waiting for it; `warmed` is a progress snapshot, not the completion signal.
-Query `COUNTERS` with this context's handle to observe warm-up completion (state 0); state 3 means the
-context is live and still warming. The profile-only `probe_int` family has one program per routine
+Flags 0 request the full rendering catalogue. `PREPARE` (bit 31) plus a nonempty mask in bits
+0–15 requests preparation of just those pipelines; bare low bits, an empty explicit set, `probe_int`
+and other unknown bits are EINVAL. The record layout is unchanged. Query `COUNTERS` with this
+context's handle to observe completion of its preparation set (state 0); state 3 means the
+context is live and still warming. Other pipelines remain available for on-demand drawing.
+The profile-only `probe_int` family has one program per routine
 (ruling 48); each is compiled and warmed on the first PROBE of that routine in that context.
 That first-use cost is excluded from performance bounds. The watchdog and kill bounds still apply (`docs/gui/gpu.md` section 1.4.1).
 

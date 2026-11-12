@@ -21,11 +21,24 @@ class StartupPipelines(unittest.TestCase):
                            if line.strip().startswith('let warming ='))
         selection = next(line.strip() for line in worker.splitlines()
                          if line.strip().startswith('let pipeline ='))
-        startup = (ROOT / 'userspace/programs/src/bwm/startup_prepare.rs').read_text()
+        path = ROOT / 'userspace/programs/src/bwm/render_requirements.rs'
+        startup = path.read_text() if path.exists() else ''
         # Before the explicit requirement-set API, both callers request the
         # default catalogue. Keep that old path executable to reproduce it.
         requirements = '\n'.join(line for line in startup.splitlines()
                                  if line.startswith('pub const ') and 'PIPELINES' in line)
+        if requirements:
+            for path, call in [
+                ('userspace/programs/src/bwm.rs',
+                 'libgfx::stage::context_for(render_requirements::CHROME_PIPELINES)'),
+                ('userspace/programs/src/bwm/session.rs',
+                 'window::claim_compositor_for(super::render_requirements::SCENE_PIPELINES)'),
+                ('userspace/programs/src/bwm/compositor.rs',
+                 'gpu::context_create_for(super::render_requirements::SCENE_PIPELINES)'),
+                ('kernel/src/window/ops.rs',
+                 'prepare_window_renderer_for(caller.tgid, true, required)'),
+            ]:
+                self.assertIn(call, (ROOT / path).read_text())
         if not requirements:
             requirements = ('const SCENE_PIPELINES:u32=0xffff;\n'
                             'const CHROME_PIPELINES:u32=0xffff;')
@@ -34,7 +47,8 @@ use std::collections::BTreeMap;
 mod abi { pub mod pipeline {
  pub const SOLID:u32=0; pub const COPY:u32=1; pub const NEAREST_SCALED:u32=3;
  pub const COVERAGE:u32=7; pub const COVERAGE_SPANS:u32=8; pub const BITMAP_TEXT:u32=9;
-}}
+ pub const PROBE_INT:u32=16;
+} @FLAGS@ }
 use abi::pipeline;
 mod encode { pub const ALL_WARM:u32=0xffff; }
 #[derive(PartialEq)] enum CtxState { Live, Quarantined }
@@ -82,11 +96,18 @@ fn cold(required:u32, base:u32)->Vec<u32> {
  for pipe in chrome_used { assert!(chrome.contains(&pipe)); }
  assert_eq!(scene.len()+chrome.len(),8,"startup still prepares unused renderer programs");
  assert_eq!(cold(catalogue_mask(),0).len(),16,"general-purpose preparation changed");
+ assert_eq!(abi::context_flags::requirements(0),Some(catalogue_mask()));
+ assert_eq!(abi::context_flags::requirements(abi::context_flags::PREPARE|SCENE_PIPELINES),Some(SCENE_PIPELINES));
+ assert_eq!(abi::context_flags::requirements(1),None,"bare flags retain their rejection");
+ assert_eq!(abi::context_flags::requirements(1<<pipeline::PROBE_INT),None);
+ assert_eq!(abi::context_flags::requirements(1<<31),None);
  assert!(cold(0,0).is_empty());
  // Native fixed setup has already completed SOLID; it must not warm it twice.
  assert_eq!(cold(SCENE_PIPELINES,1<<pipeline::SOLID),vec![pipeline::COPY]);
 }
 '''.replace('@MASK@', item(source, 'fn catalogue_mask('))
+           .replace('@FLAGS@', item((ROOT / 'libs/gpu-abi/src/lib.rs').read_text(),
+                                   'pub mod context_flags {'))
            .replace('@RETURNED@', item(source, '    fn warm_returned(')
                     .replace('#[cfg(target_arch = "x86_64")]', ''))
            .replace('@REQUIREMENTS@', requirements)

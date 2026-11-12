@@ -218,7 +218,8 @@ impl Compositor {
         let ready = ready();
         let opened = allocated.and_then(|mut c| {
             libuitest::startup::mark("context-begin");
-            c.context = gpu::context_create().map_err(|e| format!("context: errno {}", -e))?;
+            c.context = gpu::context_create_for(super::render_requirements::SCENE_PIPELINES)
+                .map_err(|e| format!("context: errno {}", -e))?;
             libuitest::startup::mark("context-ready");
             c.clear_targets()?;
             Ok(c)

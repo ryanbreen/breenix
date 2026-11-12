@@ -1296,7 +1296,8 @@ pub fn claim(caller: &Caller, c: &mut Claim, out: u64) -> Result<u64, i32> {
     if !caller.is_root() {
         return Err(EPERM);
     }
-    if c.flags != 0 || c.reserved != 0 {
+    let required = gpu_abi::context_flags::requirements(c.flags).ok_or(EINVAL as i32)?;
+    if c.reserved != 0 {
         return Err(EINVAL);
     }
     sweep_dead_owners();
@@ -1349,7 +1350,7 @@ pub fn claim(caller: &Caller, c: &mut Claim, out: u64) -> Result<u64, i32> {
         waits.events.wake_up();
     }
     // Metadata authority and notifications do not depend on a renderer cache allocation.
-    let _ = crate::gpu::prepare_window_renderer(caller.tgid, true);
+    let _ = crate::gpu::prepare_window_renderer_for(caller.tgid, true, required);
     Ok(0)
 }
 

@@ -385,7 +385,7 @@ struct Ctx {
     #[cfg(target_arch = "x86_64")]
     native_probe_mask: u32,
     /// The rendering pipelines whose warm-up step completed, one bit each
-    /// (`catalogue_mask()` when the catalogue's warm-up is complete).
+    /// (`warm_required` records the set this renderer prepares).
     warm: u32,
     /// Initial grace deadline; later resource creations do not postpone it.
     warm_after: u64,
@@ -393,6 +393,8 @@ struct Ctx {
     warm_failures: u32,
     /// Private clear/copy contexts do not use the rendering catalogue.
     warm_catalogue: bool,
+    /// Programs requested by this renderer, independent of device/backend.
+    warm_required: u32,
     /// Device errors in a row, in fence order.
     errors_in_row: u32,
     /// Test point 31's fence-depth mode on this context.
@@ -1394,7 +1396,7 @@ impl Core {
                 ctx.warm |= 1 << step.pipeline;
                 ctx.warm_failures = 0;
                 #[cfg(target_arch = "x86_64")]
-                if ctx.warm == catalogue_mask() { ctx.native_warm_scratch = None; }
+                if (ctx.warm & ctx.warm_required) == ctx.warm_required { ctx.native_warm_scratch = None; }
             }
         }
         self.settle(step.ctx);
@@ -2011,7 +2013,7 @@ impl Core {
         let presentation = dev::presentation_probe(false).map(|at| if at > now { at } else { now.saturating_add(100_000) });
         // Grace deadlines are independent across processes.
         let grace = self.contexts.values()
-            .filter(|x| x.warm_catalogue && x.state == CtxState::Live && !x.dropped && x.warm != catalogue_mask())
+            .filter(|x| x.warm_catalogue && x.state == CtxState::Live && !x.dropped && (x.warm & x.warm_required) != x.warm_required)
             .map(|x| x.warm_after).filter(|&g| g > now).min();
         let watchdog = hangs.chain(waits).chain(progress).min().map(|at| (at + limits::WATCHDOG_NS).min(now + EXAMINE_NS));
         watchdog.into_iter().chain(grace).chain(poll).chain(presentation).min()
@@ -2997,7 +2999,7 @@ fn warm_next() -> Option<u64> {
             && !c.stalled
             && c.quarantined_at.is_none()
     };
-    let warming = |x: &Ctx| x.warm_catalogue && x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && x.warm != catalogue_mask() && now_ns() >= x.warm_after;
+    let warming = |x: &Ctx| x.warm_catalogue && x.owner != 0 && x.state == CtxState::Live && x.device_alive && !x.dropped && (x.warm & x.warm_required) != x.warm_required && now_ns() >= x.warm_after;
     let due = with_core(|c| {
         if !(ready(c) && c.contexts.values().any(warming)) {
             c.warm_held = None;
@@ -3025,7 +3027,7 @@ fn warm_next() -> Option<u64> {
         let id = warm_context(c, &warming)?;
         let ctx = c.contexts.get_mut(&id)?;
         ctx.busy = true;
-        let pipeline = (!ctx.warm & catalogue_mask()).trailing_zeros();
+        let pipeline = (!ctx.warm & ctx.warm_required).trailing_zeros();
         Some((ctx.id, pipeline, ctx.objects.clone(), ctx.dx.clone(), [ctx.vb, ctx.scratch, ctx.scratch_texture]))
     })
     .flatten();
@@ -3407,11 +3409,12 @@ fn new_res(owner: u64, kind_: u32, format_: u32, width: u32, height: u32, size: 
 
 fn op_context_create(arg: u64, len: u64) -> Result<u64, i64> {
     let mut a: abi::ContextCreate = read_arg(arg, len)?;
-    if a.flags != 0 || a.handle != 0 || a.warmed != 0 || a.reserved != [0; 2] {
+    let required = abi::context_flags::requirements(a.flags).ok_or(EINVAL)?;
+    if a.handle != 0 || a.warmed != 0 || a.reserved != [0; 2] {
         return Err(EINVAL);
     }
     let tgid = caller()?;
-    let (handle, warmed) = create_context(tgid)?;
+    let (handle, warmed) = create_context_for(tgid, required)?;
     a.handle = handle;
     a.warmed = warmed;
     if let Err(e) = write_arg(arg, &a) {
@@ -3427,14 +3430,15 @@ fn create_kernel_context() -> Result<(u64, u32), i64> {
     #[cfg(target_arch = "x86_64")]
     { create_context_with_catalogue(0, false) }
     #[cfg(target_arch = "aarch64")]
-    { create_context(0) }
+    { create_context_for(0, catalogue_mask()) }
 }
 
-fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
+fn create_context_for(tgid: u64, required: u32) -> Result<(u64, u32), i64> {
     let prepared = with_core(|c| {
         let handle = c.procs.get_mut(&tgid)?.prepared_context.take()?;
         let warmed = c.ctx_of(tgid, handle).and_then(|id| c.contexts.get(&id))
-            .filter(|ctx| ctx.state == CtxState::Live && !ctx.dropped && ctx.device_alive)
+            .filter(|ctx| ctx.state == CtxState::Live && !ctx.dropped && ctx.device_alive
+                && ctx.warm_required == required)
             .map(|ctx| ctx.warmed());
         Some((handle, warmed))
     }).flatten();
@@ -3442,13 +3446,18 @@ fn create_context(tgid: u64) -> Result<(u64, u32), i64> {
         if let Some(warmed) = ready { return Ok((handle, warmed)); }
         destroy_context(tgid, handle);
     }
-    create_context_with_catalogue(tgid, true)
+    create_context_with_requirements(tgid, required)
 }
 
 /// Initialize the renderer during window/display setup so catalogue compilation is out
 /// of the first frame's path. The prepared context is counted as an ordinary process context;
 /// CONTEXT_CREATE transfers its existing handle to the caller, and exit retires it normally.
 pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32> {
+    prepare_window_renderer_for(tgid, reserve_next, catalogue_mask())
+}
+
+/// Reserve and complete only the renderer's declared preparation requirements.
+pub fn prepare_window_renderer_for(tgid: u64, reserve_next: bool, required: u32) -> Result<(), i32> {
     // QEMU clients retain ordinary context creation: CREATE must reach
     // registration without waiting for the compositor's whole catalogue.
     if !platform_config::is_parallels() && !(platform_config::is_qemu() && reserve_next) { return Ok(()); }
@@ -3458,7 +3467,7 @@ pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32>
             c.contexts.get(id).is_some_and(|ctx| ctx.warm_catalogue && ctx.state == CtxState::Live && !ctx.dropped)))
     }).ok_or(ENODEV as i32)?;
     let made = if needs_context {
-        let (handle, _) = create_context_with_catalogue(tgid, true).map_err(|e| e as i32)?;
+        let (handle, _) = create_context_with_requirements(tgid, required).map_err(|e| e as i32)?;
         let kept = with_core(|c| {
             let p = c.proc_mut(tgid);
             if p.prepared_context.is_some() { false } else { p.prepared_context = Some(handle); true }
@@ -3478,7 +3487,7 @@ pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32>
             if reserved.is_some_and(|reserved| reserved != id) { continue; }
             let Some(ctx) = c.contexts.get(id) else { continue; };
             if !ctx.warm_catalogue || ctx.dropped || ctx.state != CtxState::Live { continue; }
-            if ctx.warm != catalogue_mask() { return None; }
+            if (ctx.warm & ctx.warm_required) != ctx.warm_required { return None; }
         }
         Some(Ok(()))
     }).map_err(|_| EINTR).and_then(|r| r);
@@ -3496,6 +3505,10 @@ pub fn prepare_window_renderer(tgid: u64, reserve_next: bool) -> Result<(), i32>
 }
 
 fn create_context_with_catalogue(tgid: u64, warm_catalogue: bool) -> Result<(u64, u32), i64> {
+    create_context_with_requirements(tgid, if warm_catalogue { catalogue_mask() } else { 0 })
+}
+
+fn create_context_with_requirements(tgid: u64, required: u32) -> Result<(u64, u32), i64> {
     let _creation = CreationGuard::acquire(tgid)?;
     sweep();
     if !ensure_reaper() {
@@ -3598,7 +3611,8 @@ fn create_context_with_catalogue(tgid: u64, warm_catalogue: bool) -> Result<(u64
                 warm: 0,
                 warm_after: 0,
                 warm_failures: 0,
-                warm_catalogue,
+                warm_catalogue: required != 0,
+                warm_required: required,
                 errors_in_row: 0,
                 depth: None,
                 flushes: present_answers::Answers::new(),
@@ -3777,10 +3791,13 @@ fn create_device_context(tgid: u64, id: u32, internal: [u32; 3], vb_pages: &Arc<
     }
     #[cfg(target_arch = "x86_64")]
     if dev::backend() == abi::backend::GK208 {
-        let catalogue = with_core(|c| c.contexts.get(&id).is_some_and(|ctx| ctx.warm_catalogue)).ok_or(ENODEV)?;
+        let required = with_core(|c| c.contexts.get(&id).map(|ctx| ctx.warm_required))
+            .flatten().ok_or(ENODEV)?;
         // A tiny CE upload is fixed input setup, not catalogue warm-up. Do it on
         // the creating caller's killable wait, avoiding a kgpu self-wait.
-        let inputs = if catalogue { Some(native_warm_scratch(tgid)?) } else { None };
+        let inputs = if required & !(1 << abi::pipeline::SOLID) != 0 {
+            Some(native_warm_scratch(tgid)?)
+        } else { None };
         with_core(|c| {
             let ctx = c.contexts.get_mut(&id).ok_or(EIO)?;
             if ctx.state != CtxState::Creating || !ctx.device_alive { return Err(EIO); }
@@ -6870,7 +6887,7 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
                 // Contexts ready after catalogue setup: private clear/copy contexts have no
                 // catalogue work; rendering contexts require native completion of each step.
                 out.warmed = p.contexts.values()
-                    .filter(|id| c.contexts.get(*id).is_some_and(|x| x.state == CtxState::Live && (!x.warm_catalogue || x.warm == catalogue_mask())))
+                    .filter(|id| c.contexts.get(*id).is_some_and(|x| x.state == CtxState::Live && (!x.warm_catalogue || (x.warm & x.warm_required) == x.warm_required)))
                     .count() as u64;
                 out.resources = p.resources.len() as u64;
                 out.resource_bytes = p.quota.resource_bytes();
@@ -6883,7 +6900,7 @@ fn op_counters(arg: u64, len: u64) -> Result<u64, i64> {
             out.state = match ctx.state {
                 CtxState::Quarantined => abi::context_state::QUARANTINED,
                 CtxState::Reset => abi::context_state::RESET,
-                _ if !ctx.warm_catalogue || ctx.warm == catalogue_mask() => abi::context_state::LIVE,
+                _ if !ctx.warm_catalogue || (ctx.warm & ctx.warm_required) == ctx.warm_required => abi::context_state::LIVE,
                 _ => abi::context_state::WARMING,
             };
             out.warmed = ctx.warmed() as u64;
