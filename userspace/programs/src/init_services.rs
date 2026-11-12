@@ -319,7 +319,10 @@ fn unmount_sequence_shares() -> Result<(), String> {
         }
     }
     let mounts = std::fs::read_to_string("/proc/mounts").map_err(|e| format!("read back /proc/mounts: {e}"))?;
-    for target in mounted(&mounts) {
+    let remaining = mounted(&mounts);
+    print!("[init] sequence shares readback pid={} configured={} mounted={}\n",
+        std::process::id(), shares.len(), remaining.len());
+    for target in remaining {
         errors.push(format!("mount {target} remains"));
     }
     if errors.is_empty() { Ok(()) } else { Err(errors.join("; ")) }
