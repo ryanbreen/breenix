@@ -365,7 +365,7 @@ fn main() {
     if !strict_startup {
         for win in windows.iter().filter(|w| w.creation_order == 0 && &w.title[..w.title_len] == b"Terminal") {
             match prompt_watchers.attach(win.window_id) {
-                Ok(()) => validation.request(win.window_id, monotonic_ms().expect("monotonic clock")),
+                Ok(()) => validation.request(win.window_id, monotonic_ms().unwrap_or(0)),
                 Err(error) => print!("[bwm] terminal prompt check FAILED: window {}: attach tree reader: {error}\n", win.window_id),
             }
         }
@@ -433,7 +433,7 @@ fn main() {
         let mut wait = ShutdownWait { fds: &mut poll_fds, timeout, failed: false };
         if shutdown::boundary(&mut wait).is_none() { return; }
         // A verdict timeout must run even while input, animation or resize is busy.
-        expire_prompt_checks(&mut validation, monotonic_ms().expect("monotonic clock"));
+        expire_prompt_checks(&mut validation, monotonic_ms().unwrap_or(0));
         prompt_watchers.retain(|id| validation.prompt_pending(id));
         signal_wake.drain();
         if let Some(clipboard) = &mut clipboard { clipboard.service(&poll_fds, libbreenix::ui_clock::now_ns()); }
@@ -464,7 +464,7 @@ fn main() {
                     for win in windows.iter().filter(|w| w.creation_order >= first_new_order
                         && w.creation_order == 0 && &w.title[..w.title_len] == b"Terminal") {
                         match prompt_watchers.attach(win.window_id) {
-                            Ok(()) => validation.request(win.window_id, monotonic_ms().expect("monotonic clock")),
+                            Ok(()) => validation.request(win.window_id, monotonic_ms().unwrap_or(0)),
                             Err(error) => print!("[bwm] terminal prompt check FAILED: window {}: attach tree reader: {error}\n", win.window_id),
                         }
                     }
