@@ -290,6 +290,38 @@ class SmbStagingTest(unittest.TestCase):
         self.assertEqual([cmd[-2:] for cmd in commands], [('stop', 'smbd'), ('start', 'smbd')])
         self.assertEqual([r['ok'] for r in transcripts[-1]['requests']], [True, True])
 
+    def test_both_sequence_smb_suites_are_served(self):
+        for order in [('network-shares', 'gui-apps'), ('gui-apps', 'network-shares')]:
+            helper = load_script('smb-restart')
+            clock = [0.0]
+            chunks = [f'SUITE_SEQUENCE BEGIN suites={",".join(order)} baseline=1\n'.encode()]
+            for suite in order:
+                request = ('SUITE network-shares SMBRESTART smb/server-restart seq=1\n' if suite == 'network-shares' else
+                           'SUITE gui-apps SMBSTOP guskit/smb-share-gone seq=1\nSUITE gui-apps SMBSTART guskit/smb-share-gone seq=2\n')
+                chunks.extend([f'SUITE {suite} START cases=1\n'.encode(),
+                               (request + f'SUITE {suite} DONE passed=1 failed=0 skipped=0 total=1\n').encode(), b''])
+            chunks.append(b'SUITE_SEQUENCE DONE suites=2\n')
+            commands, transcripts = [], []
+            def remote(*cmd, **kwargs):
+                if cmd[0] == 'tail':
+                    return SimpleNamespace(returncode=0, stdout=chunks.pop(0))
+                if cmd[0] == 'test': return SimpleNamespace(returncode=1)
+                transcripts.append(json.loads(kwargs['input']))
+                return SimpleNamespace(returncode=0)
+            def incus(*cmd, **kwargs):
+                commands.append(cmd)
+                return SimpleNamespace(returncode=0)
+            def advance(_):
+                # Idle gaps between relevant suites do not spend their active budget.
+                clock[0] += 2701 if chunks and b' START ' in chunks[0] else 0.5
+            with patch.object(helper.time, 'monotonic', side_effect=lambda: clock[0]), \
+                    patch.object(helper.time, 'sleep', side_effect=advance), contextlib.redirect_stdout(io.StringIO()):
+                result = helper.watch('20261110T000000Z-metal', 'fixture-smb', remote, incus)
+            self.assertEqual(result, 0)
+            self.assertEqual(sum('systemctl' in cmd for cmd in commands), 3)
+            self.assertEqual(len(transcripts[-1]['requests']), 3)
+            self.assertTrue(all(r['ok'] for r in transcripts[-1]['requests']))
+
     def test_helper_stops_when_boot_ends_before_suite(self):
         helper = load_script('smb-restart')
         transcripts = []
