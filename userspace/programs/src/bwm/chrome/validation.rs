@@ -3,6 +3,23 @@
 pub struct ValidationQueue<S> {
     scene: Option<S>,
     first_frames: Vec<FirstFrame>,
+    prompts: Vec<Prompt>,
+}
+
+// Prompt validation is consumed by the next integration unit.
+#[allow(dead_code)]
+pub enum PromptCheck {
+    Text,
+    Empty,
+    Moved,
+}
+
+struct Prompt {
+    id: u64,
+    attempted: bool,
+    last_commit: Option<u64>,
+    in_flight: Option<u64>,
+    attempts: u32,
 }
 
 struct FirstFrame {
@@ -12,7 +29,7 @@ struct FirstFrame {
 
 impl<S> ValidationQueue<S> {
     pub fn new() -> Self {
-        Self { scene: None, first_frames: Vec::new() }
+        Self { scene: None, first_frames: Vec::new(), prompts: Vec::new() }
     }
 
     /// Update the saved scene in place and return the working scene for reuse.
@@ -24,6 +41,9 @@ impl<S> ValidationQueue<S> {
         }
         for client in &mut self.first_frames {
             client.attempted = false;
+        }
+        for prompt in &mut self.prompts {
+            prompt.attempted = false;
         }
         scene
     }
@@ -40,6 +60,43 @@ impl<S> ValidationQueue<S> {
 
     pub fn retain_clients(&mut self, mut live: impl FnMut(u64) -> bool) {
         self.first_frames.retain(|client| live(client.id));
+        self.prompts.retain(|client| live(client.id));
+    }
+
+    /// Request a separate prompt check, without replacing an existing request.
+    #[allow(dead_code)]
+    pub fn request(&mut self, id: u64) {
+        if !self.prompts.iter().any(|prompt| prompt.id == id) {
+            self.prompts.push(Prompt { id, attempted: false, last_commit: None, in_flight: None, attempts: 0 });
+        }
+    }
+
+    /// Reserve one check for this sampled commit in the current presentation.
+    #[allow(dead_code)]
+    pub fn check_prompt(&mut self, id: u64, commit: u64) -> bool {
+        if self.scene.is_none() { return false; }
+        let Some(prompt) = self.prompts.iter_mut().find(|prompt| prompt.id == id) else { return false; };
+        if prompt.attempted || prompt.in_flight.is_some() || prompt.last_commit == Some(commit) { return false; }
+        prompt.attempted = true;
+        prompt.last_commit = Some(commit);
+        prompt.in_flight = Some(commit);
+        true
+    }
+
+    /// Complete only a reserved check; return its commit on text or one failure at the limit.
+    #[allow(dead_code)]
+    pub fn prompt_result(&mut self, id: u64, commit: u64, result: PromptCheck, limit: u32) -> Option<Result<u64, ()>> {
+        let index = self.prompts.iter().position(|prompt| prompt.id == id && prompt.in_flight == Some(commit))?;
+        let prompt = &mut self.prompts[index];
+        prompt.in_flight = None;
+        prompt.attempts += 1;
+        let outcome = match result {
+            PromptCheck::Text => Some(Ok(commit)),
+            PromptCheck::Empty | PromptCheck::Moved if prompt.attempts >= limit => Some(Err(())),
+            PromptCheck::Empty | PromptCheck::Moved => None,
+        };
+        if outcome.is_some() { self.prompts.remove(index); }
+        outcome
     }
 
     pub fn pending(&self, id: u64) -> bool {
