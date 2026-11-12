@@ -204,6 +204,9 @@ pub mod libbreenix {
    assert_eq!(ids, *crate::IDS.lock().unwrap());
    crate::event(if index == 0 { "owner-begin" } else { "owner-reset" });
   }
+  pub fn activate_desktop_shares() -> Result<(), String> {
+   crate::event("shares-config"); Ok(())
+  }
   pub fn finish() {
    let last = crate::IDS.lock().unwrap().last().unwrap() == "gui-apps";
    if last { crate::event("done"); }
@@ -259,11 +262,11 @@ fn check_orderings(entry: fn()) {
  let mut mismatches = Vec::new();
  for (mode, ids, expected) in [
   ("suite", vec!["gui-apps", "time", "files-io"], vec!["prepare", "boot-id", "checks", "state", "script",
-   "owner-begin", "load", "tick", "finish", "tick", "member", "spawn", "supervise", "supervise",
+   "owner-begin", "shares-config", "load", "tick", "finish", "tick", "member", "spawn", "supervise", "supervise",
    "stop", "SUITE_SEQUENCE READY gui-apps", "hand-off-pid1"]),
-  ("sequence", vec!["time", "gui-apps", "files-io"], vec!["owner-reset", "boot-id", "load", "tick", "tick",
+  ("sequence", vec!["time", "gui-apps", "files-io"], vec!["owner-reset", "shares-config", "boot-id", "load", "tick", "tick",
    "member", "spawn", "supervise", "supervise", "stop", "SUITE_SEQUENCE READY gui-apps", "hand-off-pid1"]),
-  ("sequence", vec!["time", "gui-apps"], vec!["owner-reset", "load", "tick", "tick", "member", "spawn",
+  ("sequence", vec!["time", "gui-apps"], vec!["owner-reset", "shares-config", "load", "tick", "tick", "member", "spawn",
    "supervise", "supervise", "stop", "SUITE_SEQUENCE READY gui-apps", "done", "poweroff"]),
   ("suite", vec![], vec!["prepare", "boot-id", "checks", "state", "script", "load", "tick", "finish",
    "tick", "spawn", "supervise", "supervise", "SUITE_SEQUENCE READY gui-apps", "poweroff"]),
@@ -288,7 +291,7 @@ fn refused_teardown_cannot_emit_ready_or_hand_off() {
  STOP_FAIL.store(true, Ordering::Relaxed);
  let actual = run("sequence", &["time", "gui-apps", "files-io"], init_main);
  STOP_FAIL.store(false, Ordering::Relaxed);
- assert_eq!(actual, ["owner-reset", "boot-id", "load", "tick", "tick", "member", "spawn", "supervise", "supervise",
+ assert_eq!(actual, ["owner-reset", "shares-config", "boot-id", "load", "tick", "tick", "member", "spawn", "supervise", "supervise",
   "stop", "failure", "blocked"]);
 }
 #[test]

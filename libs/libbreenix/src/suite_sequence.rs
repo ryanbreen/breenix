@@ -67,6 +67,8 @@ struct SequencePaths {
     list: std::path::PathBuf,
     baseline: std::path::PathBuf,
     executables: std::path::PathBuf,
+    shares: std::path::PathBuf,
+    desktop_shares: std::path::PathBuf,
 }
 
 fn sequence_paths() -> &'static SequencePaths {
@@ -78,11 +80,14 @@ fn sequence_paths() -> &'static SequencePaths {
                 return SequencePaths {
                     list: directory.join("suite-sequence"),
                     baseline: directory.join("suite-baseline"),
+                    shares: directory.join("shares"),
+                    desktop_shares: directory.join("desktop-shares"),
                     executables: directory,
                 };
             }
         }
-        SequencePaths { list: LIST.into(), baseline: BASELINE.into(), executables: "/sbin".into() }
+        SequencePaths { list: LIST.into(), baseline: BASELINE.into(), executables: "/sbin".into(),
+            shares: "/etc/shares".into(), desktop_shares: "/etc/breenix/desktop-shares".into() }
     })
 }
 
@@ -161,10 +166,40 @@ fn configure(ids: &[String], index: usize) {
     COUNT.store(ids.len() as u32, Ordering::Relaxed);
 }
 
+// A staged desktop table belongs to its entry, not to the other suites' baseline.
+fn park_desktop_shares() -> Result<(), String> {
+    let paths = sequence_paths();
+    if !std::fs::read_to_string(paths.list.with_file_name("desktop-suite"))
+        .is_ok_and(|id| id.trim_end() == "gui-apps") { return Ok(()); }
+    if paths.desktop_shares.exists() {
+        return Err("desktop shares parking path already exists".into());
+    }
+    match std::fs::rename(&paths.shares, &paths.desktop_shares) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(std::format!("park desktop shares: {e}")),
+    }
+}
+
+/// Activate the parked table after owner baseline/reset and before desktop services.
+/// RESET removes this entry's copy; the parked baseline remains available.
+pub fn activate_desktop_shares() -> Result<(), String> {
+    let paths = sequence_paths();
+    if !paths.desktop_shares.try_exists().map_err(|e| std::format!("desktop shares: {e}"))? {
+        return Ok(());
+    }
+    std::fs::copy(&paths.desktop_shares, &paths.shares).map(|_| ())
+        .map_err(|e| std::format!("activate desktop shares: {e}"))
+}
+
 /// Prepare the filesystem as the PID 1 owner, before starting services.
 pub fn prepare_owner(ids: &[String], index: usize) {
     configure(ids, index);
     if index == 0 {
+        if let Err(error) = park_desktop_shares() {
+            emit(&std::format!("SUITE_SEQUENCE RESET {} FAIL {error}", ids[index]));
+            return;
+        }
         let entries = record_baseline("/");
         emit(&std::format!("SUITE_SEQUENCE BEGIN suites={} baseline={}{}", ids.join(","), entries, memory()));
         frames(&ids[index]);

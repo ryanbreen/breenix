@@ -215,6 +215,50 @@ finalize();
             result = subprocess.run([str(binary), '--test-threads=1'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
 
+    def test_desktop_share_table_is_scoped_to_its_entry(self):
+        source = (ROOT / 'libs/libbreenix/src/suite_sequence.rs').read_text()
+        source = '\n'.join(line for line in source.splitlines() if not line.startswith('//!'))
+        # Redirect only the root walk; paths and reset are the production implementation.
+        source = source.replace('record_baseline("/")', 'record_baseline(std::env::var("TEST_SEQUENCE_DIR").unwrap().as_str())')
+        if 'pub fn activate_desktop_shares(' not in source:
+            source += '\npub fn activate_desktop_shares() -> Result<(), String> { Err("activation absent".into()) }\n'
+        checks = r'''
+        #[test] fn desktop_table_lifetime() {
+            use std::os::unix::fs::PermissionsExt;
+            let root = std::path::PathBuf::from(std::env::var_os("TEST_SEQUENCE_DIR").unwrap());
+            std::env::set_var("BREENIX_SUITE_SEQUENCE_DIR", &root);
+            let table = root.join("shares");
+            let contents = b"//fixture/rw /mnt/gui smb fixture\n";
+            std::fs::write(&table, contents).unwrap();
+            std::fs::set_permissions(&table, std::fs::Permissions::from_mode(0o640)).unwrap();
+            std::fs::write(root.join("desktop-suite"), "gui-apps\n").unwrap();
+            prepare_owner(&["network-shares".into(), "gui-apps".into(), "window-manager".into()], 0);
+            assert!(!table.exists(), "desktop configuration collides with network suite's create_new table");
+            // Network-shares can own the normal path exclusively before GUI startup.
+            let owned = std::fs::OpenOptions::new().write(true).create_new(true).open(&table).unwrap();
+            drop(owned);
+            std::fs::remove_file(&table).unwrap();
+            activate_desktop_shares().unwrap();
+            assert_eq!(std::fs::read(&table).unwrap(), contents);
+            assert_eq!(std::fs::metadata(&table).unwrap().mode() & 0o777, 0o640);
+            let result = reset(root.to_str().unwrap()).unwrap();
+            assert!(result.changed.is_empty(), "{:?}", result.changed);
+            assert!(!table.exists(), "active GUI configuration survived RESET");
+            // A later desktop entry can activate the identical parked table again.
+            activate_desktop_shares().unwrap();
+            assert_eq!(std::fs::read(&table).unwrap(), contents);
+        }
+    }
+}
+'''
+        with tempfile.TemporaryDirectory() as scratch:
+            path, binary = Path(scratch) / 'table.rs', Path(scratch) / 'table'
+            path.write_text(STUBS + source + checks)
+            subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings', '--test', str(path), '-o', str(binary)], check=True)
+            import os
+            result = subprocess.run([str(binary), '--exact', 'harness::sequence::desktop_table_lifetime'], env=dict(os.environ, TEST_SEQUENCE_DIR=scratch), capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_init_owner_preserves_hostkey_arguments(self):
         source = (ROOT / 'libs/libbreenix/src/suite_sequence.rs').read_text()
         source = '\n'.join(line for line in source.splitlines() if not line.startswith('//!'))

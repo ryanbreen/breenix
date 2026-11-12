@@ -397,6 +397,10 @@ fn run_desktop_suite(pid: u64, path: &str, args: Vec<String>) -> ! {
     }
     if let Some((ids, index)) = &place {
         sequence::prepare_owner(ids, *index);
+        if let Err(error) = sequence::activate_desktop_shares() {
+            print!("SUITE_SEQUENCE RESET gui-apps FAIL {}\n", error);
+            reap_forever();
+        }
     }
     if !boot { publish_log_boot_id(false); }
     // The per-case session supplies bwm. No production bwm or bterm competes for the display.
