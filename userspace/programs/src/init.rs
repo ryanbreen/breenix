@@ -171,12 +171,12 @@ fn main() {
             let path = args.next().expect("suite path required");
             if sequence_entry {
                 assert!(pid == 1 && path == "/sbin/suite-gui-apps"
-                    && std::fs::read_to_string("/etc/breenix/desktop-suite").is_ok_and(|s| s == "gui-apps\n")
+                    && std::fs::read_to_string("/etc/breenix/desktop-suite").is_ok_and(|s| s.trim_end() == "gui-apps")
                     && breenix_suite::suite::sequence::read("gui-apps").is_some_and(|(_, index)| index > 0),
                     "[init] invalid desktop sequence entry");
             }
             if pid == 1 && path == "/sbin/suite-gui-apps"
-                && std::fs::read_to_string("/etc/breenix/desktop-suite").is_ok_and(|s| s == "gui-apps\n")
+                && std::fs::read_to_string("/etc/breenix/desktop-suite").is_ok_and(|s| s.trim_end() == "gui-apps")
             {
                 run_desktop_suite(pid, &path, args.collect());
             }
