@@ -43,6 +43,41 @@ static FIRST_RESUMED: AtomicBool = AtomicBool::new(false);
 /// No race step waits longer than this for the other CPU.
 const STEP_BOUND: Duration = Duration::from_secs(2);
 
+#[test]
+fn ordered_output_recovers_from_a_cpu_that_never_returns() {
+    static STATE: State = State::new();
+    static CPU: AtomicU32 = AtomicU32::new(1);
+    static STEPS: AtomicUsize = AtomicUsize::new(0);
+    enum Scripted {}
+    impl Port for Scripted {
+        type Writer = u8;
+        fn state() -> &'static State { &STATE }
+        fn cpu_tag() -> u32 { CPU.load(Ordering::Relaxed) }
+        fn counter() -> u64 { STEPS.fetch_add(1, Ordering::Relaxed) as u64 }
+        fn ticks(_: u64) -> u64 { 10 }
+        fn mask_interrupts() -> u64 {
+            assert!(STEPS.fetch_add(1, Ordering::Relaxed) < 1000,
+                "ordered output never revokes a stalled owner");
+            0
+        }
+        fn restore_interrupts(_: u64) {}
+        fn ready() -> bool { true }
+        fn write(_: u8, _: &Ownership<Self>) {}
+        fn capture(_: u8) {}
+        fn lead(_: u8, _: &[u8]) -> &'static [u8] { b"" }
+        fn line_open() -> bool { false }
+        fn wrote(_: u8, _: u8) {}
+        fn markers() -> &'static [&'static str] { &[] }
+    }
+    // A faulting CPU retains its guard forever. No timing or live thread is
+    // involved: the port's monotonic counter advances on each protocol step.
+    core::mem::forget(Ownership::<Scripted>::acquire());
+    CPU.store(2, Ordering::Relaxed);
+    let mut recovered = Ownership::<Scripted>::acquire_ordered();
+    uart_owner::write::<Scripted, false>(0, b"panic recovery\n", Kind::Line, &mut recovered);
+    assert!(STEPS.load(Ordering::Relaxed) < 1000);
+}
+
 thread_local! {
     static CPU: u32 = NEXT_CPU.fetch_add(1, Ordering::Relaxed);
     /// Bytes this thread has been cleared to write.
