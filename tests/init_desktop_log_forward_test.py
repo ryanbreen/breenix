@@ -1,6 +1,7 @@
 """Exercise init's production desktop serial receipt filter."""
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import unittest
 
@@ -34,8 +35,11 @@ fn main() {
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp)
             (path / 'check.rs').write_text(harness)
-            subprocess.run(['taskpolicy', '-b', 'rustc', '--edition=2021', '-Dwarnings',
-                            str(path / 'check.rs'), '-o', str(path / 'check')], check=True)
+            command = ['rustc', '--edition=2021', '-Dwarnings',
+                       str(path / 'check.rs'), '-o', str(path / 'check')]
+            if sys.platform == 'darwin':
+                command = ['taskpolicy', '-b', *command]
+            subprocess.run(command, check=True)
             result = subprocess.run([str(path / 'check')], capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(result.stdout.splitlines(), ["true", "true", "true", "false"])
