@@ -52,7 +52,8 @@ class UploadVerdictTest(unittest.TestCase):
             serial.write_text(text)
             def score():
                 return SEQUENCE['score'](['ui-testing'], serial, [serial], repo=repo)
-            self.assertTrue(score()[0], score()[1])
+            ok, rows = score()
+            self.assertTrue(ok, rows)
             receipt = uploads / f'native-diagnostic-{label}.json'
             original = receipt.read_text()
             receipt.unlink()
@@ -67,6 +68,20 @@ class UploadVerdictTest(unittest.TestCase):
             self.assertFalse(score()[0], 'staged route accepted disk-only bundle')
             serial.write_text(text.replace(text.splitlines()[-1], 'SUITE_EVIDENCE ui-testing suite-final-panel skipped=no-route'))
             self.assertFalse(score()[0], 'staged route accepted skipped panel')
+            panel = b'x' * ((2 << 20) + 1)
+            parts = f'SUITE_PARTS v=1 first=0 parts=2 bytes={len(panel)} sha256={digest(panel)}\n'.encode()
+            (uploads / 'gt710-pixels.rle').write_bytes(parts)
+            (uploads / 'native-upload.json').write_text(json.dumps(dict(id=boot, route=route, complete=True,
+                                                                        bytes=len(parts), sha256=digest(parts))))
+            for index, chunk in enumerate((panel[:2 << 20], panel[2 << 20:])):
+                (uploads / f'gt710-breengel-{index:04}.rle').write_bytes(chunk)
+                (uploads / f'native-picture-upload-{index:04}.json').write_text(json.dumps(dict(
+                    id=boot, route=route + f'/pictures/{index}', complete=True, bytes=len(chunk), sha256=digest(chunk))))
+            serial.write_text(text.replace(f'bytes=5 sha256={digest(b"start")}',
+                                           f'bytes={len(panel)} sha256={digest(panel)}'))
+            self.assertTrue(score()[0], 'matching multipart panel failed')
+            (uploads / 'gt710-breengel-0001.rle').write_bytes(b'z')
+            self.assertFalse(score()[0], 'corrupt multipart panel passed')
 
 
 if __name__ == '__main__':

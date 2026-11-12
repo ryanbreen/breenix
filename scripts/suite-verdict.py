@@ -92,6 +92,85 @@ def bundle_disk_problem(records, disk):
     return None
 
 
+def upload_problem(records, serial, directory):
+    """Verify receiver receipts and reassembled payloads against the serial anchors."""
+    try:
+        directory = Path(directory)
+        route_info = json.loads((directory / 'route.json').read_text())
+        intent = json.loads((directory / 'gt710-upload.json').read_text())
+        token = route_info['token']
+        if not isinstance(token, str) or not re.fullmatch(r'[0-9a-f]{64}', token):
+            raise ValueError('invalid route token')
+        route = '/gt710-upload/' + token
+        boot = intent['id']
+        if not isinstance(boot, str) or not boot or intent.get('route') != route or intent.get('suite') != 'ui-testing':
+            raise ValueError('receiver intent differs from route')
+
+        def received(filename, receipt_name, suffix):
+            body = (directory / filename).read_bytes()
+            receipt = json.loads((directory / receipt_name).read_text())
+            if (not 0 < len(body) <= 2 << 20 or receipt.get('id') != boot
+                    or receipt.get('route') != route + suffix or receipt.get('complete') is not True
+                    or type(receipt.get('bytes')) is not int or receipt['bytes'] != len(body)
+                    or receipt.get('sha256') != hashlib.sha256(body).hexdigest()):
+                raise ValueError('upload receipt or payload differs')
+            return body
+
+        lines = read_lines(serial)
+        part_index = 0
+        total = 0
+        for label, filename, receipt, suffix in (
+                ('startup', 'gt710-pixels.rle', 'native-upload.json', ''),
+                ('suite-final-panel', 'gt710-final.rle', 'native-final-upload.json', '/final')):
+            prefix = 'SUITE_EVIDENCE ui-testing ' + label + ' '
+            anchors = [(i, re.fullmatch(re.escape(prefix) + r'bytes=([1-9][0-9]*) sha256=([a-f0-9]{64})', line))
+                       for i, line in enumerate(lines) if line.startswith(prefix)]
+            if len(anchors) != 1 or anchors[0][1] is None:
+                raise ValueError('missing, refused or malformed ' + label + ' panel')
+            at, anchor = anchors[0]
+            before = next((i for i, line in enumerate(lines) if line.startswith('SUITE ui-testing MEMORY before ')), None)
+            after = next((i for i, line in enumerate(lines) if line.startswith('SUITE ui-testing MEMORY reclaimed=')), None)
+            if before is not None and label == 'startup' and at >= before or after is not None and label == 'suite-final-panel' and at <= after:
+                raise ValueError('panel outside its evidence slot')
+            body = received(filename, receipt, suffix)
+            total += len(body)
+            parts = re.fullmatch(rb'SUITE_PARTS v=1 first=(0|[1-9]\d*) parts=([1-9]\d*) bytes=([1-9]\d*) sha256=([a-f0-9]{64})\n', body)
+            if parts:
+                first, count, size = map(int, parts.groups()[:3])
+                if first != part_index or not (2 << 20) < size <= 64 << 20 or count != (size + (2 << 20) - 1) // (2 << 20):
+                    raise ValueError('invalid multipart range')
+                chunks = []
+                for index in range(first, first + count):
+                    chunk = received(f'gt710-breengel-{index:04}.rle', f'native-picture-upload-{index:04}.json', f'/pictures/{index}')
+                    if len(chunk) != min(2 << 20, size - (index - first) * (2 << 20)):
+                        raise ValueError('multipart chunk size differs')
+                    chunks.append(chunk)
+                body = b''.join(chunks)
+                total += len(body)
+                if hashlib.sha256(body).hexdigest() != parts[4].decode():
+                    raise ValueError('multipart digest differs')
+                part_index += count
+            if len(body) != int(anchor[1]) or hashlib.sha256(body).hexdigest() != anchor[2]:
+                raise ValueError('panel differs from serial anchor')
+        if len(list(directory.glob('gt710-breengel-*.rle'))) != part_index:
+            raise ValueError('unanchored picture parts')
+        for kind, match, _ in records:
+            if kind != 'EVIDENCE':
+                continue
+            if match['status'] != 'ok':
+                raise ValueError('staged route requires bundle upload')
+            label = match[2]
+            body = received(f'diagnostic-{label}.bin', f'native-diagnostic-{label}.json', '/diagnostics/' + label)
+            total += len(body)
+            if len(body) != int(match[3]) or hashlib.sha256(body).hexdigest() != match[4]:
+                raise ValueError('bundle differs from serial anchor')
+        if total > 64 << 20:
+            raise ValueError('uploads exceed evidence bound')
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return f'UI upload evidence invalid: {error}'
+    return None
+
+
 def read_lines(path):
     text = Path(path).read_bytes().decode("utf-8", errors="replace")
     return [line.rstrip("\r") for line in text.split("\n")]
@@ -264,7 +343,7 @@ def result_problem(manifest, records, cases):
     return None
 
 
-def verdict(manifest, records_log, logs, only=None, categories=None, disk=None):
+def verdict(manifest, records_log, logs, only=None, categories=None, disk=None, uploads=None):
     suite = manifest["id"]
     planned = [category["id"] for category in manifest["categories"] if not category["cases"]]
     hosted = [category["id"] for category in manifest["categories"] if category.get("hostRunner")]
@@ -364,6 +443,9 @@ def verdict(manifest, records_log, logs, only=None, categories=None, disk=None):
     if not records:
         return False, f"no 'SUITE {suite}' lines in {records_log}"
     problem = result_problem(manifest, records, cases)
+    if problem:
+        return False, problem
+    problem = upload_problem(records, records_log, uploads) if suite == "ui-testing" and uploads else None
     if problem:
         return False, problem
     problem = bundle_disk_problem(records, disk)
@@ -511,6 +593,7 @@ def main():
     parser.add_argument("manifest")
     parser.add_argument("logs", nargs="+")
     parser.add_argument("--disk", help="stopped VM's raw ext2 image for diskChecks and disk-only UI bundles")
+    parser.add_argument("--uploads", help="receiver evidence directory for UI upload verification")
     parser.add_argument("--milestone", help="effort/milestone whose category set this full boot must pass")
     args = parser.parse_args()
     manifest = json.loads(Path(args.manifest).read_text())
@@ -519,7 +602,7 @@ def main():
                                           args.milestone, manifest["id"]) if args.milestone else None
     except ValueError as error:
         parser.error(str(error))
-    ok, reason = verdict(manifest, args.logs[0], args.logs, categories=categories, disk=args.disk)
+    ok, reason = verdict(manifest, args.logs[0], args.logs, categories=categories, disk=args.disk, uploads=args.uploads)
     if ok:
         ok, disk_reason = disk_verdict(manifest.get("diskChecks", []), args.disk)
         if disk_reason:
