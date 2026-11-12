@@ -35,10 +35,18 @@ class LockAttribution(unittest.TestCase):
         trace = trace.split('// Kernel bindings.')[0]
         slots = (ROOT / 'kernel/src/window/gpu_command_trace.rs').read_text()
         slots = slots[slots.index('// Use one CAS'):slots.index('pub struct Commands')]
-        run_rust(self, 'mod gpu_command_trace { use core::sync::atomic::{AtomicU64, Ordering::{Acquire,Release,Relaxed,AcqRel}};\n'
-                 + slots + '}\nmod gpu_core_trace {\n' + trace + '}\nuse gpu_core_trace::Commands;\n' + r'''
+        # The journal now owns a lazily initialized case archive as well. Keep
+        # this check's original request/doorbell assertions on the recent ring.
+        run_rust(self, 'pub mod spin { pub struct Once<T>(std::sync::OnceLock<T>); impl<T> Once<T> { '
+                 'pub const fn new()->Self {Self(std::sync::OnceLock::new())} '
+                 'pub fn get(&self)->Option<&T>{self.0.get()} '
+                 'pub fn call_once(&self,f:impl FnOnce()->T)->&T{self.0.get_or_init(f)} } }\n'
+                 'mod gpu_command_trace { use core::sync::atomic::{AtomicU64, Ordering::{Acquire,Release,Relaxed,AcqRel}};\n'
+                 + slots + '}\nmod gpu_core_trace { use crate::spin;\n' + trace + '}\nuse gpu_core_trace::Commands;\n' + r'''
 #[test] fn pending_fence_and_doorbell_have_distinct_boundaries() {
  let ring = Commands::<3>::new();
+ ring.case_boundary(1, "unrelated-command");
+ assert!(!ring.export_text().contains("gpu-core-case-window"));
  let command = ring.submit(100, 758, 995, 347, 0x207, 24, 19660, 921, 921);
  let bell = ring.doorbell(110, 0, 20, 921);
  ring.finish(bell, 274000110);

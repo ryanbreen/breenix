@@ -81,7 +81,10 @@ mod spin {
 }
 mod signal { pub fn monotonic_nanos()->u64{300} }
 mod task { pub mod scheduler { pub fn stall_snapshot()->Vec<String>{Vec::new()} } }
-pub mod window { pub mod stall_trace { use crate::spin; RING } }
+pub mod window {
+ pub mod gpu_core_trace {pub fn case_boundary(_:u64,_:&str){}}
+ pub mod stall_trace { use crate::spin; RING }
+}
 static WRITES: std::sync::Mutex<Vec<Vec<u8>>> = std::sync::Mutex::new(Vec::new());
 fn device_write(buf:&[u8])->Result<usize,i32>{
  struct Caller {tid:u64} let caller=Caller{tid:7};

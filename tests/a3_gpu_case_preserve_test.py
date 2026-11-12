@@ -16,6 +16,8 @@ class CasePreservation(unittest.TestCase):
         # no effect, and the real rolling journal evicts the originating command.
         if 'pub fn case_boundary(' not in trace:
             trace += '\nimpl<const N: usize> Commands<N> { pub fn case_boundary(&self, _: u64, _: &str) {} }\n'
+        if 'pub fn export_text(' not in trace:
+            trace += '\nimpl<const N: usize> Commands<N> { pub fn export_text(&self) -> String { self.text() } }\n'
         slots = (ROOT / 'kernel/src/window/gpu_command_trace.rs').read_text()
         slots = slots[slots.index('// Use one CAS'):slots.index('pub struct Commands')]
         run_rust(self, r'''
@@ -45,12 +47,15 @@ use gpu_core_trace::Commands;
  // Deterministic eviction on the old journal, before any diagnostic export.
  for i in 0..12 {let seq=ring.submit(110+i,722,949,338,519,32,4,4+i,4+i);ring.finish(seq,130+i);}
  ring.finish(shader,150);
+ assert!(!ring.export_text().contains("gpu-core-case-window"),"active archives stay out of suite exports");
  ring.case_boundary(99,"budget 160 parent-outcome recovery/stack-restored\n"); // not the owner
  ring.case_boundary(10,"budget 170 parent-outcome recovery/stack-restored\n");
  let frozen=ring.text();
  assert!(frozen.contains("submit_ns=101 fence_return_ns=102 pid=722 tid=949 context=338 type=512"),"evicted context creator: {frozen}");
  assert!(frozen.contains("submit_ns=103 fence_return_ns=150 pid=724 tid=952 context=339 type=519 cmd_bytes=32 payload_bytes=19660"),"evicted blocking command: {frozen}");
  assert!(frozen.contains("case=recovery/stack-restored owner_tid=10 begin_ns=100 end_ns=170"),"{frozen}");
+ assert!(ring.export_text().contains("gpu-core-case-window case=recovery/stack-restored"));
+ assert!(!ring.export_text().contains("gpu-core-case-window"),"emit each frozen case once");
  let preserved=|s:String| s.lines().filter(|l|l.contains("case=recovery/")).collect::<Vec<_>>().join("\n");
  for i in 0..12 {ring.submit(180+i,9,9,9,519,32,4,30+i,30+i);}
  ring.finish(shader,999); // completion after freeze cannot rewrite its boundary

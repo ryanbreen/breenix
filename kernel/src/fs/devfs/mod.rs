@@ -466,6 +466,8 @@ pub fn screen_evidence_write(buf: &[u8]) -> Result<usize, i32> {
     if buf.len() > 512 { return Err(22); }
     if let Some(command) = buf.strip_prefix(b"WM_STALL ") {
         let command = core::str::from_utf8(command).map_err(|_| 22)?;
+        #[cfg(target_arch = "aarch64")]
+        crate::window::gpu_core_trace::case_boundary(caller.tid, command);
         crate::window::stall_trace::command(caller.tid, command);
         return Ok(buf.len());
     }
