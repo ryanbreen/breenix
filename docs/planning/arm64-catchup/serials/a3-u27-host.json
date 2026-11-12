@@ -1,0 +1,43 @@
+{
+  "preserved_suite_labels": 23,
+  "preserved_kernel_labels": 29,
+  "artifact_hashes": {
+    "suite": "0010a5807b7626847cf810547f1e19c860c93a2f7cc3e7e97eac0e2aa259593d",
+    "kernel": "008b973674713e2c0d2eaaf13c995e214c89d80f70c76711581a2f57cd4af83a",
+    "boot_disk": "01dcb966f973cf4671e384c5dd202e158443390e67eeeb4f312f87a091473bf1",
+    "x86_kernel": "4e65b6840b337f6f3256434e893f01a063e78420374c7622d86309b7ea68bcc3",
+    "x86_suite": "dfbb974873a3ce4a3b7018f2018e5b8764a73be5caef0564f624dde482486a14",
+    "client": "d978abff9335fe68e44a3031f00db3eb835f446a968a8274a56bc437e042dc0c"
+  },
+  "retained_build_warning_check": "PASS",
+  "unit": "a3-u27-proof-gate",
+  "check_first_commit": "b9cece9a",
+  "red": {
+    "checks": 3,
+    "failures": 3,
+    "reason": "scripts/a3-proof-gate.py absent"
+  },
+  "green": {
+    "checks": 3,
+    "failures": 0
+  },
+  "sampler": {
+    "samples": 3,
+    "intervals_s": [
+      2.206475709,
+      2.191704583
+    ],
+    "parent_exit": 0,
+    "sampler_exit": 0
+  },
+  "boot_count": 0,
+  "sources": {
+    "scripts/a3-proof-gate.py": "51d7dde7c62e574888bd43f2ffb6d546723c6adf113dc278a3db3ac9d7575677",
+    "tests/a3_proof_gate_test.py": "3678a63fc5a37bbd0be44a804c1a5844a2f6dd8510d2cb17fb4f325a0293f3c1"
+  },
+  "log_sha256": {
+    "a3-u27-red.log": "4aa0455833f11cd67a699ede23d02197872643f174be13eff55194178af482d9",
+    "a3-u27-green.log": "570dc7f99ee179e0cacc2665bcba418c721a1465a353e2d2726a2e1157f81117",
+    "a3-u27-order-green.log": "0ae206126782c9a5dec3400c3ada2c46d22e7a27a98f28af3ec05bd490011b7a"
+  }
+}

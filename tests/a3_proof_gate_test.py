@@ -73,7 +73,10 @@ class ProofGateTests(unittest.TestCase):
             config = {'output_dir': directory, 'ledger': str(Path(directory) / 'ledger.jsonl'),
                       'head': 'a' * 40, 'coordinator_line': 266}
             Path(config['ledger']).write_text(json.dumps({'role': 'coordinator', 'text': 'fixture'}) + '\n')
-            sampler = Mock()
+            qemu = Path(directory) / 'bundle/QEMU-GL.app/Contents/MacOS/qemu-system-aarch64'
+            qemu.parents[3].mkdir()
+            (qemu.parents[3] / 'PINS').write_text('fixture pins\n')
+            sampler = Mock(pid=12345)
             sampler.poll.return_value = None
             def execute(program, arguments):
                 self.assertEqual(program, argv[0])
@@ -82,7 +85,7 @@ class ProofGateTests(unittest.TestCase):
                 self.assertEqual(prediction['type'], 'prediction')
                 self.assertIn('25%', prediction['text'])
                 self.assertEqual(json.loads((Path(directory) / 'artifact-gate.json').read_text())['argv'], argv)
-            with patch.object(gate, 'check_chain', return_value={'hashes': {}, 'native_launcher': 'native'}), \
+            with patch.object(gate, 'check_chain', return_value={'hashes': {}, 'native_launcher': 'native', 'qemu': str(qemu)}), \
                     patch.object(gate, 'check_artifacts', return_value={'suite': 'sha'}) as artifacts, \
                     patch.object(gate, 'check_head') as head, \
                     patch.object(gate, 'check_warnings') as warnings, \
