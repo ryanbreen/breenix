@@ -770,6 +770,20 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
     let result = if needs_write {
         // === WRITE PATH: O_CREAT or O_TRUNC requires exclusive filesystem access ===
         let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+        if let Target::Inode { ino, .. } = &resolved.target {
+            fs_guard = match fs_guard.wait_for_inode(*ino) {
+                Ok(guard) => guard,
+                Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
+            };
+        }
+        if want_trunc && matches!(resolved.target, Target::Absent { .. }) {
+            if let Some(parent) = resolved.lookup_parent() {
+                fs_guard = match fs_guard.wait_for_entry_data(parent, resolved.final_name()) {
+                    Ok(guard) => guard,
+                    Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
+                };
+            }
+        }
         match fs_guard.as_mut() {
             Some(fs) => sys_open_write_path(fs, &resolved, flags, mode, &cred),
             None => {
@@ -5170,17 +5184,8 @@ pub fn sys_sync() -> SyscallResult {
             }
         }
         if matches!(handles, Ok(None)) { continue; }
-        // Exclude snapshots between the barrier and dirty-custody completion.
-        let guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
-        if let Some(fs) = guard.as_ref() {
-            if fs.sync().is_ok() {
-                if let Ok(Some(handles)) = &handles {
-                    for handle in handles {
-                        handle.object.map.complete_writeback(0, u64::MAX);
-                    }
-                }
-            }
-        }
+        let staged = handles.as_ref().ok().and_then(|h| h.as_deref()).unwrap_or(&[]);
+        let _ = crate::fs::ext2::mapped_io::sync_mount(matches!(mount, Mount::Home), staged);
     }
     SyscallResult::Ok(0)
 }
@@ -5274,6 +5279,10 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
         Ok(guard) => guard,
         Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
     };
+    guard = match guard.wait_for_inode(ino) {
+        Ok(guard) => guard,
+        Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
+    };
     let result = match guard.as_mut() {
         Some(fs) if handle.verify(fs).is_ok() => resize_inode(
             fs,
@@ -5337,6 +5346,10 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
     let size_limit = super::resource::current_fsize();
     let mut exceeded = false;
     let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno) };
+    guard = match guard.wait_for_inode(ino) {
+        Ok(guard) => guard,
+        Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
+    };
     let fs = match guard.as_mut() {
         Some(fs) => fs,
         None => return SyscallResult::Err(EIO as u64),

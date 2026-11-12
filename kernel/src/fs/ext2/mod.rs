@@ -15,6 +15,7 @@ pub mod inode;
 mod inode_index;
 pub mod live_inode;
 mod mount_device;
+pub(crate) mod mapped_io;
 mod namespace_alloc;
 mod path;
 mod reclaim;
@@ -60,7 +61,7 @@ pub struct Ext2Fs {
     pub block_groups: Vec<Ext2BlockGroupDesc>,
     /// The underlying block device, through the mount's write fence and its
     /// copy of recently transferred blocks
-    pub device: alloc::boxed::Box<mount_device::MountDevice>,
+    pub device: alloc::sync::Arc<mount_device::MountDevice>,
     /// Set when the tree was left inconsistent; the device then refuses
     /// every write.
     failed: alloc::sync::Arc<AtomicBool>,
@@ -195,7 +196,7 @@ impl Ext2Fs {
             namespace: generation::Namespace::RAW,
             superblock,
             block_groups,
-            device: alloc::boxed::Box::new(mount_device::MountDevice::new(device, failed.clone(), cached)),
+            device: alloc::sync::Arc::new(mount_device::MountDevice::new(device, failed.clone(), cached)),
             failed,
             mount_id,
             mount_pin: live_inode::MountPin::new(mount_id)?,
@@ -279,8 +280,8 @@ impl Ext2Fs {
         self.live_inodes.pin(self.mount_pin, inode_num, size)
     }
 
-    /// Service mapped data and failed shrinks before the orphan commit window.
-    fn finalize_writeback(&mut self) -> Finalize {
+    /// Service metadata and unbound clean pages before the orphan commit window.
+    fn finalize_metadata(&mut self) -> Finalize {
         if self.is_read_only() { return Finalize::Idle; }
         let mut budget = RECLAIM_BUDGET;
         let mut outcome = self.finalize_shrinks(&mut budget);
@@ -299,19 +300,14 @@ impl Ext2Fs {
         }
         let mut cache_budget = crate::memory::file_map::EVICT_BUDGET;
         let evictions = self.live_inodes.evictions(self.eviction_cursor);
-        let mut write_budget = crate::memory::file_map::EVICT_BUDGET;
         for object in &evictions {
-            if write_budget != 0 && cache_budget != 0 {
-                self.eviction_cursor = object.key.inode;
+            // Population retains its lease through binding publication. Do
+            // not evict its newly read, still-unbound clean pages meanwhile.
+            if object.data_io.load(Ordering::Acquire) {
+                outcome = outcome.merge(Finalize::More);
+                continue;
             }
-            match object
-                .map
-                .service_writeback(self, object.key.inode, &mut write_budget)
-            {
-                Ok(true) => outcome = outcome.merge(Finalize::More),
-                Err(_) => outcome = Finalize::Retry,
-                Ok(false) => {}
-            }
+            if cache_budget != 0 { self.eviction_cursor = object.key.inode; }
             if object.map.evict(&mut cache_budget) {
                 outcome = outcome.merge(Finalize::More);
             }
@@ -527,6 +523,12 @@ impl Ext2Fs {
         }
     }
 
+    fn check_data_io(&self, ino: u32) -> Result<(), &'static str> {
+        if self.live_inodes.get(ino).is_some_and(|o| o.data_io.load(Ordering::Acquire)) {
+            Err("ext2 content mutation requires inode transfer wait")
+        } else { Ok(()) }
+    }
+
     /// Read an inode from the filesystem
     pub fn read_inode(&self, inode_num: u32) -> Result<Ext2Inode, &'static str> {
         let mut inode = Ext2Inode::read_from(
@@ -693,19 +695,6 @@ impl Ext2Fs {
         Ok(Some(bytes))
     }
 
-    /// Raw writeback bypasses cache overlays and size transitions. The
-    /// snapshot is clipped to EOF, so this never extends the inode. Writeback
-    /// has no writer credentials and conservatively strips execution privilege.
-    pub(crate) fn write_mapped_range(
-        &mut self,
-        ino: u32,
-        offset: u64,
-        bytes: &[u8],
-    ) -> Result<usize, &'static str> {
-        self.ensure_writable()?;
-        self.write_file_range_disk(ino, offset, bytes, true, true)
-    }
-
     /// Clear what an unprivileged writer's content change clears, before a
     /// shared writable mapping lets its stores reach the file with no further
     /// system call (K4).
@@ -760,6 +749,7 @@ impl Ext2Fs {
         unprivileged: bool,
     ) -> Result<usize, &'static str> {
         self.ensure_writable()?;
+        self.check_data_io(inode_num)?;
         // Private mappings: give bound holes cache frames and reserve poison
         // room before the disk changes; afterwards only apply what ext2
         // published, which allocates nothing.
@@ -1032,6 +1022,7 @@ impl Ext2Fs {
         unprivileged: bool,
     ) -> Result<Option<ShrinkTicket>, &'static str> {
         self.ensure_writable()?;
+        self.check_data_io(inode_num)?;
         let custody = crate::task::thread::KillCustody::try_enter()
             .expect("ext2 resize requires its write guard custody");
         let owner = alloc::sync::Arc::new(());
@@ -1903,6 +1894,7 @@ impl Ext2SpinStallTracker {
 /// the scheduler refuses to publish the wait. A pending SIGKILL ends the spin
 /// as it ends a park: nothing is owned yet, so the syscall can unwind.
 fn ext2_spin_wait<T>(
+    interruptible: bool,
     lock_name: &str,
     mut try_acquire: impl FnMut() -> Option<T>,
 ) -> Result<T, &'static str> {
@@ -1911,7 +1903,7 @@ fn ext2_spin_wait<T>(
         if let Some(v) = try_acquire() {
             return Ok(v);
         }
-        if crate::task::thread::current_kill_pending() {
+        if interruptible && crate::task::thread::current_kill_pending() {
             return Err(EXT2_ACQUIRE_KILLED);
         }
         tracker.tick(lock_name);
@@ -1929,8 +1921,8 @@ fn ext2_spin_wait_write(
     waiters: &'static crate::task::waitqueue::WaitQueueHead,
     lock_name: &str,
 ) -> Result<spin::RwLockWriteGuard<'static, Option<Ext2Fs>>, &'static str> {
-    let upgradeable = ext2_spin_wait(lock_name, || lock.try_upgradeable_read())?;
-    ext2_spin_wait_upgrade(upgradeable, waiters, lock_name)
+    let upgradeable = ext2_spin_wait(true, lock_name, || lock.try_upgradeable_read())?;
+    ext2_spin_wait_upgrade(true, upgradeable, waiters, lock_name)
 }
 
 /// Phase 2 of the write spin: busy-spin `try_upgrade()` starting from an
@@ -1940,6 +1932,7 @@ fn ext2_spin_wait_write(
 /// releasing and re-racing for the upgradeable slot itself. A pending SIGKILL
 /// gives the slot back and wakes the contenders it was holding off.
 fn ext2_spin_wait_upgrade(
+    interruptible: bool,
     mut upgradeable: spin::RwLockUpgradableGuard<'static, Option<Ext2Fs>>,
     waiters: &'static crate::task::waitqueue::WaitQueueHead,
     lock_name: &str,
@@ -1950,7 +1943,7 @@ fn ext2_spin_wait_upgrade(
             Ok(write_guard) => return Ok(write_guard),
             Err(back) => upgradeable = back,
         }
-        if crate::task::thread::current_kill_pending() {
+        if interruptible && crate::task::thread::current_kill_pending() {
             drop(upgradeable);
             waiters.wake_up();
             return Err(EXT2_ACQUIRE_KILLED);
@@ -2213,19 +2206,20 @@ fn ext2_schedule_current_wait() {
 /// same name each caller already passes to its own `ext2_spin_wait*` spin
 /// fallback).
 fn ext2_acquire<T>(
+    interruptible: bool,
     waiters: &'static crate::task::waitqueue::WaitQueueHead,
     lock_name: &str,
     mut try_acquire: impl FnMut() -> Option<T>,
     spin_fallback: impl FnOnce() -> Result<T, &'static str>,
 ) -> Result<T, &'static str> {
-    if crate::task::thread::current_kill_pending() { return Err(EXT2_ACQUIRE_KILLED); }
+    if interruptible && crate::task::thread::current_kill_pending() { return Err(EXT2_ACQUIRE_KILLED); }
     if let Some(v) = try_acquire() {
         return Ok(v);
     }
 
     if ext2_lock_can_sleep() {
         loop {
-            if crate::task::thread::current_kill_pending() { return Err(EXT2_ACQUIRE_KILLED); }
+            if interruptible && crate::task::thread::current_kill_pending() { return Err(EXT2_ACQUIRE_KILLED); }
             if let Some(v) = try_acquire() {
                 return Ok(v);
             }
@@ -2309,15 +2303,17 @@ fn ext2_kill_custody(
 /// blocking new readers for the whole wait, not just between our park
 /// rounds) — C8 of the #728 pre-check.
 fn ext2_acquire_write(
+    interruptible: bool,
     lock: &'static RwLock<Option<Ext2Fs>>,
     waiters: &'static crate::task::waitqueue::WaitQueueHead,
     lock_name: &str,
 ) -> Result<spin::RwLockWriteGuard<'static, Option<Ext2Fs>>, &'static str> {
     let mut upgradeable = ext2_acquire(
+        interruptible,
         waiters,
         lock_name,
         || lock.try_upgradeable_read(),
-        || ext2_spin_wait(lock_name, || lock.try_upgradeable_read()),
+        || ext2_spin_wait(interruptible, lock_name, || lock.try_upgradeable_read()),
     )?;
 
     // Fast path: no readers in the way at all.
@@ -2327,11 +2323,11 @@ fn ext2_acquire_write(
     };
 
     if !ext2_lock_can_sleep() {
-        return ext2_spin_wait_upgrade(upgradeable, waiters, lock_name);
+        return ext2_spin_wait_upgrade(interruptible, upgradeable, waiters, lock_name);
     }
 
     loop {
-        if crate::task::thread::current_kill_pending() {
+        if interruptible && crate::task::thread::current_kill_pending() {
             drop(upgradeable);
             waiters.wake_up();
             return Err(EXT2_ACQUIRE_KILLED);
@@ -2372,7 +2368,7 @@ fn ext2_acquire_write(
             crate::task::waitqueue::PrepareOutcome::Mismatch => continue,
             crate::task::waitqueue::PrepareOutcome::PublishFailed
             | crate::task::waitqueue::PrepareOutcome::OutOfMemory => {
-                return ext2_spin_wait_upgrade(upgradeable, waiters, lock_name);
+                return ext2_spin_wait_upgrade(interruptible, upgradeable, waiters, lock_name);
             }
             crate::task::waitqueue::PrepareOutcome::Queued => {
                 ext2_record_park(lock_name);
@@ -2428,6 +2424,36 @@ pub struct Ext2WriteGuard {
 }
 
 impl Ext2WriteGuard {
+    /// Wait for this inode's detached transfer, without holding the namespace.
+    pub fn wait_for_inode(mut self, ino: u32) -> Result<Self, &'static str> {
+        let _wait_custody = crate::task::thread::KillCustody::try_enter()
+            .expect("inode transfer wait retains guard custody");
+        let home = core::ptr::eq(self.waiters, &HOME_EXT2_WAITERS);
+        let pin = self.as_ref().ok_or("Missing mount")?.mount_pin;
+        loop {
+            let fs = self.as_ref().ok_or("Missing mount")?;
+            pin.verify(fs)?;
+            let object = fs.live_inodes.get(ino);
+            let Some(object) = object.filter(|o| o.data_io.load(Ordering::Acquire)) else { return Ok(self); };
+            let waiters = self.waiters;
+            drop(self);
+            wait_for_data_io(waiters, &object);
+            self = fs_write_raw(home)?.wait_for_shrink_writer()?;
+        }
+    }
+
+    /// O_CREAT|O_TRUNC may find a file created since its absent-name lookup.
+    /// Recheck the entry after each lease wait, while retaining its parent pin.
+    pub fn wait_for_entry_data(mut self, parent: &live_inode::FileHandle, name: &[u8]) -> Result<Self, &'static str> {
+        loop {
+            let fs = self.as_ref().ok_or("Missing mount")?;
+            let parent = fs.read_inode(parent.verify(fs)?)?;
+            let Some(ino) = fs.lookup_in_dir_bytes(&parent, name)? else { return Ok(self); };
+            if fs.check_data_io(ino).is_ok() { return Ok(self); }
+            self = self.wait_for_inode(ino)?;
+        }
+    }
+
     /// Finish this syscall's suffix, keeping errors with their producer.
     /// Readers may run between batches; other mutators wait for the ticket.
     pub fn finish_shrink(mut self, ticket: ShrinkTicket) -> Result<Self, &'static str> {
@@ -2719,10 +2745,11 @@ pub fn init_root_fs() -> Result<(), &'static str> {
 pub fn root_fs_read() -> Result<Ext2ReadGuard, &'static str> {
     let custody = ext2_kill_custody(&ROOT_EXT2_WAITERS);
     let inner = ext2_acquire(
+        true,
         &ROOT_EXT2_WAITERS,
         "ROOT_EXT2_read",
         || ROOT_EXT2.try_read(),
-        || ext2_spin_wait("ROOT_EXT2_read", || ROOT_EXT2.try_read()),
+        || ext2_spin_wait(true, "ROOT_EXT2_read", || ROOT_EXT2.try_read()),
     )?;
     Ok(Ext2ReadGuard {
         inner: Some(inner),
@@ -2754,12 +2781,39 @@ pub(super) fn fs_write_raw(home: bool) -> Result<Ext2WriteGuard, &'static str> {
         (&ROOT_EXT2, &ROOT_EXT2_WAITERS, "ROOT_EXT2_write")
     };
     let custody = ext2_kill_custody(waiters);
-    let inner = ext2_acquire_write(lock, waiters, name)?;
+    let inner = ext2_acquire_write(true, lock, waiters, name)?;
     Ok(Ext2WriteGuard {
         inner: Some(inner),
         waiters,
         _custody: custody,
     })
+}
+
+/// Finish a reserved transfer even after SIGKILL became pending. The transfer
+/// owns kill custody until its bitmap/pointer outcome has been published.
+fn data_commit_guard(pin: live_inode::MountPin) -> Ext2WriteGuard {
+    let home = pin_is_home(pin).expect("live transfer mount remains installed");
+    let (lock, waiters, name) = if home {
+        (&HOME_EXT2, &HOME_EXT2_WAITERS, "HOME_EXT2_data_commit")
+    } else {
+        (&ROOT_EXT2, &ROOT_EXT2_WAITERS, "ROOT_EXT2_data_commit")
+    };
+    let custody = ext2_kill_custody(waiters);
+    let inner = ext2_acquire_write(false, lock, waiters, name).expect("noninterruptible data commit");
+    Ext2WriteGuard { inner: Some(inner), waiters, _custody: custody }
+}
+
+fn wait_for_data_io(waiters: &crate::task::waitqueue::WaitQueueHead, object: &live_inode::LiveInode) {
+    use crate::task::waitqueue::PrepareOutcome;
+    let outcome = waiters.prepare_to_wait_checked(
+        crate::task::thread::ThreadState::BlockedOnIO,
+        Some(ext2_now_ns().saturating_add(EXT2_LOCK_PARK_TIMEOUT_NS)),
+        || object.data_io.load(Ordering::Acquire),
+    );
+    if let PrepareOutcome::Queued = outcome {
+        ext2_schedule_current_wait();
+        waiters.finish_wait();
+    }
 }
 
 pub(crate) fn fs_sync_guard(home: bool) -> Result<Ext2WriteGuard, &'static str> {
@@ -2950,10 +3004,11 @@ pub fn init_home_fs() -> Result<(), &'static str> {
 pub fn home_fs_read() -> Result<Ext2ReadGuard, &'static str> {
     let custody = ext2_kill_custody(&HOME_EXT2_WAITERS);
     let inner = ext2_acquire(
+        true,
         &HOME_EXT2_WAITERS,
         "HOME_EXT2_read",
         || HOME_EXT2.try_read(),
-        || ext2_spin_wait("HOME_EXT2_read", || HOME_EXT2.try_read()),
+        || ext2_spin_wait(true, "HOME_EXT2_read", || HOME_EXT2.try_read()),
     )?;
     Ok(Ext2ReadGuard {
         inner: Some(inner),
@@ -3015,6 +3070,36 @@ pub fn is_home_path(path: &str) -> bool {
     (path == "/home" || path.starts_with("/home/")) && is_home_mounted()
 }
 
+/// Select bounded pinned identities, then leave the namespace for data I/O.
+pub(super) fn service_mapped_writeback(home: bool) -> Result<bool, &'static str> {
+    let handles = {
+        let guard = fs_write_raw(home)?;
+        match guard.as_ref() {
+            Some(fs) => fs.mapped_writeback_handles()?,
+            None => return Ok(false),
+        }
+    };
+    let mut budget = crate::memory::file_map::EVICT_BUDGET;
+    let mut more = false;
+    for handle in &handles {
+        more |= handle.object.map.service_writeback(handle, &mut budget)?;
+    }
+    Ok(more)
+}
+
+impl Ext2Fs {
+    fn mapped_writeback_handles(&self) -> Result<Vec<live_inode::FileHandle>, &'static str> {
+        if self.is_read_only() { return Ok(Vec::new()); }
+        let objects = self.live_inodes.evictions(self.eviction_cursor);
+        let mut handles = Vec::new();
+        handles.try_reserve_exact(objects.len()).map_err(|_| "No memory for writeback handles")?;
+        for object in objects {
+            handles.push(self.pin_loaded_inode(object.key.inode, object.size.load(Ordering::Acquire))?);
+        }
+        Ok(handles)
+    }
+}
+
 /// File-mapping cache pages became unbound: have the ext2 service retire them.
 /// Safe from binding drops, which can run under the process manager.
 pub(crate) fn request_map_eviction() {
@@ -3055,8 +3140,11 @@ pub fn shutdown_filesystems() -> Result<(), &'static str> {
         loop {
             if ext2_now_ns() >= deadline { return Err("Filesystem shutdown deadline expired"); }
             let mut guard = fs_sync_guard(home)?;
+            while let Some(ino) = guard.as_ref().and_then(|fs| fs.live_inodes.active_data_inode()) {
+                guard = guard.wait_for_inode(ino)?;
+            }
             let fs = guard.as_mut().ok_or("Filesystem disappeared during shutdown")?;
-            let progress = fs.finalize_writeback().merge(fs.finalize_pending_orphans());
+            let progress = fs.finalize_metadata().merge(fs.finalize_pending_orphans());
             match progress {
                 Finalize::Retry => return Err("Filesystem finalization failed"),
                 Finalize::More => { drop(guard); writeback::pause(1_000_000); continue; }
