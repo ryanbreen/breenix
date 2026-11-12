@@ -329,7 +329,7 @@ impl Kiosk {
                     let mut rb=abi::Readback::ZERO;
                     rb.dst=pixels.as_mut_ptr() as u64;rb.dst_len=pixels.len() as u64;
                     rb.record=record.as_mut_ptr() as u64;rb.record_len=record.len() as u32;
-                    let ret=raw(op::SCANOUT_READBACK,&mut rb as *mut abi::Readback as u64,core::mem::size_of::<abi::Readback>());
+                    let ret=match window::readback(&mut rb) { Ok(()) => 0, Err(libbreenix::error::Error::Os(e)) => -(e as i64) };
                     observed=(ret,rb.reason);
                     let mut out=Vec::with_capacity(8+record.len()+pixels.len());
                     out.extend_from_slice(&mode.width.to_le_bytes());out.extend_from_slice(&mode.height.to_le_bytes());out.extend_from_slice(&record);out.extend_from_slice(&pixels);

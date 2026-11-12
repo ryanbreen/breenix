@@ -36,36 +36,7 @@ pub fn window_result(arena: &mut Arena, check: &str, id: u64) -> Result<Record, 
     });
     result.map_err(|detail| WindowError { syscall, detail })
 }
-/// Retry pending scanout observation on composite completion, under one absolute
-/// monotonic deadline. The retry still requires a valid observation.
-pub fn readback_until(rb: &mut abi::Readback, deadline_ns: u64) -> Result<(), libbreenix::error::Error> {
-    use libbreenix::{errno::Errno, error::Error, io, time, types::{Fd, OwnedFd}};
-    let now = || time::now_monotonic().map(|t| t.as_nanos() as u64);
-    let fd = window::call(abi::op::PRESENTATION_FD, &mut abi::WinId { id: 0 })?;
-    let fd = OwnedFd::new(Fd::from_raw(fd));
-    loop {
-        if now()? >= deadline_ns { return Err(Error::Os(Errno::ETIMEDOUT)); }
-        // Acknowledge before observing: a completion during or after EAGAIN
-        // stays readable, including one published before ppoll registers us.
-        let mut generation = [0u8; 8];
-        io::read(fd.fd(), &mut generation)?;
-        match window::call(abi::op::SCANOUT_READBACK, rb) {
-            Ok(_) => {
-                if now()? >= deadline_ns { return Err(Error::Os(Errno::ETIMEDOUT)); }
-                return Ok(());
-            }
-            Err(Error::Os(Errno::EAGAIN)) => {}
-            Err(e) => return Err(e),
-        }
-        let left = deadline_ns.saturating_sub(now()?);
-        if left == 0 { return Err(Error::Os(Errno::ETIMEDOUT)); }
-        let mut fds = [io::PollFd { fd: fd.fd().raw() as i32, events: io::poll_events::POLLIN, revents: 0 }];
-        match io::poll_ns(&mut fds, Some(left)) {
-            Ok(_) | Err(Error::Os(Errno::EINTR)) => {}
-            Err(e) => return Err(e),
-        }
-    }
-}
+pub use libbreenix::window::readback_until;
 /// Require the caller's observation kind, rather than accepting whatever kind
 /// the device returned. The shared E21 validator judges backend completions.
 pub fn screen(arena: &mut Arena, check: &str, kind: ObservationKind) -> Result<Record, String> {

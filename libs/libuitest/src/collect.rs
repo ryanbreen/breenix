@@ -71,7 +71,7 @@ impl Evidence {
             let mut observation = [0; 1024];
             let mut rb = abi::Readback { dst: pixels.as_mut_ptr() as u64, dst_len: pixels.len() as u64,
                 record: observation.as_mut_ptr() as u64, record_len: observation.len() as u32, ..abi::Readback::default() };
-            let rc = window::call(abi::op::SCANOUT_READBACK, &mut rb);
+            let rc = window::readback(&mut rb);
             let kind = if u32::from_le_bytes(observation[24..28].try_into().unwrap()) == 3 { window::ObservationKind::Composed } else { window::ObservationKind::Plain };
             if rc.is_ok() && window::validate_scanout_observation(&observation, mode.width, mode.height, kind) {
                 save_png(&mut store, if failure_screen { "screen-at-collection.png" } else { "screen.png" }, mode.width, mode.height, pixels)?;

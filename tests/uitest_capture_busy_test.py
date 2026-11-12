@@ -18,8 +18,11 @@ def source(path):
 class CaptureBusy(unittest.TestCase):
     def test_capture_waits_for_completion_without_resetting_deadline(self):
         capture = source('libs/libuitest/src/capture.rs')
+        window = source('libs/libbreenix/src/window.rs')
         scanout = source('userspace/programs/src/suite_breengel/window_cases/scanout.rs')
-        helper = item(capture, 'pub fn readback_until(') if 'pub fn readback_until(' in capture else ''
+        owner = window if 'pub fn readback_until(' in window else capture
+        helper = item(owner, 'pub fn readback_until(') if 'pub fn readback_until(' in owner else ''
+        direct = item(window, 'pub fn readback(') if 'pub fn readback(' in window else 'pub fn readback(rb: &mut abi::Readback) -> Result<(), Error> { call(abi::op::SCANOUT_READBACK, rb).map(|_| ()) }'
         code = r'''
 extern crate self as libbreenix;
 extern crate self as libuitest;
@@ -42,6 +45,9 @@ pub mod io {
 }
 pub mod gpu {pub mod abi {pub mod record{pub const SERIAL:usize=8;pub const COMPOSITE_SERIAL:usize=176;pub const COMMIT:usize=32;}} pub struct Mode{pub width:u32,pub height:u32} pub fn current_mode()->Result<Mode,super::error::Error>{Ok(Mode{width:1,height:1})}}
 pub mod window {
+ use crate::error::Error;
+ DIRECT
+ SHARED_HELPER
  pub mod abi {
   pub mod op{pub const SCANOUT_READBACK:u32=22;pub const PRESENTATION_FD:u32=36;}
   #[derive(Default)] pub struct WinId{pub id:u64}
@@ -91,6 +97,11 @@ pub mod breengel_caller {
 #[test]fn busy_capture_and_continuous_commit_ratio(){
  use window::ObservationKind;
  *STATE.lock().unwrap()=State{busy:true,..Default::default()};
+ let mut pixels=[0u8;4];let mut record=[0u8;1024];
+ let mut rb=window::abi::Readback{dst:pixels.as_mut_ptr() as u64,dst_len:4,record:record.as_mut_ptr() as u64,record_len:1024,..Default::default()};
+ assert!(window::readback(&mut rb).is_ok(),"direct scanout consumers must survive present.busy");
+ assert_eq!(STATE.lock().unwrap().polls,1);
+ *STATE.lock().unwrap()=State{busy:true,..Default::default()};
  let mut a=arena::Arena{bytes:vec![0;4],published:false};
  let result=capture::screen(&mut a,"busy",ObservationKind::Composed);
  assert!(result.is_ok(),"capture must survive present.busy: {result:?}");
@@ -112,6 +123,7 @@ pub mod breengel_caller {
 '''
         # Adapt only the fixture's namespace for the real raw caller's shared ABI.
         raw = item(scanout, 'fn readback_raw(').replace('super::handoff::Readback::ZERO', 'super_handoff::Readback::default()')
+        code = code.replace('DIRECT', direct).replace('SHARED_HELPER', helper if owner == window else '')
         code = code.replace('BYTE_LEN', item(capture, 'fn byte_len(')).replace('HELPER', helper).replace('SCREEN', item(capture, 'pub fn screen(')).replace('RAW', raw)
         # Public data fixtures are intentionally available to both production callers.
         code = code.replace('#[derive(Default,Clone)]pub struct Record', '#[derive(Debug,Default,Clone)]pub struct Record')

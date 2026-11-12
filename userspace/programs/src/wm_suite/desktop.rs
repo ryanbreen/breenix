@@ -6,7 +6,7 @@ use libbreenix::{gpu, graphics, io, process, signal, time, window};
 use std::fs::File;
 use std::io::{Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
-use window::abi::{self, op, Plain};
+use window::abi::{self, Plain};
 
 pub fn now() -> u64 {
     time::now_monotonic().map_or(0, |v| v.as_nanos() as u64)
@@ -347,6 +347,11 @@ pub struct Screen {
 }
 impl Screen {
     pub fn read() -> Result<Self, String> {
+        Self::read_kind(Some(window::ObservationKind::Composed))
+    }
+    // Before takeover the retained screen may be the kernel console. Accept
+    // its plain observation and propagate failed captures to the caller.
+    fn read_kind(required: Option<window::ObservationKind>) -> Result<Self, String> {
         let mode = gpu::current_mode().map_err(|e| format!("CURRENT_MODE: {e}"))?;
         let mut s = Self {
             pixels: vec![0; (mode.width * mode.height * 4) as usize],
@@ -359,10 +364,13 @@ impl Screen {
         r.dst_len = s.pixels.len() as u64;
         r.record = s.record.as_mut_ptr() as u64;
         r.record_len = 1024;
-        window::call(op::SCANOUT_READBACK, &mut r)
+        window::readback(&mut r)
             .map_err(|e| format!("SCANOUT_READBACK: {e}, reason {}", r.reason))?;
+        let kind = required.unwrap_or_else(|| if word(&s.record, 24) == 3 {
+            window::ObservationKind::Composed
+        } else { window::ObservationKind::Plain });
         if !window::validate_scanout_observation(
-            &s.record, s.width, s.height, window::ObservationKind::Composed,
+            &s.record, s.width, s.height, kind,
         ) {
             return Err(format!("invalid scanout: backend={} flags={} context={} serial={} size={}x{} render={:x}/{:x} read={:x}/{:x} present={:x}",
                 word(&s.record, 16), word(&s.record, 24), quad(&s.record, 64), s.serial(),
@@ -522,7 +530,7 @@ impl Desktop {
         Self::launch(false)
     }
     pub fn launch(supervised: bool) -> Result<Self, String> {
-        let previous_context = Screen::read().map_or(0, |s| quad(&s.record, 64));
+        let previous_context = quad(&Screen::read_kind(None)?.record, 64);
         graphics::take_over_display().map_err(|e| format!("session display: {e}"))?;
         let startup = StartupTrace::new()?;
         let (r, w) = io::pipe2(io::status_flags::O_NONBLOCK).map_err(|e| e.to_string())?;
