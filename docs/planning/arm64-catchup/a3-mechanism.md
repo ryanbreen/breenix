@@ -1374,3 +1374,338 @@ baseline until the observer deadline. Establish a clock correlation for host
 load and bounded diagnostic export that survives the outer watchdog before
 claiming case-specific loads or a cause. A forcing regression check, repair, acceptance boot, board update or native boot
 is not justified by this measurement.
+
+## a3-u22-sample-join — coordinator line 239, retained capture only
+
+The retained capture confirms the **GL/BQL contention mechanism in sampled
+replacement work**, rather than supporting a descheduling-only explanation of
+those BQL stacks. It does not identify the originating guest command for the
+four window-65 submits, and it does not provide host stacks during either
+failed click wait or the frame-floor measurement. Some trace gaps have a
+completed GPU command before them and require a different explanation. The
+confirmation below concerns the mechanism; it is not attribution of the five
+case failures to one cause or suite acceptance.
+
+This analysis implements coordinator ARM ledger line 239(1)–(3), using
+`20261112T000736Z-qemu-70293` at `c581c2b2`. The unit adds an offline analyzer,
+its check and this report; it changes no kernel, guest program, launcher,
+deadline or verdict. The unit performs no boot. Existing issues #2872 and
+#2890 retain the unresolved runtime work.
+
+### Inputs and clock interpretation
+
+[The reproducible join](serials/a3-u22-sample-join.json) contains the 38
+distinct trace gaps intersecting the five requested case/replacement intervals,
+the narrower failed-wait/measurement joins, aggregate per-thread counts and
+source line references. `S:L` below is physical LF line L in this capture's
+`serial.txt`; `Q:L` is line L in `qemu-trace.log`; `J:L` is line L in
+`qemu-samples/samples.jsonl`. Sample P/R/S/T line numbers refer to their raw
+`.sample.txt` files. These inputs remain in the Vigil boot record; its
+`qemu-samples`, trace and host-clock links resolve to the retained measurement.
+Raw sample headers and their host paths are not copied into the repository.
+
+| Input | SHA-256 |
+| --- | --- |
+| `serial.txt` | `6b11155144993a5a536eccf3993363465bf0a5b039246f78dd44ef06e0f40707` |
+| `qemu-trace.log` | `bc36a91e8c208a337666294ceaf6499ae1ddb9a9a0b854549fe8b01f9e165eee` |
+| `serial-host-clock.jsonl` | `0fd81ffd6712678238ffe8e0d5a1fff634d4abd14351a69d24a6cca80f6bc773` |
+
+The host clock sidecar records **receipt**, not guest execution. For example,
+pair-click's FAIL was received at 1794442414.271610 s (sidecar/S:L527022),
+after the following case had already begun in guest time. Using that receipt
+as the click-failure time would assign the wrong sample. The six receipt rows
+and byte offsets are included in the JSON.
+
+Instead, the join brackets a guest clock offset using matched block
+submit/host-handle/host-complete/guest-used records, or exact wire fence IDs
+shared by host `virtio_gpu_fence_ctrl/resp` and guest core command stamps.
+For a fence, `host_response - guest_return <= offset <= host_control -
+guest_submit`. Short requests bound the mapping without substituting their
+service duration for a trace gap. The nearest endpoint anchor is an estimate
+at that endpoint, not a constant boot-wide clock offset. The JSON gives the
+source guest stamp and both offset bounds, allowing its distance to be computed; an anchor distant
+from an endpoint is not a precise synchronization measurement there.
+
+| Interval | Guest begin–end ns | Source | Host estimate, seconds minus 1794442000 | Anchor uncertainty widths, µs |
+| --- | --- | --- | --- | --- |
+| window-65 | 741425177375–743732410875 | S:L1066717 | 799.584289292–801.890981459 | 44.750 / 30.000 |
+| window-67 | 777366017958–779932516458 | S:L1121021 | 835.525413625–838.091826500 | 41.750 / 298.334 |
+| focus/pair-click | 340174592333–345596444125 | S:L506644 | 398.330403291–403.752417229 | 315.083 / 102.791 |
+| focus/keys-to-focused | 354864261416–359963623666 | S:L528707 | 413.020349416–418.119728333 | 255.750 / 138.334 |
+| performance/frame-floor | 1059198302625–1068686517208 | S:L1436078 | 1117.360016979–1126.847921000 | 53.125 / 913.416 |
+| click-wait-461 | 344425664333–345428878416 | S:L506624 | 402.581710208–403.584961562 | 322.917 / 443.625 |
+| click-wait-476 | 358710808916–359714885291 | S:L528683 | 416.867111104–417.871165020 | 765.208 / 456.459 |
+| frame-floor-measurement | 1063256757375–1068256814750 | S:L1434681 | 1121.418471729–1126.418528625 | 53.125 / 63.750 |
+
+Window 65 is replacement PID 722, 2307.233500 ms; window 67 is replacement
+PID 751, 2566.498500 ms. The complete window-67 row at S:L1121021 supersedes
+its earlier `complete=0` export at S:L1095258. The 38 gaps are adjacent events
+in host timestamp order, strictly greater than 100 ms. They are gaps in the
+enabled trace families, not an inventory of time in which the whole guest did
+no work. Boundary-intersecting gaps retain their full length in the tables;
+the subject table below identifies partial overlaps.
+
+### What the covering reports say, with counts
+
+P = `focus-pair-click.sample.txt`; R = `recovery-stack-restored.0002.sample.txt`;
+S = `recovery-supervisor-restarts.0002.sample.txt`;
+T = `recovery-supervisor-restarts.0003.sample.txt`.
+
+| Report | Header time–sample child exit, host seconds minus 1794442000 | Nominal three-second end | Journal stop row | SHA-256 |
+| --- | --- | --- | --- | --- |
+| P | 398.583000000–401.966065000 | 401.583000000 | J:L6 | `200f6819c9578c08fcd7e9ba974b9d7dada7bb6dde8bb0d873e94c96c9ee8155` |
+| R | 798.675000000–802.736189000 | 801.675000000 | J:L17 | `c2a96b386d4340f6d7bce6d96040d7e64820a04182af59c6274ffeff00205e80` |
+| S | 833.082000000–837.685596000 | 836.082000000 | J:L37 | `b80f444fbb96143a14203815b28e98e6c3644434e0545eb81f3b82b789e34bbd` |
+| T | 837.747000000–841.281459000 | 840.747000000 | J:L39 | `7677a403f58c92c5688a8423eb055a85a9154d8558411d5a73e2adb98c5610b2` |
+
+The child exit includes symbolication. `L` in the gap tables means only
+enclosure by that lifetime, extending beyond the nominal three-second sample;
+`N` also fits the nominal three-second window. Neither is a per-stack timestamp.
+The sample stderr explicitly says “Sampling completed, processing symbols”.
+The sampler starts the next child only after reaping the preceding child
+(`scripts/qemu-case-sample.py:90–150`), so back-to-back children do not establish
+uninterrupted stack sampling. P has ended before the pair-click failure wait;
+keys-to-focused and frame-floor are not sampler triggers
+(`scripts/qemu-case-sample.py:13–16,62–65`).
+
+The QEMU main loop is thread **98089364**, distinct from the application main
+thread 98089322. Its disjoint classifications follow paths through
+`qemu_main_loop -> main_loop_wait -> virtio_gpu_gl_handle_ctrl ->
+virtio_gpu_process_cmdq -> virtio_gpu_virgl_process_cmd ->
+vrend_decode_ctx_submit_cmd`. Link paths include `vrend_draw_vbo ->
+vrend_select_program -> GL_GetProgramiv -> gl::Program::resolveLinkImpl ->
+MainLinkLoadEvent::wait`. Compile includes ANGLE shader/Metal compilation
+work or its wait; transfer includes `vrend_renderer_transfer_send_iov`.
+Link/compile counts already beneath draw are classified once, not added to
+their draw ancestor. “Other” includes select/poll and other loop work.
+
+| Report | Loop stacks | Link | Compile | Draw excluding link/compile | Transfer | Other VirGL | Other | Raw leaf lines |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| P | 97 | 46 | 19 | 1 | 12 | 0 | 19 | L717–L887 |
+| R | 93 | 45 | 14 | 0 | 12 | 1 | 21 | L744–L934 |
+| S | 98 | 31 | 17 | 0 | 10 | 2 | 38 | L854–L1070 |
+| T | 103 | 0 | 0 | 0 | 6 | 0 | 97 | L403–L469 |
+
+The four vCPU host threads are 98089331–98089334. BQL rows contain
+`hvf_cpu_thread_fn -> hvf_vcpu_exec -> bql_lock_impl -> qemu_mutex_lock_impl
+-> _pthread_mutex_firstfit_lock_wait -> __psynch_mutexwait`. This identifies
+the waiting lock; these reports do not record the mutex owner or stack times.
+G means `hv_vcpu_run`/`hv_trap` in the guest execution path; it is not measured
+guest instruction retirement. I is Hypervisor `wait_for_interrupt` or QEMU
+idle/condition wait; O is other exit handling, MMIO or host work. There are
+0 mutex-other classifications in these four reports. Counts are stack
+observations, not milliseconds or fractions of the trace gap.
+
+| Report | vCPU thread | Total | BQL | G | I | O | Raw leaf lines |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | --- |
+| P | 98089331 | 97 | 69 | 10 | 8 | 10 | L77–L102 |
+| P | 98089332 | 97 | 22 | 10 | 65 | 0 | L112–L121 |
+| P | 98089333 | 97 | 8 | 17 | 71 | 1 | L131–L143 |
+| P | 98089334 | 97 | 25 | 13 | 59 | 0 | L153–L162 |
+| R | 98089331 | 93 | 59 | 5 | 27 | 2 | L77–L113 |
+| R | 98089332 | 93 | 28 | 11 | 54 | 0 | L123–L132 |
+| R | 98089333 | 93 | 6 | 14 | 73 | 0 | L142–L151 |
+| R | 98089334 | 93 | 12 | 31 | 50 | 0 | L161–L170 |
+| S | 98089331 | 98 | 46 | 7 | 45 | 0 | L76–L85 |
+| S | 98089332 | 98 | 33 | 10 | 55 | 0 | L95–L104 |
+| S | 98089333 | 98 | 14 | 8 | 76 | 0 | L114–L123 |
+| S | 98089334 | 98 | 25 | 8 | 65 | 0 | L133–L142 |
+| T | 98089331 | 103 | 7 | 57 | 35 | 4 | L79–L106 |
+| T | 98089332 | 103 | 7 | 87 | 0 | 9 | L115–L145 |
+| T | 98089333 | 103 | 0 | 55 | 13 | 35 | L154–L175 |
+| T | 98089334 | 103 | 2 | 50 | 33 | 18 | L184–L216 |
+
+For an unobserved gap (`U`), the number of covering reports for the loop and
+each of the four vCPUs is 0: their state is **unknown**, not idle, absent or
+descheduled. A report reused by several gap rows is the same aggregate sample;
+its counts must not be summed once per gap. R's 59/93 vCPU-98089331 BQL stacks
+and 45 link plus 14 compile loop stacks, during the four named replacement
+submits, support the lock mechanism. S has the same pattern in its aggregate
+window, but its first four replacement gaps extend beyond nominal sampling.
+T is different: loop 97/103 other, 6/103 transfer, with guest-path counts
+57/87/55/50 across the vCPUs. That report does not support labelling B5 a
+shader-link/BQL stall.
+
+### Per-gap command, origin and sample join
+
+For 0x207 (`SUBMIT_3D`), size is the trace's command-stream byte count,
+excluding the header. Where guest stamps survive, their header is 32 bytes.
+For 0x206 (`TRANSFER_FROM_HOST_3D`) the trace has a resource ID but lacks
+context and byte count. A matching wire fence can supply the guest header
+context, origin and 72-byte header; `payload_bytes=0` is not the amount of
+resource data transferred. These types are defined at
+`kernel/src/gpu/virgl/wire.rs:26–32`; the core journal records the request
+header's context and constructor origin at
+`kernel/src/gpu/virgl/mod.rs:412–435`, with initiating-context inheritance at
+`kernel/src/gpu/mod.rs:1300–1308`.
+
+The origin column uses the **command's** wire fence, not proximity to a case
+name. `unknown` means the matching guest command stamp was evicted. The JSON
+also gives the context-create event and surviving guest create stamps where
+available. Each sample letter expands to the main-loop and four vCPU counts
+above. A question mark context is absent from the host transfer trace; a
+guest-stamp context in parentheses is a separate, explicitly joined source.
+
+| Gap / case | Host begin–end seconds minus 1794442000 | ms | Preceding GPU command: type, context/resource, stream bytes | Origin PID/TID; guest command citation | Samples | Trace gap lines / command line |
+| --- | --- | ---: | --- | --- | --- | --- |
+| A1 window-65 | 800.250909000–800.502439000 | 251.530 | 0x207, ctx 0x153, 19660 | unknown: command stamp evicted | R N | Q:L695226–695227; cmd L695226 |
+| A2 window-65 | 800.780572000–800.900498000 | 119.926 | 0x207, ctx 0x153, 37912 | unknown: command stamp evicted | R N | Q:L695326–695327; cmd L695326 |
+| A3 window-65 | 800.948977000–801.234729000 | 285.752 | 0x207, ctx 0x152, 19660 | unknown: command stamp evicted | R N | Q:L695372–695373; cmd L695372 |
+| A4 window-65 | 801.507423000–801.637732000 | 130.309 | 0x207, ctx 0x152, 37912 | unknown: command stamp evicted | R N | Q:L695467–695468; cmd L695467 |
+| B1 window-67 | 835.928052000–836.171954000 | 243.902 | 0x207, ctx 0x15c, 19660 | 753/987; S:L1146981 | S L | Q:L945960–945961; cmd L945960 |
+| B2 window-67 | 836.441359000–836.566982000 | 125.623 | 0x207, ctx 0x15c, 37912 | 753/987; S:L1147009 | S L | Q:L946053–946054; cmd L946053 |
+| B3 window-67 | 836.824759000–837.095425000 | 270.666 | 0x207, ctx 0x15b, 19660 | 751/984; S:L1147065 | S L | Q:L946162–946163; cmd L946162 |
+| B4 window-67 | 837.357828000–837.457933000 | 100.105 | 0x207, ctx 0x15b, 37912 | 751/984; S:L1147093 | S L | Q:L946256–946257; cmd L946256 |
+| B5 window-67 | 837.747922000–837.955760000 | 207.838 | 0x206, ctx ?, res 0xf31, bytes absent (guest ctx 0x15c, header 72 bytes) | 751/984; S:L1147655 | T N | Q:L948072–948073; cmd L948041 |
+| C1 focus/pair-click | 399.070970000–399.353804000 | 282.834 | 0x207, ctx 0x9c, 19660 | 346/463; S:L524518 | P N | Q:L318563–318564; cmd L318563 |
+| C2 focus/pair-click | 399.802086000–400.112856000 | 310.770 | 0x207, ctx 0x9d, 19660 | 348/466; S:L524628 | P N | Q:L318746–318747; cmd L318746 |
+| C3 focus/pair-click | 400.329959000–400.434211000 | 104.252 | 0x207, ctx 0x9d, 33048 | 348/466; S:L524652 | P N | Q:L318820–318821; cmd L318820 |
+| C4 focus/pair-click | 400.434540000–400.574390000 | 139.850 | 0x207, ctx 0x9d, 37912 | 348/466; S:L524656 | P N | Q:L318838–318839; cmd L318838 |
+| C5 focus/pair-click | 400.648152000–400.751392000 | 103.240 | 0x207, ctx 0x9c, 33048 | 346/463; S:L524680 | P N | Q:L318883–318884; cmd L318883 |
+| C6 focus/pair-click | 400.751839000–400.889527000 | 137.688 | 0x207, ctx 0x9c, 37912 | 346/463; S:L524692 | P N | Q:L318909–318910; cmd L318909 |
+| C7 focus/pair-click | 401.269814000–401.704471000 | 434.657 | 0x206, ctx ?, res 0x736, bytes absent (guest ctx 0x9d, header 72 bytes) | 345/461; S:L525262 | P L | Q:L320960–320961; cmd L320941 |
+| C8 focus/pair-click | 402.054702000–402.324881000 | 270.179 | 0x207, ctx 0x9f, 19660 | 354/472; S:L526112 | U | Q:L322619–322620; cmd L322619 |
+| C9 focus/pair-click | 402.592359000–402.715273000 | 122.914 | 0x207, ctx 0x9f, 37912 | 354/472; S:L526258 | U | Q:L322794–322795; cmd L322794 |
+| C10 focus/pair-click | 403.030270000–403.261566000 | 231.296 | 0x207, ctx 0xa1, 19660 | 355/474; S:L526432 | U | Q:L323022–323023; cmd L323022 |
+| C11 focus/pair-click | 403.541573000–403.678834000 | 137.261 | 0x207, ctx 0xa1, 37912 | 355/474; S:L526612 | U | Q:L323252–323253; cmd L323252 |
+| D1 focus/keys-to-focused | 413.671369000–413.958272000 | 286.903 | 0x207, ctx 0xa2, 19660 | 357/478; S:L547125 | U | Q:L329658–329659; cmd L329658 |
+| D2 focus/keys-to-focused | 414.266377000–414.544460000 | 278.083 | 0x207, ctx 0xa3, 19660 | 359/481; S:L547177 | U | Q:L329775–329776; cmd L329775 |
+| D3 focus/keys-to-focused | 414.824044000–414.952711000 | 128.667 | 0x207, ctx 0xa3, 37912 | 359/481; S:L547247 | U | Q:L329880–329881; cmd L329880 |
+| D4 focus/keys-to-focused | 415.232509000–415.363040000 | 130.531 | 0x207, ctx 0xa2, 37912 | 357/478; S:L547305 | U | Q:L329991–329992; cmd L329991 |
+| D5 focus/keys-to-focused | 415.650074000–416.043652000 | 393.578 | 0x206, ctx ?, res 0x770, bytes absent (guest ctx 0xa3, header 72 bytes) | 356/476; S:L547829 | U | Q:L331975–331976; cmd L331904 |
+| D6 focus/keys-to-focused | 416.393747000–416.664996000 | 271.249 | 0x207, ctx 0xa5, 19660 | 365/487; S:L548649 | U | Q:L333589–333590; cmd L333589 |
+| D7 focus/keys-to-focused | 416.934818000–417.055730000 | 120.912 | 0x207, ctx 0xa5, 37912 | 365/487; S:L548815 | U | Q:L333801–333802; cmd L333801 |
+| D8 focus/keys-to-focused | 417.384034000–417.666527000 | 282.493 | 0x207, ctx 0xa7, 19660 | 366/489; S:L549059 | U | Q:L334105–334106; cmd L334105 |
+| D9 focus/keys-to-focused | 417.947483000–418.048308000 | 100.825 | 0x207, ctx 0xa7, 37912 | 366/489; S:L549201 | U | Q:L334291–334292; cmd L334291 |
+| E1 performance/frame-floor | 1117.975636000–1118.248273000 | 272.637 | 0x207, ctx 0x1d1, 19660 | unknown: command stamp evicted | U | Q:L1506604–1506605; cmd L1506604 |
+| E2 performance/frame-floor | 1118.520277000–1118.651373000 | 131.096 | 0x207, ctx 0x1d1, 37912 | unknown: command stamp evicted | U | Q:L1506691–1506692; cmd L1506691 |
+| E3 performance/frame-floor | 1118.967679000–1119.244107000 | 276.428 | 0x207, ctx 0x1d0, 19660 | unknown: command stamp evicted | U | Q:L1506819–1506820; cmd L1506819 |
+| E4 performance/frame-floor | 1119.513286000–1119.638241000 | 124.955 | 0x207, ctx 0x1d0, 37912 | unknown: command stamp evicted | U | Q:L1506906–1506907; cmd L1506906 |
+| E5 performance/frame-floor | 1119.910361000–1120.163277000 | 252.916 | 0x206, ctx ?, res 0x1322, bytes absent | unknown: command stamp evicted | U | Q:L1507924–1507925; cmd L1507853 |
+| E6 performance/frame-floor | 1120.169426000–1120.389624000 | 220.198 | 0x206, ctx ?, res 0x1323, bytes absent | unknown: command stamp evicted | U | Q:L1507986–1507987; cmd L1507983 |
+| E7 performance/frame-floor | 1120.745701000–1121.029900000 | 284.199 | 0x207, ctx 0x1d3, 19660 | unknown: command stamp evicted | U | Q:L1509493–1509494; cmd L1509493 |
+| E8 performance/frame-floor | 1121.307966000–1121.436371000 | 128.405 | 0x207, ctx 0x1d3, 37912 | unknown: command stamp evicted | U | Q:L1509641–1509642; cmd L1509641 |
+| E9 performance/frame-floor | 1126.662079000–1126.782793000 | 120.714 | 0x206, ctx ?, res 0x1322, bytes absent (guest ctx 0x1d1, header 72 bytes) | 994/1293; S:L1440058 | U | Q:L1621243–1621244; cmd L1621224 |
+
+For A1–A4 and B1–B4, the gap begins at ctx-submit and ends at the command's
+fence-control event. For example A1 is Q:L695226–695227, followed by fence
+response L695230; B1 is Q:L945960–945961, response L945964. The stream-size
+pattern is reproducible in the retained trace (19660 then 37912 bytes), but
+stream size alone does not identify an opcode or establish a repair.
+
+The transfer-associated gaps are materially different. B5's last GPU command
+Q:L948041 has fence response Q:L948043 at 1794442837.739552 s, **8.370 ms
+before** B5 begins; its guest row is PID 751/TID 984, context 348, type 518,
+header 72, payload 0 (S:L1147655). C7, D5, E5, E6 and E9 likewise have a
+GPU fence response before the trace gap starts. The JSON records those response
+times. Calling that preceding transfer the still-running cause would contradict
+its completion record. The gap's immediately preceding event is MMIO IRQ 0
+for B5/C7/D5/E5/E9 and virtio_notify for E6.
+
+### Context identity, including what cannot be mapped
+
+Host context-create names in this capture are the generic `breenix`; they do
+not encode a PID. Guest type-512 rows can make that mapping precise:
+
+| Context(s) | Host context-create lines | Guest creator PID/TID and serial citation |
+| --- | --- | --- |
+| 0x9c / 0x9d | Q:L318360 / L318512 | 346/463 S:L524376; 348/466 S:L524480 |
+| 0x9f / 0xa1 | Q:L321808 / L322325 | 354/472 S:L525366; 355/474 S:L525852 |
+| 0xa2 / 0xa3 | Q:L329416 / L329542 | 357/478 S:L546979; 359/481 S:L547055 |
+| 0xa5 / 0xa7 | Q:L332823 / L333317 | 365/487 S:L547933; 366/489 S:L548405 |
+| 0x152 / 0x153 | Q:L694847 / L694959 | creator cannot be mapped from retained create stamps |
+| 0x15b / 0x15c | Q:L945399 / L945616 | 751/984 S:L1119034; 753/987 S:L1119126 |
+| 0x1d0 / 0x1d1 / 0x1d3 | Q:L1505374 / L1505456 / L1508834 | creator cannot be mapped from retained create stamps |
+
+The window-67 startup export identifies PID 751 as the replacement compositor
+(S:L1094173 onward); 753/987 is explicitly `clone-child-987`
+(S:L1114461). Thus B1/B2 have a named worker command and B3/B4 a named
+replacement-leader command, with their exact submit/return times in the JSON.
+For window 65, later surviving usage associates ctx 0x152 with 722/949
+(S:L1084380), and ctx 0x153 with 722/949 and 724/952
+(S:L1084202,L1084208). That is useful evidence of replacement-context use,
+but it is not the evicted A1–A4 origin or a recovered create event. The
+report leaves those four command origins unmapped.
+
+Likewise later use associates 0x1d0/0x1d1 with the frame-floor compositor
+PID 994 (startup S:L1434987 onward), and 0x1d3 with 1002/1302
+(S:L1436098); it does not recover the missing creators or E1–E8 command
+origins. A process using a context is not necessarily its creator: the same
+context can be used by helpers or another initiating client. Resource 0xf31
+is attached to both 0x15c and 0x15b at Q:L945870,L945872; 0x736 to both
+0x9c/0x9d at L318644,L318646; 0x770 to 0xa2/0xa3 at L329802,L329804;
+0x1322 and 0x1323 to 0x1d0/0x1d1 at L1505928–L1505930 and
+L1506234–L1506236, later also 0x1d4. Attachment alone cannot choose the
+context of a transfer; the matched guest fence can, when retained.
+
+### The failures' own intervals
+
+The click failures are failures of positive click delivery, including
+keys-to-focused before its key checks (`cases.rs:596–625`). Their 1000 ms
+waits must not be confused with initial desktop startup. The wait records
+give 1003.214083 ms for pair-click (S:L506624) and 1004.076375 ms for
+keys-to-focused (S:L528683). Delivery occurs later at 345523942041 ns
+(S:L506626), respectively 359895621166 ns (S:L528685). No successful
+acknowledgment inside those deadlines is inferred.
+
+| Failed subject | Intersecting >100 ms gaps | Intersection qualification | Host stack evidence |
+| --- | --- | --- | --- |
+| Pair-click wait, 344425664333–345428878416 ns | C9, C10, C11 | C11 crosses the wait's right boundary | 0 covering reports for loop or each vCPU; states unknown |
+| Keys-to-focused click wait, 358710808916–359714885291 ns | D7, D8 | both contained | 0 covering reports for loop or each vCPU; states unknown |
+| Frame-floor, 1063256757375–1068256814750 ns | E8 | crosses the left boundary; most of the 128.405 ms is before measurement | 0 covering reports for loop or each vCPU; states unknown |
+
+The host trace and retained command rows identify the two click waits'
+submissions and originating clients in the gap table. They cannot supply
+missing thread stacks. P's high BQL/link counts describe the **earlier**
+pair-click desktop preparation, not either failed click wait. No descheduling
+conclusion follows from the missing samples.
+
+Frame-floor first/last receipts are 1063285804041 / 1068253781875 ns
+(S:L1434681): leading gap **29.046666 ms**, trailing gap **3.032875 ms**.
+`rate.rs:21–23` requires each endpoint within 1/60 second, so the leading
+endpoint fails by **12.380 ms**. Its largest internal presentation gap is
+**7.106916 ms** (S:L1434959). E8 begins before measurement and ends about
+17.9 ms after its start under the nearest-anchor mapping; this is a candidate
+timing overlap, not host-stack attribution. E1–E7 occur during setup; E9 is
+after the measured five seconds. Treating the case's nine gaps as nine stalls
+inside its measurement would be incorrect.
+
+### Result and validation
+
+R supplies the replacement-window evidence missing in the earlier measurement:
+named host submits on 0x153/0x152, four gaps of 119.926–285.752 ms, and
+explicit vCPU BQL waits alongside main-loop link/compile/transfer stacks.
+This meets line 239's lock-versus-descheduling comparison at aggregate sample
+resolution for that replacement work. It does not identify which sampled
+stack occurred in each particular gap or show lock ownership at an instant.
+B5 and the unsampled failed waits remain outside that causal conclusion.
+Exact A1–A4 originating commands and several frame-floor contexts remain
+unmapped because the guest stamps were evicted; generic host context names
+do not restore them. A repair targeted at a particular originating client
+would need that missing identity. This analysis unit does not implement a
+forcing runtime check, preservation change or repair.
+
+Check-first commit `44415973` adds `tests/a3_sample_join_test.py`. Its first
+run fails with the missing analyzer; an intermediate run exposed a zero-count
+category in the parser; after that correction the scoped check passes 1/1.
+The check exercises disjoint stack counting, strict >100 ms selection,
+preceding-command retention across another event and refusal to borrow an
+uncovering sample. This is a check of the new offline analyzer, not a runtime
+forcing check for a speculative GPU repair. The subsequent source edits add
+capture extraction and fence/clock joins; their output is the linked JSON.
+Kernel/userspace artifacts are unchanged, so no release build or suite rerun
+is reached by this unit.
+
+Reproduce the offline extraction with:
+
+```sh
+python3 scripts/analyze-a3-sample-join.py CAPTURE_DIRECTORY OUTPUT.json
+```
+
+Validation: the scoped parser check passes; claim-lint results and final
+commit/push identity are recorded in the ARM ledger. The pre-check commit's
+message lint was run retrospectively (exit 0); its file lint ran before the
+commit (exit 0). No boot, PR creation, merge, rebase, force push, deployment
+or board update was performed in this unit.
+
+CONFIRMED BUT CONTEXT UNMAPPED
