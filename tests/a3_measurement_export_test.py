@@ -1,5 +1,6 @@
 """Exercise passing and failing reap exports, and pin the measurement exit paths."""
 from pathlib import Path
+import re
 import unittest
 from gt710_gr_live_unwind_test import item
 from suite_collection_test import run_rust
@@ -8,6 +9,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class MeasurementExport(unittest.TestCase):
+    def test_exit_and_destruction_stages_do_not_alias_frame_records(self):
+        source = (ROOT / 'kernel/src/task/process_task.rs').read_text()
+        stages = re.findall(r'window::pipeline::record\((\d+), thread_id,', source)
+        # Main's section 17.1 assigns window/frame telemetry through stage 46.
+        self.assertEqual(list(map(int, stages)), list(range(47, 53)))
+        ops = (ROOT / 'kernel/src/window/ops.rs').read_text()
+        destruction = re.findall(r'pipeline::record\((\d+), w.id, w.owner,', ops)
+        self.assertEqual(destruction, ['17', '17'])
+
     def test_reap_exports_on_pass_and_fail(self):
         source = (ROOT / 'userspace/programs/src/wm_suite/desktop.rs').read_text()
         stop = item(source, '    pub fn stop(').replace('#[cfg(target_arch = "aarch64")]', '')
@@ -29,7 +39,9 @@ fn now()->u64{NOW.fetch_add(1_000_000,Ordering::Relaxed)}
 fn pause(){} fn case_ms_left()->u64{10_000}
 fn failure_diagnostic(label:&str,text:&str){LINES.lock().unwrap().push(format!("{label} {text}"));}
 fn read_fixture(_:impl AsRef<std::path::Path>)->Result<String,std::io::Error>{
- Ok("17 11 0 0 100\n18 11 0 0 200\n19 11 0 0 300\n20 11 71 0 400\n21 11 0 0 500\n22 11 0 0 600\n17 99 0 0 100\n20 99 72 0 400\n".into())
+ // Interleave an app-frame row whose frame number equals the reaped PID,
+ // and metadata whose watermark equals it. Neither is an exit record.
+ Ok("47 11 0 71 100\n48 11 0 71 200\n18 99 5 71 250\n49 11 0 71 300\n20 99 71 700 350\n50 11 71 71 400\n51 11 0 71 500\n52 11 0 71 600\n47 98 0 72 100\n50 98 72 72 400\n".into())
 }
 mod signal{pub const SIGKILL:i32=9;}
 struct Child{pid:i32,reap_ns:u64}
@@ -50,8 +62,8 @@ impl Child{
   let lines=LINES.lock().unwrap();
   assert!(lines.iter().any(|l|l.starts_with("reap ")&&l.contains("kill_returned_ns=")),"missing kill return on pass={pass}: {lines:?}");
   assert!(lines.iter().any(|l|l.starts_with("reap-wait ")&&l.contains("wait_returned_ns=")),"missing wait return on pass={pass}: {lines:?}");
-  for stage in 17..=22 { assert!(lines.iter().any(|l|l.starts_with("exit-phase ")&&l.contains(&format!("stage={stage} "))&&l.contains("tgid=71 ")),"missing group stage {stage} on pass={pass}: {lines:?}"); }
-  assert!(!lines.iter().any(|l|l.starts_with("exit-phase ")&&l.contains("tid=99 ")),"unrelated process leaked");
+  for stage in 47..=52 { assert!(lines.iter().any(|l|l.starts_with("exit-phase ")&&l.contains(&format!("stage={stage} "))&&l.contains("tgid=71 ")),"missing group stage {stage} on pass={pass}: {lines:?}"); }
+  assert_eq!(lines.iter().filter(|l|l.starts_with("exit-phase ")).count(),6,"frame or unrelated exit row misclassified: {lines:?}");
  }
 }
 '''.replace('@STALL_WAIT@', 'struct StallWait(u64);')
