@@ -22,7 +22,13 @@ import sys
 import time
 
 ROOT = Path(__file__).resolve().parents[1]
-B6_SHA256 = '22d535323fa9ea1621c05b810d217818d58e3fed01178b68b5487ae8dcb60877'
+CURRENT_BUNDLE = '10.0.12-utm-4d73aaf0-b7'
+ACCEPTED_BUNDLES = {
+    # Retained A.3 records name this historical artifact.
+    '10.0.12-utm-4d73aaf0-b6':
+        '22d535323fa9ea1621c05b810d217818d58e3fed01178b68b5487ae8dcb60877',
+    '10.0.12-utm-4d73aaf0-b7': '02673d08f54bb898d86caabde146626066955a086b93e2f04c15441bbd7d0b36',
+}
 SUITE_LABELS = ('wm-elapsed', 'supervisor-restart', 'first-composite', 'positive-click',
                 'click-release', 'reap', 'latency-median', 'latency-max',
                 'present-median', 'present-max', 'frame-interval', 'frame-first', 'frame-last',
@@ -58,8 +64,8 @@ def check_chain(argv):
     require(Path(exported).resolve() == wrapper, 'unexpected exported shell launcher')
     qemu = Path(output([str(ROOT / 'scripts/build-qemu-gl.sh'), '--print-path']))
     require(Path(argv[1]).resolve() == qemu.resolve(), 'unexpected QEMU executable at argv 1')
-    require(qemu.parents[3].name == '10.0.12-utm-4d73aaf0-b6', 'expected b6 bundle')
-    require(sha(qemu) == B6_SHA256, 'QEMU identity mismatch')
+    require(qemu.parents[3].name == CURRENT_BUNDLE, 'expected current b7 bundle')
+    require(sha(qemu) == ACCEPTED_BUNDLES[CURRENT_BUNDLE], 'QEMU identity mismatch')
     subprocess.run(['codesign', '--verify', '--deep', '--strict', str(qemu.parents[2])], check=True)
 
     # The wrapper prints the helper it will exec; its cache key is the hash

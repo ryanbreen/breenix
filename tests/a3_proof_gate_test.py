@@ -14,6 +14,7 @@ from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 GATE = ROOT / 'scripts/a3-proof-gate.py'
+B7_SHA256 = '02673d08f54bb898d86caabde146626066955a086b93e2f04c15441bbd7d0b36'
 
 
 def module(path):
@@ -24,11 +25,34 @@ def module(path):
 
 
 class ProofGateTests(unittest.TestCase):
-    def test_recipe_and_gate_require_b6(self):
+    def test_recipe_and_gate_require_b7(self):
         recipe = (ROOT / 'scripts/build-qemu-gl.sh').read_text()
-        self.assertIn('PIN=10.0.12-utm-4d73aaf0-b6', recipe)
-        gate = GATE.read_text()
-        self.assertIn("qemu.parents[3].name == '10.0.12-utm-4d73aaf0-b6'", gate)
+        self.assertIn('PIN=10.0.12-utm-4d73aaf0-b7', recipe)
+        gate = module(GATE)
+        self.assertEqual(gate.CURRENT_BUNDLE, '10.0.12-utm-4d73aaf0-b7')
+        self.assertEqual(gate.ACCEPTED_BUNDLES, {
+            '10.0.12-utm-4d73aaf0-b6':
+                '22d535323fa9ea1621c05b810d217818d58e3fed01178b68b5487ae8dcb60877',
+            '10.0.12-utm-4d73aaf0-b7': B7_SHA256,
+        })
+
+    def test_new_proof_refuses_historical_bundle_and_unknown_hash(self):
+        gate = module(GATE)
+        wrapper = ROOT / 'scripts/qemu-ui-launch.sh'
+        for bundle, digest, reason in (
+                ('10.0.12-utm-4d73aaf0-b6',
+                 '22d535323fa9ea1621c05b810d217818d58e3fed01178b68b5487ae8dcb60877',
+                 'expected current b7 bundle'),
+                ('10.0.12-utm-4d73aaf0-b7', '0' * 64, 'QEMU identity mismatch')):
+            with self.subTest(bundle=bundle, sha256=digest):
+                qemu = Path('/fixture') / bundle / 'QEMU-GL.app/Contents/MacOS/qemu-system-aarch64'
+                with patch.dict(os.environ, BREENIX_QEMU_UI_LAUNCHER=str(wrapper)), \
+                        patch.object(gate, 'output', return_value=str(qemu)), \
+                        patch.object(gate, 'sha', return_value=digest), \
+                        patch.object(gate.subprocess, 'run') as execute:
+                    with self.assertRaisesRegex(ValueError, reason):
+                        gate.check_chain([str(wrapper), str(qemu), '-accel', 'hvf'])
+                    execute.assert_not_called()
 
     def test_dry_gate_accepts_the_production_wrapper_chain(self):
         self.assertTrue(GATE.is_file(), 'the reusable A.3 proof gate is missing')
@@ -60,8 +84,7 @@ class ProofGateTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             record = json.loads(result.stdout)
             self.assertEqual(record['argv'], command[1:])
-            self.assertEqual(record['hashes']['qemu'],
-                             '22d535323fa9ea1621c05b810d217818d58e3fed01178b68b5487ae8dcb60877')
+            self.assertEqual(record['hashes']['qemu'], B7_SHA256)
             native = subprocess.check_output([wrapper], text=True).strip()
             self.assertEqual(record['native_launcher'], native)
             self.assertNotEqual(native, wrapper)
