@@ -1259,7 +1259,7 @@ class ModeApplicabilityTest(StateTest):
         desktop_group = [(s, 'contains') for s in (
             '[init] desktop services started', '[bwm] Breenix Window Manager starting',
             '[bwm] first frame read back:', '[bwm] desktop fills the scanout:',
-            '[bwm] composited client frame:')]
+            '[bwm] composited client frame:', '[bwm] terminal prompt read back:')]
         groups = boot.measured_stages(self.definition, 'default', catalog)
         self.assertIn(first_group, groups)
         self.assertIn(desktop_group, groups)

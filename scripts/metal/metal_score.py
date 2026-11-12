@@ -79,9 +79,19 @@ def score(directory):
                     cursor = index + 1
                     break
         results[milestone['id']] = {'reached': reached, 'total': len(stages), 'passed': reached == len(stages)}
-        if (run['mode'] == 'default' and milestone['id'] == 'desktop'
-                and any(re.search(r'\[bwm\] (?:first frame|desktop fill) check FAILED:', line) for line in lines)):
-            results[milestone['id']].update(passed=False, reason='desktop startup self-check failed')
+        if run['mode'] == 'default' and milestone['id'] == 'desktop':
+            prompt_lines = [line for line in lines if '[bwm] terminal prompt read back:' in line]
+            def valid_prompt(line):
+                try:
+                    text = json.loads(line.split(' text ', 1)[1])
+                    return isinstance(text, str) and text.startswith('bsh />')
+                except (IndexError, ValueError):
+                    return False
+            if any(re.search(r'\[bwm\] (?:first frame|desktop fill|terminal prompt|client frame) check FAILED:', line)
+                   for line in lines):
+                results[milestone['id']].update(passed=False, reason='desktop startup self-check failed')
+            elif not prompt_lines or not all(valid_prompt(line) for line in prompt_lines):
+                results[milestone['id']].update(passed=False, reason='no terminal prompt evidence')
     # Host-driven cases are captured while the persistent boot holds its lease, then
     # scored again from the completed capture without rerunning them. Each measured
     # category's records are server-<category>.json, or users-operator.json for the
