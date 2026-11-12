@@ -3,6 +3,8 @@ use super::*;
 #[path = "chrome/validation.rs"]
 mod validation;
 pub(super) use validation::ValidationQueue;
+#[path = "chrome/frame_text.rs"]
+mod frame_text;
 
 pub(super) struct PresentedScene {
     pub layers: Vec<Layer>,
@@ -48,12 +50,75 @@ pub(super) fn run_deferred_check(
     windows: &mut [Window],
     poll_fds: &mut [io::PollFd],
     resizing: bool,
+    strict_startup: bool,
 ) {
     if resizing { return; }
 
     let now = monotonic_ms().unwrap_or(0);
     let shown = queue.scene().map(|scene| gpu.shown_clients(&scene.layers, cursor_pointer(scene.pointer)))
         .unwrap_or_default();
+    if !strict_startup {
+        if let Some((scene, id, commit)) = queue.next_prompt_if_idle(
+            |id| {
+                (shown.iter().any(|(shown, _)| *shown == id)
+                    && windows.iter().any(|w| w.window_id == id && now >= w.check_after_ms))
+                    .then(|| gpu.sampled_commit(id)).flatten()
+            },
+            || validation_idle(poll_fds),
+        ) {
+            let area = [0, 0, gpu.desktop.width() as u32, gpu.desktop.height() as u32];
+            let result = measure_check(|| gpu.check_area(id, &scene.layers, cursor_pointer(scene.pointer), area, true));
+            let pixels = result.as_ref().map(|(pixels, _)| *pixels).map_err(|e| match e {
+                CheckError::Moved(reason) => CheckError::Moved(reason.clone()),
+                CheckError::Failed(reason) => CheckError::Failed(reason.clone()),
+            });
+            if let Some(win) = windows.iter_mut().find(|w| w.window_id == id) {
+                let finished = match &pixels {
+                    Ok(_) => true,
+                    Err(CheckError::Moved(_)) => {
+                        win.check_moved += 1;
+                        win.check_moved >= CHECK_MOVED_LIMIT
+                    }
+                    Err(CheckError::Failed(_)) => true,
+                };
+                if pixels.is_ok() || (!win.frame_checked && finished) {
+                    win.frame_checked = true;
+                    queue.complete(id);
+                    report_check(id, &pixels);
+                }
+            }
+            let mut row = None;
+            let (status, reason) = match result {
+                Ok((pixels, Some((captured, bytes)))) if captured == commit => {
+                    match libbui::tree::Tree::parse(&bytes) {
+                        Ok(tree) if tree.root.role != libbui::tree::Role::Terminal =>
+                            (validation::PromptCheck::Text, String::new()),
+                        Ok(tree) => match frame_text::cursor_row(&tree) {
+                            Some((index, text)) if !text.trim().is_empty() => {
+                                row = Some((pixels, index, serde_json::to_string(text).expect("JSON string")));
+                                (validation::PromptCheck::Text, String::new())
+                            }
+                            Some(_) => (validation::PromptCheck::Empty, "terminal cursor row is empty".into()),
+                            None => (validation::PromptCheck::Empty, "terminal cursor row is unavailable".into()),
+                        },
+                        Err(reason) => (validation::PromptCheck::Empty, format!("invalid captured tree: {reason}")),
+                    }
+                }
+                Ok((_, Some(_))) => (validation::PromptCheck::Moved, "captured commit differs from the sampled commit".into()),
+                Ok((_, None)) => (validation::PromptCheck::Empty, "capture returned no subject tree".into()),
+                Err(CheckError::Moved(reason)) => (validation::PromptCheck::Moved, reason),
+                Err(CheckError::Failed(reason)) => (validation::PromptCheck::Empty, reason),
+            };
+            match queue.prompt_result(id, commit, status, CHECK_MOVED_LIMIT) {
+                Some(Ok(commit)) => if let Some((pixels, index, text)) = row {
+                    print!("[bwm] terminal prompt read back: window {id}, commit {commit}, {pixels} pixels exact, row {index} text {text}\n");
+                },
+                Some(Err(())) => print!("[bwm] terminal prompt check FAILED: window {id}: {reason}\n"),
+                None => {},
+            }
+            return;
+        }
+    }
     let Some((scene, unchecked)) = queue.next_if_idle(
         |id| shown.iter().any(|(shown, _)| *shown == id)
             && windows.iter().any(|w| w.window_id == id && now >= w.check_after_ms),

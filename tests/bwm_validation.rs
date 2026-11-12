@@ -119,6 +119,8 @@ fn prompt_waits_for_text_at_a_new_presented_commit() {
     let mut queue = ValidationQueue::new();
     queue.request(7);
     queue.presented(1);
+    assert!(queue.next_prompt_if_idle(|_| Some(10), || false).is_none(),
+        "a busy compositor must not reserve the prompt attempt");
     assert!(queue.check_prompt(7, 10));
     assert_eq!(queue.prompt_result(7, 10, PromptCheck::Empty, 3), None);
     assert!(!queue.check_prompt(7, 11), "retry requires presentation");

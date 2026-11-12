@@ -361,6 +361,9 @@ fn main() {
     let mut drawn_pointer = cursor_pointer(first_pointer);
     let mut full_redraw = false;
     let mut validation: ValidationQueue<PresentedScene> = ValidationQueue::new();
+    if !strict_startup {
+        for win in &windows { validation.request(win.window_id); }
+    }
     let mut working_scene = PresentedScene { layers: Vec::new(), pointer: first_pointer };
 
     // The desktop outlives a clipboard that cannot open; clipboard clients then see ENOENT.
@@ -445,7 +448,13 @@ fn main() {
 
         // ── 1. Discover new/removed client windows, and see client frames ──
         if scene_changed {
+            let first_new_order = next_creation_order;
             if discover_windows(&mut windows, screen_w, screen_h, &mut next_creation_order, &mut win_defaults) {
+                if !strict_startup {
+                    for win in windows.iter().filter(|w| w.creation_order >= first_new_order) {
+                        validation.request(win.window_id);
+                    }
+                }
                 reconcile_stack(&windows, &mut stack, false);
                 if dragging.as_ref().and_then(|d| d.id()).is_some_and(|id| !windows.iter().any(|w| w.window_id == id))
                     || resizing.as_ref().is_some_and(|r| !windows.iter().any(|w| w.window_id == r.id)) {
@@ -803,7 +812,7 @@ fn main() {
             clock_dirty = true;
         }
 
-        validation.retain_clients(|id| windows.iter().any(|w| w.window_id == id && !w.frame_checked));
+        validation.retain_clients(|id| windows.iter().any(|w| w.window_id == id));
         for win in windows.iter().filter(|w| !w.frame_checked) {
             validation.first_frame(win.window_id);
         }
@@ -921,7 +930,7 @@ fn main() {
                 process::exit(1);
             }
             clock.acknowledged();
-            run_deferred_check(&mut validation, &mut gpu, &mut windows, &mut poll_fds, resizing.is_some());
+            run_deferred_check(&mut validation, &mut gpu, &mut windows, &mut poll_fds, resizing.is_some(), strict_startup);
         }
     }
 }

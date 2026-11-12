@@ -6,8 +6,6 @@ pub struct ValidationQueue<S> {
     prompts: Vec<Prompt>,
 }
 
-// Prompt validation is consumed by the next integration unit.
-#[allow(dead_code)]
 pub enum PromptCheck {
     Text,
     Empty,
@@ -64,7 +62,6 @@ impl<S> ValidationQueue<S> {
     }
 
     /// Request a separate prompt check, without replacing an existing request.
-    #[allow(dead_code)]
     pub fn request(&mut self, id: u64) {
         if !self.prompts.iter().any(|prompt| prompt.id == id) {
             self.prompts.push(Prompt { id, attempted: false, last_commit: None, in_flight: None, attempts: 0 });
@@ -72,7 +69,6 @@ impl<S> ValidationQueue<S> {
     }
 
     /// Reserve one check for this sampled commit in the current presentation.
-    #[allow(dead_code)]
     pub fn check_prompt(&mut self, id: u64, commit: u64) -> bool {
         if self.scene.is_none() { return false; }
         let Some(prompt) = self.prompts.iter_mut().find(|prompt| prompt.id == id) else { return false; };
@@ -84,7 +80,6 @@ impl<S> ValidationQueue<S> {
     }
 
     /// Complete only a reserved check; return its commit on text or one failure at the limit.
-    #[allow(dead_code)]
     pub fn prompt_result(&mut self, id: u64, commit: u64, result: PromptCheck, limit: u32) -> Option<Result<u64, ()>> {
         let index = self.prompts.iter().position(|prompt| prompt.id == id && prompt.in_flight == Some(commit))?;
         let prompt = &mut self.prompts[index];
@@ -97,6 +92,22 @@ impl<S> ValidationQueue<S> {
         };
         if outcome.is_some() { self.prompts.remove(index); }
         outcome
+    }
+
+    /// Reserve a prompt's next sampled commit only when validation can run.
+    pub fn next_prompt_if_idle(
+        &mut self,
+        mut eligible: impl FnMut(u64) -> Option<u64>,
+        idle: impl FnOnce() -> bool,
+    ) -> Option<(&S, u64, u64)> {
+        self.scene.as_ref()?;
+        let (id, commit) = self.prompts.iter().find_map(|prompt| {
+            let commit = eligible(prompt.id)?;
+            (!prompt.attempted && prompt.in_flight.is_none() && prompt.last_commit != Some(commit))
+                .then_some((prompt.id, commit))
+        })?;
+        if !idle() || !self.check_prompt(id, commit) { return None; }
+        Some((self.scene()?, id, commit))
     }
 
     pub fn pending(&self, id: u64) -> bool {

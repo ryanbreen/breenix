@@ -482,6 +482,10 @@ impl Compositor {
         self.check_area(subject, layers, pointer, [0, 0, self.width, self.height], false).map(|(count, _)| count)
     }
 
+    pub fn sampled_commit(&self, id: u64) -> Option<u64> {
+        self.sampled.iter().find(|sample| sample.id == id).map(|sample| sample.commit_id)
+    }
+
     /// `check`, for the part of the frame inside `area` (x0, y0, x1, y1) only.
     ///
     /// CAPTURE reads the clients shown in the area. A captured commit differing from the
