@@ -14,6 +14,7 @@ pub enum PromptCheck {
     Text,
     Empty,
     Moved,
+    Failed,
 }
 
 struct Prompt {
@@ -111,6 +112,7 @@ impl<S> ValidationQueue<S> {
         prompt.attempts += 1;
         let outcome = match result {
             PromptCheck::Text => Some(Ok(commit)),
+            PromptCheck::Failed => Some(Err(())),
             PromptCheck::Empty | PromptCheck::Moved if prompt.attempts >= limit => Some(Err(())),
             PromptCheck::Empty | PromptCheck::Moved => None,
         };

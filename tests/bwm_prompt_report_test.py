@@ -108,7 +108,7 @@ fn main(){
  tree_commit::serialize_for_commit(0,&mut serializations,||{page[0]=1;Ok(())}).unwrap();
  assert_eq!(serializations,0);assert_eq!(page[0],0);
  let _ = frame_text::cursor_row;
- for mode in ["prompt","empty","moved","broken","other","strict","idle"] {
+ for mode in ["prompt","empty","moved","broken","other","strict","idle","later-broken"] {
   println!("BEGIN {mode}");
   let mut q=ValidationQueue::new();present(&mut q);q.first_frame(8);q.first_frame(7);
   let strict=mode=="strict";
@@ -140,6 +140,11 @@ fn main(){
   if mode=="prompt" {
    gpu.commit=2;gpu.text="bsh /> \"\\\n>".into();present(&mut q);
    chrome::run_deferred_check(&mut q,&mut gpu,&mut windows,&mut [],false,strict);
+  } else if mode=="later-broken" {
+   assert!(windows[0].frame_checked,"the first frame must already be certified");
+   gpu.commit=2;gpu.broken=true;present(&mut q);
+   chrome::run_deferred_check(&mut q,&mut gpu,&mut windows,&mut [],false,strict);
+   assert!(!q.prompt_pending(7),"a later-frame pixel mismatch must fail immediately");
   } else if mode=="empty" || mode=="moved" || mode=="broken" {
    for commit in 2..=CHECK_MOVED_LIMIT as u64+1 {gpu.commit=commit;present(&mut q);chrome::run_deferred_check(&mut q,&mut gpu,&mut windows,&mut [],false,strict);}
   }
@@ -179,12 +184,15 @@ fn main(){
             marker = '[bwm] terminal prompt read back: window 7, commit 2, 12 pixels exact, row 1 text "bsh /> \\"\\\\\\n>"\n'
             self.assertNotIn('Starting shell', prompt, 'ordinary startup text must leave the prompt request pending')
             self.assertEqual(prompt.count(marker), 1, prompt)
-            self.assertIn('[bwm] composited client frame: window 7 on screen, 12 pixels exact\n' + marker, prompt)
+            self.assertEqual(prompt.count('[bwm] composited client frame: window 7 on screen, 12 pixels exact\n'), 1, prompt)
             self.assertNotIn('FAILED', prompt)
-            for mode in ['empty', 'moved', 'broken', 'idle']:
+            for mode in ['empty', 'moved', 'broken', 'idle', 'later-broken', 'other']:
                 self.assertEqual(section(mode).count('[bwm] terminal prompt check FAILED: window 7:'), 1, section(mode))
                 self.assertNotIn('terminal prompt read back:', section(mode))
-            for mode in ['other', 'strict']:
+            self.assertIn('pixel mismatch', section('later-broken'))
+            self.assertNotIn('no prompt verdict', section('later-broken'))
+            self.assertIn('captured root is not a terminal', section('other'))
+            for mode in ['strict']:
                 self.assertNotIn('terminal prompt', section(mode))
 
 

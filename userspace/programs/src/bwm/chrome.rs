@@ -83,7 +83,7 @@ pub(super) fn run_deferred_check(
                     }
                     Err(CheckError::Failed(_)) => true,
                 };
-                if pixels.is_ok() || (!win.frame_checked && finished) {
+                if matches!(pixels, Err(CheckError::Failed(_))) || (!win.frame_checked && finished) {
                     win.frame_checked = true;
                     queue.complete(id);
                     report_check(id, &pixels);
@@ -94,7 +94,7 @@ pub(super) fn run_deferred_check(
                 Ok((pixels, Some((captured, bytes)))) if captured == commit => {
                     match libbui::tree::Tree::parse(&bytes) {
                         Ok(tree) if tree.root.role != libbui::tree::Role::Terminal =>
-                            (validation::PromptCheck::Text, String::new()),
+                            (validation::PromptCheck::Failed, "captured root is not a terminal".into()),
                         Ok(tree) => match frame_text::cursor_row(&tree) {
                             Some((index, text)) if text.starts_with("bsh />") => {
                                 row = Some((pixels, index, serde_json::to_string(text).expect("JSON string")));
@@ -109,7 +109,7 @@ pub(super) fn run_deferred_check(
                 Ok((_, Some(_))) => (validation::PromptCheck::Moved, "captured commit differs from the sampled commit".into()),
                 Ok((_, None)) => (validation::PromptCheck::Empty, "capture returned no subject tree".into()),
                 Err(CheckError::Moved(reason)) => (validation::PromptCheck::Moved, reason),
-                Err(CheckError::Failed(reason)) => (validation::PromptCheck::Empty, reason),
+                Err(CheckError::Failed(reason)) => (validation::PromptCheck::Failed, reason),
             };
             match queue.prompt_result(id, commit, status, CHECK_MOVED_LIMIT) {
                 Some(Ok(commit)) => if let Some((pixels, index, text)) = row {
