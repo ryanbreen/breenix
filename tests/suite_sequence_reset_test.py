@@ -106,6 +106,67 @@ fn fixture_path(path: &str) -> std::path::PathBuf {
 
 
 class SequenceReset(unittest.TestCase):
+    def test_reset_stops_at_mount_boundary(self):
+        source = (ROOT / 'libs/libbreenix/src/suite_sequence.rs').read_text()
+        source = '\n'.join(line for line in source.splitlines() if not line.startswith('//!'))
+        # Adapt the old root-only API so the same production walker can run on a fixture.
+        if 'fn reset()' in source:
+            source = source.replace('fn reset()', 'fn reset(root: &str)')
+            source = source.replace('fn record_baseline()', 'fn record_baseline(root: &str)')
+            source = source.replace('record_baseline();', 'record_baseline("/");')
+            source = source.replace('match reset() {', 'match reset("/") {')
+            source = source.replace('fn walk(visit:', 'fn walk(root: &str, visit:')
+            source = source.replace('for root in ["/", "/dev/shm", "/dev/mqueue"]', 'for root in [root]')
+            source = source.replace('walk(&mut |path, meta|', 'walk(root, &mut |path, meta|')
+        checks = r"""
+        #[test] fn mount_is_never_reset() {
+            let root = std::env::var("SEQUENCE_ROOT").unwrap();
+            let mount = format!("{root}/mount");
+            let baseline = std::env::var("SEQUENCE_BASELINE").unwrap();
+            std::fs::write(&baseline, std::env::var("SEQUENCE_RECORDED").unwrap()).unwrap();
+            let result = reset(&root).unwrap();
+            assert!(std::path::Path::new(&format!("{mount}/keep")).exists(), "reset deleted a mounted file");
+            assert!(result.changed.contains(&format!("{mount}(mounted)")));
+            record_baseline(&root);
+            let entries = load_baseline().unwrap();
+            assert_eq!(entries[&mount].kind, 'm');
+            assert!(!entries.contains_key(&format!("{mount}/keep")));
+            let result = reset(&root).unwrap();
+            assert!(result.changed.contains(&format!("{mount}(mounted)")));
+        }
+    }
+}
+"""
+        with tempfile.TemporaryDirectory() as scratch:
+            scratch = Path(scratch)
+            root = scratch / 'root'
+            mount = root / 'mount'
+            mount.mkdir(parents=True)
+            baseline_dir = scratch / 'state'
+            baseline_dir.mkdir()
+            # Capture a normal directory before the foreign filesystem is mounted.
+            meta = mount.stat()
+            recorded = f'd {meta.st_mode & 0o7777:o} {meta.st_uid} {meta.st_gid} 0 0 {mount}\n'
+            attached = subprocess.run(['hdiutil', 'attach', '-nomount', 'ram://16384'], check=True, capture_output=True, text=True)
+            device = attached.stdout.split()[0]
+            try:
+                subprocess.run(['diskutil', 'eraseVolume', 'HFS+', 'SequenceFixture', device], check=True, capture_output=True)
+                subprocess.run(['diskutil', 'unmount', device], check=True, capture_output=True)
+                subprocess.run(['diskutil', 'mount', '-mountPoint', str(mount), device], check=True, capture_output=True)
+                self.assertNotEqual(root.stat().st_dev, mount.stat().st_dev)
+                (mount / 'keep').write_text('mounted data')
+                source_path, binary = scratch / 'test.rs', scratch / 'test'
+                source_path.write_text(STUBS + source + checks)
+                compiled = subprocess.run(['rustc', '--edition=2021', '-Dwarnings', '--test', str(source_path), '-o', str(binary)], capture_output=True, text=True)
+                self.assertEqual(compiled.returncode, 0, compiled.stderr)
+                import os
+                env = dict(os.environ, BREENIX_SUITE_SEQUENCE_DIR=str(baseline_dir), SEQUENCE_ROOT=str(root),
+                           SEQUENCE_BASELINE=str(baseline_dir / 'suite-baseline'), SEQUENCE_RECORDED=recorded)
+                result = subprocess.run([str(binary), '--exact', 'harness::sequence::mount_is_never_reset'], env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            finally:
+                subprocess.run(['hdiutil', 'detach', device], check=True, capture_output=True)
+
     def test_production_comparison(self):
         source = (ROOT / 'libs/libbreenix/src/suite_sequence.rs').read_text()
         source = '\n'.join(line for line in source.splitlines() if not line.startswith('//!'))
