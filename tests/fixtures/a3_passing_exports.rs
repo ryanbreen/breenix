@@ -141,6 +141,7 @@ impl Screen {
 WAIT_STRUCT
 WAIT_IMPL
 WAIT_DROP
+ELAPSED_BODY
 DIAGNOSTIC_BODY
 OBSERVATION_BODY
 LATENCY_BODY
@@ -149,14 +150,24 @@ LATENCY_BODY
 #[test]
 fn passing_cases_keep_serial_exports_below_two_kibibytes() {
     for (pointer, animation) in [(false, false), (true, false), (false, true)] {
-        FIXTURE.with(|f| *f.borrow_mut() = Fixture { clock: 1, latency: 12_000_000, ..Fixture::default() });
-        assert_eq!(input_latency(pointer, animation), Ok(()));
+      for slow in [false, true] {
+        let latency = if slow { if animation { 110_000_000 } else { 60_000_000 } } else { 12_000_000 };
+        FIXTURE.with(|f| *f.borrow_mut() = Fixture { clock: 1, latency, ..Fixture::default() });
+        assert_eq!(input_latency(pointer, animation).is_ok(), !slow);
         FIXTURE.with(|f| {
             let f = f.borrow(); assert!(f.observed);
             let output = String::from_utf8(f.output.clone()).unwrap();
+            let rows: Vec<_> = output.lines().filter(|l| l.starts_with("VALUE wm-elapsed ")).collect();
+            let ms = latency / 1_000_000;
+            let (median, max) = if animation { (33, 100) } else { (20, 50) };
+            assert_eq!(rows, vec![
+                format!("VALUE wm-elapsed performance/latency latency-median {ms}.000 {median}.000"),
+                format!("VALUE wm-elapsed performance/latency latency-max {ms}.000 {max}.000"),
+            ]);
             let bytes: usize = output.lines().filter(|l| l.starts_with("VALUE wm-")).map(|l| l.len() + 1).sum();
             assert!(bytes <= 2048, "passing pointer={pointer} animation={animation} exported {bytes} VALUE wm- bytes (limit 2048)");
         });
+      }
     }
     // A failed case must not turn a useful short diagnostic into another flood.
     FIXTURE.with(|f| f.borrow_mut().output.clear());

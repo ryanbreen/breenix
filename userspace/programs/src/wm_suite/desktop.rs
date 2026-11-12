@@ -92,6 +92,7 @@ impl Child {
         });
         let wait_returned_ns = now();
         self.reap_ns = wait_returned_ns.saturating_sub(returned_ns);
+        elapsed("reap", self.reap_ns, 500_000_000);
         waited?;
         let status = result.unwrap();
         if status & 127 != signal::SIGKILL {
@@ -455,12 +456,27 @@ struct WaitObservation {
     pixel: Option<u32>,
 }
 
+/// Compact case timing, emitted only after the measured interval has ended.
+/// Nanoseconds become milliseconds with microsecond precision, rounded upward
+/// for elapsed time and downward for the deadline so reporting cannot add margin.
+pub fn elapsed(wait: &str, ns: u64, deadline_ns: u64) {
+    use std::io::Write;
+    let Some(case) = breenix_suite::suite::running_case() else { return };
+    let us = ns.div_ceil(1000);
+    let deadline_us = deadline_ns / 1000;
+    let record = format!("VALUE wm-elapsed {case} {wait} {}.{:03} {}.{:03}\n",
+        us / 1000, us % 1000, deadline_us / 1000, deadline_us % 1000);
+    if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
+        let _ = evidence.write_all(record.as_bytes());
+    }
+}
+
 /// Failure records bypass the case verdict's short message field.
 pub fn failure_diagnostic(label: &str, text: &str) {
     use std::io::Write;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    // Each case runs in its own child. Cap cumulative failure records at 2 KiB
-    // to limit their cost on the UART shared with host input ACKs.
+    // Each case runs in its own child. Reserve 1 KiB of the 2 KiB serial
+    // budget for compact elapsed reports, including waits that end in failure.
     static BYTES: AtomicUsize = AtomicUsize::new(0);
     let label: String = label.chars().take(32).collect();
     let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") else { return };
@@ -468,7 +484,7 @@ pub fn failure_diagnostic(label: &str, text: &str) {
         let chunk: String = line.chars().take(160).collect();
         let record = format!("VALUE wm-{label} {chunk}\n");
         if BYTES.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n|
-            n.checked_add(record.len()).filter(|&total| total <= 2048)).is_err() { return; }
+            n.checked_add(record.len()).filter(|&total| total <= 1024)).is_err() { return; }
         let _ = evidence.write_all(record.as_bytes());
     }
 }
@@ -671,15 +687,21 @@ impl Desktop {
         c.clear()?;
         let w = c.info()?;
         self.click(w.x + 20, w.y + 20)?;
+        let begin = now();
         let press = c.await_event("positive click delivery to target client", |e| {
             e.kind == abi::event_kind::POINTER_BUTTON && e.pressed == 1
-        })?;
-        c.await_event("focus click release delivery to target client", |e| {
+        });
+        elapsed("positive-click", now().saturating_sub(begin), 1_000_000_000);
+        let press = press?;
+        let begin = now();
+        let released = c.await_event("focus click release delivery to target client", |e| {
             e.kind == abi::event_kind::POINTER_BUTTON
                 && e.pressed == 0
                 && e.button == press.button
                 && e.serial > press.serial
-        })?;
+        });
+        elapsed("click-release", now().saturating_sub(begin), 1_000_000_000);
+        released?;
         Ok(())
     }
 }

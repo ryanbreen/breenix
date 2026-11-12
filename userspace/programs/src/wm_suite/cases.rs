@@ -1075,7 +1075,10 @@ pub fn restart_adopts() -> CaseResult {
     value("reap-elapsed", d.wm.reap_ns as i64, "ns", None);
     stopped?;
     let mut next = Desktop::start()?;
-    next.shown(&c)?.client(&c)
+    let begin = now();
+    let composite = next.shown(&c);
+    elapsed("first-composite", now().saturating_sub(begin), 2_000_000_000);
+    composite?.client(&c)
 }
 pub fn interaction_restart() -> CaseResult {
     let (mut d, mut c) = one()?;
@@ -1100,7 +1103,10 @@ pub fn stack_restored() -> CaseResult {
     value("reap-elapsed", d.wm.reap_ns as i64, "ns", None);
     stopped?;
     let mut next = Desktop::start()?;
-    next.shown(&b)?;
+    let begin = now();
+    let composite = next.shown(&b);
+    elapsed("first-composite", now().saturating_sub(begin), 2_000_000_000);
+    composite?;
     let after = listed()?;
     check(
         before.iter().all(|w| {
@@ -1131,10 +1137,16 @@ pub fn supervisor_restarts() -> CaseResult {
         .copied()
         .ok_or("desktop supervisor has no bwm child")?;
     signal::kill(old, signal::SIGKILL)?;
-    until(2000, "production desktop supervisor restarts bwm", || {
+    let begin = now();
+    let restarted = until(2000, "production desktop supervisor restarts bwm", || {
         Ok(children(d.wm.pid, "bwm")?.iter().any(|p| *p != old))
-    })?;
-    content(&mut d, &c)?;
+    });
+    elapsed("supervisor-restart", now().saturating_sub(begin), 2_000_000_000);
+    restarted?;
+    let begin = now();
+    let composite = content(&mut d, &c);
+    elapsed("first-composite", now().saturating_sub(begin), 2_000_000_000);
+    composite?;
     Ok(())
 }
 pub fn children(parent: i32, name: &str) -> Result<Vec<i32>, String> {
@@ -1340,12 +1352,14 @@ pub fn present_latency() -> CaseResult {
         }
     }
     value("pipeline-window", c.id as i64, "", None);
-    measure::observed(&mut d, &[&c], receipt_serial)?;
     samples.sort_unstable();
     let median = samples[samples.len() / 2];
     let max = *samples.last().unwrap();
+    elapsed("present-median", median * 1000, 16_000_000);
+    elapsed("present-max", max * 1000, 33_000_000);
     value("present-median", median as i64, "us", Some((0, 16000)));
     value("present-max", max as i64, "us", Some((0, 33000)));
+    measure::observed(&mut d, &[&c], receipt_serial)?;
     if median > 16000 || max > 33000 { failure_pipeline(); }
     check(
         median <= 16000 && max <= 33000,
@@ -1374,13 +1388,19 @@ pub fn frame_floor() -> CaseResult {
     value("pipeline-window", c.id as i64, "", None);
     value("measurement-begin", begin as i64, "ns", None);
     value("measurement-end", end as i64, "ns", None);
-    d.shown(&c)?;
     let hz = rate.as_ref().map_or(0, |r| {
         (u128::from(r.intervals) * 1_000_000_000 / u128::from(r.span_ns)) as i64
     });
     value("presentation-intervals", rate.as_ref().map_or(0, |r| r.intervals) as i64, "intervals", None);
     value("presentation-span", rate.as_ref().map_or(0, |r| r.span_ns) as i64, "ns", None);
+    // Express the frame floor as an average completed-frame interval. Report
+    // the edge intervals too: the existing rate check judges both coverage and Hz.
+    let frame_ns = rate.as_ref().map_or(end - begin, |r| r.span_ns.div_ceil(r.intervals));
+    elapsed("frame-interval", frame_ns, 1_000_000_000 / 60);
+    elapsed("frame-first", times.iter().min().map_or(end - begin, |t| t - begin), 1_000_000_000 / 60);
+    elapsed("frame-last", times.iter().max().map_or(end - begin, |t| end - t), 1_000_000_000 / 60);
     value("composites-per-second", hz, "hz", Some((60, i64::MAX)));
+    d.shown(&c)?;
     if !rate.as_ref().is_some_and(|r| r.passes) {
         failure_pipeline();
         let gap = times.windows(2).map(|w| w[1].saturating_sub(w[0])).max().unwrap_or(0);
@@ -1476,7 +1496,6 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
             time::sleep_ms(50 - spent)?;
         }
     }
-    measure::observed(&mut d, &[&c], receipt_serial)?;
     samples.sort_unstable();
     let median = samples[50];
     let max = *samples.last().unwrap();
@@ -1491,7 +1510,10 @@ fn input_latency(pointer: bool, animation: bool) -> CaseResult {
         "us",
         Some((0, median_bound)),
     );
+    elapsed("latency-median", median * 1000, median_bound as u64 * 1000);
+    elapsed("latency-max", max * 1000, max_bound as u64 * 1000);
     value("latency-max", max as i64, "us", Some((0, max_bound)));
+    measure::observed(&mut d, &[&c], receipt_serial)?;
     if !failure_exported && (median > median_bound as u64 || max > max_bound as u64) { failure_pipeline(); }
     check(
         median <= median_bound as u64 && max <= max_bound as u64,
@@ -1523,6 +1545,7 @@ pub fn clipboard_latency() -> CaseResult {
             maximum = maximum.max(now() - begin);
         }
     }
+    elapsed("clipboard-max", maximum, 50_000_000);
     value(
         "clipboard-max",
         (maximum / 1000) as i64,

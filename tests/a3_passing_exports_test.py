@@ -17,6 +17,7 @@ class PassingExports(unittest.TestCase):
         suite = (ROOT / 'libs/libbreenix/src/suite.rs').read_text()
         source = (ROOT / 'tests/fixtures/a3_passing_exports.rs').read_text()
         for token, text, signature in [
+            ('ELAPSED_BODY', desktop, 'pub fn elapsed('),
             ('LATENCY_BODY', cases, 'fn input_latency('),
             ('WAIT_STRUCT', desktop, 'struct WaitObservation'),
             ('WAIT_IMPL', desktop, 'impl WaitObservation'),

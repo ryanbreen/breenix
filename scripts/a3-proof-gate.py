@@ -23,7 +23,10 @@ import time
 
 ROOT = Path(__file__).resolve().parents[1]
 B5_SHA256 = '5f5fdaf5e785a0ca59787e425ccbe038387ec0fad2431cf9be8065969c5f620b'
-SUITE_LABELS = ('latency-median', 'latency-max', 'composites-per-second')
+SUITE_LABELS = ('wm-elapsed', 'supervisor-restart', 'first-composite', 'positive-click',
+                'click-release', 'reap', 'latency-median', 'latency-max',
+                'present-median', 'present-max', 'frame-interval', 'frame-first', 'frame-last',
+                'clipboard-max', 'composites-per-second')
 KERNEL_LABELS = ('GPU_WINDOW_IDENTITY_FAIL', 'GPU_SCENE_EPOCH_FAIL')
 
 
