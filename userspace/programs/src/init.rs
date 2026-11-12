@@ -355,6 +355,9 @@ fn run_desktop_mode() -> ! {
         print!("[init] desktop services started\n");
     } else {
         print!("[init] desktop services incomplete\n");
+        if !system {
+            std::process::exit(1);
+        }
         supervisor.fallback_to_console();
     }
     supervisor.run()
