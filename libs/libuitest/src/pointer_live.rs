@@ -12,6 +12,7 @@ use libbreenix::{
     window::{self, abi, abi::op},
 };
 use libbui::tree::Flag;
+use breenix_suite::suite::control::{Wait, Watchdog};
 use std::{
     collections::BTreeMap,
     time::{Duration, Instant},
@@ -38,6 +39,7 @@ pub fn delivered(serial: u64) -> Result<Delivery, String> {
 }
 
 fn wait_delivery(serial: u64, wanted: Option<u64>, allow_wm: bool) -> Result<Delivery, String> {
+    let _watchdog = Watchdog::new(Wait::InputDelivery)?;
     let end = Instant::now() + Duration::from_secs(2);
     let mut target = wanted;
     let mut disposition = "missing".to_string();
@@ -66,6 +68,7 @@ fn wait_delivery(serial: u64, wanted: Option<u64>, allow_wm: bool) -> Result<Del
 
 /// Check the requested source set, including gaps hidden by later terminal rows.
 pub fn dispositions(serials: &[u64]) -> Result<(), String> {
+    let _watchdog = Watchdog::new(Wait::InputDelivery)?;
     let end = Instant::now() + Duration::from_secs(2);
     loop {
         let ledger = std::fs::read_to_string("/proc/breenix/input-ledger").map_err(|e| e.to_string())?;
@@ -77,6 +80,7 @@ pub fn dispositions(serials: &[u64]) -> Result<(), String> {
 /// Wait for a known source serial's terminal disposition. Client delivery also
 /// needs its processed commit watermark, checked separately below.
 pub fn wait_pointer_idle(serial: u64) -> Result<(), String> {
+    let _watchdog = Watchdog::new(Wait::InputDelivery)?;
     let end = Instant::now() + Duration::from_secs(2);
     loop {
         if let Some((name, _, reason)) = outcome(serial)? {
@@ -270,6 +274,7 @@ impl<'a> LivePointer<'a> {
         Ok(())
     }
     fn capture(&self, id: u64) -> Result<(Tree, u64), String> {
+        let _watchdog = Watchdog::new(Wait::TreeCapture)?;
         let info = self.info(id)?;
         let mut pixels = vec![
             0;
@@ -290,6 +295,7 @@ impl<'a> LivePointer<'a> {
         self.source_event(device,kind,code,value).map(|e|e.serial)
     }
     fn source_event(&mut self, device: u32, kind: u16, code: u16, value: i32) -> Result<Event, String> {
+        let _watchdog = Watchdog::new(Wait::InputDelivery)?;
         let end = Instant::now() + Duration::from_secs(2);
         loop {
             if let Some(index) = self.pending.iter().position(|e| {
