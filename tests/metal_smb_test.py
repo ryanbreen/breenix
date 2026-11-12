@@ -262,6 +262,49 @@ class SmbStagingTest(unittest.TestCase):
                                     capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_gui_request_after_long_sequence_is_answered(self):
+        helper = load_script('smb-restart')
+        clock = [0.0]
+        chunks = iter([b'', b'SUITE gui-apps START cases=73\n'
+                       b'SUITE gui-apps SMBSTOP guskit/smb-share-gone seq=1\n'
+                       b'SUITE gui-apps SMBSTART guskit/smb-share-gone seq=2\n'
+                       b'SUITE gui-apps DONE passed=73 failed=0 skipped=0 total=73\n'])
+        commands, transcripts = [], []
+        def remote(*cmd, **kwargs):
+            if cmd[0] == 'tail':
+                return SimpleNamespace(returncode=0, stdout=next(chunks))
+            if cmd[0] == 'test':
+                return SimpleNamespace(returncode=1)
+            self.assertEqual(cmd[0], 'tee')
+            transcripts.append(json.loads(kwargs['input']))
+            return SimpleNamespace(returncode=0)
+        def incus(*cmd, **kwargs):
+            commands.append(cmd)
+            return SimpleNamespace(returncode=0)
+        def advance(_):
+            clock[0] += 2701
+        with patch.object(helper.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(helper.time, 'sleep', side_effect=advance), contextlib.redirect_stdout(io.StringIO()):
+            result = helper.watch('20261110T000000Z-metal', 'fixture-smb', remote, incus, minutes=45)
+        self.assertEqual(result, 0)
+        self.assertEqual([cmd[-2:] for cmd in commands], [('stop', 'smbd'), ('start', 'smbd')])
+        self.assertEqual([r['ok'] for r in transcripts[-1]['requests']], [True, True])
+
+    def test_helper_stops_when_boot_ends_before_suite(self):
+        helper = load_script('smb-restart')
+        transcripts = []
+        def remote(*cmd, **kwargs):
+            if cmd[0] == 'tail':
+                return SimpleNamespace(returncode=0, stdout=b'')
+            if cmd[0] == 'test':
+                return SimpleNamespace(returncode=0)
+            transcripts.append(json.loads(kwargs['input']))
+            return SimpleNamespace(returncode=0)
+        with patch.object(helper.time, 'sleep'):
+            result = helper.watch('20261110T000000Z-metal', 'fixture-smb', remote, lambda *a, **k: None)
+        self.assertEqual(result, 0)
+        self.assertEqual(transcripts[-1]['requests'], [])
+
     def test_gui_stop_start_and_cleanup(self):
         helper = load_script('smb-restart')
         for ending in ('done', 'ended'):
