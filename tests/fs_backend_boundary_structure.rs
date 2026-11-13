@@ -437,3 +437,39 @@ fn open_file_read_syscalls_use_the_trait() {
     }
     assert!(violations.is_empty(), "{}", violations.join("\n"));
 }
+
+#[test]
+fn open_file_write_syscalls_use_the_trait() {
+    use syn::visit::Visit;
+
+    #[derive(Default)]
+    struct BackendNames(Vec<String>);
+    impl<'ast> Visit<'ast> for BackendNames {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(),
+                "root_fs_write" | "home_fs_write" | "home_mount_id"
+                | "write_file_range_as" | "wait_for_inode")
+            {
+                self.0.push(ident.to_string());
+            }
+        }
+    }
+
+    let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("kernel/src/syscall/handlers.rs")).unwrap();
+    let parsed = syn::parse_file(&source).unwrap();
+    let mut violations = Vec::new();
+    // sys_write and write_vector share the write_with_limit implementation.
+    for name in ["sys_write", "write_with_limit", "sys_pwrite64"] {
+        let function = parsed.items.iter().find_map(|item| match item {
+            syn::Item::Fn(function) if function.sig.ident == name => Some(function),
+            _ => None,
+        }).unwrap_or_else(|| panic!("missing handlers.rs::{name}"));
+        let mut names = BackendNames::default();
+        names.visit_block(&function.block);
+        for backend in names.0 {
+            violations.push(format!("handlers.rs::{name} names {backend}"));
+        }
+    }
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
