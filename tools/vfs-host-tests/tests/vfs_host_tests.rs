@@ -34,6 +34,51 @@ fn removal(fs: &dyn FileSystem, dir: u64, expected: u64, directory: bool) -> Rem
 }
 
 #[test]
+fn chown_clears_setid_through_setattr() {
+    use crate::vfs::attributes::{attribute_change, AttributeChange};
+    use crate::permissions::Credentials;
+    let disk = Fixture::new();
+    let adapter = Ext2Adapter::new(disk.pin());
+    let fs: &dyn FileSystem = &adapter;
+    let root = fs.root().unwrap();
+    let file = regular(fs, root, b"setid");
+    fs.setattr(file, SetAttr { mode: Some(0o6755), ..SetAttr::default() }).unwrap();
+    let before = fs.getattr(file).unwrap();
+    let request = attribute_change(before.attrs, AttributeChange::Owner(90000, 90001),
+        &Credentials::kernel()).unwrap();
+    fs.setattr(file, request).unwrap();
+    let after = fs.getattr(file).unwrap();
+    assert_eq!((after.attrs.uid, after.attrs.gid), (90000, 90001));
+    assert_eq!(after.attrs.mode, 0o100755);
+    assert_eq!(after.times.ctime.sec, 1);
+
+    let mut owner = Credentials::kernel();
+    owner.euid = 90000;
+    owner.egid = 90001;
+    assert_eq!(attribute_change(after.attrs, AttributeChange::Owner(42, u32::MAX), &owner), Err(Errno(EPERM)));
+    assert_eq!(attribute_change(after.attrs, AttributeChange::Owner(u32::MAX, 42), &owner), Err(Errno(EPERM)));
+    let mode = attribute_change(after.attrs, AttributeChange::Mode(0o6755), &owner).unwrap();
+    fs.setattr(file, mode).unwrap();
+    // Changing ownership invalidates a previously checked request. It must
+    // refuse rather than apply permission bits based on the previous owner.
+    assert_eq!(fs.setattr(file, request), Err(Errno(EAGAIN)));
+    let fresh = fs.getattr(file).unwrap();
+    let keep = attribute_change(fresh.attrs, AttributeChange::Owner(u32::MAX, u32::MAX), &owner).unwrap();
+    fs.setattr(file, keep).unwrap();
+    assert_eq!(fs.getattr(file).unwrap().attrs.mode, 0o100755);
+
+    let dir = fs.create(root, b"inherit", NewNode::Directory { attrs: attrs(0o2775) }).unwrap();
+    let change = attribute_change(fs.getattr(dir).unwrap().attrs,
+        AttributeChange::Owner(90000, 90001), &Credentials::kernel()).unwrap();
+    fs.setattr(dir, change).unwrap();
+    assert_eq!(fs.getattr(dir).unwrap().attrs.mode, 0o042775);
+    owner.egid = 42;
+    let mode = attribute_change(fs.getattr(dir).unwrap().attrs, AttributeChange::Mode(0o2775), &owner).unwrap();
+    fs.setattr(dir, mode).unwrap();
+    assert_eq!(fs.getattr(dir).unwrap().attrs.mode, 0o040775);
+}
+
+#[test]
 fn failed_create_open_leaves_no_name_and_exclusive_retry_succeeds() {
     let disk = Fixture::new();
     let adapter = Ext2Adapter::new(disk.pin());

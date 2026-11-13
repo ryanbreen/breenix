@@ -47,7 +47,7 @@ pub mod ext2 {
     }
 }
 pub mod fs {
-    pub use crate::{attrs, errno, ext2, vfs};
+    pub use crate::{attrs, errno, ext2, vfs, permissions};
 }
 pub fn arch_without_interrupts<R>(f: impl FnOnce() -> R) -> R {
     f()
@@ -79,3 +79,10 @@ pub mod memory {
 pub use vfs::mount_table;
 #[path = "../tests/mount_table_tests.rs"]
 mod mount_table_tests;
+
+#[path = "../../../kernel/src/fs/permissions.rs"]
+pub mod permissions;
+#[path = "../../../kernel/src/process/credentials.rs"]
+pub mod credentials;
+mod attribute_support;
+pub use attribute_support::{process, task, test_control};

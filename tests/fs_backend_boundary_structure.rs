@@ -7,6 +7,53 @@ use std::path::{Path, PathBuf};
 const CEILING: usize = 108;
 
 #[test]
+fn attribute_syscalls_use_the_trait() {
+    use syn::visit::{self, Visit};
+    #[derive(Default)]
+    struct Boundary { backend: Vec<String>, calls: Vec<String> }
+    impl<'ast> Visit<'ast> for Boundary {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(), "ext2" | "ext2_errno" | "Ext2Fs"
+                | "Ext2Inode" | "FileHandle" | "ext2_handle" | "ino32" | "read_inode"
+                | "write_inode" | "write_mount" | "ext2_statfs" | "statfs_pin" | "verify") {
+                self.backend.push(ident.to_string());
+            }
+        }
+        fn visit_expr_method_call(&mut self, expr: &'ast syn::ExprMethodCall) {
+            self.calls.push(expr.method.to_string());
+            visit::visit_expr_method_call(self, expr);
+        }
+    }
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src/syscall");
+    let mut boundary = Boundary::default();
+    for (file, functions) in [
+        ("metadata.rs", &["update", "fifo", "pathname", "by_cwd", "by_fd", "sys_chmod",
+            "sys_fchmod", "sys_fchmodat", "sys_chown", "sys_lchown", "sys_fchown", "sys_fchownat"][..]),
+        ("fs.rs", &["sys_utimensat", "update_inode_timestamps", "sys_statfs", "sys_fstatfs", "resolved_statfs"][..]),
+    ] {
+        let parsed = syn::parse_file(&fs::read_to_string(root.join(file)).unwrap()).unwrap();
+        for name in functions {
+            let f = parsed.items.iter().find_map(|item| match item {
+                syn::Item::Fn(f) if f.sig.ident == *name => Some(f), _ => None,
+            }).unwrap_or_else(|| panic!("missing {file}::{name}"));
+            boundary.visit_item_fn(f);
+        }
+        for item in &parsed.items {
+            if let syn::Item::Fn(f) = item {
+                if f.sig.ident.to_string().contains("statfs") { boundary.visit_item_fn(f); }
+            }
+        }
+        // Retiring a syscall's backend helper must not leave it callable elsewhere.
+        assert!(!parsed.items.iter().any(|item| matches!(item,
+            syn::Item::Fn(f) if f.sig.ident == "ext2_statfs" || f.sig.ident == "statfs_pin")));
+    }
+    assert!(boundary.backend.is_empty(), "backend names: {}", boundary.backend.join(", "));
+    for operation in ["setattr", "statfs"] {
+        assert!(boundary.calls.iter().any(|name| name == operation), "attributes must call {operation}");
+    }
+}
+
+#[test]
 fn open_and_access_use_the_trait() {
     use syn::visit::{self, Visit};
 
