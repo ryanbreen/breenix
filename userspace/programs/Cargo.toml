@@ -962,3 +962,6 @@ path = "src/collab_lan_host.rs"
 [[bin]]
 name = "collab-lan-join"
 path = "src/collab_lan_join.rs"
+[[bin]]
+name = "suite-filesystem"
+path = "src/suite_filesystem.rs"
