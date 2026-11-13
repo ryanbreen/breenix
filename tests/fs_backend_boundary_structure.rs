@@ -396,3 +396,44 @@ fn open_file_descriptions_hold_vnodes() {
         }), "{name}'s OpenFile must hold Arc<VNode>");
     }
 }
+
+#[test]
+fn open_file_read_syscalls_use_the_trait() {
+    use syn::visit::Visit;
+
+    #[derive(Default)]
+    struct BackendNames(Vec<String>);
+    impl<'ast> Visit<'ast> for BackendNames {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(),
+                "root_fs_read" | "home_fs_read" | "home_mount_id"
+                | "read_file_range_coherent" | "get_ext2_file_size_for_handle"
+                | "load_ext2_inode_stat_for_handle" | "load_ext2_inode_stat_for_mount"
+                | "update_read_atime")
+            {
+                self.0.push(ident.to_string());
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src/syscall");
+    let mut violations = Vec::new();
+    for (file, functions) in [
+        ("handlers.rs", ["sys_read", "sys_pread64"]),
+        ("fs.rs", ["sys_lseek", "sys_fstat"]),
+    ] {
+        let parsed = syn::parse_file(&fs::read_to_string(root.join(file)).unwrap()).unwrap();
+        for name in functions {
+            let function = parsed.items.iter().find_map(|item| match item {
+                syn::Item::Fn(function) if function.sig.ident == name => Some(function),
+                _ => None,
+            }).unwrap_or_else(|| panic!("missing {file}::{name}"));
+            let mut names = BackendNames::default();
+            names.visit_block(&function.block);
+            for backend in names.0 {
+                violations.push(format!("{file}::{name} names {backend}"));
+            }
+        }
+    }
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
