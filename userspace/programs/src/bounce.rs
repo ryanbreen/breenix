@@ -113,7 +113,7 @@ struct FpsOverlay {
 
 impl FpsOverlay {
     fn new() -> Self {
-        Self { counter: FpsCounter::new(), speed_pct: 100, ttf_font: None, font_size: 20.0 }
+        Self { counter: FpsCounter::new(breengel::clock::now_ns() / 1_000_000), speed_pct: 100, ttf_font: None, font_size: 20.0 }
     }
 
     fn with_ttf(mut self, font: Option<CachedFont>, size: f32) -> Self {
@@ -234,7 +234,6 @@ fn run_window_loop(win: &mut Window, simulation: &mut Simulation) {
                     Event::AnimationTick { time_ms } => {
                         simulation.advance(last_tick.map_or(1, |last| time_ms.saturating_sub(last)));
                         last_tick = Some(time_ms);
-                        fps.counter.tick(time_ms);
                         redraw = true;
                     }
                     Event::MouseMove { .. } => redraw = true,
@@ -295,6 +294,9 @@ fn run_window_loop(win: &mut Window, simulation: &mut Simulation) {
         fps.draw(fb);
 
         let presented = win.present();
+        if presented.is_ok() {
+            fps.counter.tick(breengel::clock::now_ns() / 1_000_000);
+        }
         if first_frame {
             first_frame = false;
             match presented {

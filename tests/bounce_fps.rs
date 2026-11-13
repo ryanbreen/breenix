@@ -6,7 +6,7 @@ fn animation_ticks_are_not_presented_frames() {
     let source = include_str!("../userspace/programs/src/bounce.rs");
     let animation = source.split("Event::AnimationTick { time_ms } => {").nth(1).unwrap()
         .split("Event::MouseMove").next().unwrap();
-    let mut counter = fps::FpsCounter::new();
+    let mut counter = fps::FpsCounter::new(0);
     for now in 1..=16 {
         if animation.contains("fps.counter.tick(time_ms)") { counter.tick(now); }
     }
@@ -18,7 +18,7 @@ fn animation_ticks_are_not_presented_frames() {
 
 #[test]
 fn fps_measures_presentations_over_elapsed_time() {
-    let mut counter = fps::FpsCounter::new();
+    let mut counter = fps::FpsCounter::new(0);
     for frame in 1..=62 {
         let now = if frame == 62 { 1000 } else { frame * 16 };
         counter.tick(now);
