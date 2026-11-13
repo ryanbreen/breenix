@@ -366,7 +366,7 @@ impl FileSystem for Ext2Adapter {
         &self,
         dir: u64,
         cookie: u64,
-        sink: &mut dyn FnMut(DirEnt) -> Result<bool, Errno>,
+        sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
     ) -> Result<u64, Errno> {
         let guard = read_mount(self.mount).map_err(errno)?;
         let fs = guard.as_ref().ok_or(Errno(EIO))?;
@@ -397,16 +397,17 @@ impl FileSystem for Ext2Adapter {
                 ino: ino.into(),
                 kind: kind(&child)?,
                 name,
-            })? {
+            }, record.next as u64)? {
                 return Ok(next);
             }
             next = record.next as u64;
         }
         // A shared store has no placeholder in older generation directories.
-        // Synthetic entries follow the physical record range with stable cookies.
+        // Synthetic cookies occupy a separate range so physical growth cannot
+        // repeat a previously accepted bind entry.
         if dir == ns.root {
             for (index, (name, ino)) in generation_binds(ns).enumerate() {
-                let position = data.len() as u64 + index as u64;
+                let position = (1u64 << 62) + index as u64;
                 if position < cookie {
                     continue;
                 }
@@ -422,7 +423,7 @@ impl FileSystem for Ext2Adapter {
                     ino: ino.into(),
                     kind: kind(&child)?,
                     name: name.to_vec(),
-                })? {
+                }, position + 1)? {
                     return Ok(next);
                 }
                 next = position + 1;

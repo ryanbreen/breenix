@@ -1707,44 +1707,31 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     let mut records = alloc::vec::Vec::new();
     let buffer_size = count as usize;
     let mut new_position = start_position;
-    loop {
-        // The trait returns the cookie after the accepted entry. Stop the sink
-        // after one so each ABI record gets its own resumable d_off.
-        let mut next_entry = None;
-        let next_position = match open.dirents(new_position, &mut |entry| {
-            if next_entry.is_some() {
-                return Ok(false);
-            }
-            let reclen = align_up_8(DIRENT64_HEADER_SIZE + entry.name.len() + 1);
-            if reclen > buffer_size - records.len() {
-                return if records.is_empty() {
-                    Err(crate::fs::errno::Errno(EINVAL))
-                } else {
-                    Ok(false)
-                };
-            }
-            next_entry = Some(entry);
-            Ok(true)
-        }) {
-            Ok(position) => position,
-            Err(errno) => return SyscallResult::Err(errno.into()),
-        };
-        new_position = next_position;
-        let Some(entry) = next_entry else { break; };
+    let traversal = open.dirents(start_position, &mut |entry, next_cookie| {
         let reclen = align_up_8(DIRENT64_HEADER_SIZE + entry.name.len() + 1);
-        if records.try_reserve(reclen).is_err() {
-            return SyscallResult::Err(super::errno::ENOMEM as u64);
+        if reclen > buffer_size - records.len() {
+            return if records.is_empty() {
+                Err(crate::fs::errno::Errno(EINVAL))
+            } else {
+                Ok(false)
+            };
         }
+        records.try_reserve(reclen).map_err(|_| crate::fs::errno::Errno(super::errno::ENOMEM))?;
         push_dirent64(
             &mut records,
             entry.ino,
-            new_position as i64,
+            next_cookie as i64,
             node_kind_to_dt(entry.kind),
             &entry.name,
         );
-        if records.len() == buffer_size {
-            break;
-        }
+        new_position = next_cookie;
+        Ok(true)
+    });
+    match traversal {
+        Ok(position) => new_position = position,
+        // Once records are available, return those bytes and resume after them.
+        Err(_) if !records.is_empty() => {},
+        Err(errno) => return SyscallResult::Err(errno.into()),
     }
     let bytes_written = records.len();
 

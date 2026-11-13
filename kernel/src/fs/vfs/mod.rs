@@ -226,12 +226,13 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     /// Parent inode exposed by `..`, including the backend's selected namespace.
     fn parent(&self, dir: u64) -> Result<u64, Errno>;
     /// The cookie returned is after the last accepted entry. A sink returning
-    /// false leaves that entry for the next call. Dot entries belong to VFS.
+    /// false leaves that entry for the next call. Each entry carries its next
+    /// cookie so a caller can collect a batch in one traversal. Dots belong to VFS.
     fn readdir(
         &self,
         dir: u64,
         cookie: u64,
-        sink: &mut dyn FnMut(DirEnt) -> Result<bool, Errno>,
+        sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
     ) -> Result<u64, Errno>;
     fn create(&self, dir: u64, name: &[u8], node: NewNode<'_>) -> Result<u64, Errno>;
     fn link(&self, ino: u64, dir: u64, name: &[u8]) -> Result<(), Errno>;

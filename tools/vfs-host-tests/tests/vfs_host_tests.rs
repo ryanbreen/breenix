@@ -159,7 +159,7 @@ fn names_create_lookup_readdir_and_readlink() {
     for _ in 0..expected.len() + 1 {
         let mut accepted = false;
         let next = fs
-            .readdir(root, cookie, &mut |entry| {
+            .readdir(root, cookie, &mut |entry, _cookie| {
                 if accepted {
                     return Ok(false);
                 }
@@ -586,10 +586,10 @@ fn getdents_cookie_survives_concurrent_unlink() {
         fs: fs.clone(),
         node,
     };
-    assert_eq!(file.dirents(0, &mut |_| Ok(false)), Ok(0));
+    assert_eq!(file.dirents(0, &mut |_, _| Ok(false)), Ok(0));
     let mut seen = Vec::new();
     let cookie = file
-        .dirents(0, &mut |entry| {
+        .dirents(0, &mut |entry, _cookie| {
             if seen.len() == 4 {
                 return Ok(false);
             }
@@ -618,7 +618,7 @@ fn getdents_cookie_survives_concurrent_unlink() {
     for _ in 0..expected.len() + 1 {
         let mut count = 0;
         let next = file
-            .dirents(pos, &mut |entry| {
+            .dirents(pos, &mut |entry, _cookie| {
                 if count == 2 {
                     return Ok(false);
                 }
@@ -643,7 +643,7 @@ fn getdents_cookie_survives_concurrent_unlink() {
     assert_eq!(actual, expected);
     let mut dots = Vec::new();
     let after_dots = file
-        .dirents(0, &mut |entry| {
+        .dirents(0, &mut |entry, _cookie| {
             if dots.len() == 2 {
                 return Ok(false);
             }
@@ -663,7 +663,7 @@ fn getdents_cookie_survives_concurrent_unlink() {
     );
     let mut parent_only = Vec::new();
     let after_parent = file
-        .dirents(1, &mut |entry| {
+        .dirents(1, &mut |entry, _cookie| {
             if !parent_only.is_empty() {
                 return Ok(false);
             }
@@ -868,4 +868,24 @@ fn fsize_refusal_is_distinct_from_filesystem_efbig() {
     }
     assert_eq!(fs.write(&node, req(WriteAt::Offset(fs.max_file_size().unwrap()), u64::MAX), b"x"),
         Err(WriteError::Filesystem(Errno(EFBIG))));
+}
+
+#[test]
+fn batched_dirents_supply_resumable_cookies() {
+    use std::sync::Arc;
+    use crate::vfs::file::OpenFile;
+    let disk = Fixture::new();
+    let fs = Arc::new(Ext2Adapter::new(disk.pin()));
+    let root = fs.create(fs.root().unwrap(), b"batch", NewNode::Directory { attrs: attrs(0o755) }).unwrap();
+    for name in [b"a", b"b", b"c"] { regular(fs.as_ref(), root, name); }
+    let open = OpenFile { node: fs.open(root).unwrap(), fs };
+    let mut batch = Vec::new();
+    let end = open.dirents(0, &mut |entry, cookie| { batch.push((entry, cookie)); Ok(true) }).unwrap();
+    assert_eq!(batch.len(), 5);
+    assert_eq!(end, batch.last().unwrap().1);
+    for (index, (_, cookie)) in batch.iter().enumerate() {
+        let mut resumed = Vec::new();
+        open.dirents(*cookie, &mut |entry, next| { resumed.push((entry, next)); Ok(true) }).unwrap();
+        assert_eq!(resumed, batch[index + 1..]);
+    }
 }

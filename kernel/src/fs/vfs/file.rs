@@ -15,7 +15,7 @@ impl OpenFile {
     pub fn dirents(
         &self,
         mut pos: u64,
-        emit: &mut dyn FnMut(DirEnt) -> Result<bool, Errno>,
+        emit: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
     ) -> Result<u64, Errno> {
         if pos < 2 {
             // The backend validates that this is a directory before dots escape.
@@ -31,7 +31,7 @@ impl OpenFile {
                     ino,
                     kind: NodeKind::Directory,
                     name: name.to_vec(),
-                })? {
+                }, position + 1)? {
                     return Ok(pos);
                 }
                 pos = position + 1;
