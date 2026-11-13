@@ -141,14 +141,28 @@ fn no_ext2_error_strings_above_ext2() {
             _ => false,
         }
     }
-    fn string(expr: &syn::Expr) -> Option<String> {
+    fn string(expr: &syn::Expr, constants: &std::collections::BTreeMap<String, String>) -> Option<String> {
         match expr {
             syn::Expr::Lit(syn::ExprLit { lit: syn::Lit::Str(text), .. }) => Some(text.value()),
+            syn::Expr::Path(path) => constants.get(&path.path.segments.last()?.ident.to_string()).cloned(),
+            syn::Expr::Paren(expr) => string(&expr.expr, constants),
+            syn::Expr::Reference(expr) => string(&expr.expr, constants),
             _ => None,
+        }
+    }
+    #[derive(Default)]
+    struct Constants(std::collections::BTreeMap<String, String>);
+    impl<'ast> Visit<'ast> for Constants {
+        fn visit_item_const(&mut self, item: &'ast syn::ItemConst) {
+            if let Some(text) = string(&item.expr, &self.0) {
+                self.0.insert(item.ident.to_string(), text);
+            }
+            visit::visit_item_const(self, item);
         }
     }
     struct Boundary<'a> {
         file: &'a str,
+        constants: &'a std::collections::BTreeMap<String, String>,
         function: String,
         ext2: bool,
         violations: &'a mut Vec<String>,
@@ -179,40 +193,45 @@ fn no_ext2_error_strings_above_ext2() {
             self.function = old;
         }
         fn visit_expr_method_call(&mut self, expr: &'ast syn::ExprMethodCall) {
-            if expr.method == "contains" && error_value(&expr.receiver) {
-                if let Some(text) = expr.args.first().and_then(string) { self.check(text); }
+            if ["contains", "starts_with", "ends_with"].iter().any(|method| expr.method == method) && error_value(&expr.receiver) {
+                if let Some(text) = expr.args.first().and_then(|arg| string(arg, self.constants)) { self.check(text); }
             }
             visit::visit_expr_method_call(self, expr);
         }
         fn visit_expr_binary(&mut self, expr: &'ast syn::ExprBinary) {
             if matches!(expr.op, syn::BinOp::Eq(_)) {
                 if error_value(&expr.left) {
-                    if let Some(text) = string(&expr.right) { self.check(text); }
+                    if let Some(text) = string(&expr.right, self.constants) { self.check(text); }
                 }
                 if error_value(&expr.right) {
-                    if let Some(text) = string(&expr.left) { self.check(text); }
+                    if let Some(text) = string(&expr.left, self.constants) { self.check(text); }
                 }
             }
             visit::visit_expr_binary(self, expr);
         }
     }
-    fn walk(directory: &Path, kernel: &Path, violations: &mut Vec<String>) {
+    fn walk(directory: &Path, kernel: &Path, constants: &Constants, violations: &mut Vec<String>) {
         let mut entries = fs::read_dir(directory).unwrap().map(|e| e.unwrap().path()).collect::<Vec<_>>();
         entries.sort();
         for path in entries {
             if path.is_dir() {
-                walk(&path, kernel, violations);
+                walk(&path, kernel, constants, violations);
             } else if path.extension().is_some_and(|extension| extension == "rs") {
                 let file = path.strip_prefix(kernel).unwrap().to_str().unwrap();
                 let source = fs::read_to_string(&path).unwrap();
-                Boundary { file, function: String::new(), ext2: file.starts_with("fs/ext2/"), violations }
-                    .visit_file(&syn::parse_file(&source).unwrap_or_else(|e| panic!("{file}: {e}")));
+                let parsed = syn::parse_file(&source).unwrap_or_else(|e| panic!("{file}: {e}"));
+                let mut local = Constants(constants.0.clone());
+                local.visit_file(&parsed);
+                Boundary { file, constants: &local.0, function: String::new(), ext2: file.starts_with("fs/ext2/"), violations }
+                    .visit_file(&parsed);
             }
         }
     }
     let kernel = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src");
     let mut violations = Vec::new();
-    walk(&kernel, &kernel, &mut violations);
+    let mut constants = Constants::default();
+    constants.visit_file(&syn::parse_file(&fs::read_to_string(kernel.join("fs/ext2/mod.rs")).unwrap()).unwrap());
+    walk(&kernel, &kernel, &constants, &mut violations);
     assert!(violations.is_empty(), "{}", violations.join("\n"));
 }
 
