@@ -954,3 +954,7 @@ path = "src/rectangles.rs"
 [[bin]]
 name = "biconkit"
 path = "src/biconkit.rs"
+
+[[bin]]
+name = "suite-filesystem"
+path = "src/suite_filesystem.rs"
