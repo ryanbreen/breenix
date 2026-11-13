@@ -18,8 +18,8 @@ pub fn readback(rb: &mut abi::Readback) -> Result<(), Error> {
     readback_until(rb, deadline.saturating_add(2_000_000_000))
 }
 
-/// Retry pending scanout observation on composite completion, under one absolute
-/// monotonic deadline. The retry still requires a valid observation.
+/// Retry pending scanout observation on composite completion or claim loss, under
+/// one absolute monotonic deadline. The retry still requires a valid observation.
 pub fn readback_until(rb: &mut abi::Readback, deadline_ns: u64) -> Result<(), crate::error::Error> {
     use crate::{errno::Errno, error::Error, io, time, types::{Fd, OwnedFd}};
     use crate::window;
@@ -28,7 +28,7 @@ pub fn readback_until(rb: &mut abi::Readback, deadline_ns: u64) -> Result<(), cr
     let fd = OwnedFd::new(Fd::from_raw(fd));
     loop {
         if now()? >= deadline_ns { return Err(Error::Os(Errno::ETIMEDOUT)); }
-        // Acknowledge before observing: a completion during or after EAGAIN
+        // Acknowledge before observing: completion or claim loss during or after EAGAIN
         // stays readable, including one published before ppoll registers us.
         let mut generation = [0u8; 8];
         io::read(fd.fd(), &mut generation)?;

@@ -1141,9 +1141,10 @@ pub fn read_events(caller: &Caller, r: &mut ReadEvents, out_arg: u64) -> Result<
     }
 }
 
-/// The compositor claim has ended: wake every window's event readers, so a blocking read that
-/// began under it returns.
+/// The compositor claim has ended and the registry is published. Wake window event
+/// readers and scanout observers, including those waiting for its first composite.
 fn claim_ended(windows: Vec<Arc<Waits>>) {
+    super::events::completed();
     for waits in windows {
         waits.events.wake_up();
     }
@@ -1480,7 +1481,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
     super::scene::invalidate(tgid);
     let mut gone: Vec<Window> = Vec::new();
     let mut freed: Vec<Remnant> = Vec::new();
-    let mut readers: Vec<Arc<Waits>> = Vec::new();
+    let mut readers = None;
     // The room each evidence holder has under its `RLIMIT_AS`, read before the registry is
     // taken (the process manager is never taken under it). A remnant that does not fit is not
     // kept.
@@ -1536,7 +1537,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
             }
         }
         if reg.claim.is_some_and(|c| c.holder == tgid) {
-            readers = end_claim(&mut reg);
+            readers = Some(end_claim(&mut reg));
         }
         if at_exit {
             let held: Vec<u64> = reg.remnants.iter().filter(|(_, r)| r.holder == tgid).map(|(id, _)| *id).collect();
@@ -1556,7 +1557,7 @@ pub fn group_gone(tgid: u64, at_exit: bool) {
         w.waits.acquire.wake_up();
         w.waits.events.wake_up();
     }
-    claim_ended(readers);
+    if let Some(readers) = readers { claim_ended(readers); }
     crate::gpu::window_targets::release_context(tgid);
     drop(gone);
     drop(freed);

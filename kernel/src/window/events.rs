@@ -233,7 +233,7 @@ impl crate::ipc::object::IpcFile for EventFile {
     }
 }
 
-/// Observer notifications when a composite's reservation is released.
+/// Observer notifications when a composite's reservation is released or a claim ends.
 static COMPLETIONS: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
 static COMPLETION_QUEUE: spin::Once<Arc<WaitQueueHead>> = spin::Once::new();
 
