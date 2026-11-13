@@ -81,6 +81,7 @@ impl DialogModel {fn status(&self)->&str {""}}
 struct SessionDialog {mode:session_dialog::Mode,address:Field,name:Field,model:DialogModel}
 #[derive(Clone)] struct Canvas;
 impl Canvas {
+    fn region(&self,_:usize,_:usize,_:usize,_:usize)->Self {Self}
     fn preview(&self,p:&[(i32,i32)],f:impl FnOnce(&mut Self,&[(i32,i32)]))->Self {let mut c=Self;f(&mut c,p);c}
     fn render_runs(&self,_:impl FnMut(usize,usize,usize,[u8;3])) {}
     fn render_changes(&self,_:&Self,_:impl FnMut(usize,usize,usize,[u8;3]))->bool {false}

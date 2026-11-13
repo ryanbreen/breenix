@@ -106,6 +106,18 @@ impl Canvas {
         }
         changed
     }
+    /// Copy a bounded patch for a temporary stroke preview, preserving RGB bytes.
+    pub fn region(&self, x: usize, y: usize, width: usize, height: usize) -> Self {
+        assert!(x <= self.width && width <= self.width - x);
+        assert!(y <= self.height && height <= self.height - y);
+        let mut patch = Self::new(width, height);
+        for row in 0..height {
+            let start = ((y + row) * self.width + x) * 3;
+            patch.pixels[row * width * 3..(row + 1) * width * 3]
+                .copy_from_slice(&self.pixels[start..start + width * 3]);
+        }
+        patch
+    }
     pub fn preview(&self, points: &[Point], draw: impl FnOnce(&mut Self, &[Point])) -> Self {
         let mut image = self.clone();
         draw(&mut image, points);

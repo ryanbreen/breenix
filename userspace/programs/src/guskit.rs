@@ -65,6 +65,7 @@ impl SessionDialog {
 }
 struct App {
     layout: Layout,
+    damage: Option<Clip>,
     width: usize, height: usize, history: History, clean: [u8; 32],
     tool: usize, size: usize, hue: u16, sat: u8, val: u8,
     stroke: Option<Vec<Point>>, selected_color: Option<[u8; 3]>, recent: [[u8; 3]; 8], confirm: bool, quit: bool,
@@ -202,6 +203,24 @@ impl App {
     fn point(&self, x: i32, y: i32) -> Option<Point> {
         self.layout.point(x, y, self.width, self.height)
     }
+    fn stroke_bounds(&self) -> Option<Clip> {
+        let points = self.stroke.as_ref()?;
+        let &(x, y) = points.first()?;
+        // Fill can reach the whole connected component. Circle is centred on
+        // the press; the L1 radius conservatively bounds its Euclidean radius.
+        if self.tool == 5 { return Some(Clip::new(0, 0, self.width as i32, self.height as i32)); }
+        let (mut x0, mut y0, mut x1, mut y1) = (x, y, x, y);
+        for &(x, y) in points { x0=x0.min(x); y0=y0.min(y); x1=x1.max(x); y1=y1.max(y); }
+        if self.tool == 4 {
+            let &(last_x, last_y) = points.last()?;
+            let radius = (last_x-x).abs() + (last_y-y).abs();
+            (x0,y0,x1,y1)=(x-radius,y-radius,x+radius,y+radius);
+        }
+        let radius = if matches!(self.tool, 1 | 6) { [2,5,10][self.size] } else { 0 };
+        x0=(x0-radius).max(0); y0=(y0-radius).max(0);
+        x1=(x1+radius+1).min(self.width as i32); y1=(y1+radius+1).min(self.height as i32);
+        (x1>x0 && y1>y0).then_some(Clip::new(x0,y0,x1-x0,y1-y0))
+    }
     fn draw_stroke(&self, image: &mut Canvas, points: &[Point]) {
         let Some(&last) = points.last() else { return };
         let color = self.color();
@@ -255,6 +274,10 @@ fn draw_label(fb: &mut Surface, font: Option<&mut CachedFont>, size: f32, text: 
     }
     fb.pop_clip();
 }
+fn union(a: Clip, b: Clip) -> Clip {
+    let x = a.x.min(b.x); let y = a.y.min(b.y);
+    Clip::new(x,y,(a.x+a.w).max(b.x+b.w)-x,(a.y+a.h).max(b.y+b.h)-y)
+}
 fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<CachedFont>, font_size: f32) {
     let l = app.layout;
     // Input acknowledgments wait for this frame. Retain the hue-dependent picker
@@ -270,9 +293,8 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<Cac
         palette.wait().expect("Gus Kit picker rendering");
         app.palette = Some((app.hue, palette));
     }
-    let preview = app.stroke.as_ref().map(|points| app.canvas().preview(points, |image, points| app.draw_stroke(image, points)));
     let mut cached = app.canvas_surface.take();
-    let canvas = preview.as_ref().unwrap_or_else(||app.canvas());
+    let canvas = app.canvas();
     if cached.as_ref().is_some_and(|(_,surface)|surface.width()!=app.width || surface.height()!=app.height) { cached=None; }
     if let Some((previous, surface)) = &mut cached {
         let changed = surface.batch(|fb| canvas.render_changes(previous, |x, y, width, c|
@@ -290,6 +312,7 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<Cac
         cached = Some((canvas.clone(), surface));
     }
     app.canvas_surface=cached;
+    if let Some(damage) = app.damage { fb.push_clip(damage); }
     fb.batch(|fb| {
     fb.clear(Color::rgb(45, 45, 45));
     for (i, label) in LABELS.iter().enumerate() {
@@ -308,6 +331,14 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<Cac
     for (r, c) in l.recent.iter().zip(&app.recent) { shapes::fill_rect(fb, r.x, r.y, r.w, r.h, Color::rgb(c[0], c[1], c[2])); }
     let r = l.canvas(app.width, app.height);
     libgfx::blit::blit(fb, &app.canvas_surface.as_ref().expect("canvas rendered above").1, r.x, r.y);
+    if let Some(bounds) = app.stroke_bounds() {
+        let mut patch = app.canvas().region(bounds.x as usize, bounds.y as usize, bounds.w as usize, bounds.h as usize);
+        let points: Vec<_> = app.stroke.as_ref().expect("preview bounds require a stroke").iter()
+            .map(|&(x,y)| (x-bounds.x,y-bounds.y)).collect();
+        app.draw_stroke(&mut patch, &points);
+        patch.render_runs(|x,y,width,c| shapes::fill_rect(fb,
+            r.x+bounds.x+x as i32,r.y+bounds.y+y as i32,width as i32,1,Color::rgb(c[0],c[1],c[2])));
+    }
     menu.draw(fb, &Theme::dark());
     let r = l.status;
     if !app.status().is_empty() { draw_label(fb, font.as_mut(), font_size, app.status(), r.x, r.y, Clip::new(r.x,r.y,r.w,r.h)); }
@@ -337,6 +368,7 @@ fn render(fb: &mut Surface, app: &mut App, menu: &MenuBar, font: &mut Option<Cac
         draw_label(fb, font.as_mut(), font_size, "Discard changes? D: discard  Esc: cancel", r.x, r.y, Clip::new(r.x,r.y,r.w,r.h));
     }
     });
+    if app.damage.is_some() { fb.pop_clip(); }
 }
 fn publish(win: &mut Window, app: &App, menu: &MenuBar, font_size: f32) {
     use libbui::widget::Widget;
@@ -410,6 +442,21 @@ fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) ->
     menu.set_enabled(REDO, app.redo_depth() > 0);
     Handled::Redraw
 }
+fn dispatch_input(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered, redraw: &mut bool) -> Handled {
+    let before = if matches!(delivered.event, Event::MouseMove { .. })
+        && !menu.is_open() && app.picker.is_none() && app.session_dialog.is_none() && !app.confirm {
+        app.stroke_bounds()
+    } else { None };
+    let handled = handle(app, menu, delivered);
+    if handled == Handled::Redraw {
+        let delta = before.zip(app.stroke_bounds()).map(|(a,b)| {
+            let r = union(a,b); Clip::new(r.x,r.y+app.layout.canvas_y,r.w,r.h)
+        });
+        app.damage = if *redraw { app.damage.zip(delta).map(|(a,b)| union(a,b)) } else { delta };
+        *redraw = true;
+    }
+    handled
+}
 #[path = "guskit/options.rs"] mod options;
 use options::Options;
 fn main() {
@@ -417,7 +464,7 @@ fn main() {
     let (width,height)=(options.width,options.height);
     let next=options.file;
     let image = Canvas::new(width,height); let clean = image.digest();
-    let mut app = App { layout: Layout::new(1), width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
+    let mut app = App { damage: None, layout: Layout::new(1), width,height,history: History::new(image),clean,tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0,0,0],[255,0,0],[0,255,0],[0,0,255],[255,255,0],[255,0,255],[0,255,255],[128,128,128]],confirm:false,quit:false,file:next.map(PathBuf::from),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
     if let Some(path) = app.file.clone() { if path.exists() { app.open_file(path); } }
     if let Some((host,address,port,name))=options.session {
         let result=if host {collab::Session::host(address,port,&name,app.canvas().clone(),width,height)} else {collab::Session::join(address,port,&name)};
@@ -437,11 +484,26 @@ fn main() {
         menu.set_enabled(HOST_SESSION, app.can_start_session()); menu.set_enabled(JOIN_SESSION, app.can_start_session());
         menu.set_enabled(UNDO, app.session.is_some() || app.undo_depth() > 0); menu.set_enabled(REDO, app.redo_depth() > 0);
         if redraw {
+            let whole = Clip::new(0,0,win.width() as i32,win.height() as i32);
+            let r = app.damage.unwrap_or(whole);
+            let mut damage = Clip::new(r.x.min(whole.w),r.y.min(whole.h),
+                (r.x+r.w).min(whole.w)-r.x.min(whole.w),
+                (r.y+r.h).min(whole.h)-r.y.min(whole.h));
+            if damage.is_empty() { damage = whole; }
+            // ACQUIRE's replay is repair of this back buffer, not new frame
+            // damage. Include it when drawing, but commit only this input's delta.
+            let acquired = win.acquire(u64::MAX).expect("Gus Kit acquire");
+            app.damage = Some(if acquired.replay_full { whole } else {
+                acquired.replay.iter().fold(damage, |r,b| union(r,Clip::new(b.x,b.y,b.w,b.h)))
+            });
             if let Ok(surface) = win.surface() { render(surface, &mut app, &menu, &mut font, font_size); }
-            publish(&mut win, &app, &menu, font_size); let _ = win.present();
+            publish(&mut win, &app, &menu, font_size);
+            win.commit(&[libbreenix::window::abi::Rect::new(damage.x,damage.y,damage.w,damage.h)])
+                .expect("Gus Kit present");
         }
         if app.quit { break; }
         redraw = false;
+        app.damage = None;
         let mut pointer_motion = false;
         let mut reload_font = false;
         let mut resize = None;
@@ -449,17 +511,15 @@ fn main() {
         let mut dispatch = |delivered: &breengel::Delivered| {
             pointer_motion |= matches!(delivered.event, Event::MouseMove { .. });
             match delivered.event {
-                Event::ResizeRequested { width, height } => { resize = Some((width, height)); redraw = true; return Handled::Redraw; }
+                Event::ResizeRequested { width, height } => { resize = Some((width, height)); app.damage = None; redraw = true; return Handled::Redraw; }
                 Event::Resized { width, height } => {
                     if initial_resize.take() != Some((width, height)) { app.resize_view(width, height); }
-                    redraw = true; return Handled::Redraw;
+                    app.damage = None; redraw = true; return Handled::Redraw;
                 }
                 _ => {}
             }
-            if matches!(delivered.event, Event::FontChanged) { reload_font = true; redraw = true; return Handled::Redraw; }
-            let handled = handle(&mut app, &mut menu, delivered);
-            redraw |= handled == Handled::Redraw;
-            handled
+            if matches!(delivered.event, Event::FontChanged) { reload_font = true; app.damage = None; redraw = true; return Handled::Redraw; }
+            dispatch_input(&mut app, &mut menu, delivered, &mut redraw)
         };
         let result=if collaborating { win.dispatch(&mut dispatch) } else { win.wait_dispatch(100_000_000,&mut dispatch) };
         let count=result.unwrap_or_else(|e| { if matches!(e, libbreenix::error::Error::Os(libbreenix::errno::Errno::ETIMEDOUT)) { 0 } else { eprintln!("Gus Kit dispatch: {e}"); std::process::exit(1) } });
@@ -487,7 +547,7 @@ fn main() {
         }
         if let Some(session)=&mut app.session {
             let status=session.core.model.status.clone();
-            redraw |= session.poll(10);
+            if session.poll(10) { redraw = true; app.damage = None; }
             if session.core.model.status != status { app.message.clear(); }
             app.width=session.core.model.width(); app.height=session.core.model.height();
         }
@@ -507,7 +567,7 @@ mod tests {
     fn failed_and_ended_joins_allow_another_session_without_losing_the_canvas() {
         for end in [None, Some(libcollab::wire::Message::JoinRefused { reason: b"full".to_vec() }), Some(libcollab::wire::Message::Bye)] {
             let image = Canvas::new(20, 20);
-            let mut app = App { layout: Layout::new(1), width:20,height:20,clean:image.digest(),history:History::new(image),
+            let mut app = App { damage: None, layout: Layout::new(1), width:20,height:20,clean:image.digest(),history:History::new(image),
                 tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
                 confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,
                 session:Some(collab::session_fixture(collab::Core::join("Peer"))),session_dialog:None };
@@ -533,7 +593,7 @@ mod tests {
     #[test]
     fn session_dialog_scaled_centres_focus_the_drawn_fields() {
         let image = Canvas::new(200, 120);
-        let mut app = App { layout: Layout::new(2), width:200,height:120,clean:image.digest(),history:History::new(image),
+        let mut app = App { damage: None, layout: Layout::new(2), width:200,height:120,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
             confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
         let mut menu = menu();
@@ -553,7 +613,7 @@ mod tests {
     #[test]
     fn session_dialog_inserts_physical_printable_keys_once() {
         let image = Canvas::new(200, 120);
-        let mut app = App { layout: Layout::new(1), width:200,height:120,clean:image.digest(),history:History::new(image),
+        let mut app = App { damage: None, layout: Layout::new(1), width:200,height:120,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
             confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
         let mut menu = menu();
@@ -582,7 +642,7 @@ mod tests {
     #[test]
     fn session_dialog_rejects_bad_address_after_tab_and_enter_text() {
         let image = Canvas::new(200, 120);
-        let mut app = App { layout: Layout::new(1), width:200,height:120,clean:image.digest(),history:History::new(image),
+        let mut app = App { damage: None, layout: Layout::new(1), width:200,height:120,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
             confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
         let mut menu = menu();
@@ -623,7 +683,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join("sub")).unwrap();
         let image = Canvas::new(8, 8);
-        let mut app = App { layout: Layout::new(1), width:8,height:8,clean:image.digest(),history:History::new(image),
+        let mut app = App { damage: None, layout: Layout::new(1), width:8,height:8,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
             confirm:false,quit:false,file:Some(dir.join("a.png")),message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
         let mut menu = menu();
@@ -667,24 +727,29 @@ mod tests {
     #[test]
     fn passive_events_acknowledge_without_repainting_and_strokes_still_preview() {
         let image = Canvas::new(200, 120);
-        let mut app = App { layout: Layout::new(1), width:200,height:120,clean:image.digest(),history:History::new(image),
+        let mut app = App { damage: None, layout: Layout::new(1), width:200,height:120,clean:image.digest(),history:History::new(image),
             tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
             confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
         let mut menu = menu();
+        let mut redraw = false;
         let mut event = Delivered { serial:1,time_ns:1,clicks:0,
             event:Event::KeyRelease { keycode:25,modifiers:Modifiers::default() } };
-        assert_eq!(handle(&mut app, &mut menu, &event), Handled::NoChange);
+        assert_eq!(dispatch_input(&mut app, &mut menu, &event, &mut redraw), Handled::NoChange);
         event.event = Event::Text { text:"p".into() };
-        assert_eq!(handle(&mut app, &mut menu, &event), Handled::NoChange);
+        assert_eq!(dispatch_input(&mut app, &mut menu, &event, &mut redraw), Handled::NoChange);
         event.event = Event::MouseMove { x:20,y:186 };
-        assert_eq!(handle(&mut app, &mut menu, &event), Handled::NoChange);
+        assert_eq!(dispatch_input(&mut app, &mut menu, &event, &mut redraw), Handled::NoChange);
         event.event = Event::MouseButton { button:breengel::buttons::LEFT,pressed:true,x:20,y:186 };
-        assert_eq!(handle(&mut app, &mut menu, &event), Handled::Redraw);
+        assert_eq!(dispatch_input(&mut app, &mut menu, &event, &mut redraw), Handled::Redraw);
+        assert!(redraw && app.damage.is_none(), "press redraws the frame");
+        redraw = false;
         event.event = Event::MouseMove { x:40,y:186 };
-        assert_eq!(handle(&mut app, &mut menu, &event), Handled::Redraw);
+        assert_eq!(dispatch_input(&mut app, &mut menu, &event, &mut redraw), Handled::Redraw);
+        assert_eq!(app.damage, Some(Clip::new(20,186,21,1)), "motion damage is the union of the old and new preview");
         assert_eq!(app.undo_depth(), 0, "preview must not commit the stroke");
         event.event = Event::MouseButton { button:breengel::buttons::LEFT,pressed:false,x:40,y:186 };
-        assert_eq!(handle(&mut app, &mut menu, &event), Handled::Redraw);
+        assert_eq!(dispatch_input(&mut app, &mut menu, &event, &mut redraw), Handled::Redraw);
+        assert!(redraw && app.damage.is_none(), "release restores full damage for changed status/history");
         assert_eq!(app.undo_depth(), 1);
     }
 }

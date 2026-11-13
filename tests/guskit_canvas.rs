@@ -158,3 +158,14 @@ fn undo_and_redo_after_grow_preserve_all_states() {
     assert_eq!(&h.canvas().pixels()[..3], &K);
     assert_eq!(&h.canvas().pixels()[12..15], &K);
 }
+
+#[test]
+fn preview_region_keeps_source_coordinates_and_leaves_the_base_unchanged() {
+    let mut base = Canvas::new(8, 8);
+    base.line((1, 2), (6, 2), K);
+    let before = base.pixels().to_vec();
+    let mut patch = base.region(1, 1, 4, 3);
+    assert_eq!(&patch.pixels()[4*3..8*3], &[1,2,3,1,2,3,1,2,3,1,2,3]);
+    patch.brush(&[(1,1),(2,1)], Radius::Small, [0;3]);
+    assert_eq!(base.pixels(), before);
+}

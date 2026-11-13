@@ -26,7 +26,7 @@ class MotionWork(unittest.TestCase):
         code = code.replace('fn canvas(&self)->&Canvas {&Canvas}', 'fn canvas(&self)->&Canvas {&self.image}')
         code = code.replace('fn draw_stroke(&self,_:&mut Canvas,_:&[Point]) {}', item(app, '    fn draw_stroke('))
         code = code.replace('// APP_LAYOUT_FIELD', 'layout: Layout, image: Canvas, damage: Option<Clip>,')
-        code = code.replace('// APP_METHODS', '')
+        code = code.replace('// APP_METHODS', item(app, '    fn stroke_bounds(') if 'fn stroke_bounds(' in app else '')
         code = code.replace('// LAYOUT_MODULE', 'mod layout {\n' + source('userspace/programs/src/guskit/layout.rs') + '\n}\nuse layout::Layout;')
         code = code.replace('// NODE_MODULE', source('userspace/programs/src/guskit/node.rs'))
         code = code.replace('// CONSTANTS', '\n'.join(line for line in app.splitlines() if line.startswith(('const NAMES:', 'const LABELS:'))))

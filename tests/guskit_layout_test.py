@@ -27,9 +27,9 @@ class GusKitLayout(unittest.TestCase):
         code = (ROOT / 'tests/fixtures/guskit_layout.rs').read_text()
         layout = source('userspace/programs/src/guskit/layout.rs') if 'mod layout;' in app else ''
         code = code.replace('// LAYOUT_MODULE', 'mod layout {\n' + layout + '\n}\nuse layout::Layout;' if layout else '')
-        code = code.replace('// APP_LAYOUT_FIELD', 'layout: Layout,' if layout else '')
-        code = code.replace('// APP_LAYOUT_INIT', 'layout: Layout::new(scale),' if layout else '')
-        code = code.replace('// APP_METHODS', '\n'.join(item(app, f'    fn {name}(') for name in ['point', 'press']))
+        code = code.replace('// APP_LAYOUT_FIELD', 'layout: Layout, damage: Option<Clip>,' if layout else '')
+        code = code.replace('// APP_LAYOUT_INIT', 'layout: Layout::new(scale), damage: None,' if layout else '')
+        code = code.replace('// APP_METHODS', '\n'.join(item(app, f'    fn {name}(') for name in (['point', 'press', 'stroke_bounds'] if 'fn stroke_bounds(' in app else ['point', 'press'])))
         code = code.replace('// PRODUCTION', '\n'.join(item(app, f'fn {name}(') for name in ['draw_label', 'render', 'publish']))
         code = code.replace('// NODE_MODULE', source('userspace/programs/src/guskit/node.rs'))
         code = code.replace('// CONSTANTS', '\n'.join(line for line in app.splitlines() if line.startswith(('const TOP:', 'const NAMES:', 'const LABELS:'))))
