@@ -344,6 +344,8 @@ fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) ->
             else if !modifiers.ctrl && !modifiers.alt { match ascii.to_ascii_lowercase() { b'p' => app.tool=0, b'b' => app.tool=1, b'l' => app.tool=2, b'r' => app.tool=3, b'c' => app.tool=4, b'f' => app.tool=5, b'e' => app.tool=6, b'1'..=b'3' => app.size=(ascii-b'1') as usize, _ => {} } }
         },
         Event::Text { ref text } if app.session_dialog.is_some() => {
+            // bwm also emits control text after Tab/Enter key actions.
+            if text.chars().all(char::is_control) { return Handled::NoChange; }
             let input = libbui::KeyInput { key: libbui::Key::Char, shift: false, ctrl: false, alt: false, text };
             let result = app.session_dialog.as_mut().unwrap().key(&input); app.dialog_result(result);
         },
