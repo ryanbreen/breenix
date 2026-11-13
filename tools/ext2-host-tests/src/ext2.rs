@@ -101,6 +101,7 @@ pub struct Ext2Fs {
 }
 impl Ext2Fs {
     pub fn namespace(&self) -> generation::Namespace { self.namespace }
+    pub fn host_set_namespace(&mut self, namespace: generation::Namespace) { self.namespace = namespace; }
     pub fn is_read_only(&self) -> bool { self.device.is_read_only() }
     pub fn flush_inode_times(&mut self, _ino: u32) -> Result<(), &'static str> { Ok(()) }
     pub fn statfs(&self) -> FsStats {
