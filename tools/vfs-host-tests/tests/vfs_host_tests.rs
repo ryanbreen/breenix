@@ -889,3 +889,43 @@ fn batched_dirents_supply_resumable_cookies() {
         assert_eq!(resumed, batch[index + 1..]);
     }
 }
+
+#[test]
+fn removal_rechecks_identity_owner_and_parent_policy() {
+    let disk = Fixture::new();
+    let adapter = Ext2Adapter::new(disk.pin());
+    let fs: &dyn FileSystem = &adapter;
+    let root = fs.root().unwrap();
+    for directory in [false, true] {
+        let victim = fs.create(root, b"victim", if directory {
+            NewNode::Directory { attrs: attrs(0o755) }
+        } else {
+            NewNode::Regular { attrs: attrs(0o644) }
+        }).unwrap();
+        let parent = fs.getattr(root).unwrap().attrs;
+        let owner = fs.getattr(victim).unwrap().attrs.uid;
+        let request = Remove { directory, expected: victim, owner, parent };
+        fs.rename(root, b"victim", root, b"moved", RenameMode::Replace).unwrap();
+        let replacement = fs.create(root, b"victim", if directory {
+            NewNode::Directory { attrs: attrs(0o755) }
+        } else {
+            NewNode::Regular { attrs: attrs(0o644) }
+        }).unwrap();
+        assert_eq!(fs.remove(root, b"victim", request), Err(Errno(EAGAIN)));
+        assert_eq!(fs.lookup(root, b"victim"), Ok(replacement));
+        assert_eq!(fs.getattr(replacement).unwrap().nlink, if directory { 2 } else { 1 });
+
+        fs.setattr(victim, SetAttr { uid: Some(owner + 1), ..SetAttr::default() }).unwrap();
+        assert_eq!(fs.remove(root, b"moved", request), Err(Errno(EAGAIN)));
+        assert_eq!(fs.lookup(root, b"moved"), Ok(victim));
+        let request = Remove { owner: owner + 1, ..request };
+        fs.setattr(root, SetAttr { mode: Some(0o1777), ..SetAttr::default() }).unwrap();
+        assert_eq!(fs.remove(root, b"moved", request), Err(Errno(EAGAIN)));
+        assert_eq!(fs.lookup(root, b"moved"), Ok(victim));
+        let request = Remove { parent: fs.getattr(root).unwrap().attrs, ..request };
+        fs.remove(root, b"moved", request).unwrap();
+        assert_eq!(fs.lookup(root, b"moved"), Err(Errno(ENOENT)));
+        fs.remove(root, b"victim", Remove { expected: replacement, owner, ..request }).unwrap();
+        fs.setattr(root, SetAttr { mode: Some(0o755), ..SetAttr::default() }).unwrap();
+    }
+}
