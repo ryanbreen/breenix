@@ -138,6 +138,7 @@ fn shrink_then_grow_never_discards_pixels() {
 #[test]
 fn undo_and_redo_after_grow_preserve_all_states() {
     let mut h = canvas::History::new(Canvas::new(2, 2));
+    let clean = h.canvas().digest();
     let mut first = h.canvas().clone();
     first.pencil(&[(1, 1)], K);
     h.push(first.clone());
@@ -145,10 +146,12 @@ fn undo_and_redo_after_grow_preserve_all_states() {
     second.pencil(&[(0, 0)], K);
     h.push(second);
     assert!(h.undo());
+    let grown_clean = h.clean_after_grow(3, 3, clean).unwrap();
     h.grow(3, 3);
     assert_eq!((h.undo_depth(), h.redo_depth()), (1, 1));
     assert!(h.undo());
     assert_eq!(h.canvas().pixels(), &[255; 27]);
+    assert_eq!(h.canvas().digest(), grown_clean);
     assert!(h.redo());
     assert_eq!(&h.canvas().pixels()[12..15], &K);
     assert!(h.redo());

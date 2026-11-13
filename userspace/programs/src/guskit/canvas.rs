@@ -43,6 +43,19 @@ impl Canvas {
             ],
         }
     }
+    /// Extend the image with white pixels, preserving the original coordinates.
+    fn grow(&mut self, width: usize, height: usize) {
+        let width = width.max(self.width);
+        let height = height.max(self.height);
+        if width == self.width && height == self.height { return; }
+        let mut grown = Self::new(width, height);
+        for y in 0..self.height {
+            let old = y * self.width * 3;
+            let new = y * width * 3;
+            grown.pixels[new..new + self.width * 3].copy_from_slice(&self.pixels[old..old + self.width * 3]);
+        }
+        *self = grown;
+    }
     pub(crate) fn pixels_mut(&mut self) -> &mut [u8] { &mut self.pixels }
     pub fn pixels(&self) -> &[u8] {
         &self.pixels
@@ -254,6 +267,16 @@ pub struct History {
 impl History {
     pub fn new(base: Canvas) -> Self {
         Self { base, past: Vec::new(), future: Vec::new() }
+    }
+    pub fn grow(&mut self, width: usize, height: usize) {
+        self.base.grow(width, height);
+        for canvas in self.past.iter_mut().chain(self.future.iter_mut()) { canvas.grow(width, height); }
+    }
+    pub fn clean_after_grow(&self, width: usize, height: usize, clean: [u8; 32]) -> Option<[u8; 32]> {
+        let mut canvas = core::iter::once(&self.base).chain(self.past.iter()).chain(self.future.iter())
+            .find(|canvas| canvas.digest() == clean)?.clone();
+        canvas.grow(width, height);
+        Some(canvas.digest())
     }
     pub fn canvas(&self) -> &Canvas { self.past.last().unwrap_or(&self.base) }
     pub fn undo_depth(&self) -> usize { self.past.len() }

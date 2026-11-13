@@ -75,6 +75,13 @@ struct App {
     session_dialog: Option<SessionDialog>,
 }
 impl App {
+    fn resize_view(&mut self, width: u32, height: u32) {
+        if self.session.is_some() { return; }
+        self.width = self.width.max(width as usize);
+        self.height = self.height.max((height as usize).saturating_sub(self.layout.canvas_y as usize));
+        if let Some(clean) = self.history.clean_after_grow(self.width, self.height, self.clean) { self.clean = clean; }
+        self.history.grow(self.width, self.height);
+    }
     fn color(&self) -> [u8; 3] { self.selected_color.unwrap_or_else(|| node::hsv_to_rgb(self.hue, self.sat, self.val)) }
     fn canvas(&self) -> &Canvas { self.session.as_ref().map_or_else(|| self.history.canvas(), |s| &s.core.model.canvas) }
     fn undo_depth(&self) -> usize { self.session.as_ref().map_or_else(||self.history.undo_depth(),|s|s.core.model.undo_depth()) }
@@ -425,6 +432,7 @@ fn main() {
     let mut font = win.take_display_font();
     let mut font_size = win.display_size();
     let mut redraw = true;
+    let mut initial_resize = (scale != 1).then_some((800 * scale, 600 * scale));
     loop {
         menu.set_enabled(HOST_SESSION, app.can_start_session()); menu.set_enabled(JOIN_SESSION, app.can_start_session());
         menu.set_enabled(UNDO, app.session.is_some() || app.undo_depth() > 0); menu.set_enabled(REDO, app.redo_depth() > 0);
@@ -436,9 +444,18 @@ fn main() {
         redraw = false;
         let mut pointer_motion = false;
         let mut reload_font = false;
+        let mut resize = None;
         let collaborating=!app.can_start_session();
         let mut dispatch = |delivered: &breengel::Delivered| {
             pointer_motion |= matches!(delivered.event, Event::MouseMove { .. });
+            match delivered.event {
+                Event::ResizeRequested { width, height } => { resize = Some((width, height)); redraw = true; return Handled::Redraw; }
+                Event::Resized { width, height } => {
+                    if initial_resize.take() != Some((width, height)) { app.resize_view(width, height); }
+                    redraw = true; return Handled::Redraw;
+                }
+                _ => {}
+            }
             if matches!(delivered.event, Event::FontChanged) { reload_font = true; redraw = true; return Handled::Redraw; }
             let handled = handle(&mut app, &mut menu, delivered);
             redraw |= handled == Handled::Redraw;
@@ -446,6 +463,12 @@ fn main() {
         };
         let result=if collaborating { win.dispatch(&mut dispatch) } else { win.wait_dispatch(100_000_000,&mut dispatch) };
         let count=result.unwrap_or_else(|e| { if matches!(e, libbreenix::error::Error::Os(libbreenix::errno::Errno::ETIMEDOUT)) { 0 } else { eprintln!("Gus Kit dispatch: {e}"); std::process::exit(1) } });
+        if let Some((width, height)) = resize {
+            match win.apply_resize(width, height) {
+                Ok(()) => app.resize_view(width, height),
+                Err(e) => eprintln!("Gus Kit resize refused: {width}x{height}: {e}"),
+            }
+        }
         if !collaborating {
             if let Some(session) = &app.session {
                 let next_title = session_title(&session.core.model.name);
