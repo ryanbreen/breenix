@@ -2,7 +2,7 @@
 //! inode under its filesystem write guard. Errors after a write allocate nothing.
 
 use super::{errno::*, SyscallResult};
-use crate::fs::{ext2::{self, errno::errno as ext2_errno}, namei, permissions::Credentials};
+use crate::fs::{ext2::{self, ino32, errno::errno as ext2_errno}, namei, permissions::Credentials};
 use crate::ipc::FdKind;
 
 use super::at_path::AT_FDCWD;
@@ -75,7 +75,8 @@ enum Change {
     Owner(u32, u32),
 }
 
-fn update(fs: &mut ext2::Ext2Fs, ino: u32, change: Change, cred: &Credentials) -> SyscallResult {
+fn update(fs: &mut ext2::Ext2Fs, ino: u64, change: Change, cred: &Credentials) -> SyscallResult {
+    let ino = match ino32(ino) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
     let mut inode = match fs.read_inode(ino).map_err(ext2_errno) {
         Ok(inode) => inode,
         Err(error) => return SyscallResult::Err(error.into()),
@@ -137,7 +138,7 @@ fn fifo(
     };
     let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };
     let ino = match handle.verify(fs).map_err(ext2_errno) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
-    update(fs, ino, change, cred)
+    update(fs, ino.into(), change, cred)
 
 }
 
@@ -165,7 +166,7 @@ fn pathname(fd: i32, pathname: u64, follow: bool, empty: bool, change: Change) -
     };
     let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
     match guard.as_mut() {
-        Some(fs) => update(fs, ino, change, &cred),
+        Some(fs) => update(fs, ino.into(), change, &cred),
         None => SyscallResult::Err(EIO as u64),
     }
 }
@@ -192,7 +193,7 @@ fn by_cwd(change: Change) -> SyscallResult {
         },
         None => ext2::root_inode(),
     };
-    update(fs, ino, change, &cred)
+    update(fs, ino.into(), change, &cred)
 }
 
 fn by_fd(fd: i32, change: Change) -> SyscallResult {
@@ -209,7 +210,7 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
         let mut guard = match ext2::write_mount(handle.object.mount).map_err(ext2_errno) { Ok(g) => g, Err(error) => return SyscallResult::Err(error.into()) };
         let Some(fs) = guard.as_mut() else { return SyscallResult::Err(EIO as u64); };
         let ino = match handle.verify(fs).map_err(ext2_errno) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
-        return update(fs, ino, change, &cred);
+        return update(fs, ino.into(), change, &cred);
     }
     let kind = entry.kind;
     match kind {
@@ -247,7 +248,7 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
                 Ok(ino) => ino,
                 Err(error) => return SyscallResult::Err(error.into()),
             };
-            update(fs, ino, change, &cred)
+            update(fs, ino.into(), change, &cred)
         }
         FdKind::Directory(dir) => {
             let handle = dir.lock().handle.clone();
@@ -262,7 +263,7 @@ fn by_fd(fd: i32, change: Change) -> SyscallResult {
                 Ok(ino) => ino,
                 Err(error) => return SyscallResult::Err(error.into()),
             };
-            update(fs, ino, change, &cred)
+            update(fs, ino.into(), change, &cred)
         }
         FdKind::FifoRead(_, _, entry) | FdKind::FifoWrite(_, _, entry) | FdKind::FifoReadWrite(_, _, entry) => {
             fifo(&entry, change, &cred)

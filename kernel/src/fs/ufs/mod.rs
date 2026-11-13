@@ -46,7 +46,7 @@ struct Release {
 pub struct Mount {
     pub id: u64,
     source: Vec<u8>,
-    cover: cover::Cover<(crate::fs::namei::Mount, u32)>,
+    cover: cover::Cover<(crate::fs::namei::Mount, u64)>,
     point: Mutex<Option<crate::fs::namei::Resolved<Vec<u8>>>>,
     state: Mutex<State>,
     readers: Arc<WaitQueueHead>,
@@ -112,15 +112,15 @@ impl Mount {
 }
 
 /// Enter a mount by the covered inode, even after an ancestor is renamed.
-pub fn covering(mount: crate::fs::namei::Mount, ino: u32) -> Option<u64> {
+pub fn covering(mount: crate::fs::namei::Mount, ino: u64) -> Option<u64> {
     cover::enter(MOUNTS.lock().iter().map(|m| &m.cover), (mount, ino))
 }
 
-pub fn covered_directory(id: u64) -> Result<(crate::fs::namei::Mount, u32), u64> {
+pub fn covered_directory(id: u64) -> Result<(crate::fs::namei::Mount, u64), u64> {
     Ok(get(id)?.cover.covered)
 }
 
-pub fn covered_parent(id: u64) -> Option<(crate::fs::namei::Mount, u32)> {
+pub fn covered_parent(id: u64) -> Option<(crate::fs::namei::Mount, u64)> {
     cover::leave(MOUNTS.lock().iter().map(|m| &m.cover), id)
 }
 

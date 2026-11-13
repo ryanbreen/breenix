@@ -1099,7 +1099,7 @@ impl MapState {
     /// Runs under the filesystem write guard, after a mutation. A page that
     /// still cannot be read, or for which no memory is left, stays poisoned
     /// and faults on it raise SIGBUS.
-    pub(crate) fn repair(&self, fs: &Ext2Fs, ino: u32) {
+    pub(crate) fn repair(&self, fs: &Ext2Fs, ino: u64) {
         {
             let mut inner = self.inner.lock();
             if inner.poisoned.is_empty() {
@@ -1113,6 +1113,7 @@ impl MapState {
                 return;
             }
         }
+        let Ok(ino) = crate::fs::ext2::ino32(ino) else { return; };
         let Ok(inode) = fs.read_inode(ino) else {
             return;
         };

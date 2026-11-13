@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 /// The staged migration in docs/fs/cowfs-design.md section 1.1 lowers this
 /// ext2-only ceiling at each stage and never raises it.
 /// claim-lint:ok: Staged migration requirement in docs/fs/cowfs-design.md section 1.1.
-const CEILING: usize = 184;
+const CEILING: usize = 179;
 
 fn visit(directory: &Path, ext2_dir: &Path, tally: &mut Vec<(PathBuf, usize)>) {
     for entry in fs::read_dir(directory)

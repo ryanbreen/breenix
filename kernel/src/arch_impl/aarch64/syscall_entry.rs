@@ -1639,6 +1639,7 @@ fn load_elf_from_ext2(
     super::trace::trace_exec(b'3');
     super::trace::trace_exec(b'4');
 
+    let inode_num = crate::fs::ext2::ino32(inode_num).map_err(|error| error.0)?;
     let inode = fs.read_inode(inode_num).map_err(|_| {
         super::trace::trace_exec(b'@');
         EIO

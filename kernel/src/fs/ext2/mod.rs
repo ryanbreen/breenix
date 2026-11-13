@@ -765,7 +765,7 @@ impl Ext2Fs {
                 Ok(written) => object.map.commit_write(offset, &data[..written]),
                 Err(_) => object.map.invalidate(offset, data.len() as u64),
             }
-            object.map.repair(self, inode_num);
+            object.map.repair(self, inode_num.into());
         }
         result
     }
@@ -1054,7 +1054,7 @@ impl Ext2Fs {
                 // The tail zeroing of the boundary block may not have landed.
                 object.map.invalidate(boundary, 1);
             }
-            object.map.repair(self, inode_num);
+            object.map.repair(self, inode_num.into());
         }
         result
     }
