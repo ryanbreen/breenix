@@ -27,11 +27,11 @@
 //! for the exact live-owner wire and the terminated abandoned-prefix cases.
 //!
 //! An owner that stalls between that check and its byte writes the byte late,
-//! into whatever another CPU is writing by then. Every byte is therefore
+//! into whatever another CPU is writing by then. Byte attempts are therefore
 //! bracketed by two counters ([`State::begun`], [`State::ended`]), and a record
 //! that must reach the UART whole sees from them whether another CPU wrote
 //! while it was being written. Two kinds of record must: one carrying a
-//! boot-path stage marker (`stage_lines`), and a [`Kind::Line`]. Such a record
+//! boot-path stage marker (`stage_lines`), and a [`Kind::Record`] or [`Kind::Line`]. Such a record
 //! that loses its ownership part way, or that another CPU wrote into, is
 //! written again from its first byte, on a fresh line.
 
@@ -454,6 +454,9 @@ pub enum Kind {
     /// Split around other CPUs' output if this CPU stalls, unless it carries a
     /// boot-path stage marker: then it is written whole.
     Plain,
+    /// Replay whole after a stall, but normally continue this writer's open
+    /// line. A completed TTY record may follow an already flushed fragment.
+    Record,
     /// A whole line of its own, always: written whole, starting a fresh line
     /// whoever's line is open.
     Line,
@@ -470,7 +473,7 @@ pub fn write<P: Port, const TEE: bool>(
         return;
     }
     // Decided the first time it matters: when the record loses bytes.
-    let mut whole = (kind == Kind::Line).then_some(true);
+    let mut whole = (kind == Kind::Line || kind == Kind::Record).then_some(true);
     let is_whole = |whole: &mut Option<bool>| {
         *whole.get_or_insert_with(|| stage_lines::contains(P::markers(), bytes))
     };

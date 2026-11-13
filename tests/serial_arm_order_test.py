@@ -35,7 +35,7 @@ static TX_STATE: AtomicU8 = AtomicU8::new(TX_RUNNING);
 static TX_STOPPED: AtomicBool = AtomicBool::new(false);
 static WIRE: Lock<Vec<u8>> = Lock::new(Vec::new());
 #[derive(Clone, Copy, PartialEq)] enum Writer { Kernel, Tty }
-enum Kind { Plain, Line }
+enum Kind { Plain, Record, Line }
 mod log { pub enum Level { Info } }
 static ORDERED: AtomicUsize = AtomicUsize::new(0);
 struct Ownership;

@@ -338,7 +338,7 @@ fn queue_terminal(bytes: &[u8]) -> bool {
 /// A completed terminal line must survive a vCPU owner stall as a whole
 /// record. Unterminated prompts retain ordinary fragment behavior.
 fn terminal_kind(bytes: &[u8]) -> Kind {
-    if bytes.ends_with(b"\n") { Kind::Line } else { Kind::Plain }
+    if bytes.ends_with(b"\n") { Kind::Record } else { Kind::Plain }
 }
 
 /// Give the UART the oldest queued terminal record, popped and written under
