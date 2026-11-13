@@ -11,9 +11,10 @@ fn icons() -> Vec<Box<dyn Icon>> { vec![Box::new(HomeIcon::new()), Box::new(Arro
 const NAMES: [&str; 5] = ["Home", "Back", "Forward", "Search", "Save"];
 fn state(s: IconState) -> &'static str { match s { IconState::Idle => "Idle", IconState::HoverIn => "HoverIn", IconState::Hovering => "Hovering", IconState::HoverOut => "HoverOut", IconState::Pressed => "Pressed", IconState::Clicked => "Clicked" } }
 fn main() {
-    let mut win=Window::new_without_fonts(b"Breenix Icon Kit",600,480).expect("window");
-    let ui_scale = win.surface().expect("icon surface").ui_scale();
-    if ui_scale != 1 { win.apply_resize(600 * ui_scale, 480 * ui_scale).expect("scaled icon kit"); }
+    let ui_scale = libbreenix::gpu::current_mode().expect("display mode").scale;
+    assert!((1..=2).contains(&ui_scale), "invalid icon kit UI scale");
+    // Publish the scaled size at creation so bwm can place the whole frame.
+    let mut win=Window::new_without_fonts(b"Breenix Icon Kit",600 * ui_scale,480 * ui_scale).expect("window");
     let mut grid=icons(); let mut preview=icons(); let mut input=Input::new();
     let mut last=None; let mut epochs=0u64; let mut redraw=true;
     win.set_animating(true);
