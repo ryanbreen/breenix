@@ -3,7 +3,8 @@
 //! This module contains the actual implementation of each system call.
 
 use super::SyscallResult;
-use crate::fs::ext2::{self, ino32, errno::errno as ext2_errno};
+#[cfg(all(target_arch = "x86_64", feature = "testing"))]
+use crate::fs::ext2::ino32;
 #[cfg(target_arch = "x86_64")]
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -691,118 +692,40 @@ fn write_with_limit(fd: u64, buf_ptr: u64, count: u64, signal_limit: bool) -> Sy
             unprivileged,
             size_limit,
         } => {
-            // Write to ext2 regular file
-            let (handle, position, file_mount_id) = {
+            use crate::fs::vfs::{WriteAt, WriteReq};
+
+            let (fs, node, position) = {
                 let file_guard = file.lock();
                 (
-                    match file_guard.open.ext2_handle() {
-                        Some(handle) => handle,
-                        None => return SyscallResult::Err(super::errno::EIO as u64),
-                    },
+                    file_guard.open.fs.clone(),
+                    file_guard.open.node.clone(),
                     file_guard.position,
-                    file_guard.mount_id,
                 )
             };
-
-            let inode_num = u64::from(handle.object.key.inode);
-            let ext2_ino = match ino32(inode_num) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
-            // Dispatch to correct filesystem based on mount_id
-            let is_home = crate::fs::ext2::home_mount_id().map_or(false, |id| id == file_mount_id);
-
-            let (write_offset, bytes_written) = if is_home {
-                let fs_guard = match crate::fs::ext2::home_fs_write().map_err(ext2_errno) { Ok(guard) => guard, Err(error) => return SyscallResult::Err(error.into()) };
-                let mut fs_guard = match fs_guard.wait_for_inode(ext2_ino).map_err(ext2_errno) { Ok(g) => g, Err(e) => return SyscallResult::Err(e.into()) };
-                let fs = match fs_guard.as_mut() {
-                    Some(fs) => fs,
-                    None => return SyscallResult::Err(super::errno::ENOSYS as u64),
-                };
-                if handle.verify(fs).is_err() {
-                    return SyscallResult::Err(super::errno::EIO as u64);
-                }
-                let wo = if append {
-                    match fs.read_inode(ext2_ino) {
-                        Ok(inode) => inode.size(),
-                        Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
-                    }
+            let req = WriteReq {
+                at: if append {
+                    WriteAt::Append
                 } else {
-                    position
-                };
-                let length = match super::resource::write_length(wo, buffer.len(), size_limit) {
-                    Ok(n) => n,
-                    Err(e) => {
-                        drop(fs_guard);
-                        if signal_limit {
-                            super::resource::signal_fsize();
-                        }
-                        return SyscallResult::Err(e);
-                    }
-                };
-                let bw = match fs.write_file_range_as(
-                    ext2_ino,
-                    wo,
-                    &buffer[..length],
-                    unprivileged,
-                ) {
-                    Ok(n) => n,
-                    Err(error) => {
-                        return SyscallResult::Err(ext2_errno(error).into())
-                    }
-                };
-                (wo, bw)
-            } else {
-                let fs_guard = match crate::fs::ext2::root_fs_write().map_err(ext2_errno) { Ok(guard) => guard, Err(error) => return SyscallResult::Err(error.into()) };
-                let mut fs_guard = match fs_guard.wait_for_inode(ext2_ino).map_err(ext2_errno) { Ok(g) => g, Err(e) => return SyscallResult::Err(e.into()) };
-                let fs = match fs_guard.as_mut() {
-                    Some(fs) => fs,
-                    None => return SyscallResult::Err(super::errno::ENOSYS as u64),
-                };
-                if handle.verify(fs).is_err() {
-                    return SyscallResult::Err(super::errno::EIO as u64);
-                }
-                let wo = if append {
-                    match fs.read_inode(ext2_ino) {
-                        Ok(inode) => inode.size(),
-                        Err(_) => return SyscallResult::Err(super::errno::EIO as u64),
-                    }
-                } else {
-                    position
-                };
-                let length = match super::resource::write_length(wo, buffer.len(), size_limit) {
-                    Ok(n) => n,
-                    Err(e) => {
-                        drop(fs_guard);
-                        if signal_limit {
-                            super::resource::signal_fsize();
-                        }
-                        return SyscallResult::Err(e);
-                    }
-                };
-                let bw = match fs.write_file_range_as(
-                    ext2_ino,
-                    wo,
-                    &buffer[..length],
-                    unprivileged,
-                ) {
-                    Ok(n) => n,
-                    Err(error) => {
-                        return SyscallResult::Err(ext2_errno(error).into())
-                    }
-                };
-                (wo, bw)
+                    WriteAt::Offset(position)
+                },
+                limit: size_limit,
+                clear_setid: unprivileged,
             };
-
-            // Update file position
-            {
-                let mut file_guard = file.lock();
-                file_guard.position = write_offset + bytes_written as u64;
+            match fs.write(&node, req, &buffer) {
+                Ok(written) => {
+                    file.lock().position = written.offset + written.bytes as u64;
+                    if written.limited && signal_limit {
+                        super::resource::signal_fsize();
+                    }
+                    SyscallResult::Ok(written.bytes as u64)
+                }
+                Err(error) => {
+                    if error.0 == super::errno::EFBIG && signal_limit {
+                        super::resource::signal_fsize();
+                    }
+                    SyscallResult::Err(error.into())
+                }
             }
-
-            log::debug!(
-                "sys_write: Wrote {} bytes to regular file (inode {})",
-                bytes_written,
-                inode_num
-            );
-            SyscallResult::Ok(bytes_written as u64)
         }
     };
     if matches!(result, SyscallResult::Ok(n) if n > 0) {
@@ -4084,7 +4007,7 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
     };
 
     // Extract file info from fd table under process lock
-    let fd_result: Result<(crate::fs::ext2::live_inode::FileHandle, bool), u64> =
+    let fd_result =
         crate::arch_without_interrupts(|| {
             let manager_guard = crate::process::manager();
             if let Some(ref manager) = *manager_guard {
@@ -4097,8 +4020,10 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
                             FdKind::RegularFile(file_ref) => {
                                 let file = file_ref.lock();
                                 return Ok((
-                                    file.open.ext2_handle().ok_or(super::errno::EIO as u64)?,
+                                    file.open.fs.clone(),
+                                    file.open.node.clone(),
                                     !process.cred.privileged(),
+                                    process.limits.get(crate::process::limits::FSIZE).soft,
                                 ));
                             }
                             FdKind::PipeRead(_) | FdKind::PipeWrite(_) => {
@@ -4115,57 +4040,36 @@ pub fn sys_pwrite64(fd: i32, buf_ptr: u64, count: u64, offset: i64) -> SyscallRe
             }
         });
 
-    let (handle, unprivileged) = match fd_result {
+    let (fs, node, unprivileged, size_limit) = match fd_result {
         Ok(info) => info,
         Err(e) => return SyscallResult::Err(e),
     };
 
-    let inode_num = u64::from(handle.object.key.inode);
-    let ext2_ino = match ino32(inode_num) { Ok(ino) => ino, Err(error) => return SyscallResult::Err(error.into()) };
-    let mount_id = handle.object.mount.mount_id;
-    let file_offset = offset as u64;
-    let count = match super::resource::write_length(
-        file_offset,
-        count as usize,
-        super::resource::current_fsize(),
-    ) {
-        Ok(length) => length as u64,
-        Err(errno) => {
-            super::resource::signal_fsize();
-            return SyscallResult::Err(errno);
-        }
-    };
-
-    // Read user data (no process lock held)
+    // Read user data after releasing the process lock.
     let data = match copy_from_user(buf_ptr, count as usize) {
         Ok(d) => d,
         Err(_) => return SyscallResult::Err(super::errno::EFAULT as u64),
     };
 
-    let write_fn = |fs: &mut ext2::Ext2Fs| -> SyscallResult {
-        if handle.verify(fs).is_err() {
-            return SyscallResult::Err(super::errno::EIO as u64);
-        }
-        match fs.write_file_range_as(ext2_ino, file_offset, &data, unprivileged) {
-            Ok(written) => SyscallResult::Ok(written as u64),
-            Err(error) => SyscallResult::Err(ext2_errno(error).into()),
-        }
+    // Native pwrite keeps its explicit offset even when O_APPEND is set and
+    // leaves the description's position unchanged.
+    let req = crate::fs::vfs::WriteReq {
+        at: crate::fs::vfs::WriteAt::Offset(offset as u64),
+        limit: size_limit,
+        clear_setid: unprivileged,
     };
-
-    let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
-    if is_home {
-        let fs_guard = match ext2::home_fs_write().map_err(ext2_errno) { Ok(guard) => guard, Err(error) => return SyscallResult::Err(error.into()) };
-        let mut fs_guard = match fs_guard.wait_for_inode(ext2_ino).map_err(ext2_errno) { Ok(g) => g, Err(e) => return SyscallResult::Err(e.into()) };
-        match fs_guard.as_mut() {
-            Some(fs) => write_fn(fs),
-            None => SyscallResult::Err(super::errno::EIO as u64),
+    match fs.write(&node, req, &data) {
+        Ok(written) => {
+            if written.limited {
+                super::resource::signal_fsize();
+            }
+            SyscallResult::Ok(written.bytes as u64)
         }
-    } else {
-        let fs_guard = match ext2::root_fs_write().map_err(ext2_errno) { Ok(guard) => guard, Err(error) => return SyscallResult::Err(error.into()) };
-        let mut fs_guard = match fs_guard.wait_for_inode(ext2_ino).map_err(ext2_errno) { Ok(g) => g, Err(e) => return SyscallResult::Err(e.into()) };
-        match fs_guard.as_mut() {
-            Some(fs) => write_fn(fs),
-            None => SyscallResult::Err(super::errno::EIO as u64),
+        Err(error) => {
+            if error.0 == super::errno::EFBIG {
+                super::resource::signal_fsize();
+            }
+            SyscallResult::Err(error.into())
         }
     }
 }
