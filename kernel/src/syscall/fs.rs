@@ -3,6 +3,7 @@
 //! Implements: open, lseek, fstat, getdents64
 
 use alloc::string::String;
+use crate::fs::ext2::{self, errno::errno as ext2_errno};
 use super::SyscallResult;
 use crate::ipc::fd::FdKind;
 
@@ -345,7 +346,7 @@ fn sys_open_write_path(
     ),
     SyscallResult,
 > {
-    use super::errno::{EEXIST, EISDIR, ENOENT, ENOSPC, ENOTDIR};
+    use super::errno::{EEXIST, EISDIR, ENOENT, ENOTDIR};
     use crate::fs::ext2::FileType as Ext2FileType;
     use crate::fs::namei::Target;
 
@@ -400,7 +401,7 @@ fn sys_open_write_path(
                     let file_mode = super::fifo_policy::creation_mode(mode, &cred, gid, false);
                     // The new file belongs to its creator (Linux: the effective
                     // uid and gid), so a restrictive mode still lets it reopen it.
-                    match fs.create_file(parent, filename, file_mode, cred.euid, gid) {
+                    match fs.create_file(parent, filename, file_mode, cred.euid, gid).map_err(ext2_errno) {
                         Ok(new_inode) => {
                             log::debug!(
                                 "sys_open: created file {} with inode {}",
@@ -410,11 +411,8 @@ fn sys_open_write_path(
                             (new_inode, true)
                         }
                         Err(e) => {
-                            log::error!("sys_open: failed to create file: {}", e);
-                            if e.contains("No free inodes") || e.contains("No space") {
-                                return Err(SyscallResult::Err(ENOSPC as u64));
-                            }
-                            return Err(SyscallResult::Err(5)); // EIO
+                            log::error!("sys_open: failed to create file: {:?}", e);
+                            return Err(SyscallResult::Err(e.into()));
                         }
                     }
                 }
@@ -437,7 +435,7 @@ fn sys_open_write_path(
     let is_dir = matches!(ft, Ext2FileType::Directory);
     let is_reg = matches!(ft, Ext2FileType::Regular);
     if is_reg && flags & 3 != 0 {
-        fs.ensure_writable().map_err(|e| SyscallResult::Err(crate::fs::namei::fs_errno(e)))?;
+        fs.ensure_writable().map_err(ext2_errno).map_err(|e| SyscallResult::Err(e.into()))?;
     }
 
     // A file this open created is opened with the requested access whatever
@@ -449,9 +447,9 @@ fn sys_open_write_path(
     if want_trunc && is_reg && !file_created {
         log::debug!("sys_open: truncating file inode {}", ino);
         let result = fs.begin_resize_file_as(ino, 0, cred.euid != 0);
-        shrink = match result {
+        shrink = match result.map_err(ext2_errno) {
             Ok(ticket) => ticket,
-            Err(e) => return Err(SyscallResult::Err(crate::fs::namei::fs_errno(e))),
+            Err(e) => return Err(SyscallResult::Err(e.into())),
         };
     }
 
@@ -572,7 +570,7 @@ fn sys_open_read_path(
     let is_dir = matches!(ft, Ext2FileType::Directory);
     let is_reg = matches!(ft, Ext2FileType::Regular);
     if is_reg && flags & 3 != 0 {
-        fs.ensure_writable().map_err(|e| SyscallResult::Err(crate::fs::namei::fs_errno(e)))?;
+        fs.ensure_writable().map_err(ext2_errno).map_err(|e| SyscallResult::Err(e.into()))?;
     }
     if open_is_access_checked(is_reg, is_dir, flags) {
         check_open_access(&inode, flags, &cred)?;
@@ -700,9 +698,9 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
             if handle.verify(fs) != Ok(ino) {
                 return SyscallResult::Err(5);
             }
-            let inode = match fs.read_inode(ino) {
+            let inode = match fs.read_inode(ino).map_err(ext2_errno) {
                 Ok(inode) => inode,
-                Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+                Err(e) => return SyscallResult::Err(e.into()),
             };
             if let Err(error) = check_open_access(&inode, flags, &cred) {
                 return error;
@@ -771,16 +769,16 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         // === WRITE PATH: O_CREAT or O_TRUNC requires exclusive filesystem access ===
         let mut fs_guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
         if let Target::Inode { ino, .. } = &resolved.target {
-            fs_guard = match fs_guard.wait_for_inode(*ino) {
+            fs_guard = match fs_guard.wait_for_inode(*ino).map_err(ext2_errno) {
                 Ok(guard) => guard,
-                Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
+                Err(error) => return SyscallResult::Err(error.into()),
             };
         }
         if want_trunc && matches!(resolved.target, Target::Absent { .. }) {
             if let Some(parent) = resolved.lookup_parent() {
-                fs_guard = match fs_guard.wait_for_entry_data(parent, resolved.final_name()) {
+                fs_guard = match fs_guard.wait_for_entry_data(parent, resolved.final_name()).map_err(ext2_errno) {
                     Ok(guard) => guard,
-                    Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
+                    Err(error) => return SyscallResult::Err(error.into()),
                 };
             }
         }
@@ -794,7 +792,7 @@ fn sys_open_from(dirfd: i32, pathname: u64, flags: u32, mode: u32) -> SyscallRes
         .and_then(|(ino, ft, is_dir, is_reg, mid, handle, ticket)| {
             if let Some(ticket) = ticket {
                 fs_guard.finish_shrink(ticket)
-                    .map_err(|e| SyscallResult::Err(crate::fs::namei::fs_errno(e)))?;
+                   .map_err(ext2_errno).map_err(|e| SyscallResult::Err(e.into()))?;
             }
             Ok((ino, ft, is_dir, is_reg, mid, handle))
         })
@@ -1541,7 +1539,6 @@ fn load_ext2_inode_stat_for_handle(
 ///
 /// Returns None if the ext2 filesystem is not available or inode cannot be read.
 fn load_ext2_inode_stat_for_mount(inode_num: u64, mount_id: usize) -> Option<InodeStat> {
-    use crate::fs::ext2;
 
     // Dispatch to home or root filesystem based on mount_id
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
@@ -1628,7 +1625,6 @@ fn copy_dirents_to_user(dirp: u64, records: &[u8]) -> Result<(), u64> {
 /// * On error: Negative errno
 pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
     use super::errno::{EBADF, EFAULT, EINVAL, EIO, ENOTDIR};
-    use crate::fs::ext2;
 
     log::debug!(
         "sys_getdents64: fd={}, dirp={:#x}, count={}",
@@ -1756,11 +1752,11 @@ pub fn sys_getdents64(fd: i32, dirp: u64, count: u64) -> SyscallResult {
                 return SyscallResult::Err(EIO as u64);
             }
         };
-        match fs.read_directory(&inode) {
+        match fs.read_directory(&inode).map_err(ext2_errno) {
             Ok(data) => (data, fs.namespace(), inode_num),
             Err(e) => {
-                log::error!("sys_getdents64: failed to read directory: {}", e);
-                return SyscallResult::Err(crate::fs::namei::fs_errno(e));
+                log::error!("sys_getdents64: failed to read directory: {:?}", e);
+                return SyscallResult::Err(e.into());
             }
         }
     };
@@ -1876,7 +1872,7 @@ pub fn sys_unlink(pathname: u64) -> SyscallResult {
     sys_unlink_from(AT_FDCWD, pathname)
 }
 fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
-    use super::errno::{EACCES, EIO, EISDIR, ENOENT, EPERM};
+    use super::errno::{EIO, EISDIR, ENOENT, EPERM};
     use crate::fs::namei::{Last, Target};
 
     let resolved = match resolve_user_entry_at(dirfd, pathname) {
@@ -1923,18 +1919,18 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
             Ok(ino) => ino,
             Err(_) => return SyscallResult::Err(ENOENT as u64),
         };
-        let parent_inode = match fs.read_inode(parent) {
+        let parent_inode = match fs.read_inode(parent).map_err(ext2_errno) {
             Ok(inode) => inode,
-            Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+            Err(e) => return SyscallResult::Err(e.into()),
         };
-        let target = match fs.lookup_in_dir_bytes(&parent_inode, resolved.final_name()) {
+        let target = match fs.lookup_in_dir_bytes(&parent_inode, resolved.final_name()).map_err(ext2_errno) {
             Ok(Some(ino)) => ino,
             Ok(None) => return SyscallResult::Err(ENOENT as u64),
-            Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+            Err(e) => return SyscallResult::Err(e.into()),
         };
-        let inode = match fs.read_inode(target) {
+        let inode = match fs.read_inode(target).map_err(ext2_errno) {
             Ok(inode) => inode,
-            Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+            Err(e) => return SyscallResult::Err(e.into()),
         };
         if let Err(e) =
             super::fifo_policy::check_parent_access(&parent_inode, &cred, Some(inode.uid()))
@@ -1944,7 +1940,7 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
         if inode.is_dir() {
             return SyscallResult::Err(EISDIR as u64);
         }
-        fs.unlink_in_dir(parent, resolved.final_name())
+        fs.unlink_in_dir(parent, resolved.final_name()).map_err(ext2_errno)
     };
 
     match unlink_result {
@@ -1953,20 +1949,8 @@ fn sys_unlink_from(dirfd: i32, pathname: u64) -> SyscallResult {
             SyscallResult::Ok(0)
         }
         Err(e) => {
-            log::debug!("sys_unlink: failed: {}", e);
-            // Map error to appropriate errno
-            let errno = if e.contains("memory") {
-                super::errno::ENOMEM
-            } else if e.contains("not found") || e.contains("not exist") {
-                ENOENT
-            } else if e.contains("directory") {
-                EISDIR
-            } else if e.contains("permission") || e.contains("Cannot") {
-                EACCES
-            } else {
-                EIO
-            };
-            SyscallResult::Err(errno as u64)
+            log::debug!("sys_unlink: failed: {:?}", e);
+            SyscallResult::Err(e.into())
         }
     }
 }
@@ -2082,19 +2066,19 @@ fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> 
                     (old_parent, old.final_name(), true),
                     (new_parent, new.final_name(), false),
                 ] {
-                    let inode = match fs.read_inode(parent) {
+                    let inode = match fs.read_inode(parent).map_err(ext2_errno) {
                         Ok(inode) => inode,
-                        Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+                        Err(e) => return SyscallResult::Err(e.into()),
                     };
-                    let target = match fs.lookup_in_dir(&inode, name) {
+                    let target = match fs.lookup_in_dir(&inode, name).map_err(ext2_errno) {
                         Ok(ino) => ino,
-                        Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+                        Err(e) => return SyscallResult::Err(e.into()),
                     };
                     if required && target.is_none() {
                         return SyscallResult::Err(ENOENT as u64);
                     }
                     let owner = match target {
-                        Some(ino) => match fs.read_inode(ino) {
+                        Some(ino) => match fs.read_inode(ino).map_err(ext2_errno) {
                             Ok(inode) => {
                                 if required
                                     && old_parent != new_parent
@@ -2105,7 +2089,7 @@ fn sys_rename_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> 
                                 }
                                 Some(inode.uid())
                             }
-                            Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+                            Err(e) => return SyscallResult::Err(e.into()),
                         },
                         None => None,
                     };
@@ -2168,7 +2152,7 @@ pub fn sys_rmdir(pathname: u64) -> SyscallResult {
     sys_rmdir_from(AT_FDCWD, pathname)
 }
 fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
-    use super::errno::{EACCES, EBUSY, EINVAL, EIO, ENOENT, ENOTDIR, ENOTEMPTY};
+    use super::errno::{EBUSY, EINVAL, EIO, ENOENT, ENOTDIR, ENOTEMPTY};
     use crate::fs::namei::{Last, Target};
 
     // rmdir removes the name itself: a final symlink is not followed.
@@ -2214,18 +2198,18 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
             Ok(ino) => ino,
             Err(_) => return SyscallResult::Err(ENOENT as u64),
         };
-        let parent_inode = match fs.read_inode(parent) {
+        let parent_inode = match fs.read_inode(parent).map_err(ext2_errno) {
             Ok(inode) => inode,
-            Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+            Err(e) => return SyscallResult::Err(e.into()),
         };
-        let target = match fs.lookup_in_dir_bytes(&parent_inode, resolved.final_name()) {
+        let target = match fs.lookup_in_dir_bytes(&parent_inode, resolved.final_name()).map_err(ext2_errno) {
             Ok(Some(ino)) => ino,
             Ok(None) => return SyscallResult::Err(ENOENT as u64),
-            Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+            Err(e) => return SyscallResult::Err(e.into()),
         };
-        let inode = match fs.read_inode(target) {
+        let inode = match fs.read_inode(target).map_err(ext2_errno) {
             Ok(inode) => inode,
-            Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+            Err(e) => return SyscallResult::Err(e.into()),
         };
         if let Err(e) =
             super::fifo_policy::check_parent_access(&parent_inode, &cred, Some(inode.uid()))
@@ -2235,7 +2219,7 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
         if !inode.is_dir() {
             return SyscallResult::Err(ENOTDIR as u64);
         }
-        fs.remove_directory_in(parent, resolved.final_name())
+        fs.remove_directory_in(parent, resolved.final_name()).map_err(ext2_errno)
     };
 
     match rmdir_result {
@@ -2247,29 +2231,8 @@ fn sys_rmdir_from(dirfd: i32, pathname: u64) -> SyscallResult {
             SyscallResult::Ok(0)
         }
         Err(e) => {
-            log::debug!("sys_rmdir: failed: {}", e);
-            // Map error to appropriate errno
-            let errno = if e.contains("memory") {
-                super::errno::ENOMEM
-            } else if e.contains("busy") {
-                EBUSY
-            } else if e.contains("not found") || e.contains("not exist") {
-                ENOENT
-            } else if e.contains("Not a directory") || e.contains("not a directory") {
-                ENOTDIR
-            } else if e.contains("not empty") || e.contains("Directory not empty") {
-                ENOTEMPTY
-            } else if e.contains("root directory") {
-                // Cannot remove root directory - treat as busy
-                EBUSY
-            } else if e.contains("permission") || e.contains("Cannot") {
-                EACCES
-            } else if e.contains("Invalid") {
-                EINVAL
-            } else {
-                EIO
-            };
-            SyscallResult::Err(errno as u64)
+            log::debug!("sys_rmdir: failed: {:?}", e);
+            SyscallResult::Err(e.into())
         }
     }
 }
@@ -2298,7 +2261,7 @@ pub fn sys_link(oldpath: u64, newpath: u64) -> SyscallResult {
     sys_link_from(AT_FDCWD, oldpath, AT_FDCWD, newpath)
 }
 fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> SyscallResult {
-    use super::errno::{EACCES, EEXIST, EIO, ENOENT, ENOTDIR, EPERM, EXDEV};
+    use super::errno::{EEXIST, EIO, ENOENT, EPERM, EXDEV};
     use crate::fs::ext2::FileType;
     use crate::fs::namei::{Last, Target};
 
@@ -2362,19 +2325,19 @@ fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> Sy
             Ok(ino) => ino,
             Err(_) => return SyscallResult::Err(ENOENT as u64),
         };
-        let inode = match fs.read_inode(parent) {
+        let inode = match fs.read_inode(parent).map_err(ext2_errno) {
             Ok(inode) => inode,
-            Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+            Err(e) => return SyscallResult::Err(e.into()),
         };
         if let Err(e) = super::fifo_policy::check_parent_access(&inode, &cred, None) {
             return SyscallResult::Err(e);
         }
-        match fs.read_inode(source) {
+        match fs.read_inode(source).map_err(ext2_errno) {
             Ok(target) if !may_link(&cred, target.attrs()) => return SyscallResult::Err(EPERM as u64),
             Ok(_) => {}
-            Err(e) => return SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+            Err(e) => return SyscallResult::Err(e.into()),
         }
-        fs.link_in_dir(source, parent, new.final_name())
+        fs.link_in_dir(source, parent, new.final_name()).map_err(ext2_errno)
     };
 
     match link_result {
@@ -2387,28 +2350,8 @@ fn sys_link_from(olddirfd: i32, oldpath: u64, newdirfd: i32, newpath: u64) -> Sy
             SyscallResult::Ok(0)
         }
         Err(e) => {
-            log::debug!("sys_link: failed: {}", e);
-            // Map error to appropriate errno
-            let errno = if e.contains("memory") {
-                super::errno::ENOMEM
-            } else if e.contains("Too many links") {
-                super::errno::EMLINK
-            } else if e.contains("not found") || e.contains("not exist") {
-                ENOENT
-            } else if e.contains("already exists") || e.contains("Destination already exists") {
-                EEXIST
-            } else if e.contains("directory") && e.contains("hard link") {
-                EPERM // Cannot create hard link to directory
-            } else if e.contains("Not a directory") {
-                ENOTDIR
-            } else if e.contains("permission") || e.contains("Cannot") {
-                EACCES
-            } else if e.contains("No space") {
-                super::errno::ENOSPC
-            } else {
-                EIO
-            };
-            SyscallResult::Err(errno as u64)
+            log::debug!("sys_link: failed: {:?}", e);
+            SyscallResult::Err(e.into())
         }
     }
 }
@@ -2433,7 +2376,7 @@ fn creation_parent(
         .map_err(|_| SyscallResult::Err(2))?;
     let inode = fs
         .read_inode(parent)
-        .map_err(|e| SyscallResult::Err(crate::fs::namei::fs_errno(e)))?;
+       .map_err(ext2_errno).map_err(|e| SyscallResult::Err(e.into()))?;
     let gid =
         super::fifo_policy::check_parent_access(&inode, cred, None).map_err(SyscallResult::Err)?;
     Ok((parent, gid, inode.permissions() & 0o2000 != 0))
@@ -2461,7 +2404,7 @@ pub fn sys_mkdir(pathname: u64, mode: u32) -> SyscallResult {
     sys_mkdir_from(AT_FDCWD, pathname, mode)
 }
 fn sys_mkdir_from(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
-    use super::errno::{EACCES, EEXIST, EIO, ENOENT, ENOSPC, ENOTDIR, EPERM};
+    use super::errno::{EEXIST, EIO, EPERM};
     use crate::fs::namei::{Last, Target};
 
     // A final symlink, even a dangling one, is an existing name.
@@ -2509,7 +2452,7 @@ fn sys_mkdir_from(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
                     dir_mode,
                     cred.euid,
                     parent.1,
-                )
+                ).map_err(ext2_errno)
             }
             None => {
                 log::error!("sys_mkdir: ext2 filesystem not mounted");
@@ -2528,27 +2471,8 @@ fn sys_mkdir_from(dirfd: i32, pathname: u64, mode: u32) -> SyscallResult {
             SyscallResult::Ok(0)
         }
         Err(e) => {
-            log::debug!("sys_mkdir: failed: {}", e);
-            // Map error to appropriate errno
-            let errno = if e.contains("Too many links") {
-                super::errno::EMLINK
-            } else if e.contains("not found")
-                || e.contains("not exist")
-                || e.contains("Path component not found")
-            {
-                ENOENT
-            } else if e.contains("already exists") || e.contains("Directory already exists") {
-                EEXIST
-            } else if e.contains("Not a directory") || e.contains("not a directory") {
-                ENOTDIR
-            } else if e.contains("permission") || e.contains("Cannot") {
-                EACCES
-            } else if e.contains("No space") || e.contains("No free") {
-                ENOSPC
-            } else {
-                EIO
-            };
-            SyscallResult::Err(errno as u64)
+            log::debug!("sys_mkdir: failed: {:?}", e);
+            SyscallResult::Err(e.into())
         }
     }
 }
@@ -2576,7 +2500,7 @@ pub fn sys_symlink(target: u64, linkpath: u64) -> SyscallResult {
     sys_symlink_from(target, AT_FDCWD, linkpath)
 }
 fn sys_symlink_from(target: u64, dirfd: i32, linkpath: u64) -> SyscallResult {
-    use super::errno::{EACCES, EEXIST, EINVAL, EIO, ENOENT, ENOSPC, ENOTDIR, EPERM};
+    use super::errno::{EEXIST, EINVAL, EIO, ENOENT, EPERM};
     use super::userptr::copy_path_bytes_from_user;
     use crate::fs::namei::{Last, Target};
 
@@ -2632,7 +2556,7 @@ fn sys_symlink_from(target: u64, dirfd: i32, linkpath: u64) -> SyscallResult {
                     link.final_name(),
                     cred.euid,
                     parent.1,
-                )
+                ).map_err(ext2_errno)
             }
             None => {
                 log::error!("sys_symlink: ext2 filesystem not mounted");
@@ -2651,29 +2575,8 @@ fn sys_symlink_from(target: u64, dirfd: i32, linkpath: u64) -> SyscallResult {
             SyscallResult::Ok(0)
         }
         Err(e) => {
-            log::debug!("sys_symlink: failed: {}", e);
-            // Map error to appropriate errno
-            let errno = if e.contains("too long") {
-                super::errno::ENAMETOOLONG
-            } else if e.contains("not found")
-                || e.contains("not exist")
-                || e.contains("Path component not found")
-            {
-                ENOENT
-            } else if e.contains("already exists") || e.contains("File already exists") {
-                EEXIST
-            } else if e.contains("Not a directory") || e.contains("not a directory") {
-                ENOTDIR
-            } else if e.contains("permission") || e.contains("Cannot") {
-                EACCES
-            } else if e.contains("No space") || e.contains("No free") {
-                ENOSPC
-            } else if e.contains("empty") || e.contains("Invalid") {
-                EINVAL
-            } else {
-                EIO
-            };
-            SyscallResult::Err(errno as u64)
+            log::debug!("sys_symlink: failed: {:?}", e);
+            SyscallResult::Err(e.into())
         }
     }
 }
@@ -2755,18 +2658,11 @@ fn sys_readlink_from(dirfd: i32, pathname: u64, buf: u64, bufsize: u64) -> Sysca
                 return SyscallResult::Err(EIO as u64);
             }
         };
-        match fs.read_symlink_bytes(ino) {
+        match fs.read_symlink_bytes(ino).map_err(ext2_errno) {
             Ok(t) => t,
             Err(e) => {
-                log::debug!("sys_readlink: failed to read symlink: {}", e);
-                let errno = if e.contains("Not a symbolic link") {
-                    EINVAL
-                } else if e.contains("not found") {
-                    ENOENT
-                } else {
-                    EIO
-                };
-                return SyscallResult::Err(errno as u64);
+                log::debug!("sys_readlink: failed to read symlink: {:?}", e);
+                return SyscallResult::Err(e.into());
             }
         }
     };
@@ -4852,7 +4748,6 @@ fn update_inode_timestamps(
     cred: &FileCredentials,
     access: TimesAccess,
 ) -> SyscallResult {
-    use crate::fs::ext2;
 
     let do_update = |fs: &mut ext2::Ext2Fs| -> SyscallResult {
         let inode_num = match handle.verify(fs) {
@@ -4891,9 +4786,9 @@ fn update_inode_timestamps(
         }
     };
 
-    let mut fs_guard = match ext2::write_mount(handle.object.mount) {
+    let mut fs_guard = match ext2::write_mount(handle.object.mount).map_err(ext2_errno) {
         Ok(guard) => guard,
-        Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
+        Err(error) => return SyscallResult::Err(error.into()),
     };
     match fs_guard.as_mut() {
         Some(fs) => do_update(fs),
@@ -4939,7 +4834,6 @@ fn ext2_fd_info(
 /// then flush data and metadata to the device. Without dirty mapped pages,
 /// ext2 already wrote both synchronously and only the device flush remains.
 pub fn sys_fsync(fd: i32) -> SyscallResult {
-    use crate::fs::ext2;
     let entry = match super::metadata::descriptor_entry(fd) { Ok(e) => e, Err(e) => return SyscallResult::Err(e) };
     if let FdKind::Ipc(object) = &entry.kind {
         if let Some(file) = object.as_any().downcast_ref::<crate::fs::ufs::file::UfsFile>() {
@@ -5212,7 +5106,7 @@ fn resize_inode(
     if length > fs.max_file_size() {
         return Err(EFBIG as u64);
     }
-    fs.begin_resize_file_as(ino, length, unprivileged).map_err(crate::fs::namei::fs_errno)
+    fs.begin_resize_file_as(ino, length, unprivileged).map_err(ext2_errno).map_err(u64::from)
 }
 
 fn finish_resize(
@@ -5220,9 +5114,9 @@ fn finish_resize(
     result: Result<Option<crate::fs::ext2::ShrinkTicket>, u64>,
 ) -> SyscallResult {
     match result {
-        Ok(Some(ticket)) => match guard.finish_shrink(ticket) {
+        Ok(Some(ticket)) => match guard.finish_shrink(ticket).map_err(ext2_errno) {
             Ok(_) => SyscallResult::Ok(0),
-            Err(e) => SyscallResult::Err(crate::fs::namei::fs_errno(e)),
+            Err(e) => SyscallResult::Err(e.into()),
         },
         Ok(None) => SyscallResult::Ok(0),
         Err(errno) => SyscallResult::Err(errno),
@@ -5231,7 +5125,6 @@ fn finish_resize(
 
 /// ftruncate changes the inode, leaving every open file description's offset alone.
 pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
-    use crate::fs::ext2;
     if length < 0 {
         return SyscallResult::Err(super::errno::EINVAL as u64);
     }
@@ -5275,13 +5168,13 @@ pub fn sys_ftruncate(fd: i32, length: i64) -> SyscallResult {
         Ok(cred) => !cred.privileged(),
         Err(errno) => return SyscallResult::Err(errno),
     };
-    let mut guard = match ext2::write_mount(handle.object.mount) {
+    let mut guard = match ext2::write_mount(handle.object.mount).map_err(ext2_errno) {
         Ok(guard) => guard,
-        Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
+        Err(error) => return SyscallResult::Err(error.into()),
     };
-    guard = match guard.wait_for_inode(ino) {
+    guard = match guard.wait_for_inode(ino).map_err(ext2_errno) {
         Ok(guard) => guard,
-        Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
+        Err(error) => return SyscallResult::Err(error.into()),
     };
     let result = match guard.as_mut() {
         Some(fs) if handle.verify(fs).is_ok() => resize_inode(
@@ -5346,9 +5239,9 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
     let size_limit = super::resource::current_fsize();
     let mut exceeded = false;
     let mut guard = match mount.write() { Ok(guard) => guard, Err(errno) => return SyscallResult::Err(errno.into()) };
-    guard = match guard.wait_for_inode(ino) {
+    guard = match guard.wait_for_inode(ino).map_err(ext2_errno) {
         Ok(guard) => guard,
-        Err(error) => return SyscallResult::Err(crate::fs::namei::fs_errno(error)),
+        Err(error) => return SyscallResult::Err(error.into()),
     };
     let fs = match guard.as_mut() {
         Some(fs) => fs,
@@ -5380,9 +5273,8 @@ pub fn sys_truncate(pathname: u64, length: i64) -> SyscallResult {
 
 /// Record a successful nonempty read after releasing the read-side FS lock.
 pub(super) fn update_read_atime(ino: u32, mount_id: usize) -> Result<(), u64> {
-    use crate::fs::ext2;
     let is_home = ext2::home_mount_id().map_or(false, |id| id == mount_id);
-    ext2::update_read_atime(ino, is_home).map_err(crate::fs::namei::fs_errno)
+    ext2::update_read_atime(ino, is_home).map_err(ext2_errno).map_err(u64::from)
 }
 
 

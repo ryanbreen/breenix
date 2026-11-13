@@ -259,10 +259,6 @@ fn copy_frames(frames: &[Frame]) -> Result<Vec<Frame>, u64> {
     Ok(copy)
 }
 
-pub(crate) fn fs_errno(error: &'static str) -> u64 {
-    crate::fs::ext2::errno::errno(error).0 as u64
-}
-
 fn copy_string(text: &str) -> Result<String, u64> {
     let mut copy = String::new();
     copy.try_reserve_exact(text.len()).map_err(|_| 12u64)?;
