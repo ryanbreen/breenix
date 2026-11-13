@@ -48,6 +48,11 @@ pub fn attachment(id: usize) -> Option<(InodeKey, Vec<u8>)> {
     Some((entry.parent?, entry.path.rsplit(|b| *b == b'/').next()?.to_vec()))
 }
 
+/// Recover a namespace bind from a legacy descriptor's storage identity.
+pub fn bind_cover(key: InodeKey) -> Option<usize> {
+    MOUNT_TABLE.lock().iter().find(|m| m.bind == Some(key)).map(|m| m.id)
+}
+
 /// Virtual filesystems retain their boot registration order and ids.
 pub fn mount(path: &str, kind: &'static str) -> usize {
     let mut table = MOUNT_TABLE.lock();

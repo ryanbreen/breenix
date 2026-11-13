@@ -1132,9 +1132,23 @@ fn user_frames(mount: u64, mut node: u64, held: &mut Held) -> Result<Vec<Frame>,
 /// walk is one read of the filesystem, so a concurrent rename cannot leave
 /// it with a pathname the directory never had.
 fn ancestry(held: &mut Held, mount: Mount, mut ino: u64) -> Result<Vec<Frame>, u64> {
-    let mut frames = Vec::new();
+    let mut frames: Vec<Frame> = Vec::new();
     let root = mount.root_inode();
     while ino != root {
+        // Directory descriptors still pin the storage mount. Recover a bind
+        // before following its physical parent outside the selected namespace.
+        if let Some(id) = mounts::bind_cover((mount.0, ino)) {
+            let bound = Mount(id);
+            let mut prefix = ancestry(held, bound, ino)?;
+            prefix.try_reserve(frames.len()).map_err(|_| 12u64)?;
+            for mut frame in frames.into_iter().rev() {
+                if let Node::Ext2(ref mut native, _) = frame.node {
+                    *native = bound;
+                }
+                prefix.push(frame);
+            }
+            return Ok(prefix);
+        }
         let fs = held.fs(mount)?;
         let inode = read_dir_inode(fs, ino)?;
         let data = fs.read_directory(&inode).map_err(ext2_errno)?;

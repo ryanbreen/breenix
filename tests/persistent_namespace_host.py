@@ -44,6 +44,11 @@ impl Held {
     fn fs(&mut self, _: Mount) -> Result<&ext2::Ext2Fs, u64> { Ok(&self.0) }
 }
 mod mounts {
+    pub fn bind_cover(key: (usize, u64)) -> Option<usize> {
+        if key.0 != 0 { return None; }
+        match key.1 { 10 => Some(2), 11 => Some(3), 20 => Some(4),
+            21 => Some(5), _ => None }
+    }
     pub fn attachment(id: usize) -> Option<((usize, u64), Vec<u8>)> {
         let name = match id { 1 => b"home".as_slice(), 2 => b"etc", 3 => b"root",
             4 => b"var", 5 => b"run", _ => return None };
@@ -58,7 +63,7 @@ mod mounts {
 mod ufs_abi { pub mod payload { pub const ROOT: u64 = 1; } }
 fn ino32(ino: u64) -> Result<u32, u64> { ino.try_into().map_err(|_| 75u64) }
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Node { Ext2(Mount, u64) }
+pub enum Node { Ext2(Mount, u64), Virtual }
 pub struct Frame { name: Vec<u8>, node: Node }
 pub enum Target { Inode { mount: Mount, ino: u64 }, Virtual, Absent {}, User { node: u64 } }
 pub struct Resolved { target: Target, path: alloc::boxed::Box<[u8]> }
