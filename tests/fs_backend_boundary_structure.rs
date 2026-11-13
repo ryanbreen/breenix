@@ -352,3 +352,47 @@ fn namei_enters_mounts_only_through_the_table() {
     assert!(!source.contains("ufs::covering"), "namei calls the separate ufs cover lookup");
     assert!(names.0.is_empty(), "{}", names.0.join("\n"));
 }
+
+#[test]
+fn open_file_descriptions_hold_vnodes() {
+    use syn::visit::{self, Visit};
+
+    fn structure<'a>(file: &'a syn::File, name: &str) -> &'a syn::ItemStruct {
+        file.items.iter().find_map(|item| match item {
+            syn::Item::Struct(item) if item.ident == name => Some(item),
+            _ => None,
+        }).unwrap_or_else(|| panic!("missing struct {name}"))
+    }
+    fn named(ty: &syn::Type, name: &str) -> bool {
+        matches!(ty, syn::Type::Path(path) if path.path.segments.last().is_some_and(|p| p.ident == name))
+    }
+    #[derive(Default)]
+    struct Handles(bool);
+    impl<'ast> Visit<'ast> for Handles {
+        fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
+            self.0 |= path.path.segments.iter().any(|p| p.ident == "FileHandle");
+            visit::visit_type_path(self, path);
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src");
+    let fd = syn::parse_file(&fs::read_to_string(root.join("ipc/fd.rs")).unwrap()).unwrap();
+    let vfs = syn::parse_file(&fs::read_to_string(root.join("fs/vfs/file.rs")).unwrap()).unwrap();
+    let open = structure(&vfs, "OpenFile");
+    for name in ["RegularFile", "DirectoryFile"] {
+        let description = structure(&fd, name);
+        assert!(description.fields.iter().any(|f| named(&f.ty, "OpenFile")),
+            "{name} must retain an OpenFile");
+        let mut handles = Handles::default();
+        handles.visit_item_struct(description);
+        handles.visit_item_struct(open);
+        assert!(!handles.0, "{name} must not hold a FileHandle field");
+        assert!(open.fields.iter().any(|field| {
+            let syn::Type::Path(path) = &field.ty else { return false; };
+            let Some(arc) = path.path.segments.last() else { return false; };
+            let syn::PathArguments::AngleBracketed(args) = &arc.arguments else { return false; };
+            arc.ident == "Arc" && args.args.len() == 1
+                && matches!(args.args.first(), Some(syn::GenericArgument::Type(ty)) if named(ty, "VNode"))
+        }), "{name}'s OpenFile must hold Arc<VNode>");
+    }
+}
