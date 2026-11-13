@@ -103,14 +103,37 @@ mod shutdown;
 #[path = "bwm/signal_wake.rs"]
 mod signal_wake;
 
+// Diagnostic branch only: retained supervisor output does not reach serial.
+macro_rules! failure_note {
+    ($($arg:tt)*) => { diagnostic_note(format_args!($($arg)*)) };
+}
+
+#[track_caller]
+fn diagnostic_note(message: std::fmt::Arguments<'_>) {
+    use std::io::Write;
+    let site = std::panic::Location::caller();
+    let record = format!("BWM_FAILURE {}:{} {message}\n", site.file(), site.line());
+    eprint!("{record}");
+    if let Ok(mut evidence) = std::fs::OpenOptions::new().write(true).open("/dev/screen-evidence") {
+        let _ = evidence.write_all(record.as_bytes());
+    }
+}
+
+#[track_caller]
+fn diagnostic_exit() -> ! {
+    diagnostic_note(format_args!("exit=1"));
+    process::exit(1)
+}
+
 fn main() {
+    std::panic::set_hook(Box::new(|info| diagnostic_note(format_args!("panic: {info}"))));
     libuitest::startup::mark("compositor-exec");
     let paths = settings::Paths::environment();
-    let loaded = settings::Settings::load(&paths.bwm).unwrap_or_else(|e| { eprintln!("[bwm] config: {e}"); process::exit(1); });
+    let loaded = settings::Settings::load(&paths.bwm).unwrap_or_else(|e| { failure_note!("[bwm] config: {e}"); diagnostic_exit(); });
     let _ = SETTINGS.set(loaded);
     let session_root = std::env::var_os("BREENIX_CONFIG_ROOT");
     let visible = cursor::load(session_root.as_deref().map(std::path::Path::new))
-        .unwrap_or_else(|e| { eprintln!("[bwm] cursor config: {e}"); process::exit(1); });
+        .unwrap_or_else(|e| { failure_note!("[bwm] cursor config: {e}"); diagnostic_exit(); });
     let _ = CURSOR_VISIBLE.set(visible);
     libuitest::startup::mark("config-ready");
     print!("[bwm] settings font.size={} clock.visible={}\n", settings().font_size, settings().clock_visible);
@@ -126,7 +149,7 @@ fn main() {
         Ok(d) => d,
         Err(e) => {
             print!("[bwm] ERROR: GPU compositing required: {}\n", e);
-            process::exit(1);
+            diagnostic_exit();
         }
     };
     let screen_w = mode.width as usize;
@@ -146,7 +169,7 @@ fn main() {
     // Prepare surviving titles in the first atlas batch alongside GPU targets.
     let mut startup_infos = Vec::new();
     if let Err(error) = session::list_windows(&mut startup_infos) {
-        eprintln!("[bwm] startup title discovery unavailable: {error}");
+        failure_note!("[bwm] startup title discovery unavailable: {error}");
     }
     let startup_titles: Vec<&[u8]> = startup_infos.iter()
         .filter(|w| w.flags & libbreenix::window::abi::win_flags::MINIMIZED == 0
@@ -157,8 +180,8 @@ fn main() {
     // Prepare the same clock snapshot that draw_taskbar will use.
     // Establish libgfx's context before reserving the compositor's next context.
     if let Err(error) = libgfx::stage::context_for(render_requirements::CHROME_PIPELINES) {
-        eprintln!("[bwm] ERROR: font renderer could not be initialized: {error:?}");
-        process::exit(1);
+        failure_note!("[bwm] ERROR: font renderer could not be initialized: {error:?}");
+        diagnostic_exit();
     }
     let (opened, mut ui_font, claim_epoch, scene_fd, mut desktop_tree, mut clock_wake) = std::thread::scope(|scope| {
         let font = scope.spawn(|| {
@@ -180,7 +203,7 @@ fn main() {
             if let Some(font) = font.as_mut() {
                 let texts = startup_prepare::coverage(&clock_text, &startup_titles);
                 if let Err(error) = font.prepare_subpixel(&texts, ttf_font_size() * ui().scale as f32) {
-                    eprintln!("[bwm] taskbar coverage warm-up unavailable: {error}");
+                    failure_note!("[bwm] taskbar coverage warm-up unavailable: {error}");
                 }
             }
             libuitest::startup::mark("fonts-ready");
@@ -198,7 +221,7 @@ fn main() {
                 }
                 Err(e) => {
                     print!("[bwm] ERROR: GPU compositing required: the compositor claim failed: {}\n", e);
-                    process::exit(1);
+                    diagnostic_exit();
                 }
             });
         clock.participate().expect("UI clock participant registration failed");
@@ -207,14 +230,14 @@ fn main() {
             Ok(fd) => fd,
             Err(e) => {
                 print!("[bwm] ERROR: GPU compositing required: the scene descriptor failed: {}\n", e);
-                process::exit(1);
+                diagnostic_exit();
             }
         };
 
         let desktop_tree = match desktop_publish::Publisher::new() {
             Ok(publisher) => Some(publisher),
             Err(error) => {
-                eprintln!("[bwm] compositor tree mapping failed: {}", error);
+                failure_note!("[bwm] compositor tree mapping failed: {}", error);
                 None
             }
         };
@@ -232,7 +255,7 @@ fn main() {
         Ok(c) => c,
         Err(e) => {
             print!("[bwm] ERROR: GPU compositing required: {}\n", e);
-            process::exit(1);
+            diagnostic_exit();
         }
     };
     print!("[bwm] GPU compositing mode (GPU core), display: {}x{}\n", screen_w, screen_h);
@@ -285,24 +308,24 @@ fn main() {
     let mut fills = startup_prepare::recover(
         check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index), strict_startup, |error| {
             if !reported_startup_error {
-                eprintln!("[bwm] initial presentation unavailable: {error}; recovering");
+                failure_note!("[bwm] initial presentation unavailable: {error}; recovering");
                 reported_startup_error = true;
             }
             startup_retry_wait();
             if let Err(error) = gpu.reopen() {
-                eprintln!("[bwm] ERROR: GPU compositor could not be reopened: {error}");
-                process::exit(1);
+                failure_note!("[bwm] ERROR: GPU compositor could not be reopened: {error}");
+                diagnostic_exit();
             }
             paint_background(&mut gpu.background);
             compose_full_redraw(&mut gpu, &[], &stack, &clock_text, &mut ui_font);
             check_desktop_fills(&mut gpu, screen_w, screen_h, mode_index)
         }).unwrap_or_else(|error| {
-            eprintln!("[bwm] initial presentation FAILED: {error}");
-            process::exit(1);
+            failure_note!("[bwm] initial presentation FAILED: {error}");
+            diagnostic_exit();
         });
     if let Err(error) = &fills {
-        eprintln!("[bwm] desktop fill check FAILED: {error}");
-        if strict_startup { process::exit(1); }
+        failure_note!("[bwm] desktop fill check FAILED: {error}");
+        if strict_startup { diagnostic_exit(); }
     }
     libuitest::startup::mark("fills-ready");
     // Discover metadata while the bare desktop remains unchanged. Coverage
@@ -337,19 +360,19 @@ fn main() {
         checked
     });
     if let Err(error) = prepared {
-        eprintln!("[bwm] title coverage warm-up unavailable: {error}");
+        failure_note!("[bwm] title coverage warm-up unavailable: {error}");
     }
     // Use the normal fresh-context recovery before composing clients, then
     // perform the same whole-frame and fill checks on the recovered desktop.
     let first = startup_prepare::recover(presented, strict_startup, |error| {
         if !reported_startup_error {
-            eprintln!("[bwm] initial presentation unavailable: {error}; recovering");
+            failure_note!("[bwm] initial presentation unavailable: {error}; recovering");
             reported_startup_error = true;
         }
         startup_retry_wait();
         if let Err(error) = gpu.reopen() {
-            eprintln!("[bwm] ERROR: GPU compositor could not be reopened: {error}");
-            process::exit(1);
+            failure_note!("[bwm] ERROR: GPU compositor could not be reopened: {error}");
+            diagnostic_exit();
         }
         paint_background(&mut gpu.background);
         compose_full_redraw(&mut gpu, &[], &stack, &clock_text, &mut ui_font);
@@ -358,29 +381,29 @@ fn main() {
             Err(error) => return Err(error),
         };
         if let Err(error) = &fills {
-            eprintln!("[bwm] desktop fill check FAILED: {error}");
-            if strict_startup { process::exit(1); }
+            failure_note!("[bwm] desktop fill check FAILED: {error}");
+            if strict_startup { diagnostic_exit(); }
         }
         gpu.present_startup_desktop(cursor_pointer(first_pointer)).map(|()| {
             measure_check(|| gpu.check(0, &[], cursor_pointer(first_pointer)))
         })
     }).unwrap_or_else(|error| {
-        eprintln!("[bwm] initial presentation FAILED: {error}");
-        process::exit(1);
+        failure_note!("[bwm] initial presentation FAILED: {error}");
+        diagnostic_exit();
     });
     libuitest::startup::mark("checks-ready");
     match first {
         Ok(pixels) => print!("[bwm] first frame read back: {} pixels exact\n", pixels),
         Err(CheckError::Moved(e)) | Err(CheckError::Failed(e)) => {
             print!("[bwm] first frame check FAILED: {}\n", e);
-            if strict_startup { process::exit(1); }
+            if strict_startup { diagnostic_exit(); }
         },
     }
     match fills {
         Ok(line) => print!("[bwm] desktop fills the scanout: {}\n", line),
         Err(e) => {
             print!("[bwm] desktop fill check FAILED: {}\n", e);
-            if strict_startup { process::exit(1); }
+            if strict_startup { diagnostic_exit(); }
         },
     }
     libuitest::startup::mark("desktop-ready");
@@ -403,7 +426,7 @@ fn main() {
     let mut working_scene = PresentedScene { layers: Vec::new(), pointer: first_pointer };
 
     // The desktop outlives a clipboard that cannot open; clipboard clients then see ENOENT.
-    let mut clipboard = clipboard_socket::Server::open().map_err(|e| eprintln!("[bwm] clipboard socket: {e}")).ok();
+    let mut clipboard = clipboard_socket::Server::open().map_err(|e| failure_note!("[bwm] clipboard socket: {e}")).ok();
     let mut poll_fds = vec![
         io::PollFd { fd: stream.fd(), events: io::poll_events::POLLIN as i16, revents: 0 },
         io::PollFd { fd: scene_fd, events: io::poll_events::POLLIN as i16, revents: 0 },
@@ -470,7 +493,7 @@ fn main() {
         if let Some(wake) = &clock_wake {
             if poll_fds[2].revents != 0 {
                 if let Err(error) = wake.drain() {
-                    eprintln!("[bwm] UI clock wake stopped: {error}");
+                    failure_note!("[bwm] UI clock wake stopped: {error}");
                     clock_wake = None;
                 }
             }
@@ -944,12 +967,12 @@ fn main() {
                         // Start again with a fresh context and targets; the next frame
                         // repaints everything.
                         if !frame_failed {
-                            print!("[bwm] GPU frame failed: {}\n", e);
+                            failure_note!("[bwm] GPU frame failed: {}", e);
                         }
                         frame_failed = true;
                         if let Err(e) = gpu.reopen() {
-                            print!("[bwm] ERROR: GPU compositor could not be reopened: {}\n", e);
-                            process::exit(1);
+                            failure_note!("[bwm] ERROR: GPU compositor could not be reopened: {}", e);
+                            diagnostic_exit();
                         }
                         paint_background(&mut gpu.background);
                         compose_full_redraw(&mut gpu, &windows, &stack, &clock_text, &mut ui_font);
@@ -961,7 +984,7 @@ fn main() {
         }
         if let Some(publisher) = &mut desktop_tree {
             if let Err(error) = publisher.publish(&windows, &stack, [screen_w as i64, screen_h as i64]) {
-                eprintln!("[bwm] compositor tree publication failed: {}", error);
+                failure_note!("[bwm] compositor tree publication failed: {}", error);
             }
         }
         defer_checks_after_activity(&mut windows, monotonic_ms().unwrap_or(0), gpu.validation_delay_ms(), input_ready);
@@ -974,8 +997,8 @@ fn main() {
             if let Err(error) = libbreenix::window::call(
                 libbreenix::window::abi::op::COMPOSITOR_ACK, &mut ack,
             ) {
-                eprintln!("[bwm] compositor acknowledgment failed: {}", error);
-                process::exit(1);
+                failure_note!("[bwm] compositor acknowledgment failed: {} ack={:?}", error, ack);
+                diagnostic_exit();
             }
             clock.acknowledged();
             run_deferred_check(&mut validation, &mut gpu, &mut windows, &mut poll_fds, resizing.is_some(), strict_startup);
@@ -1096,8 +1119,8 @@ extern "C" fn terminate(_: i32) {
 fn term_mask(how: i32) {
     let mask = (1u64 << (signal::SIGTERM - 1)) | (1u64 << (signal::SIGCHLD - 1));
     if let Err(error) = signal::sigprocmask(how, Some(&mask), None) {
-        eprintln!("[bwm] cannot set shutdown signal mask: {error}");
-        process::exit(1);
+        failure_note!("[bwm] cannot set shutdown signal mask: {error}");
+        diagnostic_exit();
     }
 }
 
@@ -1117,16 +1140,16 @@ extern "C" fn child_exited(_: i32) { signal_wake::notify(); }
 fn initialize_shutdown() -> signal_wake::SignalWake {
     term_mask(signal::SIG_BLOCK);
     let wake = signal_wake::SignalWake::open().unwrap_or_else(|error| {
-        eprintln!("[bwm] cannot create signal wake pipe: {error}");
-        process::exit(1);
+        failure_note!("[bwm] cannot create signal wake pipe: {error}");
+        diagnostic_exit();
     });
     if let Err(error) = signal::sigaction(signal::SIGCHLD, Some(&signal::Sigaction::new(child_exited)), None) {
-        eprintln!("[bwm] cannot install child handler: {error}");
-        process::exit(1);
+        failure_note!("[bwm] cannot install child handler: {error}");
+        diagnostic_exit();
     }
     if let Err(error) = signal::sigaction(signal::SIGTERM, Some(&signal::Sigaction::new(terminate)), None) {
-        eprintln!("[bwm] cannot install shutdown handler: {error}");
-        process::exit(1);
+        failure_note!("[bwm] cannot install shutdown handler: {error}");
+        diagnostic_exit();
     }
     wake
 }
@@ -1145,15 +1168,15 @@ impl shutdown::Runtime for ShutdownWait<'_> {
     fn terminated(&self) -> bool { TERMINATE.load(std::sync::atomic::Ordering::Relaxed) }
     fn release(&mut self) {
         if let Err(error) = libbreenix::window::release_compositor() {
-            eprintln!("[bwm] cannot release compositor: {error}");
+            failure_note!("[bwm] cannot release compositor: {error}");
             self.failed = true;
         }
     }
     fn restore(&mut self) {
         if let Err(error) = libbreenix::graphics::give_back_display() {
-            eprintln!("[bwm] cannot restore display: {error}");
+            failure_note!("[bwm] cannot restore display: {error}");
             self.failed = true;
         }
     }
-    fn exit(&mut self, status: i32) { process::exit(if self.failed { 1 } else { status }); }
+    fn exit(&mut self, status: i32) { if self.failed { diagnostic_exit(); } else { process::exit(status); } }
 }
