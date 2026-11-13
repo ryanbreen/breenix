@@ -75,7 +75,6 @@ impl Mount {
     pub fn write(self) -> Result<ext2::Ext2WriteGuard, Errno> {
         mounts::ext2_adapter(self.0)?.write()
     }
-
 }
 
 /// What a resolved pathname names.
