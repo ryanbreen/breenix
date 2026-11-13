@@ -518,7 +518,7 @@ fn file_mapping(
     if kind != 2 && prot.contains(Protection::WRITE) && !may_write {
         return Err(EACCES as u64);
     }
-    let handle = file.lock().handle.clone();
+    let handle = file.lock().open.ext2_handle().ok_or(crate::syscall::errno::EIO as u64)?;
     Ok((handle, may_write))
 }
 

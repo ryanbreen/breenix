@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 /// The staged migration in docs/fs/cowfs-design.md section 1.1 lowers this
 /// ext2-only ceiling at each stage and never raises it.
 /// claim-lint:ok: Staged migration requirement in docs/fs/cowfs-design.md section 1.1.
-const CEILING: usize = 153;
+const CEILING: usize = 128;
 
 fn visit(directory: &Path, ext2_dir: &Path, tally: &mut Vec<(PathBuf, usize)>) {
     for entry in fs::read_dir(directory)
@@ -351,4 +351,234 @@ fn namei_enters_mounts_only_through_the_table() {
     names.visit_file(&syn::parse_file(&source).unwrap());
     assert!(!source.contains("ufs::covering"), "namei calls the separate ufs cover lookup");
     assert!(names.0.is_empty(), "{}", names.0.join("\n"));
+}
+
+#[test]
+fn open_file_descriptions_hold_vnodes() {
+    use syn::visit::{self, Visit};
+
+    fn structure<'a>(file: &'a syn::File, name: &str) -> &'a syn::ItemStruct {
+        file.items.iter().find_map(|item| match item {
+            syn::Item::Struct(item) if item.ident == name => Some(item),
+            _ => None,
+        }).unwrap_or_else(|| panic!("missing struct {name}"))
+    }
+    fn named(ty: &syn::Type, name: &str) -> bool {
+        matches!(ty, syn::Type::Path(path) if path.path.segments.last().is_some_and(|p| p.ident == name))
+    }
+    #[derive(Default)]
+    struct Handles(bool);
+    impl<'ast> Visit<'ast> for Handles {
+        fn visit_type_path(&mut self, path: &'ast syn::TypePath) {
+            self.0 |= path.path.segments.iter().any(|p| p.ident == "FileHandle");
+            visit::visit_type_path(self, path);
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src");
+    let fd = syn::parse_file(&fs::read_to_string(root.join("ipc/fd.rs")).unwrap()).unwrap();
+    let vfs = syn::parse_file(&fs::read_to_string(root.join("fs/vfs/file.rs")).unwrap()).unwrap();
+    let open = structure(&vfs, "OpenFile");
+    for name in ["RegularFile", "DirectoryFile"] {
+        let description = structure(&fd, name);
+        assert!(description.fields.iter().any(|f| named(&f.ty, "OpenFile")),
+            "{name} must retain an OpenFile");
+        let mut handles = Handles::default();
+        handles.visit_item_struct(description);
+        handles.visit_item_struct(open);
+        assert!(!handles.0, "{name} must not hold a FileHandle field");
+        assert!(open.fields.iter().any(|field| {
+            let syn::Type::Path(path) = &field.ty else { return false; };
+            let Some(arc) = path.path.segments.last() else { return false; };
+            let syn::PathArguments::AngleBracketed(args) = &arc.arguments else { return false; };
+            arc.ident == "Arc" && args.args.len() == 1
+                && matches!(args.args.first(), Some(syn::GenericArgument::Type(ty)) if named(ty, "VNode"))
+        }), "{name}'s OpenFile must hold Arc<VNode>");
+    }
+}
+
+#[test]
+fn open_file_read_syscalls_use_the_trait() {
+    use syn::visit::Visit;
+
+    #[derive(Default)]
+    struct BackendNames(Vec<String>);
+    impl<'ast> Visit<'ast> for BackendNames {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(),
+                "ext2" | "ext2_handle" | "FileHandle" | "Mount" | "read_inode"
+                | "read_file_range" | "sync_range" | "root_fs_read" | "home_fs_read" | "home_mount_id"
+                | "read_file_range_coherent" | "get_ext2_file_size_for_handle"
+                | "load_ext2_inode_stat_for_handle" | "load_ext2_inode_stat_for_mount"
+                | "update_read_atime")
+            {
+                self.0.push(ident.to_string());
+            }
+        }
+    }
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src/syscall");
+    let mut violations = Vec::new();
+    for (file, functions) in [
+        ("handlers.rs", ["sys_read", "sys_pread64"]),
+        ("fs.rs", ["sys_lseek", "sys_fstat"]),
+    ] {
+        let parsed = syn::parse_file(&fs::read_to_string(root.join(file)).unwrap()).unwrap();
+        for name in functions {
+            let function = parsed.items.iter().find_map(|item| match item {
+                syn::Item::Fn(function) if function.sig.ident == name => Some(function),
+                _ => None,
+            }).unwrap_or_else(|| panic!("missing {file}::{name}"));
+            let mut names = BackendNames::default();
+            names.visit_block(&function.block);
+            for backend in names.0 {
+                violations.push(format!("{file}::{name} names {backend}"));
+            }
+        }
+    }
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
+
+#[test]
+fn open_file_write_syscalls_use_the_trait() {
+    use syn::visit::Visit;
+
+    #[derive(Default)]
+    struct BackendNames(Vec<String>);
+    impl<'ast> Visit<'ast> for BackendNames {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(),
+                "ext2" | "ext2_handle" | "FileHandle" | "Mount" | "read_inode"
+                | "read_file_range" | "sync_range" | "root_fs_write" | "home_fs_write" | "home_mount_id"
+                | "write_file_range_as" | "wait_for_inode")
+            {
+                self.0.push(ident.to_string());
+            }
+        }
+    }
+
+    let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("kernel/src/syscall/handlers.rs")).unwrap();
+    let parsed = syn::parse_file(&source).unwrap();
+    let mut violations = Vec::new();
+    // sys_write and write_vector share the write_with_limit implementation.
+    for name in ["sys_write", "write_with_limit", "sys_pwrite64"] {
+        let function = parsed.items.iter().find_map(|item| match item {
+            syn::Item::Fn(function) if function.sig.ident == name => Some(function),
+            _ => None,
+        }).unwrap_or_else(|| panic!("missing handlers.rs::{name}"));
+        let mut names = BackendNames::default();
+        names.visit_block(&function.block);
+        for backend in names.0 {
+            violations.push(format!("handlers.rs::{name} names {backend}"));
+        }
+    }
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
+
+#[test]
+fn directory_and_sync_syscalls_use_the_trait() {
+    use syn::visit::Visit;
+
+    #[derive(Default)]
+    struct BackendNames(Vec<String>);
+    impl<'ast> Visit<'ast> for BackendNames {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            if matches!(ident.to_string().as_str(),
+                "ext2" | "ext2_handle" | "FileHandle" | "Mount" | "read_inode"
+                | "read_file_range" | "sync_range" | "read_mount" | "write_mount" | "raw_entries" | "read_directory"
+                | "check_shrink" | "ext2_fd_info" | "resize_inode")
+            {
+                self.0.push(ident.to_string());
+            }
+        }
+    }
+
+    let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("kernel/src/syscall/fs.rs")).unwrap();
+    let parsed = syn::parse_file(&source).unwrap();
+    let mut violations = Vec::new();
+    for name in ["sys_getdents64", "sys_fsync", "sys_ftruncate"] {
+        let function = parsed.items.iter().find_map(|item| match item {
+            syn::Item::Fn(function) if function.sig.ident == name => Some(function),
+            _ => None,
+        }).unwrap_or_else(|| panic!("missing fs.rs::{name}"));
+        let mut names = BackendNames::default();
+        names.visit_block(&function.block);
+        for backend in names.0 {
+            violations.push(format!("fs.rs::{name} names {backend}"));
+        }
+    }
+    assert!(violations.is_empty(), "{}", violations.join("\n"));
+}
+
+#[test]
+fn write_signals_only_for_rejected_fsize() {
+    use syn::visit::{self, Visit};
+    struct Signals { success: bool, bad: Vec<String> }
+    impl<'ast> Visit<'ast> for Signals {
+        fn visit_arm(&mut self, arm: &'ast syn::Arm) {
+            let old = self.success;
+            if matches!(&arm.pat, syn::Pat::TupleStruct(p) if p.path.is_ident("Ok")) {
+                self.success = true;
+            }
+            visit::visit_arm(self, arm);
+            self.success = old;
+        }
+        fn visit_expr_call(&mut self, call: &'ast syn::ExprCall) {
+            if matches!(&*call.func, syn::Expr::Path(p) if p.path.segments.last().unwrap().ident == "signal_fsize") && self.success {
+                self.bad.push("successful writes must not signal SIGXFSZ".into());
+            }
+            visit::visit_expr_call(self, call);
+        }
+        fn visit_expr_binary(&mut self, expr: &'ast syn::ExprBinary) {
+            if matches!(&*expr.right, syn::Expr::Path(p) if p.path.segments.last().unwrap().ident == "EFBIG") {
+                self.bad.push("filesystem EFBIG must not imply SIGXFSZ".into());
+            }
+            visit::visit_expr_binary(self, expr);
+        }
+    }
+    let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src/syscall/handlers.rs")).unwrap();
+    let parsed = syn::parse_file(&source).unwrap();
+    let mut signals = Signals { success: false, bad: Vec::new() };
+    for item in &parsed.items {
+        if let syn::Item::Fn(f) = item {
+            if f.sig.ident == "write_with_limit" || f.sig.ident == "sys_pwrite64" {
+                signals.visit_block(&f.block);
+            }
+        }
+    }
+    assert!(signals.bad.is_empty(), "{}", signals.bad.join("\n"));
+}
+
+#[test]
+fn getdents_collects_a_batch_in_one_backend_traversal() {
+    use syn::visit::{self, Visit};
+    #[derive(Default)]
+    struct Traversal { loops: usize, calls: usize }
+    impl<'ast> Visit<'ast> for Traversal {
+        fn visit_expr_loop(&mut self, expr: &'ast syn::ExprLoop) {
+            self.loops += 1;
+            visit::visit_expr_loop(self, expr);
+            self.loops -= 1;
+        }
+        fn visit_expr_method_call(&mut self, expr: &'ast syn::ExprMethodCall) {
+            if expr.method == "dirents" {
+                self.calls += 1;
+                assert_eq!(self.loops, 0, "getdents must not restart traversal per entry");
+                let Some(syn::Expr::Reference(r)) = expr.args.last() else { panic!("missing sink") };
+                let syn::Expr::Closure(c) = &*r.expr else { panic!("missing sink closure") };
+                assert_eq!(c.inputs.len(), 2, "sink needs each entry's next cookie");
+            }
+            visit::visit_expr_method_call(self, expr);
+        }
+    }
+    let source = fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("kernel/src/syscall/fs.rs")).unwrap();
+    let parsed = syn::parse_file(&source).unwrap();
+    let f = parsed.items.iter().find_map(|i| match i {
+        syn::Item::Fn(f) if f.sig.ident == "sys_getdents64" => Some(f), _ => None
+    }).unwrap();
+    let mut traversal = Traversal::default();
+    traversal.visit_block(&f.block);
+    assert_eq!(traversal.calls, 1);
 }

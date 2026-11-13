@@ -5,10 +5,11 @@
 use crate::fs::{attrs::InodeAttrs, errno::Errno};
 use crate::syscall::errno::EOPNOTSUPP;
 use alloc::{sync::Arc, vec::Vec};
-use core::sync::atomic::AtomicU64;
+use core::{any::Any, sync::atomic::AtomicU64};
 use spin::Mutex;
 
 pub use crate::fs::attrs::MountFlags;
+pub mod file;
 pub mod mount_table;
 #[cfg(not(test))]
 pub mod mount;
@@ -48,7 +49,7 @@ pub struct VNode {
     pub incarnation: u64,
     pub size: AtomicU64,
     pub times: Mutex<NodeTimes>,
-    _pin: Arc<dyn Send + Sync>,
+    backend_pin: Arc<dyn Any + Send + Sync>,
 }
 impl VNode {
     pub fn new(
@@ -57,7 +58,7 @@ impl VNode {
         incarnation: u64,
         size: u64,
         times: NodeTimes,
-        pin: Arc<dyn Send + Sync>,
+        pin: Arc<dyn Any + Send + Sync>,
     ) -> Self {
         Self {
             mount,
@@ -65,8 +66,13 @@ impl VNode {
             incarnation,
             size: AtomicU64::new(size),
             times: Mutex::new(times),
-            _pin: pin,
+            backend_pin: pin,
         }
+    }
+
+    /// Borrow the backend's retained inode handle without changing its lifetime.
+    pub fn pin<T: Any>(&self) -> Option<&T> {
+        self.backend_pin.downcast_ref()
     }
 }
 
@@ -127,6 +133,41 @@ pub enum WriteAt {
     Offset(u64),
     Append,
 }
+/// The caller snapshots its resource limit and credential decision before locking.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteReq {
+    pub at: WriteAt,
+    pub limit: u64,
+    pub clear_setid: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WriteResult {
+    /// Offset selected under the backend's write guard, including for append.
+    pub offset: u64,
+    pub bytes: usize,
+    /// The request was shortened by the caller's file-size limit.
+    pub limited: bool,
+}
+
+/// A resource-limit refusal is distinct from a backend's maximum-file-size error.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WriteError {
+    FileSizeLimit,
+    Filesystem(Errno),
+}
+impl WriteError {
+    pub fn errno(self) -> Errno {
+        match self {
+            Self::FileSizeLimit => Errno(crate::syscall::errno::EFBIG),
+            Self::Filesystem(errno) => errno,
+        }
+    }
+}
+impl From<Errno> for WriteError {
+    fn from(errno: Errno) -> Self { Self::Filesystem(errno) }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum XattrSet {
     Upsert,
@@ -182,13 +223,16 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn open(&self, ino: u64) -> Result<Arc<VNode>, Errno>;
     // Names
     fn lookup(&self, dir: u64, name: &[u8]) -> Result<u64, Errno>;
+    /// Parent inode exposed by `..`, including the backend's selected namespace.
+    fn parent(&self, dir: u64) -> Result<u64, Errno>;
     /// The cookie returned is after the last accepted entry. A sink returning
-    /// false leaves that entry for the next call. Dot entries belong to VFS.
+    /// false leaves that entry for the next call. Each entry carries its next
+    /// cookie so a caller can collect a batch in one traversal. Dots belong to VFS.
     fn readdir(
         &self,
         dir: u64,
         cookie: u64,
-        sink: &mut dyn FnMut(DirEnt) -> Result<bool, Errno>,
+        sink: &mut dyn FnMut(DirEnt, u64) -> Result<bool, Errno>,
     ) -> Result<u64, Errno>;
     fn create(&self, dir: u64, name: &[u8], node: NewNode<'_>) -> Result<u64, Errno>;
     fn link(&self, ino: u64, dir: u64, name: &[u8]) -> Result<(), Errno>;
@@ -206,10 +250,10 @@ pub trait FileSystem: core::any::Any + Send + Sync {
     fn read(&self, _node: &VNode, _off: u64, _buf: &mut [u8]) -> Result<usize, Errno> {
         Err(Errno(EOPNOTSUPP))
     }
-    fn write(&self, _node: &VNode, _at: WriteAt, _buf: &[u8]) -> Result<usize, Errno> {
-        Err(Errno(EOPNOTSUPP))
+    fn write(&self, _node: &VNode, _req: WriteReq, _buf: &[u8]) -> Result<WriteResult, WriteError> {
+        Err(Errno(EOPNOTSUPP).into())
     }
-    fn resize(&self, _node: &VNode, _size: u64) -> Result<(), Errno> {
+    fn resize(&self, _node: &VNode, _size: u64, _clear_setid: bool) -> Result<(), Errno> {
         Err(Errno(EOPNOTSUPP))
     }
     fn fsync(&self, _node: &VNode, _data_only: bool) -> Result<(), Errno> {
