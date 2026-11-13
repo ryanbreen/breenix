@@ -184,3 +184,36 @@ fn pending_peers_wait_at_the_sequencing_barrier_and_converge() {
     assert_eq!(a.model.peer.response(1),Some(&libcollab::peer::Response::Ack {global:2}));
     assert_eq!(b.model.peer.response(1),Some(&libcollab::peer::Response::Ack {global:1}));
 }
+
+#[path = "../userspace/programs/src/collab_lan_script.rs"] mod lan_script;
+#[test]
+fn lan_script_converges_through_two_cores() {
+    struct Buffer(Vec<u8>);
+    impl Transport for Buffer {
+        type Error = ();
+        fn send(&mut self, _: u32, bytes: &[u8]) -> Result<usize, SendError<()>> {
+            self.0.extend_from_slice(bytes); Ok(bytes.len())
+        }
+    }
+    let mut host = Core::host("host", Canvas::new(64, 64), 64, 64);
+    let mut peer = Core::join("join");
+    host.connect(7);
+    let mut hello = Buffer(Vec::new()); peer.flush(1, &mut hello); host.receive(7, &hello.0);
+    while host.pending(7) {
+        let mut wire = Buffer(Vec::new()); host.flush(7, &mut wire); peer.receive(1, &wire.0);
+    }
+    for ops in lan_script::strokes() { host.submit_stroke(ops); }
+    for ops in lan_script::strokes() { peer.submit_stroke(ops); }
+    let mut wire = Buffer(Vec::new()); peer.flush(1, &mut wire); host.receive(7, &wire.0);
+    while host.pending(7) {
+        let mut wire = Buffer(Vec::new()); host.flush(7, &mut wire); peer.receive(1, &wire.0);
+    }
+    assert_eq!(host.model.peer.log().len(), 8);
+    assert_eq!(peer.model.peer.log().len(), 8);
+    assert_eq!(host.model.canvas.digest(), peer.model.canvas.digest());
+    for core in [&host, &peer] {
+        for id in &core.model.submitted {
+            assert!(matches!(core.model.peer.response(*id), Some(libcollab::peer::Response::Ack { .. })));
+        }
+    }
+}

@@ -314,6 +314,8 @@ class AppsStep(unittest.TestCase):
         self.assertEqual(record(swapped), 1)
 
     def test_step_seven_selection_and_order(self):
+        self.assertEqual(len(NAMES), 74)
+        self.assertIn('guskit-collab/session-dialog', NAMES)
         expected = json.loads((ROOT / 'docs/gui/gt710-step-23-5.json').read_text())['cases'] + [
             'guskit-collab/join-sync', 'guskit-collab/stroke-both-ways',
             'guskit-collab/global-order', 'guskit-collab/three-peers',

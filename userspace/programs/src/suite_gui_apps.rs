@@ -106,6 +106,7 @@ static SUITE: Suite = suite("gui-apps", "GUI applications", &[
         case("three-peers", "Three peers converge", guskit_collab::three_peers).session(libuitest::supervisor::serve),
         case("undo-ownership", "Undo affects only its owner", guskit_collab::undo_ownership).session(libuitest::supervisor::serve),
         case("peer-leaves", "Peer and host departures are reported", guskit_collab::peer_leaves).session(libuitest::supervisor::serve),
+        case("session-dialog", "Host and join through session dialogs", guskit_collab::session_dialog).session(libuitest::supervisor::serve),
     ]),
     category("desktop", "Desktop", &[
         case("init-desktop", "Init starts the desktop", desktop::init_desktop).session(libuitest::supervisor::serve),

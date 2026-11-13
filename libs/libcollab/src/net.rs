@@ -1,4 +1,4 @@
-//! Nonblocking loopback TCP transport for collaboration sessions.
+//! Nonblocking TCP transport for collaboration sessions.
 use crate::queue::OutputQueues;
 pub use crate::queue::{SendError, Transport};
 use alloc::{collections::BTreeMap, vec::Vec};
@@ -16,13 +16,13 @@ pub struct TcpTransport {
     next: u32,
 }
 impl TcpTransport {
-    pub fn bind(port: u16) -> Result<Self, Error> {
+    pub fn bind(address: [u8; 4], port: u16) -> Result<Self, Error> {
         let listener = OwnedFd::new(socket::socket(
             socket::AF_INET,
             socket::SOCK_STREAM | socket::SOCK_NONBLOCK,
             0,
         )?);
-        socket::bind_inet(listener.fd(), &SockAddrIn::new([127, 0, 0, 1], port))?;
+        socket::bind_inet(listener.fd(), &SockAddrIn::new(address, port))?;
         socket::listen(listener.fd(), 16)?;
         Ok(Self {
             listener: Some(listener),
@@ -37,13 +37,13 @@ impl TcpTransport {
             next: 1,
         }
     }
-    pub fn connect(&mut self, port: u16) -> Result<u32, Error> {
+    pub fn connect(&mut self, address: [u8; 4], port: u16) -> Result<u32, Error> {
         let fd = OwnedFd::new(socket::socket(
             socket::AF_INET,
             socket::SOCK_STREAM | socket::SOCK_NONBLOCK,
             0,
         )?);
-        match socket::connect_inet(fd.fd(), &SockAddrIn::new([127, 0, 0, 1], port)) {
+        match socket::connect_inet(fd.fd(), &SockAddrIn::new(address, port)) {
             Ok(()) | Err(Error::Os(Errno::EINPROGRESS)) => {}
             Err(error) => return Err(error),
         }

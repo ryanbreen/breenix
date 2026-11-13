@@ -2,8 +2,8 @@
 fn gui_apps_cases_have_sessions_and_no_placeholder() {
     let source = include_str!("../userspace/programs/src/suite_gui_apps.rs");
     let cases: Vec<_> = source.lines().filter(|line| line.trim_start().starts_with("case(")).collect();
-    // #2880 corrected the base to 55; collaboration adds six cases.
-    assert_eq!(cases.len(), 73);
+    // #2880 corrected the base to 55; collaboration includes the session dialog.
+    assert_eq!(cases.len(), 74);
     for case in cases {
         assert!(case.contains(".session(libuitest::supervisor::serve)"), "missing session: {case}");
         assert!(!case.contains("pending::"), "placeholder: {case}");
@@ -194,4 +194,14 @@ fn init_desktop_case_uses_the_real_init_session() {
         .split("pub fn ").next().unwrap();
     assert!(case.contains("App::init_desktop(\"Terminal\")"));
     assert!(!case.contains("App::launch("));
+}
+
+#[test]
+fn collaboration_session_dialog_is_registered() {
+    let manifest = include_str!("../docs/suites/gui-apps.json");
+    let category = manifest.split("\"id\": \"guskit-collab\"").nth(1).expect("collaboration category")
+        .split("\"id\": \"desktop\"").next().unwrap();
+    assert!(category.contains("\"id\": \"session-dialog\""), "manifest missing session-dialog");
+    let source = include_str!("../userspace/programs/src/suite_gui_apps.rs");
+    assert!(source.contains("case(\"session-dialog\", \"Host and join through session dialogs\", guskit_collab::session_dialog).session(libuitest::supervisor::serve)"), "dispatcher missing session-dialog");
 }

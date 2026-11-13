@@ -7,7 +7,12 @@ publish = false
 [workspace]
 
 [dependencies]
-libcollab = { path = "../../libs/libcollab" }
+libcollab = { path = "../../libs/libcollab", features = ["net"] }
+breengel = { path = "../../libs/breengel" }
+libbui = { path = "../../libs/libbui" }
+libbreenix = { path = "../../libs/libbreenix", features = ["std"] }
+libfont = { path = "../../libs/libfont" }
+libgfx = { path = "../../libs/libgfx" }
 libpixcheck = { path = "../../libs/libpixcheck" }
 libimg = { path = "../../libs/libimg" }
 libvt = { path = "../../libs/libvt" }
@@ -53,3 +58,15 @@ path = "../../tests/gui_apps_wiring.rs"
 
 [lints.rust]
 unexpected_cfgs = { level = "warn", check-cfg = ['cfg(target_os, values("breenix"))'] }
+
+[[test]]
+name = "guskit_argv"
+path = "../../tests/guskit_argv.rs"
+
+[[test]]
+name = "guskit_session_dialog"
+path = "../../tests/guskit_session_dialog.rs"
+
+[[test]]
+name = "guskit_dispatch"
+path = "../../userspace/programs/src/guskit.rs"

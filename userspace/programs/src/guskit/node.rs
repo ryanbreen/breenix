@@ -61,3 +61,20 @@ pub trait Collaboration {
 pub fn collab(bounds: [i64; 4], model: &impl Collaboration) -> Node {
     node("collab", Role::Status, bounds, model.collab_value())
 }
+
+pub fn session_dialog(host: bool, address: &str, name: &str, status: &str, address_focused: bool, name_focused: bool) -> Vec<Node> {
+    let mut dialog = node("session-dialog", Role::Dialog, [220,200,360,180], json!({"status":status}));
+    dialog.name = if host { "Host Session" } else { "Join Session" }.into();
+    let mut nodes = vec![dialog];
+    for (key, label, value, bounds, focused) in [
+        ("session-address", "Address", address, [270,250,300,24], address_focused),
+        ("session-name", "Name", name, [270,300,300,24], name_focused),
+    ] {
+        if host && key == "session-address" { continue; }
+        let mut field = node(key, Role::Textfield, bounds, json!(value));
+        field.parent = Some("session-dialog".into()); field.name = label.into();
+        field.flags.push(Flag::Editable); if focused { field.flags.push(Flag::Focused); }
+        nodes.push(field);
+    }
+    nodes
+}

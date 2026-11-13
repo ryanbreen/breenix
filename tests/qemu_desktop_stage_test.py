@@ -74,6 +74,38 @@ class DesktopStageTest(unittest.TestCase):
                 self.assertEqual(hashlib.sha256(base.read_bytes()).digest(), original)
 
 
+    def test_network_shares_stages_private_endpoint_without_desktop(self):
+        debugfs, = metal_root.require_e2fsprogs('debugfs')
+        with metal_smb_test.SmbStagingTest().gui_root() as (image, _, config):
+            site = {key: 'fixture' for key in vm_site.REQUIRED}
+            site.update(config, SMB_TEST_INSTANCE='fixture-instance', SNTP_SERVERS='clock.example')
+            site_file = image.with_name('site')
+            site_file.write_text(''.join(f'{key}={value}\n' for key, value in site.items()))
+            site_file.chmod(0o600)
+            result = subprocess.run(['python3', str(ROOT / 'scripts/qemu-desktop-stage.py'), str(image),
+                                     'network-shares', '', '--forward-port', '23456'], capture_output=True,
+                                    env=dict(os.environ, BREENIX_VM_SITE=str(site_file)))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            def read(command):
+                return subprocess.run([debugfs, '-R', command, str(image)], capture_output=True, check=True)
+            self.assertEqual(read('cat /etc/breenix/smb-test-server').stdout, b'10.0.2.2 23456\n')
+            self.assertIn(b'username=fixture-user', read('cat /etc/breenix/smb-test.cred').stdout)
+            self.assertIn(b'File not found', read('stat /etc/breenix/desktop-suite').stderr)
+
+    def test_network_shares_leaves_shares_table_to_suite(self):
+        debugfs, = metal_root.require_e2fsprogs('debugfs')
+        with metal_smb_test.SmbStagingTest().gui_root() as (image, _, config):
+            site = {key: 'fixture' for key in vm_site.REQUIRED}
+            site.update(config, SMB_TEST_INSTANCE='fixture-instance', SNTP_SERVERS='clock.example')
+            site_file = image.with_name('site')
+            site_file.write_text(''.join(f'{key}={value}\n' for key, value in site.items()))
+            site_file.chmod(0o600)
+            subprocess.run(['python3', str(ROOT / 'scripts/qemu-desktop-stage.py'), str(image),
+                            'network-shares', '', '--forward-port', '23456'], check=True,
+                           env=dict(os.environ, BREENIX_VM_SITE=str(site_file)))
+            result = subprocess.run([debugfs, '-R', 'stat /etc/shares', str(image)], capture_output=True, check=True)
+            self.assertIn(b'File not found', result.stderr)
+
     def test_missing_smb_configuration_is_refused(self):
         with metal_smb_test.SmbStagingTest().gui_root() as (image, _, _):
             site = {key: 'fixture' for key in vm_site.REQUIRED}

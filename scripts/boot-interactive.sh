@@ -13,6 +13,10 @@
 #                        via -fw_cfg name=opt/breenix/mode (see "Boot modes" in docs/boot-path.md);
 #                        desktop's window manager composes through the GPU core, so it needs --gpu-gl
 #   --program PATH       for --mode program: the absolute guest path /sbin/probe runs (probe --run PATH)
+#   --collab-host [PORT] forward LAN TCP PORT to guest collaboration port 7890 (default 7890;
+#                        desktop and program modes only)
+#   BREENIX_COLLAB_HOST_BIND=127.0.0.1 limits that forward to this host for collab-pair.py;
+#                        the operator's default is 0.0.0.0 for LAN sharing.
 #   --case CATEGORY[/CASE]       for --mode suite: run one category or case (not full-suite evidence; not filed in Vigil)
 #   --suite ID           for --mode suite: the effort suite (docs/suites/ID.json) run as PID 1, /sbin/suite-ID
 #                        console selects --gpu-gl for its display-owner and scanout cases
@@ -78,6 +82,9 @@ QMP_SOCKET=
 QMP_REQUESTED=0
 GPU_GL=0
 UNTIL_DESKTOP_READY=0
+COLLAB_HOST_PORT=
+COLLAB_HOST=0
+COLLAB_HOST_BIND=${BREENIX_COLLAB_HOST_BIND:-0.0.0.0}
 
 while [ "$#" -gt 0 ]; do
     case "$1" in
@@ -89,6 +96,9 @@ while [ "$#" -gt 0 ]; do
         --accel) export BREENIX_ARM64_QEMU_ACCEL="$2"; shift 2 ;;
         --cpu) CPU="$2"; shift 2 ;;
         --program) PROGRAM="$2"; shift 2 ;;
+        --collab-host)
+            COLLAB_HOST=1; COLLAB_HOST_PORT=7890; shift
+            if [ "$#" -gt 0 ] && [[ "$1" != --* ]]; then COLLAB_HOST_PORT="$1"; shift; fi ;;
         --suite) SUITE="$2"; shift 2 ;;
         --case) [ -n "$2" ] || { echo "--case needs a category or category/case id" >&2; exit 2; }; ONLY="$2"; shift 2 ;;
         --screen-checkpoints) SCREEN_CHECKPOINTS="$2"; shift 2 ;;
@@ -116,6 +126,28 @@ case "$MODE" in
     tests|probe|shell|desktop|program|suite) ;;
     *) echo "unknown mode: $MODE (expected tests, probe, shell, desktop, program or suite)" >&2; exit 2 ;;
 esac
+if [ "$COLLAB_HOST" -eq 1 ]; then
+    [ "$MODE" = desktop ] || [ "$MODE" = program ] || { echo "--collab-host requires desktop or program mode" >&2; exit 2; }
+    COLLAB_HOST_PORT=$(python3 - "$COLLAB_HOST_PORT" "$COLLAB_HOST_BIND" <<'PY'
+import socket
+import sys
+
+value = sys.argv[1]
+if not value.isascii() or not value.isdecimal() or len(value.lstrip('0')) > 5 or not 1 <= int(value) <= 65535:
+    sys.exit('--collab-host needs a port from 1 to 65535')
+port = int(value)
+bind = sys.argv[2]
+if bind not in ('0.0.0.0', '127.0.0.1'):
+    sys.exit('BREENIX_COLLAB_HOST_BIND must be 0.0.0.0 or 127.0.0.1')
+try:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind((bind, port))
+except OSError as error:
+    sys.exit(f'--collab-host port {port} cannot be bound: {error}')
+print(port)
+PY
+    ) || exit 2
+fi
 [ "$UNTIL_DESKTOP_READY" -eq 0 ] || [ "$MODE" = desktop ] || { echo "--until-desktop-ready requires desktop mode" >&2; exit 2; }
 case "$SCREEN_CHECKPOINTS" in on|off) ;; *) echo "--screen-checkpoints needs on or off" >&2; exit 2 ;; esac
 if [ "$MODE" = program ]; then
@@ -363,12 +395,12 @@ if [[ "$SUITE" == *,* ]]; then
         "$ROOT/userspace/programs/aarch64/suite-${SUITE%%,*}.elf" "$SUITE"
 fi
 SMB_INSTANCE=
-if [ "$MODE" = suite ] && [[ ",$SUITE," == *,gui-apps,* ]]; then
+if [ "$MODE" = suite ] && { [[ ",$SUITE," == *,gui-apps,* ]] || [[ ",$SUITE," == *,network-shares,* ]]; }; then
     SMB_INSTANCE=$(PYTHONPATH="$ROOT/scripts:$ROOT/scripts/metal" python3 - "$SUITE" "$ONLY" <<'PYSMB'
 import sys
 from metal.metal_root import smb_gui_selection
 from vm_site import load_site
-if smb_gui_selection('suite', sys.argv[1], sys.argv[2] or None):
+if smb_gui_selection('suite', sys.argv[1], sys.argv[2] or None) or 'network-shares' in sys.argv[1].split(','):
     print(load_site()['SMB_TEST_INSTANCE'])
 PYSMB
 )
@@ -381,7 +413,7 @@ PYSMB
 fi
 source "$ROOT/scripts/qemu-smb-forward.sh"
 trap qemu_smb_forward_stop EXIT
-if [ "$MODE" = suite ] && [[ ",$SUITE," == *,gui-apps,* ]]; then
+if [ "$MODE" = suite ] && { [[ ",$SUITE," == *,gui-apps,* ]] || [[ ",$SUITE," == *,network-shares,* ]]; }; then
     qemu_smb_forward_start "$MODE" "$SUITE" "$ONLY"
     python3 "$ROOT/scripts/qemu-desktop-stage.py" "$WRITABLE" "$SUITE" "$ONLY" --forward-port "$SMB_FORWARD_PORT"
 fi
@@ -413,6 +445,7 @@ if [ "$MODE" = suite ] && { [ "$SUITE" = ui-testing ] || [ "$SUITE" = gui-apps ]
 fi
 # The users suite's external-client cases need the boot host's real OpenSSH.
 NETDEV="user,id=net0"
+[ -z "$COLLAB_HOST_PORT" ] || NETDEV+=",hostfwd=tcp:$COLLAB_HOST_BIND:$COLLAB_HOST_PORT-:7890"
 USERS_SSH_STATE=
 if [ "$MODE" = suite ] && [[ ",$SUITE," == *,users,* ]] && { [ -z "$ONLY" ] || [[ "$ONLY" == ssh || "$ONLY" == ssh/* ]]; }; then
     USERS_SSH_STATE="$SERIAL_LOG.users-hostssh-state.json"
