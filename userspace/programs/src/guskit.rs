@@ -330,8 +330,8 @@ fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) ->
             }
             if app.session_dialog.is_some() {
                 let key = match keycode { 1 => libbui::Key::Escape, 15 => libbui::Key::Tab, 28 => libbui::Key::Enter, 14 => libbui::Key::Backspace, 111 => libbui::Key::Delete, 105 => libbui::Key::Left, 106 => libbui::Key::Right, 102 => libbui::Key::Home, 107 => libbui::Key::End, _ => libbui::Key::Char };
-                let text = if ascii.is_ascii_graphic() || ascii == b' ' { (ascii as char).to_string() } else { String::new() };
-                let input = libbui::KeyInput { key, shift: modifiers.shift, ctrl: modifiers.ctrl, alt: modifiers.alt, text: &text };
+                // Printable input arrives separately as Event::Text.
+                let input = libbui::KeyInput { key, shift: modifiers.shift, ctrl: modifiers.ctrl, alt: modifiers.alt, text: "" };
                 let result = app.session_dialog.as_mut().unwrap().key(&input); app.dialog_result(result);
             } else if app.picker.is_some() {
                 use libbui::{Key, KeyInput};
@@ -447,6 +447,35 @@ fn main() {
 mod tests {
     use super::*;
     use breengel::{Delivered, Modifiers};
+
+    #[test]
+    fn session_dialog_inserts_physical_printable_keys_once() {
+        let image = Canvas::new(200, 120);
+        let mut app = App { width:200,height:120,clean:image.digest(),history:History::new(image),
+            tool:0,size:0,hue:0,sat:0,val:0,stroke:None,selected_color:None,recent:[[0;3];8],
+            confirm:false,quit:false,file:None,message:String::new(),picker:None,directory:PathBuf::from("."),save_as:false,palette:None,canvas_surface:None,session:None,session_dialog:None };
+        let mut menu = menu();
+        app.action(JOIN_SESSION);
+        // bwm sends KeyPress, Text and KeyRelease for a physical printable key.
+        for (keycode, ascii) in [(2, b'1'), (11, b'0'), (52, b'.'), (11, b'0'),
+            (52, b'.'), (3, b'2'), (52, b'.'), (3, b'2'), (15, b'\t'),
+            (25, b'P'), (18, b'e'), (18, b'e'), (19, b'r')]
+        {
+            let modifiers = Modifiers { shift: ascii.is_ascii_uppercase(), ..Modifiers::default() };
+            for event in [
+                Event::KeyPress { keycode, ascii, text:(ascii as char).to_string(), modifiers, repeat:false },
+                Event::Text { text:(ascii as char).to_string() },
+                Event::KeyRelease { keycode, modifiers },
+            ] {
+                handle(&mut app, &mut menu, &Delivered { serial:1,time_ns:1,clicks:0,event });
+            }
+        }
+        let dialog = app.session_dialog.as_mut().unwrap();
+        assert_eq!(dialog.address.text(), "10.0.2.2");
+        assert_eq!(dialog.name.text(), "Peer");
+        assert_eq!(dialog.model.submit(dialog.address.text(), dialog.name.text()),
+            session_dialog::Outcome::Start(false, [10, 0, 2, 2], 7890, "Peer".into()));
+    }
 
     #[test]
     fn session_dialog_rejects_bad_address_after_tab_and_enter_text() {
