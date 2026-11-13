@@ -85,6 +85,25 @@ impl App {
         if let Some(clean) = self.history.clean_after_grow(self.width, self.height, self.clean) { self.clean = clean; }
         self.history.grow(self.width, self.height);
     }
+    // The retained canvas is the last rendered image. Session metadata alone
+    // changes status; Apply/Undo add only rows whose pixels actually changed.
+    fn content_damage(&self) -> Clip {
+        let l = self.layout;
+        let r = l.status;
+        let mut damage = Clip::new(r.x,r.y,r.w,r.h);
+        if let Some((previous,_)) = &self.canvas_surface {
+            self.canvas().render_changes(previous, |x,y,w,_| {
+                damage = union(damage,Clip::new(x as i32*l.scale,y as i32*l.scale+l.canvas_y,w as i32*l.scale,l.scale));
+            });
+        } else {
+            let r = l.canvas(self.width,self.height);
+            damage = union(damage,Clip::new(r.x,r.y,r.w,r.h));
+        }
+        if let Some(r) = self.stroke_bounds() {
+            damage = union(damage,Clip::new(r.x*l.scale,r.y*l.scale+l.canvas_y,r.w*l.scale,r.h*l.scale));
+        }
+        damage
+    }
     fn color(&self) -> [u8; 3] { self.selected_color.unwrap_or_else(|| node::hsv_to_rgb(self.hue, self.sat, self.val)) }
     fn canvas(&self) -> &Canvas { self.session.as_ref().map_or_else(|| self.history.canvas(), |s| &s.core.model.canvas) }
     fn undo_depth(&self) -> usize { self.session.as_ref().map_or_else(||self.history.undo_depth(),|s|s.core.model.undo_depth()) }
@@ -453,19 +472,34 @@ fn handle(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered) ->
     menu.set_enabled(REDO, app.redo_depth() > 0);
     Handled::Redraw
 }
+fn invalidate(app: &mut App, redraw: &mut bool, delta: Option<Clip>) {
+    app.damage = if *redraw { app.damage.zip(delta).map(|(a,b)| union(a,b)) } else { delta };
+    *redraw = true;
+}
 fn dispatch_input(app: &mut App, menu: &mut MenuBar, delivered: &breengel::Delivered, redraw: &mut bool) -> Handled {
-    let before = if matches!(delivered.event, Event::MouseMove { .. })
-        && !menu.is_open() && app.picker.is_none() && app.session_dialog.is_none() && !app.confirm {
-        app.stroke_bounds()
-    } else { None };
+    let modal = menu.is_open() || app.picker.is_some() || app.session_dialog.is_some() || app.confirm;
+    let before = app.stroke_bounds();
+    let controls = (app.tool,app.size,app.hue,app.sat,app.val,app.selected_color,app.recent);
     let handled = handle(app, menu, delivered);
     if handled == Handled::Redraw {
-        let delta = before.zip(app.stroke_bounds()).map(|(a,b)| {
-            let r = union(a,b); let l = app.layout;
-            Clip::new(r.x*l.scale,r.y*l.scale+l.canvas_y,r.w*l.scale,r.h*l.scale)
-        });
-        app.damage = if *redraw { app.damage.zip(delta).map(|(a,b)| union(a,b)) } else { delta };
-        *redraw = true;
+        let delta = if modal || menu.is_open() || app.picker.is_some() || app.session_dialog.is_some() || app.confirm {
+            None
+        } else {
+            let l = app.layout;
+            let stroke = before.into_iter().chain(app.stroke_bounds()).map(|r|
+                Clip::new(r.x*l.scale,r.y*l.scale+l.canvas_y,r.w*l.scale,r.h*l.scale)).reduce(union);
+            if matches!(delivered.event, Event::MouseMove { .. }) {
+                stroke
+            } else {
+                let mut r = app.content_damage();
+                if let Some(stroke) = stroke { r = union(r,stroke); }
+                if controls != (app.tool,app.size,app.hue,app.sat,app.val,app.selected_color,app.recent) {
+                    r = union(r,Clip::new(0,22*l.scale,800*l.scale,l.canvas_y-22*l.scale));
+                }
+                Some(r)
+            }
+        };
+        invalidate(app,redraw,delta);
     }
     handled
 }
@@ -565,15 +599,23 @@ fn main() {
             font = win.take_display_font();
             font_size = win.display_size();
         }
+        let mut session_changed = false;
         if let Some(session)=&mut app.session {
             let status=session.core.model.status.clone();
-            if session.poll(10) { redraw = true; app.damage = None; }
+            session_changed = session.poll(10);
             if session.core.model.status != status { app.message.clear(); }
             app.width=session.core.model.width(); app.height=session.core.model.height();
         }
+        if session_changed {
+            let delta = if menu.is_open() || app.picker.is_some() || app.session_dialog.is_some() || app.confirm { None }
+                else { Some(app.content_damage()) };
+            invalidate(&mut app,&mut redraw,delta);
+        }
         // MAP_TREE is passive. Its attach probe needs a freshly sealed tree
         // page, which is published with a pixel commit, even on idle motion.
-        redraw |= pointer_motion && win.tree_reader_count() != 0;
+        if pointer_motion && win.tree_reader_count() != 0 && !redraw {
+            invalidate(&mut app,&mut redraw,Some(Clip::new(0,0,1,1)));
+        }
         if count != 0 && !redraw { let _ = win.commit_no_change(); }
     }
 }

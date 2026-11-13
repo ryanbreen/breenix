@@ -26,11 +26,11 @@ class MotionWork(unittest.TestCase):
         code = code.replace('fn canvas(&self)->&Canvas {&Canvas}', 'fn canvas(&self)->&Canvas {&self.image}')
         code = code.replace('fn draw_stroke(&self,_:&mut Canvas,_:&[Point]) {}', item(app, '    fn draw_stroke('))
         code = code.replace('// APP_LAYOUT_FIELD', 'layout: Layout, image: Canvas, damage: Option<Clip>,')
-        code = code.replace('// APP_METHODS', item(app, '    fn stroke_bounds(') if 'fn stroke_bounds(' in app else '')
+        code = code.replace('// APP_METHODS', '\n'.join(item(app, f'    fn {name}(') for name in ['stroke_bounds', 'content_damage'] if f'fn {name}(' in app))
         code = code.replace('// LAYOUT_MODULE', 'mod dimensions {\n' + source('userspace/programs/src/guskit/dimensions.rs') + '\n}\n' + 'mod layout {\n' + source('userspace/programs/src/guskit/layout.rs') + '\n}\nuse layout::Layout;')
         code = code.replace('// NODE_MODULE', source('userspace/programs/src/guskit/node.rs'))
         code = code.replace('// CONSTANTS', '\n'.join(line for line in app.splitlines() if line.startswith(('const NAMES:', 'const LABELS:'))))
-        code = code.replace('// PRODUCTION', '\n'.join(item(app, f'fn {name}(') for name in ['draw_label', 'render']))
+        code = code.replace('// PRODUCTION', '\n'.join(item(app, f'fn {name}(') for name in ['draw_label', 'render', 'union']))
         code = code.replace('fn clear(&mut self,c:Color) {self.pixels.fill(c)}', '''fn clear(&mut self,c:Color) {
             for y in 0..self.height { for x in 0..self.width { self.put_pixel(x,y,c); } }
         }''')
@@ -41,6 +41,7 @@ class MotionWork(unittest.TestCase):
         code = code.replace('f.pixels[py as usize*f.width+px as usize]=c', 'f.put_pixel(px as usize,py as usize,c)')
         code += r'''
 use std::sync::atomic::{AtomicBool,AtomicUsize,Ordering};
+static TEST_LOCK:std::sync::Mutex<()>=std::sync::Mutex::new(());
 static COUNT:AtomicBool=AtomicBool::new(false);
 static CANVAS_ALLOCS:AtomicUsize=AtomicUsize::new(0);
 static WRITES:AtomicUsize=AtomicUsize::new(0);
@@ -54,6 +55,7 @@ unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
 }
 #[global_allocator] static ALLOCATOR:CountingAllocator=CountingAllocator;
 #[test] fn brush_motions() {
+    let _guard=TEST_LOCK.lock().unwrap();
     for scale in [1,2] {
         let mut app=App {width:200,height:120,tool:1,size:0,hue:0,sat:0,val:0,recent:[[0;3];8],stroke:None,selected_color:None,
             palette:None,canvas_surface:None,picker:None,confirm:false,session:None,session_dialog:None,message:String::new(),
@@ -93,6 +95,33 @@ unsafe impl std::alloc::GlobalAlloc for CountingAllocator {
     }
 }
 '''
+        code += r'''
+#[test] fn completed_stroke_apply_and_undo_pixels() {
+    let _guard=TEST_LOCK.lock().unwrap();
+    let mut app=App {width:1148,height:454,tool:1,size:0,hue:0,sat:0,val:0,recent:[[0;3];8],stroke:None,selected_color:None,
+        palette:None,canvas_surface:None,picker:None,confirm:false,session:None,session_dialog:None,message:String::new(),
+        file:None,directory:PathBuf::from("."),save_as:false,layout:Layout::new(2),image:Canvas::new(1148,454),damage:None};
+    let mut fb=Surface::new(2296,1260,libgfx::surface::Format::BGRX).unwrap();fb.scale=2;
+    render(&mut fb,&mut app,&MenuBar,&mut None,14.0);
+    let original=fb.pixels.clone();
+    for undo in [false,true] {
+        if undo {app.image=Canvas::new(1148,454)} else {app.image.pencil(&[(10,80),(70,80)],[40,204,40])}
+        EVENT_DAMAGE
+        WRITES.store(0,Ordering::Relaxed);
+        render(&mut fb,&mut app,&MenuBar,&mut None,14.0);
+        let writes=WRITES.load(Ordering::Relaxed);
+        println!("native completed gesture undo={undo} pixel_writes={writes} full_window_pixels={}",2296*1260);
+        assert!(writes<=3*800_000,"completed gesture still draws the whole window: {writes} writes");
+        for y in 0..fb.height {for x in 0..fb.width {
+            let want=if y>=352 {
+                let i=(((y-352)/2)*1148+x/2)*3;
+                Color::rgb(app.image.pixels()[i],app.image.pixels()[i+1],app.image.pixels()[i+2])
+            } else {original[y*fb.width+x]};
+            assert_eq!(fb.pixels[y*fb.width+x],want,"undo={undo} pixel={x},{y}");
+        }}
+    }
+}
+'''.replace('EVENT_DAMAGE', 'app.damage=Some(app.content_damage());' if 'fn content_damage(' in app else 'app.damage=None;')
         with tempfile.TemporaryDirectory(prefix='guskit-motion-') as tmp:
             path = Path(tmp)
             (path / 'src').mkdir()
