@@ -402,7 +402,7 @@ mod mkfs {
         fs::write(src.join("big"), big).unwrap();
         std::os::unix::fs::symlink("a-dir/empty", src.join("link")).unwrap();
         std::os::unix::fs::symlink("missing", src.join("dangling")).unwrap();
-        for i in 0..300 {
+        for i in 0..400 {
             fs::write(src.join(format!("file-{i:03}")), [i as u8]).unwrap();
         }
         let p = s.path("image");
